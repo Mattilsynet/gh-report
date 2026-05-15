@@ -29,7 +29,9 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use cherry_pit_core::{AggregateId, ErrorCategory, EventStore, Projection};
+use cherry_pit_core::{
+    AggregateId, CorrelationContext, ErrorCategory, EventEnvelope, EventStore, Projection,
+};
 use serde::{Serialize, de::DeserializeOwned};
 
 /// Errors returned by projection drivers and storage backends.
@@ -951,6 +953,130 @@ async fn sync_dir(path: &Path) -> ProjectionResult<()> {
     .map_err(|e| ProjectionError::Infrastructure(Box::new(e)))?
 }
 
+// ===== Projection driver extension trait + tuple types =====
+//
+// Co-located with `ProjectionDriver` per CHE-0057:R2's extension-trait-
+// with-concrete-type rationale extended by analogy to projection drivers.
+// CHE-0051:R5 originally placed these inside cherry-pit-agent; that letter
+// is superseded by SM-2 of the phase2-v2-track-1 mission package (bead
+// `adr-fmt-ugia`). The agent-side surface is preserved via a `pub use`
+// re-export in `cherry_pit_agent::lib` for CHE-0054:R8 backward-compat.
+//
+// C14 (do not edit CHE-0048 source) remains honoured: the underlying
+// `ProjectionDriver` shape is untouched; this is an additive extension
+// trait + tuple-impl layer.
+
+/// Extension trait adding per-event projection application on top of
+/// [`ProjectionDriver`]'s replay-only surface.
+///
+/// `ProjectionDriver` ships `replay`, `project_to_file`, `rebuild_file`
+/// — all stream-level operations. Live publish handlers need a
+/// single-envelope entry point for incremental projection updates;
+/// `apply_one` provides that without modifying CHE-0048's driver (C14).
+///
+/// The default impl simply delegates to [`Projection::apply`] on a
+/// caller-owned mutable projection — the driver itself is stateless
+/// w.r.t. the live projection (it owns only the store binding). This
+/// preserves single-writer-per-aggregate (CHE-0006) by leaving the
+/// projection state where the consumer chooses to keep it.
+///
+/// Per CHE-0057:R4 this trait must never appear as a trait object;
+/// the workspace tripwire (ripgrep on `Box`+`dyn`+the trait name across
+/// `crates/`) enforces the discipline.
+pub trait ProjectionDriverExt<P, S>
+where
+    P: Projection,
+    S: EventStore<Event = P::Event>,
+{
+    /// Apply a single event envelope to a caller-owned projection.
+    ///
+    /// Synchronous per CHE-0018:R1 — `Projection::apply` is sync.
+    fn apply_one(&self, projection: &mut P, envelope: &EventEnvelope<P::Event>) {
+        projection.apply(envelope);
+    }
+
+    /// Replay the entire stream into a fresh `P::default()`.
+    ///
+    /// Pass-through to [`ProjectionDriver::replay`] for ergonomic
+    /// access through the extension trait surface.
+    ///
+    /// # Errors
+    ///
+    /// Surfaces [`ProjectionError`] from the underlying driver.
+    fn replay_all(
+        &self,
+        aggregate_id: AggregateId,
+        correlation: &CorrelationContext,
+    ) -> impl std::future::Future<Output = ProjectionResult<P>> + Send;
+}
+
+impl<P, S> ProjectionDriverExt<P, S> for ProjectionDriver<P, S>
+where
+    P: Projection,
+    S: EventStore<Event = P::Event>,
+{
+    fn replay_all(
+        &self,
+        aggregate_id: AggregateId,
+        correlation: &CorrelationContext,
+    ) -> impl std::future::Future<Output = ProjectionResult<P>> + Send {
+        self.replay(aggregate_id, correlation)
+    }
+}
+
+/// Heterogeneous fixed-arity tuple of [`ProjectionDriver`] instances.
+///
+/// Each tuple element is a distinct `ProjectionDriver<Pn, Sn>` where
+/// every `(Pn, Sn)` pair is independent — the tuple shape preserves
+/// per-projection type discipline (no `Box<dyn Projection>`, CHE-0005:R1).
+///
+/// v0.1 ships arities **0, 1 and 2** which suffice for the FOCUS.md §4
+/// step 5 ergonomic-benchmark gate (2-aggregate composition). Higher
+/// arities up to ~8 are tracked as a `// FOLLOW-UP S7` extension gated
+/// by the ergonomic benchmark — if the benchmark passes at arity 2 with
+/// comfortable headroom, macro-expansion to arity 8 is purely mechanical
+/// and lands in S7.
+///
+/// The trait is currently a marker — driver-level operations
+/// (`apply_one`, `replay_all`) are exercised on the individual elements
+/// via destructuring or pattern matching at the consumer site.
+pub trait ProjectionDriverTuple {
+    /// Number of projections in the tuple. Const-folded at the call
+    /// site so consumers can `assert!(<T as ProjectionDriverTuple>::ARITY == 2)`.
+    const ARITY: usize;
+}
+
+impl<P1, S1> ProjectionDriverTuple for (ProjectionDriver<P1, S1>,)
+where
+    P1: Projection,
+    S1: EventStore<Event = P1::Event>,
+{
+    const ARITY: usize = 1;
+}
+
+impl<P1, S1, P2, S2> ProjectionDriverTuple for (ProjectionDriver<P1, S1>, ProjectionDriver<P2, S2>)
+where
+    P1: Projection,
+    S1: EventStore<Event = P1::Event>,
+    P2: Projection,
+    S2: EventStore<Event = P2::Event>,
+{
+    const ARITY: usize = 2;
+}
+
+// FOLLOW-UP S7: extend `ProjectionDriverTuple` impls to arity 8 via a
+// declarative macro once the ergonomic benchmark validates the 2-arity
+// shape. The brief ("fixed-arity (works to ~8)") sets 8 as the ceiling;
+// v0.1 only needs 2 for the wiring-vs-domain-LOC gate.
+
+/// Marker for "no projections wired" — used when `App::new` is called
+/// without projection parameters. The unit type implements
+/// [`ProjectionDriverTuple`] with arity 0 so an empty composition is
+/// expressible without special-casing in `App`.
+impl ProjectionDriverTuple for () {
+    const ARITY: usize = 0;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1350,5 +1476,41 @@ mod tests {
                 assert_eq!(first.total, count);
             });
         }
+    }
+
+    // ===== ProjectionDriverExt + ProjectionDriverTuple tests =====
+    // Relocated from cherry-pit-agent/src/projection.rs per SM-2 of the
+    // phase2-v2-track-1 mission package. Behaviour unchanged; the tests
+    // now live alongside the production trait definitions per CHE-0057:R2.
+
+    #[test]
+    fn apply_one_delegates_to_projection_apply() {
+        let id = aggregate_id(1);
+        let store = StaticStore::new(vec![]);
+        let driver = ProjectionDriver::<CounterView, _>::new(store);
+        let mut view = CounterView::default();
+        driver.apply_one(&mut view, &envelope(id, 1));
+        driver.apply_one(&mut view, &envelope(id, 2));
+        assert_eq!(view.total, 2);
+    }
+
+    #[test]
+    fn tuple_arity_0() {
+        assert_eq!(<() as ProjectionDriverTuple>::ARITY, 0);
+    }
+
+    #[test]
+    fn tuple_arity_1() {
+        type T = (ProjectionDriver<CounterView, StaticStore>,);
+        assert_eq!(<T as ProjectionDriverTuple>::ARITY, 1);
+    }
+
+    #[test]
+    fn tuple_arity_2() {
+        type T = (
+            ProjectionDriver<CounterView, StaticStore>,
+            ProjectionDriver<CounterView, StaticStore>,
+        );
+        assert_eq!(<T as ProjectionDriverTuple>::ARITY, 2);
     }
 }
