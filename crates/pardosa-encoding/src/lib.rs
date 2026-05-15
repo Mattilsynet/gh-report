@@ -38,8 +38,16 @@ pub const DEFAULT_DECODE_CAP: usize = 1 << 20;
 
 /// Errors raised by [`Decode::decode`].
 ///
-/// Sub-mission C will subsume this enum into the wider 11-variant
-/// `EventError` per F4; for now this is the decoder-local surface.
+/// `DecodeError` is the decoder-local error surface introduced in
+/// GEN-0035. The v2 canonical event-level error is
+/// [`pardosa_traits::EventError`](../pardosa_traits/enum.EventError.html)
+/// (GEN-0039); a `From<DecodeError> for EventError` bridge lives in
+/// `pardosa-traits` so call sites that adopt EventError can lift decode
+/// failures. Full migration of the `Decode` trait signature to return
+/// `EventError` directly is tracked as a follow-up sub-mission
+/// (C2 / `adr-fmt-vggv`); until then `DecodeError` remains the
+/// substrate-level decode return type and is not deprecated for
+/// removal — only doc-pointed at the v2 successor.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[non_exhaustive]
 pub enum DecodeError {

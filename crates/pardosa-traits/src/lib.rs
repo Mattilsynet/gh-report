@@ -152,3 +152,181 @@ seal_tuple!(
 seal_tuple!(
     T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15
 );
+
+// ---------------------------------------------------------------------------
+// EventError — pardosa-events canonical error surface (GEN-0039)
+// ---------------------------------------------------------------------------
+//
+// 11-variant `repr(u8)` enum with literal discriminants 0..=10. The in-house
+// canonical encoding (GEN-0035) emits the discriminant byte as the entire
+// payload for these unit-like variants: byte-1 of any encoded `EventError`
+// equals the discriminant value. Variant ordering and discriminants are
+// frozen as a wire contract — appending new variants is permitted at
+// discriminant 11+ in a forward-compatible (Tier-A) revision; renumbering
+// is a breaking change requiring a superseding ADR.
+//
+// EventError is *additive* in v2 — `pardosa_encoding::DecodeError` is the
+// existing decoder-local surface, retained while `Decode` trait-signature
+// migration is carved to a follow-up sub-mission (C2 / `adr-fmt-vggv`).
+// `From<pardosa_encoding::DecodeError> for EventError` bridges decoder
+// failures into the wider event-error space for call sites that adopt
+// EventError directly.
+
+/// Canonical event-level error surface for pardosa.
+///
+/// `repr(u8)` with literal discriminants pinned 0..=10. The in-house
+/// canonical encoding emits a single byte equal to the discriminant for
+/// each variant, per GEN-0039 (F4 wire contract: byte-1 of an encoded
+/// `EventError` equals the discriminant value).
+///
+/// Variant ordering and discriminant values are part of the wire
+/// contract — see GEN-0039.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+#[non_exhaustive]
+pub enum EventError {
+    /// Caller-supplied data violated a documented input invariant.
+    InvalidInput = 0,
+    /// The addressed entity does not exist.
+    NotFound = 1,
+    /// The operation conflicts with the current state (e.g. version mismatch,
+    /// duplicate key, concurrent write race).
+    Conflict = 2,
+    /// Caller is not authenticated.
+    Unauthorized = 3,
+    /// Caller is authenticated but lacks permission for the operation.
+    PermissionDenied = 4,
+    /// A required dependency is temporarily unavailable; retry may succeed.
+    Unavailable = 5,
+    /// The operation did not complete within its deadline.
+    Timeout = 6,
+    /// An internal invariant was violated. Carries no caller-actionable
+    /// detail; surface only as an opaque failure.
+    Internal = 7,
+    /// A resource quota or limit was exceeded (memory, message size, rate).
+    ResourceExhausted = 8,
+    /// The operation was explicitly cancelled before completion.
+    Cancelled = 9,
+    /// Underlying storage reported irrecoverable data loss for the
+    /// affected entity.
+    DataLoss = 10,
+}
+
+impl EventError {
+    /// Return the wire discriminant byte for this variant.
+    ///
+    /// Equivalent to the first (and only) byte of `EventError::encode`.
+    /// Pinned by GEN-0039; renumbering is a breaking change.
+    #[must_use]
+    pub const fn discriminant(self) -> u8 {
+        // `repr(u8)` makes the cast a no-op at the bit level.
+        self as u8
+    }
+}
+
+impl pardosa_encoding::Encode for EventError {
+    fn encode(&self, out: &mut Vec<u8>) {
+        // Single byte per GEN-0039 F4 wire contract. `repr(u8)` makes
+        // `self.discriminant()` bit-identical to the variant's pinned
+        // discriminant.
+        out.push(self.discriminant());
+    }
+}
+
+impl From<pardosa_encoding::DecodeError> for EventError {
+    /// Bridge decoder-local failures into the wider event-error space.
+    ///
+    /// Every `DecodeError` variant maps to `EventError::InvalidInput`:
+    /// from the caller's perspective a malformed encoded payload is a
+    /// caller-side input defect, not an internal invariant violation.
+    /// Call sites that want a finer mapping can match `DecodeError`
+    /// directly before bridging.
+    ///
+    /// This bridge is the v2 transition mechanism. Full migration of
+    /// the `Decode` trait signature to return `EventError` directly is
+    /// carved to sub-mission C2 (`adr-fmt-vggv`).
+    fn from(_err: pardosa_encoding::DecodeError) -> Self {
+        EventError::InvalidInput
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Timestamp — event time newtype (GEN-0039)
+// ---------------------------------------------------------------------------
+
+use core::num::NonZeroU64;
+
+/// Event timestamp as non-zero epoch nanoseconds.
+///
+/// `NonZeroU64` is load-bearing: `Option<Timestamp>` is the same size as
+/// `Timestamp` (niche optimisation) and zero is reserved as a sentinel
+/// for "unset" at the option layer rather than wasting a representable
+/// value inside the newtype. Nanosecond granularity covers ~584 years
+/// of unsigned range from any chosen epoch; that headroom is the smallest
+/// resolution that survives high-frequency event interleaving without
+/// loss, and dropping to milliseconds would lose ordering for sub-ms
+/// events. See GEN-0039 for the full representation rationale.
+///
+/// Epoch convention is documented in GEN-0039 (UNIX epoch by default).
+/// No `Default` impl is provided — "zero time" is meaningless for an
+/// event, and `NonZeroU64` makes an accidental zero unrepresentable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Timestamp(NonZeroU64);
+
+impl Timestamp {
+    /// Construct a `Timestamp` from a raw epoch-nanosecond count.
+    ///
+    /// Returns `None` if `nanos == 0` — zero is reserved as the
+    /// `Option<Timestamp>::None` sentinel via the `NonZeroU64` niche.
+    #[must_use]
+    pub const fn from_nanos(nanos: u64) -> Option<Self> {
+        match NonZeroU64::new(nanos) {
+            Some(nz) => Some(Self(nz)),
+            None => None,
+        }
+    }
+
+    /// Return the underlying epoch-nanosecond value.
+    #[must_use]
+    pub const fn as_nanos(self) -> u64 {
+        self.0.get()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Validate — invariant-check trait (GEN-0040)
+// ---------------------------------------------------------------------------
+
+/// Sync invariant check executed against a constructed value.
+///
+/// `validate` is intentionally synchronous: command handling is a pure
+/// decision (CHE-0008), invariant checks happen in that same pure phase,
+/// and admitting `async` here would force every aggregate / event /
+/// wrapper validator onto an executor for no semantic gain. Validators
+/// must remain side-effect-free and bounded — no I/O, no global state,
+/// no allocation that the caller cannot account for. See GEN-0040 for
+/// the full rationale; sync-only is a deliberate choice cited against
+/// CHE-0008.
+///
+/// `Error = EventError` is the canonical v2 surface; finer-grained
+/// validators are encouraged to construct an `EventError::InvalidInput`
+/// and carry diagnostic context out-of-band (logging, tracing) rather
+/// than encoding it in the error type.
+pub trait Validate {
+    /// Validation error type. Defaults to [`EventError`] for the common
+    /// case; bounded wrappers (F sub-mission) may use a narrower type
+    /// when the error space is genuinely smaller.
+    type Error;
+
+    /// Check invariants and return `Ok(())` if the value is well-formed.
+    ///
+    /// Must be a pure function (CHE-0008): no I/O, no global mutation,
+    /// no observable side effects. Implementations should be cheap and
+    /// total — long-running or fallible-against-environment checks
+    /// belong in command handling proper, not here.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Self::Error` when the value violates an invariant.
+    fn validate(&self) -> Result<(), Self::Error>;
+}

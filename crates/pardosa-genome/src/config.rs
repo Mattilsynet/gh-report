@@ -107,6 +107,23 @@ pub struct DecodeOptions {
     /// Default: 256 MiB.
     pub max_message_size: usize,
 
+    /// Maximum per-event payload size in bytes (`msg_data_size` cap).
+    ///
+    /// Default: **16 MiB** — a finer-grained ceiling sitting below the
+    /// 256 MiB gross gate (`max_message_size`, GEN-0013). The cap is a
+    /// pure runtime parameter; the on-disk header layout in `format.rs`
+    /// is unchanged (per GEN-0038 / oracle K3 verdict).
+    ///
+    /// **Prospective wire-in.** This field records the contract but is
+    /// not consumed by any decode-time validation in this commit — the
+    /// bare-message decode path that would gate `msg_data_size <=
+    /// max_event_size` does not yet exist in `pardosa-genome`. The
+    /// check lands when that decode path is introduced (tracked as a
+    /// follow-up; see GEN-0038 §"Wire-in" for the deferral note). C
+    /// lands the field + the runtime-cap contract; no live validation
+    /// path exists in this commit.
+    pub max_event_size: u32,
+
     /// Maximum zstd window log. Default: 22 (4 MiB).
     pub max_zstd_window_log: u32,
 
@@ -121,6 +138,7 @@ impl Default for DecodeOptions {
             max_total_elements: PageClass::Page0.max_elements(),
             max_uncompressed_size: 268_435_456,
             max_message_size: 268_435_456,
+            max_event_size: 16 * 1024 * 1024,
             max_zstd_window_log: 22,
             reject_trailing_bytes: true,
         }

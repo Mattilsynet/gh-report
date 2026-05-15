@@ -23,12 +23,22 @@ pub use genome_safe::{GenomeOrd, GenomeSafe, schema_hash_bytes, schema_hash_comb
 // keeps resolving and the derive macro's emitted paths
 // (`::pardosa_genome::sealed::Sealed`) work without users depending on
 // `pardosa-traits` directly.
-pub use pardosa_traits::{EventSafe, sealed};
+//
+// EventError, Timestamp, Validate are the v2 typing-core surface introduced
+// in sub-mission C (GEN-0038/0039/0040). Alphabetised; explicit (no glob).
+pub use pardosa_traits::{EventError, EventSafe, Timestamp, Validate, sealed};
 
 // Encode/Decode re-exported from pardosa-encoding so the derive macro's
 // emitted `::pardosa_genome::{Encode, Decode}` paths resolve in downstream
 // user code and trybuild fixtures without a direct pardosa-encoding dep.
 // Mirrors the EventSafe re-export pattern above.
+//
+// `DecodeError` is the decoder-local error surface (GEN-0035). The v2
+// canonical event-level error is `EventError` (GEN-0039); a
+// `From<DecodeError> for EventError` bridge lives in `pardosa-traits` so
+// call sites that adopt EventError can lift decode failures. Full
+// migration of the `Decode` trait signature to return `EventError`
+// directly is tracked as a follow-up sub-mission (C2 / `adr-fmt-vggv`).
 pub use pardosa_encoding::{Decode, DecodeError, Decoder, Encode, from_bytes, to_vec};
 
 // Re-export derive macro when the `derive` feature is enabled.
