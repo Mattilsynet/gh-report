@@ -420,6 +420,17 @@ Track 0.5 verdict for Track 2.
 7. `cargo tree` shows **no `async-trait`** anywhere in cherry-pit-* dep trees.
 8. `cargo run -p adr-fmt -- --lint` warnings-only, no errors (baseline preserved).
 9. Bead `adr-fmt-spsd` closed with code reference, not text deferral.
+10. **gh-report SMI landed** (Track 4.0). All of:
+    - `rg -n 'sequence_tracker|run_index|repo_index|delivery_index' crates/gh-report/src/`
+      returns zero hits.
+    - `rg -n 'EventStore' crates/gh-report/src/` shows write-side use confined
+      to the `Merger` module.
+    - New regression test `crates/gh-report/tests/smi_replay_equivalence.rs`
+      loads a pre-SMI msgpack event log (captured in-tree) and asserts
+      projection final-state byte-equivalence to the baseline.
+    - Sweep audit trail preserved: `Run` event variants
+      (`SweepStarted/Progress/Completed/Failed`, `EvidencePublished`) still
+      emitted; projection sweep-history fields unchanged.
 
 No checklist item ("orphan count = 0", "every invariant has a falsifier") that
 is dischargeable by editing an ADR file. v1's ceremony pattern is structurally
@@ -545,6 +556,13 @@ bead, label `evidence` + `mission:phase2-v2-pardosa-research`) with sections:
 3. Prior-art table (six targets × three questions).
 4. Three decision matrices (Q1/Q2/Q3): options × cost × reversibility ×
    ADR-amendment cost × operational risk × pardosa-capability preserved.
+   Per-option note: does the option preserve a **single-writer-friendly**
+   trait shape? gh-report's Track 4.0 SMI refactor reveals gh-report's
+   actual usage is single-writer-per-process; if a `SingleWriterEventStore`
+   capability marker (orthogonal to `HashChainedEventStore` from Q2 and
+   the correlation/causation strategy from Q3) emerges as natural,
+   recommend its inclusion in Track 2.2 adapter scope. Observational
+   input only — not a Track 0.5 mandate.
 5. Recommendation per question (explicit choice + 2-sentence rationale).
 6. Rollup verdict, one of:
    - **Proceed**: pardosa wraps cleanly; Track 2 starts as planned.
@@ -609,8 +627,11 @@ Goal: the second real consumer. Read + write + projection drives adr-fmt's lint 
 
 Goal: shrink `gh-report::server.rs` (3850 LOC) by consuming `cherry-pit-web` the way adr-srv does. Surfaces every "general but not really" gap.
 
+Track-4 internal order: **4.0 (SMI) → 4.1 (router diff) → 4.2 (push upstream) → 4.3 (migrate + LOC gate)**. 4.0 lands first so the router diff in 4.1 sees post-SMI gh-report; the LOC gate at 4.3 absorbs SMI deletions.
+
 | # | Task | Deliverable | Verify |
 |---|------|-------------|--------|
+| 4.0 | gh-report SMI refactor | Declare the **Serial Merge Invariant** (SMI): exactly one task (`Merger`) holds the `EventStore` write handle within a gh-report process. Collapse `RunService` + `RepoService` + `WebhookService` write paths onto a single `mpsc::Sender<MergerCommand>`. Webhook handler funnels through the same channel (no second writer path). Aggregate `handle()` runs inside the merger against in-memory state; no load-before-append, no CAS, no per-service sequence-tracker maps. Delete `run_index` / `repo_index` / `delivery_index` from `AppState` (become plain `HashMap` fields owned by the merger task). On-disk msgpack event format unchanged — pre-SMI event logs replay byte-identically. All 8 `DomainEvent` variants retained; sweep history audit preserved in projection per FOCUS §3 audit constraint. ApplicationService public APIs become thin channel-send wrappers (call-sites in `collect.rs` and `webhook/mod.rs` do not move). Closes I1 TOCTOU structurally. | `cargo test -p gh-report --workspace`; `cargo test -p gh-report --test smi_replay_equivalence` (new regression test); `rg -n 'sequence_tracker\|run_index\|repo_index\|delivery_index' crates/gh-report/src/` → zero hits; `rg -n 'EventStore' crates/gh-report/src/` → write-side use confined to `Merger` module. |
 | 4.1 | Diff gh-report router vs adr-srv router | Read-only analysis sub-mission. `.ooda/gh-report-cherry-pit-web-gap.md`: every line of `infra/server/server.rs` not present in `cherry-pit-web::build_router` is either (a) reusable upstream, (b) gh-report-specific composition (acceptable), or (c) duplicated logic (must consolidate). | Artefact registered as evidence bead. Inventory drives 4.2. |
 | 4.2 | Push category (a) into cherry-pit-web | Each reusable layer becomes part of cherry-pit-web's public composition. cherry-pit-web's tests grow to cover them. | `cargo test -p cherry-pit-web`; `cargo test -p gh-report`. |
 | 4.3 | Migrate gh-report onto consolidated cherry-pit-web | Delete duplicated logic. `wc -l server.rs < 2500` (exit-criterion gate per §5). | LOC gate hits; full gh-report integration tests green. |
@@ -662,6 +683,7 @@ Track 5 (SEC-0003 bind-in-library) ── gated on 4
 | Track 0.5 concludes "Re-scope" (pardosa not viable) | M | M | Fallback: in-memory + sqlite as second impl. FOCUS §3 amendment A partially withdrawn. No code wasted — 0.5 is read-only. |
 | Track 0.5 recommends multiple CHE amendments | M | M | Each is its own §6 high-risk decision the user ratifies. moltke batches them in one ratification round. |
 | Scope creep ("while we're at it…") | H | M | Strict track boundaries; injection queue for discovered work; gardener pass between tracks. |
+| gh-report SMI (Track 4.0) replay-equivalence test fails — pre-SMI event log produces divergent post-projection state | M | H | Halt-and-handback per FOCUS abort criteria. Likely a fold-order bug in the in-memory aggregate-state path or a missed event variant in the merger's routing. Bisect via feynman. Do not commit a partial SMI; on-disk format is contractually unchanged, so partial rollout would silently corrupt audit trail equivalence. |
 
 **Pre-mortem worst case**: Track 2.2 reveals the `EventStore` trait can't
 accommodate pardosa without breaking existing file-store consumers. **Response**:
@@ -790,3 +812,4 @@ queue with `phase:N-<name>` bead label for next phase sweep.
 | 0.1     | 2026-05-13 | Initial; per-axis detail blocks lifted from `.ooda/refinement-roadmap-draft.md`. |
 | 0.2     | 2026-05-13 | Restructured to high-level ordered task lists. Ceremony stripped from all phases (C4 doc refreshes, CHANGELOG, MSRV declaration, semver docs, license-header audit, docs.rs metadata, crates.io publication actions removed). Phase 3 reframed: correctness + error-withstanding + adversarial-input hardening, not publication-prep. Phase 3 gains Smithy contract models and TLA+ specifications (details deferred to task activation). Axis J (perf/energy) and Publication-prep removed. |
 | 0.3     | 2026-05-14 | Phase 2 superseded by Phase 2 v2 (Generalization by Construction). v1 declared exit on ceremony for 6/10 tasks (ADR text shuffling counted as discharge for T2/T4/T5/T7/T8/T9/T10; cherry-pit-agent + cherry-pit-web circularly counted as "≥2 worked examples"; only T6 falsifier tests + injection-queue storage work were load-bearing). v1 task closures retained for audit; v2 layers in 5 tracks (0 Ratification → 0.5 Pardosa research → 1 Foundations → 2 Pardosa as 2nd EventStore → 3 adr-srv → 4 gh-report consolidation → 5 SEC-0003 bind-in-library) with mechanical CI-verifiable exit criteria. Track 0.5 (Pardosa research) prepended at user request: gap analysis surfaced model mismatches (Purged state ↔ Aggregate lifecycle; DomainId↔AggregateId identity; correlation/causation propagation in EventBus) and prior-art survey (EventStoreDB / Marten / Axon / Rust crates / NATS / Kafka) required before any pardosa-wrapping code. FOCUS.md §3/§7/§8 amendment draft at `.ooda/focus-amendment-phase2-v2-draft.md` for user ratification. |
+| 0.4     | 2026-05-15 | gh-report **Serial Merge Invariant (SMI)** refactor added as **Track 4.0** (single-writer merger; collapses three-service write coordination; webhook funnels through same merger as sweeps; on-disk msgpack format unchanged; audit trail preserved in projection). Promoted to **mechanical Phase 2 v2 exit criterion #10** (rg checks + replay-equivalence regression test). **Track 0.5 deliverables §4** gains a per-option callout asking whether each Q1/Q2/Q3 decision preserves a single-writer-friendly trait shape (`SingleWriterEventStore` capability marker as potential factoring; observational input, not mandate). **Risk register** gains replay-equivalence-regression row. **Track-4 internal order** documented as 4.0 → 4.1 → 4.2 → 4.3 so the router diff sees post-SMI gh-report. No new track. No §3 FOCUS amendment required. **Sequencing unchanged** — Track 4 remains gated on Tracks 1 + 3. Discovery origin: plan-mode session 2026-05-15 reading gh-report write path; named invariants (SMI, job-queue regenerability, pure-worker, append-or-reject, post-append publish) documented on the injection bead. Companion: `FOCUS.md` v0.5 (§3 audit-trail entry + §8 Phase-2 v2 verify additions for SMI exit gate). |
