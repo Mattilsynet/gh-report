@@ -395,17 +395,28 @@ impl<T: Decode, const N: usize> Decode for [T; N] {
 
 impl<K: Encode + Ord, V: Encode> Encode for BTreeMap<K, V> {
     fn encode(&self, out: &mut Vec<u8>) {
-        // BTreeMap iterates keys in ascending K::Ord order, which is the
-        // workspace's canonical-bytes-equivalent for the primitive types
-        // currently in use. GEN-0035:R5 mandates ascending *encoded
-        // bytes* of K; for the primitive-key cases this coincides with
-        // K::Ord. Composite keys whose Ord disagrees with encoded-bytes
-        // ordering are not yet supported and will be addressed in
-        // sub-mission B if any surface.
+        // GEN-0035:R5 mandates ascending *encoded bytes* of K. BTreeMap
+        // iterates in K::Ord order, which coincides with encoded-bytes
+        // order for fixed-width primitive keys but disagrees for any
+        // variable-length-encoded K (String, Vec<u8>, Vec<T>, etc.) where
+        // the u32 length prefix dominates lex order. We therefore encode
+        // each (k, v) into a scratch pair and sort pairs by canonical
+        // K-bytes before emission. Sort-key bytes ARE the wire bytes for
+        // K (`Encode::encode` is deterministic), so the decoder's
+        // re-encode-and-compare invariant at lib.rs:413–438 holds.
         encode_len_prefix(self.len(), out);
+        let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(self.len());
         for (k, v) in self {
-            k.encode(out);
-            v.encode(out);
+            let mut k_bytes = Vec::new();
+            k.encode(&mut k_bytes);
+            let mut v_bytes = Vec::new();
+            v.encode(&mut v_bytes);
+            pairs.push((k_bytes, v_bytes));
+        }
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        for (k_bytes, v_bytes) in &pairs {
+            out.extend_from_slice(k_bytes);
+            out.extend_from_slice(v_bytes);
         }
     }
 }
@@ -739,6 +750,109 @@ mod tests {
         10u8.encode(&mut bad);
         let err = from_bytes::<BTreeMap<u32, u8>>(&bad).unwrap_err();
         assert_eq!(err, DecodeError::NonCanonicalMap);
+    }
+
+    // ---- B0 (sub-mission B folded in): canonical map ordering for
+    // variable-length encoded keys. GEN-0035:R5 — entries must be emitted
+    // in ascending order of canonical encoded bytes of K, not K::Ord.
+    // The two roundtrip tests below were red against the pre-fix encoder
+    // because for mixed-length keys (e.g. "alpha"/"beta"/"gamma") the
+    // u32 length prefix dominates lex order and disagrees with K::Ord;
+    // the decoder rejected the encoder's own output with NonCanonicalMap.
+    //
+    // Subsumption notes (sub-mission B's named matrix):
+    //   - `string_roundtrip` covers the String matrix entry.
+    //   - `vec_u8_layout` + `cap_charges_nested_length_prefixes` cover
+    //     Vec<u8> round-trip; `roundtrip_btreemap_vec_u8_u32_mixed_length`
+    //     below additionally exercises Vec<u8>-keyed BTreeMaps.
+
+    #[test]
+    fn roundtrip_btreemap_string_u32_mixed_length() {
+        // B0 load-bearing: original reproducer. Mixed-length String keys
+        // — K::Ord ("alpha" < "beta" < "gamma") disagrees with encoded-
+        // bytes order because the u32 length prefix of "gamma" (5) ties
+        // with "alpha" but "beta" is length 4 ... actually all three are
+        // not equal length, so encoded-bytes order = ascending length
+        // tie-break by content. Encoder must sort by encoded-K-bytes.
+        let mut m: BTreeMap<String, u32> = BTreeMap::new();
+        m.insert(String::from("alpha"), 1);
+        m.insert(String::from("beta"), 2);
+        m.insert(String::from("gamma"), 3);
+        rt(m);
+    }
+
+    #[test]
+    fn canonical_bytes_btreemap_string_u32_mixed_length() {
+        // B0 load-bearing: assert the wire bytes are the
+        // sort-by-encoded-K-bytes order, NOT K::Ord order.
+        let mut m: BTreeMap<String, u32> = BTreeMap::new();
+        m.insert(String::from("alpha"), 1);
+        m.insert(String::from("beta"), 2);
+        m.insert(String::from("gamma"), 3);
+        let got = to_vec(&m);
+
+        // Build expected by encoding each (k, v) into its own buffer,
+        // sorting pairs by encoded-K-bytes, then concatenating with the
+        // u32 LE count prefix.
+        let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        for (k, v) in [("alpha", 1u32), ("beta", 2), ("gamma", 3)] {
+            let mut kb = Vec::new();
+            String::from(k).encode(&mut kb);
+            let mut vb = Vec::new();
+            v.encode(&mut vb);
+            pairs.push((kb, vb));
+        }
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&(pairs.len() as u32).to_le_bytes());
+        for (kb, vb) in &pairs {
+            expected.extend_from_slice(kb);
+            expected.extend_from_slice(vb);
+        }
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn roundtrip_btreemap_vec_u8_u32_mixed_length() {
+        // B0 load-bearing: generalises beyond String. Vec<u8> keys with
+        // distinct lengths — vec![1] (len 1), vec![1,1] (len 2), vec![2]
+        // (len 1). K::Ord on Vec<u8> is lex on bytes ignoring length, so
+        // vec![1] < vec![1,1] < vec![2]; encoded bytes prepend u32 len,
+        // so encoded order = ascending length tie-break by content.
+        let mut m: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
+        m.insert(vec![1], 10);
+        m.insert(vec![1, 1], 20);
+        m.insert(vec![2], 30);
+        rt(m);
+    }
+
+    #[test]
+    fn decode_btreemap_rejects_misordered() {
+        // B0 load-bearing: negative case. Hand-construct an encoded map
+        // whose entries are in K::Ord order with mixed-length String keys
+        // (which is the *wrong* order under GEN-0035:R5). Decoder must
+        // reject with NonCanonicalMap. Guards the decoder's invariant
+        // against any future "optimisation" that drops the check.
+        let mut bad = Vec::new();
+        // count = 3
+        encode_len_prefix(3, &mut bad);
+        // K::Ord order: "alpha", "beta", "gamma". For variable-length
+        // keys this does NOT match encoded-bytes order (length prefix
+        // dominates), so the decoder must reject.
+        for (k, v) in [("alpha", 1u32), ("beta", 2), ("gamma", 3)] {
+            String::from(k).encode(&mut bad);
+            v.encode(&mut bad);
+        }
+        let err = from_bytes::<BTreeMap<String, u32>>(&bad).unwrap_err();
+        assert_eq!(err, DecodeError::NonCanonicalMap);
+    }
+
+    #[test]
+    fn roundtrip_tuple_u8_u16_u32() {
+        // B's named matrix entry (was rolled back at B-attempt). Verifies
+        // tuple round-trip at a specific arity beyond the existing
+        // `tuple_back_to_back_no_prefix` coverage.
+        rt((7u8, 0x1234u16, 0xdead_beefu32));
     }
 
     #[test]
