@@ -12,6 +12,19 @@ publish = false  # internal workspace crate; allows wildcard path-deps under den
 name = "pardosa_encoding"
 path = "src/lib.rs"
 
+[features]
+# GEN-0041 foreign-crate v0 floor. Each gate enables Encode + Decode for one
+# foreign payload type. Flags are off by default so the no-features build
+# keeps the encoding substrate dependency-free; downstream crates opt in.
+uuid = ["dep:uuid"]
+bytes = ["dep:bytes"]
+arrayvec = ["dep:arrayvec"]
+
 [dependencies]
+# GEN-0041 foreign-floor optional deps. Re-route through the workspace
+# table so versions stay aligned with pardosa-traits' twin gates.
+uuid = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+arrayvec = { workspace = true, optional = true }
 
 [dev-dependencies]

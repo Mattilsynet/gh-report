@@ -12,7 +12,21 @@ publish = false  # internal workspace crate; allows wildcard path-deps under den
 name = "pardosa_traits"
 path = "src/lib.rs"
 
+[features]
+# GEN-0041 foreign-crate v0 floor. Each gate adds Sealed + EventSafe for one
+# foreign payload type and pulls through to pardosa-encoding's matching gate
+# (which carries the Encode + Decode impls). Splitting across crates is
+# orphan-rule-mandatory: EventSafe is defined here, Encode in encoding.
+uuid = ["dep:uuid", "pardosa-encoding/uuid"]
+bytes = ["dep:bytes", "pardosa-encoding/bytes"]
+arrayvec = ["dep:arrayvec", "pardosa-encoding/arrayvec"]
+
 [dependencies]
 # Encode supertrait on EventSafe (GEN-0037 / F2 closure). Co-located in the
 # trait-defining crate so blanket impls stay orphan-rule-clean.
 pardosa-encoding = { path = "../pardosa-encoding" }
+# GEN-0041 foreign-floor optional deps. Sealed + EventSafe impls for foreign
+# types must live here (orphan rule, since EventSafe is defined here).
+uuid = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+arrayvec = { workspace = true, optional = true }

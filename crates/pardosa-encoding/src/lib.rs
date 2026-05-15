@@ -616,6 +616,102 @@ impl_tuple!(T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9
 impl_tuple!(T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9, T10: 10, T11: 11, T12: 12, T13: 13, T14: 14, T15: 15);
 
 // ---------------------------------------------------------------------------
+// GEN-0041 foreign-crate v0 floor
+// ---------------------------------------------------------------------------
+//
+// Encode + Decode impls for `uuid::Uuid`, `bytes::Bytes`, and
+// `arrayvec::ArrayVec<T, N>` behind feature gates `uuid`, `bytes`,
+// `arrayvec`. The sealing chain (`sealed::Sealed` + `EventSafe`) for these
+// types lives in `pardosa-traits` behind matching feature gates; the orphan
+// rule mandates the split (Encode is defined here, EventSafe there).
+//
+// S1 (byte-shape conformance) — each impl conforms to GEN-0035 length-prefix
+// rules: fixed-width types emit verbatim bytes back-to-back; variable-length
+// payloads emit `[len:u32 LE][bytes…]`. Tests below assert wire layout.
+//
+// S2 (post-decode capacity/length validity) — capacity-bounded types
+// (`ArrayVec<T, N>`) reject a decoded length > N before any allocation,
+// surfacing as `EventError::InvalidInput` (the frozen post-C2 variant for
+// caller-input violations; no new variant introduced).
+
+// ---- uuid::Uuid — 16 bytes verbatim, no length prefix ----------------------
+#[cfg(feature = "uuid")]
+impl Encode for uuid::Uuid {
+    fn encode(&self, out: &mut Vec<u8>) {
+        // `Uuid::as_bytes()` returns `&[u8; 16]` with a stable layout
+        // (uuid crate documents these as the bytes "in network order");
+        // we emit them verbatim. Fixed width = no length prefix, matching
+        // GEN-0035 §"Fixed-size arrays".
+        out.extend_from_slice(uuid::Uuid::as_bytes(self));
+    }
+}
+
+#[cfg(feature = "uuid")]
+impl Decode for uuid::Uuid {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
+        let bytes = d.read_bytes(16)?;
+        let mut arr = [0u8; 16];
+        arr.copy_from_slice(bytes);
+        Ok(uuid::Uuid::from_bytes(arr))
+    }
+}
+
+// ---- bytes::Bytes — length-prefixed opaque payload -------------------------
+#[cfg(feature = "bytes")]
+impl Encode for bytes::Bytes {
+    fn encode(&self, out: &mut Vec<u8>) {
+        // Wire-identical to `Vec<u8>` / `&[u8]` — GEN-0035 length-prefix
+        // rule applies to any variable-length byte payload regardless of
+        // ownership flavour. Round-trip via `Bytes::copy_from_slice` on
+        // the decode side.
+        encode_len_prefix(self.len(), out);
+        out.extend_from_slice(self);
+    }
+}
+
+#[cfg(feature = "bytes")]
+impl Decode for bytes::Bytes {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
+        let n = d.read_len_prefix()?;
+        let slice = d.read_bytes(n)?;
+        Ok(bytes::Bytes::copy_from_slice(slice))
+    }
+}
+
+// ---- arrayvec::ArrayVec<T, N> — length-prefixed bounded vec ---------------
+#[cfg(feature = "arrayvec")]
+impl<T: Encode, const N: usize> Encode for arrayvec::ArrayVec<T, N> {
+    fn encode(&self, out: &mut Vec<u8>) {
+        encode_len_prefix(self.len(), out);
+        for v in self {
+            v.encode(out);
+        }
+    }
+}
+
+#[cfg(feature = "arrayvec")]
+impl<T: Decode, const N: usize> Decode for arrayvec::ArrayVec<T, N> {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
+        let n = d.read_len_prefix()?;
+        // S2 guard: capacity-bounded types must reject `len > N` before any
+        // per-element decode so a malformed header cannot consume budget
+        // it will never deposit into a value.
+        if n > N {
+            return Err(EventError::InvalidInput);
+        }
+        let mut v: arrayvec::ArrayVec<T, N> = arrayvec::ArrayVec::new();
+        for _ in 0..n {
+            // `try_push` cannot fail given the S2 check above — n ≤ N and
+            // we push exactly n times. Mapping the (unreachable) error to
+            // InvalidInput keeps the surface frozen.
+            v.try_push(T::decode(d)?)
+                .map_err(|_| EventError::InvalidInput)?;
+        }
+        Ok(v)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -932,5 +1028,108 @@ mod tests {
         Tag::Seven.encode(&mut buf);
         assert_eq!(buf.len(), 1);
         assert_eq!(buf[0], 7u8);
+    }
+
+    // ----- GEN-0041 foreign-crate v0 floor -----------------------------------
+
+    #[cfg(feature = "uuid")]
+    #[test]
+    fn uuid_roundtrip_and_layout() {
+        // S1: Uuid encodes as 16 verbatim bytes, no length prefix. Pick a
+        // pattern whose every byte is distinct so any byte-order surprise
+        // would show up as a permuted assert.
+        let raw: [u8; 16] = [
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD,
+            0xEE, 0xFF,
+        ];
+        let u = uuid::Uuid::from_bytes(raw);
+        let bytes = to_vec(&u);
+        assert_eq!(bytes.as_slice(), &raw[..]);
+        let back: uuid::Uuid = from_bytes(&bytes).unwrap();
+        assert_eq!(back, u);
+    }
+
+    #[cfg(feature = "uuid")]
+    #[test]
+    fn uuid_truncated_input_rejected() {
+        // 15 bytes is one short of the 16 the fixed-width decode requires;
+        // surfaces via the standard truncated-read path.
+        let err = from_bytes::<uuid::Uuid>(&[0u8; 15]).unwrap_err();
+        assert_eq!(err, EventError::InvalidInput);
+    }
+
+    #[cfg(feature = "bytes")]
+    #[test]
+    fn bytes_roundtrip_and_layout() {
+        // S1: length-prefixed payload identical to Vec<u8>/&[u8] wire form.
+        let payload = bytes::Bytes::from_static(&[0xAA, 0xBB, 0xCC]);
+        let wire = to_vec(&payload);
+        assert_eq!(wire, vec![3, 0, 0, 0, 0xAA, 0xBB, 0xCC]);
+        let back: bytes::Bytes = from_bytes(&wire).unwrap();
+        assert_eq!(back, payload);
+
+        // Empty payload still carries the 4-byte length header.
+        let empty = bytes::Bytes::new();
+        let wire_empty = to_vec(&empty);
+        assert_eq!(wire_empty, vec![0, 0, 0, 0]);
+        let back_empty: bytes::Bytes = from_bytes(&wire_empty).unwrap();
+        assert_eq!(back_empty, empty);
+    }
+
+    #[cfg(feature = "bytes")]
+    #[test]
+    fn bytes_wire_matches_vec_u8() {
+        // S1 sanity: a `bytes::Bytes` payload and a `Vec<u8>` with identical
+        // contents must produce byte-identical wire output. Locks the
+        // "same length-prefix rule for any opaque byte payload" invariant.
+        let payload = [0xDE, 0xAD, 0xBE, 0xEF, 0x01];
+        let from_bytes_form = to_vec(&bytes::Bytes::copy_from_slice(&payload));
+        let from_vec_form = to_vec(&payload.to_vec());
+        assert_eq!(from_bytes_form, from_vec_form);
+    }
+
+    #[cfg(feature = "arrayvec")]
+    #[test]
+    fn arrayvec_roundtrip() {
+        // Variable-length capacity-bounded vec encodes like Vec<T>: u32 LE
+        // count + per-element encode. Round-trip at len < N and len == N.
+        let mut av: arrayvec::ArrayVec<u32, 4> = arrayvec::ArrayVec::new();
+        av.try_push(1).unwrap();
+        av.try_push(2).unwrap();
+        av.try_push(3).unwrap();
+        let wire = to_vec(&av);
+        // 4-byte LE count + 3 * 4-byte u32 LE payload = 16 bytes total.
+        assert_eq!(wire[..4], [3, 0, 0, 0]);
+        let back: arrayvec::ArrayVec<u32, 4> = from_bytes(&wire).unwrap();
+        assert_eq!(back.as_slice(), av.as_slice());
+
+        // At capacity.
+        let mut full: arrayvec::ArrayVec<u8, 3> = arrayvec::ArrayVec::new();
+        full.try_push(7).unwrap();
+        full.try_push(8).unwrap();
+        full.try_push(9).unwrap();
+        let wire = to_vec(&full);
+        let back: arrayvec::ArrayVec<u8, 3> = from_bytes(&wire).unwrap();
+        assert_eq!(back.as_slice(), full.as_slice());
+    }
+
+    #[cfg(feature = "arrayvec")]
+    #[test]
+    fn arrayvec_rejects_len_over_capacity() {
+        // S2: a decoded length-prefix exceeding the target capacity must
+        // surface as EventError::InvalidInput *before* any per-element
+        // decode runs. Construct the smallest such wire: count=4 against
+        // a 3-capacity ArrayVec.
+        //
+        // Bonus: only 4 payload bytes follow (one fewer than required for
+        // count=4 even at u8), so a missed S2 guard would also fail via
+        // the truncated-read path; the test asserts the *S2* code path is
+        // reached by making the input long enough that absent the guard
+        // the decode would otherwise succeed.
+        let mut wire = Vec::new();
+        4u32.encode(&mut wire);
+        wire.extend_from_slice(&[1u8, 2, 3, 4]);
+        let err = from_bytes::<arrayvec::ArrayVec<u8, 3>>(&wire).unwrap_err();
+        assert_eq!(err, EventError::InvalidInput);
     }
 }

@@ -37,6 +37,9 @@ rmp-serde = "1"
 # === Identity / time ===
 uuid = { version = "1", features = ["v7", "serde"] }
 jiff = { version = "0.2", features = ["serde"] }
+# GEN-0041 foreign floor: capacity-bounded inline vec. default-features off
+# keeps it `no_std`-clean for pardosa-encoding's `#![no_std]` substrate.
+arrayvec = { version = "0.7", default-features = false }
 
 # === Async / concurrency ===
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }

@@ -154,6 +154,36 @@ seal_tuple!(
 );
 
 // ---------------------------------------------------------------------------
+// GEN-0041 foreign-crate v0 floor — Sealed + EventSafe for foreign types
+// ---------------------------------------------------------------------------
+//
+// Sealing + EventSafe for `uuid::Uuid`, `bytes::Bytes`, and
+// `arrayvec::ArrayVec<T, N>` behind feature gates `uuid`, `bytes`,
+// `arrayvec`. The matching `Encode + Decode` impls live in
+// `pardosa-encoding` behind the same flag names and are pulled in by this
+// crate's feature definitions (`pardosa-encoding/<flag>`). Splitting is
+// orphan-rule-mandatory: `EventSafe` is defined here, `Encode` there, so
+// foreign-type impls must land in their respective defining crate.
+
+#[cfg(feature = "uuid")]
+impl sealed::Sealed for uuid::Uuid {}
+#[cfg(feature = "uuid")]
+impl EventSafe for uuid::Uuid {}
+
+#[cfg(feature = "bytes")]
+impl sealed::Sealed for bytes::Bytes {}
+#[cfg(feature = "bytes")]
+impl EventSafe for bytes::Bytes {}
+
+// S2: capacity is part of the type. `T: EventSafe` propagates the seal
+// down to the element type; `arrayvec::ArrayVec<T, N>` itself participates
+// in the chain. Bound mirrors `Vec<T>` above.
+#[cfg(feature = "arrayvec")]
+impl<T: EventSafe, const N: usize> sealed::Sealed for arrayvec::ArrayVec<T, N> {}
+#[cfg(feature = "arrayvec")]
+impl<T: EventSafe, const N: usize> EventSafe for arrayvec::ArrayVec<T, N> {}
+
+// ---------------------------------------------------------------------------
 // EventError — pardosa-events canonical error surface (GEN-0039)
 // ---------------------------------------------------------------------------
 //
