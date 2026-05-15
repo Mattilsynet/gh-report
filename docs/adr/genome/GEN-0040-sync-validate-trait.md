@@ -38,11 +38,12 @@ pretends a length-bounded wrapper might return `NotFound`. Associated
 ```rust
 pub trait Validate {
     type Error;
+    const COST: ValidationCost = ValidationCost::Cheap;
     fn validate(&self) -> Result<(), Self::Error>;
 }
 ```
 
-Three properties earn their keep:
+Four properties earn their keep:
 
 1. **Sync signature.** No `async`, no `async_trait`, no RPITIT.
    Validators are pure decisions — no I/O, no global state, no
@@ -58,6 +59,17 @@ Three properties earn their keep:
 3. **`&self` receiver, no `&mut`.** Validation never mutates the
    value under inspection — symmetric with CHE-0008's
    `handle(&self, …)`.
+4. **Declared-with-default `COST: ValidationCost`.** Each impl
+   declares an upper-bound classification — `Free`, `Cheap`,
+   `Bounded { ops }`, `Unbounded` — so callers (gateways, batch
+   validators) can budget admission control without inspecting the
+   impl body. The default is `Cheap`, matching the O(1) shape of
+   every workspace impl as of this amendment (the bounded wrapper
+   family from sub-mission F). Existing impls inherit the correct
+   classification without an explicit override; only impls whose
+   work exceeds O(1) need to act. `Unbounded` is the load-bearing
+   variant — it shifts rate-limiting responsibility to the caller
+   (GEN-0040:R7).
 
 Placement: `Validate` lives in `pardosa-traits` (GEN-0036 substrate
 crate), reachable from `pardosa-genome` via the re-export block.
@@ -79,6 +91,16 @@ R3 [4]: Validators must be pure functions per CHE-0008 — no I/O,
   no global state, no observable side effects
 R4 [4]: `Validate` lives in `pardosa-traits` and is re-exported
   from `pardosa-genome` for the standard public surface
+R5 [4]: `Validate` carries an associated `const COST: ValidationCost`
+  with default `ValidationCost::Cheap` — declared-with-default so
+  existing impls inherit the correct classification without an
+  explicit override
+R6 [4]: Impls whose `validate` work exceeds O(1) SHOULD override
+  `COST` with `Bounded { ops }` or `Unbounded`; `Free` is reserved
+  for structural no-ops the compiler can elide
+R7 [4]: `ValidationCost::Unbounded` REQUIRES caller rate-limiting;
+  impls choosing it MUST document the rate-limiting obligation on
+  the impl's `validate` doc-comment
 
 ## Consequences
 

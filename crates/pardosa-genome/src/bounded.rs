@@ -366,6 +366,7 @@ impl<const MAX: usize> Validate for NonEmptyEventString<MAX> {
 mod tests {
     use super::*;
     use pardosa_encoding::{from_bytes, to_vec};
+    use pardosa_traits::ValidationCost;
 
     // ---- Happy-path round-trips -----------------------------------------
 
@@ -470,6 +471,23 @@ mod tests {
     }
 
     // ---- Wire-compat sanity --------------------------------------------
+
+    // ---- ValidationCost surface (GEN-0040 amendment) -------------------
+
+    #[test]
+    fn bounded_wrappers_inherit_default_cheap_cost() {
+        // Wrappers do O(1) length checks; the trait-default `Cheap` is
+        // correct without per-impl override. Locking the const here guards
+        // against an accidental future override (or default reshuffle)
+        // that would silently reclassify the wrappers as Free/Bounded.
+        assert_eq!(<EventString<8> as Validate>::COST, ValidationCost::Cheap);
+        assert_eq!(<EventBytes<8> as Validate>::COST, ValidationCost::Cheap);
+        assert_eq!(<EventVec<u32, 8> as Validate>::COST, ValidationCost::Cheap);
+        assert_eq!(
+            <NonEmptyEventString<8> as Validate>::COST,
+            ValidationCost::Cheap
+        );
+    }
 
     #[test]
     fn event_string_wire_compat_with_string() {

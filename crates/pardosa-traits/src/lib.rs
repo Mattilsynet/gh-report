@@ -46,6 +46,17 @@ pub mod sealed {
 /// Every `EventSafe` type also implements [`pardosa_encoding::Encode`] — the
 /// F2 supertrait bound deferred in A2.1 lands here, atomically with the
 /// matching `Encode` blanket fill in `pardosa-encoding` (GEN-0037).
+///
+/// The `#[diagnostic::on_unimplemented]` attribute steers downstream users
+/// at the blessed `#[derive(GenomeSafe)]` path when the bound fails. Plain
+/// "trait bound not satisfied" gives the user no actionable next step —
+/// the seal is private by construction (no manual impl is reachable), so
+/// the diagnostic must name the derive macro that does the sealing.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not `EventSafe`",
+    label = "needs `#[derive(GenomeSafe)]`",
+    note = "Only types blessed by `#[derive(GenomeSafe)]` (or workspace-internal impls) may implement `EventSafe`. See GEN-0036."
+)]
 pub trait EventSafe: pardosa_encoding::Encode + sealed::Sealed {}
 
 // ---------------------------------------------------------------------------
@@ -252,6 +263,39 @@ impl Timestamp {
 // Validate — invariant-check trait (GEN-0040)
 // ---------------------------------------------------------------------------
 
+/// Declared cost of a [`Validate::validate`] invocation.
+///
+/// Each variant carries a different rate-limiting obligation for the
+/// caller. `Cheap` is the default because every existing impl (bounded
+/// wrappers from sub-mission F) does a single O(1) length / shape check;
+/// reclassifying to `Free` or upgrading to `Bounded`/`Unbounded` is an
+/// opt-in act of the impl author. The variant is consulted by callers
+/// (gateways, batch validators) that must decide whether to admit the
+/// work synchronously or defer it.
+///
+/// See GEN-0040 R5..R7 for the binding rules.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValidationCost {
+    /// `validate()` is a structural no-op the compiler should elide.
+    /// Reserved — no current workspace impl declares it.
+    Free,
+    /// `validate()` runs in O(1) — a single bounds/shape check (the
+    /// default for the bounded wrapper family from sub-mission F).
+    Cheap,
+    /// `validate()` runs in O(n) with a caller-visible upper bound on
+    /// the number of primitive operations.
+    Bounded {
+        /// Maximum primitive operations per call. Callers may use this
+        /// to budget admission control without inspecting the impl.
+        ops: u32,
+    },
+    /// `validate()` has no statically known upper bound on work; callers
+    /// MUST apply external rate limiting (e.g. user-supplied data with
+    /// adversary-controlled cardinality).
+    Unbounded,
+}
+
 /// Sync invariant check executed against a constructed value.
 ///
 /// `validate` is intentionally synchronous: command handling is a pure
@@ -267,11 +311,24 @@ impl Timestamp {
 /// validators are encouraged to construct an `EventError::InvalidInput`
 /// and carry diagnostic context out-of-band (logging, tracing) rather
 /// than encoding it in the error type.
+///
+/// The associated [`COST`](Self::COST) const declares how expensive
+/// `validate` is — defaults to [`ValidationCost::Cheap`] so the bounded
+/// wrapper family inherits the correct classification without a
+/// per-impl override. Impls whose validate work exceeds O(1) MUST
+/// override; `Unbounded` REQUIRES caller rate-limiting per GEN-0040:R7.
 pub trait Validate {
     /// Validation error type. Defaults to [`EventError`] for the common
     /// case; bounded wrappers (F sub-mission) may use a narrower type
     /// when the error space is genuinely smaller.
     type Error;
+
+    /// Declared cost of a `validate()` invocation; see [`ValidationCost`].
+    ///
+    /// Defaults to [`ValidationCost::Cheap`]. The default matches the
+    /// shape of every workspace impl as of GEN-0040 — overriding is an
+    /// opt-in act for impls whose work exceeds O(1).
+    const COST: ValidationCost = ValidationCost::Cheap;
 
     /// Check invariants and return `Ok(())` if the value is well-formed.
     ///
