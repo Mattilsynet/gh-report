@@ -85,3 +85,22 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo install --locked cargo-deny
       - run: cargo deny check
+
+  # cargo-vet runs advisory-only for now (continue-on-error). Goal is to
+  # surface the unvetted-dep list and chip down `supply-chain/config.toml`
+  # exemptions over time via `cargo vet certify`. Flip continue-on-error
+  # off once the exemption count is "manageable" (judgement call;
+  # rough heuristic <= 50 exemptions).
+  # See: kerkour.com/rust-supply-chain-nightmare
+  vet:
+    name: vet (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - run: cargo install --locked cargo-vet
+      - run: cargo vet --locked
