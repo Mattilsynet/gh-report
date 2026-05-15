@@ -1,7 +1,15 @@
+# Schema v2 (cargo-deny >= 0.14): vulnerability / unsound / notice severity
+# knobs were removed; all such advisories now emit errors unconditionally.
+# Only `yanked` and `unmaintained` remain tunable. Defaults are already the
+# strictest setting (unmaintained = "all"); listed explicitly so a future
+# edit cannot relax the posture by accident. See AGENTS.md doctrine and
+# https://embarkstudios.github.io/cargo-deny/checks/advisories/cfg.html.
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
+unmaintained = "all"
+unused-ignored-advisory = "warn"
 ignore = []
 
 [licenses]
