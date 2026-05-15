@@ -10,10 +10,15 @@
 
 #![forbid(unsafe_code)]
 
+pub mod bounded;
 pub mod config;
 pub mod error;
 pub mod format;
 pub mod genome_safe;
+
+// Bounded wrapper types (GEN-0042). Per-field MAX enforcement layered on
+// top of the GEN-0035:R8 decoder cap; invariant-only wire format.
+pub use bounded::{EventBytes, EventString, EventVec, NonEmptyEventString};
 
 // Re-exports
 pub use config::{Compression, DecodeOptions, EncodeOptions, PageClass};
