@@ -13,7 +13,7 @@
 //! - [`App::run`] — terminal wiring of the publish-loop. Stubbed in
 //!   S5 (returns immediately on first shutdown signal); S6+ adds the
 //!   bus subscription that drives [`crate::dispatch::dispatch_one`]
-//!   per envelope and the [`crate::projection::ProjectionDriverExt`]
+//!   per envelope and the [`cherry_pit_projection::ProjectionDriverExt`]
 //!   incremental update.
 //!
 //! ## Type-parameter inventory
@@ -49,7 +49,7 @@ use crate::dead_letter::DeadLetterSink;
 use crate::dispatch::{self, ErasedPolicyDispatcher, make_adapter};
 use crate::error::AgentError;
 use crate::event_bus::InProcessEventBus;
-use crate::projection::ProjectionDriverTuple;
+use cherry_pit_projection::ProjectionDriverTuple;
 
 /// Convenience alias for the event type bound by an [`Aggregate`].
 type EventOf<G> = <<G as CommandGateway>::Aggregate as Aggregate>::Event;
