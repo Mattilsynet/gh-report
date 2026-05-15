@@ -1,0 +1,28 @@
+# Dependabot configuration.
+#
+# Purpose: keep SHA-pinned GitHub Actions current. CI pins actions by full
+# commit SHA (per .github/workflows/ci.yml and AGENTS.md supply-chain
+# doctrine); without an updater those pins rot. Dependabot opens a PR per
+# action update, which CI gates as any other dep change.
+#
+# Cargo ecosystem updates are intentionally *not* enabled here: the workspace
+# Cargo.lock is committed deliberately (see crates/adr-fmt/README.md "Cargo.lock
+# policy"), and dep bumps go through cargo-audit + cargo-deny on each PR.
+# Enabling Dependabot for cargo would generate noise without changing the
+# safety posture. Revisit when/if cargo-vet lands (Tier-1 follow-up).
+#
+# See: kerkour.com/rust-supply-chain-nightmare
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      gha:
+        patterns:
+          - "*"
