@@ -1,0 +1,33 @@
+error[E0277]: the trait bound `NotACommand: cherry_pit_core::Command` is not satisfied
+  --> tests/compile_fail/handle_non_command.rs:30:5
+   |
+30 |     fn handle(&self, _cmd: NotACommand) -> Result<Vec<Self::Event>, Self::Error> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `cherry_pit_core::Command` is not implemented for `NotACommand`
+  --> tests/compile_fail/handle_non_command.rs:26:1
+   |
+26 | struct NotACommand;
+   | ^^^^^^^^^^^^^^^^^^
+note: required by a bound in `HandleCommand`
+  --> src/aggregate.rs
+   |
+   | pub trait HandleCommand<C: Command>: Aggregate {
+   |                            ^^^^^^^ required by this bound in `HandleCommand`
+
+error[E0277]: the trait bound `NotACommand: cherry_pit_core::Command` is not satisfied
+  --> tests/compile_fail/handle_non_command.rs:28:6
+   |
+28 | impl HandleCommand<NotACommand> for MyAggregate {
+   |      ^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `cherry_pit_core::Command` is not implemented for `NotACommand`
+  --> tests/compile_fail/handle_non_command.rs:26:1
+   |
+26 | struct NotACommand;
+   | ^^^^^^^^^^^^^^^^^^
+note: required by a bound in `HandleCommand`
+  --> src/aggregate.rs
+   |
+   | pub trait HandleCommand<C: Command>: Aggregate {
+   |                            ^^^^^^^ required by this bound in `HandleCommand`

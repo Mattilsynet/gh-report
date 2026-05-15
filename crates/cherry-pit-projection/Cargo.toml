@@ -1,0 +1,32 @@
+[package]
+name = "cherry-pit-projection"
+version = "0.1.0"
+description = "Projection drivers and storage backends for cherry-pit read models"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage = "https://github.com/acje/solon/tree/main/crates/cherry-pit-projection"
+documentation = "https://docs.rs/cherry-pit-projection"
+keywords = ["event-sourcing", "cqrs", "projection", "read-model"]
+categories = ["data-structures", "filesystem"]
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+cherry-pit-core = { workspace = true }
+serde = { workspace = true }
+rmp-serde = { workspace = true }
+tokio = { workspace = true, features = ["fs", "rt", "sync"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "sync"] }
+trybuild = { workspace = true }
+uuid = { workspace = true }
+jiff = { workspace = true }

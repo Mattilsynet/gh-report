@@ -1,0 +1,14 @@
+error: EVT-011: GenomeSafe: #[serde(skip_serializing_if = "...")] is not supported on field. Conditional field omission breaks fixed-layout serialization.
+ --> tests/compile_fail/serde_skip_serializing_if.rs:5:13
+  |
+5 |     #[serde(skip_serializing_if = "Option::is_none")]
+  |             ^^^^^^^^^^^^^^^^^^^
+
+error: cannot find attribute `serde` in this scope
+ --> tests/compile_fail/serde_skip_serializing_if.rs:5:7
+  |
+5 |     #[serde(skip_serializing_if = "Option::is_none")]
+  |       ^^^^^
+  |
+  = note: `serde` is an attribute that can be used by the derive macros `Deserialize` and `Serialize`, you might be missing a `derive` attribute
+  = note: `serde` is in scope, but it is a crate, not an attribute

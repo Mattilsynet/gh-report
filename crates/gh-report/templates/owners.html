@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Owner Coverage — {{ organization }}</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="ws.js" defer></script>
+    {% if warm_start %}<meta http-equiv="refresh" content="5">{% endif %}
+</head>
+<body>
+
+<nav class="top-nav">
+    <a href="index.html">Dashboard</a>
+    <a href="report.html">Report</a>
+    <a href="owners.html">Owners</a>
+    <a href="orphans.html">Orphans ({{ orphaned_count }})</a>
+</nav>
+
+<h1>Owner Coverage Breakdown</h1>
+
+<ul class="breadcrumb">
+    <li><a href="index.html">Dashboard</a></li>
+    <li>Owners</li>
+</ul>
+
+<p class="meta">Coverage per CODEOWNERS-identified owner across {{ total_repos }} non-archived repositories.</p>
+
+{% if vm.rows.is_empty() %}
+<p class="meta">No CODEOWNERS data available. Ensure repositories contain CODEOWNERS files.</p>
+{% else %}
+<div class="table-wrapper">
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Owner</th>
+            <th>Type</th>
+            <th>Repos</th>
+            <th class="text-center">Sec Score</th>
+            {% for name in vm.control_names %}
+            <th class="text-center">{{ name }}</th>
+            {% endfor %}
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in vm.rows %}
+        <tr>
+            <td><a href="owners/{{ row.slug }}.html" title="{{ row.owner }}">{{ row.owner_short }}</a></td>
+            <td>{{ row.owner_type }}</td>
+            <td>{{ row.repo_count }}</td>
+            <td class="text-center">
+                <div class="score-bar-inline">
+                    <div class="progress-bar">
+                        <div class="progress-fill {{ row.sec_score_tier.css_class() }} {{ row.sec_score_width_class }}"></div>
+                    </div>
+                    <span class="score-label">{{ row.sec_score_formatted }}</span>
+                </div>
+            </td>
+            {% for cell in row.controls %}
+            <td class="text-center">
+                <span class="status-dot {{ cell.tier.status_dot_class() }}" title="{{ cell.rate_formatted }}"></span>
+                {{ cell.rate_formatted }}
+            </td>
+            {% endfor %}
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endif %}
+
+<p class="footer">This page shows aggregated owner-level metrics and does not list individual repository names.</p>
+
+</body>
+</html>

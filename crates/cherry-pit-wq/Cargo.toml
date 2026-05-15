@@ -1,0 +1,30 @@
+[package]
+name = "cherry-pit-wq"
+version = "0.1.0"
+description = "Domain-agnostic concurrency and resource-pacing primitives for cherry-pit consumers"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage = "https://github.com/acje/solon/tree/main/crates/cherry-pit-wq"
+documentation = "https://docs.rs/cherry-pit-wq"
+keywords = ["worker-pool", "rate-limit", "pagination", "cherry-pit"]
+categories = ["asynchronous", "concurrency"]
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+cherry-pit-core = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+tracing = { workspace = true }
+http = { workspace = true }
+scc = { workspace = true }
+futures-util = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+tokio-test = { workspace = true }
+uuid = { workspace = true }

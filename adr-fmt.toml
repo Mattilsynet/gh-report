@@ -1,0 +1,165 @@
+# adr-fmt configuration
+#
+# This file is the workspace-root SSOT discovery marker for adr-fmt.
+# Domain definitions, crate mappings, corpus location, and stale
+# directory live here. Rules are hardcoded in the binary; only
+# rule-parameter overrides are configurable.
+#
+# Rationale, governance philosophy, and rule semantics live in the
+# ADRs under docs/adr/adr-fmt/ (start with AFM-0001).
+
+[corpus]
+root = "docs/adr"
+
+[stale]
+directory = "stale"
+
+# ── Domain definitions ──────────────────────────────────────────────
+
+[[domains]]
+prefix = "GND"
+name = "Ground Domain"
+directory = "ground"
+description = """\
+    Universal foundations for information-systems design. \
+    Epistemic principles applicable to any information system, \
+    independent of language, runtime, or project. Establishes the \
+    irreducible uncertainty under which all directives operate and \
+    the feedback mechanisms required to close the resulting gaps \
+    between intent, action, and outcome. GND ADRs are the \
+    structural parents that domain-specific principle ADRs (COM, \
+    RST, SEC) implement in their respective vocabularies."""
+crates = []
+foundation = true
+
+[[domains]]
+prefix = "COM"
+name = "Common Domain"
+directory = "common"
+description = """\
+    Cross-cutting software design principles informed by Ousterhout's \
+    A Philosophy of Software Design and complementary works on \
+    software architecture, evolutionary design, and organizational \
+    alignment. Technology-agnostic guidance on module depth, \
+    complexity management, error design, abstraction layering, \
+    trade-off analysis, and structural communication. Distinct from \
+    Cherry's crate-specific architecture decisions."""
+crates = []
+foundation = true
+
+[[domains]]
+prefix = "CHE"
+name = "Cherry Domain"
+directory = "cherry"
+description = """\
+    Design philosophy, EDA/DDD/hexagonal architecture, domain model \
+    traits (aggregates, commands, events, policies), infrastructure \
+    ports, concurrency, delivery, storage backends, workspace tooling, \
+    testing strategy, and build configuration."""
+crates = [
+    "cherry-pit-core",
+    "cherry-pit-gateway",
+    "cherry-pit-web",
+    "cherry-pit-projection",
+    "cherry-pit-agent",
+    "cherry-pit-wq",
+    "cherry-pit-storage",
+    "gh-report",
+]
+
+[[domains]]
+prefix = "PAR"
+name = "Pardosa Domain"
+directory = "pardosa"
+description = """\
+    EDA storage layer: fiber semantics, stream management, \
+    NATS/JetStream transport, migration model, backpressure, \
+    single-writer fencing at transport level, and the substrate-\
+    agnostic event-invariant carrier crate (pardosa-derive) hosting \
+    sealed traits and derive macros consumed across substrates."""
+crates = ["pardosa", "pardosa-derive", "pardosa-encoding", "pardosa-traits"]
+
+[[domains]]
+prefix = "GEN"
+name = "Genome Domain"
+directory = "genome"
+description = """\
+    Binary serialization format: wire layout, schema hashing, \
+    zero-copy deserialization, compression, security limits (DoS \
+    protection, decompression bombs), type validation, and forward \
+    compatibility."""
+crates = ["pardosa-genome"]
+
+[[domains]]
+prefix = "RST"
+name = "Rust Domain"
+directory = "rust"
+description = """\
+    Rust language and toolchain governance: toolchain pinning, \
+    MSRV policy, edition strategy, workspace lint and format \
+    configuration, dependency management, supply chain security, \
+    and conservative feature adoption. Platform-specific decisions \
+    that apply to all Rust crates in the workspace."""
+crates = []
+foundation = true
+
+[[domains]]
+prefix = "SEC"
+name = "Security Domain"
+directory = "security"
+description = """\
+    CISQ-aligned security qualities: integrity at trust boundaries, \
+    availability via resource bounding, control via capability \
+    restriction, authenticity via provenance binding. Composed \
+    qualities cover TOCTOU prevention, confidentiality, and \
+    non-repudiation. Foundation domain applying to all crates."""
+crates = []
+foundation = true
+
+[[domains]]
+prefix = "AFM"
+name = "adr-fmt Domain"
+directory = "adr-fmt"
+description = """\
+    ADR governance tooling: CLI design, MADR template enforcement, \
+    markdown parsing strategy, diagnostic output, safe-write \
+    semantics, naming conventions, relationship vocabulary, tier \
+    classification, and domain management. Covers the adr-fmt \
+    binary's own architectural decisions as a Rust CLI tool."""
+crates = ["adr-fmt"]
+
+[[domains]]
+prefix = "FLO"
+name = "Flow Domain"
+directory = "flow"
+description = """\
+    Flow-control architecture grounded in Reinertsen's Principles of \
+    Product Development Flow (2009). Cost-of-delay scheduling, cadence, \
+    transport-batch sizing, queue telemetry, late binding, admission \
+    control, progressive throttling, U-curve discipline, variability \
+    placement, tripwires, and relief valves. Calibration probe for \
+    v0.1 generalization (AFM-0025); structural surface for future \
+    CHE/PAR work on flow control."""
+crates = []
+foundation = true
+
+# ── Rule parameter overrides ────────────────────────────────────────
+#
+# Only declare rules whose defaults you want to change.
+# Hardcoded defaults: T015 min_words=7, max_words=100
+#                     T016 max_rules=10, min_rule_words=7, max_rule_words=60
+#                     T019 asymmetric leverage-bound: fires iff rule_rank < adr_rank (no carve-outs; not configurable)
+#                     T020 max_refs per tier: S=3 A=5 B=7 C=8 D=5 (not configurable)
+#
+# T015 and T016 limits are scaled by tier factor (S=1.5 A=1.2 B=1.0 C=0.8 D=0.6).
+# All four are signals, not gates. Exceeding the limit flags
+# an ADR for review — it may be overloaded or genuinely need the
+# space. A warning here is interesting, not necessarily wrong.
+
+[[rules]]
+id = "T015"
+params = { min_words = 7, max_words = 120 }
+
+[[rules]]
+id = "T016"
+params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }

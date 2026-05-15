@@ -1,0 +1,92 @@
+---
+source: src/report/html.rs
+assertion_line: 1099
+expression: "&pages[\"index.html\"]"
+---
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TestOrg Security Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="ws.js" defer></script>
+    
+</head>
+
+<body>
+
+    <nav class="top-nav">
+        <a href="index.html">Dashboard</a>
+        <a href="report.html">Report</a>
+        
+        <a href="orphans.html">Orphans (0)</a>
+    </nav>
+
+    <div class="page-header">
+        <p class="meta"><strong>Date:</strong> 2026-04-09 12:00 UTC · <strong>Scope:</strong> 5 non-archived · 0 archived repositories in <code>TestOrg</code></p>
+    </div>
+
+    <div class="scorecard">
+        <div class="card health-score-card tier-warn" title="Geometric mean of all coverage rates. Rewards balanced improvement across all controls.">
+            <p class="card-label">Organisation Governance Score</p>
+            <p class="card-value">68.8%</p>
+            <div class="progress-bar">
+                <div class="progress-fill tier-warn w-70"></div>
+            </div>
+        </div>
+        <div class="card tier-warn" title="Percentage of public repos with a SECURITY.md or GitHub security-policy setting enabled.">
+            <p class="card-label">Security Policy</p>
+            <p class="card-value">66.7% (2/3)</p>
+            <div class="progress-bar">
+                <div class="progress-fill tier-warn w-65"></div>
+            </div>
+        </div>
+        <div class="card tier-warn" title="Percentage of repos with Dependabot security updates enabled (auto-PRs for vulnerable dependencies).">
+            <p class="card-label">Dependabot Status</p>
+            <p class="card-value">60.0% (3/5)</p>
+            <div class="progress-bar">
+                <div class="progress-fill tier-warn w-60"></div>
+            </div>
+        </div>
+        <div class="card tier-pass" title="Percentage of repos with GitHub secret scanning enabled to detect leaked credentials.">
+            <p class="card-label">Secret Scanning</p>
+            <p class="card-value">80.0% (4/5)</p>
+            <div class="progress-bar">
+                <div
+                    class="progress-fill tier-pass w-80">
+                </div>
+            </div>
+        </div>
+        <div class="card tier-warn" title="Percentage of repos with branch protection rules on the default branch (PR reviews, status checks).">
+            <p class="card-label">Branch Protection</p>
+            <p class="card-value">60.0% (3/5)</p>
+            <div class="progress-bar">
+                <div
+                    class="progress-fill tier-warn w-60">
+                </div>
+            </div>
+        </div>
+        <div class="card tier-pass" title="Percentage of repos with a CODEOWNERS file identifying responsible teams or individuals.">
+            <p class="card-label">CODEOWNERS</p>
+            <p class="card-value">80.0% (4/5)</p>
+            <div class="progress-bar">
+                <div class="progress-fill tier-pass w-80"></div>
+            </div>
+        </div>
+        <div class="card tier-na" title="Proportion of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better.">
+            <p class="card-label">Archival Coverage</p>
+            <p class="card-value">N/A</p>
+            <p class="card-detail">0 archived · 0 stale</p>
+            <div class="progress-bar">
+                <div class="progress-fill tier-na w-0"></div>
+            </div>
+        </div>
+    </div>
+
+    
+
+</body>
+
+</html>

@@ -1,0 +1,23 @@
+# CHE-0022 append-only snapshot for gh_report::domain::events::DomainEvent.
+#
+# Format: one record per line, `<VariantName>: <comma-separated sorted field names>`.
+# Empty lines and lines starting with `#` are ignored.
+#
+# Rules (CHE-0022:R1/R2/R3 — see docs/adr/cherry/CHE-0022):
+#   - Adding new variants     → allowed (additive). Add a new line here.
+#   - Adding new fields       → allowed if `#[serde(default)]`. Append the field
+#                               to the variant's sorted field list here.
+#   - Renaming/removing       → forbidden. Falsifier (event_schema_append_only)
+#                               will fail with a CHE-0022-violation message.
+#
+# Update procedure: when the falsifier reports "additive change detected",
+# copy the suggested new line(s) into this file in the same sorted order
+# and re-run. Cite CHE-0022 in the commit message.
+SweepStarted: batch_id, org, repo_count, timestamp
+RepoEvaluated: domain_key, duration_ms, evidence, repo_name, source, success, timestamp
+RepoRemoved: domain_key, repo_name, timestamp
+SweepCompleted: batch_id, duration_ms, repo_count, timestamp
+WebhookReceived: action, repo, timestamp
+EvidencePublished: page_count, timestamp, warm_start
+SweepFailed: batch_id, duration_ms, error, timestamp
+SweepProgress: batch_id, completed, timestamp, total

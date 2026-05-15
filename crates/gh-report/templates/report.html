@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ vm.organization }} GitHub Security Posture Overview</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="ws.js" defer></script>
+    {% if vm.warm_start %}<meta http-equiv="refresh" content="5">{% endif %}
+</head>
+
+<body>
+
+    <nav class="top-nav">
+        <a href="index.html">Dashboard</a>
+        <a href="report.html">Report</a>
+        {% if vm.owners.is_some() %}<a href="owners.html">Owners</a>{% endif %}
+        <a href="orphans.html">Orphans ({{ vm.orphaned_count }})</a>
+    </nav>
+
+    <h1>{{ vm.organization }} GitHub Security Posture Overview</h1>
+
+    <div class="meta">
+        <p><strong>Date:</strong> {{ vm.date_time }} · <strong>Scope:</strong> {{ vm.total_repos }} non-archived · {{ vm.archived_repos }} archived repositories in
+            <code>{{ vm.organization }}</code></p>
+    </div>
+
+    <h2>Summary</h2>
+
+    <p>This report provides an executive snapshot of how consistently core repository security controls
+        are applied across {{ vm.total_repos }} non-archived repositories in <code>{{ vm.organization }}</code>
+        GitHub organization.
+        It measures how consistently key security controls are enabled, owned, and monitored across all
+        non-archived repositories, using aggregated results only.</p>
+
+    <h3>Observability Metrics</h3>
+
+    <p class="question">Do we communicate to external parties how to inform us about security issues found in our public
+        repositories?</p>
+    <p><code>Security Policy Coverage</code>: <span class="metric">{{ vm.policy_coverage_formatted }}</span>
+        <em>(non-archived public repos only)</em></p>
+
+    <p class="question">Do we have Dependabot security updates enabled so GitHub can automatically open remediation pull
+        requests for vulnerable dependencies?</p>
+    <p><code>Dependabot Status</code>: <span class="metric">{{ vm.dependabot_coverage_formatted
+            }}</span></p>
+
+    <p class="question">Do we scan our repositories for leaked secrets?</p>
+    <p><code>Secret Scanning Coverage</code>: <span class="metric">{{ vm.secret_scanning_coverage_formatted }}</span>
+    </p>
+
+    <h3>Ownership Metrics</h3>
+
+    <p class="question">Do we enforce branch protection rules?</p>
+    <p><code>Branch Protection</code>: <span class="metric">{{ vm.branch_protection_coverage_formatted
+            }}</span></p>
+
+    <p class="question">Do we have CODEOWNERS files in <code>{{ vm.conforming_codeowners_path }}</code> or
+        <code>./{{ vm.non_conforming_codeowners_path }}</code>?</p>
+    <p><code>CODEOWNERS Coverage</code>: <span class="metric">{{ vm.codeowners_coverage_formatted }}</span></p>
+
+    <h2>Supporting Counts and Details</h2>
+
+    <details>
+        <summary>Security Policy Coverage, public repos only</summary>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Metric</th>
+                    <th class="text-right">Value</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td title="Percentage of public repos with a security policy enabled or SECURITY.md present.">Coverage</td>
+                    <td class="text-right">{{ vm.policy_coverage_formatted }}</td>
+                </tr>
+                <tr>
+                    <td title="Repos where the GitHub security-policy setting is enabled at the org or repo level.">Via GitHub setting</td>
+                    <td class="text-right">{{ vm.policy_via_setting }}</td>
+                </tr>
+                <tr>
+                    <td title="Repos with a SECURITY.md file committed in the repository root.">Via <code>SECURITY.md</code> presence</td>
+                    <td class="text-right">{{ vm.policy_via_file }}</td>
+                </tr>
+                <tr>
+                    <td title="Repos where neither setting nor file was found.">Missing policy evidence</td>
+                    <td class="text-right">{{ vm.policy_missing }}</td>
+                </tr>
+                <tr>
+                    <td title="Repos where the check could not be completed (API error, permission denied, etc.).">Unknown</td>
+                    <td class="text-right">{{ vm.policy_unknown }}</td>
+                </tr>
+            </tbody>
+        </table>
+    </details>
+
+    <details>
+        <summary>Dependabot Status</summary>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Metric</th>
+                    <th class="text-right">Value</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td title="Percentage of repos with Dependabot security updates enabled.">Coverage</td>
+                    <td class="text-right">{{ vm.dependabot_coverage_formatted }}</td>
+                </tr>
+                <tr>
+                    <td title="Repos where the API returned enabled, disabled, or paused status.">Repos with confirmed enabled/disabled/paused evidence</td>
+                    <td class="text-right">{{ vm.dependabot_observable_repos }}</td>
+                </tr>
+                <tr>
+                    <td title="Repos where Dependabot was paused (by GitHub or inferred from inactivity).">Paused</td>
+                    <td class="text-right">{{ vm.dependabot_paused }}</td>
+                </tr>
+                <tr>
+                    <td title="Repos where Dependabot security updates are explicitly disabled.">Disabled</td>
+                    <td class="text-right">{{ vm.dependabot_disabled }}</td>
+                </tr>
+                <tr>
+                    <td title="Repos where the check could not be completed.">Unknown</td>
+                    <td class="text-right">{{ vm.dependabot_unknown }}</td>
+                </tr>
+            </tbody>
+        </table>
+    </details>
+
+    <details>
+        <summary>Secret Scanning Coverage</summary>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Metric</th>
+                    <th class="text-right">Value</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td title="Percentage of repos with GitHub secret scanning enabled.">Coverage</td>
+                    <td class="text-right">{{ vm.secret_scanning_coverage_formatted }}</td>
+                </tr>
+                <tr>
+                    <td title="Repos where the API returned enabled or disabled status.">Repos with confirmed enabled/disabled evidence</td>
+                    <td class="text-right">{{ vm.secret_scanning_observable_repos }}</td>
+                </tr>
+                <tr>
+                    <td title="Repos where secret scanning is explicitly disabled.">Disabled</td>
+                    <td class="text-right">{{ vm.secret_scanning_disabled }}</td>
+                </tr>
+                <tr>
+                    <td title="Repos where the API returned 403 (insufficient token permissions).">Permission denied</td>
+                    <td class="text-right">{{ vm.secret_scanning_permission_denied }}</td>
+                </tr>
+                <tr>
+                    <td title="Repos where the check could not be completed.">Unknown</td>
+                    <td class="text-right">{{ vm.secret_scanning_unknown }}</td>
+                </tr>
+            </tbody>
+        </table>
+    </details>
+
+    <details>
+        <summary>Branch Protection</summary>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Metric</th>
+                    <th class="text-right">Value</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td title="Percentage of repos with full branch protection on the default branch.">Coverage</td>
+                    <td class="text-right">{{ vm.branch_protection_coverage_formatted }}</td>
+                </tr>
+                <tr>
+                    <td title="Repos with some but not all branch protection rules enabled.">Partial</td>
+                    <td class="text-right">{{ vm.branch_protection_partial }}</td>
+                </tr>
+                <tr>
+                    <td title="Repos with no branch protection rules on the default branch.">Fail</td>
+                    <td class="text-right">{{ vm.branch_protection_fail }}</td>
+                </tr>
+                <tr>
+                    <td title="Repos where the check could not be completed.">Unknown</td>
+                    <td class="text-right">{{ vm.branch_protection_unknown }}</td>
+                </tr>
+            </tbody>
+        </table>
+    </details>
+
+    <details>
+        <summary>CODEOWNERS Coverage</summary>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Metric</th>
+                    <th class="text-right">Value</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td title="Percentage of repos with a CODEOWNERS file in a recognized location.">Coverage</td>
+                    <td class="text-right">{{ vm.codeowners_coverage_formatted }}</td>
+                </tr>
+                <tr>
+                    <td title="Repos with CODEOWNERS in the preferred .github/ directory.">Conforming (<code>{{ vm.conforming_codeowners_path }}</code>)</td>
+                    <td class="text-right">{{ vm.codeowners_conforming }}</td>
+                </tr>
+                <tr>
+                    <td title="Repos with CODEOWNERS in the repo root (non-preferred location).">Non-Conforming (<code>{{ vm.non_conforming_codeowners_path }}</code>)</td>
+                    <td class="text-right">{{ vm.codeowners_non_conforming }}</td>
+                </tr>
+                <tr>
+                    <td title="Repos with no CODEOWNERS file found in any recognized location.">Absent</td>
+                    <td class="text-right">{{ vm.codeowners_absent }}</td>
+                </tr>
+                <tr>
+                    <td title="Repos where the check could not be completed.">Unknown</td>
+                    <td class="text-right">{{ vm.codeowners_unknown }}</td>
+                </tr>
+            </tbody>
+        </table>
+    </details>
+
+    <h2>Metric Caveats</h2>
+
+    <div class="caveat">
+        <p>Branch protection coverage counts only <code>pass</code> as sufficient; <code>partial</code> remains
+            insufficient.</p>
+    </div>
+
+    <h2>Assessment Metadata</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Field</th>
+                <th class="text-right">Value</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Public repos</td>
+                <td class="text-right">{{ vm.public_repos }}</td>
+            </tr>
+            <tr>
+                <td>Internal repos</td>
+                <td class="text-right">{{ vm.internal_repos }}</td>
+            </tr>
+            <tr>
+                <td>Private repos</td>
+                <td class="text-right">{{ vm.private_repos }}</td>
+            </tr>
+            <tr>
+                <td>Rate limit warnings</td>
+                <td class="text-right">{{ vm.rate_limit_warnings }}</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <p class="footer">This report shows aggregated metrics only and does not list individual repository names.</p>
+
+</body>
+
+</html>

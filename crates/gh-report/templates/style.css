@@ -1,0 +1,845 @@
+/* gh-report design system — served as an external stylesheet so the
+   Content-Security-Policy can omit 'unsafe-inline' for style-src. */
+
+/* ── CSS Variables ──────────────────────────────────────────────── */
+
+:root {
+   /* Status palette  (severity base colours) */
+   --status-pass: #116e6b;
+   /* success base-default */
+   --status-warn: #EEAB2B;
+   /* warning base-active  */
+   --status-fail: #C83719;
+   /* danger  base-default */
+   --status-unknown: #5F5F5F;
+   /* neutral base-default */
+
+   /* Backgrounds */
+   --bg-page: #FAF7F4;
+   /* primary background-default */
+   --bg-card: #ffffff;
+   /* primary surface-default    */
+   --bg-code: #EDEDED;
+   /* neutral surface-tinted     */
+   --bg-caveat: #FFF3CF;
+   /* warning surface-tinted     */
+   --bg-stripe: #EDEDED;
+   /* neutral surface-tinted     */
+   --bg-nav: #E6EFE1;
+   /* primary surface-tinted     */
+   --bg-progress: #DEDEDE;
+   /* neutral surface-active     */
+   --bg-stale: #FEEAE6;
+   /* danger  surface-tinted     */
+
+   /* Text */
+   --text-primary: #3D3D3D;
+   /* neutral text-default  */
+   --text-muted: #6B6B6B;
+   /* neutral text-subtle   */
+
+   /* Borders */
+   --border-default: #E3E3E3;
+   /* neutral surface-hover  */
+   --border-muted: #EDEDED;
+   /* neutral surface-tinted */
+
+   /* Accent */
+   --accent: #116E6B;
+   /* primary base-default */
+
+   /* Tier card borders */
+   --tier-pass-border: var(--status-pass);
+   --tier-warn-border: var(--status-warn);
+   --tier-fail-border: var(--status-fail);
+   --tier-na-border: var(--border-default);
+
+   /* Rank colours (podium — warning / neutral / warm-brown) */
+   --rank-gold: #F9CC76;
+   /* warning base-default   */
+   --rank-silver: #5F5F5F;
+   /* neutral base-default   */
+   --rank-bronze: #7F433B;
+   /* warning border-default */
+}
+
+/* ── Base Layout ────────────────────────────────────────────────── */
+
+*,
+*::before,
+*::after {
+   box-sizing: border-box;
+}
+
+body {
+   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+   max-width: 72em;
+   margin: 0 auto;
+   padding: 1em 1.5em 2em;
+   color: var(--text-primary);
+   background: var(--bg-page);
+   line-height: 1.6;
+}
+
+h1 {
+   border-bottom: 2px solid var(--border-default);
+   padding-bottom: .4em;
+   margin-top: 1em;
+   font-size: 1.4em;
+}
+
+/* ── Page Header (title + meta on one line) ─────────────────────── */
+
+.page-header {
+   display: flex;
+   justify-content: space-between;
+   align-items: baseline;
+   flex-wrap: wrap;
+   gap: 0 1em;
+   border-bottom: 2px solid var(--border-default);
+   padding-bottom: .4em;
+   margin-top: 1em;
+}
+
+.page-header h1 {
+   border-bottom: none;
+   padding-bottom: 0;
+   margin: 0;
+}
+
+.page-header .meta {
+   margin: 0;
+   white-space: nowrap;
+}
+
+.warm-start-badge {
+   display: inline-block;
+   font-size: 0.8em;
+   font-weight: 500;
+   color: var(--tier-warn-border);
+   border: 1px solid var(--tier-warn-border);
+   border-radius: 4px;
+   padding: .1em .5em;
+   margin-left: .5em;
+   vertical-align: middle;
+}
+
+h2 {
+   border-bottom: 1px solid var(--border-default);
+   padding-bottom: .3em;
+   margin-top: 2em;
+}
+
+h3 {
+   margin-top: 1.5em;
+}
+
+a {
+   color: var(--accent);
+   text-decoration: none;
+}
+
+a:hover {
+   text-decoration: underline;
+}
+
+/* ── Utility classes ────────────────────────────────────────────── */
+
+.meta {
+   color: var(--text-muted);
+   margin-bottom: 1.5em;
+}
+
+.metric {
+   font-weight: bold;
+}
+
+.question {
+   font-style: italic;
+   color: var(--text-muted);
+}
+
+.caveat {
+   background: var(--bg-caveat);
+   border-left: 4px solid var(--status-warn);
+   padding: .6em 1em;
+   margin: 1em 0;
+}
+
+.footer {
+   color: var(--text-muted);
+   font-style: italic;
+   margin-top: 2em;
+   font-size: 0.9em;
+}
+
+ul {
+   padding-left: 1.5em;
+}
+
+code {
+   background: var(--bg-code);
+   padding: .15em .3em;
+   border-radius: 3px;
+   font-size: 0.9em;
+}
+
+/* ── Top Nav Bar ────────────────────────────────────────────────── */
+
+.top-nav {
+   background: var(--bg-nav);
+   border-bottom: 1px solid var(--border-default);
+   padding: .5em 1em;
+   margin: -1em -1.5em 1.5em;
+   display: flex;
+   gap: 1.5em;
+   align-items: center;
+   font-size: 0.9em;
+}
+
+.top-nav a {
+   font-weight: 500;
+}
+
+/* ── Breadcrumb ─────────────────────────────────────────────────── */
+
+.breadcrumb {
+   list-style: none;
+   padding: 0;
+   margin: 0 0 1em;
+   display: flex;
+   gap: 0;
+   font-size: 0.9em;
+   color: var(--text-muted);
+}
+
+.breadcrumb li::after {
+   content: " / ";
+   margin: 0 .4em;
+}
+
+.breadcrumb li:last-child::after {
+   content: "";
+}
+
+.breadcrumb a {
+   font-weight: 500;
+}
+
+/* ── Health Score Card (spans full scorecard grid row) ────────────── */
+
+.health-score-card {
+   grid-column: 1 / -1;
+}
+
+/* ── Dashboard Scorecard ────────────────────────────────────────── */
+
+.scorecard {
+   display: grid;
+   grid-template-columns: repeat(auto-fit, minmax(14em, 1fr));
+   gap: 1em;
+   margin: 1.5em 0;
+}
+
+.card {
+   border: 1px solid var(--border-default);
+   border-radius: 6px;
+   padding: 1em 1.2em;
+   background: var(--bg-card);
+}
+
+.card-label {
+   color: var(--text-muted);
+   font-size: 0.85em;
+   margin: 0 0 .3em;
+}
+
+.card-value {
+   font-size: 1.4em;
+   font-weight: bold;
+   margin: 0;
+}
+
+/* ── Tier Cards ─────────────────────────────────────────────────── */
+
+.tier-pass {
+   border-left: 4px solid var(--tier-pass-border);
+   background: color-mix(in srgb, var(--tier-pass-border) 6%, var(--bg-card));
+}
+
+.tier-warn {
+   border-left: 4px solid var(--tier-warn-border);
+   background: color-mix(in srgb, var(--tier-warn-border) 6%, var(--bg-card));
+}
+
+.tier-fail {
+   border-left: 4px solid var(--tier-fail-border);
+   background: color-mix(in srgb, var(--tier-fail-border) 6%, var(--bg-card));
+}
+
+.tier-na {
+   border-left: 4px solid var(--tier-na-border);
+}
+
+/* ── Rank Cards (podium) ────────────────────────────────────────── */
+
+.rank-gold {
+   border-left: 4px solid var(--rank-gold);
+   background: color-mix(in srgb, var(--rank-gold) 8%, var(--bg-card));
+}
+
+.rank-silver {
+   border-left: 4px solid var(--rank-silver);
+   background: color-mix(in srgb, var(--rank-silver) 8%, var(--bg-card));
+}
+
+.rank-bronze {
+   border-left: 4px solid var(--rank-bronze);
+   background: color-mix(in srgb, var(--rank-bronze) 8%, var(--bg-card));
+}
+
+.rank-gold .card-label,
+.rank-silver .card-label,
+.rank-bronze .card-label {
+   font-size: 1.1em;
+}
+
+.rank-emoji {
+   font-size: 1.8em;
+   vertical-align: middle;
+   line-height: 1;
+}
+
+.rank-gold .card-value,
+.rank-silver .card-value,
+.rank-bronze .card-value {
+   font-size: 1.8em;
+}
+
+/* Rank cards used as <a> links need visual reset */
+a.card {
+   color: var(--text-primary);
+   text-decoration: none;
+   display: block;
+   transition: border-color 0.15s ease;
+}
+
+a.card:hover {
+   border-color: var(--accent);
+   text-decoration: none;
+}
+
+/* ── Progress Bar ───────────────────────────────────────────────── */
+
+.progress-bar {
+   background: var(--bg-progress);
+   border-radius: 4px;
+   height: 8px;
+   overflow: hidden;
+   margin-top: .4em;
+}
+
+.progress-fill {
+   height: 100%;
+   border-radius: 4px;
+   transition: width 0.3s ease;
+}
+
+.progress-fill.tier-pass {
+   background: var(--status-pass);
+}
+
+.progress-fill.tier-warn {
+   background: var(--status-warn);
+}
+
+.progress-fill.tier-fail {
+   background: var(--status-fail);
+}
+
+.progress-fill.tier-na {
+   background: var(--border-default);
+}
+
+/* Width classes: .w-0 through .w-100 in 5% increments — CSP compliant */
+.w-0 {
+   width: 0%;
+}
+
+.w-5 {
+   width: 5%;
+}
+
+.w-10 {
+   width: 10%;
+}
+
+.w-15 {
+   width: 15%;
+}
+
+.w-20 {
+   width: 20%;
+}
+
+.w-25 {
+   width: 25%;
+}
+
+.w-30 {
+   width: 30%;
+}
+
+.w-35 {
+   width: 35%;
+}
+
+.w-40 {
+   width: 40%;
+}
+
+.w-45 {
+   width: 45%;
+}
+
+.w-50 {
+   width: 50%;
+}
+
+.w-55 {
+   width: 55%;
+}
+
+.w-60 {
+   width: 60%;
+}
+
+.w-65 {
+   width: 65%;
+}
+
+.w-70 {
+   width: 70%;
+}
+
+.w-75 {
+   width: 75%;
+}
+
+.w-80 {
+   width: 80%;
+}
+
+.w-85 {
+   width: 85%;
+}
+
+.w-90 {
+   width: 90%;
+}
+
+.w-95 {
+   width: 95%;
+}
+
+.w-100 {
+   width: 100%;
+}
+
+/* ── Status Dots ────────────────────────────────────────────────── */
+
+.status-dot {
+   display: inline-block;
+   width: 8px;
+   height: 8px;
+   border-radius: 50%;
+   vertical-align: middle;
+}
+
+.status-pass {
+   background-color: var(--status-pass);
+}
+
+.status-warn {
+   background-color: var(--status-warn);
+}
+
+.status-fail {
+   background-color: var(--status-fail);
+}
+
+.status-unknown {
+   background-color: var(--status-unknown);
+}
+
+.status-na {
+   background-color: var(--status-unknown);
+}
+
+.status-pending {
+   background-color: var(--status-unknown);
+}
+
+/* ── Tables ─────────────────────────────────────────────────────── */
+
+.table-wrapper {
+   overflow-x: auto;
+}
+
+.data-table {
+   width: 100%;
+   border-collapse: collapse;
+   margin: 1em 0;
+}
+
+.data-table th,
+.data-table td {
+   text-align: left;
+   padding: .5em .8em;
+   border-bottom: 1px solid var(--border-muted);
+}
+
+.data-table th {
+   font-size: 0.85em;
+   color: var(--text-muted);
+   position: sticky;
+   top: 0;
+   background: var(--bg-page);
+   z-index: 1;
+}
+
+.data-table tbody tr:nth-child(even) {
+   background: var(--bg-stripe);
+}
+
+/* Stale repo row — overrides stripe to draw attention to repos
+   whose updated_at is more than 2 years before the report date. */
+.data-table tbody tr.row-stale {
+   background: var(--bg-stale);
+}
+
+.data-table a {
+   font-weight: 500;
+}
+
+.cell-truncate {
+   max-width: 20em;
+   overflow: hidden;
+   text-overflow: ellipsis;
+   white-space: nowrap;
+}
+
+/* ── Details / Summary ──────────────────────────────────────────── */
+
+details {
+   border: 1px solid var(--border-muted);
+   border-radius: 6px;
+   margin: 1em 0;
+   padding: 0;
+}
+
+details[open] {
+   padding-bottom: .5em;
+}
+
+summary {
+   cursor: pointer;
+   padding: .6em 1em;
+   font-weight: 600;
+   background: var(--bg-stripe);
+   border-radius: 6px;
+   user-select: none;
+}
+
+details[open] summary {
+   border-bottom: 1px solid var(--border-muted);
+   border-radius: 6px 6px 0 0;
+}
+
+details>*:not(summary) {
+   padding-left: 1em;
+   padding-right: 1em;
+}
+
+/* ── Owner Overview ─────────────────────────────────────────────── */
+
+.owner-summary {
+   margin: 1.5em -1.5em;
+   padding: 1em 1.5em;
+   border-top: 1px solid var(--border-default);
+   border-bottom: 1px solid var(--border-default);
+   background: var(--bg-nav);
+}
+
+.owner-summary-header {
+   display: flex;
+   justify-content: space-between;
+   align-items: baseline;
+   flex-wrap: wrap;
+   gap: 0 1em;
+}
+
+.owner-summary-header h3 {
+   margin: 0;
+}
+
+.owner-summary-header p {
+   margin: 0;
+}
+
+.owner-summary p {
+   margin: .3em 0;
+}
+
+/* ── Text alignment utilities ───────────────────────────────────── */
+
+.text-center {
+   text-align: center;
+}
+
+.text-right {
+   text-align: right;
+}
+
+/* ── Inline Score Bar ───────────────────────────────────────────── */
+
+.score-bar-inline {
+   display: flex;
+   align-items: center;
+   gap: .4em;
+   min-width: 7em;
+}
+
+.score-bar-inline .progress-bar {
+   flex: 1;
+   height: 6px;
+   margin-top: 0;
+}
+
+.score-label {
+   font-size: 0.8em;
+   white-space: nowrap;
+   min-width: 3.5em;
+   text-align: right;
+}
+
+/* ── Card detail line ───────────────────────────────────────────── */
+
+.card-detail {
+   font-size: 0.8em;
+   color: var(--text-muted);
+   margin: .2em 0 0;
+}
+
+/* ── Responsive ─────────────────────────────────────────────────── */
+
+@media (max-width: 64em) {
+   .scorecard {
+      grid-template-columns: repeat(auto-fit, minmax(12em, 1fr));
+   }
+
+   .health-score-card {
+      grid-column: 1 / -1;
+   }
+}
+
+@media (max-width: 48em) {
+   body {
+      padding: .5em 1em 1em;
+   }
+
+   .scorecard {
+      grid-template-columns: 1fr;
+   }
+
+   .top-nav {
+      flex-wrap: wrap;
+      gap: .5em;
+      margin: -.5em -1em 1em;
+      padding: .5em .75em;
+   }
+
+   .owner-summary {
+      margin-left: -1em;
+      margin-right: -1em;
+      padding-left: 1em;
+      padding-right: 1em;
+   }
+
+   .data-table {
+      font-size: 0.85em;
+   }
+
+   .data-table th,
+   .data-table td {
+      padding: .3em .5em;
+   }
+
+   h1 {
+      font-size: 1.2em;
+   }
+
+   .page-header {
+      flex-direction: column;
+   }
+
+   .page-header .meta {
+      white-space: normal;
+   }
+}
+
+@media (max-width: 30em) {
+   body {
+      padding: .4em .6em .8em;
+      font-size: 0.9em;
+   }
+
+   .top-nav {
+      gap: .3em;
+      font-size: 0.8em;
+      padding: .4em .5em;
+   }
+
+   .card {
+      padding: .7em .8em;
+   }
+
+   .card-value {
+      font-size: 1.2em;
+   }
+
+   .rank-gold .card-value,
+   .rank-silver .card-value,
+   .rank-bronze .card-value {
+      font-size: 1.4em;
+   }
+
+   .owner-summary {
+      padding: .7em .6em;
+   }
+
+   h1 {
+      font-size: 1.1em;
+   }
+}
+
+/* ── Dark Mode ──────────────────────────────────────────────────── */
+
+@media (prefers-color-scheme: dark) {
+   :root {
+      /* ── Dark-mode tokens ───────────────────────── */
+
+      --status-pass: #68B096;
+      /* success base-default */
+      --status-warn: #E2C35A;
+      /* warning base-default */
+      --status-fail: #E76C6A;
+      /* danger  base-default */
+      --status-unknown: #98A2A4;
+      /* neutral base-default */
+
+      --bg-page: #081E21;
+      /* primary background-default */
+      --bg-card: #152E32;
+      /* primary surface-default    */
+      --bg-code: #1E282A;
+      /* neutral surface-default    */
+      --bg-caveat: #1D1911;
+      /* warning surface-tinted     */
+      --bg-stripe: #162224;
+      /* neutral base-contrast-subtle */
+      --bg-nav: #043937;
+      /* primary surface-tinted     */
+      --bg-progress: #343B3C;
+      /* neutral surface-active     */
+      --bg-stale: #1D1111;
+      /* danger  surface-tinted     */
+
+      --text-primary: #BBC2C3;
+      /* neutral text-default  */
+      --text-muted: #98A2A4;
+      /* neutral text-subtle   */
+
+      --border-default: #3A4244;
+      /* neutral border-subtle */
+      --border-muted: #2A3032;
+      /* neutral surface-hover */
+
+      --accent: #68b096;
+      /* primary base-default */
+
+      /* Rank colours (podium, dark) */
+      --rank-gold: #E2C35A;
+      /* warning base-default   */
+      --rank-silver: #98A2A4;
+      /* neutral base-default   */
+      --rank-bronze: #A84A48;
+      /* danger  border-default */
+   }
+
+   code {
+      background: var(--bg-code);
+   }
+}
+
+/* ── Print ──────────────────────────────────────────────────────── */
+
+@media print {
+   body {
+      max-width: none;
+      margin: 0;
+      padding: 1em;
+      color: #000;
+      background: #fff;
+   }
+
+   .top-nav {
+      display: none;
+   }
+
+   .owner-summary {
+      margin-left: 0;
+      margin-right: 0;
+   }
+
+   .card {
+      break-inside: avoid;
+      border-color: #ccc;
+   }
+
+   .rank-gold,
+   .rank-silver,
+   .rank-bronze {
+      print-color-adjust: exact;
+      -webkit-print-color-adjust: exact;
+   }
+
+   .data-table th {
+      position: static;
+   }
+
+   a {
+      color: #000;
+      text-decoration: underline;
+   }
+
+   a[href]::after {
+      content: " (" attr(href) ")";
+      font-size: 0.8em;
+      color: #666;
+   }
+
+   .progress-bar {
+      border: 1px solid #ccc;
+   }
+
+   .progress-fill {
+      print-color-adjust: exact;
+      -webkit-print-color-adjust: exact;
+   }
+
+   .status-dot {
+      print-color-adjust: exact;
+      -webkit-print-color-adjust: exact;
+   }
+}

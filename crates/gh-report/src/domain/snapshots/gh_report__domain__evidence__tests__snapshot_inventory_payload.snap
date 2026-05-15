@@ -1,0 +1,24 @@
+---
+source: src/domain/evidence.rs
+expression: payload
+---
+{
+  "schema_version": "1.0",
+  "organization": "TestOrg",
+  "generated_at": "2026-04-09T12:00:00+00:00",
+  "repositories": [
+    {
+      "id": "id-snap-repo",
+      "node_id": null,
+      "name": "snap-repo",
+      "visibility": "private",
+      "language": null,
+      "default_branch": "main",
+      "archived": false,
+      "inventory_key": "id-snap-repo",
+      "has_issues": true,
+      "fork": false,
+      "topics": []
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+[package]
+name = "cherry-pit-storage"
+version = "0.1.0"
+description = "Synchronous filesystem primitives — atomic writes, run-locks, content-addressable signatures — for cherry-pit consumers"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage = "https://github.com/acje/solon/tree/main/crates/cherry-pit-storage"
+documentation = "https://docs.rs/cherry-pit-storage"
+keywords = ["atomic-write", "file-lock", "content-addressable", "cherry-pit"]
+categories = ["filesystem"]
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+tempfile = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+jiff = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }
+tokio-test = { workspace = true }
+proptest = { workspace = true }

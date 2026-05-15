@@ -1,0 +1,19 @@
+[workspace]
+# Standalone workspace — keep this tool independent of the adr-fmt root
+# workspace. The parent workspace does not enumerate scripts/ as a member;
+# declaring an empty [workspace] here prevents cargo from auto-attaching.
+
+[package]
+name = "citation-diff"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "Apache-2.0 OR MIT"
+publish = false
+
+[dependencies]
+regex = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1

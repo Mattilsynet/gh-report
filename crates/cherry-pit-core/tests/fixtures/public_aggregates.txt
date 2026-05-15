@@ -1,0 +1,19 @@
+# Snapshot: concrete public aggregate types re-exported from cherry-pit-core.
+#
+# Maintained by hand. The test
+# `crates/cherry-pit-core/tests/aggregate_default_zero_state.rs` asserts that
+# the in-test enumeration of public aggregate types matches this file exactly.
+#
+# CHE-0012 R1: every aggregate constructs zero-state via `Default`. The
+# trybuild fixture `tests/compile_fail/aggregate_requires_default.rs` proves
+# the trait bound; this snapshot pins the *set of aggregates that bound
+# applies to* so the next addition is a conscious act (which forces an ADR
+# citation in the commit message — see § Reporting in mission contract).
+#
+# Empty rationale: as of 1778750000, cherry-pit-core exports the `Aggregate`
+# trait and `HandleCommand` trait but no concrete aggregate types. Aggregates
+# are defined in downstream domain crates. When the first concrete aggregate
+# is re-exported here, add its name below and update the test's
+# `CURRENT_PUBLIC_AGGREGATES` constant.
+
+# (no public concrete aggregates as of 1778750000)

@@ -1,0 +1,29 @@
+[package]
+name = "cherry-pit-core"
+version = "0.1.0"
+description = "Foundational traits for cherry-pit: aggregates, commands, events, ports"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage = "https://github.com/acje/solon/tree/main/crates/cherry-pit-core"
+documentation = "https://docs.rs/cherry-pit-core"
+readme = "README.md"
+keywords = ["event-sourcing", "cqrs", "ddd", "aggregate", "domain-events"]
+categories = ["data-structures"]
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+uuid = { workspace = true }
+jiff = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+trybuild = { workspace = true }
+serde_json = { workspace = true }
+rmp-serde = { workspace = true }
+toml = { workspace = true }

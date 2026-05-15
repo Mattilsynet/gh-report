@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ vm.owner }} — Owner Detail</title>
+    <link rel="stylesheet" href="../style.css">
+    <script src="../ws.js" defer></script>
+    {% if warm_start %}<meta http-equiv="refresh" content="5">{% endif %}
+</head>
+
+<body>
+
+    <nav class="top-nav">
+        <a href="../index.html">Dashboard</a>
+        <a href="../report.html">Report</a>
+        <a href="../owners.html">Owners</a>
+        <a href="../orphans.html">Orphans ({{ orphaned_count }})</a>
+    </nav>
+
+    <h1 title="{{ vm.owner }}">{{ vm.owner_short }}</h1>
+
+    <ul class="breadcrumb">
+        <li><a href="../index.html">Dashboard</a></li>
+        <li><a href="../owners.html">Owners</a></li>
+        <li>{{ vm.breadcrumb_label }}</li>
+    </ul>
+
+    <p class="meta">{{ vm.owner_type_label }} · {{ vm.repo_rows.len() }} repositories</p>
+
+    <div class="scorecard">
+        {% for card in vm.summary_cards %}
+        <div class="card {{ card.cell.tier.css_class() }}">
+            <p class="card-label">{{ card.label }}</p>
+            <p class="card-value">{{ card.cell.rate_formatted }}</p>
+            <div class="progress-bar">
+                <div class="progress-fill {{ card.cell.tier.css_class() }} {{ card.cell.width_class }}"></div>
+            </div>
+        </div>
+        {% endfor %}
+        <div class="card{% if vm.stale_repo_count > 0 %} tier-warn{% endif %}">
+            <p class="card-label">Stale Repos</p>
+            <p class="card-value">{{ vm.stale_repo_count }} / {{ vm.total_repo_count }}</p>
+            <div class="progress-bar">
+                <div class="progress-fill{% if vm.stale_repo_count > 0 %} tier-warn{% endif %} {{ vm.stale_width_class }}"></div>
+            </div>
+        </div>
+    </div>
+
+    {% if vm.repo_rows.is_empty() %}
+    <p class="meta">No repositories found for this owner.</p>
+    {% else %}
+    <h2>Repositories</h2>
+    <div class="table-wrapper">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Repository</th>
+                    <th>Visibility</th>
+                    <th class="text-center">Repo Score</th>
+                    {% for name in vm.control_names %}
+                    <th class="text-center">{{ name }}</th>
+                    {% endfor %}
+                    <th>Description</th>
+                    <th>Language</th>
+                    <th class="text-center">Fork</th>
+                    <th>License</th>
+                    <th>Last Push</th>
+                    <th>Created</th>
+                    <th>Last Committer</th>
+                    <th>Last Commit</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in vm.repo_rows %}
+                <tr{% if row.is_stale %} class="row-stale"{% endif %}>
+                    <td>{% if row.repo_url.is_empty() %}{{ row.repo_name }}{% else %}<a href="{{ row.repo_url }}"
+                            target="_blank" rel="noopener noreferrer">{{ row.repo_name }}</a>{% endif %}</td>
+                    <td>{{ row.visibility }}</td>
+                    <td class="text-center">
+                        <div class="score-bar-inline">
+                            <div class="progress-bar">
+                                <div class="progress-fill {{ row.repo_score_tier.css_class() }} {{ row.repo_score_width_class }}"></div>
+                            </div>
+                            <span class="score-label">{{ row.repo_score_formatted }}</span>
+                        </div>
+                    </td>
+                    {% for dot in row.controls %}
+                    <td class="text-center"><span class="status-dot {{ dot.css_class }}" title="{{ dot.label }}"></span>
+                    </td>
+                    {% endfor %}
+                    <td class="cell-truncate" title="{{ row.description }}">{{ row.description }}</td>
+                    <td>{{ row.language }}</td>
+                    <td class="text-center">{% if row.is_fork %}Yes{% endif %}</td>
+                    <td>{{ row.license }}</td>
+                    <td>{{ row.pushed_at }}</td>
+                    <td>{{ row.created_at }}</td>
+                    <td>{% if row.last_committer_url.is_empty() %}{{ row.last_committer_login }}{% else %}<a
+                            href="{{ row.last_committer_url }}" target="_blank" rel="noopener noreferrer">{{
+                            row.last_committer_login }}</a>{% endif %}</td>
+                    <td>{{ row.last_commit_date }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    {% if vm.has_stale_repos %}
+    <p class="footer">Rows highlighted in orange have not been updated in over 2 years and may be abandoned.</p>
+    {% endif %}
+
+    <p class="footer">This page lists all repositories (including private and internal) associated with this owner.
+        Ensure access to this dashboard is restricted to authorised personnel.</p>
+
+</body>
+
+</html>

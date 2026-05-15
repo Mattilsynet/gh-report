@@ -1,0 +1,20 @@
+error[E0308]: mismatched types
+  --> tests/compile_fail/gateway_rejects_unhandled_command.rs:79:27
+   |
+79 |     let _fail = gw.create(DeleteOrder, CorrelationContext::none());
+   |                    ------ ^^^^^^^^^^^ expected `CreateOrder`, found `DeleteOrder`
+   |                    |
+   |                    arguments to this method are incorrect
+   |
+help: the return type of this call is `DeleteOrder` due to the type of the argument passed
+  --> tests/compile_fail/gateway_rejects_unhandled_command.rs:79:17
+   |
+79 |     let _fail = gw.create(DeleteOrder, CorrelationContext::none());
+   |                 ^^^^^^^^^^-----------^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |                           |
+   |                           this argument influences the return type of `create`
+note: method defined here
+  --> src/gateway.rs
+   |
+   |     fn create<C>(
+   |        ^^^^^^

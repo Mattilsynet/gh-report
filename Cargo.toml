@@ -1,0 +1,134 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/adr-fmt",
+    "crates/cherry-pit-agent",
+    "crates/cherry-pit-core",
+    "crates/cherry-pit-gateway",
+    "crates/cherry-pit-projection",
+    "crates/cherry-pit-wq",
+    "crates/cherry-pit-storage",
+    "crates/cherry-pit-web",
+    "crates/gh-report",
+    "crates/pardosa",
+    "crates/pardosa-derive",
+    "crates/pardosa-encoding",
+    "crates/pardosa-genome",
+    "crates/pardosa-traits",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.95"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/acje/solon"
+authors = ["acje"]
+
+[workspace.dependencies]
+# === Text processing ===
+regex = "1"
+toml = "1"
+
+# === Serialization ===
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+rmp-serde = "1"
+
+# === Identity / time ===
+uuid = { version = "1", features = ["v7", "serde"] }
+jiff = { version = "0.2", features = ["serde"] }
+
+# === Async / concurrency ===
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+scc = "3"
+futures-util = "0.3"
+
+# === Web framework ===
+axum = { version = "0.8", default-features = false, features = ["http1", "http2", "tokio", "json", "ws"] }
+tower-http = { version = "0.6", features = ["limit", "trace"] }
+
+# === Networking / HTTP ===
+bytes = "1"
+http = "1"
+percent-encoding = "2"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "json", "gzip"] }
+
+# === Crypto / encoding ===
+sha2 = "0.11"
+zstd = { version = "0.13", default-features = false }
+
+# === Concurrency ===
+arc-swap = "1"
+
+# === Logging ===
+tracing = "0.1"
+
+# === Error handling ===
+thiserror = "2"
+
+# === Misc ===
+fastrand = "2"
+
+# === CLI ===
+# clap routed at workspace tier with `derive` only; gh-report adds `env` via
+# `features = ["env"]` on its dep entry. F6 default-features tightening deferred:
+# disabling defaults removes std/color/help/usage/error-context/suggestions,
+# which would alter CLI UX (TODO(F6, post-MC-P0)).
+clap = { version = "4", features = ["derive"] }
+
+# === Internal ===
+cherry-pit-core = { path = "crates/cherry-pit-core", version = "0.1.0" }
+cherry-pit-gateway = { path = "crates/cherry-pit-gateway", version = "0.1.0" }
+cherry-pit-projection = { path = "crates/cherry-pit-projection", version = "0.1.0" }
+cherry-pit-web = { path = "crates/cherry-pit-web", version = "0.1.0" }
+cherry-pit-agent = { path = "crates/cherry-pit-agent", version = "0.1.0" }
+
+# === Async runtime extras ===
+tokio-util = { version = "0.7", default-features = false }
+
+# === Templating ===
+askama = "0.15.6"
+
+# === Logging extras ===
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# === Crypto / auth ===
+# hmac: constant-time HMAC-SHA256 webhook signature verification.
+hmac = "0.13"
+# jsonwebtoken: GitHub App auth; aws_lc_rs backend (FIPS-validated, ring successor).
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+# pem: RSA key parsing for defence-in-depth key-size validation.
+pem = "3"
+# secrecy: SecretString auto-zeroize on drop.
+secrecy = { version = "0.10", features = ["serde"] }
+# zeroize: explicit zeroize of intermediate token buffers.
+zeroize = "1"
+# base64: encoding.
+base64 = "0.22"
+
+# === URL handling ===
+url = "2"
+
+# === Caching ===
+moka = { version = "0.12", features = ["future"] }
+
+# === Dev dependencies ===
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+proptest = "1"
+trybuild = "1"
+tokio-tungstenite = "0.29"
+tokio-test = "0.4"
+wiremock = "0.6"
+insta = { version = "1", features = ["json"] }
+tower = { version = "0.5.3", features = ["util"] }
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
+overflow-checks = true
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }

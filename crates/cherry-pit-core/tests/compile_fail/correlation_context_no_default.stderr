@@ -1,0 +1,20 @@
+error[E0599]: no function or associated item named `default` found for struct `CorrelationContext` in the current scope
+ --> tests/compile_fail/correlation_context_no_default.rs:8:36
+  |
+8 |     let _ctx = CorrelationContext::default();
+  |                                    ^^^^^^^ function or associated item not found in `CorrelationContext`
+  |
+note: if you're trying to build a new `CorrelationContext` consider using one of the following associated functions:
+      CorrelationContext::none
+      CorrelationContext::new
+      CorrelationContext::correlated
+ --> src/correlation.rs
+  |
+  |     pub fn none() -> Self {
+  |     ^^^^^^^^^^^^^^^^^^^^^
+...
+  |     pub fn new(correlation_id: uuid::Uuid, causation_id: uuid::Uuid) -> Self {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+  |     pub fn correlated(correlation_id: uuid::Uuid) -> Self {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

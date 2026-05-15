@@ -1,0 +1,50 @@
+[package]
+name = "cherry-pit-web"
+version = "0.1.0"
+description = "HTTP adapter for cherry-pit CommandGateway over axum"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage = "https://github.com/acje/solon/tree/main/crates/cherry-pit-web"
+documentation = "https://docs.rs/cherry-pit-web"
+keywords = ["http", "axum", "cqrs", "command-gateway"]
+categories = ["web-programming::http-server"]
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Read-side projection adapter scaffold (cherry-pit-projection edge).
+# Phase 3 of m5-projection-port wires the full handler set + WS upgrade
+# per CHE-0049 R11–R14.
+projection = ["dep:cherry-pit-projection", "dep:futures-util"]
+
+[dependencies]
+cherry-pit-core = { workspace = true }
+cherry-pit-projection = { workspace = true, optional = true }
+axum = { workspace = true }
+bytes = { workspace = true }
+futures-util = { workspace = true, optional = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+percent-encoding = { workspace = true }
+sha2 = { workspace = true }
+tracing = { workspace = true }
+zstd = { workspace = true }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+jiff = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+reqwest = { workspace = true }
+proptest = { workspace = true }
+trybuild = { workspace = true }

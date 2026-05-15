@@ -1,0 +1,10 @@
+error[E0191]: the value of the associated type `Event` in `EventStore` must be specified
+  --> tests/compile_fail/event_store_not_object_safe.rs:14:23
+   |
+14 | fn _erase(_s: Box<dyn EventStore>) {}
+   |                       ^^^^^^^^^^
+   |
+help: specify the associated type
+   |
+14 | fn _erase(_s: Box<dyn EventStore<Event = /* Type */>>) {}
+   |                                 ++++++++++++++++++++

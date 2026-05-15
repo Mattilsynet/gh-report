@@ -1,0 +1,3168 @@
+//! Collection pipeline: run a single security data collection pass.
+//!
+//! Pipeline:
+//! 1. Acquire run lock (prevent concurrent runs)
+//!    - A signal handler (SIGINT/SIGTERM) releases the lock and triggers
+//!      cooperative shutdown via `CancellationToken`, preventing orphaned
+//!      lock files on graceful termination.
+//! 2. Resolve credentials and build `GitHubClient`
+//! 3. Load or build repository inventory
+//! 4. Collect org-level secret scanning alert summary
+//! 5. Evaluate each repository against all five security checks
+//!    - Resume from checkpoint if available
+//!    - Reuse from baseline (kept separate from checkpoint)
+//!    - Isolate per-repository failures
+//!    - Persist checkpoint periodically (excludes baseline-reused entries)
+//!    - Save baseline, then remove checkpoint
+//! 6. Build evidence (assessment metadata + metrics + repositories)
+//! 7. Render HTML report and update in-memory cache
+//! 8. Release run lock
+
+use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::sync::Arc;
+
+use arc_swap::ArcSwap;
+use cherry_pit_core::CorrelationContext;
+use tracing::{debug, error, info, warn};
+
+use crate::aggregate::metrics;
+use crate::app::state::{AppState, CACHED_STYLESHEET, CACHED_WS_JS, CachedPage};
+use crate::collector::ghas_scanning;
+use crate::collector::{branch_protection, codeowners, dependabot, inventory, security_policy};
+use crate::config;
+use crate::config::runtime::RuntimeConfig;
+use crate::domain::aggregates::run::{
+    CompleteSweep, FailSweep, PublishEvidence, RecordProgress, StartSweep,
+};
+use crate::domain::checks::{
+    BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersResult,
+    CodeownersStatus, DependabotResult, DependabotStatus, RepositoryChecks, SecretScanningResult,
+    SecretScanningStatus, SecurityPolicyEvidence, SecurityPolicyResult, SecurityPolicyStatus,
+};
+use crate::domain::evidence::{AssessmentMetadata, Evidence, RepositoryEvidence};
+use crate::domain::metrics::OrgAlertSummary;
+use crate::domain::repository::Repository;
+use crate::domain::run::RunMetadata;
+use crate::error::{AppError, GitHubApiError, PersistenceError};
+use crate::github::auth::{AuthMetadata, CapabilitySet, GitHubAppConfig, GitHubCredential};
+use crate::github::client::GitHubClient;
+use crate::infra::{baseline, checkpoint, lock};
+use crate::report::html;
+
+// ── Repository evaluator trait ──────────────────────────────────────
+
+/// Abstraction for evaluating a single repository's security posture.
+///
+/// This trait enables dependency injection: production code uses
+/// [`LiveEvaluator`] (which calls the real GitHub API), while tests
+/// use a synchronous closure wrapper (`FnEvaluator` in `#[cfg(test)]`).
+///
+/// The method returns an opaque future; the evaluator is shared via
+/// monomorphic `Arc<E: RepoEvaluator>` across `tokio::spawn` tasks.
+///
+/// # Concurrency contract
+/// Implementors must be safe for concurrent use: the evaluator is
+/// shared across `tokio::spawn` tasks. Do not hold `RefCell` or other
+/// non-thread-safe state.
+pub(crate) trait RepoEvaluator: Send + Sync {
+    /// Evaluate all security checks for a single repository.
+    ///
+    /// Returns an anonymous opaque future. The compiler places the state
+    /// machine on the stack (or in the parent async frame) per CHE-0025:R2 —
+    /// no per-call heap allocation.
+    fn evaluate<'a>(
+        &'a self,
+        repo: Arc<Repository>,
+        ts: &'a str,
+    ) -> impl Future<Output = Result<RepositoryEvidence, String>> + Send + 'a;
+}
+
+/// Context for a work-queue job: repository + run timestamp.
+///
+/// Carries everything the [`LiveEvaluator`] needs to execute a job
+/// without coupling the reactor to collection-specific types.
+#[derive(Debug, Clone)]
+pub(crate) struct JobContext {
+    pub repo: Arc<Repository>,
+    pub run_timestamp: String,
+}
+
+/// Production evaluator that calls all five security check collectors
+/// via the GitHub API.
+///
+/// Implements both [`RepoEvaluator`] (for the existing collection pipeline)
+/// and [`JobExecutor`] (for the work-queue reactor).
+pub(crate) struct LiveEvaluator {
+    client: Arc<GitHubClient>,
+    org_summary: Arc<ArcSwap<Option<Arc<OrgAlertSummary>>>>,
+}
+
+impl LiveEvaluator {
+    /// Create an evaluator that reads org summary from a shared `ArcSwap`.
+    ///
+    /// Used when the evaluator should read the latest org summary from
+    /// `AppState` (e.g., for webhook-triggered evaluations using AD6
+    /// eventual consistency).
+    pub(crate) fn with_shared_org_summary(
+        client: Arc<GitHubClient>,
+        org_summary: Arc<ArcSwap<Option<Arc<OrgAlertSummary>>>>,
+    ) -> Self {
+        Self {
+            client,
+            org_summary,
+        }
+    }
+}
+
+impl RepoEvaluator for LiveEvaluator {
+    async fn evaluate<'a>(
+        &'a self,
+        repo: Arc<Repository>,
+        ts: &'a str,
+    ) -> Result<RepositoryEvidence, String> {
+        let org_guard = self.org_summary.load_full();
+        let org_ref = (*org_guard).as_ref().map(AsRef::as_ref);
+
+        // Pre-warm the repo_details cache. Three of the five collectors
+        // (security_policy, ghas_scanning, dependabot) call
+        // repo_details() internally. Without this pre-warm, all three
+        // miss the scc::HashMap cache simultaneously within the tokio::join!
+        // and make identical HTTP requests. A single call here populates
+        // the cache so the concurrent collectors hit it.
+        let _ = self.client.repo_details(&repo.name).await;
+
+        // Run all six checks concurrently (5 security + last_commit).
+        // GitHubClient uses ArcSwap, scc::HashMap, and atomics — designed for
+        // concurrent &self access. tokio::join! completes all branches
+        // before propagating panics, unlike sequential .await which aborts
+        // on the first. Safe because the outer tokio::spawn catches panics.
+        let (sp, ss, dep, bp, co, last_commit) = tokio::join!(
+            security_policy::evaluate(&self.client, &repo, ts),
+            ghas_scanning::evaluate(&self.client, &repo, ts, org_ref),
+            dependabot::evaluate(&self.client, &repo, ts),
+            branch_protection::evaluate(&self.client, &repo, ts),
+            codeowners::evaluate(&self.client, &repo, ts),
+            crate::collector::last_commit::fetch_last_commit(&self.client, &repo),
+        );
+
+        // ── Dependabot inactivity heuristic ─────────────────
+        // If the API reports "Enabled" but the repo has had no code
+        // push in > 90 days, GitHub may have auto-paused Dependabot
+        // without the API reflecting it.  Infer "Paused" as a proxy.
+        let dep = if dep.status == DependabotStatus::Enabled
+            && crate::domain::time::is_dependabot_inactive(repo.pushed_at.as_deref(), ts)
+        {
+            debug!(
+                repo = %repo.name,
+                pushed_at = ?repo.pushed_at,
+                "dependabot inferred paused from inactivity (>90 days since last push)"
+            );
+            DependabotResult {
+                status: DependabotStatus::Paused,
+                reason: Some("inferred_from_inactivity".to_string()),
+                timestamp: ts.to_string(),
+            }
+        } else {
+            dep
+        };
+
+        Ok(RepositoryEvidence {
+            repository: repo,
+            checks: RepositoryChecks {
+                security_policy: sp,
+                secret_scanning: ss,
+                dependabot_security_updates: dep,
+                branch_protection: bp,
+                codeowners: co,
+            },
+            last_commit,
+        })
+    }
+}
+
+impl crate::app::worker_pool::JobExecutor for LiveEvaluator {
+    type Context = JobContext;
+    type Result = RepositoryEvidence;
+
+    fn execute<'a>(
+        &'a self,
+        _domain_key: &'a crate::app::work_queue::DomainKey,
+        context: &'a Self::Context,
+    ) -> impl Future<Output = Result<Self::Result, String>> + Send + 'a {
+        self.evaluate(Arc::clone(&context.repo), &context.run_timestamp)
+    }
+}
+
+struct CollectionSetup {
+    lock: lock::RunLock,
+    client: Arc<GitHubClient>,
+    capabilities: CapabilitySet,
+    auth_metadata: AuthMetadata,
+    /// Budget gate total calls at the start of this run, for per-run delta.
+    budget_baseline: u64,
+}
+
+/// Bundles the client, capabilities, and auth metadata for the collection
+/// pipeline. Reduces parameter count for [`run_collection_pipeline`].
+struct CollectionContext {
+    client: Arc<GitHubClient>,
+    capabilities: CapabilitySet,
+    auth_metadata: AuthMetadata,
+    /// Budget gate total calls at the start of this run, for per-run delta.
+    budget_baseline: u64,
+}
+
+struct InventoryLoad {
+    active_repos: Vec<Arc<Repository>>,
+    /// ISO 8601 timestamp of when inventory was fetched from API.
+    inventory_fetched_at: Option<String>,
+    /// Number of archived repositories excluded from `active_repos`.
+    archived_repos: u32,
+}
+
+struct OrgAlertContext {
+    summary: OrgAlertSummary,
+    snapshot: Option<serde_json::Value>,
+}
+
+// ── Main entry point ────────────────────────────────────────────────
+
+/// Execute a single collection run.
+///
+/// Acquires a run lock, resolves credentials, builds the repository
+/// inventory from the GitHub API, evaluates each repository with per-repo
+/// failure isolation, renders the HTML report, and stores pages in the
+/// in-memory cache for immediate serving.
+///
+/// # Errors
+///
+/// Returns `AppError` if lock acquisition, credential resolution, inventory
+/// loading, report rendering, or cache population fails. Individual
+/// repository evaluation failures are isolated and do not abort the run.
+pub async fn run(config: RuntimeConfig, state: Arc<AppState>) -> Result<(), AppError> {
+    let mut run = RunMetadata::new(
+        config.org_name.clone(),
+        config::EVIDENCE_SCHEMA_VERSION.to_string(),
+    );
+    // Cycle-root correlation context (CHE-0039:R1, R3). Deterministic
+    // projection of `run.run_id` per `RunMetadata::correlation_context`
+    // — gap α (WU-6 v2 B7' Inc 2). Threaded `&CorrelationContext`
+    // through the pipeline; consumed by `publish_event` at Inc 5.
+    let corr_ctx = run.correlation_context();
+    info!(
+        run_id = %run.run_id,
+        org = %run.organization,
+        "collection run starting"
+    );
+
+    // Store current run in state.
+    state.current_run.store(Arc::new(Some(run.clone())));
+
+    let result = run_collection_inner(&config, &mut run, &corr_ctx, &state).await;
+
+    // Clear current_run regardless.
+    state.current_run.store(Arc::new(None));
+
+    if result.is_ok() {
+        state.last_completed_run.store(Arc::new(Some(run.clone())));
+    }
+
+    result
+}
+
+/// Inner collection flow extracted to allow state cleanup in all paths.
+async fn run_collection_inner(
+    config: &RuntimeConfig,
+    run: &mut RunMetadata,
+    corr_ctx: &CorrelationContext,
+    state: &Arc<AppState>,
+) -> Result<(), AppError> {
+    let setup = prepare_collection(config, run, state).await?;
+
+    // Start the worker pool (idempotent) now that the GitHub client exists.
+    // Must happen before run_collection_pipeline enqueues jobs.
+    state.ensure_worker_pool().await;
+
+    let inventory = load_active_repositories(&setup.client).await?;
+
+    // Evict seeded cache entries whose updated_at no longer matches the
+    // current inventory. Prevents stale repo detail data from being
+    // served for repos that changed between runs.
+    let stale_check: Vec<(String, Option<String>)> = inventory
+        .active_repos
+        .iter()
+        .map(|r| (r.name.clone(), r.updated_at.clone()))
+        .collect();
+    setup.client.evict_stale_entries(&stale_check);
+
+    let org_alert = collect_org_alert_context(&setup.client, &inventory.active_repos, run).await;
+
+    // Destructure setup so we can move `client` into CollectionContext
+    // while keeping the lock guard alive.
+    let CollectionSetup {
+        lock,
+        client,
+        capabilities,
+        auth_metadata,
+        budget_baseline,
+    } = setup;
+
+    let ctx = CollectionContext {
+        client,
+        capabilities,
+        auth_metadata,
+        budget_baseline,
+    };
+
+    // Wrap the lock in Arc<Mutex<Option>> for shared access between the
+    // main flow and the signal handler. The signal handler uses try_lock()
+    // to avoid deadlock if the main flow panics while holding the mutex.
+    let lock_handle = Arc::new(tokio::sync::Mutex::new(Some(lock)));
+    let cancel = tokio_util::sync::CancellationToken::new();
+
+    // Spawn a signal handler that releases the lock and triggers
+    // cooperative shutdown on SIGINT (Ctrl-C) or SIGTERM.
+    let signal_lock = Arc::clone(&lock_handle);
+    let signal_cancel = cancel.clone();
+    let signal_handle = tokio::spawn(async move {
+        crate::infra::signal::wait_for_shutdown_signal().await;
+
+        warn!("signal received — releasing lock and shutting down");
+
+        // Release the lock before cancelling.
+        if let Ok(mut guard) = signal_lock.try_lock() {
+            if let Some(lock) = guard.take()
+                && let Err(e) = lock.release()
+            {
+                warn!(error = %e, "failed to release lock during signal shutdown");
+            }
+        } else {
+            warn!("could not acquire lock handle during signal — main task may still hold it");
+        }
+
+        // Cooperative cancellation — lets Tokio runtime wind down,
+        // run Drop guards, and flush tracing subscribers.
+        signal_cancel.cancel();
+    });
+
+    // Run the main collection pipeline, racing against cancellation.
+    let result = tokio::select! {
+        res = run_collection_pipeline(
+            config, run, corr_ctx, ctx, &inventory, org_alert, &lock_handle, state,
+        ) => res,
+        () = cancel.cancelled() => {
+            info!(
+                "collection cancelled by signal — lock released, no report published"
+            );
+            return Ok(());
+        }
+    };
+
+    // Normal completion: take the lock from the Arc and drop it.
+    if let Some(lock) = lock_handle.lock().await.take() {
+        drop(lock);
+    }
+
+    // Inspect signal handler for panics (best-effort; the handler is simple
+    // and unlikely to panic, but silent loss would hide bugs).
+    if signal_handle.is_finished()
+        && let Err(e) = signal_handle.await
+    {
+        error!(error = ?e, "signal handler task panicked");
+    }
+
+    result
+}
+
+/// Inner collection pipeline, extracted so it can be wrapped in `tokio::select!`
+/// for cooperative cancellation via `CancellationToken`.
+///
+/// ## Processing path (AD2 — single path)
+///
+/// All repository evaluation flows through the unified `WorkQueue` → worker
+/// pool → delivery task pipeline. The sweep enqueues repos via
+/// `enqueue_batch()` and waits for completion via `BatchTracker`. Workers
+/// and delivery task are shared with webhook-triggered jobs.
+///
+/// Orchestration is driven by [`SweepSaga`], a state machine that models
+/// each pipeline phase as an explicit state transition with domain event
+/// emission, progress tracking, and saga-level timeout.
+//
+// 8/7 args after WU-6 v2 B7' Inc 2 added `corr_ctx`. A Params-struct
+// tidying would be its own commit (R3 Tidy First) — out of scope for
+// the parameter-threading increment. Revisit at Inc 5 / B8' when the
+// helper internals consume `ctx` and the call shape settles.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "8/7 after WU-6 v2 Inc 2 added corr_ctx; Params-struct tidying is a separate Tidy-First commit (R3) deferred until Inc 5/B8' when call shape settles"
+)]
+async fn run_collection_pipeline(
+    config: &RuntimeConfig,
+    run: &mut RunMetadata,
+    corr_ctx: &CorrelationContext,
+    ctx: CollectionContext,
+    inventory: &InventoryLoad,
+    org_alert: OrgAlertContext,
+    _lock_handle: &Arc<tokio::sync::Mutex<Option<lock::RunLock>>>,
+    state: &Arc<AppState>,
+) -> Result<(), AppError> {
+    let mut saga = SweepSaga::new(config, run, &ctx, org_alert, state);
+    saga.run_to_completion(config, run, corr_ctx, &ctx, inventory, state)
+        .await
+}
+
+// ── Sweep Saga ──────────────────────────────────────────────────────
+
+/// Current phase of the sweep saga state machine.
+///
+/// Each variant represents a checkpoint in the orchestration pipeline.
+/// The saga transitions through phases sequentially, emitting domain
+/// events at each transition for observability.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SweepPhase {
+    /// Initial state — checkpoint resume pending.
+    Init,
+    /// Checkpoint resume completed. Baseline reuse pending.
+    Resumed,
+    /// Baseline reuse completed. Batch enqueue pending.
+    BaselineReused,
+    /// Batch enqueued into work queue. Awaiting completion.
+    AwaitingBatch,
+    /// All repos evaluated (batch drained). Finalize pending.
+    BatchDrained,
+    /// Pipeline completed successfully.
+    Completed,
+    /// Pipeline failed (timeout, error, or all jobs rejected).
+    Failed { error: String },
+}
+
+/// Sweep orchestration state machine.
+///
+/// Models `run_collection_pipeline` as explicit phase transitions with
+/// domain event emission, progress tracking, and saga-level timeout.
+///
+/// ## Phase flow
+///
+/// ```text
+/// Init → Resumed → BaselineReused → AwaitingBatch → BatchDrained → Completed
+///                                 ↘ (no pending) → BatchDrained → Completed
+///                     (timeout/error) → Failed
+/// ```
+///
+/// Each step method (`step_resume`, `step_baseline`, etc.) advances the
+/// phase and can be tested independently by constructing the saga in
+/// the appropriate starting phase.
+pub(crate) struct SweepSaga {
+    /// Current phase.
+    phase: SweepPhase,
+    /// Evidence from checkpoint resume.
+    completed: HashMap<String, Arc<RepositoryEvidence>>,
+    /// Evidence reused from previous baseline.
+    baseline_cache: HashMap<String, Arc<RepositoryEvidence>>,
+    /// Number of repos resumed from checkpoint.
+    resumed_count: usize,
+    /// Number of repos reused from baseline.
+    baseline_reused: usize,
+    /// Wall-clock start of the sweep.
+    sweep_start: std::time::Instant,
+    /// ISO 8601 run timestamp (derived from `RunMetadata`).
+    run_timestamp: String,
+    /// Content hash of the org-level alert snapshot.
+    snapshot_signature: String,
+    /// Path to the date-scoped checkpoint file.
+    checkpoint_path: std::path::PathBuf,
+    /// Budget pause notification channel.
+    pause_notify: Arc<tokio::sync::Notify>,
+    /// Org-level alert summary.
+    org_summary: Arc<OrgAlertSummary>,
+    /// GitHub API client (shared across phases).
+    client: Arc<GitHubClient>,
+}
+
+impl SweepSaga {
+    /// Create a new saga in the `Init` phase.
+    ///
+    /// Performs one-time setup: wires budget pause notification and stores
+    /// the org summary for eventual consistency (AD6).
+    fn new(
+        config: &RuntimeConfig,
+        run: &RunMetadata,
+        ctx: &CollectionContext,
+        org_alert: OrgAlertContext,
+        state: &Arc<AppState>,
+    ) -> Self {
+        let pause_notify = Arc::new(tokio::sync::Notify::new());
+        ctx.client
+            .set_budget_pause_notify(Arc::clone(&pause_notify));
+
+        let org_summary = Arc::new(org_alert.summary);
+        state
+            .evidence()
+            .org_summary
+            .store(Arc::new(Some(Arc::clone(&org_summary))));
+
+        Self {
+            phase: SweepPhase::Init,
+            completed: HashMap::new(),
+            baseline_cache: HashMap::new(),
+            resumed_count: 0,
+            baseline_reused: 0,
+            sweep_start: std::time::Instant::now(),
+            run_timestamp: run.timestamp(),
+            snapshot_signature: checkpoint::build_snapshot_signature(org_alert.snapshot.as_ref()),
+            checkpoint_path: checkpoint::checkpoint_path(&config.store_dir, &run.date()),
+            pause_notify,
+            org_summary,
+            client: Arc::clone(&ctx.client),
+        }
+    }
+
+    /// Current phase of the saga.
+    #[cfg(test)]
+    pub(crate) fn phase(&self) -> &SweepPhase {
+        &self.phase
+    }
+
+    /// Drive the saga to completion, transitioning through all phases.
+    ///
+    /// Emits domain events (`SweepStarted`, `SweepProgress`,
+    /// `SweepCompleted`/`SweepFailed`) at each transition.
+    async fn run_to_completion(
+        &mut self,
+        config: &RuntimeConfig,
+        run: &mut RunMetadata,
+        corr_ctx: &CorrelationContext,
+        ctx: &CollectionContext,
+        inventory: &InventoryLoad,
+        state: &Arc<AppState>,
+    ) -> Result<(), AppError> {
+        // Phase 1: Resume from checkpoint.
+        self.step_resume(inventory, config, state)?;
+
+        // Emit progress: resumed repos.
+        Self::emit_progress(run, corr_ctx, inventory.active_repos.len(), state).await;
+
+        // Phase 2: Reuse from baseline.
+        self.step_baseline(inventory, config, state);
+
+        // Emit progress: resumed + baseline-reused repos.
+        Self::emit_progress(run, corr_ctx, inventory.active_repos.len(), state).await;
+
+        // Phase 3: Enqueue pending repos and await batch completion.
+        self.step_enqueue_and_await(config, run, corr_ctx, ctx, inventory, state)
+            .await?;
+
+        // If sweep failed (all rejected or timed out), propagate as error
+        // so the caller does not record it as a completed run.
+        if let SweepPhase::Failed { ref error } = self.phase {
+            return Err(AppError::Inventory(
+                crate::error::InventoryError::ApiFetchFailed {
+                    reason: error.clone(),
+                },
+            ));
+        }
+
+        // Phase 4: Finalize — build evidence, publish, save baseline.
+        self.step_finalize(config, run, corr_ctx, ctx, inventory, state)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Phase 1: Resume from checkpoint.
+    ///
+    /// Loads the date-scoped checkpoint file and pre-populates the
+    /// evidence store with resumed entries.
+    fn step_resume(
+        &mut self,
+        inventory: &InventoryLoad,
+        config: &RuntimeConfig,
+        state: &Arc<AppState>,
+    ) -> Result<(), AppError> {
+        debug_assert_eq!(self.phase, SweepPhase::Init);
+
+        let (completed, resumed_count) = resume_and_populate(
+            &self.checkpoint_path,
+            &self.run_timestamp,
+            &self.snapshot_signature,
+            inventory,
+            config,
+            state,
+        )?;
+
+        self.completed = completed;
+        self.resumed_count = resumed_count;
+        self.phase = SweepPhase::Resumed;
+        Ok(())
+    }
+
+    /// Phase 2: Reuse evidence from the previous baseline.
+    ///
+    /// Finds repos whose `updated_at` matches the baseline and
+    /// pre-populates the evidence store.
+    fn step_baseline(
+        &mut self,
+        inventory: &InventoryLoad,
+        config: &RuntimeConfig,
+        state: &Arc<AppState>,
+    ) {
+        debug_assert_eq!(self.phase, SweepPhase::Resumed);
+
+        self.baseline_cache = reuse_from_baseline(
+            &inventory.active_repos,
+            &self.completed,
+            &self.run_timestamp,
+            &config.store_dir,
+        );
+        self.baseline_reused = self.baseline_cache.len();
+
+        // M2.cd (W3): bulk-load baseline-reused entries into the projection
+        // at startup, before any bus dispatch (parent D2, pre-mortem #7).
+        // Sole-writer authorisation per CHE-0048:R2 — projection's
+        // `load_baseline` is the only direct mutation path at v0.1.
+        let baseline_entries: Vec<RepositoryEvidence> = self
+            .baseline_cache
+            .values()
+            .map(|ev| (**ev).clone())
+            .collect();
+        state.lock_projection().load_baseline(baseline_entries);
+
+        self.phase = SweepPhase::BaselineReused;
+    }
+
+    /// Phase 3: Enqueue pending repos and await batch completion with timeout.
+    ///
+    /// If no repos are pending (all resumed or reused), transitions directly
+    /// to `BatchDrained`. If all jobs are rejected by the queue, transitions
+    /// to `Completed` (clean abort). On timeout, transitions to `Failed` and
+    /// emits `SweepFailed`.
+    async fn step_enqueue_and_await(
+        &mut self,
+        config: &RuntimeConfig,
+        run: &RunMetadata,
+        corr_ctx: &CorrelationContext,
+        ctx: &CollectionContext,
+        inventory: &InventoryLoad,
+        state: &Arc<AppState>,
+    ) -> Result<(), AppError> {
+        debug_assert_eq!(self.phase, SweepPhase::BaselineReused);
+
+        let pending: Vec<&Arc<Repository>> = inventory
+            .active_repos
+            .iter()
+            .filter(|r| {
+                !self.completed.contains_key(&r.inventory_key)
+                    && !self.baseline_cache.contains_key(&r.inventory_key)
+            })
+            .collect();
+
+        info!(
+            total = inventory.active_repos.len(),
+            resumed = self.resumed_count,
+            baseline_reused = self.baseline_reused,
+            pending = pending.len(),
+            "enqueuing pending repos via work queue"
+        );
+
+        if let Err(e) = state
+            .run_service
+            .start_sweep(
+                StartSweep {
+                    org: config.org_name.clone(),
+                    repo_count: inventory.active_repos.len(),
+                    batch_id: run.run_id.clone(),
+                    timestamp: jiff::Timestamp::now().to_string(),
+                },
+                corr_ctx,
+            )
+            .await
+        {
+            warn!(error = %e, "SweepStarted publish failed, non-fatal");
+        }
+
+        if pending.is_empty() {
+            self.phase = SweepPhase::BatchDrained;
+            return Ok(());
+        }
+
+        self.phase = SweepPhase::AwaitingBatch;
+
+        let batch_future = enqueue_and_await_batch(BatchParams {
+            pending: &pending,
+            run_timestamp: &self.run_timestamp,
+            pause_notify: &self.pause_notify,
+            org_summary: &self.org_summary,
+            auth_metadata: &ctx.auth_metadata,
+            capabilities: &ctx.capabilities,
+            config,
+            run,
+            inventory,
+            state,
+        });
+
+        // Wrap the batch await with a saga-level timeout.
+        let timeout_duration = std::time::Duration::from_secs(config::SWEEP_TIMEOUT_SECS);
+
+        match tokio::time::timeout(timeout_duration, batch_future).await {
+            Ok(Ok(true)) => {
+                // Batch completed normally.
+                self.phase = SweepPhase::BatchDrained;
+
+                // Emit final progress (all complete).
+                Self::emit_progress(run, corr_ctx, inventory.active_repos.len(), state).await;
+            }
+            Ok(Ok(false)) => {
+                // All jobs rejected — clean abort.
+                let error_msg = "all jobs rejected by work queue".to_string();
+                self.phase = SweepPhase::Failed {
+                    error: error_msg.clone(),
+                };
+                if let Err(e) = state
+                    .run_service
+                    .fail(
+                        &run.run_id,
+                        FailSweep {
+                            batch_id: run.run_id.clone(),
+                            error: error_msg,
+                            duration_ms: self.elapsed_ms(),
+                            timestamp: jiff::Timestamp::now().to_string(),
+                        },
+                        corr_ctx,
+                    )
+                    .await
+                {
+                    warn!(error = %e, "SweepFailed publish failed, non-fatal");
+                }
+            }
+            Ok(Err(e)) => {
+                // Batch error.
+                let error_msg = e.to_string();
+                self.phase = SweepPhase::Failed {
+                    error: error_msg.clone(),
+                };
+                if let Err(pub_err) = state
+                    .run_service
+                    .fail(
+                        &run.run_id,
+                        FailSweep {
+                            batch_id: run.run_id.clone(),
+                            error: error_msg,
+                            duration_ms: self.elapsed_ms(),
+                            timestamp: jiff::Timestamp::now().to_string(),
+                        },
+                        corr_ctx,
+                    )
+                    .await
+                {
+                    warn!(error = %pub_err, "SweepFailed publish failed, non-fatal");
+                }
+                return Err(e);
+            }
+            Err(_elapsed) => {
+                // Saga-level timeout.
+                let error_msg = format!("sweep timed out after {}s", config::SWEEP_TIMEOUT_SECS);
+                warn!(
+                    timeout_secs = config::SWEEP_TIMEOUT_SECS,
+                    elapsed_ms = self.elapsed_ms(),
+                    "sweep batch timed out"
+                );
+                self.phase = SweepPhase::Failed {
+                    error: error_msg.clone(),
+                };
+                if let Err(e) = state
+                    .run_service
+                    .fail(
+                        &run.run_id,
+                        FailSweep {
+                            batch_id: run.run_id.clone(),
+                            error: error_msg,
+                            duration_ms: self.elapsed_ms(),
+                            timestamp: jiff::Timestamp::now().to_string(),
+                        },
+                        corr_ctx,
+                    )
+                    .await
+                {
+                    warn!(error = %e, "SweepFailed publish failed, non-fatal");
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Phase 4: Finalize — snapshot evidence, build report, publish,
+    /// save baseline, clean up checkpoint.
+    async fn step_finalize(
+        &mut self,
+        config: &RuntimeConfig,
+        run: &mut RunMetadata,
+        corr_ctx: &CorrelationContext,
+        ctx: &CollectionContext,
+        inventory: &InventoryLoad,
+        state: &Arc<AppState>,
+    ) -> Result<(), AppError> {
+        debug_assert_eq!(self.phase, SweepPhase::BatchDrained);
+
+        let result = finalize_and_publish(FinalizeParams {
+            baseline_cache: &self.baseline_cache,
+            run_timestamp: &self.run_timestamp,
+            snapshot_signature: &self.snapshot_signature,
+            checkpoint_path: &self.checkpoint_path,
+            config,
+            run,
+            corr_ctx,
+            inventory,
+            org_summary: &self.org_summary,
+            auth_metadata: &ctx.auth_metadata,
+            capabilities: &ctx.capabilities,
+            budget_baseline: ctx.budget_baseline,
+            client: &self.client,
+            state,
+        })
+        .await;
+
+        match &result {
+            Ok(()) => {
+                self.phase = SweepPhase::Completed;
+                if let Err(e) = state
+                    .run_service
+                    .complete(
+                        &run.run_id,
+                        CompleteSweep {
+                            batch_id: run.run_id.clone(),
+                            duration_ms: self.elapsed_ms(),
+                            repo_count: inventory.active_repos.len(),
+                            timestamp: jiff::Timestamp::now().to_string(),
+                        },
+                        corr_ctx,
+                    )
+                    .await
+                {
+                    warn!(error = %e, "SweepCompleted publish failed, non-fatal");
+                }
+            }
+            Err(e) => {
+                let error_msg = e.to_string();
+                self.phase = SweepPhase::Failed {
+                    error: error_msg.clone(),
+                };
+                if let Err(pub_err) = state
+                    .run_service
+                    .fail(
+                        &run.run_id,
+                        FailSweep {
+                            batch_id: run.run_id.clone(),
+                            error: error_msg,
+                            duration_ms: self.elapsed_ms(),
+                            timestamp: jiff::Timestamp::now().to_string(),
+                        },
+                        corr_ctx,
+                    )
+                    .await
+                {
+                    warn!(error = %pub_err, "SweepFailed publish failed, non-fatal");
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Elapsed time since sweep start, in milliseconds (clamped to u64).
+    fn elapsed_ms(&self) -> u64 {
+        u64::try_from(self.sweep_start.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// Emit a `SweepProgress` event with the current completion count.
+    ///
+    /// Uses the evidence store length as the source of truth — it includes
+    /// resumed, baseline-reused, batch-completed, and any concurrent
+    /// webhook-triggered entries. The count is advisory (observability only).
+    ///
+    /// Associated function (no `&self`) because all required state is passed
+    /// explicitly via `run` and `state`; kept in `impl SweepSaga` for the
+    /// semantic grouping.
+    async fn emit_progress(
+        run: &RunMetadata,
+        corr_ctx: &CorrelationContext,
+        total: usize,
+        state: &Arc<AppState>,
+    ) {
+        let completed = state.lock_projection().len();
+        if let Err(e) = state
+            .run_service
+            .record_progress(
+                &run.run_id,
+                RecordProgress {
+                    batch_id: run.run_id.clone(),
+                    completed,
+                    total,
+                    timestamp: jiff::Timestamp::now().to_string(),
+                },
+                corr_ctx,
+            )
+            .await
+        {
+            warn!(error = %e, "SweepProgress publish failed, non-fatal");
+        }
+    }
+}
+
+/// Parameters for [`enqueue_and_await_batch`].
+struct BatchParams<'a> {
+    pending: &'a [&'a Arc<Repository>],
+    run_timestamp: &'a str,
+    pause_notify: &'a Arc<tokio::sync::Notify>,
+    org_summary: &'a Arc<OrgAlertSummary>,
+    auth_metadata: &'a AuthMetadata,
+    capabilities: &'a CapabilitySet,
+    config: &'a RuntimeConfig,
+    run: &'a RunMetadata,
+    inventory: &'a InventoryLoad,
+    state: &'a Arc<AppState>,
+}
+
+/// Enqueue pending repos, wait for all jobs to complete, then shut down
+/// the partial publisher. Returns `false` if the queue rejected all jobs
+/// (caller should abort the sweep).
+async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppError> {
+    let BatchParams {
+        pending,
+        run_timestamp,
+        pause_notify,
+        org_summary,
+        auth_metadata,
+        capabilities,
+        config,
+        run,
+        inventory,
+        state,
+    } = params;
+    let items: Vec<(crate::app::work_queue::DomainKey, JobContext)> = pending
+        .iter()
+        .map(|repo| {
+            (
+                repo.inventory_key.clone(),
+                JobContext {
+                    repo: Arc::clone(repo),
+                    run_timestamp: run_timestamp.to_string(),
+                },
+            )
+        })
+        .collect();
+
+    let batch_result = crate::app::work_queue::enqueue_batch(
+        &state.work_queue,
+        items,
+        &crate::app::work_queue::JobSource::ScheduledBatch,
+        &run.correlation_context(),
+    );
+
+    if batch_result.accepted == 0 && !pending.is_empty() {
+        warn!(
+            total = batch_result.total,
+            rejected = batch_result.rejected,
+            "sweep aborted: work queue rejected all jobs (closed or full)"
+        );
+        return Ok(false);
+    }
+
+    if batch_result.rejected > 0 {
+        warn!(
+            rejected = batch_result.rejected,
+            total = batch_result.total,
+            "some sweep jobs rejected — queue capacity < inventory"
+        );
+    }
+
+    let tracker = crate::app::work_queue::BatchTracker::new(batch_result.accepted);
+    state
+        .evidence()
+        .batch_tracker
+        .store(Arc::new(Some(Arc::clone(&tracker))));
+
+    let pp_config = PartialPublishConfig {
+        pause_notify: Arc::clone(pause_notify),
+        config: config.clone(),
+        run: run.clone(),
+        inventory_fetched_at: inventory.inventory_fetched_at.clone(),
+        org_alert_summary: Some(Arc::clone(org_summary)),
+        auth_metadata: auth_metadata.clone(),
+        capabilities: capabilities.clone(),
+        archived_repos: inventory.archived_repos,
+        state: Arc::clone(state),
+    };
+    let (pp_task, pp_shutdown) = spawn_partial_publisher_from_store(pp_config, Arc::clone(state));
+
+    tracker.wait().await;
+    state.evidence().batch_tracker.store(Arc::new(None));
+
+    let _ = pp_shutdown.send(true);
+    if let Err(e) = pp_task.await {
+        error!(error = ?e, "partial publisher task panicked");
+    }
+
+    Ok(true)
+}
+
+/// Phase 1: Attempt to resume from a checkpoint and pre-populate the evidence store.
+///
+/// Returns `(completed_map, resumed_count)`.
+fn resume_and_populate(
+    checkpoint_path: &std::path::Path,
+    run_timestamp: &str,
+    snapshot_signature: &str,
+    inventory: &InventoryLoad,
+    config: &RuntimeConfig,
+    state: &Arc<AppState>,
+) -> Result<(HashMap<String, Arc<RepositoryEvidence>>, usize), AppError> {
+    let current_keys: HashSet<String> = inventory
+        .active_repos
+        .iter()
+        .map(|r| r.inventory_key.clone())
+        .collect();
+
+    let resume_result = checkpoint::try_resume(
+        checkpoint_path,
+        run_timestamp,
+        snapshot_signature,
+        &current_keys,
+        !config.no_resume,
+    )
+    .map_err(AppError::Persistence)?;
+
+    if resume_result.rotated {
+        warn!("checkpoint was rotated due to corruption or schema mismatch");
+    }
+
+    let completed = resume_result.completed;
+    let resumed_count = completed.len();
+
+    if resumed_count > 0 {
+        info!(
+            resumed = resumed_count,
+            total = inventory.active_repos.len(),
+            "resumed from checkpoint"
+        );
+    }
+
+    // M2.cd (W4): bulk-load checkpoint-resumed entries into the projection
+    // at startup, before any bus dispatch (parent D2, pre-mortem #7).
+    // Sole-writer authorisation per CHE-0048:R2.
+    let resumed_entries: Vec<RepositoryEvidence> =
+        completed.values().map(|ev| (**ev).clone()).collect();
+    state
+        .lock_projection()
+        .load_resumed_checkpoint(resumed_entries);
+
+    Ok((completed, resumed_count))
+}
+
+/// Arguments for [`finalize_and_publish`].
+struct FinalizeParams<'a> {
+    baseline_cache: &'a HashMap<String, Arc<RepositoryEvidence>>,
+    run_timestamp: &'a str,
+    snapshot_signature: &'a str,
+    checkpoint_path: &'a std::path::Path,
+    config: &'a RuntimeConfig,
+    run: &'a mut RunMetadata,
+    corr_ctx: &'a CorrelationContext,
+    inventory: &'a InventoryLoad,
+    org_summary: &'a Arc<OrgAlertSummary>,
+    auth_metadata: &'a AuthMetadata,
+    capabilities: &'a CapabilitySet,
+    budget_baseline: u64,
+    client: &'a Arc<GitHubClient>,
+    state: &'a Arc<AppState>,
+}
+
+/// Phase 4: Snapshot the evidence store, persist checkpoint, build + publish
+/// evidence, save baseline, and export the repo-detail cache.
+async fn finalize_and_publish(params: FinalizeParams<'_>) -> Result<(), AppError> {
+    let FinalizeParams {
+        baseline_cache,
+        run_timestamp,
+        snapshot_signature,
+        checkpoint_path,
+        config,
+        run,
+        corr_ctx,
+        inventory,
+        org_summary,
+        auth_metadata,
+        capabilities,
+        budget_baseline,
+        client,
+        state,
+    } = params;
+
+    let evidence_repos = state.lock_projection().sorted_snapshot();
+
+    // Persist final checkpoint (checkpoint-resumed + freshly-evaluated only).
+    if !evidence_repos.is_empty() {
+        let checkpoint_results: HashMap<String, Arc<RepositoryEvidence>> = evidence_repos
+            .iter()
+            .filter(|ev| !baseline_cache.contains_key(&ev.repository.inventory_key))
+            .map(|ev| (ev.repository.inventory_key.clone(), Arc::new(ev.clone())))
+            .collect();
+        if !checkpoint_results.is_empty() {
+            let final_data =
+                build_checkpoint_data(run_timestamp, snapshot_signature, checkpoint_results);
+            if let Err(e) = checkpoint::save_checkpoint(checkpoint_path, &final_data) {
+                warn!(error = %e, "failed to save final checkpoint");
+            }
+        }
+    }
+
+    let rate_limit_warnings = client
+        .rate_limit_warnings
+        .load(std::sync::atomic::Ordering::Relaxed);
+
+    let evidence = build_evidence(BuildEvidenceParams {
+        repositories: evidence_repos,
+        config,
+        run,
+        inventory_fetched_at: inventory.inventory_fetched_at.clone(),
+        org_alert_summary: Some(org_summary),
+        auth_metadata,
+        capabilities,
+        rate_limit_warnings,
+        archived_repos: inventory.archived_repos,
+    });
+
+    publish_evidence(config, run, corr_ctx, &evidence, state).await?;
+
+    run.complete();
+
+    // Save baseline from evidence store and remove checkpoint.
+    let new_baseline = baseline::build_baseline(&evidence.repositories);
+    match baseline::save_baseline(&config.store_dir, &new_baseline) {
+        Ok(()) => {
+            checkpoint::remove_checkpoint(checkpoint_path);
+        }
+        Err(e) => {
+            warn!(error = %e, "failed to save baseline — keeping checkpoint");
+        }
+    }
+
+    // Export repo detail cache for cross-run caching.
+    let entries = client.export_cache();
+    if !entries.is_empty() {
+        let cache = &state.github().repo_detail_cache;
+        for (key, detail) in entries {
+            cache.insert(key, detail).await;
+        }
+    }
+
+    info!(
+        run_id = %run.run_id,
+        repos = evidence.collection_statistics.total_repos,
+        api_calls = client.budget_total_calls() - budget_baseline,
+        "collection run complete"
+    );
+
+    Ok(())
+}
+
+async fn prepare_collection(
+    config: &RuntimeConfig,
+    run: &RunMetadata,
+    state: &Arc<AppState>,
+) -> Result<CollectionSetup, AppError> {
+    std::fs::create_dir_all(&config.store_dir).map_err(PersistenceError::Io)?;
+    let lock_guard = lock::acquire(
+        &config.store_dir,
+        &run.run_id,
+        lock::DEFAULT_LOCK_TTL,
+        config.force_unlock,
+    )
+    .map_err(|e| {
+        if let PersistenceError::LockFailed { ref reason } = e {
+            let lock_file = lock::lock_path(&config.store_dir);
+            warn!(
+                reason = %reason,
+                lock_file = %lock_file.display(),
+                "collection already in progress; remove lock manually or re-run with --force-unlock"
+            );
+        }
+        AppError::Persistence(e)
+    })?;
+    info!("run lock acquired");
+
+    // Get or create the long-lived GitHubClient. First run constructs it;
+    // subsequent runs reuse the same client (connection pool, credentials).
+    let client = state
+        .github()
+        .client
+        .get_or_try_init(|| async {
+            let app_config = GitHubAppConfig::from_environment()?;
+            let credential = GitHubCredential::from_environment()?;
+            let client = GitHubClient::new(
+                credential,
+                crate::config::DEFAULT_GITHUB_API_BASE_URL,
+                &config.org_name,
+                app_config,
+                Arc::clone(&state.github().budget_gate),
+                Arc::clone(&state.github().rate_limit_state),
+            )?;
+            Ok::<Arc<GitHubClient>, AppError>(Arc::new(client))
+        })
+        .await?;
+    let client = Arc::clone(client);
+
+    // Clear per-run caches from the previous run, then re-seed from the
+    // cross-run moka cache. The ordering is: clear → seed → evaluate.
+    client.clear_run_cache();
+    client.reset_halt();
+
+    // Seed the repo detail cache from the cross-run moka cache (daemon mode).
+    let cache = &state.github().repo_detail_cache;
+    let entries: Vec<_> = cache
+        .iter()
+        .map(|(k, v)| ((*k).clone(), v.clone()))
+        .collect();
+    client.seed_cache(entries);
+
+    // Record budget baseline for per-run delta reporting.
+    let budget_baseline = state.github().budget_gate.total_calls_made();
+
+    let capabilities = client.probe_capabilities().await;
+    if !capabilities.can_run() {
+        return Err(AppError::GitHubApi(GitHubApiError::AuthorizationDenied {
+            reason: "insufficient permissions to list org repositories; \
+                     set GITHUB_TOKEN or run `gh auth login`"
+                .into(),
+        }));
+    }
+
+    let auth_metadata = client.collect_auth_metadata().await;
+    info!(
+        auth_mode = %auth_metadata.auth_mode,
+        token_tier = %auth_metadata.token_tier,
+        "credentials resolved"
+    );
+
+    Ok(CollectionSetup {
+        lock: lock_guard,
+        client,
+        capabilities,
+        auth_metadata,
+        budget_baseline,
+    })
+}
+
+async fn load_active_repositories(client: &GitHubClient) -> Result<InventoryLoad, AppError> {
+    let inv = inventory::build_inventory_from_api(client, None).await?;
+    let inventory_fetched_at = inv.inventory_fetched_at.clone();
+    let archived_count =
+        u32::try_from(inv.repositories.iter().filter(|r| r.archived).count()).unwrap_or(u32::MAX);
+    let active_repos: Vec<Arc<Repository>> = inv
+        .repositories
+        .into_iter()
+        .filter(|r| !r.archived)
+        .map(Arc::new)
+        .collect();
+    info!(total = active_repos.len(), "repository inventory loaded");
+
+    Ok(InventoryLoad {
+        active_repos,
+        inventory_fetched_at,
+        archived_repos: archived_count,
+    })
+}
+
+async fn collect_org_alert_context(
+    client: &GitHubClient,
+    active_repos: &[Arc<Repository>],
+    run: &RunMetadata,
+) -> OrgAlertContext {
+    let summary = ghas_scanning::collect_org_alerts(client, active_repos, &run.timestamp()).await;
+    let snapshot = serde_json::to_value(&summary)
+        .inspect_err(
+            |e| warn!(error = %e, "failed to serialize org alert summary for checkpoint signature"),
+        )
+        .ok();
+
+    OrgAlertContext { summary, snapshot }
+}
+
+/// Populate the HTML cache from the most recent baseline, so the server
+/// can start serving immediately without waiting for the first API
+/// collection to complete.
+///
+/// Returns `true` if the warm-start succeeded (baseline exists, is valid,
+/// and pages were rendered). Returns `false` on any graceful failure
+/// (no baseline, empty baseline, schema mismatch, render error).
+///
+/// # Why this is safe
+///
+/// - `html_cache` uses [`ArcSwap`] for atomic swap — concurrent reads
+///   from the server always see a consistent snapshot.
+/// - The warm-start evidence uses placeholder `AssessmentMetadata` (auth
+///   fields set to Unknown, `archived_repos: 0`, `warm_start: true`).
+///   Templates detect `warm_start` and display a "Cached" badge.
+/// - The first real collection atomically replaces the warm-start cache.
+pub(crate) async fn warm_start_from_baseline(
+    config: &RuntimeConfig,
+    state: &Arc<AppState>,
+) -> bool {
+    let baseline = crate::infra::baseline::load_baseline(&config.store_dir);
+    let Some(baseline) = baseline else {
+        info!("no baseline found — skipping warm start");
+        return false;
+    };
+
+    let repos: Vec<RepositoryEvidence> = baseline
+        .entries
+        .into_values()
+        .map(|entry| entry.evidence)
+        .collect();
+
+    if repos.is_empty() {
+        info!("baseline is empty — skipping warm start");
+        return false;
+    }
+
+    info!(repos = repos.len(), "warm-starting from baseline");
+
+    let run = RunMetadata::new(
+        config.org_name.clone(),
+        config::EVIDENCE_SCHEMA_VERSION.to_string(),
+    );
+
+    let mut collection_stats = metrics::build_collection_statistics(&repos);
+    // archived_repos is unknown from baseline alone; default to 0.
+    collection_stats.archived_repos = 0;
+    let mut aggregated = metrics::aggregate_metrics(&repos);
+    metrics::enrich_owner_metrics_with_lifecycle(
+        &mut aggregated.owner_metrics,
+        &repos,
+        &run.timestamp(),
+    );
+    // Warm-start observability: derive per-repo counts (observable_enabled,
+    // unobservable) from baseline evidence. Org-level data (total alerts, age
+    // buckets, status_mismatch_count) is zero because OrgAlertSummary is
+    // unavailable during warm-start — only a live collection populates those.
+    let observability = metrics::build_secret_scanning_observability_summary(&repos, None);
+
+    let evidence = Evidence {
+        assessment_metadata: AssessmentMetadata {
+            date: run.date(),
+            organization: config.org_name.clone(),
+            schema_version: config::EVIDENCE_SCHEMA_VERSION.to_string(),
+            run_timestamp: run.timestamp(),
+            run_id: run.run_id.clone(),
+            token_tier: crate::domain::auth::TokenTier::Unknown,
+            token_scopes: "cached".to_string(),
+            auth_mode: crate::domain::auth::AuthMode::Unknown,
+            rate_limit_warnings: 0,
+            unavailable_capabilities: vec![],
+            inventory_fetched_at: None,
+            warm_start: true,
+        },
+        collection_statistics: collection_stats,
+        metrics: aggregated,
+        secret_scanning_observability: observability,
+        repositories: repos,
+    };
+
+    match publish_evidence(config, &run, &run.correlation_context(), &evidence, state).await {
+        Ok(()) => {
+            info!("warm-start cache populated — server can start serving");
+            true
+        }
+        Err(e) => {
+            warn!(error = %e, "warm-start render failed — server will start with empty cache");
+            false
+        }
+    }
+}
+
+pub(crate) async fn publish_evidence(
+    config: &RuntimeConfig,
+    run: &RunMetadata,
+    corr_ctx: &CorrelationContext,
+    evidence: &Evidence,
+    state: &Arc<AppState>,
+) -> Result<(), AppError> {
+    let pages = html::render_dashboard(evidence, &config.dashboard_config)?;
+    info!(
+        page_count = pages.len(),
+        total_bytes = pages.values().map(String::len).sum::<usize>(),
+        "dashboard pages rendered"
+    );
+
+    // Build the in-memory cache on the blocking thread pool to avoid
+    // starving the async executor during zstd compression + SHA-256
+    // hashing (CPU-bound, ~10-50 ms per page at quality 6).
+    // Static assets (style.css, ws.js) use pre-computed LazyLock<CachedPage>
+    // instances — their zstd compression and SHA-256 hash are computed
+    // once at first access and cloned via Bytes refcount increment (~1 ns)
+    // on subsequent publishes.
+    let cache: HashMap<String, CachedPage> = tokio::task::spawn_blocking(move || {
+        pages
+            .into_iter()
+            .map(|(path, content)| {
+                let page = match path.as_str() {
+                    "style.css" => CACHED_STYLESHEET.clone(),
+                    "ws.js" => CACHED_WS_JS.clone(),
+                    _ => CachedPage::new(&path, content.into_bytes()),
+                };
+                (path, page)
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| {
+        AppError::Report(crate::error::ReportError::TemplateRenderFailed {
+            reason: format!("cache build task panicked: {e}"),
+        })
+    })?;
+
+    let page_count = cache.len();
+
+    // Extract keys BEFORE store() moves cache into the Arc.
+    let page_keys: Vec<String> = cache.keys().cloned().collect();
+
+    state.evidence().html_cache.store(Arc::new(Some(cache)));
+    info!(page_count, run_id = %run.run_id, "html cache updated");
+
+    // Notify connected WebSocket clients of the cache update.
+    // SendError (no receivers) is not an error — ignored intentionally.
+    let _ = state
+        .evidence()
+        .ws_broadcast
+        .send(crate::app::state::PageUpdateEvent::new(
+            page_keys,
+            String::new(), // empty = full sweep / warm-start
+            jiff::Timestamp::now().to_string(),
+        ));
+
+    if let Err(e) = state
+        .run_service
+        .publish_evidence(
+            &run.run_id,
+            PublishEvidence {
+                page_count,
+                warm_start: evidence.assessment_metadata.warm_start,
+                timestamp: jiff::Timestamp::now().to_string(),
+            },
+            corr_ctx,
+        )
+        .await
+    {
+        warn!(error = %e, "EvidencePublished publish failed, non-fatal");
+    }
+
+    Ok(())
+}
+
+/// Phase 2: Check the baseline for repos that haven't changed since the
+/// last successful run.
+///
+/// Returns a separate map of baseline-reused entries (kept separate from
+/// checkpoint-completed entries so checkpoints remain small).
+fn reuse_from_baseline(
+    repositories: &[Arc<Repository>],
+    completed: &HashMap<String, Arc<RepositoryEvidence>>,
+    run_timestamp: &str,
+    store_dir: &std::path::Path,
+) -> HashMap<String, Arc<RepositoryEvidence>> {
+    let pending_before_baseline: Vec<&Arc<Repository>> = repositories
+        .iter()
+        .filter(|r| !completed.contains_key(&r.inventory_key))
+        .collect();
+
+    let loaded_baseline = baseline::load_baseline(store_dir);
+    let mut baseline_cache: HashMap<String, Arc<RepositoryEvidence>> = HashMap::new();
+
+    if let Some(ref bl) = loaded_baseline {
+        for repo in &pending_before_baseline {
+            if let Some(entry) = bl.entries.get(&repo.inventory_key)
+                && baseline::should_reuse(&entry.updated_at, repo.updated_at.as_deref())
+            {
+                // If the baseline has dependabot Enabled but the repo's
+                // pushed_at is stale (> 90 days), skip reuse so the
+                // inactivity heuristic can re-evaluate and infer Paused.
+                if entry.evidence.checks.dependabot_security_updates.status
+                    == DependabotStatus::Enabled
+                    && crate::domain::time::is_dependabot_inactive(
+                        repo.pushed_at.as_deref(),
+                        run_timestamp,
+                    )
+                {
+                    debug!(
+                        repo = %repo.name,
+                        "skipping baseline reuse: dependabot may be auto-paused (inactive >90 days)"
+                    );
+                    continue;
+                }
+
+                debug!(
+                    repo = %repo.name,
+                    updated_at = %entry.updated_at,
+                    "reusing baseline evidence"
+                );
+                baseline_cache.insert(repo.inventory_key.clone(), Arc::new(entry.evidence.clone()));
+            }
+        }
+
+        if !baseline_cache.is_empty() {
+            info!(
+                reused = baseline_cache.len(),
+                total = repositories.len(),
+                "reused evidence from baseline"
+            );
+        }
+    }
+
+    baseline_cache
+}
+
+/// Build a checkpoint data structure from the current collection state.
+fn build_checkpoint_data(
+    run_timestamp: &str,
+    snapshot_signature: &str,
+    results: HashMap<String, Arc<RepositoryEvidence>>,
+) -> checkpoint::Checkpoint {
+    checkpoint::Checkpoint {
+        schema_version: config::EVIDENCE_SCHEMA_VERSION.to_string(),
+        run_timestamp: run_timestamp.to_string(),
+        secret_scanning_snapshot_signature: snapshot_signature.to_string(),
+        results,
+    }
+}
+
+// ── Partial publisher ───────────────────────────────────────────────
+
+/// Configuration for the partial publisher task.
+///
+/// Carries all owned data needed to call [`build_evidence`] +
+/// [`publish_evidence`] inside a `tokio::spawn` boundary.
+pub(crate) struct PartialPublishConfig {
+    /// Notification channel: fires when the budget gate pauses.
+    pub pause_notify: Arc<tokio::sync::Notify>,
+    pub config: RuntimeConfig,
+    pub run: RunMetadata,
+    pub inventory_fetched_at: Option<String>,
+    pub org_alert_summary: Option<Arc<OrgAlertSummary>>,
+    pub auth_metadata: AuthMetadata,
+    pub capabilities: CapabilitySet,
+    pub archived_repos: u32,
+    pub state: Arc<AppState>,
+}
+
+/// Spawn a partial publisher that reads from the evidence store (C9).
+///
+/// Reads from `state.lock_projection().sorted_snapshot()` (M2.cd cutover —
+/// projection is sole reader per CHE-0048:R2). Used by the queue-based sweep.
+fn spawn_partial_publisher_from_store(
+    pp: PartialPublishConfig,
+    state: Arc<AppState>,
+) -> (
+    tokio::task::JoinHandle<()>,
+    tokio::sync::watch::Sender<bool>,
+) {
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let handle = tokio::spawn(async move {
+        let debounce_duration = std::time::Duration::from_secs(1);
+        let mut pending = false;
+        let debounce_timer = tokio::time::sleep(debounce_duration);
+        tokio::pin!(debounce_timer);
+        debounce_timer
+            .as_mut()
+            .reset(tokio::time::Instant::now() + std::time::Duration::from_hours(24));
+
+        loop {
+            tokio::select! {
+                () = pp.pause_notify.notified() => {
+                    if !pending {
+                        pending = true;
+                        debounce_timer.as_mut().reset(
+                            tokio::time::Instant::now() + debounce_duration,
+                        );
+                    }
+                }
+
+                () = &mut debounce_timer, if pending => {
+                    pending = false;
+
+                    // Snapshot from projection (M2.cd; CHE-0048:R2 sole
+                    // reader). Guard scoped to this statement; the cloned
+                    // `Vec` is owned across the subsequent `.await`
+                    // (D-CD-3: never hold a `MutexGuard` across `.await`).
+                    let all_evidence = state
+                        .lock_projection()
+                        .sorted_snapshot();
+
+                    let evidence = build_evidence(BuildEvidenceParams {
+                        repositories: all_evidence,
+                        config: &pp.config,
+                        run: &pp.run,
+                        inventory_fetched_at: pp.inventory_fetched_at.clone(),
+                        org_alert_summary: pp.org_alert_summary.as_deref(),
+                        auth_metadata: &pp.auth_metadata,
+                        capabilities: &pp.capabilities,
+                        rate_limit_warnings: 0,
+                        archived_repos: pp.archived_repos,
+                    });
+
+                    if let Err(e) =
+                        publish_evidence(
+                            &pp.config,
+                            &pp.run,
+                            &pp.run.correlation_context(),
+                            &evidence,
+                            &pp.state,
+                        )
+                        .await
+                    {
+                        warn!(error = %e, "partial report publish failed");
+                    } else {
+                        info!("partial report published");
+                    }
+                }
+
+                _ = shutdown_rx.changed() => break,
+            }
+        }
+    });
+
+    (handle, shutdown_tx)
+}
+
+/// Create a failure evidence record for a repository whose evaluation failed.
+///
+/// All checks are set to `unknown` with `collection_error` reason.
+///
+/// Public within the crate for use by the delivery task in `daemon.rs`
+/// (inserts failure evidence when a `JobOutcome::Failure` is received).
+pub(crate) fn failure_evidence(repo: &Arc<Repository>, run_timestamp: &str) -> RepositoryEvidence {
+    failure_evidence_with_reason(repo, run_timestamp, "collection_error")
+}
+
+/// Create a failure evidence record with a specific reason string.
+///
+/// Used by [`failure_evidence`] (reason = `"collection_error"`) and by the
+/// `JoinError` handler (reason = `"task_panicked"`).
+///
+/// For non-public repositories, the security policy check is set to
+/// `NotApplicable` (matching the real evaluator in `security_policy.rs`)
+/// rather than `Unknown`. This prevents non-public repos from diluting
+/// per-owner security policy coverage denominators.
+fn failure_evidence_with_reason(
+    repo: &Arc<Repository>,
+    run_timestamp: &str,
+    reason: &str,
+) -> RepositoryEvidence {
+    let default_branch = repo.default_branch.clone();
+    let (sp_status, sp_evidence) = if repo.is_public() {
+        (
+            SecurityPolicyStatus::Unknown,
+            SecurityPolicyEvidence::CollectionError,
+        )
+    } else {
+        (
+            SecurityPolicyStatus::NotApplicable,
+            SecurityPolicyEvidence::NotApplicable,
+        )
+    };
+    RepositoryEvidence {
+        repository: Arc::clone(repo),
+        checks: RepositoryChecks {
+            security_policy: SecurityPolicyResult {
+                status: sp_status,
+                evidence: sp_evidence,
+                path: None,
+                timestamp: run_timestamp.to_string(),
+            },
+            secret_scanning: SecretScanningResult {
+                status: SecretScanningStatus::Unknown,
+                has_open_alerts: None,
+                alerts_observable: false,
+                reason: Some(reason.to_string()),
+                timestamp: run_timestamp.to_string(),
+            },
+            dependabot_security_updates: DependabotResult {
+                status: DependabotStatus::Unknown,
+                reason: Some(reason.to_string()),
+                timestamp: run_timestamp.to_string(),
+            },
+            branch_protection: BranchProtectionResult {
+                status: BranchProtectionStatus::Unknown,
+                details: BranchProtectionDetails {
+                    default_branch,
+                    has_pr: None,
+                    required_reviewers: None,
+                    has_status_checks: None,
+                    admin_equivalent: None,
+                    has_broad_bypass: None,
+                    reason: Some(reason.to_string()),
+                },
+                timestamp: run_timestamp.to_string(),
+            },
+            codeowners: CodeownersResult {
+                status: CodeownersStatus::Unknown,
+                path: None,
+                timestamp: run_timestamp.to_string(),
+                parsed: None,
+                truncation: None,
+            },
+        },
+        last_commit: None,
+    }
+}
+
+// ── Evidence building ───────────────────────────────────────────────
+
+/// Parameters for building the evidence artifact.
+///
+/// Groups the inputs to [`build_evidence`] to avoid a long positional
+/// parameter list.
+struct BuildEvidenceParams<'a> {
+    repositories: Vec<RepositoryEvidence>,
+    config: &'a RuntimeConfig,
+    run: &'a RunMetadata,
+    inventory_fetched_at: Option<String>,
+    org_alert_summary: Option<&'a OrgAlertSummary>,
+    auth_metadata: &'a AuthMetadata,
+    capabilities: &'a CapabilitySet,
+    rate_limit_warnings: u32,
+    /// Number of archived repositories excluded from the active set.
+    archived_repos: u32,
+}
+
+/// Build the complete evidence artifact from collected data.
+fn build_evidence(params: BuildEvidenceParams<'_>) -> Evidence {
+    let mut stats = metrics::build_collection_statistics(&params.repositories);
+    stats.archived_repos = params.archived_repos;
+    let mut aggregated = metrics::aggregate_metrics(&params.repositories);
+    metrics::enrich_owner_metrics_with_lifecycle(
+        &mut aggregated.owner_metrics,
+        &params.repositories,
+        &params.run.timestamp(),
+    );
+    let observability = metrics::build_secret_scanning_observability_summary(
+        &params.repositories,
+        params.org_alert_summary,
+    );
+
+    Evidence {
+        assessment_metadata: build_assessment_metadata(
+            params.config,
+            params.run,
+            params.inventory_fetched_at,
+            params.auth_metadata,
+            params.capabilities,
+            params.rate_limit_warnings,
+        ),
+        collection_statistics: stats,
+        metrics: aggregated,
+        secret_scanning_observability: observability,
+        repositories: params.repositories,
+    }
+}
+
+/// Build assessment metadata for the evidence artifact.
+fn build_assessment_metadata(
+    config: &RuntimeConfig,
+    run: &RunMetadata,
+    inventory_fetched_at: Option<String>,
+    auth_metadata: &AuthMetadata,
+    capabilities: &CapabilitySet,
+    rate_limit_warnings: u32,
+) -> AssessmentMetadata {
+    AssessmentMetadata {
+        date: run.date(),
+        organization: config.org_name.clone(),
+        schema_version: config::EVIDENCE_SCHEMA_VERSION.to_string(),
+        run_timestamp: run.timestamp(),
+        run_id: run.run_id.clone(),
+        token_tier: auth_metadata.token_tier,
+        token_scopes: auth_metadata.token_scopes.clone(),
+        auth_mode: auth_metadata.auth_mode,
+        rate_limit_warnings,
+        unavailable_capabilities: capabilities.unavailable_capabilities(),
+        inventory_fetched_at,
+        warm_start: false,
+    }
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::worker_pool::JobExecutor;
+    use crate::config::dashboard::DashboardConfig;
+    use crate::domain::auth::AuthMode;
+    use crate::domain::auth::{Capability, TokenTier};
+    use crate::domain::repository::Visibility;
+    use crate::test_fixtures;
+
+    /// Compile-time assertion: `LiveEvaluator` satisfies `JobExecutor` bounds.
+    /// This ensures the impl stays in sync with the trait as both evolve.
+    const _: () = {
+        fn assert_job_executor<T: JobExecutor>() {}
+        let _ = assert_job_executor::<LiveEvaluator>;
+    };
+
+    fn sample_repo(name: &str) -> RepositoryEvidence {
+        test_fixtures::all_passing_evidence(name)
+    }
+
+    fn sample_config() -> RuntimeConfig {
+        RuntimeConfig {
+            org_name: "TestOrg".to_string(),
+            no_resume: true,
+            max_workers: 4,
+            store_dir: std::path::PathBuf::from("/tmp/test-store"),
+            force_unlock: false,
+            dashboard_config: DashboardConfig::default(),
+        }
+    }
+
+    fn test_repository(name: &str) -> Repository {
+        test_fixtures::make_repository(name, false, Visibility::Public)
+    }
+
+    fn arc_repo(name: &str) -> Arc<Repository> {
+        Arc::new(test_repository(name))
+    }
+
+    fn test_auth_metadata() -> AuthMetadata {
+        AuthMetadata {
+            token_tier: TokenTier::Full,
+            token_scopes: "repo, read:org".to_string(),
+            auth_mode: AuthMode::Pat,
+        }
+    }
+
+    fn test_capabilities() -> CapabilitySet {
+        CapabilitySet::default()
+    }
+
+    // ── FnEvaluator: test wrapper ──────────────────────────────────
+
+    /// Test-only wrapper that implements [`RepoEvaluator`] using a synchronous
+    /// closure. The closure is wrapped in `std::sync::Mutex` to allow mutation
+    /// from `&self`.
+    struct FnEvaluator<F>(std::sync::Mutex<F>)
+    where
+        F: FnMut(&Repository, &str) -> Result<RepositoryEvidence, String> + Send;
+
+    impl<F> RepoEvaluator for FnEvaluator<F>
+    where
+        F: FnMut(&Repository, &str) -> Result<RepositoryEvidence, String> + Send,
+    {
+        async fn evaluate<'a>(
+            &'a self,
+            repo: Arc<Repository>,
+            ts: &'a str,
+        ) -> Result<RepositoryEvidence, String> {
+            (self.0.lock().unwrap())(&repo, ts)
+        }
+    }
+
+    impl<F> crate::app::worker_pool::JobExecutor for FnEvaluator<F>
+    where
+        F: FnMut(&Repository, &str) -> Result<RepositoryEvidence, String> + Send + 'static,
+    {
+        type Context = JobContext;
+        type Result = RepositoryEvidence;
+
+        async fn execute<'a>(
+            &'a self,
+            _domain_key: &'a crate::app::work_queue::DomainKey,
+            context: &'a Self::Context,
+        ) -> Result<Self::Result, String> {
+            self.evaluate(Arc::clone(&context.repo), &context.run_timestamp)
+                .await
+        }
+    }
+
+    // ── build_evidence tests ───────────────────────────────────────
+
+    #[test]
+    fn build_evidence_with_repos() {
+        let repos = vec![sample_repo("repo-1"), sample_repo("repo-2")];
+        let config = sample_config();
+        let run_meta = RunMetadata::new(
+            "TestOrg".to_string(),
+            crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
+        );
+
+        let evidence = build_evidence(BuildEvidenceParams {
+            repositories: repos,
+            config: &config,
+            run: &run_meta,
+            inventory_fetched_at: None,
+            org_alert_summary: None,
+            auth_metadata: &test_auth_metadata(),
+            capabilities: &test_capabilities(),
+            rate_limit_warnings: 0,
+            archived_repos: 0,
+        });
+
+        assert_eq!(evidence.assessment_metadata.organization, "TestOrg");
+        assert_eq!(
+            evidence.assessment_metadata.schema_version,
+            config::EVIDENCE_SCHEMA_VERSION
+        );
+        assert_eq!(evidence.collection_statistics.total_repos, 2);
+        assert_eq!(evidence.collection_statistics.public_repos, 2);
+        assert_eq!(evidence.repositories.len(), 2);
+    }
+
+    #[test]
+    fn build_evidence_empty_repos() {
+        let config = sample_config();
+        let run_meta = RunMetadata::new(
+            "TestOrg".to_string(),
+            crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
+        );
+
+        let evidence = build_evidence(BuildEvidenceParams {
+            repositories: Vec::new(),
+            config: &config,
+            run: &run_meta,
+            inventory_fetched_at: None,
+            org_alert_summary: None,
+            auth_metadata: &test_auth_metadata(),
+            capabilities: &test_capabilities(),
+            rate_limit_warnings: 0,
+            archived_repos: 0,
+        });
+
+        assert_eq!(evidence.collection_statistics.total_repos, 0);
+        assert_eq!(evidence.repositories.len(), 0);
+    }
+
+    #[test]
+    fn build_evidence_metrics_computed_correctly() {
+        let repos = vec![sample_repo("repo-1")];
+        let config = sample_config();
+        let run_meta = RunMetadata::new(
+            "TestOrg".to_string(),
+            crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
+        );
+
+        let evidence = build_evidence(BuildEvidenceParams {
+            repositories: repos,
+            config: &config,
+            run: &run_meta,
+            inventory_fetched_at: None,
+            org_alert_summary: None,
+            auth_metadata: &test_auth_metadata(),
+            capabilities: &test_capabilities(),
+            rate_limit_warnings: 0,
+            archived_repos: 0,
+        });
+
+        assert_eq!(evidence.metrics.security_policy_coverage.numerator, 1);
+        assert_eq!(evidence.metrics.security_policy_coverage.denominator, 1);
+        assert_eq!(evidence.metrics.security_policy_coverage.rate, Some(100.0));
+        assert_eq!(evidence.metrics.secret_scanning_coverage.numerator, 1);
+        assert_eq!(evidence.metrics.branch_protection_coverage.numerator, 1);
+    }
+
+    #[test]
+    fn build_assessment_metadata_populates_fields() {
+        let config = sample_config();
+        let run_meta = RunMetadata::new(
+            "TestOrg".to_string(),
+            crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
+        );
+        let auth = test_auth_metadata();
+        let caps = test_capabilities();
+
+        let metadata = build_assessment_metadata(&config, &run_meta, None, &auth, &caps, 3);
+
+        assert_eq!(metadata.organization, "TestOrg");
+        assert_eq!(metadata.schema_version, config::EVIDENCE_SCHEMA_VERSION);
+        assert_eq!(metadata.run_id, run_meta.run_id);
+        assert_eq!(metadata.date.len(), 10);
+        assert_eq!(metadata.token_tier, TokenTier::Full);
+        assert_eq!(metadata.token_scopes, "repo, read:org");
+        assert_eq!(metadata.auth_mode, AuthMode::Pat);
+        assert_eq!(metadata.rate_limit_warnings, 3);
+        // CapabilitySet::default() has all capabilities as NotProbed,
+        // so all 1 optional capabilities should appear as unavailable.
+        assert_eq!(metadata.unavailable_capabilities.len(), 1);
+        assert!(
+            metadata
+                .unavailable_capabilities
+                .contains(&Capability::OrgSecretScanningAlerts)
+        );
+    }
+
+    #[test]
+    fn failure_evidence_has_unknown_status() {
+        let repo = Arc::new(test_repository("test"));
+        let ev = failure_evidence(&repo, "2026-04-09T12:00:00+00:00");
+
+        assert_eq!(
+            ev.checks.security_policy.status,
+            SecurityPolicyStatus::Unknown
+        );
+        assert_eq!(
+            ev.checks.secret_scanning.status,
+            SecretScanningStatus::Unknown
+        );
+        assert_eq!(
+            ev.checks.dependabot_security_updates.status,
+            DependabotStatus::Unknown
+        );
+        assert_eq!(
+            ev.checks.branch_protection.status,
+            BranchProtectionStatus::Unknown
+        );
+        assert_eq!(ev.checks.codeowners.status, CodeownersStatus::Unknown);
+        assert_eq!(
+            ev.checks.security_policy.evidence,
+            SecurityPolicyEvidence::CollectionError
+        );
+        assert_eq!(ev.checks.codeowners.path, None);
+    }
+
+    /// Helper: create a `RepositoryEvidence` from a domain `Repository`.
+    fn sample_repo_from_domain(repo: &Repository, timestamp: &str) -> RepositoryEvidence {
+        test_fixtures::evidence_from_repository(repo, timestamp)
+    }
+
+    // ── failure_evidence_with_reason test ───────────────────────────
+
+    #[test]
+    fn failure_evidence_with_reason_uses_custom_reason() {
+        let repo = Arc::new(test_repository("panicked"));
+        let ev = failure_evidence_with_reason(&repo, "2026-04-09T12:00:00+00:00", "task_panicked");
+
+        assert_eq!(
+            ev.checks.secret_scanning.reason.as_deref(),
+            Some("task_panicked")
+        );
+        assert_eq!(
+            ev.checks.dependabot_security_updates.reason.as_deref(),
+            Some("task_panicked")
+        );
+        assert_eq!(
+            ev.checks.branch_protection.details.reason.as_deref(),
+            Some("task_panicked")
+        );
+        // Public repo → security_policy should be Unknown
+        assert_eq!(
+            ev.checks.security_policy.status,
+            SecurityPolicyStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn failure_evidence_with_reason_non_public_repo_uses_not_applicable() {
+        let repo = Arc::new(test_fixtures::make_repository(
+            "private-repo",
+            false,
+            Visibility::Private,
+        ));
+        let ev =
+            failure_evidence_with_reason(&repo, "2026-04-09T12:00:00+00:00", "collection_error");
+
+        assert_eq!(
+            ev.checks.security_policy.status,
+            SecurityPolicyStatus::NotApplicable,
+            "non-public repo failure evidence should use NotApplicable"
+        );
+        assert_eq!(
+            ev.checks.security_policy.evidence,
+            SecurityPolicyEvidence::NotApplicable,
+        );
+        // Other checks should still be Unknown
+        assert_eq!(
+            ev.checks.secret_scanning.status,
+            SecretScanningStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn failure_evidence_with_reason_pending_non_public_uses_not_applicable() {
+        let repo = Arc::new(test_fixtures::make_repository(
+            "internal-repo",
+            false,
+            Visibility::Internal,
+        ));
+        let ev = failure_evidence_with_reason(&repo, "2026-04-09T12:00:00+00:00", "pending");
+
+        assert_eq!(
+            ev.checks.security_policy.status,
+            SecurityPolicyStatus::NotApplicable,
+            "non-public repo with pending reason should use NotApplicable"
+        );
+        assert_eq!(
+            ev.checks.security_policy.evidence,
+            SecurityPolicyEvidence::NotApplicable,
+        );
+    }
+
+    // ── JoinError recovery test ────────────────────────────────────
+
+    /// Evaluator that always panics — used to test `JoinError` recovery.
+    struct PanickingEvaluator;
+
+    impl RepoEvaluator for PanickingEvaluator {
+        async fn evaluate<'a>(
+            &'a self,
+            _repo: Arc<Repository>,
+            _ts: &'a str,
+        ) -> Result<RepositoryEvidence, String> {
+            panic!("simulated task panic for JoinError test");
+        }
+    }
+
+    impl crate::app::worker_pool::JobExecutor for PanickingEvaluator {
+        type Context = JobContext;
+        type Result = RepositoryEvidence;
+
+        async fn execute<'a>(
+            &'a self,
+            _domain_key: &'a crate::app::work_queue::DomainKey,
+            context: &'a Self::Context,
+        ) -> Result<Self::Result, String> {
+            self.evaluate(Arc::clone(&context.repo), &context.run_timestamp)
+                .await
+        }
+    }
+
+    /// Helper: create a test repository with an explicit `updated_at` value.
+    fn test_repository_with_updated_at(name: &str, updated_at: Option<&str>) -> Repository {
+        let mut repo = test_repository(name);
+        repo.updated_at = updated_at.map(String::from);
+        repo
+    }
+
+    fn arc_repo_with_updated_at(name: &str, updated_at: Option<&str>) -> Arc<Repository> {
+        Arc::new(test_repository_with_updated_at(name, updated_at))
+    }
+
+    // ── SweepSaga tests ────────────────────────────────────────────
+
+    fn test_org_summary() -> OrgAlertSummary {
+        OrgAlertSummary {
+            collection_status: crate::domain::status::CollectionStatus::Success,
+            collection_reason: None,
+            per_repo: HashMap::new(),
+            open_secret_alert_age_buckets: config::empty_age_buckets(),
+            total_open_secret_alerts: 0,
+            oldest_open_secret_alert_created_at: None,
+            newest_open_secret_alert_created_at: None,
+        }
+    }
+
+    #[test]
+    fn saga_starts_in_init_phase() {
+        let config = sample_config();
+        let run_meta = RunMetadata::new(
+            "TestOrg".to_string(),
+            crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
+        );
+
+        let saga = make_test_saga(&config, &run_meta);
+
+        assert_eq!(*saga.phase(), SweepPhase::Init);
+    }
+
+    #[tokio::test]
+    async fn saga_step_resume_transitions_to_resumed() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = RuntimeConfig {
+            store_dir: dir.path().to_path_buf(),
+            ..sample_config()
+        };
+        let run_meta = RunMetadata::new(
+            "TestOrg".to_string(),
+            crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
+        );
+
+        let state = AppState::new_with_cache_capacity(10);
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo("repo-1"), arc_repo("repo-2")],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        let mut saga = make_test_saga(&config, &run_meta);
+
+        saga.step_resume(&inventory, &config, &state).unwrap();
+        assert_eq!(*saga.phase(), SweepPhase::Resumed);
+        assert_eq!(saga.resumed_count, 0);
+    }
+
+    #[tokio::test]
+    async fn saga_step_baseline_transitions_to_baseline_reused() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = RuntimeConfig {
+            store_dir: dir.path().to_path_buf(),
+            ..sample_config()
+        };
+        let run_meta = RunMetadata::new(
+            "TestOrg".to_string(),
+            crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
+        );
+
+        let state = AppState::new_with_cache_capacity(10);
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo("repo-1")],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        let mut saga = make_test_saga_in(&config, &run_meta, SweepPhase::Resumed);
+
+        saga.step_baseline(&inventory, &config, &state);
+        assert_eq!(*saga.phase(), SweepPhase::BaselineReused);
+        // No baseline file exists, so 0 reused.
+        assert_eq!(saga.baseline_reused, 0);
+    }
+
+    #[test]
+    fn sweep_phase_failed_carries_error_message() {
+        let phase = SweepPhase::Failed {
+            error: "timeout after 7200s".into(),
+        };
+        assert_eq!(
+            phase,
+            SweepPhase::Failed {
+                error: "timeout after 7200s".into()
+            }
+        );
+    }
+
+    #[test]
+    fn sweep_phase_debug_impl() {
+        let phases = vec![
+            SweepPhase::Init,
+            SweepPhase::Resumed,
+            SweepPhase::BaselineReused,
+            SweepPhase::AwaitingBatch,
+            SweepPhase::BatchDrained,
+            SweepPhase::Completed,
+            SweepPhase::Failed {
+                error: "test".into(),
+            },
+        ];
+        for phase in &phases {
+            let debug = format!("{phase:?}");
+            assert!(!debug.is_empty());
+        }
+    }
+
+    #[test]
+    fn sweep_phase_eq() {
+        assert_eq!(SweepPhase::Init, SweepPhase::Init);
+        assert_ne!(SweepPhase::Init, SweepPhase::Resumed);
+        assert_eq!(
+            SweepPhase::Failed { error: "a".into() },
+            SweepPhase::Failed { error: "a".into() }
+        );
+        assert_ne!(
+            SweepPhase::Failed { error: "a".into() },
+            SweepPhase::Failed { error: "b".into() }
+        );
+    }
+
+    /// Helper: create a minimal `Arc<GitHubClient>` for saga tests.
+    ///
+    /// The client is never actually used in unit tests (saga steps that
+    /// need it are tested via integration-level tests). This just satisfies
+    /// the type constraint.
+    fn test_github_client() -> Arc<GitHubClient> {
+        let credential = crate::github::auth::GitHubCredential {
+            mode: AuthMode::Pat,
+            token: secrecy::SecretString::from("test-token"),
+            expires_at: None,
+        };
+        Arc::new(
+            GitHubClient::new(
+                credential,
+                config::DEFAULT_GITHUB_API_BASE_URL,
+                "test-org",
+                None,
+                Arc::new(crate::github::budget::BudgetGate::new(
+                    1000,
+                    std::time::Duration::from_mins(1),
+                )),
+                Arc::new(crate::github::rate_limit::RateLimitState::default()),
+            )
+            .expect("test client construction should not fail"),
+        )
+    }
+
+    // ── Saga test harness ──────────────────────────────────────────
+
+    /// Construct a `SweepSaga` for testing, starting in the given phase.
+    ///
+    /// Defaults to `SweepPhase::Init` when called via [`make_test_saga`].
+    fn make_test_saga_in(
+        config: &RuntimeConfig,
+        run: &RunMetadata,
+        phase: SweepPhase,
+    ) -> SweepSaga {
+        SweepSaga {
+            phase,
+            completed: HashMap::new(),
+            baseline_cache: HashMap::new(),
+            resumed_count: 0,
+            baseline_reused: 0,
+            sweep_start: std::time::Instant::now(),
+            run_timestamp: run.timestamp(),
+            snapshot_signature: "test-snapshot-sig".to_string(),
+            checkpoint_path: checkpoint::checkpoint_path(&config.store_dir, &run.date()),
+            pause_notify: Arc::new(tokio::sync::Notify::new()),
+            org_summary: Arc::new(test_org_summary()),
+            client: test_github_client(),
+        }
+    }
+
+    /// Construct a `SweepSaga` in the `Init` phase for testing.
+    fn make_test_saga(config: &RuntimeConfig, run: &RunMetadata) -> SweepSaga {
+        make_test_saga_in(config, run, SweepPhase::Init)
+    }
+
+    /// Construct a `CollectionContext` for saga tests.
+    fn make_test_collection_context() -> CollectionContext {
+        CollectionContext {
+            client: test_github_client(),
+            capabilities: test_capabilities(),
+            auth_metadata: test_auth_metadata(),
+            budget_baseline: 0,
+        }
+    }
+
+    /// Start a worker pool + delivery loop with a test executor.
+    ///
+    /// Returns `(pool_handle, delivery_handle)`. The caller must close
+    /// the work queue to shut down the pool (e.g., after saga completion).
+    fn start_test_worker_pool<E>(
+        state: &Arc<AppState>,
+        executor: Arc<E>,
+        worker_count: usize,
+    ) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>)
+    where
+        E: crate::app::worker_pool::JobExecutor<Context = JobContext, Result = RepositoryEvidence>,
+    {
+        let (outcome_tx, outcome_rx) = tokio::sync::mpsc::channel(1024);
+
+        let delivery_state = Arc::clone(state);
+        let delivery_handle = tokio::spawn(crate::app::daemon::delivery_loop(
+            outcome_rx,
+            delivery_state,
+        ));
+
+        let queue = Arc::clone(&state.work_queue);
+        let budget = Arc::clone(&state.github().budget_gate);
+        let rate_limit = Arc::clone(&state.github().rate_limit_state);
+
+        let pool_handle = tokio::spawn(async move {
+            crate::app::worker_pool::run_worker_pool(
+                queue,
+                executor,
+                budget,
+                rate_limit,
+                {
+                    let mut cfg = crate::app::worker_pool::WorkerPoolConfig::default();
+                    cfg.worker_count = worker_count;
+                    cfg
+                },
+                outcome_tx,
+            )
+            .await;
+        });
+
+        (pool_handle, delivery_handle)
+    }
+
+    /// Create a `RuntimeConfig` with `store_dir` and `no_resume` overridden.
+    fn config_with_dir(dir: &std::path::Path) -> RuntimeConfig {
+        RuntimeConfig {
+            store_dir: dir.to_path_buf(),
+            no_resume: false,
+            ..sample_config()
+        }
+    }
+
+    /// Create a standard `RunMetadata` for tests.
+    fn test_run_meta() -> RunMetadata {
+        RunMetadata::new(
+            "TestOrg".to_string(),
+            crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
+        )
+    }
+
+    /// Seed a checkpoint file containing the given evidence entries.
+    fn seed_checkpoint(
+        checkpoint_path: &std::path::Path,
+        run_timestamp: &str,
+        entries: Vec<(&str, RepositoryEvidence)>,
+    ) {
+        let results: HashMap<String, Arc<RepositoryEvidence>> = entries
+            .into_iter()
+            .map(|(key, ev)| (format!("id-{key}"), Arc::new(ev)))
+            .collect();
+        let ckpt = build_checkpoint_data(run_timestamp, "test-snapshot-sig", results);
+        checkpoint::save_checkpoint(checkpoint_path, &ckpt).unwrap();
+    }
+
+    /// Seed a baseline file containing the given evidence entries.
+    fn seed_baseline(store_dir: &std::path::Path, entries: Vec<(&str, &str, RepositoryEvidence)>) {
+        let mut bl_entries = HashMap::new();
+        for (name, updated_at, evidence) in entries {
+            bl_entries.insert(
+                format!("id-{name}"),
+                baseline::BaselineEntry {
+                    updated_at: updated_at.to_string(),
+                    evidence,
+                },
+            );
+        }
+        let bl = baseline::Baseline {
+            schema_version: config::EVIDENCE_SCHEMA_VERSION.to_string(),
+            entries: bl_entries,
+        };
+        baseline::save_baseline(store_dir, &bl).unwrap();
+    }
+
+    /// Run saga through `step_resume` and `step_baseline` (no worker pool needed).
+    fn saga_run_resume_and_baseline(
+        saga: &mut SweepSaga,
+        inventory: &InventoryLoad,
+        config: &RuntimeConfig,
+        state: &Arc<AppState>,
+    ) {
+        saga.step_resume(inventory, config, state).unwrap();
+        saga.step_baseline(inventory, config, state);
+    }
+
+    // ── Migrated saga tests — Category A (checkpoint/baseline) ─────
+
+    /// Test 4: Pre-existing checkpoint data is loaded and repos are resumed.
+    #[tokio::test]
+    async fn saga_resumes_from_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10);
+
+        let mut saga = make_test_saga(&config, &run);
+
+        // Seed checkpoint with evidence for "repo-1".
+        let evidence_1 = sample_repo("repo-1");
+        seed_checkpoint(
+            &saga.checkpoint_path,
+            &run.timestamp(),
+            vec![("repo-1", evidence_1)],
+        );
+
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo("repo-1"), arc_repo("repo-2")],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga.step_resume(&inventory, &config, &state).unwrap();
+
+        assert_eq!(*saga.phase(), SweepPhase::Resumed);
+        assert_eq!(saga.resumed_count, 1);
+        // Evidence store should contain the resumed repo.
+        assert!(state.lock_projection().get("id-repo-1").is_some());
+        assert!(state.lock_projection().get("id-repo-2").is_none());
+    }
+
+    /// Test 10: Unchanged repos reuse baseline evidence.
+    #[tokio::test]
+    async fn saga_reuses_baseline() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10);
+
+        let mut saga = make_test_saga(&config, &run);
+
+        // Seed baseline for "repo-1" with a specific updated_at.
+        let mut evidence_1 = sample_repo("repo-1");
+        Arc::make_mut(&mut evidence_1.repository).updated_at =
+            Some("2026-04-10T00:00:00Z".to_string());
+        seed_baseline(
+            dir.path(),
+            vec![("repo-1", "2026-04-10T00:00:00Z", evidence_1)],
+        );
+
+        // Inventory with matching updated_at.
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo_with_updated_at(
+                "repo-1",
+                Some("2026-04-10T00:00:00Z"),
+            )],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+
+        assert_eq!(*saga.phase(), SweepPhase::BaselineReused);
+        assert_eq!(saga.baseline_reused, 1);
+        assert!(state.lock_projection().get("id-repo-1").is_some());
+    }
+
+    /// Test 11: Changed `updated_at` forces re-evaluation (no baseline reuse).
+    #[tokio::test]
+    async fn saga_reevaluates_when_baseline_updated_at_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10);
+
+        let mut saga = make_test_saga(&config, &run);
+
+        // Seed baseline with old updated_at.
+        let mut evidence = sample_repo("repo-1");
+        Arc::make_mut(&mut evidence.repository).updated_at =
+            Some("2026-04-09T00:00:00Z".to_string());
+        seed_baseline(
+            dir.path(),
+            vec![("repo-1", "2026-04-09T00:00:00Z", evidence)],
+        );
+
+        // Inventory has a newer updated_at → mismatch.
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo_with_updated_at(
+                "repo-1",
+                Some("2026-04-10T12:00:00Z"),
+            )],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+
+        assert_eq!(
+            saga.baseline_reused, 0,
+            "changed updated_at should prevent reuse"
+        );
+        assert!(state.lock_projection().get("id-repo-1").is_none());
+    }
+
+    /// Test 12: Checkpoint + baseline work together correctly.
+    #[tokio::test]
+    async fn saga_checkpoint_and_baseline_interaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10);
+
+        let mut saga = make_test_saga(&config, &run);
+
+        // Seed checkpoint for "repo-1".
+        seed_checkpoint(
+            &saga.checkpoint_path,
+            &run.timestamp(),
+            vec![("repo-1", sample_repo("repo-1"))],
+        );
+
+        // Seed baseline for "repo-2" with matching updated_at.
+        let mut evidence_2 = sample_repo("repo-2");
+        Arc::make_mut(&mut evidence_2.repository).updated_at =
+            Some("2026-04-10T00:00:00Z".to_string());
+        seed_baseline(
+            dir.path(),
+            vec![("repo-2", "2026-04-10T00:00:00Z", evidence_2)],
+        );
+
+        let inventory = InventoryLoad {
+            active_repos: vec![
+                arc_repo("repo-1"),
+                arc_repo_with_updated_at("repo-2", Some("2026-04-10T00:00:00Z")),
+                arc_repo("repo-3"),
+            ],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+
+        assert_eq!(saga.resumed_count, 1);
+        assert_eq!(saga.baseline_reused, 1);
+        assert!(state.lock_projection().get("id-repo-1").is_some());
+        assert!(state.lock_projection().get("id-repo-2").is_some());
+        assert!(state.lock_projection().get("id-repo-3").is_none());
+    }
+
+    /// Test 13: No `updated_at` → no baseline reuse.
+    #[tokio::test]
+    async fn saga_baseline_skipped_when_repo_updated_at_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10);
+
+        let mut saga = make_test_saga(&config, &run);
+
+        // Seed baseline for "repo-1".
+        let mut evidence = sample_repo("repo-1");
+        Arc::make_mut(&mut evidence.repository).updated_at =
+            Some("2026-04-10T00:00:00Z".to_string());
+        seed_baseline(
+            dir.path(),
+            vec![("repo-1", "2026-04-10T00:00:00Z", evidence)],
+        );
+
+        // Inventory with updated_at=None → should not reuse.
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo("repo-1")], // updated_at=None by default
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+
+        assert_eq!(saga.baseline_reused, 0);
+        assert!(state.lock_projection().get("id-repo-1").is_none());
+    }
+
+    /// Test 14: All repos from baseline → no checkpoint file written.
+    #[tokio::test]
+    async fn saga_baseline_only_produces_no_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10);
+
+        let mut saga = make_test_saga(&config, &run);
+        let ctx = make_test_collection_context();
+
+        // Seed baseline covering all repos.
+        let mut evidence = sample_repo("repo-1");
+        Arc::make_mut(&mut evidence.repository).updated_at =
+            Some("2026-04-10T00:00:00Z".to_string());
+        seed_baseline(
+            dir.path(),
+            vec![("repo-1", "2026-04-10T00:00:00Z", evidence)],
+        );
+
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo_with_updated_at(
+                "repo-1",
+                Some("2026-04-10T00:00:00Z"),
+            )],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+
+        // All repos from baseline → pending is empty.
+        assert_eq!(saga.baseline_reused, 1);
+
+        // step_enqueue_and_await with no pending repos → BatchDrained immediately.
+        saga.step_enqueue_and_await(
+            &config,
+            &run,
+            &run.correlation_context(),
+            &ctx,
+            &inventory,
+            &state,
+        )
+        .await
+        .unwrap();
+        assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
+
+        // Checkpoint should not exist (only freshly evaluated repos go to checkpoint,
+        // and all repos came from baseline).
+        assert!(!saga.checkpoint_path.exists());
+    }
+
+    /// Test 16: All resumed/baseline → no fresh evaluation needed.
+    #[tokio::test]
+    async fn saga_resumed_plus_baseline_with_zero_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10);
+
+        let mut saga = make_test_saga(&config, &run);
+        let ctx = make_test_collection_context();
+
+        // Seed checkpoint for "repo-1".
+        seed_checkpoint(
+            &saga.checkpoint_path,
+            &run.timestamp(),
+            vec![("repo-1", sample_repo("repo-1"))],
+        );
+
+        // Seed baseline for "repo-2" with matching updated_at.
+        let mut evidence_2 = sample_repo("repo-2");
+        Arc::make_mut(&mut evidence_2.repository).updated_at =
+            Some("2026-04-10T00:00:00Z".to_string());
+        seed_baseline(
+            dir.path(),
+            vec![("repo-2", "2026-04-10T00:00:00Z", evidence_2)],
+        );
+
+        let inventory = InventoryLoad {
+            active_repos: vec![
+                arc_repo("repo-1"),
+                arc_repo_with_updated_at("repo-2", Some("2026-04-10T00:00:00Z")),
+            ],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        assert_eq!(saga.resumed_count, 1);
+        assert_eq!(saga.baseline_reused, 1);
+
+        // No pending repos → step_enqueue_and_await goes directly to BatchDrained.
+        saga.step_enqueue_and_await(
+            &config,
+            &run,
+            &run.correlation_context(),
+            &ctx,
+            &inventory,
+            &state,
+        )
+        .await
+        .unwrap();
+        assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
+        // Both repos present in evidence store.
+        assert_eq!(state.lock_projection().len(), 2);
+    }
+
+    // ── Migrated saga tests — Category B (worker pool) ─────────────
+
+    /// Test 1: All repos in input appear in output evidence store.
+    #[tokio::test]
+    async fn saga_evaluates_all_repos() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10);
+        let ctx = make_test_collection_context();
+
+        let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
+            |repo: &Repository, ts: &str| Ok(sample_repo_from_domain(repo, ts)),
+        )));
+
+        let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 2);
+
+        let mut saga = make_test_saga(&config, &run);
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo("repo-1"), arc_repo("repo-2"), arc_repo("repo-3")],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga.step_enqueue_and_await(
+            &config,
+            &run,
+            &run.correlation_context(),
+            &ctx,
+            &inventory,
+            &state,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
+        assert_eq!(state.lock_projection().len(), 3);
+        assert!(state.lock_projection().get("id-repo-1").is_some());
+        assert!(state.lock_projection().get("id-repo-2").is_some());
+        assert!(state.lock_projection().get("id-repo-3").is_some());
+
+        // Shut down worker pool.
+        state.work_queue.close();
+    }
+
+    /// Test 2: Failing repo is isolated — passing repos still get results.
+    #[tokio::test]
+    async fn saga_isolates_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10);
+        let ctx = make_test_collection_context();
+
+        let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
+            |repo: &Repository, ts: &str| {
+                if repo.name == "fail-repo" {
+                    Err("simulated failure".to_string())
+                } else {
+                    Ok(sample_repo_from_domain(repo, ts))
+                }
+            },
+        )));
+
+        let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 2);
+
+        let mut saga = make_test_saga(&config, &run);
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo("pass-repo"), arc_repo("fail-repo")],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga.step_enqueue_and_await(
+            &config,
+            &run,
+            &run.correlation_context(),
+            &ctx,
+            &inventory,
+            &state,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
+        // Passing repo is in the evidence store.
+        assert!(state.lock_projection().get("id-pass-repo").is_some());
+        // Failing repo: delivery_loop does not insert failure evidence for
+        // fresh repos (no pre-existing entry to overwrite). The repo is
+        // simply absent — the saga still completes (failure isolation).
+        assert!(
+            state.lock_projection().get("id-fail-repo").is_none(),
+            "fresh repo failure produces no evidence entry in saga path"
+        );
+
+        state.work_queue.close();
+    }
+
+    /// Test 3: Checkpoint file exists after evaluation completes.
+    #[tokio::test]
+    async fn saga_creates_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let mut run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10);
+        let ctx = make_test_collection_context();
+
+        let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
+            |repo: &Repository, ts: &str| Ok(sample_repo_from_domain(repo, ts)),
+        )));
+
+        let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 2);
+
+        let mut saga = make_test_saga(&config, &run);
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo("repo-1")],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga.step_enqueue_and_await(
+            &config,
+            &run,
+            &run.correlation_context(),
+            &ctx,
+            &inventory,
+            &state,
+        )
+        .await
+        .unwrap();
+
+        // Finalize writes the checkpoint.
+        let corr_ctx = run.correlation_context();
+        saga.step_finalize(&config, &mut run, &corr_ctx, &ctx, &inventory, &state)
+            .await
+            .unwrap();
+
+        assert_eq!(*saga.phase(), SweepPhase::Completed);
+        // Baseline is saved and checkpoint removed on success.
+        // The baseline file should exist.
+        assert!(baseline::baseline_path(dir.path()).exists());
+
+        state.work_queue.close();
+    }
+
+    /// Test 5: Evidence store contains all expected repos (saga path
+    /// does not guarantee sorted order — reframed from legacy test).
+    #[tokio::test]
+    async fn saga_output_contains_all_repos() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10);
+        let ctx = make_test_collection_context();
+
+        let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
+            |repo: &Repository, ts: &str| Ok(sample_repo_from_domain(repo, ts)),
+        )));
+
+        let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 2);
+
+        let mut saga = make_test_saga(&config, &run);
+        let names = ["zebra", "alpha", "middle"];
+        let inventory = InventoryLoad {
+            active_repos: names.iter().map(|n| arc_repo(n)).collect(),
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga.step_enqueue_and_await(
+            &config,
+            &run,
+            &run.correlation_context(),
+            &ctx,
+            &inventory,
+            &state,
+        )
+        .await
+        .unwrap();
+
+        let snapshot = state.lock_projection().sorted_snapshot();
+        let mut found_names: Vec<String> =
+            snapshot.iter().map(|e| e.repository.name.clone()).collect();
+        found_names.sort();
+        assert_eq!(found_names, vec!["alpha", "middle", "zebra"]);
+
+        state.work_queue.close();
+    }
+
+    /// Test 6: Panicked worker → saga times out → `Failed` phase.
+    ///
+    /// Uses `start_paused = true` to fast-forward the saga-level timeout
+    /// without actually waiting 2 hours.
+    #[tokio::test(start_paused = true)]
+    async fn saga_recovers_from_task_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10);
+        let ctx = make_test_collection_context();
+
+        let evaluator: Arc<PanickingEvaluator> = Arc::new(PanickingEvaluator);
+
+        let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 1);
+
+        let mut saga = make_test_saga(&config, &run);
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo("panic-repo")],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga.step_enqueue_and_await(
+            &config,
+            &run,
+            &run.correlation_context(),
+            &ctx,
+            &inventory,
+            &state,
+        )
+        .await
+        .unwrap();
+
+        // Panicked worker → outcome never sent → batch tracker never
+        // reaches zero → saga-level timeout fires → Failed phase.
+        assert!(
+            matches!(saga.phase(), SweepPhase::Failed { .. }),
+            "expected Failed phase after worker panic, got {:?}",
+            saga.phase()
+        );
+
+        state.work_queue.close();
+    }
+
+    /// Test 7: `max_workers=0` is clamped to `MIN_WORKERS` by `RuntimeConfig`.
+    /// Saga completes with the clamped worker count.
+    #[tokio::test]
+    async fn saga_clamps_max_workers_zero_to_min() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = RuntimeConfig::new("TestOrg", false, 0, dir.path().to_path_buf()).unwrap();
+        assert_eq!(config.max_workers, config::MIN_WORKERS);
+
+        let run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10);
+        let ctx = make_test_collection_context();
+
+        let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
+            |repo: &Repository, ts: &str| Ok(sample_repo_from_domain(repo, ts)),
+        )));
+
+        let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, config.max_workers);
+
+        let mut saga = make_test_saga(&config, &run);
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo("repo-1")],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga.step_enqueue_and_await(
+            &config,
+            &run,
+            &run.correlation_context(),
+            &ctx,
+            &inventory,
+            &state,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
+        assert_eq!(state.lock_projection().len(), 1);
+
+        state.work_queue.close();
+    }
+
+    /// Test 8: `max_workers=9999` is clamped to `MAX_WORKERS`.
+    #[tokio::test]
+    async fn saga_clamps_max_workers_oversized_to_max() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = RuntimeConfig::new("TestOrg", false, 9999, dir.path().to_path_buf()).unwrap();
+        assert_eq!(config.max_workers, config::MAX_WORKERS);
+
+        let run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10);
+        let ctx = make_test_collection_context();
+
+        let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
+            |repo: &Repository, ts: &str| Ok(sample_repo_from_domain(repo, ts)),
+        )));
+
+        // Use a reasonable worker count for the test (not 128).
+        let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 2);
+
+        let mut saga = make_test_saga(&config, &run);
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo("repo-1")],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga.step_enqueue_and_await(
+            &config,
+            &run,
+            &run.correlation_context(),
+            &ctx,
+            &inventory,
+            &state,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
+        assert_eq!(state.lock_projection().len(), 1);
+
+        state.work_queue.close();
+    }
+
+    /// Test 9: Partial publisher task shuts down cleanly after saga completion.
+    #[tokio::test]
+    async fn saga_partial_publisher_shuts_down_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10);
+        let ctx = make_test_collection_context();
+
+        let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
+            |repo: &Repository, ts: &str| Ok(sample_repo_from_domain(repo, ts)),
+        )));
+
+        let (pool, delivery) = start_test_worker_pool(&state, evaluator, 2);
+
+        let mut saga = make_test_saga(&config, &run);
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo("repo-1"), arc_repo("repo-2")],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga.step_enqueue_and_await(
+            &config,
+            &run,
+            &run.correlation_context(),
+            &ctx,
+            &inventory,
+            &state,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
+        assert_eq!(state.lock_projection().len(), 2);
+
+        // Close the queue and verify worker pool + delivery shut down cleanly.
+        state.work_queue.close();
+        let pool_result = pool.await;
+        let delivery_result = delivery.await;
+        assert!(pool_result.is_ok(), "worker pool should exit cleanly");
+        assert!(delivery_result.is_ok(), "delivery loop should exit cleanly");
+    }
+
+    /// Test 15: Checkpoint survives baseline save failure.
+    ///
+    /// Simulates baseline save failure by creating a directory at the
+    /// baseline path (`atomic_write_bytes` fails on a directory target).
+    #[tokio::test]
+    async fn saga_checkpoint_survives_baseline_save_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let mut run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10);
+        let ctx = make_test_collection_context();
+
+        let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
+            |repo: &Repository, ts: &str| Ok(sample_repo_from_domain(repo, ts)),
+        )));
+
+        let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 2);
+
+        let mut saga = make_test_saga(&config, &run);
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo("repo-1")],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga.step_enqueue_and_await(
+            &config,
+            &run,
+            &run.correlation_context(),
+            &ctx,
+            &inventory,
+            &state,
+        )
+        .await
+        .unwrap();
+
+        // Create a directory at the baseline path to force save failure.
+        let baseline_path = baseline::baseline_path(dir.path());
+        std::fs::create_dir_all(&baseline_path).unwrap();
+
+        // Finalize writes checkpoint first, then attempts baseline save (fails).
+        let corr_ctx = run.correlation_context();
+        saga.step_finalize(&config, &mut run, &corr_ctx, &ctx, &inventory, &state)
+            .await
+            .unwrap();
+
+        assert_eq!(*saga.phase(), SweepPhase::Completed);
+        // Checkpoint should still exist because baseline save failed.
+        assert!(
+            saga.checkpoint_path.exists(),
+            "checkpoint should survive baseline save failure"
+        );
+
+        state.work_queue.close();
+    }
+}

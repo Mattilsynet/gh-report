@@ -1,0 +1,34 @@
+[package]
+name = "cherry-pit-agent"
+version = "0.1.0"
+description = "Root composition crate wiring Aggregate/Policy/Projection against EventStore/EventBus/CommandGateway (per CHE-0051)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage = "https://github.com/acje/solon/tree/main/crates/cherry-pit-agent"
+documentation = "https://docs.rs/cherry-pit-agent"
+keywords = ["composition", "cqrs", "event-sourcing"]
+categories = ["asynchronous"]
+
+[lints]
+workspace = true
+
+[dependencies]
+cherry-pit-core = { workspace = true }
+cherry-pit-gateway = { workspace = true }
+cherry-pit-projection = { workspace = true }
+cherry-pit-web = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true }
+tokio = { workspace = true }
+jiff = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+proptest = { workspace = true }
+trybuild = { workspace = true }
+tempfile = { workspace = true }

@@ -1,0 +1,18 @@
+error: EVT-007: GenomeSafe: #[serde(untagged)] is not supported on type. Untagged enums bypass variant serialization, causing silent data corruption in fixed-layout formats.
+ --> tests/compile_fail/serde_untagged.rs:4:9
+  |
+4 | #[serde(untagged)]
+  |         ^^^^^^^^
+
+error: cannot find attribute `serde` in this scope
+ --> tests/compile_fail/serde_untagged.rs:4:3
+  |
+4 | #[serde(untagged)]
+  |   ^^^^^
+  |
+  = note: `serde` is in scope, but it is a crate, not an attribute
+help: `serde` is an attribute that can be used by the derive macros `Deserialize` and `Serialize`, you might be missing a `derive` attribute
+  |
+5 + #[derive(Deserialize, Serialize)]
+6 | enum Bad {
+  |

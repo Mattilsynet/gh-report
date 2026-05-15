@@ -1,0 +1,14 @@
+error: EVT-006: GenomeSafe: #[serde(flatten)] is not supported on field. Flattening causes serde to emit serialize_map instead of serialize_struct, breaking fixed-layout serialization.
+  --> tests/compile_fail/serde_flatten.rs:11:13
+   |
+11 |     #[serde(flatten)]
+   |             ^^^^^^^
+
+error: cannot find attribute `serde` in this scope
+  --> tests/compile_fail/serde_flatten.rs:11:7
+   |
+11 |     #[serde(flatten)]
+   |       ^^^^^
+   |
+   = note: `serde` is an attribute that can be used by the derive macros `Deserialize` and `Serialize`, you might be missing a `derive` attribute
+   = note: `serde` is in scope, but it is a crate, not an attribute

@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ vm.organization }} Security Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="ws.js" defer></script>
+    {% if vm.warm_start %}<meta http-equiv="refresh" content="5">{% endif %}
+</head>
+
+<body>
+
+    <nav class="top-nav">
+        <a href="index.html">Dashboard</a>
+        <a href="report.html">Report</a>
+        {% if vm.owners.is_some() %}<a href="owners.html">Owners</a>{% endif %}
+        <a href="orphans.html">Orphans ({{ vm.orphaned_count }})</a>
+    </nav>
+
+    <div class="page-header">
+        <p class="meta"><strong>Date:</strong> {{ vm.date_time }} · <strong>Scope:</strong> {{ vm.total_repos }} non-archived · {{ vm.archived_repos }} archived repositories in <code>{{ vm.organization }}</code>{% if vm.warm_start %} <span class="warm-start-badge">Cached · next update in progress</span>{% endif %}</p>
+    </div>
+
+    <div class="scorecard">
+        <div class="card health-score-card {{ vm.health_tier.css_class() }}" title="Geometric mean of all coverage rates. Rewards balanced improvement across all controls.">
+            <p class="card-label">Organisation Governance Score</p>
+            <p class="card-value">{{ vm.health_score_formatted }}</p>
+            <div class="progress-bar">
+                <div class="progress-fill {{ vm.health_tier.css_class() }} {{ vm.health_width_class }}"></div>
+            </div>
+        </div>
+        <div class="card {{ vm.policy_tier.css_class() }}" title="Percentage of public repos with a SECURITY.md or GitHub security-policy setting enabled.">
+            <p class="card-label">Security Policy</p>
+            <p class="card-value">{{ vm.policy_coverage_formatted }}</p>
+            <div class="progress-bar">
+                <div class="progress-fill {{ vm.policy_tier.css_class() }} {{ vm.policy_width_class }}"></div>
+            </div>
+        </div>
+        <div class="card {{ vm.dependabot_tier.css_class() }}" title="Percentage of repos with Dependabot security updates enabled (auto-PRs for vulnerable dependencies).">
+            <p class="card-label">Dependabot Status</p>
+            <p class="card-value">{{ vm.dependabot_coverage_formatted }}</p>
+            <div class="progress-bar">
+                <div class="progress-fill {{ vm.dependabot_tier.css_class() }} {{ vm.dependabot_width_class }}"></div>
+            </div>
+        </div>
+        <div class="card {{ vm.secret_scanning_tier.css_class() }}" title="Percentage of repos with GitHub secret scanning enabled to detect leaked credentials.">
+            <p class="card-label">Secret Scanning</p>
+            <p class="card-value">{{ vm.secret_scanning_coverage_formatted }}</p>
+            <div class="progress-bar">
+                <div
+                    class="progress-fill {{ vm.secret_scanning_tier.css_class() }} {{ vm.secret_scanning_width_class }}">
+                </div>
+            </div>
+        </div>
+        <div class="card {{ vm.branch_protection_tier.css_class() }}" title="Percentage of repos with branch protection rules on the default branch (PR reviews, status checks).">
+            <p class="card-label">Branch Protection</p>
+            <p class="card-value">{{ vm.branch_protection_coverage_formatted }}</p>
+            <div class="progress-bar">
+                <div
+                    class="progress-fill {{ vm.branch_protection_tier.css_class() }} {{ vm.branch_protection_width_class }}">
+                </div>
+            </div>
+        </div>
+        <div class="card {{ vm.codeowners_tier.css_class() }}" title="Percentage of repos with a CODEOWNERS file identifying responsible teams or individuals.">
+            <p class="card-label">CODEOWNERS</p>
+            <p class="card-value">{{ vm.codeowners_coverage_formatted }}</p>
+            <div class="progress-bar">
+                <div class="progress-fill {{ vm.codeowners_tier.css_class() }} {{ vm.codeowners_width_class }}"></div>
+            </div>
+        </div>
+        <div class="card {{ vm.stale_tier.css_class() }}" title="Proportion of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better.">
+            <p class="card-label">Archival Coverage</p>
+            <p class="card-value">{{ vm.stale_rate_formatted }}</p>
+            <p class="card-detail">{{ vm.archived_repos }} archived · {{ vm.stale_active_repos }} stale</p>
+            <div class="progress-bar">
+                <div class="progress-fill {{ vm.stale_tier.css_class() }} {{ vm.stale_width_class }}"></div>
+            </div>
+        </div>
+    </div>
+
+    {% if let Some(owners_vm) = vm.owners %}
+    <div class="owner-summary">
+        <div class="owner-summary-header">
+            <h3>CODEOWNERS Summary</h3>
+            <p><strong>{{ owners_vm.rows.len() }}</strong> owners identified across {{ vm.total_repos }} repositories.</p>
+        </div>
+        {% if !vm.top_security_teams.is_empty() %}
+        <div class="scorecard">
+            {% for team in vm.top_security_teams %}
+            <a href="owners/{{ team.slug }}.html" class="card {{ team.rank_class }}" title="{{ team.owner }}">
+                <p class="card-label"><span class="rank-emoji">{{ team.rank_emoji }}</span> {{ team.owner_short }}</p>
+                <p class="card-value">{{ team.sec_score_formatted }}</p>
+                <div class="progress-bar">
+                    <div class="progress-fill {{ team.sec_score_tier.css_class() }} {{ team.sec_score_width_class }}"></div>
+                </div>
+            </a>
+            {% endfor %}
+        </div>
+        {% endif %}
+        <p><a href="owners.html">View owner breakdown &rarr;</a></p>
+    </div>
+    {% endif %}
+
+</body>
+
+</html>

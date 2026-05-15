@@ -1,0 +1,5 @@
+error: EVT-003: GenomeSafe: HashSet has non-deterministic iteration order. Use BTreeSet for deterministic serialization.
+ --> tests/compile_fail/ref_hashset.rs:6:20
+  |
+6 |     data: &'static HashSet<String>,
+  |                    ^^^^^^^^^^^^^^^

@@ -1,0 +1,49 @@
+warning: unused imports: `BusError` and `EventBus`
+  --> tests/compile_fail/mismatched_event_types.rs:11:29
+   |
+11 |     Aggregate, AggregateId, BusError, Command, CommandGateway, CorrelationContext, CreateResult,
+   |                             ^^^^^^^^
+12 |     DispatchResult, DomainEvent, EventBus, EventEnvelope, EventStore, HandleCommand,
+   |                                  ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0271]: type mismatch resolving `<InProcessEventBus<EvB> as EventBus>::Event == EvA`
+  --> tests/compile_fail/mismatched_event_types.rs:99:9
+   |
+96 |     let _app = App::new(
+   |                -------- required by a bound introduced by this call
+...
+99 |         InProcessEventBus::<EvB>::new(),
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `EvA`, found `EvB`
+   |
+note: required by a bound in `App::<G, S, B, P, D>::new`
+  --> src/app.rs
+   |
+   |     B: EventBus<Event = EventOf<G>>,
+   |                 ^^^^^^^^^^^^^^^^^^ required by this bound in `App::<G, S, B, P, D>::new`
+...
+   |     pub fn new(gateway: G, store: S, bus: B, projections: P, dead_letter: D) -> Self {
+   |            --- required by a bound in this associated function
+
+error[E0271]: type mismatch resolving `<InProcessEventBus<EvB> as EventBus>::Event == EvA`
+   --> tests/compile_fail/mismatched_event_types.rs:96:16
+    |
+ 96 |       let _app = App::new(
+    |  ________________^
+ 97 | |         GwA,
+ 98 | |         StoreA,
+ 99 | |         InProcessEventBus::<EvB>::new(),
+100 | |         (),
+101 | |         TracingDeadLetterSink::new(),
+102 | |     );
+    | |_____^ expected `EvA`, found `EvB`
+    |
+note: required by a bound in `App`
+   --> src/app.rs
+    |
+    | pub struct App<G, S, B, P, D>
+    |            --- required by a bound in this struct
+...
+    |     B: EventBus<Event = EventOf<G>>,
+    |                 ^^^^^^^^^^^^^^^^^^ required by this bound in `App`

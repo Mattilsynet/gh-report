@@ -1,0 +1,14 @@
+[package]
+name = "pardosa-traits"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Sealed trait substrate for pardosa events: EventSafe + sealed::Sealed (GEN-0036)"
+license.workspace = true
+
+[lib]
+name = "pardosa_traits"
+path = "src/lib.rs"
+
+[dependencies]

@@ -1,0 +1,18 @@
+error: EVT-009: GenomeSafe: #[serde(tag = "...")] is not supported on type. Only externally tagged enums (serde default) are compatible with fixed discriminant-based layout.
+ --> tests/compile_fail/serde_adjacent_tagged.rs:4:9
+  |
+4 | #[serde(tag = "type", content = "data")]
+  |         ^^^
+
+error: cannot find attribute `serde` in this scope
+ --> tests/compile_fail/serde_adjacent_tagged.rs:4:3
+  |
+4 | #[serde(tag = "type", content = "data")]
+  |   ^^^^^
+  |
+  = note: `serde` is in scope, but it is a crate, not an attribute
+help: `serde` is an attribute that can be used by the derive macros `Deserialize` and `Serialize`, you might be missing a `derive` attribute
+  |
+5 + #[derive(Deserialize, Serialize)]
+6 | enum Bad {
+  |

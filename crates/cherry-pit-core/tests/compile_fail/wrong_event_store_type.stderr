@@ -1,0 +1,9 @@
+error[E0271]: expected `impl Future<Output = Result<Vec<EventEnvelope<<OrderStore as EventStore>::Event>>, StoreError>> + Send` to be a future that resolves to `Result<Vec<EventEnvelope<UserEvent>>, StoreError>`, but it resolves to `Result<Vec<EventEnvelope<OrderEvent>>, StoreError>`
+  --> tests/compile_fail/wrong_event_store_type.rs:69:9
+   |
+69 |     > = Box::pin(future);
+   |         ^^^^^^^^^^^^^^^^ expected `UserEvent`, found `OrderEvent`
+   |
+   = note: expected enum `Result<Vec<EventEnvelope<UserEvent>>, StoreError>`
+              found enum `Result<Vec<EventEnvelope<OrderEvent>>, StoreError>`
+   = note: required for the cast from `Pin<Box<impl Future<Output = Result<Vec<EventEnvelope<<OrderStore as EventStore>::Event>>, StoreError>> + Send>>` to `Pin<Box<dyn Future<Output = Result<Vec<EventEnvelope<UserEvent>>, StoreError>>>>`

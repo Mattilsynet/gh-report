@@ -1,0 +1,159 @@
+---
+source: crates/gh-report/src/domain/evidence.rs
+expression: evidence
+---
+{
+  "assessment_metadata": {
+    "date": "2026-04-09",
+    "organization": "TestOrg",
+    "schema_version": "15.0",
+    "run_timestamp": "2026-04-09T12:00:00+00:00",
+    "run_id": "test-run-id",
+    "token_tier": "full",
+    "token_scopes": "repo, read:org, security_events",
+    "auth_mode": "pat",
+    "rate_limit_warnings": 0,
+    "unavailable_capabilities": [],
+    "warm_start": false
+  },
+  "collection_statistics": {
+    "total_repos": 1,
+    "public_repos": 1,
+    "internal_repos": 0,
+    "private_repos": 0,
+    "archived_repos": 0
+  },
+  "metrics": {
+    "security_policy_coverage": {
+      "numerator": 1,
+      "denominator": 1,
+      "rate": 100.0
+    },
+    "policy_counts": {
+      "via_setting": 1,
+      "via_file": 0,
+      "unknown": 0,
+      "missing": 0
+    },
+    "secret_scanning_coverage": {
+      "numerator": 1,
+      "denominator": 1,
+      "rate": 100.0
+    },
+    "secret_scanning_counts": {
+      "enabled": 1,
+      "disabled": 0,
+      "permission_denied": 0,
+      "unknown": 0
+    },
+    "dependabot_security_updates_coverage": {
+      "numerator": 1,
+      "denominator": 1,
+      "rate": 100.0
+    },
+    "dependabot_security_updates_counts": {
+      "enabled": 1,
+      "paused": 0,
+      "disabled": 0,
+      "unknown": 0
+    },
+    "open_secret_alert_prevalence": {
+      "numerator": 0,
+      "denominator": 1,
+      "rate": 0.0
+    },
+    "secret_alert_counts": {
+      "repos_with_open_alerts": 0,
+      "repos_without_open_alerts": 1,
+      "unobservable": 0
+    },
+    "branch_protection_coverage": {
+      "numerator": 1,
+      "denominator": 1,
+      "rate": 100.0
+    },
+    "branch_protection_counts": {
+      "pass": 1,
+      "partial": 0,
+      "fail": 0,
+      "unknown": 0
+    },
+    "codeowners_coverage": {
+      "numerator": 1,
+      "denominator": 1,
+      "rate": 100.0
+    },
+    "codeowners_counts": {
+      "conforming": 1,
+      "non_conforming": 0,
+      "absent": 0,
+      "unknown": 0,
+      "truncated": 0
+    }
+  },
+  "secret_scanning_observability": {
+    "collection_status": "success",
+    "collection_reason": null,
+    "total_open_secret_alerts": 0,
+    "open_secret_alert_age_buckets": {},
+    "oldest_open_secret_alert_created_at": null,
+    "newest_open_secret_alert_created_at": null,
+    "status_mismatch_count": 0,
+    "observable_enabled_repositories": 1,
+    "unobservable_repositories": 0
+  },
+  "repositories": [
+    {
+      "repository": {
+        "id": "id-snap-repo",
+        "node_id": null,
+        "name": "snap-repo",
+        "visibility": "public",
+        "language": null,
+        "default_branch": "main",
+        "archived": false,
+        "inventory_key": "id-snap-repo",
+        "has_issues": true,
+        "fork": false,
+        "topics": []
+      },
+      "checks": {
+        "security_policy": {
+          "status": "pass",
+          "evidence": "setting",
+          "path": null,
+          "timestamp": "2026-04-09T12:00:00+00:00"
+        },
+        "secret_scanning": {
+          "status": "enabled",
+          "has_open_alerts": false,
+          "alerts_observable": true,
+          "reason": null,
+          "timestamp": "2026-04-09T12:00:00+00:00"
+        },
+        "dependabot_security_updates": {
+          "status": "enabled",
+          "reason": null,
+          "timestamp": "2026-04-09T12:00:00+00:00"
+        },
+        "branch_protection": {
+          "status": "pass",
+          "details": {
+            "default_branch": "main",
+            "has_pr": true,
+            "required_reviewers": 1,
+            "has_status_checks": true,
+            "admin_equivalent": true,
+            "has_broad_bypass": false
+          },
+          "timestamp": "2026-04-09T12:00:00+00:00"
+        },
+        "codeowners": {
+          "status": "conforming",
+          "path": ".github/CODEOWNERS",
+          "timestamp": "2026-04-09T12:00:00+00:00"
+        }
+      }
+    }
+  ]
+}

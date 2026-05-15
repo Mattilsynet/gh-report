@@ -1,0 +1,12 @@
+error[E0038]: the trait `ProjectionSource` is not dyn compatible
+  --> tests/compile_fail/projection_source_not_object_safe.rs:19:19
+   |
+19 | fn _erase(_p: Box<dyn ProjectionSource>) {}
+   |                   ^^^^^^^^^^^^^^^^^^^^ `ProjectionSource` is not dyn compatible
+   |
+note: for a trait to be dyn compatible it needs to allow building a vtable
+      for more information, visit <https://doc.rust-lang.org/reference/items/traits.html#dyn-compatibility>
+  --> src/projection/port.rs
+   |
+   |     fn __seal_no_dyn<__Seal>(&self, _seal: __Seal) {}
+   |        ^^^^^^^^^^^^^ the trait is not dyn compatible because method `__seal_no_dyn` has generic type parameters

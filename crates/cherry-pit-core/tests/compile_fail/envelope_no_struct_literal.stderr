@@ -1,0 +1,19 @@
+error[E0451]: fields `event_id`, `aggregate_id`, `sequence`, `timestamp`, `correlation_id`, `causation_id` and `payload` of struct `EventEnvelope` are private
+  --> tests/compile_fail/envelope_no_struct_literal.rs:21:9
+   |
+20 |     let _envelope = EventEnvelope::<TestEvent> {
+   |                     -------------------------- in this type
+21 |         event_id: uuid::Uuid::now_v7(),
+   |         ^^^^^^^^ private field
+22 |         aggregate_id: AggregateId::new(NonZeroU64::new(1).unwrap()),
+   |         ^^^^^^^^^^^^ private field
+23 |         sequence: NonZeroU64::new(1).unwrap(),
+   |         ^^^^^^^^ private field
+24 |         timestamp: jiff::Timestamp::now(),
+   |         ^^^^^^^^^ private field
+25 |         correlation_id: None,
+   |         ^^^^^^^^^^^^^^ private field
+26 |         causation_id: None,
+   |         ^^^^^^^^^^^^ private field
+27 |         payload: TestEvent::Created,
+   |         ^^^^^^^ private field

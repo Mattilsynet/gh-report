@@ -1,0 +1,25 @@
+# Build artifacts
+target/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+*.swp
+*.swo
+
+# OODA scratch artefacts (keep dir, ignore contents)
+.ooda/*
+!.ooda/.gitkeep
+
+# LLM scratch notes (pre-research drafts, not intentional docs)
+docs/notes/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+
+# opencode plugin deps
+.opencode/node_modules/
+*.db
+.beads-credential-key

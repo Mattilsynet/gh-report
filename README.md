@@ -1,0 +1,74 @@
+# Solon
+
+Enabling constraints for agent-first development
+
+A Rust workspace shipping binaries (`adr-fmt`, `adr-srv`, `gh-report`)
+plus their supporting library crates and a governed ADR corpus.
+
+## What's here
+
+- **`adr-fmt`** — read-only ADR template and link-integrity validator.
+  See [`crates/adr-fmt/`](crates/adr-fmt/).
+- **`gh-report`** — GitHub organisation evidence collector and HTML
+  reporter. Built on a family of internal `cherry-pit-*` crates
+  providing an event-sourcing substrate (core, gateway, projection,
+  agent, web, work-queue, storage primitives). See
+  [`crates/gh-report/`](crates/gh-report/).
+- **ADR corpus** at [`docs/adr/`](docs/adr/). Two domains are actively
+  edited: `adr-fmt/` (prefix `AFM`) governs the validator; `cherry/`
+  (prefix `CHE`) governs cherry-pit and gh-report. The `pardosa/` and
+  `genome/` domains are under construction — their crate directories
+  exist under `crates/` but are not yet Cargo workspace members.
+  Foundation domains (`ground`, `common`, `rust`, `security`, `flow`)
+  supply cross-cutting principles applied to all crates.
+
+## Quickstart — adr-fmt
+
+`adr-fmt` discovers its corpus via `adr-fmt.toml` at the workspace root.
+
+```console
+cargo build -p adr-fmt
+cargo test  -p adr-fmt
+cargo run   -p adr-fmt -- --lint
+cargo run   -p adr-fmt -- --tree CHE
+cargo run   -p adr-fmt -- --refs CHE-0054
+cargo run   -p adr-fmt -- --context cherry-pit-core
+```
+
+Full rule taxonomy (T0xx template, L0xx links, S0xx lifecycle, P0xx
+parser) is in [`crates/adr-fmt/README.md`](crates/adr-fmt/README.md).
+
+## Quickstart — gh-report
+
+`gh-report` runs as a daemon (or one-shot, for baseline inspection).
+It polls a GitHub organisation, persists evidence as cherry-pit events
+to a local MessagePack store, and serves an HTML report. There is **no
+offline / fixture mode** at v0.1 — the binary always reaches the GitHub
+API. Credentials resolve in this order: GitHub App, `GITHUB_TOKEN` env,
+then `gh auth token` as a local-developer fallback (so a logged-in
+[`gh` CLI](https://cli.github.com/) is sufficient for local runs). See
+[`crates/gh-report/OPERATIONS.md`](crates/gh-report/OPERATIONS.md) for
+production auth setup.
+
+```console
+cargo build -p gh-report --release
+
+# Daemon mode (collects from GitHub; persists to ./store/; serves HTML)
+cargo run -p gh-report -- --org <your-org> --store-dir ./store
+
+# Inspect the persisted baseline (reads ./store/; writes JSON to stdout)
+cargo run -p gh-report -- --dump-baseline --store-dir ./store
+```
+
+Operational recovery procedures live at
+[`crates/cherry-pit-gateway/RUNBOOKS.md`](crates/cherry-pit-gateway/RUNBOOKS.md).
+
+## More
+
+- [`FOCUS.md`](FOCUS.md) — current construction / refinement recipe.
+- [`AGENTS.md`](AGENTS.md) — agent doctrine for this repo.
+- Per-crate `README.md` files under [`crates/`](crates/).
+
+## License
+
+Dual-licensed under Apache-2.0 OR MIT at your option.

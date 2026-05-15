@@ -1,0 +1,191 @@
+[package]
+name = "gh-report"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "GitHub organization governance collector and reporter"
+license = "MIT"
+repository = "https://github.com/acje/quicksilver"
+readme = "README.md"
+keywords = ["github", "governance", "security", "compliance"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "gh-report"
+path = "src/bin/gh-report.rs"
+
+[lib]
+name = "gh_report"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+# cherry-pit-wq — M5 B2 swap target for worker_pool / work_queue / rate_limit / pagination / budget re-exports
+cherry-pit-wq = { version = "0.1.0", path = "../cherry-pit-wq" }
+# cherry-pit-storage — M5 B3 swap target for PersistenceError / atomic_write_bytes / RunLock / build_snapshot_signature re-exports (CHE-0053:R3 flat surface)
+cherry-pit-storage = { version = "0.1.0", path = "../cherry-pit-storage" }
+
+# cherry-pit-core — CHE-0048 EDA foundational traits (Projection, DomainEvent,
+# EventEnvelope). Single-aggregate posture per Tension-2 lock; no
+# CommandGateway/Aggregate/HandleCommand wiring (S5.b lock).
+cherry-pit-core = { workspace = true }
+
+# cherry-pit-gateway — durable EventStore impl (MsgpackFileStore) per
+# BC-v2-12 + CHE-0036:R1. Wired at WU-6 v2 B3' (charter
+# wu6v2-charter-1778415390); single MsgpackFileStore<DomainEvent>
+# instance per process at <store_dir>/events/<org>/, with the singleton
+# aggregate id `ORG_GOVERNANCE_AGGREGATE_ID = NonZeroU64::new(1)` per
+# Tension-2 single-aggregate lock.
+cherry-pit-gateway = { workspace = true }
+
+# cherry-pit-agent — root composition crate. WU-6 v2 B5' uses
+# `InProcessEventBus<DomainEvent>` (CHE-0051:R2) and the
+# `ProjectionDriverExt::apply_one` extension trait (CHE-0051:R5) to
+# wire snapshot-fast-path startup + bus-driven incremental projection
+# updates. The full `App` composition (CommandGateway/Aggregate) is
+# **not** used per S5.b bus-only lock; we depend on cherry-pit-agent
+# only for the bus impl + the `ProjectionDriverExt` trait.
+cherry-pit-agent = { workspace = true }
+
+# cherry-pit-projection — durable projection snapshot+checkpoint store
+# (FileProjectionStore) per CHE-0048:R1/R2. Wired at WU-6 v2 B4'
+# (charter wu6v2-charter-1778415390); single
+# FileProjectionStore<EvidenceProjection> instance per process at
+# <store_dir>/projections/<org>/, projection_name = "evidence". cpp
+# composes filenames as `{aggregate_id}-{projection_name}.snapshot.msgpack`
+# and `…checkpoint.msgpack` — the snapshot is written strictly before
+# the checkpoint (CHE-0048:R2). The store is held by AppState but not
+# yet driven; B5' wires ProjectionDriverExt to consume it.
+cherry-pit-projection = { workspace = true }
+
+# cherry-pit-web — MC-2.4b direct dep for Phase-2 `ProjectionSource` stub on
+# `EvidenceState` per CHE-0055 §G1. MC-2.7 removes both the stub and this
+# dep edge when the gh-report shim is deleted.
+cherry-pit-web = { workspace = true, features = ["projection"] }
+
+# CLI
+clap = { workspace = true, features = ["env"] }
+
+# Async runtime
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+
+# HTTP client
+reqwest = { workspace = true }
+
+# HTTP types (HeaderMap) — used directly by src/github/pagination.rs after
+# the MC-2.3 relocation from cherry-pit-wq (CHE-0055 §G6). Previously
+# transitive via the cpr re-export shim.
+http = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+rmp-serde = { workspace = true }
+
+# Time
+jiff = { workspace = true }
+
+# Web framework and serving
+axum = { workspace = true }
+
+# HTTP middleware (request body limits, tracing)
+tower-http = { workspace = true }
+
+# Server SERVE pipeline (absorbed under P1-A.5.2):
+# zstd pre-compression of cached pages (level 19 at population time);
+# Bytes for zero-copy body clones on the serving hot path;
+# futures-util for WebSocket SinkExt/StreamExt (broadcast → client forwarding).
+bytes = { workspace = true }
+zstd = { workspace = true }
+futures-util = { workspace = true }
+
+# Templating
+askama = { workspace = true }
+
+# Logging / tracing
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Hashing
+sha2 = { workspace = true }
+
+# HMAC-SHA256 webhook signature verification (constant-time via hmac::Mac::verify_slice)
+hmac = { workspace = true }
+
+# URL handling
+url = { workspace = true }
+percent-encoding = { workspace = true }
+
+# Secret handling — secrecy 0.10 includes zeroize as a core dependency;
+# SecretString values are automatically zeroed from memory on drop.
+secrecy = { workspace = true }
+
+# Zeroize intermediate token buffers (Bearer strings) on drop.
+# Already a transitive dep via secrecy — direct dep for explicit use.
+zeroize = { workspace = true }
+
+# JWT signing (GitHub App authentication).
+# `aws_lc_rs` is used instead of the default `ring` backend because it
+# provides FIPS-validated cryptographic primitives and is the
+# AWS-maintained successor to ring.
+jsonwebtoken = { workspace = true }
+
+# RSA key-size validation before JWT signing (defence-in-depth).
+# Already a transitive dep via jsonwebtoken — making it direct adds a
+# manifest entry but no new Cargo.lock entry.
+pem = { workspace = true }
+
+# Concurrency
+arc-swap = { workspace = true }
+scc = { workspace = true }
+
+# Encoding
+base64 = { workspace = true }
+
+# Misc
+fastrand = { workspace = true }
+
+# UUID — gap-α projection of `RunMetadata::run_id` into
+# `CorrelationContext` (WU-6 v2 B7' Inc 2). Also used in tests for
+# envelope construction.
+uuid = { workspace = true }
+
+# Caching
+moka = { workspace = true }
+
+# Structured JSON logging is handled by infra::cloud_logging (custom layer)
+
+[dev-dependencies]
+# HTTP mocking
+wiremock = { workspace = true }
+
+# Snapshot testing
+insta = { workspace = true }
+
+# Async test helpers
+tokio-test = { workspace = true }
+
+# Property-based testing
+proptest = { workspace = true }
+
+# Temp directories for test isolation
+tempfile = { workspace = true }
+
+# WebSocket test client
+tokio-tungstenite = { workspace = true }
+
+# Axum handler testing (tower::ServiceExt::oneshot)
+tower = { workspace = true }
+
+# WebSocket stream splitting in tests
+# (futures-util now a main dep — see [dependencies])
+
+# panic = "unwind" (default) is intentional — Drop-based lock cleanup in
+# src/infra/lock.rs requires stack unwinding, and tokio::spawn catches task
+# panics via JoinHandle for graceful degradation.

@@ -1,0 +1,30 @@
+[package]
+name = "pardosa-genome"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Binary serialization format with zero-copy reads and serde integration"
+license.workspace = true
+
+[lib]
+name = "pardosa_genome"
+path = "src/lib.rs"
+
+[features]
+default = ["std", "derive"]
+std = []
+derive = ["dep:pardosa-derive"]
+zstd = ["std"]  # Phase 3: will add dep:zstd
+
+[dependencies]
+serde = { workspace = true }
+xxhash-rust = { version = "0.8", default-features = false, features = ["const_xxh3"] }
+pardosa-derive = { path = "../pardosa-derive", optional = true }
+pardosa-encoding = { path = "../pardosa-encoding" }
+pardosa-traits = { path = "../pardosa-traits" }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+proptest = { workspace = true }
+trybuild = { workspace = true }

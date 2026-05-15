@@ -1,0 +1,56 @@
+---
+source: src/domain/evidence.rs
+expression: evidence
+---
+{
+  "repository": {
+    "id": "id-snapshot-repo",
+    "node_id": null,
+    "name": "snapshot-repo",
+    "visibility": "public",
+    "language": null,
+    "default_branch": "main",
+    "archived": false,
+    "inventory_key": "id-snapshot-repo",
+    "has_issues": true,
+    "fork": false,
+    "topics": []
+  },
+  "checks": {
+    "security_policy": {
+      "status": "pass",
+      "evidence": "setting",
+      "path": null,
+      "timestamp": "2026-04-09T12:00:00+00:00"
+    },
+    "secret_scanning": {
+      "status": "enabled",
+      "has_open_alerts": false,
+      "alerts_observable": true,
+      "reason": null,
+      "timestamp": "2026-04-09T12:00:00+00:00"
+    },
+    "dependabot_security_updates": {
+      "status": "enabled",
+      "reason": null,
+      "timestamp": "2026-04-09T12:00:00+00:00"
+    },
+    "branch_protection": {
+      "status": "pass",
+      "details": {
+        "default_branch": "main",
+        "has_pr": true,
+        "required_reviewers": 1,
+        "has_status_checks": true,
+        "admin_equivalent": true,
+        "has_broad_bypass": false
+      },
+      "timestamp": "2026-04-09T12:00:00+00:00"
+    },
+    "codeowners": {
+      "status": "conforming",
+      "path": ".github/CODEOWNERS",
+      "timestamp": "2026-04-09T12:00:00+00:00"
+    }
+  }
+}

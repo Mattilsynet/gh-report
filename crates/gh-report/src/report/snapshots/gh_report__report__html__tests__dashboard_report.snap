@@ -1,0 +1,273 @@
+---
+source: src/report/html.rs
+assertion_line: 1091
+expression: "&pages[\"report.html\"]"
+---
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TestOrg GitHub Security Posture Overview</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="ws.js" defer></script>
+    
+</head>
+
+<body>
+
+    <nav class="top-nav">
+        <a href="index.html">Dashboard</a>
+        <a href="report.html">Report</a>
+        
+        <a href="orphans.html">Orphans (0)</a>
+    </nav>
+
+    <h1>TestOrg GitHub Security Posture Overview</h1>
+
+    <div class="meta">
+        <p><strong>Date:</strong> 2026-04-09 12:00 UTC · <strong>Scope:</strong> 5 non-archived · 0 archived repositories in
+            <code>TestOrg</code></p>
+    </div>
+
+    <h2>Summary</h2>
+
+    <p>This report provides an executive snapshot of how consistently core repository security controls
+        are applied across 5 non-archived repositories in <code>TestOrg</code>
+        GitHub organization.
+        It measures how consistently key security controls are enabled, owned, and monitored across all
+        non-archived repositories, using aggregated results only.</p>
+
+    <h3>Observability Metrics</h3>
+
+    <p class="question">Do we communicate to external parties how to inform us about security issues found in our public
+        repositories?</p>
+    <p><code>Security Policy Coverage</code>: <span class="metric">66.7% (2/3)</span>
+        <em>(non-archived public repos only)</em></p>
+
+    <p class="question">Do we have Dependabot security updates enabled so GitHub can automatically open remediation pull
+        requests for vulnerable dependencies?</p>
+    <p><code>Dependabot Status</code>: <span class="metric">60.0% (3/5)</span></p>
+
+    <p class="question">Do we scan our repositories for leaked secrets?</p>
+    <p><code>Secret Scanning Coverage</code>: <span class="metric">80.0% (4/5)</span>
+    </p>
+
+    <h3>Ownership Metrics</h3>
+
+    <p class="question">Do we enforce branch protection rules?</p>
+    <p><code>Branch Protection</code>: <span class="metric">60.0% (3/5)</span></p>
+
+    <p class="question">Do we have CODEOWNERS files in <code>.github/CODEOWNERS</code> or
+        <code>./CODEOWNERS</code>?</p>
+    <p><code>CODEOWNERS Coverage</code>: <span class="metric">80.0% (4/5)</span></p>
+
+    <h2>Supporting Counts and Details</h2>
+
+    <details>
+        <summary>Security Policy Coverage, public repos only</summary>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Metric</th>
+                    <th class="text-right">Value</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td title="Percentage of public repos with a security policy enabled or SECURITY.md present.">Coverage</td>
+                    <td class="text-right">66.7% (2/3)</td>
+                </tr>
+                <tr>
+                    <td title="Repos where the GitHub security-policy setting is enabled at the org or repo level.">Via GitHub setting</td>
+                    <td class="text-right">1</td>
+                </tr>
+                <tr>
+                    <td title="Repos with a SECURITY.md file committed in the repository root.">Via <code>SECURITY.md</code> presence</td>
+                    <td class="text-right">1</td>
+                </tr>
+                <tr>
+                    <td title="Repos where neither setting nor file was found.">Missing policy evidence</td>
+                    <td class="text-right">1</td>
+                </tr>
+                <tr>
+                    <td title="Repos where the check could not be completed (API error, permission denied, etc.).">Unknown</td>
+                    <td class="text-right">0</td>
+                </tr>
+            </tbody>
+        </table>
+    </details>
+
+    <details>
+        <summary>Dependabot Status</summary>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Metric</th>
+                    <th class="text-right">Value</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td title="Percentage of repos with Dependabot security updates enabled.">Coverage</td>
+                    <td class="text-right">60.0% (3/5)</td>
+                </tr>
+                <tr>
+                    <td title="Repos where the API returned enabled, disabled, or paused status.">Repos with confirmed enabled/disabled/paused evidence</td>
+                    <td class="text-right">4</td>
+                </tr>
+                <tr>
+                    <td title="Repos where Dependabot was paused (by GitHub or inferred from inactivity).">Paused</td>
+                    <td class="text-right">0</td>
+                </tr>
+                <tr>
+                    <td title="Repos where Dependabot security updates are explicitly disabled.">Disabled</td>
+                    <td class="text-right">1</td>
+                </tr>
+                <tr>
+                    <td title="Repos where the check could not be completed.">Unknown</td>
+                    <td class="text-right">1</td>
+                </tr>
+            </tbody>
+        </table>
+    </details>
+
+    <details>
+        <summary>Secret Scanning Coverage</summary>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Metric</th>
+                    <th class="text-right">Value</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td title="Percentage of repos with GitHub secret scanning enabled.">Coverage</td>
+                    <td class="text-right">80.0% (4/5)</td>
+                </tr>
+                <tr>
+                    <td title="Repos where the API returned enabled or disabled status.">Repos with confirmed enabled/disabled evidence</td>
+                    <td class="text-right">5</td>
+                </tr>
+                <tr>
+                    <td title="Repos where secret scanning is explicitly disabled.">Disabled</td>
+                    <td class="text-right">1</td>
+                </tr>
+                <tr>
+                    <td title="Repos where the API returned 403 (insufficient token permissions).">Permission denied</td>
+                    <td class="text-right">0</td>
+                </tr>
+                <tr>
+                    <td title="Repos where the check could not be completed.">Unknown</td>
+                    <td class="text-right">0</td>
+                </tr>
+            </tbody>
+        </table>
+    </details>
+
+    <details>
+        <summary>Branch Protection</summary>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Metric</th>
+                    <th class="text-right">Value</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td title="Percentage of repos with full branch protection on the default branch.">Coverage</td>
+                    <td class="text-right">60.0% (3/5)</td>
+                </tr>
+                <tr>
+                    <td title="Repos with some but not all branch protection rules enabled.">Partial</td>
+                    <td class="text-right">1</td>
+                </tr>
+                <tr>
+                    <td title="Repos with no branch protection rules on the default branch.">Fail</td>
+                    <td class="text-right">0</td>
+                </tr>
+                <tr>
+                    <td title="Repos where the check could not be completed.">Unknown</td>
+                    <td class="text-right">1</td>
+                </tr>
+            </tbody>
+        </table>
+    </details>
+
+    <details>
+        <summary>CODEOWNERS Coverage</summary>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Metric</th>
+                    <th class="text-right">Value</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td title="Percentage of repos with a CODEOWNERS file in a recognized location.">Coverage</td>
+                    <td class="text-right">80.0% (4/5)</td>
+                </tr>
+                <tr>
+                    <td title="Repos with CODEOWNERS in the preferred .github/ directory.">Conforming (<code>.github/CODEOWNERS</code>)</td>
+                    <td class="text-right">3</td>
+                </tr>
+                <tr>
+                    <td title="Repos with CODEOWNERS in the repo root (non-preferred location).">Non-Conforming (<code>CODEOWNERS</code>)</td>
+                    <td class="text-right">1</td>
+                </tr>
+                <tr>
+                    <td title="Repos with no CODEOWNERS file found in any recognized location.">Absent</td>
+                    <td class="text-right">0</td>
+                </tr>
+                <tr>
+                    <td title="Repos where the check could not be completed.">Unknown</td>
+                    <td class="text-right">1</td>
+                </tr>
+            </tbody>
+        </table>
+    </details>
+
+    <h2>Metric Caveats</h2>
+
+    <div class="caveat">
+        <p>Branch protection coverage counts only <code>pass</code> as sufficient; <code>partial</code> remains
+            insufficient.</p>
+    </div>
+
+    <h2>Assessment Metadata</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Field</th>
+                <th class="text-right">Value</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Public repos</td>
+                <td class="text-right">3</td>
+            </tr>
+            <tr>
+                <td>Internal repos</td>
+                <td class="text-right">1</td>
+            </tr>
+            <tr>
+                <td>Private repos</td>
+                <td class="text-right">1</td>
+            </tr>
+            <tr>
+                <td>Rate limit warnings</td>
+                <td class="text-right">0</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <p class="footer">This report shows aggregated metrics only and does not list individual repository names.</p>
+
+</body>
+
+</html>

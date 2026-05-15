@@ -1,0 +1,5 @@
+error: GenomeSafe: enum must be #[repr(u8)] for canonical encoding (GEN-0035:R4). Annotate the enum with `#[repr(u8)]` and give each variant an explicit discriminant literal (e.g. `Variant = 0`).
+ --> tests/compile_fail/hashmap_in_enum.rs:5:6
+  |
+5 | enum Bad {
+  |      ^^^
