@@ -19,6 +19,11 @@ docs/notes/
 # Beads / Dolt files (added by bd init)
 .dolt/
 
+# Beads issues export — internal planning history, not for public history.
+# bd regenerates this file from the Dolt store; ignoring it keeps it local.
+.beads/issues.jsonl
+.beads/events.jsonl
+
 # opencode plugin deps
 .opencode/node_modules/
 *.db
