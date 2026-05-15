@@ -22,5 +22,32 @@ help: the trait `Sealed` is not implemented for `Outsider`
 note: required by a bound in `EventSafe`
   --> $WORKSPACE/crates/pardosa-traits/src/lib.rs
    |
-   | pub trait EventSafe: sealed::Sealed {}
-   |                      ^^^^^^^^^^^^^^ required by this bound in `EventSafe`
+   | pub trait EventSafe: pardosa_encoding::Encode + sealed::Sealed {}
+   |                                                 ^^^^^^^^^^^^^^ required by this bound in `EventSafe`
+
+error[E0277]: the trait bound `Outsider: Encode` is not satisfied
+  --> tests/compile_fail/sealed_eventsafe_external_impl.rs:10:20
+   |
+10 | impl EventSafe for Outsider {}
+   |                    ^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `Encode` is not implemented for `Outsider`
+  --> tests/compile_fail/sealed_eventsafe_external_impl.rs:8:1
+   |
+ 8 | struct Outsider;
+   | ^^^^^^^^^^^^^^^
+   = help: the following other types implement trait `Encode`:
+             &[u8]
+             &str
+             ()
+             (T0, T1)
+             (T0, T1, T2)
+             (T0, T1, T2, T3)
+             (T0, T1, T2, T3, T4)
+             (T0, T1, T2, T3, T4, T5)
+           and $N others
+note: required by a bound in `EventSafe`
+  --> $WORKSPACE/crates/pardosa-traits/src/lib.rs
+   |
+   | pub trait EventSafe: pardosa_encoding::Encode + sealed::Sealed {}
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `EventSafe`

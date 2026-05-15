@@ -7,8 +7,10 @@
 //! their own types. The only blessed path is `#[derive(GenomeSafe)]`, which
 //! emits `Sealed + EventSafe + GenomeSafe` atomically.
 //!
-//! `EventSafe` is intentionally a sealed marker in this crate revision; the
-//! `Encode` supertrait bound is deferred to A2.2 (see GEN-0036 Context).
+//! `EventSafe` carries the [`pardosa_encoding::Encode`] supertrait, closing the
+//! F2 deferral from A2.1 (see GEN-0036 Context / GEN-0037). Every sealed type
+//! also has an `Encode` impl in `pardosa-encoding`; `Decode` blanket fill for
+//! the same set is sub-mission B.
 //!
 //! # Why std-aware substrate
 //!
@@ -41,9 +43,10 @@ pub mod sealed {
 /// trusted crates in the pardosa workspace (and `#[derive(GenomeSafe)]`-blessed
 /// user types) can satisfy the bound.
 ///
-/// The `Encode` supertrait bound is deferred to A2.2 per GEN-0036; this crate
-/// revision ships `EventSafe` as a pure sealed marker.
-pub trait EventSafe: sealed::Sealed {}
+/// Every `EventSafe` type also implements [`pardosa_encoding::Encode`] — the
+/// F2 supertrait bound deferred in A2.1 lands here, atomically with the
+/// matching `Encode` blanket fill in `pardosa-encoding` (GEN-0037).
+pub trait EventSafe: pardosa_encoding::Encode + sealed::Sealed {}
 
 // ---------------------------------------------------------------------------
 // Trusted blanket impls — primitives
@@ -100,11 +103,11 @@ impl<T: EventSafe> EventSafe for Vec<T> {}
 impl<T: EventSafe> sealed::Sealed for Box<T> {}
 impl<T: EventSafe> EventSafe for Box<T> {}
 
-impl<K: EventSafe, V: EventSafe> sealed::Sealed for BTreeMap<K, V> {}
-impl<K: EventSafe, V: EventSafe> EventSafe for BTreeMap<K, V> {}
+impl<K: EventSafe + Ord, V: EventSafe> sealed::Sealed for BTreeMap<K, V> {}
+impl<K: EventSafe + Ord, V: EventSafe> EventSafe for BTreeMap<K, V> {}
 
-impl<T: EventSafe> sealed::Sealed for BTreeSet<T> {}
-impl<T: EventSafe> EventSafe for BTreeSet<T> {}
+impl<T: EventSafe + Ord> sealed::Sealed for BTreeSet<T> {}
+impl<T: EventSafe + Ord> EventSafe for BTreeSet<T> {}
 
 impl<T: EventSafe> sealed::Sealed for Arc<T> {}
 impl<T: EventSafe> EventSafe for Arc<T> {}

@@ -75,12 +75,21 @@ fn derive_genome_safe_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     // --- Build schema hash expression ---
     let hash_expr = build_hash_expr(input)?;
 
-    // --- Add GenomeSafe (+ GenomeOrd where needed) bounds to generic parameters ---
+    // --- Add GenomeSafe (+ GenomeOrd + Ord where needed) bounds to generic parameters ---
+    // BTreeMap-key / BTreeSet-element params get `+ Ord` mechanically: the
+    // F2 `EventSafe: Encode` supertrait (GEN-0037) makes `BTreeMap<K, _>:
+    // EventSafe` resolve `Encode for BTreeMap<K, _>`, which requires
+    // `K: Ord`. `GenomeOrd` is the user-asserted *deterministic* ordering;
+    // `Ord` is the mechanical std requirement. Both must be present.
     let genome_ord_params = collect_btree_key_params(input);
     let extra_bounds = input.generics.type_params().map(|tp| {
         let ident = &tp.ident;
         if genome_ord_params.contains(&ident.to_string()) {
-            quote! { #ident: ::pardosa_genome::GenomeSafe + ::pardosa_genome::GenomeOrd }
+            quote! {
+                #ident: ::pardosa_genome::GenomeSafe
+                    + ::pardosa_genome::GenomeOrd
+                    + ::core::cmp::Ord
+            }
         } else {
             quote! { #ident: ::pardosa_genome::GenomeSafe }
         }
@@ -885,7 +894,7 @@ fn validate_enum_repr_u8(input: &DeriveInput, data: &syn::DataEnum) -> syn::Resu
 fn build_encode_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let name = &input.ident;
     let (impl_generics, ty_generics, where_clause_existing) = input.generics.split_for_impl();
-    let where_clause = build_codec_where_clause(input, where_clause_existing);
+    let where_clause = build_codec_where_clause(input, where_clause_existing, CodecMode::Encode);
 
     let body = match &input.data {
         Data::Struct(data) => build_struct_encode_body(&data.fields),
@@ -907,7 +916,7 @@ fn build_encode_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
 fn build_decode_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let name = &input.ident;
     let (impl_generics, ty_generics, where_clause_existing) = input.generics.split_for_impl();
-    let where_clause = build_codec_where_clause(input, where_clause_existing);
+    let where_clause = build_codec_where_clause(input, where_clause_existing, CodecMode::Decode);
 
     let body = match &input.data {
         Data::Struct(data) => build_struct_decode_body(name, &data.fields),
@@ -928,14 +937,23 @@ fn build_decode_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     })
 }
 
-/// Build a where-clause that adds `Encode + Decode` bounds on every type
-/// parameter for the codec impls. Type parameters appearing in BTreeMap-key
-/// position additionally receive an `Ord` bound, matching the upstream
-/// `BTreeMap<K, V>: Decode where K: Ord + Encode + Decode` requirement.
-/// Extends the existing user where-clause.
+/// Build a where-clause for a codec impl.
+///
+/// `mode` selects which side of the codec is being emitted; only that side's
+/// own bound is added to each generic type parameter. Mixing `Encode + Decode`
+/// on both impls (the previous shape) leaked a spurious `T: Decode`
+/// requirement into the `Encode` impl, which broke `EventSafe` resolution
+/// under the F2 supertrait (GEN-0037).
+///
+/// Type parameters appearing in `BTreeMap` key position get an additional
+/// `Ord` bound. On the Decode side they also get `Encode` because upstream
+/// `impl<K: Decode + Encode + Ord, V: Decode> Decode for BTreeMap<K, V>`
+/// requires it (the canonical-ordering check on decode re-encodes keys to
+/// compare bytes).
 fn build_codec_where_clause(
     input: &DeriveInput,
     existing: Option<&syn::WhereClause>,
+    mode: CodecMode,
 ) -> TokenStream2 {
     let btree_key_params = collect_btree_key_params(input);
     let extra: Vec<TokenStream2> = input
@@ -943,14 +961,23 @@ fn build_codec_where_clause(
         .type_params()
         .map(|tp| {
             let ident = &tp.ident;
-            if btree_key_params.contains(&ident.to_string()) {
-                quote! {
-                    #ident: ::pardosa_encoding::Encode
-                        + ::pardosa_encoding::Decode
-                        + ::core::cmp::Ord
+            match (mode, btree_key_params.contains(&ident.to_string())) {
+                (CodecMode::Encode, false) => {
+                    quote! { #ident: ::pardosa_encoding::Encode }
                 }
-            } else {
-                quote! { #ident: ::pardosa_encoding::Encode + ::pardosa_encoding::Decode }
+                (CodecMode::Encode, true) => {
+                    quote! { #ident: ::pardosa_encoding::Encode + ::core::cmp::Ord }
+                }
+                (CodecMode::Decode, false) => {
+                    quote! { #ident: ::pardosa_encoding::Decode }
+                }
+                (CodecMode::Decode, true) => {
+                    quote! {
+                        #ident: ::pardosa_encoding::Decode
+                            + ::pardosa_encoding::Encode
+                            + ::core::cmp::Ord
+                    }
+                }
             }
         })
         .collect();
@@ -961,6 +988,12 @@ fn build_codec_where_clause(
 
     let existing_preds = existing.map(|w| &w.predicates);
     quote! { where #(#extra,)* #existing_preds }
+}
+
+#[derive(Copy, Clone)]
+enum CodecMode {
+    Encode,
+    Decode,
 }
 
 fn build_struct_encode_body(fields: &Fields) -> TokenStream2 {

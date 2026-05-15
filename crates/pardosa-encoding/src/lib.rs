@@ -15,9 +15,13 @@
 
 extern crate alloc;
 
-use alloc::collections::BTreeMap;
+use alloc::borrow::{Cow, ToOwned};
+use alloc::boxed::Box;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::marker::PhantomData;
 
 // ---------------------------------------------------------------------------
 // Decoder cap (GEN-0035 §"Decoder cap")
@@ -434,6 +438,93 @@ impl<K: Decode + Encode + Ord, V: Decode> Decode for BTreeMap<K, V> {
 }
 
 // ---------------------------------------------------------------------------
+// BTreeSet<T> — u32 LE count + elements in ascending encoded-bytes order.
+// ---------------------------------------------------------------------------
+//
+// Same canonical-ordering contract as BTreeMap (GEN-0035:R5). T: Ord is
+// the std std-bound; encoded-bytes order coincides with T::Ord for the
+// primitive element types currently in use.
+
+impl<T: Encode + Ord> Encode for BTreeSet<T> {
+    fn encode(&self, out: &mut Vec<u8>) {
+        encode_len_prefix(self.len(), out);
+        for v in self {
+            v.encode(out);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Smart pointers & wrappers — encode-transparent
+// ---------------------------------------------------------------------------
+//
+// Box<T>, Arc<T>, Cow<'_, T> encode as the underlying T — matching the
+// schema-hash transparency in pardosa-genome (GEN-0036 §"Smart pointers
+// and wrappers"). PhantomData<T> encodes as zero bytes — like `()`.
+
+impl<T: Encode + ?Sized> Encode for Box<T> {
+    fn encode(&self, out: &mut Vec<u8>) {
+        (**self).encode(out);
+    }
+}
+
+impl<T: Encode + ?Sized> Encode for Arc<T> {
+    fn encode(&self, out: &mut Vec<u8>) {
+        (**self).encode(out);
+    }
+}
+
+impl<T: Encode + ToOwned + ?Sized> Encode for Cow<'_, T> {
+    fn encode(&self, out: &mut Vec<u8>) {
+        (**self).encode(out);
+    }
+}
+
+impl<T: ?Sized> Encode for PhantomData<T> {
+    fn encode(&self, _out: &mut Vec<u8>) {}
+}
+
+// ---------------------------------------------------------------------------
+// char — 4-byte LE u32 codepoint
+// ---------------------------------------------------------------------------
+//
+// `char` is a Unicode scalar value (21 bits used). Encoded as the u32
+// codepoint; surrogate values are not representable so decode-side validation
+// returns InvalidUtf8 if a non-scalar u32 is observed.
+
+impl Encode for char {
+    fn encode(&self, out: &mut Vec<u8>) {
+        u32::from(*self).encode(out);
+    }
+}
+impl Decode for char {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let cp = u32::decode(d)?;
+        char::from_u32(cp).ok_or(DecodeError::InvalidUtf8)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Borrowed slice forms — &str, &[u8]
+// ---------------------------------------------------------------------------
+//
+// `&str` and `&[u8]` share wire form with `str` / `[u8]` (length-prefixed
+// payload). Provided explicitly so generic code over `T: Encode` with
+// `T = &str` / `T = &[u8]` resolves without auto-ref dance.
+
+impl Encode for &str {
+    fn encode(&self, out: &mut Vec<u8>) {
+        (*self).encode(out);
+    }
+}
+
+impl Encode for &[u8] {
+    fn encode(&self, out: &mut Vec<u8>) {
+        (*self).encode(out);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tuples — back-to-back, no length prefix (up to 4 for now; B extends to 16).
 // ---------------------------------------------------------------------------
 
@@ -456,6 +547,18 @@ impl_tuple!(T0: 0);
 impl_tuple!(T0: 0, T1: 1);
 impl_tuple!(T0: 0, T1: 1, T2: 2);
 impl_tuple!(T0: 0, T1: 1, T2: 2, T3: 3);
+impl_tuple!(T0: 0, T1: 1, T2: 2, T3: 3, T4: 4);
+impl_tuple!(T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5);
+impl_tuple!(T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6);
+impl_tuple!(T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7);
+impl_tuple!(T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8);
+impl_tuple!(T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9);
+impl_tuple!(T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9, T10: 10);
+impl_tuple!(T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9, T10: 10, T11: 11);
+impl_tuple!(T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9, T10: 10, T11: 11, T12: 12);
+impl_tuple!(T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9, T10: 10, T11: 11, T12: 12, T13: 13);
+impl_tuple!(T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9, T10: 10, T11: 11, T12: 12, T13: 13, T14: 14);
+impl_tuple!(T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6, T7: 7, T8: 8, T9: 9, T10: 10, T11: 11, T12: 12, T13: 13, T14: 14, T15: 15);
 
 // ---------------------------------------------------------------------------
 // Tests

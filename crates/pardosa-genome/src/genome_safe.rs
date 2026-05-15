@@ -214,7 +214,9 @@ impl<T: GenomeSafe> GenomeSafe for Box<T> {
     const SCHEMA_SOURCE: &'static str = T::SCHEMA_SOURCE;
 }
 
-impl<K: GenomeSafe + GenomeOrd, V: GenomeSafe> GenomeSafe for std::collections::BTreeMap<K, V> {
+impl<K: GenomeSafe + GenomeOrd + Ord, V: GenomeSafe> GenomeSafe
+    for std::collections::BTreeMap<K, V>
+{
     const SCHEMA_HASH: u128 = schema_hash_combine(
         schema_hash_combine(schema_hash_bytes(b"BTreeMap"), K::SCHEMA_HASH),
         V::SCHEMA_HASH,
@@ -222,7 +224,7 @@ impl<K: GenomeSafe + GenomeOrd, V: GenomeSafe> GenomeSafe for std::collections::
     const SCHEMA_SOURCE: &'static str = "BTreeMap<_, _>";
 }
 
-impl<T: GenomeSafe + GenomeOrd> GenomeSafe for std::collections::BTreeSet<T> {
+impl<T: GenomeSafe + GenomeOrd + Ord> GenomeSafe for std::collections::BTreeSet<T> {
     const SCHEMA_HASH: u128 = schema_hash_combine(schema_hash_bytes(b"BTreeSet"), T::SCHEMA_HASH);
     const SCHEMA_SOURCE: &'static str = "BTreeSet<_>";
 }

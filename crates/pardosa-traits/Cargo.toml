@@ -6,9 +6,13 @@ rust-version.workspace = true
 authors.workspace = true
 description = "Sealed trait substrate for pardosa events: EventSafe + sealed::Sealed (GEN-0036)"
 license.workspace = true
+publish = false  # internal workspace crate; allows wildcard path-deps under deny.toml (HEAD e364ede)
 
 [lib]
 name = "pardosa_traits"
 path = "src/lib.rs"
 
 [dependencies]
+# Encode supertrait on EventSafe (GEN-0037 / F2 closure). Co-located in the
+# trait-defining crate so blanket impls stay orphan-rule-clean.
+pardosa-encoding = { path = "../pardosa-encoding" }

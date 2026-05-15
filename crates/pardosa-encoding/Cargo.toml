@@ -6,6 +6,7 @@ rust-version.workspace = true
 authors.workspace = true
 description = "In-house canonical encoding format for pardosa events (GEN-0035)"
 license.workspace = true
+publish = false  # internal workspace crate; allows wildcard path-deps under deny.toml (HEAD e364ede)
 
 [lib]
 name = "pardosa_encoding"

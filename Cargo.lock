@@ -1776,6 +1776,9 @@ dependencies = [
 [[package]]
 name = "pardosa-traits"
 version = "0.1.0"
+dependencies = [
+ "pardosa-encoding",
+]
 
 [[package]]
 name = "parking"
