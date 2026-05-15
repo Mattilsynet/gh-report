@@ -889,7 +889,7 @@ fn validate_enum_repr_u8(input: &DeriveInput, data: &syn::DataEnum) -> syn::Resu
 //   encode → match on self, push the variant's explicit u8 discriminant, then
 //            encode variant fields in declaration order.
 //   decode → read 1 byte, match against the variant discriminants, decode
-//            payload; unknown byte → DecodeError::InvalidDiscriminant.
+//            payload; unknown byte → EventError::InvalidInput.
 
 fn build_encode_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let name = &input.ident;
@@ -930,7 +930,7 @@ fn build_decode_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         {
             fn decode(
                 d: &mut ::pardosa_encoding::Decoder<'_>,
-            ) -> ::core::result::Result<Self, ::pardosa_encoding::DecodeError> {
+            ) -> ::core::result::Result<Self, ::pardosa_encoding::EventError> {
                 #body
             }
         }
@@ -1124,7 +1124,7 @@ fn build_enum_decode_body(name: &syn::Ident, data: &syn::DataEnum) -> TokenStrea
         let byte: u8 = byte;
         match byte {
             #(#arms)*
-            _ => ::core::result::Result::Err(::pardosa_encoding::DecodeError::InvalidDiscriminant),
+            _ => ::core::result::Result::Err(::pardosa_encoding::EventError::InvalidInput),
         }
     }
 }

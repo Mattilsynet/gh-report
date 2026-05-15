@@ -4,7 +4,7 @@
 //! (LE primitives, length-prefixed variable-width data, `repr(u8)`
 //! enum discriminants) owned by the workspace so we control the spec,
 //! the sealing, and the decoder cap semantics. This crate provides the
-//! substrate ([`Encode`], [`Decode`], [`DecodeError`], primitive impls);
+//! substrate ([`Encode`], [`Decode`], [`EventError`], primitive impls);
 //! the sealed [`EventSafe`]/[`GenomeSafe`]/[`GenomeOrd`] trait stack is
 //! introduced separately in sub-mission A2.
 //!
@@ -36,39 +36,75 @@ pub const DEFAULT_DECODE_CAP: usize = 1 << 20;
 // Errors
 // ---------------------------------------------------------------------------
 
-/// Errors raised by [`Decode::decode`].
+/// Canonical event-level error surface for pardosa (GEN-0039).
 ///
-/// `DecodeError` is the decoder-local error surface introduced in
-/// GEN-0035. The v2 canonical event-level error is
-/// [`pardosa_traits::EventError`](../pardosa_traits/enum.EventError.html)
-/// (GEN-0039); a `From<DecodeError> for EventError` bridge lives in
-/// `pardosa-traits` so call sites that adopt EventError can lift decode
-/// failures. Full migration of the `Decode` trait signature to return
-/// `EventError` directly is tracked as a follow-up sub-mission
-/// (C2 / `adr-fmt-vggv`); until then `DecodeError` remains the
-/// substrate-level decode return type and is not deprecated for
-/// removal — only doc-pointed at the v2 successor.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+/// `repr(u8)` with literal discriminants pinned 0..=10. The in-house
+/// canonical encoding emits a single byte equal to the discriminant for
+/// each variant (F4 wire contract: byte-1 of an encoded `EventError`
+/// equals the discriminant value).
+///
+/// Variant ordering and discriminant values are part of the wire
+/// contract — see GEN-0039. Renumbering is a breaking change.
+///
+/// `EventError` is also the return type of [`Decode::decode`] following
+/// the C2 migration (sub-mission `adr-fmt-vggv`): all decoder-local
+/// failure modes (truncated input, cap exceeded, invalid discriminant,
+/// invalid UTF-8, non-canonical map, trailing bytes) collapse to
+/// `EventError::InvalidInput`, matching the pre-migration bridge
+/// semantics from `pardosa_traits`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
 #[non_exhaustive]
-pub enum DecodeError {
-    /// Input ended before the expected number of bytes were available.
-    UnexpectedEof,
-    /// A length or count header exceeded the remaining decode cap; no
-    /// allocation was attempted.
-    CapExceeded,
-    /// `bool` byte was neither `0u8` nor `1u8`.
-    InvalidBool,
-    /// `Option` discriminant byte was neither `0u8` (None) nor `1u8` (Some).
-    InvalidOptionTag,
-    /// Sum-type discriminant byte did not match a known variant.
-    InvalidDiscriminant,
-    /// String length-prefix payload was not valid UTF-8.
-    InvalidUtf8,
-    /// A `BTreeMap` entry was emitted out of canonical (ascending
-    /// encoded-key-bytes) order — duplicate or descending key.
-    NonCanonicalMap,
-    /// Decode succeeded but input bytes remained.
-    TrailingBytes,
+pub enum EventError {
+    /// Caller-supplied data violated a documented input invariant.
+    /// All decoder-local failures (truncated input, malformed tag,
+    /// non-canonical ordering, cap exceeded, trailing bytes, invalid
+    /// UTF-8, unknown discriminant) surface as this variant.
+    InvalidInput = 0,
+    /// The addressed entity does not exist.
+    NotFound = 1,
+    /// The operation conflicts with the current state (e.g. version mismatch,
+    /// duplicate key, concurrent write race).
+    Conflict = 2,
+    /// Caller is not authenticated.
+    Unauthorized = 3,
+    /// Caller is authenticated but lacks permission for the operation.
+    PermissionDenied = 4,
+    /// A required dependency is temporarily unavailable; retry may succeed.
+    Unavailable = 5,
+    /// The operation did not complete within its deadline.
+    Timeout = 6,
+    /// An internal invariant was violated. Carries no caller-actionable
+    /// detail; surface only as an opaque failure.
+    Internal = 7,
+    /// A resource quota or limit was exceeded (memory, message size, rate).
+    ResourceExhausted = 8,
+    /// The operation was explicitly cancelled before completion.
+    Cancelled = 9,
+    /// Underlying storage reported irrecoverable data loss for the
+    /// affected entity.
+    DataLoss = 10,
+}
+
+impl EventError {
+    /// Return the wire discriminant byte for this variant.
+    ///
+    /// Equivalent to the first (and only) byte of `EventError::encode`.
+    /// Pinned by GEN-0039; renumbering is a breaking change.
+    #[must_use]
+    pub const fn discriminant(self) -> u8 {
+        // `repr(u8)` makes the cast a no-op at the bit level.
+        self as u8
+    }
+}
+
+impl Encode for EventError {
+    fn encode(&self, out: &mut Vec<u8>) {
+        // Single byte per GEN-0039 F4 wire contract. `repr(u8)` makes
+        // `self.discriminant()` bit-identical to the variant's pinned
+        // discriminant.
+        out.push(self.discriminant());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -105,10 +141,10 @@ impl<'a> Decoder<'a> {
     }
 
     /// Read exactly `n` bytes from the cursor, advancing it.
-    pub fn read_bytes(&mut self, n: usize) -> Result<&'a [u8], DecodeError> {
-        let end = self.pos.checked_add(n).ok_or(DecodeError::UnexpectedEof)?;
+    pub fn read_bytes(&mut self, n: usize) -> Result<&'a [u8], EventError> {
+        let end = self.pos.checked_add(n).ok_or(EventError::InvalidInput)?;
         if end > self.input.len() {
-            return Err(DecodeError::UnexpectedEof);
+            return Err(EventError::InvalidInput);
         }
         let slice = &self.input[self.pos..end];
         self.pos = end;
@@ -117,11 +153,11 @@ impl<'a> Decoder<'a> {
 
     /// Read a `u32 LE` length header and charge it against the cap.
     /// Returns `CapExceeded` *before* any allocation is attempted.
-    pub fn read_len_prefix(&mut self) -> Result<usize, DecodeError> {
+    pub fn read_len_prefix(&mut self) -> Result<usize, EventError> {
         let raw = u32::decode(self)?;
         let n = raw as usize;
         if n > self.cap_remaining {
-            return Err(DecodeError::CapExceeded);
+            return Err(EventError::InvalidInput);
         }
         self.cap_remaining -= n;
         Ok(n)
@@ -163,7 +199,7 @@ pub trait Encode {
 /// Decode a value from a [`Decoder`] cursor.
 pub trait Decode: Sized {
     /// Read one value from the decoder cursor.
-    fn decode(d: &mut Decoder<'_>) -> Result<Self, DecodeError>;
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError>;
 }
 
 /// Encode `value` to a fresh `Vec<u8>`.
@@ -176,17 +212,17 @@ pub fn to_vec<T: Encode>(value: &T) -> Vec<u8> {
 
 /// Decode a value from `input` with the default cap, enforcing strict
 /// (no trailing bytes) consumption per GEN-0035:R6.
-pub fn from_bytes<T: Decode>(input: &[u8]) -> Result<T, DecodeError> {
+pub fn from_bytes<T: Decode>(input: &[u8]) -> Result<T, EventError> {
     from_bytes_with_cap(input, DEFAULT_DECODE_CAP)
 }
 
 /// Decode a value from `input` with an explicit cap, enforcing strict
 /// (no trailing bytes) consumption per GEN-0035:R6.
-pub fn from_bytes_with_cap<T: Decode>(input: &[u8], cap: usize) -> Result<T, DecodeError> {
+pub fn from_bytes_with_cap<T: Decode>(input: &[u8], cap: usize) -> Result<T, EventError> {
     let mut d = Decoder::with_cap(input, cap);
     let value = T::decode(&mut d)?;
     if !d.is_at_end() {
-        return Err(DecodeError::TrailingBytes);
+        return Err(EventError::InvalidInput);
     }
     Ok(value)
 }
@@ -202,7 +238,7 @@ impl Encode for u8 {
     }
 }
 impl Decode for u8 {
-    fn decode(d: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
         Ok(d.read_bytes(1)?[0])
     }
 }
@@ -214,7 +250,7 @@ impl Encode for i8 {
     }
 }
 impl Decode for i8 {
-    fn decode(d: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
         #[allow(clippy::cast_possible_wrap)]
         Ok(d.read_bytes(1)?[0] as i8)
     }
@@ -230,7 +266,7 @@ macro_rules! impl_le_primitive {
                 }
             }
             impl Decode for $ty {
-                fn decode(d: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+                fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
                     let bytes = d.read_bytes($n)?;
                     let mut arr = [0u8; $n];
                     arr.copy_from_slice(bytes);
@@ -261,11 +297,11 @@ impl Encode for bool {
     }
 }
 impl Decode for bool {
-    fn decode(d: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
         match d.read_bytes(1)?[0] {
             0 => Ok(false),
             1 => Ok(true),
-            _ => Err(DecodeError::InvalidBool),
+            _ => Err(EventError::InvalidInput),
         }
     }
 }
@@ -275,7 +311,7 @@ impl Encode for () {
     fn encode(&self, _out: &mut Vec<u8>) {}
 }
 impl Decode for () {
-    fn decode(_d: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+    fn decode(_d: &mut Decoder<'_>) -> Result<Self, EventError> {
         Ok(())
     }
 }
@@ -296,11 +332,11 @@ impl<T: Encode> Encode for Option<T> {
     }
 }
 impl<T: Decode> Decode for Option<T> {
-    fn decode(d: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
         match d.read_bytes(1)?[0] {
             0 => Ok(None),
             1 => Ok(Some(T::decode(d)?)),
-            _ => Err(DecodeError::InvalidOptionTag),
+            _ => Err(EventError::InvalidInput),
         }
     }
 }
@@ -327,7 +363,7 @@ impl<T: Encode> Encode for Vec<T> {
     }
 }
 impl<T: Decode> Decode for Vec<T> {
-    fn decode(d: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
         let n = d.read_len_prefix()?;
         // Bounded doubling: cap was already charged in read_len_prefix,
         // so reserving n is safe. We do not reserve eagerly beyond n,
@@ -355,12 +391,12 @@ impl Encode for String {
     }
 }
 impl Decode for String {
-    fn decode(d: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
         let n = d.read_len_prefix()?;
         let bytes = d.read_bytes(n)?;
         core::str::from_utf8(bytes)
             .map(alloc::string::ToString::to_string)
-            .map_err(|_| DecodeError::InvalidUtf8)
+            .map_err(|_| EventError::InvalidInput)
     }
 }
 
@@ -383,7 +419,7 @@ impl<T: Encode, const N: usize> Encode for [T; N] {
     }
 }
 impl<T: Decode, const N: usize> Decode for [T; N] {
-    fn decode(d: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
         // Build via an intermediate Vec to avoid MaybeUninit gymnastics
         // under #![forbid(unsafe_code)].
         let mut v: Vec<T> = Vec::with_capacity(N);
@@ -393,7 +429,7 @@ impl<T: Decode, const N: usize> Decode for [T; N] {
         // SAFETY (logical, no unsafe): `try_into` on a Vec of exact length
         // succeeds; we built it with N elements above.
         v.try_into()
-            .map_err(|_| DecodeError::UnexpectedEof /* unreachable */)
+            .map_err(|_| EventError::InvalidInput /* unreachable */)
     }
 }
 
@@ -430,7 +466,7 @@ impl<K: Encode + Ord, V: Encode> Encode for BTreeMap<K, V> {
 }
 
 impl<K: Decode + Encode + Ord, V: Decode> Decode for BTreeMap<K, V> {
-    fn decode(d: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
         let n = d.read_len_prefix()?;
         let mut map = BTreeMap::new();
         let mut prev_key_bytes: Option<Vec<u8>> = None;
@@ -446,7 +482,7 @@ impl<K: Decode + Encode + Ord, V: Decode> Decode for BTreeMap<K, V> {
             if let Some(prev) = &prev_key_bytes
                 && k_bytes.as_slice() <= prev.as_slice()
             {
-                return Err(DecodeError::NonCanonicalMap);
+                return Err(EventError::InvalidInput);
             }
             let v = V::decode(d)?;
             prev_key_bytes = Some(k_bytes);
@@ -517,9 +553,9 @@ impl Encode for char {
     }
 }
 impl Decode for char {
-    fn decode(d: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
         let cp = u32::decode(d)?;
-        char::from_u32(cp).ok_or(DecodeError::InvalidUtf8)
+        char::from_u32(cp).ok_or(EventError::InvalidInput)
     }
 }
 
@@ -555,7 +591,7 @@ macro_rules! impl_tuple {
             }
         }
         impl<$($T: Decode),+> Decode for ($($T,)+) {
-            fn decode(d: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+            fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
                 Ok(( $( $T::decode(d)?, )+ ))
             }
         }
@@ -636,13 +672,13 @@ mod tests {
     #[test]
     fn invalid_option_tag_rejected() {
         let err = from_bytes::<Option<u32>>(&[2u8, 0, 0, 0, 0]).unwrap_err();
-        assert_eq!(err, DecodeError::InvalidOptionTag);
+        assert_eq!(err, EventError::InvalidInput);
     }
 
     #[test]
     fn invalid_bool_rejected() {
         let err = from_bytes::<bool>(&[2u8]).unwrap_err();
-        assert_eq!(err, DecodeError::InvalidBool);
+        assert_eq!(err, EventError::InvalidInput);
     }
 
     #[test]
@@ -663,14 +699,14 @@ mod tests {
     fn invalid_utf8_rejected() {
         // len=2, payload = 0xFF 0xFE — invalid UTF-8.
         let err = from_bytes::<String>(&[2, 0, 0, 0, 0xFF, 0xFE]).unwrap_err();
-        assert_eq!(err, DecodeError::InvalidUtf8);
+        assert_eq!(err, EventError::InvalidInput);
     }
 
     #[test]
     fn trailing_bytes_rejected() {
         // GEN-0035:R6 — one extra byte after a u32.
         let err = from_bytes::<u32>(&[1, 0, 0, 0, 0xFF]).unwrap_err();
-        assert_eq!(err, DecodeError::TrailingBytes);
+        assert_eq!(err, EventError::InvalidInput);
     }
 
     #[test]
@@ -683,7 +719,7 @@ mod tests {
         let mut input = Vec::new();
         input.extend_from_slice(&bogus_len.to_le_bytes());
         let err = from_bytes::<Vec<u8>>(&input).unwrap_err();
-        assert_eq!(err, DecodeError::CapExceeded);
+        assert_eq!(err, EventError::InvalidInput);
     }
 
     #[test]
@@ -696,7 +732,7 @@ mod tests {
         let ok: Vec<u8> = from_bytes_with_cap(&input, 16).unwrap();
         assert_eq!(ok.len(), 8);
         let err = from_bytes_with_cap::<Vec<u8>>(&input, 4).unwrap_err();
-        assert_eq!(err, DecodeError::CapExceeded);
+        assert_eq!(err, EventError::InvalidInput);
     }
 
     #[test]
@@ -713,7 +749,7 @@ mod tests {
         // Cap=2 (= outer count) succeeds for the outer header but the
         // inner length=4 exceeds remaining cap=0, so CapExceeded.
         let err = from_bytes_with_cap::<Vec<Vec<u8>>>(&bytes, 2).unwrap_err();
-        assert_eq!(err, DecodeError::CapExceeded);
+        assert_eq!(err, EventError::InvalidInput);
     }
 
     #[test]
@@ -757,7 +793,7 @@ mod tests {
         1u32.encode(&mut bad);
         10u8.encode(&mut bad);
         let err = from_bytes::<BTreeMap<u32, u8>>(&bad).unwrap_err();
-        assert_eq!(err, DecodeError::NonCanonicalMap);
+        assert_eq!(err, EventError::InvalidInput);
     }
 
     // ---- B0 (sub-mission B folded in): canonical map ordering for
@@ -852,7 +888,7 @@ mod tests {
             v.encode(&mut bad);
         }
         let err = from_bytes::<BTreeMap<String, u32>>(&bad).unwrap_err();
-        assert_eq!(err, DecodeError::NonCanonicalMap);
+        assert_eq!(err, EventError::InvalidInput);
     }
 
     #[test]
@@ -866,7 +902,7 @@ mod tests {
     #[test]
     fn unexpected_eof() {
         let err = from_bytes::<u32>(&[1, 2]).unwrap_err();
-        assert_eq!(err, DecodeError::UnexpectedEof);
+        assert_eq!(err, EventError::InvalidInput);
     }
 
     #[test]

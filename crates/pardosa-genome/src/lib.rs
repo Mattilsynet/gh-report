@@ -33,13 +33,13 @@ pub use pardosa_traits::{EventError, EventSafe, Timestamp, Validate, sealed};
 // user code and trybuild fixtures without a direct pardosa-encoding dep.
 // Mirrors the EventSafe re-export pattern above.
 //
-// `DecodeError` is the decoder-local error surface (GEN-0035). The v2
-// canonical event-level error is `EventError` (GEN-0039); a
-// `From<DecodeError> for EventError` bridge lives in `pardosa-traits` so
-// call sites that adopt EventError can lift decode failures. Full
-// migration of the `Decode` trait signature to return `EventError`
-// directly is tracked as a follow-up sub-mission (C2 / `adr-fmt-vggv`).
-pub use pardosa_encoding::{Decode, DecodeError, Decoder, Encode, from_bytes, to_vec};
+// `EventError` is the canonical event-level error and the return type of
+// [`Decode::decode`]; decoder-local failure modes (truncated input, cap
+// exceeded, unknown discriminant, invalid UTF-8, non-canonical map,
+// trailing bytes) all collapse to `EventError::InvalidInput`. Granularity
+// loss is intentional — call sites get a single uniform error surface;
+// finer diagnosis is out-of-band (logging/tracing). See GEN-0040.
+pub use pardosa_encoding::{Decode, Decoder, Encode, from_bytes, to_vec};
 
 // Re-export derive macro when the `derive` feature is enabled.
 // Derive macros and traits live in different namespaces — both resolve
