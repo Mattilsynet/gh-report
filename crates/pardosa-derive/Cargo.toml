@@ -6,6 +6,8 @@ rust-version.workspace = true
 authors.workspace = true
 description = "Substrate-agnostic event-invariant carrier: sealed traits and derive macros for pardosa events"
 license.workspace = true
+# Not yet ready for crates.io; path-only deps to pardosa-traits.
+publish = false
 
 [lib]
 proc-macro = true

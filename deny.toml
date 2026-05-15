@@ -17,11 +17,20 @@ allow = [
     "Zlib",
     "CC0-1.0",
     "CDLA-Permissive-2.0",
+    # BSL-1.0: xxhash-rust (transitive via zstd via cherry-pit-storage).
+    # Boost Software License 1.0, OSI-approved, permissive — equivalent
+    # in posture to MIT/BSD. Allowed for the same reason as ISC.
+    "BSL-1.0",
 ]
 
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Workspace-internal `path = "../foo"` deps are wildcards by default
+# because they carry no version constraint. We're an unpublished
+# workspace; treat intra-workspace path deps as out of scope for the
+# wildcard ban. External wildcards remain denied.
+allow-wildcard-paths = true
 highlight = "all"
 
 [sources]

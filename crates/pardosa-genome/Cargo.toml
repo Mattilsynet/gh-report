@@ -6,6 +6,8 @@ rust-version.workspace = true
 authors.workspace = true
 description = "Binary serialization format with zero-copy reads and serde integration"
 license.workspace = true
+# Not yet ready for crates.io; path-only deps to pardosa-{derive,encoding,traits}.
+publish = false
 
 [lib]
 name = "pardosa_genome"
