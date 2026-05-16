@@ -75,10 +75,33 @@ pub const FOOTER_CHECKSUM_OFFSET: usize = 24;
 //   [format_version:u16][schema_hash:u128][algo:u8][compressed_size:u32][msg_data_size:u32][data...]
 
 /// Bare message header size (uncompressed).
-pub const BARE_HEADER_SIZE: usize = 23;
+///
+/// Derived from primitive widths so a future field change propagates
+/// mechanically. The `const _` assertion below pins the legacy v2 value
+/// (23) so an accidental width drift fails compilation with a clear
+/// message rather than silently shifting the wire layout.
+pub const BARE_HEADER_SIZE: usize = 2          // format_version: u16
+    + HEADER_SCHEMA_HASH_LEN                    // schema_hash:    u128 (16)
+    + 1                                         // algo:           u8
+    + 4; // msg_data_size:  u32
 
-/// Bare message header size (compressed).
-pub const BARE_HEADER_COMPRESSED_SIZE: usize = 27;
+/// Bare message header size (compressed). Adds one extra `u32`
+/// (`compressed_size`) over the uncompressed layout.
+pub const BARE_HEADER_COMPRESSED_SIZE: usize = BARE_HEADER_SIZE + 4;
+
+// Pin legacy v2 wire values. A future field-width change must update
+// both the derivation above AND the literal here, surfacing the wire
+// impact explicitly. Compile-time check — zero runtime cost.
+const _: () = assert!(
+    BARE_HEADER_SIZE == 23,
+    "BARE_HEADER_SIZE drifted from v2 wire value (23). \
+     Update FORMAT_VERSION and downstream readers, then update this assert."
+);
+const _: () = assert!(
+    BARE_HEADER_COMPRESSED_SIZE == 27,
+    "BARE_HEADER_COMPRESSED_SIZE drifted from v2 wire value (27). \
+     Update FORMAT_VERSION and downstream readers, then update this assert."
+);
 
 // ---------------------------------------------------------------------------
 // Compression algorithm codes
