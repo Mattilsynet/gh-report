@@ -10,29 +10,39 @@
 //!        COM-0019:R4 (correlation_id flows through observability boundary),
 //!        COM-0019:R7 (EventBus retry-absorb telemetry — `error!` severity).
 //!
-//! Test design:
-//! - Wire a real `RunService` with a `MsgpackFileStore` (persistence
-//!   still succeeds) and a `FailingBus` that returns `Err(BusError)`
-//!   from `publish`. This exercises the helper through the production
-//!   code path rather than calling it directly (helper is `pub(super)`
-//!   inside `services::shared`, deliberately not exported).
+//! Test design (Track 4.0/3b, mission `adr-fmt-nnn3`):
+//! - The `publish_or_trace` absorb point now lives inside the
+//!   [`Merger`] task — the bus moved off `RunService` (which became a
+//!   thin `merger_tx.send(...).await` wrapper) and into the Merger
+//!   per Track 4.0/3b. The matching failure-injection seam is
+//!   `Merger::with_bus_for_test`, the canonical test-only ctor added
+//!   for this class of test (shared by step-4 / step-5 reroute tests;
+//!   not re-litigated per-step).
+//! - Wire a real `MsgpackFileStore` (persistence still succeeds —
+//!   CHE-0024:R1) and a `FailingBus` that returns `Err(BusError)`
+//!   from `publish`. Spawn the Merger over both via
+//!   `with_bus_for_test`; drive a single `MergerCommand::StartSweep`
+//!   through the channel and await the reply.
 //! - Capture emissions via a `tracing_subscriber::Layer` that records
 //!   each event's field values into a shared `Vec`.
-//! - Drive `RunService::start_sweep` (single envelope) and assert
-//!   exactly one captured error event with all five required fields.
+//! - Assert exactly one captured ERROR event with all five required
+//!   fields on the `gh_report.eda` target (one envelope ⇒ one
+//!   per-envelope emission).
 
 use std::collections::HashMap;
+use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
 
-use cherry_pit_core::{BusError, CorrelationContext, EventBus, EventEnvelope};
+use cherry_pit_core::{AggregateId, BusError, CorrelationContext, EventBus, EventEnvelope};
 use cherry_pit_gateway::MsgpackFileStore;
 use tempfile::TempDir;
+use tokio::sync::oneshot;
 use tracing::Subscriber;
 use tracing::field::{Field, Visit};
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::{Context, SubscriberExt};
 
-use gh_report::app::services::run_service::RunService;
+use gh_report::app::services::{Merger, MergerCommand};
 use gh_report::domain::aggregates::run::StartSweep;
 use gh_report::domain::events::DomainEvent;
 
@@ -105,13 +115,25 @@ async fn publish_failure_emits_structured_error_per_envelope() {
     let dir = TempDir::new().expect("tempdir");
     let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(dir.path()));
     let bus: Arc<FailingBus> = Arc::new(FailingBus);
-    let index = Arc::new(Mutex::new(HashMap::new()));
-    let tracker = Arc::new(Mutex::new(HashMap::new()));
+    let run_index: Arc<Mutex<HashMap<String, AggregateId>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let repo_index: Arc<Mutex<HashMap<String, AggregateId>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let delivery_index: Arc<Mutex<HashMap<String, AggregateId>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 
-    let svc = RunService::with_stores(
+    // Canonical Track 4.0 failure-injection seam: spawn the Merger
+    // over the FailingBus via the test-only ctor. The merger arm
+    // runs `publish_or_trace(&self.bus, ...)` after persistence
+    // succeeds — exactly the absorb point under test.
+    let (merger_tx, _merger_handle) = Merger::<FailingBus>::with_bus_for_test(
         Arc::clone(&store),
         Arc::clone(&bus),
-        Arc::clone(&index),
+        Arc::clone(&run_index),
+        Arc::clone(&repo_index),
+        Arc::clone(&delivery_index),
         Arc::clone(&tracker),
     );
 
@@ -132,8 +154,23 @@ async fn publish_failure_emits_structured_error_per_envelope() {
         timestamp: "2026-05-11T00:00:00Z".into(),
     };
     let ctx = CorrelationContext::none();
-    svc.start_sweep(cmd, &ctx)
+
+    // Drive the Merger directly: this is the post-3b architectural
+    // boundary at which `publish_or_trace` lives. The reply mirrors
+    // what `RunService::start_sweep` would receive — start_sweep
+    // returns `Ok(())` despite the bus failure (CHE-0024:R1).
+    let (reply_tx, reply_rx) = oneshot::channel();
+    merger_tx
+        .send(MergerCommand::StartSweep {
+            cmd,
+            ctx,
+            reply: reply_tx,
+        })
         .await
+        .expect("merger channel open");
+    reply_rx
+        .await
+        .expect("merger reply delivered")
         .expect("start_sweep succeeds despite bus failure (CHE-0024:R1)");
 
     let captured = events_handle
