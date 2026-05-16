@@ -64,64 +64,18 @@ async fn webhook_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
-    // 1. Validate webhook secret is configured (defense in depth).
-    let Some(ref secret) = state.webhook().secret else {
-        // Should not happen — route is only registered when secret is set.
-        return StatusCode::NOT_FOUND;
+    let (event_type, delivery_id, corr_ctx) = match validate_request(&state, &headers, &body) {
+        Ok(parts) => parts,
+        Err(status) => return status,
     };
-
-    // 2. Extract and validate HMAC signature.
-    let Some(signature) = headers
-        .get("x-hub-signature-256")
-        .and_then(|v| v.to_str().ok())
-    else {
-        return StatusCode::UNAUTHORIZED;
-    };
-
-    if !verify_signature(secret, &body, signature) {
-        warn!("webhook HMAC signature validation failed");
-        return StatusCode::UNAUTHORIZED;
-    }
-
-    // 3. Extract event type.
-    let Some(event_type) = headers.get("x-github-event").and_then(|v| v.to_str().ok()) else {
-        return StatusCode::BAD_REQUEST;
-    };
-
-    // 4. Extract delivery ID.
-    let Some(delivery_id) = headers
-        .get("x-github-delivery")
-        .and_then(|v| v.to_str().ok())
-    else {
-        return StatusCode::BAD_REQUEST;
-    };
-    let delivery_id = delivery_id.to_string();
-
-    // Webhook chain root (CHE-0039:R3, oracle bonus adr-fmt-l13).
-    // Each delivery is a fresh-input adapter chain root, distinct from any
-    // concurrent collect-cycle context. Constructor matches Inc 2's collect
-    // root (`correlated`); only the projection input differs.
-    //
-    // Projection: parse `delivery_id` as a hyphenated UUID. GitHub's
-    // `X-GitHub-Delivery` header is documented as a UUID. HMAC at line 78
-    // already gates the request, so a non-UUID `delivery_id` would be
-    // malformed-after-HMAC (essentially impossible in production); `nil()`
-    // is a deterministic defensive fallback. F5: same delivery_id string ->
-    // same Uuid -> same CorrelationContext (pure function, no clock/PRNG).
-    //
-    // Held in scope; consumed at Inc 5 by the 4 publish sites in the
-    // `match action` block below when they route through `publish_event`.
-    let corr_ctx = CorrelationContext::correlated(
-        Uuid::parse_str(&delivery_id).unwrap_or_else(|_| Uuid::nil()),
-    );
 
     // 5. Map event to action (parse before replay-cache insert so malformed
     //    requests don't burn delivery IDs).
-    let action = match map_event_to_action(event_type, &body, &state) {
+    let action = match map_event_to_action(&event_type, &body, &state) {
         Ok(action) => action,
         Err(e) => {
             warn!(
-                event = event_type,
+                event = %event_type,
                 delivery = %delivery_id,
                 err = %e,
                 "webhook parse error"
@@ -147,52 +101,7 @@ async fn webhook_handler(
 
     match action {
         WebhookAction::Remove { inventory_key } => {
-            // M2.cd: direct-write to `store` deleted (W5). The `RepoRemoved`
-            // envelope below drives `EvidenceProjection::apply`'s removal
-            // path (CHE-0048:R2 sole-writer). Pre-read the projection here
-            // to preserve the prior `had_evidence` semantics (used to gate
-            // the `RepoRemoved` publish — we still only emit it when the
-            // key existed pre-removal). Guard scoped to this statement.
-            let had_evidence = state.lock_projection().get(&inventory_key).is_some();
-            if let Err(e) = state
-                .webhook_service
-                .ingest(
-                    RecordDelivery {
-                        delivery_id: delivery_id.clone(),
-                        action: "remove".into(),
-                        repo: Some(inventory_key.clone()),
-                        timestamp: jiff::Timestamp::now().to_string(),
-                    },
-                    &corr_ctx,
-                )
-                .await
-            {
-                tracing::warn!(?e, "WebhookReceived publish failed, non-fatal");
-            }
-            if had_evidence
-                && let Err(e) = state
-                    .repo_service
-                    .record_removal(
-                        &inventory_key,
-                        RecordRemoval {
-                            domain_key: inventory_key.clone(),
-                            repo_name: inventory_key.clone(),
-                            timestamp: jiff::Timestamp::now().to_string(),
-                        },
-                        &corr_ctx,
-                    )
-                    .await
-            {
-                tracing::warn!(?e, "RepoRemoved publish failed, non-fatal");
-            }
-            info!(
-                event = event_type,
-                delivery = %delivery_id,
-                key = %inventory_key,
-                had_evidence = had_evidence,
-                "webhook: repository removed from evidence store"
-            );
-            StatusCode::OK
+            execute_remove(&state, &event_type, &delivery_id, inventory_key, &corr_ctx).await
         }
         WebhookAction::Enqueue {
             inventory_key,
@@ -213,32 +122,161 @@ async fn webhook_handler(
             {
                 tracing::warn!(?e, "WebhookReceived publish failed, non-fatal");
             }
-            execute_enqueue(&state, event_type, &delivery_id, inventory_key, repo).await
+            execute_enqueue(&state, &event_type, &delivery_id, inventory_key, repo).await
         }
-        WebhookAction::Ignore => {
-            if let Err(e) = state
-                .webhook_service
-                .ingest(
-                    RecordDelivery {
-                        delivery_id: delivery_id.clone(),
-                        action: "ignore".into(),
-                        repo: None,
-                        timestamp: jiff::Timestamp::now().to_string(),
-                    },
-                    &corr_ctx,
-                )
-                .await
-            {
-                tracing::warn!(?e, "WebhookReceived publish failed, non-fatal");
-            }
-            debug!(
-                event = event_type,
-                delivery = %delivery_id,
-                "webhook event ignored"
-            );
-            StatusCode::OK
-        }
+        WebhookAction::Ignore => execute_ignore(&state, &event_type, &delivery_id, &corr_ctx).await,
     }
+}
+
+/// Validate HMAC signature, extract event/delivery headers, build correlation ctx.
+///
+/// Returns `Err(StatusCode)` on any validation failure (NOT_FOUND if secret
+/// is unconfigured, UNAUTHORIZED on missing/bad signature, BAD_REQUEST on
+/// missing headers). Extracted from [`webhook_handler`] for cohesion; no
+/// behavioural change.
+fn validate_request(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    body: &Bytes,
+) -> Result<(String, String, CorrelationContext), StatusCode> {
+    // 1. Validate webhook secret is configured (defense in depth).
+    let Some(ref secret) = state.webhook().secret else {
+        // Should not happen — route is only registered when secret is set.
+        return Err(StatusCode::NOT_FOUND);
+    };
+
+    // 2. Extract and validate HMAC signature.
+    let Some(signature) = headers
+        .get("x-hub-signature-256")
+        .and_then(|v| v.to_str().ok())
+    else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+
+    if !verify_signature(secret, body, signature) {
+        warn!("webhook HMAC signature validation failed");
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    // 3. Extract event type.
+    let Some(event_type) = headers.get("x-github-event").and_then(|v| v.to_str().ok()) else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+
+    // 4. Extract delivery ID.
+    let Some(delivery_id) = headers
+        .get("x-github-delivery")
+        .and_then(|v| v.to_str().ok())
+    else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+
+    // Webhook chain root (CHE-0039:R3, oracle bonus adr-fmt-l13).
+    // Each delivery is a fresh-input adapter chain root, distinct from any
+    // concurrent collect-cycle context. Constructor matches Inc 2's collect
+    // root (`correlated`); only the projection input differs.
+    //
+    // Projection: parse `delivery_id` as a hyphenated UUID. GitHub's
+    // `X-GitHub-Delivery` header is documented as a UUID. HMAC above
+    // already gates the request, so a non-UUID `delivery_id` would be
+    // malformed-after-HMAC (essentially impossible in production); `nil()`
+    // is a deterministic defensive fallback. F5: same delivery_id string ->
+    // same Uuid -> same CorrelationContext (pure function, no clock/PRNG).
+    let corr_ctx = CorrelationContext::correlated(
+        Uuid::parse_str(delivery_id).unwrap_or_else(|_| Uuid::nil()),
+    );
+
+    Ok((event_type.to_string(), delivery_id.to_string(), corr_ctx))
+}
+
+/// Execute the remove action: publish WebhookReceived + (conditionally) RepoRemoved.
+///
+/// Extracted from [`webhook_handler`] for cohesion; no behavioural change.
+async fn execute_remove(
+    state: &Arc<AppState>,
+    event_type: &str,
+    delivery_id: &str,
+    inventory_key: String,
+    corr_ctx: &CorrelationContext,
+) -> StatusCode {
+    // M2.cd: direct-write to `store` deleted (W5). The `RepoRemoved`
+    // envelope below drives `EvidenceProjection::apply`'s removal
+    // path (CHE-0048:R2 sole-writer). Pre-read the projection here
+    // to preserve the prior `had_evidence` semantics (used to gate
+    // the `RepoRemoved` publish — we still only emit it when the
+    // key existed pre-removal). Guard scoped to this statement.
+    let had_evidence = state.lock_projection().get(&inventory_key).is_some();
+    if let Err(e) = state
+        .webhook_service
+        .ingest(
+            RecordDelivery {
+                delivery_id: delivery_id.to_string(),
+                action: "remove".into(),
+                repo: Some(inventory_key.clone()),
+                timestamp: jiff::Timestamp::now().to_string(),
+            },
+            corr_ctx,
+        )
+        .await
+    {
+        tracing::warn!(?e, "WebhookReceived publish failed, non-fatal");
+    }
+    if had_evidence
+        && let Err(e) = state
+            .repo_service
+            .record_removal(
+                &inventory_key,
+                RecordRemoval {
+                    domain_key: inventory_key.clone(),
+                    repo_name: inventory_key.clone(),
+                    timestamp: jiff::Timestamp::now().to_string(),
+                },
+                corr_ctx,
+            )
+            .await
+    {
+        tracing::warn!(?e, "RepoRemoved publish failed, non-fatal");
+    }
+    info!(
+        event = event_type,
+        delivery = delivery_id,
+        key = %inventory_key,
+        had_evidence = had_evidence,
+        "webhook: repository removed from evidence store"
+    );
+    StatusCode::OK
+}
+
+/// Execute the ignore action: publish WebhookReceived with `action=ignore`.
+///
+/// Extracted from [`webhook_handler`] for cohesion; no behavioural change.
+async fn execute_ignore(
+    state: &Arc<AppState>,
+    event_type: &str,
+    delivery_id: &str,
+    corr_ctx: &CorrelationContext,
+) -> StatusCode {
+    if let Err(e) = state
+        .webhook_service
+        .ingest(
+            RecordDelivery {
+                delivery_id: delivery_id.to_string(),
+                action: "ignore".into(),
+                repo: None,
+                timestamp: jiff::Timestamp::now().to_string(),
+            },
+            corr_ctx,
+        )
+        .await
+    {
+        tracing::warn!(?e, "WebhookReceived publish failed, non-fatal");
+    }
+    debug!(
+        event = event_type,
+        delivery = delivery_id,
+        "webhook event ignored"
+    );
+    StatusCode::OK
 }
 
 /// Execute the enqueue action: debounce check (push only), then submit job.
