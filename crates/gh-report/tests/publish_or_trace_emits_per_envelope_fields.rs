@@ -115,11 +115,11 @@ async fn publish_failure_emits_structured_error_per_envelope() {
     let dir = TempDir::new().expect("tempdir");
     let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(dir.path()));
     let bus: Arc<FailingBus> = Arc::new(FailingBus);
-    let run_index: Arc<Mutex<HashMap<String, AggregateId>>> =
+    let runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    let repo_index: Arc<Mutex<HashMap<String, AggregateId>>> =
+    let repos_by_key: Arc<Mutex<HashMap<String, AggregateId>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    let delivery_index: Arc<Mutex<HashMap<String, AggregateId>>> =
+    let deliveries_by_id: Arc<Mutex<HashMap<String, AggregateId>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -131,9 +131,9 @@ async fn publish_failure_emits_structured_error_per_envelope() {
     let (merger_tx, _merger_handle) = Merger::<FailingBus>::with_bus_for_test(
         Arc::clone(&store),
         Arc::clone(&bus),
-        Arc::clone(&run_index),
-        Arc::clone(&repo_index),
-        Arc::clone(&delivery_index),
+        Arc::clone(&runs_by_key),
+        Arc::clone(&repos_by_key),
+        Arc::clone(&deliveries_by_id),
         Arc::clone(&tracker),
     );
 

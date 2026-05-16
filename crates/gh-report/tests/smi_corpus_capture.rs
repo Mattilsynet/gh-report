@@ -131,11 +131,11 @@ async fn capture_pre_smi_corpus() {
     let store_dir = tempfile::tempdir().expect("tempdir");
     let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(store_dir.path()));
     let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
-    let run_index: Arc<Mutex<HashMap<String, AggregateId>>> =
+    let runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    let repo_index: Arc<Mutex<HashMap<String, AggregateId>>> =
+    let repos_by_key: Arc<Mutex<HashMap<String, AggregateId>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    let delivery_index: Arc<Mutex<HashMap<String, AggregateId>>> =
+    let deliveries_by_id: Arc<Mutex<HashMap<String, AggregateId>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -149,9 +149,9 @@ async fn capture_pre_smi_corpus() {
     let (merger_tx, _merger_handle) = Merger::spawn(
         Arc::clone(&store),
         Arc::clone(&bus),
-        Arc::clone(&run_index),
-        Arc::clone(&repo_index),
-        Arc::clone(&delivery_index),
+        Arc::clone(&runs_by_key),
+        Arc::clone(&repos_by_key),
+        Arc::clone(&deliveries_by_id),
         Arc::clone(&tracker),
     );
 
@@ -167,7 +167,7 @@ async fn capture_pre_smi_corpus() {
     webhook_aggregate_ingest(&webhook, &ctx).await;
 
     let copied = copy_msgpack_files(store_dir.path(), &target);
-    let aggregate_ids = collect_aggregate_ids(&run_index, &repo_index, &delivery_index);
+    let aggregate_ids = collect_aggregate_ids(&runs_by_key, &repos_by_key, &deliveries_by_id);
     let payload_sequence = load_payload_sequence(&store, &aggregate_ids).await;
     let projection = fold_projection(&store, &aggregate_ids).await;
 
@@ -370,12 +370,12 @@ fn copy_msgpack_files(store_dir: &Path, target: &Path) -> Vec<String> {
 }
 
 fn collect_aggregate_ids(
-    run_index: &Arc<Mutex<HashMap<String, AggregateId>>>,
-    repo_index: &Arc<Mutex<HashMap<String, AggregateId>>>,
-    delivery_index: &Arc<Mutex<HashMap<String, AggregateId>>>,
+    runs_by_key: &Arc<Mutex<HashMap<String, AggregateId>>>,
+    repos_by_key: &Arc<Mutex<HashMap<String, AggregateId>>>,
+    deliveries_by_id: &Arc<Mutex<HashMap<String, AggregateId>>>,
 ) -> Vec<AggregateId> {
     let mut all: Vec<AggregateId> = Vec::new();
-    for index in [run_index, repo_index, delivery_index] {
+    for index in [runs_by_key, repos_by_key, deliveries_by_id] {
         let guard = index.lock().expect("index lock");
         all.extend(guard.values().copied());
     }

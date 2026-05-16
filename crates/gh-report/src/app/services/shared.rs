@@ -42,7 +42,7 @@
 //! The second call's `or_insert` is a no-op (correct routing
 //! preserved), but its `EventStore::create` produces an **orphan
 //! aggregate stream** on disk that the index never points to. The
-//! `sequence_tracker` likewise records an unreachable entry. Not
+//! `next_seq` likewise records an unreachable entry. Not
 //! exercised by current tests; cross-thread concurrency on a single
 //! `RepoService` / `RunService` instance is not part of the B7'b
 //! threat model. Tracked in bd `adr-fmt-1uwm`; resolution candidates:
@@ -90,7 +90,7 @@ where
 {
     pub store: &'a Arc<S>,
     pub index: &'a Arc<Mutex<HashMap<String, AggregateId>>>,
-    pub sequence_tracker: &'a Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
+    pub next_seq: &'a Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
 }
 
 /// Look up the `AggregateId` for `domain_key` from the routing
@@ -178,7 +178,7 @@ where
             if let Some(env) = envs.last() {
                 let seq = env.sequence();
                 let mut guard = handles
-                    .sequence_tracker
+                    .next_seq
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 guard.insert(assigned_id, seq);
@@ -194,7 +194,7 @@ where
             if let Some(env) = envs.last() {
                 let next = env.sequence();
                 let mut guard = handles
-                    .sequence_tracker
+                    .next_seq
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 guard.insert(id, next);
