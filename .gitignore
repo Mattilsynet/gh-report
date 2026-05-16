@@ -34,3 +34,12 @@ docs/notes/
 # any per-crate runs that materialise a nested store/ tree.
 store/
 **/store/
+
+# Bespoke scripts. The Track-4 experiment (prod-loc, track4-verify, awk
+# loc/adr counters, citation-diff) was retracted 2026-05-16 — drift +
+# clutter cost exceeded the value delivered (most criteria already
+# enforced by `cargo test` / `cargo clippy` / `cargo fmt` CI jobs).
+# Keep this directory ignored so future throwaway tooling does not
+# silently accumulate in git history. Promote any genuinely durable
+# tool to its own crate under `crates/` with an ADR justifying it.
+scripts/
