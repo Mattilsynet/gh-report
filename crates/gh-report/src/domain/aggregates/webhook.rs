@@ -5,7 +5,7 @@
 //! Enforces the sole CHE-0054:R3 invariant: **exactly one
 //! `WebhookReceived` event per instance** — write-once, terminal
 //! after first event. Combined with delivery-id-keyed routing in
-//! `AppState::delivery_index` (CHE-0054:R5), this gives the
+//! `AppState::deliveries_by_id` (CHE-0054:R5), this gives the
 //! application-level "idempotency by delivery id" property that
 //! currently lives in the in-memory `seen_deliveries` cache at
 //! `webhook/mod.rs`.
@@ -45,7 +45,7 @@ pub enum DeliveryPhase {
 /// The `WebhookDelivery` aggregate (CHE-0054:R3).
 ///
 /// Per-instance state is intentionally minimal — the load-bearing
-/// identity (`delivery_id`) lives in `AppState::delivery_index` per
+/// identity (`delivery_id`) lives in `AppState::deliveries_by_id` per
 /// CHE-0054:R5. The aggregate captures only the action+repo
 /// projection of the received event for replay equivalence.
 #[derive(Debug, Clone, Default)]
@@ -100,7 +100,7 @@ impl Aggregate for WebhookDelivery {
 pub enum WebhookError {
     /// At-most-one-event invariant violated: this delivery has already
     /// been recorded (CHE-0054:R3). The delivery-id-keyed
-    /// `AppState::delivery_index` should normally route a duplicate
+    /// `AppState::deliveries_by_id` should normally route a duplicate
     /// command to a fresh aggregate via the resolved AggregateId, so
     /// reaching this error is itself a routing-cache miss (legitimate
     /// idempotent retry path).
@@ -113,7 +113,7 @@ pub enum WebhookError {
 /// Record a single received GitHub webhook delivery.
 ///
 /// `delivery_id` is the load-bearing identity carried at the
-/// application boundary (`AppState::delivery_index` per CHE-0054:R5);
+/// application boundary (`AppState::deliveries_by_id` per CHE-0054:R5);
 /// it is included on the command for completeness and for use by the
 /// routing layer, but is not currently materialised on
 /// [`DomainEvent::WebhookReceived`] (open ζ-2 — adding the field

@@ -18,10 +18,7 @@
 //! Post-3b the service holds only a [`mpsc::Sender<MergerCommand>`]
 //! and no longer touches either port directly, so the generics are
 //! dropped. The [`Merger`] binds the concrete types at the
-//! composition root — see [`super::merger`] module docs. The
-//! [`crate::app::state::RunServiceConcrete`] alias is preserved as a
-//! single-line shim through Track 4.0; its deletion is a step-6
-//! concern.
+//! composition root — see [`super::merger`] module docs.
 //!
 //! [`Run`]: crate::domain::aggregates::run::Run
 //! [`Merger`]: super::merger::Merger
@@ -313,20 +310,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(dir.path()));
         let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
-        let run_index = Arc::new(Mutex::new(HashMap::new()));
-        let repo_index = Arc::new(Mutex::new(HashMap::new()));
-        let delivery_index = Arc::new(Mutex::new(HashMap::new()));
+        let runs_by_key = Arc::new(Mutex::new(HashMap::new()));
+        let repos_by_key = Arc::new(Mutex::new(HashMap::new()));
+        let deliveries_by_id = Arc::new(Mutex::new(HashMap::new()));
         let tracker = Arc::new(Mutex::new(HashMap::new()));
         let (merger_tx, _merger_handle) = Merger::spawn(
             Arc::clone(&store),
             Arc::clone(&bus),
-            Arc::clone(&run_index),
-            repo_index,
-            delivery_index,
+            Arc::clone(&runs_by_key),
+            repos_by_key,
+            deliveries_by_id,
             Arc::clone(&tracker),
         );
         let svc = RunService::with_merger_tx(merger_tx);
-        (dir, store, bus, run_index, tracker, svc)
+        (dir, store, bus, runs_by_key, tracker, svc)
     }
 
     #[tokio::test]
@@ -502,7 +499,7 @@ mod tests {
             let guard = tracker
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *guard.get(&assigned_id).expect("sequence_tracker entry")
+            *guard.get(&assigned_id).expect("next_seq entry")
         };
         assert_eq!(
             tracked_seq.get(),
@@ -592,7 +589,7 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             *guard
                 .get(&assigned_id)
-                .expect("sequence_tracker should record last applied seq")
+                .expect("next_seq should record last applied seq")
         };
         assert_eq!(tracked_seq.get(), 1, "first event has sequence 1");
 

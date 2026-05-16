@@ -215,10 +215,10 @@ where
 {
     store: Arc<Store>,
     bus: Arc<B>,
-    run_index: Arc<Mutex<HashMap<String, AggregateId>>>,
-    repo_index: Arc<Mutex<HashMap<String, AggregateId>>>,
-    delivery_index: Arc<Mutex<HashMap<String, AggregateId>>>,
-    sequence_tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
+    runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>>,
+    repos_by_key: Arc<Mutex<HashMap<String, AggregateId>>>,
+    deliveries_by_id: Arc<Mutex<HashMap<String, AggregateId>>>,
+    next_seq: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
 }
 
 impl Merger<Bus> {
@@ -235,18 +235,18 @@ impl Merger<Bus> {
     pub fn spawn(
         store: Arc<Store>,
         bus: Arc<Bus>,
-        run_index: Arc<Mutex<HashMap<String, AggregateId>>>,
-        repo_index: Arc<Mutex<HashMap<String, AggregateId>>>,
-        delivery_index: Arc<Mutex<HashMap<String, AggregateId>>>,
-        sequence_tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
+        runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>>,
+        repos_by_key: Arc<Mutex<HashMap<String, AggregateId>>>,
+        deliveries_by_id: Arc<Mutex<HashMap<String, AggregateId>>>,
+        next_seq: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
     ) -> (mpsc::Sender<MergerCommand>, tokio::task::JoinHandle<()>) {
         Merger::<Bus>::spawn_inner(
             store,
             bus,
-            run_index,
-            repo_index,
-            delivery_index,
-            sequence_tracker,
+            runs_by_key,
+            repos_by_key,
+            deliveries_by_id,
+            next_seq,
         )
     }
 }
@@ -263,18 +263,18 @@ where
     fn spawn_inner(
         store: Arc<Store>,
         bus: Arc<B>,
-        run_index: Arc<Mutex<HashMap<String, AggregateId>>>,
-        repo_index: Arc<Mutex<HashMap<String, AggregateId>>>,
-        delivery_index: Arc<Mutex<HashMap<String, AggregateId>>>,
-        sequence_tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
+        runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>>,
+        repos_by_key: Arc<Mutex<HashMap<String, AggregateId>>>,
+        deliveries_by_id: Arc<Mutex<HashMap<String, AggregateId>>>,
+        next_seq: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
     ) -> (mpsc::Sender<MergerCommand>, tokio::task::JoinHandle<()>) {
         let merger = Self {
             store,
             bus,
-            run_index,
-            repo_index,
-            delivery_index,
-            sequence_tracker,
+            runs_by_key,
+            repos_by_key,
+            deliveries_by_id,
+            next_seq,
         };
         let (tx, rx) = mpsc::channel(MERGER_CHANNEL_CAPACITY);
         let handle = tokio::spawn(merger.run(rx));
@@ -305,18 +305,18 @@ where
     pub fn with_bus_for_test(
         store: Arc<Store>,
         bus: Arc<B>,
-        run_index: Arc<Mutex<HashMap<String, AggregateId>>>,
-        repo_index: Arc<Mutex<HashMap<String, AggregateId>>>,
-        delivery_index: Arc<Mutex<HashMap<String, AggregateId>>>,
-        sequence_tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
+        runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>>,
+        repos_by_key: Arc<Mutex<HashMap<String, AggregateId>>>,
+        deliveries_by_id: Arc<Mutex<HashMap<String, AggregateId>>>,
+        next_seq: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
     ) -> (mpsc::Sender<MergerCommand>, tokio::task::JoinHandle<()>) {
         Self::spawn_inner(
             store,
             bus,
-            run_index,
-            repo_index,
-            delivery_index,
-            sequence_tracker,
+            runs_by_key,
+            repos_by_key,
+            deliveries_by_id,
+            next_seq,
         )
     }
 
@@ -409,7 +409,7 @@ where
         use cherry_pit_core::{Aggregate, HandleCommand};
 
         let domain_key = cmd.batch_id.clone();
-        let existing_id = super::shared::lookup(&self.run_index, &domain_key);
+        let existing_id = super::shared::lookup(&self.runs_by_key, &domain_key);
         let (envelopes, last_seq) =
             super::shared::load_envelopes_or_empty(&self.store, existing_id).await;
         let mut state = crate::domain::aggregates::run::Run::default();
@@ -420,8 +420,8 @@ where
         let new_envelopes = super::shared::create_or_append(
             super::shared::PersistHandles {
                 store: &self.store,
-                index: &self.run_index,
-                sequence_tracker: &self.sequence_tracker,
+                index: &self.runs_by_key,
+                next_seq: &self.next_seq,
             },
             &domain_key,
             existing_id,
@@ -513,7 +513,7 @@ where
     ) -> Result<(), RepoError> {
         use cherry_pit_core::{Aggregate, HandleCommand};
 
-        let existing_id = super::shared::lookup(&self.repo_index, domain_key);
+        let existing_id = super::shared::lookup(&self.repos_by_key, domain_key);
         let (envelopes, last_seq) =
             super::shared::load_envelopes_or_empty(&self.store, existing_id).await;
         let mut state = crate::domain::aggregates::repo::Repo::default();
@@ -524,8 +524,8 @@ where
         let new_envelopes = super::shared::create_or_append(
             super::shared::PersistHandles {
                 store: &self.store,
-                index: &self.repo_index,
-                sequence_tracker: &self.sequence_tracker,
+                index: &self.repos_by_key,
+                next_seq: &self.next_seq,
             },
             domain_key,
             existing_id,
@@ -547,7 +547,7 @@ where
     ) -> Result<(), RepoError> {
         use cherry_pit_core::{Aggregate, HandleCommand};
 
-        let existing_id = super::shared::lookup(&self.repo_index, domain_key);
+        let existing_id = super::shared::lookup(&self.repos_by_key, domain_key);
         let (envelopes, last_seq) =
             super::shared::load_envelopes_or_empty(&self.store, existing_id).await;
         let mut state = crate::domain::aggregates::repo::Repo::default();
@@ -558,8 +558,8 @@ where
         let new_envelopes = super::shared::create_or_append(
             super::shared::PersistHandles {
                 store: &self.store,
-                index: &self.repo_index,
-                sequence_tracker: &self.sequence_tracker,
+                index: &self.repos_by_key,
+                next_seq: &self.next_seq,
             },
             domain_key,
             existing_id,
@@ -592,7 +592,7 @@ where
             .expect("EventStore::create failure path enriched in B7'c");
         {
             let mut guard = self
-                .delivery_index
+                .deliveries_by_id
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard.entry(delivery_id).or_insert(assigned_id);
@@ -600,7 +600,7 @@ where
         if let Some(env) = new_envelopes.last() {
             let seq = env.sequence();
             let mut guard = self
-                .sequence_tracker
+                .next_seq
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard.insert(assigned_id, seq);
@@ -617,7 +617,7 @@ where
     /// the strict resolver.
     fn resolve_run_id(&self, batch_id: &str) -> Result<AggregateId, RunError> {
         let guard = self
-            .run_index
+            .runs_by_key
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard
@@ -667,7 +667,7 @@ where
         if let Some(env) = new_envelopes.last() {
             let next = env.sequence();
             let mut guard = self
-                .sequence_tracker
+                .next_seq
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard.insert(id, next);
