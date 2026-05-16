@@ -1,5 +1,6 @@
 # Build artifacts
 target/
+**/target/
 
 # macOS
 .DS_Store
@@ -23,9 +24,6 @@ docs/notes/
 # bd regenerates this file from the Dolt store; ignoring it keeps it local.
 .beads/issues.jsonl
 .beads/events.jsonl
-
-# Ad-hoc analysis scripts (awk/etc.); not part of shipped tooling
-scripts/
 
 # opencode plugin deps
 .opencode/node_modules/

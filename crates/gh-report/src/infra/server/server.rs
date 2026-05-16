@@ -52,96 +52,16 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use cherry_pit_web::{SVG_CSP, http_trace_layer, normalize_request_path, security_headers};
 use futures_util::{SinkExt, StreamExt};
-use percent_encoding::percent_decode_str;
 use tokio::net::TcpListener;
 use tower_http::limit::RequestBodyLimitLayer;
-use tower_http::trace::TraceLayer;
 
-use tracing::{Span, debug, info, info_span, warn};
+use tracing::{debug, info, warn};
 
 use super::config::ValidatedConfig;
 use super::error::ServerError;
 use super::state::ServerState;
-
-// ===========================================================================
-// Path normalisation (security-critical)
-// ===========================================================================
-
-/// Result of normalising a raw URI path.
-///
-/// Carries the clean cache lookup key and whether the original path had
-/// a trailing slash — needed to choose the correct fallback strategy.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct NormalizedPath {
-    /// Clean cache key (e.g., `"about"`, `"index.html"`, `"blog/post"`).
-    pub(crate) key: String,
-    /// Whether the original request path ended with `/`.
-    pub(crate) has_trailing_slash: bool,
-}
-
-/// Normalise a raw URI path into a safe cache lookup key.
-///
-/// Returns `None` (→ 400) if the path contains traversal sequences, null
-/// bytes, backslashes, or any component that resolves to `..` after
-/// percent-decoding.
-///
-/// # Algorithm
-///
-/// 1. Percent-decode the raw path (handles `%2e%2e`, `%2f`, etc.).
-/// 2. Reject null bytes (`\0`), backslashes (`\`).
-/// 3. Detect trailing slash before filtering (empty final segment).
-/// 4. Split on `/`, skip empty components (collapses `//`), reject `..`.
-/// 5. Re-join with `/` — the result is a clean relative path suitable
-///    for `HashMap` lookup.
-/// 6. Map empty result (root `/`) to `index.html`.
-///
-/// **Double-encoding resilience:** we decode only once. A doubly-encoded
-/// `%252e%252e` decodes to the literal `%2e%2e` which contains no `/` or
-/// `.` path separators, so it becomes a harmless (non-existent) cache key.
-pub(crate) fn normalize_request_path(raw: &str) -> Option<NormalizedPath> {
-    // Step 1: percent-decode.
-    let decoded = percent_decode_str(raw).decode_utf8().ok()?;
-
-    // Step 2: reject dangerous bytes.
-    if decoded.contains('\0') || decoded.contains('\\') {
-        return None;
-    }
-
-    // Step 3: detect trailing slash before filtering.
-    let has_trailing_slash = decoded.ends_with('/') && decoded.len() > 1;
-
-    // Step 4: split, filter empties, reject traversal.
-    let mut segments: Vec<&str> = Vec::new();
-    for seg in decoded.split('/') {
-        if seg.is_empty() || seg == "." {
-            continue;
-        }
-        // Defense-in-depth: reject any segment containing ".." — not just
-        // exact-match ".." — to prevent bypass via prefixed/suffixed variants
-        // like "\x08.." that survive the exact check.
-        if seg.contains("..") {
-            return None; // traversal attempt
-        }
-        segments.push(seg);
-    }
-
-    // Step 5: re-join.
-    let joined = segments.join("/");
-
-    // Step 6: root → index.html.
-    if joined.is_empty() {
-        Some(NormalizedPath {
-            key: "index.html".to_string(),
-            has_trailing_slash: true,
-        })
-    } else {
-        Some(NormalizedPath {
-            key: joined,
-            has_trailing_slash,
-        })
-    }
-}
 
 // ===========================================================================
 // Content-encoding negotiation
@@ -406,6 +326,8 @@ async fn ws_session<S: ServerState>(
         return; // client disconnected immediately
     }
 
+    // gh-report-specific: WS ping/pong keepalive (30s ping, 10s pong deadline) absent
+    // from cherry-pit-web — see deferred bead adr-fmt-65n4
     let mut ping_interval =
         tokio::time::interval(std::time::Duration::from_secs(WS_PING_INTERVAL_SECS));
     ping_interval.tick().await; // consume the immediate first tick
@@ -447,6 +369,8 @@ async fn ws_session<S: ServerState>(
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        // gh-report-specific: lag → text-frame `{"type":"reload"}` (templates
+                        // depend on this); cherry-pit-web uses close-1001 — see deferred bead adr-fmt-65n4
                         debug!(missed = n, "ws client lagged — sending reload signal");
                         if sender
                             .send(Message::Text(r#"{"type":"reload"}"#.into()))
@@ -493,13 +417,6 @@ async fn ws_session<S: ServerState>(
 // ===========================================================================
 // Response building helper
 // ===========================================================================
-
-/// SVG-specific Content-Security-Policy that blocks script execution.
-///
-/// SVG with `image/svg+xml` allows embedded `<script>` execution. This CSP
-/// overrides the global policy on SVG responses to prevent XSS while still
-/// allowing inline CSS and self-referenced images within the SVG.
-const SVG_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'";
 
 /// Build a full HTTP response from a cached page.
 ///
@@ -660,6 +577,8 @@ fn resolve_cache_key<'a>(
 /// - **400** for paths that fail normalisation (traversal, null bytes, etc.).
 /// - **404** for valid paths not present in the cache (serves custom error
 ///   page if configured).
+// gh-report-specific: custom 404 via `error_page_key` page-fallback; cherry-pit-web
+// returns plain 404 — see deferred bead adr-fmt-65n4
 async fn cache_fallback<S: ServerState>(
     State(state): State<Arc<S>>,
     Extension(error_page_key): Extension<Option<Arc<str>>>,
@@ -844,6 +763,8 @@ pub(crate) fn build_router<S: ServerState>(
     let http_semaphore = Arc::new(tokio::sync::Semaphore::new(config.concurrency_limit()));
     let ws_semaphore = Arc::new(tokio::sync::Semaphore::new(config.ws_max_connections()));
     let body_limit = config.max_request_body_bytes();
+    // gh-report-specific: per-deployment `csp_override` threaded into security_headers;
+    // cherry-pit-web hardcodes default CSP — see deferred bead adr-fmt-65n4
     let csp: HeaderValue = HeaderValue::from_str(config.csp_override().unwrap_or(DEFAULT_CSP))
         .expect("CSP validated by builder");
     let error_page_key: Option<Arc<str>> = config.error_page_key().map(Into::into);
@@ -872,30 +793,7 @@ pub(crate) fn build_router<S: ServerState>(
         .with_state(state)
         .layer(Extension(error_page_key))
         .layer(Extension(ws_semaphore))
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(|request: &axum::extract::Request| {
-                    info_span!(
-                        "http",
-                        method = %request.method(),
-                        path = %request.uri().path(),
-                    )
-                })
-                .on_request(|_req: &axum::extract::Request, _span: &Span| {
-                    debug!("request started");
-                })
-                .on_response(
-                    |response: &axum::http::Response<_>,
-                     latency: std::time::Duration,
-                     _span: &Span| {
-                        info!(
-                            status = response.status().as_u16(),
-                            latency_us = u64::try_from(latency.as_micros()).unwrap_or(u64::MAX),
-                            "response",
-                        );
-                    },
-                ),
-        )
+        .layer(http_trace_layer())
         // HTTP concurrency limit: per-instance semaphore replaces the
         // static LazyLock for test isolation and configurability.
         .layer(middleware::from_fn(move |request, next| {
@@ -911,42 +809,6 @@ pub(crate) fn build_router<S: ServerState>(
         }))
 }
 
-/// Inject all security response headers in a single middleware pass.
-///
-/// Replaces six individual `SetResponseHeaderLayer::overriding(...)` layers
-/// with one async function, collapsing 6 levels of `Service::call()`
-/// indirection into a single function call.
-///
-/// The `csp` parameter is resolved from [`ValidatedConfig::csp_override()`] (or the
-/// built-in default) and captured by the closure in `build_router`.
-async fn security_headers(request: Request, next: Next, csp: HeaderValue) -> Response {
-    let mut response = next.run(request).await;
-    let headers = response.headers_mut();
-    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
-    headers.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    // Only set CSP if the handler didn't already set a response-specific
-    // override (e.g., SVG XSS mitigation sets a restrictive CSP).
-    if !headers.contains_key(header::CONTENT_SECURITY_POLICY) {
-        headers.insert(header::CONTENT_SECURITY_POLICY, csp);
-    }
-    headers.insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
-    );
-    headers.insert(
-        axum::http::HeaderName::from_static("permissions-policy"),
-        HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
-    );
-    headers.insert(
-        header::STRICT_TRANSPORT_SECURITY,
-        HeaderValue::from_static("max-age=63072000; includeSubDomains"),
-    );
-    response
-}
-
 /// Per-instance HTTP concurrency limiter.
 ///
 /// Bounds the number of in-flight HTTP requests being processed
@@ -954,6 +816,9 @@ async fn security_headers(request: Request, next: Next, csp: HeaderValue) -> Res
 /// the primary rate limiting should be at the ingress layer (Cloud Run,
 /// reverse proxy). Returns 503 Service Unavailable when the limit is
 /// reached, shedding load immediately rather than queuing.
+// gh-report-specific: kept local to avoid widening cherry-pit-web public surface
+// mid-Track-4.3. CHE-0030:R1 discipline. Future: re-export from cherry-pit-web
+// in a separate mission. See deferred bead adr-fmt-65n4.
 async fn http_concurrency_limit(
     semaphore: Arc<tokio::sync::Semaphore>,
     request: Request,
@@ -975,6 +840,8 @@ async fn http_concurrency_limit(
 ///
 /// Also suitable as a Kubernetes `startupProbe` target: always returns
 /// 200, proving the process is alive and listening.
+// gh-report-specific: `/healthz` (unversioned) returning `{"status":"ok"}`;
+// cherry-pit-web exposes `/v1/healthz` with `{"v":1,"status":"ok"}` — see deferred bead adr-fmt-65n4
 async fn healthz() -> impl IntoResponse {
     (
         StatusCode::OK,

@@ -52,7 +52,7 @@ pub use error::{
     post_persist_cancellation_response,
 };
 pub use limits::LayerLimits;
-pub use path::{PathSegmentError, normalize_request_path, sanitize_path_segment};
+pub use path::{NormalizedPath, PathSegmentError, normalize_request_path, sanitize_path_segment};
 pub use security::{SVG_CSP, security_headers};
 pub use trace::{HttpTraceLayer, http_trace_layer};
 

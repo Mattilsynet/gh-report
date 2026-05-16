@@ -328,11 +328,7 @@ impl AppState {
 )]
 fn build_services(
     merger_tx: tokio::sync::mpsc::Sender<MergerCommand>,
-) -> (
-    Arc<RunService>,
-    Arc<RepoService>,
-    Arc<WebhookService>,
-) {
+) -> (Arc<RunService>, Arc<RepoService>, Arc<WebhookService>) {
     let run = Arc::new(RunService::with_merger_tx(merger_tx.clone()));
     let repo = Arc::new(RepoService::with_merger_tx(merger_tx.clone()));
     let webhook = Arc::new(WebhookService::with_merger_tx(merger_tx));
