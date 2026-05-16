@@ -3,10 +3,49 @@ use std::fmt;
 
 use crate::error::PardosaError;
 
+/// Raw deserialization helper for `Index`. Routes through `Index::new`
+/// to enforce the `u64::MAX` sentinel guard on the deser path — without
+/// this wrapper, a derived `Deserialize` bypasses `Index::new`'s assert
+/// and lets a handcrafted serialized form inject `Index::NONE` into
+/// positions that semantically forbid it (notably `Fiber.current`).
+/// Positions that legitimately carry `NONE` (e.g. `Event.precursor`) opt
+/// in via `index_with_sentinel` below.
+#[derive(Deserialize)]
+pub(crate) struct IndexRaw(u64);
+
+impl TryFrom<IndexRaw> for Index {
+    type Error = String;
+
+    fn try_from(raw: IndexRaw) -> Result<Self, Self::Error> {
+        if raw.0 == u64::MAX {
+            return Err("u64::MAX is reserved for Index::NONE — not valid in this position".into());
+        }
+        Ok(Index(raw.0))
+    }
+}
+
+/// Serde adapter for `Index` fields that legitimately permit the
+/// `Index::NONE` sentinel (e.g. `Event.precursor` marking a genesis
+/// event). Use as `#[serde(with = "index_with_sentinel")]`.
+pub(crate) mod index_with_sentinel {
+    use super::Index;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(index: &Index, s: S) -> Result<S::Ok, S::Error> {
+        index.0.serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Index, D::Error> {
+        // Accept any u64 including u64::MAX; sentinel is meaningful here.
+        u64::deserialize(d).map(Index)
+    }
+}
+
 /// Position in the append-only line.
 ///
 /// GENOME LAYOUT: single `u64` field. Do not add fields or reorder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "IndexRaw")]
 pub struct Index(u64);
 
 impl Index {
@@ -146,6 +185,9 @@ pub struct Event<T> {
     timestamp: i64,
     domain_id: DomainId,
     detached: bool,
+    // Precursor legitimately carries Index::NONE for genesis events.
+    // Bypass the sentinel-rejecting IndexRaw guard for this field only.
+    #[serde(with = "index_with_sentinel")]
     precursor: Index,
     domain_event: T,
 }
@@ -291,12 +333,30 @@ mod tests {
     }
 
     #[test]
-    fn index_none_serde_roundtrip() {
-        let i = Index::NONE;
-        let json = serde_json::to_string(&i).unwrap();
-        let back: Index = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, i);
-        assert!(back.is_none());
+    fn index_none_serde_via_event_precursor() {
+        // Index::NONE cannot deserialize bare (would bypass the sentinel
+        // guard); it round-trips only inside positions that opt in via
+        // index_with_sentinel — e.g. Event.precursor for genesis events.
+        let event = Event::new(
+            1,
+            1_700_000_000_000,
+            DomainId::new(1),
+            false,
+            Index::NONE,
+            "genesis".to_string(),
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        let back: Event<String> = serde_json::from_str(&json).unwrap();
+        assert!(back.precursor().is_none());
+    }
+
+    #[test]
+    fn index_bare_deserialize_rejects_sentinel() {
+        let result: Result<Index, _> = serde_json::from_str("18446744073709551615");
+        assert!(
+            result.is_err(),
+            "bare Index deserialize must reject u64::MAX sentinel"
+        );
     }
 
     // --- DomainId ---
