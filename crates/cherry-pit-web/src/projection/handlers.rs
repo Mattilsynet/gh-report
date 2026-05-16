@@ -57,17 +57,18 @@
 //! phase.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::State;
 use axum::extract::ws::{CloseCode, CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
+use axum::extract::{Extension, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::broadcast;
+use tokio::sync::{Semaphore, broadcast};
 
 use super::port::ProjectionSource;
 use super::state::{PageEntry, ProjectionState};
@@ -297,13 +298,24 @@ fn etag_weak_match(client_val: &HeaderValue, server_val: &HeaderValue) -> bool {
 
 /// WebSocket upgrade handler.
 ///
-/// Validates `Origin == Host` (CSWSH defence per donor) and delegates to
-/// [`ws_session`] on a fresh per-connection task.
+/// Validates `Origin == Host` (CSWSH defence per donor), then attempts
+/// to acquire a permit from the WS semaphore extension (CHE-0062:R1
+/// SEC-0003:R3 route-scoped) — `503 Service Unavailable` on exhaustion,
+/// short-circuiting before the upgrade completes. On success the owned
+/// permit moves into [`ws_session`] for the connection lifetime; drop
+/// on session exit frees the slot. Mirrors the donor's
+/// `server::ws_handler` byte-for-byte so CHE-0062's falsifier tests at
+/// `crates/gh-report/src/infra/server/server.rs:2164,:2209` observe an
+/// identical accept/shed topology after Track 4.3 migration.
 ///
-/// `state` is the typed projection state; cloning is an `Arc` bump.
+/// The `Extension<Arc<Semaphore>>` is attached by
+/// [`super::build_projection_router`]; the WS handler is the **only**
+/// consumer of that extension. `state` is the typed projection state;
+/// cloning is an `Arc` bump.
 pub(crate) async fn ws_handler<P>(
     ws: WebSocketUpgrade,
     State(state): State<ProjectionState<P>>,
+    Extension(ws_sem): Extension<Arc<Semaphore>>,
     headers: HeaderMap,
 ) -> Response
 where
@@ -312,8 +324,11 @@ where
     if !validate_ws_origin(&headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
+    let Ok(permit) = ws_sem.clone().try_acquire_owned() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
     ws.max_message_size(WS_MAX_MESSAGE_SIZE)
-        .on_upgrade(move |socket| ws_session::<P>(socket, state))
+        .on_upgrade(move |socket| ws_session::<P>(socket, state, permit))
 }
 
 /// Per-connection WebSocket session.
@@ -328,8 +343,15 @@ where
 /// WS code [`WS_CLOSE_GOING_AWAY`] (1001) per CHE-0049 R11
 /// drop-and-resync. The client follows the R11 reconnect path:
 /// HTTP-fetch-snapshot, then re-attach WS.
-pub(crate) async fn ws_session<P>(socket: WebSocket, state: ProjectionState<P>)
-where
+///
+/// `_permit` is the owned WS-semaphore permit held for the connection
+/// lifetime (CHE-0062:R1 SEC-0003:R3) — dropping it on function exit
+/// frees one slot for a subsequent upgrade.
+pub(crate) async fn ws_session<P>(
+    socket: WebSocket,
+    state: ProjectionState<P>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+) where
     P: ProjectionSource,
 {
     let (mut sender, mut receiver) = socket.split();

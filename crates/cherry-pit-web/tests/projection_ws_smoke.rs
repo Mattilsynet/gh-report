@@ -19,7 +19,7 @@
 use std::time::Duration;
 
 use cherry_pit_core::CorrelationContext;
-use cherry_pit_web::{PageUpdate, ProjectionState, build_projection_router};
+use cherry_pit_web::{LayerLimits, PageUpdate, ProjectionState, build_projection_router};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::time::timeout;
@@ -41,12 +41,20 @@ use common::MockProjectionSource;
 ///    `EventEnvelope` shape.
 /// 4. Close the WS cleanly.
 #[tokio::test(flavor = "current_thread")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "linear end-to-end WS smoke; splitting would obscure the flow"
+)]
 async fn ws_envelope_carries_v1_and_refuses_event_envelope_shape() {
     // ── 1. server setup ──────────────────────────────────────────
     let source = MockProjectionSource::new();
     let tx = source.tx();
     let state = ProjectionState::from_arc(source);
-    let app = build_projection_router(state, axum::Router::new());
+    let app = build_projection_router(
+        state,
+        LayerLimits::permissive_for_tests(),
+        axum::Router::new(),
+    );
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
