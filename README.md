@@ -2,7 +2,9 @@
 
 Enabling constraints for agent-first development
 
-A Rust workspace shipping binaries (`adr-fmt`, `adr-srv`, `gh-report`)
+Cherry-pit and pardosa are for coding agents extending an event-driven service who need their changes to be safe before review, and for the humans who'd rather not be the ones reviewing them line by line. Cherry-pit catches edits that would quietly break how the system fits together. Pardosa catches edits that would quietly break what the system remembers. The rules both crates enforce live in docs/adr/cherry/ and docs/adr/pardosa/.
+
+A Rust workspace shipping binaries (`adr-fmt`, `adr-srv` (TBD), `gh-report`)
 plus their supporting library crates and a governed ADR corpus.
 
 ## What's here
