@@ -1,6 +1,9 @@
 //! Binary format constants and header layout.
 //!
-//! All multi-byte fields are little-endian.
+//! All multi-byte fields are little-endian. The endianness contract for
+//! `schema_hash` (bytes 8..24) is mechanically pinned by
+//! `tests/header_wire_contract.rs`; a future header writer that uses
+//! `to_be_bytes` or `to_ne_bytes` for this field fails that test.
 
 /// File magic bytes: ASCII "PGNO" (0x50 0x47 0x4E 0x4F).
 pub const MAGIC: [u8; 4] = *b"PGNO";
