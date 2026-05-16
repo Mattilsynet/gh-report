@@ -13,7 +13,7 @@ use crate::domain::checks::{
 };
 use crate::domain::repository::Repository;
 use crate::github::client::GitHubClient;
-use crate::infra::validate::sanitize_path_segment;
+use cherry_pit_web::sanitize_path_segment;
 
 /// Summarize a single ruleset's branch controls.
 fn summarize_ruleset(ruleset: &serde_json::Value) -> BranchControls {

@@ -12,7 +12,7 @@ use crate::config;
 use crate::domain::evidence::LastCommitInfo;
 use crate::domain::repository::Repository;
 use crate::github::client::GitHubClient;
-use crate::infra::validate::sanitize_path_segment;
+use cherry_pit_web::sanitize_path_segment;
 
 /// Fetch the most recent commit on the repository's default branch.
 ///

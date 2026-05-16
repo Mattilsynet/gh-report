@@ -8,7 +8,7 @@ use tracing::{debug, instrument, trace};
 use crate::domain::checks::{DependabotResult, DependabotStatus};
 use crate::domain::repository::Repository;
 use crate::github::client::GitHubClient;
-use crate::infra::validate::sanitize_path_segment;
+use cherry_pit_web::sanitize_path_segment;
 
 /// Extract the `security_and_analysis.dependabot_security_updates.status` field.
 fn extract_status(data: &serde_json::Value) -> Option<DependabotStatus> {

@@ -9,7 +9,7 @@ use crate::config;
 use crate::domain::checks::{SecurityPolicyEvidence, SecurityPolicyResult, SecurityPolicyStatus};
 use crate::domain::repository::Repository;
 use crate::github::client::GitHubClient;
-use crate::infra::validate::sanitize_path_segment;
+use cherry_pit_web::sanitize_path_segment;
 
 /// Build a `SecurityPolicyResult` from the given components.
 fn build_result(
