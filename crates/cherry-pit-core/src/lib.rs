@@ -67,6 +67,14 @@ mod policy;
 mod projection;
 mod store;
 
+// CHE-0058 carve-out: feature-gated `pub mod` for test fixtures.
+// Visibility is opt-in via `--features testing` for downstream consumers
+// (SM-4 conformance harness + adapter-crate integration tests); always
+// compiled in `#[cfg(test)]` so core's own tests can exercise the
+// fixtures without enabling the feature.
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use aggregate::{Aggregate, HandleCommand};
 pub use aggregate_id::AggregateId;
 pub use bus::{CommandBus, EventBus};

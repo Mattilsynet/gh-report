@@ -16,6 +16,15 @@ categories = ["data-structures"]
 [lints]
 workspace = true
 
+[features]
+# In-memory fixtures (FakeBus, InMemoryEventStore, InMemoryProjectionStore)
+# behind a feature gate so production builds stay clear of test-only code.
+# Carve-out CHE-0058 permits `#[cfg(any(test, feature = "testing"))] pub mod
+# testing;` over CHE-0030:R1's bare-`pub mod` ban. Zero new dependencies
+# (CHE-0029:R4 inviolate) — implementation is pure std on top of the
+# existing serde/uuid/jiff trio.
+testing = []
+
 [dependencies]
 serde = { workspace = true }
 uuid = { workspace = true }
