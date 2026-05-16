@@ -64,8 +64,8 @@ pub use command_router::{CommandRouter, DispatchOutcome};
 // `path`), keeping the `middleware` module itself implementation
 // detail per CHE-0030:R2.
 pub use middleware::{
-    HttpTraceLayer, LayerLimits, SVG_CSP, compress_zstd, compute_etag, http_trace_layer,
-    normalize_request_path, sanitize_path_segment, security_headers,
+    HttpTraceLayer, LayerLimits, NormalizedPath, SVG_CSP, compress_zstd, compute_etag,
+    http_trace_layer, normalize_request_path, sanitize_path_segment, security_headers,
 };
 #[cfg(feature = "projection")]
 pub use projection::{

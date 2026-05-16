@@ -422,9 +422,8 @@ fn write_snapshots(
     // `serde_json::to_string_pretty` preserves `BTreeMap` ordering
     // (the projection uses it for repositories) so output is
     // deterministic.
-    let payload_json = serde_json::to_string_pretty(payload_sequence)
-        .expect("serialise payload sequence")
-        + "\n";
+    let payload_json =
+        serde_json::to_string_pretty(payload_sequence).expect("serialise payload sequence") + "\n";
     let projection_json =
         serde_json::to_string_pretty(projection).expect("serialise projection") + "\n";
 
@@ -437,14 +436,17 @@ fn write_snapshots(
     // copy_msgpack_files) — gives the replay test a stable
     // enumeration source without re-scanning the directory.
     let manifest = copied.join("\n") + "\n";
-    fs::write(target.join("aggregate_files.txt"), manifest)
-        .expect("write aggregate_files.txt");
+    fs::write(target.join("aggregate_files.txt"), manifest).expect("write aggregate_files.txt");
 
     let written: Vec<PathBuf> = fs::read_dir(target)
         .expect("read target")
         .map(|e| e.expect("dir entry").path())
         .collect();
-    assert!(written.iter().any(|p| ends_with(p, "payload_sequence.json")));
+    assert!(
+        written
+            .iter()
+            .any(|p| ends_with(p, "payload_sequence.json"))
+    );
     assert!(
         written
             .iter()

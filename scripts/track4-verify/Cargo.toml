@@ -1,0 +1,22 @@
+[package]
+name = "track4-verify"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "Apache-2.0 OR MIT"
+publish = false
+description = "Mechanical verifier for Phase 2 v2 Track 4 mission package exit criteria."
+
+# Standalone crate; excluded from the parent workspace so its lints / deps
+# do not bleed into the gh-report mission. Invoke from repo root via:
+#   cargo run --manifest-path scripts/track4-verify/Cargo.toml
+[workspace]
+
+[[bin]]
+name = "track4-verify"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]

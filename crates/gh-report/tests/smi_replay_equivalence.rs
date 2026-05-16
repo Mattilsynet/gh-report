@@ -64,10 +64,9 @@ fn fixtures_dir() -> PathBuf {
 /// Decoding mirrors `MsgpackFileStore::deserialize_and_validate_stream`:
 /// a single `from_slice::<Vec<EventEnvelope<DomainEvent>>>`.
 fn load_msgpack_aggregate(path: &PathBuf) -> Vec<EventEnvelope<DomainEvent>> {
-    let bytes = fs::read(path)
-        .unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()));
-    let envelopes: Vec<EventEnvelope<DomainEvent>> = rmp_serde::from_slice(&bytes)
-        .unwrap_or_else(|e| {
+    let bytes = fs::read(path).unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()));
+    let envelopes: Vec<EventEnvelope<DomainEvent>> =
+        rmp_serde::from_slice(&bytes).unwrap_or_else(|e| {
             panic!(
                 "decode fixture {} as Vec<EventEnvelope<DomainEvent>>: {e}",
                 path.display()
@@ -108,8 +107,8 @@ fn smi_replay_payload_sequence_byte_equivalent() {
         }
     }
 
-    let expected_json = fs::read_to_string(dir.join("payload_sequence.json"))
-        .expect("read payload_sequence.json");
+    let expected_json =
+        fs::read_to_string(dir.join("payload_sequence.json")).expect("read payload_sequence.json");
     let expected: Vec<DomainEvent> =
         serde_json::from_str(&expected_json).expect("decode payload_sequence.json");
 
@@ -165,8 +164,8 @@ fn smi_replay_projection_snapshot_byte_equivalent() {
     // drift.
     let expected_value: EvidenceProjection =
         serde_json::from_str(&expected_json).expect("decode projection_snapshot.json");
-    let expected_normalised = serde_json::to_string_pretty(&expected_value)
-        .expect("re-serialise expected projection");
+    let expected_normalised =
+        serde_json::to_string_pretty(&expected_value).expect("re-serialise expected projection");
 
     assert_eq!(
         replayed_json, expected_normalised,
@@ -205,14 +204,15 @@ fn smi_msgpack_on_disk_format_byte_equivalent() {
             continue;
         }
         let path = dir.join(line);
-        let original = fs::read(&path)
-            .unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()));
+        let original =
+            fs::read(&path).unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()));
         let envelopes: Vec<EventEnvelope<DomainEvent>> = rmp_serde::from_slice(&original)
             .unwrap_or_else(|e| panic!("decode {}: {e}", path.display()));
         let reencoded = rmp_serde::encode::to_vec_named(&envelopes)
             .unwrap_or_else(|e| panic!("re-encode {}: {e}", path.display()));
         assert_eq!(
-            original, reencoded,
+            original,
+            reencoded,
             "msgpack on-disk format drifted for {} — Track 4.0 contract \
              violation per criterion #11 (`.ooda/brief-track-4.0-smi.md`). \
              The encoding contract (rmp_serde::encode::to_vec_named over \
