@@ -32,6 +32,13 @@ uuid = { workspace = true }
 # milestones may re-add as actual call-sites materialise.
 
 [dev-dependencies]
+# SM-6: re-pull cherry-pit-core with the `testing` feature so the
+# conformance harness (cherry_pit_core::testing::conformance) is
+# accessible from tests/. The non-feature build (above) stays clean
+# of test-only code per CHE-0058 carve-out. The serde dev-dep
+# remains: TestEvent in conformance_pardosa_store.rs derives
+# Serialize/Deserialize (the harness's bounds reach via DomainEvent).
+cherry-pit-core = { workspace = true, features = ["testing"] }
 tokio = { workspace = true }
 tokio-test = { workspace = true }
 serde = { workspace = true }
