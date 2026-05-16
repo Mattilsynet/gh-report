@@ -29,7 +29,15 @@ pub use error::ServerError;
 pub use port::ProjectionSource;
 pub use state::{PageEntry, PageUpdate, ProjectionState};
 
+use std::sync::Arc;
+
 use axum::Router;
+use axum::extract::{DefaultBodyLimit, Extension};
+use tokio::sync::Semaphore;
+use tower_http::limit::RequestBodyLimitLayer;
+
+use crate::middleware::LayerLimits;
+use crate::middleware::limits::http_concurrency_limit;
 
 /// Construct an axum router for the projection adapter.
 ///
@@ -45,24 +53,58 @@ use axum::Router;
 /// Consumer composition with [`crate::build_router`] (the cqrs surface)
 /// is done via [`Router::merge`] in `main`.
 ///
-/// `extra_routes` is a stateless [`Router`] that the consumer merges
-/// onto the projection surface — auth probes, status pages, anything
-/// outside the projection contract. The merge happens after
-/// `.with_state(state)` so `extra_routes` carries its own state (or
-/// none); the projection state never leaks into consumer routes.
-/// Callers with no extras pass [`Router::new()`]. The parameter
-/// realises the CHE-0049 R12 amendment (2026-05-16) extending the
-/// CQRS-side R2 `extra_routes` merge-point convention to the
-/// projection adapter.
+/// ## Parameters
+///
+/// - `state` — typed projection state (CHE-0049:R1 + R12).
+/// - `limits` — per-layer numeric sizing for the SEC-0003 R1/R3
+///   availability layers attached by this builder (CHE-0062:R2). The
+///   library owns *what layer is attached where*; the consumer owns
+///   *what number goes in*. Three layers are unconditionally attached
+///   per CHE-0062:R4:
+///     - body cap → `RequestBodyLimitLayer` (413 on exceed, SEC-0003:R1);
+///     - inflight cap → [`http_concurrency_limit`] middleware with
+///       **503-shedding** semantics (SEC-0003:R3 — does *not* queue);
+///     - WS connection cap → `Arc<Semaphore>` extracted as
+///       `Extension<Arc<Semaphore>>` by [`handlers::ws_handler`], which
+///       calls `try_acquire_owned` on upgrade and returns 503 on
+///       exhaustion (SEC-0003:R3 route-scoped per CHE-0049:R3 + R11).
+/// - `extra_routes` — stateless [`Router`] merged onto the projection
+///   surface after `.with_state(state)`. Auth probes, status pages,
+///   anything outside the projection contract. The projection state
+///   never leaks into consumer routes. Callers with no extras pass
+///   [`Router::new()`]. Realises the CHE-0049 R12 amendment
+///   (2026-05-16).
 ///
 /// Per CHE-0049 R11 backpressure is "drop-and-resync": on
 /// `broadcast::RecvError::Lagged` the per-socket task closes the WS
 /// with code 1001 ("Going Away"). Clients recover by HTTP-fetching the
 /// current snapshot and re-attaching a fresh WS for subsequent deltas
 /// — the snapshot is the durable checkpoint per CHE-0048:R2.
-pub fn build_projection_router<P>(state: ProjectionState<P>, extra_routes: Router) -> Router
+pub fn build_projection_router<P>(
+    state: ProjectionState<P>,
+    limits: LayerLimits,
+    extra_routes: Router,
+) -> Router
 where
     P: ProjectionSource,
 {
-    handlers::build(state).merge(extra_routes)
+    // Per-instance permit pools. Each `build_projection_router` call
+    // gets its own pools so tests run in parallel without cross-talk
+    // (donor `server.rs:843-845` rationale).
+    let http_semaphore = Arc::new(Semaphore::new(limits.max_inflight_requests));
+    let ws_semaphore = Arc::new(Semaphore::new(limits.max_ws_connections));
+
+    // axum's `DefaultBodyLimit::disable()` lifts axum's built-in 2 MiB
+    // cap so `RequestBodyLimitLayer` is the sole authority — without it
+    // axum may short-circuit at its own default before reaching the
+    // tower-http layer, hiding the CHE-0062:R2 sizing from observation.
+    handlers::build(state)
+        .merge(extra_routes)
+        .layer(DefaultBodyLimit::disable())
+        .layer(RequestBodyLimitLayer::new(limits.max_body_bytes))
+        .layer(axum::middleware::from_fn(move |request, next| {
+            let sem = Arc::clone(&http_semaphore);
+            http_concurrency_limit(sem, request, next)
+        }))
+        .layer(Extension(ws_semaphore))
 }

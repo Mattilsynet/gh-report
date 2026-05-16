@@ -145,10 +145,6 @@ impl LayerLimits {
 /// Wired via [`axum::middleware::from_fn`] in the router builder; the
 /// per-instance `Arc<Semaphore>` is captured by the closure so the
 /// permit pool lives for the router's lifetime.
-#[expect(
-    dead_code,
-    reason = "wired into build_projection_router by Track 4.2.B-ii per CHE-0062:R1"
-)]
 pub(crate) async fn http_concurrency_limit(
     semaphore: Arc<Semaphore>,
     request: Request,
