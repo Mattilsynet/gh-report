@@ -76,29 +76,18 @@ ratification (§6).
 
 ---
 
-## 3. Starting State (2026-05-13, EVAL-GATE PASS)
+## 3. Starting State
 
-Captured at moment of phase transition. Sources cited from the readiness
-packet (`.ooda/eval-gate-readiness-1778665592.md` and its prep artefacts).
+Live state — point-in-time snapshots have been removed; query the SSOTs.
 
-| Item | State at EVAL-GATE PASS |
-|------|--------------------------|
-| `cherry-pit-core` | Live 0.1.0; load-bearing in gh-report. |
-| `cherry-pit-gateway` | Live 0.1.0; `MsgpackFileStore` only; CHE-0047 R5 implemented. |
-| `cherry-pit-projection` | Live 0.1.0; `FileProjectionStore`, `InMemoryProjection`, `ProjectionDriver`. |
-| `cherry-pit-web` | Live 0.1.0; axum bridge over `CommandGateway`. |
-| `cherry-pit-agent` | Live 0.1.0; composition root + EventBus. |
-| `gh-report` | Worked example; 8 `HandleCommand` impls across 3 services; all 6 §6.2 anti-patterns clear. |
-| ADR corpus | 55 ratified CHE ADRs (CHE-0001..CHE-0055; CHE-0055 supersedes CHE-0052 per commit `868abfe`). |
-| §6.3 baseline | 11/11 exit 0 (build, test, clippy `-D warnings`, fmt, `adr-fmt --lint`, `--tree CHE`, `--context × 5`). |
-| Open bd evidence beads | 15 retained-open under active arch-review epics (post-gardener 2026-05-13); ~38 archival beads closed. |
-| Commit pins | `868abfe` (CHE-0055 ratification trio: CHE-0055 + cmd-queue-target Ratified + master-architecture-review promoted to tracked); `31b3bf2` (FOCUS §0/§1 finalize). |
-| WU-7 epic | `adr-fmt-cli6` closed 2026-05-13. |
-| `.ooda/` size | 28 MB post-gardener (reclaimed 5.12 MB / 325 files in aggressive sweep). |
-| Phase 2 v1 → v2 transition | 2026-05-14: v1 declared exit on ceremony (6/10 tasks discharged by ADR text only; framework crates circularly counted as "≥2 worked examples"). v2 supersedes per `docs/c4/roadmap.md` v0.3 with mechanical CI-verifiable exit criteria + Track 0.5 (Pardosa research) gate before Track 2 (pardosa wrap). v1 task closures retained for audit; do not re-open. |
-| Phase 2 v2 Track 4.0 — SMI injection | 2026-05-15: gh-report **Serial Merge Invariant** refactor added as Track 4.0 + Phase 2 v2 exit criterion #10 (rg checks + replay-equivalence test). Discovery origin: plan-mode dataflow analysis of gh-report write path. Audit constraint locked: sweep history (`Run` event variants) must remain in projection; on-disk msgpack format unchanged. Track 4 gating on Tracks 1 + 3 unchanged. Companion: `docs/c4/roadmap.md` v0.4; injection bead `adr-fmt-nnn3` (labels `phase:2-generalize,track:4,mission:gh-report-smi`). |
-| Phase 2 v2 Tracks 1 + 2 + 4 — starting state | 2026-05-16: Tracks 0 + 0.5 + 1 + 2 closed; Track 4 mid-flight at commit `f634de9` (Tracks 4.0 + 4.2.A + 4.2.B done). Track-4 epic `adr-fmt-ysaa`; Track-1+2 epic `adr-fmt-x3ax`. Remaining Phase 2 v2 work: Tracks 3 + 4.3 + 4.4 + 5. Track 4.3 scope ratified server.rs-only (validate.rs migration split out to Track 4.4 per moltke decision A). |
-| Phase 2 v2 exit-criterion amendment + retraction | 2026-05-16 morning: §8 Track-4 LOC gate amended from `wc -l < 2500` (raw newline proxy) to production-LOC non-regression gate via bespoke tooling (`scripts/prod-loc` + `scripts/track4-verify`); CI job `track4-gates` wired; `scripts/` un-ignored. 2026-05-16 afternoon: **amendment retracted, tooling removed** — audit found ~10 of 13 `track4-verify` criteria already enforced by existing CI jobs (`build` / `test` / `clippy` / `fmt`); `prod-loc` was 574 LOC to enforce a proxy gate whose existence was itself questionable. User verdict: "the gain is too small and the cost of drift and clutter is real. remove". `scripts/` re-ignored + emptied; CI job deleted; LOC gate sunset entirely (architectural substance is observable in commit diffs + ADRs, not in a LOC number). See §9 row 0.7 for full rationale. |
+| Item | Pointer |
+|------|---------|
+| Active phase | Phase 2 v2 (Generalization by Construction) |
+| Remaining Phase 2 v2 tracks | Track 3 (adr-srv), Track 4.4 (validate.rs migration), Track 5 (SEC-0003 bind-in-library) |
+| Closed-track / closed-task history | bd, labels `phase:1-cleanup` / `phase:2-generalize` |
+| Live track-level dashboard | `docs/c4/roadmap.md` |
+| ADR corpus state | `cargo run -p adr-fmt -- --tree CHE` (and PAR / GEN / AFM) |
+| Workspace members | `Cargo.toml [workspace] members` (SSOT) |
 
 ---
 
@@ -301,10 +290,6 @@ cargo run -p adr-fmt -- --refs CHE-0052     # task 1: only historical refs
 **Phase 2 (Generalize)** — baseline plus:
 
 ```
-# (Phase 2 v1 verify additions retained for historical task closures;
-# Phase 2 v2 supersedes with the mechanical exit-gate suite below.)
-cargo test -p <crate> --features trybuild           # v1 T6 compile-fail fixtures (retained)
-
 # Phase 2 v2 — Generalization by Construction
 # Track 1.3: trait-conformance suite (any-impl-must-pass)
 cargo test --workspace --test '*_conformance'
@@ -332,22 +317,15 @@ cargo test -p adr-srv --test graphql_read_e2e
 cargo test -p adr-srv --test graphql_write_e2e
 cargo test -p adr-srv --test lint_integration   # metacircular adr-fmt-as-projection
 
-# Track 4: gh-report consolidation — LOC gate retracted (v0.7, 2026-05-16).
-# Originally raw `wc -l < 2500` (v0.5 and earlier), then production-LOC
-# non-regression via scripts/prod-loc + scripts/track4-verify (v0.6, half a
-# day), now sunset entirely. Substance is observable in commit diffs +
-# ADRs (CHE-0062 thin-shell, CHE-0049-Amendment-Part-2 library-attached
-# layers, SMI-1..SMI-5 single-writer invariants); LOC counts are proxy.
-# Existing CI jobs (build / test / clippy / fmt) already cover ~10 of the
-# 13 criteria the retracted harness wrapped. See §9 row 0.7.
+# Track 4 mechanical LOC gate retracted v0.7 (2026-05-16); substance
+# evidence lives in CHE-0062 + CHE-0049-Amendment-Part-2 + SMI-1..SMI-5.
 
 # Track 5: SEC-0003 bind-in-library integration test (test name TBD per chosen mechanism)
 cargo test -p cherry-pit-web --test sec_0003_enforced_at_library_surface
 
-# Track 4.0: gh-report SMI exit gate (Phase 2 v2 exit criterion #10)
-cargo test -p gh-report --test smi_replay_equivalence
+# Track 4.0 SMI invariant maintained (Track 4.0 closed 2026-05-16):
 rg -n 'sequence_tracker|run_index|repo_index|delivery_index' crates/gh-report/src/ && exit 1 || true
-# rg above MUST return 0 hits post-SMI; non-zero exit-on-match negated to 0
+cargo test -p gh-report --test smi_replay_equivalence
 ```
 
 **Phase 3 (Harden)** — baseline plus:
@@ -367,10 +345,5 @@ all green AND `docs/c4/roadmap.md` exit criteria all checked.
 
 | Version | Date       | Author | Changes |
 |---------|------------|--------|---------|
-| 0.1     | 2026-05-13 | acje + agent | Initial template. Predecessor `FOCUS-cherry-pit-construction.md` v0.4 archived in place via `git mv`. EVAL-GATE cleared 2026-05-13 (verdicts §6.1/§6.2/§6.3 = PASS at `.ooda/eval-gate-2026-05-13.md` once finalized from DRAFT). This file is a barebones template — §1 objective, §3 starting-state additions, §4 axis selection, §5 sequencing, §6 medium-risk escalation list, §7 guardrail confirmations, §8 axis-specific verify commands all `[TO BE FILLED IN]` and await user direction. |
-| 0.2     | 2026-05-13 | acje + agent | Adopted 3-phase model (Cleanup / Generalize / Harden). §3 starting state filled in (commit pins `868abfe` / `31b3bf2`, post-gardener state, `adr-fmt-cli6` closed). §4 reshaped: phases replace ungrouped axes; full per-axis detail moved to `docs/c4/roadmap.md` (split for stability — FOCUS.md is the recipe, roadmap.md is the live dashboard). §5 sequencing diagram with cross-phase injection. §6 publication-prep policy = Phase 3 only; medium-risk list populated. §7 deferred-items reframed (Phase 3 review for CHE-0044 / Pardosa / NATS; donor refactor N/A post-Axis-B). §8 per-phase verify additions. `.ooda/refinement-roadmap-draft.md` deleted (lifecycle expired per its own §"What this draft does NOT do" — adoption supersedes draft). All Round-1 / Round-2 grilling decisions committed. |
-| 0.3     | 2026-05-13 | acje + agent | Ceremony stripped from all phases (C4 doc refreshes, master-review scheduled-refresh, README quickstart, public-surface audit tasks, CHANGELOG, MSRV declaration, semver docs, license-header audit, docs.rs metadata, crates.io publication actions removed — these were ceremony-shaped tasks, not substance). Phase 3 reframed: correctness + error-withstanding + adversarial-input hardening, not publication-prep. Phase 3 gains Smithy contract models and TLA+ specifications for temporal invariants (scope and tool details deferred to task activation). Axis J (perf/energy) and Publication-prep dropped. Roadmap.md restructured from axis-detail blocks to ordered high-level task lists. §4 condensed (axis labels removed; task list lives in roadmap.md); §6 publication-prep escalation replaced with "crates.io publication = refinement does not publish"; §7 publication guardrail rewritten. |
-| 0.4     | 2026-05-14 | acje + agent | Phase 2 v2 (Generalization by Construction) ratified after ceremony-vs-substance review: v1 declared exit on ceremony for 6/10 tasks (cherry-pit-agent + cherry-pit-web circularly counted as "≥2 worked examples"; T2/T4/T5/T7/T8/T9/T10 discharged by ADR text only). §3 starting-state addendum records the v1→v2 transition. §7 amendment: Pardosa/NATS deferral lifted (constrained — tests-only NATS via embedded `nats-server`; production NATS, SEC-0010 TLS, SEC-0011 hash-chain stay Phase 3); CHE-0044 object_store still Phase-3-deferred, decoupled from pardosa activation. §8 Phase-2 verify additions rewritten with the mechanical Phase-2 v2 exit-gate suite (conformance harness, RPITIT audit, pardosa workspace activation, adr-srv full-stack, gh-report LOC gate, SEC-0003 library-surface integration test). Track 0.5 (Pardosa research) prepended per user request: gap analysis surfaced model mismatches (Purged state ↔ Aggregate lifecycle; DomainId↔AggregateId identity; correlation/causation propagation in EventBus) requiring prior-art survey (EventStoreDB / Marten / Axon / Rust crates / NATS / Kafka) + verdict ratification before Track 2 (pardosa wrap). §2 invariants unchanged; any CHE amendment recommended by Track 0.5 is its own user-ratification round. Companion: `docs/c4/roadmap.md` v0.3. |
-| 0.5     | 2026-05-15 | acje + agent | **Phase 2 v2 Track 4.0 — gh-report Serial Merge Invariant (SMI)** added. §3 starting-state gains audit-trail row for the SMI injection (discovery origin: plan-mode dataflow analysis; audit constraint locked: sweep history must remain in projection; on-disk msgpack format unchanged). §8 Phase-2 v2 verify suite gains SMI exit-gate block (`cargo test -p gh-report --test smi_replay_equivalence` + rg check for `sequence_tracker / run_index / repo_index / delivery_index` returning zero hits). §2 invariants unchanged. §6 escalation policy unchanged. §7 guardrails unchanged. Track 4 gating on Tracks 1 + 3 unchanged (SMI waits for adr-srv full stack before landing, so the router diff in 4.1 sees post-SMI gh-report). Companion: `docs/c4/roadmap.md` v0.4 (Track 4.0 row, exit criterion #10, Track 0.5 single-writer-friendly callout, risk register row, Track-4 internal order). Named invariants documented on injection bead (SMI, job-queue regenerability, pure-worker, append-or-reject, post-append publish). No CHE ADR amendment in this round; any trait-shape recommendation surfaces through Track 0.5 verdict process if still open, or follow-up ADR mission post-Track-4. |
-| 0.6     | 2026-05-16 | acje + agent | **Phase 2 v2 exit-criterion #5/#6 (Track 4 LOC gate) amended.** Original §8 line read verbatim: `test "$(wc -l < crates/gh-report/src/infra/server/server.rs)" -lt 2500`. That gate was malformed-as-doctrine: raw `wc -l` counts every newline (comments, blank lines, `#[cfg(test)]` blocks, in-file integration tests) so it measured **proxy not substance** — a file could grow large with tests while production code shrank, or shrink by stripping comments while production complexity stayed put. Phase 2 v2 doctrine (`.ooda/refinement-doctrine-v2.md` §3 row 99: "ceremony is form-shaped; substance is invariant-shaped") rules out proxy gates. Replacement: production-LOC non-regression gate via `scripts/prod-loc` (syn-based AST walker counting top-level item spans **outside** `#[cfg(test)]` modules and `tests/` directories) against Phase-2-v2 baseline 1007 (measured at HEAD `f634de9` pre-Track-4.3). Doctrine going forward: **non-regression**, not a tightening floor — the Track-4.3-internal aspirational threshold (≤ 927) is not inherited by future tracks. **Mechanical enforcement.** `scripts/` un-ignored from root `.gitignore`; `scripts/prod-loc/` + `scripts/track4-verify/` Rust crates committed as version-controlled enforcement infrastructure; historical awk artefacts (`adr_agg.awk`, `adr_rules.awk`, `loc.awk`, `loc_agg.awk`) committed as honest record. CI workflow `.github/workflows/ci.yml` gains job `track4-gates` running `cargo run --manifest-path scripts/track4-verify/Cargo.toml -- --eventstore-ceiling 60`; harness exits 1 on any FAIL (verified locally with `--eventstore-ceiling 5` force-fail → `EXIT=1`). This closes the silent-reinterpretation failure mode — the gate is now machine-checked on every push and PR, not advisory in prose. Substance grounded in CHE-0062 (gh-report-as-thin-shell), CHE-0049-Amendment-Part-2 (library-attached layers), and SMI-1..SMI-5 (single-writer invariants from Track 4.0). User ratifications 2026-05-16: (A) gh-report HTTP/WS contract frozen for Track 4, cherry-pit-web router adoption deferred to Phase 3 bead `adr-fmt-65n4`; (I) LOC gate measures production lines only; (B+D) `scripts/` un-ignored + CI gate wired. Mid-mission honesty escalation triggered the amendment: "amend the goalpost explicitly, do not silently reinterpret — silent reinterpretation is the v1 ceremony failure mode". Companion: `docs/c4/roadmap.md` v0.5. §2 invariants unchanged. §3 starting-state gains amendment row. §7 guardrails unchanged. |
+| 0.1–0.6 | 2026-05-13 → 2026-05-16 | acje + agent | Phase model adoption, ceremony strip, Phase 2 v1→v2 supersession, Track 4.0 SMI injection, LOC-gate amend-then-retract. See git log + bd for detail. |
 | 0.7     | 2026-05-16 | acje + agent | **v0.6 amendment retracted; LOC gate sunset entirely; bespoke scripts removed.** Half-day audit of `scripts/prod-loc` (574 LOC syn-AST production-LOC counter) + `scripts/track4-verify` (711 LOC, 13-criterion harness) found: ~10 of the 13 `track4-verify` criteria duplicate existing CI jobs (`build`, `test`, `clippy`, `fmt`); the unique value (LOC non-regression gate, SMI rg checks, audit-trail/alias verifications) collapses to 4-6 inline CI shell steps; the LOC gate the tooling enforced is itself a proxy gate (architectural substance — duplication deleted, libraries consolidated — is observable in commit diffs and ADRs, not in a line count). User verdict (verbatim): *"the gain is too small and the cost of drift and clutter is real. remove"*. Actions: (1) `git rm -r scripts/prod-loc scripts/track4-verify scripts/citation-diff`; (2) `git rm scripts/{adr_agg,adr_rules,loc,loc_agg}.awk` (the "honest historical record" of v0.6 was equally subject to the drift-and-clutter verdict); (3) `.gitignore` re-adds `scripts/` so future throwaway tooling does not silently accumulate — promote any genuinely durable tool to its own `crates/` member with an ADR justifying it; (4) `.github/workflows/ci.yml` job `track4-gates` deleted; (5) §3 row + §8 Track-4 verify block rewritten to reflect retraction. **Doctrine lesson recorded:** v0.6 amended a malformed gate by building tooling to enforce the amendment — substituted measurement infrastructure for the underlying question "is the gate's substance worth measuring at all?". v0.7 answers no. Track 4 epic `adr-fmt-ysaa` remains CLOSED — retraction does not reopen exit criteria, it removes mechanical enforcement that was duplicative of `cargo test` / `cargo clippy` / `cargo fmt` plus the substance evidence already in CHE-0062 / CHE-0049-Amendment-Part-2 / SMI-1..SMI-5. Net code change: −1285 LOC bespoke scripts + −15 LOC `.gitignore` un-ignore + −16 LOC CI job, −1 CI job, +1 `.gitignore` rule. §2 invariants unchanged. §6/§7 guardrails unchanged. SM2 (doc_markdown sweep, also retracted 2026-05-16) is a sibling failure mode — both rounds demonstrated that **building tools to enforce a gate is a higher-order ceremony**: the tool exists, therefore the gate must be real, therefore the proxy is treated as substance. Companion: `docs/c4/roadmap.md` v0.6. |

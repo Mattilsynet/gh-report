@@ -34,6 +34,14 @@ treat them as known noise unless the change is in that file. CI runs
 --all-targets -- -D warnings`, and `cargo fmt --check`
 (`.github/workflows/ci.yml`). Mirror these locally before push.
 
+**Verify-command gotchas.** (a) `cargo test -p <crate> <name>` is a
+function-name *filter*, not a file target — `<name>` matching no
+`#[test] fn` exits 0 with 0 tests run (silent false-green). Use
+`cargo test -p <crate> --test <file_stem>` to target an integration-test
+file. (b) Workspace-wide `cargo fmt --check` may pick up pre-existing
+baseline drift in `crates/gh-report/src/infra/server/{mod,server}.rs`;
+prefer `cargo fmt -p <crate>` while that drift is unreconciled.
+
 ## CLI surface (frozen for v0.1)
 
 ```
