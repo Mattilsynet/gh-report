@@ -45,14 +45,24 @@ use axum::Router;
 /// Consumer composition with [`crate::build_router`] (the cqrs surface)
 /// is done via [`Router::merge`] in `main`.
 ///
+/// `extra_routes` is a stateless [`Router`] that the consumer merges
+/// onto the projection surface — auth probes, status pages, anything
+/// outside the projection contract. The merge happens after
+/// `.with_state(state)` so `extra_routes` carries its own state (or
+/// none); the projection state never leaks into consumer routes.
+/// Callers with no extras pass [`Router::new()`]. The parameter
+/// realises the CHE-0049 R12 amendment (2026-05-16) extending the
+/// CQRS-side R2 `extra_routes` merge-point convention to the
+/// projection adapter.
+///
 /// Per CHE-0049 R11 backpressure is "drop-and-resync": on
 /// `broadcast::RecvError::Lagged` the per-socket task closes the WS
 /// with code 1001 ("Going Away"). Clients recover by HTTP-fetching the
 /// current snapshot and re-attaching a fresh WS for subsequent deltas
 /// — the snapshot is the durable checkpoint per CHE-0048:R2.
-pub fn build_projection_router<P>(state: ProjectionState<P>) -> Router
+pub fn build_projection_router<P>(state: ProjectionState<P>, extra_routes: Router) -> Router
 where
     P: ProjectionSource,
 {
-    handlers::build(state)
+    handlers::build(state).merge(extra_routes)
 }

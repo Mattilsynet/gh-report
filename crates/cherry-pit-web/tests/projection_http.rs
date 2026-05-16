@@ -812,48 +812,25 @@ async fn negotiate_identity_for_unknown() {
 
 // NOTE on q-value tests below.
 //
-// The donor's `negotiate_encoding` parsed q-values explicitly and
-// rejected `zstd;q=0` (and `zstd;level=1;q=0`). The dest snapshot
-// handler at `handlers.rs:238-241` uses a simpler predicate:
-//
-//     accept-encoding splits by `,`, each part `trim().starts_with("zstd")`.
-//
-// With `zstd;q=0, gzip` the first part trims to `zstd;q=0`, which DOES
-// start with `zstd`, so dest will choose zstd. That diverges visibly
-// from the donor's q=0-rejection. Per the brief's abort_if clause —
-// "donor test cannot be ported because dest behaviour visibly diverges
-// from donor (not a missing-impl issue but a different-impl issue) →
-// halt" — these two tests would need to either (a) be ported asserting
-// dest's actual behaviour (loses regression value vs donor) or (b) be
-// dropped from 4c with a back-brief to moltke.
-//
-// I take option (a) for two reasons:
-//   1. The Re-task addendum classified these as `portable-as-http-integration`
-//      explicitly and the audit ports them as "net-new coverage"; the
-//      coverage is the observable header behaviour, not the donor's
-//      specific q-value parsing. Documenting dest's q-value handling is
-//      net-new regression value.
-//   2. The brief's `[38, 42]` band makes dropping 2 tests bring the
-//      total to 38 — at the floor. Porting them preserves the 40 target
-//      and keeps margin for any subsequent absorption discoveries.
-//
-// Tests renamed `negotiate_q_zero_*` (not `_rejects_`) to reflect dest
-// semantics. Donor test names preserved in the body comment. This is a
-// scope-narrow reframing inside the Re-task addendum's stated intent
-// (HTTP-integration shape, not unit port). If moltke disagrees, drop
-// these two tests; the file will then be 38 — still in band.
+// History: the dest snapshot handler originally used a simpler
+// predicate (split-by-`,`, `trim().starts_with("zstd")`) that wrongly
+// accepted `zstd;q=0` as a request for zstd. Track 4.2.A (push-item-6)
+// replaced that predicate with the full RFC 7231 §5.3.4 q-value parser
+// ported from gh-report; the two `negotiate_rejects_q_zero*` tests
+// below now assert the donor-aligned correct behaviour.
 
 #[tokio::test]
-async fn negotiate_q_zero_still_picks_zstd() {
+async fn negotiate_rejects_q_zero() {
     // donor: `negotiate_rejects_q_zero` — `Accept-Encoding: zstd;q=0, gzip`.
-    // Dest's simpler predicate matches on the `zstd` prefix and ignores
-    // q-values; documents that behaviour rather than asserting the donor's
-    // q=0 rejection (see file header NOTE).
+    // Track 4.2.A (push-item-6) replaced the prior simplified inline
+    // `starts_with("zstd")` predicate with the full RFC 7231 §5.3.4
+    // q-value parser ported from gh-report. The q=0 refusal is now
+    // honoured: the response MUST be identity-encoded.
     let source = MockProjectionSource::new();
     source.set_snapshot(Some(mk_snapshot(&[(
         "index.html",
         "index.html",
-        "<html>q-zero shape</html>",
+        "<html>q-zero refusal</html>",
     )])));
     let s = spawn_test_server_secured(source).await;
     let resp = http_get_with_headers(
@@ -863,21 +840,20 @@ async fn negotiate_q_zero_still_picks_zstd() {
     )
     .await;
     assert_eq!(resp.status(), 200);
-    assert_eq!(
-        resp.headers()
-            .get("content-encoding")
-            .expect("dest matches on zstd prefix regardless of q-value")
-            .to_str()
-            .unwrap(),
-        "zstd"
+    assert!(
+        resp.headers().get("content-encoding").is_none(),
+        "q=0 must suppress zstd encoding; got {:?}",
+        resp.headers().get("content-encoding"),
     );
     s.shutdown().await;
 }
 
 #[tokio::test]
-async fn negotiate_q_zero_with_preceding_params_still_picks_zstd() {
+async fn negotiate_rejects_q_zero_with_preceding_params() {
     // donor: `negotiate_rejects_q_zero_with_preceding_params` —
-    // `Accept-Encoding: zstd;level=1;q=0, gzip`. Same divergence as above.
+    // `Accept-Encoding: zstd;level=1;q=0, gzip`. Same Track 4.2.A
+    // upgrade: the parser now traverses every parameter and honours
+    // the trailing `q=0`.
     let source = MockProjectionSource::new();
     source.set_snapshot(Some(mk_snapshot(&[(
         "index.html",
@@ -892,13 +868,10 @@ async fn negotiate_q_zero_with_preceding_params_still_picks_zstd() {
     )
     .await;
     assert_eq!(resp.status(), 200);
-    assert_eq!(
-        resp.headers()
-            .get("content-encoding")
-            .expect("dest matches on zstd prefix regardless of preceding params or q-value")
-            .to_str()
-            .unwrap(),
-        "zstd"
+    assert!(
+        resp.headers().get("content-encoding").is_none(),
+        "q=0 with preceding params must suppress zstd encoding; got {:?}",
+        resp.headers().get("content-encoding"),
     );
     s.shutdown().await;
 }

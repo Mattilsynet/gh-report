@@ -91,7 +91,7 @@ impl ProjectionSource for StubSource {
 async fn spawn_stub() -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let source = StubSource::new();
     let state = ProjectionState::from_arc(source);
-    let app: Router = build_projection_router(state);
+    let app: Router = build_projection_router(state, Router::new());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {

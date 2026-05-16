@@ -19,11 +19,13 @@
 //! ## Public surface (CHE-0049:R14 + CHE-0030:R1/R2)
 //!
 //! Per CHE-0049:R14 the flat `pub use middleware::{...}` re-export at
-//! `lib.rs` is restricted to the five R8 utility primitives —
+//! `lib.rs` covers the five R8 utility primitives —
 //! `compute_etag`, `compress_zstd`, `security_headers`,
-//! `normalize_request_path`, `sanitize_path_segment`. The
+//! `normalize_request_path`, `sanitize_path_segment` — plus three
+//! generic transport helpers ported from the donor crate as part of
+//! Track 4.2.A (`SVG_CSP`, `http_trace_layer`, `HttpTraceLayer`). The
 //! `middleware` module itself is private (CHE-0030:R2). The deliberate
-//! public items beyond R8 reach consumers through three dedicated
+//! public items beyond these reach consumers through three dedicated
 //! public submodules — [`errors`], [`correlation`], and [`path`] —
 //! whose surfaces are documented at the module level.
 //!
@@ -62,7 +64,8 @@ pub use command_router::{CommandRouter, DispatchOutcome};
 // `path`), keeping the `middleware` module itself implementation
 // detail per CHE-0030:R2.
 pub use middleware::{
-    compress_zstd, compute_etag, normalize_request_path, sanitize_path_segment, security_headers,
+    HttpTraceLayer, SVG_CSP, compress_zstd, compute_etag, http_trace_layer, normalize_request_path,
+    sanitize_path_segment, security_headers,
 };
 #[cfg(feature = "projection")]
 pub use projection::{

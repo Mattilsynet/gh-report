@@ -46,7 +46,7 @@ async fn ws_envelope_carries_v1_and_refuses_event_envelope_shape() {
     let source = MockProjectionSource::new();
     let tx = source.tx();
     let state = ProjectionState::from_arc(source);
-    let app = build_projection_router(state);
+    let app = build_projection_router(state, axum::Router::new());
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
