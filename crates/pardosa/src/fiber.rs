@@ -109,6 +109,21 @@ impl Fiber {
     /// is `Index::NONE`, not strictly greater than the current index, or
     /// if the internal length counter overflows.
     pub fn advance(&mut self, new_current: Index) -> Result<(), PardosaError> {
+        self.check_advance(new_current)?;
+        self.advance_unchecked(new_current);
+        Ok(())
+    }
+
+    /// Validate that [`advance`](Self::advance) with `new_current` would
+    /// succeed, without mutating. Used by the two-phase atomic-commit
+    /// pattern in `Dragline` to lift fallibility into a pre-validation
+    /// stage so the subsequent mutation is infallible.
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`advance`](Self::advance): sentinel value,
+    /// non-monotonic index, or length overflow.
+    pub(crate) fn check_advance(&self, new_current: Index) -> Result<(), PardosaError> {
         if new_current.is_none() {
             return Err(PardosaError::FiberInvariantViolation(
                 "new_current must not be Index::NONE".into(),
@@ -119,12 +134,25 @@ impl Fiber {
                 "new_current must be > current".into(),
             ));
         }
-        self.len = self
-            .len
-            .checked_add(1)
-            .ok_or_else(|| PardosaError::FiberInvariantViolation("fiber len overflow".into()))?;
-        self.current = new_current;
+        if self.len.checked_add(1).is_none() {
+            return Err(PardosaError::FiberInvariantViolation(
+                "fiber len overflow".into(),
+            ));
+        }
         Ok(())
+    }
+
+    /// Infallible counterpart to [`advance`](Self::advance). Caller must
+    /// have validated the same `new_current` via
+    /// [`check_advance`](Self::check_advance) first; passing a value that
+    /// would fail validation triggers a debug-assertion. Release builds
+    /// will wrap on overflow rather than abort — partial commits in the
+    /// caller are the only path to such a state, so a saturating wrap is
+    /// the least-bad recovery.
+    pub(crate) fn advance_unchecked(&mut self, new_current: Index) {
+        debug_assert!(self.check_advance(new_current).is_ok());
+        self.len = self.len.saturating_add(1);
+        self.current = new_current;
     }
 }
 
@@ -231,6 +259,34 @@ mod tests {
             matches!(err, PardosaError::FiberInvariantViolation(ref msg) if msg.contains('>')),
             "expected ordering error, got: {err}"
         );
+    }
+
+    // --- Fiber::check_advance / advance_unchecked (two-phase API) ---
+
+    #[test]
+    fn fiber_check_advance_does_not_mutate() {
+        let f = Fiber::new(Index::new(0), 1, Index::new(0)).unwrap();
+        f.check_advance(Index::new(3)).unwrap();
+        // State unchanged after successful validation.
+        assert_eq!(f.current(), Index::new(0));
+        assert_eq!(f.len(), 1);
+    }
+
+    #[test]
+    fn fiber_check_advance_surfaces_all_advance_errors() {
+        let f = Fiber::new(Index::new(0), 1, Index::new(5)).unwrap();
+        assert!(f.check_advance(Index::NONE).is_err());
+        assert!(f.check_advance(Index::new(5)).is_err());
+        assert!(f.check_advance(Index::new(3)).is_err());
+    }
+
+    #[test]
+    fn fiber_advance_unchecked_mutates_in_place() {
+        let mut f = Fiber::new(Index::new(0), 1, Index::new(0)).unwrap();
+        f.check_advance(Index::new(7)).unwrap();
+        f.advance_unchecked(Index::new(7));
+        assert_eq!(f.current(), Index::new(7));
+        assert_eq!(f.len(), 2);
     }
 
     // --- Fiber deserialization validates invariants ---
