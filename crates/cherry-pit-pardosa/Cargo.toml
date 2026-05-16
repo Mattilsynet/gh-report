@@ -1,0 +1,37 @@
+[package]
+name = "cherry-pit-pardosa"
+version = "0.1.0"
+description = "Pardosa-backed EventStore adapter for cherry-pit, with single-writer semantics and an opt-in rollout stub for PAR-0021 hash chains"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage = "https://github.com/acje/solon/tree/main/crates/cherry-pit-pardosa"
+documentation = "https://docs.rs/cherry-pit-pardosa"
+keywords = ["event-sourcing", "event-store", "pardosa", "cherry-pit", "cqrs"]
+categories = ["data-structures"]
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Cherry-pit core ports (EventStore + the three CHE-0057 extension traits).
+cherry-pit-core = { workspace = true }
+# Pardosa substrate (Dragline, DomainId, MigrationPolicy).
+pardosa = { workspace = true }
+# Envelope construction uses jiff::Timestamp and uuid::Uuid::now_v7.
+jiff = { workspace = true }
+uuid = { workspace = true }
+# Trimmed per actual imports in src/lib.rs (oracle adr-fmt-byuj §1.2 invited
+# trim during execution): no thiserror (StoreError variants constructed via
+# Box<dyn Error>::from), no tokio/async-nats/tracing/serde/pardosa-traits/
+# pardosa-encoding/pardosa-genome/pardosa-derive — none of those surfaces
+# is touched by the v0.1 adapter. SM-6 conformance harness or later
+# milestones may re-add as actual call-sites materialise.
+
+[dev-dependencies]
+tokio = { workspace = true }
+tokio-test = { workspace = true }
+serde = { workspace = true }

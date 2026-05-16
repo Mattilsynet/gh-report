@@ -90,4 +90,4 @@ pub use gateway::CommandGateway;
 pub use idempotency::IdempotencyKey;
 pub use policy::Policy;
 pub use projection::Projection;
-pub use store::EventStore;
+pub use store::{EventStore, HashChainedEventStore, PurgeableEventStore, SingleWriterEventStore};

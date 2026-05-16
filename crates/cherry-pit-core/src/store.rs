@@ -290,3 +290,124 @@ pub trait EventStore: Send + Sync + 'static {
         context: CorrelationContext,
     ) -> impl Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send;
 }
+
+// ─── Extension traits (CHE-0057) ───────────────────────────────────
+//
+// Optional EventStore capabilities are surfaced as supertrait-bounded
+// extension traits per CHE-0057:R1–R2. Each capability lives here
+// alongside `EventStore`, extends it, and is opted into by
+// implementations. Method signatures are append-only per CHE-0057:R5;
+// removal or signature change requires superseding the per-extension
+// ADR (CHE-0059 / CHE-0060 / CHE-0061).
+
+/// Optional [`EventStore`] capability: the substrate supports physical
+/// purge of an aggregate's event history followed by re-creation under
+/// the same id with a fresh stream (e.g. pardosa's PAR-0001 fiber
+/// state machine `Purged → Defined` transition, which severs logical
+/// continuity by setting `precursor = Index::NONE`).
+///
+/// Substrates that cannot physically purge MUST NOT implement this
+/// trait per CHE-0057:R3 — returning a not-implemented stub from
+/// required methods is forbidden, and the rollout-stub carve-out in
+/// CHE-0057:R3 does not apply to purge (CHE-0059:R3).
+///
+/// Governing ADR: CHE-0059. Citations: CHE-0019:R1 (`load_history`
+/// returns `Ok(Vec::new())` for unknown aggregates), CHE-0039:R1
+/// (recreate threads `CorrelationContext` — no `Default` fabrication),
+/// PAR-0001 (substrate origin).
+pub trait PurgeableEventStore: EventStore {
+    /// Load the full event history of an aggregate, including
+    /// aggregates whose current state is purged. Returns
+    /// `Ok(Vec::new())` for genuinely unknown aggregates (CHE-0019:R1
+    /// + CHE-0059:R5).
+    ///
+    /// The substrate distinguishes "purged, history retained" from
+    /// "never created" — both arrive here, but the former returns its
+    /// retained history, the latter returns the empty vec.
+    fn load_history(
+        &self,
+        id: AggregateId,
+    ) -> impl Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send;
+
+    /// Recreate an aggregate previously in the purged state with a
+    /// fresh stream of events. The substrate MUST sever logical
+    /// continuity with the prior incarnation (CHE-0059:R4; pardosa
+    /// sets the new aggregate's precursor index to NONE per PAR-0001).
+    ///
+    /// `tombstone` is the final domain event recorded against the
+    /// prior incarnation before its purge. Substrates whose state
+    /// machine records detachment as an event in the audit trail
+    /// (e.g. pardosa's `Defined → Detach → Detached → Purge → Purged`
+    /// path per PAR-0001) require a real payload; substrates that
+    /// purge without an audit-trail event MAY ignore it. The adapter
+    /// cannot fabricate `Self::Event` because the type is opaque at
+    /// the port boundary — callers (aggregates) supply the tombstone
+    /// variant. See CHE-0059:R4 + oracle adjudication `adr-fmt-1clv`.
+    ///
+    /// `context` carries [`CorrelationContext`] per CHE-0039:R1 —
+    /// callers MUST supply it explicitly; the substrate MUST NOT
+    /// fabricate a default (CHE-0039:R2).
+    fn recreate(
+        &self,
+        id: AggregateId,
+        tombstone: Self::Event,
+        events: Vec<Self::Event>,
+        context: CorrelationContext,
+    ) -> impl Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send;
+}
+
+/// Optional [`EventStore`] capability: the substrate maintains a
+/// per-stream BLAKE3 hash chain (PAR-0021 `precursor_hash` plus
+/// `Dragline::frontier`) for cryptographic tamper evidence beyond
+/// CHE-0016's structural envelope.
+///
+/// `PardosaEventStore` MAY implement this trait as an always-failing
+/// rollout stub returning [`StoreError::Infrastructure`] from both
+/// methods until PAR-0021 lands in pardosa source — this is the named
+/// CHE-0057:R3 / CHE-0060:R3 carve-out. The stub MUST be documented
+/// in the `impl` block and MUST be removed when PAR-0021 lands.
+/// **No trait-level default impl** is permitted: a default would hide
+/// the stub from review and silently survive PAR-0021's arrival.
+///
+/// Governing ADR: CHE-0060. Citations: CHE-0016 (structural envelope
+/// baseline), PAR-0021 (substrate origin), SEC-0011 (deferred non-
+/// repudiation consumer).
+pub trait HashChainedEventStore: EventStore {
+    /// 32-byte BLAKE3 frontier hash over all committed events in
+    /// append order (PAR-0021:R3 + CHE-0060:R2).
+    ///
+    /// Returns the hash unconditionally (no `Result`): the substrate
+    /// MUST be able to surface its current frontier. Rollout-stub
+    /// implementations per CHE-0060:R3 surface failure through
+    /// [`verify_chain`](Self::verify_chain) instead.
+    fn frontier_hash(&self) -> [u8; 32];
+
+    /// Verify the precursor-hash chain over the entire stream. Per
+    /// PAR-0021:R5, rejects any event whose `precursor_hash` does not
+    /// match the BLAKE3 hash of the referenced predecessor's canonical
+    /// bytes.
+    ///
+    /// Sub-stream verification is not exposed today: pardosa's
+    /// substrate API (`Dragline::verify_precursor_chains`) is whole-
+    /// stream only. If a substrate later supports sub-stream
+    /// verification a superseding ADR introduces the shape per
+    /// CHE-0057:R5 — pre-committing a range parameter now would
+    /// freeze the wrong shape under append-only.
+    fn verify_chain(&self) -> impl Future<Output = Result<(), StoreError>> + Send;
+}
+
+/// Optional [`EventStore`] marker capability: the substrate guarantees
+/// single-writer-per-aggregate-stream semantics at the substrate layer
+/// (e.g. pardosa's PAR-0004 `Nats-Expected-Last-Subject-Sequence`
+/// fencing).
+///
+/// Zero methods (CHE-0061:R2) — purely a type-system signal for
+/// downstream code that requires single-writer guarantees. Adding
+/// methods is forbidden per CHE-0061:R5 and would re-classify the
+/// trait away from marker shape; any addition requires a superseding
+/// ADR.
+///
+/// Governing ADR: CHE-0061. Citations: CHE-0006 (single-writer
+/// architectural assumption it makes observable), PAR-0004
+/// (substrate-level enforcement origin).
+pub trait SingleWriterEventStore: EventStore {}
