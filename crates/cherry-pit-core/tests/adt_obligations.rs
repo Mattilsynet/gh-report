@@ -51,23 +51,109 @@ fn m3_dependency_allowlist() {
     }
 }
 
-/// M29: Public API is flat — no `pub mod` in lib.rs (CHE-0030 R1/R2).
+/// M29: Public API is flat — no `pub mod` in lib.rs (CHE-0030 R1/R2),
+/// except the CHE-0058 carve-out: a `pub mod` declaration is permitted
+/// when immediately preceded by a `#[cfg(...)]` attribute whose
+/// predicate names `test` or `feature = "testing"`.
 #[test]
 fn m29_no_pub_mod_in_lib() {
     let lib_rs = include_str!("../src/lib.rs");
-    for (i, line) in lib_rs.lines().enumerate() {
+    let lines: Vec<&str> = lib_rs.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         // Skip doc comments and regular comments.
         if trimmed.starts_with("//") {
             continue;
         }
+        if !trimmed.starts_with("pub mod") {
+            continue;
+        }
+        // CHE-0058 carve-out: walk back past blank lines / comments to
+        // the previous meaningful line. If it is a `#[cfg(...)]`
+        // attribute whose predicate contains either `test` or
+        // `feature = "testing"`, the `pub mod` is permitted.
+        let mut j = i;
+        let prev_meaningful = loop {
+            if j == 0 {
+                break None;
+            }
+            j -= 1;
+            let prev = lines[j].trim();
+            if prev.is_empty() || prev.starts_with("//") {
+                continue;
+            }
+            break Some(prev);
+        };
+        let permitted = match prev_meaningful {
+            Some(prev) => {
+                prev.starts_with("#[cfg(")
+                    && (prev.contains("test") || prev.contains("feature = \"testing\""))
+            }
+            None => false,
+        };
         assert!(
-            !trimmed.starts_with("pub mod"),
+            permitted,
             "lib.rs line {} contains `pub mod` — CHE-0030 forbids public modules. \
-             Use `mod` + `pub use` re-exports instead. Line: {trimmed}",
+             CHE-0058 carve-out requires preceding `#[cfg(...)]` naming `test` or \
+             `feature = \"testing\"`. Line: {trimmed}",
             i + 1
         );
     }
+}
+
+/// M29b: CHE-0058 carve-out detection — synthetic smoke test exercising
+/// both permitted (gated) and forbidden (bare) shapes against the same
+/// detection logic as M29. Keeps M29 honest if `lib.rs` happens to have
+/// zero `pub mod` declarations.
+#[test]
+fn m29b_carve_out_logic() {
+    // Inline copy of the M29 detection logic so we can drive it with
+    // synthetic input rather than the real lib.rs.
+    fn check(src: &str) -> Result<(), String> {
+        let lines: Vec<&str> = src.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("//") || !trimmed.starts_with("pub mod") {
+                continue;
+            }
+            let mut j = i;
+            let prev_meaningful = loop {
+                if j == 0 {
+                    break None;
+                }
+                j -= 1;
+                let prev = lines[j].trim();
+                if prev.is_empty() || prev.starts_with("//") {
+                    continue;
+                }
+                break Some(prev);
+            };
+            let permitted = match prev_meaningful {
+                Some(prev) => {
+                    prev.starts_with("#[cfg(")
+                        && (prev.contains("test") || prev.contains("feature = \"testing\""))
+                }
+                None => false,
+            };
+            if !permitted {
+                return Err(format!("line {}: {trimmed}", i + 1));
+            }
+        }
+        Ok(())
+    }
+
+    // Bare `pub mod` — forbidden.
+    assert!(check("pub mod foo;").is_err());
+    // Gated by `cfg(test)` — permitted.
+    assert!(check("#[cfg(test)]\npub mod testing;").is_ok());
+    // Gated by `cfg(feature = \"testing\")` — permitted.
+    assert!(check("#[cfg(feature = \"testing\")]\npub mod testing;").is_ok());
+    // Gated by `cfg(any(test, feature = \"testing\"))` — permitted.
+    assert!(check("#[cfg(any(test, feature = \"testing\"))]\npub mod testing;").is_ok());
+    // Gated by an unrelated cfg (e.g. `target_os`) — still forbidden.
+    assert!(check("#[cfg(target_os = \"linux\")]\npub mod foo;").is_err());
+    // Blank line / comment between cfg and pub mod — still permitted.
+    assert!(check("#[cfg(test)]\n\n// comment\npub mod testing;").is_ok());
 }
 
 /// M20: `AggregateNotFound` is a `DispatchError` variant, not `StoreError`
