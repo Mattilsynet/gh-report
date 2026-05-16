@@ -48,6 +48,7 @@ pub use crate::app::github_infra::GithubState;
 pub use crate::app::services::repo_service::RepoService;
 pub use crate::app::services::run_service::RunService;
 pub use crate::app::services::webhook_service::WebhookService;
+pub use crate::app::services::{Merger, MergerCommand};
 pub use crate::app::webhook_context::WebhookState;
 
 /// Concrete monomorphisation of [`RunService`] used throughout
@@ -238,6 +239,33 @@ pub struct AppState {
     /// [`WebhookDelivery`](crate::domain::aggregates::webhook::WebhookDelivery)
     /// aggregate.
     pub webhook_service: Arc<WebhookServiceConcrete>,
+
+    /// Command channel into the [`Merger`] task — sole holder of the
+    /// [`EventStore`](cherry_pit_core::EventStore) write handle
+    /// (Phase 2 v2 Track 4.0, `adr-fmt-nnn3`).
+    ///
+    /// Wired at Track 4.0/3a as additive scaffold: the Merger task is
+    /// spawned and the channel held here, but **no caller routes
+    /// through it yet**. Track 4.0/3b/4/5 reroute each existing
+    /// ApplicationService method to send through this channel; Track
+    /// 4.0/6 deletes the now-dead service write logic. SMI invariant
+    /// (sole-writer) holds at step 6 by construction.
+    #[allow(
+        dead_code,
+        reason = "Track 4.0/3a additive scaffold; load-bearing at 3b/4/5"
+    )]
+    pub(crate) merger_tx: tokio::sync::mpsc::Sender<MergerCommand>,
+
+    /// Lifetime guard for the Merger task spawned by
+    /// [`Merger::spawn`]. Dropping [`AppState`] drops this
+    /// [`tokio::task::JoinHandle`] which signals shutdown via the
+    /// channel-closed branch in [`Merger`]'s loop. Never joined
+    /// explicitly — process exit reclaims the task.
+    #[allow(
+        dead_code,
+        reason = "lifetime guard; the task is kept alive by holding this handle"
+    )]
+    pub(crate) merger_handle: tokio::task::JoinHandle<()>,
 
     /// Shared per-aggregate last-applied-sequence tracker
     /// (CHE-0054:R6 / CHE-0042:R3). Populated by service `append`
@@ -462,10 +490,19 @@ impl AppState {
         let sequence_tracker = Arc::new(Mutex::new(HashMap::new()));
         let noop_dir = noop_events_dir();
         let (rs, ps, ws) = build_three_stores(&noop_dir);
+        let merger_store = Arc::clone(&rs);
         let (run_service, repo_service, webhook_service) = build_services(
             rs,
             ps,
             ws,
+            Arc::clone(&bus),
+            Arc::clone(&run_index),
+            Arc::clone(&repo_index),
+            Arc::clone(&delivery_index),
+            Arc::clone(&sequence_tracker),
+        );
+        let (merger_tx, merger_handle) = Merger::spawn(
+            merger_store,
             Arc::clone(&bus),
             Arc::clone(&run_index),
             Arc::clone(&repo_index),
@@ -499,6 +536,8 @@ impl AppState {
             run_service,
             repo_service,
             webhook_service,
+            merger_tx,
+            merger_handle,
             sequence_tracker,
             run_index,
             repo_index,
@@ -542,10 +581,19 @@ impl AppState {
         let delivery_index = Arc::new(Mutex::new(HashMap::new()));
         let sequence_tracker = Arc::new(Mutex::new(HashMap::new()));
         let (rs, ps, ws) = build_three_stores(events_dir);
+        let merger_store = Arc::clone(&event_store);
         let (run_service, repo_service, webhook_service) = build_services(
             rs,
             ps,
             ws,
+            Arc::clone(&bus),
+            Arc::clone(&run_index),
+            Arc::clone(&repo_index),
+            Arc::clone(&delivery_index),
+            Arc::clone(&sequence_tracker),
+        );
+        let (merger_tx, merger_handle) = Merger::spawn(
+            merger_store,
             Arc::clone(&bus),
             Arc::clone(&run_index),
             Arc::clone(&repo_index),
@@ -571,6 +619,8 @@ impl AppState {
             run_service,
             repo_service,
             webhook_service,
+            merger_tx,
+            merger_handle,
             sequence_tracker,
             run_index,
             repo_index,
@@ -746,10 +796,19 @@ impl AppStateBuilder {
         let sequence_tracker = Arc::new(Mutex::new(HashMap::new()));
         let noop_dir = noop_events_dir();
         let (rs, ps, ws) = build_three_stores(&noop_dir);
+        let merger_store = Arc::clone(&rs);
         let (run_service, repo_service, webhook_service) = build_services(
             rs,
             ps,
             ws,
+            Arc::clone(&bus),
+            Arc::clone(&run_index),
+            Arc::clone(&repo_index),
+            Arc::clone(&delivery_index),
+            Arc::clone(&sequence_tracker),
+        );
+        let (merger_tx, merger_handle) = Merger::spawn(
+            merger_store,
             Arc::clone(&bus),
             Arc::clone(&run_index),
             Arc::clone(&repo_index),
@@ -784,6 +843,8 @@ impl AppStateBuilder {
             run_service,
             repo_service,
             webhook_service,
+            merger_tx,
+            merger_handle,
             sequence_tracker,
             run_index,
             repo_index,
@@ -1015,21 +1076,21 @@ mod tests {
         assert_eq!(r1.default_branch, "branch-1");
     }
 
-    #[test]
-    fn html_cache_starts_empty() {
+    #[tokio::test]
+    async fn html_cache_starts_empty() {
         let state = AppState::new();
         assert!(state.evidence().html_cache.load().is_none());
     }
 
-    #[test]
-    fn builder_default_produces_valid_state() {
+    #[tokio::test]
+    async fn builder_default_produces_valid_state() {
         let state = AppStateBuilder::new().build();
         assert!(state.webhook().secret.is_none());
         assert!(state.evidence().html_cache.load().is_none());
     }
 
-    #[test]
-    fn builder_with_webhook_secret() {
+    #[tokio::test]
+    async fn builder_with_webhook_secret() {
         let state = AppStateBuilder::new().webhook_secret("test-secret").build();
         assert!(state.webhook().secret.is_some());
     }
@@ -1058,8 +1119,8 @@ mod tests {
         assert!(cache.entry_count() <= 5);
     }
 
-    #[test]
-    fn sub_aggregate_accessors_return_correct_references() {
+    #[tokio::test]
+    async fn sub_aggregate_accessors_return_correct_references() {
         let state = AppStateBuilder::new().webhook_secret("s").build();
         // Verify accessors compile and return the right types.
         let _wh: &WebhookState = state.webhook();
@@ -1096,8 +1157,8 @@ mod tests {
         assert!(cache.entry_count() <= 7);
     }
 
-    #[test]
-    fn is_ready_false_when_no_run_and_no_cache() {
+    #[tokio::test]
+    async fn is_ready_false_when_no_run_and_no_cache() {
         use crate::infra::server::state::ServerState;
         let state = AppStateBuilder::new().build();
         assert!(
@@ -1106,8 +1167,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn is_ready_true_when_html_cache_populated() {
+    #[tokio::test]
+    async fn is_ready_true_when_html_cache_populated() {
         use crate::infra::server::state::ServerState;
         let state = AppStateBuilder::new().build();
         // Populate the HTML cache.

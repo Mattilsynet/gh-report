@@ -45,7 +45,10 @@
 //! eagerly (no Option) or lazily (Option) depending on whether an
 //! in-memory EventStore exists in the workspace yet (oracle Gap-β).
 
+pub mod merger;
 pub mod repo_service;
 pub mod run_service;
 mod shared;
 pub mod webhook_service;
+
+pub use merger::{Merger, MergerCommand};
