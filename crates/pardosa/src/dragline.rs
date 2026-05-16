@@ -190,7 +190,9 @@ pub struct AppendResult {
 /// - `lookup` maps each active domain ID to its fiber position and state.
 /// - `purged_ids` tracks domain IDs in the Purged state (removed from lookup).
 /// - `next_event_id` is globally monotonic, never decreases, even across generations.
-/// - `next_id` auto-increments for new fiber creation.
+/// - `next_id` auto-increments for new fiber creation. [`Dragline::create`]
+///   advances it past any ids in `purged_ids` so the auto-assignment contract
+///   does not stall when on-disk state lands `next_id` on a purged id.
 /// - When `migrating` is true, application writes are rejected.
 #[derive(Debug)]
 pub struct Dragline<T> {
@@ -229,10 +231,21 @@ impl<T> Dragline<T> {
     /// Transition: Undefined → Defined.
     /// Appends a creation event to the line and registers the fiber.
     ///
+    /// # Domain-ID skipping
+    ///
+    /// Auto-assignment advances `next_id` past any ids in `purged_ids`
+    /// transparently. The on-disk format (and migration replays) can put
+    /// `next_id` on top of a previously-purged id; pre-FH4 this raised
+    /// `IdAlreadyExists` and herded the caller into using `create_reuse`
+    /// with a specific id, breaking the auto-create contract. The skip
+    /// loop is bounded by `u64::MAX`; if every remaining id is purged
+    /// the call fails with `DomainIdOverflow` (no liveness corner).
+    ///
     /// # Errors
     ///
     /// Returns an error if a migration is in progress, the event ID or
-    /// domain ID counter overflows, or the line index exceeds capacity.
+    /// domain ID counter overflows (including when skipping past purged
+    /// ids exhausts the `u64` space), or the line index exceeds capacity.
     pub fn create(
         &mut self,
         timestamp: i64,
@@ -240,11 +253,20 @@ impl<T> Dragline<T> {
     ) -> Result<AppendResult, PardosaError> {
         self.reject_if_migrating()?;
 
-        let domain_id = self.next_id;
+        // Advance next_id past any purged ids. `purged_ids` is a HashSet so
+        // each membership check is O(1); the loop terminates either when
+        // we find a fresh id (the common case: zero iterations) or when
+        // checked_next overflows u64 (every remaining id is purged).
+        let mut domain_id = self.next_id;
+        while self.purged_ids.contains(&domain_id) {
+            domain_id = domain_id.checked_next()?;
+        }
 
-        // Domain ID should be fresh — auto-assigned from monotonic counter.
-        // Defensive check against impossible collisions.
-        if self.lookup.contains_key(&domain_id) || self.purged_ids.contains(&domain_id) {
+        // After skipping, the id may now collide with an active fiber in
+        // lookup. That would indicate a corrupted on-disk state (lookup
+        // and next_id disagree) and is structurally impossible from the
+        // public API alone — keep the defensive check.
+        if self.lookup.contains_key(&domain_id) {
             return Err(PardosaError::IdAlreadyExists(domain_id));
         }
 
@@ -1201,6 +1223,100 @@ mod tests {
         let r3 = d.create_reuse(id, 1004, "c3").unwrap();
         assert_eq!(d.fiber_state(id), FiberState::Defined);
         assert_eq!(r3.domain_id, id);
+    }
+
+    // ── FH4: create() liveness across interleaved purges ──────────────
+    //
+    // Before FH4, create() bailed with IdAlreadyExists the moment its
+    // auto-assigned next_id collided with a purged_id. A long-running
+    // stream that interleaved auto-creates with purges of low-numbered
+    // ids could herd the caller into a corner where only the explicit
+    // create_reuse(specific_id, …) path could make progress. These tests
+    // assert create() now transparently advances past purged ids.
+
+    #[test]
+    fn create_advances_past_purged_ids_in_long_run() {
+        // Liveness shape: heavy interleave of creates + purges via the
+        // public API must never stall. Pre-FH4 this passes too (because
+        // next_id is monotonic and races ahead of any purged id reachable
+        // through the public API alone), but it pins down the API-level
+        // contract the user expects.
+        let mut d = Dragline::new();
+        let mut created: Vec<DomainId> = Vec::new();
+        for ts in 0..50_i64 {
+            let r = d.create(1000 + ts, "x").unwrap();
+            created.push(r.domain_id);
+        }
+        for (i, id) in created.iter().enumerate() {
+            if i % 2 == 0 {
+                d.detach(*id, 2000 + i as i64, "det").unwrap();
+                d.migrate_fiber(*id, MigrationPolicy::Purge).unwrap();
+            }
+        }
+        for ts in 3000..3050_i64 {
+            let r = d
+                .create(ts, "y")
+                .expect("create() must not stall on liveness across purges");
+            assert!(!matches!(d.fiber_state(r.domain_id), FiberState::Purged));
+        }
+    }
+
+    #[test]
+    fn create_skips_purged_when_next_id_collides() {
+        // Direct mechanism test for the FH4 fix. The public API
+        // monotonically advances next_id past every assignment, so the
+        // collision condition is only reachable from external bytes
+        // (load_from_disk, migration replay). We use from_raw_parts to
+        // construct a Dragline whose next_id == 5 sits on a purged id.
+        // Pre-FH4: create() fails with IdAlreadyExists. Post-FH4:
+        // create() skips 5/6/7 and assigns 8.
+        let mut purged_ids = HashSet::new();
+        purged_ids.insert(DomainId::new(5));
+        purged_ids.insert(DomainId::new(6));
+        purged_ids.insert(DomainId::new(7));
+        let mut d = Dragline::<&str>::from_raw_parts(
+            Vec::new(),
+            HashMap::new(),
+            purged_ids,
+            DomainId::new(5),
+            0,
+            false,
+        )
+        .unwrap();
+
+        let r = d
+            .create(1000, "fresh")
+            .expect("create() must skip purged ids");
+        assert_eq!(
+            r.domain_id,
+            DomainId::new(8),
+            "create() should have skipped 5, 6, 7"
+        );
+        assert_eq!(d.next_domain_id(), DomainId::new(9));
+    }
+
+    #[test]
+    fn create_overflows_when_remaining_ids_all_purged() {
+        // Bounded-loop guarantee: if next_id is u64::MAX AND it is purged,
+        // the skip loop has nowhere to advance and surfaces
+        // DomainIdOverflow rather than looping forever.
+        let mut purged_ids = HashSet::new();
+        purged_ids.insert(DomainId::new(u64::MAX));
+        let mut d = Dragline::<&str>::from_raw_parts(
+            Vec::new(),
+            HashMap::new(),
+            purged_ids,
+            DomainId::new(u64::MAX),
+            0,
+            false,
+        )
+        .unwrap();
+
+        let err = d.create(1000, "x").unwrap_err();
+        assert!(
+            matches!(err, PardosaError::DomainIdOverflow),
+            "expected DomainIdOverflow, got: {err}"
+        );
     }
 
     // ── Precursor chain verification ──────────────────────────────────
