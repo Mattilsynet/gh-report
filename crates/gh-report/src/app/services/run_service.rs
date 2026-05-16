@@ -443,6 +443,22 @@ mod tests {
 
         // (1) Stream contents.
         let loaded = store.load(assigned_id).await.expect("load");
+        assert_lifecycle_stream(&loaded);
+
+        // (2) Bus captured all 5 in order.
+        assert_captured_sequence(&captured, 5);
+
+        // (3) Sequence tracker == 5.
+        assert_tracker_seq(&tracker, assigned_id, 5);
+
+        // (4) Single per-aggregate file (CHE-0036:R1).
+        assert_single_msgpack_file(&dir, assigned_id);
+    }
+
+    /// Assert the stored envelope sequence for the run lifecycle test:
+    /// 5 envelopes [`SweepStarted`, `SweepProgress(1/3)`, `SweepProgress(2/3)`,
+    /// `SweepCompleted{3}`, `EvidencePublished{7, !warm}`], monotonic seqs.
+    fn assert_lifecycle_stream(loaded: &[EventEnvelope<DomainEvent>]) {
         assert_eq!(loaded.len(), 5, "5 envelopes after lifecycle");
         for (i, env) in loaded.iter().enumerate() {
             assert_eq!(
@@ -484,31 +500,48 @@ mod tests {
                 ..
             }
         ));
+    }
 
-        // (2) Bus captured all 5 in order.
-        let captured_envs = captured
+    /// Assert the bus captured exactly `expected_len` envelopes in
+    /// strict 1..=expected_len sequence order.
+    fn assert_captured_sequence(
+        captured: &Arc<Mutex<Vec<EventEnvelope<DomainEvent>>>>,
+        expected_len: usize,
+    ) {
+        let envs = captured
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(captured_envs.len(), 5, "5 envelopes published");
-        for (i, env) in captured_envs.iter().enumerate() {
+        assert_eq!(
+            envs.len(),
+            expected_len,
+            "{expected_len} envelopes published"
+        );
+        for (i, env) in envs.iter().enumerate() {
             assert_eq!(env.sequence().get(), u64::try_from(i + 1).unwrap());
         }
+    }
 
-        // (3) Sequence tracker == 5.
-        let tracked_seq = {
-            let guard = tracker
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *guard.get(&assigned_id).expect("next_seq entry")
-        };
+    /// Assert the per-aggregate next-sequence tracker entry equals `expected`.
+    fn assert_tracker_seq(
+        tracker: &Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
+        id: AggregateId,
+        expected: u64,
+    ) {
+        let guard = tracker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let seq = *guard.get(&id).expect("next_seq entry");
         assert_eq!(
-            tracked_seq.get(),
-            5,
+            seq.get(),
+            expected,
             "tracker should reflect last appended sequence"
         );
+    }
 
-        // (4) Single per-aggregate file (CHE-0036:R1).
-        let store_file = dir.path().join(format!("{assigned_id}.msgpack"));
+    /// Assert the on-disk store contains exactly one `<id>.msgpack`
+    /// file, satisfying CHE-0036:R1 (one file per aggregate).
+    fn assert_single_msgpack_file(dir: &TempDir, id: AggregateId) {
+        let store_file = dir.path().join(format!("{id}.msgpack"));
         assert!(store_file.exists(), "single per-aggregate file");
         let entries: Vec<_> = std::fs::read_dir(dir.path())
             .expect("readdir")
