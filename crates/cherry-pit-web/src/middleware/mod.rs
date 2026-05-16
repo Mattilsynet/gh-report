@@ -32,6 +32,7 @@
 pub(crate) mod compression;
 pub(crate) mod correlation;
 pub(crate) mod error;
+pub(crate) mod limits;
 pub(crate) mod path;
 pub(crate) mod security;
 pub(crate) mod trace;
@@ -50,6 +51,7 @@ pub use error::{
     ErrorBody, ErrorEnvelope, map_bus_error, map_dispatch_error, map_store_error,
     post_persist_cancellation_response,
 };
+pub use limits::LayerLimits;
 pub use path::{PathSegmentError, normalize_request_path, sanitize_path_segment};
 pub use security::{SVG_CSP, security_headers};
 pub use trace::{HttpTraceLayer, http_trace_layer};
