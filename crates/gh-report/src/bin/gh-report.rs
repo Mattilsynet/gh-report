@@ -1,9 +1,8 @@
 #![forbid(unsafe_code)]
-// TODO(P0a, bd-adr-fmt-5f8s): triage pedantic surface from MC-P0 first exposure.
-// doc_markdown: 55 mechanical backtick adds (automaton candidate).
-// too_many_lines: 5 functions need refactor (real work, separate mission).
+// TODO(P0a, bd-adr-fmt-5f8s): doc_markdown — 55 mechanical backtick adds.
+// Deferred: SM2 was abandoned (automaton over-correction). Revisit via a
+// hand-written per-comment pass.
 #![allow(clippy::doc_markdown)]
-#![allow(clippy::too_many_lines)]
 
 //! `gh-report` CLI entrypoint.
 //!
