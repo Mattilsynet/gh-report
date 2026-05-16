@@ -449,10 +449,15 @@ impl<T: Decode, const N: usize> Decode for [T; N] {
         for _ in 0..N {
             v.push(T::decode(d)?);
         }
-        // SAFETY (logical, no unsafe): `try_into` on a Vec of exact length
-        // succeeds; we built it with N elements above.
-        v.try_into()
-            .map_err(|_| EventError::InvalidInput /* unreachable */)
+        // Provably-Ok by construction: `v` has exactly N elements (the
+        // loop pushed N times, no fallible interleaving could shrink it
+        // after a successful T::decode). `try_into::<[T; N]>` on a Vec
+        // of length N cannot fail. The debug_assert pins the invariant
+        // for debug builds; the expect carries the same justification
+        // into release builds without runtime cost on the happy path.
+        debug_assert_eq!(v.len(), N, "loop invariant: v populated with N elements");
+        Ok(v.try_into()
+            .unwrap_or_else(|_| unreachable!("v.len() == N by loop invariant")))
     }
 }
 
