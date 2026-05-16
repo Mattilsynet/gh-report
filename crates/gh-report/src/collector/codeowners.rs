@@ -14,7 +14,7 @@ use crate::domain::checks::{CodeownersResult, CodeownersStatus};
 use crate::domain::codeowners::CodeownersTruncationReason;
 use crate::domain::repository::Repository;
 use crate::github::client::GitHubClient;
-use crate::infra::validate::sanitize_path_segment;
+use cherry_pit_web::sanitize_path_segment;
 
 /// Maximum raw base64 string length before decoding (~133 KB → ~100 KB decoded).
 const MAX_BASE64_LENGTH: usize = 133 * 1024;

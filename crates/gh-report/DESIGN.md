@@ -345,11 +345,12 @@ Inline-absorbs the upstream SERVE pipeline into
 | `ServerError` (server-internal, 3-variant) | `infra::server::error` |
 | `start`, `build_router`, middleware (security headers, WS handler, etc.) | `infra::server::server` |
 | `wait_for_shutdown_signal` | `infra::signal` |
-| `sanitize_path_segment` | `infra::validate` |
+| `sanitize_path_segment` | `cherry_pit_web` (canonical; previously `infra::validate` — local copy deleted SM1 `sm1-sanitize-path-1779000001`) |
 
 `sanitize_path_segment` is the highest-fanout symbol — re-imported by 6
 collector modules (security_policy, dependabot, last_commit,
-ghas_scanning, branch_protection, codeowners). Collectors update import
+ghas_scanning, branch_protection, codeowners) from `cherry_pit_web` (flat
+re-export per cherry-pit-web/src/lib.rs:68). Collectors update import
 paths; behaviour unchanged.
 
 Webhook handler + cached HTML pages remain at `src/webhook/` and

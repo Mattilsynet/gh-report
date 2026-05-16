@@ -17,7 +17,7 @@ use crate::domain::repository::Repository;
 use crate::domain::status::CollectionStatus;
 use crate::domain::time::parse_iso8601;
 use crate::github::client::{ApiOutcome, GitHubClient};
-use crate::infra::validate::sanitize_path_segment;
+use cherry_pit_web::sanitize_path_segment;
 
 // ---------------------------------------------------------------------------
 // Org-level alert aggregation

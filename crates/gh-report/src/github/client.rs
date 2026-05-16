@@ -340,22 +340,6 @@ pub fn validate_api_base_url(url_str: &str) -> Result<String, GitHubApiError> {
     Ok(url_str.trim_end_matches('/').to_string())
 }
 
-/// Validate and sanitize a path segment from untrusted API data.
-///
-/// Thin wrapper around [`crate::infra::validate::sanitize_path_segment`]
-/// that maps the error to [`GitHubApiError::InvalidResponse`].
-///
-/// Rejects values containing path traversal sequences (`..`), slashes,
-/// or backslashes that could cause requests to hit unintended endpoints.
-pub(crate) fn sanitize_path_segment(
-    value: &str,
-    field_name: &str,
-) -> Result<String, GitHubApiError> {
-    crate::infra::validate::sanitize_path_segment(value, field_name)
-        .map(std::borrow::Cow::into_owned)
-        .map_err(|e| GitHubApiError::InvalidResponse { reason: e.reason })
-}
-
 /// Duration buffer before expiry at which we refresh GitHub App tokens.
 ///
 /// Set to 5 minutes to ensure tokens are refreshed well before GitHub's
@@ -394,11 +378,11 @@ impl GitHubClient {
             })?;
 
         // Validate org_name before storing — it is interpolated into API paths
-        let validated_org = sanitize_path_segment(org_name, "org_name").map_err(|e| {
-            GitHubApiError::ClientConfigError {
+        let validated_org = cherry_pit_web::sanitize_path_segment(org_name, "org_name")
+            .map(std::borrow::Cow::into_owned)
+            .map_err(|e| GitHubApiError::ClientConfigError {
                 reason: format!("invalid organization name: {e}"),
-            }
-        })?;
+            })?;
 
         let http = Self::build_http_client()?;
 
@@ -1029,7 +1013,7 @@ impl GitHubClient {
 
         // Validate repo_name before URL interpolation — this is a pub method
         // called with API-derived data.
-        let safe_name = match sanitize_path_segment(repo_name, "repo_name") {
+        let safe_name = match cherry_pit_web::sanitize_path_segment(repo_name, "repo_name") {
             Ok(n) => n,
             Err(e) => {
                 return ApiOutcome::failure(None, format!("invalid repo name: {e}"), false);
@@ -1711,43 +1695,9 @@ mod tests {
         );
     }
 
-    // ── Path sanitization tests ─────────────────────────────────
-
-    #[test]
-    fn sanitize_path_segment_accepts_normal() {
-        assert_eq!(
-            sanitize_path_segment("main", "default_branch").unwrap(),
-            "main"
-        );
-        assert_eq!(
-            sanitize_path_segment("release-v2.1", "default_branch").unwrap(),
-            "release-v2.1"
-        );
-    }
-
-    #[test]
-    fn sanitize_path_segment_rejects_traversal() {
-        assert!(sanitize_path_segment("../etc/passwd", "default_branch").is_err());
-        assert!(sanitize_path_segment("foo/../bar", "default_branch").is_err());
-    }
-
-    #[test]
-    fn sanitize_path_segment_rejects_slashes() {
-        assert!(sanitize_path_segment("feature/branch", "default_branch").is_err());
-        assert!(sanitize_path_segment("a\\b", "default_branch").is_err());
-    }
-
-    #[test]
-    fn sanitize_path_segment_rejects_empty() {
-        assert!(sanitize_path_segment("", "default_branch").is_err());
-    }
-
-    #[test]
-    fn sanitize_path_segment_rejects_control_chars() {
-        assert!(sanitize_path_segment("foo\x00bar", "repo_name").is_err());
-        assert!(sanitize_path_segment("foo\nbar", "repo_name").is_err());
-        assert!(sanitize_path_segment("foo\rbar", "repo_name").is_err());
-    }
+    // ── Path sanitization tests removed (SM1 sm1-sanitize-path-1779000001):
+    //    the local sanitize_path_segment wrapper was deleted; identical
+    //    coverage now lives in cherry-pit-web at middleware/path.rs.
 
     // ── Error body truncation tests ─────────────────────────────
 
