@@ -210,6 +210,44 @@ impl<T> Default for Dragline<T> {
     }
 }
 
+/// Description of a prepared, infallible mutation produced by the
+/// `prepare` phase of `Dragline::commit_atomic` (FH5). Every field
+/// here has had its fallibility discharged in `prepare`; `apply` only
+/// performs operations whose invariants were checked upstream.
+struct PreparedCommit<T> {
+    event: Event<T>,
+    event_id: u64,
+    index: Index,
+    domain_id: DomainId,
+    lookup_op: LookupOp,
+    /// Some when this writer advances the domain-id counter (create).
+    next_id_advance: Option<DomainId>,
+    /// Some when this writer clears a purged-id reservation (create_reuse).
+    purged_remove: Option<DomainId>,
+}
+
+/// Shape of the lookup-table mutation a writer performs. Each variant
+/// corresponds to one of the legal write patterns; encoding them as an
+/// enum prevents writers from mixing patterns or forgetting steps.
+enum LookupOp {
+    /// Fresh fiber under a new domain id. Used by `create` and
+    /// `create_reuse`.
+    Insert { fiber: Fiber, state: FiberState },
+    /// Advance an existing fiber's `current` index. `new_state` is Some
+    /// when the writer also transitions the fiber state (detach,
+    /// rescue Detached → Defined); None for plain `update`.
+    ///
+    /// `new_current` MUST have been validated via `Fiber::check_advance`
+    /// in prepare; `apply` invokes `Fiber::advance_unchecked`.
+    AdvanceFiber {
+        new_current: Index,
+        new_state: Option<FiberState>,
+    },
+    /// Replace the existing fiber wholesale (rescue Locked → Defined,
+    /// where history is destroyed and a fresh fiber starts).
+    ReplaceFiber { fiber: Fiber, new_state: FiberState },
+}
+
 impl<T> Dragline<T> {
     /// Create a new empty dragline.
     #[must_use]
@@ -251,52 +289,50 @@ impl<T> Dragline<T> {
         timestamp: i64,
         domain_event: T,
     ) -> Result<AppendResult, PardosaError> {
-        self.reject_if_migrating()?;
+        self.commit_atomic(|s| {
+            // Advance next_id past any purged ids. `purged_ids` is a HashSet
+            // so each membership check is O(1); the loop terminates either
+            // when we find a fresh id (the common case: zero iterations) or
+            // when checked_next overflows u64 (every remaining id is purged).
+            let mut domain_id = s.next_id;
+            while s.purged_ids.contains(&domain_id) {
+                domain_id = domain_id.checked_next()?;
+            }
 
-        // Advance next_id past any purged ids. `purged_ids` is a HashSet so
-        // each membership check is O(1); the loop terminates either when
-        // we find a fresh id (the common case: zero iterations) or when
-        // checked_next overflows u64 (every remaining id is purged).
-        let mut domain_id = self.next_id;
-        while self.purged_ids.contains(&domain_id) {
-            domain_id = domain_id.checked_next()?;
-        }
+            // After skipping, the id may now collide with an active fiber in
+            // lookup. That would indicate a corrupted on-disk state (lookup
+            // and next_id disagree) and is structurally impossible from the
+            // public API alone — keep the defensive check.
+            if s.lookup.contains_key(&domain_id) {
+                return Err(PardosaError::IdAlreadyExists(domain_id));
+            }
 
-        // After skipping, the id may now collide with an active fiber in
-        // lookup. That would indicate a corrupted on-disk state (lookup
-        // and next_id disagree) and is structurally impossible from the
-        // public API alone — keep the defensive check.
-        if self.lookup.contains_key(&domain_id) {
-            return Err(PardosaError::IdAlreadyExists(domain_id));
-        }
+            let new_state = transition(FiberState::Undefined, FiberAction::Create)?;
+            let event_id = s.peek_event_id()?;
+            let index = s.next_index()?;
+            let next_domain_id = domain_id.checked_next()?;
+            let fiber = Fiber::new(index, 1, index)?;
 
-        // Validate state machine: Undefined → Create → Defined
-        let new_state = transition(FiberState::Undefined, FiberAction::Create)?;
-
-        // Pre-validate all computations before mutating
-        let event_id = self.peek_event_id()?;
-        let index = self.next_index()?;
-        let next_domain_id = domain_id.checked_next()?;
-        let fiber = Fiber::new(index, 1, index)?;
-
-        // All checks passed — commit state changes
-        let event = Event::new(
-            event_id,
-            timestamp,
-            domain_id,
-            false,
-            Index::NONE,
-            domain_event,
-        );
-        self.line.append_validated(event, event_id)?;
-        self.lookup.insert(domain_id, (fiber, new_state));
-        self.next_event_id = event_id + 1;
-        self.next_id = next_domain_id;
-
-        Ok(AppendResult {
-            domain_id,
-            event_id,
-            index,
+            let event = Event::new(
+                event_id,
+                timestamp,
+                domain_id,
+                false,
+                Index::NONE,
+                domain_event,
+            );
+            Ok(PreparedCommit {
+                event,
+                event_id,
+                index,
+                domain_id,
+                lookup_op: LookupOp::Insert {
+                    fiber,
+                    state: new_state,
+                },
+                next_id_advance: Some(next_domain_id),
+                purged_remove: None,
+            })
         })
     }
 
@@ -315,36 +351,36 @@ impl<T> Dragline<T> {
         timestamp: i64,
         domain_event: T,
     ) -> Result<AppendResult, PardosaError> {
-        self.reject_if_migrating()?;
+        self.commit_atomic(|s| {
+            if !s.purged_ids.contains(&domain_id) {
+                return Err(PardosaError::IdNotPurged(domain_id));
+            }
 
-        if !self.purged_ids.contains(&domain_id) {
-            return Err(PardosaError::IdNotPurged(domain_id));
-        }
+            let new_state = transition(FiberState::Purged, FiberAction::Create)?;
+            let event_id = s.peek_event_id()?;
+            let index = s.next_index()?;
+            let fiber = Fiber::new(index, 1, index)?;
 
-        // Validate state machine: Purged → Create → Defined
-        let new_state = transition(FiberState::Purged, FiberAction::Create)?;
-
-        let event_id = self.peek_event_id()?;
-        let index = self.next_index()?;
-        let fiber = Fiber::new(index, 1, index)?;
-
-        let event = Event::new(
-            event_id,
-            timestamp,
-            domain_id,
-            false,
-            Index::NONE,
-            domain_event,
-        );
-        self.line.append_validated(event, event_id)?;
-        self.purged_ids.remove(&domain_id);
-        self.lookup.insert(domain_id, (fiber, new_state));
-        self.next_event_id = event_id + 1;
-
-        Ok(AppendResult {
-            domain_id,
-            event_id,
-            index,
+            let event = Event::new(
+                event_id,
+                timestamp,
+                domain_id,
+                false,
+                Index::NONE,
+                domain_event,
+            );
+            Ok(PreparedCommit {
+                event,
+                event_id,
+                index,
+                domain_id,
+                lookup_op: LookupOp::Insert {
+                    fiber,
+                    state: new_state,
+                },
+                next_id_advance: None,
+                purged_remove: Some(domain_id),
+            })
         })
     }
 
@@ -356,49 +392,49 @@ impl<T> Dragline<T> {
     ///
     /// Returns an error if a migration is in progress, the fiber is not
     /// found or not in the `Defined` state, or internal counters overflow.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the fiber disappears from the lookup between the
-    /// read-check and the mutable update — impossible under single-threaded
-    /// access (the only supported mode).
     pub fn update(
         &mut self,
         domain_id: DomainId,
         timestamp: i64,
         domain_event: T,
     ) -> Result<AppendResult, PardosaError> {
-        self.reject_if_migrating()?;
+        self.commit_atomic(|s| {
+            let (fiber, state) = s
+                .lookup
+                .get(&domain_id)
+                .ok_or(PardosaError::FiberNotFound(domain_id))?;
 
-        let (fiber, state) = self
-            .lookup
-            .get(&domain_id)
-            .ok_or(PardosaError::FiberNotFound(domain_id))?;
+            let _new_state = transition(*state, FiberAction::Update)?;
 
-        let _new_state = transition(*state, FiberAction::Update)?;
+            let event_id = s.peek_event_id()?;
+            let index = s.next_index()?;
+            let precursor = fiber.current();
 
-        let event_id = self.peek_event_id()?;
-        let index = self.next_index()?;
-        let precursor = fiber.current();
+            // Lift Fiber::advance fallibility into prepare (FH5: closes
+            // the latent partial-commit window where line.append_validated
+            // succeeded then fiber.advance Err'd on len overflow).
+            fiber.check_advance(index)?;
 
-        let event = Event::new(
-            event_id,
-            timestamp,
-            domain_id,
-            false,
-            precursor,
-            domain_event,
-        );
-        self.line.append_validated(event, event_id)?;
-
-        let (fiber, _) = self.lookup.get_mut(&domain_id).unwrap();
-        fiber.advance(index)?;
-        self.next_event_id = event_id + 1;
-
-        Ok(AppendResult {
-            domain_id,
-            event_id,
-            index,
+            let event = Event::new(
+                event_id,
+                timestamp,
+                domain_id,
+                false,
+                precursor,
+                domain_event,
+            );
+            Ok(PreparedCommit {
+                event,
+                event_id,
+                index,
+                domain_id,
+                lookup_op: LookupOp::AdvanceFiber {
+                    new_current: index,
+                    new_state: None,
+                },
+                next_id_advance: None,
+                purged_remove: None,
+            })
         })
     }
 
@@ -410,50 +446,47 @@ impl<T> Dragline<T> {
     ///
     /// Returns an error if a migration is in progress, the fiber is not
     /// found or not in the `Defined` state, or internal counters overflow.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the fiber disappears from the lookup between the
-    /// read-check and the mutable update — impossible under single-threaded
-    /// access.
     pub fn detach(
         &mut self,
         domain_id: DomainId,
         timestamp: i64,
         domain_event: T,
     ) -> Result<AppendResult, PardosaError> {
-        self.reject_if_migrating()?;
+        self.commit_atomic(|s| {
+            let (fiber, state) = s
+                .lookup
+                .get(&domain_id)
+                .ok_or(PardosaError::FiberNotFound(domain_id))?;
 
-        let (fiber, state) = self
-            .lookup
-            .get(&domain_id)
-            .ok_or(PardosaError::FiberNotFound(domain_id))?;
+            let new_state = transition(*state, FiberAction::Detach)?;
 
-        let new_state = transition(*state, FiberAction::Detach)?;
+            let event_id = s.peek_event_id()?;
+            let index = s.next_index()?;
+            let precursor = fiber.current();
 
-        let event_id = self.peek_event_id()?;
-        let index = self.next_index()?;
-        let precursor = fiber.current();
+            // FH5: lift Fiber::advance fallibility into prepare.
+            fiber.check_advance(index)?;
 
-        let event = Event::new(
-            event_id,
-            timestamp,
-            domain_id,
-            true,
-            precursor,
-            domain_event,
-        );
-        self.line.append_validated(event, event_id)?;
-
-        let (fiber, state) = self.lookup.get_mut(&domain_id).unwrap();
-        fiber.advance(index)?;
-        *state = new_state;
-        self.next_event_id = event_id + 1;
-
-        Ok(AppendResult {
-            domain_id,
-            event_id,
-            index,
+            let event = Event::new(
+                event_id,
+                timestamp,
+                domain_id,
+                true,
+                precursor,
+                domain_event,
+            );
+            Ok(PreparedCommit {
+                event,
+                event_id,
+                index,
+                domain_id,
+                lookup_op: LookupOp::AdvanceFiber {
+                    new_current: index,
+                    new_state: Some(new_state),
+                },
+                next_id_advance: None,
+                purged_remove: None,
+            })
         })
     }
 
@@ -486,58 +519,70 @@ impl<T> Dragline<T> {
         timestamp: i64,
         domain_event: T,
     ) -> Result<AppendResult, PardosaError> {
-        self.reject_if_migrating()?;
+        self.commit_atomic(|s| {
+            let (fiber, state) = s
+                .lookup
+                .get(&domain_id)
+                .ok_or(PardosaError::FiberNotFound(domain_id))?;
 
-        let (fiber, state) = self
-            .lookup
-            .get(&domain_id)
-            .ok_or(PardosaError::FiberNotFound(domain_id))?;
+            let current_state = *state;
+            let new_state = transition(current_state, FiberAction::Rescue)?;
 
-        let current_state = *state;
-        let new_state = transition(current_state, FiberAction::Rescue)?;
+            let event_id = s.peek_event_id()?;
+            let index = s.next_index()?;
 
-        let event_id = self.peek_event_id()?;
-        let index = self.next_index()?;
+            // Locked → Defined: fresh start, no precursor, new fiber.
+            // Detached → Defined: continue the chain, advance existing fiber.
+            let (precursor, lookup_op) = match current_state {
+                FiberState::Locked => {
+                    let new_fiber = Fiber::new(index, 1, index)?;
+                    (
+                        Index::NONE,
+                        LookupOp::ReplaceFiber {
+                            fiber: new_fiber,
+                            new_state,
+                        },
+                    )
+                }
+                FiberState::Detached => {
+                    // FH5: lift Fiber::advance fallibility into prepare.
+                    fiber.check_advance(index)?;
+                    (
+                        fiber.current(),
+                        LookupOp::AdvanceFiber {
+                            new_current: index,
+                            new_state: Some(new_state),
+                        },
+                    )
+                }
+                // transition() above only succeeds for Detached and Locked.
+                // If the state machine gains new rescuable states, this arm
+                // surfaces the gap as an explicit error rather than a panic.
+                other => {
+                    return Err(PardosaError::InvalidTransition {
+                        state: other,
+                        action: FiberAction::Rescue,
+                    });
+                }
+            };
 
-        // Locked → Defined: fresh start, no precursor, new fiber.
-        // Detached → Defined: continue the chain, advance existing fiber.
-        let (precursor, replace_fiber) = match current_state {
-            FiberState::Locked => (Index::NONE, Some(Fiber::new(index, 1, index)?)),
-            FiberState::Detached => (fiber.current(), None),
-            // transition() above only succeeds for Detached and Locked.
-            // If the state machine gains new rescuable states, this arm
-            // surfaces the gap as an explicit error rather than a panic.
-            other => {
-                return Err(PardosaError::InvalidTransition {
-                    state: other,
-                    action: FiberAction::Rescue,
-                });
-            }
-        };
-
-        let event = Event::new(
-            event_id,
-            timestamp,
-            domain_id,
-            false,
-            precursor,
-            domain_event,
-        );
-        self.line.append_validated(event, event_id)?;
-
-        let (fiber, state) = self.lookup.get_mut(&domain_id).unwrap();
-        if let Some(new_fiber) = replace_fiber {
-            *fiber = new_fiber;
-        } else {
-            fiber.advance(index)?;
-        }
-        *state = new_state;
-        self.next_event_id = event_id + 1;
-
-        Ok(AppendResult {
-            domain_id,
-            event_id,
-            index,
+            let event = Event::new(
+                event_id,
+                timestamp,
+                domain_id,
+                false,
+                precursor,
+                domain_event,
+            );
+            Ok(PreparedCommit {
+                event,
+                event_id,
+                index,
+                domain_id,
+                lookup_op,
+                next_id_advance: None,
+                purged_remove: None,
+            })
         })
     }
 
@@ -884,6 +929,91 @@ impl<T> Dragline<T> {
             return Err(PardosaError::IndexOverflow);
         }
         Ok(Index::new(len))
+    }
+
+    // ── Atomic-commit helper (FH5) ────────────────────────────────────
+    //
+    // The four/five Dragline writers (create, create_reuse, update,
+    // detach, rescue) all share a pre-validate-then-mutate shape. To
+    // make partial commits unrepresentable, every fallible computation
+    // is hoisted into a `prepare` closure that returns a `PreparedCommit`
+    // describing the mutations to perform. `commit_atomic` then drives
+    // the mutations through `apply_prepared`, which is infallible: the
+    // line append is the last operation that can fail (it is gated by
+    // `Linevec::append_validated`'s pre-validation), and every step
+    // after it consists of operations whose fallibility was already
+    // discharged in `prepare` (including `Fiber::advance`, lifted into
+    // `Fiber::check_advance` here and replayed via
+    // `Fiber::advance_unchecked` in apply).
+
+    fn commit_atomic<F>(&mut self, prepare: F) -> Result<AppendResult, PardosaError>
+    where
+        F: FnOnce(&Self) -> Result<PreparedCommit<T>, PardosaError>,
+    {
+        self.reject_if_migrating()?;
+        let prepared = prepare(self)?;
+        self.apply_prepared(prepared)
+    }
+
+    /// Infallible mutation phase. Every error path was discharged in
+    /// `prepare`; if `line.append_validated` returns Err here it
+    /// indicates a same-writer bug — the prepare phase computed a
+    /// candidate that violates Linevec's invariants. Surface loudly.
+    fn apply_prepared(&mut self, p: PreparedCommit<T>) -> Result<AppendResult, PardosaError> {
+        let PreparedCommit {
+            event,
+            event_id,
+            index,
+            domain_id,
+            lookup_op,
+            next_id_advance,
+            purged_remove,
+        } = p;
+
+        // Single remaining fallible step. Anything but Ok here means
+        // prepare missed a validation — bug, not user error.
+        self.line.append_validated(event, event_id)?;
+
+        match lookup_op {
+            LookupOp::Insert { fiber, state } => {
+                self.lookup.insert(domain_id, (fiber, state));
+            }
+            LookupOp::AdvanceFiber {
+                new_current,
+                new_state,
+            } => {
+                let (fiber, state) = self
+                    .lookup
+                    .get_mut(&domain_id)
+                    .expect("prepare verified fiber presence");
+                fiber.advance_unchecked(new_current);
+                if let Some(ns) = new_state {
+                    *state = ns;
+                }
+            }
+            LookupOp::ReplaceFiber { fiber, new_state } => {
+                let (slot_fiber, slot_state) = self
+                    .lookup
+                    .get_mut(&domain_id)
+                    .expect("prepare verified fiber presence");
+                *slot_fiber = fiber;
+                *slot_state = new_state;
+            }
+        }
+
+        if let Some(d) = purged_remove {
+            self.purged_ids.remove(&d);
+        }
+        if let Some(d) = next_id_advance {
+            self.next_id = d;
+        }
+        self.next_event_id = event_id + 1;
+
+        Ok(AppendResult {
+            domain_id,
+            event_id,
+            index,
+        })
     }
 
     /// Reassemble a `Dragline` from raw parts, gated by [`verify_invariants`].
@@ -2243,6 +2373,165 @@ mod tests {
                     }
                     prev_event_id = Some(r.event_id);
                 }
+            }
+
+            // FH5 (adr-fmt-pp3c, adr-fmt-w2bs): commit_atomic must be all
+            // or nothing. For every fallible step reachable inside any
+            // writer, on Err the three observable counters must be
+            // unchanged: (a) next_event_id, (b) line.len(), (c) lookup
+            // contents. Schema-hash injection (per bead AC) does not fit
+            // Dragline's `T` (no trait bound) — instead we exercise every
+            // reachable failure mode of every writer and assert atomicity
+            // by counter comparison.
+            #[test]
+            fn commit_atomic_preserves_state_on_err(
+                writer_pick in 0u8..5,
+                failure_mode in 0u8..3,
+                seed_creates in 1usize..8,
+            ) {
+                let mut d = Dragline::<String>::new();
+                let mut ids: Vec<DomainId> = Vec::new();
+                for i in 0..seed_creates {
+                    let r = d.create(i64::try_from(i).unwrap(), format!("seed{i}")).unwrap();
+                    ids.push(r.domain_id);
+                }
+                // detach one to enable rescue path
+                let detached_id = if ids.len() >= 2 {
+                    let id = ids[1];
+                    d.detach(id, 1000, "det".into()).unwrap();
+                    Some(id)
+                } else {
+                    None
+                };
+
+                // Engineer the Dragline into a state where the chosen
+                // writer's chosen failure_mode will Err.
+                match failure_mode {
+                    0 => {
+                        // Migration mode: every writer Errs in commit_atomic
+                        // BEFORE prepare runs (reject_if_migrating).
+                        d.set_migrating(true);
+                    }
+                    1 => {
+                        // DomainIdOverflow for create() path; other writers
+                        // hit different (or no) Err. We only assert atomicity,
+                        // which holds in either case.
+                        let line: Vec<Event<String>> = d.read_line().to_vec();
+                        let lookup: HashMap<DomainId, (Fiber, FiberState)> = ids
+                            .iter()
+                            .filter_map(|id| {
+                                let s = d.fiber_state(*id);
+                                if matches!(s, FiberState::Undefined) {
+                                    None
+                                } else {
+                                    Some((*id, (d.lookup.get(id).unwrap().0.clone(), s)))
+                                }
+                            })
+                            .collect();
+                        let next_event_id = d.next_event_id();
+                        d = Dragline::<String>::from_raw_parts(
+                            line, lookup, HashSet::new(), DomainId::new(u64::MAX), next_event_id, false,
+                        ).unwrap();
+                    }
+                    _ => {
+                        // FiberNotFound for update/detach/rescue.
+                        // For create / create_reuse this mode does not force
+                        // an Err — but atomicity is still asserted only when
+                        // Err occurs, so a successful call is fine.
+                    }
+                }
+
+                // Snapshot pre-call state.
+                let pre_next_event_id = d.next_event_id();
+                let pre_line_len = d.line_len();
+                let pre_lookup_snapshot: HashMap<DomainId, FiberState> =
+                    ids.iter().map(|id| (*id, d.fiber_state(*id))).collect();
+                let pre_next_id = d.next_domain_id();
+
+                // Dispatch the writer. For mode 2 (FiberNotFound) we pass
+                // a never-present DomainId::new(u64::MAX).
+                let bogus = DomainId::new(u64::MAX);
+                let target_id = if failure_mode == 2 {
+                    bogus
+                } else {
+                    detached_id.unwrap_or(ids[0])
+                };
+
+                let result: Result<AppendResult, PardosaError> = match writer_pick {
+                    0 => d.create(2000, "x".into()),
+                    1 => d.create_reuse(bogus, 2000, "x".into()),
+                    2 => d.update(target_id, 2000, "x".into()),
+                    3 => d.detach(ids[0], 2000, "x".into()),
+                    _ => d.rescue(
+                        target_id,
+                        LockedRescuePolicy::PreserveAuditTrail,
+                        2000,
+                        "x".into(),
+                    ),
+                };
+
+                // Atomicity property: if the call Erred, NO state advanced.
+                // If it succeeded, that is also a valid outcome (this
+                // proptest does not require the call to fail — only that
+                // failure, when it occurs, leaves no partial commit).
+                if result.is_err() {
+                    prop_assert_eq!(
+                        d.next_event_id(),
+                        pre_next_event_id,
+                        "next_event_id advanced on Err"
+                    );
+                    prop_assert_eq!(
+                        d.line_len(),
+                        pre_line_len,
+                        "line.len() changed on Err"
+                    );
+                    prop_assert_eq!(
+                        d.next_domain_id(),
+                        pre_next_id,
+                        "next_domain_id advanced on Err"
+                    );
+                    for id in &ids {
+                        prop_assert_eq!(
+                            d.fiber_state(*id),
+                            *pre_lookup_snapshot.get(id).unwrap(),
+                            "fiber state changed on Err for id {:?}", id
+                        );
+                    }
+                }
+            }
+
+            // Targeted regression for the latent partial-commit window
+            // (Bucket B evidence bead adr-fmt-w2bs): line.append_validated
+            // succeeded then fiber.advance Err'd on len overflow, leaving
+            // an extra event in the line without next_event_id/state
+            // advancing. After FH5 commit_atomic + Fiber::check_advance
+            // lift, this window is closed: fiber-overflow is caught in
+            // prepare BEFORE the line append.
+            #[test]
+            fn fiber_advance_overflow_does_not_partial_commit(_dummy in 0..1u8) {
+                // Construct a Dragline with one fiber whose len is already
+                // at u64::MAX, so the next update's check_advance will Err
+                // on len overflow.
+                let index0 = Index::new(0);
+                let fiber = Fiber::new(index0, u64::MAX, index0).unwrap();
+                let mut lookup = HashMap::new();
+                let domain_id = DomainId::new(0);
+                lookup.insert(domain_id, (fiber, FiberState::Defined));
+                let event = Event::new(0u64, 0, domain_id, false, Index::NONE, "seed".to_string());
+                let mut d = Dragline::<String>::from_raw_parts(
+                    vec![event], lookup, HashSet::new(), DomainId::new(1), 1, false,
+                ).unwrap();
+
+                let pre_event_id = d.next_event_id();
+                let pre_line_len = d.line_len();
+
+                let err = d.update(domain_id, 100, "u".into()).unwrap_err();
+                prop_assert!(
+                    matches!(err, PardosaError::FiberInvariantViolation(_)),
+                    "expected FiberInvariantViolation, got: {err:?}"
+                );
+                prop_assert_eq!(d.next_event_id(), pre_event_id, "next_event_id advanced on overflow");
+                prop_assert_eq!(d.line_len(), pre_line_len, "line gained an event on overflow");
             }
         }
     }

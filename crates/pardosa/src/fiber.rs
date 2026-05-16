@@ -145,13 +145,19 @@ impl Fiber {
     /// Infallible counterpart to [`advance`](Self::advance). Caller must
     /// have validated the same `new_current` via
     /// [`check_advance`](Self::check_advance) first; passing a value that
-    /// would fail validation triggers a debug-assertion. Release builds
-    /// will wrap on overflow rather than abort — partial commits in the
-    /// caller are the only path to such a state, so a saturating wrap is
-    /// the least-bad recovery.
+    /// would fail validation triggers a debug-assertion. `&mut self`
+    /// excludes any cross-writer race, so an unchecked invariant here
+    /// indicates a same-writer bug — fail loud rather than silently
+    /// corrupt by saturating.
     pub(crate) fn advance_unchecked(&mut self, new_current: Index) {
-        debug_assert!(self.check_advance(new_current).is_ok());
-        self.len = self.len.saturating_add(1);
+        debug_assert!(
+            self.check_advance(new_current).is_ok(),
+            "advance_unchecked called without preceding check_advance for {new_current:?}"
+        );
+        self.len = self
+            .len
+            .checked_add(1)
+            .expect("check_advance verified non-overflow");
         self.current = new_current;
     }
 }
