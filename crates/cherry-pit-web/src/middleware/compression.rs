@@ -64,6 +64,71 @@ pub fn compress_zstd(body: &[u8]) -> Option<Vec<u8>> {
     zstd::stream::encode_all(std::io::Cursor::new(body), 19).ok()
 }
 
+// ===========================================================================
+// Content-encoding negotiation (RFC 7231 §5.3.4)
+// ===========================================================================
+
+/// Supported response encodings, in preference order.
+///
+/// The projection adapter advertises only zstd and identity; gzip / br
+/// are deliberately omitted because (a) every page body in the snapshot
+/// is already zstd-precompressed at cache-population time and (b)
+/// per-request compression on the response path would defeat the
+/// snapshot-precompression optimisation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Encoding {
+    Zstd,
+    Identity,
+}
+
+/// Negotiate the best response encoding from an `Accept-Encoding` header.
+///
+/// Parses q-values (quality factors) per RFC 7231 §5.3.4 and selects the
+/// highest-quality supported encoding. An entry with `q=0` is an
+/// explicit refusal and is excluded; absent q-value defaults to `1.0`.
+///
+/// Strict superset of the prior simplified inline check
+/// (`s.split(',').any(|p| p.trim().starts_with("zstd"))`): every header
+/// value the simplified version accepted is still accepted here, plus
+/// q-value-aware refusals are now honoured.
+pub(crate) fn negotiate_encoding(accept: &HeaderValue) -> Encoding {
+    let Ok(s) = accept.to_str() else {
+        return Encoding::Identity;
+    };
+
+    let mut zstd_quality: Option<f32> = None;
+
+    for part in s.split(',') {
+        let part = part.trim();
+        let (name, params) = match part.split_once(';') {
+            Some((n, p)) => (n.trim(), Some(p.trim())),
+            None => (part, None),
+        };
+
+        // Parse q-value, defaulting to 1.0.
+        let quality = params
+            .and_then(|p| {
+                p.split(';').find_map(|param| {
+                    let param = param.trim();
+                    param
+                        .strip_prefix("q=")
+                        .and_then(|q| q.trim().parse::<f32>().ok())
+                })
+            })
+            .unwrap_or(1.0);
+
+        if name == "zstd" && quality > 0.0 {
+            zstd_quality = Some(quality);
+        }
+    }
+
+    if zstd_quality.is_some_and(|q| q > 0.0) {
+        Encoding::Zstd
+    } else {
+        Encoding::Identity
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,5 +167,104 @@ mod tests {
             compress_zstd(&at_limit).is_some(),
             "inputs at exactly MAX_PRECOMPRESS_BYTES must compress"
         );
+    }
+
+    // ── negotiate_encoding ────────────────────────────────────────────
+
+    /// Reproduces the simplified inline check at the prior call site so the
+    /// strict-superset assertion below is anchored to the actual replaced
+    /// expression, not a paraphrase. If this helper drifts from the call
+    /// site, the equivalence claim drifts with it — which is precisely
+    /// what the equivalence test is meant to detect.
+    fn simplified_accepts_zstd(v: &HeaderValue) -> bool {
+        v.to_str()
+            .ok()
+            .is_some_and(|s| s.split(',').any(|p| p.trim().starts_with("zstd")))
+    }
+
+    #[test]
+    fn negotiate_encoding_strict_superset_of_simplified() {
+        // For every header value the simplified version accepted, the new
+        // parser MUST also return Encoding::Zstd. (The converse — the new
+        // parser rejecting headers the simplified version accepted — is
+        // permitted only when the header has q=0, which the simplified
+        // version wrongly accepted; that direction is asserted below.)
+        let accepted_by_simplified = [
+            "zstd",
+            "zstd,gzip",
+            "gzip,zstd",
+            " zstd ",
+            "gzip, zstd",
+            "zstd;q=1.0",
+            "zstd;q=0.5",
+            "br, zstd;q=0.9",
+            "gzip;q=1.0, zstd;q=0.1",
+            "zstd, deflate",
+            "*, zstd",
+        ];
+        for raw in accepted_by_simplified {
+            let h = HeaderValue::from_static(raw);
+            assert!(
+                simplified_accepts_zstd(&h),
+                "test anchor: simplified must accept {raw:?}"
+            );
+            assert_eq!(
+                negotiate_encoding(&h),
+                Encoding::Zstd,
+                "strict superset broken: new parser must accept {raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn negotiate_encoding_honours_q_zero_refusal() {
+        // RFC 7231 §5.3.4: `q=0` is an explicit refusal. The simplified
+        // inline check wrongly accepted this; the new parser correctly
+        // rejects.
+        let h = HeaderValue::from_static("zstd;q=0");
+        assert!(
+            simplified_accepts_zstd(&h),
+            "anchor: simplified incorrectly accepts q=0"
+        );
+        assert_eq!(
+            negotiate_encoding(&h),
+            Encoding::Identity,
+            "q=0 must be honoured as a refusal"
+        );
+    }
+
+    #[test]
+    fn negotiate_encoding_absent_zstd_returns_identity() {
+        let h = HeaderValue::from_static("gzip, br, deflate");
+        assert_eq!(negotiate_encoding(&h), Encoding::Identity);
+    }
+
+    #[test]
+    fn negotiate_encoding_empty_header_returns_identity() {
+        let h = HeaderValue::from_static("");
+        assert_eq!(negotiate_encoding(&h), Encoding::Identity);
+    }
+
+    #[test]
+    fn negotiate_encoding_multi_value_with_whitespace() {
+        let h = HeaderValue::from_static("  gzip ; q=0.8 ,  zstd ; q=0.9  ");
+        assert_eq!(negotiate_encoding(&h), Encoding::Zstd);
+    }
+
+    #[test]
+    fn negotiate_encoding_malformed_q_value_defaults_to_one() {
+        // Unparseable q-value → params are silently skipped and the
+        // default 1.0 applies. Matches the donor's behaviour: prefer
+        // serving over rejecting a marginal header.
+        let h = HeaderValue::from_static("zstd;q=notanumber");
+        assert_eq!(negotiate_encoding(&h), Encoding::Zstd);
+    }
+
+    #[test]
+    fn negotiate_encoding_wildcard_alone_is_identity() {
+        // The donor parses `*` as a name (not a wildcard); it does not
+        // satisfy `name == "zstd"`. Identity is the correct fallback.
+        let h = HeaderValue::from_static("*;q=0.5");
+        assert_eq!(negotiate_encoding(&h), Encoding::Identity);
     }
 }

@@ -34,6 +34,7 @@ pub(crate) mod correlation;
 pub(crate) mod error;
 pub(crate) mod path;
 pub(crate) mod security;
+pub(crate) mod trace;
 
 use axum::{
     extract::Request,
@@ -50,7 +51,8 @@ pub use error::{
     post_persist_cancellation_response,
 };
 pub use path::{PathSegmentError, normalize_request_path, sanitize_path_segment};
-pub use security::security_headers;
+pub use security::{SVG_CSP, security_headers};
+pub use trace::{HttpTraceLayer, http_trace_layer};
 
 /// Response header used to echo the active correlation id, per
 /// CHE-0049 R5.

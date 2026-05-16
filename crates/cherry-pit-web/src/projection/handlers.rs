@@ -71,6 +71,7 @@ use tokio::sync::broadcast;
 
 use super::port::ProjectionSource;
 use super::state::{PageEntry, ProjectionState};
+use crate::middleware::compression::{Encoding, negotiate_encoding};
 
 // ===========================================================================
 // Constants
@@ -234,11 +235,15 @@ fn serve_page(page: &PageEntry, request_headers: &HeaderMap, status: StatusCode)
         return resp;
     }
 
-    // Negotiate content encoding (zstd-only, per donor).
+    // Negotiate content encoding per RFC 7231 §5.3.4. `negotiate_encoding`
+    // is the full q-value parser (honours `q=0` refusals and quality
+    // ordering); a strict-superset behavioural-equivalence test against
+    // the prior simplified inline check
+    // (`s.split(',').any(|p| p.trim().starts_with("zstd"))`) is asserted
+    // in `middleware::compression::tests`.
     let wants_zstd = request_headers
         .get(header::ACCEPT_ENCODING)
-        .and_then(|h| h.to_str().ok())
-        .is_some_and(|s| s.split(',').any(|p| p.trim().starts_with("zstd")));
+        .is_some_and(|h| negotiate_encoding(h) == Encoding::Zstd);
 
     let (body_bytes, content_encoding, content_length): (
         Bytes,

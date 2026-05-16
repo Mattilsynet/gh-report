@@ -19,6 +19,16 @@ use axum::{
     response::Response,
 };
 
+/// SVG-specific Content-Security-Policy that blocks script execution.
+///
+/// Responses serving `image/svg+xml` may carry embedded `<script>` whose
+/// origin is the response itself; the global page CSP does not constrain
+/// script execution inside an SVG document. Handlers serving SVG override
+/// the per-response `Content-Security-Policy` header with this value so
+/// [`security_headers`] preserves it (per the CSP-already-set branch
+/// below). Inline styles and self-referenced images remain permitted.
+pub const SVG_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'";
+
 /// Inject all security response headers in a single middleware pass.
 ///
 /// Wire via [`axum::middleware::from_fn`] with a closure that clones the

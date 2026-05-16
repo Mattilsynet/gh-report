@@ -134,7 +134,7 @@ where
     P: ProjectionSource,
 {
     let state = ProjectionState::from_arc(source);
-    let app = build_projection_router(state);
+    let app = build_projection_router(state, axum::Router::new());
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind ephemeral");
@@ -190,10 +190,12 @@ where
     let csp = HeaderValue::from_static(
         "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'",
     );
-    let app = build_projection_router(state).layer(axum::middleware::from_fn(move |req, next| {
-        let csp = csp.clone();
-        security_headers(req, next, csp)
-    }));
+    let app = build_projection_router(state, axum::Router::new()).layer(axum::middleware::from_fn(
+        move |req, next| {
+            let csp = csp.clone();
+            security_headers(req, next, csp)
+        },
+    ));
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind ephemeral");
