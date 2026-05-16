@@ -1,10 +1,21 @@
 //! Pre-SMI replay-corpus capture harness for Track 4.0 (mission
 //! `adr-fmt-nnn3`).
 //!
-//! Captures a deterministic, representative event log via the **current**
-//! three-service write path (`RunService` + `RepoService` + `WebhookService`)
-//! into `tests/fixtures/smi_pre_corpus/`, alongside two derived snapshot
-//! files used by the load-bearing replay test (`smi_replay_equivalence`).
+//! Captures a deterministic, representative event log via the
+//! Merger-routed write path (Track 4.0/3b onward — `RunService` is a
+//! thin channel-send wrapper over the [`Merger`] task; `RepoService`
+//! and `WebhookService` continue to write directly until their
+//! respective reroute steps 4 / 5) into
+//! `tests/fixtures/smi_pre_corpus/`, alongside two derived snapshot
+//! files used by the load-bearing replay test
+//! (`smi_replay_equivalence`).
+//!
+//! The on-disk byte sequence is invariant across the reroute steps
+//! (criterion #4 / #11) — that is precisely what
+//! `smi_replay_equivalence` enforces against this fixture. The
+//! harness updates here only reflect the call-site shape needed to
+//! drive the **current** API surface, not a change in the captured
+//! bytes.
 //!
 //! ## Why this is a `#[ignore]`-gated test, not a binary target
 //!
@@ -36,6 +47,14 @@
 //! the replay test only asserts on payload sequence + projection
 //! snapshot.
 //!
+//! Determinism of `AggregateId` assignment across the Merger reroute
+//! depends on the harness driving commands in a fixed order through a
+//! single-task merger: the Merger consumes commands strictly FIFO from
+//! its [`tokio::sync::mpsc`] queue, so the `EventStore::create` calls
+//! it issues fire in the same order the harness `.await`s each
+//! service method. The counter therefore advances 1, 2, 3, … in
+//! scenario order, matching pre-3b capture.
+//!
 //! ## Scenario coverage
 //!
 //! One Run aggregate exercising all five Run variants
@@ -47,6 +66,8 @@
 //! Covers all 8 `DomainEvent` variants — satisfies criterion #10
 //! (sweep audit trail preserved) and exercises the only two variants
 //! that mutate `EvidenceProjection`.
+//!
+//! [`Merger`]: gh_report::app::services::Merger
 
 use std::collections::HashMap;
 use std::fs;
@@ -58,6 +79,7 @@ use cherry_pit_agent::InProcessEventBus;
 use cherry_pit_core::{AggregateId, CorrelationContext, EventStore};
 use cherry_pit_gateway::MsgpackFileStore;
 
+use gh_report::app::services::Merger;
 use gh_report::app::services::repo_service::RepoService;
 use gh_report::app::services::run_service::RunService;
 use gh_report::app::services::webhook_service::WebhookService;
@@ -103,29 +125,47 @@ async fn capture_pre_smi_corpus() {
     let target = prepare_fixture_dir();
 
     // Fresh store → deterministic AggregateId assignment (1, 2, 3, ...).
+    // Per-aggregate routing indices (matches AppState shape — Track 4.0
+    // tightened from the single-index shorthand used in the pre-3a
+    // capture harness).
     let store_dir = tempfile::tempdir().expect("tempdir");
     let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(store_dir.path()));
     let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
-    let index: Arc<Mutex<HashMap<String, AggregateId>>> = Arc::new(Mutex::new(HashMap::new()));
+    let run_index: Arc<Mutex<HashMap<String, AggregateId>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let repo_index: Arc<Mutex<HashMap<String, AggregateId>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let delivery_index: Arc<Mutex<HashMap<String, AggregateId>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
-    let run = RunService::with_stores(
+    // Spawn the Merger over the shared store/bus/indices/tracker; the
+    // Run-aggregate writes flow through `merger_tx` per Track 4.0/3b.
+    // The JoinHandle is intentionally dropped — the task is kept alive
+    // by the surviving `merger_tx` clones inside `RunService` and the
+    // local binding; the harness `.await`s every command before
+    // returning, so the task always drains its queue before drop.
+    let (merger_tx, _merger_handle) = Merger::spawn(
         Arc::clone(&store),
         Arc::clone(&bus),
-        Arc::clone(&index),
+        Arc::clone(&run_index),
+        Arc::clone(&repo_index),
+        Arc::clone(&delivery_index),
         Arc::clone(&tracker),
     );
+
+    let run = RunService::with_merger_tx(merger_tx);
     let repo = RepoService::with_stores(
         Arc::clone(&store),
         Arc::clone(&bus),
-        Arc::clone(&index),
+        Arc::clone(&repo_index),
         Arc::clone(&tracker),
     );
     let webhook = WebhookService::with_stores(
         Arc::clone(&store),
         Arc::clone(&bus),
-        Arc::clone(&index),
+        Arc::clone(&delivery_index),
         Arc::clone(&tracker),
     );
 
@@ -137,7 +177,7 @@ async fn capture_pre_smi_corpus() {
     webhook_aggregate_ingest(&webhook, &ctx).await;
 
     let copied = copy_msgpack_files(store_dir.path(), &target);
-    let aggregate_ids = collect_aggregate_ids(&index);
+    let aggregate_ids = collect_aggregate_ids(&run_index, &repo_index, &delivery_index);
     let payload_sequence = load_payload_sequence(&store, &aggregate_ids).await;
     let projection = fold_projection(&store, &aggregate_ids).await;
 
@@ -157,7 +197,7 @@ fn prepare_fixture_dir() -> PathBuf {
 
 type Store = MsgpackFileStore<DomainEvent>;
 type Bus = InProcessEventBus<DomainEvent>;
-type RunSvc = RunService<Store, Bus>;
+type RunSvc = RunService;
 type RepoSvc = RepoService<Store, Bus>;
 type WebhookSvc = WebhookService<Store, Bus>;
 
@@ -342,12 +382,15 @@ fn copy_msgpack_files(store_dir: &Path, target: &Path) -> Vec<String> {
 }
 
 fn collect_aggregate_ids(
-    index: &Arc<Mutex<HashMap<String, AggregateId>>>,
+    run_index: &Arc<Mutex<HashMap<String, AggregateId>>>,
+    repo_index: &Arc<Mutex<HashMap<String, AggregateId>>>,
+    delivery_index: &Arc<Mutex<HashMap<String, AggregateId>>>,
 ) -> Vec<AggregateId> {
-    let mut all: Vec<AggregateId> = {
+    let mut all: Vec<AggregateId> = Vec::new();
+    for index in [run_index, repo_index, delivery_index] {
         let guard = index.lock().expect("index lock");
-        guard.values().copied().collect()
-    };
+        all.extend(guard.values().copied());
+    }
     all.sort_by_key(|id| id.get());
     all.dedup();
     all

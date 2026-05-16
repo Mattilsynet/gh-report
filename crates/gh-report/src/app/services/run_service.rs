@@ -1,138 +1,103 @@
 //! `RunService` — ApplicationService for the [`Run`] aggregate
-//! (CHE-0054:R4).
+//! (CHE-0054:R4), rerouted through the [`Merger`] task at Track 4.0/3b.
 //!
-//! Owns the load → handle → append → publish triad
-//! (CHE-0008:R1 + CHE-0024:R3) for sweep-lifecycle use cases. Each
-//! method resolves the run's `AggregateId` via the
-//! `Arc<Mutex<HashMap<String, AggregateId>>>` index handle held on
-//! [`RunService`] (CHE-0054:R5), loads the aggregate from the
-//! `EventStore`, dispatches the command via the appropriate
-//! [`HandleCommand`] impl, persists the resulting events with CAS on
-//! the expected sequence (CHE-0042:R3, CHE-0054:R6), and publishes
-//! them via the `EventBus`.
+//! The five public methods preserve their pre-3b signatures verbatim
+//! — call sites at `collect.rs` / `server.rs` did not move — but the
+//! bodies are now thin wrappers that build a [`MergerCommand`] +
+//! [`oneshot::channel`] reply, send through the Merger's
+//! [`mpsc::Sender`], and await the reply. The load → handle → append
+//! → publish triad lives inside the Merger arms (verbatim lifts of
+//! the pre-3b service bodies — see [`super::merger`] module docs);
+//! `RunService` no longer holds the [`EventStore`] or [`EventBus`]
+//! handle, the routing index, or the sequence tracker.
 //!
-//! ## Method body status
+//! ## Generic-port discipline (Track 4.0/3b departure)
 //!
-//! All five `RunService` methods are wired (Inc B7'b-2 / B7'b-3).
-//! The 14 production publish sites in `collect.rs`/`daemon.rs`/
-//! `webhook/mod.rs` migrate to these calls in **B7'c**.
-//!
-//! ## Generic-port discipline
-//!
-//! `RunService` is generic over `S: EventStore<Event = DomainEvent>`
-//! and `B: EventBus<Event = DomainEvent>` per CHE-0005:R1 (no
-//! `Arc<dyn EventStore>` / `Box<dyn EventBus>`). Concrete
-//! monomorphisation happens in [`AppState`](crate::app::state::AppState).
+//! Pre-3b the service was generic over `S: EventStore<Event =
+//! DomainEvent>` + `B: EventBus<Event = DomainEvent>` per CHE-0005:R1.
+//! Post-3b the service holds only a [`mpsc::Sender<MergerCommand>`]
+//! and no longer touches either port directly, so the generics are
+//! dropped. The [`Merger`] binds the concrete types at the
+//! composition root — see [`super::merger`] module docs. The
+//! [`crate::app::state::RunServiceConcrete`] alias is preserved as a
+//! single-line shim through Track 4.0; its deletion is a step-6
+//! concern.
 //!
 //! [`Run`]: crate::domain::aggregates::run::Run
-//! [`HandleCommand`]: cherry_pit_core::HandleCommand
+//! [`Merger`]: super::merger::Merger
+//! [`MergerCommand`]: super::merger::MergerCommand
+//! [`EventStore`]: cherry_pit_core::EventStore
+//! [`EventBus`]: cherry_pit_core::EventBus
+//! [`mpsc::Sender`]: tokio::sync::mpsc::Sender
+//! [`oneshot::channel`]: tokio::sync::oneshot::channel
 
-use std::collections::HashMap;
-use std::num::NonZeroU64;
-use std::sync::{Arc, Mutex};
+use cherry_pit_core::CorrelationContext;
+use tokio::sync::{mpsc, oneshot};
 
-use cherry_pit_core::{AggregateId, CorrelationContext, EventBus, EventStore};
-
+use super::merger::MergerCommand;
 use crate::domain::aggregates::run::{
     CompleteSweep, FailSweep, PublishEvidence, RecordProgress, RunError, StartSweep,
 };
-use crate::domain::events::DomainEvent;
 
 /// ApplicationService for the [`Run`] aggregate.
 ///
-/// Generic over the concrete [`EventStore`] and [`EventBus`]
-/// implementations per CHE-0005:R1. The application composition
-/// root in [`AppState`](crate::app::state::AppState) supplies the
-/// concrete types ([`MsgpackFileStore`](cherry_pit_gateway::MsgpackFileStore)
-/// + [`InProcessEventBus`](cherry_pit_agent::InProcessEventBus)).
+/// Post-3b channel handle: a thin wrapper over the [`Merger`] task's
+/// [`mpsc::Sender`]. Each method builds the corresponding
+/// [`MergerCommand`] variant with a [`oneshot::Sender`] reply, sends
+/// it through the merger queue, and awaits the typed
+/// `Result<(), RunError>` response.
 ///
-/// ## Routing index (CHE-0054:R5)
+/// ## SMI invariant carry (Track 4.0/3b)
 ///
-/// `index` maps a domain key (Run uses `batch_id: String`) to the
-/// store-assigned [`AggregateId`]. Routing is the
-/// ApplicationService's responsibility — no helper derives the id
-/// by destructuring an event variant (B7' Inc 5 abort root cause F1
-/// fix).
-///
-/// ## Sequence tracker (CHE-0054:R6 / CHE-0042:R3)
-///
-/// `sequence_tracker` records the last applied sequence per
-/// aggregate so the `append`-path can pass `expected_sequence:
-/// NonZeroU64` for caller-tracked optimistic concurrency control.
-/// Empty entries imply create-path.
+/// Routing the five RunService write paths through `merger_tx`
+/// promotes the *sole-writer* invariant from latent to enforced for
+/// the [`Run`] aggregate: every successful append to a Run stream
+/// now flows through the single Merger task. RepoService /
+/// WebhookService reroute at steps 4 / 5 close the analogous gap for
+/// their aggregates; the final cross-aggregate sole-writer guarantee
+/// is end-of-Track-4.0.
 ///
 /// [`Run`]: crate::domain::aggregates::run::Run
+/// [`Merger`]: super::merger::Merger
+/// [`mpsc::Sender`]: tokio::sync::mpsc::Sender
 #[derive(Debug)]
-pub struct RunService<S, B>
-where
-    S: EventStore<Event = DomainEvent>,
-    B: EventBus<Event = DomainEvent>,
-{
-    /// Durable per-aggregate event store (load + create + append).
-    store: Arc<S>,
-    /// Synchronous in-process event bus (publish for fan-out).
-    bus: Arc<B>,
-    /// `batch_id` → `AggregateId` routing index (CHE-0054:R5).
-    index: Arc<Mutex<HashMap<String, AggregateId>>>,
-    /// Last-applied sequence per aggregate for caller-tracked CAS
-    /// (CHE-0054:R6, CHE-0042:R3).
-    sequence_tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
+pub struct RunService {
+    /// Producer end of the Merger command channel
+    /// (`adr-fmt-nnn3` — Track 4.0/3b).
+    merger_tx: mpsc::Sender<MergerCommand>,
 }
 
-impl<S, B> RunService<S, B>
-where
-    S: EventStore<Event = DomainEvent>,
-    B: EventBus<Event = DomainEvent>,
-{
-    /// Construct a `RunService` wired to the given store, bus, and
-    /// shared routing/sequence handles.
+impl RunService {
+    /// Construct a `RunService` wired to the [`Merger`] command
+    /// channel.
     ///
-    /// Both `index` and `sequence_tracker` are typically shared with
-    /// the [`AppState`](crate::app::state::AppState) so other
-    /// service-method invocations and replay-time fast-path
-    /// reconstruction observe the same view of routing.
+    /// The supplied `merger_tx` is shared with [`AppState`] and the
+    /// other ApplicationService surfaces that will reroute in Track
+    /// 4.0/4 ([`RepoService`]) and Track 4.0/5
+    /// ([`WebhookService`]). Cloning the [`mpsc::Sender`] is cheap
+    /// (refcount bump) and keeps the channel open for the process
+    /// lifetime of [`AppState`].
+    ///
+    /// [`AppState`]: crate::app::state::AppState
+    /// [`Merger`]: super::merger::Merger
+    /// [`RepoService`]: super::repo_service::RepoService
+    /// [`WebhookService`]: super::webhook_service::WebhookService
+    /// [`mpsc::Sender`]: tokio::sync::mpsc::Sender
     #[must_use]
-    pub fn with_stores(
-        store: Arc<S>,
-        bus: Arc<B>,
-        index: Arc<Mutex<HashMap<String, AggregateId>>>,
-        sequence_tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
-    ) -> Self {
-        Self {
-            store,
-            bus,
-            index,
-            sequence_tracker,
-        }
-    }
-
-    /// Read access to the store handle (for diagnostics / tests).
-    #[must_use]
-    pub fn store(&self) -> &Arc<S> {
-        &self.store
-    }
-
-    /// Read access to the bus handle (for diagnostics / tests).
-    #[must_use]
-    pub fn bus(&self) -> &Arc<B> {
-        &self.bus
+    pub fn with_merger_tx(merger_tx: mpsc::Sender<MergerCommand>) -> Self {
+        Self { merger_tx }
     }
 
     /// Begin a new sweep run.
     ///
-    /// Create-path triad (CHE-0054:R10, CHE-0024:R3): handle the
-    /// command on a fresh `Run::default()`, persist the resulting
-    /// events via `EventStore::create` (the store assigns the
-    /// `AggregateId`), record the `batch_id → AggregateId` routing
-    /// (CHE-0054:R5) and the per-aggregate sequence (CHE-0054:R6 /
-    /// CHE-0042:R3), then publish the envelopes synchronously via
-    /// the in-process bus.
-    ///
-    /// `EventBus::publish` failure is **non-fatal** per CHE-0024:R1
-    /// ("publication failure is non-fatal — tracking-style processors
-    /// can catch up on missed publications"). Persistence is the
-    /// source of truth; a publish error is logged at `warn!` and
-    /// swallowed.
+    /// Routes [`MergerCommand::StartSweep`] through the Merger task,
+    /// which runs the create-path triad
+    /// (load → handle → create → publish) verbatim against the
+    /// shared [`EventStore`](cherry_pit_core::EventStore) /
+    /// [`EventBus`](cherry_pit_core::EventBus) the Merger owns. The
+    /// SMI sole-writer invariant for the [`Run`] aggregate is
+    /// enforced by the Merger task being the only holder of the
+    /// store write handle for Run streams from 3b onward.
     ///
     /// # Errors
     ///
@@ -140,69 +105,40 @@ where
     ///   the same `batch_id` is already past `Empty`.
     /// - Persistence failures surface as `RunError` only after
     ///   future enrichment (`#[non_exhaustive]` on `RunError` per
-    ///   linus L1); for now an `EventStore` error panics via
-    ///   `expect`. **B7'b-2 scope**: the create-path always starts
-    ///   from a fresh `Run::default()` and the only `RunError` path
-    ///   is `AlreadyStarted` raised when the `batch_id` is already
-    ///   indexed (load returns prior events → fold to non-`Empty`
-    ///   phase → `Run::handle` rejects).
+    ///   linus L1); for now an `EventStore` error panics inside the
+    ///   Merger arm.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the Merger task has shut down before the reply
+    /// arrives — this can only happen at process teardown after
+    /// [`AppState`] has been dropped, so a panic on the receiver
+    /// surfaces a misuse-after-shutdown bug rather than a recoverable
+    /// runtime condition.
+    ///
+    /// [`AppState`]: crate::app::state::AppState
+    /// [`Run`]: crate::domain::aggregates::run::Run
     pub async fn start_sweep(
         &self,
         cmd: StartSweep,
         ctx: &CorrelationContext,
     ) -> Result<(), RunError> {
-        use cherry_pit_core::{Aggregate, HandleCommand};
-
-        let domain_key = cmd.batch_id.clone();
-
-        // 0. Resolve AggregateId (CHE-0054:R5). Create-path starts
-        //    fresh when the batch_id is not yet indexed.
-        let existing_id = super::shared::lookup(&self.index, &domain_key);
-
-        // 1+2. Load + fold to current state (Empty for create-path).
-        let (envelopes, last_seq) =
-            super::shared::load_envelopes_or_empty(&self.store, existing_id).await;
-        let mut state = crate::domain::aggregates::run::Run::default();
-        for env in &envelopes {
-            state.apply(env.payload());
-        }
-
-        // 3. Handle (pure). May reject with RunError::AlreadyStarted
-        //    when an existing aggregate for this batch_id is past Empty.
-        let new_events = state.handle(cmd)?;
-
-        // 4. Persist via create or append. The append-path branch is
-        //    unreachable here in practice — `Run::handle` above
-        //    rejects StartSweep on a non-Empty Run with
-        //    RunError::AlreadyStarted — but the shared helper covers
-        //    both branches uniformly.
-        let new_envelopes = super::shared::create_or_append(
-            super::shared::PersistHandles {
-                store: &self.store,
-                index: &self.index,
-                sequence_tracker: &self.sequence_tracker,
-            },
-            &domain_key,
-            existing_id,
-            last_seq,
-            new_events,
-            ctx,
-        )
-        .await;
-
-        // 5. Publish — non-fatal per CHE-0024:R1.
-        super::shared::publish_or_trace(&self.bus, &new_envelopes, "SweepStarted").await;
-
-        Ok(())
+        let (reply, rx) = oneshot::channel();
+        self.merger_tx
+            .send(MergerCommand::StartSweep {
+                cmd,
+                ctx: ctx.clone(),
+                reply,
+            })
+            .await
+            .expect("Merger task alive for AppState lifetime");
+        rx.await.expect("Merger arm always replies before drop")
     }
 
     /// Record a progress checkpoint mid-sweep.
     ///
-    /// `batch_id` is the routing key — the service uses it to resolve
-    /// the `AggregateId` from the index (CHE-0054:R5). The command's
-    /// own `batch_id` field is treated strictly as event-payload data;
-    /// routing is the ApplicationService's responsibility, separate
-    /// from the command shape.
+    /// `batch_id` is the routing key per CHE-0054:R5 — see the
+    /// pre-3b doc for the rationale.
     ///
     /// # Errors
     ///
@@ -210,189 +146,124 @@ where
     /// is not in the `Started` phase.
     /// Returns [`RunError::RoutingMiss`] when `batch_id` has no entry
     /// in the routing index (CHE-0024:R1 non-fatal path).
+    ///
+    /// # Panics
+    ///
+    /// See [`Self::start_sweep`].
     pub async fn record_progress(
         &self,
         batch_id: &str,
         cmd: RecordProgress,
         ctx: &CorrelationContext,
     ) -> Result<(), RunError> {
-        use cherry_pit_core::HandleCommand;
-
-        let id = self.resolve_id(batch_id)?;
-        let (state, last_seq) = self.load_and_fold(id).await;
-        let new_events = state.handle(cmd)?;
-        let new_envelopes = self.append_and_track(id, last_seq, new_events, ctx).await;
-        super::shared::publish_or_trace(&self.bus, &new_envelopes, "SweepProgress").await;
-        Ok(())
+        let (reply, rx) = oneshot::channel();
+        self.merger_tx
+            .send(MergerCommand::RecordProgress {
+                batch_id: batch_id.to_owned(),
+                cmd,
+                ctx: ctx.clone(),
+                reply,
+            })
+            .await
+            .expect("Merger task alive for AppState lifetime");
+        rx.await.expect("Merger arm always replies before drop")
     }
 
     /// Mark the sweep complete (success terminal).
-    ///
-    /// `batch_id` is the routing key — see [`record_progress`](Self::record_progress).
     ///
     /// # Errors
     ///
     /// Returns [`RunError::NotStarted`] when the resolved aggregate
     /// is not in the `Started` phase (terminal-xor invariant b).
     /// Returns [`RunError::RoutingMiss`] when `batch_id` has no entry
-    /// in the routing index (CHE-0024:R1 non-fatal path).
+    /// in the routing index.
+    ///
+    /// # Panics
+    ///
+    /// See [`Self::start_sweep`].
     pub async fn complete(
         &self,
         batch_id: &str,
         cmd: CompleteSweep,
         ctx: &CorrelationContext,
     ) -> Result<(), RunError> {
-        use cherry_pit_core::HandleCommand;
-
-        let id = self.resolve_id(batch_id)?;
-        let (state, last_seq) = self.load_and_fold(id).await;
-        let new_events = state.handle(cmd)?;
-        let new_envelopes = self.append_and_track(id, last_seq, new_events, ctx).await;
-        super::shared::publish_or_trace(&self.bus, &new_envelopes, "SweepCompleted").await;
-        Ok(())
+        let (reply, rx) = oneshot::channel();
+        self.merger_tx
+            .send(MergerCommand::CompleteSweep {
+                batch_id: batch_id.to_owned(),
+                cmd,
+                ctx: ctx.clone(),
+                reply,
+            })
+            .await
+            .expect("Merger task alive for AppState lifetime");
+        rx.await.expect("Merger arm always replies before drop")
     }
 
     /// Mark the sweep failed (failure terminal).
-    ///
-    /// `batch_id` is the routing key — see [`record_progress`](Self::record_progress).
     ///
     /// # Errors
     ///
     /// Returns [`RunError::NotStarted`] when the resolved aggregate
     /// is not in the `Started` phase (terminal-xor invariant b).
     /// Returns [`RunError::RoutingMiss`] when `batch_id` has no entry
-    /// in the routing index (CHE-0024:R1 non-fatal path).
+    /// in the routing index.
+    ///
+    /// # Panics
+    ///
+    /// See [`Self::start_sweep`].
     pub async fn fail(
         &self,
         batch_id: &str,
         cmd: FailSweep,
         ctx: &CorrelationContext,
     ) -> Result<(), RunError> {
-        use cherry_pit_core::HandleCommand;
-
-        let id = self.resolve_id(batch_id)?;
-        let (state, last_seq) = self.load_and_fold(id).await;
-        let new_events = state.handle(cmd)?;
-        let new_envelopes = self.append_and_track(id, last_seq, new_events, ctx).await;
-        super::shared::publish_or_trace(&self.bus, &new_envelopes, "SweepFailed").await;
-        Ok(())
+        let (reply, rx) = oneshot::channel();
+        self.merger_tx
+            .send(MergerCommand::FailSweep {
+                batch_id: batch_id.to_owned(),
+                cmd,
+                ctx: ctx.clone(),
+                reply,
+            })
+            .await
+            .expect("Merger task alive for AppState lifetime");
+        rx.await.expect("Merger arm always replies before drop")
     }
 
     /// Publish evidence after a successful sweep.
     ///
     /// `batch_id` is the routing key. [`PublishEvidence`] does not
-    /// carry `batch_id` in its payload (the command represents the
-    /// post-completion evidence-publish use case, conceptually
-    /// "publish evidence for the run we just completed"); the service
-    /// supplies the routing key explicitly per CHE-0054:R5.
+    /// carry `batch_id` in its payload — the service supplies the
+    /// routing key explicitly per CHE-0054:R5.
     ///
     /// # Errors
     ///
     /// Returns [`RunError::NotCompleted`] when the resolved aggregate
     /// is not in the `Completed` phase (invariant c).
     /// Returns [`RunError::RoutingMiss`] when `batch_id` has no entry
-    /// in the routing index (CHE-0024:R1 non-fatal path).
+    /// in the routing index.
+    ///
+    /// # Panics
+    ///
+    /// See [`Self::start_sweep`].
     pub async fn publish_evidence(
         &self,
         batch_id: &str,
         cmd: PublishEvidence,
         ctx: &CorrelationContext,
     ) -> Result<(), RunError> {
-        use cherry_pit_core::HandleCommand;
-
-        let id = self.resolve_id(batch_id)?;
-        let (state, last_seq) = self.load_and_fold(id).await;
-        let new_events = state.handle(cmd)?;
-        let new_envelopes = self.append_and_track(id, last_seq, new_events, ctx).await;
-        super::shared::publish_or_trace(&self.bus, &new_envelopes, "EvidencePublished").await;
-        Ok(())
-    }
-
-    // --- private append-path helpers (CHE-0054:R10 triad sub-steps) ---
-
-    /// Resolve a `batch_id` routing key to its `AggregateId` from the
-    /// index (CHE-0054:R5).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RunError::RoutingMiss`] when the routing key is
-    /// unknown — callers of the four append-path methods must have
-    /// called [`start_sweep`](Self::start_sweep) first. The append-path
-    /// callers in `collect.rs` wrap this in a non-fatal `warn!` arm
-    /// (CHE-0024:R1), so a missing routing-index entry surfaces as a
-    /// log line rather than aborting the cycle.
-    fn resolve_id(&self, batch_id: &str) -> Result<AggregateId, RunError> {
-        let guard = self
-            .index
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard
-            .get(batch_id)
-            .copied()
-            .ok_or_else(|| RunError::RoutingMiss(batch_id.into()))
-    }
-
-    /// Load the per-aggregate event stream and fold it into a fresh
-    /// [`Run`] aggregate. Returns the rebuilt state alongside the
-    /// last-applied sequence (for caller-tracked CAS, CHE-0054:R6).
-    ///
-    /// Panics when the indexed aggregate has zero events (a routing
-    /// bug — start_sweep must have produced ≥1 event for the index
-    /// entry to exist) or when `EventStore::load` fails (typed
-    /// surface in B7'c).
-    ///
-    /// [`Run`]: crate::domain::aggregates::run::Run
-    async fn load_and_fold(
-        &self,
-        id: AggregateId,
-    ) -> (crate::domain::aggregates::run::Run, NonZeroU64) {
-        use cherry_pit_core::Aggregate;
-
-        let envelopes = self
-            .store
-            .load(id)
+        let (reply, rx) = oneshot::channel();
+        self.merger_tx
+            .send(MergerCommand::PublishEvidence {
+                batch_id: batch_id.to_owned(),
+                cmd,
+                ctx: ctx.clone(),
+                reply,
+            })
             .await
-            .expect("EventStore::load failure path enriched in B7'c");
-        let mut state = crate::domain::aggregates::run::Run::default();
-        for env in &envelopes {
-            state.apply(env.payload());
-        }
-        let last_seq = envelopes
-            .last()
-            .map(cherry_pit_core::EventEnvelope::sequence)
-            .expect("indexed AggregateId must have ≥1 envelope (corrupt routing otherwise)");
-        (state, last_seq)
-    }
-
-    /// Append `new_events` with caller-tracked CAS on `last_seq`
-    /// (CHE-0054:R6 / CHE-0042:R3) and update the sequence tracker
-    /// to the resulting last sequence.
-    ///
-    /// Panics on `EventStore::append` failure or when the returned
-    /// envelope vec is empty (the latter is impossible per the
-    /// `EventStore` contract: `append` of N events returns N
-    /// envelopes); typed surface in B7'c.
-    async fn append_and_track(
-        &self,
-        id: AggregateId,
-        last_seq: NonZeroU64,
-        new_events: Vec<DomainEvent>,
-        ctx: &CorrelationContext,
-    ) -> Vec<cherry_pit_core::EventEnvelope<DomainEvent>> {
-        let new_envelopes = self
-            .store
-            .append(id, last_seq, new_events, ctx.clone())
-            .await
-            .expect("EventStore::append failure path enriched in B7'c");
-        if let Some(env) = new_envelopes.last() {
-            let next = env.sequence();
-            let mut guard = self
-                .sequence_tracker
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            guard.insert(id, next);
-        }
-        new_envelopes
+            .expect("Merger task alive for AppState lifetime");
+        rx.await.expect("Merger arm always replies before drop")
     }
 }
 
@@ -400,14 +271,33 @@ where
 mod tests {
     use super::*;
 
+    use std::collections::HashMap;
+    use std::num::NonZeroU64;
+    use std::sync::{Arc, Mutex};
+
     use cherry_pit_agent::InProcessEventBus;
-    use cherry_pit_core::{EventEnvelope, EventStore};
+    use cherry_pit_core::{AggregateId, EventEnvelope, EventStore};
     use cherry_pit_gateway::MsgpackFileStore;
     use tempfile::TempDir;
 
-    /// Construct a B7'b-shaped RunService backed by a tempdir
-    /// MsgpackFileStore (per Gap-β bead `adr-fmt-luxw`) and an
-    /// in-process bus.
+    use crate::app::services::merger::Merger;
+    use crate::domain::events::DomainEvent;
+
+    /// Build a Track 4.0/3b-shaped RunService backed by:
+    ///
+    /// - A tempdir [`MsgpackFileStore`] (Gap-β bead `adr-fmt-luxw`),
+    /// - An [`InProcessEventBus`] for fan-out,
+    /// - A [`Merger`] task spawned over the same store/bus/indices/tracker
+    ///   so the assertions below observe the Merger-driven shared state
+    ///   exactly as production will at 3b/4/5.
+    ///
+    /// Returns the tempdir, the durable handles for direct inspection,
+    /// and the [`RunService`] under test. The Merger
+    /// [`tokio::task::JoinHandle`] is intentionally dropped here —
+    /// the task is kept alive by the [`mpsc::Sender`] inside the
+    /// service; dropping the handle without aborting lets the task run
+    /// for the test scope (the handle does **not** abort on drop, see
+    /// `tokio::task::JoinHandle` docs).
     #[allow(
         clippy::type_complexity,
         reason = "test helper returns the four shared handles plus the service; factoring would obscure the wiring under test"
@@ -418,141 +308,51 @@ mod tests {
         Arc<InProcessEventBus<DomainEvent>>,
         Arc<Mutex<HashMap<String, AggregateId>>>,
         Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
-        RunService<MsgpackFileStore<DomainEvent>, InProcessEventBus<DomainEvent>>,
+        RunService,
     ) {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(dir.path()));
         let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
-        let index = Arc::new(Mutex::new(HashMap::new()));
+        let run_index = Arc::new(Mutex::new(HashMap::new()));
+        let repo_index = Arc::new(Mutex::new(HashMap::new()));
+        let delivery_index = Arc::new(Mutex::new(HashMap::new()));
         let tracker = Arc::new(Mutex::new(HashMap::new()));
-        let svc = RunService::with_stores(
+        let (merger_tx, _merger_handle) = Merger::spawn(
             Arc::clone(&store),
             Arc::clone(&bus),
-            Arc::clone(&index),
+            Arc::clone(&run_index),
+            repo_index,
+            delivery_index,
             Arc::clone(&tracker),
         );
-        (dir, store, bus, index, tracker, svc)
+        let svc = RunService::with_merger_tx(merger_tx);
+        (dir, store, bus, run_index, tracker, svc)
     }
 
-    #[test]
-    fn with_stores_constructs_service() {
-        // Smoke test: B7'b-1 constructor surface compiles and yields a
-        // service with both port handles attached. Method-body wiring
-        // arrives in B7'b-2..3.
-        let (_dir, _store, _bus, _index, _tracker, svc) = build_service();
-        let _: &Arc<MsgpackFileStore<DomainEvent>> = svc.store();
-        let _: &Arc<InProcessEventBus<DomainEvent>> = svc.bus();
-    }
-
-    /// Inc 2 (B7'b-2) — `start_sweep` create-path triad: load → handle
-    /// → create → publish. Asserts:
-    ///   1. `EventStore::create` ran: file `<id>.msgpack` present
-    ///      (CHE-0036:R1) and contains exactly one `SweepStarted`
-    ///      envelope at sequence 1.
-    ///   2. `EventBus::publish` ran: registered handler captured one
-    ///      envelope.
-    ///   3. Routing index populated: `batch_id` → `AggregateId`
-    ///      (CHE-0054:R5).
-    ///   4. Sequence tracker populated: `AggregateId` → `NonZeroU64(1)`
-    ///      (CHE-0054:R6 / CHE-0042:R3).
     #[tokio::test]
-    async fn start_sweep_create_path_persists_and_publishes() {
-        let (dir, store, bus, index, tracker, svc) = build_service();
-
-        // Subscriber that records every published envelope.
-        let captured: Arc<Mutex<Vec<EventEnvelope<DomainEvent>>>> =
-            Arc::new(Mutex::new(Vec::new()));
-        let captured_for_handler = Arc::clone(&captured);
-        bus.register(move |env: &EventEnvelope<DomainEvent>| {
-            captured_for_handler
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(env.clone());
-        });
-
-        let cmd = StartSweep {
-            org: "octocat".into(),
-            repo_count: 3,
-            batch_id: "batch-001".into(),
-            timestamp: "2026-05-10T12:00:00Z".into(),
-        };
-        let ctx = CorrelationContext::none();
-
-        svc.start_sweep(cmd.clone(), &ctx)
-            .await
-            .expect("start_sweep should succeed on empty aggregate");
-
-        // (3) Routing index populated.
-        let assigned_id = {
-            let guard = index
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *guard
-                .get(&cmd.batch_id)
-                .expect("index should map batch_id to AggregateId")
-        };
-
-        // (4) Sequence tracker populated.
-        let tracked_seq = {
-            let guard = tracker
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *guard
-                .get(&assigned_id)
-                .expect("sequence_tracker should record last applied seq")
-        };
-        assert_eq!(tracked_seq.get(), 1, "first event has sequence 1");
-
-        // (1) File present per CHE-0036:R1 + envelope contents.
-        let store_file = dir.path().join(format!("{assigned_id}.msgpack"));
-        assert!(
-            store_file.exists(),
-            "MsgpackFileStore should have created {store_file:?}"
-        );
-        let loaded = store.load(assigned_id).await.expect("load should succeed");
-        assert_eq!(loaded.len(), 1, "exactly one envelope persisted");
-        assert_eq!(loaded[0].sequence().get(), 1, "first event has sequence 1");
-        match loaded[0].payload() {
-            DomainEvent::SweepStarted {
-                org,
-                repo_count,
-                batch_id,
-                ..
-            } => {
-                assert_eq!(org, "octocat");
-                assert_eq!(*repo_count, 3);
-                assert_eq!(batch_id, "batch-001");
-            }
-            other => panic!("expected SweepStarted, got {other:?}"),
-        }
-
-        // (2) Bus subscriber received the envelope.
-        let captured_envs = captured
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(captured_envs.len(), 1, "exactly one envelope published");
-        assert_eq!(captured_envs[0].sequence().get(), 1);
-        assert!(matches!(
-            captured_envs[0].payload(),
-            DomainEvent::SweepStarted { .. }
-        ));
+    async fn with_merger_tx_constructs_service() {
+        // Smoke test: 3b constructor surface compiles and yields a
+        // service whose handle (the mpsc::Sender) is wired to a live
+        // Merger task. Behaviour is covered by the lifecycle test.
+        let (_dir, _store, _bus, _index, _tracker, _svc) = build_service();
     }
 
-    /// Inc 3 (B7'b-3) — full Run lifecycle exercising all four
-    /// append-path methods on a single aggregate:
+    /// 3b — full Run lifecycle exercising all five service surfaces
+    /// routed through the Merger task:
     /// `start → progress → progress → complete → publish_evidence`.
     ///
-    /// Asserts:
-    ///   1. Stream contains exactly 5 envelopes at sequences 1..=5
-    ///      with the expected payload variants in order.
-    ///   2. Bus subscriber captured all 5 envelopes in order.
-    ///   3. Sequence tracker advanced to `NonZeroU64(5)`.
-    ///   4. Routing index unchanged (still maps `batch_id` →
-    ///      same `AggregateId`; CHE-0054:R5).
-    ///   5. Single per-aggregate file (CHE-0036:R1) — no extra
-    ///      streams created by the append-path.
+    /// Asserts the same five properties the pre-3b lifecycle test
+    /// asserted (envelope sequence + payload variants + bus capture
+    /// + sequence tracker advance + single per-aggregate file) —
+    /// proving the channel-reroute is observably equivalent at the
+    /// EventStore / EventBus boundary.
+    ///
+    /// This is the contract enforcer for SMI invariants 1
+    /// (sole-writer: the Merger is the only writer to the Run
+    /// stream) and 5 (post-append publish: every appended envelope
+    /// arrives on the bus before the reply resolves).
     #[tokio::test]
-    async fn run_lifecycle_appends_persists_and_publishes() {
+    async fn run_lifecycle_appends_persists_and_publishes_through_merger() {
         let (dir, store, bus, index, tracker, svc) = build_service();
 
         let captured: Arc<Mutex<Vec<EventEnvelope<DomainEvent>>>> =
@@ -726,9 +526,8 @@ mod tests {
     }
 
     /// CHE-0024:R1 — append-path called for an unknown `batch_id`
-    /// returns `RunError::RoutingMiss` rather than panicking, so the
-    /// caller's non-fatal `warn!` arm in `collect.rs` can log and
-    /// continue.
+    /// returns `RunError::RoutingMiss` rather than panicking. The
+    /// Merger arm preserves the error verbatim across the channel.
     #[tokio::test]
     async fn record_progress_on_unknown_batch_id_returns_routing_miss() {
         let (_dir, _store, _bus, _index, _tracker, svc) = build_service();
@@ -746,5 +545,87 @@ mod tests {
             .expect_err("unknown batch_id should not panic; must return RoutingMiss");
 
         assert_eq!(err, RunError::RoutingMiss("never-registered".into()));
+    }
+
+    /// 3b smoke test for create-path: assert that `start_sweep`
+    /// through the Merger publishes exactly one `SweepStarted`
+    /// envelope at sequence 1, populates the routing index, and
+    /// records the sequence tracker. Mirrors the pre-3b
+    /// `start_sweep_create_path_persists_and_publishes` test.
+    #[tokio::test]
+    async fn start_sweep_create_path_persists_and_publishes_through_merger() {
+        let (dir, store, bus, index, tracker, svc) = build_service();
+
+        let captured: Arc<Mutex<Vec<EventEnvelope<DomainEvent>>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let captured_for_handler = Arc::clone(&captured);
+        bus.register(move |env: &EventEnvelope<DomainEvent>| {
+            captured_for_handler
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(env.clone());
+        });
+
+        let cmd = StartSweep {
+            org: "octocat".into(),
+            repo_count: 3,
+            batch_id: "batch-001".into(),
+            timestamp: "2026-05-10T12:00:00Z".into(),
+        };
+        let ctx = CorrelationContext::none();
+
+        svc.start_sweep(cmd.clone(), &ctx)
+            .await
+            .expect("start_sweep should succeed on empty aggregate");
+
+        let assigned_id = {
+            let guard = index
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard
+                .get(&cmd.batch_id)
+                .expect("index should map batch_id to AggregateId")
+        };
+        let tracked_seq = {
+            let guard = tracker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard
+                .get(&assigned_id)
+                .expect("sequence_tracker should record last applied seq")
+        };
+        assert_eq!(tracked_seq.get(), 1, "first event has sequence 1");
+
+        let store_file = dir.path().join(format!("{assigned_id}.msgpack"));
+        assert!(
+            store_file.exists(),
+            "MsgpackFileStore should have created {store_file:?}"
+        );
+        let loaded = store.load(assigned_id).await.expect("load should succeed");
+        assert_eq!(loaded.len(), 1, "exactly one envelope persisted");
+        assert_eq!(loaded[0].sequence().get(), 1, "first event has sequence 1");
+        match loaded[0].payload() {
+            DomainEvent::SweepStarted {
+                org,
+                repo_count,
+                batch_id,
+                ..
+            } => {
+                assert_eq!(org, "octocat");
+                assert_eq!(*repo_count, 3);
+                assert_eq!(batch_id, "batch-001");
+            }
+            other => panic!("expected SweepStarted, got {other:?}"),
+        }
+
+        let captured_envs = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(captured_envs.len(), 1, "exactly one envelope published");
+        assert_eq!(captured_envs[0].sequence().get(), 1);
+        assert!(matches!(
+            captured_envs[0].payload(),
+            DomainEvent::SweepStarted { .. }
+        ));
     }
 }

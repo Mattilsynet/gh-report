@@ -54,7 +54,7 @@ use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
 
 use cherry_pit_agent::InProcessEventBus;
-use cherry_pit_core::{AggregateId, CorrelationContext};
+use cherry_pit_core::{AggregateId, CorrelationContext, EventBus};
 use cherry_pit_gateway::MsgpackFileStore;
 use tokio::sync::{mpsc, oneshot};
 
@@ -209,16 +209,19 @@ pub enum MergerCommand {
 /// Track 4.0/6 deletes the now-dead ApplicationService write logic.
 ///
 /// [`EventStore`]: cherry_pit_core::EventStore
-pub struct Merger {
+pub struct Merger<B = Bus>
+where
+    B: EventBus<Event = DomainEvent> + Send + Sync + 'static,
+{
     store: Arc<Store>,
-    bus: Arc<Bus>,
+    bus: Arc<B>,
     run_index: Arc<Mutex<HashMap<String, AggregateId>>>,
     repo_index: Arc<Mutex<HashMap<String, AggregateId>>>,
     delivery_index: Arc<Mutex<HashMap<String, AggregateId>>>,
     sequence_tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
 }
 
-impl Merger {
+impl Merger<Bus> {
     /// Spawn the Merger task and return the producer end of its
     /// command channel plus the [`tokio::task::JoinHandle`].
     ///
@@ -237,6 +240,34 @@ impl Merger {
         delivery_index: Arc<Mutex<HashMap<String, AggregateId>>>,
         sequence_tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
     ) -> (mpsc::Sender<MergerCommand>, tokio::task::JoinHandle<()>) {
+        Merger::<Bus>::spawn_inner(
+            store,
+            bus,
+            run_index,
+            repo_index,
+            delivery_index,
+            sequence_tracker,
+        )
+    }
+}
+
+impl<B> Merger<B>
+where
+    B: EventBus<Event = DomainEvent> + Send + Sync + 'static,
+{
+    /// Shared spawn body used by the production [`Self::spawn`] and
+    /// the `#[cfg(test)]` [`Self::with_bus_for_test`] seam. The two
+    /// public entry points differ only in the concrete type of the
+    /// `bus` parameter; the channel-send/receive shape is identical.
+    #[must_use]
+    fn spawn_inner(
+        store: Arc<Store>,
+        bus: Arc<B>,
+        run_index: Arc<Mutex<HashMap<String, AggregateId>>>,
+        repo_index: Arc<Mutex<HashMap<String, AggregateId>>>,
+        delivery_index: Arc<Mutex<HashMap<String, AggregateId>>>,
+        sequence_tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
+    ) -> (mpsc::Sender<MergerCommand>, tokio::task::JoinHandle<()>) {
         let merger = Self {
             store,
             bus,
@@ -248,6 +279,45 @@ impl Merger {
         let (tx, rx) = mpsc::channel(MERGER_CHANNEL_CAPACITY);
         let handle = tokio::spawn(merger.run(rx));
         (tx, handle)
+    }
+
+    /// Test-only seam for failure-mode coverage of the bus-publish
+    /// path (Track 4.0/3b; mission `adr-fmt-nnn3`).
+    ///
+    /// Spawns a Merger over an arbitrary [`EventBus`] implementation
+    /// — typically a fake bus that returns [`cherry_pit_core::BusError`]
+    /// from `publish` — so tests can drive the bus-failure absorb
+    /// arm in [`super::shared::publish_or_trace`] without
+    /// constructing the full [`AppState`]. Canonical seam for the
+    /// `FailingBus` pattern shared by the post-3b RunService /
+    /// post-step-4 RepoService / post-step-5 WebhookService failure
+    /// tests — added once here rather than re-litigated per-step.
+    ///
+    /// Production code never names this constructor; [`Self::spawn`]
+    /// is the sole production entry point (concrete `Bus` per
+    /// CHE-0005:R1). Marked `#[doc(hidden)]` because Rust's
+    /// `#[cfg(test)]` is not visible to integration tests in
+    /// `tests/` (separate crate compilation) — `doc(hidden)` is the
+    /// idiomatic equivalent: reachable from tests, invisible in
+    /// rustdoc, semantically test-only.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_bus_for_test(
+        store: Arc<Store>,
+        bus: Arc<B>,
+        run_index: Arc<Mutex<HashMap<String, AggregateId>>>,
+        repo_index: Arc<Mutex<HashMap<String, AggregateId>>>,
+        delivery_index: Arc<Mutex<HashMap<String, AggregateId>>>,
+        sequence_tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
+    ) -> (mpsc::Sender<MergerCommand>, tokio::task::JoinHandle<()>) {
+        Self::spawn_inner(
+            store,
+            bus,
+            run_index,
+            repo_index,
+            delivery_index,
+            sequence_tracker,
+        )
     }
 
     /// Main task loop: receive commands and dispatch to the lifted

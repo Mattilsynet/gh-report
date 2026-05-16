@@ -51,13 +51,22 @@ pub use crate::app::services::webhook_service::WebhookService;
 pub use crate::app::services::{Merger, MergerCommand};
 pub use crate::app::webhook_context::WebhookState;
 
-/// Concrete monomorphisation of [`RunService`] used throughout
-/// `gh-report` (CHE-0005:R1: bind generic ports at the composition
-/// root). [`MsgpackFileStore`] supplies the durable per-aggregate
-/// event store; [`InProcessEventBus`] supplies synchronous in-process
-/// fan-out.
-pub type RunServiceConcrete =
-    RunService<MsgpackFileStore<DomainEvent>, InProcessEventBus<DomainEvent>>;
+/// Concrete monomorphisation of [`RunService`].
+///
+/// Pre-3b this alias bound `<S, B>` generics ports at the composition
+/// root per CHE-0005:R1. Post-3b (Track 4.0/3b, `adr-fmt-nnn3`)
+/// [`RunService`] is no longer generic — it is a thin
+/// [`tokio::sync::mpsc::Sender<MergerCommand>`] wrapper and the
+/// concrete [`EventStore`] / [`EventBus`] bind only on the
+/// [`Merger`] task. The alias is retained as a single-line shim for
+/// caller stability through Track 4.0; its deletion is a step-6
+/// concern. [`RepoServiceConcrete`] and [`WebhookServiceConcrete`]
+/// collapse symmetrically at Track 4.0/4 and Track 4.0/5
+/// respectively.
+///
+/// [`EventStore`]: cherry_pit_core::EventStore
+/// [`EventBus`]: cherry_pit_core::EventBus
+pub type RunServiceConcrete = RunService;
 /// Concrete monomorphisation of [`RepoService`]. See [`RunServiceConcrete`].
 pub type RepoServiceConcrete =
     RepoService<MsgpackFileStore<DomainEvent>, InProcessEventBus<DomainEvent>>;
@@ -244,15 +253,15 @@ pub struct AppState {
     /// [`EventStore`](cherry_pit_core::EventStore) write handle
     /// (Phase 2 v2 Track 4.0, `adr-fmt-nnn3`).
     ///
-    /// Wired at Track 4.0/3a as additive scaffold: the Merger task is
-    /// spawned and the channel held here, but **no caller routes
-    /// through it yet**. Track 4.0/3b/4/5 reroute each existing
-    /// ApplicationService method to send through this channel; Track
-    /// 4.0/6 deletes the now-dead service write logic. SMI invariant
-    /// (sole-writer) holds at step 6 by construction.
+    /// Wired at Track 4.0/3a as additive scaffold; load-bearing from
+    /// Track 4.0/3b onward (Run aggregate writes). Track 4.0/4
+    /// reroutes [`RepoService`] through this channel, Track 4.0/5
+    /// reroutes [`WebhookService`], Track 4.0/6 deletes the now-dead
+    /// service write logic. SMI invariant (sole-writer) holds
+    /// completely at step 6 by construction.
     #[allow(
         dead_code,
-        reason = "Track 4.0/3a additive scaffold; load-bearing at 3b/4/5"
+        reason = "AppState retains the master Sender so RepoService (Track 4.0/4) and WebhookService (Track 4.0/5) can clone from it; RunService already clones in build_services"
     )]
     pub(crate) merger_tx: tokio::sync::mpsc::Sender<MergerCommand>,
 
@@ -354,11 +363,10 @@ impl AppState {
     reason = "wiring helper threads named handles into the three services; factoring would obscure the 1:1 mapping with AppState fields"
 )]
 fn build_services(
-    run_store: Arc<MsgpackFileStore<DomainEvent>>,
+    merger_tx: tokio::sync::mpsc::Sender<MergerCommand>,
     repo_store: Arc<MsgpackFileStore<DomainEvent>>,
     webhook_store: Arc<MsgpackFileStore<DomainEvent>>,
     bus: Arc<InProcessEventBus<DomainEvent>>,
-    run_index: Arc<Mutex<HashMap<String, AggregateId>>>,
     repo_index: Arc<Mutex<HashMap<String, AggregateId>>>,
     delivery_index: Arc<Mutex<HashMap<String, AggregateId>>>,
     sequence_tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
@@ -367,12 +375,7 @@ fn build_services(
     Arc<RepoServiceConcrete>,
     Arc<WebhookServiceConcrete>,
 ) {
-    let run = Arc::new(RunService::with_stores(
-        run_store,
-        Arc::clone(&bus),
-        run_index,
-        Arc::clone(&sequence_tracker),
-    ));
+    let run = Arc::new(RunService::with_merger_tx(merger_tx));
     let repo = Arc::new(RepoService::with_stores(
         repo_store,
         Arc::clone(&bus),
@@ -490,21 +493,19 @@ impl AppState {
         let sequence_tracker = Arc::new(Mutex::new(HashMap::new()));
         let noop_dir = noop_events_dir();
         let (rs, ps, ws) = build_three_stores(&noop_dir);
-        let merger_store = Arc::clone(&rs);
-        let (run_service, repo_service, webhook_service) = build_services(
+        let (merger_tx, merger_handle) = Merger::spawn(
             rs,
-            ps,
-            ws,
             Arc::clone(&bus),
             Arc::clone(&run_index),
             Arc::clone(&repo_index),
             Arc::clone(&delivery_index),
             Arc::clone(&sequence_tracker),
         );
-        let (merger_tx, merger_handle) = Merger::spawn(
-            merger_store,
+        let (run_service, repo_service, webhook_service) = build_services(
+            merger_tx.clone(),
+            ps,
+            ws,
             Arc::clone(&bus),
-            Arc::clone(&run_index),
             Arc::clone(&repo_index),
             Arc::clone(&delivery_index),
             Arc::clone(&sequence_tracker),
@@ -581,21 +582,19 @@ impl AppState {
         let delivery_index = Arc::new(Mutex::new(HashMap::new()));
         let sequence_tracker = Arc::new(Mutex::new(HashMap::new()));
         let (rs, ps, ws) = build_three_stores(events_dir);
-        let merger_store = Arc::clone(&event_store);
-        let (run_service, repo_service, webhook_service) = build_services(
+        let (merger_tx, merger_handle) = Merger::spawn(
             rs,
-            ps,
-            ws,
             Arc::clone(&bus),
             Arc::clone(&run_index),
             Arc::clone(&repo_index),
             Arc::clone(&delivery_index),
             Arc::clone(&sequence_tracker),
         );
-        let (merger_tx, merger_handle) = Merger::spawn(
-            merger_store,
+        let (run_service, repo_service, webhook_service) = build_services(
+            merger_tx.clone(),
+            ps,
+            ws,
             Arc::clone(&bus),
-            Arc::clone(&run_index),
             Arc::clone(&repo_index),
             Arc::clone(&delivery_index),
             Arc::clone(&sequence_tracker),
@@ -796,21 +795,19 @@ impl AppStateBuilder {
         let sequence_tracker = Arc::new(Mutex::new(HashMap::new()));
         let noop_dir = noop_events_dir();
         let (rs, ps, ws) = build_three_stores(&noop_dir);
-        let merger_store = Arc::clone(&rs);
-        let (run_service, repo_service, webhook_service) = build_services(
+        let (merger_tx, merger_handle) = Merger::spawn(
             rs,
-            ps,
-            ws,
             Arc::clone(&bus),
             Arc::clone(&run_index),
             Arc::clone(&repo_index),
             Arc::clone(&delivery_index),
             Arc::clone(&sequence_tracker),
         );
-        let (merger_tx, merger_handle) = Merger::spawn(
-            merger_store,
+        let (run_service, repo_service, webhook_service) = build_services(
+            merger_tx.clone(),
+            ps,
+            ws,
             Arc::clone(&bus),
-            Arc::clone(&run_index),
             Arc::clone(&repo_index),
             Arc::clone(&delivery_index),
             Arc::clone(&sequence_tracker),
