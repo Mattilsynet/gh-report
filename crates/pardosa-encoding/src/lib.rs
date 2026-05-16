@@ -107,6 +107,29 @@ impl Encode for EventError {
     }
 }
 
+impl Decode for EventError {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
+        // Exhaustive match on the pinned 0..=10 wire bytes. Unknown
+        // discriminants surface as `InvalidInput`, matching the
+        // post-C2 convention for all decoder-local failures.
+        let byte = u8::decode(d)?;
+        match byte {
+            0 => Ok(EventError::InvalidInput),
+            1 => Ok(EventError::NotFound),
+            2 => Ok(EventError::Conflict),
+            3 => Ok(EventError::Unauthorized),
+            4 => Ok(EventError::PermissionDenied),
+            5 => Ok(EventError::Unavailable),
+            6 => Ok(EventError::Timeout),
+            7 => Ok(EventError::Internal),
+            8 => Ok(EventError::ResourceExhausted),
+            9 => Ok(EventError::Cancelled),
+            10 => Ok(EventError::DataLoss),
+            _ => Err(EventError::InvalidInput),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Decoder state
 // ---------------------------------------------------------------------------
@@ -1131,5 +1154,62 @@ mod tests {
         wire.extend_from_slice(&[1u8, 2, 3, 4]);
         let err = from_bytes::<arrayvec::ArrayVec<u8, 3>>(&wire).unwrap_err();
         assert_eq!(err, EventError::InvalidInput);
+    }
+
+    // -----------------------------------------------------------------
+    // EventError wire-contract pins (GEN-0039 / footgun FH6 = F11+F12)
+    // -----------------------------------------------------------------
+    //
+    // These tests freeze the wire byte for every `EventError` variant.
+    // If a future edit reorders or renumbers the enum, the assertions
+    // below break loudly instead of the wire silently shifting.
+
+    #[test]
+    fn event_error_discriminants_pinned() {
+        // One assert per variant — GEN-0039 wire contract, byte 1.
+        assert_eq!(EventError::InvalidInput.discriminant(), 0);
+        assert_eq!(EventError::NotFound.discriminant(), 1);
+        assert_eq!(EventError::Conflict.discriminant(), 2);
+        assert_eq!(EventError::Unauthorized.discriminant(), 3);
+        assert_eq!(EventError::PermissionDenied.discriminant(), 4);
+        assert_eq!(EventError::Unavailable.discriminant(), 5);
+        assert_eq!(EventError::Timeout.discriminant(), 6);
+        assert_eq!(EventError::Internal.discriminant(), 7);
+        assert_eq!(EventError::ResourceExhausted.discriminant(), 8);
+        assert_eq!(EventError::Cancelled.discriminant(), 9);
+        assert_eq!(EventError::DataLoss.discriminant(), 10);
+    }
+
+    #[test]
+    fn event_error_roundtrip_every_variant() {
+        // Symmetric Encode/Decode for every variant 0..=10.
+        for v in [
+            EventError::InvalidInput,
+            EventError::NotFound,
+            EventError::Conflict,
+            EventError::Unauthorized,
+            EventError::PermissionDenied,
+            EventError::Unavailable,
+            EventError::Timeout,
+            EventError::Internal,
+            EventError::ResourceExhausted,
+            EventError::Cancelled,
+            EventError::DataLoss,
+        ] {
+            let bytes = to_vec(&v);
+            assert_eq!(bytes.len(), 1, "EventError encodes to one byte");
+            assert_eq!(bytes[0], v.discriminant());
+            let back: EventError = from_bytes(&bytes).expect("decode");
+            assert_eq!(v, back);
+        }
+    }
+
+    #[test]
+    fn event_error_unknown_discriminant_rejected() {
+        // Discriminants 11..=255 are not assigned; decode must reject.
+        for b in 11u8..=255 {
+            let err = from_bytes::<EventError>(&[b]).unwrap_err();
+            assert_eq!(err, EventError::InvalidInput);
+        }
     }
 }
