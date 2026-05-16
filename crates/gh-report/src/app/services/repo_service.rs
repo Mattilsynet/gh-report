@@ -330,6 +330,41 @@ mod tests {
 
         // Stream contents.
         let loaded = store.load(assigned_id).await.expect("load");
+        assert_lifecycle_stream(&loaded);
+
+        // Bus captured all 3 in order.
+        assert_captured_sequence(&captured, 3);
+
+        // Sequence tracker == 3.
+        assert_tracker_seq(&tracker, assigned_id, 3);
+
+        // Single per-aggregate file (CHE-0036:R1).
+        assert_single_msgpack_file(&dir, assigned_id);
+
+        // Post-removal rejection (CHE-0054:R2.c).
+        let err = svc
+            .record_evaluation(
+                domain_key,
+                RecordEvaluation {
+                    domain_key: domain_key.into(),
+                    repo_name: "hello".into(),
+                    success: true,
+                    source: "scheduled_batch".into(),
+                    duration_ms: 1,
+                    timestamp: "2026-05-10T12:03:00Z".into(),
+                    evidence: None,
+                },
+                &ctx,
+            )
+            .await
+            .expect_err("evaluate after remove must reject");
+        assert_eq!(err, RepoError::AlreadyRemoved);
+    }
+
+    /// Assert the stored envelope sequence for the lifecycle test:
+    /// 3 envelopes, monotonically-numbered, payloads
+    /// [`RepoEvaluated{success:true}`, `RepoEvaluated{success:false}`, `RepoRemoved`].
+    fn assert_lifecycle_stream(loaded: &[EventEnvelope<DomainEvent>]) {
         assert_eq!(loaded.len(), 3, "3 envelopes after lifecycle");
         for (i, env) in loaded.iter().enumerate() {
             assert_eq!(
@@ -351,29 +386,41 @@ mod tests {
             loaded[2].payload(),
             DomainEvent::RepoRemoved { .. }
         ));
+    }
 
-        // Bus captured all 3 in order.
-        {
-            let captured_envs = captured
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            assert_eq!(captured_envs.len(), 3);
-            for (i, env) in captured_envs.iter().enumerate() {
-                assert_eq!(env.sequence().get(), u64::try_from(i + 1).unwrap());
-            }
+    /// Assert the bus captured exactly `expected_len` envelopes in
+    /// strict 1..=expected_len sequence order.
+    fn assert_captured_sequence(
+        captured: &Arc<Mutex<Vec<EventEnvelope<DomainEvent>>>>,
+        expected_len: usize,
+    ) {
+        let envs = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(envs.len(), expected_len);
+        for (i, env) in envs.iter().enumerate() {
+            assert_eq!(env.sequence().get(), u64::try_from(i + 1).unwrap());
         }
+    }
 
-        // Sequence tracker == 3.
-        let tracked_seq = {
-            let guard = tracker
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *guard.get(&assigned_id).expect("next_seq entry")
-        };
-        assert_eq!(tracked_seq.get(), 3);
+    /// Assert the per-aggregate next-sequence tracker entry equals
+    /// `expected`.
+    fn assert_tracker_seq(
+        tracker: &Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
+        id: AggregateId,
+        expected: u64,
+    ) {
+        let guard = tracker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let seq = *guard.get(&id).expect("tracker entry");
+        assert_eq!(seq.get(), expected);
+    }
 
-        // Single per-aggregate file (CHE-0036:R1).
-        let store_file = dir.path().join(format!("{assigned_id}.msgpack"));
+    /// Assert the on-disk store contains exactly one `<id>.msgpack`
+    /// file, satisfying CHE-0036:R1 (one file per aggregate).
+    fn assert_single_msgpack_file(dir: &TempDir, id: AggregateId) {
+        let store_file = dir.path().join(format!("{id}.msgpack"));
         assert!(store_file.exists());
         let entries: Vec<_> = std::fs::read_dir(dir.path())
             .expect("readdir")
@@ -381,25 +428,6 @@ mod tests {
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "msgpack"))
             .collect();
         assert_eq!(entries.len(), 1);
-
-        // Post-removal rejection (CHE-0054:R2.c).
-        let err = svc
-            .record_evaluation(
-                domain_key,
-                RecordEvaluation {
-                    domain_key: domain_key.into(),
-                    repo_name: "hello".into(),
-                    success: true,
-                    source: "scheduled_batch".into(),
-                    duration_ms: 1,
-                    timestamp: "2026-05-10T12:03:00Z".into(),
-                    evidence: None,
-                },
-                &ctx,
-            )
-            .await
-            .expect_err("evaluate after remove must reject");
-        assert_eq!(err, RepoError::AlreadyRemoved);
     }
 
     /// Step-4 — covers the lazy-create branch on `record_removal`:
