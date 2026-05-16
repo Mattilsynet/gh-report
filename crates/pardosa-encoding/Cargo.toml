@@ -28,3 +28,8 @@ bytes = { workspace = true, optional = true }
 arrayvec = { workspace = true, optional = true }
 
 [dev-dependencies]
+# FH11 (bead adr-fmt-bw7l) decode-cap behavioural property test. Lives
+# in tests/decode_cap_respected.rs only; the library crate remains
+# no_std + dep-free. proptest is workspace-pinned per AGENTS.md
+# path-hygiene + adr-fmt-toml workspace alignment.
+proptest = { workspace = true }

@@ -1782,6 +1782,7 @@ version = "0.1.0"
 dependencies = [
  "arrayvec",
  "bytes",
+ "proptest",
  "uuid",
 ]
 
