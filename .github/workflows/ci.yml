@@ -60,7 +60,8 @@ jobs:
           set -euo pipefail
           fail=0
           for c in cherry-pit-core cherry-pit-gateway cherry-pit-web cherry-pit-agent \
-                   cherry-pit-projection cherry-pit-wq cherry-pit-storage; do
+                   cherry-pit-projection cherry-pit-wq cherry-pit-storage \
+                   cherry-pit-pardosa; do
             if cargo tree -p "$c" -e features 2>&1 | grep -q async-trait; then
               echo "::error::$c transitively depends on async-trait (CHE-0025/CHE-0029:R4)"
               fail=1
