@@ -287,98 +287,14 @@ pub(crate) async fn delivery_loop(
             JobOutcome::Success {
                 domain_key, result, ..
             } => {
-                let repo_name = result.repository.name.clone();
-                // Clone for the projection envelope (CHE-0048:R2 + BC-v2-2:
-                // payload must carry the materialised state). RepositoryEvidence
-                // wraps Repository in Arc, so Clone is shallow on the heaviest
-                // field; boxed because the type is ~560 bytes and would
-                // otherwise dominate the DomainEvent enum size. B6'.
-                // M2.cd: direct-write to `store` deleted (W1). The
-                // `RepoEvaluated` envelope published below carries the
-                // evidence; `EvidenceProjection::apply` materialises it
-                // into the read-model. CHE-0048:R2 sole-writer.
-                let evidence_for_event = Box::new(result);
-                if let Err(e) = state
-                    .repo_service
-                    .record_evaluation(
-                        &domain_key,
-                        RecordEvaluation {
-                            domain_key: domain_key.clone(),
-                            repo_name: repo_name.clone(),
-                            success: true,
-                            source: format!("{source:?}"),
-                            duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
-                            timestamp: jiff::Timestamp::now().to_string(),
-                            evidence: Some(evidence_for_event),
-                        },
-                        &corr_ctx,
-                    )
-                    .await
-                {
-                    tracing::warn!(?e, "RepoEvaluated publish failed, non-fatal");
-                }
-                info!(
-                    key = %domain_key,
-                    repo = %repo_name,
-                    source = ?source,
-                    duration_ms = duration.as_millis(),
-                    "job completed"
-                );
+                handle_success_outcome(&state, &corr_ctx, domain_key, result, &source, duration)
+                    .await;
             }
             JobOutcome::Failure {
                 domain_key, error, ..
             } => {
-                // Insert failure evidence: synthetic record with Unknown
-                // statuses. Prevents stale passing data from persisting.
-                // B6': also carry the synthetic record on the
-                // `RepoEvaluated` envelope so `EvidenceProjection` reflects
-                // the failure state in the read model.
-                // M2.cd: read existing evidence from projection (sole reader);
-                // direct-write to `store` deleted (W2). The `RepoEvaluated`
-                // failure envelope below carries the synthesised failure
-                // evidence; `EvidenceProjection::apply` materialises it.
-                let existing = state.lock_projection().get(&domain_key);
-                let (repo_name, evidence_for_event) = if let Some(existing) = existing {
-                    let name = existing.repository.name.clone();
-                    let failure = collect::failure_evidence(
-                        &existing.repository,
-                        &jiff::Timestamp::now().to_string(),
-                    );
-                    let failure_for_event = Box::new(failure);
-                    (name, Some(failure_for_event))
-                } else {
-                    // No baseline repo — we lack the inputs to synthesise
-                    // RepositoryEvidence (no Repository handle). Emit
-                    // metadata-only; projection treats `None` as no-op.
-                    (domain_key.clone(), None)
-                };
-                if let Err(e) = state
-                    .repo_service
-                    .record_evaluation(
-                        &domain_key,
-                        RecordEvaluation {
-                            domain_key: domain_key.clone(),
-                            repo_name: repo_name.clone(),
-                            success: false,
-                            source: format!("{source:?}"),
-                            duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
-                            timestamp: jiff::Timestamp::now().to_string(),
-                            evidence: evidence_for_event,
-                        },
-                        &corr_ctx,
-                    )
-                    .await
-                {
-                    tracing::warn!(?e, "RepoEvaluated publish failed, non-fatal");
-                }
-                error!(
-                    key = %domain_key,
-                    repo = %repo_name,
-                    source = ?source,
-                    error = %error,
-                    duration_ms = duration.as_millis(),
-                    "job failed"
-                );
+                handle_failure_outcome(&state, &corr_ctx, domain_key, error, &source, duration)
+                    .await;
             }
             _ => {
                 warn!("delivery_loop: unhandled JobOutcome variant, skipping");
@@ -395,6 +311,118 @@ pub(crate) async fn delivery_loop(
         }
     }
     info!("delivery task exiting — outcome channel closed");
+}
+
+/// Publish a successful repo evaluation and log completion.
+///
+/// Extracted from [`delivery_loop`] for cohesion; no behavioural change.
+async fn handle_success_outcome(
+    state: &Arc<AppState>,
+    corr_ctx: &CorrelationContext,
+    domain_key: String,
+    result: RepositoryEvidence,
+    source: &JobSource,
+    duration: Duration,
+) {
+    let repo_name = result.repository.name.clone();
+    // Clone for the projection envelope (CHE-0048:R2 + BC-v2-2:
+    // payload must carry the materialised state). RepositoryEvidence
+    // wraps Repository in Arc, so Clone is shallow on the heaviest
+    // field; boxed because the type is ~560 bytes and would
+    // otherwise dominate the DomainEvent enum size. B6'.
+    // M2.cd: direct-write to `store` deleted (W1). The
+    // `RepoEvaluated` envelope published below carries the
+    // evidence; `EvidenceProjection::apply` materialises it
+    // into the read-model. CHE-0048:R2 sole-writer.
+    let evidence_for_event = Box::new(result);
+    if let Err(e) = state
+        .repo_service
+        .record_evaluation(
+            &domain_key,
+            RecordEvaluation {
+                domain_key: domain_key.clone(),
+                repo_name: repo_name.clone(),
+                success: true,
+                source: format!("{source:?}"),
+                duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
+                timestamp: jiff::Timestamp::now().to_string(),
+                evidence: Some(evidence_for_event),
+            },
+            corr_ctx,
+        )
+        .await
+    {
+        tracing::warn!(?e, "RepoEvaluated publish failed, non-fatal");
+    }
+    info!(
+        key = %domain_key,
+        repo = %repo_name,
+        source = ?source,
+        duration_ms = duration.as_millis(),
+        "job completed"
+    );
+}
+
+/// Publish a failed repo evaluation and log the failure.
+///
+/// Extracted from [`delivery_loop`] for cohesion; no behavioural change.
+async fn handle_failure_outcome(
+    state: &Arc<AppState>,
+    corr_ctx: &CorrelationContext,
+    domain_key: String,
+    error: String,
+    source: &JobSource,
+    duration: Duration,
+) {
+    // Insert failure evidence: synthetic record with Unknown
+    // statuses. Prevents stale passing data from persisting.
+    // B6': also carry the synthetic record on the
+    // `RepoEvaluated` envelope so `EvidenceProjection` reflects
+    // the failure state in the read model.
+    // M2.cd: read existing evidence from projection (sole reader);
+    // direct-write to `store` deleted (W2). The `RepoEvaluated`
+    // failure envelope below carries the synthesised failure
+    // evidence; `EvidenceProjection::apply` materialises it.
+    let existing = state.lock_projection().get(&domain_key);
+    let (repo_name, evidence_for_event) = if let Some(existing) = existing {
+        let name = existing.repository.name.clone();
+        let failure =
+            collect::failure_evidence(&existing.repository, &jiff::Timestamp::now().to_string());
+        let failure_for_event = Box::new(failure);
+        (name, Some(failure_for_event))
+    } else {
+        // No baseline repo — we lack the inputs to synthesise
+        // RepositoryEvidence (no Repository handle). Emit
+        // metadata-only; projection treats `None` as no-op.
+        (domain_key.clone(), None)
+    };
+    if let Err(e) = state
+        .repo_service
+        .record_evaluation(
+            &domain_key,
+            RecordEvaluation {
+                domain_key: domain_key.clone(),
+                repo_name: repo_name.clone(),
+                success: false,
+                source: format!("{source:?}"),
+                duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
+                timestamp: jiff::Timestamp::now().to_string(),
+                evidence: evidence_for_event,
+            },
+            corr_ctx,
+        )
+        .await
+    {
+        tracing::warn!(?e, "RepoEvaluated publish failed, non-fatal");
+    }
+    error!(
+        key = %domain_key,
+        repo = %repo_name,
+        source = ?source,
+        error = %error,
+        duration_ms = duration.as_millis(),
+        "job failed"
+    );
 }
 
 /// Resolve the port number from the `PORT` env var, defaulting to 8080.
