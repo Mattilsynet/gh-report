@@ -70,3 +70,7 @@ Under `feature = "projection"`, snapshot-delta WS push is permitted since the sn
 **Auto-generated idempotency keys** — CHE-0046:R3 requires stable idempotency keys for boundary-crossing retries. Auto-generating a key when the client omits the header would produce a fresh key per retry attempt, defeating the deduplication purpose.
 
 **Unversioned DTO paths** — Omitting the `/v1/` prefix would make future breaking changes to request/response shapes require either silent incompatibility or an ad-hoc versioning retrofit. The prefix cost is negligible and establishes the convention early.
+
+## Amendment 2026-05-16
+
+R12 extended: `build_projection_router<P>` takes a second parameter `extra_routes: Router` (stateless) merged onto the projection surface after `with_state`. Mirrors the CHE-0049:R2 / CQRS `build_router` extension-point convention so consumers attach auth probes, status pages, or any non-projection routes without re-wrapping the router. The merge happens after state is bound, so `extra_routes` cannot widen the projection state's type surface. Callers with no extras pass `Router::new()`. Additive change, no behaviour change for existing routes.
