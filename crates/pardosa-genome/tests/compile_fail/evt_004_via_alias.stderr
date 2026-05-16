@@ -1,0 +1,51 @@
+error[E0277]: the trait bound `usize: GenomeSafe` is not satisfied
+  --> tests/compile_fail/evt_004_via_alias.rs:17:8
+   |
+17 |     n: Size,
+   |        ^^^^ the trait `GenomeSafe` is not implemented for `usize`
+   |
+   = help: the following other types implement trait `GenomeSafe`:
+             f32
+             f64
+             i128
+             i16
+             i32
+             i64
+             i8
+             u128
+           and $N others
+
+error[E0277]: the trait bound `usize: Encode` is not satisfied
+  --> tests/compile_fail/evt_004_via_alias.rs:15:21
+   |
+15 | #[derive(Serialize, GenomeSafe)]
+   |                     ^^^^^^^^^^ the trait `Encode` is not implemented for `usize`
+   |
+   = help: the following other types implement trait `Encode`:
+             f32
+             f64
+             i128
+             i16
+             i32
+             i64
+             i8
+             u128
+           and $N others
+   = note: this error originates in the derive macro `GenomeSafe` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `usize: Decode` is not satisfied
+  --> tests/compile_fail/evt_004_via_alias.rs:17:8
+   |
+17 |     n: Size,
+   |        ^^^^ the trait `Decode` is not implemented for `usize`
+   |
+   = help: the following other types implement trait `Decode`:
+             f32
+             f64
+             i128
+             i16
+             i32
+             i64
+             i8
+             u128
+           and $N others

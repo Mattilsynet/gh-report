@@ -9,6 +9,38 @@
 //! compiler error so user tooling and tests can match on the code rather
 //! than free-text. The catalog is growth-friendly: new codes append.
 //!
+//! ## Catalog status: best-effort syntactic diagnostics, not a security boundary
+//!
+//! The EVT-NNN checks operate on the surface syntax of field types
+//! (`syn::Type::Path` last-segment ident matching). They are **convenience
+//! diagnostics**: they catch the common case where a user writes
+//! `HashMap<K, V>`, `usize`, or `fn(..) -> ..` literally as a field type
+//! and surface a friendly, stable error code pointing at the precise
+//! anti-pattern.
+//!
+//! They are **not** a security or correctness boundary. Type aliases
+//! (`type SafeMap = HashMap<K, V>;`), associated types, and re-exports
+//! that hide the offending type behind a different last-segment ident
+//! will silently bypass these syntactic checks.
+//!
+//! The **load-bearing backstop** is trait resolution. The derive generates
+//! `impl Encode for T where <each_field>: Encode` (and analogous clauses
+//! for `Decode`, `EventSafe`, `GenomeSafe`). `HashMap`, `HashSet`, `usize`,
+//! `isize`, raw pointers, and function pointers have no `Encode`/`Decode`
+//! impls in `pardosa-encoding`, so any attempt to actually compile a
+//! downstream user of such a type — whether the offending type appears
+//! directly or behind an alias — fails at the trait-resolution stage with
+//! an `E0277` "the trait bound `…: Encode` is not satisfied" error.
+//!
+//! The trybuild fixtures in `crates/pardosa-genome/tests/compile_fail/`
+//! pin both paths: direct-use fixtures (`evt_002.rs`, `evt_004.rs`,
+//! `evt_013.rs`, …) pin the EVT-NNN diagnostic; via-alias fixtures
+//! (`evt_002_via_alias.rs`, `evt_004_via_alias.rs`, `evt_013_via_alias.rs`)
+//! pin the trait-resolution backstop. Either failure path is acceptable;
+//! what is **not** acceptable is a fixture passing compilation. Should
+//! that happen, the offending type has reached an unsound code path and
+//! the bead/ADR governing that EVT must be reopened.
+//!
 //! - `EVT-001` — union (unsupported data shape)
 //! - `EVT-002` — `HashMap` field (non-deterministic iteration order)
 //! - `EVT-003` — `HashSet` field (non-deterministic iteration order)
