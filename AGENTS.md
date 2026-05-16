@@ -3,13 +3,12 @@
 Multi-crate Rust workspace. The foundational product is `adr-fmt`, an ADR
 template + link-integrity validator — read-only at runtime, never writes
 into the corpus. The workspace also contains the cherry-pit family
-(`cherry-pit-{core,gateway,web,projection,agent,wq,storage-primitives}`)
-and `gh-report`. The directories `crates/pardosa`, `crates/pardosa-genome`,
-and `crates/pardosa-derive` exist on disk for in-flight integration
-and ADR co-location but are not yet workspace members (see `Cargo.toml`
-`members` for the SSOT). adr-fmt governance is scoped to the `adr-fmt`
-crate and its `AFM-*` ADRs; other crates have their own ADR domains
-(CHE, etc.).
+(`cherry-pit-{core,gateway,web,projection,agent,wq,storage-primitives}`),
+`gh-report`, and the pardosa family
+(`pardosa`, `pardosa-derive`, `pardosa-encoding`, `pardosa-genome`,
+`pardosa-traits`). See `Cargo.toml` `members` for the SSOT. adr-fmt
+governance is scoped to the `adr-fmt` crate and its `AFM-*` ADRs; other
+crates have their own ADR domains (CHE, PAR, GEN, etc.).
 
 ## Commands
 
@@ -111,13 +110,12 @@ built binary; the tool dogfoods itself).
 Other domains (`common`, `ground`, `rust`, `security`, `flow`) are a
 **retained reference corpus** for self-host validation. Do not edit those
 ADRs; do not add or remove domains in `adr-fmt.toml` during v0.1. The
-`pardosa` and `genome` domains are also retained reference: the directories
-`crates/pardosa`, `crates/pardosa-genome`, and `crates/pardosa-derive`
-exist for in-flight integration but are not yet workspace members. Treat
-their ADRs as reference, not binding, until those crates land in
-`Cargo.toml` `members`. (Note: `adr-fmt.toml` still lists `crates = [...]`
-under PAR and GEN domains, so `adr-fmt --context pardosa` resolves — a
-follow-up will reconcile that mapping with workspace membership.)
+`pardosa` and `genome` domains are **live**: the pardosa family
+(`pardosa`, `pardosa-derive`, `pardosa-encoding`, `pardosa-genome`,
+`pardosa-traits`) ships in `Cargo.toml` `members`, and `adr-fmt --context
+pardosa` (etc.) resolves to those crates per the `[domains.PAR]` /
+`[domains.GEN]` mapping in `adr-fmt.toml`. PAR/GEN ADRs may be edited
+per normal ADR process.
 
 The `cherry` domain (prefix `CHE`) is **live**: the workspace ships
 `cherry-pit-core`, `cherry-pit-gateway`, `cherry-pit-web`,

@@ -603,7 +603,7 @@ touching FOCUS.md further.
 
 | # | Task | Deliverable | Verify |
 |---|------|-------------|--------|
-| 2.1 | Activate pardosa* as workspace members | Add `pardosa`, `pardosa-genome`, `pardosa-derive` to `Cargo.toml` `members`. Reconcile MSRV / edition / lints. Update `adr-fmt.toml` PAR/GEN domain `crates = [...]` so `--context pardosa` keeps working. | `cargo build --workspace`; `cargo run -p adr-fmt -- --tree PAR`; `cargo run -p adr-fmt -- --context pardosa` exit 0. |
+| 2.1 | ~~Activate pardosa* as workspace members~~ **(complete prior to Track 2 start)** | All five pardosa crates (`pardosa`, `pardosa-derive`, `pardosa-encoding`, `pardosa-genome`, `pardosa-traits`) already in `Cargo.toml` `members`; `adr-fmt.toml` PAR/GEN domains already populated. AGENTS.md § Governance reconciled to match. | `cargo build --workspace` green; `cargo run -p adr-fmt -- --context pardosa` exit 0. |
 | 2.2 | `PardosaEventStore` adapter | New crate (or module within cherry-pit-gateway per CHE-0029 layering) wrapping pardosa's fiber/dragline as `cherry_pit_core::EventStore` per the Track 0.5 verdict (Q1/Q2/Q3 recommendations). Local fiber storage only in this sub-mission — no NATS. | Trait-conformance harness from 1.3 runs and passes against `PardosaEventStore`. **Load-bearing exit signal for Track 2.** |
 | 2.3 | NATS substrate — tests only | Embedded `nats-server` test fixture. Pardosa publish-then-apply (PAR-0008) flows over NATS in tests. Feature-gated for adr-srv Track-3 use; production deploy still local fibers. | `cargo test -p <pardosa-store-crate> --features nats` exit 0; CI workflow installs nats-server binary. |
 
