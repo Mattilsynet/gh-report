@@ -1,89 +1,99 @@
 //! `RepoService` — ApplicationService for the [`Repo`] aggregate
-//! (CHE-0054:R4).
+//! (CHE-0054:R4), rerouted through the [`Merger`] task at Track 4.0/4.
 //!
-//! Owns the load → handle → append → publish triad for
-//! repository-evaluation use cases. Resolves identity via the shared
-//! `Arc<Mutex<HashMap<String, AggregateId>>>` index handle (CHE-0054:R5;
-//! key is the `domain_key` carried on
-//! [`RepoEvaluated`](crate::domain::events::DomainEvent::RepoEvaluated)
-//! / [`RepoRemoved`](crate::domain::events::DomainEvent::RepoRemoved)).
+//! Symmetric to [`super::run_service::RunService`] at Track 4.0/3b:
+//! the two public methods preserve their pre-step-4 signatures
+//! verbatim — call sites at `daemon.rs` / `webhook/mod.rs` did not
+//! move — but the bodies are now thin wrappers that build a
+//! [`MergerCommand`] + [`oneshot::channel`] reply, send through the
+//! Merger's [`mpsc::Sender`], and await the reply. The load → handle
+//! → append → publish triad lives inside the Merger arms (verbatim
+//! lifts of the pre-3a service bodies — see [`super::merger`] module
+//! docs); `RepoService` no longer holds the [`EventStore`] or
+//! [`EventBus`] handle, the routing index, or the sequence tracker.
 //!
-//! ## Method body status
+//! ## Generic-port discipline (Track 4.0/4 departure)
 //!
-//! Both `RepoService` methods are wired (Inc B7'b-4). The 14
-//! production publish sites migrate to these calls in **B7'c**.
+//! Pre-step-4 the service was generic over `S: EventStore<Event =
+//! DomainEvent>` + `B: EventBus<Event = DomainEvent>` per CHE-0005:R1.
+//! Post-step-4 the service holds only a [`mpsc::Sender<MergerCommand>`]
+//! and no longer touches either port directly, so the generics are
+//! dropped (Option A — symmetric to RunService at 3b). The [`Merger`]
+//! binds the concrete types at the composition root — see
+//! [`super::merger`] module docs. The
+//! [`crate::app::state::RepoServiceConcrete`] alias is preserved as a
+//! single-line shim through Track 4.0; its deletion is a step-6
+//! concern.
 //!
 //! [`Repo`]: crate::domain::aggregates::repo::Repo
+//! [`Merger`]: super::merger::Merger
+//! [`MergerCommand`]: super::merger::MergerCommand
+//! [`EventStore`]: cherry_pit_core::EventStore
+//! [`EventBus`]: cherry_pit_core::EventBus
+//! [`mpsc::Sender`]: tokio::sync::mpsc::Sender
+//! [`oneshot::channel`]: tokio::sync::oneshot::channel
 
-use std::collections::HashMap;
-use std::num::NonZeroU64;
-use std::sync::{Arc, Mutex};
+use cherry_pit_core::CorrelationContext;
+use tokio::sync::{mpsc, oneshot};
 
-use cherry_pit_core::{AggregateId, CorrelationContext, EventBus, EventStore};
-
+use super::merger::MergerCommand;
 use crate::domain::aggregates::repo::{RecordEvaluation, RecordRemoval, RepoError};
-use crate::domain::events::DomainEvent;
 
 /// ApplicationService for the [`Repo`] aggregate.
 ///
-/// Generic over the concrete [`EventStore`] and [`EventBus`] per
-/// CHE-0005:R1 — see [`RunService`](super::run_service::RunService)
-/// docs for the routing/CAS rationale.
+/// Post-step-4 channel handle: a thin wrapper over the [`Merger`]
+/// task's [`mpsc::Sender`]. Each method builds the corresponding
+/// [`MergerCommand`] variant with a [`oneshot::Sender`] reply, sends
+/// it through the merger queue, and awaits the typed
+/// `Result<(), RepoError>` response.
 ///
+/// ## SMI invariant carry (Track 4.0/4)
+///
+/// Routing the two RepoService write paths through `merger_tx`
+/// promotes the *sole-writer* invariant from latent to enforced for
+/// the [`Repo`] aggregate: every successful append to a Repo stream
+/// now flows through the single Merger task. RunService closed the
+/// analogous gap for the [`Run`] aggregate at Track 4.0/3b;
+/// WebhookService reroute at step 5 closes it for the
+/// [`WebhookDelivery`] aggregate. The final cross-aggregate
+/// sole-writer guarantee is end-of-Track-4.0.
+///
+/// [`Run`]: crate::domain::aggregates::run::Run
 /// [`Repo`]: crate::domain::aggregates::repo::Repo
+/// [`WebhookDelivery`]: crate::domain::aggregates::webhook::WebhookDelivery
+/// [`Merger`]: super::merger::Merger
+/// [`mpsc::Sender`]: tokio::sync::mpsc::Sender
 #[derive(Debug)]
-pub struct RepoService<S, B>
-where
-    S: EventStore<Event = DomainEvent>,
-    B: EventBus<Event = DomainEvent>,
-{
-    /// Durable per-aggregate event store.
-    store: Arc<S>,
-    /// Synchronous in-process event bus.
-    bus: Arc<B>,
-    /// `domain_key` → `AggregateId` routing index (CHE-0054:R5).
-    index: Arc<Mutex<HashMap<String, AggregateId>>>,
-    /// Last-applied sequence per aggregate (CHE-0054:R6).
-    sequence_tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
+pub struct RepoService {
+    /// Producer end of the Merger command channel
+    /// (`adr-fmt-nnn3` — Track 4.0/4).
+    merger_tx: mpsc::Sender<MergerCommand>,
 }
 
-impl<S, B> RepoService<S, B>
-where
-    S: EventStore<Event = DomainEvent>,
-    B: EventBus<Event = DomainEvent>,
-{
-    /// Construct a `RepoService` wired to the given store, bus, and
-    /// shared routing/sequence handles.
+impl RepoService {
+    /// Construct a `RepoService` wired to the [`Merger`] command
+    /// channel.
+    ///
+    /// The supplied `merger_tx` is shared with [`AppState`] and the
+    /// other ApplicationService surfaces — at step 4 with
+    /// [`RunService`] (already rerouted at 3b); at step 5 with
+    /// [`WebhookService`]. Cloning the [`mpsc::Sender`] is cheap
+    /// (refcount bump) and keeps the channel open for the process
+    /// lifetime of [`AppState`].
+    ///
+    /// [`AppState`]: crate::app::state::AppState
+    /// [`Merger`]: super::merger::Merger
+    /// [`RunService`]: super::run_service::RunService
+    /// [`WebhookService`]: super::webhook_service::WebhookService
+    /// [`mpsc::Sender`]: tokio::sync::mpsc::Sender
     #[must_use]
-    pub fn with_stores(
-        store: Arc<S>,
-        bus: Arc<B>,
-        index: Arc<Mutex<HashMap<String, AggregateId>>>,
-        sequence_tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
-    ) -> Self {
-        Self {
-            store,
-            bus,
-            index,
-            sequence_tracker,
-        }
-    }
-
-    /// Read access to the store handle (for diagnostics / tests).
-    #[must_use]
-    pub fn store(&self) -> &Arc<S> {
-        &self.store
-    }
-
-    /// Read access to the bus handle (for diagnostics / tests).
-    #[must_use]
-    pub fn bus(&self) -> &Arc<B> {
-        &self.bus
+    pub fn with_merger_tx(merger_tx: mpsc::Sender<MergerCommand>) -> Self {
+        Self { merger_tx }
     }
 
     /// Record a repository evaluation.
     ///
-    /// `domain_key` is the routing key — the service uses it to
+    /// `domain_key` is the routing key — the Merger arm uses it to
     /// resolve the `AggregateId` from the index (CHE-0054:R5),
     /// **lazily creating** a fresh aggregate the first time the key
     /// is seen. The command's own `domain_key` field is treated
@@ -92,86 +102,80 @@ where
     /// command shape (mirrors the `batch_id` pattern on
     /// [`RunService`](super::run_service::RunService)).
     ///
+    /// Routes [`MergerCommand::RecordEvaluation`] through the Merger
+    /// task. The SMI sole-writer invariant for the [`Repo`]
+    /// aggregate is enforced by the Merger task being the only
+    /// holder of the store write handle for Repo streams from step
+    /// 4 onward.
+    ///
+    /// [`Repo`]: crate::domain::aggregates::repo::Repo
+    ///
     /// # Errors
     ///
     /// Returns [`RepoError::AlreadyRemoved`] when the resolved
     /// aggregate is in the terminal `Removed` phase (invariant c).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the Merger task has shut down before the reply
+    /// arrives — this can only happen at process teardown after
+    /// [`AppState`] has been dropped, so a panic on the receiver
+    /// surfaces a misuse-after-shutdown bug rather than a recoverable
+    /// runtime condition.
+    ///
+    /// [`AppState`]: crate::app::state::AppState
     pub async fn record_evaluation(
         &self,
         domain_key: &str,
         cmd: RecordEvaluation,
         ctx: &CorrelationContext,
     ) -> Result<(), RepoError> {
-        use cherry_pit_core::{Aggregate, HandleCommand};
-
-        let existing_id = super::shared::lookup(&self.index, domain_key);
-        let (envelopes, last_seq) =
-            super::shared::load_envelopes_or_empty(&self.store, existing_id).await;
-        let mut state = crate::domain::aggregates::repo::Repo::default();
-        for env in &envelopes {
-            state.apply(env.payload());
-        }
-        let new_events = state.handle(cmd)?;
-        let new_envelopes = super::shared::create_or_append(
-            super::shared::PersistHandles {
-                store: &self.store,
-                index: &self.index,
-                sequence_tracker: &self.sequence_tracker,
-            },
-            domain_key,
-            existing_id,
-            last_seq,
-            new_events,
-            ctx,
-        )
-        .await;
-        super::shared::publish_or_trace(&self.bus, &new_envelopes, "RepoEvaluated").await;
-        Ok(())
+        let (reply, rx) = oneshot::channel();
+        self.merger_tx
+            .send(MergerCommand::RecordEvaluation {
+                domain_key: domain_key.to_owned(),
+                cmd: Box::new(cmd),
+                ctx: ctx.clone(),
+                reply,
+            })
+            .await
+            .expect("Merger task alive for AppState lifetime");
+        rx.await.expect("Merger arm always replies before drop")
     }
 
     /// Record a repository removal (terminal).
     ///
     /// `domain_key` is the routing key — see
-    /// [`record_evaluation`](Self::record_evaluation). A `RecordRemoval`
-    /// for a never-evaluated repo lazily creates the aggregate (allowed
-    /// per CHE-0054:R2 — webhook-driven removal can arrive without
-    /// prior local evaluation).
+    /// [`record_evaluation`](Self::record_evaluation). A
+    /// `RecordRemoval` for a never-evaluated repo lazily creates the
+    /// aggregate (allowed per CHE-0054:R2 — webhook-driven removal
+    /// can arrive without prior local evaluation).
     ///
     /// # Errors
     ///
     /// Returns [`RepoError::AlreadyRemoved`] when the resolved
     /// aggregate is already in the `Removed` phase.
+    ///
+    /// # Panics
+    ///
+    /// See [`Self::record_evaluation`].
     pub async fn record_removal(
         &self,
         domain_key: &str,
         cmd: RecordRemoval,
         ctx: &CorrelationContext,
     ) -> Result<(), RepoError> {
-        use cherry_pit_core::{Aggregate, HandleCommand};
-
-        let existing_id = super::shared::lookup(&self.index, domain_key);
-        let (envelopes, last_seq) =
-            super::shared::load_envelopes_or_empty(&self.store, existing_id).await;
-        let mut state = crate::domain::aggregates::repo::Repo::default();
-        for env in &envelopes {
-            state.apply(env.payload());
-        }
-        let new_events = state.handle(cmd)?;
-        let new_envelopes = super::shared::create_or_append(
-            super::shared::PersistHandles {
-                store: &self.store,
-                index: &self.index,
-                sequence_tracker: &self.sequence_tracker,
-            },
-            domain_key,
-            existing_id,
-            last_seq,
-            new_events,
-            ctx,
-        )
-        .await;
-        super::shared::publish_or_trace(&self.bus, &new_envelopes, "RepoRemoved").await;
-        Ok(())
+        let (reply, rx) = oneshot::channel();
+        self.merger_tx
+            .send(MergerCommand::RecordRemoval {
+                domain_key: domain_key.to_owned(),
+                cmd,
+                ctx: ctx.clone(),
+                reply,
+            })
+            .await
+            .expect("Merger task alive for AppState lifetime");
+        rx.await.expect("Merger arm always replies before drop")
     }
 }
 
@@ -179,11 +183,27 @@ where
 mod tests {
     use super::*;
 
+    use std::collections::HashMap;
+    use std::num::NonZeroU64;
+    use std::sync::{Arc, Mutex};
+
     use cherry_pit_agent::InProcessEventBus;
-    use cherry_pit_core::{EventEnvelope, EventStore};
+    use cherry_pit_core::{AggregateId, EventEnvelope, EventStore};
     use cherry_pit_gateway::MsgpackFileStore;
     use tempfile::TempDir;
 
+    use crate::app::services::merger::Merger;
+    use crate::domain::events::DomainEvent;
+
+    /// Build a Track 4.0/4-shaped RepoService backed by a [`Merger`]
+    /// task spawned over a shared tempdir [`MsgpackFileStore`] +
+    /// [`InProcessEventBus`] + the three routing indices + sequence
+    /// tracker. Symmetric to the RunService 3b test harness.
+    ///
+    /// Returns the tempdir, the durable handles for direct inspection,
+    /// and the [`RepoService`] under test. The Merger
+    /// [`tokio::task::JoinHandle`] is intentionally dropped — the task
+    /// is kept alive by the [`mpsc::Sender`] inside the service.
     #[allow(
         clippy::type_complexity,
         reason = "test helper returns the four shared handles plus the service; factoring would obscure the wiring under test"
@@ -194,47 +214,53 @@ mod tests {
         Arc<InProcessEventBus<DomainEvent>>,
         Arc<Mutex<HashMap<String, AggregateId>>>,
         Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
-        RepoService<MsgpackFileStore<DomainEvent>, InProcessEventBus<DomainEvent>>,
+        RepoService,
     ) {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(dir.path()));
         let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
-        let index = Arc::new(Mutex::new(HashMap::new()));
+        let run_index = Arc::new(Mutex::new(HashMap::new()));
+        let repo_index = Arc::new(Mutex::new(HashMap::new()));
+        let delivery_index = Arc::new(Mutex::new(HashMap::new()));
         let tracker = Arc::new(Mutex::new(HashMap::new()));
-        let svc = RepoService::with_stores(
+        let (merger_tx, _merger_handle) = Merger::spawn(
             Arc::clone(&store),
             Arc::clone(&bus),
-            Arc::clone(&index),
+            run_index,
+            Arc::clone(&repo_index),
+            delivery_index,
             Arc::clone(&tracker),
         );
-        (dir, store, bus, index, tracker, svc)
+        let svc = RepoService::with_merger_tx(merger_tx);
+        (dir, store, bus, repo_index, tracker, svc)
     }
 
-    #[test]
-    fn with_stores_constructs_service() {
-        let (_dir, _store, _bus, _index, _tracker, svc) = build_service();
-        let _: &Arc<MsgpackFileStore<DomainEvent>> = svc.store();
-        let _: &Arc<InProcessEventBus<DomainEvent>> = svc.bus();
+    #[tokio::test]
+    async fn with_merger_tx_constructs_service() {
+        // Smoke test: step-4 constructor surface compiles and yields a
+        // service whose handle (the mpsc::Sender) is wired to a live
+        // Merger task. Behaviour is covered by the lifecycle test.
+        let (_dir, _store, _bus, _index, _tracker, _svc) = build_service();
     }
 
-    /// Inc 4 (B7'b-4) — Repo lifecycle exercising lazy-create +
-    /// append-on-subsequent on a single domain_key:
+    /// Step-4 — full Repo lifecycle exercising both service surfaces
+    /// routed through the Merger task:
     /// `evaluate (create) → evaluate (append) → remove (append, terminal)`.
     ///
-    /// Asserts:
-    ///   1. Stream contains 3 envelopes at sequences 1..=3 with
-    ///      payload variants in order
-    ///      (RepoEvaluated, RepoEvaluated, RepoRemoved).
-    ///   2. Bus subscriber captured all 3 in order.
-    ///   3. Routing index populated: domain_key → AggregateId.
-    ///   4. Sequence tracker == NonZeroU64(3).
-    ///   5. Single per-aggregate file (CHE-0036:R1).
-    ///   6. Subsequent record_evaluation rejects with
-    ///      RepoError::AlreadyRemoved (CHE-0054:R2.c terminal).
+    /// Asserts the same six properties the pre-step-4 lifecycle test
+    /// asserted (envelope sequence + payload variants + bus capture +
+    /// routing index populated + sequence tracker advance + single
+    /// per-aggregate file + post-removal rejection) — proving the
+    /// channel-reroute is observably equivalent at the EventStore /
+    /// EventBus boundary.
+    ///
+    /// This is the contract enforcer for SMI invariants 1
+    /// (sole-writer: the Merger is the only writer to the Repo
+    /// stream) and 5 (post-append publish: every appended envelope
+    /// arrives on the bus before the reply resolves) for the Repo
+    /// aggregate.
     #[tokio::test]
-    async fn repo_lifecycle_lazy_creates_then_appends_then_terminates() {
-        use crate::domain::aggregates::repo::RepoError;
-
+    async fn repo_lifecycle_lazy_creates_then_appends_then_terminates_through_merger() {
         let (dir, store, bus, index, tracker, svc) = build_service();
 
         let captured: Arc<Mutex<Vec<EventEnvelope<DomainEvent>>>> =
@@ -297,7 +323,7 @@ mod tests {
         .await
         .expect("record_removal");
 
-        // (3) Routing index resolves.
+        // Routing index resolves.
         let assigned_id = {
             let guard = index
                 .lock()
@@ -305,7 +331,7 @@ mod tests {
             *guard.get(domain_key).expect("index should map domain_key")
         };
 
-        // (1) Stream contents.
+        // Stream contents.
         let loaded = store.load(assigned_id).await.expect("load");
         assert_eq!(loaded.len(), 3, "3 envelopes after lifecycle");
         for (i, env) in loaded.iter().enumerate() {
@@ -329,7 +355,7 @@ mod tests {
             DomainEvent::RepoRemoved { .. }
         ));
 
-        // (2) Bus capture.
+        // Bus captured all 3 in order.
         {
             let captured_envs = captured
                 .lock()
@@ -340,7 +366,7 @@ mod tests {
             }
         }
 
-        // (4) Sequence tracker == 3.
+        // Sequence tracker == 3.
         let tracked_seq = {
             let guard = tracker
                 .lock()
@@ -349,7 +375,7 @@ mod tests {
         };
         assert_eq!(tracked_seq.get(), 3);
 
-        // (5) Single per-aggregate file (CHE-0036:R1).
+        // Single per-aggregate file (CHE-0036:R1).
         let store_file = dir.path().join(format!("{assigned_id}.msgpack"));
         assert!(store_file.exists());
         let entries: Vec<_> = std::fs::read_dir(dir.path())
@@ -359,7 +385,7 @@ mod tests {
             .collect();
         assert_eq!(entries.len(), 1);
 
-        // (6) Post-removal rejection (CHE-0054:R2.c).
+        // Post-removal rejection (CHE-0054:R2.c).
         let err = svc
             .record_evaluation(
                 domain_key,
@@ -379,11 +405,11 @@ mod tests {
         assert_eq!(err, RepoError::AlreadyRemoved);
     }
 
-    /// Inc 4 — covers the lazy-create branch on `record_removal`:
+    /// Step-4 — covers the lazy-create branch on `record_removal`:
     /// webhook-driven removal arrives for a never-evaluated repo
     /// (allowed per CHE-0054:R2 — no pre-evaluation precondition).
     #[tokio::test]
-    async fn repo_removal_lazy_creates_when_never_evaluated() {
+    async fn repo_removal_lazy_creates_when_never_evaluated_through_merger() {
         let (_dir, store, _bus, index, tracker, svc) = build_service();
 
         let ctx = CorrelationContext::none();

@@ -68,8 +68,11 @@ pub use crate::app::webhook_context::WebhookState;
 /// [`EventBus`]: cherry_pit_core::EventBus
 pub type RunServiceConcrete = RunService;
 /// Concrete monomorphisation of [`RepoService`]. See [`RunServiceConcrete`].
-pub type RepoServiceConcrete =
-    RepoService<MsgpackFileStore<DomainEvent>, InProcessEventBus<DomainEvent>>;
+///
+/// Collapsed to a single-line alias at Track 4.0/4 (channel-reroute);
+/// kept as a shim through Track 4.0 for caller stability, deleted at
+/// step 6.
+pub type RepoServiceConcrete = RepoService;
 /// Concrete monomorphisation of [`WebhookService`]. See [`RunServiceConcrete`].
 pub type WebhookServiceConcrete =
     WebhookService<MsgpackFileStore<DomainEvent>, InProcessEventBus<DomainEvent>>;
@@ -364,10 +367,8 @@ impl AppState {
 )]
 fn build_services(
     merger_tx: tokio::sync::mpsc::Sender<MergerCommand>,
-    repo_store: Arc<MsgpackFileStore<DomainEvent>>,
     webhook_store: Arc<MsgpackFileStore<DomainEvent>>,
     bus: Arc<InProcessEventBus<DomainEvent>>,
-    repo_index: Arc<Mutex<HashMap<String, AggregateId>>>,
     delivery_index: Arc<Mutex<HashMap<String, AggregateId>>>,
     sequence_tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
 ) -> (
@@ -375,13 +376,8 @@ fn build_services(
     Arc<RepoServiceConcrete>,
     Arc<WebhookServiceConcrete>,
 ) {
-    let run = Arc::new(RunService::with_merger_tx(merger_tx));
-    let repo = Arc::new(RepoService::with_stores(
-        repo_store,
-        Arc::clone(&bus),
-        repo_index,
-        Arc::clone(&sequence_tracker),
-    ));
+    let run = Arc::new(RunService::with_merger_tx(merger_tx.clone()));
+    let repo = Arc::new(RepoService::with_merger_tx(merger_tx));
     let webhook = Arc::new(WebhookService::with_stores(
         webhook_store,
         bus,
@@ -492,7 +488,7 @@ impl AppState {
         let delivery_index = Arc::new(Mutex::new(HashMap::new()));
         let sequence_tracker = Arc::new(Mutex::new(HashMap::new()));
         let noop_dir = noop_events_dir();
-        let (rs, ps, ws) = build_three_stores(&noop_dir);
+        let (rs, _, ws) = build_three_stores(&noop_dir);
         let (merger_tx, merger_handle) = Merger::spawn(
             rs,
             Arc::clone(&bus),
@@ -503,10 +499,8 @@ impl AppState {
         );
         let (run_service, repo_service, webhook_service) = build_services(
             merger_tx.clone(),
-            ps,
             ws,
             Arc::clone(&bus),
-            Arc::clone(&repo_index),
             Arc::clone(&delivery_index),
             Arc::clone(&sequence_tracker),
         );
@@ -581,7 +575,7 @@ impl AppState {
         let repo_index = Arc::new(Mutex::new(HashMap::new()));
         let delivery_index = Arc::new(Mutex::new(HashMap::new()));
         let sequence_tracker = Arc::new(Mutex::new(HashMap::new()));
-        let (rs, ps, ws) = build_three_stores(events_dir);
+        let (rs, _, ws) = build_three_stores(events_dir);
         let (merger_tx, merger_handle) = Merger::spawn(
             rs,
             Arc::clone(&bus),
@@ -592,10 +586,8 @@ impl AppState {
         );
         let (run_service, repo_service, webhook_service) = build_services(
             merger_tx.clone(),
-            ps,
             ws,
             Arc::clone(&bus),
-            Arc::clone(&repo_index),
             Arc::clone(&delivery_index),
             Arc::clone(&sequence_tracker),
         );
@@ -794,7 +786,7 @@ impl AppStateBuilder {
         let delivery_index = Arc::new(Mutex::new(HashMap::new()));
         let sequence_tracker = Arc::new(Mutex::new(HashMap::new()));
         let noop_dir = noop_events_dir();
-        let (rs, ps, ws) = build_three_stores(&noop_dir);
+        let (rs, _, ws) = build_three_stores(&noop_dir);
         let (merger_tx, merger_handle) = Merger::spawn(
             rs,
             Arc::clone(&bus),
@@ -805,10 +797,8 @@ impl AppStateBuilder {
         );
         let (run_service, repo_service, webhook_service) = build_services(
             merger_tx.clone(),
-            ps,
             ws,
             Arc::clone(&bus),
-            Arc::clone(&repo_index),
             Arc::clone(&delivery_index),
             Arc::clone(&sequence_tracker),
         );

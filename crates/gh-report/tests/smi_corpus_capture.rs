@@ -155,13 +155,8 @@ async fn capture_pre_smi_corpus() {
         Arc::clone(&tracker),
     );
 
-    let run = RunService::with_merger_tx(merger_tx);
-    let repo = RepoService::with_stores(
-        Arc::clone(&store),
-        Arc::clone(&bus),
-        Arc::clone(&repo_index),
-        Arc::clone(&tracker),
-    );
+    let run = RunService::with_merger_tx(merger_tx.clone());
+    let repo = RepoService::with_merger_tx(merger_tx);
     let webhook = WebhookService::with_stores(
         Arc::clone(&store),
         Arc::clone(&bus),
@@ -198,7 +193,7 @@ fn prepare_fixture_dir() -> PathBuf {
 type Store = MsgpackFileStore<DomainEvent>;
 type Bus = InProcessEventBus<DomainEvent>;
 type RunSvc = RunService;
-type RepoSvc = RepoService<Store, Bus>;
+type RepoSvc = RepoService;
 type WebhookSvc = WebhookService<Store, Bus>;
 
 async fn run_aggregate_happy_path(run: &RunSvc, ctx: &CorrelationContext) {
