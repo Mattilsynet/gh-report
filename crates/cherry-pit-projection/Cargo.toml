@@ -24,6 +24,8 @@ tokio = { workspace = true, features = ["fs", "rt", "sync"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+cherry-pit-core = { workspace = true, features = ["testing"] }
+cherry-pit-gateway = { workspace = true }
 proptest = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "sync"] }
