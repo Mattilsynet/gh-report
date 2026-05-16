@@ -718,22 +718,8 @@ impl SweepSaga {
                 self.phase = SweepPhase::Failed {
                     error: error_msg.clone(),
                 };
-                if let Err(e) = state
-                    .run_service
-                    .fail(
-                        &run.run_id,
-                        FailSweep {
-                            batch_id: run.run_id.clone(),
-                            error: error_msg,
-                            duration_ms: self.elapsed_ms(),
-                            timestamp: jiff::Timestamp::now().to_string(),
-                        },
-                        corr_ctx,
-                    )
-                    .await
-                {
-                    warn!(error = %e, "SweepFailed publish failed, non-fatal");
-                }
+                Self::publish_sweep_failed(state, run, corr_ctx, error_msg, self.elapsed_ms())
+                    .await;
             }
             Ok(Err(e)) => {
                 // Batch error.
@@ -741,22 +727,8 @@ impl SweepSaga {
                 self.phase = SweepPhase::Failed {
                     error: error_msg.clone(),
                 };
-                if let Err(pub_err) = state
-                    .run_service
-                    .fail(
-                        &run.run_id,
-                        FailSweep {
-                            batch_id: run.run_id.clone(),
-                            error: error_msg,
-                            duration_ms: self.elapsed_ms(),
-                            timestamp: jiff::Timestamp::now().to_string(),
-                        },
-                        corr_ctx,
-                    )
-                    .await
-                {
-                    warn!(error = %pub_err, "SweepFailed publish failed, non-fatal");
-                }
+                Self::publish_sweep_failed(state, run, corr_ctx, error_msg, self.elapsed_ms())
+                    .await;
                 return Err(e);
             }
             Err(_elapsed) => {
@@ -770,26 +742,41 @@ impl SweepSaga {
                 self.phase = SweepPhase::Failed {
                     error: error_msg.clone(),
                 };
-                if let Err(e) = state
-                    .run_service
-                    .fail(
-                        &run.run_id,
-                        FailSweep {
-                            batch_id: run.run_id.clone(),
-                            error: error_msg,
-                            duration_ms: self.elapsed_ms(),
-                            timestamp: jiff::Timestamp::now().to_string(),
-                        },
-                        corr_ctx,
-                    )
-                    .await
-                {
-                    warn!(error = %e, "SweepFailed publish failed, non-fatal");
-                }
+                Self::publish_sweep_failed(state, run, corr_ctx, error_msg, self.elapsed_ms())
+                    .await;
             }
         }
 
         Ok(())
+    }
+
+    /// Publish a `SweepFailed` event; non-fatal on publish error (warn only).
+    ///
+    /// Associated function: callers already hold the values needed and pass
+    /// them explicitly, mirroring [`Self::emit_progress`].
+    async fn publish_sweep_failed(
+        state: &Arc<AppState>,
+        run: &RunMetadata,
+        corr_ctx: &CorrelationContext,
+        error_msg: String,
+        duration_ms: u64,
+    ) {
+        if let Err(e) = state
+            .run_service
+            .fail(
+                &run.run_id,
+                FailSweep {
+                    batch_id: run.run_id.clone(),
+                    error: error_msg,
+                    duration_ms,
+                    timestamp: jiff::Timestamp::now().to_string(),
+                },
+                corr_ctx,
+            )
+            .await
+        {
+            warn!(error = %e, "SweepFailed publish failed, non-fatal");
+        }
     }
 
     /// Phase 4: Finalize — snapshot evidence, build report, publish,
