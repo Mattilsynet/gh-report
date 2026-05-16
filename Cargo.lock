@@ -442,6 +442,7 @@ name = "cherry-pit-projection"
 version = "0.1.0"
 dependencies = [
  "cherry-pit-core",
+ "cherry-pit-gateway",
  "jiff",
  "proptest",
  "rmp-serde",

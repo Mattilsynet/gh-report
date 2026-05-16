@@ -427,6 +427,515 @@ where
     }
 }
 
+// ─── Conformance harness ───────────────────────────────────────────
+//
+// Generic `fn`s that lift the trait-doc contracts of [`EventStore`],
+// [`Aggregate`], and [`Projection`] into runtime-assertable invariants.
+// Registrants (in-memory store, gateway file-store, projection
+// file-store, and Track 2.2's pardosa-backed store) call these from
+// integration tests to prove they honour the same contract.
+//
+// Signature shape (SM-4 contract + oracle §1.3): generic `fn`s over
+// the concrete impl type — no `Box<dyn EventStore>`, no `BoxFuture`,
+// no `Pin<Box<dyn Future>>` (CHE-0005:R1 + CHE-0025:R2). Async fns
+// return RPITIT futures; caller owns the runtime. Factories return a
+// fresh store per call so each invariant scenario runs in isolation.
+
+pub mod conformance {
+    //! Runtime-assertable conformance for [`EventStore`], [`Aggregate`],
+    //! [`Projection`].
+    //!
+    //! Each `fn` asserts the documented trait contract by exercising the
+    //! impl through its public surface. On contract violation the fn
+    //! **panics with a descriptive message** — the calling integration
+    //! test fails, surfacing the specific invariant that broke. Panics
+    //! are the right shape here because (a) these are test helpers, not
+    //! production code paths, (b) `Aggregate::apply` is panic-only by
+    //! CHE-0009:R2 so the harness is consistent with the traits it
+    //! covers, and (c) `#[test]` translates panic into a failing test.
+    //!
+    //! ## No trait objects
+    //!
+    //! All fns are generic over concrete `S: EventStore`, `A: Aggregate`,
+    //! `P: Projection`. There is no `Box<dyn EventStore>` / `BoxFuture`
+    //! anywhere in the public surface (CHE-0005:R1, CHE-0025:R2). Async
+    //! fns use RPITIT — caller awaits with its own runtime.
+    //!
+    //! ## Factories
+    //!
+    //! [`assert_event_store_conformance`] and
+    //! [`assert_projection_conformance`] take a `make_store: impl Fn() -> S`
+    //! closure so each scenario receives a fresh, isolated store
+    //! (tempdir-backed for file stores, freshly-constructed for in-memory
+    //! ones). This avoids cross-scenario state bleed without imposing a
+    //! reset method on the trait surface (CHE-0022:R5 — no mutation API
+    //! on stored envelopes).
+
+    use std::num::NonZeroU64;
+
+    use crate::aggregate::Aggregate;
+    use crate::aggregate_id::AggregateId;
+    use crate::correlation::CorrelationContext;
+    use crate::error::StoreError;
+    use crate::projection::Projection;
+    use crate::store::EventStore;
+
+    /// Assert every documented invariant of the [`EventStore`] trait
+    /// against a concrete impl `S`.
+    ///
+    /// Scenarios exercised (each on a fresh store from `make_store`):
+    ///
+    /// 1. `create` → `load` round-trip preserves contiguous sequences
+    ///    from `1`.
+    /// 2. `append` with stale `expected_sequence` returns
+    ///    [`StoreError::ConcurrencyConflict`] (CHE-0041:R3 + ref impl
+    ///    `msgpack_file.rs:513-520`).
+    /// 3. `load` of an unknown `AggregateId` returns `Ok(vec![])`
+    ///    (CHE-0019:R1 + `store.rs:115-117`).
+    /// 4. `create` with empty events returns
+    ///    [`StoreError::Infrastructure`] (`store.rs:176-177`).
+    /// 5. `append` to a never-created aggregate returns
+    ///    [`StoreError::Infrastructure`] (CHE-0019:R3 +
+    ///    `msgpack_file.rs:504-508`).
+    /// 6. Monotonicity-and-gap-rejection: `append` after a successful
+    ///    `create` lands sequences exactly contiguous with what
+    ///    `create` produced (the doc-trait contract at
+    ///    `store.rs:115-120`).
+    ///
+    /// Panics with a descriptive message on first violation.
+    ///
+    /// # Parameters
+    ///
+    /// - `make_store` — called once per scenario; returns a fresh,
+    ///   empty `S`. Implementations backed by the filesystem typically
+    ///   wrap a `tempfile::TempDir` so each scenario sees an isolated
+    ///   directory.
+    /// - `make_event` — produces a fresh `S::Event` per index. The
+    ///   harness uses indices `0..3` to build small streams; events
+    ///   need not be distinct, but distinguishable payloads make
+    ///   failure messages easier to triage.
+    ///
+    /// # Panics
+    ///
+    /// Panics on any contract violation, with the violated invariant
+    /// named in the panic message.
+    pub async fn assert_event_store_conformance<S, F, ME>(make_store: F, make_event: ME)
+    where
+        S: EventStore,
+        F: Fn() -> S,
+        ME: Fn(u32) -> S::Event,
+    {
+        scenario_create_load_roundtrip::<S, _, _>(&make_store, &make_event).await;
+        scenario_stale_expected_sequence::<S, _, _>(&make_store, &make_event).await;
+        scenario_load_unknown_returns_empty::<S, _, _>(&make_store, &make_event).await;
+        scenario_empty_create_is_infrastructure::<S, _, _>(&make_store, &make_event).await;
+        scenario_append_to_phantom_is_infrastructure::<S, _, _>(&make_store, &make_event).await;
+        scenario_create_then_append_is_monotone::<S, _, _>(&make_store, &make_event).await;
+    }
+
+    /// Scenario 1: `create` returns envelopes with sequences contiguous
+    /// from 1, and `load` returns the same stream (store.rs:115-120).
+    async fn scenario_create_load_roundtrip<S, F, ME>(make_store: &F, make_event: &ME)
+    where
+        S: EventStore,
+        F: Fn() -> S,
+        ME: Fn(u32) -> S::Event,
+    {
+        let store = make_store();
+        let (id, created) = store
+            .create(
+                vec![make_event(0), make_event(1), make_event(2)],
+                CorrelationContext::none(),
+            )
+            .await
+            .expect("create with non-empty events must succeed");
+        assert_eq!(
+            created.len(),
+            3,
+            "create must return one envelope per supplied event"
+        );
+        for (i, env) in created.iter().enumerate() {
+            let expected = u64::try_from(i).expect("i fits in u64") + 1;
+            assert_eq!(
+                env.sequence().get(),
+                expected,
+                "envelope[{i}] sequence must be {expected} (contiguous from 1)",
+            );
+            assert_eq!(
+                env.aggregate_id(),
+                id,
+                "envelope[{i}] aggregate_id must match store-assigned id",
+            );
+        }
+
+        let loaded = store
+            .load(id)
+            .await
+            .expect("load after create must succeed");
+        assert_eq!(
+            loaded.len(),
+            3,
+            "load must return the full stream just created"
+        );
+        for (i, env) in loaded.iter().enumerate() {
+            let expected = u64::try_from(i).expect("i fits in u64") + 1;
+            assert_eq!(
+                env.sequence().get(),
+                expected,
+                "loaded envelope[{i}] sequence must be {expected}",
+            );
+        }
+    }
+
+    /// Scenario 2: a stale `expected_sequence` on `append` must yield
+    /// `StoreError::ConcurrencyConflict` echoing all three fields
+    /// (CHE-0041:R3 + store.rs:269-272).
+    async fn scenario_stale_expected_sequence<S, F, ME>(make_store: &F, make_event: &ME)
+    where
+        S: EventStore,
+        F: Fn() -> S,
+        ME: Fn(u32) -> S::Event,
+    {
+        let store = make_store();
+        let (id, created) = store
+            .create(vec![make_event(0)], CorrelationContext::none())
+            .await
+            .expect("create must succeed");
+        let real_last = created
+            .last()
+            .expect("create returns ≥1 envelope")
+            .sequence();
+        // Pick a stale expected_sequence that is NOT the real last.
+        let stale = NonZeroU64::new(real_last.get().saturating_add(99)).expect("non-zero by add");
+        let result = store
+            .append(id, stale, vec![make_event(1)], CorrelationContext::none())
+            .await;
+        let Err(err) = result else {
+            panic!(
+                "stale expected_sequence must reject; got Ok (CHE-0041:R3 + \
+                 store.rs:269-272)",
+            );
+        };
+        match err {
+            StoreError::ConcurrencyConflict {
+                aggregate_id,
+                expected_sequence,
+                actual_sequence,
+            } => {
+                assert_eq!(
+                    aggregate_id, id,
+                    "ConcurrencyConflict aggregate_id must match",
+                );
+                assert_eq!(
+                    expected_sequence, stale,
+                    "ConcurrencyConflict expected_sequence must echo caller's input",
+                );
+                assert_eq!(
+                    actual_sequence,
+                    real_last.get(),
+                    "ConcurrencyConflict actual_sequence must reflect store state",
+                );
+            }
+            other => panic!(
+                "expected StoreError::ConcurrencyConflict, got {other:?} \
+                 (CHE-0041:R3 + store.rs:269-272)",
+            ),
+        }
+    }
+
+    /// Scenario 3: `load` of an unknown `AggregateId` returns
+    /// `Ok(vec![])`, not an error (CHE-0019:R1 + store.rs:115-117).
+    async fn scenario_load_unknown_returns_empty<S, F, ME>(make_store: &F, _make_event: &ME)
+    where
+        S: EventStore,
+        F: Fn() -> S,
+        ME: Fn(u32) -> S::Event,
+    {
+        let store = make_store();
+        // Use an aggregate id far above what the store can have allocated.
+        let phantom = AggregateId::new(NonZeroU64::new(987_654_321).expect("non-zero"));
+        let loaded = store
+            .load(phantom)
+            .await
+            .expect("load of unknown aggregate must return Ok(vec![]), not error");
+        assert!(
+            loaded.is_empty(),
+            "load of unknown aggregate must return empty Vec (CHE-0019:R1 + store.rs:115-117), \
+             got {} envelopes",
+            loaded.len(),
+        );
+    }
+
+    /// Scenario 4: `create` with an empty events vec must return
+    /// `StoreError::Infrastructure` (store.rs:176-177).
+    async fn scenario_empty_create_is_infrastructure<S, F, ME>(make_store: &F, _make_event: &ME)
+    where
+        S: EventStore,
+        F: Fn() -> S,
+        ME: Fn(u32) -> S::Event,
+    {
+        let store = make_store();
+        let result = store.create(Vec::new(), CorrelationContext::none()).await;
+        let Err(err) = result else {
+            panic!("create with empty events must fail; got Ok (store.rs:176-177)");
+        };
+        assert!(
+            matches!(err, StoreError::Infrastructure(_)),
+            "empty-events create must return StoreError::Infrastructure, got {err:?}",
+        );
+    }
+
+    /// Scenario 5: `append` to an aggregate id that was never `create`d
+    /// must return `StoreError::Infrastructure` (CHE-0019:R3).
+    async fn scenario_append_to_phantom_is_infrastructure<S, F, ME>(make_store: &F, make_event: &ME)
+    where
+        S: EventStore,
+        F: Fn() -> S,
+        ME: Fn(u32) -> S::Event,
+    {
+        let store = make_store();
+        let phantom = AggregateId::new(NonZeroU64::new(42).expect("non-zero"));
+        let result = store
+            .append(
+                phantom,
+                NonZeroU64::new(1).expect("non-zero"),
+                vec![make_event(0)],
+                CorrelationContext::none(),
+            )
+            .await;
+        let Err(err) = result else {
+            panic!("append to never-created aggregate must fail; got Ok (CHE-0019:R3)");
+        };
+        assert!(
+            matches!(err, StoreError::Infrastructure(_)),
+            "append-to-phantom must return StoreError::Infrastructure, got {err:?}",
+        );
+    }
+
+    /// Scenario 6: `create` followed by `append` produces a monotone,
+    /// gap-free, end-to-end-loadable stream.
+    async fn scenario_create_then_append_is_monotone<S, F, ME>(make_store: &F, make_event: &ME)
+    where
+        S: EventStore,
+        F: Fn() -> S,
+        ME: Fn(u32) -> S::Event,
+    {
+        let store = make_store();
+        let (id, created) = store
+            .create(
+                vec![make_event(0), make_event(1)],
+                CorrelationContext::none(),
+            )
+            .await
+            .expect("create must succeed");
+        let last_seq = created.last().expect("≥1 envelope").sequence();
+        assert_eq!(
+            last_seq.get(),
+            2,
+            "after create of 2 events, last sequence must be 2",
+        );
+        let appended = store
+            .append(
+                id,
+                last_seq,
+                vec![make_event(2), make_event(3)],
+                CorrelationContext::none(),
+            )
+            .await
+            .expect("append with correct expected_sequence must succeed");
+        assert_eq!(appended.len(), 2, "append returns one envelope per event");
+        assert_eq!(
+            appended[0].sequence().get(),
+            3,
+            "first appended sequence must be last_create_seq + 1",
+        );
+        assert_eq!(
+            appended[1].sequence().get(),
+            4,
+            "second appended sequence must be contiguous",
+        );
+
+        // Load the full stream and re-verify contiguity end-to-end.
+        let full = store
+            .load(id)
+            .await
+            .expect("load after append must succeed");
+        assert_eq!(
+            full.len(),
+            4,
+            "stream after create+append must contain all 4 events",
+        );
+        for (i, env) in full.iter().enumerate() {
+            let expected = u64::try_from(i).expect("i fits in u64") + 1;
+            assert_eq!(
+                env.sequence().get(),
+                expected,
+                "full stream envelope[{i}] sequence must be {expected} (monotone, gap-free)",
+            );
+            assert_eq!(env.aggregate_id(), id, "all envelopes scoped to id");
+        }
+    }
+
+    /// Assert the [`Aggregate`] trait contract for `A`.
+    ///
+    /// Scenarios exercised:
+    ///
+    /// 1. `A::default()` constructs without panic (CHE-0012:R1 — zero state).
+    /// 2. `A::default()` does NOT satisfy the caller-supplied `probe`
+    ///    (i.e. the default state is distinguishable from a non-default
+    ///    state — CHE-0012:R3).
+    /// 3. Applying every event in `events` to a fresh default does not
+    ///    panic (CHE-0009:R1 — apply is total over well-formed events).
+    /// 4. After applying every event, the resulting state DOES satisfy
+    ///    `probe` (i.e. the events meaningfully changed state).
+    /// 5. Replay determinism: applying the same event sequence to two
+    ///    fresh defaults yields states that both satisfy `probe`
+    ///    (CHE-0009:R2 implicit; tightened in
+    ///    [`assert_projection_conformance`] which can use `PartialEq`).
+    ///
+    /// # Parameters
+    ///
+    /// - `events` — a non-empty sequence of well-formed events that
+    ///   together drive `A` to a non-default state.
+    /// - `probe` — observer returning `true` iff the aggregate has
+    ///   reached the non-default state induced by `events`. Caller-
+    ///   supplied because [`Aggregate`] has no required state-
+    ///   inspection method (CHE-0020:R1 — no `id()`, and by
+    ///   generalisation no required state accessors).
+    ///
+    /// # Panics
+    ///
+    /// Panics on any contract violation. Panics if `events` is empty
+    /// (the harness cannot prove the default-vs-applied distinction
+    /// without at least one event).
+    pub fn assert_aggregate_conformance<A>(events: &[A::Event], probe: impl Fn(&A) -> bool)
+    where
+        A: Aggregate,
+    {
+        assert!(
+            !events.is_empty(),
+            "assert_aggregate_conformance requires ≥1 event to distinguish default-vs-applied",
+        );
+
+        // 1. default constructs without panic.
+        let default_a = A::default();
+
+        // 2. default does not satisfy probe (must be distinguishable).
+        assert!(
+            !probe(&default_a),
+            "A::default() must NOT satisfy the caller-supplied probe — the probe must \
+             distinguish default-state from event-driven state (CHE-0012:R3)",
+        );
+
+        // 3 + 4. apply does not panic; final state satisfies probe.
+        let mut a = A::default();
+        for ev in events {
+            a.apply(ev);
+        }
+        assert!(
+            probe(&a),
+            "after applying all events, A must satisfy probe — events did not produce \
+             the expected state transition (CHE-0009:R1)",
+        );
+
+        // 5. replay determinism via the probe (two fresh applies both pass).
+        let mut a2 = A::default();
+        for ev in events {
+            a2.apply(ev);
+        }
+        assert!(
+            probe(&a2),
+            "replay determinism violated: same event sequence applied to a second fresh \
+             A::default() did not satisfy probe (CHE-0009:R2)",
+        );
+    }
+
+    /// Assert the [`Projection`] trait contract for `P` against a
+    /// concrete [`EventStore`] backing.
+    ///
+    /// Scenarios exercised:
+    ///
+    /// 1. `P::default()` constructs without panic.
+    /// 2. Replay-equivalence (CHE-0048:R3): applying the envelopes
+    ///    produced by a `create` call to two fresh `P::default()`
+    ///    instances yields equal `P`s (per the caller-supplied
+    ///    `compare`).
+    /// 3. Re-replay determinism: applying the same envelope sequence
+    ///    twice into the same fresh `P` yields the same outcome
+    ///    relative to a single-application baseline (idempotence at
+    ///    the projection-fold level; CHE-0048:R3 documented
+    ///    obligation).
+    ///
+    /// # Parameters
+    ///
+    /// - `make_store` — fresh isolated store per scenario.
+    /// - `make_event` — produces a fresh `P::Event` per index.
+    /// - `compare` — equality observer over `P`. Pass `|a, b| a == b`
+    ///   when `P: PartialEq`; supply a custom closure for projections
+    ///   that intentionally do not implement `PartialEq`.
+    ///
+    /// # Panics
+    ///
+    /// Panics on any contract violation.
+    pub async fn assert_projection_conformance<P, S, F, ME, C>(
+        make_store: F,
+        make_event: ME,
+        compare: C,
+    ) where
+        P: Projection,
+        S: EventStore<Event = P::Event>,
+        F: Fn() -> S,
+        ME: Fn(u32) -> P::Event,
+        C: Fn(&P, &P) -> bool,
+    {
+        // 1. default constructs without panic.
+        let _ = P::default();
+
+        // 2. replay-equivalence via EventStore::load.
+        let store = make_store();
+        let (id, _) = store
+            .create(
+                vec![make_event(0), make_event(1), make_event(2)],
+                CorrelationContext::none(),
+            )
+            .await
+            .expect("create must succeed");
+        let envs = store
+            .load(id)
+            .await
+            .expect("load after create must succeed for replay");
+        assert_eq!(envs.len(), 3, "loaded stream must reflect created events");
+
+        let mut p1 = P::default();
+        for env in &envs {
+            p1.apply(env);
+        }
+        let mut p2 = P::default();
+        for env in &envs {
+            p2.apply(env);
+        }
+        assert!(
+            compare(&p1, &p2),
+            "CHE-0048:R3 replay-equivalence violated: same envelope sequence into two \
+             fresh P::default() instances did not yield equal projections",
+        );
+
+        // 3. baseline: single application equals double application
+        // result-wise — projections that fold per-envelope deterministically
+        // pass this; non-deterministic projections would diverge here.
+        // (This is the fold-side reading of CHE-0009:R1 + CHE-0048:R3.)
+        let mut p3 = P::default();
+        for env in &envs {
+            p3.apply(env);
+        }
+        assert!(
+            compare(&p1, &p3),
+            "projection apply must be deterministic over identical input \
+             (CHE-0009:R1 generalised to projections)",
+        );
+    }
+}
+
 // ─── Smoke tests ───────────────────────────────────────────────────
 //
 // These are intentionally narrow: just enough to prove the fixture
