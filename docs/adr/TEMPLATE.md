@@ -1,6 +1,6 @@
 # ADR Template — Golden Reference
 
-Last-updated: 2026-05-02
+Last-updated: 2026-05-16
 
 Two audiences: **Humans** (Context, Related, Consequences — narrative rationale and trade-offs)
 and **Agents** (tagged rules in Decision — extracted verbatim by `adr-fmt --context <CRATE>`).
@@ -17,6 +17,7 @@ Date: YYYY-MM-DD
 Last-reviewed: YYYY-MM-DD
 Tier: S|A|B|C|D
 Status: Draft | Proposed | Accepted | Rejected | Deprecated | Superseded by PREFIX-NNNN
+Crates: crate-a, crate-b (optional; comma-separated list scoping rules to specific crates)
 Parent-cross-domain: PREFIX-NNNN — reason (optional; only when first References target is in another domain)
 
 ## Related
@@ -90,7 +91,9 @@ Used by `--context` to filter rules per crate. Omit for domain-wide decisions. A
 target is in a different domain. Value: target ADR ID + em-dash + reason. Suppression matches
 **exactly** (field ID must equal first `References:` target). Per AFM-0020, every non-Root
 ADR's structural parent is its first `References:` target; this field is the explicit
-acknowledgment that a cross-domain parent is intentional. **Suppresses:** L011.
+acknowledgment that a cross-domain parent is intentional.
+**Suppresses:** L011. **Enforced by:** L018 (declared ID must match first References target),
+L019 (declared target must exist in the corpus).
 
 ### Status
 
@@ -112,7 +115,7 @@ Only `Accepted` ADRs have rules extracted. Terminal states require `stale/` move
 ### Related
 
 `References: PREFIX-NNNN, PREFIX-NNNN | Supersedes: PREFIX-NNNN` — pipe-separated relationships
-on one line inside `## Related`. Three permitted verbs:
+on one line inside `## Related`. References count is tier-scaled (T020). Three permitted verbs:
 
 | Verb | Meaning | Use when |
 |------|---------|----------|
@@ -125,7 +128,7 @@ applicable parent first; foundation citations follow. Cross-domain first-citatio
 unless suppressed via `Parent-cross-domain:`. `Root` + `References` cannot coexist (L009).
 Every ADR needs at least one relationship (T007).
 **Invalidation test:** if removing the first target makes the ADR collapse, ordering is correct.
-**Enforced by:** T007, L001, L003, L007–L017.
+**Enforced by:** T007, T020, L001, L003, L007–L019.
 
 ### Context
 
@@ -143,9 +146,11 @@ extracted by `--context`.
 
 Pattern: `RN [L]: text` — N sequential integer, L Meadows leverage layer (1–12).
 Multi-line: indent continuation lines ≥2 spaces; blank line or next `RN [L]:` terminates.
-Global ID: `PREFIX-NNNN:RN:LN` (e.g., `CHE-0042:R1:L5`).
-Constraints: sequential IDs from R1, **max 10 per ADR**, 7–60 words, layer 1–12.
-All statuses require tagged rules (no Draft/Proposed exemption).
+Global ID rendered by `--context`: `[PREFIX-NNNN:RN:LN]` (e.g., `[CHE-0042:R1:L5]`).
+Constraints: sequential IDs from R1, **tier-scaled max** (S/A/B/C/D — default B-tier limit 10),
+7–60 words, layer 1–12. All statuses require tagged rules (no Draft/Proposed exemption).
+Rule layers materially weaker than the ADR's tier emit **T019** (tension warning); excess
+rule count emits **T016**.
 
 **Why max 10:** P(all followed) = P(individual)^N. At 90% per-rule compliance,
 10 rules → 35% all-correct; 15 rules → 21%.
@@ -171,7 +176,7 @@ All statuses require tagged rules (no Draft/Proposed exemption).
 
 Prose, `###` headings, and code blocks in Decision are for humans — NOT extracted by `--context`.
 Use for implementation details, code examples, and future work.
-**Enforced by:** T009, T016, T011, T014.
+**Enforced by:** T009, T011, T014, T016, T019.
 
 ### Consequences
 
