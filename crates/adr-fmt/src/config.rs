@@ -58,10 +58,10 @@ pub struct DomainConfig {
     /// when domain has >1 root and rationale is empty") is not yet
     /// wired. Tracked as a follow-up to the parent-edge migration.
     #[serde(default)]
-    #[expect(
-        dead_code,
-        reason = "AFM-0020 R5 multi-root warning emission deferred (rule wiring requires new diagnostic ID and domain-level rule plumbing, > 20 LOC); field is parsed and ready, fail-closes via #[expect] when the diagnostic lands"
-    )]
+    // Track 3.1: lib API exposure (pub mod config) makes this field
+    // reachable from external consumers; prior `#[expect(dead_code)]`
+    // removed because pub-reachability now suppresses the lint
+    // naturally. AFM-0020 R5 warning emission still deferred.
     pub multi_root_rationale: String,
 }
 
