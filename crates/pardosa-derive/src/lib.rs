@@ -135,8 +135,8 @@ fn derive_genome_safe_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     };
 
     // --- Build Encode/Decode impls (GEN-0035) ---
-    let encode_impl = build_encode_impl(input)?;
-    let decode_impl = build_decode_impl(input)?;
+    let encode_impl = build_encode_impl(input);
+    let decode_impl = build_decode_impl(input);
 
     Ok(quote! {
         impl #impl_generics ::pardosa_genome::sealed::Sealed for #name #ty_generics
@@ -402,7 +402,7 @@ fn build_field_hash_exprs(fields: &Fields) -> Vec<TokenStream2> {
 // Uses last-segment matching (e.g., `BTreeMap` not `std::collections::BTreeMap`).
 // Known limitation: type aliases wrapping BTreeMap/BTreeSet are not detected.
 
-/// Collect generic type parameter names that appear in BTreeMap key or BTreeSet
+/// Collect generic type parameter names that appear in `BTreeMap` key or `BTreeSet`
 /// element position.
 fn collect_btree_key_params(input: &DeriveInput) -> std::collections::HashSet<String> {
     let generic_names: std::collections::HashSet<String> = input
@@ -504,7 +504,7 @@ fn find_btree_key_params(
 }
 
 /// Recursively collect all generic type parameter identifiers from a type
-/// expression. Used to extract params from BTreeMap key / BTreeSet element
+/// expression. Used to extract params from `BTreeMap` key / `BTreeSet` element
 /// position.
 fn collect_generic_idents(
     ty: &syn::Type,
@@ -610,7 +610,7 @@ fn reject_serde_attrs(attrs: &[syn::Attribute], context: &str) -> syn::Result<()
             let ident_str = meta
                 .path
                 .get_ident()
-                .map(|i| i.to_string())
+                .map(ToString::to_string)
                 .unwrap_or_default();
 
             // Check path-only attrs: #[serde(flatten)], #[serde(untagged)]
@@ -923,7 +923,7 @@ fn validate_enum_repr_u8(input: &DeriveInput, data: &syn::DataEnum) -> syn::Resu
 //   decode → read 1 byte, match against the variant discriminants, decode
 //            payload; unknown byte → EventError::InvalidInput.
 
-fn build_encode_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
+fn build_encode_impl(input: &DeriveInput) -> TokenStream2 {
     let name = &input.ident;
     let (impl_generics, ty_generics, where_clause_existing) = input.generics.split_for_impl();
     let where_clause = build_codec_where_clause(input, where_clause_existing, CodecMode::Encode);
@@ -934,7 +934,7 @@ fn build_encode_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         Data::Union(_) => unreachable!("union rejected earlier"),
     };
 
-    Ok(quote! {
+    quote! {
         impl #impl_generics ::pardosa_encoding::Encode for #name #ty_generics
             #where_clause
         {
@@ -942,10 +942,10 @@ fn build_encode_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 #body
             }
         }
-    })
+    }
 }
 
-fn build_decode_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
+fn build_decode_impl(input: &DeriveInput) -> TokenStream2 {
     let name = &input.ident;
     let (impl_generics, ty_generics, where_clause_existing) = input.generics.split_for_impl();
     let where_clause = build_codec_where_clause(input, where_clause_existing, CodecMode::Decode);
@@ -956,7 +956,7 @@ fn build_decode_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         Data::Union(_) => unreachable!("union rejected earlier"),
     };
 
-    Ok(quote! {
+    quote! {
         impl #impl_generics ::pardosa_encoding::Decode for #name #ty_generics
             #where_clause
         {
@@ -966,7 +966,7 @@ fn build_decode_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 #body
             }
         }
-    })
+    }
 }
 
 /// Build a where-clause for a codec impl.
@@ -1072,21 +1072,20 @@ fn build_struct_decode_body(name: &syn::Ident, fields: &Fields) -> TokenStream2 
 fn build_enum_encode_body(data: &syn::DataEnum) -> TokenStream2 {
     let arms = data.variants.iter().map(|v| {
         let vname = &v.ident;
-        let disc_lit = match &v.discriminant {
-            Some((_, expr)) => expr,
-            None => unreachable!("validate_enum_repr_u8 enforced explicit discriminants"),
+        let Some((_, disc_lit)) = &v.discriminant else {
+            unreachable!("validate_enum_repr_u8 enforced explicit discriminants")
         };
         match &v.fields {
             Fields::Named(named) => {
-                let names: Vec<_> = named
+                let field_names: Vec<_> = named
                     .named
                     .iter()
                     .map(|f| f.ident.clone().expect("named field"))
                     .collect();
                 quote! {
-                    Self::#vname { #(#names),* } => {
+                    Self::#vname { #(#field_names),* } => {
                         out.push((#disc_lit) as u8);
-                        #( ::pardosa_encoding::Encode::encode(#names, out); )*
+                        #( ::pardosa_encoding::Encode::encode(#field_names, out); )*
                     }
                 }
             }
@@ -1116,9 +1115,8 @@ fn build_enum_encode_body(data: &syn::DataEnum) -> TokenStream2 {
 fn build_enum_decode_body(name: &syn::Ident, data: &syn::DataEnum) -> TokenStream2 {
     let arms = data.variants.iter().map(|v| {
         let vname = &v.ident;
-        let disc_lit = match &v.discriminant {
-            Some((_, expr)) => expr,
-            None => unreachable!("validate_enum_repr_u8 enforced explicit discriminants"),
+        let Some((_, disc_lit)) = &v.discriminant else {
+            unreachable!("validate_enum_repr_u8 enforced explicit discriminants")
         };
         match &v.fields {
             Fields::Named(named) => {
