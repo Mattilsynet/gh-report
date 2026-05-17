@@ -31,7 +31,7 @@ pub use genome_safe::{GenomeOrd, GenomeSafe, schema_hash_bytes, schema_hash_comb
 // (`::pardosa_genome::sealed::Sealed`) work without users depending on
 // `pardosa-traits` directly.
 //
-// EventError, Timestamp, Validate are the v2 typing-core surface introduced
+// EventError, Timestamp, Validate are the typing-core surface introduced
 // in sub-mission C (GEN-0038/0039/0040). Alphabetised; explicit (no glob).
 pub use pardosa_traits::{EventError, EventSafe, Timestamp, Validate, sealed};
 
