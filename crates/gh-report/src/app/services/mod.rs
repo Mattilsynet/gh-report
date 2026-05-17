@@ -1,11 +1,11 @@
-//! Per-aggregate ApplicationService skeletons (CHE-0054:R4).
+//! Per-aggregate `ApplicationService` skeletons (CHE-0054:R4).
 //!
 //! Each service owns the load → handle → append → publish triad
 //! (CHE-0008:R1 + CHE-0024:R3) for one aggregate type:
 //!
 //! - [`run_service::RunService`] — Run aggregate use cases.
 //! - [`repo_service::RepoService`] — Repo aggregate use cases.
-//! - [`webhook_service::WebhookService`] — WebhookDelivery use case.
+//! - [`webhook_service::WebhookService`] — `WebhookDelivery` use case.
 //!
 //! ## Method body status (Inc B7'a-5)
 //!
@@ -28,14 +28,14 @@
 //!   (chosen here for Q7-corpus alignment); flagged in the Inc B7'a-5
 //!   commit.
 //!
-//! ## Open γ — EventStore stack shape
+//! ## Open γ — `EventStore` stack shape
 //!
 //! Per moltke instruction: hopper picks at Inc B7'a-5/6 wiring.
-//! Resolution: **per-aggregate concrete EventStore instances** (three
+//! Resolution: **per-aggregate concrete `EventStore` instances** (three
 //! `Arc<MsgpackFileStore<DomainEvent>>`, one per service). CHE-0054:R8
 //! permits either; per-aggregate keeps each service self-contained
 //! and matches the per-aggregate write-coordination granularity
-//! justified by R4. AppState wiring (Inc B7'a-6) materialises the
+//! justified by R4. `AppState` wiring (Inc B7'a-6) materialises the
 //! three instances.
 //!
 //! ## Open ε — `Option<Arc<...Service>>` smell
@@ -43,7 +43,7 @@
 //! Resolved at Inc B7'a-6 wiring time, not here. The skeletons make
 //! no assumption either way — `AppState::new()` may construct services
 //! eagerly (no Option) or lazily (Option) depending on whether an
-//! in-memory EventStore exists in the workspace yet (oracle Gap-β).
+//! in-memory `EventStore` exists in the workspace yet (oracle Gap-β).
 
 pub mod merger;
 pub mod repo_service;

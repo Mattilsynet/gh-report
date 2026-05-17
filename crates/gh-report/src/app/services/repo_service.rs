@@ -1,4 +1,4 @@
-//! `RepoService` — ApplicationService for the [`Repo`] aggregate
+//! `RepoService` — `ApplicationService` for the [`Repo`] aggregate
 //! (CHE-0054:R4), rerouted through the [`Merger`] task at Track 4.0/4.
 //!
 //! Symmetric to [`super::run_service::RunService`] at Track 4.0/3b:
@@ -18,7 +18,7 @@
 //! DomainEvent>` + `B: EventBus<Event = DomainEvent>` per CHE-0005:R1.
 //! Post-step-4 the service holds only a [`mpsc::Sender<MergerCommand>`]
 //! and no longer touches either port directly, so the generics are
-//! dropped (Option A — symmetric to RunService at 3b). The [`Merger`]
+//! dropped (Option A — symmetric to `RunService` at 3b). The [`Merger`]
 //! binds the concrete types at the composition root — see
 //! [`super::merger`] module docs.
 //!
@@ -36,7 +36,7 @@ use tokio::sync::{mpsc, oneshot};
 use super::merger::MergerCommand;
 use crate::domain::aggregates::repo::{RecordEvaluation, RecordRemoval, RepoError};
 
-/// ApplicationService for the [`Repo`] aggregate.
+/// `ApplicationService` for the [`Repo`] aggregate.
 ///
 /// Post-step-4 channel handle: a thin wrapper over the [`Merger`]
 /// task's [`mpsc::Sender`]. Each method builds the corresponding
@@ -46,12 +46,12 @@ use crate::domain::aggregates::repo::{RecordEvaluation, RecordRemoval, RepoError
 ///
 /// ## SMI invariant carry (Track 4.0/4)
 ///
-/// Routing the two RepoService write paths through `merger_tx`
+/// Routing the two `RepoService` write paths through `merger_tx`
 /// promotes the *sole-writer* invariant from latent to enforced for
-/// the [`Repo`] aggregate: every successful append to a Repo stream
-/// now flows through the single Merger task. RunService closed the
+/// the [`Repo`] aggregate: every successful append to a `Repo` stream
+/// now flows through the single Merger task. `RunService` closed the
 /// analogous gap for the [`Run`] aggregate at Track 4.0/3b;
-/// WebhookService reroute at step 5 closes it for the
+/// `WebhookService` reroute at step 5 closes it for the
 /// [`WebhookDelivery`] aggregate. The final cross-aggregate
 /// sole-writer guarantee is end-of-Track-4.0.
 ///
@@ -72,7 +72,7 @@ impl RepoService {
     /// channel.
     ///
     /// The supplied `merger_tx` is shared with [`AppState`] and the
-    /// other ApplicationService surfaces — at step 4 with
+    /// other `ApplicationService` surfaces — at step 4 with
     /// [`RunService`] (already rerouted at 3b); at step 5 with
     /// [`WebhookService`]. Cloning the [`mpsc::Sender`] is cheap
     /// (refcount bump) and keeps the channel open for the process
@@ -95,7 +95,7 @@ impl RepoService {
     /// **lazily creating** a fresh aggregate the first time the key
     /// is seen. The command's own `domain_key` field is treated
     /// strictly as event-payload data; routing is the
-    /// ApplicationService's responsibility, separate from the
+    /// `ApplicationService`'s responsibility, separate from the
     /// command shape (mirrors the `batch_id` pattern on
     /// [`RunService`](super::run_service::RunService)).
     ///
@@ -192,16 +192,16 @@ mod tests {
     use crate::app::services::merger::Merger;
     use crate::domain::events::DomainEvent;
 
-    /// Build a Track 4.0/4-shaped RepoService backed by a [`Merger`]
+    /// Build a Track 4.0/4-shaped `RepoService` backed by a [`Merger`]
     /// task spawned over a shared tempdir [`MsgpackFileStore`] +
     /// [`InProcessEventBus`] + the three routing indices + sequence
-    /// tracker. Symmetric to the RunService 3b test harness.
+    /// tracker. Symmetric to the `RunService` 3b test harness.
     ///
     /// Returns the tempdir, the durable handles for direct inspection,
     /// and the [`RepoService`] under test. The Merger
     /// [`tokio::task::JoinHandle`] is intentionally dropped — the task
     /// is kept alive by the [`mpsc::Sender`] inside the service.
-    #[allow(
+    #[expect(
         clippy::type_complexity,
         reason = "test helper returns the four shared handles plus the service; factoring would obscure the wiring under test"
     )]
@@ -248,8 +248,8 @@ mod tests {
     /// asserted (envelope sequence + payload variants + bus capture +
     /// routing index populated + sequence tracker advance + single
     /// per-aggregate file + post-removal rejection) — proving the
-    /// channel-reroute is observably equivalent at the EventStore /
-    /// EventBus boundary.
+    /// channel-reroute is observably equivalent at the `EventStore` /
+    /// `EventBus` boundary.
     ///
     /// This is the contract enforcer for SMI invariants 1
     /// (sole-writer: the Merger is the only writer to the Repo
@@ -389,7 +389,7 @@ mod tests {
     }
 
     /// Assert the bus captured exactly `expected_len` envelopes in
-    /// strict 1..=expected_len sequence order.
+    /// strict `1..=expected_len` sequence order.
     fn assert_captured_sequence(
         captured: &Arc<Mutex<Vec<EventEnvelope<DomainEvent>>>>,
         expected_len: usize,

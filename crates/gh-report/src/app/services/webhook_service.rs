@@ -1,4 +1,4 @@
-//! `WebhookService` — ApplicationService for the [`WebhookDelivery`]
+//! `WebhookService` — `ApplicationService` for the [`WebhookDelivery`]
 //! aggregate (CHE-0054:R4), rerouted through the [`Merger`] task at
 //! Track 4.0/5.
 //!
@@ -10,7 +10,7 @@
 //! [`MergerCommand::IngestWebhook`] + [`oneshot::channel`] reply,
 //! sends through the Merger's [`mpsc::Sender`], and awaits the
 //! reply. The fresh-per-delivery create-path
-//! (`EventStore::create` → routing index entry → next_seq
+//! (`EventStore::create` → routing index entry → `next_seq`
 //! entry → bus publish) lives inside the Merger arm now — see
 //! [`super::merger`] module docs.
 //!
@@ -21,7 +21,7 @@
 //! CHE-0005:R1. Post-step-5 the service holds only a
 //! [`mpsc::Sender<MergerCommand>`] and no longer touches either port
 //! directly, so the generics are dropped (Option A — symmetric to
-//! RunService at 3b and RepoService at step 4). The [`Merger`] binds
+//! `RunService` at 3b and `RepoService` at step 4). The [`Merger`] binds
 //! the concrete types at the composition root.
 //!
 //! ## Fresh-per-delivery semantics (unchanged contract)
@@ -30,11 +30,11 @@
 //! `EventStore::create` inside the Merger arm — there is no lazy
 //! index lookup, no routing-key reuse. The `delivery_id` is recorded
 //! into the routing index (and the assigned id into the
-//! next_seq) for symmetry with the other services and so any
+//! `next_seq`) for symmetry with the other services and so any
 //! future cache-based dedup can read this surface, but **routing
-//! does not gate persistence**: WebhookDelivery is a degenerate
+//! does not gate persistence**: `WebhookDelivery` is a degenerate
 //! single-event terminal aggregate (CHE-0054:R3) and idempotency
-//! against duplicate delivery_ids stays at the call-site
+//! against duplicate `delivery_id`s stays at the call-site
 //! (`webhook/mod.rs` `seen_deliveries` cache).
 //!
 //! [`WebhookDelivery`]: crate::domain::aggregates::webhook::WebhookDelivery
@@ -50,7 +50,7 @@ use tokio::sync::{mpsc, oneshot};
 use super::merger::MergerCommand;
 use crate::domain::aggregates::webhook::{RecordDelivery, WebhookError};
 
-/// ApplicationService for the [`WebhookDelivery`] aggregate.
+/// `ApplicationService` for the [`WebhookDelivery`] aggregate.
 ///
 /// Post-step-5 channel handle: a thin wrapper over the [`Merger`]
 /// task's [`mpsc::Sender`]. [`ingest`](Self::ingest) builds
@@ -62,9 +62,9 @@ use crate::domain::aggregates::webhook::{RecordDelivery, WebhookError};
 ///
 /// Routing the `ingest` write path through `merger_tx` promotes the
 /// *sole-writer* invariant from latent to **structurally enforced**
-/// for the [`WebhookDelivery`] aggregate. RunService closed the
+/// for the [`WebhookDelivery`] aggregate. `RunService` closed the
 /// analogous gap for the [`Run`] aggregate at Track 4.0/3b and
-/// RepoService for the [`Repo`] aggregate at Track 4.0/4; with this
+/// `RepoService` for the [`Repo`] aggregate at Track 4.0/4; with this
 /// step every successful append to any of the three aggregates
 /// flows through the single Merger task and the TOCTOU window
 /// between aggregate load and event-stream append is closed by
@@ -89,7 +89,7 @@ impl WebhookService {
     /// channel.
     ///
     /// The supplied `merger_tx` is shared with [`AppState`] and the
-    /// two other ApplicationService surfaces — [`RunService`]
+    /// two other `ApplicationService` surfaces — [`RunService`]
     /// (rerouted at 3b) and [`RepoService`] (rerouted at step 4).
     /// Cloning the [`mpsc::Sender`] is cheap (refcount bump) and
     /// keeps the channel open for the process lifetime of
@@ -110,7 +110,7 @@ impl WebhookService {
     /// Routes [`MergerCommand::IngestWebhook`] through the Merger
     /// task. The Merger arm executes the fresh-per-delivery
     /// create-path (`EventStore::create` → routing index entry →
-    /// next_seq entry → bus publish) atomically with respect
+    /// `next_seq` entry → bus publish) atomically with respect
     /// to other Merger commands; the SMI sole-writer invariant for
     /// the [`WebhookDelivery`] aggregate is enforced by the Merger
     /// task being the only holder of the store write handle.
@@ -174,17 +174,17 @@ mod tests {
     use crate::app::services::merger::Merger;
     use crate::domain::events::DomainEvent;
 
-    /// Build a Track 4.0/5-shaped WebhookService backed by a
+    /// Build a Track 4.0/5-shaped `WebhookService` backed by a
     /// [`Merger`] task spawned over a shared tempdir
     /// [`MsgpackFileStore`] + [`InProcessEventBus`] + the three
     /// routing indices + sequence tracker. Symmetric to the
-    /// RunService 3b and RepoService step-4 test harnesses.
+    /// `RunService` 3b and `RepoService` step-4 test harnesses.
     ///
     /// Returns the tempdir, the durable handles for direct
     /// inspection, and the [`WebhookService`] under test. The Merger
     /// [`tokio::task::JoinHandle`] is intentionally dropped — the
     /// task is kept alive by the [`mpsc::Sender`] inside the service.
-    #[allow(
+    #[expect(
         clippy::type_complexity,
         reason = "test helper returns the four shared handles plus the service; factoring would obscure the wiring under test"
     )]
@@ -227,13 +227,13 @@ mod tests {
     /// create-path test asserted (stream contents + bus capture +
     /// routing index populated + sequence tracker advance + single
     /// per-aggregate file) — proving the channel-reroute is
-    /// observably equivalent at the EventStore / EventBus boundary
-    /// for the WebhookDelivery aggregate.
+    /// observably equivalent at the `EventStore` / `EventBus` boundary
+    /// for the `WebhookDelivery` aggregate.
     ///
     /// Contract enforcer for SMI invariants 1 (sole-writer: the
-    /// Merger is the only writer to WebhookDelivery streams) and 5
+    /// Merger is the only writer to `WebhookDelivery` streams) and 5
     /// (post-append publish: every appended envelope arrives on the
-    /// bus before the reply resolves) for the WebhookDelivery
+    /// bus before the reply resolves) for the `WebhookDelivery`
     /// aggregate.
     #[tokio::test]
     async fn ingest_create_path_single_event_through_merger() {
@@ -316,16 +316,16 @@ mod tests {
     }
 
     /// Step-5 — fresh-per-delivery semantics: two ingests with the
-    /// **same** delivery_id mint **two distinct** aggregates (no
+    /// **same** `delivery_id` mint **two distinct** aggregates (no
     /// routing-key reuse).
     ///
     /// Documents the explicit Track-4.0 contract: idempotency
-    /// against duplicate delivery_ids is a call-site concern
+    /// against duplicate `delivery_id`s is a call-site concern
     /// (`webhook/mod.rs` `seen_deliveries` cache), NOT a service
     /// invariant. Two msgpack files exist, each with one event at
     /// sequence 1. The index records the **first** assignment
     /// (`or_insert` semantics inside the Merger arm) and the
-    /// next_seq records both assigned ids.
+    /// `next_seq` records both assigned ids.
     #[tokio::test]
     async fn ingest_fresh_per_delivery_does_not_dedupe_on_delivery_id_through_merger() {
         let (dir, store, _bus, index, tracker, svc) = build_service();

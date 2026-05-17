@@ -393,7 +393,7 @@ async fn run_collection_inner(
 // tidying would be its own commit (R3 Tidy First) — out of scope for
 // the parameter-threading increment. Revisit at Inc 5 / B8' when the
 // helper internals consume `ctx` and the call shape settles.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "8/7 after WU-6 v2 Inc 2 added corr_ctx; Params-struct tidying is a separate Tidy-First commit (R3) deferred until Inc 5/B8' when call shape settles"
 )]

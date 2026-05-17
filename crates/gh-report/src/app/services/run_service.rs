@@ -1,4 +1,4 @@
-//! `RunService` — ApplicationService for the [`Run`] aggregate
+//! `RunService` — `ApplicationService` for the [`Run`] aggregate
 //! (CHE-0054:R4), rerouted through the [`Merger`] task at Track 4.0/3b.
 //!
 //! The five public methods preserve their pre-3b signatures verbatim
@@ -36,7 +36,7 @@ use crate::domain::aggregates::run::{
     CompleteSweep, FailSweep, PublishEvidence, RecordProgress, RunError, StartSweep,
 };
 
-/// ApplicationService for the [`Run`] aggregate.
+/// `ApplicationService` for the [`Run`] aggregate.
 ///
 /// Post-3b channel handle: a thin wrapper over the [`Merger`] task's
 /// [`mpsc::Sender`]. Each method builds the corresponding
@@ -46,11 +46,11 @@ use crate::domain::aggregates::run::{
 ///
 /// ## SMI invariant carry (Track 4.0/3b)
 ///
-/// Routing the five RunService write paths through `merger_tx`
+/// Routing the five `RunService` write paths through `merger_tx`
 /// promotes the *sole-writer* invariant from latent to enforced for
-/// the [`Run`] aggregate: every successful append to a Run stream
-/// now flows through the single Merger task. RepoService /
-/// WebhookService reroute at steps 4 / 5 close the analogous gap for
+/// the [`Run`] aggregate: every successful append to a `Run` stream
+/// now flows through the single Merger task. `RepoService` /
+/// `WebhookService` reroute at steps 4 / 5 close the analogous gap for
 /// their aggregates; the final cross-aggregate sole-writer guarantee
 /// is end-of-Track-4.0.
 ///
@@ -69,7 +69,7 @@ impl RunService {
     /// channel.
     ///
     /// The supplied `merger_tx` is shared with [`AppState`] and the
-    /// other ApplicationService surfaces that will reroute in Track
+    /// other `ApplicationService` surfaces that will reroute in Track
     /// 4.0/4 ([`RepoService`]) and Track 4.0/5
     /// ([`WebhookService`]). Cloning the [`mpsc::Sender`] is cheap
     /// (refcount bump) and keeps the channel open for the process
@@ -280,7 +280,7 @@ mod tests {
     use crate::app::services::merger::Merger;
     use crate::domain::events::DomainEvent;
 
-    /// Build a Track 4.0/3b-shaped RunService backed by:
+    /// Build a Track 4.0/3b-shaped `RunService` backed by:
     ///
     /// - A tempdir [`MsgpackFileStore`] (Gap-β bead `adr-fmt-luxw`),
     /// - An [`InProcessEventBus`] for fan-out,
@@ -295,7 +295,7 @@ mod tests {
     /// service; dropping the handle without aborting lets the task run
     /// for the test scope (the handle does **not** abort on drop, see
     /// `tokio::task::JoinHandle` docs).
-    #[allow(
+    #[expect(
         clippy::type_complexity,
         reason = "test helper returns the four shared handles plus the service; factoring would obscure the wiring under test"
     )]
@@ -342,7 +342,7 @@ mod tests {
     /// asserted (envelope sequence + payload variants + bus capture
     /// + sequence tracker advance + single per-aggregate file) —
     /// proving the channel-reroute is observably equivalent at the
-    /// EventStore / EventBus boundary.
+    /// `EventStore` / `EventBus` boundary.
     ///
     /// This is the contract enforcer for SMI invariants 1
     /// (sole-writer: the Merger is the only writer to the Run
@@ -503,7 +503,7 @@ mod tests {
     }
 
     /// Assert the bus captured exactly `expected_len` envelopes in
-    /// strict 1..=expected_len sequence order.
+    /// strict `1..=expected_len` sequence order.
     fn assert_captured_sequence(
         captured: &Arc<Mutex<Vec<EventEnvelope<DomainEvent>>>>,
         expected_len: usize,
