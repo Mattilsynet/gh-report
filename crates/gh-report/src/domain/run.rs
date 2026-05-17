@@ -97,7 +97,7 @@ impl RunMetadata {
     /// 128-bit correlation key, not parsed for version metadata.
     ///
     /// **Cycle-root**: returned context uses
-    /// [`CorrelationContext::correlated`] (correlation_id only, no
+    /// [`CorrelationContext::correlated`] (`correlation_id` only, no
     /// causation) — a collection cycle is the root of its own
     /// correlation chain (CHE-0039:R3).
     ///

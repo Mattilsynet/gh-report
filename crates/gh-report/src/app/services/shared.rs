@@ -1,4 +1,4 @@
-//! Shared helpers for ApplicationService triad bodies (CHE-0054:R10).
+//! Shared helpers for `ApplicationService` triad bodies (CHE-0054:R10).
 //!
 //! Consolidates the load → handle → create-or-append → publish
 //! pattern duplicated across [`RunService::start_sweep`] and the two
@@ -22,14 +22,14 @@
 //! avoid leaking the routing/persistence shape into the aggregate
 //! API.
 //!
-//! ## Why WebhookService is excluded
+//! ## Why `WebhookService` is excluded
 //!
 //! [`WebhookService::ingest`] uses fresh-per-delivery semantics:
 //! every call mints a new `AggregateId` via `EventStore::create`
 //! unconditionally — there is no lazy index lookup, no fold, no
 //! append branch. The structural exemption from the I1 TOCTOU
 //! window (lazy lookup followed by `or_insert`) was confirmed by
-//! linus on Inc 5. WebhookService still adopts [`publish_or_trace`]
+//! linus on Inc 5. `WebhookService` still adopts [`publish_or_trace`]
 //! for the publish step.
 //!
 //! ## I1 TOCTOU carry (B7'b → B7'c+)
@@ -73,7 +73,7 @@ use cherry_pit_core::{AggregateId, CorrelationContext, EventBus, EventEnvelope, 
 use crate::domain::events::DomainEvent;
 
 /// Borrow-bundle of the three persistence handles each
-/// ApplicationService holds — the store, the routing index, and the
+/// `ApplicationService` holds — the store, the routing index, and the
 /// per-aggregate sequence tracker. Carried through
 /// [`create_or_append`] (and any future shared persist-side helper)
 /// to keep the function signature inside the
@@ -218,7 +218,7 @@ where
 /// reconcile via checkpointed replay from `EventStore::load`. The
 /// per-envelope emission satisfies COM-0019:R1 (structured emission
 /// at the absorb point), COM-0019:R4 (`correlation_id` flows through
-/// the observability boundary), and COM-0019:R7 (EventBus
+/// the observability boundary), and COM-0019:R7 (`EventBus`
 /// retry-absorb telemetry — `error!` severity makes the absorbed
 /// failure operator-actionable).
 ///

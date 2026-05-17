@@ -130,8 +130,8 @@ async fn webhook_handler(
 
 /// Validate HMAC signature, extract event/delivery headers, build correlation ctx.
 ///
-/// Returns `Err(StatusCode)` on any validation failure (NOT_FOUND if secret
-/// is unconfigured, UNAUTHORIZED on missing/bad signature, BAD_REQUEST on
+/// Returns `Err(StatusCode)` on any validation failure (`NOT_FOUND` if secret
+/// is unconfigured, `UNAUTHORIZED` on missing/bad signature, `BAD_REQUEST` on
 /// missing headers). Extracted from [`webhook_handler`] for cohesion; no
 /// behavioural change.
 fn validate_request(
@@ -189,7 +189,7 @@ fn validate_request(
     Ok((event_type.to_string(), delivery_id.to_string(), corr_ctx))
 }
 
-/// Execute the remove action: publish WebhookReceived + (conditionally) RepoRemoved.
+/// Execute the remove action: publish `WebhookReceived` + (conditionally) `RepoRemoved`.
 ///
 /// Extracted from [`webhook_handler`] for cohesion; no behavioural change.
 async fn execute_remove(
@@ -247,7 +247,7 @@ async fn execute_remove(
     StatusCode::OK
 }
 
-/// Execute the ignore action: publish WebhookReceived with `action=ignore`.
+/// Execute the ignore action: publish `WebhookReceived` with `action=ignore`.
 ///
 /// Extracted from [`webhook_handler`] for cohesion; no behavioural change.
 async fn execute_ignore(

@@ -12,7 +12,7 @@
 //!
 //! ## Degenerate-aggregate shape
 //!
-//! WebhookDelivery is a deliberately-degenerate aggregate per
+//! `WebhookDelivery` is a deliberately-degenerate aggregate per
 //! CHE-0054:R3 / Consequences §2: single variant, single invariant,
 //! no continuing lifecycle. The shape is preserved (rather than
 //! reducing webhook ingest to an adapter-only port) so that future
@@ -21,9 +21,9 @@
 //!
 //! Per pre-mortem-#3 degeneracy check (mid-checkpoint instructions):
 //! the existing `seen_deliveries` cache in `webhook/mod.rs:140` is a
-//! real read-side consumer that an event-sourced WebhookDelivery
+//! real read-side consumer that an event-sourced `WebhookDelivery`
 //! aggregate can replace post-WU-7. The invariant ("at most one
-//! `WebhookReceived` per delivery_id") is therefore non-trivial.
+//! `WebhookReceived` per `delivery_id`") is therefore non-trivial.
 //!
 //! Per CHE-0009:R1–R2, [`WebhookDelivery::apply`] is total and
 //! infallible. Per CHE-0008:R1, [`HandleCommand`] is pure.
@@ -32,7 +32,7 @@ use cherry_pit_core::{Aggregate, Command, HandleCommand};
 
 use crate::domain::events::DomainEvent;
 
-/// WebhookDelivery lifecycle phase derived from applied events.
+/// `WebhookDelivery` lifecycle phase derived from applied events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DeliveryPhase {
     /// No events applied yet — empty aggregate (CHE-0012:R1).
@@ -101,7 +101,7 @@ pub enum WebhookError {
     /// At-most-one-event invariant violated: this delivery has already
     /// been recorded (CHE-0054:R3). The delivery-id-keyed
     /// `AppState::deliveries_by_id` should normally route a duplicate
-    /// command to a fresh aggregate via the resolved AggregateId, so
+    /// command to a fresh aggregate via the resolved `AggregateId`, so
     /// reaching this error is itself a routing-cache miss (legitimate
     /// idempotent retry path).
     #[error("WebhookDelivery already received (terminal)")]

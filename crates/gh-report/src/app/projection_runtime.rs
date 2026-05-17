@@ -460,7 +460,7 @@ mod tests {
     }
 
     /// Out-of-order envelope publishes still leave the atomic at the
-    /// max sequence (fetch_max guarantee). Guards against a future
+    /// max sequence (`fetch_max` guarantee). Guards against a future
     /// publisher that batches envelopes non-monotonically.
     #[tokio::test]
     async fn checkpoint_atomic_uses_max_not_last_publish() {

@@ -86,7 +86,7 @@ impl EvidenceState {
 /// Convert a legacy `CachedPage` into the cherry-side `PageEntry`.
 ///
 /// `PageEntry` is `#[non_exhaustive]`; the only public constructor is
-/// `PageEntry::new(filename, body)` which re-computes ETag + zstd. The
+/// `PageEntry::new(filename, body)` which re-computes `ETag` + zstd. The
 /// resulting entry is semantically equivalent to the input but the
 /// pre-compression cost is paid again on conversion. Acceptable here
 /// because `ProjectionSource::snapshot` is invoked on WS reconnect

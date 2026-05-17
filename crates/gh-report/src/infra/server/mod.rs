@@ -8,7 +8,9 @@
 
 pub mod config;
 pub mod error;
-#[allow(clippy::module_inception)]
-// mirrors donor crate's `server::server` shape; byte-for-byte port
+#[expect(
+    clippy::module_inception,
+    reason = "absorbed under mission `absorb-server-1778695800` (P1-A.5.2) as a byte-for-byte donor port preserving the donor's `server::server` shape; upstream crate/commit provenance not preserved in this codebase"
+)]
 pub mod server;
 pub mod state;

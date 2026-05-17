@@ -3,12 +3,11 @@
 //! fields (`event_id`, `correlation_id`, `causation_id`,
 //! `aggregate_id`, `error`) plus the existing `event` label.
 //!
-#![allow(clippy::doc_markdown)] // TODO(P0a, bd-adr-fmt-5f8s): integration test file — see lib.rs note.
 //! Cites: CHE-0024:R1 (publish failure non-fatal — events persisted),
-//!        CHE-0024:R3 (consumers reconcile via replay from EventStore::load),
+//!        CHE-0024:R3 (consumers reconcile via replay from `EventStore::load`),
 //!        COM-0019:R1 (structured emission at absorb point),
-//!        COM-0019:R4 (correlation_id flows through observability boundary),
-//!        COM-0019:R7 (EventBus retry-absorb telemetry — `error!` severity).
+//!        COM-0019:R4 (`correlation_id` flows through observability boundary),
+//!        COM-0019:R7 (`EventBus` retry-absorb telemetry — `error!` severity).
 //!
 //! Test design (Track 4.0/3b, mission `adr-fmt-nnn3`):
 //! - The `publish_or_trace` absorb point now lives inside the
@@ -46,7 +45,7 @@ use gh_report::app::services::{Merger, MergerCommand};
 use gh_report::domain::aggregates::run::StartSweep;
 use gh_report::domain::events::DomainEvent;
 
-/// Fake EventBus that always returns `Err(BusError)` from `publish`.
+/// Fake `EventBus` that always returns `Err(BusError)` from `publish`.
 /// Drives the `publish_or_trace` helper down its error arm.
 #[derive(Default)]
 struct FailingBus;

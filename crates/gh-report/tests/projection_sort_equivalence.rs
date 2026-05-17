@@ -3,12 +3,11 @@
 //! not by insertion order and not by the underlying `BTreeMap` key
 //! (`inventory_key`) order.
 //!
-#![allow(clippy::doc_markdown)] // TODO(P0a, bd-adr-fmt-5f8s): integration test file — see lib.rs note.
 //! Mitigates F-LOW-1 from the M2.b linus review (review bead
 //! `adr-fmt-1oqi`, report `.ooda/review-linus-m2b-1778488527.md`): the
 //! M2.b unit test `sorted_snapshot_orders_by_id_then_name` uses fixtures
 //! whose `inventory_key` and `(id, name)` agree, so it cannot
-//! discriminate between BTreeMap iteration order and the documented
+//! discriminate between `BTreeMap` iteration order and the documented
 //! `(id, name)` sort contract. This integration test does.
 //!
 //! Parent: `.ooda/brief-m2cd-readwrite-cutover.md` D-CD-4.
@@ -26,12 +25,12 @@
 //! | C    | `m-key-3`       | `a-id`   | `c-name`   |
 //!
 //! - **Insertion order** (A, B, C)             → ids `b, c, a`
-//! - **BTreeMap key order** (`inventory_key`)  → B, C, A  (`c, a, b`)
+//! - **`BTreeMap` key order** (`inventory_key`)  → B, C, A  (`c, a, b`)
 //! - **`(id, name)` sort order** (target)      → C, A, B  (`a-id, b-id, c-id`)
 //!
 //! All three orderings are pairwise distinct. The target-sort
 //! assertion therefore falsifies any regression that returns
-//! insertion order *or* BTreeMap iteration order.
+//! insertion order *or* `BTreeMap` iteration order.
 
 use gh_report::domain::checks::{
     BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersResult,
@@ -44,7 +43,7 @@ use gh_report::projection::EvidenceProjection;
 use std::sync::Arc;
 
 /// Build a `RepositoryEvidence` with explicitly-chosen `id`, `name`,
-/// and `inventory_key`. The test_fixtures helper ties all three to
+/// and `inventory_key`. The `test_fixtures` helper ties all three to
 /// the same `name` argument; we cannot use it here because the whole
 /// point of this fixture is to make those three values disagree.
 fn ev(inventory_key: &str, id: &str, name: &str) -> RepositoryEvidence {

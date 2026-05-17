@@ -62,7 +62,7 @@ use crate::domain::evidence::{AssessmentMetadata, RepositoryEvidence};
 /// `<store_dir>/events/<org>/`), not from the id itself.
 ///
 /// Wired at WU-6 v2 B3' (charter `wu6v2-charter-1778415390`,
-/// AdjustIntent option 2). Reused at B5' driver wiring and B7' collectors
+/// `AdjustIntent` option 2). Reused at B5' driver wiring and B7' collectors
 /// — every `event_store.create` / `event_store.append` / `event_store.load`
 /// call in gh-report uses this constant.
 ///

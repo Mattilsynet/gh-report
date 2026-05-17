@@ -111,7 +111,7 @@ pub struct AppState {
     /// Durable per-aggregate event store.
     ///
     /// Wired at WU-6 v2 B3' (charter `wu6v2-charter-1778415390`,
-    /// AdjustIntent option 2). Constructed at
+    /// `AdjustIntent` option 2). Constructed at
     /// `<store_dir>/events/<org>/`; the singleton aggregate id is
     /// [`crate::projection::ORG_GOVERNANCE_AGGREGATE_ID`] (Tension-2
     /// single-aggregate lock).
@@ -231,7 +231,7 @@ pub struct AppState {
     /// [`tokio::task::JoinHandle`] which signals shutdown via the
     /// channel-closed branch in [`Merger`]'s loop. Never joined
     /// explicitly — process exit reclaims the task.
-    #[allow(
+    #[expect(
         dead_code,
         reason = "lifetime guard; the task is kept alive by holding this handle"
     )]
@@ -241,7 +241,7 @@ pub struct AppState {
     /// (CHE-0054:R6 / CHE-0042:R3). Populated by service `append`
     /// paths in B7'b-2..6 to support caller-tracked optimistic
     /// concurrency control.
-    #[allow(dead_code, reason = "B7'b-2..6 populates and reads this tracker")]
+    #[expect(dead_code, reason = "B7'b-2..6 populates and reads this tracker")]
     pub(crate) next_seq: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
 
     // ── Domain-key → AggregateId indices (CHE-0054:R5) ──────────
@@ -261,11 +261,11 @@ pub struct AppState {
     //
     // Indices are constructed empty and never populated in B7'a;
     // the load path that consults them lands in B7'b.
-    #[allow(dead_code, reason = "B7'b populates and reads these indices")]
+    #[expect(dead_code, reason = "B7'b populates and reads these indices")]
     pub(crate) runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>>,
-    #[allow(dead_code, reason = "B7'b populates and reads these indices")]
+    #[expect(dead_code, reason = "B7'b populates and reads these indices")]
     pub(crate) repos_by_key: Arc<Mutex<HashMap<String, AggregateId>>>,
-    #[allow(dead_code, reason = "B7'b populates and reads these indices")]
+    #[expect(dead_code, reason = "B7'b populates and reads these indices")]
     pub(crate) deliveries_by_id: Arc<Mutex<HashMap<String, AggregateId>>>,
 }
 
@@ -311,7 +311,7 @@ impl AppState {
 
 // ── Service-construction helper ─────────────────────────────────────
 
-/// Build the three ApplicationService surfaces over a shared
+/// Build the three `ApplicationService` surfaces over a shared
 /// [`Merger`] command channel.
 ///
 /// Post-Track-4.0/5 every service is a thin channel-send wrapper
@@ -322,10 +322,6 @@ impl AppState {
 ///
 /// [`Merger`]: super::services::merger::Merger
 /// [`EventStore`]: cherry_pit_core::EventStore
-#[allow(
-    clippy::type_complexity,
-    reason = "return tuple mirrors the three AppState service fields it feeds"
-)]
 fn build_services(
     merger_tx: tokio::sync::mpsc::Sender<MergerCommand>,
 ) -> (Arc<RunService>, Arc<RepoService>, Arc<WebhookService>) {
@@ -462,7 +458,7 @@ impl AppState {
     /// lazily — the directories are not touched until the first
     /// write — so neither path needs to exist.
     ///
-    /// Per the AdjustIntent option-2 file layout the per-org subtrees
+    /// Per the `AdjustIntent` option-2 file layout the per-org subtrees
     /// are siblings (BC-v2-13: events/ and projections/ disjoint):
     ///
     /// - `<store_dir>/events/<org>/1.msgpack` — single

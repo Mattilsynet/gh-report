@@ -1,8 +1,4 @@
 #![forbid(unsafe_code)]
-// TODO(P0a, bd-adr-fmt-5f8s): doc_markdown — 55 mechanical backtick adds.
-// Deferred: SM2 was abandoned (automaton over-correction). Revisit via a
-// hand-written per-comment pass.
-#![allow(clippy::doc_markdown)]
 
 //! `gh-report` CLI entrypoint.
 //!

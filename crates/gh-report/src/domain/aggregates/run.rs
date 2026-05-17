@@ -98,7 +98,7 @@ impl Aggregate for Run {
 /// Errors rejecting commands against `Run` invariants (CHE-0054:R1).
 ///
 /// `#[non_exhaustive]` per linus L1 — B7'b/c may add variants for
-/// CAS/sequence-number conflicts, EventStore append failures, or
+/// CAS/sequence-number conflicts, `EventStore` append failures, or
 /// future invariant enrichment.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[non_exhaustive]

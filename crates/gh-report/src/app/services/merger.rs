@@ -3,7 +3,7 @@
 //! `adr-fmt-nnn3`).
 //!
 //! Closes the I1 TOCTOU window (lookup-then-create on the routing
-//! index across the three ApplicationServices, see
+//! index across the three `ApplicationService`s, see
 //! [`super::shared`] module docs) by collapsing all command-driven
 //! writes into one [`tokio::task`] consuming a single
 //! [`mpsc::channel`]. The three [`super::run_service::RunService`],
@@ -36,7 +36,7 @@
 //! stay byte-identical at the suspension-point boundary. The reply
 //! type is the matching service error per CHE-0054:R4
 //! (`RunError`/`RepoError`/`WebhookError` — see Track 4.0 brief
-//! "ApplicationService public APIs become thin channel-send
+//! "`ApplicationService` public APIs become thin channel-send
 //! wrappers").
 //!
 //! ## Why module-private to `services/`
@@ -92,7 +92,7 @@ type Bus = InProcessEventBus<DomainEvent>;
 
 /// Commands routed through the [`Merger`] task.
 ///
-/// One variant per ApplicationService public method (eight total,
+/// One variant per `ApplicationService` public method (eight total,
 /// mirroring the five [`super::run_service::RunService`] methods,
 /// the two [`super::repo_service::RepoService`] methods, and the
 /// single [`super::webhook_service::WebhookService::ingest`] surface).
@@ -195,7 +195,7 @@ pub enum MergerCommand {
 /// Single-task command merger holding the sole [`EventStore`] write
 /// handle (Track 4.0/3a scaffold).
 ///
-/// Owns [`Arc`] clones of the same handles each ApplicationService
+/// Owns [`Arc`] clones of the same handles each `ApplicationService`
 /// holds today — the per-aggregate event store, the in-process bus,
 /// the three routing indices, and the shared sequence tracker. The
 /// task body matches on incoming [`MergerCommand`] variants and runs
@@ -206,7 +206,7 @@ pub enum MergerCommand {
 /// [`Self::spawn`]'s returned [`mpsc::Sender`]; no production caller
 /// routes through it. Track 4.0/3b/4/5 switch each call site from
 /// `service.method(...)` to `merger_tx.send(MergerCommand::...).await`;
-/// Track 4.0/6 deletes the now-dead ApplicationService write logic.
+/// Track 4.0/6 deletes the now-dead `ApplicationService` write logic.
 ///
 /// [`EventStore`]: cherry_pit_core::EventStore
 pub struct Merger<B = Bus>
