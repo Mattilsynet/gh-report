@@ -120,7 +120,19 @@ where
     // Discover marker directory by walking up from CWD looking for an
     // `adr-fmt.toml` with a valid `[corpus]` table whose root resolves
     // to a directory containing at least one configured domain.
-    let marker = discover_marker();
+    //
+    // An unreadable marker — file exists but cannot be read — is a
+    // hard error: surface to stderr and return 1, same observable
+    // behaviour at the binary edge as pre-T2-lift (`process::exit(1)`
+    // inside `discover_marker`). Library callers that want to recover
+    // call `config::load` / `config::load_quiet` directly.
+    let marker = match discover_marker() {
+        Ok(opt) => opt,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            return 1;
+        }
+    };
 
     // Default mode: guidelines
     let is_non_default_mode =
@@ -309,13 +321,18 @@ where
 /// `None`, also terminating. Symlinked CWDs and symlinked marker
 /// files are accepted (file resolution follows symlinks).
 ///
-/// Returns `None` if no valid marker is found before reaching the
-/// filesystem root, or if `getcwd` fails. An unreadable marker is
-/// reported to stderr and the process is exited with code 1 (same
-/// behaviour as pre-Track-3.1; library callers that want different
-/// behaviour should call lower-level modules directly).
-fn discover_marker() -> Option<(PathBuf, Config)> {
-    let cwd = std::env::current_dir().ok()?;
+/// Returns `Ok(None)` if no valid marker is found before reaching
+/// the filesystem root, or if `getcwd` fails. Returns `Err(msg)` if
+/// a marker file exists but cannot be read (IO error during walk-up);
+/// callers at the binary edge map this to `eprintln! + return 1`,
+/// preserving pre-T2-lift observable behaviour while keeping the
+/// library free of `process::exit` (lift per oracle bd adr-fmt-d7ao
+/// T2; AFM-0001 R1 governs the *binary* exit-code contract, not the
+/// library).
+fn discover_marker() -> Result<Option<(PathBuf, Config)>, String> {
+    let Ok(cwd) = std::env::current_dir() else {
+        return Ok(None);
+    };
     // Canonicalize once so symlinked CWDs walk up through the
     // resolved path, not the lexical (unresolved) path.
     let canon_cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
@@ -324,7 +341,7 @@ fn discover_marker() -> Option<(PathBuf, Config)> {
         let candidate = dir.join("adr-fmt.toml");
         if candidate.is_file() {
             match try_marker(dir) {
-                Ok(Some(pair)) => return Some(pair),
+                Ok(Some(pair)) => return Ok(Some(pair)),
                 Ok(None) => {
                     // Structurally invalid (parsed but unfit). Walk
                     // past so a stray cannot mask a valid parent.
@@ -340,18 +357,16 @@ fn discover_marker() -> Option<(PathBuf, Config)> {
                 }
                 Err(TryMarkerError::Io(msg)) => {
                     // Unreadable marker the user clearly created:
-                    // hard error, do not silently mask. Preserves
-                    // pre-Track-3.1 behaviour; library callers that
-                    // want to recover should use the lower-level
-                    // config:: module directly.
-                    eprintln!("error: {msg}");
-                    std::process::exit(1);
+                    // hard error. Return Err so the binary edge can
+                    // surface it without the library calling
+                    // `process::exit`.
+                    return Err(msg);
                 }
             }
         }
         match dir.parent() {
             Some(parent) => dir = parent,
-            None => return None,
+            None => return Ok(None),
         }
     }
 }
