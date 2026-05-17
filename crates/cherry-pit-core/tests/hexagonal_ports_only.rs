@@ -131,30 +131,37 @@ fn port_traits_are_public() {
 }
 
 // Domain traits (CHE-0004:R2 — "domain logic behind trait-based ports").
-#[allow(dead_code)]
-fn _probe_aggregate<T: cherry_pit_core::Aggregate>() {}
-#[allow(dead_code)]
-fn _probe_handle_command<A, C>()
+// Each probe binds a port trait by its public path. The functions are
+// never called; #[expect(dead_code)] fails closed if any probe ever
+// becomes reachable — which would mean either the file gained an unwanted
+// caller (regression) or the lint moved (toolchain change worth noticing).
+// The `_`-prefix convention is deliberately NOT used: the prefix would
+// suppress dead_code at the rustc level, leaving #[expect] unfulfilled
+// and itself emitting an error — losing the fail-closed property.
+#[expect(dead_code, reason = "CHE-0028 probe: Aggregate port trait is publicly re-exported")]
+fn probe_aggregate<T: cherry_pit_core::Aggregate>() {}
+#[expect(dead_code, reason = "CHE-0028 probe: HandleCommand<C> port trait is publicly re-exported")]
+fn probe_handle_command<A, C>()
 where
     A: cherry_pit_core::Aggregate + cherry_pit_core::HandleCommand<C>,
     C: cherry_pit_core::Command,
 {
 }
-#[allow(dead_code)]
-fn _probe_domain_event<E: cherry_pit_core::DomainEvent>() {}
-#[allow(dead_code)]
-fn _probe_command<C: cherry_pit_core::Command>() {}
-#[allow(dead_code)]
-fn _probe_policy<P: cherry_pit_core::Policy>() {}
-#[allow(dead_code)]
-fn _probe_projection<P: cherry_pit_core::Projection>() {}
+#[expect(dead_code, reason = "CHE-0028 probe: DomainEvent port trait is publicly re-exported")]
+fn probe_domain_event<E: cherry_pit_core::DomainEvent>() {}
+#[expect(dead_code, reason = "CHE-0028 probe: Command port trait is publicly re-exported")]
+fn probe_command<C: cherry_pit_core::Command>() {}
+#[expect(dead_code, reason = "CHE-0028 probe: Policy port trait is publicly re-exported")]
+fn probe_policy<P: cherry_pit_core::Policy>() {}
+#[expect(dead_code, reason = "CHE-0028 probe: Projection port trait is publicly re-exported")]
+fn probe_projection<P: cherry_pit_core::Projection>() {}
 
 // Infrastructure ports (the hexagon's edges to adapters).
-#[allow(dead_code)]
-fn _probe_command_bus<B: cherry_pit_core::CommandBus>() {}
-#[allow(dead_code)]
-fn _probe_command_gateway<G: cherry_pit_core::CommandGateway>() {}
-#[allow(dead_code)]
-fn _probe_event_bus<B: cherry_pit_core::EventBus>() {}
-#[allow(dead_code)]
-fn _probe_event_store<S: cherry_pit_core::EventStore>() {}
+#[expect(dead_code, reason = "CHE-0028 probe: CommandBus port trait is publicly re-exported")]
+fn probe_command_bus<B: cherry_pit_core::CommandBus>() {}
+#[expect(dead_code, reason = "CHE-0028 probe: CommandGateway port trait is publicly re-exported")]
+fn probe_command_gateway<G: cherry_pit_core::CommandGateway>() {}
+#[expect(dead_code, reason = "CHE-0028 probe: EventBus port trait is publicly re-exported")]
+fn probe_event_bus<B: cherry_pit_core::EventBus>() {}
+#[expect(dead_code, reason = "CHE-0028 probe: EventStore port trait is publicly re-exported")]
+fn probe_event_store<S: cherry_pit_core::EventStore>() {}
