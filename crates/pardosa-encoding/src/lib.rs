@@ -22,6 +22,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
+use core::num::NonZeroU64;
 
 // ---------------------------------------------------------------------------
 // Decoder cap (GEN-0035 §"Decoder cap")
@@ -777,6 +778,31 @@ impl<T: Decode, const N: usize> Decode for arrayvec::ArrayVec<T, N> {
 }
 
 // ---------------------------------------------------------------------------
+// NonZeroU64 — F2c-pre Inc-pre.1 (PAR-0021:R1 hash-chain prereq)
+// ---------------------------------------------------------------------------
+//
+// Concrete-type impl, NOT a blanket over `NonZero<T>`. The blanket form
+// would foreclose a future, wider sealing scheme that wants to enumerate
+// each `NonZero<*>` independently; pinning to `NonZeroU64` here is the
+// only consumer surface today (cherry-pit-core `AggregateId`, `sequence`)
+// and leaves the blanket path open. Wire shape: 8 bytes LE of the inner
+// u64 — identical to `u64`. Decode rejects `0u64` (niche violation) as
+// `EventError::InvalidInput`.
+
+impl Encode for NonZeroU64 {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.get().encode(out);
+    }
+}
+
+impl Decode for NonZeroU64 {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
+        let raw = u64::decode(d)?;
+        NonZeroU64::new(raw).ok_or(EventError::InvalidInput)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PAR-0021 R1 precursor-hash helper
 // ---------------------------------------------------------------------------
 //
@@ -1289,5 +1315,32 @@ mod tests {
             let err = from_bytes::<EventError>(&[b]).unwrap_err();
             assert_eq!(err, EventError::InvalidInput);
         }
+    }
+
+    // -----------------------------------------------------------------
+    // NonZeroU64 — Inc-pre.1 (F2c-pre, PAR-0021:R1 hash-chain prereq)
+    // -----------------------------------------------------------------
+    //
+    // Concrete-type impl, NOT a blanket over `NonZero<T>`. Preserves
+    // the future blanket-impl path so a wider sealing scheme can
+    // subsume this point impl without removing it. Wire shape: 8-byte
+    // LE of the inner u64, identical to `u64` (NonZeroU64::get()).
+
+    #[test]
+    fn non_zero_u64_layout_and_roundtrip() {
+        use core::num::NonZeroU64;
+        let nz = NonZeroU64::new(0x0102_0304_0506_0708).expect("nonzero literal");
+        let bytes = to_vec(&nz);
+        // 8-byte LE — same wire as u64::get().
+        assert_eq!(bytes, vec![0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]);
+        let back: NonZeroU64 = from_bytes(&bytes).expect("decode");
+        assert_eq!(back, nz);
+    }
+
+    #[test]
+    fn non_zero_u64_rejects_zero_on_decode() {
+        // Wire `0u64` violates the niche; surface as InvalidInput.
+        let err = from_bytes::<core::num::NonZeroU64>(&[0u8; 8]).unwrap_err();
+        assert_eq!(err, EventError::InvalidInput);
     }
 }
