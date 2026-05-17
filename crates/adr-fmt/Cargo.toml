@@ -10,6 +10,14 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[lib]
+name = "adr_fmt"
+path = "src/lib.rs"
+
+[[bin]]
+name = "adr-fmt"
+path = "src/main.rs"
+
 [dependencies]
 clap = { workspace = true }
 regex = { workspace = true }
