@@ -31,7 +31,10 @@ fn assert_sync<T: Sync>() {}
 fn assert_clone<T: Clone>() {}
 fn assert_static<T: 'static>() {}
 
-#[expect(dead_code, reason = "compile-time bound check; intentionally never called at runtime")]
+#[expect(
+    dead_code,
+    reason = "compile-time bound check; intentionally never called at runtime"
+)]
 fn appstate_is_axum_state_compatible<G, S, R>()
 where
     G: CommandGateway,
@@ -44,7 +47,10 @@ where
     assert_static::<AppState<G, S, R>>();
 }
 
-#[expect(dead_code, reason = "compile-time bound check; intentionally never called at runtime")]
+#[expect(
+    dead_code,
+    reason = "compile-time bound check; intentionally never called at runtime"
+)]
 fn build_router_is_callable<G, S, R>(state: AppState<G, S, R>) -> Router
 where
     G: CommandGateway,
