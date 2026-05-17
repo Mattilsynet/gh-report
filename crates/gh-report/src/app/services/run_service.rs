@@ -33,7 +33,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::merger::MergerCommand;
 use crate::domain::aggregates::run::{
-    CompleteSweep, FailSweep, PublishEvidence, RecordProgress, RunError, StartSweep,
+    CompleteSweep, FailSweep, PublishEvidence, RecordProgress, RenderPartial, RunError, StartSweep,
 };
 
 /// `ApplicationService` for the [`Run`] aggregate.
@@ -253,6 +253,43 @@ impl RunService {
         let (reply, rx) = oneshot::channel();
         self.merger_tx
             .send(MergerCommand::PublishEvidence {
+                batch_id: batch_id.to_owned(),
+                cmd,
+                ctx: ctx.clone(),
+                reply,
+            })
+            .await
+            .expect("Merger task alive for AppState lifetime");
+        rx.await.expect("Merger arm always replies before drop")
+    }
+
+    /// Record a mid-sweep partial render (non-terminal, CHE-0054:R1.e).
+    ///
+    /// `batch_id` is the routing key. Distinct from
+    /// [`Self::publish_evidence`] which is terminal and must follow
+    /// `SweepCompleted`. `render_partial` may be called any number of
+    /// times while the Run is in the `Started` phase and does not
+    /// advance the phase.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RunError::NotStarted`] when the resolved aggregate is
+    /// not in the `Started` phase.
+    /// Returns [`RunError::RoutingMiss`] when `batch_id` has no entry in
+    /// the routing index.
+    ///
+    /// # Panics
+    ///
+    /// See [`Self::start_sweep`].
+    pub async fn render_partial(
+        &self,
+        batch_id: &str,
+        cmd: RenderPartial,
+        ctx: &CorrelationContext,
+    ) -> Result<(), RunError> {
+        let (reply, rx) = oneshot::channel();
+        self.merger_tx
+            .send(MergerCommand::RenderPartial {
                 batch_id: batch_id.to_owned(),
                 cmd,
                 ctx: ctx.clone(),
@@ -657,5 +694,176 @@ mod tests {
             captured_envs[0].payload(),
             DomainEvent::SweepStarted { .. }
         ));
+    }
+
+    /// CHE-0054:R1.e — `render_partial` is non-terminal and admissible
+    /// between `SweepStarted` and a terminal event. Drives the full
+    /// 6-envelope sequence
+    /// `start → progress → render_partial → render_partial → complete
+    /// → publish_evidence` through the Merger and asserts envelope
+    /// order on the [`EventStore`]. The aggregate's phase-admissibility
+    /// (Started-only for partial, Completed-only for publish) is the
+    /// load-bearing invariant exercised here.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "linear 6-step lifecycle assertion; factoring into helpers would obscure the envelope-order claim that is the whole point of the test"
+    )]
+    #[tokio::test]
+    async fn render_partial_between_progress_and_complete() {
+        let (_dir, store, _bus, index, tracker, svc) = build_service();
+
+        let ctx = CorrelationContext::none();
+        let batch_id = "batch-partial-001";
+
+        // 1. start
+        svc.start_sweep(
+            StartSweep {
+                org: "octocat".into(),
+                repo_count: 4,
+                batch_id: batch_id.into(),
+                timestamp: "2026-05-17T10:00:00Z".into(),
+            },
+            &ctx,
+        )
+        .await
+        .expect("start_sweep");
+
+        // 2. progress (1/4)
+        svc.record_progress(
+            batch_id,
+            RecordProgress {
+                batch_id: batch_id.into(),
+                completed: 1,
+                total: 4,
+                timestamp: "2026-05-17T10:00:01Z".into(),
+            },
+            &ctx,
+        )
+        .await
+        .expect("record_progress");
+
+        // 3. render_partial (first)
+        svc.render_partial(
+            batch_id,
+            RenderPartial {
+                batch_id: batch_id.into(),
+                page_count: 2,
+                pending_repos: 3,
+                timestamp: "2026-05-17T10:00:02Z".into(),
+            },
+            &ctx,
+        )
+        .await
+        .expect("render_partial 1");
+
+        // 4. render_partial (second)
+        svc.render_partial(
+            batch_id,
+            RenderPartial {
+                batch_id: batch_id.into(),
+                page_count: 5,
+                pending_repos: 1,
+                timestamp: "2026-05-17T10:00:03Z".into(),
+            },
+            &ctx,
+        )
+        .await
+        .expect("render_partial 2");
+
+        // 5. complete
+        svc.complete(
+            batch_id,
+            CompleteSweep {
+                batch_id: batch_id.into(),
+                duration_ms: 4000,
+                repo_count: 4,
+                timestamp: "2026-05-17T10:00:04Z".into(),
+            },
+            &ctx,
+        )
+        .await
+        .expect("complete");
+
+        // 6. publish_evidence
+        svc.publish_evidence(
+            batch_id,
+            PublishEvidence {
+                page_count: 7,
+                warm_start: false,
+                timestamp: "2026-05-17T10:00:05Z".into(),
+            },
+            &ctx,
+        )
+        .await
+        .expect("publish_evidence");
+
+        let assigned_id = {
+            let guard = index
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard.get(batch_id).expect("index should map batch_id")
+        };
+
+        let loaded = store.load(assigned_id).await.expect("load");
+        assert_eq!(loaded.len(), 6, "6 envelopes after lifecycle with partials");
+        for (i, env) in loaded.iter().enumerate() {
+            assert_eq!(
+                env.sequence().get(),
+                u64::try_from(i + 1).unwrap(),
+                "envelope {i} should have sequence {}",
+                i + 1
+            );
+        }
+        assert!(matches!(
+            loaded[0].payload(),
+            DomainEvent::SweepStarted { .. }
+        ));
+        assert!(matches!(
+            loaded[1].payload(),
+            DomainEvent::SweepProgress {
+                completed: 1,
+                total: 4,
+                ..
+            }
+        ));
+        assert!(matches!(
+            loaded[2].payload(),
+            DomainEvent::PartialEvidenceRendered {
+                page_count: 2,
+                pending_repos: 3,
+                ..
+            }
+        ));
+        assert!(matches!(
+            loaded[3].payload(),
+            DomainEvent::PartialEvidenceRendered {
+                page_count: 5,
+                pending_repos: 1,
+                ..
+            }
+        ));
+        assert!(matches!(
+            loaded[4].payload(),
+            DomainEvent::SweepCompleted { repo_count: 4, .. }
+        ));
+        assert!(matches!(
+            loaded[5].payload(),
+            DomainEvent::EvidencePublished {
+                page_count: 7,
+                warm_start: false,
+                ..
+            }
+        ));
+
+        // Tracker reflects the final appended sequence.
+        let guard = tracker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let seq = *guard.get(&assigned_id).expect("tracker entry");
+        assert_eq!(
+            seq.get(),
+            6,
+            "tracker should reflect last appended sequence"
+        );
     }
 }

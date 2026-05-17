@@ -60,7 +60,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::domain::aggregates::repo::{RecordEvaluation, RecordRemoval, RepoError};
 use crate::domain::aggregates::run::{
-    CompleteSweep, FailSweep, PublishEvidence, RecordProgress, RunError, StartSweep,
+    CompleteSweep, FailSweep, PublishEvidence, RecordProgress, RenderPartial, RunError, StartSweep,
 };
 use crate::domain::aggregates::webhook::{RecordDelivery, WebhookError};
 use crate::domain::events::DomainEvent;
@@ -155,6 +155,18 @@ pub enum MergerCommand {
     PublishEvidence {
         batch_id: String,
         cmd: PublishEvidence,
+        ctx: CorrelationContext,
+        reply: oneshot::Sender<Result<(), RunError>>,
+    },
+    /// Mirrors [`super::run_service::RunService::render_partial`] —
+    /// mid-sweep non-terminal partial render for the [`Run`] aggregate
+    /// (CHE-0054:R1.e). May appear zero-or-more times between
+    /// `SweepStarted` and a terminal event; does not advance phase.
+    ///
+    /// [`Run`]: crate::domain::aggregates::run::Run
+    RenderPartial {
+        batch_id: String,
+        cmd: RenderPartial,
         ctx: CorrelationContext,
         reply: oneshot::Sender<Result<(), RunError>>,
     },
@@ -372,6 +384,15 @@ where
                     let result = self.handle_publish_evidence(&batch_id, cmd, &ctx).await;
                     let _ = reply.send(result);
                 }
+                MergerCommand::RenderPartial {
+                    batch_id,
+                    cmd,
+                    ctx,
+                    reply,
+                } => {
+                    let result = self.handle_render_partial(&batch_id, cmd, &ctx).await;
+                    let _ = reply.send(result);
+                }
                 MergerCommand::RecordEvaluation {
                     domain_key,
                     cmd,
@@ -499,6 +520,28 @@ where
         let new_events = state.handle(cmd)?;
         let new_envelopes = self.append_and_track(id, last_seq, new_events, ctx).await;
         super::shared::publish_or_trace(&self.bus, &new_envelopes, "EvidencePublished").await;
+        Ok(())
+    }
+
+    /// Mirrors [`super::run_service::RunService::render_partial`].
+    /// Non-terminal append-path arm for the [`Run`] aggregate
+    /// (CHE-0054:R1.e). Identical triad shape to the other Run
+    /// append-path arms; the aggregate enforces phase admissibility.
+    ///
+    /// [`Run`]: crate::domain::aggregates::run::Run
+    async fn handle_render_partial(
+        &self,
+        batch_id: &str,
+        cmd: RenderPartial,
+        ctx: &CorrelationContext,
+    ) -> Result<(), RunError> {
+        use cherry_pit_core::HandleCommand;
+
+        let id = self.resolve_run_id(batch_id)?;
+        let (state, last_seq) = self.load_and_fold_run(id).await;
+        let new_events = state.handle(cmd)?;
+        let new_envelopes = self.append_and_track(id, last_seq, new_events, ctx).await;
+        super::shared::publish_or_trace(&self.bus, &new_envelopes, "PartialEvidenceRendered").await;
         Ok(())
     }
 
