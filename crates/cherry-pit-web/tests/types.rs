@@ -10,18 +10,28 @@
 //!
 //! If any of these helpers fail to compile, the public API has
 //! regressed against CHE-0049 R1 or CHE-0050 R2.
-
-#![allow(dead_code)]
+//!
+//! Every helper in this file is a compile-time bound check that is
+//! intentionally never called at runtime — `dead_code` is the expected
+//! state, and #[expect] fails closed when a helper gains a real caller
+//! (which would be a sign the bound check has been turned into a
+//! behavioural test and should be moved elsewhere).
 
 use axum::Router;
 use cherry_pit_core::{Aggregate, CommandGateway, EventStore};
 use cherry_pit_web::{AppState, CommandRouter, build_router};
 
+// `assert_send` / `assert_sync` / `assert_clone` / `assert_static` carry
+// no suppression: they are called from `appstate_is_axum_state_compatible`
+// below, so even though the caller itself is dead, clippy treats the
+// callees as reachable. Only the top-level helpers (those not called
+// from any other item in this file) need #[expect(dead_code)].
 fn assert_send<T: Send>() {}
 fn assert_sync<T: Sync>() {}
 fn assert_clone<T: Clone>() {}
 fn assert_static<T: 'static>() {}
 
+#[expect(dead_code, reason = "compile-time bound check; intentionally never called at runtime")]
 fn appstate_is_axum_state_compatible<G, S, R>()
 where
     G: CommandGateway,
@@ -34,6 +44,7 @@ where
     assert_static::<AppState<G, S, R>>();
 }
 
+#[expect(dead_code, reason = "compile-time bound check; intentionally never called at runtime")]
 fn build_router_is_callable<G, S, R>(state: AppState<G, S, R>) -> Router
 where
     G: CommandGateway,

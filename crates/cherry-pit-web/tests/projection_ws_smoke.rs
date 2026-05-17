@@ -41,7 +41,7 @@ use common::MockProjectionSource;
 ///    `EventEnvelope` shape.
 /// 4. Close the WS cleanly.
 #[tokio::test(flavor = "current_thread")]
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "linear end-to-end WS smoke; splitting would obscure the flow"
 )]
