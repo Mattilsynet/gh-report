@@ -5,7 +5,9 @@
 //! Header + footer + index checks run at [`Reader::open`]; per-message
 //! payload reads via [`Reader::read_message`] / [`Reader::iter_messages`]
 //! verify each body's xxh64 against the stored index entry (GEN-0011 #14,
-//! GEN-0016 R1) before yielding bytes.
+//! GEN-0016 R1) before yielding bytes. The optional schema-source block
+//! (GEN-0009 R2) is parsed once at open time and exposed via
+//! [`Reader::schema_source`].
 //!
 //! Checks executed at [`Reader::open`]:
 //!  * #13 magic at header offset 0 and footer offset 20 must be "PGNO".
@@ -36,7 +38,13 @@
 //!  * Index entries are parsed once into an in-memory `Vec` so SM-3 can
 //!    iterate without re-seeking.
 //!  * `FileError` stays separate from `DeError` (GEN-0026 R3). No
-//!    message-payload errors are surfaced in SM-2.
+//!    message-payload errors are surfaced from the open path.
+//!  * A non-UTF-8 schema block is surfaced as
+//!    [`FileError::InvalidSchemaSource`] — the spec mandates UTF-8
+//!    (GEN-0009 R2). Padding bytes are NOT required to be zero by the
+//!    Reader (lenient parse — Writer always writes zeros, but a future
+//!    producer could legitimately use the pad region without breaking
+//!    the schema string itself).
 
 use std::io::{Read, Seek, SeekFrom};
 
@@ -78,6 +86,10 @@ pub struct Reader<R: Read + Seek> {
     schema_hash: u128,
     page_class: u8,
     schema_size: u32,
+    /// Parsed schema-source block (GEN-0009 R2). `None` when
+    /// `schema_size == 0`; otherwise the UTF-8 string of length
+    /// `schema_size`. Pad bytes are never included.
+    schema_source: Option<String>,
     message_count: u64,
     index: Vec<IndexEntry>,
 }
@@ -159,6 +171,27 @@ impl<R: Read + Seek> Reader<R> {
         {
             return Err(FileError::InvalidReserved);
         }
+
+        // ── Schema-source block (GEN-0009 R2) ──────────────────────
+        // When schema_size > 0, schema_size UTF-8 bytes live at file offset
+        // FILE_HEADER_SIZE. The block is then zero-padded to an 8-byte
+        // boundary (Writer responsibility); we only need to read the
+        // unpadded portion. messages_offset(schema_size) handles the
+        // arithmetic for downstream geometry checks.
+        let schema_source = if schema_size == 0 {
+            None
+        } else {
+            let size = usize::try_from(schema_size).map_err(|_| FileError::IndexOverflow)?;
+            // source position is currently right after the 40-byte header
+            // (read_exact above advanced the cursor). No explicit seek.
+            let mut buf = vec![0u8; size];
+            source.read_exact(&mut buf).map_err(FileError::Io)?;
+            // GEN-0009 R2: "plain UTF-8". Reject anything else as a wire
+            // violation — surface via FileError::InvalidSchemaSource (kept
+            // separate from DeError per GEN-0026 R3).
+            let s = String::from_utf8(buf).map_err(|_| FileError::InvalidSchemaSource)?;
+            Some(s)
+        };
 
         // ── Footer ──────────────────────────────────────────────────
         let file_len = source.seek(SeekFrom::End(0)).map_err(FileError::Io)?;
@@ -289,6 +322,7 @@ impl<R: Read + Seek> Reader<R> {
             schema_hash,
             page_class,
             schema_size,
+            schema_source,
             message_count,
             index,
         })
@@ -314,12 +348,11 @@ impl<R: Read + Seek> Reader<R> {
         self.page_class
     }
 
-    /// Embedded schema source. SM-2 always returns `None`; SM-4 parses
-    /// the block and exposes the UTF-8 string.
+    /// Embedded schema source (GEN-0009 R2). `None` when no block is
+    /// present (`schema_size == 0`); otherwise the parsed UTF-8 string.
     #[must_use]
-    #[allow(clippy::unused_self)]
     pub fn schema_source(&self) -> Option<&str> {
-        None
+        self.schema_source.as_deref()
     }
 
     /// Parsed index entries. Useful to SM-3 for per-message iteration.
@@ -328,12 +361,10 @@ impl<R: Read + Seek> Reader<R> {
         &self.index
     }
 
-    /// Raw `schema_size` from the header. SM-2 always 0 (no schema block);
-    /// SM-4 reads non-zero. Exposed so [`Reader::read_message`] can locate
-    /// message bodies via the index entries (the helper isn't called
-    /// directly here — entries store absolute offsets — but it pins the
-    /// invariant that bodies live at `messages_offset(schema_size) ..
-    /// index_offset`).
+    /// Raw `schema_size` from the header. Equals the unpadded UTF-8 byte
+    /// length of [`Reader::schema_source`] when present, or `0` when no
+    /// schema-source block is embedded. Useful for offset arithmetic
+    /// against [`crate::format::messages_offset`].
     #[must_use]
     pub fn schema_size(&self) -> u32 {
         self.schema_size
