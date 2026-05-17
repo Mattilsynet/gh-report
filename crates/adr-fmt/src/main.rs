@@ -67,7 +67,7 @@ struct Cli {
 
 // CLI dispatch shape; splitting would scatter mode-selection logic
 // without simplifying any branch.
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "CLI mode dispatch; each arm is a small linear sequence and splitting would scatter the mode-selection logic without simplifying any branch"
 )]

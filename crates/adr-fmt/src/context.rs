@@ -37,7 +37,7 @@ use crate::output::{EmittedRule, RootGroup};
 /// # Errors
 ///
 /// Returns an error if `crate_name` is not found in any domain's crate list.
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "context resolution is a linear stage pipeline (candidate/foundation identification → grouping → ordering) whose intermediate state would require multi-parameter helper signatures with no simplification gain"
 )]

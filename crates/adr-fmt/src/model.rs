@@ -73,7 +73,7 @@ impl fmt::Display for AdrId {
 /// flags enum would lose the per-field rustdoc surface and obscure
 /// individual access patterns in rules.
 #[derive(Debug, Clone)]
-#[allow(
+#[expect(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent section-presence/position flag with its own rustdoc surface; collapsing into a flags enum loses per-field access patterns used in rules and obscures the parser's individual probes"
 )]
@@ -125,7 +125,13 @@ pub struct AdrRecord {
     /// when the field has only the target ID with no reason.
     /// Currently parsed but not rendered; preserved for future tree
     /// or lint surfacing (see AFM-0024).
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "AFM-0024 cross-domain parent surfacing deferred (tree/lint rendering not yet wired); field is parsed and ready, fail-closes via #[expect] when the surface lands. Wrapped in cfg_attr(not(test)) because test fixtures write the field, which silences dead_code under --all-targets."
+        )
+    )]
     pub parent_cross_domain_reason: String,
 }
 
@@ -301,7 +307,7 @@ impl Tier {
     #[must_use]
     // Each tier is a distinct semantic knob; coincident values are
     // calibration, not a request to collapse arms.
-    #[allow(
+    #[expect(
         clippy::match_same_arms,
         reason = "each tier is an independently-tunable calibration knob; coincident values are accidental, not semantic equivalence — collapsing arms would erase the calibration intent"
     )]
@@ -327,7 +333,7 @@ impl Tier {
     #[must_use]
     // Each tier is a distinct semantic knob; coincident values are
     // calibration, not a request to collapse arms.
-    #[allow(
+    #[expect(
         clippy::match_same_arms,
         reason = "each tier is an independently-tunable calibration knob; coincident values are accidental, not semantic equivalence — collapsing arms would erase the calibration intent"
     )]

@@ -207,7 +207,7 @@ pub fn render_root_groups(crate_name: &str, groups: &[RootGroup]) -> String {
 /// reachable from any root via parent-edge traversal (cycles or
 /// missing parent). These are rendered flat after the tree(s).
 #[must_use]
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "single-pass tree renderer; function is sequential branch-rendering whose split would scatter the indent/connector state across helpers without simplifying any branch"
 )]
