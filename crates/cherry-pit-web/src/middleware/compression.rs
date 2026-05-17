@@ -91,6 +91,13 @@ pub(crate) enum Encoding {
 /// (`s.split(',').any(|p| p.trim().starts_with("zstd"))`): every header
 /// value the simplified version accepted is still accepted here, plus
 /// q-value-aware refusals are now honoured.
+#[cfg_attr(
+    all(not(feature = "projection"), not(test)),
+    expect(
+        dead_code,
+        reason = "see `Encoding` above — same dual-gate (projection feature + cfg(test)) drives reachability."
+    )
+)]
 pub(crate) fn negotiate_encoding(accept: &HeaderValue) -> Encoding {
     let Ok(s) = accept.to_str() else {
         return Encoding::Identity;

@@ -41,13 +41,6 @@
 //! Display string preserves all human-observable information for
 //! diagnostics and debugging.
 
-// Mapping helpers and code constants are exercised by this module's own
-// unit tests in v0.1; S5 wires them into real handlers. Suppressing
-// dead-code warnings here keeps the scaffolding visible at the call
-// sites it will actually serve, rather than fragmenting the surface
-// across cfg(test) boundaries.
-#![allow(dead_code)]
-
 use std::error::Error;
 use std::fmt::Display;
 
