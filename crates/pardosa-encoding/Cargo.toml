@@ -19,6 +19,10 @@ path = "src/lib.rs"
 uuid = ["dep:uuid"]
 bytes = ["dep:bytes"]
 arrayvec = ["dep:arrayvec"]
+# GEN-0043 jiff::Timestamp canonical 8-byte LE shape. Foreign-floor twin
+# of pardosa-traits' `jiff` gate (traits pulls through to encoding per
+# GEN-0043:R3). Off by default.
+jiff = ["dep:jiff"]
 # PAR-0021 R1 precursor-hash helper. Off by default — GEN-0041 no_std
 # substrate stays dep-free when the feature is not selected.
 blake3 = ["dep:blake3"]
@@ -29,6 +33,7 @@ blake3 = ["dep:blake3"]
 uuid = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 arrayvec = { workspace = true, optional = true }
+jiff = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
 
 [dev-dependencies]

@@ -20,6 +20,9 @@ path = "src/lib.rs"
 uuid = ["dep:uuid", "pardosa-encoding/uuid"]
 bytes = ["dep:bytes", "pardosa-encoding/bytes"]
 arrayvec = ["dep:arrayvec", "pardosa-encoding/arrayvec"]
+# GEN-0043 jiff::Timestamp foreign-floor. Same pull-through shape as the
+# GEN-0041 v0 gates above (traits → encoding per GEN-0043:R3).
+jiff = ["dep:jiff", "pardosa-encoding/jiff"]
 
 [dependencies]
 # Encode supertrait on EventSafe (GEN-0037 / F2 closure). Co-located in the
@@ -30,3 +33,4 @@ pardosa-encoding = { path = "../pardosa-encoding" }
 uuid = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 arrayvec = { workspace = true, optional = true }
+jiff = { workspace = true, optional = true }
