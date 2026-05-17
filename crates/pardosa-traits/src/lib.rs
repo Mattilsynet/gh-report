@@ -16,7 +16,7 @@
 //!
 //! The trusted-blanket pattern requires that impls of a foreign trait for
 //! foreign types live in the trait's defining crate (Rust orphan rule E0117/
-//! E0210). Sealed + EventSafe blankets for std types (`Box<T>`, `Vec<T>`,
+//! E0210). `Sealed` + `EventSafe` blankets for std types (`Box<T>`, `Vec<T>`,
 //! `Arc<T>`, `BTreeMap<K, V>`, primitives, tuples, …) therefore live here.
 //! `pardosa-traits` keeps zero external dependencies — std types only.
 

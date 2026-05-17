@@ -1,7 +1,7 @@
-//! F1 reframed: in-house EventError encoding produces a single discriminant
+//! F1 reframed: in-house `EventError` encoding produces a single discriminant
 //! byte per variant.
 //!
-//! Package contract v2.1 §4.5: EventError is a `repr(u8)` enum with literal
+//! Package contract v2.1 §4.5: `EventError` is a `repr(u8)` enum with literal
 //! discriminants 0..=10. The in-house canonical encoding (GEN-0035) emits
 //! the discriminant byte as the entire payload for unit-like variants —
 //! byte-1 of the encoded form equals the discriminant value. This file
