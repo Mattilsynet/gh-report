@@ -20,8 +20,11 @@
 //!  * `W: Write` only — no `Seek` requirement (per package G3 resolution: the
 //!    index is buffered in memory so the footer can be authored last from
 //!    known state). Aligns GEN-0008 R1 — no transport deps.
-//!  * SM-1 surface only: `schema_source` is hard-coded `None` (schema_size = 0);
-//!    SM-4 will add it.
+//!  * `schema_source` is optional (`Option<&str>`, GEN-0009 R2). When `Some`
+//!    and non-empty, the UTF-8 bytes are emitted between the header and the
+//!    first message body, followed by zero-pad to an 8-byte boundary; header
+//!    `schema_size` records the unpadded byte count. `Some("")` writes no
+//!    block (schema_size = 0) — observably indistinguishable from `None`.
 //!  * `dict_id` is hard-zero per v2 (`format.rs:28`).
 //!  * `page_class` is opaque to v0.1 (G5): caller sets it via
 //!    [`Writer::with_page_class`]; Writer writes it verbatim.
@@ -34,6 +37,7 @@ use crate::format::{
     FOOTER_MAGIC_OFFSET, FOOTER_MESSAGE_COUNT_OFFSET, FORMAT_VERSION, HEADER_MAGIC_OFFSET,
     HEADER_PAGE_CLASS_OFFSET, HEADER_SCHEMA_HASH_LEN, HEADER_SCHEMA_HASH_OFFSET,
     HEADER_SCHEMA_SIZE_OFFSET, HEADER_VERSION_OFFSET, INDEX_ENTRY_SIZE, MAGIC, messages_offset,
+    pad_to_8,
 };
 use xxhash_rust::xxh64::xxh64;
 
@@ -55,8 +59,13 @@ pub struct Writer<'w, W: Write> {
     sink: &'w mut W,
     schema_hash: u128,
     page_class: u8,
+    /// Optional UTF-8 schema source (GEN-0009 R2). When `Some` and non-empty,
+    /// written between the header and the first message body, padded to an
+    /// 8-byte boundary with zeros. Borrowed from the caller — the bytes are
+    /// flushed during the first `write_message`/`finish` call.
+    schema_source: Option<&'w str>,
     /// Tracks bytes written for index-entry offsets. Starts at
-    /// `messages_offset(0)` once the header is flushed.
+    /// `messages_offset(schema_size)` once the header + schema block are flushed.
     cursor: u64,
     /// `true` once the header has been written to `sink`.
     header_written: bool,
@@ -68,12 +77,14 @@ impl<'w, W: Write> Writer<'w, W> {
     /// Construct a Writer with a 16-byte schema hash (xxh3-128 per GEN-0035).
     ///
     /// `page_class` defaults to `0`; override via [`Writer::with_page_class`].
-    /// `schema_source` is not exposed in SM-1 (always `None`); SM-4 adds it.
+    /// `schema_source` defaults to `None`; override via
+    /// [`Writer::with_schema_source`] (GEN-0009 R2).
     pub fn new(sink: &'w mut W, schema_hash: u128) -> Self {
         Self {
             sink,
             schema_hash,
             page_class: 0,
+            schema_source: None,
             cursor: 0,
             header_written: false,
             index: Vec::new(),
@@ -85,6 +96,21 @@ impl<'w, W: Write> Writer<'w, W> {
     #[must_use]
     pub fn with_page_class(mut self, page_class: u8) -> Self {
         self.page_class = page_class;
+        self
+    }
+
+    /// Builder-style attachment of an optional informational schema source
+    /// (GEN-0009 R2). The byte length is recorded in the header's
+    /// `schema_size` u32 LE; the bytes themselves are written verbatim after
+    /// the header, then zero-padded to an 8-byte boundary so the first
+    /// message body lands on an aligned offset (`messages_offset(size)`).
+    ///
+    /// Passing `""` is permitted — it sets `schema_size = 0` and writes no
+    /// block (observably the same as never calling this rung). The Reader
+    /// surface returns `None` in that case (no block to expose).
+    #[must_use]
+    pub fn with_schema_source(mut self, schema_source: &'w str) -> Self {
+        self.schema_source = Some(schema_source);
         self
     }
 
@@ -165,28 +191,47 @@ impl<'w, W: Write> Writer<'w, W> {
         Ok(())
     }
 
-    /// Emit the 40-byte v2 header. Idempotent guard via `header_written`.
+    /// Emit the 40-byte v2 header followed by the optional schema-source
+    /// block (UTF-8 + zero-pad to 8-byte boundary per GEN-0009 R2 and
+    /// `format.rs:33-35`). Idempotent guard via `header_written`.
     fn write_header(&mut self) -> Result<(), FileError> {
+        // schema_size is the unpadded UTF-8 byte length; pad-to-8 is added
+        // after the block, not into the count.
+        let schema_bytes: &[u8] = self.schema_source.map_or(&[], str::as_bytes);
+        let schema_size = u32::try_from(schema_bytes.len()).map_err(|_| FileError::InvalidIndex)?;
+
         let mut buf = [0u8; FILE_HEADER_SIZE];
         // magic
         buf[HEADER_MAGIC_OFFSET..HEADER_MAGIC_OFFSET + 4].copy_from_slice(&MAGIC);
         // format_version u16 LE
         buf[HEADER_VERSION_OFFSET..HEADER_VERSION_OFFSET + 2]
             .copy_from_slice(&FORMAT_VERSION.to_le_bytes());
-        // flags u16 LE at HEADER_FLAGS_OFFSET stays zero (no compression in SM-1).
+        // flags u16 LE at HEADER_FLAGS_OFFSET stays zero (no compression in v0.1).
         // schema_hash u128 LE (16 bytes per HEADER_SCHEMA_HASH_LEN / GEN-0035)
         buf[HEADER_SCHEMA_HASH_OFFSET..HEADER_SCHEMA_HASH_OFFSET + HEADER_SCHEMA_HASH_LEN]
             .copy_from_slice(&self.schema_hash.to_le_bytes());
         // dict_id u32 LE at HEADER_DICT_ID_OFFSET stays zero (hard-zero in v2, format.rs:28).
         // page_class u8
         buf[HEADER_PAGE_CLASS_OFFSET] = self.page_class;
-        // schema_size u32 LE — SM-1 always 0 (no schema block).
-        let schema_size: u32 = 0;
+        // schema_size u32 LE — unpadded byte count of the schema source block.
         buf[HEADER_SCHEMA_SIZE_OFFSET..HEADER_SCHEMA_SIZE_OFFSET + 4]
             .copy_from_slice(&schema_size.to_le_bytes());
         // reserved bytes already zero.
 
         self.sink.write_all(&buf).map_err(io_to_file)?;
+
+        if !schema_bytes.is_empty() {
+            // Write the block, then zero-pad to the next 8-byte boundary.
+            // `pad_to_8(n) - n` is in 0..=7 — cheap stack-allocated buffer.
+            self.sink.write_all(schema_bytes).map_err(io_to_file)?;
+            let pad_len = pad_to_8(schema_bytes.len()) - schema_bytes.len();
+            if pad_len > 0 {
+                // Fixed 7-byte zero buffer covers the worst case (size % 8 == 1).
+                let zeros = [0u8; 7];
+                self.sink.write_all(&zeros[..pad_len]).map_err(io_to_file)?;
+            }
+        }
+
         self.cursor = messages_offset(schema_size) as u64;
         self.header_written = true;
         Ok(())
