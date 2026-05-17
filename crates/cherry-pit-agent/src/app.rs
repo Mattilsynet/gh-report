@@ -102,9 +102,9 @@ where
     gateway: G,
 
     /// Event store — persistence ingress per CHE-0051:R3.
-    #[allow(
+    #[expect(
         dead_code,
-        reason = "composition slot per CHE-0051:R3; CommandGateway wraps the store per CHE-0005:R3 so App has no direct read path; lifetime owned for v0.1 + future saga/outbox hooks"
+        reason = "composition slot per CHE-0051:R3; CommandGateway wraps the store per CHE-0005:R3 so App has no direct read path; lifetime owned for v0.1 + future saga/outbox hooks. #[expect] fails closed when S6+ wires a direct read path."
     )]
     store: S,
 
@@ -112,9 +112,9 @@ where
     bus: B,
 
     /// Projection drivers — heterogeneous tuple per CHE-0051:R5 + R9.
-    #[allow(
+    #[expect(
         dead_code,
-        reason = "composition slot per CHE-0051:R5 + R9; ProjectionDriverTuple per-envelope hook is consumer-owned (projection state lives outside App); lifetime owned for v0.1 + future runtime hooks (S7+)"
+        reason = "composition slot per CHE-0051:R5 + R9; ProjectionDriverTuple per-envelope hook is consumer-owned (projection state lives outside App); lifetime owned for v0.1 + future runtime hooks (S7+). #[expect] fails closed when S7+ wires the driver loop."
     )]
     projections: P,
 

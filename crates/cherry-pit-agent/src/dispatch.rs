@@ -64,10 +64,13 @@
 //! `ErasedPolicyDispatcher`, `PolicyAdapter`, `route_failure`,
 //! `dispatch_one`, and `DispatcherList` are defined here in S5 with
 //! their full unit-test coverage but are not yet driven by
-//! `App::run` (an S5 stub). S6 wires them in. The crate-level
-//! `#![allow(dead_code)]` below would be too coarse — instead each
-//! item carries an explicit `#[allow(dead_code)]` with an S6 follow-up
-//! note so the wired-up signal stays loud at S6.
+//! `App::run` (an S5 stub). S6 wires them in. The `#[cfg(test)]`
+//! tests below reach all of these items via `dispatch_one`'s call
+//! graph, so `dead_code` does not fire on them under `--all-targets`
+//! and no suppression is needed. Only `DispatcherList` — a public
+//! type alias not constructed by any test — carries
+//! `#[expect(dead_code)]` so the marker fails closed when S6 wires
+//! it into `App::run`.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -112,13 +115,11 @@ pub fn correlation_for(
 }
 
 /// Boxed future returned by the user dispatch closure.
-#[allow(dead_code, reason = "wired into App::run in S6")]
 type DispatchFuture<'a> = Pin<Box<dyn Future<Output = Result<(), AgentError>> + Send + 'a>>;
 
 /// Agent-internal trait object adapter unifying
 /// `(Policy<Event=E>, dispatch_closure)` pairs into a single
 /// invocable shape per `E`. See module-level C1 boundary note.
-#[allow(dead_code, reason = "trait methods wired into App::run in S6")]
 pub(crate) trait ErasedPolicyDispatcher<E, G>: Send + Sync
 where
     E: DomainEvent,
@@ -150,7 +151,6 @@ where
 }
 
 /// Concrete adapter holding one policy + its dispatch closure.
-#[allow(dead_code, reason = "fields exercised via trait dispatch wired in S6")]
 struct PolicyAdapter<P, F>
 where
     P: Policy,
@@ -225,7 +225,6 @@ where
 /// policy error is preserved as the returned `AgentError::Policy` and
 /// the sink failure is logged via `tracing::error!` rather than
 /// shadowing the root cause.
-#[allow(dead_code, reason = "wired into App::run in S6")]
 pub(crate) async fn route_failure<D>(
     sink: &D,
     envelope_event_id: uuid::Uuid,
@@ -275,7 +274,6 @@ where
 /// Used internally by `App::dispatch_envelopes`. Exposed here so unit
 /// tests can exercise the dispatcher in isolation without standing up
 /// a full `App`.
-#[allow(dead_code, reason = "wired into App::run in S6")]
 pub(crate) async fn dispatch_one<E, G, D>(
     policies: &[Box<dyn ErasedPolicyDispatcher<E, G>>],
     envelope: &EventEnvelope<E>,
@@ -311,7 +309,7 @@ where
 /// Public re-export of `Arc` for the dispatcher's storage shape used by
 /// tests. The `App` itself owns the policy registry by value; this
 /// alias keeps the dispatcher unit-testable with shared ownership.
-#[allow(dead_code, reason = "wired into App::run in S6")]
+#[expect(dead_code, reason = "S6 wires DispatcherList via App::run; fails closed when wired")]
 pub(crate) type DispatcherList<E, G> = Arc<Vec<Box<dyn ErasedPolicyDispatcher<E, G>>>>;
 
 #[cfg(test)]
