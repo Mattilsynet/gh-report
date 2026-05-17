@@ -19,6 +19,9 @@ path = "src/lib.rs"
 uuid = ["dep:uuid"]
 bytes = ["dep:bytes"]
 arrayvec = ["dep:arrayvec"]
+# PAR-0021 R1 precursor-hash helper. Off by default — GEN-0041 no_std
+# substrate stays dep-free when the feature is not selected.
+blake3 = ["dep:blake3"]
 
 [dependencies]
 # GEN-0041 foreign-floor optional deps. Re-route through the workspace
@@ -26,6 +29,7 @@ arrayvec = ["dep:arrayvec"]
 uuid = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 arrayvec = { workspace = true, optional = true }
+blake3 = { workspace = true, optional = true }
 
 [dev-dependencies]
 # FH11 (bead adr-fmt-bw7l) decode-cap behavioural property test. Lives
