@@ -21,7 +21,7 @@ zstd = ["std"]  # Phase 3: will add dep:zstd
 
 [dependencies]
 serde = { workspace = true }
-xxhash-rust = { version = "0.8", default-features = false, features = ["const_xxh3"] }
+xxhash-rust = { version = "0.8", default-features = false, features = ["const_xxh3", "xxh64"] }
 pardosa-derive = { path = "../pardosa-derive", optional = true }
 pardosa-encoding = { path = "../pardosa-encoding" }
 pardosa-traits = { path = "../pardosa-traits" }
