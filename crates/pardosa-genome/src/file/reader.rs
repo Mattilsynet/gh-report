@@ -41,10 +41,12 @@
 //!    message-payload errors are surfaced from the open path.
 //!  * A non-UTF-8 schema block is surfaced as
 //!    [`FileError::InvalidSchemaSource`] — the spec mandates UTF-8
-//!    (GEN-0009 R2). Padding bytes are NOT required to be zero by the
-//!    Reader (lenient parse — Writer always writes zeros, but a future
-//!    producer could legitimately use the pad region without breaking
-//!    the schema string itself).
+//!    (GEN-0009 R2). The 0–7 byte tail pad between the schema bytes and
+//!    the next 8-byte boundary MUST be all `0x00`; any non-zero pad byte
+//!    is a hard wire violation surfaced as [`FileError::InvalidReserved`]
+//!    (GEN-0018 R1+R2 — no lenient mode). Pad-content is structurally
+//!    identical to the header/footer/index-entry reserved-zero regions
+//!    that variant already covers.
 
 use std::io::{Read, Seek, SeekFrom};
 
@@ -55,7 +57,7 @@ use crate::format::{
     FORMAT_VERSION, HEADER_DICT_ID_OFFSET, HEADER_FLAGS_OFFSET, HEADER_MAGIC_OFFSET,
     HEADER_PAGE_CLASS_OFFSET, HEADER_RESERVED_LEN, HEADER_RESERVED_OFFSET, HEADER_SCHEMA_HASH_LEN,
     HEADER_SCHEMA_HASH_OFFSET, HEADER_SCHEMA_SIZE_OFFSET, HEADER_VERSION_OFFSET, INDEX_ENTRY_SIZE,
-    MAGIC, messages_offset,
+    MAGIC, messages_offset, pad_to_8,
 };
 use xxhash_rust::xxh64::xxh64;
 
@@ -190,6 +192,23 @@ impl<R: Read + Seek> Reader<R> {
             // violation — surface via FileError::InvalidSchemaSource (kept
             // separate from DeError per GEN-0026 R3).
             let s = String::from_utf8(buf).map_err(|_| FileError::InvalidSchemaSource)?;
+            // GEN-0018 R1+R2: the 0–7 byte tail pad MUST be all 0x00.
+            // No lenient mode — any non-zero byte is a hard wire violation
+            // routed through InvalidReserved (same variant as the other
+            // reserved-zero regions: header bytes 33..40, footer bytes
+            // 16..20, index-entry reserved:u32). Cursor sits at the end
+            // of the schema bytes after the read_exact above; pad width
+            // is in 0..=7 — empty when `size` is a multiple of 8.
+            let pad_len = pad_to_8(size) - size;
+            if pad_len > 0 {
+                let mut pad = [0u8; 7];
+                source
+                    .read_exact(&mut pad[..pad_len])
+                    .map_err(FileError::Io)?;
+                if pad[..pad_len].iter().any(|&b| b != 0) {
+                    return Err(FileError::InvalidReserved);
+                }
+            }
             Some(s)
         };
 
