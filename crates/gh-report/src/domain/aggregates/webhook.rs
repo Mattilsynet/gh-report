@@ -79,6 +79,7 @@ impl Aggregate for WebhookDelivery {
             | DomainEvent::SweepCompleted { .. }
             | DomainEvent::SweepFailed { .. }
             | DomainEvent::EvidencePublished { .. }
+            | DomainEvent::PartialEvidenceRendered { .. }
             | DomainEvent::RepoEvaluated { .. }
             | DomainEvent::RepoRemoved { .. } => {
                 debug_assert!(

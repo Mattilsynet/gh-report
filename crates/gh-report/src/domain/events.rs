@@ -132,6 +132,23 @@ pub enum DomainEvent {
         timestamp: String,
     },
 
+    /// Mid-sweep partial render emitted by the partial-publisher debounce.
+    ///
+    /// Non-terminal: admissible only while `Run.phase == Started`. Does
+    /// NOT drive a phase transition. Distinct from the terminal
+    /// `EvidencePublished` (which follows `SweepCompleted` per
+    /// CHE-0054:R1.c). See the new R1.e admitting this variant.
+    PartialEvidenceRendered {
+        /// Sweep `batch_id` this partial belongs to.
+        batch_id: String,
+        /// Number of HTML pages rendered into the cache.
+        page_count: usize,
+        /// Repos still pending evaluation at render time.
+        pending_repos: usize,
+        /// ISO 8601 UTC timestamp.
+        timestamp: String,
+    },
+
     /// A scheduled sweep failed (timeout, error, or all jobs rejected).
     SweepFailed {
         /// Unique identifier matching the originating [`SweepStarted::batch_id`].
@@ -196,6 +213,17 @@ impl std::fmt::Display for DomainEvent {
                 let label = if *warm_start { "warm" } else { "live" };
                 write!(f, "evidence_published({page_count} pages, {label})")
             }
+            Self::PartialEvidenceRendered {
+                batch_id,
+                page_count,
+                pending_repos,
+                ..
+            } => {
+                write!(
+                    f,
+                    "partial_evidence_rendered(batch={batch_id}, pages={page_count}, pending={pending_repos})"
+                )
+            }
             Self::SweepFailed {
                 batch_id,
                 error,
@@ -235,6 +263,7 @@ impl DomainEvent {
             Self::SweepCompleted { .. } => "sweep_completed",
             Self::WebhookReceived { .. } => "webhook_received",
             Self::EvidencePublished { .. } => "evidence_published",
+            Self::PartialEvidenceRendered { .. } => "partial_evidence_rendered",
             Self::SweepFailed { .. } => "sweep_failed",
             Self::SweepProgress { .. } => "sweep_progress",
         }
@@ -453,6 +482,50 @@ mod tests {
     }
 
     #[test]
+    fn partial_evidence_rendered_serialization_round_trip() {
+        let event = DomainEvent::PartialEvidenceRendered {
+            batch_id: "b1".into(),
+            page_count: 3,
+            pending_repos: 7,
+            timestamp: "2026-04-20T12:00:00Z".into(),
+        };
+
+        // JSON round-trip.
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"partial_evidence_rendered""#));
+        assert!(json.contains(r#""batch_id":"b1""#));
+        assert!(json.contains(r#""page_count":3"#));
+        assert!(json.contains(r#""pending_repos":7"#));
+
+        let back: DomainEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            back,
+            DomainEvent::PartialEvidenceRendered {
+                page_count: 3,
+                pending_repos: 7,
+                ..
+            }
+        ));
+
+        // msgpack round-trip (matches the on-disk EventStore path per CHE-0031).
+        let mp = rmp_serde::to_vec_named(&event).unwrap();
+        let back: DomainEvent = rmp_serde::from_slice(&mp).unwrap();
+        match back {
+            DomainEvent::PartialEvidenceRendered {
+                batch_id,
+                page_count,
+                pending_repos,
+                ..
+            } => {
+                assert_eq!(batch_id, "b1");
+                assert_eq!(page_count, 3);
+                assert_eq!(pending_repos, 7);
+            }
+            other => panic!("expected PartialEvidenceRendered, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn sweep_failed_serialization_round_trip() {
         let event = DomainEvent::SweepFailed {
             batch_id: "batch-001".into(),
@@ -540,6 +613,12 @@ mod tests {
                 warm_start: true,
                 timestamp: ts.clone(),
             },
+            DomainEvent::PartialEvidenceRendered {
+                batch_id: "b".into(),
+                page_count: 2,
+                pending_repos: 4,
+                timestamp: ts.clone(),
+            },
             DomainEvent::SweepFailed {
                 batch_id: "b".into(),
                 error: "timeout".into(),
@@ -588,6 +667,10 @@ mod tests {
             (
                 r#"{"type":"evidence_published","page_count":0,"warm_start":false,"timestamp":"t"}"#,
                 "evidence_published",
+            ),
+            (
+                r#"{"type":"partial_evidence_rendered","batch_id":"b","page_count":0,"pending_repos":0,"timestamp":"t"}"#,
+                "partial_evidence_rendered",
             ),
             (
                 r#"{"type":"sweep_failed","batch_id":"b","error":"e","duration_ms":0,"timestamp":"t"}"#,
@@ -669,6 +752,15 @@ mod tests {
                 "evidence_published",
             ),
             (
+                DomainEvent::PartialEvidenceRendered {
+                    batch_id: "b".into(),
+                    page_count: 0,
+                    pending_repos: 0,
+                    timestamp: ts.clone(),
+                },
+                "partial_evidence_rendered",
+            ),
+            (
                 DomainEvent::SweepFailed {
                     batch_id: "b".into(),
                     error: "e".into(),
@@ -738,6 +830,12 @@ mod tests {
             DomainEvent::EvidencePublished {
                 page_count: 0,
                 warm_start: false,
+                timestamp: ts.clone(),
+            },
+            DomainEvent::PartialEvidenceRendered {
+                batch_id: "b".into(),
+                page_count: 0,
+                pending_repos: 0,
                 timestamp: ts.clone(),
             },
             DomainEvent::SweepFailed {

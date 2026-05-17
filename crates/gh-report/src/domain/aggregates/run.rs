@@ -10,6 +10,8 @@
 //! - **(c)** `EvidencePublished` may only follow `SweepCompleted`.
 //! - **(d)** `SweepProgress` may only appear between `SweepStarted` and
 //!   a terminal event.
+//! - **(e)** `PartialEvidenceRendered` may only appear between
+//!   `SweepStarted` and a terminal event; it does NOT mutate the phase.
 //!
 //! Non-run variants reaching [`Run::apply`] (e.g. `RepoEvaluated`)
 //! are defensively ignored — the application boundary is responsible
@@ -69,6 +71,8 @@ impl Aggregate for Run {
             DomainEvent::SweepProgress { completed, .. } => {
                 self.completed = *completed;
             }
+            // Non-phase-changing; invariant (e) enforced at command-handle time.
+            DomainEvent::PartialEvidenceRendered { .. } => {}
             DomainEvent::SweepCompleted { .. } => {
                 self.phase = RunPhase::Completed;
             }
@@ -175,6 +179,16 @@ pub struct PublishEvidence {
 }
 impl Command for PublishEvidence {}
 
+/// Emit a mid-sweep partial render record (non-terminal, CHE-0054:R1.e).
+#[derive(Debug, Clone)]
+pub struct RenderPartial {
+    pub batch_id: String,
+    pub page_count: usize,
+    pub pending_repos: usize,
+    pub timestamp: String,
+}
+impl Command for RenderPartial {}
+
 // --- HandleCommand impls (CHE-0008:R1 pure) ---------------------------
 
 impl HandleCommand<StartSweep> for Run {
@@ -251,6 +265,22 @@ impl HandleCommand<PublishEvidence> for Run {
         Ok(vec![DomainEvent::EvidencePublished {
             page_count: cmd.page_count,
             warm_start: cmd.warm_start,
+            timestamp: cmd.timestamp,
+        }])
+    }
+}
+
+impl HandleCommand<RenderPartial> for Run {
+    type Error = RunError;
+
+    fn handle(&self, cmd: RenderPartial) -> Result<Vec<DomainEvent>, Self::Error> {
+        if self.phase != RunPhase::Started {
+            return Err(RunError::NotStarted(self.phase));
+        }
+        Ok(vec![DomainEvent::PartialEvidenceRendered {
+            batch_id: cmd.batch_id,
+            page_count: cmd.page_count,
+            pending_repos: cmd.pending_repos,
             timestamp: cmd.timestamp,
         }])
     }
@@ -565,6 +595,114 @@ mod tests {
             })
             .unwrap_err();
         assert_eq!(err, RunError::NotStarted(RunPhase::Completed));
+    }
+
+    // --- RenderPartial (CHE-0054:R1.e) ---
+
+    #[test]
+    fn render_partial_from_started_emits_event() {
+        let r = started();
+        let events = r
+            .handle(RenderPartial {
+                batch_id: "b1".into(),
+                page_count: 2,
+                pending_repos: 1,
+                timestamp: ts(),
+            })
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            DomainEvent::PartialEvidenceRendered {
+                batch_id,
+                page_count,
+                pending_repos,
+                ..
+            } => {
+                assert_eq!(batch_id, "b1");
+                assert_eq!(*page_count, 2);
+                assert_eq!(*pending_repos, 1);
+            }
+            other => panic!("expected PartialEvidenceRendered, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_partial_from_empty_rejects() {
+        let r = Run::default();
+        let err = r
+            .handle(RenderPartial {
+                batch_id: "b1".into(),
+                page_count: 1,
+                pending_repos: 1,
+                timestamp: ts(),
+            })
+            .unwrap_err();
+        assert_eq!(err, RunError::NotStarted(RunPhase::Empty));
+    }
+
+    #[test]
+    fn render_partial_from_completed_rejects() {
+        let mut r = started();
+        r.apply(&DomainEvent::SweepCompleted {
+            batch_id: "b1".into(),
+            duration_ms: 1,
+            repo_count: 3,
+            timestamp: ts(),
+        });
+        let err = r
+            .handle(RenderPartial {
+                batch_id: "b1".into(),
+                page_count: 1,
+                pending_repos: 0,
+                timestamp: ts(),
+            })
+            .unwrap_err();
+        assert_eq!(err, RunError::NotStarted(RunPhase::Completed));
+    }
+
+    #[test]
+    fn render_partial_from_failed_rejects() {
+        let mut r = started();
+        r.apply(&DomainEvent::SweepFailed {
+            batch_id: "b1".into(),
+            error: "x".into(),
+            duration_ms: 1,
+            timestamp: ts(),
+        });
+        let err = r
+            .handle(RenderPartial {
+                batch_id: "b1".into(),
+                page_count: 1,
+                pending_repos: 0,
+                timestamp: ts(),
+            })
+            .unwrap_err();
+        assert_eq!(err, RunError::NotStarted(RunPhase::Failed));
+    }
+
+    #[test]
+    fn apply_partial_evidence_rendered_does_not_mutate_phase() {
+        // Invariant (e): PartialEvidenceRendered is non-terminal; apply
+        // must be a pure no-op on every Run field. Phase MUST stay
+        // Started; batch_id, repo_count, completed MUST be untouched.
+        let mut r = started();
+        let snapshot_phase = r.phase;
+        let snapshot_batch = r.batch_id.clone();
+        let snapshot_repos = r.repo_count;
+        let snapshot_completed = r.completed;
+
+        r.apply(&DomainEvent::PartialEvidenceRendered {
+            batch_id: "b1".into(),
+            page_count: 99,
+            pending_repos: 7,
+            timestamp: ts(),
+        });
+
+        assert_eq!(r.phase, snapshot_phase);
+        assert_eq!(r.phase, RunPhase::Started);
+        assert_eq!(r.batch_id, snapshot_batch);
+        assert_eq!(r.repo_count, snapshot_repos);
+        assert_eq!(r.completed, snapshot_completed);
     }
 
     // --- RunError::RoutingMiss (CHE-0024:R1) ---
