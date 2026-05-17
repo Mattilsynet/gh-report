@@ -180,6 +180,15 @@ pub enum FileError {
     MessageError(u64, DeError),
     /// Embedded schema source is not valid UTF-8.
     InvalidSchemaSource,
+    /// A header, footer, or index-entry reserved-bytes region contained
+    /// non-zero data. Reserved regions must be all zeros (GEN-0011 #16).
+    InvalidReserved,
+    /// Footer's `message_count × INDEX_ENTRY_SIZE` overflowed `u64`, or
+    /// the resulting index region could not be addressed in `usize` on
+    /// this platform (GEN-0011 #20). Distinct from
+    /// [`Self::InvalidIndex`], which covers well-formedness violations
+    /// (#18) where arithmetic itself is well-defined.
+    IndexOverflow,
     /// Underlying I/O failure on the sink or source.
     Io(std::io::Error),
 }
@@ -202,6 +211,12 @@ impl fmt::Display for FileError {
             }
             Self::InvalidSchemaSource => {
                 write!(f, "embedded schema source is not valid UTF-8")
+            }
+            Self::InvalidReserved => {
+                write!(f, "reserved bytes must be zero")
+            }
+            Self::IndexOverflow => {
+                write!(f, "message_count × INDEX_ENTRY_SIZE overflows u64")
             }
             Self::Io(err) => write!(f, "i/o error: {err}"),
         }
