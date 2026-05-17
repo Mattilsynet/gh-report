@@ -145,6 +145,13 @@ impl LayerLimits {
 /// Wired via [`axum::middleware::from_fn`] in the router builder; the
 /// per-instance `Arc<Semaphore>` is captured by the closure so the
 /// permit pool lives for the router's lifetime.
+#[cfg_attr(
+    not(feature = "projection"),
+    expect(
+        dead_code,
+        reason = "CHE-0062 availability layer; consumed only by `projection::build_projection_router` (gated on the `projection` feature) per CHE-0062:R1. No in-file test exercises it. cfg_attr scopes #[expect]'s fail-closed semantic to the projection-off build where `dead_code` fires."
+    )
+)]
 pub(crate) async fn http_concurrency_limit(
     semaphore: Arc<Semaphore>,
     request: Request,

@@ -30,10 +30,6 @@ pub trait ProjectionSource: Send + Sync + 'static {
     /// Returns `None` before [`is_ready`](Self::is_ready) flips to `true`.
     /// The snapshot is shared via `Arc` to avoid copying the page map per
     /// request (Phase 3 detail; Phase 2 honours the signature only).
-    #[allow(
-        clippy::zero_sized_map_values,
-        reason = "Phase 2 placeholder; Phase 3c fills in PageEntry fields"
-    )]
     fn snapshot(&self) -> Option<Arc<HashMap<String, PageEntry>>>;
 
     /// Subscribe to the delta stream that follows the latest snapshot.
