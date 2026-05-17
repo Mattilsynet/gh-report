@@ -23,6 +23,13 @@ surface; (2) `pub use testing as <other>` rustc rejects (E0365 / E0255);
 namespace but contradicts CHE-0030:R1 as written. Option 3 is the only
 shape preserving surface segregation without fighting the compiler.
 
+Subsequent work (CHE-0060 + pardosa-encoding integration) surfaced that
+the parenthetical "CHE-0029:R4 inviolate" over-stated the rule's status.
+CHE-0058's scope is the test-fixture visibility carve-out; the
+parenthetical's intent was to prevent the testing feature from being a
+wedge to widen core deps. This amendment narrows the parenthetical to
+its intended scope, not reversing the rule.
+
 ## Decision
 
 CHE-0030:R1 is amended (not superseded): `pub mod` remains forbidden
@@ -39,8 +46,10 @@ R1 [4]: A `pub mod` declaration in a cherry-pit crate's `lib.rs` is
 
 R2 [4]: A crate exposing a feature-gated `pub mod testing;` MUST
   declare `testing = []` under `[features]` in its `Cargo.toml`; the
-  feature MUST NOT enable additional dependencies (CHE-0029:R4
-  inviolate).
+  feature MUST NOT enable additional dependencies. This guardrail
+  protects CHE-0029:R4 against the testing-feature wedge; R4 itself
+  remains amendable through normal ADR process per CHE-0029's Tier-B
+  status.
 
 R3 [4]: The carve-out is for `testing` fixtures only. Adding a second
   feature-gated public module requires a fresh ADR citing CHE-0058 as
