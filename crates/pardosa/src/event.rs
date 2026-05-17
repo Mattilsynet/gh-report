@@ -181,6 +181,11 @@ impl fmt::Display for DomainId {
 /// - `timestamp`: Unix epoch in milliseconds.
 /// - `detached`: `true` when this event records a soft-delete (Detach operation).
 /// - `precursor`: Index of the previous event in the same fiber (`Index::NONE` for the first event).
+/// - `precursor_hash`: 32-byte BLAKE3 of the predecessor's canonical bytes (PAR-0021 R1).
+///   Genesis events use `[0u8; 32]` since they have no predecessor. F2a ships
+///   this field as plumbing-only — callers pass `[0u8; 32]` until F2b wires the
+///   real BLAKE3 computation. Positioned adjacent to `precursor` because the
+///   two are conceptually paired (hash of the event `precursor` points at).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 #[allow(
@@ -196,6 +201,7 @@ pub struct Event<T> {
     // Bypass the sentinel-rejecting IndexRaw guard for this field only.
     #[serde(with = "index_with_sentinel")]
     precursor: Index,
+    precursor_hash: [u8; 32],
     domain_event: T,
 }
 
@@ -207,6 +213,7 @@ impl<T> Event<T> {
         domain_id: DomainId,
         detached: bool,
         precursor: Index,
+        precursor_hash: [u8; 32],
         domain_event: T,
     ) -> Self {
         Event {
@@ -215,6 +222,7 @@ impl<T> Event<T> {
             domain_id,
             detached,
             precursor,
+            precursor_hash,
             domain_event,
         }
     }
@@ -242,6 +250,11 @@ impl<T> Event<T> {
     #[must_use]
     pub fn precursor(&self) -> Index {
         self.precursor
+    }
+
+    #[must_use]
+    pub fn precursor_hash(&self) -> [u8; 32] {
+        self.precursor_hash
     }
 
     #[must_use]
@@ -350,6 +363,7 @@ mod tests {
             DomainId::new(1),
             false,
             Index::NONE,
+            [0u8; 32],
             "genesis".to_string(),
         );
         let json = serde_json::to_string(&event).unwrap();
@@ -390,6 +404,7 @@ mod tests {
             DomainId::new(5),
             false,
             Index::NONE,
+            [0u8; 32],
             "created".to_string(),
         );
         assert_eq!(event.event_id(), 1);
@@ -408,6 +423,7 @@ mod tests {
             DomainId::new(5),
             false,
             Index::new(0),
+            [0u8; 32],
             "updated".to_string(),
         );
         assert_eq!(event.event_id(), 2);
@@ -423,6 +439,7 @@ mod tests {
             DomainId::new(1),
             false,
             Index::NONE,
+            [0u8; 32],
             "created".to_string(),
         );
         let json = serde_json::to_string(&event).unwrap();
@@ -441,6 +458,7 @@ mod tests {
             DomainId::new(1),
             false,
             Index::new(0),
+            [0u8; 32],
             "updated".to_string(),
         );
         let json = serde_json::to_string(&event).unwrap();
@@ -457,8 +475,55 @@ mod tests {
             DomainId::new(1),
             true,
             Index::new(1),
+            [0u8; 32],
             "detached".to_string(),
         );
         assert!(event.detached());
+    }
+
+    // --- precursor_hash plumbing (PAR-0021 R1; F2a) ---
+
+    #[test]
+    fn event_precursor_hash_accessor() {
+        // F2a is plumbing-only: callers provide [0u8; 32] sentinel until F2b
+        // wires real BLAKE3 computation. Pin the accessor shape + position so
+        // F2b can change the *value* without disturbing the surface.
+        let event = Event::new(
+            7,
+            1_700_000_000_007,
+            DomainId::new(1),
+            false,
+            Index::NONE,
+            [0u8; 32],
+            "hashed".to_string(),
+        );
+        assert_eq!(event.precursor_hash(), [0u8; 32]);
+    }
+
+    #[test]
+    fn event_precursor_hash_nonzero_roundtrip() {
+        // Distinguish "field exists" from "field is hard-zeroed somewhere
+        // downstream" — pass a non-trivial bit-pattern and read it back.
+        let hash: [u8; 32] = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
+            0x1d, 0x1e, 0x1f, 0x20,
+        ];
+        let event = Event::new(
+            8,
+            1_700_000_000_008,
+            DomainId::new(1),
+            false,
+            Index::new(7),
+            hash,
+            "linked".to_string(),
+        );
+        assert_eq!(event.precursor_hash(), hash);
+
+        // Serde round-trip pins that the field is serialized — `[u8; 32]`
+        // under GEN-0035:R1 is fixed-width verbatim (no length prefix).
+        let json = serde_json::to_string(&event).unwrap();
+        let back: Event<String> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.precursor_hash(), hash);
     }
 }

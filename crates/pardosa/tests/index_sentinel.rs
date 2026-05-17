@@ -48,6 +48,7 @@ fn event_accepts_precursor_none() {
         DomainId::new(1),
         false,
         Index::NONE,
+        [0u8; 32],
         "created".to_string(),
     );
     let json = serde_json::to_string(&event).unwrap();
@@ -64,6 +65,7 @@ fn event_with_real_precursor_roundtrips() {
         DomainId::new(1),
         false,
         Index::new(0),
+        [0u8; 32],
         "updated".to_string(),
     );
     let json = serde_json::to_string(&event).unwrap();
