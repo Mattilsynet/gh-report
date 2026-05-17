@@ -13,7 +13,14 @@ pub const MAGIC: [u8; 4] = *b"PGNO";
 ///
 /// v2 widens `schema_hash` from u64 (xxh64) to u128 (xxh3-128) per GEN-0035;
 /// header layout grows from 32 to 40 bytes and downstream offsets shift +8.
-pub const FORMAT_VERSION: u16 = 2;
+///
+/// v3 adds `precursor_hash: [u8; 32]` per-event (PAR-0021 R1; F2a). File
+/// header byte layout is unchanged from v2; only `Event<T>` payload bytes
+/// grow by 32 per event. No v2→v3 migration is supported: v2 streams are
+/// rejected with [`crate::FileError::UnsupportedVersion`] (per user ruling
+/// 2026-05-17; the existing reader version-check at file/reader.rs already
+/// enforces this).
+pub const FORMAT_VERSION: u16 = 3;
 
 // ---------------------------------------------------------------------------
 // File header layout (40 bytes; v2)

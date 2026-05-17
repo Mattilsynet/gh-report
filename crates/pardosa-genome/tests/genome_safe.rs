@@ -270,7 +270,7 @@ fn hash_combine_order_dependent() {
 fn format_constants() {
     use pardosa_genome::format::*;
     assert_eq!(MAGIC, *b"PGNO");
-    assert_eq!(FORMAT_VERSION, 2);
+    assert_eq!(FORMAT_VERSION, 3);
     assert_eq!(FILE_HEADER_SIZE, 40);
     assert_eq!(FILE_FOOTER_SIZE, 32);
     assert_eq!(INDEX_ENTRY_SIZE, 24);

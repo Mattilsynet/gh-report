@@ -1,4 +1,4 @@
-//! v2 file-format Reader.
+//! Pardosa-genome file-format Reader (current `FORMAT_VERSION` only).
 //!
 //! Opens a file produced by [`crate::file::Writer`] and validates its
 //! geometry inline at open time (GEN-0011 R2 — no `open_unchecked` path).
@@ -12,7 +12,9 @@
 //! Checks executed at [`Reader::open`]:
 //!  * #13 magic at header offset 0 and footer offset 20 must be "PGNO".
 //!  * Format version (u16 LE at header offset 4) must equal
-//!    [`FORMAT_VERSION`] = 2.
+//!    [`FORMAT_VERSION`]. Stale versions (v2 and earlier) are rejected
+//!    via [`FileError::UnsupportedVersion`] (no migration path; user
+//!    ruling 2026-05-17).
 //!  * #16 reserved regions must be all-zero: header bytes 33..40,
 //!    footer bytes 16..20, and each index entry's `reserved:u32` field.
 //!    Routed through [`FileError::InvalidReserved`].
