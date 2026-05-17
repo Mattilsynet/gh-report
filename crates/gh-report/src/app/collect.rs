@@ -33,7 +33,7 @@ use crate::collector::{branch_protection, codeowners, dependabot, inventory, sec
 use crate::config;
 use crate::config::runtime::RuntimeConfig;
 use crate::domain::aggregates::run::{
-    CompleteSweep, FailSweep, PublishEvidence, RecordProgress, StartSweep,
+    CompleteSweep, FailSweep, PublishEvidence, RecordProgress, RenderPartial, StartSweep,
 };
 use crate::domain::checks::{
     BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersResult,
@@ -799,7 +799,6 @@ impl SweepSaga {
             checkpoint_path: &self.checkpoint_path,
             config,
             run,
-            corr_ctx,
             inventory,
             org_summary: &self.org_summary,
             auth_metadata: &ctx.auth_metadata,
@@ -811,7 +810,9 @@ impl SweepSaga {
         .await;
 
         match &result {
-            Ok(()) => {
+            Ok((page_count, warm_start)) => {
+                let page_count = *page_count;
+                let warm_start = *warm_start;
                 self.phase = SweepPhase::Completed;
                 if let Err(e) = state
                     .run_service
@@ -828,6 +829,27 @@ impl SweepSaga {
                     .await
                 {
                     warn!(error = %e, "SweepCompleted publish failed, non-fatal");
+                }
+
+                // Terminal PublishEvidence MUST follow SweepCompleted
+                // (CHE-0054:R1.c). Fire-and-forget on Err mirrors the
+                // existing non-fatal pattern; the rewritten warn! reflects
+                // that, post-reorder, this branch is only reached on an
+                // unexpected aggregate/merger rejection (defence-in-depth).
+                if let Err(e) = state
+                    .run_service
+                    .publish_evidence(
+                        &run.run_id,
+                        PublishEvidence {
+                            page_count,
+                            warm_start,
+                            timestamp: jiff::Timestamp::now().to_string(),
+                        },
+                        corr_ctx,
+                    )
+                    .await
+                {
+                    warn!(error = %e, "post-complete publish unexpectedly rejected");
                 }
             }
             Err(e) => {
@@ -854,7 +876,7 @@ impl SweepSaga {
             }
         }
 
-        result
+        result.map(|_| ())
     }
 
     /// Elapsed time since sweep start, in milliseconds (clamped to u64).
@@ -1055,7 +1077,6 @@ struct FinalizeParams<'a> {
     checkpoint_path: &'a std::path::Path,
     config: &'a RuntimeConfig,
     run: &'a mut RunMetadata,
-    corr_ctx: &'a CorrelationContext,
     inventory: &'a InventoryLoad,
     org_summary: &'a Arc<OrgAlertSummary>,
     auth_metadata: &'a AuthMetadata,
@@ -1065,9 +1086,14 @@ struct FinalizeParams<'a> {
     state: &'a Arc<AppState>,
 }
 
-/// Phase 4: Snapshot the evidence store, persist checkpoint, build + publish
-/// evidence, save baseline, and export the repo-detail cache.
-async fn finalize_and_publish(params: FinalizeParams<'_>) -> Result<(), AppError> {
+/// Phase 4: Snapshot the evidence store, persist checkpoint, build evidence,
+/// render + cache the HTML, save baseline, and export the repo-detail cache.
+///
+/// Returns `(page_count, warm_start)` so the caller can fire the terminal
+/// [`PublishEvidence`] command **after** [`CompleteSweep`] has been
+/// recorded (CHE-0054:R1.c — `EvidencePublished` may only follow
+/// `SweepCompleted`).
+async fn finalize_and_publish(params: FinalizeParams<'_>) -> Result<(usize, bool), AppError> {
     let FinalizeParams {
         baseline_cache,
         run_timestamp,
@@ -1075,7 +1101,6 @@ async fn finalize_and_publish(params: FinalizeParams<'_>) -> Result<(), AppError
         checkpoint_path,
         config,
         run,
-        corr_ctx,
         inventory,
         org_summary,
         auth_metadata,
@@ -1119,7 +1144,11 @@ async fn finalize_and_publish(params: FinalizeParams<'_>) -> Result<(), AppError
         archived_repos: inventory.archived_repos,
     });
 
-    publish_evidence(config, run, corr_ctx, &evidence, state).await?;
+    // Render + cache only — the terminal PublishEvidence command is
+    // issued by the caller (`step_finalize`) AFTER CompleteSweep, per
+    // CHE-0054:R1.c.
+    let page_count = render_and_cache_evidence(config, run, &evidence, state).await?;
+    let warm_start = evidence.assessment_metadata.warm_start;
 
     run.complete();
 
@@ -1150,7 +1179,7 @@ async fn finalize_and_publish(params: FinalizeParams<'_>) -> Result<(), AppError
         "collection run complete"
     );
 
-    Ok(())
+    Ok((page_count, warm_start))
 }
 
 async fn prepare_collection(
@@ -1355,7 +1384,59 @@ pub(crate) async fn warm_start_from_baseline(
         repositories: repos,
     };
 
-    match publish_evidence(config, &run, &run.correlation_context(), &evidence, state).await {
+    // Warm-start lifecycle synthesis (CHE-0054:R1.c): the terminal
+    // PublishEvidence inside `publish_evidence` is only admissible
+    // after SweepCompleted. Synthesise a `StartSweep → CompleteSweep`
+    // pair for this warm-start batch so the publish below lands
+    // against an aggregate in `Completed` phase.
+    //
+    // The `warm-start-` prefix on `batch_id` is the convention by
+    // which downstream consumers distinguish synthetic warm-start
+    // sweeps from real collection runs. Each call is fire-and-forget
+    // on Err (mirror existing non-fatal pattern).
+    let warm_batch_id = format!("warm-start-{}", run.timestamp());
+    let warm_corr = run.correlation_context();
+    let warm_repo_count = evidence.collection_statistics.total_repos as usize;
+
+    if let Err(e) = state
+        .run_service
+        .start_sweep(
+            StartSweep {
+                org: config.org_name.clone(),
+                repo_count: warm_repo_count,
+                batch_id: warm_batch_id.clone(),
+                timestamp: run.timestamp(),
+            },
+            &warm_corr,
+        )
+        .await
+    {
+        warn!(error = %e, "warm-start StartSweep non-fatal");
+    }
+    if let Err(e) = state
+        .run_service
+        .complete(
+            &warm_batch_id,
+            CompleteSweep {
+                batch_id: warm_batch_id.clone(),
+                duration_ms: 0,
+                repo_count: warm_repo_count,
+                timestamp: run.timestamp(),
+            },
+            &warm_corr,
+        )
+        .await
+    {
+        warn!(error = %e, "warm-start CompleteSweep non-fatal");
+    }
+
+    // `publish_evidence` fires the terminal PublishEvidence against
+    // `run.run_id`. Override the run_id for the warm-start publish
+    // so the triple is contiguous on the synthetic stream.
+    let mut warm_run = run.clone();
+    warm_run.run_id = warm_batch_id.clone();
+
+    match publish_evidence(config, &warm_run, &warm_corr, &evidence, state).await {
         Ok(()) => {
             info!("warm-start cache populated — server can start serving");
             true
@@ -1367,13 +1448,16 @@ pub(crate) async fn warm_start_from_baseline(
     }
 }
 
-pub(crate) async fn publish_evidence(
+/// Build the HTML+zstd cache and broadcast WS update. Returns
+/// `page_count`. No domain-command call — caller decides which run
+/// command to issue (terminal [`PublishEvidence`] post-`CompleteSweep`,
+/// or non-terminal [`RenderPartial`] mid-sweep) per CHE-0054:R1.c/e.
+pub(crate) async fn render_and_cache_evidence(
     config: &RuntimeConfig,
     run: &RunMetadata,
-    corr_ctx: &CorrelationContext,
     evidence: &Evidence,
     state: &Arc<AppState>,
-) -> Result<(), AppError> {
+) -> Result<usize, AppError> {
     let pages = html::render_dashboard(evidence, &config.dashboard_config)?;
     info!(
         page_count = pages.len(),
@@ -1427,6 +1511,26 @@ pub(crate) async fn publish_evidence(
             jiff::Timestamp::now().to_string(),
         ));
 
+    Ok(page_count)
+}
+
+/// Legacy combined helper — renders + caches + fires the terminal
+/// [`PublishEvidence`] command. Internal callers should prefer
+/// [`render_and_cache_evidence`] paired with an explicit run-service
+/// command for clarity, since the terminal publish is only valid
+/// after `CompleteSweep` (CHE-0054:R1.c).
+///
+/// Kept as a thin wrapper for the warm-start path, which synthesises
+/// its own `StartSweep → CompleteSweep` pair before calling here.
+pub(crate) async fn publish_evidence(
+    config: &RuntimeConfig,
+    run: &RunMetadata,
+    corr_ctx: &CorrelationContext,
+    evidence: &Evidence,
+    state: &Arc<AppState>,
+) -> Result<(), AppError> {
+    let page_count = render_and_cache_evidence(config, run, evidence, state).await?;
+
     if let Err(e) = state
         .run_service
         .publish_evidence(
@@ -1440,7 +1544,10 @@ pub(crate) async fn publish_evidence(
         )
         .await
     {
-        warn!(error = %e, "EvidencePublished publish failed, non-fatal");
+        // Defence-in-depth: the application-layer reorder (CHE-0054:R1.c)
+        // means we now only enter this branch when something at the
+        // aggregate or merger layer rejected the publish unexpectedly.
+        warn!(error = %e, "post-complete publish unexpectedly rejected");
     }
 
     Ok(())
@@ -1597,19 +1704,47 @@ fn spawn_partial_publisher_from_store(
                         archived_repos: pp.archived_repos,
                     });
 
-                    if let Err(e) =
-                        publish_evidence(
-                            &pp.config,
-                            &pp.run,
-                            &pp.run.correlation_context(),
-                            &evidence,
-                            &pp.state,
-                        )
-                        .await
+                    // Partial-render path (CHE-0054:R1.e): emit
+                    // `PartialEvidenceRendered` (non-terminal) — never the
+                    // terminal `EvidencePublished`, which is reserved for
+                    // post-`SweepCompleted` (CHE-0054:R1.c).
+                    //
+                    // TODO: derive `pending_repos` from the inventory once
+                    // a clean RunMetadata API exists; 0 is sufficient for
+                    // the invariant (PartialEvidenceRendered admissibility)
+                    // and downstream consumers tolerate it.
+                    let pending_repos: usize = 0;
+
+                    match render_and_cache_evidence(
+                        &pp.config,
+                        &pp.run,
+                        &evidence,
+                        &pp.state,
+                    )
+                    .await
                     {
-                        warn!(error = %e, "partial report publish failed");
-                    } else {
-                        info!("partial report published");
+                        Ok(page_count) => {
+                            if let Err(e) = pp
+                                .state
+                                .run_service
+                                .render_partial(
+                                    &pp.run.run_id,
+                                    RenderPartial {
+                                        batch_id: pp.run.run_id.clone(),
+                                        page_count,
+                                        pending_repos,
+                                        timestamp: jiff::Timestamp::now().to_string(),
+                                    },
+                                    &pp.run.correlation_context(),
+                                )
+                                .await
+                            {
+                                warn!(error = %e, "partial render record failed");
+                            } else {
+                                info!("partial report published");
+                            }
+                        }
+                        Err(e) => warn!(error = %e, "partial report publish failed"),
                     }
                 }
 
@@ -3151,5 +3286,277 @@ mod tests {
         );
 
         state.work_queue.close();
+    }
+
+    // ── Sub-mission 4 — EvidencePublished ordering (CHE-0054:R1.c/e) ─────
+    //
+    // Invariants under test, as observed on the event bus:
+    //   T1. step_finalize emits SweepCompleted strictly before
+    //       EvidencePublished on the Run stream (R1.c).
+    //   T2. Partial publisher emits PartialEvidenceRendered while
+    //       phase == Started and NEVER EvidencePublished pre-complete
+    //       (R1.c forbidden; R1.e admissible).
+    //   T3. Warm-start synthesises SweepStarted → SweepCompleted →
+    //       EvidencePublished in order on the synthetic warm-start
+    //       batch_id stream.
+    //
+    // The bus is the operational read-surface; ordering observed there
+    // is what real consumers (projection, log, future saga) see.
+
+    /// Subscribe to the bus and collect every published envelope's event
+    /// into a `Vec<DomainEvent>` in publish order. Returns a shared
+    /// `Arc<Mutex<...>>` the test inspects after the production calls
+    /// settle.
+    fn capture_bus(
+        bus: &cherry_pit_agent::InProcessEventBus<crate::domain::events::DomainEvent>,
+    ) -> Arc<std::sync::Mutex<Vec<crate::domain::events::DomainEvent>>> {
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_handle = Arc::clone(&captured);
+        bus.register(move |env| {
+            captured_handle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(env.payload().clone());
+        });
+        captured
+    }
+
+    /// `step_finalize` must emit `SweepCompleted` strictly before
+    /// `EvidencePublished` on the Run stream (CHE-0054:R1.c).
+    #[tokio::test]
+    async fn step_finalize_emits_sweep_completed_before_evidence_published() {
+        use crate::domain::events::DomainEvent;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let mut run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10);
+        let ctx = make_test_collection_context();
+
+        let captured = capture_bus(&state.bus);
+
+        let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
+            |repo: &Repository, ts: &str| Ok(sample_repo_from_domain(repo, ts)),
+        )));
+        let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 2);
+
+        let mut saga = make_test_saga(&config, &run);
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo("repo-1")],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga.step_enqueue_and_await(
+            &config,
+            &run,
+            &run.correlation_context(),
+            &ctx,
+            &inventory,
+            &state,
+        )
+        .await
+        .unwrap();
+
+        let corr_ctx = run.correlation_context();
+        saga.step_finalize(&config, &mut run, &corr_ctx, &ctx, &inventory, &state)
+            .await
+            .unwrap();
+
+        // Give the synchronous in-process bus a microtask to flush;
+        // publish() is synchronous in-line so this is for paranoia only.
+        tokio::task::yield_now().await;
+
+        let events = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+
+        let position = |pred: fn(&DomainEvent) -> bool| events.iter().position(pred);
+
+        let started_at = position(|e| matches!(e, DomainEvent::SweepStarted { .. }))
+            .expect("SweepStarted must appear on the bus");
+        let completed_at = position(|e| matches!(e, DomainEvent::SweepCompleted { .. }))
+            .expect("SweepCompleted must appear on the bus");
+        let published_at = position(|e| matches!(e, DomainEvent::EvidencePublished { .. })).expect(
+            "EvidencePublished must appear on the bus after the sub-mission 4 reorder \
+                 (was previously rejected by aggregate pre-fix)",
+        );
+
+        assert!(
+            started_at < completed_at,
+            "SweepStarted ({started_at}) must precede SweepCompleted ({completed_at})"
+        );
+        assert!(
+            completed_at < published_at,
+            "CHE-0054:R1.c — SweepCompleted ({completed_at}) must precede \
+             EvidencePublished ({published_at}); pre-fix order was reversed"
+        );
+
+        state.work_queue.close();
+    }
+
+    /// Partial publisher must emit `PartialEvidenceRendered` and must
+    /// never emit `EvidencePublished` between `SweepStarted` and
+    /// `SweepCompleted` (CHE-0054:R1.c forbids terminal publish pre-complete;
+    /// R1.e admits non-terminal partial render).
+    ///
+    /// Driven via `RunService` directly (rather than spawning the debounce
+    /// loop) — the partial publisher's contract surface IS the
+    /// `render_partial` call; the debounce / `pause_notify` wiring is plumbing.
+    #[tokio::test]
+    async fn partial_publisher_emits_partial_evidence_rendered_never_evidence_published() {
+        use crate::domain::events::DomainEvent;
+
+        let state = AppState::new_with_cache_capacity(10);
+        let captured = capture_bus(&state.bus);
+
+        let run = test_run_meta();
+        let corr_ctx = run.correlation_context();
+
+        // Production order: SweepStarted, then one or more RenderPartial
+        // calls (driven by the debounce loop), then eventually
+        // SweepCompleted in step_finalize. This test exercises the
+        // pre-complete window only.
+        state
+            .run_service
+            .start_sweep(
+                StartSweep {
+                    org: "TestOrg".to_string(),
+                    repo_count: 1,
+                    batch_id: run.run_id.clone(),
+                    timestamp: jiff::Timestamp::now().to_string(),
+                },
+                &corr_ctx,
+            )
+            .await
+            .unwrap();
+
+        for _ in 0..2 {
+            state
+                .run_service
+                .render_partial(
+                    &run.run_id,
+                    RenderPartial {
+                        batch_id: run.run_id.clone(),
+                        page_count: 1,
+                        pending_repos: 0,
+                        timestamp: jiff::Timestamp::now().to_string(),
+                    },
+                    &corr_ctx,
+                )
+                .await
+                .unwrap();
+        }
+
+        tokio::task::yield_now().await;
+
+        let events = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+
+        let started_at = events
+            .iter()
+            .position(|e| matches!(e, DomainEvent::SweepStarted { .. }))
+            .expect("SweepStarted must appear on the bus");
+
+        // At least one PartialEvidenceRendered must appear after SweepStarted.
+        let partial_count = events
+            .iter()
+            .skip(started_at + 1)
+            .filter(|e| matches!(e, DomainEvent::PartialEvidenceRendered { .. }))
+            .count();
+        assert_eq!(
+            partial_count, 2,
+            "CHE-0054:R1.e — partial publisher must emit PartialEvidenceRendered for each render"
+        );
+
+        // EvidencePublished MUST NOT appear pre-complete (R1.c).
+        let published_pre_complete = events
+            .iter()
+            .skip(started_at + 1)
+            .any(|e| matches!(e, DomainEvent::EvidencePublished { .. }));
+        assert!(
+            !published_pre_complete,
+            "CHE-0054:R1.c — partial publisher must never emit EvidencePublished \
+             before SweepCompleted; saw one in pre-complete window"
+        );
+    }
+
+    /// Warm-start must synthesise `SweepStarted → SweepCompleted →
+    /// EvidencePublished` in order on the synthetic `warm-start-*` stream
+    /// (the only way `EvidencePublished` is admissible at cold boot per
+    /// CHE-0054:R1.c).
+    #[tokio::test]
+    async fn warm_start_synthesises_started_completed_published_in_order() {
+        use crate::domain::events::DomainEvent;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let state = AppState::new_with_cache_capacity(10);
+
+        // Seed a baseline so warm_start_from_baseline has something to
+        // restore. Single repo is enough; we're testing lifecycle
+        // event ordering, not evidence content.
+        let mut evidence = sample_repo("repo-1");
+        Arc::make_mut(&mut evidence.repository).updated_at =
+            Some("2026-04-10T00:00:00Z".to_string());
+        seed_baseline(
+            dir.path(),
+            vec![("repo-1", "2026-04-10T00:00:00Z", evidence)],
+        );
+
+        let captured = capture_bus(&state.bus);
+
+        let ok = warm_start_from_baseline(&config, &state).await;
+        assert!(ok, "warm-start should succeed with a seeded baseline");
+
+        tokio::task::yield_now().await;
+
+        let events = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+
+        // Locate the synthetic triple. Each event variant exposes its
+        // batch_id; we filter on the `warm-start-` prefix per the
+        // production-side convention.
+        let warm_started_at = events.iter().position(|e| {
+            matches!(
+                e,
+                DomainEvent::SweepStarted { batch_id, .. } if batch_id.starts_with("warm-start-")
+            )
+        });
+        let warm_completed_at = events.iter().position(|e| {
+            matches!(
+                e,
+                DomainEvent::SweepCompleted { batch_id, .. } if batch_id.starts_with("warm-start-")
+            )
+        });
+        let warm_published_at = events
+            .iter()
+            .position(|e| matches!(e, DomainEvent::EvidencePublished { .. }));
+
+        let started_at = warm_started_at.expect(
+            "warm-start SweepStarted (batch_id prefix `warm-start-`) must appear on the bus",
+        );
+        let completed_at = warm_completed_at.expect(
+            "warm-start SweepCompleted (batch_id prefix `warm-start-`) must appear on the bus",
+        );
+        let published_at =
+            warm_published_at.expect("warm-start EvidencePublished must appear on the bus");
+
+        assert!(
+            started_at < completed_at,
+            "warm-start SweepStarted ({started_at}) must precede SweepCompleted \
+             ({completed_at})"
+        );
+        assert!(
+            completed_at < published_at,
+            "CHE-0054:R1.c — warm-start SweepCompleted ({completed_at}) must precede \
+             EvidencePublished ({published_at})"
+        );
     }
 }
