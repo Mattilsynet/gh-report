@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+use pardosa_encoding::Encode;
+
 use crate::error::PardosaError;
 
 /// Raw deserialization helper for `Index`. Routes through `Index::new`
@@ -138,6 +140,18 @@ impl fmt::Display for Index {
     }
 }
 
+// PAR-0021 R1 canonical-bytes domain. Hand-rolled `Encode` per F2c Path-B
+// (PAR-0024 R5: pardosa runtime does not consume `pardosa-derive`). Single
+// `u64` field encoded GEN-0035-style — verbatim 8 bytes little-endian, no
+// length prefix, no discriminant. `Index::NONE` (the `u64::MAX` sentinel)
+// participates on the wire so genesis-event canonical bytes round-trip
+// through the precursor field.
+impl Encode for Index {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.0.encode(out);
+    }
+}
+
 /// Unique identifier for a domain entity / fiber.
 ///
 /// GENOME LAYOUT: single `u64` field. Do not add fields or reorder.
@@ -169,6 +183,14 @@ impl DomainId {
 impl fmt::Display for DomainId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+// PAR-0021 R1 canonical-bytes domain — single u64, verbatim LE per GEN-0035.
+// Twin of `Encode for Index` above; see that comment for the Path-B rationale.
+impl Encode for DomainId {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.0.encode(out);
     }
 }
 
