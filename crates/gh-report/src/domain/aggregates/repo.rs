@@ -71,6 +71,7 @@ impl Aggregate for Repo {
             | DomainEvent::SweepCompleted { .. }
             | DomainEvent::SweepFailed { .. }
             | DomainEvent::EvidencePublished { .. }
+            | DomainEvent::PartialEvidenceRendered { .. }
             | DomainEvent::WebhookReceived { .. } => {
                 debug_assert!(
                     false,

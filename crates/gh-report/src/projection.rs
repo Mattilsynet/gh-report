@@ -248,7 +248,8 @@ impl Projection for EvidenceProjection {
             | DomainEvent::SweepFailed { .. }
             | DomainEvent::SweepProgress { .. }
             | DomainEvent::WebhookReceived { .. }
-            | DomainEvent::EvidencePublished { .. } => {
+            | DomainEvent::EvidencePublished { .. }
+            | DomainEvent::PartialEvidenceRendered { .. } => {
                 // No-op until B6' extends payloads. Placeholder match
                 // arms keep the projection idempotent (CHE-0048:R3) and
                 // exhaustive against future variants.
