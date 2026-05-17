@@ -83,7 +83,7 @@ Live state — point-in-time snapshots have been removed; query the SSOTs.
 | Item | Pointer |
 |------|---------|
 | Active phase | Phase 2 v2 (Generalization by Construction) |
-| Remaining Phase 2 v2 tracks | Track 3 (adr-srv), Track 4.4 (validate.rs migration), Track 5 (SEC-0003 bind-in-library) |
+| Remaining Phase 2 v2 tracks | Track 3 (adr-srv, read-only re-scope), Track 4.4 (validate.rs migration), Track 5 (SEC-0003 bind-in-library), Track 6 (pardosa-genome file format; PAR-0021 + F9 atomic-ship), Track 7 (gh-report → pardosa hard cut), Track 8 (C3 idiomatic audit) |
 | Closed-track / closed-task history | bd, labels `phase:1-cleanup` / `phase:2-generalize` |
 | Live track-level dashboard | `docs/c4/roadmap.md` |
 | ADR corpus state | `cargo run -p adr-fmt -- --tree CHE` (and PAR / GEN / AFM) |
@@ -235,6 +235,13 @@ with their phase target; items permanently out of scope are marked
   propagation, prior-art survey). NATS / JetStream lights up **for tests
   only** (embedded `nats-server`) — production NATS deploy, SEC-0010 (TLS),
   and SEC-0011 (hash-chain) remain Phase 3.
+- **First persisted pardosa event in any consumer.** Gated on Track 6
+  atomic-ship complete (PAR-0021 F2 chain + F9 type-surface together,
+  `FORMAT_VERSION = 3` in tree). Roadmap Tracks 3.A (adr-srv ADR scrape)
+  and 7 (gh-report hard cut) carry this gate explicitly. "Parallel" in
+  the roadmap means concurrent agents on disjoint crate trees, not
+  concurrent first-writes onto a still-changing wire format. Phase 2
+  v2 only; lifts once Track 6 closes.
 - **CHE-0044 object_store backend.** Still deferred to Phase 3 review;
   decoupled from pardosa activation. Phase 3 may lift the deferral or
   confirm it.
@@ -311,11 +318,15 @@ cargo test -p <pardosa-store-crate> --test '*_conformance'
 # Track 2.3: NATS substrate, tests-only
 cargo test -p <pardosa-store-crate> --features nats
 
-# Track 3: adr-srv full stack
+# Track 3: adr-srv read-only (Phase 2 v2 re-scope 2026-05-17)
+# C1 — adr-srv operational; ADR corpus scraped, served via GraphQL Query.
 cargo test -p adr-srv
-cargo test -p adr-srv --test graphql_read_e2e
-cargo test -p adr-srv --test graphql_write_e2e
-cargo test -p adr-srv --test lint_integration   # metacircular adr-fmt-as-projection
+cargo test -p adr-srv --test scrape_pipeline      # Track 3.A: idempotent re-scrape
+cargo test -p adr-srv --test graphql_read_e2e     # Track 3.3: Query schema + projection
+cargo run  -p adr-srv &                           # smoke: server starts
+# { adr(id: "AFM-0001") { title, references { id } } } returns scraped + projected ADR
+# Mutations (ratifyAdr / supersede) and metacircular lint_integration RETIRED
+# to Phase 3 (roadmap injection-queue items 3 + 4).
 
 # Track 4 mechanical LOC gate retracted v0.7 (2026-05-16); substance
 # evidence lives in CHE-0062 + CHE-0049-Amendment-Part-2 + SMI-1..SMI-5.
@@ -323,9 +334,25 @@ cargo test -p adr-srv --test lint_integration   # metacircular adr-fmt-as-projec
 # Track 5: SEC-0003 bind-in-library integration test (test name TBD per chosen mechanism)
 cargo test -p cherry-pit-web --test sec_0003_enforced_at_library_surface
 
-# Track 4.0 SMI invariant maintained (Track 4.0 closed 2026-05-16):
+# Track 6: pardosa-genome file-format atomic-ship (Epic 6.A PAR-0021 + Epic 6.B F9).
+# Gate for any first persisted event in adr-srv (Track 3.A) or gh-report (Track 7).
+rg -n 'FORMAT_VERSION *= *3' crates/pardosa-genome/src/format.rs
+cargo test -p pardosa-genome
+cargo test -p pardosa-genome --test tamper_injection   # F2f
+
+# Track 7: gh-report → pardosa hard cut. C2 discharged here.
+cargo test -p gh-report                           # green on pardosa-genome backend
+rg -n 'msgpack.*store|MsgpackEventStore' crates/gh-report/src/   # zero hits
+cargo run -p adr-fmt -- --refs CHE-0031           # supersession ADR cites CHE-0031
+
+# Track 4.0 SMI invariant maintained across Track 7 cut-over:
 rg -n 'sequence_tracker|run_index|repo_index|delivery_index' crates/gh-report/src/ && exit 1 || true
 cargo test -p gh-report --test smi_replay_equivalence
+
+# Track 8: C3 idiomatic architectural-organization audit.
+# Audit-report bead + per-crate remediation beads under labels track:8,remediation.
+bd query --label 'track:8,remediation' --json
+# Every Phase-2 remediation bead either closed or labelled phase:3-harden with rationale.
 ```
 
 **Phase 3 (Harden)** — baseline plus:
@@ -347,3 +374,4 @@ all green AND `docs/c4/roadmap.md` exit criteria all checked.
 |---------|------------|--------|---------|
 | 0.1–0.6 | 2026-05-13 → 2026-05-16 | acje + agent | Phase model adoption, ceremony strip, Phase 2 v1→v2 supersession, Track 4.0 SMI injection, LOC-gate amend-then-retract. See git log + bd for detail. |
 | 0.7     | 2026-05-16 | acje + agent | **v0.6 amendment retracted; LOC gate sunset entirely; bespoke scripts removed.** Half-day audit of `scripts/prod-loc` (574 LOC syn-AST production-LOC counter) + `scripts/track4-verify` (711 LOC, 13-criterion harness) found: ~10 of the 13 `track4-verify` criteria duplicate existing CI jobs (`build`, `test`, `clippy`, `fmt`); the unique value (LOC non-regression gate, SMI rg checks, audit-trail/alias verifications) collapses to 4-6 inline CI shell steps; the LOC gate the tooling enforced is itself a proxy gate (architectural substance — duplication deleted, libraries consolidated — is observable in commit diffs and ADRs, not in a line count). User verdict (verbatim): *"the gain is too small and the cost of drift and clutter is real. remove"*. Actions: (1) `git rm -r scripts/prod-loc scripts/track4-verify scripts/citation-diff`; (2) `git rm scripts/{adr_agg,adr_rules,loc,loc_agg}.awk` (the "honest historical record" of v0.6 was equally subject to the drift-and-clutter verdict); (3) `.gitignore` re-adds `scripts/` so future throwaway tooling does not silently accumulate — promote any genuinely durable tool to its own `crates/` member with an ADR justifying it; (4) `.github/workflows/ci.yml` job `track4-gates` deleted; (5) §3 row + §8 Track-4 verify block rewritten to reflect retraction. **Doctrine lesson recorded:** v0.6 amended a malformed gate by building tooling to enforce the amendment — substituted measurement infrastructure for the underlying question "is the gate's substance worth measuring at all?". v0.7 answers no. Track 4 epic `adr-fmt-ysaa` remains CLOSED — retraction does not reopen exit criteria, it removes mechanical enforcement that was duplicative of `cargo test` / `cargo clippy` / `cargo fmt` plus the substance evidence already in CHE-0062 / CHE-0049-Amendment-Part-2 / SMI-1..SMI-5. Net code change: −1285 LOC bespoke scripts + −15 LOC `.gitignore` un-ignore + −16 LOC CI job, −1 CI job, +1 `.gitignore` rule. §2 invariants unchanged. §6/§7 guardrails unchanged. SM2 (doc_markdown sweep, also retracted 2026-05-16) is a sibling failure mode — both rounds demonstrated that **building tools to enforce a gate is a higher-order ceremony**: the tool exists, therefore the gate must be real, therefore the proxy is treated as substance. Companion: `docs/c4/roadmap.md` v0.6. |
+| 0.8     | 2026-05-17 | acje + agent | **User-ratified Phase 2 v2 completion criteria** synced from `docs/c4/roadmap.md` v0.9: C1 = adr-srv operational in **read-only mode** (scrape ADRs → pardosa-genome → GraphQL Query); C2 = gh-report stores internal state in pardosa-genome files (hard cut, re-scrape GitHub API; no prod deployments); C3 = idiomatic architectural-organization audit across `adr-srv` / `gh-report` / `cherry-pit-*` / `pardosa-*`. **§3 row updated** to enumerate all remaining tracks (3 read-only, 4.4, 5, 6, 7, 8). **§7 guardrail added**: "First persisted pardosa event in any consumer" gated on Track 6 atomic-ship complete — formalises the user direction that PAR-0021 F2 chain + F9 type-surface (`FORMAT_VERSION = 3`) land before any consumer writes. "Parallel" means concurrent agents on disjoint crate trees, not concurrent first-writes. **§8 verify block rewritten**: Track 3 verify drops `graphql_write_e2e` + `lint_integration` (retired to Phase 3 injection-queue items 3 + 4); adds Track 3.A `scrape_pipeline`; adds Track 6 atomic-ship verify (`FORMAT_VERSION = 3` grep + `tamper_injection` test); adds Track 7 (`gh-report` on pardosa, msgpack-store zero hits, CHE-0031 supersession ADR refs); adds Track 8 (`track:8,remediation` bd query). §2 invariants unchanged. §6 escalation policy unchanged. Track 6 atomic-ship preserved (Epic 6.A + 6.B together, per user direction). Track 4.4 + Track 5 placement preserved (sequenced after Track 3.3, per user "as early as possible in Phase 2" direction). Companion: `docs/c4/roadmap.md` v0.9. |
