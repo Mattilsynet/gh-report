@@ -4,26 +4,28 @@
 //!   1. `run_default_mode_via_lib_api_returns_zero` — proves the
 //!      top-level entry-point `adr_fmt::run` is callable from a
 //!      library consumer (Phase 2 v2 C1 prerequisite for `adr-srv`).
-//!   2. `lib_api_modules_resolve` — compile-time probe that each
-//!      re-exported module path resolves and exposes the headline
-//!      types future consumers will name.
+//!   2. `lib_api_modules_resolve` — compile-time probe that every
+//!      item in the Q2 public-API set resolves under its re-exported
+//!      path at the crate root. If any of these stop resolving, the
+//!      lib API contract has regressed.
+//!
+//! Q2 minimum set — see oracle bd adr-fmt-d7ao:
+//!   - `Config`, `LoadError`, `load_quiet`, `resolve_corpus_root`
+//!   - `ContainmentError`, `contained_join`, `contained_join_optional`
+//!   - `AdrId`, `AdrRecord`, `DomainDir`, `Tier`, `parse_adr_id`
+//!   - `ParseOutcome`, `parse_domain`, `parse_stale`
+//!   - `Diagnostic`, `Severity`
+//!
+//! Modules `context`, `nav`, `output`, `refs`, `rules`, `guidelines`
+//! are private per CHE-0030 R1; their probes were dropped in commit
+//! "trim adr-fmt lib surface to CHE-0030 Q2 set" because external
+//! consumers MUST NOT name those paths.
 //!
 //! Binary regression coverage lives in `tests/integration.rs` (~84
 //! tests). These tests exist solely to pin the lib API contract.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
-
-/// Type alias for `context_grouped`'s signature — kept here (not in
-/// `adr_fmt::context`) because the probe's purpose is to name the
-/// full external form from a library-consumer perspective, including
-/// the `Result<Vec<…>>` layering. Mirrors what a real consumer would
-/// `use` from the crate.
-type ContextGroupedFn = fn(
-    &str,
-    &[adr_fmt::model::AdrRecord],
-    &adr_fmt::config::Config,
-) -> Result<Vec<adr_fmt::output::RootGroup>, String>;
+use std::path::{Path, PathBuf};
 
 #[test]
 fn run_default_mode_via_lib_api_returns_zero() {
@@ -41,82 +43,66 @@ fn run_default_mode_via_lib_api_returns_zero() {
 
 #[test]
 fn lib_api_modules_resolve() {
-    // Compile-time probes: name each re-exported module path and a
-    // headline type from each. If any of these stop resolving, the
-    // lib API contract has regressed.
-    //
-    // Variables are named without underscore prefix so each binding
-    // is a deliberate use, not a no-op (silences
-    // clippy::no_effect_underscore_binding under workspace pedantic).
-    // `let _: T = expr` syntax is used for value probes; `let f: F = ...`
-    // for fn-pointer probes (also exercises the type alias).
+    // Compile-time probes for the Q2 set. Each binding names a path
+    // re-exported at the crate root via `pub use`; if any path
+    // shifts or is removed, this test fails to compile.
 
-    // adr_fmt::report — Severity, Diagnostic
-    let _: adr_fmt::report::Severity = adr_fmt::report::Severity::Warning;
-    let _: adr_fmt::report::Diagnostic = adr_fmt::report::Diagnostic::warning(
-        "T999",
-        std::path::Path::new("probe.md"),
-        1,
-        String::from("probe"),
-    );
+    // report — Severity, Diagnostic
+    let _: adr_fmt::Severity = adr_fmt::Severity::Warning;
+    let _: adr_fmt::Diagnostic =
+        adr_fmt::Diagnostic::warning("T999", Path::new("probe.md"), 1, String::from("probe"));
 
-    // adr_fmt::model — Tier, DomainDir, AdrId via parse_adr_id
-    let _: adr_fmt::model::Tier = adr_fmt::model::Tier::A;
-    let _: adr_fmt::model::DomainDir = adr_fmt::model::DomainDir {
+    // model — Tier, DomainDir, AdrId, AdrRecord (via parse_adr_id),
+    // parse_adr_id
+    let _: adr_fmt::Tier = adr_fmt::Tier::A;
+    let _: adr_fmt::DomainDir = adr_fmt::DomainDir {
         path: PathBuf::from("/tmp/probe"),
         prefix: String::from("PRB"),
         name: String::from("probe"),
     };
-    let _: Option<adr_fmt::model::AdrId> = adr_fmt::model::parse_adr_id("PRB-0001");
+    let _: Option<adr_fmt::AdrId> = adr_fmt::parse_adr_id("PRB-0001");
+    // AdrRecord named via fn-pointer signature below.
 
-    // adr_fmt::containment — ContainmentError, contained_join
-    let _: Result<PathBuf, adr_fmt::containment::ContainmentError> =
-        adr_fmt::containment::contained_join(std::path::Path::new("/tmp"), "x");
+    // containment — ContainmentError, contained_join,
+    // contained_join_optional
+    let _: Result<PathBuf, adr_fmt::ContainmentError> =
+        adr_fmt::contained_join(Path::new("/tmp"), "x");
+    let _: Result<Option<PathBuf>, adr_fmt::ContainmentError> =
+        adr_fmt::contained_join_optional(Path::new("/tmp"), "x");
 
-    // adr_fmt::nav — ChildEntry, compute_children
-    let _: std::collections::HashMap<adr_fmt::model::AdrId, Vec<adr_fmt::nav::ChildEntry>> =
-        adr_fmt::nav::compute_children(&[]);
-
-    // adr_fmt::parser — parse_domain (fn-pointer probe; constructing
-    // a full ParseOutcome requires fs access, out of scope for a probe).
-    // The fn-pointer assignment alone enforces the signature at
-    // compile time; calling through it isn't required.
-    let parse_domain_fn: fn(
-        &adr_fmt::model::DomainDir,
-    ) -> Result<adr_fmt::parser::ParseOutcome, String> = adr_fmt::parser::parse_domain;
-    // Use the binding so it isn't a dead binding under clippy.
+    // parser — parse_domain, parse_stale, ParseOutcome (fn-pointer
+    // probes; constructing a full ParseOutcome requires fs access).
+    let parse_domain_fn: fn(&adr_fmt::DomainDir) -> Result<adr_fmt::ParseOutcome, String> =
+        adr_fmt::parse_domain;
     assert!(std::ptr::fn_addr_eq(
         parse_domain_fn,
-        adr_fmt::parser::parse_domain as fn(_) -> _
+        adr_fmt::parse_domain as fn(_) -> _
+    ));
+    let parse_stale_fn: fn(&Path, &adr_fmt::Config) -> Result<adr_fmt::ParseOutcome, String> =
+        adr_fmt::parse_stale;
+    assert!(std::ptr::fn_addr_eq(
+        parse_stale_fn,
+        adr_fmt::parse_stale as fn(_, _) -> _,
     ));
 
-    // adr_fmt::rules — run_all (fn-pointer probe).
-    let rules_run_all_fn: fn(
-        &[adr_fmt::model::AdrRecord],
-        &adr_fmt::config::Config,
-    ) -> Vec<adr_fmt::report::Diagnostic> = adr_fmt::rules::run_all;
+    // config — Config, LoadError, load_quiet, resolve_corpus_root
+    // (fn-pointer probes name AdrRecord-free signatures from
+    // config.rs). `Config` and `LoadError` are named via the
+    // load_quiet signature below.
+    let load_quiet_fn: fn(&Path) -> Result<adr_fmt::Config, adr_fmt::LoadError> =
+        adr_fmt::load_quiet;
     assert!(std::ptr::fn_addr_eq(
-        rules_run_all_fn,
-        adr_fmt::rules::run_all as fn(_, _) -> _,
+        load_quiet_fn,
+        adr_fmt::load_quiet as fn(_) -> _,
     ));
+    // resolve_corpus_root takes a `CorpusConfig` which is private
+    // (sub-struct of Config); name it through a fn-pointer-coerced
+    // assertion only via `&Config`-projecting code paths in real
+    // consumers. For a probe, the path-resolution alone is enough:
+    let _ = adr_fmt::resolve_corpus_root;
 
-    // adr_fmt::refs — find_refs (fn-pointer probe).
-    let refs_find_fn: fn(
-        &adr_fmt::model::AdrId,
-        &[adr_fmt::model::AdrRecord],
-    ) -> Result<adr_fmt::refs::RefsReport, String> = adr_fmt::refs::find_refs;
-    assert!(std::ptr::fn_addr_eq(
-        refs_find_fn,
-        adr_fmt::refs::find_refs as fn(_, _) -> _,
-    ));
-
-    // adr_fmt::context — context_grouped (fn-pointer probe via alias).
-    // The return type names `adr_fmt::output::RootGroup`, which is why
-    // `output` is also re-exported (rendering helpers private would
-    // make this signature unnameable externally).
-    let context_grouped_fn: ContextGroupedFn = adr_fmt::context::context_grouped;
-    assert!(std::ptr::fn_addr_eq(
-        context_grouped_fn,
-        adr_fmt::context::context_grouped as fn(_, _, _) -> _,
-    ));
+    // AdrRecord — named explicitly to pin the type's public path.
+    // Real consumers see `Vec<AdrRecord>` from parsers; here a
+    // type-position probe suffices.
+    let _: fn() -> Vec<adr_fmt::AdrRecord> = || Vec::new();
 }

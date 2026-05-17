@@ -25,51 +25,64 @@
 //!   1 — Infrastructure error or lint errors detected
 //!
 //! The CLI surface is frozen for v0.1 per AFM-0001. The library API
-//! is exposed via `pub use` / `pub mod` re-exports per CHE-0030.
+//! follows CHE-0030 R1: modules are private; only the minimum set
+//! of items needed by downstream consumers (`adr-srv` per Phase 2 v2 C1)
+//! is re-exported via a flat `pub use` block. Oracle Q2 set: see
+//! bd adr-fmt-d7ao.
 
 #![forbid(unsafe_code)]
-// Track 3.1: pub-mod widening exposed pedantic-doc lints on pub fns
-// in `parser.rs`, which AGENTS.md flags as "do not refactor during
-// v0.1" (AFM-0006 regex parser is large + stable). Suppress these
-// two pedantic lints crate-wide rather than touching parser.rs.
-// Non-parser pub fns have `# Errors` docs added in-place; this
-// allow exists for parser's three pub fns (`parse_domain`,
-// `parse_stale`, `parse_adr_file`). Revisit when parser.rs is
-// next opened for behavioural work.
+// Pedantic-doc lints (`missing_errors_doc`, `missing_panics_doc`)
+// would fire on `pub fn` items in private modules (`parser.rs` in
+// particular) under workspace `pedantic = warn`. AGENTS.md forbids
+// refactoring `parser.rs` during v0.1 per AFM-0006. Suppress these
+// two lints crate-wide rather than touching parser.rs. Revisit when
+// parser.rs is next opened for behavioural work.
 #![allow(
     clippy::missing_errors_doc,
     clippy::missing_panics_doc,
-    reason = "Track 3.1 lib-API widening exposed pedantic doc lints in parser.rs; AGENTS.md forbids parser.rs refactor during v0.1 per AFM-0006"
+    reason = "AGENTS.md forbids parser.rs refactor during v0.1 per AFM-0006; pedantic doc lints fire on parser's pub fns"
 )]
 
-// Public lib API (Track 3.1): re-export the modules that future
-// consumers (e.g. `adr-srv`, Phase 2 v2 C1) need to drive ADR
-// parsing, linting, navigation, and rendering without spawning
-// the binary. `output` is re-exported because `context_grouped`
-// returns `Vec<output::RootGroup>`; keeping `output` private
-// would make the `context` return type unnameable externally.
-// `guidelines` stays private — it is purely a stdout-rendering
-// helper for the binary's default mode (AFM-0001).
-pub mod config;
-pub mod containment;
-pub mod context;
-pub mod model;
-pub mod nav;
-pub mod output;
-pub mod parser;
-pub mod refs;
-pub mod report;
-pub mod rules;
-
+// Internal modules — private per CHE-0030 R1. Only the items named
+// in the `pub use` block below are part of the library contract.
+// Internal reorganisation (rename a module, split a file, move a
+// helper) is a non-breaking change for downstream consumers.
+mod config;
+mod containment;
+mod context;
 mod guidelines;
+mod model;
+mod nav;
+mod output;
+mod parser;
+mod refs;
+mod report;
+mod rules;
+
+// Public library surface (CHE-0030 R1, flat `pub use`).
+//
+// Minimum set per oracle bd adr-fmt-d7ao Q2: just enough for
+// `adr-srv` (Phase 2 v2 C1) to discover an ADR corpus, parse it,
+// and surface parser-stage diagnostics. Anything beyond this set
+// must be justified by a current consumer (COM-0013 R1) and
+// re-confirmed against SEC-0004 R3 (minimal public API).
+//
+// `config::load` is intentionally absent: only `load_quiet` is
+// `pub` in `config.rs` today; oracle Q2 named both but inventing
+// a new alias would exceed the minimum-surface mandate.
+pub use config::{Config, LoadError, load_quiet, resolve_corpus_root};
+pub use containment::{ContainmentError, contained_join, contained_join_optional};
+pub use model::{AdrId, AdrRecord, DomainDir, Tier, parse_adr_id};
+pub use parser::{ParseOutcome, parse_domain, parse_stale};
+pub use report::{Diagnostic, Severity};
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
 
-use config::Config;
-use model::{DomainDir, parse_adr_id};
+// `Config`, `DomainDir`, `AdrId`, `parse_adr_id` are at crate root
+// via the `pub use` block above, so no `use` statements needed here.
 
 /// ADR template and link-integrity validator.
 #[derive(Parser)]
