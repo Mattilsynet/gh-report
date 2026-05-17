@@ -222,7 +222,7 @@ struct PreparedCommit<T> {
     lookup_op: LookupOp,
     /// Some when this writer advances the domain-id counter (create).
     next_id_advance: Option<DomainId>,
-    /// Some when this writer clears a purged-id reservation (create_reuse).
+    /// Some when this writer clears a purged-id reservation (`create_reuse`).
     purged_remove: Option<DomainId>,
 }
 
@@ -842,6 +842,14 @@ impl<T> Dragline<T> {
         Ok(())
     }
 
+    /// Verify that every event's `precursor` (when set) points to an earlier
+    /// event in the same domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PardosaError::BrokenPrecursorChain`] when an event names a
+    /// precursor that is forward-looking (precursor index ≥ event index) or
+    /// that belongs to a different domain.
     pub fn verify_precursor_chains(&self) -> Result<(), PardosaError> {
         for (i, event) in self.line.iter().enumerate() {
             let precursor = event.precursor();
@@ -1379,7 +1387,7 @@ mod tests {
         }
         for (i, id) in created.iter().enumerate() {
             if i % 2 == 0 {
-                d.detach(*id, 2000 + i as i64, "det").unwrap();
+                d.detach(*id, 2000 + i64::try_from(i).expect("test index fits in i64"), "det").unwrap();
                 d.migrate_fiber(*id, MigrationPolicy::Purge).unwrap();
             }
         }
