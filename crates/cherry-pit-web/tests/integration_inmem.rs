@@ -23,8 +23,6 @@
 //!   it onto each envelope per CHE-0016), and the response echoes the
 //!   same header back per **CHE-0049 R5**.
 
-#![allow(dead_code)]
-
 use std::convert::Infallible;
 use std::error::Error;
 use std::fmt;
@@ -418,6 +416,10 @@ fn harness() -> Harness {
     Harness { app, store, router }
 }
 
+#[expect(
+    dead_code,
+    reason = "test helper retained for symmetry with the WU-4 brief's HTTP-response assertion vocabulary; not exercised by every test, but kept inline so any future assertion needing body bytes can use it without a separate refactor."
+)]
 async fn body_string(response: axum::response::Response) -> String {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     String::from_utf8(bytes.to_vec()).unwrap()
@@ -661,9 +663,14 @@ async fn correlation_round_trip_propagates_and_echoes() {
 // `map_store_error` is exercised indirectly through the load handler;
 // keep a direct reference here so a future refactor that drops the
 // public mapper from the surface fails this file at compile time as
-// well as the existing unit tests.
-#[allow(dead_code)]
-fn _public_mappers_remain_reachable() {
+// well as the existing unit tests. #[expect] fails closed: if the
+// reachability check ever gains a real caller, this attribute fires
+// as unfulfilled and must be removed.
+#[expect(
+    dead_code,
+    reason = "compile-time reachability anchor for `map_store_error`; the function body is the assertion that the public mapper still type-checks at the test crate's call site."
+)]
+fn public_mappers_remain_reachable() {
     let err = StoreError::Infrastructure("x".into());
     let _ = map_store_error(&err);
 }

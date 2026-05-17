@@ -405,10 +405,15 @@ async fn ws_cross_origin_upgrade_rejected() {
     server.shutdown().await;
 }
 
-// Suppress unused-import lint when `CloseFrame` isn't referenced after
-// build (kept for documentation symmetry with the lag-test rewrite).
-#[allow(dead_code)]
-fn _close_frame_anchor(_f: CloseFrame) {}
+// Compile-time reachability anchor for `CloseFrame`: kept for
+// documentation symmetry with the lag-test rewrite. #[expect] fails
+// closed: if `CloseFrame` ever gains a real caller in this file, this
+// attribute fires as unfulfilled and must be removed.
+#[expect(
+    dead_code,
+    reason = "compile-time reachability anchor for `CloseFrame`; the parameter type is the assertion that the import still resolves at the test crate's call site."
+)]
+fn close_frame_anchor(_f: CloseFrame) {}
 
 // ===========================================================================
 // Opportunistic pickup (sub-4d brief §"Opportunistic pickup")

@@ -14,8 +14,6 @@
 //! Heavyweight integration coverage against an in-memory `EventStore`
 //! lands in S6; this test only proves the trait wires up end-to-end.
 
-#![allow(dead_code)]
-
 use std::convert::Infallible;
 use std::num::NonZeroU64;
 

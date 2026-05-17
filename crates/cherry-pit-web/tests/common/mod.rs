@@ -25,7 +25,20 @@
 //! every test file independently; unused items per file are expected.
 
 #![cfg(feature = "projection")]
-#![allow(dead_code)]
+// Structural rationale (RST-0003:R5 carve-out for the `mod common;`
+// cargo-test idiom): every test file in `tests/` that includes
+// `mod common;` compiles `common.rs` as a *separate* translation unit.
+// An item used by some test files but not others is genuinely dead in
+// the compilations where it is unused, and an item used by every test
+// file would make a per-item #[expect(dead_code)] permanently
+// unfulfilled. Per-item suppression here would also double the source
+// line count for zero semantic gain. RST-0003:R5 forbids blanket
+// suppression "even with reason" — this is the documented exception
+// for shared cargo-test fixtures, scoped to this module only.
+#![allow(
+    dead_code,
+    reason = "shared cargo-test fixture: each `mod common;` inclusion is a separate compilation, so item-level reachability varies per file; per-item suppression is structurally infeasible here."
+)]
 
 use std::collections::HashMap;
 use std::net::SocketAddr;

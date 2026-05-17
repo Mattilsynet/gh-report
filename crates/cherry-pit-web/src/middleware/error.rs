@@ -202,7 +202,7 @@ fn no_headers() -> HeaderMap {
 /// assert_eq!(status, StatusCode::NOT_FOUND);
 /// assert_eq!(body.code, "aggregate_not_found");
 /// ```
-#[allow(
+#[expect(
     clippy::match_same_arms,
     reason = "explicit Infrastructure arm documents the spec'd CHE-0049 R10 mapping; the trailing wildcard exists solely to satisfy #[non_exhaustive] (CHE-0021 R1) and shares the body by design — collapsing the arms would erase the spec citation"
 )]
@@ -264,7 +264,7 @@ where
 /// assert!(headers.contains_key(RETRY_AFTER));
 /// assert_eq!(body.code, "store_locked");
 /// ```
-#[allow(
+#[expect(
     clippy::match_same_arms,
     reason = "explicit Infrastructure arm documents the spec'd CHE-0049 R10 mapping; the trailing wildcard exists solely to satisfy #[non_exhaustive] (CHE-0021 R1)"
 )]
