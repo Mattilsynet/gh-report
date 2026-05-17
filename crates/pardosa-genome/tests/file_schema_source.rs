@@ -295,3 +295,117 @@ fn rejects_non_utf8_schema_block() {
         "expected FileError::InvalidSchemaSource, got {err:?}"
     );
 }
+
+// ── GEN-0018 R1+R2: non-zero pad bytes are a hard wire violation ────────
+//
+// The schema-source block is `schema_size` UTF-8 bytes, then zero-padded
+// to an 8-byte boundary. Per GEN-0018 R1 ("all padding bytes must be
+// `0x00` — non-zero padding produces a hard, non-recoverable error") and
+// R2 ("there is no lenient mode for padding validation"), the Reader
+// must reject any non-zero byte in the 0..7 tail-pad region with
+// `FileError::InvalidReserved` — the same variant that already covers
+// header/footer/index-entry reserved-zero violations (structurally
+// identical: a region the wire format requires to be all-zero).
+//
+// Construction shape: build a valid file via `build_file`, then poke a
+// non-zero byte into the pad region at a known offset (the pad starts
+// at `FILE_HEADER_SIZE + schema_size`). The header's `schema_size` is
+// unchanged, so Reader's read-exact only consumes the UTF-8 portion;
+// our pad-check then walks the pad-width bytes and rejects. Refresh the
+// footer checksum so the failure surfaces as `InvalidReserved`, not
+// `InvalidChecksum` (the footer checksum spans `footer[0..24]` only,
+// independent of the pad — but pin the cause explicitly).
+
+/// Refresh the footer checksum in-place. Mirrors the helper used by the
+/// non-UTF-8 negative test above; factored out because three new tests
+/// need it.
+fn refresh_footer_checksum(file: &mut [u8]) {
+    let n = file.len();
+    let footer_start = n - FILE_FOOTER_SIZE;
+    let footer = &mut file[footer_start..];
+    let cksum = xxh64(&footer[..FOOTER_CHECKSUM_OFFSET], 0);
+    footer[FOOTER_CHECKSUM_OFFSET..FOOTER_CHECKSUM_OFFSET + 8]
+        .copy_from_slice(&cksum.to_le_bytes());
+}
+
+#[test]
+fn rejects_non_zero_pad_width_7() {
+    // schema_size = 1 → pad width 7 (residue class size mod 8 == 1).
+    // Poke a non-zero byte at the *last* pad byte to ensure we don't
+    // stop scanning prematurely.
+    let mut file = build_file(Some("a"), &[b"payload"]);
+    Reader::open(Cursor::new(&file)).expect("baseline file is well-formed");
+
+    let pad_start = FILE_HEADER_SIZE + 1;
+    let pad_end = FILE_HEADER_SIZE + pad_to_8(1);
+    assert_eq!(pad_end - pad_start, 7);
+    file[pad_end - 1] = 0xAB;
+
+    refresh_footer_checksum(&mut file);
+
+    let err = Reader::open(Cursor::new(&file)).expect_err("must reject non-zero pad");
+    assert!(
+        matches!(err, FileError::InvalidReserved),
+        "expected FileError::InvalidReserved, got {err:?}"
+    );
+}
+
+#[test]
+fn rejects_non_zero_pad_width_5() {
+    // schema_size = 3 → pad width 5 (residue class size mod 8 == 3).
+    // Poke the *first* pad byte — opposite end from the width-7 case.
+    let mut file = build_file(Some("abc"), &[b"payload"]);
+    Reader::open(Cursor::new(&file)).expect("baseline file is well-formed");
+
+    let pad_start = FILE_HEADER_SIZE + 3;
+    let pad_end = FILE_HEADER_SIZE + pad_to_8(3);
+    assert_eq!(pad_end - pad_start, 5);
+    file[pad_start] = 0x01;
+
+    refresh_footer_checksum(&mut file);
+
+    let err = Reader::open(Cursor::new(&file)).expect_err("must reject non-zero pad");
+    assert!(
+        matches!(err, FileError::InvalidReserved),
+        "expected FileError::InvalidReserved, got {err:?}"
+    );
+}
+
+#[test]
+fn rejects_non_zero_pad_width_1() {
+    // schema_size = 7 → pad width 1 (residue class size mod 8 == 7).
+    // The single pad byte is both first and last; ensures the check
+    // covers width-1 (off-by-one boundary).
+    let mut file = build_file(Some("schema!"), &[b"payload"]);
+    Reader::open(Cursor::new(&file)).expect("baseline file is well-formed");
+
+    let pad_start = FILE_HEADER_SIZE + 7;
+    let pad_end = FILE_HEADER_SIZE + pad_to_8(7);
+    assert_eq!(pad_end - pad_start, 1);
+    file[pad_start] = 0xFF;
+
+    refresh_footer_checksum(&mut file);
+
+    let err = Reader::open(Cursor::new(&file)).expect_err("must reject non-zero pad");
+    assert!(
+        matches!(err, FileError::InvalidReserved),
+        "expected FileError::InvalidReserved, got {err:?}"
+    );
+}
+
+#[test]
+fn accepts_zero_width_pad() {
+    // schema_size = 8 → pad width 0 (size mod 8 == 0). The pad-zero check
+    // must be a no-op when the pad range is empty; no read, no error.
+    // This pins that the check uses `pad_to_8(size) - size` and not a
+    // hardcoded "always read 8 bytes".
+    let schema = "abcdefgh";
+    assert_eq!(schema.len(), 8);
+    assert_eq!(pad_to_8(8) - 8, 0);
+
+    let file = build_file(Some(schema), &[b"payload"]);
+    let mut r = Reader::open(Cursor::new(&file)).expect("zero-width pad must accept");
+    assert_eq!(r.schema_source(), Some(schema));
+    let got: Vec<Vec<u8>> = r.iter_messages().collect::<Result<_, _>>().unwrap();
+    assert_eq!(got, vec![b"payload".to_vec()]);
+}
