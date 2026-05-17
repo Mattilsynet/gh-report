@@ -285,6 +285,35 @@ impl<T> Event<T> {
     }
 }
 
+// PAR-0021 R1 canonical-bytes domain for Event<T>. Hand-rolled per F2c
+// Path-B (PAR-0024 R5: pardosa runtime does not consume pardosa-derive).
+//
+// Fields encoded back-to-back in declaration order — must match the struct
+// definition at `event.rs:217` (event_id, timestamp, domain_id, detached,
+// precursor, precursor_hash, domain_event). Re-ordering is a wire-breaking
+// change; the `event_string_canonical_bytes_pin` test in
+// `crates/pardosa/tests/canonical_bytes.rs` traps any drift.
+//
+// `T: Encode` lives on the impl, not the type definition, so existing
+// `Event<T>` call sites that don't need canonical bytes (e.g. serde-only
+// paths) remain unconstrained. PAR-0021 R1 + R3 only require Encode at
+// the point where `precursor_hash_of` / `frontier_roll` are called.
+//
+// P-include semantics (F2c brief): `precursor_hash` IS part of the encoded
+// bytes — no skip-field — so the next event's precursor identity covers
+// the prior event's full surface.
+impl<T: Encode> Encode for Event<T> {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.event_id.encode(out);
+        self.timestamp.encode(out);
+        self.domain_id.encode(out);
+        self.detached.encode(out);
+        self.precursor.encode(out);
+        self.precursor_hash.encode(out);
+        self.domain_event.encode(out);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
