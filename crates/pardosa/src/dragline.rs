@@ -1387,7 +1387,12 @@ mod tests {
         }
         for (i, id) in created.iter().enumerate() {
             if i % 2 == 0 {
-                d.detach(*id, 2000 + i64::try_from(i).expect("test index fits in i64"), "det").unwrap();
+                d.detach(
+                    *id,
+                    2000 + i64::try_from(i).expect("test index fits in i64"),
+                    "det",
+                )
+                .unwrap();
                 d.migrate_fiber(*id, MigrationPolicy::Purge).unwrap();
             }
         }

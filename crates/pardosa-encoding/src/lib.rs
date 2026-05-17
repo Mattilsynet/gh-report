@@ -410,10 +410,7 @@ fn encode_len_prefix(len: usize, out: &mut Vec<u8>) {
     // GEN-0035:R3 — length prefix is `u32 LE`. Lengths beyond u32::MAX
     // are not representable on the wire; the decoder is capped at 1 MiB
     // by default so encoder-side overflow is a programming error.
-    debug_assert!(
-        u32::try_from(len).is_ok(),
-        "length exceeds u32::MAX"
-    );
+    debug_assert!(u32::try_from(len).is_ok(), "length exceeds u32::MAX");
     (len as u32).encode(out);
 }
 
@@ -1016,7 +1013,11 @@ mod tests {
         }
         pairs.sort_by(|a, b| a.0.cmp(&b.0));
         let mut expected = Vec::new();
-        expected.extend_from_slice(&u32::try_from(pairs.len()).expect("test fixture under u32::MAX").to_le_bytes());
+        expected.extend_from_slice(
+            &u32::try_from(pairs.len())
+                .expect("test fixture under u32::MAX")
+                .to_le_bytes(),
+        );
         for (kb, vb) in &pairs {
             expected.extend_from_slice(kb);
             expected.extend_from_slice(vb);
@@ -1083,7 +1084,10 @@ mod tests {
         // defect now rather than at C.
         #[repr(u8)]
         enum Tag {
-            #[expect(dead_code, reason = "test enum: `Zero` is the documentary tag-0 discriminant; only `Seven` is constructed in this test body")]
+            #[expect(
+                dead_code,
+                reason = "test enum: `Zero` is the documentary tag-0 discriminant; only `Seven` is constructed in this test body"
+            )]
             Zero = 0,
             Seven = 7,
         }

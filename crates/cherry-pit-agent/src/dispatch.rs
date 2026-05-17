@@ -309,7 +309,10 @@ where
 /// Public re-export of `Arc` for the dispatcher's storage shape used by
 /// tests. The `App` itself owns the policy registry by value; this
 /// alias keeps the dispatcher unit-testable with shared ownership.
-#[expect(dead_code, reason = "S6 wires DispatcherList via App::run; fails closed when wired")]
+#[expect(
+    dead_code,
+    reason = "S6 wires DispatcherList via App::run; fails closed when wired"
+)]
 pub(crate) type DispatcherList<E, G> = Arc<Vec<Box<dyn ErasedPolicyDispatcher<E, G>>>>;
 
 #[cfg(test)]
