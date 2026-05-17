@@ -95,7 +95,7 @@ pub fn check(record: &AdrRecord, config: &Config, diags: &mut Vec<Diagnostic>) {
     // is well within u64 range; truncation/sign-loss/precision warnings
     // are spurious at these magnitudes. No idiomatic non-cast alternative
     // exists for `f64 → u64` after `.round()`.
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_precision_loss,
         clippy::cast_sign_loss,
@@ -109,7 +109,7 @@ pub fn check(record: &AdrRecord, config: &Config, diags: &mut Vec<Diagnostic>) {
         .rule_param_u64("T016", "max_rules")
         .unwrap_or(DEFAULT_MAX_RULES);
     // See T015 cast rationale above.
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_precision_loss,
         clippy::cast_sign_loss,

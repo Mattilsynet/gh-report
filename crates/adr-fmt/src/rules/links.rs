@@ -342,7 +342,7 @@ fn check_root_references_coexistence(source: &AdrRecord, diags: &mut Vec<Diagnos
 /// Operates on the parent-edge projection (see `nav::compute_parent_edges`)
 /// rather than the full citation graph. Stale source ADRs are excluded
 /// from these checks — orphaned ancestry is expected for retired ADRs.
-#[allow(
+#[expect(
     clippy::too_many_lines,
     reason = "single-pass tree-structure rule; cycle/duplicate/parent-edge checks share parent-edge map and a split would require threading the map through multiple helpers without simplifying any check"
 )]
