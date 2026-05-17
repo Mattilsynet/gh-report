@@ -2,8 +2,10 @@
 //!
 //! Opens a file produced by [`crate::file::Writer`] and validates its
 //! geometry inline at open time (GEN-0011 R2 — no `open_unchecked` path).
-//! SM-2 scope: header + footer + index checks. Per-message payload
-//! reading and per-message xxh64 verification land in SM-3.
+//! Header + footer + index checks run at [`Reader::open`]; per-message
+//! payload reads via [`Reader::read_message`] / [`Reader::iter_messages`]
+//! verify each body's xxh64 against the stored index entry (GEN-0011 #14,
+//! GEN-0016 R1) before yielding bytes.
 //!
 //! Checks executed at [`Reader::open`]:
 //!  * #13 magic at header offset 0 and footer offset 20 must be "PGNO".
@@ -53,14 +55,15 @@ use xxhash_rust::xxh64::xxh64;
 ///
 /// 24 wire bytes per entry: `offset:u64 LE`, `size:u32 LE`,
 /// `reserved:u32 LE (=0)`, `checksum:u64 LE`. The `checksum` is xxh64
-/// (seed=0) of the message body (GEN-0016 R1); SM-3 verifies it.
+/// (seed=0) of the message body (GEN-0016 R1); verified by
+/// [`Reader::read_message`].
 #[derive(Debug, Clone, Copy)]
 pub struct IndexEntry {
     /// Byte offset of the message body within the file.
     pub offset: u64,
     /// Message body length in bytes.
     pub size: u32,
-    /// xxh64(seed=0) of the message body. Verified in SM-3.
+    /// xxh64(seed=0) of the message body. Verified at read time.
     pub checksum: u64,
 }
 
@@ -326,15 +329,92 @@ impl<R: Read + Seek> Reader<R> {
     }
 
     /// Raw `schema_size` from the header. SM-2 always 0 (no schema block);
-    /// SM-4 reads non-zero. Exposed for SM-3 to compute message offsets.
+    /// SM-4 reads non-zero. Exposed so [`Reader::read_message`] can locate
+    /// message bodies via the index entries (the helper isn't called
+    /// directly here — entries store absolute offsets — but it pins the
+    /// invariant that bodies live at `messages_offset(schema_size) ..
+    /// index_offset`).
     #[must_use]
     pub fn schema_size(&self) -> u32 {
         self.schema_size
     }
 
-    /// Consume the Reader, returning the underlying source. SM-3 uses
-    /// this to switch from validation mode into message-iteration mode.
+    /// Read the body of message `idx`, verifying its xxh64 against the
+    /// stored index entry before returning the bytes (GEN-0011 #14,
+    /// GEN-0016 R1 — xxh64 seed=0, full 64 bits, no truncation).
+    ///
+    /// # Errors
+    /// Returns [`FileError::InvalidIndex`] when `idx >= message_count`.
+    /// Returns [`FileError::ChecksumMismatch`] when the body's xxh64
+    /// does not match the index entry. Returns [`FileError::Io`] on a
+    /// read-side I/O failure.
+    pub fn read_message(&mut self, idx: usize) -> Result<Vec<u8>, FileError> {
+        let entry = self
+            .index
+            .get(idx)
+            .copied()
+            .ok_or(FileError::InvalidIndex)?;
+        // size:u32 → usize is widening on every supported host.
+        let size = entry.size as usize;
+        let mut buf = vec![0u8; size];
+        self.inner
+            .seek(SeekFrom::Start(entry.offset))
+            .map_err(FileError::Io)?;
+        self.inner.read_exact(&mut buf).map_err(FileError::Io)?;
+        let computed = xxh64(&buf, 0);
+        if computed != entry.checksum {
+            // Index payload of ChecksumMismatch is the message index in
+            // storage order. `idx` fits u64 because it was bounded above
+            // by `self.index.len()` which came from `message_count: u64`.
+            return Err(FileError::ChecksumMismatch(idx as u64));
+        }
+        Ok(buf)
+    }
+
+    /// Iterate every message in storage order, verifying each body's
+    /// xxh64 before yielding. Sugar over [`Reader::read_message`].
+    ///
+    /// The iterator yields `Result<Vec<u8>, FileError>` so callers can
+    /// see *which* message failed. A `ChecksumMismatch(i)` does not
+    /// poison subsequent iterations — the caller decides whether to
+    /// keep reading or abort.
+    pub fn iter_messages(&mut self) -> MessageIter<'_, R> {
+        MessageIter {
+            reader: self,
+            next: 0,
+        }
+    }
+
+    /// Consume the Reader, returning the underlying source.
     pub fn into_inner(self) -> R {
         self.inner
     }
 }
+
+/// Iterator over message bodies in storage order, verifying each body's
+/// xxh64 before yielding. Returned by [`Reader::iter_messages`].
+#[derive(Debug)]
+pub struct MessageIter<'r, R: Read + Seek> {
+    reader: &'r mut Reader<R>,
+    next: usize,
+}
+
+impl<R: Read + Seek> Iterator for MessageIter<'_, R> {
+    type Item = Result<Vec<u8>, FileError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next >= self.reader.index.len() {
+            return None;
+        }
+        let item = self.reader.read_message(self.next);
+        self.next += 1;
+        Some(item)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.reader.index.len().saturating_sub(self.next);
+        (remaining, Some(remaining))
+    }
+}
+
+impl<R: Read + Seek> ExactSizeIterator for MessageIter<'_, R> {}

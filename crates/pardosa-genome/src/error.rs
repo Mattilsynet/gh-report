@@ -172,6 +172,11 @@ pub enum FileError {
     UnsupportedCompression(u8),
     /// Footer checksum mismatch.
     InvalidChecksum,
+    /// Per-message xxh64 mismatch (GEN-0011 #14, GEN-0016 R1). The
+    /// payload `u64` is the message index (matching the footer's
+    /// `message_count` indexing — 0-based, in storage order). Distinct
+    /// from [`Self::InvalidChecksum`], which is the footer-level check.
+    ChecksumMismatch(u64),
     /// Index offset or entry is inconsistent.
     InvalidIndex,
     /// File uses compression but the feature is not enabled.
@@ -202,6 +207,9 @@ impl fmt::Display for FileError {
                 write!(f, "unsupported compression algorithm: 0x{algo:02X}")
             }
             Self::InvalidChecksum => write!(f, "footer checksum mismatch"),
+            Self::ChecksumMismatch(idx) => {
+                write!(f, "per-message checksum mismatch at index {idx}")
+            }
             Self::InvalidIndex => write!(f, "invalid message index"),
             Self::CompressionNotAvailable => {
                 write!(f, "compression feature not enabled")

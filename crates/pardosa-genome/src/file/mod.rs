@@ -5,5 +5,5 @@
 mod reader;
 mod writer;
 
-pub use reader::{IndexEntry, Reader};
+pub use reader::{IndexEntry, MessageIter, Reader};
 pub use writer::Writer;
