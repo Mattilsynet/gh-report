@@ -319,6 +319,8 @@ impl<T> Dragline<T> {
                 domain_id,
                 false,
                 Index::NONE,
+                // F2a: genesis event has no predecessor; zero hash is canonical.
+                [0u8; 32],
                 domain_event,
             );
             Ok(PreparedCommit {
@@ -367,6 +369,8 @@ impl<T> Dragline<T> {
                 domain_id,
                 false,
                 Index::NONE,
+                // F2a: genesis event has no predecessor; zero hash is canonical.
+                [0u8; 32],
                 domain_event,
             );
             Ok(PreparedCommit {
@@ -421,6 +425,9 @@ impl<T> Dragline<T> {
                 domain_id,
                 false,
                 precursor,
+                // F2a: plumbing-only zero sentinel; F2b will compute BLAKE3
+                // of the canonical bytes of the predecessor at index `precursor`.
+                [0u8; 32],
                 domain_event,
             );
             Ok(PreparedCommit {
@@ -473,6 +480,9 @@ impl<T> Dragline<T> {
                 domain_id,
                 true,
                 precursor,
+                // F2a: plumbing-only zero sentinel; F2b will compute BLAKE3
+                // of the canonical bytes of the predecessor at index `precursor`.
+                [0u8; 32],
                 domain_event,
             );
             Ok(PreparedCommit {
@@ -572,6 +582,9 @@ impl<T> Dragline<T> {
                 domain_id,
                 false,
                 precursor,
+                // F2a: plumbing-only zero sentinel; F2b will compute BLAKE3
+                // of the canonical bytes of the predecessor at index `precursor`.
+                [0u8; 32],
                 domain_event,
             );
             Ok(PreparedCommit {
@@ -1070,7 +1083,15 @@ mod tests {
     #[test]
     fn linevec_append_validated_rejects_mismatched_event_id() {
         let mut lv = Linevec::<&str>::new();
-        let e = Event::new(5, 1000, DomainId::new(0), false, Index::NONE, "x");
+        let e = Event::new(
+            5,
+            1000,
+            DomainId::new(0),
+            false,
+            Index::NONE,
+            [0u8; 32],
+            "x",
+        );
         // caller claims expected_event_id = 7 but event carries 5
         let err = lv.append_validated(e, 7).unwrap_err();
         assert!(
@@ -1083,10 +1104,26 @@ mod tests {
     #[test]
     fn linevec_append_validated_rejects_non_monotonic_event_id() {
         let mut lv = Linevec::<&str>::new();
-        let e0 = Event::new(0, 1000, DomainId::new(0), false, Index::NONE, "a");
+        let e0 = Event::new(
+            0,
+            1000,
+            DomainId::new(0),
+            false,
+            Index::NONE,
+            [0u8; 32],
+            "a",
+        );
         lv.append_validated(e0, 0).unwrap();
         // Try to append an event with event_id == last (0), violating strict >.
-        let e_dup = Event::new(0, 1001, DomainId::new(0), false, Index::NONE, "dup");
+        let e_dup = Event::new(
+            0,
+            1001,
+            DomainId::new(0),
+            false,
+            Index::NONE,
+            [0u8; 32],
+            "dup",
+        );
         let err = lv.append_validated(e_dup, 0).unwrap_err();
         assert!(
             matches!(err, PardosaError::FiberInvariantViolation(ref m) if m.contains("not strictly greater")),
@@ -1098,10 +1135,26 @@ mod tests {
     #[test]
     fn linevec_append_validated_rejects_forward_precursor() {
         let mut lv = Linevec::<&str>::new();
-        let e0 = Event::new(0, 1000, DomainId::new(0), false, Index::NONE, "a");
+        let e0 = Event::new(
+            0,
+            1000,
+            DomainId::new(0),
+            false,
+            Index::NONE,
+            [0u8; 32],
+            "a",
+        );
         lv.append_validated(e0, 0).unwrap();
         // line.len() == 1, so precursor must be < 1; offer Index::new(5).
-        let bad = Event::new(1, 1001, DomainId::new(0), false, Index::new(5), "bad");
+        let bad = Event::new(
+            1,
+            1001,
+            DomainId::new(0),
+            false,
+            Index::new(5),
+            [0u8; 32],
+            "bad",
+        );
         let err = lv.append_validated(bad, 1).unwrap_err();
         assert!(
             matches!(err, PardosaError::FiberInvariantViolation(ref m) if m.contains("precursor index")),
@@ -1113,10 +1166,26 @@ mod tests {
     #[test]
     fn linevec_append_validated_rejects_cross_domain_precursor() {
         let mut lv = Linevec::<&str>::new();
-        let e0 = Event::new(0, 1000, DomainId::new(0), false, Index::NONE, "a");
+        let e0 = Event::new(
+            0,
+            1000,
+            DomainId::new(0),
+            false,
+            Index::NONE,
+            [0u8; 32],
+            "a",
+        );
         lv.append_validated(e0, 0).unwrap();
         // event for domain 99 cannot point precursor at domain 0's event
-        let bad = Event::new(1, 1001, DomainId::new(99), false, Index::new(0), "bad");
+        let bad = Event::new(
+            1,
+            1001,
+            DomainId::new(99),
+            false,
+            Index::new(0),
+            [0u8; 32],
+            "bad",
+        );
         let err = lv.append_validated(bad, 1).unwrap_err();
         assert!(
             matches!(err, PardosaError::BrokenPrecursorChain { .. }),
@@ -1128,9 +1197,25 @@ mod tests {
     #[test]
     fn linevec_append_validated_accepts_valid_event() {
         let mut lv = Linevec::<&str>::new();
-        let e0 = Event::new(0, 1000, DomainId::new(0), false, Index::NONE, "a");
+        let e0 = Event::new(
+            0,
+            1000,
+            DomainId::new(0),
+            false,
+            Index::NONE,
+            [0u8; 32],
+            "a",
+        );
         lv.append_validated(e0, 0).unwrap();
-        let e1 = Event::new(1, 1001, DomainId::new(0), false, Index::new(0), "b");
+        let e1 = Event::new(
+            1,
+            1001,
+            DomainId::new(0),
+            false,
+            Index::new(0),
+            [0u8; 32],
+            "b",
+        );
         lv.append_validated(e1, 1).unwrap();
         assert_eq!(lv.len(), 2);
     }
@@ -1497,7 +1582,15 @@ mod tests {
         // Manually inject event with precursor pointing to wrong domain_id.
         // Event at index 0 is domain_id=0, so this event (domain_id=99)
         // with precursor=0 has a cross-domain precursor — broken chain.
-        let bad_event = Event::new(99, 2000, DomainId::new(99), false, Index::new(0), "broken");
+        let bad_event = Event::new(
+            99,
+            2000,
+            DomainId::new(99),
+            false,
+            Index::new(0),
+            [0u8; 32],
+            "broken",
+        );
         d.line.force_push_unchecked(bad_event);
 
         let err = d.verify_precursor_chains().unwrap_err();
@@ -1513,7 +1606,15 @@ mod tests {
         d.create(1000, "created").unwrap();
 
         // Precursor points forward (index 5 > current position 1) — broken
-        let bad_event = Event::new(99, 2000, DomainId::new(0), false, Index::new(5), "broken");
+        let bad_event = Event::new(
+            99,
+            2000,
+            DomainId::new(0),
+            false,
+            Index::new(5),
+            [0u8; 32],
+            "broken",
+        );
         d.line.force_push_unchecked(bad_event);
 
         let err = d.verify_precursor_chains().unwrap_err();
@@ -1529,7 +1630,15 @@ mod tests {
         d.create(1000, "created").unwrap();
 
         // Precursor points to self (index 1 at position 1) — broken
-        let bad_event = Event::new(99, 2000, DomainId::new(0), false, Index::new(1), "broken");
+        let bad_event = Event::new(
+            99,
+            2000,
+            DomainId::new(0),
+            false,
+            Index::new(1),
+            [0u8; 32],
+            "broken",
+        );
         d.line.force_push_unchecked(bad_event);
 
         let err = d.verify_precursor_chains().unwrap_err();
@@ -1608,6 +1717,7 @@ mod tests {
             line[last_idx].domain_id(),
             line[last_idx].detached(),
             line[last_idx].precursor(),
+            line[last_idx].precursor_hash(),
             *line[last_idx].domain_event(),
         );
         line[last_idx] = dup;
@@ -1724,6 +1834,7 @@ mod tests {
             DomainId::new(0),
             false,
             Index::new(pos + 5), // forward reference
+            [0u8; 32],
             "bad",
         );
         line.push(bad);
@@ -2530,7 +2641,7 @@ mod tests {
                 let mut lookup = HashMap::new();
                 let domain_id = DomainId::new(0);
                 lookup.insert(domain_id, (fiber, FiberState::Defined));
-                let event = Event::new(0u64, 0, domain_id, false, Index::NONE, "seed".to_string());
+                let event = Event::new(0u64, 0, domain_id, false, Index::NONE, [0u8; 32], "seed".to_string());
                 let mut d = Dragline::<String>::from_raw_parts(
                     vec![event], lookup, HashSet::new(), DomainId::new(1), 1, false,
                 ).unwrap();
