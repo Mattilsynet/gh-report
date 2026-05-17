@@ -23,16 +23,16 @@ pub const MAGIC: [u8; 4] = *b"PGNO";
 pub const FORMAT_VERSION: u16 = 3;
 
 // ---------------------------------------------------------------------------
-// File header layout (40 bytes; v2)
+// File header layout (40 bytes; unchanged across versions)
 // ---------------------------------------------------------------------------
 //
 // Offset  Size  Field           Description
 // ──────  ────  ──────────────  ──────────────────────────────────────────
 //  0      4     magic           ASCII "PGNO"
-//  4      2     format_version  Format version (v2)
+//  4      2     format_version  Format version (current `FORMAT_VERSION`)
 //  6      2     flags           compression_algo (bits 0-2), reserved (3-15)
 //  8     16     schema_hash     Compile-time schema fingerprint (u128 LE, xxh3-128)
-// 24      4     dict_id         Reserved for zstd dictionaries; must be 0 in v2
+// 24      4     dict_id         Reserved for zstd dictionaries; must be 0
 // 28      1     page_class      Page class hint (0–3)
 // 29      4     schema_size     Byte count of embedded schema source (u32 LE)
 // 33      7     reserved        Must be all zeros
@@ -55,7 +55,7 @@ pub const HEADER_MAGIC_OFFSET: usize = 0;
 pub const HEADER_VERSION_OFFSET: usize = 4;
 pub const HEADER_FLAGS_OFFSET: usize = 6;
 pub const HEADER_SCHEMA_HASH_OFFSET: usize = 8;
-/// Width of `schema_hash` field, in bytes. v2: u128 → 16 bytes.
+/// Width of `schema_hash` field, in bytes. u128 → 16 bytes.
 pub const HEADER_SCHEMA_HASH_LEN: usize = 16;
 pub const HEADER_DICT_ID_OFFSET: usize = 24;
 pub const HEADER_PAGE_CLASS_OFFSET: usize = 28;
@@ -75,10 +75,10 @@ pub const FOOTER_CHECKSUM_OFFSET: usize = 24;
 // Bare message header
 // ---------------------------------------------------------------------------
 //
-// Uncompressed (23 bytes; v2):
+// Uncompressed (23 bytes; unchanged across versions):
 //   [format_version:u16][schema_hash:u128][algo:u8][msg_data_size:u32][data...]
 //
-// Compressed (27 bytes; v2):
+// Compressed (27 bytes; unchanged across versions):
 //   [format_version:u16][schema_hash:u128][algo:u8][compressed_size:u32][msg_data_size:u32][data...]
 
 /// Bare message header size (uncompressed).

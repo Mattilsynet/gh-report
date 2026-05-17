@@ -25,7 +25,7 @@
 //!    first message body, followed by zero-pad to an 8-byte boundary; header
 //!    `schema_size` records the unpadded byte count. `Some("")` writes no
 //!    block (schema_size = 0) — observably indistinguishable from `None`.
-//!  * `dict_id` is hard-zero per v2 (`format.rs:28`).
+//!  * `dict_id` is hard-zero (`format.rs:28`).
 //!  * `page_class` is opaque to v0.1 (G5): caller sets it via
 //!    [`Writer::with_page_class`]; Writer writes it verbatim.
 
@@ -191,7 +191,7 @@ impl<'w, W: Write> Writer<'w, W> {
         Ok(())
     }
 
-    /// Emit the 40-byte v2 header followed by the optional schema-source
+    /// Emit the 40-byte header followed by the optional schema-source
     /// block (UTF-8 + zero-pad to 8-byte boundary per GEN-0009 R2 and
     /// `format.rs:33-35`). Idempotent guard via `header_written`.
     fn write_header(&mut self) -> Result<(), FileError> {
@@ -210,7 +210,7 @@ impl<'w, W: Write> Writer<'w, W> {
         // schema_hash u128 LE (16 bytes per HEADER_SCHEMA_HASH_LEN / GEN-0035)
         buf[HEADER_SCHEMA_HASH_OFFSET..HEADER_SCHEMA_HASH_OFFSET + HEADER_SCHEMA_HASH_LEN]
             .copy_from_slice(&self.schema_hash.to_le_bytes());
-        // dict_id u32 LE at HEADER_DICT_ID_OFFSET stays zero (hard-zero in v2, format.rs:28).
+        // dict_id u32 LE at HEADER_DICT_ID_OFFSET stays zero (hard-zero, format.rs:28).
         // page_class u8
         buf[HEADER_PAGE_CLASS_OFFSET] = self.page_class;
         // schema_size u32 LE — unpadded byte count of the schema source block.

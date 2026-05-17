@@ -12,7 +12,7 @@
 //! Checks executed at [`Reader::open`]:
 //!  * #13 magic at header offset 0 and footer offset 20 must be "PGNO".
 //!  * Format version (u16 LE at header offset 4) must equal
-//!    [`FORMAT_VERSION`]. Stale versions (v2 and earlier) are rejected
+//!    [`FORMAT_VERSION`]. Older versions are rejected
 //!    via [`FileError::UnsupportedVersion`] (no migration path; user
 //!    ruling 2026-05-17).
 //!  * #16 reserved regions must be all-zero: header bytes 33..40,
@@ -148,7 +148,7 @@ impl<R: Read + Seek> Reader<R> {
                 .expect("slice len 16"),
         );
 
-        // dict_id u32 LE: hard-zero in v2 (format.rs:28). Treat any
+        // dict_id u32 LE: hard-zero (format.rs:28). Treat any
         // non-zero value as a wire violation — surface as InvalidReserved
         // since the field is effectively reserved for future versions.
         let dict_id = u32::from_le_bytes(
