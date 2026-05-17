@@ -28,18 +28,40 @@
 //! is exposed via `pub use` / `pub mod` re-exports per CHE-0030.
 
 #![forbid(unsafe_code)]
+// Track 3.1: pub-mod widening exposed pedantic-doc lints on pub fns
+// in `parser.rs`, which AGENTS.md flags as "do not refactor during
+// v0.1" (AFM-0006 regex parser is large + stable). Suppress these
+// two pedantic lints crate-wide rather than touching parser.rs.
+// Non-parser pub fns have `# Errors` docs added in-place; this
+// allow exists for parser's three pub fns (`parse_domain`,
+// `parse_stale`, `parse_adr_file`). Revisit when parser.rs is
+// next opened for behavioural work.
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    reason = "Track 3.1 lib-API widening exposed pedantic doc lints in parser.rs; AGENTS.md forbids parser.rs refactor during v0.1 per AFM-0006"
+)]
 
-mod config;
-mod containment;
-mod context;
+// Public lib API (Track 3.1): re-export the modules that future
+// consumers (e.g. `adr-srv`, Phase 2 v2 C1) need to drive ADR
+// parsing, linting, navigation, and rendering without spawning
+// the binary. `output` is re-exported because `context_grouped`
+// returns `Vec<output::RootGroup>`; keeping `output` private
+// would make the `context` return type unnameable externally.
+// `guidelines` stays private — it is purely a stdout-rendering
+// helper for the binary's default mode (AFM-0001).
+pub mod config;
+pub mod containment;
+pub mod context;
+pub mod model;
+pub mod nav;
+pub mod output;
+pub mod parser;
+pub mod refs;
+pub mod report;
+pub mod rules;
+
 mod guidelines;
-mod model;
-mod nav;
-mod output;
-mod parser;
-mod refs;
-mod report;
-mod rules;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

@@ -39,6 +39,7 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
+    #[must_use]
     pub fn warning(rule: &'static str, file: &Path, line: usize, message: String) -> Self {
         Self {
             severity: Severity::Warning,

@@ -125,13 +125,10 @@ pub struct AdrRecord {
     /// when the field has only the target ID with no reason.
     /// Currently parsed but not rendered; preserved for future tree
     /// or lint surfacing (see AFM-0024).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "AFM-0024 cross-domain parent surfacing deferred (tree/lint rendering not yet wired); field is parsed and ready, fail-closes via #[expect] when the surface lands. Wrapped in cfg_attr(not(test)) because test fixtures write the field, which silences dead_code under --all-targets."
-        )
-    )]
+    // Track 3.1: lib API exposure (pub mod model) makes this field
+    // reachable from external consumers; prior cfg_attr(not(test),
+    // expect(dead_code)) removed because pub-reachability now
+    // suppresses the lint naturally. AFM-0024 rendering still deferred.
     pub parent_cross_domain_reason: String,
 }
 

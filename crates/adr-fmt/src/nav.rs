@@ -145,9 +145,9 @@ pub fn compute_parent_children(records: &[AdrRecord]) -> HashMap<AdrId, Vec<AdrI
 ///
 /// This is the cycle-safe primitive for `--context` parent-chain
 /// assignment and L013 cycle detection.
-pub fn walk_parent_chain(
+pub fn walk_parent_chain<S: std::hash::BuildHasher>(
     start: &AdrId,
-    parent_edges: &HashMap<AdrId, AdrId>,
+    parent_edges: &HashMap<AdrId, AdrId, S>,
 ) -> Result<AdrId, Vec<AdrId>> {
     use std::collections::HashSet;
 
