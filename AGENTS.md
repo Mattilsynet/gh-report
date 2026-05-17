@@ -25,6 +25,40 @@ cargo clippy --workspace --all-targets
 cargo fmt --check
 ```
 
+### Cargo scoping (binding rule)
+
+Default cargo invocation form is `-p <crate>`. Workspace-scoped commands
+(`--workspace`, `--all-features` on the workspace, bare `cargo test`) are
+reserved for **two** moments only:
+
+1. **Pre-push verify** — mirroring CI once, just before `git push`.
+2. **Cross-crate changes** — when the edit demonstrably spans ≥ 2 crates
+   (state the crates in the verify reason).
+
+Trace evidence (2026-05-17, 17 sessions): 217/492 cargo calls were
+workspace-scoped, accounting for the majority of the 2 118 s cargo bash
+budget. Most were mid-loop verifies of single-crate changes — `-p <crate>`
+would have sufficed and finished in a fraction of the time.
+
+Operational rules for every agent (build/plan modes, all subagents):
+
+- **Verifying a change inside crate `X`?** Run `cargo test -p X` (and
+  `cargo clippy -p X --all-targets -- -D warnings` if linting). Never
+  `--workspace` for a single-crate edit.
+- **Filtering tests in `X`?** `cargo test -p X --test <file_stem>` for
+  an integration-test file; `cargo test -p X <name>` for a function-name
+  filter (mind the false-green gotcha below).
+- **Hopper verify_commands** authored by moltke must follow the same rule:
+  scope to the crate(s) the mission touches. Cross-crate missions name
+  each `-p` flag explicitly rather than reaching for `--workspace`.
+- **Pre-push only**: `cargo test --workspace --all-features`,
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo fmt --check` — mirror CI, then push.
+
+Violations (workspace-scoped command on a single-crate edit) are a doctrine
+violation in the same class as `cd <path> && …` under § Bash hygiene: not
+blocked by permissions, but treated as a mistake to be corrected on review.
+
 Toolchain is pinned: `rust-toolchain.toml` selects 1.95 + clippy + rustfmt.
 Edition 2024, MSRV 1.95, resolver 3. Workspace lints set
 `clippy::pedantic = warn` (see `Cargo.toml [workspace.lints.clippy]`).
