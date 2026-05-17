@@ -164,6 +164,11 @@ impl<'a> Decoder<'a> {
     }
 
     /// Read exactly `n` bytes from the cursor, advancing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventError::InvalidInput`] when fewer than `n` bytes remain
+    /// in the input, or when the resulting cursor position would overflow.
     pub fn read_bytes(&mut self, n: usize) -> Result<&'a [u8], EventError> {
         let end = self.pos.checked_add(n).ok_or(EventError::InvalidInput)?;
         if end > self.input.len() {
@@ -176,6 +181,11 @@ impl<'a> Decoder<'a> {
 
     /// Read a `u32 LE` length header and charge it against the cap.
     /// Returns `CapExceeded` *before* any allocation is attempted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventError::InvalidInput`] if the prefix cannot be read or
+    /// the length exceeds the remaining decode cap.
     pub fn read_len_prefix(&mut self) -> Result<usize, EventError> {
         let raw = u32::decode(self)?;
         let n = raw as usize;
@@ -222,6 +232,12 @@ pub trait Encode {
 /// Decode a value from a [`Decoder`] cursor.
 pub trait Decode: Sized {
     /// Read one value from the decoder cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventError`] when the wire bytes are malformed, exceed the
+    /// decoder cap, or otherwise fail validation. Specific variants are
+    /// implementation-defined.
     fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError>;
 }
 
@@ -235,12 +251,24 @@ pub fn to_vec<T: Encode>(value: &T) -> Vec<u8> {
 
 /// Decode a value from `input` with the default cap, enforcing strict
 /// (no trailing bytes) consumption per GEN-0035:R6.
+///
+/// # Errors
+///
+/// Returns [`EventError::InvalidInput`] if the bytes do not decode cleanly
+/// to `T`, or if any bytes remain after `T` is read. Propagates errors
+/// from `T::decode`.
 pub fn from_bytes<T: Decode>(input: &[u8]) -> Result<T, EventError> {
     from_bytes_with_cap(input, DEFAULT_DECODE_CAP)
 }
 
 /// Decode a value from `input` with an explicit cap, enforcing strict
 /// (no trailing bytes) consumption per GEN-0035:R6.
+///
+/// # Errors
+///
+/// Returns [`EventError::InvalidInput`] if the bytes do not decode cleanly
+/// to `T`, the decode cap is exceeded, or any bytes remain after `T` is
+/// read. Propagates errors from `T::decode`.
 pub fn from_bytes_with_cap<T: Decode>(input: &[u8], cap: usize) -> Result<T, EventError> {
     let mut d = Decoder::with_cap(input, cap);
     let value = T::decode(&mut d)?;
@@ -268,13 +296,19 @@ impl Decode for u8 {
 impl Encode for i8 {
     fn encode(&self, out: &mut Vec<u8>) {
         // Bit-pattern preserved; cast is the wire-level operation.
-        #[allow(clippy::cast_sign_loss)]
+        #[allow(
+            clippy::cast_sign_loss,
+            reason = "non-idiomatic Rust required: wire-protocol i8↔u8 reinterpretation per GEN-0035 is by-design bit reuse; `try_from` would reject negative values that are valid on the wire"
+        )]
         out.push(*self as u8);
     }
 }
 impl Decode for i8 {
     fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
-        #[allow(clippy::cast_possible_wrap)]
+        #[allow(
+            clippy::cast_possible_wrap,
+            reason = "non-idiomatic Rust required: wire-protocol u8↔i8 reinterpretation per GEN-0035 is by-design bit reuse; `try_from` would reject high-bit-set bytes that are valid on the wire"
+        )]
         Ok(d.read_bytes(1)?[0] as i8)
     }
 }
@@ -368,12 +402,18 @@ impl<T: Decode> Decode for Option<T> {
 // Length-prefixed: Vec<T>, String, &[u8] (encode only for borrowed)
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::cast_possible_truncation)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "non-idiomatic Rust required: wire-protocol u32 LE length prefix per GEN-0035:R3; the debug_assert above forbids the truncation branch in debug builds, release relies on the upstream 1 MiB cap to keep `len` well below `u32::MAX`"
+)]
 fn encode_len_prefix(len: usize, out: &mut Vec<u8>) {
     // GEN-0035:R3 — length prefix is `u32 LE`. Lengths beyond u32::MAX
     // are not representable on the wire; the decoder is capped at 1 MiB
     // by default so encoder-side overflow is a programming error.
-    debug_assert!(len <= u32::MAX as usize, "length exceeds u32::MAX");
+    debug_assert!(
+        u32::try_from(len).is_ok(),
+        "length exceeds u32::MAX"
+    );
     (len as u32).encode(out);
 }
 
@@ -748,6 +788,10 @@ mod tests {
     use super::*;
     use alloc::vec;
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "test helper takes T by value to keep 27 call sites ergonomic (`rt(String::from(\"x\"))` rather than `rt(&String::from(\"x\"))`); `assert_eq!` then borrows internally"
+    )]
     fn rt<T: Encode + Decode + PartialEq + core::fmt::Debug>(v: T) {
         let bytes = to_vec(&v);
         let back: T = from_bytes(&bytes).expect("decode");
@@ -760,7 +804,7 @@ mod tests {
         assert_eq!(to_vec(&0u8), vec![0]);
         assert_eq!(to_vec(&1u8), vec![1]);
         assert_eq!(to_vec(&0x0102u16), vec![0x02, 0x01]);
-        assert_eq!(to_vec(&0x01020304u32), vec![0x04, 0x03, 0x02, 0x01]);
+        assert_eq!(to_vec(&0x0102_0304_u32), vec![0x04, 0x03, 0x02, 0x01]);
         assert_eq!(to_vec(&true), vec![1]);
         assert_eq!(to_vec(&false), vec![0]);
     }
@@ -785,7 +829,7 @@ mod tests {
     #[test]
     fn option_layout() {
         // GEN-0035 §"Composite encoding" — Option<u32>: 1+4 bytes Some, 1 byte None.
-        let some = to_vec(&Some(0x01020304u32));
+        let some = to_vec(&Some(0x0102_0304_u32));
         assert_eq!(some, vec![1, 0x04, 0x03, 0x02, 0x01]);
         let none: Vec<u8> = to_vec(&Option::<u32>::None);
         assert_eq!(none, vec![0]);
@@ -814,7 +858,7 @@ mod tests {
 
     #[test]
     fn string_roundtrip() {
-        rt(String::from(""));
+        rt(String::new());
         rt(String::from("hello, world"));
         rt(String::from("⛵🦀"));
     }
@@ -972,7 +1016,7 @@ mod tests {
         }
         pairs.sort_by(|a, b| a.0.cmp(&b.0));
         let mut expected = Vec::new();
-        expected.extend_from_slice(&(pairs.len() as u32).to_le_bytes());
+        expected.extend_from_slice(&u32::try_from(pairs.len()).expect("test fixture under u32::MAX").to_le_bytes());
         for (kb, vb) in &pairs {
             expected.extend_from_slice(kb);
             expected.extend_from_slice(vb);
@@ -1039,7 +1083,7 @@ mod tests {
         // defect now rather than at C.
         #[repr(u8)]
         enum Tag {
-            #[allow(dead_code)]
+            #[expect(dead_code, reason = "test enum: `Zero` is the documentary tag-0 discriminant; only `Seven` is constructed in this test body")]
             Zero = 0,
             Seven = 7,
         }
