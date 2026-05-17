@@ -79,7 +79,7 @@ pub struct IndexEntry {
     pub checksum: u64,
 }
 
-/// v2 genome-file reader.
+/// Genome-file reader (current [`FORMAT_VERSION`] only).
 ///
 /// Use [`Reader::open`] to validate and parse the file's geometry.
 /// Accessors expose header metadata and the parsed index; message-body

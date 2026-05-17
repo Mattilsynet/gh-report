@@ -1,4 +1,4 @@
-//! v2 file-format Writer.
+//! Genome-file Writer (emits current [`crate::format::FORMAT_VERSION`]).
 //!
 //! Emits a complete file in three phases from a single
 //! [`Writer::finish`] call (no in-place mutation, no append after finish per
@@ -50,7 +50,7 @@ struct IndexEntry {
     checksum: u64,
 }
 
-/// v2 genome-file writer.
+/// Genome-file writer (emits current [`crate::format::FORMAT_VERSION`]).
 ///
 /// Use [`Writer::new`] to start, [`Writer::write_message`] zero or more times,
 /// then [`Writer::finish`] exactly once. After `finish`, the Writer is
