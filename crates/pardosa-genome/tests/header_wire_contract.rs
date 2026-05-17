@@ -11,7 +11,7 @@
 //! # AC #3 status (vacuous by absence)
 //!
 //! The bead `adr-fmt-i24x` AC #3 asks for "similar assertion at every
-//! callsite that writes schema_hash into a header." As of this commit,
+//! callsite that writes `schema_hash` into a header." As of this commit,
 //! there are **zero such callsites** in `crates/pardosa-genome/src/`:
 //! `format.rs` declares the constants + layout; `genome_safe.rs` ships
 //! the schema-hash *computation* primitives (which already use
@@ -21,7 +21,7 @@
 //! they must satisfy.
 //!
 //! When a header writer lands, it must:
-//! 1. Place a `u128` schema_hash at file-header bytes 8..24 in LE form
+//! 1. Place a `u128` `schema_hash` at file-header bytes 8..24 in LE form
 //!    (or at the analogous offset in a bare-message header).
 //! 2. Have its own callsite-local assertion / round-trip test mirroring
 //!    this one so the wire bytes are checked at every emission point.
@@ -33,7 +33,7 @@ use pardosa_genome::format::{HEADER_SCHEMA_HASH_LEN, HEADER_SCHEMA_HASH_OFFSET};
 /// in any failure diff (the high and low halves are visibly distinct).
 const KNOWN_HASH: u128 = 0x0F0E_0D0C_0B0A_0908_0706_0504_0302_0100;
 
-/// Synthesise a file-header buffer with the schema_hash field populated
+/// Synthesise a file-header buffer with the `schema_hash` field populated
 /// in LE form. Mirrors what a future header writer must produce.
 fn synth_header_with_schema_hash(hash: u128) -> [u8; 40] {
     let mut buf = [0u8; 40];
