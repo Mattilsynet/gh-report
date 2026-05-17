@@ -31,6 +31,10 @@ pub(crate) mod index_with_sentinel {
     use super::Index;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "non-idiomatic Rust required: serde `#[serde(with = \"...\")]` mandates `serialize<S>(value: &T, s: S)` signature for the serialize callback regardless of `T`'s size or `Copy`-ness"
+    )]
     pub fn serialize<S: Serializer>(index: &Index, s: S) -> Result<S::Ok, S::Error> {
         index.0.serialize(s)
     }
@@ -179,7 +183,10 @@ impl fmt::Display for DomainId {
 /// - `precursor`: Index of the previous event in the same fiber (`Index::NONE` for the first event).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
-#[allow(clippy::struct_field_names)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "non-idiomatic Rust required: field names (`event_id`, `domain_id`) are part of the GENOME wire layout per PAR-0003:R1; renaming for clippy taste would alter the serialized field tags and break replay across generations"
+)]
 pub struct Event<T> {
     event_id: u64,
     timestamp: i64,
