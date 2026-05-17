@@ -116,11 +116,14 @@ fn rejects_bad_footer_magic() {
 #[test]
 fn rejects_unsupported_format_version() {
     let mut buf = zero_msg_file();
-    // Bump version to 3 (any non-2).
-    buf[HEADER_VERSION_OFFSET..HEADER_VERSION_OFFSET + 2].copy_from_slice(&3u16.to_le_bytes());
+    // Writer emits the current FORMAT_VERSION (v3). Overwrite to a stale
+    // version (v2) so the reader's UnsupportedVersion guard fires. Per
+    // user ruling 2026-05-17, v2 streams are read-incompatible after
+    // the v3 bump (no migration code).
+    buf[HEADER_VERSION_OFFSET..HEADER_VERSION_OFFSET + 2].copy_from_slice(&2u16.to_le_bytes());
     let err = Reader::open(Cursor::new(buf)).expect_err("must reject");
     assert!(
-        matches!(err, FileError::UnsupportedVersion(3)),
+        matches!(err, FileError::UnsupportedVersion(2)),
         "got {err:?}"
     );
 }
