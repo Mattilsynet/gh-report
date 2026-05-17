@@ -64,3 +64,11 @@ signatures are append-only per CHE-0057:R5. SEC-0011 non-repudiation
 remains formally deferred — this ADR provides the trait shape but no
 claim of non-repudiation until pardosa implements PAR-0021 and a
 follow-up SEC ADR ratifies the claim.
+
+Encoding locality: R2's `[u8; 32]` signature confines hashing to the
+trait's output, not its inputs. Any encoding of `AggregateId` or
+`EventEnvelope<E>` required to produce a frontier hash in a non-stub
+impl is therefore impl-side — the adapter crate (e.g. cherry-pit-
+pardosa) chooses the encoding strategy, and cherry-pit-core need not
+host an Encode impl on either type. The core dep set stays narrow
+without further amendment.
