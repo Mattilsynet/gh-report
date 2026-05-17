@@ -13,6 +13,7 @@
 pub mod bounded;
 pub mod config;
 pub mod error;
+pub mod file;
 pub mod format;
 pub mod genome_safe;
 
@@ -23,6 +24,7 @@ pub use bounded::{EventBytes, EventString, EventVec, NonEmptyEventString};
 // Re-exports
 pub use config::{Compression, DecodeOptions, EncodeOptions, PageClass};
 pub use error::{DeError, FileError, SerError};
+pub use file::Writer;
 pub use genome_safe::{GenomeOrd, GenomeSafe, schema_hash_bytes, schema_hash_combine};
 // EventSafe + sealed module re-exported so downstream `use pardosa_genome::*`
 // keeps resolving and the derive macro's emitted paths

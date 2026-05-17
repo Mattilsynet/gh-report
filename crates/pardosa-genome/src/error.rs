@@ -180,6 +180,8 @@ pub enum FileError {
     MessageError(u64, DeError),
     /// Embedded schema source is not valid UTF-8.
     InvalidSchemaSource,
+    /// Underlying I/O failure on the sink or source.
+    Io(std::io::Error),
 }
 
 impl fmt::Display for FileError {
@@ -201,6 +203,7 @@ impl fmt::Display for FileError {
             Self::InvalidSchemaSource => {
                 write!(f, "embedded schema source is not valid UTF-8")
             }
+            Self::Io(err) => write!(f, "i/o error: {err}"),
         }
     }
 }
