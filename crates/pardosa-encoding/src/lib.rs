@@ -777,6 +777,34 @@ impl<T: Decode, const N: usize> Decode for arrayvec::ArrayVec<T, N> {
     }
 }
 
+// ---- jiff::Timestamp — 8 bytes LE of as_microsecond() ---------------------
+//
+// GEN-0043:R1 — canonical wire shape is the 8-byte little-endian encoding
+// of `Timestamp::as_microsecond()` (i64 microseconds since the Unix epoch).
+// Decode reads 8 bytes LE and reconstructs via `Timestamp::from_microsecond`;
+// the round-trip is total over `i64` (no in-range rejection — `from_microsecond`
+// accepts the full `i64` domain per GEN-0043:R1). Sub-microsecond precision
+// is truncated at encode and the truncated value is the canonical wall-clock
+// identity (GEN-0043:R2). Fixed-width 8 bytes — no length prefix; the
+// GEN-0035:R8 decoder cap does not apply (GEN-0043:R4).
+#[cfg(feature = "jiff")]
+impl Encode for jiff::Timestamp {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.as_microsecond().encode(out);
+    }
+}
+
+#[cfg(feature = "jiff")]
+impl Decode for jiff::Timestamp {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
+        let micros = i64::decode(d)?;
+        // `from_microsecond` is total over i64 per GEN-0043:R1 — no in-range
+        // check at decode. Map any future error (e.g. if jiff narrows its
+        // accepted range) onto the frozen InvalidInput variant.
+        jiff::Timestamp::from_microsecond(micros).map_err(|_| EventError::InvalidInput)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // NonZeroU64 — F2c-pre Inc-pre.1 (PAR-0021:R1 hash-chain prereq)
 // ---------------------------------------------------------------------------
@@ -1257,6 +1285,44 @@ mod tests {
         4u32.encode(&mut wire);
         wire.extend_from_slice(&[1u8, 2, 3, 4]);
         let err = from_bytes::<arrayvec::ArrayVec<u8, 3>>(&wire).unwrap_err();
+        assert_eq!(err, EventError::InvalidInput);
+    }
+
+    // ----- jiff::Timestamp foreign-floor (GEN-0043) --------------------------
+
+    #[cfg(feature = "jiff")]
+    #[test]
+    fn jiff_timestamp_layout_and_roundtrip() {
+        // GEN-0043:R1 — wire shape is 8-byte LE of as_microsecond() (i64).
+        // Pick a distinct-byte pattern in the positive half so any byte-
+        // order surprise would show up as a permuted assert.
+        let micros: i64 = 0x0102_0304_0506_0708;
+        let ts = jiff::Timestamp::from_microsecond(micros).unwrap();
+        let bytes = to_vec(&ts);
+        assert_eq!(bytes, vec![0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]);
+        let back: jiff::Timestamp = from_bytes(&bytes).unwrap();
+        assert_eq!(back, ts);
+        assert_eq!(back.as_microsecond(), micros);
+    }
+
+    #[cfg(feature = "jiff")]
+    #[test]
+    fn jiff_timestamp_zero_micros_roundtrip() {
+        // The Unix epoch — micros == 0 — must encode as 8 zero bytes and
+        // round-trip cleanly. Anchors the floor of the GEN-0043:R1 domain.
+        let ts = jiff::Timestamp::from_microsecond(0).unwrap();
+        let bytes = to_vec(&ts);
+        assert_eq!(bytes, vec![0u8; 8]);
+        let back: jiff::Timestamp = from_bytes(&bytes).unwrap();
+        assert_eq!(back, ts);
+    }
+
+    #[cfg(feature = "jiff")]
+    #[test]
+    fn jiff_timestamp_truncated_input_rejected() {
+        // 7 bytes is one short of the fixed-width 8 the decode requires;
+        // surfaces via the standard truncated-read path.
+        let err = from_bytes::<jiff::Timestamp>(&[0u8; 7]).unwrap_err();
         assert_eq!(err, EventError::InvalidInput);
     }
 

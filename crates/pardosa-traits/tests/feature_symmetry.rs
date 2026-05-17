@@ -40,9 +40,19 @@
 //! fixture is required because the supertrait closure already
 //! produces the desired hard failure on drift.
 
-#[cfg(any(feature = "uuid", feature = "bytes", feature = "arrayvec"))]
+#[cfg(any(
+    feature = "uuid",
+    feature = "bytes",
+    feature = "arrayvec",
+    feature = "jiff"
+))]
 use pardosa_encoding::Decode;
-#[cfg(any(feature = "uuid", feature = "bytes", feature = "arrayvec"))]
+#[cfg(any(
+    feature = "uuid",
+    feature = "bytes",
+    feature = "arrayvec",
+    feature = "jiff"
+))]
 use pardosa_traits::{EventSafe, sealed};
 
 /// Generic compile-time symmetry probe. The `const _` items below
@@ -50,7 +60,12 @@ use pardosa_traits::{EventSafe, sealed};
 /// feature gate. The helper itself is `#[cfg]`-gated on the disjunction
 /// of feature flags that produce a caller, so it exists if and only if
 /// at least one probe is compiled in.
-#[cfg(any(feature = "uuid", feature = "bytes", feature = "arrayvec"))]
+#[cfg(any(
+    feature = "uuid",
+    feature = "bytes",
+    feature = "arrayvec",
+    feature = "jiff"
+))]
 fn assert_symmetric<T: sealed::Sealed + EventSafe + Decode>() {}
 
 // Anonymous `const _` items are the idiomatic Rust shape for type-level
@@ -70,6 +85,12 @@ const _: fn() = assert_symmetric::<bytes::Bytes>;
 // / `T: Decode`) resolve cleanly.
 #[cfg(feature = "arrayvec")]
 const _: fn() = assert_symmetric::<arrayvec::ArrayVec<u8, 4>>;
+
+// GEN-0043 jiff::Timestamp — parallel to the GEN-0041 v0 floor. Drift
+// in either crate's `jiff` gate (e.g. dropping `EventSafe for Timestamp`
+// while keeping `Encode for Timestamp`) breaks compile here.
+#[cfg(feature = "jiff")]
+const _: fn() = assert_symmetric::<jiff::Timestamp>;
 
 /// Runtime no-op so `cargo test` reports a result line for this file
 /// even when the symmetry assertions are purely compile-time. Keeps

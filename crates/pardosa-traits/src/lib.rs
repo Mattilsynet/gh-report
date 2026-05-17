@@ -194,6 +194,15 @@ impl<T: EventSafe, const N: usize> sealed::Sealed for arrayvec::ArrayVec<T, N> {
 #[cfg(feature = "arrayvec")]
 impl<T: EventSafe, const N: usize> EventSafe for arrayvec::ArrayVec<T, N> {}
 
+// GEN-0043 — jiff::Timestamp wall-clock identity. Encode/Decode twin lives
+// in pardosa-encoding behind the matching `jiff` feature; this feature
+// pulls that through per GEN-0043:R3 so a single `--features jiff` flag
+// enables the full Sealed + EventSafe + Encode + Decode surface.
+#[cfg(feature = "jiff")]
+impl sealed::Sealed for jiff::Timestamp {}
+#[cfg(feature = "jiff")]
+impl EventSafe for jiff::Timestamp {}
+
 // ---------------------------------------------------------------------------
 // EventError — pardosa-events canonical error surface (GEN-0039)
 // ---------------------------------------------------------------------------
