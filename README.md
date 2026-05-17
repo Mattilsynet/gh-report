@@ -2,7 +2,7 @@
 
 Enabling constraints for agent-first development
 
-Cherry-pit and pardosa are library families for coding agents. Cherry-pit constrains compositions that would quietly break how the system fits together. Pardosa constrains behavior that would quietly break what the system remembers. The rules both crates enforce live in docs/adr/cherry/ and docs/adr/pardosa/.
+Cherry-pit and Pardosa are library families primarily for coding agents. Cherry-pit constrains compositions that could quietly break how the system fits together. Pardosa constrains behavior that could quietly break what the system remembers. The rules both crates enforce live in a sizable ADR corpus of 215+ documents docs/adr/, each averaging about 5 rules.
 
 A Rust workspace shipping binaries (`adr-fmt`, `adr-srv` (TBD), `gh-report`)
 plus their supporting library crates and a governed ADR corpus.
