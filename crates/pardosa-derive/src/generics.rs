@@ -54,11 +54,7 @@ fn iter_fields(fields: &Fields) -> Box<dyn Iterator<Item = &syn::Field> + '_> {
 
 /// Recursively walk a type looking for BTreeMap/BTreeSet usage.
 /// When found, extract the key/element type and collect generic params from it.
-fn find_btree_key_params(
-    ty: &syn::Type,
-    generics: &HashSet<String>,
-    result: &mut HashSet<String>,
-) {
+fn find_btree_key_params(ty: &syn::Type, generics: &HashSet<String>, result: &mut HashSet<String>) {
     use syn::Type;
     match ty {
         Type::Path(tp) => {
