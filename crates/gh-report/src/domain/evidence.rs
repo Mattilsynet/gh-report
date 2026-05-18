@@ -1,7 +1,5 @@
 //! Evidence artifact types produced by collection runs.
 
-use std::sync::Arc;
-
 use pardosa_encoding::Encode;
 use serde::{Deserialize, Serialize};
 
@@ -35,15 +33,17 @@ impl Encode for LastCommitInfo {
 }
 
 /// A repository with its collected check results (evidence).
+///
+/// `repository` is owned: GEN-0045:R4 forbids Arc-as-field in
+/// `GenomeSafe`-deriving structs because shared ownership does not survive
+/// serialisation. Consumers that need to fan out the same `Repository`
+/// across async tasks wrap with `Arc::new(evidence.repository)` at the call
+/// site; cross-snapshot sharing semantics (CHE-0048) are preserved by those
+/// runtime Arcs, not by the field type.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RepositoryEvidence {
     /// The repository this evidence pertains to.
-    ///
-    /// Wrapped in `Arc` to avoid deep-cloning the full `Repository` struct
-    /// when evidence is shared across checkpoint snapshots, partial
-    /// publisher, and baseline caches.  Transparent to serde thanks to
-    /// `serde(features = ["rc"])`.
-    pub repository: Arc<Repository>,
+    pub repository: Repository,
     /// Aggregated security check results for the repository.
     pub checks: RepositoryChecks,
     /// Information about the most recent commit on the default branch.
@@ -54,16 +54,14 @@ pub struct RepositoryEvidence {
 
 /// Wire format: fields encoded in struct declaration order via
 /// `Encode::encode`. Field reorder is a wire-format break; new fields
-/// must be appended (CHE-0064:R2 + PAR-0024:R5). Terminal composer in
-/// the DomainEvent-reachable Encode closure (sub-4b.iii).
+/// must be appended (CHE-0064:R2 + PAR-0024:R5).
 ///
 /// # Wire format
 ///
-/// 1. `repository: Arc<Repository>` — `Arc<T>` blanket delegates to
-///    `<Repository as Encode>::encode` (sub-4b.i).
-/// 2. `checks: RepositoryChecks` — composite of 4b.ii intermediates.
+/// 1. `repository: Repository` — delegates to `<Repository as Encode>::encode`.
+/// 2. `checks: RepositoryChecks` — composite.
 /// 3. `last_commit: Option<LastCommitInfo>` — `Option<T>` blanket
-///    writes a 1-byte tag then optionally the inner encoding (4b.i).
+///    writes a 1-byte tag then optionally the inner encoding.
 impl Encode for RepositoryEvidence {
     fn encode(&self, out: &mut Vec<u8>) {
         self.repository.encode(out);

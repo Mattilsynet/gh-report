@@ -892,7 +892,6 @@ mod tests {
     };
     use crate::domain::repository::Visibility;
     use crate::test_fixtures;
-    use std::sync::Arc;
 
     fn sample_metrics() -> AggregatedMetrics {
         AggregatedMetrics {
@@ -1845,7 +1844,7 @@ mod tests {
             ),
         );
         {
-            let r = Arc::make_mut(&mut repo.repository);
+            let r = &mut repo.repository;
             r.description = Some("A test repo".to_string());
             r.language = Some("Rust".to_string());
             r.fork = true;
@@ -1964,7 +1963,7 @@ mod tests {
             ),
         );
         // 3 years before run_timestamp (2026-04-09)
-        Arc::make_mut(&mut repo.repository).updated_at = Some("2023-01-01T00:00:00Z".to_string());
+        repo.repository.updated_at = Some("2023-01-01T00:00:00Z".to_string());
 
         let repos = vec![repo];
         let metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
@@ -2145,7 +2144,7 @@ mod tests {
                 test_fixtures::codeowners_with_owners(&["@org/team-xss"]),
             ),
         );
-        Arc::make_mut(&mut repo.repository).description =
+        repo.repository.description =
             Some("<img onerror=alert(1)>".to_string());
         repo.last_commit = Some(LastCommitInfo {
             committer_login: Some("<b>bold</b>".to_string()),

@@ -20,7 +20,6 @@ use crate::domain::metrics::{
 use crate::domain::repository::{Repository, Visibility};
 use crate::domain::status::CollectionStatus;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 // ── Timestamps ──────────────────────────────────────────────────────
 
@@ -67,7 +66,7 @@ pub fn make_repository_evidence(
     checks: RepositoryChecks,
 ) -> RepositoryEvidence {
     RepositoryEvidence {
-        repository: Arc::new(make_repository(name, archived, visibility)),
+        repository: make_repository(name, archived, visibility),
         checks,
         last_commit: None,
     }
@@ -94,7 +93,7 @@ pub fn all_passing_evidence(name: &str) -> RepositoryEvidence {
 #[must_use]
 pub fn evidence_from_repository(repo: &Repository, timestamp: &str) -> RepositoryEvidence {
     RepositoryEvidence {
-        repository: Arc::new(repo.clone()),
+        repository: repo.clone(),
         checks: RepositoryChecks {
             security_policy: SecurityPolicyResult {
                 status: SecurityPolicyStatus::Pass,
@@ -478,10 +477,8 @@ pub fn make_repo_with_updated_at(
             codeowners_with_owners(owners),
         ),
     );
-    // Set updated_at on the repository Arc
-    let mut inner = (*repo.repository).clone();
-    inner.updated_at = updated_at.map(ToString::to_string);
-    repo.repository = Arc::new(inner);
+    // Set updated_at on the owned repository.
+    repo.repository.updated_at = updated_at.map(ToString::to_string);
     repo
 }
 

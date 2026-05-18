@@ -250,11 +250,10 @@ pub fn build_baseline(repositories: &[RepositoryEvidence]) -> Baseline {
 mod tests {
     use super::*;
     use crate::test_fixtures;
-    use std::sync::Arc;
 
     fn make_evidence_with_updated_at(name: &str, updated_at: Option<&str>) -> RepositoryEvidence {
         let mut ev = test_fixtures::all_passing_evidence(name);
-        Arc::make_mut(&mut ev.repository).updated_at = updated_at.map(String::from);
+        ev.repository.updated_at = updated_at.map(String::from);
         ev
     }
 
@@ -417,7 +416,7 @@ mod tests {
     fn build_baseline_excludes_total_failure() {
         // Create a total-failure evidence (all 5 checks Unknown).
         let mut ev = test_fixtures::all_passing_evidence("halted-repo");
-        Arc::make_mut(&mut ev.repository).updated_at = Some("2026-04-09T12:00:00Z".to_string());
+        ev.repository.updated_at = Some("2026-04-09T12:00:00Z".to_string());
         ev.checks.security_policy.status = SecurityPolicyStatus::Unknown;
         ev.checks.secret_scanning.status = SecretScanningStatus::Unknown;
         ev.checks.dependabot_security_updates.status = DependabotStatus::Unknown;
@@ -452,7 +451,7 @@ mod tests {
     fn build_baseline_keeps_partial_failure() {
         // Only 1 check is Unknown — should still be cached.
         let mut ev = test_fixtures::all_passing_evidence("partial-repo");
-        Arc::make_mut(&mut ev.repository).updated_at = Some("2026-04-09T12:00:00Z".to_string());
+        ev.repository.updated_at = Some("2026-04-09T12:00:00Z".to_string());
         ev.checks.branch_protection.status = BranchProtectionStatus::Unknown;
 
         let baseline = build_baseline(&[ev]);
