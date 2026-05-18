@@ -409,6 +409,29 @@ behaviour on interfaces. **Not** publication-prep.
    diagnostic appears in query. No bead yet (file when Phase 3
    activates).
 
+5. **Workspace hash-algorithm consolidation** (drafted 2026-05-18; mission
+   package preserved as bd evidence bead — see bd query
+   `--label hash-consolidation,evidence`). Collapse three hash policies
+   (SHA-256, BLAKE3, xxhash) onto a single rule: "BLAKE3 where there's an
+   adversary (precursor chain, frontier); HMAC-SHA256 for external protocols
+   (GitHub `x-hub-signature-256`); xxh3-family otherwise (file checksums,
+   snapshot signatures, ETags)." Six sub-missions: (1) author COM-0039
+   umbrella ADR; (2) supersede GEN-0016, update CHE-0053 R11 to xxh3-128;
+   (3) pardosa-genome xxh64→xxh3-64 + `FORMAT_VERSION` 3→4 (hard cut);
+   (4) cherry-pit-storage snapshot signature SHA-256→xxh3-128 (drop sha2
+   dep); (5a) extract three `compute_etag` sites to one shared helper
+   (structural; SHA-256 preserved); (5b) swap shared helper to xxh3-128
+   (behavioural; one-time RFC 9110 §8.8.3 revalidation); (6) audit gate.
+   Gated on Track 6 atomic-ship complete (`FORMAT_VERSION=3` in tree) so
+   the 3→4 bump doesn't fight Track 6's atomic-ship. Verify: `rg 'use sha2'
+   crates/` returns exactly 1 hit (`gh-report/src/webhook/signature.rs`);
+   `cargo tree -p cherry-pit-storage -i sha2` empty; `rg 'fn compute_etag'
+   crates/` returns exactly 1 hit; `cargo test --workspace --all-features`
+   exit 0. Algorithm choices ratified by user 2026-05-18 (xxh3-128 not
+   BLAKE3 for snapshot sig + ETags — right-sized for no-adversary threat
+   model; ~10× faster than SHA-256). Mission-package body lives in bd
+   evidence bead (queryable via the label-based query above).
+
 ---
 
 ## Injection log
@@ -428,3 +451,4 @@ Cross-phase discovery audit trail lives in bd
 | 0.7     | 2026-05-16 | Pruned historic state: Phase 1 (closed) + Phase 2 v1 (superseded) collapsed to single-paragraph pointers; closed Phase 2 v2 Tracks 0/0.5/1/2/4 sub-sections dropped; injection log replaced with bd query pointer; revision history collapsed v0.1–v0.5. Forward-work content (Tracks 3, 4.4, 5; Phase 3) unchanged. Closed-task audit trail SSOT is bd + git log. |
 | 0.8     | 2026-05-17 | Surfaced parallel Phase-2 file-format work stream as Track 6 (pardosa-genome file-format hardening); Epic 6.A = PAR-0021 (`adr-fmt-il9a`, 6 sub-tasks), Epic 6.B = F9 (`adr-fmt-e71p`, 5 sub-tasks), plus 6 adjacent loose tasks. Previously bd-only; roadmap omitted 19 open Phase-2 beads. Sequencing diagram updated; risk register extended with wire-format / atomic-ship rows. F-task `phase:2-generalize` label backfill is a separate bd action. |
 | 0.9     | 2026-05-17 | **User-ratified Phase 2 v2 completion criteria** (C1/C2/C3): C1 = adr-srv operational in **read-only mode** (scrape ADRs → pardosa-genome → GraphQL Query); C2 = gh-report stores internal state in pardosa-genome files (hard cut, re-scrape GitHub API); C3 = idiomatic architectural organization audit across adr-srv / gh-report / cherry-pit-* / pardosa-*. **Track 3 re-scoped** to read-only: 3.4 (GraphQL mutations) and 3.5 (metacircular adr-fmt-as-lint loop) retired to Phase 3 backlog; new 3.A scrape-pipeline sub-task added. **Track 7 added** (gh-report → pardosa hard cut; supersedes CHE-0031; 4 sub-tasks). **Track 8 added** (C3 idiomatic audit, 4 sub-tasks). Exit criteria rewritten: 12 criteria, indexed to C1/C2/C3/Track 6. Sequencing updated: Track 3.1/3.2 + Track 6 parallel at start; first pardosa write (3.A) gated on Track 6 atomic-ship; Track 7/8 sequenced after Track 5. Risk register extended with Track 3↔6 coupling, Track 7 hard-cut, Track 8 audit-bikeshedding rows. **Original v0.8 Track 6 content preserved unchanged.** PAR-0021 sequencing decision: F2 chain lands before any consumer write (Track 3.A + Track 7), per user direction; "parallel" in roadmap means concurrent agents on disjoint crate trees, not concurrent first-writes. Track 6 atomic-ship (Epic 6.A + 6.B together) preserved per user direction. Track 4.4 + Track 5 placement preserved (sequenced after Track 3.3 per user "as early as possible in Phase 2" direction). Companion: FOCUS.md sync to v0.8 (this commit). |
+| 1.0     | 2026-05-18 | **Phase 3 injection queue extended**: item #5 — workspace hash-algorithm consolidation. Drafted as mission package `hash-consolidation-1779148800`; promoted to bd evidence bead (label `evidence,hash-consolidation,phase:3-harden,roadmap-deferred`). Collapses three hash policies onto one rule ("adversary → BLAKE3; external protocol → HMAC-SHA256; otherwise → xxh3"). Six sub-missions; gated on Phase 2 Track 6 atomic-ship complete. Algorithm choices user-ratified 2026-05-18 (xxh3-128 for snapshot signature + ETags; right-sized for no-adversary threat model). Phase 2 v2 forward-work unchanged. |
