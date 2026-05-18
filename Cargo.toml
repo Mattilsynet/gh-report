@@ -75,6 +75,14 @@ tracing = "0.1"
 # === Error handling ===
 thiserror = "2"
 
+# === Benchmarking ===
+# criterion 0.5 statistical bench harness. dev-dependency only;
+# pardosa-encoding stays no_std (lib build does not pull criterion).
+# default-features off keeps the dep surface minimal (no html_reports;
+# downstream crates can opt in via `features = ["html_reports"]` if
+# needed for a specific bench).
+criterion = { version = "0.5", default-features = false }
+
 # === Misc ===
 fastrand = "2"
 
