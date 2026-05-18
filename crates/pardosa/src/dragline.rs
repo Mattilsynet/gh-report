@@ -8,10 +8,10 @@ use crate::fiber::Fiber;
 // (event.rs:305); `precursor_hash_of` is BLAKE3 of those bytes. P-include
 // semantics: `precursor_hash` IS part of the encoded surface so the chain
 // covers the prior event's full shape (event.rs:302).
-use pardosa_encoding::{Encode, precursor_hash_of, to_vec};
 use crate::fiber_state::{
     FiberAction, FiberState, LockedRescuePolicy, MigrationPolicy, transition,
 };
+use pardosa_encoding::{Encode, precursor_hash_of, to_vec};
 
 /// Append-only event log with invariant enforcement at write time.
 ///
