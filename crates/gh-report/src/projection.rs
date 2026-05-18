@@ -284,9 +284,8 @@ impl Projection for EvidenceProjection {
 /// bound.
 ///
 /// `event_type()` delegates to the existing inherent
-/// [`DomainEvent::event_type`] method, preserving the `serde(tag = "type")`
-/// discriminator already verified by
-/// `event_type_matches_serde_tag` in `domain::events`.
+/// [`DomainEvent::event_type`] method, which returns the `PascalCase`
+/// variant name as the wire discriminator (post CHE-0065 pivot).
 impl CoreDomainEvent for DomainEvent {
     fn event_type(&self) -> &'static str {
         // Delegate to the existing inherent method on `DomainEvent`.
@@ -463,9 +462,10 @@ mod tests {
     }
 
     #[test]
-    fn core_domain_event_impl_returns_serde_tag() {
+    fn core_domain_event_impl_returns_pascalcase_discriminator() {
         // Pin the trait impl: `CoreDomainEvent::event_type` must equal
-        // the inherent method (and therefore the serde `tag = "type"`).
+        // the inherent method. Post CHE-0065 pivot, discriminators are
+        // PascalCase variant names (no longer serde-derived).
         let ev = DomainEvent::RepoRemoved {
             domain_key: "k".into(),
             repo_name: "r".into(),
@@ -473,7 +473,7 @@ mod tests {
         };
         assert_eq!(
             <DomainEvent as CoreDomainEvent>::event_type(&ev),
-            "repo_removed"
+            "RepoRemoved"
         );
     }
 
