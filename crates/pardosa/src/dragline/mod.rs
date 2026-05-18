@@ -3,16 +3,16 @@
 //! The dragline crate-internal tree is split across sibling files along
 //! concern boundaries:
 //!
-//! - `all` (transient, removed at the end of M1): holds the not-yet-split
-//!   remainder during the staged refactor.
-//! - Future siblings: `linevec`, `commit`, `state`, `api` — see
-//!   `AFM`-/`PAR`-governed split (mission
-//!   `pardosa-wave1-m1-split-dragline-1779100805`).
+//! - `linevec` — append-only `Linevec<T>` newtype + write-time validators.
+//! - `commit` — `PreparedCommit<T>`, `LookupOp`, two-phase
+//!   prepare/apply commit machinery (FH5).
+//! - `state` — public `Dragline<T>` struct, `AppendResult`, constructors.
+//! - `api` — the `impl Dragline { … }` public write/read surface.
 //!
 //! Public re-exports below preserve the exact pre-split surface
 //! (`pardosa::Dragline`, `pardosa::AppendResult`).
 
-mod all;
+mod api;
 mod commit;
 mod linevec;
 mod state;
