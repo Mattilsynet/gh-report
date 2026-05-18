@@ -11,6 +11,13 @@
 /// lifetime hazards in stored events. Use owned `String` / `Vec<u8>`, or
 /// bounded `EventString<MAX>` / `EventBytes<MAX>` instead. See GEN-0045.
 ///
+/// Runtime-sharing wrappers (`Arc<T>`, `Cow<'_, T>`) also do **not** implement
+/// `GenomeSafe`. `Arc<T>` shared ownership does not survive serialisation —
+/// decoding always allocates a fresh `Arc`, so the impl was semantically
+/// misleading. `Cow<'_, T>` generalises the borrowed-lifetime hazard: the
+/// `Borrowed` variant is a reference and cannot survive a storage round-trip.
+/// Use the owned inner type `T` directly. See GEN-0045.
+///
 /// For types used as `BTreeMap` keys or `BTreeSet` elements, the additional
 /// [`GenomeOrd`] marker is required. See ADR-033.
 ///
@@ -248,21 +255,17 @@ impl<T: GenomeSafe + GenomeOrd + Ord> GenomeSafe for std::collections::BTreeSet<
 // Blanket impls — smart pointers and wrappers
 // ---------------------------------------------------------------------------
 //
-// Box<T> and Arc<T> are hash-transparent: they delegate to T's hash.
-// Wrapping or unwrapping Box/Arc is schema-compatible.
+// Box<T> is hash-transparent: it delegates to T's hash.
+// Wrapping or unwrapping Box is schema-compatible.
 //
 // No impl for Rc<T>: !Send, incompatible with async runtimes (Tokio/Axum).
-// Users needing shared ownership should use Arc<T>.
-
-impl<T: GenomeSafe> GenomeSafe for std::sync::Arc<T> {
-    const SCHEMA_HASH: u128 = T::SCHEMA_HASH;
-    const SCHEMA_SOURCE: &'static str = T::SCHEMA_SOURCE;
-}
-
-impl<T: GenomeSafe + ToOwned + ?Sized> GenomeSafe for std::borrow::Cow<'_, T> {
-    const SCHEMA_HASH: u128 = T::SCHEMA_HASH;
-    const SCHEMA_SOURCE: &'static str = T::SCHEMA_SOURCE;
-}
+// Use Arc<T> for shared ownership, but note Arc<T> itself is also excluded —
+// shared ownership does not survive serialisation (decode allocates a fresh
+// Arc). Use the owned inner type T directly. See GEN-0045.
+//
+// No impl for Cow<'_, T>: the Borrowed variant is a reference and cannot
+// survive a storage round-trip (generalises the &str / &[u8] exclusion;
+// see GEN-0045). Use the owned T directly.
 
 // PhantomData always hashes as "PhantomData" regardless of T.
 // Changing PhantomData<A> to PhantomData<B> is NOT a schema-breaking change.

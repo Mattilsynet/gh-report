@@ -395,7 +395,7 @@ fn schema_size_header_offset() {
 }
 
 // ---------------------------------------------------------------------------
-// Blanket impl hash transparency (Box/Arc/Cow delegate to inner)
+// Blanket impl hash transparency (Box delegates to inner; Arc/Cow excluded — see GEN-0045)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -403,20 +403,6 @@ fn box_hash_transparent() {
     let inner = <u32 as pardosa_genome::genome_safe::GenomeSafe>::SCHEMA_HASH;
     let boxed = <Box<u32> as pardosa_genome::genome_safe::GenomeSafe>::SCHEMA_HASH;
     assert_eq!(inner, boxed, "Box<T> hash must equal T hash");
-}
-
-#[test]
-fn arc_hash_transparent() {
-    let inner = <String as pardosa_genome::genome_safe::GenomeSafe>::SCHEMA_HASH;
-    let arced = <std::sync::Arc<String> as pardosa_genome::genome_safe::GenomeSafe>::SCHEMA_HASH;
-    assert_eq!(inner, arced, "Arc<T> hash must equal T hash");
-}
-
-#[test]
-fn cow_hash_transparent() {
-    let inner = <str as pardosa_genome::genome_safe::GenomeSafe>::SCHEMA_HASH;
-    let cow = <std::borrow::Cow<'_, str> as pardosa_genome::genome_safe::GenomeSafe>::SCHEMA_HASH;
-    assert_eq!(inner, cow, "Cow<T> hash must equal T hash");
 }
 
 // ---------------------------------------------------------------------------
@@ -531,18 +517,15 @@ fn file_error_display() {
 }
 
 // ---------------------------------------------------------------------------
-// String / str / Cow<str> schema hash identity (strict type-identity policy)
+// String / str schema hash identity (strict type-identity policy)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn string_str_cow_hash_identity() {
+fn string_str_hash_identity() {
     let h_string = <String as GenomeSafe>::SCHEMA_HASH;
     let h_str = <str as GenomeSafe>::SCHEMA_HASH;
-    let h_cow_str = <std::borrow::Cow<'_, str> as GenomeSafe>::SCHEMA_HASH;
 
-    // Cow<str> delegates to str — same hash
-    assert_eq!(h_cow_str, h_str, "Cow<str> must equal str");
-    // String is distinct (strict type identity)
+    // String is distinct from str (strict type identity)
     assert_ne!(h_string, h_str, "String must differ from str");
 }
 
