@@ -74,6 +74,17 @@ impl fmt::Display for AggregateId {
     }
 }
 
+// CHE-0064:R2 — hand-rolled Encode (no derive) per PAR-0024:R5.
+// Delegates verbatim to the inner `NonZeroU64`'s canonical encoding
+// (pardosa-encoding/src/lib.rs Encode for NonZeroU64). Wire-identical
+// to a bare `u64` LE — niche-optimisation of AggregateId is irrelevant
+// on the wire.
+impl pardosa_encoding::Encode for AggregateId {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.0.encode(out);
+    }
+}
+
 impl From<NonZeroU64> for AggregateId {
     fn from(id: NonZeroU64) -> Self {
         Self(id)

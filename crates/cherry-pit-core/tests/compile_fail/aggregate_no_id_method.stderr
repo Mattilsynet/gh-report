@@ -1,8 +1,8 @@
 error[E0599]: no method named `id` found for struct `MyAggregate` in the current scope
-  --> tests/compile_fail/aggregate_no_id_method.rs:29:17
+  --> tests/compile_fail/aggregate_no_id_method.rs:37:17
    |
  8 | struct MyAggregate;
    | ------------------ method `id` not found for this struct
 ...
-29 |     let _ = agg.id();
+37 |     let _ = agg.id();
    |                 ^^ method not found in `MyAggregate`

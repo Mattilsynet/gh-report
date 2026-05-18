@@ -13,8 +13,13 @@ fn m1_forbid_unsafe_code() {
     );
 }
 
-/// M3: `cherry-pit-core` dependencies restricted to {serde, uuid, jiff}
-/// (CHE-0029 R4). Also covers M23 (no thiserror).
+/// M3: `cherry-pit-core` dependencies restricted to
+/// {serde, uuid, jiff, pardosa-encoding} (CHE-0029 R4 as amended by
+/// CHE-0064 R1: pardosa-encoding admitted to the substrate ring to
+/// supply the `Encode` supertrait fed into the PAR-0021 hash chain).
+/// Also covers M23 (no thiserror). The CHE-0029 R6 closure check
+/// (forbidden transitives: tokio/axum/async-nats/tracing) is
+/// orthogonal and verified by `dep_tree.rs`.
 #[test]
 fn m3_dependency_allowlist() {
     let cargo_toml = include_str!("../Cargo.toml");
@@ -28,7 +33,7 @@ fn m3_dependency_allowlist() {
     let deps_end = deps_section.find("\n[").unwrap_or(deps_section.len());
     let deps = &deps_section[..deps_end];
 
-    let allowed = ["serde", "uuid", "jiff"];
+    let allowed = ["serde", "uuid", "jiff", "pardosa-encoding"];
     for line in deps.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -46,7 +51,7 @@ fn m3_dependency_allowlist() {
         assert!(
             allowed.contains(&name),
             "Unexpected dependency '{name}' in cherry-pit-core. \
-             Allowed: {allowed:?} per CHE-0029 R4."
+             Allowed: {allowed:?} per CHE-0029 R4 (as amended by CHE-0064 R1)."
         );
     }
 }

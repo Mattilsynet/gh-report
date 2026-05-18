@@ -29,6 +29,14 @@ testing = []
 serde = { workspace = true }
 uuid = { workspace = true }
 jiff = { workspace = true }
+# CHE-0064 admits pardosa-encoding into cherry-pit-core's substrate ring
+# (amending CHE-0029:R4). Required by the `DomainEvent: Encode` supertrait
+# wired in src/event.rs; the precursor-hash chain in pardosa::Dragline
+# (PAR-0021:R5) consumes the canonical encoding of envelope payloads.
+# Features `uuid` + `jiff` come through the workspace entry (see root
+# Cargo.toml). Closure check: this crate transitively remains free of
+# tokio/axum/async-nats/tracing per CHE-0029:R6.
+pardosa-encoding = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

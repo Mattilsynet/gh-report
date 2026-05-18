@@ -16,6 +16,15 @@ fn readme_usage_example() {
         }
     }
 
+    // CHE-0064:R2 — hand-rolled Encode (no derive) per PAR-0024:R5.
+    impl pardosa_encoding::Encode for CounterEvent {
+        fn encode(&self, out: &mut Vec<u8>) {
+            match self {
+                CounterEvent::Incremented => out.push(0u8),
+            }
+        }
+    }
+
     #[derive(Default)]
     struct Counter {
         count: u32,
