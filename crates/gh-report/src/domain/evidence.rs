@@ -52,6 +52,26 @@ pub struct RepositoryEvidence {
     pub last_commit: Option<LastCommitInfo>,
 }
 
+/// Wire format: fields encoded in struct declaration order via
+/// `Encode::encode`. Field reorder is a wire-format break; new fields
+/// must be appended (CHE-0064:R2 + PAR-0024:R5). Terminal composer in
+/// the DomainEvent-reachable Encode closure (sub-4b.iii).
+///
+/// # Wire format
+///
+/// 1. `repository: Arc<Repository>` — `Arc<T>` blanket delegates to
+///    `<Repository as Encode>::encode` (sub-4b.i).
+/// 2. `checks: RepositoryChecks` — composite of 4b.ii intermediates.
+/// 3. `last_commit: Option<LastCommitInfo>` — `Option<T>` blanket
+///    writes a 1-byte tag then optionally the inner encoding (4b.i).
+impl Encode for RepositoryEvidence {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.repository.encode(out);
+        self.checks.encode(out);
+        self.last_commit.encode(out);
+    }
+}
+
 /// Assessment metadata for a collection run.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AssessmentMetadata {

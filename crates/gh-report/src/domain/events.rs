@@ -179,6 +179,156 @@ pub enum DomainEvent {
     },
 }
 
+/// Wire format: a `u8` discriminant in variant declaration order
+/// (0..=8) followed by each payload field encoded in its declaration
+/// order via `Encode::encode`. Variant reorder, insertion, removal,
+/// or field reorder within a variant is a wire-format break; new
+/// variants must be appended at the end and new fields appended at
+/// the end of their variant (CHE-0064:R2 + PAR-0024:R5 +
+/// CHE-0022:R5 additive evolution).
+///
+/// Terminal composer of the DomainEvent-reachable Encode closure
+/// (sub-4b.iii). This impl is what drives E0277 in the gh-report
+/// build from 6 to 0 — every aggregate, projection, and event-store
+/// call site that names `DomainEvent: Encode` resolves here.
+///
+/// # Wire format
+///
+/// | Discriminant | Variant                    | Payload fields (declaration order)                                                                  |
+/// |--------------|----------------------------|-----------------------------------------------------------------------------------------------------|
+/// | `0u8`        | `SweepStarted`             | `org`, `repo_count`, `batch_id`, `timestamp`                                                        |
+/// | `1u8`        | `RepoEvaluated`            | `domain_key`, `repo_name`, `success`, `source`, `duration_ms`, `timestamp`, `evidence`              |
+/// | `2u8`        | `RepoRemoved`              | `domain_key`, `repo_name`, `timestamp`                                                              |
+/// | `3u8`        | `SweepCompleted`           | `batch_id`, `duration_ms`, `repo_count`, `timestamp`                                                |
+/// | `4u8`        | `WebhookReceived`          | `action`, `repo`, `timestamp`                                                                       |
+/// | `5u8`        | `EvidencePublished`        | `page_count`, `warm_start`, `timestamp`                                                             |
+/// | `6u8`        | `PartialEvidenceRendered`  | `batch_id`, `page_count`, `pending_repos`, `timestamp`                                              |
+/// | `7u8`        | `SweepFailed`              | `batch_id`, `error`, `duration_ms`, `timestamp`                                                     |
+/// | `8u8`        | `SweepProgress`            | `batch_id`, `completed`, `total`, `timestamp`                                                       |
+///
+/// `RepoEvaluated.evidence: Option<Box<RepositoryEvidence>>` resolves
+/// via the `Option<T>` blanket → `Box<T>` blanket →
+/// `<RepositoryEvidence as Encode>::encode` chain in `pardosa-encoding`.
+impl pardosa_encoding::Encode for DomainEvent {
+    // Exhaustive 9-variant match (110 lines) is structurally bound by
+    // the enum shape, not a code-smell to decompose. Targeted allow,
+    // not speculative — extracting per-variant helpers would add 9
+    // single-use fns purely to dodge a line count.
+    #[allow(clippy::too_many_lines)]
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::SweepStarted {
+                org,
+                repo_count,
+                batch_id,
+                timestamp,
+            } => {
+                0u8.encode(out);
+                org.encode(out);
+                repo_count.encode(out);
+                batch_id.encode(out);
+                timestamp.encode(out);
+            }
+            Self::RepoEvaluated {
+                domain_key,
+                repo_name,
+                success,
+                source,
+                duration_ms,
+                timestamp,
+                evidence,
+            } => {
+                1u8.encode(out);
+                domain_key.encode(out);
+                repo_name.encode(out);
+                success.encode(out);
+                source.encode(out);
+                duration_ms.encode(out);
+                timestamp.encode(out);
+                evidence.encode(out);
+            }
+            Self::RepoRemoved {
+                domain_key,
+                repo_name,
+                timestamp,
+            } => {
+                2u8.encode(out);
+                domain_key.encode(out);
+                repo_name.encode(out);
+                timestamp.encode(out);
+            }
+            Self::SweepCompleted {
+                batch_id,
+                duration_ms,
+                repo_count,
+                timestamp,
+            } => {
+                3u8.encode(out);
+                batch_id.encode(out);
+                duration_ms.encode(out);
+                repo_count.encode(out);
+                timestamp.encode(out);
+            }
+            Self::WebhookReceived {
+                action,
+                repo,
+                timestamp,
+            } => {
+                4u8.encode(out);
+                action.encode(out);
+                repo.encode(out);
+                timestamp.encode(out);
+            }
+            Self::EvidencePublished {
+                page_count,
+                warm_start,
+                timestamp,
+            } => {
+                5u8.encode(out);
+                page_count.encode(out);
+                warm_start.encode(out);
+                timestamp.encode(out);
+            }
+            Self::PartialEvidenceRendered {
+                batch_id,
+                page_count,
+                pending_repos,
+                timestamp,
+            } => {
+                6u8.encode(out);
+                batch_id.encode(out);
+                page_count.encode(out);
+                pending_repos.encode(out);
+                timestamp.encode(out);
+            }
+            Self::SweepFailed {
+                batch_id,
+                error,
+                duration_ms,
+                timestamp,
+            } => {
+                7u8.encode(out);
+                batch_id.encode(out);
+                error.encode(out);
+                duration_ms.encode(out);
+                timestamp.encode(out);
+            }
+            Self::SweepProgress {
+                batch_id,
+                completed,
+                total,
+                timestamp,
+            } => {
+                8u8.encode(out);
+                batch_id.encode(out);
+                completed.encode(out);
+                total.encode(out);
+                timestamp.encode(out);
+            }
+        }
+    }
+}
+
 impl std::fmt::Display for DomainEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
