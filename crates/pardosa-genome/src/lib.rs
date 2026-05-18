@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bounded;
+pub mod char_scalar;
 pub mod config;
 pub mod error;
 pub mod file;
@@ -21,6 +22,10 @@ pub mod genome_safe;
 // Bounded wrapper types (GEN-0042). Per-field MAX enforcement layered on
 // top of the GEN-0035:R8 decoder cap; invariant-only wire format.
 pub use bounded::{EventBytes, EventString, EventVec, NonEmptyEventString};
+
+// CharScalar wrapper (GEN-0045:R2). Unicode-scalar contract over char;
+// wire byte-identical to raw char (PM4).
+pub use char_scalar::CharScalar;
 
 // Float-tier wrapper family (GEN-0045:R1). Invariant-only wrappers over
 // f32/f64; wire byte-identical to inner type (PM4).

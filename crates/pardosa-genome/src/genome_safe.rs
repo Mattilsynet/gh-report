@@ -162,8 +162,18 @@ macro_rules! impl_genome_safe_primitive {
 }
 
 impl_genome_safe_primitive!(
-    bool, u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64, char,
+    bool, u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64,
 );
+
+// Raw `char` retains `GenomeSafe` for fields carrying a raw Unicode codepoint
+// without the explicit-scalar contract. When the field's intent is "exactly
+// one Unicode scalar with surrogate rejection at the boundary", use
+// `CharScalar` instead (GEN-0045:R2). The two types are wire byte-identical
+// (4-byte LE u32) but have distinct schema hashes.
+impl GenomeSafe for char {
+    const SCHEMA_HASH: u128 = schema_hash_bytes(b"char");
+    const SCHEMA_SOURCE: &'static str = "char";
+}
 
 impl GenomeSafe for () {
     const SCHEMA_HASH: u128 = schema_hash_bytes(b"()");
