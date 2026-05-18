@@ -212,9 +212,22 @@ impl<K: Decode + Encode + Ord, V: Decode> Decode for BTreeMap<K, V> {
 
 impl<T: Encode + Ord> Encode for BTreeSet<T> {
     fn encode(&self, out: &mut Vec<u8>) {
+        // GEN-0035:R5 mandates ascending *encoded bytes*. BTreeSet iterates
+        // in T::Ord order, which coincides with encoded-bytes order for
+        // fixed-width primitives but disagrees for any variable-length T
+        // (String, Vec<u8>, etc.) where the u32 length prefix dominates lex
+        // order. Encode each element to scratch, sort scratches by bytes,
+        // then emit — same shape as BTreeMap above.
         encode_len_prefix(self.len(), out);
+        let mut scratches: Vec<Vec<u8>> = Vec::with_capacity(self.len());
         for v in self {
-            v.encode(out);
+            let mut buf = Vec::new();
+            v.encode(&mut buf);
+            scratches.push(buf);
+        }
+        scratches.sort();
+        for buf in &scratches {
+            out.extend_from_slice(buf);
         }
     }
 }
