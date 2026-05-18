@@ -13,6 +13,7 @@
 //! (`pardosa::Dragline`, `pardosa::AppendResult`).
 
 mod all;
+mod commit;
 mod linevec;
 
 pub use all::{AppendResult, Dragline};
