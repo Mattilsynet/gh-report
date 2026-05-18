@@ -49,9 +49,13 @@ pub struct Run {
     /// `batch_id` from the originating `SweepStarted`, if any.
     pub batch_id: Option<String>,
     /// Total repo count declared at sweep start.
-    pub repo_count: usize,
+    //
+    // Width fixed at u64 per GEN-0004:R1 / GEN-0032 / GEN-0037 EVT-004:
+    // the `Run` aggregate's fields mirror the `DomainEvent` field widths,
+    // which are u64 to keep canonical-bytes target-independent.
+    pub repo_count: u64,
     /// Number of repos completed (last `SweepProgress::completed`).
-    pub completed: usize,
+    pub completed: u64,
 }
 
 impl Aggregate for Run {
@@ -131,7 +135,10 @@ pub enum RunError {
 #[derive(Debug, Clone)]
 pub struct StartSweep {
     pub org: String,
-    pub repo_count: usize,
+    // u64 mirrors the resulting `DomainEvent::SweepStarted.repo_count`
+    // (GEN-0004:R1 — no platform-dependent widths in domain types).
+    // Conversion from `usize` happens at the producer per COM-0023.
+    pub repo_count: u64,
     pub batch_id: String,
     pub timestamp: String,
 }
@@ -141,8 +148,8 @@ impl Command for StartSweep {}
 #[derive(Debug, Clone)]
 pub struct RecordProgress {
     pub batch_id: String,
-    pub completed: usize,
-    pub total: usize,
+    pub completed: u64,
+    pub total: u64,
     pub timestamp: String,
 }
 impl Command for RecordProgress {}
@@ -152,7 +159,7 @@ impl Command for RecordProgress {}
 pub struct CompleteSweep {
     pub batch_id: String,
     pub duration_ms: u64,
-    pub repo_count: usize,
+    pub repo_count: u64,
     pub timestamp: String,
 }
 impl Command for CompleteSweep {}
@@ -170,7 +177,7 @@ impl Command for FailSweep {}
 /// Publish evidence after a successful sweep.
 #[derive(Debug, Clone)]
 pub struct PublishEvidence {
-    pub page_count: usize,
+    pub page_count: u64,
     /// Whether this publish is a warm-start (replayed from baseline,
     /// no fresh GitHub API calls). Distinguishes cold-boot replay from
     /// live cycle output for downstream cache-warming consumers.
@@ -183,8 +190,8 @@ impl Command for PublishEvidence {}
 #[derive(Debug, Clone)]
 pub struct RenderPartial {
     pub batch_id: String,
-    pub page_count: usize,
-    pub pending_repos: usize,
+    pub page_count: u64,
+    pub pending_repos: u64,
     pub timestamp: String,
 }
 impl Command for RenderPartial {}

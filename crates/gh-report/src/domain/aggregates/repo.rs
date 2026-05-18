@@ -39,7 +39,11 @@ pub struct Repo {
     /// `domain_key` from the first event seen, if any.
     pub domain_key: Option<String>,
     /// Number of `RepoEvaluated` events applied.
-    pub evaluation_count: usize,
+    //
+    // Width fixed at u64 per GEN-0004:R1 (no platform-dependent widths
+    // in domain-model fields; cascades from `DomainEvent` field widths
+    // even though this struct is not itself serialised today).
+    pub evaluation_count: u64,
 }
 
 impl Aggregate for Repo {
@@ -53,7 +57,11 @@ impl Aggregate for Repo {
                 }
                 if self.phase != RepoPhase::Removed {
                     self.phase = RepoPhase::Active;
-                    self.evaluation_count += 1;
+                    // saturating_add (COM-0023:R3) — `apply` is infallible
+                    // per CHE-0009:R1; saturating at u64::MAX (≈1.8e19) is
+                    // unreachable in any realistic workload and preserves
+                    // the no-panic contract of the projection path.
+                    self.evaluation_count = self.evaluation_count.saturating_add(1);
                 }
             }
             DomainEvent::RepoRemoved { domain_key, .. } => {

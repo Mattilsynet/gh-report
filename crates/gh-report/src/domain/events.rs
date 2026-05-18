@@ -48,7 +48,12 @@ pub enum DomainEvent {
         /// Target organization.
         org: String,
         /// Number of repositories to evaluate.
-        repo_count: usize,
+        //
+        // Width fixed at u64 per GEN-0004:R1 / GEN-0032 / GEN-0037 EVT-004:
+        // platform-dependent widths are forbidden in any canonical-bytes
+        // type position. Conversion from `usize` (e.g. `Vec::len()`) lives
+        // at the constructor call sites per COM-0023.
+        repo_count: u64,
         /// Unique identifier for this sweep batch.
         batch_id: String,
         /// ISO 8601 UTC timestamp.
@@ -107,7 +112,7 @@ pub enum DomainEvent {
         /// Total sweep duration in milliseconds.
         duration_ms: u64,
         /// Number of repositories evaluated.
-        repo_count: usize,
+        repo_count: u64,
         /// ISO 8601 UTC timestamp.
         timestamp: String,
     },
@@ -125,7 +130,7 @@ pub enum DomainEvent {
     /// Evidence was published (HTML cache updated, WebSocket broadcast sent).
     EvidencePublished {
         /// Number of HTML pages in the cache.
-        page_count: usize,
+        page_count: u64,
         /// Whether this was a warm-start publish (from baseline, no API calls).
         warm_start: bool,
         /// ISO 8601 UTC timestamp.
@@ -142,9 +147,9 @@ pub enum DomainEvent {
         /// Sweep `batch_id` this partial belongs to.
         batch_id: String,
         /// Number of HTML pages rendered into the cache.
-        page_count: usize,
+        page_count: u64,
         /// Repos still pending evaluation at render time.
-        pending_repos: usize,
+        pending_repos: u64,
         /// ISO 8601 UTC timestamp.
         timestamp: String,
     },
@@ -166,9 +171,9 @@ pub enum DomainEvent {
         /// Unique identifier matching the originating [`SweepStarted::batch_id`].
         batch_id: String,
         /// Number of repositories completed so far (resumed + baseline + evaluated).
-        completed: usize,
+        completed: u64,
         /// Total number of repositories in the sweep.
-        total: usize,
+        total: u64,
         /// ISO 8601 UTC timestamp.
         timestamp: String,
     },
