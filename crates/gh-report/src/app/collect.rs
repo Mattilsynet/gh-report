@@ -541,13 +541,13 @@ impl SweepSaga {
         self.step_resume(inventory, config, state)?;
 
         // Emit progress: resumed repos.
-        Self::emit_progress(run, corr_ctx, inventory.active_repos.len(), state).await;
+        Self::emit_progress(run, corr_ctx, inventory.active_repos.len() as u64, state).await;
 
         // Phase 2: Reuse from baseline.
         self.step_baseline(inventory, config, state);
 
         // Emit progress: resumed + baseline-reused repos.
-        Self::emit_progress(run, corr_ctx, inventory.active_repos.len(), state).await;
+        Self::emit_progress(run, corr_ctx, inventory.active_repos.len() as u64, state).await;
 
         // Phase 3: Enqueue pending repos and await batch completion.
         self.step_enqueue_and_await(config, run, corr_ctx, ctx, inventory, state)
@@ -670,7 +670,10 @@ impl SweepSaga {
             .start_sweep(
                 StartSweep {
                     org: config.org_name.clone(),
-                    repo_count: inventory.active_repos.len(),
+                    // Vec::len() → u64: lossless on every pardosa target per
+                    // PAR-0011 (64-bit gate); event field width fixed at
+                    // u64 per GEN-0004:R1.
+                    repo_count: inventory.active_repos.len() as u64,
                     batch_id: run.run_id.clone(),
                     timestamp: jiff::Timestamp::now().to_string(),
                 },
@@ -710,7 +713,7 @@ impl SweepSaga {
                 self.phase = SweepPhase::BatchDrained;
 
                 // Emit final progress (all complete).
-                Self::emit_progress(run, corr_ctx, inventory.active_repos.len(), state).await;
+                Self::emit_progress(run, corr_ctx, inventory.active_repos.len() as u64, state).await;
             }
             Ok(Ok(false)) => {
                 // All jobs rejected — clean abort.
@@ -821,7 +824,7 @@ impl SweepSaga {
                         CompleteSweep {
                             batch_id: run.run_id.clone(),
                             duration_ms: self.elapsed_ms(),
-                            repo_count: inventory.active_repos.len(),
+                            repo_count: inventory.active_repos.len() as u64,
                             timestamp: jiff::Timestamp::now().to_string(),
                         },
                         corr_ctx,
@@ -841,7 +844,10 @@ impl SweepSaga {
                     .publish_evidence(
                         &run.run_id,
                         PublishEvidence {
-                            page_count,
+                            // page_count source is `Vec::len()` (HTML pages);
+                            // lossless usize→u64 cast per PAR-0011 64-bit gate,
+                            // event-field width fixed at u64 per GEN-0004:R1.
+                            page_count: page_count as u64,
                             warm_start,
                             timestamp: jiff::Timestamp::now().to_string(),
                         },
@@ -896,10 +902,13 @@ impl SweepSaga {
     async fn emit_progress(
         run: &RunMetadata,
         corr_ctx: &CorrelationContext,
-        total: usize,
+        total: u64,
         state: &Arc<AppState>,
     ) {
-        let completed = state.lock_projection().len();
+        // `EvidenceProjection::len()` returns `usize` (collection size); the
+        // event field is `u64` per GEN-0004:R1. Cast is lossless on every
+        // pardosa target per PAR-0011 (64-bit gate).
+        let completed = state.lock_projection().len() as u64;
         if let Err(e) = state
             .run_service
             .record_progress(
@@ -1396,7 +1405,10 @@ pub(crate) async fn warm_start_from_baseline(
     // on Err (mirror existing non-fatal pattern).
     let warm_batch_id = format!("warm-start-{}", run.timestamp());
     let warm_corr = run.correlation_context();
-    let warm_repo_count = evidence.collection_statistics.total_repos as usize;
+    // `total_repos` is u32 in evidence; widen to u64 (infallible) for the
+    // domain field (GEN-0004:R1 prohibits usize/isize; the prior code used
+    // `as usize` which was platform-dependent).
+    let warm_repo_count: u64 = u64::from(evidence.collection_statistics.total_repos);
 
     if let Err(e) = state
         .run_service
@@ -1536,7 +1548,7 @@ pub(crate) async fn publish_evidence(
         .publish_evidence(
             &run.run_id,
             PublishEvidence {
-                page_count,
+                page_count: page_count as u64,
                 warm_start: evidence.assessment_metadata.warm_start,
                 timestamp: jiff::Timestamp::now().to_string(),
             },
@@ -1713,7 +1725,7 @@ fn spawn_partial_publisher_from_store(
                     // a clean RunMetadata API exists; 0 is sufficient for
                     // the invariant (PartialEvidenceRendered admissibility)
                     // and downstream consumers tolerate it.
-                    let pending_repos: usize = 0;
+                    let pending_repos: u64 = 0;
 
                     match render_and_cache_evidence(
                         &pp.config,
@@ -1731,7 +1743,7 @@ fn spawn_partial_publisher_from_store(
                                     &pp.run.run_id,
                                     RenderPartial {
                                         batch_id: pp.run.run_id.clone(),
-                                        page_count,
+                                        page_count: page_count as u64,
                                         pending_repos,
                                         timestamp: jiff::Timestamp::now().to_string(),
                                     },
