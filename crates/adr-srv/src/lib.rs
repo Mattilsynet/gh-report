@@ -24,10 +24,9 @@ pub use adr_fmt::{AdrRecord, Config, LoadError, Tier, load_quiet, resolve_corpus
 /// the two underlying errors (`LoadError` and the resolve `String`) are
 /// merged for caller convenience at the skeleton stage.
 pub fn surface_probe(marker_dir: &Path) -> Result<PathBuf, String> {
-    let config: Config = load_quiet(marker_dir).map_err(|e| match e {
-        LoadError::Io(msg) => format!("load_quiet io error: {msg}"),
-        LoadError::Parse(msg) => format!("load_quiet parse error: {msg}"),
-    })?;
+    // LoadError implements Display per AFM-0028:R1; format via `{e}`
+    // rather than variant-matching its public-field shape.
+    let config: Config = load_quiet(marker_dir).map_err(|e| e.to_string())?;
     let root: PathBuf = resolve_corpus_root(marker_dir, &config.corpus)
         .map_err(|e| format!("resolve_corpus_root failed: {e}"))?;
     Ok(root)
