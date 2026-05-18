@@ -42,3 +42,10 @@ blake3 = { workspace = true, optional = true }
 # no_std + dep-free. proptest is workspace-pinned per AGENTS.md
 # path-hygiene + adr-fmt-toml workspace alignment.
 proptest = { workspace = true }
+# Mission M4 criterion bench harness. dev-dep only — lib build remains
+# no_std clean (`cargo build --no-default-features` proves this).
+criterion = { workspace = true }
+
+[[bench]]
+name = "encoding"
+harness = false
