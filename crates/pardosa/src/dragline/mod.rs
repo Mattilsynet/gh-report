@@ -15,5 +15,6 @@
 mod all;
 mod commit;
 mod linevec;
+mod state;
 
-pub use all::{AppendResult, Dragline};
+pub use state::{AppendResult, Dragline};
