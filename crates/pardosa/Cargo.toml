@@ -25,3 +25,9 @@ pardosa-encoding = { path = "../pardosa-encoding", features = ["blake3"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
+# Mission M4 criterion bench harness. dev-dep only.
+criterion = { workspace = true }
+
+[[bench]]
+name = "dragline"
+harness = false
