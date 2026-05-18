@@ -46,6 +46,14 @@ impl DomainEvent for StubEvent {
     }
 }
 
+impl pardosa_encoding::Encode for StubEvent {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Noop => out.push(0u8),
+        }
+    }
+}
+
 #[derive(Default)]
 struct StubAggregate;
 

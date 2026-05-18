@@ -23,6 +23,12 @@ impl DomainEvent for TestEvent {
     }
 }
 
+impl pardosa_encoding::Encode for TestEvent {
+    fn encode(&self, out: &mut Vec<u8>) {
+        pardosa_encoding::Encode::encode(&self.payload, out);
+    }
+}
+
 fn ctx() -> CorrelationContext {
     CorrelationContext::none()
 }

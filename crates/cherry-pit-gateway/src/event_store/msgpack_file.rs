@@ -132,6 +132,20 @@ use cherry_pit_core::{
 ///     }
 /// }
 ///
+/// // CHE-0064:R2 — every `impl DomainEvent for X` must hand-roll a
+/// // matching `impl pardosa_encoding::Encode for X`. The encoding
+/// // crate's `Encode` is deliberately not `#[derive]`-able.
+/// impl pardosa_encoding::Encode for OrderEvent {
+///     fn encode(&self, out: &mut Vec<u8>) {
+///         match self {
+///             Self::Created { name } => {
+///                 out.push(0u8);
+///                 pardosa_encoding::Encode::encode(name, out);
+///             }
+///         }
+///     }
+/// }
+///
 /// // Create a store pointing at a temporary directory (CHE-0038:R5).
 /// let dir = tempfile::tempdir().unwrap();
 /// let store = MsgpackFileStore::<OrderEvent>::new(dir.path());
@@ -552,6 +566,21 @@ mod tests {
             match self {
                 Self::Created { .. } => "test.created",
                 Self::Updated { .. } => "test.updated",
+            }
+        }
+    }
+
+    impl pardosa_encoding::Encode for TestEvent {
+        fn encode(&self, out: &mut Vec<u8>) {
+            match self {
+                Self::Created { name } => {
+                    out.push(0u8);
+                    pardosa_encoding::Encode::encode(name, out);
+                }
+                Self::Updated { name } => {
+                    out.push(1u8);
+                    pardosa_encoding::Encode::encode(name, out);
+                }
             }
         }
     }

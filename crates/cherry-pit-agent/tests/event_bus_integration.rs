@@ -25,6 +25,17 @@ impl DomainEvent for E {
     }
 }
 
+impl pardosa_encoding::Encode for E {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::N(n) => {
+                out.push(0u8);
+                pardosa_encoding::Encode::encode(n, out);
+            }
+        }
+    }
+}
+
 fn env(n: u64) -> EventEnvelope<E> {
     EventEnvelope::new(
         uuid::Uuid::now_v7(),

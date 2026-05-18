@@ -30,6 +30,14 @@ impl DomainEvent for TestEvent {
     }
 }
 
+impl pardosa_encoding::Encode for TestEvent {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Tick => out.push(0u8),
+        }
+    }
+}
+
 #[tokio::test]
 async fn stale_lock_evidence_reports_filesystem_metadata() {
     let dir = tempfile::tempdir().unwrap();

@@ -22,6 +22,15 @@ impl DomainEvent for Ev {
         "ev.x"
     }
 }
+// CHE-0064:R2 — Encode hand-rolled so the cascade does not obscure
+// the real assertion (closure missing CorrelationContext param).
+impl pardosa_encoding::Encode for Ev {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::X => out.push(0u8),
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 struct Agg;

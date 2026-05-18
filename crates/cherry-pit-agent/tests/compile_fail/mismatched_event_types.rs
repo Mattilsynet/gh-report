@@ -23,6 +23,15 @@ impl DomainEvent for EvA {
         "a"
     }
 }
+// CHE-0064:R2 — Encode hand-rolled so the cascade does not obscure
+// the real assertion (EventBus<EvB> vs EventStore<EvA> mismatch).
+impl pardosa_encoding::Encode for EvA {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::A => out.push(0u8),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 enum EvB {
@@ -31,6 +40,14 @@ enum EvB {
 impl DomainEvent for EvB {
     fn event_type(&self) -> &'static str {
         "b"
+    }
+}
+// CHE-0064:R2 — Encode hand-rolled (see EvA above).
+impl pardosa_encoding::Encode for EvB {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::B => out.push(0u8),
+        }
     }
 }
 

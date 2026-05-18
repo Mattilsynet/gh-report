@@ -614,6 +614,12 @@ where
 /// impl DomainEvent for CounterEvent {
 ///     fn event_type(&self) -> &'static str { "counter.incremented" }
 /// }
+/// // CHE-0064:R2 — hand-rolled Encode is mandatory; Encode is not derive-able.
+/// impl pardosa_encoding::Encode for CounterEvent {
+///     fn encode(&self, out: &mut Vec<u8>) {
+///         match self { Self::Incremented => out.push(0u8) }
+///     }
+/// }
 ///
 /// #[derive(Default)]
 /// struct CounterView { total: u64 }
@@ -694,6 +700,12 @@ impl<P: Projection> Default for InMemoryProjection<P> {
 /// enum CounterEvent { Incremented }
 /// impl DomainEvent for CounterEvent {
 ///     fn event_type(&self) -> &'static str { "counter.incremented" }
+/// }
+/// // CHE-0064:R2 — hand-rolled Encode is mandatory; Encode is not derive-able.
+/// impl pardosa_encoding::Encode for CounterEvent {
+///     fn encode(&self, out: &mut Vec<u8>) {
+///         match self { Self::Incremented => out.push(0u8) }
+///     }
 /// }
 ///
 /// #[derive(Default, Clone, Serialize, Deserialize)]
@@ -1095,6 +1107,14 @@ mod tests {
     impl DomainEvent for CounterEvent {
         fn event_type(&self) -> &'static str {
             "counter.incremented"
+        }
+    }
+
+    impl pardosa_encoding::Encode for CounterEvent {
+        fn encode(&self, out: &mut Vec<u8>) {
+            match self {
+                Self::Incremented => out.push(0u8),
+            }
         }
     }
 
