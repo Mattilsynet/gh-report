@@ -14,6 +14,8 @@ use crate::error::PardosaError;
 use crate::event::{DomainId, Event, Index};
 use crate::fiber::Fiber;
 use crate::fiber_state::FiberState;
+use crate::frontier::frontier_roll;
+use pardosa_encoding::{Encode, to_vec};
 
 /// Description of a prepared, infallible mutation produced by the
 /// `prepare` phase of `Dragline::commit_atomic` (FH5). Every field
@@ -98,6 +100,7 @@ impl<T> Dragline<T> {
 
     pub(super) fn commit_atomic<F>(&mut self, prepare: F) -> Result<AppendResult, PardosaError>
     where
+        T: Encode,
         F: FnOnce(&Self) -> Result<PreparedCommit<T>, PardosaError>,
     {
         self.reject_if_migrating()?;
@@ -109,7 +112,10 @@ impl<T> Dragline<T> {
     /// `prepare`; if `line.append_validated` returns Err here it
     /// indicates a same-writer bug — the prepare phase computed a
     /// candidate that violates Linevec's invariants. Surface loudly.
-    fn apply_prepared(&mut self, p: PreparedCommit<T>) -> Result<AppendResult, PardosaError> {
+    fn apply_prepared(&mut self, p: PreparedCommit<T>) -> Result<AppendResult, PardosaError>
+    where
+        T: Encode,
+    {
         let PreparedCommit {
             event,
             event_id,
@@ -119,6 +125,11 @@ impl<T> Dragline<T> {
             next_id_advance,
             purged_remove,
         } = p;
+
+        // Roll the frontier before appending so the canonical bytes of this
+        // event are included. BLAKE3(current_frontier || event_bytes) per PAR-0021:R3.
+        let event_bytes = to_vec(&event);
+        self.frontier = frontier_roll(self.frontier, &event_bytes);
 
         // Single remaining fallible step. Anything but Ok here means
         // prepare missed a validation — bug, not user error.
@@ -158,6 +169,16 @@ impl<T> Dragline<T> {
             self.next_id = d;
         }
         self.next_event_id = event_id + 1;
+
+        // PAR-0021:R4 — publish frontier on anchor_interval tick.
+        self.events_since_tick += 1;
+        if self.events_since_tick >= self.anchor_interval {
+            self.events_since_tick = 0;
+            if let Some(publisher) = self.publisher.as_mut() {
+                let subject = format!("pardosa.{}.frontier", self.stream_name);
+                publisher.publish(&subject, &self.frontier);
+            }
+        }
 
         Ok(AppendResult {
             domain_id,

@@ -16,8 +16,16 @@ use crate::event::DomainId;
 use crate::event::Event;
 use crate::fiber::Fiber;
 use crate::fiber_state::FiberState;
+use crate::frontier::FrontierPublisher;
 #[cfg(test)]
 use pardosa_encoding::Encode;
+
+/// Default tick interval: publish frontier every 1 000 committed events.
+///
+/// Count-based rather than wall-clock so the mechanism is deterministic in
+/// tests without a runtime timer and requires no async executor. Wall-clock
+/// anchoring belongs to the Phase 3 SEC-0010 production NATS wiring.
+pub const DEFAULT_ANCHOR_INTERVAL: u64 = 1_000;
 
 /// Result of a successful append operation.
 #[derive(Debug, Clone, Copy)]
@@ -45,6 +53,8 @@ pub struct AppendResult {
 ///   advances it past any ids in `purged_ids` so the auto-assignment contract
 ///   does not stall when on-disk state lands `next_id` on a purged id.
 /// - When `migrating` is true, application writes are rejected.
+/// - `frontier` is updated on every commit via BLAKE3 chaining (PAR-0021:R3).
+/// - `events_since_tick` resets to 0 after each `anchor_interval` publish.
 #[derive(Debug)]
 pub struct Dragline<T> {
     pub(super) line: Linevec<T>,
@@ -53,6 +63,17 @@ pub struct Dragline<T> {
     pub(super) next_id: DomainId,
     pub(super) next_event_id: u64,
     pub(super) migrating: bool,
+    /// Rolling BLAKE3 frontier hash (PAR-0021:R3). All-zero until the first event.
+    pub(super) frontier: [u8; 32],
+    /// NATS subject prefix component: subject = `pardosa.{stream_name}.frontier`.
+    pub(super) stream_name: String,
+    /// Publish frontier every `anchor_interval` committed events (PAR-0021:R4).
+    /// Default: [`DEFAULT_ANCHOR_INTERVAL`].
+    pub(super) anchor_interval: u64,
+    /// Count of events since the last `anchor_interval` tick.
+    pub(super) events_since_tick: u64,
+    /// Optional publisher; `None` when created via [`Dragline::new`] (no NATS wiring).
+    pub(super) publisher: Option<Box<dyn FrontierPublisher>>,
 }
 
 impl<T> Default for Dragline<T> {
@@ -62,7 +83,11 @@ impl<T> Default for Dragline<T> {
 }
 
 impl<T> Dragline<T> {
-    /// Create a new empty dragline.
+    /// Create a new empty dragline with no publisher attached.
+    ///
+    /// Commits proceed normally; no frontier publish occurs. Suitable for
+    /// unit tests and contexts where the Phase 3 NATS wiring (SEC-0010) is
+    /// not yet available.
     #[must_use]
     pub fn new() -> Self {
         Dragline {
@@ -72,7 +97,49 @@ impl<T> Dragline<T> {
             next_id: DomainId::new(0),
             next_event_id: 0,
             migrating: false,
+            frontier: [0u8; 32],
+            stream_name: String::new(),
+            anchor_interval: DEFAULT_ANCHOR_INTERVAL,
+            events_since_tick: 0,
+            publisher: None,
         }
+    }
+
+    /// Create a dragline wired to a `FrontierPublisher`.
+    ///
+    /// Every `anchor_interval` committed events, the current frontier hash is
+    /// published to `pardosa.{stream_name}.frontier` (PAR-0021:R4).
+    ///
+    /// `anchor_interval` must be ≥ 1. A value of 0 is silently promoted to 1
+    /// (publish on every commit) to avoid infinite-tick semantics.
+    #[must_use]
+    pub fn with_publisher<P: FrontierPublisher>(
+        stream_name: String,
+        anchor_interval: u64,
+        publisher: P,
+    ) -> Self {
+        Dragline {
+            line: Linevec::new(),
+            lookup: HashMap::new(),
+            purged_ids: HashSet::new(),
+            next_id: DomainId::new(0),
+            next_event_id: 0,
+            migrating: false,
+            frontier: [0u8; 32],
+            stream_name,
+            anchor_interval: anchor_interval.max(1),
+            events_since_tick: 0,
+            publisher: Some(Box::new(publisher)),
+        }
+    }
+
+    /// The current frontier hash (PAR-0021:R3).
+    ///
+    /// Returns `[0u8; 32]` on an empty dragline. Updated on every commit via
+    /// BLAKE3 chaining; deterministic from the append order.
+    #[must_use]
+    pub fn frontier(&self) -> [u8; 32] {
+        self.frontier
     }
 
     /// Reassemble a `Dragline` from raw parts, gated by [`Dragline::verify_invariants`].
@@ -103,6 +170,11 @@ impl<T> Dragline<T> {
             next_id,
             next_event_id,
             migrating,
+            frontier: [0u8; 32],
+            stream_name: String::new(),
+            anchor_interval: DEFAULT_ANCHOR_INTERVAL,
+            events_since_tick: 0,
+            publisher: None,
         };
         d.verify_invariants()?;
         Ok(d)
