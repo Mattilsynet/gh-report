@@ -324,7 +324,11 @@ behaviour on interfaces. **Not** publication-prep.
 
 ### Tasks
 
-**Interface trust boundaries (adversarial-input)**
+Tasks are numbered 1–18 contiguously across all six groups (§A–§F) plus
+the injection queue (§G). Group headers are descriptive; numbering is
+authoritative.
+
+**§A. Interface trust boundaries (adversarial-input)**
 
 1. Wire `gh-report` webhook trust-boundary validation (SEC-0002 R1–R3:
    signature verification, replay protection, request size caps).
@@ -336,7 +340,7 @@ behaviour on interfaces. **Not** publication-prep.
 4. Webhook signature-verification negative tests (wrong secret, tampered
    payload, missing header, timing-attack resistance).
 
-**Error-path correctness**
+**§B. Error-path correctness**
 
 5. Error-path property tests for `cherry-pit-projection` and
    `cherry-pit-gateway` file-store (store failures, partial reads,
@@ -349,13 +353,13 @@ behaviour on interfaces. **Not** publication-prep.
 7. Error-propagation audit: every public-surface `Result` chain
    preserves enough context for the caller to act.
 
-**Invariant correctness under stress**
+**§C. Invariant correctness under stress**
 
 8. CHE-0024 (persist-then-publish) failure-mode tests + CHE-0006
    (single-writer) concurrent-command tests + CHE-0022 (append-only)
    in-place-mutation rejection tests.
 
-**Formal specifications**
+**§D. Formal specifications**
 
 9. Smithy contract models for `gh-report` webhook ingress,
    `cherry-pit-web` projection-router API, and `cherry-pit` event-envelope
@@ -365,7 +369,7 @@ behaviour on interfaces. **Not** publication-prep.
     *(Scope and tool details — PlusCal vs raw TLA+, which invariants —
     decided at task activation.)*
 
-**Security ADR closure**
+**§E. Security ADR closure**
 
 11. Resolve SEC-0010 (Transport Security / NATS TLS) and SEC-0011
     (Tamper-Evident Logs / hash-chain): elevate to Accepted with
@@ -373,43 +377,60 @@ behaviour on interfaces. **Not** publication-prep.
     CHE-0044 / Pardosa deferral disposition.
 12. Draft new CHE ADR for secret isolation (per SEC-0007).
 
-### Phase-3 injection queue
+**§F. Cross-cutting language doctrine (RST)**
 
-1. **WS connection cap mechanism for `cherry-pit-web`** (bead
-   `adr-fmt-8qj5`, SEC-0003 R2). Deferred from P1-B sub-mission 3
-   (`adr-fmt-3d86`). Three candidate mechanisms enumerated in surprise
-   artefact `.ooda/surprise-p1b-sub3-1778699612.md`. Decision requires
-   oracle orient on `cherry-pit-web` public-API surface (CHE-0049:R1 +
-   CHE-0050:R2). Vacuous under default features per CHE-0049:R3+R11.
+13. Review the cross-cutting RST hardening ideas register against
+    Phase-3 work-in-progress; promote any candidate to a real RST ADR
+    if-and-only-if a Phase-3 task creates concrete pain or establishes
+    a worked example the ADR would describe. Natural candidates: a
+    property/fuzz testing methodology ADR (advisory framing) earning
+    its keep once tasks 2, 3, 5 land adversarial-input + error-path
+    harnesses; a formal-verification / model-checking gate ADR earning
+    its keep once tasks 9, 10 land Smithy + TLA+ harnesses; a
+    `cargo-deny` / `cargo-audit` enforcement ADR — actionable
+    independent of other Phase-3 tasks, lowest-friction candidate if a
+    security review surfaces a dependency advisory. Drafting any RST
+    ADR remains user-ratified per FOCUS §6 (always-escalate: new ADR).
 
-2. **Adversarial-input gap inventory for cherry-pit-storage lock**
-   (bead `adr-fmt-htyk`). Enumerate adversarial inputs the lock
-   primitive does not yet defend against (oversized PID, malformed
-   UTF-8 in lockfile, symlink races on the lockfile path, etc);
-   informational checklist that defers actual harness/fuzz work to
-   existing Phase-3 task 5 (file-store error-path property tests).
+### §G. Phase-3 injection queue
 
-3. **adr-srv GraphQL mutations** (retired from Phase 2 Track 3.4 on
-   2026-05-17). `Mutation` surface — `ratifyAdr(id)` /
-   `supersede(old, new)` — mapped to commands via
-   `cherry_pit_web::CommandRouter`. Persist via `PardosaEventStore`,
-   project via Track 1.1. Verify: `cargo test -p adr-srv --test
-   graphql_write_e2e`. Re-scoped here because Phase 2 v2 completion
-   criterion C1 is **read-only**; the write-side surface needs separate
-   ratification before re-activation. No bead yet (file when Phase 3
-   activates).
+Discovered work not yet promoted into the §A–§F task list. Numbered
+contiguously with the main task list to avoid cross-reference ambiguity.
 
-4. **Projection-driven adr-fmt integration (metacircular)** (retired
-   from Phase 2 Track 3.5 on 2026-05-17). adr-srv's projection re-runs
-   adr-fmt's lint rules on every event; output surfaced via
-   `{ lint { diagnostics { id, severity, … } } }`. Closes the
-   metacircular loop. Depends on Phase-3 injection #3 (mutation
-   surface). Verify: `cargo test -p adr-srv --test lint_integration`;
-   introduce a synthetic L0xx-violating ADR via mutation, assert
-   diagnostic appears in query. No bead yet (file when Phase 3
-   activates).
+14. **WS connection cap mechanism for `cherry-pit-web`** (bead
+    `adr-fmt-8qj5`, SEC-0003 R2). Deferred from P1-B sub-mission 3
+    (`adr-fmt-3d86`). Three candidate mechanisms enumerated in surprise
+    artefact `.ooda/surprise-p1b-sub3-1778699612.md`. Decision requires
+    oracle orient on `cherry-pit-web` public-API surface (CHE-0049:R1 +
+    CHE-0050:R2). Vacuous under default features per CHE-0049:R3+R11.
 
-5. **Workspace hash-algorithm consolidation** (drafted 2026-05-18; mission
+15. **Adversarial-input gap inventory for cherry-pit-storage lock**
+    (bead `adr-fmt-htyk`). Enumerate adversarial inputs the lock
+    primitive does not yet defend against (oversized PID, malformed
+    UTF-8 in lockfile, symlink races on the lockfile path, etc);
+    informational checklist that defers actual harness/fuzz work to
+    existing Phase-3 task 5 (file-store error-path property tests).
+
+16. **adr-srv GraphQL mutations** (retired from Phase 2 Track 3.4 on
+    2026-05-17). `Mutation` surface — `ratifyAdr(id)` /
+    `supersede(old, new)` — mapped to commands via
+    `cherry_pit_web::CommandRouter`. Persist via `PardosaEventStore`,
+    project via Track 1.1. Verify: `cargo test -p adr-srv --test
+    graphql_write_e2e`. Re-scoped here because Phase 2 v2 completion
+    criterion C1 is **read-only**; the write-side surface needs separate
+    ratification before re-activation. No bead yet (file when Phase 3
+    activates).
+
+17. **Projection-driven adr-fmt integration (metacircular)** (retired
+    from Phase 2 Track 3.5 on 2026-05-17). adr-srv's projection re-runs
+    adr-fmt's lint rules on every event; output surfaced via
+    `{ lint { diagnostics { id, severity, … } } }`. Closes the
+    metacircular loop. Depends on §G task 16 (mutation surface).
+    Verify: `cargo test -p adr-srv --test lint_integration`; introduce
+    a synthetic L0xx-violating ADR via mutation, assert diagnostic
+    appears in query. No bead yet (file when Phase 3 activates).
+
+18. **Workspace hash-algorithm consolidation** (drafted 2026-05-18; mission
    package preserved as bd evidence bead — see bd query
    `--label hash-consolidation,evidence`). Collapse three hash policies
    (SHA-256, BLAKE3, xxhash) onto a single rule: "BLAKE3 where there's an
@@ -452,3 +473,4 @@ Cross-phase discovery audit trail lives in bd
 | 0.8     | 2026-05-17 | Surfaced parallel Phase-2 file-format work stream as Track 6 (pardosa-genome file-format hardening); Epic 6.A = PAR-0021 (`adr-fmt-il9a`, 6 sub-tasks), Epic 6.B = F9 (`adr-fmt-e71p`, 5 sub-tasks), plus 6 adjacent loose tasks. Previously bd-only; roadmap omitted 19 open Phase-2 beads. Sequencing diagram updated; risk register extended with wire-format / atomic-ship rows. F-task `phase:2-generalize` label backfill is a separate bd action. |
 | 0.9     | 2026-05-17 | **User-ratified Phase 2 v2 completion criteria** (C1/C2/C3): C1 = adr-srv operational in **read-only mode** (scrape ADRs → pardosa-genome → GraphQL Query); C2 = gh-report stores internal state in pardosa-genome files (hard cut, re-scrape GitHub API); C3 = idiomatic architectural organization audit across adr-srv / gh-report / cherry-pit-* / pardosa-*. **Track 3 re-scoped** to read-only: 3.4 (GraphQL mutations) and 3.5 (metacircular adr-fmt-as-lint loop) retired to Phase 3 backlog; new 3.A scrape-pipeline sub-task added. **Track 7 added** (gh-report → pardosa hard cut; supersedes CHE-0031; 4 sub-tasks). **Track 8 added** (C3 idiomatic audit, 4 sub-tasks). Exit criteria rewritten: 12 criteria, indexed to C1/C2/C3/Track 6. Sequencing updated: Track 3.1/3.2 + Track 6 parallel at start; first pardosa write (3.A) gated on Track 6 atomic-ship; Track 7/8 sequenced after Track 5. Risk register extended with Track 3↔6 coupling, Track 7 hard-cut, Track 8 audit-bikeshedding rows. **Original v0.8 Track 6 content preserved unchanged.** PAR-0021 sequencing decision: F2 chain lands before any consumer write (Track 3.A + Track 7), per user direction; "parallel" in roadmap means concurrent agents on disjoint crate trees, not concurrent first-writes. Track 6 atomic-ship (Epic 6.A + 6.B together) preserved per user direction. Track 4.4 + Track 5 placement preserved (sequenced after Track 3.3 per user "as early as possible in Phase 2" direction). Companion: FOCUS.md sync to v0.8 (this commit). |
 | 1.0     | 2026-05-18 | **Phase 3 injection queue extended**: item #5 — workspace hash-algorithm consolidation. Drafted as mission package `hash-consolidation-1779148800`; promoted to bd evidence bead (label `evidence,hash-consolidation,phase:3-harden,roadmap-deferred`). Collapses three hash policies onto one rule ("adversary → BLAKE3; external protocol → HMAC-SHA256; otherwise → xxh3"). Six sub-missions; gated on Phase 2 Track 6 atomic-ship complete. Algorithm choices user-ratified 2026-05-18 (xxh3-128 for snapshot signature + ETags; right-sized for no-adversary threat model). Phase 2 v2 forward-work unchanged. |
+| 1.1     | 2026-05-18 | **Phase 3 task list renumbered 1–18 contiguously across groups §A–§F + §G injection queue.** Group headers prefixed with §A–§G; numbering is now authoritative. New **§F Cross-cutting language doctrine (RST)** group added with task #13: review the RST hardening ideas register against Phase-3 work-in-progress; promote candidates only when worked-example evidence exists (proptest/fuzz methodology, formal-verification gate, cargo-deny/cargo-audit enforcement are the natural candidates). Drafting any RST ADR remains user-ratified per FOCUS §6. Existing injection-queue items 1–5 renumbered to 14–18; cross-references in FOCUS §8 verify block updated (formerly "items 3 + 4" → "§G items 16 + 17"). Substance unchanged; renumbering is purely organisational. Companion: FOCUS.md v0.9. |
