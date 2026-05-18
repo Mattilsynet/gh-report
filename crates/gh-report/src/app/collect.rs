@@ -713,7 +713,8 @@ impl SweepSaga {
                 self.phase = SweepPhase::BatchDrained;
 
                 // Emit final progress (all complete).
-                Self::emit_progress(run, corr_ctx, inventory.active_repos.len() as u64, state).await;
+                Self::emit_progress(run, corr_ctx, inventory.active_repos.len() as u64, state)
+                    .await;
             }
             Ok(Ok(false)) => {
                 // All jobs rejected — clean abort.
