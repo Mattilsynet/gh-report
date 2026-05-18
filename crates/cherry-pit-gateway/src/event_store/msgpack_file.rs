@@ -8,6 +8,8 @@ use std::sync::Arc;
 use cherry_pit_core::{
     AggregateId, CorrelationContext, DomainEvent, EventEnvelope, EventStore, StoreError,
 };
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 /// File-based event store using `MessagePack` serialization.
 ///
@@ -182,7 +184,7 @@ fn corrupt_data(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> S
     StoreError::CorruptData(error.into())
 }
 
-impl<E: DomainEvent> MsgpackFileStore<E> {
+impl<E: DomainEvent + Serialize + DeserializeOwned> MsgpackFileStore<E> {
     /// Create a new store writing to the given directory.
     ///
     /// The directory is created lazily on first write.
@@ -429,14 +431,14 @@ impl<E: DomainEvent> MsgpackFileStore<E> {
     }
 }
 
-impl<E: DomainEvent> Default for MsgpackFileStore<E> {
+impl<E: DomainEvent + Serialize + DeserializeOwned> Default for MsgpackFileStore<E> {
     /// Default store directory: `store/`
     fn default() -> Self {
         Self::new("store")
     }
 }
 
-impl<E: DomainEvent> EventStore for MsgpackFileStore<E> {
+impl<E: DomainEvent + Serialize + DeserializeOwned> EventStore for MsgpackFileStore<E> {
     type Event = E;
 
     async fn load(&self, id: AggregateId) -> Result<Vec<EventEnvelope<E>>, StoreError> {
