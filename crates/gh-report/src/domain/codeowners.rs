@@ -17,6 +17,21 @@ use serde::{Deserialize, Serialize};
 /// returned a `file` payload — the file presence component of the status
 /// (`Conforming` / `NonConforming`) is unaffected. Only the parsed-owners
 /// component is missing.
+///
+/// # Wire format
+///
+/// Variant discriminant is `u8` of declaration position (`NotBase64Encoded=0`,
+/// `OversizedBase64=1`, `ContentMissing=2`, `DecodeFailed=3`, `InvalidUtf8=4`).
+/// Reorder or insert is a wire-format break (CHE-0064:R2 + PAR-0024:R5); new
+/// variants must append.
+///
+/// ```
+/// use gh_report::domain::codeowners::CodeownersTruncationReason;
+/// use pardosa_encoding::Encode;
+/// let mut out = Vec::new();
+/// CodeownersTruncationReason::OversizedBase64.encode(&mut out);
+/// assert_eq!(out, vec![1u8]);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CodeownersTruncationReason {
@@ -32,7 +47,41 @@ pub enum CodeownersTruncationReason {
     InvalidUtf8,
 }
 
+// Wire format: u8 discriminant per declaration order. Reorder or insert is a
+// wire-format break (CHE-0064:R2 + PAR-0024:R5); new variants must append.
+impl pardosa_encoding::Encode for CodeownersTruncationReason {
+    fn encode(&self, out: &mut Vec<u8>) {
+        let discriminant: u8 = match self {
+            Self::NotBase64Encoded => 0,
+            Self::OversizedBase64 => 1,
+            Self::ContentMissing => 2,
+            Self::DecodeFailed => 3,
+            Self::InvalidUtf8 => 4,
+        };
+        out.push(discriminant);
+    }
+}
+
 /// Parsed CODEOWNERS file content.
+///
+/// # Wire format
+///
+/// Fields encode in declaration order via `Encode::encode`: `entries`,
+/// `unique_owners`, `skipped_lines`. Field reorder is a wire-format break
+/// (CHE-0064:R2 + PAR-0024:R5); new fields must append.
+///
+/// ```
+/// use gh_report::domain::codeowners::ParsedCodeowners;
+/// use pardosa_encoding::Encode;
+/// let parsed = ParsedCodeowners {
+///     entries: Vec::new(),
+///     unique_owners: Vec::new(),
+///     skipped_lines: 0,
+/// };
+/// let mut out = Vec::new();
+/// parsed.encode(&mut out);
+/// assert!(!out.is_empty());
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParsedCodeowners {
     /// Individual CODEOWNERS entries (pattern + owners).
@@ -48,11 +97,50 @@ pub struct ParsedCodeowners {
     pub skipped_lines: u32,
 }
 
+// Wire format: fields encoded in struct declaration order via `Encode::encode`.
+// Field reorder is a wire-format break; new fields must be appended
+// (CHE-0064:R2 + PAR-0024:R5).
+impl pardosa_encoding::Encode for ParsedCodeowners {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.entries.encode(out);
+        self.unique_owners.encode(out);
+        self.skipped_lines.encode(out);
+    }
+}
+
 /// A single CODEOWNERS entry: a file pattern and its owners.
+///
+/// # Wire format
+///
+/// Fields encode in declaration order via `Encode::encode`: `pattern`,
+/// `owners`. Field reorder is a wire-format break (CHE-0064:R2 + PAR-0024:R5);
+/// new fields must append.
+///
+/// ```
+/// use gh_report::domain::codeowners::CodeownersEntry;
+/// use pardosa_encoding::Encode;
+/// let entry = CodeownersEntry {
+///     pattern: "*.rs".to_string(),
+///     owners: vec!["@team".to_string()],
+/// };
+/// let mut out = Vec::new();
+/// entry.encode(&mut out);
+/// assert!(!out.is_empty());
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodeownersEntry {
     /// File pattern (e.g., `*.js`, `src/`, `/docs/`).
     pub pattern: String,
     /// Owner references (e.g., `@org/team`, `@user`).
     pub owners: Vec<String>,
+}
+
+// Wire format: fields encoded in struct declaration order via `Encode::encode`.
+// Field reorder is a wire-format break; new fields must be appended
+// (CHE-0064:R2 + PAR-0024:R5).
+impl pardosa_encoding::Encode for CodeownersEntry {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.pattern.encode(out);
+        self.owners.encode(out);
+    }
 }

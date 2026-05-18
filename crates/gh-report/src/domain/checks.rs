@@ -8,6 +8,13 @@ use serde::{Deserialize, Serialize};
 use crate::domain::codeowners::ParsedCodeowners;
 
 /// Aggregated per-repository security check results.
+///
+/// # Wire format
+///
+/// Fields encode in declaration order via `Encode::encode`: `security_policy`,
+/// `secret_scanning`, `dependabot_security_updates`, `branch_protection`,
+/// `codeowners`. Field reorder is a wire-format break (CHE-0064:R2 +
+/// PAR-0024:R5); new fields must append.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RepositoryChecks {
     /// Security policy check result.
@@ -22,11 +29,30 @@ pub struct RepositoryChecks {
     pub codeowners: CodeownersResult,
 }
 
+// Wire format: fields encoded in struct declaration order via `Encode::encode`.
+// Field reorder is a wire-format break; new fields must be appended
+// (CHE-0064:R2 + PAR-0024:R5).
+impl pardosa_encoding::Encode for RepositoryChecks {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.security_policy.encode(out);
+        self.secret_scanning.encode(out);
+        self.dependabot_security_updates.encode(out);
+        self.branch_protection.encode(out);
+        self.codeowners.encode(out);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Security Policy
 // ---------------------------------------------------------------------------
 
 /// Security policy evaluation outcome.
+///
+/// # Wire format
+///
+/// Fields encode in declaration order via `Encode::encode`: `status`,
+/// `evidence`, `path`, `timestamp`. Field reorder is a wire-format break
+/// (CHE-0064:R2 + PAR-0024:R5); new fields must append.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecurityPolicyResult {
     /// Whether a security policy was detected.
@@ -39,7 +65,34 @@ pub struct SecurityPolicyResult {
     pub timestamp: String,
 }
 
+// Wire format: fields encoded in struct declaration order via `Encode::encode`.
+// Field reorder is a wire-format break; new fields must be appended
+// (CHE-0064:R2 + PAR-0024:R5).
+impl pardosa_encoding::Encode for SecurityPolicyResult {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.status.encode(out);
+        self.evidence.encode(out);
+        self.path.encode(out);
+        self.timestamp.encode(out);
+    }
+}
+
 /// Security policy status.
+///
+/// # Wire format
+///
+/// Variant discriminant is `u8` of declaration position (`Pass=0`, `Fail=1`,
+/// `Unknown=2`, `NotApplicable=3`). Reordering or inserting a variant is a
+/// wire-format break (CHE-0064:R2 + PAR-0024:R5); new variants must be
+/// appended.
+///
+/// ```
+/// use gh_report::domain::checks::SecurityPolicyStatus;
+/// use pardosa_encoding::Encode;
+/// let mut out = Vec::new();
+/// SecurityPolicyStatus::Fail.encode(&mut out);
+/// assert_eq!(out, vec![1u8]);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SecurityPolicyStatus {
@@ -49,7 +102,36 @@ pub enum SecurityPolicyStatus {
     NotApplicable,
 }
 
+// Wire format: u8 discriminant per declaration order. Reorder or insert is a
+// wire-format break (CHE-0064:R2 + PAR-0024:R5); new variants must append.
+impl pardosa_encoding::Encode for SecurityPolicyStatus {
+    fn encode(&self, out: &mut Vec<u8>) {
+        let discriminant: u8 = match self {
+            Self::Pass => 0,
+            Self::Fail => 1,
+            Self::Unknown => 2,
+            Self::NotApplicable => 3,
+        };
+        out.push(discriminant);
+    }
+}
+
 /// How the security policy check was determined.
+///
+/// # Wire format
+///
+/// Variant discriminant is `u8` of declaration position (`Setting=0`, `File=1`,
+/// `Absent=2`, `PermissionDenied=3`, `TransientError=4`, `CollectionError=5`,
+/// `NotApplicable=6`). Reorder or insert is a wire-format break (CHE-0064:R2 +
+/// PAR-0024:R5); new variants must append.
+///
+/// ```
+/// use gh_report::domain::checks::SecurityPolicyEvidence;
+/// use pardosa_encoding::Encode;
+/// let mut out = Vec::new();
+/// SecurityPolicyEvidence::File.encode(&mut out);
+/// assert_eq!(out, vec![1u8]);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SecurityPolicyEvidence {
@@ -70,11 +152,35 @@ pub enum SecurityPolicyEvidence {
     NotApplicable,
 }
 
+// Wire format: u8 discriminant per declaration order. Reorder or insert is a
+// wire-format break (CHE-0064:R2 + PAR-0024:R5); new variants must append.
+impl pardosa_encoding::Encode for SecurityPolicyEvidence {
+    fn encode(&self, out: &mut Vec<u8>) {
+        let discriminant: u8 = match self {
+            Self::Setting => 0,
+            Self::File => 1,
+            Self::Absent => 2,
+            Self::PermissionDenied => 3,
+            Self::TransientError => 4,
+            Self::CollectionError => 5,
+            Self::NotApplicable => 6,
+        };
+        out.push(discriminant);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Secret Scanning
 // ---------------------------------------------------------------------------
 
 /// Secret scanning evaluation outcome.
+///
+/// # Wire format
+///
+/// Fields encode in declaration order via `Encode::encode`: `status`,
+/// `has_open_alerts`, `alerts_observable`, `reason`, `timestamp`. Field
+/// reorder is a wire-format break (CHE-0064:R2 + PAR-0024:R5); new fields
+/// must append.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecretScanningResult {
     /// Whether secret scanning is enabled on the repository.
@@ -89,7 +195,34 @@ pub struct SecretScanningResult {
     pub timestamp: String,
 }
 
+// Wire format: fields encoded in struct declaration order via `Encode::encode`.
+// Field reorder is a wire-format break; new fields must be appended
+// (CHE-0064:R2 + PAR-0024:R5).
+impl pardosa_encoding::Encode for SecretScanningResult {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.status.encode(out);
+        self.has_open_alerts.encode(out);
+        self.alerts_observable.encode(out);
+        self.reason.encode(out);
+        self.timestamp.encode(out);
+    }
+}
+
 /// Secret scanning status.
+///
+/// # Wire format
+///
+/// Variant discriminant is `u8` of declaration position (`Enabled=0`,
+/// `Disabled=1`, `PermissionDenied=2`, `Unknown=3`). Reorder or insert is a
+/// wire-format break (CHE-0064:R2 + PAR-0024:R5); new variants must append.
+///
+/// ```
+/// use gh_report::domain::checks::SecretScanningStatus;
+/// use pardosa_encoding::Encode;
+/// let mut out = Vec::new();
+/// SecretScanningStatus::Disabled.encode(&mut out);
+/// assert_eq!(out, vec![1u8]);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SecretScanningStatus {
@@ -97,6 +230,20 @@ pub enum SecretScanningStatus {
     Disabled,
     PermissionDenied,
     Unknown,
+}
+
+// Wire format: u8 discriminant per declaration order. Reorder or insert is a
+// wire-format break (CHE-0064:R2 + PAR-0024:R5); new variants must append.
+impl pardosa_encoding::Encode for SecretScanningStatus {
+    fn encode(&self, out: &mut Vec<u8>) {
+        let discriminant: u8 = match self {
+            Self::Enabled => 0,
+            Self::Disabled => 1,
+            Self::PermissionDenied => 2,
+            Self::Unknown => 3,
+        };
+        out.push(discriminant);
+    }
 }
 
 impl std::fmt::Display for SecretScanningStatus {
@@ -115,6 +262,12 @@ impl std::fmt::Display for SecretScanningStatus {
 // ---------------------------------------------------------------------------
 
 /// Dependabot security updates evaluation outcome.
+///
+/// # Wire format
+///
+/// Fields encode in declaration order via `Encode::encode`: `status`, `reason`,
+/// `timestamp`. Field reorder is a wire-format break (CHE-0064:R2 +
+/// PAR-0024:R5); new fields must append.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DependabotResult {
     /// Whether Dependabot security updates are enabled on the repository.
@@ -125,7 +278,32 @@ pub struct DependabotResult {
     pub timestamp: String,
 }
 
+// Wire format: fields encoded in struct declaration order via `Encode::encode`.
+// Field reorder is a wire-format break; new fields must be appended
+// (CHE-0064:R2 + PAR-0024:R5).
+impl pardosa_encoding::Encode for DependabotResult {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.status.encode(out);
+        self.reason.encode(out);
+        self.timestamp.encode(out);
+    }
+}
+
 /// Dependabot security updates status.
+///
+/// # Wire format
+///
+/// Variant discriminant is `u8` of declaration position (`Enabled=0`,
+/// `Paused=1`, `Disabled=2`, `Unknown=3`). Reorder or insert is a wire-format
+/// break (CHE-0064:R2 + PAR-0024:R5); new variants must append.
+///
+/// ```
+/// use gh_report::domain::checks::DependabotStatus;
+/// use pardosa_encoding::Encode;
+/// let mut out = Vec::new();
+/// DependabotStatus::Paused.encode(&mut out);
+/// assert_eq!(out, vec![1u8]);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DependabotStatus {
@@ -133,6 +311,20 @@ pub enum DependabotStatus {
     Paused,
     Disabled,
     Unknown,
+}
+
+// Wire format: u8 discriminant per declaration order. Reorder or insert is a
+// wire-format break (CHE-0064:R2 + PAR-0024:R5); new variants must append.
+impl pardosa_encoding::Encode for DependabotStatus {
+    fn encode(&self, out: &mut Vec<u8>) {
+        let discriminant: u8 = match self {
+            Self::Enabled => 0,
+            Self::Paused => 1,
+            Self::Disabled => 2,
+            Self::Unknown => 3,
+        };
+        out.push(discriminant);
+    }
 }
 
 impl std::fmt::Display for DependabotStatus {
@@ -151,6 +343,12 @@ impl std::fmt::Display for DependabotStatus {
 // ---------------------------------------------------------------------------
 
 /// Branch protection evaluation outcome.
+///
+/// # Wire format
+///
+/// Fields encode in declaration order via `Encode::encode`: `status`, `details`,
+/// `timestamp`. Field reorder is a wire-format break (CHE-0064:R2 +
+/// PAR-0024:R5); new fields must append.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BranchProtectionResult {
     /// Overall branch protection status.
@@ -161,7 +359,32 @@ pub struct BranchProtectionResult {
     pub timestamp: String,
 }
 
+// Wire format: fields encoded in struct declaration order via `Encode::encode`.
+// Field reorder is a wire-format break; new fields must be appended
+// (CHE-0064:R2 + PAR-0024:R5).
+impl pardosa_encoding::Encode for BranchProtectionResult {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.status.encode(out);
+        self.details.encode(out);
+        self.timestamp.encode(out);
+    }
+}
+
 /// Branch protection status.
+///
+/// # Wire format
+///
+/// Variant discriminant is `u8` of declaration position (`Pass=0`, `Partial=1`,
+/// `Fail=2`, `Unknown=3`). Reorder or insert is a wire-format break
+/// (CHE-0064:R2 + PAR-0024:R5); new variants must append.
+///
+/// ```
+/// use gh_report::domain::checks::BranchProtectionStatus;
+/// use pardosa_encoding::Encode;
+/// let mut out = Vec::new();
+/// BranchProtectionStatus::Partial.encode(&mut out);
+/// assert_eq!(out, vec![1u8]);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BranchProtectionStatus {
@@ -169,6 +392,20 @@ pub enum BranchProtectionStatus {
     Partial,
     Fail,
     Unknown,
+}
+
+// Wire format: u8 discriminant per declaration order. Reorder or insert is a
+// wire-format break (CHE-0064:R2 + PAR-0024:R5); new variants must append.
+impl pardosa_encoding::Encode for BranchProtectionStatus {
+    fn encode(&self, out: &mut Vec<u8>) {
+        let discriminant: u8 = match self {
+            Self::Pass => 0,
+            Self::Partial => 1,
+            Self::Fail => 2,
+            Self::Unknown => 3,
+        };
+        out.push(discriminant);
+    }
 }
 
 impl std::fmt::Display for BranchProtectionStatus {
@@ -183,6 +420,13 @@ impl std::fmt::Display for BranchProtectionStatus {
 }
 
 /// Detailed branch protection controls state.
+///
+/// # Wire format
+///
+/// Fields encode in declaration order via `Encode::encode`: `default_branch`,
+/// `has_pr`, `required_reviewers`, `has_status_checks`, `admin_equivalent`,
+/// `has_broad_bypass`, `reason`. Field reorder is a wire-format break
+/// (CHE-0064:R2 + PAR-0024:R5); new fields must append.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BranchProtectionDetails {
     /// Name of the repository's default branch.
@@ -205,6 +449,21 @@ pub struct BranchProtectionDetails {
     /// Human-readable reason for the current status.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+// Wire format: fields encoded in struct declaration order via `Encode::encode`.
+// Field reorder is a wire-format break; new fields must be appended
+// (CHE-0064:R2 + PAR-0024:R5).
+impl pardosa_encoding::Encode for BranchProtectionDetails {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.default_branch.encode(out);
+        self.has_pr.encode(out);
+        self.required_reviewers.encode(out);
+        self.has_status_checks.encode(out);
+        self.admin_equivalent.encode(out);
+        self.has_broad_bypass.encode(out);
+        self.reason.encode(out);
+    }
 }
 
 /// Intermediate representation of merged branch protection controls.
@@ -366,6 +625,12 @@ impl BranchControls {
 // ---------------------------------------------------------------------------
 
 /// CODEOWNERS evaluation outcome.
+///
+/// # Wire format
+///
+/// Fields encode in declaration order via `Encode::encode`: `status`, `path`,
+/// `timestamp`, `parsed`, `truncation`. Field reorder is a wire-format break
+/// (CHE-0064:R2 + PAR-0024:R5); new fields must append.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodeownersResult {
     /// Whether a CODEOWNERS file was found and in a conforming location.
@@ -385,7 +650,34 @@ pub struct CodeownersResult {
     pub truncation: Option<crate::domain::codeowners::CodeownersTruncationReason>,
 }
 
+// Wire format: fields encoded in struct declaration order via `Encode::encode`.
+// Field reorder is a wire-format break; new fields must be appended
+// (CHE-0064:R2 + PAR-0024:R5).
+impl pardosa_encoding::Encode for CodeownersResult {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.status.encode(out);
+        self.path.encode(out);
+        self.timestamp.encode(out);
+        self.parsed.encode(out);
+        self.truncation.encode(out);
+    }
+}
+
 /// CODEOWNERS status.
+///
+/// # Wire format
+///
+/// Variant discriminant is `u8` of declaration position (`Conforming=0`,
+/// `NonConforming=1`, `Absent=2`, `Unknown=3`). Reorder or insert is a
+/// wire-format break (CHE-0064:R2 + PAR-0024:R5); new variants must append.
+///
+/// ```
+/// use gh_report::domain::checks::CodeownersStatus;
+/// use pardosa_encoding::Encode;
+/// let mut out = Vec::new();
+/// CodeownersStatus::NonConforming.encode(&mut out);
+/// assert_eq!(out, vec![1u8]);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CodeownersStatus {
@@ -397,6 +689,20 @@ pub enum CodeownersStatus {
     Absent,
     /// CODEOWNERS status could not be determined.
     Unknown,
+}
+
+// Wire format: u8 discriminant per declaration order. Reorder or insert is a
+// wire-format break (CHE-0064:R2 + PAR-0024:R5); new variants must append.
+impl pardosa_encoding::Encode for CodeownersStatus {
+    fn encode(&self, out: &mut Vec<u8>) {
+        let discriminant: u8 = match self {
+            Self::Conforming => 0,
+            Self::NonConforming => 1,
+            Self::Absent => 2,
+            Self::Unknown => 3,
+        };
+        out.push(discriminant);
+    }
 }
 
 impl std::fmt::Display for CodeownersStatus {
