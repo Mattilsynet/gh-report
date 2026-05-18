@@ -9,6 +9,7 @@ pub mod error;
 pub mod event;
 pub mod fiber;
 pub mod fiber_state;
+pub mod frontier;
 
 pub use dragline::{AppendResult, Dragline};
 pub use error::PardosaError;
