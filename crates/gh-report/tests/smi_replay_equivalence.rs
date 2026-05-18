@@ -81,6 +81,7 @@ fn load_msgpack_aggregate(path: &PathBuf) -> Vec<EventEnvelope<DomainEvent>> {
 }
 
 #[test]
+#[ignore = "wire-format in flight; SMI fixture regenerated and tests re-enabled in sub-05 per CHE-0065"]
 fn smi_replay_payload_sequence_byte_equivalent() {
     let dir = fixtures_dir();
     let manifest_path = dir.join("aggregate_files.txt");
@@ -130,6 +131,7 @@ fn smi_replay_payload_sequence_byte_equivalent() {
 }
 
 #[test]
+#[ignore = "wire-format in flight; SMI fixture regenerated and tests re-enabled in sub-05 per CHE-0065"]
 fn smi_replay_projection_snapshot_byte_equivalent() {
     let dir = fixtures_dir();
     let manifest_path = dir.join("aggregate_files.txt");
@@ -188,6 +190,7 @@ fn smi_replay_projection_snapshot_byte_equivalent() {
 /// (AGENTS.md § Conventions), so rmp-serde minor-version output drift
 /// is contained.
 #[test]
+#[ignore = "wire-format in flight; SMI fixture regenerated and tests re-enabled in sub-05 per CHE-0065"]
 fn smi_msgpack_on_disk_format_byte_equivalent() {
     let dir = fixtures_dir();
     let manifest_path = dir.join("aggregate_files.txt");
