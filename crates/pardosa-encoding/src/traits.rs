@@ -66,3 +66,21 @@ pub fn from_bytes_with_cap<T: Decode>(input: &[u8], cap: usize) -> Result<T, Eve
     }
     Ok(value)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{EventError, from_bytes};
+
+    #[test]
+    fn trailing_bytes_rejected() {
+        // GEN-0035:R6 — one extra byte after a u32.
+        let err = from_bytes::<u32>(&[1, 0, 0, 0, 0xFF]).unwrap_err();
+        assert_eq!(err, EventError::InvalidInput);
+    }
+
+    #[test]
+    fn unexpected_eof() {
+        let err = from_bytes::<u32>(&[1, 2]).unwrap_err();
+        assert_eq!(err, EventError::InvalidInput);
+    }
+}

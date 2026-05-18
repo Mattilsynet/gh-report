@@ -17,10 +17,20 @@
 // surfacing as `EventError::InvalidInput` (the frozen post-C2 variant for
 // caller-input violations; no new variant introduced).
 
-#[cfg(any(feature = "uuid", feature = "bytes", feature = "arrayvec", feature = "jiff"))]
+#[cfg(any(
+    feature = "uuid",
+    feature = "bytes",
+    feature = "arrayvec",
+    feature = "jiff"
+))]
 use alloc::vec::Vec;
 
-#[cfg(any(feature = "uuid", feature = "bytes", feature = "arrayvec", feature = "jiff"))]
+#[cfg(any(
+    feature = "uuid",
+    feature = "bytes",
+    feature = "arrayvec",
+    feature = "jiff"
+))]
 use crate::{Decode, Decoder, Encode, EventError};
 
 #[cfg(any(feature = "bytes", feature = "arrayvec"))]
@@ -128,5 +138,165 @@ impl Decode for jiff::Timestamp {
         // check at decode. Map any future error (e.g. if jiff narrows its
         // accepted range) onto the frozen InvalidInput variant.
         jiff::Timestamp::from_microsecond(micros).map_err(|_| EventError::InvalidInput)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(any(
+        feature = "uuid",
+        feature = "bytes",
+        feature = "arrayvec",
+        feature = "jiff"
+    ))]
+    use crate::{EventError, from_bytes, to_vec};
+    #[cfg(any(feature = "bytes", feature = "arrayvec"))]
+    use alloc::vec;
+    #[cfg(any(feature = "bytes", feature = "arrayvec"))]
+    use alloc::vec::Vec;
+
+    // ----- GEN-0041 foreign-crate v0 floor -----------------------------------
+
+    #[cfg(feature = "uuid")]
+    #[test]
+    fn uuid_roundtrip_and_layout() {
+        // S1: Uuid encodes as 16 verbatim bytes, no length prefix. Pick a
+        // pattern whose every byte is distinct so any byte-order surprise
+        // would show up as a permuted assert.
+        let raw: [u8; 16] = [
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD,
+            0xEE, 0xFF,
+        ];
+        let u = uuid::Uuid::from_bytes(raw);
+        let bytes = to_vec(&u);
+        assert_eq!(bytes.as_slice(), &raw[..]);
+        let back: uuid::Uuid = from_bytes(&bytes).unwrap();
+        assert_eq!(back, u);
+    }
+
+    #[cfg(feature = "uuid")]
+    #[test]
+    fn uuid_truncated_input_rejected() {
+        // 15 bytes is one short of the 16 the fixed-width decode requires;
+        // surfaces via the standard truncated-read path.
+        let err = from_bytes::<uuid::Uuid>(&[0u8; 15]).unwrap_err();
+        assert_eq!(err, EventError::InvalidInput);
+    }
+
+    #[cfg(feature = "bytes")]
+    #[test]
+    fn bytes_roundtrip_and_layout() {
+        // S1: length-prefixed payload identical to Vec<u8>/&[u8] wire form.
+        let payload = bytes::Bytes::from_static(&[0xAA, 0xBB, 0xCC]);
+        let wire = to_vec(&payload);
+        assert_eq!(wire, vec![3, 0, 0, 0, 0xAA, 0xBB, 0xCC]);
+        let back: bytes::Bytes = from_bytes(&wire).unwrap();
+        assert_eq!(back, payload);
+
+        // Empty payload still carries the 4-byte length header.
+        let empty = bytes::Bytes::new();
+        let wire_empty = to_vec(&empty);
+        assert_eq!(wire_empty, vec![0, 0, 0, 0]);
+        let back_empty: bytes::Bytes = from_bytes(&wire_empty).unwrap();
+        assert_eq!(back_empty, empty);
+    }
+
+    #[cfg(feature = "bytes")]
+    #[test]
+    fn bytes_wire_matches_vec_u8() {
+        // S1 sanity: a `bytes::Bytes` payload and a `Vec<u8>` with identical
+        // contents must produce byte-identical wire output. Locks the
+        // "same length-prefix rule for any opaque byte payload" invariant.
+        let payload = [0xDE, 0xAD, 0xBE, 0xEF, 0x01];
+        let from_bytes_form = to_vec(&bytes::Bytes::copy_from_slice(&payload));
+        let from_vec_form = to_vec(&payload.to_vec());
+        assert_eq!(from_bytes_form, from_vec_form);
+    }
+
+    #[cfg(feature = "arrayvec")]
+    #[test]
+    fn arrayvec_roundtrip() {
+        // Variable-length capacity-bounded vec encodes like Vec<T>: u32 LE
+        // count + per-element encode. Round-trip at len < N and len == N.
+        let mut av: arrayvec::ArrayVec<u32, 4> = arrayvec::ArrayVec::new();
+        av.try_push(1).unwrap();
+        av.try_push(2).unwrap();
+        av.try_push(3).unwrap();
+        let wire = to_vec(&av);
+        // 4-byte LE count + 3 * 4-byte u32 LE payload = 16 bytes total.
+        assert_eq!(wire[..4], [3, 0, 0, 0]);
+        let back: arrayvec::ArrayVec<u32, 4> = from_bytes(&wire).unwrap();
+        assert_eq!(back.as_slice(), av.as_slice());
+
+        // At capacity.
+        let mut full: arrayvec::ArrayVec<u8, 3> = arrayvec::ArrayVec::new();
+        full.try_push(7).unwrap();
+        full.try_push(8).unwrap();
+        full.try_push(9).unwrap();
+        let wire = to_vec(&full);
+        let back: arrayvec::ArrayVec<u8, 3> = from_bytes(&wire).unwrap();
+        assert_eq!(back.as_slice(), full.as_slice());
+    }
+
+    #[cfg(feature = "arrayvec")]
+    #[test]
+    fn arrayvec_rejects_len_over_capacity() {
+        // S2: a decoded length-prefix exceeding the target capacity must
+        // surface as EventError::InvalidInput *before* any per-element
+        // decode runs. Construct the smallest such wire: count=4 against
+        // a 3-capacity ArrayVec.
+        //
+        // Bonus: only 4 payload bytes follow (one fewer than required for
+        // count=4 even at u8), so a missed S2 guard would also fail via
+        // the truncated-read path; the test asserts the *S2* code path is
+        // reached by making the input long enough that absent the guard
+        // the decode would otherwise succeed.
+        use crate::Encode;
+        let mut wire = Vec::new();
+        4u32.encode(&mut wire);
+        wire.extend_from_slice(&[1u8, 2, 3, 4]);
+        let err = from_bytes::<arrayvec::ArrayVec<u8, 3>>(&wire).unwrap_err();
+        assert_eq!(err, EventError::InvalidInput);
+    }
+
+    // ----- jiff::Timestamp foreign-floor (GEN-0043) --------------------------
+
+    #[cfg(feature = "jiff")]
+    #[test]
+    fn jiff_timestamp_layout_and_roundtrip() {
+        // GEN-0043:R1 — wire shape is 8-byte LE of as_microsecond() (i64).
+        // Pick a distinct-byte pattern in the positive half so any byte-
+        // order surprise would show up as a permuted assert.
+        let micros: i64 = 0x0102_0304_0506_0708;
+        let ts = jiff::Timestamp::from_microsecond(micros).unwrap();
+        let bytes = to_vec(&ts);
+        assert_eq!(
+            bytes,
+            alloc::vec![0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]
+        );
+        let back: jiff::Timestamp = from_bytes(&bytes).unwrap();
+        assert_eq!(back, ts);
+        assert_eq!(back.as_microsecond(), micros);
+    }
+
+    #[cfg(feature = "jiff")]
+    #[test]
+    fn jiff_timestamp_zero_micros_roundtrip() {
+        // The Unix epoch — micros == 0 — must encode as 8 zero bytes and
+        // round-trip cleanly. Anchors the floor of the GEN-0043:R1 domain.
+        let ts = jiff::Timestamp::from_microsecond(0).unwrap();
+        let bytes = to_vec(&ts);
+        assert_eq!(bytes, alloc::vec![0u8; 8]);
+        let back: jiff::Timestamp = from_bytes(&bytes).unwrap();
+        assert_eq!(back, ts);
+    }
+
+    #[cfg(feature = "jiff")]
+    #[test]
+    fn jiff_timestamp_truncated_input_rejected() {
+        // 7 bytes is one short of the fixed-width 8 the decode requires;
+        // surfaces via the standard truncated-read path.
+        let err = from_bytes::<jiff::Timestamp>(&[0u8; 7]).unwrap_err();
+        assert_eq!(err, EventError::InvalidInput);
     }
 }

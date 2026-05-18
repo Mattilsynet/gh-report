@@ -100,3 +100,53 @@ impl Decode for () {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{Decode, Encode, EventError, from_bytes, to_vec};
+    use alloc::vec;
+
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "test helper takes T by value to keep call sites ergonomic; `assert_eq!` then borrows internally"
+    )]
+    fn rt<T: Encode + Decode + PartialEq + core::fmt::Debug>(v: T) {
+        let bytes = to_vec(&v);
+        let back: T = from_bytes(&bytes).expect("decode");
+        assert_eq!(v, back);
+    }
+
+    #[test]
+    fn primitive_widths() {
+        // GEN-0035 §"Primitive encoding"
+        assert_eq!(to_vec(&0u8), vec![0]);
+        assert_eq!(to_vec(&1u8), vec![1]);
+        assert_eq!(to_vec(&0x0102u16), vec![0x02, 0x01]);
+        assert_eq!(to_vec(&0x0102_0304_u32), vec![0x04, 0x03, 0x02, 0x01]);
+        assert_eq!(to_vec(&true), vec![1]);
+        assert_eq!(to_vec(&false), vec![0]);
+    }
+
+    #[test]
+    fn primitive_roundtrip() {
+        rt(0u8);
+        rt(255u8);
+        rt(-1i8);
+        rt(u16::MAX);
+        rt(i16::MIN);
+        rt(u32::MAX);
+        rt(u64::MAX);
+        rt(u128::MAX);
+        rt(i128::MIN);
+        rt(1.5f32);
+        rt(f64::INFINITY.to_bits()); // ensure bit-level f64 roundtrip via u64
+        rt(true);
+        rt(false);
+    }
+
+    #[test]
+    fn invalid_bool_rejected() {
+        let err = from_bytes::<bool>(&[2u8]).unwrap_err();
+        assert_eq!(err, EventError::InvalidInput);
+    }
+}
