@@ -82,4 +82,15 @@ pub enum PardosaError {
         "precursor chain broken at event_id {event_id}: precursor index {precursor:?} not found"
     )]
     BrokenPrecursorChain { event_id: u64, precursor: Index },
+
+    #[error(
+        "precursor hash mismatch at event_id {event_id}: expected {expected:?}, actual {actual:?}"
+    )]
+    PrecursorHashMismatch {
+        event_id: u64,
+        // BLAKE3 output is 32 bytes; debug-formatted byte arrays are the
+        // existing convention in BrokenPrecursorChain.
+        expected: [u8; 32],
+        actual: [u8; 32],
+    },
 }
