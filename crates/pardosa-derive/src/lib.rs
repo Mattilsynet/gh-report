@@ -166,4 +166,3 @@ fn derive_genome_safe_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         #decode_impl
     })
 }
-
