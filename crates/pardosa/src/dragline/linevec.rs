@@ -162,3 +162,156 @@ impl<T> std::ops::Index<usize> for Linevec<T> {
         &self.0[i]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{DomainId, Event, Index, PardosaError};
+
+    // ── Linevec::append_validated rejection cases ─────────────────────
+    //
+    // FH3: every production write must go through append_validated. These
+    // tests cover the rejection paths directly on the newtype so a future
+    // refactor that breaks one of the invariants surfaces here rather than
+    // limping along until verify_invariants is next called.
+
+    #[test]
+    fn linevec_append_validated_rejects_mismatched_event_id() {
+        let mut lv = Linevec::<&str>::new();
+        let e = Event::new(
+            5,
+            1000,
+            DomainId::new(0),
+            false,
+            Index::NONE,
+            [0u8; 32],
+            "x",
+        );
+        // caller claims expected_event_id = 7 but event carries 5
+        let err = lv.append_validated(e, 7).unwrap_err();
+        assert!(
+            matches!(err, PardosaError::FiberInvariantViolation(ref m) if m.contains("!=")),
+            "got: {err}"
+        );
+        assert_eq!(lv.len(), 0, "rejected append must not mutate line");
+    }
+
+    #[test]
+    fn linevec_append_validated_rejects_non_monotonic_event_id() {
+        let mut lv = Linevec::<&str>::new();
+        let e0 = Event::new(
+            0,
+            1000,
+            DomainId::new(0),
+            false,
+            Index::NONE,
+            [0u8; 32],
+            "a",
+        );
+        lv.append_validated(e0, 0).unwrap();
+        // Try to append an event with event_id == last (0), violating strict >.
+        let e_dup = Event::new(
+            0,
+            1001,
+            DomainId::new(0),
+            false,
+            Index::NONE,
+            [0u8; 32],
+            "dup",
+        );
+        let err = lv.append_validated(e_dup, 0).unwrap_err();
+        assert!(
+            matches!(err, PardosaError::FiberInvariantViolation(ref m) if m.contains("not strictly greater")),
+            "got: {err}"
+        );
+        assert_eq!(lv.len(), 1, "rejected append must not mutate line");
+    }
+
+    #[test]
+    fn linevec_append_validated_rejects_forward_precursor() {
+        let mut lv = Linevec::<&str>::new();
+        let e0 = Event::new(
+            0,
+            1000,
+            DomainId::new(0),
+            false,
+            Index::NONE,
+            [0u8; 32],
+            "a",
+        );
+        lv.append_validated(e0, 0).unwrap();
+        // line.len() == 1, so precursor must be < 1; offer Index::new(5).
+        let bad = Event::new(
+            1,
+            1001,
+            DomainId::new(0),
+            false,
+            Index::new(5),
+            [0u8; 32],
+            "bad",
+        );
+        let err = lv.append_validated(bad, 1).unwrap_err();
+        assert!(
+            matches!(err, PardosaError::FiberInvariantViolation(ref m) if m.contains("precursor index")),
+            "got: {err}"
+        );
+        assert_eq!(lv.len(), 1, "rejected append must not mutate line");
+    }
+
+    #[test]
+    fn linevec_append_validated_rejects_cross_domain_precursor() {
+        let mut lv = Linevec::<&str>::new();
+        let e0 = Event::new(
+            0,
+            1000,
+            DomainId::new(0),
+            false,
+            Index::NONE,
+            [0u8; 32],
+            "a",
+        );
+        lv.append_validated(e0, 0).unwrap();
+        // event for domain 99 cannot point precursor at domain 0's event
+        let bad = Event::new(
+            1,
+            1001,
+            DomainId::new(99),
+            false,
+            Index::new(0),
+            [0u8; 32],
+            "bad",
+        );
+        let err = lv.append_validated(bad, 1).unwrap_err();
+        assert!(
+            matches!(err, PardosaError::BrokenPrecursorChain { .. }),
+            "got: {err}"
+        );
+        assert_eq!(lv.len(), 1, "rejected append must not mutate line");
+    }
+
+    #[test]
+    fn linevec_append_validated_accepts_valid_event() {
+        let mut lv = Linevec::<&str>::new();
+        let e0 = Event::new(
+            0,
+            1000,
+            DomainId::new(0),
+            false,
+            Index::NONE,
+            [0u8; 32],
+            "a",
+        );
+        lv.append_validated(e0, 0).unwrap();
+        let e1 = Event::new(
+            1,
+            1001,
+            DomainId::new(0),
+            false,
+            Index::new(0),
+            [0u8; 32],
+            "b",
+        );
+        lv.append_validated(e1, 1).unwrap();
+        assert_eq!(lv.len(), 2);
+    }
+}
