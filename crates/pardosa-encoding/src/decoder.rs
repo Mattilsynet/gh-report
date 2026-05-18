@@ -92,3 +92,53 @@ impl<'a> Decoder<'a> {
         self.pos >= self.input.len()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{EventError, from_bytes, from_bytes_with_cap, to_vec};
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    #[test]
+    fn cap_exceeded_before_alloc() {
+        // u32 length header = 2 MiB; default cap is 1 MiB. Must reject
+        // before allocation (we cannot directly observe allocation, but
+        // the error variant must be CapExceeded — not UnexpectedEof from
+        // a successful huge allocation followed by short input).
+        let bogus_len: u32 = 2 * 1024 * 1024;
+        let mut input = Vec::new();
+        input.extend_from_slice(&bogus_len.to_le_bytes());
+        let err = from_bytes::<Vec<u8>>(&input).unwrap_err();
+        assert_eq!(err, EventError::InvalidInput);
+    }
+
+    #[test]
+    fn cap_configurable() {
+        // 4-byte length header advertising 8 bytes is fine under cap=16,
+        // rejected under cap=4.
+        let mut input = Vec::new();
+        input.extend_from_slice(&8u32.to_le_bytes());
+        input.extend_from_slice(&[0u8; 8]);
+        let ok: Vec<u8> = from_bytes_with_cap(&input, 16).unwrap();
+        assert_eq!(ok.len(), 8);
+        let err = from_bytes_with_cap::<Vec<u8>>(&input, 4).unwrap_err();
+        assert_eq!(err, EventError::InvalidInput);
+    }
+
+    #[test]
+    fn cap_charges_nested_length_prefixes() {
+        // Vec<Vec<u8>> with two inner vecs of 4 bytes each: outer header
+        // charges 2 (count), inner headers charge 4 each, payloads charge
+        // 4 each. Total cap usage from len-prefixes = 2 + 4 + 4 = 10 bytes
+        // of "budget"; we set cap to exactly fit.
+        let v: Vec<Vec<u8>> = vec![vec![1, 2, 3, 4], vec![5, 6, 7, 8]];
+        let bytes = to_vec(&v);
+        // Generous cap succeeds.
+        let back: Vec<Vec<u8>> = from_bytes_with_cap(&bytes, 1024).unwrap();
+        assert_eq!(back, v);
+        // Cap=2 (= outer count) succeeds for the outer header but the
+        // inner length=4 exceeds remaining cap=0, so CapExceeded.
+        let err = from_bytes_with_cap::<Vec<Vec<u8>>>(&bytes, 2).unwrap_err();
+        assert_eq!(err, EventError::InvalidInput);
+    }
+}

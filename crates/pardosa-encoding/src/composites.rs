@@ -349,3 +349,239 @@ impl Decode for NonZeroU64 {
         NonZeroU64::new(raw).ok_or(EventError::InvalidInput)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::composites::encode_len_prefix;
+    use crate::{Decode, Encode, EventError, from_bytes, to_vec};
+    use alloc::collections::BTreeMap;
+    use alloc::string::String;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "test helper takes T by value to keep call sites ergonomic; `assert_eq!` then borrows internally"
+    )]
+    fn rt<T: Encode + Decode + PartialEq + core::fmt::Debug>(v: T) {
+        let bytes = to_vec(&v);
+        let back: T = from_bytes(&bytes).expect("decode");
+        assert_eq!(v, back);
+    }
+
+    #[test]
+    fn option_layout() {
+        // GEN-0035 §"Composite encoding" — Option<u32>: 1+4 bytes Some, 1 byte None.
+        let some = to_vec(&Some(0x0102_0304_u32));
+        assert_eq!(some, vec![1, 0x04, 0x03, 0x02, 0x01]);
+        let none: Vec<u8> = to_vec(&Option::<u32>::None);
+        assert_eq!(none, vec![0]);
+        rt(Some(42u64));
+        rt(Option::<String>::None);
+    }
+
+    #[test]
+    fn invalid_option_tag_rejected() {
+        let err = from_bytes::<Option<u32>>(&[2u8, 0, 0, 0, 0]).unwrap_err();
+        assert_eq!(err, EventError::InvalidInput);
+    }
+
+    #[test]
+    fn vec_u8_layout() {
+        // Vec<u8> length 3: 4 LE length bytes + 3 payload bytes.
+        let bytes = to_vec(&vec![0xAAu8, 0xBB, 0xCC]);
+        assert_eq!(bytes, vec![3, 0, 0, 0, 0xAA, 0xBB, 0xCC]);
+    }
+
+    #[test]
+    fn string_roundtrip() {
+        rt(String::new());
+        rt(String::from("hello, world"));
+        rt(String::from("⛵🦀"));
+    }
+
+    #[test]
+    fn invalid_utf8_rejected() {
+        // len=2, payload = 0xFF 0xFE — invalid UTF-8.
+        let err = from_bytes::<String>(&[2, 0, 0, 0, 0xFF, 0xFE]).unwrap_err();
+        assert_eq!(err, EventError::InvalidInput);
+    }
+
+    #[test]
+    fn vec_roundtrip() {
+        rt(Vec::<u32>::new());
+        rt(vec![1u32, 2, 3, 4, 5]);
+        rt(vec![Some(1u8), None, Some(2)]);
+    }
+
+    #[test]
+    fn array_back_to_back_no_prefix() {
+        let bytes = to_vec(&[1u8, 2, 3]);
+        assert_eq!(bytes, vec![1, 2, 3]);
+        let back: [u8; 3] = from_bytes(&bytes).unwrap();
+        assert_eq!(back, [1, 2, 3]);
+    }
+
+    #[test]
+    fn tuple_back_to_back_no_prefix() {
+        let bytes = to_vec(&(1u8, 0x0203u16));
+        assert_eq!(bytes, vec![1, 0x03, 0x02]);
+        rt((1u32, 2u64, 3u8));
+        rt((true, false, 0u8, u32::MAX));
+    }
+
+    #[test]
+    fn btreemap_roundtrip_and_canonical_order() {
+        let mut m: BTreeMap<u32, u8> = BTreeMap::new();
+        m.insert(1, 10);
+        m.insert(2, 20);
+        m.insert(3, 30);
+        rt(m.clone());
+
+        // Tamper: re-emit with descending keys; decoder must reject.
+        let mut bad = Vec::new();
+        3u32.encode(&mut bad);
+        3u32.encode(&mut bad);
+        30u8.encode(&mut bad);
+        2u32.encode(&mut bad);
+        20u8.encode(&mut bad);
+        1u32.encode(&mut bad);
+        10u8.encode(&mut bad);
+        let err = from_bytes::<BTreeMap<u32, u8>>(&bad).unwrap_err();
+        assert_eq!(err, EventError::InvalidInput);
+    }
+
+    // ---- B0 (sub-mission B folded in): canonical map ordering for
+    // variable-length encoded keys. GEN-0035:R5 — entries must be emitted
+    // in ascending order of canonical encoded bytes of K, not K::Ord.
+    // The two roundtrip tests below were red against the pre-fix encoder
+    // because for mixed-length keys (e.g. "alpha"/"beta"/"gamma") the
+    // u32 length prefix dominates lex order and disagrees with K::Ord;
+    // the decoder rejected the encoder's own output with NonCanonicalMap.
+    //
+    // Subsumption notes (sub-mission B's named matrix):
+    //   - `string_roundtrip` covers the String matrix entry.
+    //   - `vec_u8_layout` + `cap_charges_nested_length_prefixes` cover
+    //     Vec<u8> round-trip; `roundtrip_btreemap_vec_u8_u32_mixed_length`
+    //     below additionally exercises Vec<u8>-keyed BTreeMaps.
+
+    #[test]
+    fn roundtrip_btreemap_string_u32_mixed_length() {
+        // B0 load-bearing: original reproducer. Mixed-length String keys
+        // — K::Ord ("alpha" < "beta" < "gamma") disagrees with encoded-
+        // bytes order because the u32 length prefix of "gamma" (5) ties
+        // with "alpha" but "beta" is length 4 ... actually all three are
+        // not equal length, so encoded-bytes order = ascending length
+        // tie-break by content. Encoder must sort by encoded-K-bytes.
+        let mut m: BTreeMap<String, u32> = BTreeMap::new();
+        m.insert(String::from("alpha"), 1);
+        m.insert(String::from("beta"), 2);
+        m.insert(String::from("gamma"), 3);
+        rt(m);
+    }
+
+    #[test]
+    fn canonical_bytes_btreemap_string_u32_mixed_length() {
+        // B0 load-bearing: assert the wire bytes are the
+        // sort-by-encoded-K-bytes order, NOT K::Ord order.
+        let mut m: BTreeMap<String, u32> = BTreeMap::new();
+        m.insert(String::from("alpha"), 1);
+        m.insert(String::from("beta"), 2);
+        m.insert(String::from("gamma"), 3);
+        let got = to_vec(&m);
+
+        // Build expected by encoding each (k, v) into its own buffer,
+        // sorting pairs by encoded-K-bytes, then concatenating with the
+        // u32 LE count prefix.
+        let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        for (k, v) in [("alpha", 1u32), ("beta", 2), ("gamma", 3)] {
+            let mut kb = Vec::new();
+            String::from(k).encode(&mut kb);
+            let mut vb = Vec::new();
+            v.encode(&mut vb);
+            pairs.push((kb, vb));
+        }
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut expected = Vec::new();
+        expected.extend_from_slice(
+            &u32::try_from(pairs.len())
+                .expect("test fixture under u32::MAX")
+                .to_le_bytes(),
+        );
+        for (kb, vb) in &pairs {
+            expected.extend_from_slice(kb);
+            expected.extend_from_slice(vb);
+        }
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn roundtrip_btreemap_vec_u8_u32_mixed_length() {
+        // B0 load-bearing: generalises beyond String. Vec<u8> keys with
+        // distinct lengths — vec![1] (len 1), vec![1,1] (len 2), vec![2]
+        // (len 1). K::Ord on Vec<u8> is lex on bytes ignoring length, so
+        // vec![1] < vec![1,1] < vec![2]; encoded bytes prepend u32 len,
+        // so encoded order = ascending length tie-break by content.
+        let mut m: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
+        m.insert(vec![1], 10);
+        m.insert(vec![1, 1], 20);
+        m.insert(vec![2], 30);
+        rt(m);
+    }
+
+    #[test]
+    fn decode_btreemap_rejects_misordered() {
+        // B0 load-bearing: negative case. Hand-construct an encoded map
+        // whose entries are in K::Ord order with mixed-length String keys
+        // (which is the *wrong* order under GEN-0035:R5). Decoder must
+        // reject with NonCanonicalMap. Guards the decoder's invariant
+        // against any future "optimisation" that drops the check.
+        let mut bad = Vec::new();
+        // count = 3
+        encode_len_prefix(3, &mut bad);
+        // K::Ord order: "alpha", "beta", "gamma". For variable-length
+        // keys this does NOT match encoded-bytes order (length prefix
+        // dominates), so the decoder must reject.
+        for (k, v) in [("alpha", 1u32), ("beta", 2), ("gamma", 3)] {
+            String::from(k).encode(&mut bad);
+            v.encode(&mut bad);
+        }
+        let err = from_bytes::<BTreeMap<String, u32>>(&bad).unwrap_err();
+        assert_eq!(err, EventError::InvalidInput);
+    }
+
+    #[test]
+    fn roundtrip_tuple_u8_u16_u32() {
+        // B's named matrix entry (was rolled back at B-attempt). Verifies
+        // tuple round-trip at a specific arity beyond the existing
+        // `tuple_back_to_back_no_prefix` coverage.
+        rt((7u8, 0x1234u16, 0xdead_beefu32));
+    }
+
+    // -----------------------------------------------------------------
+    // NonZeroU64 — Inc-pre.1 (F2c-pre, PAR-0021:R1 hash-chain prereq)
+    // -----------------------------------------------------------------
+    //
+    // Concrete-type impl, NOT a blanket over `NonZero<T>`. Preserves
+    // the future blanket-impl path so a wider sealing scheme can
+    // subsume this point impl without removing it. Wire shape: 8-byte
+    // LE of the inner u64, identical to `u64` (NonZeroU64::get()).
+
+    #[test]
+    fn non_zero_u64_layout_and_roundtrip() {
+        use core::num::NonZeroU64;
+        let nz = NonZeroU64::new(0x0102_0304_0506_0708).expect("nonzero literal");
+        let bytes = to_vec(&nz);
+        // 8-byte LE — same wire as u64::get().
+        assert_eq!(bytes, vec![0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]);
+        let back: NonZeroU64 = from_bytes(&bytes).expect("decode");
+        assert_eq!(back, nz);
+    }
+
+    #[test]
+    fn non_zero_u64_rejects_zero_on_decode() {
+        // Wire `0u64` violates the niche; surface as InvalidInput.
+        let err = from_bytes::<core::num::NonZeroU64>(&[0u8; 8]).unwrap_err();
+        assert_eq!(err, EventError::InvalidInput);
+    }
+}
