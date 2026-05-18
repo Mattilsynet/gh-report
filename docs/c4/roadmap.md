@@ -104,6 +104,8 @@ the gaps surface as code-level friction (not ADR commentary).
     - `rg -n 'EventStore' crates/gh-report/src/` shows write-side use confined
       to the `Merger` module.
     - `cargo test -p gh-report --test smi_replay_equivalence` exit 0.
+    - `cargo test -p gh-report --test bootstrap_replay` exit 0 (Memory Image
+      bootstrap conformance — Track 7.5).
 11. **(Track 6)** Atomic-ship verified: F2f tamper-injection test green,
     F9 wrappers all green, `FORMAT_VERSION = 3` in tree.
 12. **(C3)** Track 8 architectural audit checklist committed; every crate
@@ -239,6 +241,7 @@ deployments exist; data loss in the migration is acceptable cost.
 | 7.2 | gh-report EventStore swap | Replace gh-report's msgpack-store wiring with `PardosaEventStore`. Delete msgpack on-disk format code + tests. Update CHE-0031 references in code to point at the supersession ADR (7.3). Atomic commit-set per CHE-0022:R1. | `cargo test -p gh-report` green; `cargo build --workspace` green; no msgpack-store references remain (`rg -n 'msgpack.*store\|MsgpackEventStore' crates/gh-report/src/`). |
 | 7.3 | Supersession ADR | Draft new CHE-#### ADR superseding CHE-0031 (named-msgpack → pardosa-genome). Cite Track 7.2 commit-set as implementation evidence. Per AFM-0020:R1, `References:` first target = CHE-0031. Per GND-0007:R4, CHE-0031 transitions to `Superseded` with retirement section. **Always-escalate ADR draft per FOCUS.md §6** — already ratified 2026-05-17. | `cargo run -p adr-fmt -- --lint` warnings-only; `cargo run -p adr-fmt -- --refs CHE-0031` shows the new ADR. |
 | 7.4 | SMI replay green on fresh log | First post-cut gh-report run re-scrapes GitHub API and writes a fresh pardosa-genome event log. SMI invariants (Track 4.0) preserved across the cut. | `rg -n 'sequence_tracker\|run_index\|repo_index\|delivery_index' crates/gh-report/src/` zero hits; `cargo test -p gh-report --test smi_replay_equivalence` green. |
+| 7.5 | Memory Image bootstrap (replay + snapshot invariants) | (a) **Bootstrap replay**: on `AppState` construction (or first read), scan `events/<org>/` via the EventStore's enumeration API, load each aggregate's envelopes, fold into `Run` / `Repo` / `Delivery` aggregate state, populate `runs_by_key` / `repos_by_key` / `deliveries_by_id` / `next_seq` from the folded result. Reserve `AggregateId(1)` for `OrgGovernance` (no real aggregate may collide with it). (b) **Snapshot subordination**: tag `BaselineEntry` with `last_applied_sequence: NonZeroU64` per aggregate; on load, discard any entry whose aggregate's event log is newer; document `baseline.msgpack` as an event-log-subordinate boot-acceleration snapshot of *aggregate state* (not a projection cache). (c) Task body refined once `@oracle` (ADR coverage for Memory Image bootstrap) and `@copernicus` (`RepoEvaluated` ↔ `RepositoryEvidence` field-completeness) report back. **Triggering evidence**: post-eval2 analysis of `/tmp/gh-report-eval-store/` — 87 fragmented aggregate files (ids 627→713) across 4 runs for the same 561 repos, because `state.rs` constructs `runs_by_key` / `repos_by_key` / `deliveries_by_id` / `next_seq` as `HashMap::new()` on every restart with no event-log replay. | `cargo test -p gh-report --test bootstrap_replay` exit 0: append N events under store dir A; drop and recreate `AppState` pointing at A; assert (i) routing indices populated for every domain key present in events; (ii) next append on an existing domain key reuses its `AggregateId` (no new aggregate file created); (iii) `last_seq` advances from the loaded value, not from 1. Plus `cargo test -p gh-report --test baseline_subordinate_to_events` exit 0: write baseline, append a `RepoEvaluated` past the baseline sequence, restart, assert baseline entry was discarded and projection rebuilt from event. |
 
 ### Track 8 — C3 idiomatic architectural organization audit (NEW; final Phase 2 track)
 
@@ -250,7 +253,7 @@ practice via checklist.
 
 | # | Task | Deliverable | Verify |
 |---|------|-------------|--------|
-| 8.1 | Author E1 checklist | Single `.ooda/`-then-bd evidence artefact (label `evidence,track:8`) enumerating C3 criteria: (a) hexagonal layering visible (ports/adapters split per crate); (b) no `async-trait` in cherry-pit-* dep tree (CHE-0025); (c) RPITIT at public trait surfaces; (d) ADR coverage — every public type has an ADR home or inline justification; (e) idiomatic crate naming + `lib`/`bin` split; (f) flat public API via `pub use` re-exports (CHE-0030); (g) aggregate boundaries match CHE-0005:R1 (single aggregate per port); (h) dependency direction respects CHE-0029 (acyclic crate DAG). | Checklist bead created with all criteria + verify-grep where applicable. |
+| 8.1 | Author E1 checklist | Single `.ooda/`-then-bd evidence artefact (label `evidence,track:8`) enumerating C3 criteria: (a) hexagonal layering visible (ports/adapters split per crate); (b) no `async-trait` in cherry-pit-* dep tree (CHE-0025); (c) RPITIT at public trait surfaces; (d) ADR coverage — every public type has an ADR home or inline justification; (e) idiomatic crate naming + `lib`/`bin` split; (f) flat public API via `pub use` re-exports (CHE-0030); (g) aggregate boundaries match CHE-0005:R1 (single aggregate per port); (h) dependency direction respects CHE-0029 (acyclic crate DAG); **(i) Memory Image discipline (Fowler): events under the configured store dir are the single source of truth; routing indices, aggregate state, and projections are constructed in memory by folding events at startup; on-disk artefacts other than the event log are either absent or explicitly tagged as event-log-subordinate snapshots with a `last_applied_sequence` per aggregate and a documented discard-on-skew rule.** | Checklist bead created with all criteria + verify-grep where applicable. Verify-grep for (i): `rg -n 'HashMap::new' crates/*/src/app/state.rs` flags any routing-index field constructed without a paired `replay_*` / `rehydrate_*` call; per-crate audit row in 8.2 must explicitly state "rebuilt from events / snapshot-subordinate / no derived state persisted". |
 | 8.2 | Per-crate audit | Walk every crate in `Cargo.toml [workspace] members` (currently 14: adr-fmt, adr-srv [new], cherry-pit-{core,gateway,web,projection,agent,wq,storage}, gh-report, pardosa, pardosa-genome, pardosa-encoding, pardosa-derive, pardosa-traits). For each, score against 8.1 criteria; file a remediation bead per failure. | One audit row per crate committed in a single audit-report bead; remediation beads filed with `track:8,remediation` labels. |
 | 8.3 | Drain or defer remediations | Each remediation bead either closed in-track or labeled `phase:3-harden` with a rationale comment explaining why it can't reasonably ship in Phase 2. | All `track:8,remediation` beads either closed or `phase:3-harden`-labelled. |
 | 8.4 | ADR gap-fill | Any 8.2 finding without an ADR home gets a draft ADR (CHE / GND / AFM domain per topic). Per FOCUS.md §6, new ADR drafts are always-escalate — user ratifies each before merge. | New ADRs land in `docs/adr/<domain>/`; `cargo run -p adr-fmt -- --lint` warnings-only. |
@@ -301,6 +304,7 @@ gated on Track 6 atomic-ship complete — same gate applies to Track 7.
 | Scope creep ("while we're at it…") | H | M | Strict track boundaries; injection queue for discovered work; gardener pass between tracks. |
 | Track 6 wire-format change strands v2 readers | L | H | F2a includes read-only migration path (v2 streams decode with zero-hash sentinel); F2f tamper-injection test asserts v2→v3 read still works. Halt-and-handback if migration path proves infeasible. |
 | Track 6 atomic-ship coupling (F2a + F9) inflates blast radius | M | M | Epic acceptance criteria require atomic landing; mitigation = small TDD increments behind the `blake3` feature flag until F2f integration test green, then single squash commit. |
+| Track 7 hard cut preserves the Memory Image bootstrap defect: routing indices (`runs_by_key`, `repos_by_key`, `deliveries_by_id`, `next_seq`) start empty on every restart and are not rebuilt from `events/<org>/*`. Observed in `/tmp/gh-report-eval-store/` (87 fragmented aggregates across 4 runs, ids 627→713 for the same 561 repos). gh-report on pardosa would re-fragment the same way. | H (current code path; default behaviour) | M (silent state leak: unbounded aggregate-id growth on long-running processes; `baseline.msgpack` hides the symptom by serving warm-start from a parallel data plane) | Track 7.5 lands bootstrap replay atomically with the pardosa cut. 7.1 conformance harness extended to assert "drop + recreate store at same dir preserves derived state per domain key". |
 
 **Abort criteria**: if any remaining track cannot reach its verify-green within
 ~3 hopper missions, halt and re-orient via feynman.
@@ -452,6 +456,21 @@ contiguously with the main task list to avoid cross-reference ambiguity.
    BLAKE3 for snapshot sig + ETags — right-sized for no-adversary threat
    model; ~10× faster than SHA-256). Mission-package body lives in bd
    evidence bead (queryable via the label-based query above).
+
+19. **gh-report `SweepProgress` publish ordering** (observed 2026-05-18 in
+    `/tmp/gh-report-eval2.log` lines 16, 19: `routing index has no
+    AggregateId for batch_id="c25e81d…"`). Within a single process
+    lifetime, `record_progress` reaches the merger before `start_sweep`
+    has registered the batch_id in `runs_by_key`. Plausible causes
+    include the warm-start synthetic publish path (`collect.rs:1407`
+    `warm-start-{}`) racing real `SweepStarted`, or the merger queue
+    being unordered with respect to publish/append. Needs feynman
+    orient (multiple plausible causal models). Non-fatal warning today;
+    logged at WARN level. Matches §B (Error-path correctness) intent.
+    Verify: a regression test exercising the warm-start → first-sweep
+    transition asserts no `routing index has no AggregateId for
+    batch_id=…` warning is logged. No bead yet (file when Phase 3
+    activates).
 
 ---
 

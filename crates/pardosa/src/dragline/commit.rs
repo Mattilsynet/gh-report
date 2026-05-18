@@ -9,7 +9,7 @@
 //! invariants were already pre-validated upstream — an Err there is a
 //! same-writer bug, not user error.
 
-use super::all::{AppendResult, Dragline};
+use super::state::{AppendResult, Dragline};
 use crate::error::PardosaError;
 use crate::event::{DomainId, Event, Index};
 use crate::fiber::Fiber;
