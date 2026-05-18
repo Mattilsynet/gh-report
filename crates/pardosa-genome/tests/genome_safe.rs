@@ -538,11 +538,9 @@ fn file_error_display() {
 fn string_str_cow_hash_identity() {
     let h_string = <String as GenomeSafe>::SCHEMA_HASH;
     let h_str = <str as GenomeSafe>::SCHEMA_HASH;
-    let h_ref_str = <&str as GenomeSafe>::SCHEMA_HASH;
     let h_cow_str = <std::borrow::Cow<'_, str> as GenomeSafe>::SCHEMA_HASH;
 
-    // &str and Cow<str> delegate to str — same hash
-    assert_eq!(h_ref_str, h_str, "&str must equal str");
+    // Cow<str> delegates to str — same hash
     assert_eq!(h_cow_str, h_str, "Cow<str> must equal str");
     // String is distinct (strict type identity)
     assert_ne!(h_string, h_str, "String must differ from str");

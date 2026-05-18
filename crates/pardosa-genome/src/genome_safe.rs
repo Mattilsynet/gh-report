@@ -6,6 +6,11 @@
 /// attributes that break fixed-layout assumptions (`#[serde(flatten)]`,
 /// `#[serde(tag)]`, `#[serde(untagged)]`, `#[serde(skip_serializing_if)]`).
 ///
+/// Borrowed types (`&str`, `&[u8]`) do **not** implement `GenomeSafe`. Borrowed
+/// references cannot round-trip through genome storage and would introduce
+/// lifetime hazards in stored events. Use owned `String` / `Vec<u8>`, or
+/// bounded `EventString<MAX>` / `EventBytes<MAX>` instead. See GEN-0045.
+///
 /// For types used as `BTreeMap` keys or `BTreeSet` elements, the additional
 /// [`GenomeOrd`] marker is required. See ADR-033.
 ///
@@ -264,20 +269,6 @@ impl<T: GenomeSafe + ToOwned + ?Sized> GenomeSafe for std::borrow::Cow<'_, T> {
 impl<T: GenomeSafe + ?Sized> GenomeSafe for core::marker::PhantomData<T> {
     const SCHEMA_HASH: u128 = schema_hash_bytes(b"PhantomData");
     const SCHEMA_SOURCE: &'static str = "PhantomData";
-}
-
-// ---------------------------------------------------------------------------
-// Blanket impls — references (for zero-copy deserialization)
-// ---------------------------------------------------------------------------
-
-impl GenomeSafe for &str {
-    const SCHEMA_HASH: u128 = <str as GenomeSafe>::SCHEMA_HASH;
-    const SCHEMA_SOURCE: &'static str = "&str";
-}
-
-impl GenomeSafe for &[u8] {
-    const SCHEMA_HASH: u128 = schema_hash_bytes(b"bytes");
-    const SCHEMA_SOURCE: &'static str = "&[u8]";
 }
 
 // ---------------------------------------------------------------------------
