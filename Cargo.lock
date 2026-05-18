@@ -22,6 +22,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "adr-srv"
+version = "0.1.0"
+dependencies = [
+ "adr-fmt",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -432,6 +439,7 @@ name = "cherry-pit-core"
 version = "0.1.0"
 dependencies = [
  "jiff",
+ "pardosa-encoding",
  "proptest",
  "rmp-serde",
  "serde",

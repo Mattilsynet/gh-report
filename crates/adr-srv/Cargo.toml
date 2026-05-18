@@ -1,0 +1,21 @@
+[package]
+name = "adr-srv"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "Apache-2.0 OR MIT"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+adr-fmt = { path = "../adr-fmt" }
+
+[[bin]]
+name = "adr-srv"
+path = "src/main.rs"
+
+[lib]
+name = "adr_srv"
+path = "src/lib.rs"
