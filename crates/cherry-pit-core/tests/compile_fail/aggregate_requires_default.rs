@@ -16,6 +16,14 @@ impl cherry_pit_core::DomainEvent for NoopEvent {
     }
 }
 
+impl pardosa_encoding::Encode for NoopEvent {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            NoopEvent::Tick => out.push(0u8),
+        }
+    }
+}
+
 // Foo lacks `#[derive(Default)]` — the `impl Aggregate` below must be
 // rejected because `Aggregate: Default + Send + Sync + 'static`.
 struct Foo;

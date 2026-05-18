@@ -15,12 +15,18 @@ use crate::error::EnvelopeError;
 /// `Clone` + `Send` + `Sync` + `'static`, each load-bearing;
 /// CHE-0022 R1–R5: event enum evolution rules — no `#[non_exhaustive]`,
 /// immutable `event_type()` strings, new fields as `Option<T>`;
-/// CHE-0045 R1–R2: domain events format-agnostic, serde chosen by infra.)
+/// CHE-0045 R1–R2: domain events format-agnostic, serde chosen by infra;
+/// CHE-0064 R1–R2: `pardosa_encoding::Encode` supertrait — the canonical
+/// pre-image fed to the PAR-0021 precursor-hash chain. Downstream
+/// `impl DomainEvent for X` blocks must hand-roll a matching
+/// `impl pardosa_encoding::Encode for X` per PAR-0024:R5; the encoding
+/// crate's `Encode` is deliberately not `#[derive]`-able.)
 ///
 /// # Examples
 ///
 /// ```
 /// use cherry_pit_core::DomainEvent;
+/// use pardosa_encoding::Encode;
 /// use serde::{Serialize, Deserialize};
 ///
 /// #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,8 +41,23 @@ use crate::error::EnvelopeError;
 ///         }
 ///     }
 /// }
+///
+/// // CHE-0064:R2 — hand-rolled (no derive) per PAR-0024:R5. Tag byte
+/// // distinguishes variants; future variants append, never reorder.
+/// impl Encode for OrderEvent {
+///     fn encode(&self, out: &mut Vec<u8>) {
+///         match self {
+///             OrderEvent::Placed { item } => {
+///                 out.push(0u8);
+///                 item.encode(out);
+///             }
+///         }
+///     }
+/// }
 /// ```
-pub trait DomainEvent: Serialize + DeserializeOwned + Clone + Send + Sync + 'static {
+pub trait DomainEvent:
+    Serialize + DeserializeOwned + Clone + Send + Sync + pardosa_encoding::Encode + 'static
+{
     /// A stable string identifier for this event type.
     ///
     /// Used for routing, schema registry, and deserialization dispatch.
@@ -125,12 +146,19 @@ impl<E: DomainEvent> EventEnvelope<E> {
     /// ```
     /// use std::num::NonZeroU64;
     /// use cherry_pit_core::{AggregateId, DomainEvent, EventEnvelope, EnvelopeError};
+    /// use pardosa_encoding::Encode;
     /// use serde::{Serialize, Deserialize};
     ///
     /// #[derive(Debug, Clone, Serialize, Deserialize)]
     /// enum Ev { Created }
     /// impl DomainEvent for Ev {
     ///     fn event_type(&self) -> &'static str { "ev.created" }
+    /// }
+    /// // CHE-0064:R2 — hand-rolled Encode (no derive) per PAR-0024:R5.
+    /// impl Encode for Ev {
+    ///     fn encode(&self, out: &mut Vec<u8>) {
+    ///         match self { Ev::Created => out.push(0u8) }
+    ///     }
     /// }
     ///
     /// let id = AggregateId::new(NonZeroU64::new(1).unwrap());
@@ -321,6 +349,28 @@ impl<E: DomainEvent> EventEnvelope<E> {
     }
 }
 
+/// Canonical encoding of an envelope — the pre-image fed to the
+/// PAR-0021 precursor-hash chain (CHE-0064:R1).
+///
+/// Field order is fixed (`event_id`, `aggregate_id`, `sequence`, `timestamp`,
+/// `correlation_id`, `causation_id`, `payload`) and matches the struct's
+/// declaration order. Changing the order or the per-field encoding
+/// breaks every existing hash chain — treat as a wire format.
+///
+/// Hand-rolled per PAR-0024:R5; the encoding crate's `Encode` is
+/// deliberately not `#[derive]`-able.
+impl<E: DomainEvent> pardosa_encoding::Encode for EventEnvelope<E> {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.event_id.encode(out);
+        self.aggregate_id.encode(out);
+        self.sequence.encode(out);
+        self.timestamp.encode(out);
+        self.correlation_id.encode(out);
+        self.causation_id.encode(out);
+        self.payload.encode(out);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,6 +385,18 @@ mod tests {
     impl DomainEvent for TestEvent {
         fn event_type(&self) -> &'static str {
             "test.happened"
+        }
+    }
+
+    // CHE-0064:R2 — hand-rolled Encode for the test fixture event.
+    impl pardosa_encoding::Encode for TestEvent {
+        fn encode(&self, out: &mut Vec<u8>) {
+            match self {
+                TestEvent::Happened { value } => {
+                    out.push(0u8);
+                    value.encode(out);
+                }
+            }
         }
     }
 

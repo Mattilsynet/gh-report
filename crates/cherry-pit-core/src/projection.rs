@@ -20,12 +20,19 @@ use crate::event::{DomainEvent, EventEnvelope};
 ///
 /// ```
 /// use cherry_pit_core::{Projection, DomainEvent, EventEnvelope};
+/// use pardosa_encoding::Encode;
 /// use serde::{Serialize, Deserialize};
 ///
 /// #[derive(Debug, Clone, Serialize, Deserialize)]
 /// enum CounterEvent { Incremented }
 /// impl DomainEvent for CounterEvent {
 ///     fn event_type(&self) -> &'static str { "counter.incremented" }
+/// }
+/// // CHE-0064:R2 — hand-rolled Encode (no derive) per PAR-0024:R5.
+/// impl Encode for CounterEvent {
+///     fn encode(&self, out: &mut Vec<u8>) {
+///         match self { CounterEvent::Incremented => out.push(0u8) }
+///     }
 /// }
 ///
 /// #[derive(Default)]

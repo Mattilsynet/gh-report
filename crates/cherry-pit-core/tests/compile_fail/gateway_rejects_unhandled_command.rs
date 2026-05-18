@@ -22,6 +22,14 @@ impl DomainEvent for MyEvent {
     }
 }
 
+impl pardosa_encoding::Encode for MyEvent {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            MyEvent::Created => out.push(0u8),
+        }
+    }
+}
+
 impl Aggregate for MyAggregate {
     type Event = MyEvent;
     fn apply(&mut self, _event: &Self::Event) {}
