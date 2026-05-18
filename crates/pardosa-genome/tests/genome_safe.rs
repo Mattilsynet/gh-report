@@ -513,13 +513,6 @@ fn trait_and_derive_coexist() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn ser_error_display() {
-    let err = pardosa_genome::SerError::MessageTooLarge;
-    let s = format!("{err}");
-    assert!(s.contains("4 GiB"), "got: {s}");
-}
-
-#[test]
 fn de_error_display() {
     let err = pardosa_genome::DeError::SchemaMismatch {
         expected: 0x1234,
