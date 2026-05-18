@@ -14,12 +14,17 @@ pub mod bounded;
 pub mod config;
 pub mod error;
 pub mod file;
+pub mod floats;
 pub mod format;
 pub mod genome_safe;
 
 // Bounded wrapper types (GEN-0042). Per-field MAX enforcement layered on
 // top of the GEN-0035:R8 decoder cap; invariant-only wire format.
 pub use bounded::{EventBytes, EventString, EventVec, NonEmptyEventString};
+
+// Float-tier wrapper family (GEN-0045:R1). Invariant-only wrappers over
+// f32/f64; wire byte-identical to inner type (PM4).
+pub use floats::{FiniteF32, FiniteF64, OrderedF32, OrderedF64, RealF32, RealF64};
 
 // Re-exports
 pub use config::{Compression, DecodeOptions, PageClass};
