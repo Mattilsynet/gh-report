@@ -22,7 +22,7 @@ pub mod genome_safe;
 pub use bounded::{EventBytes, EventString, EventVec, NonEmptyEventString};
 
 // Re-exports
-pub use config::{Compression, DecodeOptions, EncodeOptions, PageClass};
+pub use config::{Compression, DecodeOptions, PageClass};
 pub use error::{DeError, FileError, SerError};
 pub use file::{Reader, Writer};
 pub use genome_safe::{GenomeOrd, GenomeSafe, schema_hash_bytes, schema_hash_combine};

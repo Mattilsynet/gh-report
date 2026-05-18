@@ -65,25 +65,6 @@ pub enum Compression {
 }
 
 // ---------------------------------------------------------------------------
-// Encode options
-// ---------------------------------------------------------------------------
-
-/// Options for encoding.
-#[derive(Debug, Clone)]
-pub struct EncodeOptions {
-    /// Compression algorithm. Default: `None`.
-    pub compression: Compression,
-}
-
-impl Default for EncodeOptions {
-    fn default() -> Self {
-        Self {
-            compression: Compression::None,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Decode options
 // ---------------------------------------------------------------------------
 
