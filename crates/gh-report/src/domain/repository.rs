@@ -86,14 +86,15 @@ impl Eq for Repository {}
 
 /// Repository visibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(u8)]
 #[serde(rename_all = "lowercase")]
 pub enum Visibility {
     /// The repository is visible to everyone on the internet.
-    Public,
+    Public = 0,
     /// The repository is visible to members of the organization.
-    Internal,
+    Internal = 1,
     /// The repository is only visible to users with explicit access.
-    Private,
+    Private = 2,
 }
 
 impl std::fmt::Display for Visibility {

@@ -15,20 +15,21 @@ use serde::{Deserialize, Serialize};
 /// Describes how the application authenticated with the GitHub API.
 /// Serialized into evidence artifacts for audit trail purposes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
 #[non_exhaustive]
 pub enum AuthMode {
     /// GitHub Personal Access Token (classic or fine-grained).
     #[serde(rename = "pat")]
-    Pat,
+    Pat = 0,
     /// GitHub App installation authentication.
     #[serde(rename = "github_app")]
-    GitHubApp,
+    GitHubApp = 1,
     /// Local `gh auth` developer fallback.
     #[serde(rename = "gh_cli_fallback")]
-    GhCliFallback,
+    GhCliFallback = 2,
     /// Unknown or not yet determined (used as default before credential discovery).
     #[serde(rename = "unknown")]
-    Unknown,
+    Unknown = 3,
 }
 
 impl std::fmt::Display for AuthMode {
@@ -62,14 +63,15 @@ impl pardosa_encoding::Encode for AuthMode {
 /// - Limited: Some scopes present but not the full set
 /// - Unknown: Unable to determine (e.g. GitHub App, fine-grained PAT, or unavailable)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum TokenTier {
     /// All required scopes present: repo, read:org, `security_events`.
-    Full,
+    Full = 0,
     /// Some scopes present but not the full required set.
-    Limited,
+    Limited = 1,
     /// Unable to determine (e.g., GitHub App, fine-grained PAT).
-    Unknown,
+    Unknown = 2,
 }
 
 impl std::fmt::Display for TokenTier {
@@ -99,10 +101,11 @@ impl pardosa_encoding::Encode for TokenTier {
 /// string keys ensures typos are caught at compile time — a misspelled
 /// capability can never silently skip a security check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
     /// Organization-level secret scanning alerts.
-    OrgSecretScanningAlerts,
+    OrgSecretScanningAlerts = 0,
 }
 
 impl Capability {

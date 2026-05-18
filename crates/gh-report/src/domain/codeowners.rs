@@ -33,18 +33,19 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(out, vec![1u8]);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum CodeownersTruncationReason {
     /// Content API response carried a non-`base64` encoding (or no encoding).
-    NotBase64Encoded,
+    NotBase64Encoded = 0,
     /// Encoded content exceeded the size cap before decoding.
-    OversizedBase64,
+    OversizedBase64 = 1,
     /// `base64` field was missing or null in the API response.
-    ContentMissing,
+    ContentMissing = 2,
     /// Decoded bytes failed base64 decoding (e.g. illegal characters).
-    DecodeFailed,
+    DecodeFailed = 3,
     /// Decoded bytes were not valid UTF-8.
-    InvalidUtf8,
+    InvalidUtf8 = 4,
 }
 
 // Wire format: u8 discriminant per declaration order. Reorder or insert is a
