@@ -144,7 +144,7 @@ impl<T> Linevec<T> {
     /// validation. The caller is responsible for re-running
     /// `Dragline::verify_invariants` before exposing the dragline. Gated
     /// to `cfg(test)` for the same reason `Dragline::from_raw_parts` is.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn from_raw_unchecked(events: Vec<Event<T>>) -> Self {
         Linevec(events)
     }

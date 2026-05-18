@@ -9,15 +9,15 @@
 use std::collections::{HashMap, HashSet};
 
 use super::linevec::Linevec;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use crate::error::PardosaError;
 use crate::event::DomainId;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use crate::event::Event;
 use crate::fiber::Fiber;
 use crate::fiber_state::FiberState;
 use crate::frontier::FrontierPublisher;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use pardosa_encoding::Encode;
 
 /// Default tick interval: publish frontier every 1 000 committed events.
@@ -151,8 +151,8 @@ impl<T> Dragline<T> {
     /// crate bypasses this check by design (the write-path methods
     /// maintain the invariants by construction); any code reassembling
     /// state from external bytes must come through here.
-    #[cfg(test)]
-    pub(crate) fn from_raw_parts(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_raw_parts(
         line: Vec<Event<T>>,
         lookup: HashMap<DomainId, (Fiber, FiberState)>,
         purged_ids: HashSet<DomainId>,

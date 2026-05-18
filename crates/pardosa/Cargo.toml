@@ -11,6 +11,15 @@ license.workspace = true
 name = "pardosa"
 path = "src/lib.rs"
 
+[features]
+# Exposes `Dragline::from_raw_parts` as `pub` so integration tests in
+# `tests/` can drive tamper-injection scenarios without needing a production
+# persistence layer. The function is the documented persistence-boundary
+# seam (`load_from_disk` future surface); this feature flag lets integration
+# tests use it ahead of that landing without changing the public API surface
+# under normal compilation.
+test-support = []
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
