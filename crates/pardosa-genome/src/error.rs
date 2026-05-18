@@ -8,14 +8,8 @@ use core::fmt;
 /// Errors during serialization.
 #[derive(Debug)]
 pub enum SerError {
-    /// Serialized message exceeds `u32::MAX` bytes.
-    MessageTooLarge,
-    /// Unsupported serde attribute detected at runtime (defense-in-depth).
-    UnsupportedAttribute(&'static str),
     /// `SizingSerializer` and `WritingSerializer` produced different byte counts.
     InternalSizingMismatch { expected: usize, actual: usize },
-    /// Compression failed.
-    CompressionFailed,
     /// serde `ser::Error::custom()`.
     Custom(SerMessage),
 }
@@ -23,17 +17,12 @@ pub enum SerError {
 impl fmt::Display for SerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MessageTooLarge => write!(f, "serialized message exceeds 4 GiB"),
-            Self::UnsupportedAttribute(attr) => {
-                write!(f, "unsupported serde attribute: {attr}")
-            }
             Self::InternalSizingMismatch { expected, actual } => {
                 write!(
                     f,
                     "internal sizing mismatch: expected {expected} bytes, wrote {actual}"
                 )
             }
-            Self::CompressionFailed => write!(f, "compression failed"),
             Self::Custom(msg) => write!(f, "{msg}"),
         }
     }
@@ -68,8 +57,6 @@ pub enum DeError {
     InvalidBool(u8),
     /// Enum discriminant exceeds variant count.
     InvalidDiscriminant(u32),
-    /// Owning type requested in core-only mode.
-    AllocRequired,
     /// Nesting depth exceeds limit.
     DepthLimitExceeded,
     /// Total elements exceed page class limit.
@@ -90,8 +77,6 @@ pub enum DeError {
     DecompressionFailed,
     /// Uncompressed size exceeds limit.
     UncompressedSizeTooLarge(u32),
-    /// Bare message size exceeds limit.
-    MessageTooLarge(u32),
     /// Trailing bytes after decompression.
     PostDecompressionTrailingBytes,
     /// serde `de::Error::custom()`.
@@ -110,9 +95,6 @@ impl fmt::Display for DeError {
             Self::InvalidChar(v) => write!(f, "invalid char value: 0x{v:08X}"),
             Self::InvalidBool(v) => write!(f, "invalid bool value: 0x{v:02X}"),
             Self::InvalidDiscriminant(d) => write!(f, "invalid enum discriminant: {d}"),
-            Self::AllocRequired => {
-                write!(f, "owning type requires alloc feature")
-            }
             Self::DepthLimitExceeded => write!(f, "nesting depth limit exceeded"),
             Self::ElementLimitExceeded => write!(f, "total element limit exceeded"),
             Self::TrailingBytes { expected, actual } => {
@@ -137,9 +119,6 @@ impl fmt::Display for DeError {
             Self::DecompressionFailed => write!(f, "decompression failed"),
             Self::UncompressedSizeTooLarge(size) => {
                 write!(f, "uncompressed size too large: {size}")
-            }
-            Self::MessageTooLarge(size) => {
-                write!(f, "message too large: {size}")
             }
             Self::PostDecompressionTrailingBytes => {
                 write!(f, "trailing bytes after decompression")
