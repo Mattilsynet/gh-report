@@ -219,6 +219,34 @@ impl<T: Encode + Ord> Encode for BTreeSet<T> {
     }
 }
 
+impl<T: Decode + Encode + Ord> Decode for BTreeSet<T> {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
+        // Mirrors BTreeMap<K, V>::decode (this file, above). For each
+        // element we decode T, re-encode to obtain canonical bytes, and
+        // assert strictly ascending byte order against the previous
+        // element. Strict (not ≤) because BTreeSet does not admit
+        // duplicates; a repeat is a wire violation, not just
+        // non-canonical. The re-encode is the same double-pass shape
+        // as BTreeMap and a future SM may collapse to single-pass.
+        let n = d.read_len_prefix()?;
+        let mut set = BTreeSet::new();
+        let mut prev_bytes: Option<Vec<u8>> = None;
+        for _ in 0..n {
+            let v = T::decode(d)?;
+            let mut v_bytes = Vec::new();
+            v.encode(&mut v_bytes);
+            if let Some(prev) = &prev_bytes
+                && v_bytes.as_slice() <= prev.as_slice()
+            {
+                return Err(EventError::InvalidInput);
+            }
+            prev_bytes = Some(v_bytes);
+            set.insert(v);
+        }
+        Ok(set)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Smart pointers & wrappers — encode-transparent
 // ---------------------------------------------------------------------------
@@ -582,6 +610,61 @@ mod tests {
     fn non_zero_u64_rejects_zero_on_decode() {
         // Wire `0u64` violates the niche; surface as InvalidInput.
         let err = from_bytes::<core::num::NonZeroU64>(&[0u8; 8]).unwrap_err();
+        assert_eq!(err, EventError::InvalidInput);
+    }
+
+    // -----------------------------------------------------------------
+    // BTreeSet<T> — F3 (`adr-fmt-mync`, Encode/Decode parity)
+    // -----------------------------------------------------------------
+    //
+    // Encode existed pre-F3; Decode was missing. Wire shape: u32 LE
+    // count prefix followed by elements. Decoder enforces strictly
+    // ascending encoded-bytes order (BTreeSet rejects duplicates, so
+    // equal-bytes is also a wire violation, not just non-canonical).
+    //
+    // KNOWN GAP filed as discovered-from at the bottom of this block:
+    // the Encode side iterates in `T::Ord`, which only coincides with
+    // encoded-bytes order for fixed-width primitive `T`. Variable-
+    // length `T` (e.g. `String`, `Vec<u8>`) needs the sort-by-encoded-
+    // bytes shape used by BTreeMap. F3's scope is decode parity; the
+    // wider encode-order fix is a separate bead.
+
+    #[test]
+    fn btreeset_roundtrip_primitive() {
+        use alloc::collections::BTreeSet;
+        let mut s: BTreeSet<u32> = BTreeSet::new();
+        s.insert(1);
+        s.insert(2);
+        s.insert(3);
+        rt(s);
+
+        rt(BTreeSet::<u64>::new());
+    }
+
+    #[test]
+    fn btreeset_decode_rejects_misordered() {
+        use alloc::collections::BTreeSet;
+        // Hand-construct an encoded set with descending u32 elements;
+        // decoder must reject as the ascending-bytes invariant fails.
+        let mut bad = Vec::new();
+        encode_len_prefix(3, &mut bad);
+        3u32.encode(&mut bad);
+        2u32.encode(&mut bad);
+        1u32.encode(&mut bad);
+        let err = from_bytes::<BTreeSet<u32>>(&bad).unwrap_err();
+        assert_eq!(err, EventError::InvalidInput);
+    }
+
+    #[test]
+    fn btreeset_decode_rejects_duplicate() {
+        use alloc::collections::BTreeSet;
+        // Strictly-ascending check catches equal adjacent bytes too;
+        // a duplicate element is a wire violation, not just non-canonical.
+        let mut bad = Vec::new();
+        encode_len_prefix(2, &mut bad);
+        7u32.encode(&mut bad);
+        7u32.encode(&mut bad);
+        let err = from_bytes::<BTreeSet<u32>>(&bad).unwrap_err();
         assert_eq!(err, EventError::InvalidInput);
     }
 }

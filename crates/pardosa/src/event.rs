@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-use pardosa_encoding::Encode;
+use pardosa_encoding::{Decode, Decoder, Encode, EventError};
 
 use crate::error::PardosaError;
 
@@ -50,7 +50,7 @@ pub(crate) mod index_with_sentinel {
 /// Position in the append-only line.
 ///
 /// GENOME LAYOUT: single `u64` field. Do not add fields or reorder.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "IndexRaw")]
 pub struct Index(u64);
 
@@ -149,6 +149,16 @@ impl fmt::Display for Index {
 impl Encode for Index {
     fn encode(&self, out: &mut Vec<u8>) {
         self.0.encode(out);
+    }
+}
+
+// `Index::NONE` (`u64::MAX`) is a meaningful wire value (genesis-event
+// precursor sentinel) so decode is unconditional — no NONE rejection
+// here. Higher layers that disallow NONE (e.g., a non-genesis event
+// position field) gate at their own decode/validate boundary.
+impl Decode for Index {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
+        u64::decode(d).map(Index)
     }
 }
 
@@ -576,5 +586,31 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         let back: Event<String> = serde_json::from_str(&json).unwrap();
         assert_eq!(back.precursor_hash(), hash);
+    }
+
+    // --- F3 (`adr-fmt-mync`): BTreeSet<Index> round-trip ---
+    //
+    // Confirms Decode for Index pairs with Encode for Index, and that
+    // pardosa-encoding's new Decode for BTreeSet<T> composes with a
+    // pardosa-defined newtype wrapper. Index is fixed-width (u64) so
+    // T::Ord coincides with encoded-bytes order; this exercises the
+    // round-trip but does NOT exercise the variable-length encode-
+    // ordering gap (filed separately as discovered-from).
+
+    #[test]
+    fn btreeset_index_roundtrip() {
+        use pardosa_encoding::{from_bytes, to_vec};
+        use std::collections::BTreeSet;
+
+        let mut s: BTreeSet<Index> = BTreeSet::new();
+        s.insert(Index::new(1));
+        s.insert(Index::new(42));
+        s.insert(Index::new(1_000_000));
+        // NONE participates on the wire — genesis-event precursor case.
+        s.insert(Index::NONE);
+
+        let bytes = to_vec(&s);
+        let back: BTreeSet<Index> = from_bytes(&bytes).expect("decode");
+        assert_eq!(back, s);
     }
 }
