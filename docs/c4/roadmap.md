@@ -382,6 +382,250 @@ footer integrity = xxh3-128 (R3 tree-shaped); message bodies = xxh3-64
 R10). Three algorithms; one rule ("adversary → BLAKE3; external → HMAC;
 otherwise → xxh3").
 
+### Track 10 — Vernon DDD tactical-pattern alignment (NEW; gated on Track 7 complete)
+
+Goal: close the gap between the cherry-pit ADR corpus (which faithfully
+translates Vernon's *Implementing DDD* Ch. 5–10 into Rust types at the
+substrate level) and the gh-report consumer (where the substrate's DDD
+discipline is not consistently expressed). Read-only assessment
+2026-05-18 against Vernon's pattern-by-pattern checklist found
+cherry-pit-core exemplary on Entities (CHE-0011/0020), Domain Events
+(CHE-0010/0016/0042), Aggregates (CHE-0005/0006/0008/0009/0012), and
+Repository-reframed-as-EventStore; gaps cluster at the consumer layer:
+Value Objects (Ch. 6), Bounded-Context event-type partitioning (Ch. 10
+Rule 4), Application Services (Ch. 14 — gh-report realises them today
+via the `Merger` task per CHE-0054:R4/R10), and Anti-Corruption Layer
+at the GitHub edge (Ch. 3 / Ch. 13). Track scope is
+**gh-report + cherry-pit-core + cherry-pit-projection**; adr-srv (Track 3)
+inherits VOs + event-enum discipline by construction.
+
+Triggering evidence (assessment artefacts):
+
+- `bd show adr-fmt-2ww8n` — Vernon Ch. 5–10 tactical-pattern assessment
+  (re-verified 2026-05-18; 6/7 findings confirmed, 1 delta).
+- `bd show adr-fmt-fyrlo` — oracle ADR-binding survey across CHE
+  corpus; identifies PAR-0024:R5 misattribution
+  (canonical-bytes anchor is **CHE-0064:R2 — hand-rolled `Encode`,
+  no `#[derive]`** — not PAR-0024:R5, which is naming-discipline only)
+  and CHE-0054:R8/R10 carve-out preserving gh-report's non-consumption
+  of `CommandGateway` / `App<...>`.
+- `bd show adr-fmt-9kz7p` — feynman orientation: final four-mission
+  shape recommendation; option (a) multi-projection over option (b)
+  facade enum (user-ratified 2026-05-18 at plan review).
+
+Key file:line evidence: `crates/gh-report/src/domain/events.rs:45-180`
+(9-variant umbrella `DomainEvent`); `crates/gh-report/src/domain/aggregates/{run,repo,webhook}.rs`
+defensive `debug_assert!(false, "CHE-0054:R5 routing bug")` arms (one
+per aggregate) admitting the type-system doesn't enforce CHE-0005:R1;
+`crates/gh-report/src/domain/repository.rs:17-65` GitHub-API shape
+leaking into domain entity; CHE-0054:R5 names `RepoIdentity` but
+implementation uses `String` (zero hits for the type).
+
+**Four missions, sequenced. Mission 10.5 (ACL) deferred to Phase 3
+§G #20.** Each mission is a single landing with a mechanical verify.
+Mission packages live in bd (epic `adr-fmt-u3pim`); per-mission
+contracts under `mission:track10-ddd-vernon-1779131035`.
+
+#### 10.1 — Scope ratification (this roadmap edit)
+
+Deliverable: this Track 10 section — replace the prior draft with the
+moltke-authored final shape carried in contract `adr-fmt-bjc2e`. Fix
+PAR-0024:R5 → CHE-0064:R2 misattribution under 10.3; reframe 10.4 from
+"extract `ApplicationService<A,S,B>`" or "amend `CommandGateway`" to
+**doc-only ADR codifying the Merger pattern** (CHE-0054:R8/R10
+preserved per oracle bead `adr-fmt-fyrlo`); move 10.5 to Phase 3 §G #20
+with rationale citing CHE-0022 silence on event-payload field removal.
+Pure documentation change; no code edits.
+
+Verify: `awk '/^### .*10\.[1-5]/' docs/c4/roadmap.md` lists 10.1, 10.2,
+10.3, 10.4 under Track 10 and 10.5 under §G; `rg -n 'PAR-0024:R5' docs/c4/roadmap.md`
+returns zero hits under the Track 10 block; mission contract
+`adr-fmt-bjc2e` V1–V6 exit 0.
+
+#### 10.2 — Value Objects + `RepoIdentity` newtype (gh-report)
+
+Deliverable: introduce domain newtypes in `crates/gh-report/src/domain/`:
+`BatchId(Uuid)`, `RepoIdentity(String)` (closes the CHE-0054:R5
+abstraction gap — the rule names the type but zero implementations
+exist), `Org(String)`, `EventTimestamp(jiff::Timestamp)` (CHE-0034:R1).
+Validated constructors per CHE-0002:R3 + COM-0020:R1 (private fields,
+no `pub fn new_unchecked`). `pardosa_encoding::Encode` hand-rolled per
+**CHE-0064:R2** (no `#[derive(Encode)]`); `serde(transparent)` so wire
+format is byte-unchanged. Migrate command structs (`StartSweep`,
+`RecordProgress`, …) + `DomainEvent` variant payload fields to the
+newtypes. `AppState` `DashMap` indices retype to
+`DashMap<RepoIdentity, AggregateId>` etc. — CHE-0054:R5 wording amends
+in line (key types change; three-index structure preserved).
+
+Verify: `cargo test -p gh-report --all-features` exit 0;
+`rg -n 'domain_key: String\|batch_id: String\|repo_name: String\|timestamp: String' crates/gh-report/src/domain/`
+returns zero hits inside command + event types (current baseline: 42
+hits per assessment `adr-fmt-2ww8n` finding 1); existing CHE-0031:R3 /
+CHE-0038:R4 golden fixtures re-pass byte-unchanged (transparent
+newtype invariant); trybuild compile-fail fixtures land per
+CHE-0028:R1/R3 + CHE-0038:R2 for each VO's negative case.
+
+#### 10.3 — Per-aggregate event enums + Tension-2 retirement + multi-projection (gh-report)
+
+Deliverable: largest mission of the track. Three coupled changes
+landing as separate-but-sequential sub-missions, each linus-reviewed:
+
+(a) **Partition `DomainEvent`** in `crates/gh-report/src/domain/events.rs`
+    into `RunEvent` (6 variants: `SweepStarted`, `SweepCompleted`,
+    `SweepFailed`, `SweepProgress`, `EvidencePublished`,
+    `PartialEvidenceRendered`), `RepoEvent` (2 variants:
+    `RepoEvaluated`, `RepoRemoved`), `WebhookEvent` (1 variant:
+    `WebhookReceived`). Each aggregate's `type Event = …` becomes its
+    own enum (CHE-0005:R1 restored at the type level). The
+    `debug_assert!(false, "CHE-0054:R5 routing bug")` arms in all
+    three aggregates (`run.rs:99`, `repo.rs:86`, `webhook.rs:87`) and
+    their paired `#[should_panic]` tests delete. Hand-rolled
+    `impl Encode` per-aggregate enum **must preserve original
+    umbrella discriminant per variant** — RunEvent variants keep
+    `0u8, 3u8, 5u8, 6u8, 7u8, 8u8`; RepoEvent keeps `1u8, 2u8`;
+    WebhookEvent keeps `4u8` — NOT renumber from 0 within each enum.
+    Canonical-bytes anchor: **CHE-0064:R2** (hand-rolled `Encode`,
+    no derive). `event_type()` strings are immutable per CHE-0010:R2
+    + CHE-0022:R4. msgpack named tags unchanged per CHE-0031:R1.
+
+(b) **Tension-2 lock retirement** at
+    `crates/gh-report/src/projection.rs:18-26` (single `OrgGovernance`
+    aggregate for all 9 events) and singleton `AggregateId` constant
+    block at `:55-60`. User-ratified 2026-05-18: **option (a)
+    multi-projection** over option (b) facade enum. Decompose
+    `EvidenceProjection` into per-aggregate `RunProjection` /
+    `RepoProjection` / `WebhookProjection` composed at the
+    `ProjectionDriver` boundary; no `AnyDomainEvent` facade.
+
+(c) **Preflight I0** before any code edit: read
+    `crates/cherry-pit-projection/src/lib.rs` to verify the
+    composition surface admits per-aggregate `Projection` impls under
+    one `ProjectionDriver`. CHE-0054:R8 already permits the
+    `gh-report → cherry-pit-projection` dep edge for
+    `ProjectionDriver` + `FileProjectionStore`; the open question is
+    the *shape* of the composition primitive. If closed, halt and
+    back-brief moltke (`BriefScope::PackageLevel`) — moltke decides
+    between widening the API inside 10.3 within CHE-0054:R8 or
+    escalating to user for option (b) re-ratification.
+
+(d) **ADR amendments** (wording-only, mechanical):
+    CHE-0054:R1/R2/R3 (replace `DomainEvent::*` with appropriate
+    `Aggregate::Event` types); CHE-0063:R6 (cite `RunEvent` as the
+    additive home of `PartialEvidenceRendered`); CHE-0048-family
+    projection ADR (identified at mission time via
+    `adr-fmt --refs CHE-0048`) names projection co-migration across
+    per-aggregate event enums. Preflight: if
+    `adr-fmt --refs CHE-0054` inbound-ref count exceeds 5,
+    back-brief moltke before code work starts (PM4 mitigation).
+
+Verify: `cargo test -p gh-report --all-features` exit 0;
+`cargo test -p gh-report --test pardosa_chain_continuity` exit 0
+(new integration test asserting frontier hash byte-identical pre/post
+split using committed binary fixture);
+`rg -n 'routing bug\|debug_assert!\(false' crates/gh-report/src/domain/aggregates/`
+zero hits;
+`rg -n 'Tension-2\|single aggregate.*OrgGovernance' crates/gh-report/src/projection.rs`
+zero hits in live code;
+existing CHE-0031:R3 / CHE-0038:R4 serde golden fixtures re-pass
+byte-unchanged (per CHE-0022:R2 + CHE-0064:R2 canonical-bytes
+invariant); `cargo run -p adr-fmt -- --lint` warnings-only.
+
+#### 10.4 — Doc-only ADR codifying the Merger pattern
+
+Deliverable: a new CHE ADR (`docs/adr/cherry/CHE-NNNN-merger-as-application-service.md`,
+NNNN = next free CHE slot resolved at mission time) codifying
+gh-report's bespoke `Merger`-task pattern
+(`crates/gh-report/src/app/merger.rs:109,347-414`) as the v0.1
+realisation of an Application Service for a multi-aggregate consumer.
+**This is a doc-only ADR, not a primitive extraction.** No new traits,
+no new crate, no amendment to `CommandGateway`/`CommandRouter`
+(CHE-0050), no consumption of `cherry-pit-agent::App<...>` by
+gh-report. CHE-0054:R8/R10 carve-out preserved exactly as written —
+the new ADR cites R8/R10 as parents and *amplifies* (not amends) them
+by documenting the multiplexer realisation already in tree.
+
+Wording discipline: each per-aggregate `ApplicationService`
+(`RunService`/`RepoService`/`WebhookService`) **delegates** its triad
+to a shared Merger task; per-aggregate identity is preserved at the
+service-method boundary. This phrasing keeps CHE-0054:R4 (each
+aggregate has a dedicated service) intact while documenting the
+multiplexer task. Trait-level `ApplicationService<A, S, B>` extraction
+is deferred to Phase 3 when a second write-side consumer surfaces
+(adr-srv read-only in Phase 2 does not exercise the triad).
+
+Verify: `cargo run -p adr-fmt -- --lint` warnings-only (no errors per
+AFM-0003); `cargo run -p adr-fmt -- --refs CHE-0054` lists the new
+ADR; `cargo run -p adr-fmt -- --tree CHE` shows the new ADR registered
+under the AFM-0020 parent-edge model; linus reviews prose for
+amendment-vs-amplification distinction (PM6 mitigation).
+
+**Out of scope for Track 10:**
+
+- **Trait-level `ApplicationService<A, S, B>` extraction** into
+  `cherry-pit-agent` or a new crate. Deferred to Phase 3 per user
+  decision A (feynman bead `adr-fmt-9kz7p` leader H3). The Merger
+  pattern (10.4 ADR) names the v0.1 realisation; trait extraction
+  waits on a second write-side consumer.
+- **Amending `CommandGateway` / `CommandRouter` (CHE-0050)** to
+  express Application Service as a first-class trait. Same rationale
+  — out of v0.1 scope; CHE-0054:R8/R10 carve-out preserved.
+- **Domain Services vs Application Services trait separation**
+  (Vernon Ch. 7). Services already moved Weak→Strong via Track 4.0
+  Merger wiring (`adr-fmt-2ww8n` finding 6 delta). No concrete
+  violation remains; documentation-only Phase-3 candidate.
+- **Versioned event-type naming** (`SweepStartedV1`/`V2` rather than
+  additive fields) — CHE-0010:R2 + CHE-0022:R4 forbid renames of
+  existing `event_type()` strings. Phase-3 candidate.
+- **Strategic DDD** (Bounded Context maps, Context Mapping diagrams).
+  Track 10 is tactical-patterns-only; strategic mapping deferred
+  until adr-srv + gh-report exercise enough surface to make context
+  boundaries observable.
+- **Anti-Corruption Layer (`Repository` field removal)** at the
+  GitHub edge. Filed as Phase 3 §G #20 with one-paragraph rationale
+  citing CHE-0022 silence on event-payload field removal.
+- **adr-srv `ApplicationService` consumption** — adr-srv inherits
+  VOs + event-enum discipline by construction during Track 3.3; the
+  Merger ADR is gh-report-specific.
+
+**Sequencing inside Track 10:**
+
+```
+10.1  Scope ratification (roadmap edit; no code)
+   ▼
+10.2  Value Objects + RepoIdentity        [wire format unchanged]
+   ▼
+10.3  Per-aggregate event enums + Tension-2 retirement
+      + multi-projection (I0 preflight on cherry-pit-projection)
+   ▼
+10.4  Doc-only ADR codifying Merger pattern (CHE-NNNN)
+```
+
+10.2 must precede 10.3 — VOs land before the event-enum split
+references them in payload fields. 10.4 must follow 10.3 — the Merger
+ADR cites the post-split shape (`RunEvent`/`RepoEvent`/`WebhookEvent`)
+in its code citations.
+
+**Risk register additions (8):**
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|-----------|
+| 10.3 hand-rolled `impl Encode` per-aggregate enum renumbers discriminants from 0 within each enum, breaking pardosa-genome canonical bytes (frontier hash rebuilds on every restart) | M | H | Per-variant discriminant map locked to original umbrella byte assignment (Run: `0,3,5,6,7,8`; Repo: `1,2`; Webhook: `4`) and called out in the commit body. Verify: `cargo test -p gh-report --test pardosa_chain_continuity` (new fixture-based test in 10.3) appends pre-split events, restarts under post-split code, asserts frontier hash byte-identical. Abort criterion A1 if this fails after ≤ 2 hopper sub-mission attempts. |
+| 10.3 Tension-2 retirement + multi-projection composition surface in `cherry-pit-projection` is closed against per-aggregate `Projection` impls | M | M | I0 preflight: read `crates/cherry-pit-projection/src/lib.rs` before any code edit; if no public primitive admits the composition, halt and back-brief moltke. CHE-0054:R8 already permits the dep edge; the open question is API shape, not dependency direction. |
+| 10.3 ADR amendments on CHE-0054 / CHE-0048 cascade beyond wording-only (`adr-fmt --refs CHE-0054` shows ≥ 8 inbound references) | M | M | Mission 10.3 preflight runs `adr-fmt --refs CHE-0054` and `adr-fmt --refs CHE-0048`; if inbound-ref count exceeds 5 per target, hopper back-briefs moltke before code work starts (PM4). |
+| 10.2 VO migration breaks event payload `#[derive(Serialize, Deserialize)]` interaction with `serde(transparent)` newtype + `serde(tag = "type")` enum | M | M | Two-increment TDD: (1) newtype with constructors + `serde(transparent)` + hand-rolled `Encode` impl, red test round-trips newtype alone; (2) migrate ONE command struct field, verify, then the rest. Failure at (2) does not need to revert (1). Existing serde golden fixtures (CHE-0031:R3) are the post-each-increment gate. Abort criterion A2. |
+| 10.4 Merger ADR wording inadvertently amends CHE-0054:R4 ("Each aggregate has a dedicated ApplicationService") by phrasing Merger as the realisation | L | M | Prose discipline: "per-aggregate services *delegate* triad to shared Merger; per-aggregate identity preserved at service-method boundary". Linus reviews specifically for amendment-vs-amplification (PM6). |
+| Track 10 ↔ Track 7 ordering: 7's hard cut to pardosa makes 10.3's chain-continuity test load-bearing | L | H | 10 gates on Track 7 complete; pre-cut msgpack store is not in 10's contract surface. Frontier-continuity is a pardosa-only concern post-cut. |
+| Track 10 ↔ Track 9 ordering: 9's `FORMAT_VERSION=4` lands during/before 10 | L | M | 10 gates on Track 9 complete (per master sequencing); 10.3's canonical-bytes invariant is asserted against the v4 wire, not v3. |
+| Scope creep into Vernon strategic patterns (Context Maps) or ACL (now §G #20) | M | M | Out-of-scope list explicit above; injection queue for Phase-3 candidates. Track 10 closes when 10.1–10.4 verify-green. |
+
+**Abort criteria**: if 10.3's `pardosa_chain_continuity` test cannot
+stay green across the split within ≤ 2 hopper sub-mission attempts
+(criterion A1), halt and re-orient via feynman — the per-variant
+discriminant preservation is the Track 10 cornerstone and any silent
+canonical-bytes drift is a halt-and-handback condition. Additional
+package-level aborts (A2–A5) live in the package bead `adr-fmt-u3pim`
+under "package_abort_criteria".
+
 ### Phase 2 v2 sequencing (remaining)
 
 ```
@@ -606,6 +850,33 @@ contiguously with the main task list to avoid cross-reference ambiguity.
     transition asserts no `routing index has no AggregateId for
     batch_id=…` warning is logged. No bead yet (file when Phase 3
     activates).
+
+20. **Anti-Corruption Layer for GitHub API edge in gh-report** (deferred
+    from Phase 2 Track 10 mission 10.5 on 2026-05-18). Separate
+    GitHub-API DTOs from the domain `Repository` entity: move
+    API-shaped fields (`node_id`, `html_url`, `topics`, `license_spdx`,
+    `pushed_at`, `fork`, `description`) out of
+    `crates/gh-report/src/domain/repository.rs:17-65` into
+    `crates/gh-report/src/github/dto.rs`; define a pure-domain
+    `Repository` retaining only identity + business-meaningful fields.
+    Map at the adapter boundary. The hand-rolled `PartialEq` in
+    `repository.rs` (visible Vernon-tell: equality had to be corrected
+    because foreign fields don't belong to identity) disappears.
+    **Deferred rationale**: CHE-0022 is silent on whether removing
+    fields from already-emitted event payloads (the GitHub-shaped
+    fields appear inside `RepoEvaluated`) is permitted under
+    `event_type()` immutability (CHE-0010:R2 + CHE-0022:R4). Adding
+    fields is additive-safe; removing fields requires either an ADR
+    amendment to CHE-0022 carving out a removal protocol, or a new
+    `RepoEvaluatedV2` event-type with the lean payload (which itself
+    requires CHE-0010:R2 amendment for the rename). Neither path fits
+    inside Track 10's tactical-only scope. Filing here so the GitHub
+    adapter cleanup happens once the event-payload removal protocol is
+    ratified at the ADR level. Verify (when activated): `cargo test -p
+    gh-report --all-features` exit 0; `rg -n
+    'html_url\|topics\|license_spdx\|pushed_at\|node_id'
+    crates/gh-report/src/domain/` zero hits; CHE-0022 + CHE-0045
+    amendments landed. No bead yet (file when Phase 3 activates).
 
 ---
 
