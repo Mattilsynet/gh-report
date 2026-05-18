@@ -1,6 +1,6 @@
 # Cherry-Pit Refinement Roadmap
 
-**Status**: Live (Phase 2 v2 — remaining tracks: 3 (read-only re-scope), 4.4, 5, 6, 7, 8)
+**Status**: Live (Phase 2 v2 — remaining tracks: 3 (read-only re-scope), 4.4, 5, 6, 7, 8, 9)
 **Governs**: Phases 2–3 of the architectural refinement phase
 **Companion to**: `FOCUS.md` §4 (this document is FOCUS.md's §4 detail)
 **Reader**: moltke decomposing into hopper missions; user reviewing progress
@@ -38,19 +38,13 @@ superseded by v2 on 2026-05-14.
 
 ## Phase 1 — Cleanup (closed 2026-05-14)
 
-Exit criteria met: workspace builds and tests green, lint warnings-only,
-no donor crates in tree. Task-level audit in bd under closed beads with
-label `phase:1-cleanup`.
+- Closed; exit criteria met. Audit: `bd query --label phase:1-cleanup`.
 
 ---
 
 ## Phase 2 v1 — Generalize (superseded 2026-05-14)
 
-Superseded by Phase 2 v2 (ceremony-vs-substance review). Task closures
-retained in bd under `phase:2-generalize`. Operational lessons
-(`cargo test --test <file_stem>` vs bare-name filter; pre-existing
-`gh-report` fmt-baseline drift) migrated to `AGENTS.md § Commands`
-"Verify-command gotchas".
+- Superseded by v2. Closures in bd under `phase:2-generalize`. Lessons migrated to `AGENTS.md § Commands` "Verify-command gotchas".
 
 ---
 
@@ -344,6 +338,50 @@ practice via checklist.
 | 8.3 | Drain or defer remediations | Each remediation bead either closed in-track or labeled `phase:3-harden` with a rationale comment explaining why it can't reasonably ship in Phase 2. | All `track:8,remediation` beads either closed or `phase:3-harden`-labelled. |
 | 8.4 | ADR gap-fill | Any 8.2 finding without an ADR home gets a draft ADR (CHE / GND / AFM domain per topic). Per FOCUS.md §6, new ADR drafts are always-escalate — user ratifies each before merge. | New ADRs land in `docs/adr/<domain>/`; `cargo run -p adr-fmt -- --lint` warnings-only. |
 
+### Track 9 — pardosa serialization + file-storage correctness hardening (NEW; gated on Track 7 complete)
+
+Goal: discharge the remaining correctness gaps in `pardosa-genome` and
+`pardosa-encoding` surfaced by the 2026-05-18 R1–R13 review (see bd
+evidence bead with label `evidence,pardosa-storage-review`). Sequential
+read workload (offset-0 → NATS-tail) is the assumed access pattern;
+random-access read-by-domain-id on cold files is **out of scope** for
+v0.1 and remains a Phase-3 candidate. Wire-format change: bumps
+`FORMAT_VERSION` 3 → 4 with **hard-reject** of v3 readers (mirrors v2→v3
+ruling at `crates/pardosa-genome/src/format.rs:18-22`). User-ratified
+2026-05-18: no compatibility window, no transcoder.
+
+**Coordination with §G #18 (workspace hash-algorithm consolidation,
+Phase 3).** §G #18 sub-mission (3) (pardosa-genome xxh64→xxh3-64 +
+`FORMAT_VERSION` 3→4) is **absorbed into Mission 3 below** to avoid a
+double wire-bump (v3→v4 here, v4→v5 in Phase 3). §G #18 retains items
+(1) COM-0039 umbrella ADR, (2) GEN-0016 supersession + CHE-0053 R11
+update, (4) cherry-pit-storage snapshot signature, (5a/b) shared
+`compute_etag`, (6) audit gate. COM-0039 is pulled forward as a Mission
+1 prerequisite (it ratifies the "BLAKE3 / HMAC-SHA256 / xxh3-family"
+policy that Mission 3 implements at the genome wire surface).
+
+Four missions, sequenced:
+
+| # | Mission | Deliverable | Verify |
+|---|---------|-------------|--------|
+| 9.1 | ADR hygiene + encoder fact-find + COM-0039 draft | (a) Read-only audit of `crates/pardosa-encoding/src/{lib,traits,primitives,composites,decoder}.rs` to determine whether the two-pass sizing pass (GEN-0005) is still active under GEN-0035 canonical-encoding seal. Output: evidence bead with concrete file:line citations. (b) Draft amendments C1–C6 against GEN-0005 / GEN-0009 / GEN-0011 / GEN-0016 / PAR-0008 / PAR-0021 marking the v4 changes' ADR homes. (c) Draft COM-0039 umbrella ADR (pulled forward from §G #18 item 1) ratifying the hash-algorithm policy that Missions 3 implements. Per FOCUS.md §6, COM-0039 + each GEN/PAR amendment is always-escalate — user ratifies each before merge. | `cargo run -p adr-fmt -- --lint` warnings-only after each ADR lands; evidence bead created with `evidence,track:9,mission:9.1` labels; encoder fact-find bead labeled `evidence,pardosa-encoding,sizing-pass-status`. |
+| 9.2 | R9: dragline routing index determinism (BTreeMap) | Replace `HashMap<DomainId, …>` with `BTreeMap` in `crates/pardosa/src/dragline/state.rs`. Pure-internal change — no wire impact, no public-API change. Update `list` / `list_with_deleted` docstrings in `crates/pardosa/src/dragline/api.rs` to commit to deterministic iteration order. Closes PAR-0022 determinism seam. | `cargo test -p pardosa` exit 0; targeted ordering test asserts iteration order is sorted by DomainId across 1k inserts; `cargo clippy -p pardosa --all-targets -- -D warnings` clean. |
+| 9.3 | FORMAT_VERSION=4 wire bump (R3 + R7 + R10 + xxh64→xxh3-64) | **Atomic commit-set** carrying four coupled changes on the v4 wire: (a) **R3** tree-shaped footer checksum using xxh3-128 covering header + schema block + body-hash list + index + footer prefix (replaces flat xxh64 file checksum at footer); (b) **R7** per-message body framing `[size:u32 LE][xxh3-64:u64 LE]` with `FileError::RecoverableTruncation { last_valid_offset, last_valid_event_id }` returned on partial-tail decode; (c) **R10** per-file BLAKE3 frontier stamped into footer (mirrors PAR-0021 R3 in-memory frontier onto the on-disk artefact); (d) **§G #18 (3)** message-body hash xxh64→xxh3-64 swap (absorbed from Phase 3). Footer grows 32 B → 80 B. `Writer: Write + Sync` adds `sync_data` on `finish` (closes PAR-0008 C4 fsync gap). v3 readers hard-reject v4; no migration path. | v4 round-trip test; tamper-injection test rejects bodies with mutated `[size][hash]` frame; `cargo test -p pardosa-genome` exit 0; `cargo test -p pardosa --all-features` exit 0; golden-fixture rebake committed in the same commit-set; `rg -n 'FORMAT_VERSION' crates/pardosa-genome/src/` returns `= 4`; v3-fixture read returns `FileError::UnsupportedVersion { found: 3, .. }`. |
+| 9.4 | R1: excise sizing pass (conditional on 9.1 finding) | If 9.1 (a) confirms the two-pass sizing pass is still active in `pardosa-encoding`, excise it; encoders write directly to the buffer, relying on GEN-0035 canonical-encoding seal for size determinism. Supersede GEN-0005 via the GEN-0035 amendment drafted in 9.1 (b). If 9.1 (a) finds the sizing pass is already gone, close 9.4 as no-op with a note in the evidence bead. | If active: `cargo bench -p pardosa-encoding` shows ≥ 1.5× encode throughput improvement on the existing benchmark suite; `cargo test -p pardosa-encoding --all-features` exit 0. If already gone: close-with-note, no code change. |
+
+**Mission 3 abort criterion**: if R7's body-prefix framing
+(`[size:u32][xxh3-64:u64]`) demonstrably conflicts with the GEN-0035
+canonical-encoding seal (e.g. the size prefix breaks the canonical-bytes
+invariant for hashing-over-canonical), drop R7 from the v4 bundle and
+file it as Mission 9.5 in the injection queue. R3 + R10 + xxh64→xxh3-64
+still ship in v4. Decision lands in feynman re-orient if hit.
+
+**Hash layering after v4** (locked by COM-0039 ratification in 9.1):
+footer integrity = xxh3-128 (R3 tree-shaped); message bodies = xxh3-64
+(R7 frame); event precursor chain + per-file frontier = BLAKE3 (PAR-0021,
+R10). Three algorithms; one rule ("adversary → BLAKE3; external → HMAC;
+otherwise → xxh3").
+
 ### Phase 2 v2 sequencing (remaining)
 
 ```
@@ -366,6 +404,9 @@ Track 4.4  validate.rs → cherry-pit-web
 Track 5    SEC-0003 bind-in-library; adr-fmt-spsd closes
   ▼
 Track 7    gh-report → pardosa hard cut; CHE-0031 supersede; SMI green
+  ▼
+Track 9    pardosa serialization + file-storage correctness hardening
+           (FORMAT_VERSION 3 → 4, hard-reject; absorbs §G #18 sub-mission 3)
   ▼
 Track 8    C3 idiomatic audit + remediation + ADR gap-fill
   ▼
@@ -391,6 +432,10 @@ gated on Track 6 atomic-ship complete — same gate applies to Track 7.
 | Track 6 wire-format change strands v2 readers | L | H | F2a includes read-only migration path (v2 streams decode with zero-hash sentinel); F2f tamper-injection test asserts v2→v3 read still works. Halt-and-handback if migration path proves infeasible. |
 | Track 6 atomic-ship coupling (F2a + F9) inflates blast radius | M | M | Epic acceptance criteria require atomic landing; mitigation = small TDD increments behind the `blake3` feature flag until F2f integration test green, then single squash commit. |
 | Track 7 hard cut preserves the Memory Image bootstrap defect: routing indices (`runs_by_key`, `repos_by_key`, `deliveries_by_id`, `next_seq`) start empty on every restart and are not rebuilt from `events/<org>/*`. Observed in `/tmp/gh-report-eval-store/` (87 fragmented aggregates across 4 runs, ids 627→713 for the same 561 repos). gh-report on pardosa would re-fragment the same way. | H (current code path; default behaviour) | M (silent state leak: unbounded aggregate-id growth on long-running processes; `baseline.msgpack` hides the symptom by serving warm-start from a parallel data plane) | Track 7.5 lands bootstrap replay atomically with the pardosa cut. 7.1 conformance harness extended to assert "drop + recreate store at same dir preserves derived state per domain key". |
+| Track 9 v4 wire bump strands v3 readers (hard-reject) | L | M | User-ratified hard-reject 2026-05-18; no production deployments. Golden fixtures rebaked in same commit-set as 9.3. v3 → v4 read returns explicit `UnsupportedVersion` error, not silent corruption. |
+| Track 9 Mission 3 R7 body-framing conflicts with GEN-0035 canonical-encoding seal | M | M | Explicit abort criterion: drop R7 from v4 bundle, file as 9.5; R3 + R10 + xxh64→xxh3-64 still ship. Decision lands in feynman re-orient if hit during 9.3 increment. |
+| Track 9 absorbs §G #18 sub-mission (3); COM-0039 pulled forward into 9.1 | L | L | Coordination noted in Track 9 preamble and §G #18 item 18; risk is documentary, not technical. §G #18 retains items (1)*, (2), (4), (5a/b), (6) where (1) is partially discharged by 9.1's COM-0039 draft (genome-scoped algorithm policy ratified; cross-workspace audit still Phase 3). |
+| Track 9 golden-fixture rebake (GEN-0009 R4) blast radius unknown until enumerated | M | M | Copernicus enumeration of all v3 fixtures runs as 9.3's first sub-step before any wire-bump code lands. If fixture count is unexpectedly large or fixtures encode behaviours that don't round-trip cleanly under v4, halt-and-handback to moltke. |
 
 **Abort criteria**: if any remaining track cannot reach its verify-green within
 ~3 hopper missions, halt and re-orient via feynman.
@@ -522,26 +567,30 @@ contiguously with the main task list to avoid cross-reference ambiguity.
 
 18. **Workspace hash-algorithm consolidation** (drafted 2026-05-18; mission
    package preserved as bd evidence bead — see bd query
-   `--label hash-consolidation,evidence`). Collapse three hash policies
-   (SHA-256, BLAKE3, xxhash) onto a single rule: "BLAKE3 where there's an
-   adversary (precursor chain, frontier); HMAC-SHA256 for external protocols
+   `--label hash-consolidation,evidence`). **Sub-mission (3) absorbed into
+   Phase 2 Track 9 Mission 3 (2026-05-18 user-ratified); COM-0039 draft
+   (item 1) pulled forward into Track 9 Mission 1 for genome-scoped
+   ratification.** Remaining Phase-3 scope: items (2) GEN-0016
+   supersession + CHE-0053 R11 update, (4) cherry-pit-storage snapshot
+   signature SHA-256→xxh3-128 (drop sha2 dep), (5a) extract three
+   `compute_etag` sites to one shared helper (structural; SHA-256
+   preserved), (5b) swap shared helper to xxh3-128 (behavioural; one-time
+   RFC 9110 §8.8.3 revalidation), (6) audit gate. Cross-workspace COM-0039
+   audit (item 1's full scope: every `use sha2`, `use blake3`, `use
+   xxhash`) remains Phase 3. Collapse three hash policies (SHA-256,
+   BLAKE3, xxhash) onto a single rule: "BLAKE3 where there's an adversary
+   (precursor chain, frontier); HMAC-SHA256 for external protocols
    (GitHub `x-hub-signature-256`); xxh3-family otherwise (file checksums,
-   snapshot signatures, ETags)." Six sub-missions: (1) author COM-0039
-   umbrella ADR; (2) supersede GEN-0016, update CHE-0053 R11 to xxh3-128;
-   (3) pardosa-genome xxh64→xxh3-64 + `FORMAT_VERSION` 3→4 (hard cut);
-   (4) cherry-pit-storage snapshot signature SHA-256→xxh3-128 (drop sha2
-   dep); (5a) extract three `compute_etag` sites to one shared helper
-   (structural; SHA-256 preserved); (5b) swap shared helper to xxh3-128
-   (behavioural; one-time RFC 9110 §8.8.3 revalidation); (6) audit gate.
-   Gated on Track 6 atomic-ship complete (`FORMAT_VERSION=3` in tree) so
-   the 3→4 bump doesn't fight Track 6's atomic-ship. Verify: `rg 'use sha2'
-   crates/` returns exactly 1 hit (`gh-report/src/webhook/signature.rs`);
-   `cargo tree -p cherry-pit-storage -i sha2` empty; `rg 'fn compute_etag'
-   crates/` returns exactly 1 hit; `cargo test --workspace --all-features`
-   exit 0. Algorithm choices ratified by user 2026-05-18 (xxh3-128 not
-   BLAKE3 for snapshot sig + ETags — right-sized for no-adversary threat
-   model; ~10× faster than SHA-256). Mission-package body lives in bd
-   evidence bead (queryable via the label-based query above).
+   snapshot signatures, ETags)." Gated on Track 9 complete
+   (`FORMAT_VERSION=4` in tree) so the cherry-pit-storage swap doesn't
+   fight Track 9's atomic-ship. Verify: `rg 'use sha2' crates/` returns
+   exactly 1 hit (`gh-report/src/webhook/signature.rs`); `cargo tree -p
+   cherry-pit-storage -i sha2` empty; `rg 'fn compute_etag' crates/`
+   returns exactly 1 hit; `cargo test --workspace --all-features` exit 0.
+   Algorithm choices ratified by user 2026-05-18 (xxh3-128 not BLAKE3 for
+   snapshot sig + ETags — right-sized for no-adversary threat model;
+   ~10× faster than SHA-256). Mission-package body lives in bd evidence
+   bead (queryable via the label-based query above).
 
 19. **gh-report `SweepProgress` publish ordering** (observed 2026-05-18 in
     `/tmp/gh-report-eval2.log` lines 16, 19: `routing index has no
@@ -572,12 +621,13 @@ Cross-phase discovery audit trail lives in bd
 
 | Version | Date       | Changes |
 |---------|------------|---------|
-| 0.1–0.5 | 2026-05-13 → 2026-05-16 | Initial axis detail → high-level task list; ceremony strip; Phase 2 v1→v2 supersession; Track 4.0 SMI promoted to mechanical exit criterion; LOC-gate amendment. See git log + bd for detail. |
-| 0.6     | 2026-05-16 | v0.5 LOC-gate amendment retracted; `scripts/prod-loc` + `scripts/track4-verify` removed; CI job `track4-gates` deleted; `.gitignore` re-adds `scripts/`. Track 4 substance lives in commit diffs + CHE-0062 + CHE-0049-Amendment-Part-2 + SMI-1..SMI-5. Companion: FOCUS.md v0.7. |
-| 0.7     | 2026-05-16 | Pruned historic state: Phase 1 (closed) + Phase 2 v1 (superseded) collapsed to single-paragraph pointers; closed Phase 2 v2 Tracks 0/0.5/1/2/4 sub-sections dropped; injection log replaced with bd query pointer; revision history collapsed v0.1–v0.5. Forward-work content (Tracks 3, 4.4, 5; Phase 3) unchanged. Closed-task audit trail SSOT is bd + git log. |
-| 0.8     | 2026-05-17 | Surfaced parallel Phase-2 file-format work stream as Track 6 (pardosa-genome file-format hardening); Epic 6.A = PAR-0021 (`adr-fmt-il9a`, 6 sub-tasks), Epic 6.B = F9 (`adr-fmt-e71p`, 5 sub-tasks), plus 6 adjacent loose tasks. Previously bd-only; roadmap omitted 19 open Phase-2 beads. Sequencing diagram updated; risk register extended with wire-format / atomic-ship rows. F-task `phase:2-generalize` label backfill is a separate bd action. |
-| 0.9     | 2026-05-17 | **User-ratified Phase 2 v2 completion criteria** (C1/C2/C3): C1 = adr-srv operational in **read-only mode** (scrape ADRs → pardosa-genome → GraphQL Query); C2 = gh-report stores internal state in pardosa-genome files (hard cut, re-scrape GitHub API); C3 = idiomatic architectural organization audit across adr-srv / gh-report / cherry-pit-* / pardosa-*. **Track 3 re-scoped** to read-only: 3.4 (GraphQL mutations) and 3.5 (metacircular adr-fmt-as-lint loop) retired to Phase 3 backlog; new 3.A scrape-pipeline sub-task added. **Track 7 added** (gh-report → pardosa hard cut; supersedes CHE-0031; 4 sub-tasks). **Track 8 added** (C3 idiomatic audit, 4 sub-tasks). Exit criteria rewritten: 12 criteria, indexed to C1/C2/C3/Track 6. Sequencing updated: Track 3.1/3.2 + Track 6 parallel at start; first pardosa write (3.A) gated on Track 6 atomic-ship; Track 7/8 sequenced after Track 5. Risk register extended with Track 3↔6 coupling, Track 7 hard-cut, Track 8 audit-bikeshedding rows. **Original v0.8 Track 6 content preserved unchanged.** PAR-0021 sequencing decision: F2 chain lands before any consumer write (Track 3.A + Track 7), per user direction; "parallel" in roadmap means concurrent agents on disjoint crate trees, not concurrent first-writes. Track 6 atomic-ship (Epic 6.A + 6.B together) preserved per user direction. Track 4.4 + Track 5 placement preserved (sequenced after Track 3.3 per user "as early as possible in Phase 2" direction). Companion: FOCUS.md sync to v0.8 (this commit). |
-| 1.0     | 2026-05-18 | **Phase 3 injection queue extended**: item #5 — workspace hash-algorithm consolidation. Drafted as mission package `hash-consolidation-1779148800`; promoted to bd evidence bead (label `evidence,hash-consolidation,phase:3-harden,roadmap-deferred`). Collapses three hash policies onto one rule ("adversary → BLAKE3; external protocol → HMAC-SHA256; otherwise → xxh3"). Six sub-missions; gated on Phase 2 Track 6 atomic-ship complete. Algorithm choices user-ratified 2026-05-18 (xxh3-128 for snapshot signature + ETags; right-sized for no-adversary threat model). Phase 2 v2 forward-work unchanged. |
-| 1.1     | 2026-05-18 | **Phase 3 task list renumbered 1–18 contiguously across groups §A–§F + §G injection queue.** Group headers prefixed with §A–§G; numbering is now authoritative. New **§F Cross-cutting language doctrine (RST)** group added with task #13: review the RST hardening ideas register against Phase-3 work-in-progress; promote candidates only when worked-example evidence exists (proptest/fuzz methodology, formal-verification gate, cargo-deny/cargo-audit enforcement are the natural candidates). Drafting any RST ADR remains user-ratified per FOCUS §6. Existing injection-queue items 1–5 renumbered to 14–18; cross-references in FOCUS §8 verify block updated (formerly "items 3 + 4" → "§G items 16 + 17"). Substance unchanged; renumbering is purely organisational. Companion: FOCUS.md v0.9. |
-| 1.2     | 2026-05-18 | **Memory Image bootstrap refinement** (post-eval2 storage analysis of `/tmp/gh-report-eval-store/`). User-ratified architectural style: Fowler **Memory Image** — persist events; routing indices, aggregate state, and projections live in-memory and are rebuilt from the event log on startup; on-disk snapshots (e.g. `baseline.msgpack`) are aggregate-state snapshots subordinate to the event log, not parallel persistence planes. **Triggering evidence**: 87 fragmented aggregate files (ids 627→713) accumulated across 4 runs for the same 561 repos because `state.rs` constructs `runs_by_key` / `repos_by_key` / `deliveries_by_id` / `next_seq` as `HashMap::new()` on every restart with no event-log replay; Track 7 (gh-report → pardosa hard cut) would preserve this defect since its 7.4 verify only checks SMI invariants, not bootstrap-replay. **Track 7 grows 4 → 5 sub-tasks**: new **7.5** combines (a) startup replay of routing indices from `events/<org>/*` into folded aggregate state, (b) `BaselineEntry` tagged with `last_applied_sequence` per aggregate + discard-on-skew rule, (c) `AggregateId(1)` reserved for the `OrgGovernance` singleton. 7.5 body deliberately under-specified; refined after `@oracle` (Memory Image ADR coverage across CHE-0036 / CHE-0054 / CHE-0035) and `@copernicus` (`RepoEvaluated` ↔ `RepositoryEvidence` field-completeness) probes report back. **Phase 2 exit criterion 10** gains a fourth bullet (`cargo test -p gh-report --test bootstrap_replay`). **Risk register** gains a row covering "Track 7 hard cut preserves bootstrap defect". **Track 8.1 checklist** gains criterion (i) Memory Image discipline so future violations across any crate get caught generically by the C3 audit, not just gh-report's current one. **Phase 3 §G #19** files the gh-report `SweepProgress publish failed` ordering bug observed in the eval2 log (non-fatal WARN; matches §B error-path-correctness intent). Sequencing diagram unchanged; track ordering unchanged. Status line updated to reflect 7.5 in scope. Companion: FOCUS.md may need parallel update (verify on next FOCUS edit). |
-| 1.3     | 2026-05-18 | **Track 7.5 execution plan annex.** Added probe-then-mission sequence as a sub-section under Track 7.5 (lines after row 7.5, before Track 8 heading): (1) bd evidence bead capturing eval2 storage analysis under `mission:memory-image-bootstrap-<ts>`; (2) parallel `@oracle` (ADR coverage) + `@copernicus` (`RepoEvaluated` ↔ `RepositoryEvidence` field-completeness) probes; (3) 3-row decision-fork table on probe results; (4) conditional 7.5 refinement if fields not reconstructible; (5) moltke mission contract shape with commander_intent, package_success_criteria, pre-mortem (snapshot-skew, id=1 collision, replay perf, baseline migration), rollback (feature-flag); (6) execute → gardener → user. Out-of-scope explicitly named: D4 (Phase 3 §G #19), `gh-report repair` command, `/tmp` cleanup. Track 7.5 row unchanged; annex pins the execution sequence so probe results have a defined home and the under-specification has a defined resolution path. |
+| 0.1–0.5 | 2026-05-13 → 2026-05-16 | Initial axis detail → high-level task list; ceremony strip; Phase 2 v1→v2 supersession; Track 4.0 SMI promoted to mechanical exit criterion; LOC-gate amendment. |
+| 0.6     | 2026-05-16 | Retracted v0.5 LOC-gate amendment; removed `scripts/prod-loc`, `scripts/track4-verify`, CI `track4-gates` job. |
+| 0.7     | 2026-05-16 | Pruned closed Phase 1, Phase 2 v1, and closed Phase 2 v2 Tracks 0/0.5/1/2/4 sub-sections; injection log replaced with bd query pointer. |
+| 0.8     | 2026-05-17 | Surfaced Track 6 (pardosa-genome file-format hardening): Epic 6.A PAR-0021 + Epic 6.B F9 + 6 adjacent loose tasks. |
+| 0.9     | 2026-05-17 | User-ratified Phase 2 v2 C1/C2/C3 exit criteria; Track 3 re-scoped read-only; added Track 7 (gh-report → pardosa hard cut) and Track 8 (C3 audit). |
+| 1.0     | 2026-05-18 | Added Phase 3 §G workspace hash-algorithm consolidation. |
+| 1.1     | 2026-05-18 | Renumbered Phase 3 tasks 1–18 contiguously; added §F RST doctrine group (task #13). |
+| 1.2     | 2026-05-18 | Added Memory Image bootstrap refinement; Track 7 grows 4 → 5 sub-tasks (new 7.5); filed Phase 3 §G #19 SweepProgress ordering. |
+| 1.3     | 2026-05-18 | Added Track 7.5 probe-then-mission execution plan annex. |
+| 1.4     | 2026-05-18 | Added Track 9 (pardosa serialization + file-storage correctness hardening, 4 missions); absorbed §G #18 sub-mission (3). |
