@@ -39,11 +39,10 @@ impl<T> Dragline<T> {
     /// Returns an error if a migration is in progress, the event ID or
     /// domain ID counter overflows (including when skipping past purged
     /// ids exhausts the `u64` space), or the line index exceeds capacity.
-    pub fn create(
-        &mut self,
-        timestamp: i64,
-        domain_event: T,
-    ) -> Result<AppendResult, PardosaError> {
+    pub fn create(&mut self, timestamp: i64, domain_event: T) -> Result<AppendResult, PardosaError>
+    where
+        T: Encode,
+    {
         self.commit_atomic(|s| {
             // Advance next_id past any purged ids. `purged_ids` is a HashSet
             // so each membership check is O(1); the loop terminates either
@@ -107,7 +106,10 @@ impl<T> Dragline<T> {
         domain_id: DomainId,
         timestamp: i64,
         domain_event: T,
-    ) -> Result<AppendResult, PardosaError> {
+    ) -> Result<AppendResult, PardosaError>
+    where
+        T: Encode,
+    {
         self.commit_atomic(|s| {
             if !s.purged_ids.contains(&domain_id) {
                 return Err(PardosaError::IdNotPurged(domain_id));
