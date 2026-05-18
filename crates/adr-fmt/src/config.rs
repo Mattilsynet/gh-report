@@ -108,10 +108,27 @@ pub fn load_quiet(marker_dir: &Path) -> Result<Config, LoadError> {
 /// should treat this as a hard error rather than skip. `Parse` covers
 /// malformed TOML or a missing `[corpus]` table — discovery may skip
 /// and continue walking.
+// Per AFM-0028:R1 — public error types in the AFM-0026:R1 surface set
+// implement Display + Debug + std::error::Error. Debug is derived; Display
+// is hand-rolled per AFM-0028:R2 (single-line, human-readable). Variant
+// inner Strings already carry path/message and are public surface per
+// AFM-0026:R3, so surfacing them here is in-policy.
+#[derive(Debug)]
 pub enum LoadError {
     Io(String),
     Parse(String),
 }
+
+impl core::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            LoadError::Io(msg) => write!(f, "adr-fmt config I/O error: {msg}"),
+            LoadError::Parse(msg) => write!(f, "adr-fmt config parse error: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for LoadError {}
 
 fn load_inner_typed(marker_dir: &Path) -> Result<Config, LoadError> {
     let config_path = marker_dir.join("adr-fmt.toml");
