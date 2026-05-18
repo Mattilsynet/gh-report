@@ -8,7 +8,7 @@ Status: Accepted
 
 ## Related
 
-References: CHE-0029, CHE-0060, PAR-0021, PAR-0024, CHE-0058
+References: CHE-0029, CHE-0060, PAR-0021, GEN-0037, CHE-0058
 
 ## Context
 
@@ -34,8 +34,12 @@ R1 [5]: `cherry-pit-core` MAY depend on `pardosa-encoding` in addition
 
 R2 [5]: `cherry-pit-core::DomainEvent` carries `pardosa_encoding::Encode`
   as a supertrait; every workspace `impl DomainEvent for X` therefore
-  requires a matching `impl Encode for X`. Per PAR-0024:R5 every Encode
-  impl touched by this mission is hand-rolled — no `#[derive(Encode)]`.
+  requires a matching `impl Encode for X`. For the `cherry-pit-core`
+  structural carriers (`EventEnvelope<E>`, `AggregateId` — see R3),
+  the impl is hand-rolled because those types do not derive
+  `GenomeSafe`. For `GenomeSafe`-deriving event-payload types, the
+  matching `Encode` is emitted per GEN-0037:R4 — no separate
+  `#[derive(Encode)]` exists.
 
 R3 [5]: `cherry-pit-core` hosts `impl Encode for EventEnvelope<E>` and
   `impl Encode for AggregateId` as the type-owner. The impls are
