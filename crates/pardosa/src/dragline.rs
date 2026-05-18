@@ -3,6 +3,12 @@ use std::collections::{HashMap, HashSet};
 use crate::error::PardosaError;
 use crate::event::{DomainId, Event, Index};
 use crate::fiber::Fiber;
+// F2b: precursor-hash chain wiring per PAR-0021:R5. `to_vec` encodes a
+// predecessor `Event<T>` via its `impl<T: Encode> Encode for Event<T>`
+// (event.rs:305); `precursor_hash_of` is BLAKE3 of those bytes. P-include
+// semantics: `precursor_hash` IS part of the encoded surface so the chain
+// covers the prior event's full shape (event.rs:302).
+use pardosa_encoding::{Encode, precursor_hash_of, to_vec};
 use crate::fiber_state::{
     FiberAction, FiberState, LockedRescuePolicy, MigrationPolicy, transition,
 };
@@ -401,7 +407,10 @@ impl<T> Dragline<T> {
         domain_id: DomainId,
         timestamp: i64,
         domain_event: T,
-    ) -> Result<AppendResult, PardosaError> {
+    ) -> Result<AppendResult, PardosaError>
+    where
+        T: Encode,
+    {
         self.commit_atomic(|s| {
             let (fiber, state) = s
                 .lookup
@@ -425,9 +434,14 @@ impl<T> Dragline<T> {
                 domain_id,
                 false,
                 precursor,
-                // F2a: plumbing-only zero sentinel; F2b will compute BLAKE3
-                // of the canonical bytes of the predecessor at index `precursor`.
-                [0u8; 32],
+                // F2b: BLAKE3 of canonical bytes of predecessor at `precursor`,
+                // P-include semantics (event.rs:302). Genesis events have
+                // `precursor == Index::NONE` and carry the zero hash.
+                if precursor.is_none() {
+                    [0u8; 32]
+                } else {
+                    precursor_hash_of(&to_vec(&s.line[precursor.as_usize()]))
+                },
                 domain_event,
             );
             Ok(PreparedCommit {
@@ -458,7 +472,10 @@ impl<T> Dragline<T> {
         domain_id: DomainId,
         timestamp: i64,
         domain_event: T,
-    ) -> Result<AppendResult, PardosaError> {
+    ) -> Result<AppendResult, PardosaError>
+    where
+        T: Encode,
+    {
         self.commit_atomic(|s| {
             let (fiber, state) = s
                 .lookup
@@ -480,9 +497,14 @@ impl<T> Dragline<T> {
                 domain_id,
                 true,
                 precursor,
-                // F2a: plumbing-only zero sentinel; F2b will compute BLAKE3
-                // of the canonical bytes of the predecessor at index `precursor`.
-                [0u8; 32],
+                // F2b: BLAKE3 of canonical bytes of predecessor at `precursor`,
+                // P-include semantics (event.rs:302). Genesis events have
+                // `precursor == Index::NONE` and carry the zero hash.
+                if precursor.is_none() {
+                    [0u8; 32]
+                } else {
+                    precursor_hash_of(&to_vec(&s.line[precursor.as_usize()]))
+                },
                 domain_event,
             );
             Ok(PreparedCommit {
@@ -528,7 +550,10 @@ impl<T> Dragline<T> {
         _policy: LockedRescuePolicy,
         timestamp: i64,
         domain_event: T,
-    ) -> Result<AppendResult, PardosaError> {
+    ) -> Result<AppendResult, PardosaError>
+    where
+        T: Encode,
+    {
         self.commit_atomic(|s| {
             let (fiber, state) = s
                 .lookup
@@ -582,9 +607,14 @@ impl<T> Dragline<T> {
                 domain_id,
                 false,
                 precursor,
-                // F2a: plumbing-only zero sentinel; F2b will compute BLAKE3
-                // of the canonical bytes of the predecessor at index `precursor`.
-                [0u8; 32],
+                // F2b: BLAKE3 of canonical bytes of predecessor at `precursor`,
+                // P-include semantics (event.rs:302). Genesis events have
+                // `precursor == Index::NONE` and carry the zero hash.
+                if precursor.is_none() {
+                    [0u8; 32]
+                } else {
+                    precursor_hash_of(&to_vec(&s.line[precursor.as_usize()]))
+                },
                 domain_event,
             );
             Ok(PreparedCommit {
@@ -800,7 +830,10 @@ impl<T> Dragline<T> {
     /// Returns any [`PardosaError`] produced by [`verify_precursor_chains`](Self::verify_precursor_chains),
     /// or a [`PardosaError::FiberInvariantViolation`] when one of the
     /// cross-event / bookkeeping invariants fails.
-    pub fn verify_invariants(&self) -> Result<(), PardosaError> {
+    pub fn verify_invariants(&self) -> Result<(), PardosaError>
+    where
+        T: Encode,
+    {
         self.verify_precursor_chains()?;
 
         // (a) event-id strictly monotonic across line
@@ -863,7 +896,14 @@ impl<T> Dragline<T> {
     /// Returns [`PardosaError::BrokenPrecursorChain`] when an event names a
     /// precursor that is forward-looking (precursor index ≥ event index) or
     /// that belongs to a different domain.
-    pub fn verify_precursor_chains(&self) -> Result<(), PardosaError> {
+    ///
+    /// Returns [`PardosaError::PrecursorHashMismatch`] when an event's
+    /// `precursor_hash` does not match BLAKE3 of the canonical bytes of the
+    /// predecessor it points to (PAR-0021:R5, P-include semantics).
+    pub fn verify_precursor_chains(&self) -> Result<(), PardosaError>
+    where
+        T: Encode,
+    {
         for (i, event) in self.line.iter().enumerate() {
             let precursor = event.precursor();
             if precursor.is_none() {
@@ -882,6 +922,19 @@ impl<T> Dragline<T> {
                 return Err(PardosaError::BrokenPrecursorChain {
                     event_id: event.event_id(),
                     precursor,
+                });
+            }
+
+            // F2b: hash-chain check. Recompute the predecessor's BLAKE3
+            // identity and compare against the precursor_hash the event
+            // committed at write time. Any divergence is tamper / corruption.
+            let expected = precursor_hash_of(&to_vec(precursor_event));
+            let actual = event.precursor_hash();
+            if actual != expected {
+                return Err(PardosaError::PrecursorHashMismatch {
+                    event_id: event.event_id(),
+                    expected,
+                    actual,
                 });
             }
         }
@@ -1054,7 +1107,10 @@ impl<T> Dragline<T> {
         next_id: DomainId,
         next_event_id: u64,
         migrating: bool,
-    ) -> Result<Self, PardosaError> {
+    ) -> Result<Self, PardosaError>
+    where
+        T: Encode,
+    {
         let d = Dragline {
             line: Linevec::from_raw_unchecked(line),
             lookup,
@@ -1646,6 +1702,97 @@ mod tests {
             matches!(err, PardosaError::BrokenPrecursorChain { .. }),
             "expected BrokenPrecursorChain, got: {err}"
         );
+    }
+
+    // ── Tamper regression (PAR-0021:R5, F2b) ──────────────────────────
+    //
+    // The hash-chain check exists so that a downstream actor cannot mutate
+    // a historical event undetected: any byte change in event K invalidates
+    // event K+1's `precursor_hash`. These tests exercise both directions —
+    // happy chain stays green; tampered chain surfaces PrecursorHashMismatch
+    // pinpointing the *successor* of the mutated event (the one whose
+    // committed `precursor_hash` no longer matches the recomputed identity).
+    //
+    // The seam is `from_raw_parts` (L1109) — the in-crate persistence-
+    // boundary reconstruction surface used by surrounding tests. No
+    // `unsafe`, no new public surface, no new seam.
+
+    #[test]
+    fn verify_precursor_chains_detects_tampered_predecessor() {
+        // Build a valid 3-event chain: create + two updates.
+        let mut d = Dragline::<&'static str>::new();
+        let r = d.create(1000, "created").unwrap();
+        d.update(r.domain_id, 1001, "u1").unwrap();
+        d.update(r.domain_id, 1002, "u2").unwrap();
+
+        // Sanity: the chain is valid pre-tamper.
+        assert!(d.verify_precursor_chains().is_ok());
+
+        // Snapshot raw parts. We tamper line[1]'s payload — all other fields
+        // preserved (event_id, timestamp, domain_id, precursor index, and
+        // its OWN precursor_hash which was correct relative to genesis).
+        // line[2]'s committed precursor_hash was computed over the original
+        // line[1] bytes; after we swap line[1]'s payload the recomputation
+        // at verify time will diverge.
+        let mut line = d.line.as_slice().to_vec();
+        let original = line[1].clone();
+        let tampered = Event::new(
+            original.event_id(),
+            original.timestamp(),
+            original.domain_id(),
+            original.detached(),
+            original.precursor(),
+            original.precursor_hash(),
+            "TAMPERED", // payload swap — different bytes than "u1"
+        );
+        let expected_mismatch_event_id = line[2].event_id();
+        line[1] = tampered;
+
+        // Reconstruct via from_raw_parts. verify_invariants runs internally
+        // and calls verify_precursor_chains, so from_raw_parts returns
+        // Err(PrecursorHashMismatch) — gate works as intended.
+        let err = Dragline::from_raw_parts(
+            line,
+            d.lookup.clone(),
+            d.purged_ids.clone(),
+            d.next_id,
+            d.next_event_id,
+            false,
+        )
+        .unwrap_err();
+
+        match err {
+            PardosaError::PrecursorHashMismatch {
+                event_id,
+                expected,
+                actual,
+            } => {
+                assert_eq!(
+                    event_id, expected_mismatch_event_id,
+                    "mismatch should pinpoint the successor (line[2]), not the tampered event itself",
+                );
+                assert_ne!(expected, actual, "hashes must differ on tamper");
+            }
+            other => panic!("expected PrecursorHashMismatch, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn verify_precursor_chains_valid_chain_is_regression_canary() {
+        // Mirrors verify_precursor_chains_valid (L1609) but exists explicitly
+        // as a guard against an F2b regression that would compute different
+        // hashes on the write path vs the verify path. If write/verify ever
+        // disagree, this test goes red even without tampering.
+        let mut d = Dragline::<&'static str>::new();
+        let r = d.create(1000, "created").unwrap();
+        d.update(r.domain_id, 1001, "u1").unwrap();
+        d.update(r.domain_id, 1002, "u2").unwrap();
+        d.update(r.domain_id, 1003, "u3").unwrap();
+
+        // Each non-genesis event's committed precursor_hash MUST match
+        // BLAKE3 of its predecessor's encoded bytes. Anything else means
+        // writer and verifier diverged in their hash derivation.
+        assert!(d.verify_precursor_chains().is_ok());
     }
 
     // ── verify_invariants (superset of precursor chains) ─────────────
