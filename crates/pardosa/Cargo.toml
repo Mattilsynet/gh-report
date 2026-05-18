@@ -18,10 +18,13 @@ thiserror = { workspace = true }
 # F2c (PAR-0021 R1+R3): canonical-bytes domain locked to GEN-0035 in-house
 # encoding. `blake3` feature pulls the `precursor_hash_of` / `frontier_roll`
 # helpers; the `blake3` crate dep stays contained to `pardosa-encoding` so
-# pardosa runtime does not consume `pardosa-derive` (PAR-0024 R5) and does
-# not directly depend on `blake3`. Hand-rolled `impl Encode` on
-# Index/DomainId/Event<T> lives in `src/event.rs`.
+# pardosa runtime does not consume `pardosa-derive` (PAR-0024 R5).
+# Hand-rolled `impl Encode` on Index/DomainId/Event<T> lives in `src/event.rs`.
 pardosa-encoding = { path = "../pardosa-encoding", features = ["blake3"] }
+# F2e (PAR-0021 R4): frontier publish requires BLAKE3 chaining directly in
+# pardosa (frontier_roll = BLAKE3(frontier || event_bytes)). Matches the dep
+# already present transitively via pardosa-encoding[blake3].
+blake3 = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
