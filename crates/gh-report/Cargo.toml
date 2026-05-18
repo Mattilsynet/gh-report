@@ -32,6 +32,12 @@ cherry-pit-storage = { version = "0.1.0", path = "../cherry-pit-storage" }
 # CommandGateway/Aggregate/HandleCommand wiring (S5.b lock).
 cherry-pit-core = { workspace = true }
 
+# pardosa-encoding — CHE-0064:R2 supertrait of CoreDomainEvent. Required for
+# the hand-rolled `Encode` impls on this crate's domain types (PAR-0024:R5
+# prohibits `derive(Encode)`). Features `uuid` + `jiff` carried from workspace
+# default per commit-2b convention.
+pardosa-encoding = { workspace = true }
+
 # cherry-pit-gateway — durable EventStore impl (MsgpackFileStore) per
 # BC-v2-12 + CHE-0036:R1. Wired at WU-6 v2 B3' (charter
 # wu6v2-charter-1778415390); single MsgpackFileStore<DomainEvent>

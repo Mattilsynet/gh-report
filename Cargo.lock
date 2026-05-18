@@ -1115,6 +1115,7 @@ dependencies = [
  "jiff",
  "jsonwebtoken",
  "moka",
+ "pardosa-encoding",
  "pem",
  "percent-encoding",
  "proptest",

@@ -114,6 +114,42 @@ impl Repository {
     }
 }
 
+// Wire format: fields encoded in struct declaration order, each via
+// `Encode::encode`. Field reorder is a wire-format break; new fields
+// must be appended (CHE-0064:R2 + PAR-0024:R5).
+impl pardosa_encoding::Encode for Repository {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.id.encode(out);
+        self.node_id.encode(out);
+        self.name.encode(out);
+        self.visibility.encode(out);
+        self.language.encode(out);
+        self.default_branch.encode(out);
+        self.archived.encode(out);
+        self.inventory_key.encode(out);
+        self.updated_at.encode(out);
+        self.has_issues.encode(out);
+        self.pushed_at.encode(out);
+        self.created_at.encode(out);
+        self.description.encode(out);
+        self.fork.encode(out);
+        self.html_url.encode(out);
+        self.topics.encode(out);
+        self.license_spdx.encode(out);
+    }
+}
+
+// Wire format: one `u8` discriminant per variant declaration order.
+impl pardosa_encoding::Encode for Visibility {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Public => out.push(0u8),
+            Self::Internal => out.push(1u8),
+            Self::Private => out.push(2u8),
+        }
+    }
+}
+
 /// Sorting key for deterministic repository ordering.
 impl Ord for Repository {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {

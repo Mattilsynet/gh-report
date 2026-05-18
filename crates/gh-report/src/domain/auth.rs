@@ -42,6 +42,20 @@ impl std::fmt::Display for AuthMode {
     }
 }
 
+// Wire format: one `u8` discriminant per variant declaration order.
+// Variant reorder is a wire-format break: extending requires appending a
+// new variant, never inserting (CHE-0064:R2 + PAR-0024:R5).
+impl pardosa_encoding::Encode for AuthMode {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Pat => out.push(0u8),
+            Self::GitHubApp => out.push(1u8),
+            Self::GhCliFallback => out.push(2u8),
+            Self::Unknown => out.push(3u8),
+        }
+    }
+}
+
 /// Token capability tier based on available OAuth scopes.
 ///
 /// - Full: {repo, read:org, `security_events`} all present
@@ -68,6 +82,17 @@ impl std::fmt::Display for TokenTier {
     }
 }
 
+// Wire format: one `u8` discriminant per variant declaration order.
+impl pardosa_encoding::Encode for TokenTier {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Full => out.push(0u8),
+            Self::Limited => out.push(1u8),
+            Self::Unknown => out.push(2u8),
+        }
+    }
+}
+
 /// An optional GitHub API capability that can be probed at startup.
 ///
 /// Each variant maps to a specific API family. Using an enum instead of
@@ -89,6 +114,15 @@ impl std::fmt::Display for Capability {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::OrgSecretScanningAlerts => write!(f, "org_secret_scanning_alerts"),
+        }
+    }
+}
+
+// Wire format: one `u8` discriminant per variant declaration order.
+impl pardosa_encoding::Encode for Capability {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::OrgSecretScanningAlerts => out.push(0u8),
         }
     }
 }

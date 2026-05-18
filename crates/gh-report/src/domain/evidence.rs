@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use pardosa_encoding::Encode;
 use serde::{Deserialize, Serialize};
 
 use super::auth::{AuthMode, Capability, TokenTier};
@@ -21,6 +22,16 @@ pub struct LastCommitInfo {
     /// ISO 8601 timestamp of the commit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_date: Option<String>,
+}
+
+// Wire format: fields encoded in struct declaration order via `Encode::encode`.
+// Field reorder is a wire-format break (CHE-0064:R2 + PAR-0024:R5).
+impl Encode for LastCommitInfo {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.committer_login.encode(out);
+        self.committer_name.encode(out);
+        self.commit_date.encode(out);
+    }
 }
 
 /// A repository with its collected check results (evidence).
@@ -76,6 +87,26 @@ pub struct AssessmentMetadata {
     /// rather than a fresh API collection.
     #[serde(default)]
     pub warm_start: bool,
+}
+
+// Wire format: fields encoded in struct declaration order via `Encode::encode`.
+// Field reorder is a wire-format break; new fields must be appended
+// (CHE-0064:R2 + PAR-0024:R5).
+impl Encode for AssessmentMetadata {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.date.encode(out);
+        self.organization.encode(out);
+        self.schema_version.encode(out);
+        self.run_timestamp.encode(out);
+        self.run_id.encode(out);
+        self.token_tier.encode(out);
+        self.token_scopes.encode(out);
+        self.auth_mode.encode(out);
+        self.rate_limit_warnings.encode(out);
+        self.unavailable_capabilities.encode(out);
+        self.inventory_fetched_at.encode(out);
+        self.warm_start.encode(out);
+    }
 }
 
 /// Complete evidence artifact for a collection run.
