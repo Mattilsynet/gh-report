@@ -15,6 +15,8 @@ use cherry_pit_core::{
     DispatchError, DispatchResult, EventEnvelope, EventStore, HandleCommand, StoreError,
 };
 use cherry_pit_gateway::MsgpackFileStore;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use super::domain::{Bar, Foo};
 
@@ -25,7 +27,10 @@ pub struct FileStoreGateway<A: Aggregate> {
     store: Arc<MsgpackFileStore<<A as Aggregate>::Event>>,
 }
 
-impl<A: Aggregate> FileStoreGateway<A> {
+impl<A: Aggregate> FileStoreGateway<A>
+where
+    <A as Aggregate>::Event: Serialize + DeserializeOwned,
+{
     pub fn new(store: Arc<MsgpackFileStore<<A as Aggregate>::Event>>) -> Self {
         Self { store }
     }
@@ -34,6 +39,7 @@ impl<A: Aggregate> FileStoreGateway<A> {
 impl<A> CommandGateway for FileStoreGateway<A>
 where
     A: Aggregate,
+    <A as Aggregate>::Event: Serialize + DeserializeOwned,
 {
     type Aggregate = A;
 

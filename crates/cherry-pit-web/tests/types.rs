@@ -20,6 +20,7 @@
 use axum::Router;
 use cherry_pit_core::{Aggregate, CommandGateway, EventStore};
 use cherry_pit_web::{AppState, CommandRouter, build_router};
+use serde::Serialize;
 
 // `assert_send` / `assert_sync` / `assert_clone` / `assert_static` carry
 // no suppression: they are called from `appstate_is_axum_state_compatible`
@@ -55,6 +56,7 @@ fn build_router_is_callable<G, S, R>(state: AppState<G, S, R>) -> Router
 where
     G: CommandGateway,
     S: EventStore<Event = <G::Aggregate as Aggregate>::Event>,
+    <G::Aggregate as Aggregate>::Event: Serialize,
     R: CommandRouter<Gateway = G> + Clone + Send + Sync + 'static,
 {
     build_router(state, Router::new())

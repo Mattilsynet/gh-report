@@ -9,10 +9,15 @@ use crate::error::EnvelopeError;
 ///
 /// Events are immutable facts — something that happened. They are the
 /// source of truth in an event-sourced system. Every event must be
-/// serializable (for persistence/transport) and cloneable (for fan-out
-/// to multiple consumers).
-/// (CHE-0010 R1–R3: supertrait bounds `Serialize` + `DeserializeOwned` +
-/// `Clone` + `Send` + `Sync` + `'static`, each load-bearing;
+/// cloneable (for fan-out to multiple consumers) and canonically
+/// encodable for substrate-side hash chaining.
+/// (CHE-0010 R1–R3 [amended 2026-05-18]: supertrait bounds `Clone` +
+/// `Send` + `Sync` + `'static` + `pardosa_encoding::Encode`, each
+/// load-bearing. The `Serialize` + `DeserializeOwned` pair was
+/// dropped because pardosa-genome — not serde — is the wire format
+/// per CHE-0065:R1; the `Encode` bound originates in CHE-0064:R2.
+/// Implementers MAY still derive `Serialize` / `Deserialize`
+/// voluntarily, but the trait no longer requires it.
 /// CHE-0022 R1–R5: event enum evolution rules — no `#[non_exhaustive]`,
 /// immutable `event_type()` strings, new fields as `Option<T>`;
 /// CHE-0045 R1–R2: domain events format-agnostic, serde chosen by infra;
@@ -56,7 +61,7 @@ use crate::error::EnvelopeError;
 /// }
 /// ```
 pub trait DomainEvent:
-    Serialize + DeserializeOwned + Clone + Send + Sync + pardosa_encoding::Encode + 'static
+    Clone + Send + Sync + 'static + pardosa_encoding::Encode
 {
     /// A stable string identifier for this event type.
     ///

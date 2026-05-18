@@ -125,6 +125,7 @@ pub fn build_router<G, S, R>(state: AppState<G, S, R>, extra_routes: Router) -> 
 where
     G: CommandGateway,
     S: EventStore<Event = <G::Aggregate as Aggregate>::Event>,
+    <G::Aggregate as Aggregate>::Event: Serialize,
     R: CommandRouter<Gateway = G> + Clone + Send + Sync + 'static,
 {
     // Apply state to cherry-pit-web's own `/v1/` subtree first, leaving
@@ -143,6 +144,7 @@ fn v1_routes<G, S, R>() -> Router<AppState<G, S, R>>
 where
     G: CommandGateway,
     S: EventStore<Event = <G::Aggregate as Aggregate>::Event>,
+    <G::Aggregate as Aggregate>::Event: Serialize,
     R: CommandRouter<Gateway = G> + Clone + Send + Sync + 'static,
 {
     Router::new()
@@ -258,7 +260,7 @@ where
 /// private fields. An unknown aggregate yields `events: []` per
 /// **CHE-0049 R7** (200 with an empty list, never 404 — CHE-0019 R1).
 #[derive(Debug, Serialize)]
-struct LoadedBody<E: DomainEvent> {
+struct LoadedBody<E: DomainEvent + Serialize> {
     aggregate_id: AggregateId,
     events: Vec<LoadedEvent<E>>,
 }
@@ -267,7 +269,7 @@ struct LoadedBody<E: DomainEvent> {
 /// public-method accessors only, no struct-literal access to private
 /// fields of the upstream type.
 #[derive(Debug, Serialize)]
-struct LoadedEvent<E: DomainEvent> {
+struct LoadedEvent<E: DomainEvent + Serialize> {
     event_id: uuid::Uuid,
     sequence: NonZeroU64,
     event_type: &'static str,
@@ -291,6 +293,7 @@ async fn load_handler<G, S, R>(
 where
     G: CommandGateway,
     S: EventStore<Event = <G::Aggregate as Aggregate>::Event>,
+    <G::Aggregate as Aggregate>::Event: Serialize,
     R: CommandRouter<Gateway = G> + Clone + Send + Sync + 'static,
 {
     let aggregate_id = AggregateId::new(id);
