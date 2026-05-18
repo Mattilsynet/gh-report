@@ -782,7 +782,6 @@ mod tests {
     };
     use crate::test_fixtures;
     use std::collections::HashMap;
-    use std::sync::Arc;
 
     fn sample_metrics() -> AggregatedMetrics {
         AggregatedMetrics {
@@ -1491,7 +1490,7 @@ mod tests {
     fn view_model_stale_rate_with_stale_active_repos() {
         let mut evidence = sample_evidence();
         // Make repo-1 stale by setting updated_at to 3 years ago
-        Arc::make_mut(&mut evidence.repositories[0].repository).updated_at =
+        evidence.repositories[0].repository.updated_at =
             Some("2023-01-01T00:00:00Z".to_string());
         evidence.collection_statistics.archived_repos = 2;
 

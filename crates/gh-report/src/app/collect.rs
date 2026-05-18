@@ -168,7 +168,7 @@ impl RepoEvaluator for LiveEvaluator {
         };
 
         Ok(RepositoryEvidence {
-            repository: repo,
+            repository: (*repo).clone(),
             checks: RepositoryChecks {
                 security_policy: sp,
                 secret_scanning: ss,
@@ -1806,7 +1806,7 @@ fn failure_evidence_with_reason(
         )
     };
     RepositoryEvidence {
-        repository: Arc::clone(repo),
+        repository: (**repo).clone(),
         checks: RepositoryChecks {
             security_policy: SecurityPolicyResult {
                 status: sp_status,
@@ -2627,7 +2627,7 @@ mod tests {
 
         // Seed baseline for "repo-1" with a specific updated_at.
         let mut evidence_1 = sample_repo("repo-1");
-        Arc::make_mut(&mut evidence_1.repository).updated_at =
+        evidence_1.repository.updated_at =
             Some("2026-04-10T00:00:00Z".to_string());
         seed_baseline(
             dir.path(),
@@ -2663,7 +2663,7 @@ mod tests {
 
         // Seed baseline with old updated_at.
         let mut evidence = sample_repo("repo-1");
-        Arc::make_mut(&mut evidence.repository).updated_at =
+        evidence.repository.updated_at =
             Some("2026-04-09T00:00:00Z".to_string());
         seed_baseline(
             dir.path(),
@@ -2708,7 +2708,7 @@ mod tests {
 
         // Seed baseline for "repo-2" with matching updated_at.
         let mut evidence_2 = sample_repo("repo-2");
-        Arc::make_mut(&mut evidence_2.repository).updated_at =
+        evidence_2.repository.updated_at =
             Some("2026-04-10T00:00:00Z".to_string());
         seed_baseline(
             dir.path(),
@@ -2746,7 +2746,7 @@ mod tests {
 
         // Seed baseline for "repo-1".
         let mut evidence = sample_repo("repo-1");
-        Arc::make_mut(&mut evidence.repository).updated_at =
+        evidence.repository.updated_at =
             Some("2026-04-10T00:00:00Z".to_string());
         seed_baseline(
             dir.path(),
@@ -2779,7 +2779,7 @@ mod tests {
 
         // Seed baseline covering all repos.
         let mut evidence = sample_repo("repo-1");
-        Arc::make_mut(&mut evidence.repository).updated_at =
+        evidence.repository.updated_at =
             Some("2026-04-10T00:00:00Z".to_string());
         seed_baseline(
             dir.path(),
@@ -2838,7 +2838,7 @@ mod tests {
 
         // Seed baseline for "repo-2" with matching updated_at.
         let mut evidence_2 = sample_repo("repo-2");
-        Arc::make_mut(&mut evidence_2.repository).updated_at =
+        evidence_2.repository.updated_at =
             Some("2026-04-10T00:00:00Z".to_string());
         seed_baseline(
             dir.path(),
@@ -3514,7 +3514,7 @@ mod tests {
         // restore. Single repo is enough; we're testing lifecycle
         // event ordering, not evidence content.
         let mut evidence = sample_repo("repo-1");
-        Arc::make_mut(&mut evidence.repository).updated_at =
+        evidence.repository.updated_at =
             Some("2026-04-10T00:00:00Z".to_string());
         seed_baseline(
             dir.path(),

@@ -40,7 +40,6 @@ use gh_report::domain::checks::{
 use gh_report::domain::evidence::RepositoryEvidence;
 use gh_report::domain::repository::{Repository, Visibility};
 use gh_report::projection::EvidenceProjection;
-use std::sync::Arc;
 
 /// Build a `RepositoryEvidence` with explicitly-chosen `id`, `name`,
 /// and `inventory_key`. The `test_fixtures` helper ties all three to
@@ -49,7 +48,7 @@ use std::sync::Arc;
 fn ev(inventory_key: &str, id: &str, name: &str) -> RepositoryEvidence {
     let ts = "2026-04-09T12:00:00+00:00";
     RepositoryEvidence {
-        repository: Arc::new(Repository {
+        repository: Repository {
             id: id.to_string(),
             node_id: None,
             name: name.to_string(),
@@ -67,7 +66,7 @@ fn ev(inventory_key: &str, id: &str, name: &str) -> RepositoryEvidence {
             html_url: None,
             topics: vec![],
             license_spdx: None,
-        }),
+        },
         checks: RepositoryChecks {
             security_policy: SecurityPolicyResult {
                 status: SecurityPolicyStatus::Pass,

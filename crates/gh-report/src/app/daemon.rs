@@ -386,8 +386,10 @@ async fn handle_failure_outcome(
     let existing = state.lock_projection().get(&domain_key);
     let (repo_name, evidence_for_event) = if let Some(existing) = existing {
         let name = existing.repository.name.clone();
-        let failure =
-            collect::failure_evidence(&existing.repository, &jiff::Timestamp::now().to_string());
+        let failure = collect::failure_evidence(
+            &std::sync::Arc::new(existing.repository.clone()),
+            &jiff::Timestamp::now().to_string(),
+        );
         let failure_for_event = Box::new(failure);
         (name, Some(failure_for_event))
     } else {
