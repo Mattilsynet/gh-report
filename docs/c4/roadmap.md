@@ -243,6 +243,92 @@ deployments exist; data loss in the migration is acceptable cost.
 | 7.4 | SMI replay green on fresh log | First post-cut gh-report run re-scrapes GitHub API and writes a fresh pardosa-genome event log. SMI invariants (Track 4.0) preserved across the cut. | `rg -n 'sequence_tracker\|run_index\|repo_index\|delivery_index' crates/gh-report/src/` zero hits; `cargo test -p gh-report --test smi_replay_equivalence` green. |
 | 7.5 | Memory Image bootstrap (replay + snapshot invariants) | (a) **Bootstrap replay**: on `AppState` construction (or first read), scan `events/<org>/` via the EventStore's enumeration API, load each aggregate's envelopes, fold into `Run` / `Repo` / `Delivery` aggregate state, populate `runs_by_key` / `repos_by_key` / `deliveries_by_id` / `next_seq` from the folded result. Reserve `AggregateId(1)` for `OrgGovernance` (no real aggregate may collide with it). (b) **Snapshot subordination**: tag `BaselineEntry` with `last_applied_sequence: NonZeroU64` per aggregate; on load, discard any entry whose aggregate's event log is newer; document `baseline.msgpack` as an event-log-subordinate boot-acceleration snapshot of *aggregate state* (not a projection cache). (c) Task body refined once `@oracle` (ADR coverage for Memory Image bootstrap) and `@copernicus` (`RepoEvaluated` ↔ `RepositoryEvidence` field-completeness) report back. **Triggering evidence**: post-eval2 analysis of `/tmp/gh-report-eval-store/` — 87 fragmented aggregate files (ids 627→713) across 4 runs for the same 561 repos, because `state.rs` constructs `runs_by_key` / `repos_by_key` / `deliveries_by_id` / `next_seq` as `HashMap::new()` on every restart with no event-log replay. | `cargo test -p gh-report --test bootstrap_replay` exit 0: append N events under store dir A; drop and recreate `AppState` pointing at A; assert (i) routing indices populated for every domain key present in events; (ii) next append on an existing domain key reuses its `AggregateId` (no new aggregate file created); (iii) `last_seq` advances from the loaded value, not from 1. Plus `cargo test -p gh-report --test baseline_subordinate_to_events` exit 0: write baseline, append a `RepoEvaluated` past the baseline sequence, restart, assert baseline entry was discarded and projection rebuilt from event. |
 
+#### Track 7.5 execution plan (probe-then-mission)
+
+Track 7.5's body is deliberately under-specified pending two evidence probes.
+The execution sequence below resolves the under-specification before any
+hopper mission lands. User-ratified 2026-05-18.
+
+1. **Evidence bead (Bucket A).** Capture the eval2 storage analysis as a
+   durable cross-agent artefact via the write-tmp / `bd create --body-file`
+   / rm pattern. Title: `gh-report eval2 storage analysis — Memory Image
+   bootstrap defect`. Labels: `evidence,gh-report,memory-image,
+   phase:2-generalize,mission:memory-image-bootstrap-<ts>`. Body cites
+   D1–D4 defects and file:line references into `state.rs` (`:401-404`,
+   `:482-485`, `:685-688`), `merger.rs`, `run_service.rs:350-353`,
+   `infra/baseline.rs`, `collect.rs:1333`/`:1407`, and
+   `cherry-pit-projection/src/lib.rs:73`. Output: `bd-NNN` — the durable
+   pointer threaded into both probe prompts and the eventual mission
+   contract.
+
+2. **Parallel probes** (single message, two `task` calls):
+   - `@oracle` — Memory Image ADR coverage. Four questions:
+     (i) do CHE-0036 / CHE-0054 / CHE-0035 already mandate startup replay
+     of in-memory routing indices from persisted events?
+     (ii) does any ADR forbid on-disk projection caches / mandate events
+     as SoR?
+     (iii) where does `OrgGovernance` singleton id=1 reservation belong —
+     CHE-0005 (aggregate boundaries), a new CHE, or implementation detail
+     in `cherry-pit-projection`?
+     (iv) is `baseline.msgpack` covered by any ADR as an aggregate-state
+     snapshot, or only as a warm-start optimization?
+     Output: `oracle-summary` bead with binding constraints, gaps, ADR
+     ids requiring update/creation.
+   - `@copernicus` — `RepoEvaluated` ↔ `RepositoryEvidence`
+     field-completeness. Read `crates/gh-report/src/domain/events.rs`
+     (`RepoEvaluated` payload) and `crates/gh-report/src/domain/evidence.rs`
+     (`RepositoryEvidence`). Verify every field of `RepositoryEvidence`
+     (including nested `assessment_metadata.auth_mode`) is reconstructible
+     from `RepoEvaluated` + ancestor events alone. Output: evidence bead
+     with field-by-field table.
+
+   Both probes labelled `mission:memory-image-bootstrap-<ts>` so a later
+   moltke mission can collect them via `bd query --label
+   mission:memory-image-bootstrap-<ts>`.
+
+3. **Decision fork on probe results.**
+
+   | Copernicus says | Oracle says | Mission shape |
+   |---|---|---|
+   | Fields reconstructible | ADRs already cover Memory Image | 7.5 = pure code change: implement `replay_from_events()` at `AppState` bootstrap + tag `BaselineEntry` + reserve id=1. Single hopper mission, 3 TDD increments. |
+   | Fields reconstructible | ADR gap | Add ADR-authoring sub-mission (user-ratified per FOCUS §6) **before** code. Mission has 2 phases: ADR draft → code. |
+   | Fields NOT reconstructible | (either) | **Refine 7.5 first** before the mission: widen `RepoEvaluated` payload OR document baseline as legitimate escape hatch with explicit invariant. Roadmap edit required; pause mission. |
+
+   This fork is the reason 7.5's body is under-specified — the probes
+   determine which branch lands.
+
+4. **Conditional 7.5 refinement** (only if Step 3 selects the third row).
+   Plan-mode roadmap edit to widen the payload or document the escape
+   hatch, then continue to Step 5.
+
+5. **Moltke mission contract**, fork-selected shape:
+   - `commander_intent`: "gh-report restart preserves derived state per
+     domain key; routing indices rebuild from events; `baseline.msgpack`
+     is event-log-subordinate."
+   - `package_success_criteria`: the two `cargo test` commands named in
+     7.5's verify column + `bd query --label
+     mission:memory-image-bootstrap-<ts>,review:approved` non-empty.
+   - Pre-mortem covers: snapshot-vs-log skew on partial replay;
+     `OrgGovernance` id=1 collision with existing aggregate; replay perf
+     at 561-repo scale; `last_applied_sequence` migration of existing
+     `baseline.msgpack` files (562 entries observed in the eval store).
+   - Rollback: feature-flag the replay path; fall back to current
+     `HashMap::new()` behaviour if replay panics.
+   - Sub-missions: hopper-sized TDD increments; each gets a linus
+     review-request bead per AGENTS.md § Review loop.
+
+6. **Execute.** Moltke drives sub-missions until `package_success_criteria`
+   met → gardener sweep → report to user.
+
+**Out of scope for this execution plan:**
+- D4 (gh-report `SweepProgress publish ordering`) — filed as Phase 3
+  §G #19; not injected into Phase 2.
+- `gh-report repair` command for the 87 fragmented historical aggregates
+  — ratified out (stop-the-bleed only; existing files accepted as
+  history).
+- Cleanup of `/tmp/gh-report-eval-store/` — user scratch.
+
+
 ### Track 8 — C3 idiomatic architectural organization audit (NEW; final Phase 2 track)
 
 Goal: discharge **C3**. Operationalise "idiomatic architectural organization"
@@ -493,3 +579,5 @@ Cross-phase discovery audit trail lives in bd
 | 0.9     | 2026-05-17 | **User-ratified Phase 2 v2 completion criteria** (C1/C2/C3): C1 = adr-srv operational in **read-only mode** (scrape ADRs → pardosa-genome → GraphQL Query); C2 = gh-report stores internal state in pardosa-genome files (hard cut, re-scrape GitHub API); C3 = idiomatic architectural organization audit across adr-srv / gh-report / cherry-pit-* / pardosa-*. **Track 3 re-scoped** to read-only: 3.4 (GraphQL mutations) and 3.5 (metacircular adr-fmt-as-lint loop) retired to Phase 3 backlog; new 3.A scrape-pipeline sub-task added. **Track 7 added** (gh-report → pardosa hard cut; supersedes CHE-0031; 4 sub-tasks). **Track 8 added** (C3 idiomatic audit, 4 sub-tasks). Exit criteria rewritten: 12 criteria, indexed to C1/C2/C3/Track 6. Sequencing updated: Track 3.1/3.2 + Track 6 parallel at start; first pardosa write (3.A) gated on Track 6 atomic-ship; Track 7/8 sequenced after Track 5. Risk register extended with Track 3↔6 coupling, Track 7 hard-cut, Track 8 audit-bikeshedding rows. **Original v0.8 Track 6 content preserved unchanged.** PAR-0021 sequencing decision: F2 chain lands before any consumer write (Track 3.A + Track 7), per user direction; "parallel" in roadmap means concurrent agents on disjoint crate trees, not concurrent first-writes. Track 6 atomic-ship (Epic 6.A + 6.B together) preserved per user direction. Track 4.4 + Track 5 placement preserved (sequenced after Track 3.3 per user "as early as possible in Phase 2" direction). Companion: FOCUS.md sync to v0.8 (this commit). |
 | 1.0     | 2026-05-18 | **Phase 3 injection queue extended**: item #5 — workspace hash-algorithm consolidation. Drafted as mission package `hash-consolidation-1779148800`; promoted to bd evidence bead (label `evidence,hash-consolidation,phase:3-harden,roadmap-deferred`). Collapses three hash policies onto one rule ("adversary → BLAKE3; external protocol → HMAC-SHA256; otherwise → xxh3"). Six sub-missions; gated on Phase 2 Track 6 atomic-ship complete. Algorithm choices user-ratified 2026-05-18 (xxh3-128 for snapshot signature + ETags; right-sized for no-adversary threat model). Phase 2 v2 forward-work unchanged. |
 | 1.1     | 2026-05-18 | **Phase 3 task list renumbered 1–18 contiguously across groups §A–§F + §G injection queue.** Group headers prefixed with §A–§G; numbering is now authoritative. New **§F Cross-cutting language doctrine (RST)** group added with task #13: review the RST hardening ideas register against Phase-3 work-in-progress; promote candidates only when worked-example evidence exists (proptest/fuzz methodology, formal-verification gate, cargo-deny/cargo-audit enforcement are the natural candidates). Drafting any RST ADR remains user-ratified per FOCUS §6. Existing injection-queue items 1–5 renumbered to 14–18; cross-references in FOCUS §8 verify block updated (formerly "items 3 + 4" → "§G items 16 + 17"). Substance unchanged; renumbering is purely organisational. Companion: FOCUS.md v0.9. |
+| 1.2     | 2026-05-18 | **Memory Image bootstrap refinement** (post-eval2 storage analysis of `/tmp/gh-report-eval-store/`). User-ratified architectural style: Fowler **Memory Image** — persist events; routing indices, aggregate state, and projections live in-memory and are rebuilt from the event log on startup; on-disk snapshots (e.g. `baseline.msgpack`) are aggregate-state snapshots subordinate to the event log, not parallel persistence planes. **Triggering evidence**: 87 fragmented aggregate files (ids 627→713) accumulated across 4 runs for the same 561 repos because `state.rs` constructs `runs_by_key` / `repos_by_key` / `deliveries_by_id` / `next_seq` as `HashMap::new()` on every restart with no event-log replay; Track 7 (gh-report → pardosa hard cut) would preserve this defect since its 7.4 verify only checks SMI invariants, not bootstrap-replay. **Track 7 grows 4 → 5 sub-tasks**: new **7.5** combines (a) startup replay of routing indices from `events/<org>/*` into folded aggregate state, (b) `BaselineEntry` tagged with `last_applied_sequence` per aggregate + discard-on-skew rule, (c) `AggregateId(1)` reserved for the `OrgGovernance` singleton. 7.5 body deliberately under-specified; refined after `@oracle` (Memory Image ADR coverage across CHE-0036 / CHE-0054 / CHE-0035) and `@copernicus` (`RepoEvaluated` ↔ `RepositoryEvidence` field-completeness) probes report back. **Phase 2 exit criterion 10** gains a fourth bullet (`cargo test -p gh-report --test bootstrap_replay`). **Risk register** gains a row covering "Track 7 hard cut preserves bootstrap defect". **Track 8.1 checklist** gains criterion (i) Memory Image discipline so future violations across any crate get caught generically by the C3 audit, not just gh-report's current one. **Phase 3 §G #19** files the gh-report `SweepProgress publish failed` ordering bug observed in the eval2 log (non-fatal WARN; matches §B error-path-correctness intent). Sequencing diagram unchanged; track ordering unchanged. Status line updated to reflect 7.5 in scope. Companion: FOCUS.md may need parallel update (verify on next FOCUS edit). |
+| 1.3     | 2026-05-18 | **Track 7.5 execution plan annex.** Added probe-then-mission sequence as a sub-section under Track 7.5 (lines after row 7.5, before Track 8 heading): (1) bd evidence bead capturing eval2 storage analysis under `mission:memory-image-bootstrap-<ts>`; (2) parallel `@oracle` (ADR coverage) + `@copernicus` (`RepoEvaluated` ↔ `RepositoryEvidence` field-completeness) probes; (3) 3-row decision-fork table on probe results; (4) conditional 7.5 refinement if fields not reconstructible; (5) moltke mission contract shape with commander_intent, package_success_criteria, pre-mortem (snapshot-skew, id=1 collision, replay perf, baseline migration), rollback (feature-flag); (6) execute → gardener → user. Out-of-scope explicitly named: D4 (Phase 3 §G #19), `gh-report repair` command, `/tmp` cleanup. Track 7.5 row unchanged; annex pins the execution sequence so probe results have a defined home and the under-specification has a defined resolution path. |
