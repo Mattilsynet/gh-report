@@ -1,0 +1,11 @@
+error[E0277]: the trait bound `&[u8]: GenomeSafe` is not satisfied
+ --> tests/compile_fail/ref_bytes_genome_safe.rs:6:14
+  |
+6 |     let _ = <&[u8] as GenomeSafe>::SCHEMA_HASH;
+  |              ^^^^^ the trait `GenomeSafe` is not implemented for `&[u8]`
+  |
+help: the trait `GenomeSafe` is implemented for `[T; N]`
+ --> src/genome_safe.rs
+  |
+  | impl<T: GenomeSafe, const N: usize> GenomeSafe for [T; N] {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

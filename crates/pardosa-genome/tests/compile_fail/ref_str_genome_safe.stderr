@@ -1,0 +1,11 @@
+error[E0277]: the trait bound `&str: GenomeSafe` is not satisfied
+ --> tests/compile_fail/ref_str_genome_safe.rs:6:14
+  |
+6 |     let _ = <&str as GenomeSafe>::SCHEMA_HASH;
+  |              ^^^^ the trait `GenomeSafe` is not implemented for `&str`
+  |
+help: consider removing the leading `&`-reference
+  |
+6 -     let _ = <&str as GenomeSafe>::SCHEMA_HASH;
+6 +     let _ = <str as GenomeSafe>::SCHEMA_HASH;
+  |
