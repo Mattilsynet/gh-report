@@ -667,4 +667,71 @@ mod tests {
         let err = from_bytes::<BTreeSet<u32>>(&bad).unwrap_err();
         assert_eq!(err, EventError::InvalidInput);
     }
+
+    // ---- kb50: BTreeSet<T> canonical-order fix for variable-length T --------
+    //
+    // Mirror of the BTreeMap mixed-length tests at lines 496-579 above.
+    // GEN-0035:R5: elements must be emitted in ascending order of encoded
+    // bytes. For variable-length T (String, Vec<u8>) T::Ord disagrees
+    // with encoded-bytes order (u32 length prefix dominates), so the
+    // encoder must sort by encoded bytes, not T::Ord.
+
+    #[test]
+    fn roundtrip_btreeset_string_mixed_length() {
+        // kb50 load-bearing: encoder must sort by encoded bytes, not T::Ord.
+        // "beta" (4 bytes) < "alpha"/"gamma" (5 bytes) by encoded-bytes order;
+        // T::Ord would yield "alpha" < "beta" < "gamma".
+        use alloc::collections::BTreeSet;
+        let mut s: BTreeSet<String> = BTreeSet::new();
+        s.insert(String::from("alpha"));
+        s.insert(String::from("beta"));
+        s.insert(String::from("gamma"));
+        rt(s);
+    }
+
+    #[test]
+    fn canonical_bytes_btreeset_string_mixed_length() {
+        // kb50 load-bearing: wire bytes must be sorted by encoded-element-bytes,
+        // not T::Ord order.
+        use alloc::collections::BTreeSet;
+        let mut s: BTreeSet<String> = BTreeSet::new();
+        s.insert(String::from("alpha"));
+        s.insert(String::from("beta"));
+        s.insert(String::from("gamma"));
+        let got = to_vec(&s);
+
+        // Build expected: encode each element, sort by encoded bytes,
+        // concatenate with u32 LE count prefix.
+        let mut elems: Vec<Vec<u8>> = Vec::new();
+        for e in ["alpha", "beta", "gamma"] {
+            let mut eb = Vec::new();
+            String::from(e).encode(&mut eb);
+            elems.push(eb);
+        }
+        elems.sort();
+        let mut expected = Vec::new();
+        expected.extend_from_slice(
+            &u32::try_from(elems.len())
+                .expect("test fixture under u32::MAX")
+                .to_le_bytes(),
+        );
+        for eb in &elems {
+            expected.extend_from_slice(eb);
+        }
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn roundtrip_btreeset_vec_u8_mixed_length() {
+        // kb50 load-bearing: Vec<u8> elements with distinct lengths.
+        // T::Ord on Vec<u8> is lex on bytes (ignoring length prefix);
+        // encoded bytes prepend u32 len, so encoded order = ascending
+        // length then content.
+        use alloc::collections::BTreeSet;
+        let mut s: BTreeSet<Vec<u8>> = BTreeSet::new();
+        s.insert(vec![1]);
+        s.insert(vec![1, 1]);
+        s.insert(vec![2]);
+        rt(s);
+    }
 }
