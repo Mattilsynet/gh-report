@@ -84,6 +84,17 @@ impl DomainEvent for TestEvent {
     }
 }
 
+impl pardosa_encoding::Encode for TestEvent {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Incremented(n) => {
+                out.push(0u8);
+                pardosa_encoding::Encode::encode(n, out);
+            }
+        }
+    }
+}
+
 // ── Projection (drives projection-over-pardosa-store registrant) ───
 
 #[derive(Default, Debug, PartialEq)]

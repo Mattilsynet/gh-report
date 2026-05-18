@@ -24,6 +24,17 @@ impl DomainEvent for FooEvent {
     }
 }
 
+impl pardosa_encoding::Encode for FooEvent {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Happened { value } => {
+                out.push(0u8);
+                pardosa_encoding::Encode::encode(value, out);
+            }
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Foo {
     pub last: u32,
@@ -63,6 +74,17 @@ impl DomainEvent for BarEvent {
     fn event_type(&self) -> &'static str {
         match self {
             Self::Pinged { .. } => "bar.pinged",
+        }
+    }
+}
+
+impl pardosa_encoding::Encode for BarEvent {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Pinged { from } => {
+                out.push(0u8);
+                pardosa_encoding::Encode::encode(from, out);
+            }
         }
     }
 }

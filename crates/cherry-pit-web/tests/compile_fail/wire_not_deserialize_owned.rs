@@ -35,6 +35,15 @@ impl DomainEvent for E {
         "e"
     }
 }
+// CHE-0064:R2 — Encode hand-rolled so the cascade does not obscure the
+// real assertion (Wire: DeserializeOwned).
+impl pardosa_encoding::Encode for E {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Created => out.push(0u8),
+        }
+    }
+}
 #[derive(Default)]
 struct A;
 impl Aggregate for A {

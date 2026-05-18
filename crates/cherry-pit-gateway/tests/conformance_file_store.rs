@@ -50,6 +50,17 @@ impl DomainEvent for TestEvent {
     }
 }
 
+impl pardosa_encoding::Encode for TestEvent {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Stamped(n) => {
+                out.push(0u8);
+                pardosa_encoding::Encode::encode(n, out);
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn msgpack_file_store_conforms() {
     // TempDirs are retained here so they outlive every store the

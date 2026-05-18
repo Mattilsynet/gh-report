@@ -55,6 +55,17 @@ impl DomainEvent for TestEvent {
     }
 }
 
+impl pardosa_encoding::Encode for TestEvent {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Tallied(n) => {
+                out.push(0u8);
+                pardosa_encoding::Encode::encode(n, out);
+            }
+        }
+    }
+}
+
 /// Tally projection: sums signed integers from `Tallied` events and
 /// tracks how many envelopes have been folded in. Both fields move
 /// monotonically away from `Default`, so replay equivalence is
