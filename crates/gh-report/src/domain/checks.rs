@@ -94,12 +94,13 @@ impl pardosa_encoding::Encode for SecurityPolicyResult {
 /// assert_eq!(out, vec![1u8]);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum SecurityPolicyStatus {
-    Pass,
-    Fail,
-    Unknown,
-    NotApplicable,
+    Pass = 0,
+    Fail = 1,
+    Unknown = 2,
+    NotApplicable = 3,
 }
 
 // Wire format: u8 discriminant per declaration order. Reorder or insert is a
@@ -133,23 +134,24 @@ impl pardosa_encoding::Encode for SecurityPolicyStatus {
 /// assert_eq!(out, vec![1u8]);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum SecurityPolicyEvidence {
     /// Detected via the GitHub API `is_security_policy_enabled` setting.
-    Setting,
+    Setting = 0,
     /// Detected via file presence (e.g., `SECURITY.md`).
-    File,
+    File = 1,
     /// No evidence of a security policy.
     #[serde(alias = "none")]
-    Absent,
+    Absent = 2,
     /// API returned a permission error; status could not be determined.
-    PermissionDenied,
+    PermissionDenied = 3,
     /// API returned a transient error; status may succeed on retry.
-    TransientError,
+    TransientError = 4,
     /// An unexpected error occurred during collection.
-    CollectionError,
+    CollectionError = 5,
     /// Security policy evaluation is not applicable (non-public repository).
-    NotApplicable,
+    NotApplicable = 6,
 }
 
 // Wire format: u8 discriminant per declaration order. Reorder or insert is a
@@ -224,12 +226,13 @@ impl pardosa_encoding::Encode for SecretScanningResult {
 /// assert_eq!(out, vec![1u8]);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum SecretScanningStatus {
-    Enabled,
-    Disabled,
-    PermissionDenied,
-    Unknown,
+    Enabled = 0,
+    Disabled = 1,
+    PermissionDenied = 2,
+    Unknown = 3,
 }
 
 // Wire format: u8 discriminant per declaration order. Reorder or insert is a
@@ -305,12 +308,13 @@ impl pardosa_encoding::Encode for DependabotResult {
 /// assert_eq!(out, vec![1u8]);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum DependabotStatus {
-    Enabled,
-    Paused,
-    Disabled,
-    Unknown,
+    Enabled = 0,
+    Paused = 1,
+    Disabled = 2,
+    Unknown = 3,
 }
 
 // Wire format: u8 discriminant per declaration order. Reorder or insert is a
@@ -386,12 +390,13 @@ impl pardosa_encoding::Encode for BranchProtectionResult {
 /// assert_eq!(out, vec![1u8]);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum BranchProtectionStatus {
-    Pass,
-    Partial,
-    Fail,
-    Unknown,
+    Pass = 0,
+    Partial = 1,
+    Fail = 2,
+    Unknown = 3,
 }
 
 // Wire format: u8 discriminant per declaration order. Reorder or insert is a
@@ -679,16 +684,17 @@ impl pardosa_encoding::Encode for CodeownersResult {
 /// assert_eq!(out, vec![1u8]);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum CodeownersStatus {
     /// CODEOWNERS file found in the conforming location (`.github/CODEOWNERS`).
-    Conforming,
+    Conforming = 0,
     /// CODEOWNERS file found in a non-conforming location (e.g., repo root).
-    NonConforming,
+    NonConforming = 1,
     /// No CODEOWNERS file detected.
-    Absent,
+    Absent = 2,
     /// CODEOWNERS status could not be determined.
-    Unknown,
+    Unknown = 3,
 }
 
 // Wire format: u8 discriminant per declaration order. Reorder or insert is a
@@ -727,13 +733,14 @@ impl std::fmt::Display for CodeownersStatus {
 /// - `Excluded` — status is indeterminate or not applicable, excluded from both
 ///   numerator and denominator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum ScoreCategory {
     /// Control is satisfied.
-    Pass,
+    Pass = 0,
     /// Control is not satisfied.
-    Fail,
+    Fail = 1,
     /// Control is indeterminate or not applicable; excluded from scoring.
-    Excluded,
+    Excluded = 2,
 }
 
 impl From<SecurityPolicyStatus> for ScoreCategory {
@@ -793,18 +800,19 @@ impl From<CodeownersStatus> for ScoreCategory {
 /// Used to selectively trigger evaluation of individual checks
 /// (e.g., in response to a webhook event affecting a specific control).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckType {
     /// Maps to [`RepositoryChecks::security_policy`].
-    SecurityPolicy,
+    SecurityPolicy = 0,
     /// Maps to [`RepositoryChecks::secret_scanning`].
-    SecretScanning,
+    SecretScanning = 1,
     /// Maps to [`RepositoryChecks::dependabot_security_updates`].
-    Dependabot,
+    Dependabot = 2,
     /// Maps to [`RepositoryChecks::branch_protection`].
-    BranchProtection,
+    BranchProtection = 3,
     /// Maps to [`RepositoryChecks::codeowners`].
-    Codeowners,
+    Codeowners = 4,
 }
 
 impl CheckType {
