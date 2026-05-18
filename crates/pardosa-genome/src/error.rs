@@ -79,7 +79,7 @@ pub enum DeError {
     /// Format version not supported.
     VersionMismatch { expected: u16, actual: u16 },
     /// Schema hash mismatch.
-    SchemaMismatch { expected: u64, actual: u64 },
+    SchemaMismatch { expected: u128, actual: u128 },
     /// Padding byte is not 0x00.
     NonZeroPadding { offset: usize },
     /// Offset points into inline region.
@@ -124,7 +124,7 @@ impl fmt::Display for DeError {
             Self::SchemaMismatch { expected, actual } => {
                 write!(
                     f,
-                    "schema mismatch: expected 0x{expected:016X}, got 0x{actual:016X}"
+                    "schema mismatch: expected 0x{expected:032X}, got 0x{actual:032X}"
                 )
             }
             Self::NonZeroPadding { offset } => {
