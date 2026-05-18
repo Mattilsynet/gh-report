@@ -1,13 +1,13 @@
 # CHE-0060. HashChainedEventStore Extension Trait
 
 Date: 2026-05-16
-Last-reviewed: 2026-05-16
+Last-reviewed: 2026-05-18
 Tier: B
 Status: Accepted
 
 ## Related
 
-References: CHE-0057, CHE-0016, PAR-0021, SEC-0011
+References: CHE-0057, CHE-0016, PAR-0021, SEC-0011, CHE-0064
 
 ## Context
 
@@ -65,10 +65,16 @@ remains formally deferred — this ADR provides the trait shape but no
 claim of non-repudiation until pardosa implements PAR-0021 and a
 follow-up SEC ADR ratifies the claim.
 
-Encoding locality: R2's `[u8; 32]` signature confines hashing to the
-trait's output, not its inputs. Any encoding of `AggregateId` or
-`EventEnvelope<E>` required to produce a frontier hash in a non-stub
-impl is therefore impl-side — the adapter crate (e.g. cherry-pit-
-pardosa) chooses the encoding strategy, and cherry-pit-core need not
-host an Encode impl on either type. The core dep set stays narrow
-without further amendment.
+Encoding locality (scope: frontier-hash production at the
+HashChainedEventStore trait-output boundary). R2's `[u8; 32]`
+signature confines *frontier* hashing to the trait's output, not its
+inputs; the adapter crate (e.g. cherry-pit-pardosa) chooses any
+encoding strategy needed to produce a frontier hash. This paragraph
+does NOT govern substrate-internal Encode bounds: PAR-0021:R5's
+per-event `precursor_hash` is computed inside `pardosa::Dragline`
+and requires `EventEnvelope<E>: Encode` / `AggregateId: Encode` at
+the substrate layer — that locality is set by CHE-0064 (2026-05-18),
+which amends CHE-0029:R4 to admit `pardosa-encoding` in
+`cherry-pit-core` for exactly this purpose. The two surfaces are
+distinct; this ADR's no-Encode-impl statement stands for frontier
+hashing only.
