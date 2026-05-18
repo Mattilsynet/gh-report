@@ -1,13 +1,13 @@
 # CHE-0029. Cargo Workspace with Layered Crate DAG
 
 Date: 2026-04-24
-Last-reviewed: 2026-04-30
+Last-reviewed: 2026-05-18
 Tier: B
 Status: Accepted
 
 ## Related
 
-References: CHE-0001, CHE-0004, COM-0014
+References: CHE-0001, CHE-0004, COM-0014, CHE-0064
 
 ## Context
 
@@ -38,8 +38,11 @@ R2 [5]: Share dependency versions at workspace level via
 R3 [5]: Commit Cargo.lock to version control for reproducible
   dependency resolution across all environments
 R4 [5]: Restrict cherry-pit-core/Cargo.toml [dependencies] to the
-  pure-domain set serde, uuid, jiff so the crate stays a leaf with
-  zero transport, runtime, or filesystem dependencies
+  pure-domain set serde, uuid, jiff, pardosa-encoding so the crate
+  stays a leaf with zero transport, runtime, or filesystem
+  dependencies (pardosa-encoding admitted per CHE-0064:R1 on
+  2026-05-18 to host substrate-side Encode impls; its closure must
+  remain inside CHE-0029:R6's tokio/axum/async-nats/tracing exclusion)
 R5 [5]: Keep async runtimes (tokio), web frameworks (axum), transport
   clients (async-nats), and observability stacks (tracing) in adapter
   crates such as cherry-pit-gateway, cherry-pit-web, and pardosa
