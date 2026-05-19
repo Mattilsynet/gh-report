@@ -154,6 +154,7 @@ async fn publish_failure_emits_structured_error_per_envelope() {
         repo_count: 1,
         batch_id: "m2a-prime-test".into(),
         timestamp: "2026-05-11T00:00:00Z".into(),
+        snapshot_signature: "test-sig-m2a".into(),
     };
     let ctx = CorrelationContext::none();
 

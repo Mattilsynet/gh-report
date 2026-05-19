@@ -1,9 +1,16 @@
-//! Baseline file mechanism for minimizing API calls across runs.
+//! Baseline algorithms for evidence reuse and `--dump-baseline` JSON shape.
 //!
-//! A baseline persists per-repository evidence from the most recent successful
-//! run. On subsequent runs, if a repository's `updated_at` timestamp matches
-//! the baseline entry, the previous evidence is reused without re-evaluating
-//! the repository via the GitHub API.
+//! δ.3c-ii retired on-disk persistence (`baseline.msgpack`). The baseline
+//! is now reconstructed from the projection (in-memory; rebuilt at boot via
+//! event-log replay per CHE-0051:R5 + CHE-0048:R2). This module keeps:
+//!
+//! - `Baseline` / `BaselineEntry` — JSON shape for `--dump-baseline` output
+//!   (byte-equivalent to the pre-δ.3c-ii dump).
+//! - `build_baseline` — pure builder over `&[RepositoryEvidence]`; reused
+//!   by `--dump-baseline` (replay → project → build → JSON) and by tests.
+//! - `should_reuse` — staleness comparator (called by `reuse_from_baseline`
+//!   in `app/collect.rs`).
+//! - `is_total_failure` — total-failure filter used by `build_baseline`.
 //!
 //! # Staleness window
 //!
@@ -12,21 +19,12 @@
 //! can be minutes to hours. The `inventory_fetched_at` field on
 //! [`AssessmentMetadata`](crate::domain::evidence::AssessmentMetadata)
 //! makes this observable.
-//!
-//! # Storage
-//!
-//! The baseline is stored as `baseline.msgpack` (`MessagePack`) in `store_dir`
-//! (persists across runs). Schema version is validated before reuse — on
-//! mismatch the baseline is discarded.
-//! Previous versions stored the baseline as `baseline.json`; that format
-//! is no longer supported.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use tracing::{debug, info, warn};
+use tracing::debug;
 
 use crate::config;
 use crate::domain::checks::{
@@ -34,10 +32,11 @@ use crate::domain::checks::{
     SecurityPolicyStatus,
 };
 use crate::domain::evidence::RepositoryEvidence;
-use crate::error::PersistenceError;
-use cherry_pit_storage::atomic_write_bytes;
 
 /// A single repository's baseline entry.
+///
+/// Retained as the JSON shape for `--dump-baseline` output. Field order
+/// and names define the byte-equivalent dump contract; do not reorder.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BaselineEntry {
     /// `updated_at` timestamp from the GitHub API at the time this
@@ -47,123 +46,17 @@ pub struct BaselineEntry {
     pub evidence: RepositoryEvidence,
 }
 
-/// Persisted baseline: a map of inventory keys to evidence entries.
+/// Baseline JSON shape: a map of inventory keys to evidence entries.
+///
+/// δ.3c-ii: no longer persisted to disk. Constructed in-memory by
+/// [`build_baseline`] from the projection (via event-log replay) for
+/// the `--dump-baseline` CLI flag.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Baseline {
-    /// Schema version — must match [`config::EVIDENCE_SCHEMA_VERSION`]
-    /// for the baseline to be considered valid.
+    /// Schema version — stamped from [`config::EVIDENCE_SCHEMA_VERSION`].
     pub schema_version: String,
     /// Per-repository baseline entries keyed by inventory key.
     pub entries: HashMap<String, BaselineEntry>,
-}
-
-/// Maximum baseline file size in bytes (200 MB).
-const MAX_BASELINE_FILE_BYTES: u64 = 200 * 1024 * 1024;
-
-/// Return the canonical path for the baseline file (`MessagePack`).
-#[must_use]
-pub fn baseline_path(store_dir: &Path) -> PathBuf {
-    store_dir.join("baseline.msgpack")
-}
-
-/// Load a baseline from `store_dir/baseline.msgpack`.
-///
-/// Returns `None` if no baseline exists, the file is corrupt, exceeds the
-/// size limit, or has a schema version mismatch. All non-fatal failures
-/// are logged as warnings.
-pub fn load_baseline(store_dir: &Path) -> Option<Baseline> {
-    let path = baseline_path(store_dir);
-
-    if !path.exists() {
-        debug!("no baseline file found");
-        return None;
-    }
-
-    // Size guard.
-    match std::fs::metadata(&path) {
-        Ok(meta) if meta.len() > MAX_BASELINE_FILE_BYTES => {
-            warn!(
-                size = meta.len(),
-                max = MAX_BASELINE_FILE_BYTES,
-                "baseline file exceeds size limit — discarding"
-            );
-            return None;
-        }
-        Err(e) => {
-            warn!(error = %e, "failed to stat baseline file — discarding");
-            return None;
-        }
-        _ => {}
-    }
-
-    let data = match std::fs::read(&path) {
-        Ok(d) => d,
-        Err(e) => {
-            warn!(error = %e, "failed to read baseline file — discarding");
-            return None;
-        }
-    };
-
-    let baseline: Baseline = match rmp_serde::from_slice(&data) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(error = %e, "failed to parse baseline file — discarding");
-            return None;
-        }
-    };
-
-    if baseline.schema_version != config::EVIDENCE_SCHEMA_VERSION {
-        warn!(
-            found = %baseline.schema_version,
-            expected = config::EVIDENCE_SCHEMA_VERSION,
-            "baseline schema version mismatch — discarding"
-        );
-        return None;
-    }
-
-    info!(entries = baseline.entries.len(), "baseline loaded");
-    Some(baseline)
-}
-
-/// Save a baseline atomically to `store_dir/baseline.msgpack`.
-///
-/// # Errors
-///
-/// Returns [`PersistenceError`] if serialization or the atomic write fails.
-pub fn save_baseline(store_dir: &Path, baseline: &Baseline) -> Result<(), PersistenceError> {
-    let path = baseline_path(store_dir);
-    let data =
-        rmp_serde::to_vec_named(baseline).map_err(|e| PersistenceError::AtomicWriteFailed {
-            reason: format!("failed to serialize baseline: {e}"),
-        })?;
-    atomic_write_bytes(&path, &data)?;
-    info!(
-        entries = baseline.entries.len(),
-        bytes = data.len(),
-        path = %path.display(),
-        "baseline saved"
-    );
-    Ok(())
-}
-
-/// Dump a baseline file to stdout as pretty-printed JSON.
-///
-/// Used by the `--dump-baseline` CLI flag for inspecting `MessagePack` baselines.
-///
-/// # Errors
-///
-/// Returns an error message if the file cannot be read, parsed, or serialized.
-pub fn dump_baseline(store_dir: &Path) -> Result<String, String> {
-    let path = baseline_path(store_dir);
-    if !path.exists() {
-        return Err(format!("baseline file not found: {}", path.display()));
-    }
-    let data =
-        std::fs::read(&path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    let baseline: Baseline = rmp_serde::from_slice(&data)
-        .map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
-    serde_json::to_string_pretty(&baseline)
-        .map_err(|e| format!("failed to serialize baseline as JSON: {e}"))
 }
 
 /// Determine whether a baseline entry can be reused for a given repository.
@@ -202,18 +95,12 @@ fn is_total_failure(evidence: &RepositoryEvidence) -> bool {
         && c.codeowners.status == CodeownersStatus::Unknown
 }
 
-/// Build a new baseline from a completed collection run.
+/// Build a baseline from a slice of evidence (typically the projection's
+/// `repositories.values()` at `--dump-baseline` time).
 ///
-/// Only includes entries for repositories that were either:
-/// - Freshly evaluated in the current run, OR
-/// - Reused from a previous baseline (and thus validated in the current run).
-///
-/// Excludes entries where all 5 checks are `Unknown` (total collection
-/// failures from rate-limit halts or panics) to prevent permanent caching
-/// of unresolved results.
-///
-/// Does NOT blindly persist stale baseline entries that were neither
-/// re-evaluated nor reused.
+/// Only includes entries for repositories that have a non-empty
+/// `updated_at`. Excludes entries where all 5 checks are `Unknown`
+/// (total collection failures) to keep the dump informative.
 #[must_use]
 pub fn build_baseline(repositories: &[RepositoryEvidence]) -> Baseline {
     let mut entries = HashMap::new();
@@ -323,83 +210,6 @@ mod tests {
         let baseline = build_baseline(&[]);
         assert_eq!(baseline.schema_version, config::EVIDENCE_SCHEMA_VERSION);
     }
-
-    // ── load / save round-trip ─────────────────────────────────────
-
-    #[test]
-    fn save_and_load_round_trip() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let ev = make_evidence_with_updated_at("repo-rt", Some("2026-04-09T12:00:00Z"));
-        let baseline = build_baseline(&[ev]);
-
-        save_baseline(dir.path(), &baseline).unwrap();
-        let loaded = load_baseline(dir.path()).unwrap();
-
-        assert_eq!(loaded.schema_version, baseline.schema_version);
-        assert_eq!(loaded.entries.len(), 1);
-        assert_eq!(
-            loaded.entries["id-repo-rt"].updated_at,
-            "2026-04-09T12:00:00Z"
-        );
-    }
-
-    #[test]
-    fn load_missing_baseline_returns_none() {
-        let dir = tempfile::TempDir::new().unwrap();
-        assert!(load_baseline(dir.path()).is_none());
-    }
-
-    #[test]
-    fn load_corrupt_baseline_returns_none() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = baseline_path(dir.path());
-        std::fs::write(&path, "not valid msgpack").unwrap();
-        assert!(load_baseline(dir.path()).is_none());
-    }
-
-    #[test]
-    fn load_wrong_schema_version_returns_none() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let baseline = Baseline {
-            schema_version: "0.0".to_string(),
-            entries: HashMap::new(),
-        };
-        let data = rmp_serde::to_vec(&baseline).unwrap();
-        std::fs::write(baseline_path(dir.path()), data).unwrap();
-        assert!(load_baseline(dir.path()).is_none());
-    }
-
-    // ── baseline_path ──────────────────────────────────────────────
-
-    #[test]
-    fn baseline_path_is_in_store_dir() {
-        let path = baseline_path(Path::new("/tmp/store"));
-        assert_eq!(path, PathBuf::from("/tmp/store/baseline.msgpack"));
-    }
-
-    // ── dump_baseline ──────────────────────────────────────────────
-
-    #[test]
-    fn dump_baseline_outputs_json() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let ev = make_evidence_with_updated_at("repo-dump", Some("2026-04-09T12:00:00Z"));
-        let baseline = build_baseline(&[ev]);
-        save_baseline(dir.path(), &baseline).unwrap();
-
-        let json_str = dump_baseline(dir.path()).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        assert!(parsed["entries"].is_object());
-    }
-
-    #[test]
-    fn dump_baseline_missing_file() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let result = dump_baseline(dir.path());
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not found"));
-    }
-
-    // ── baseline + checkpoint composition ──────────────────────────
 
     #[test]
     fn baseline_only_includes_evaluated_repos() {

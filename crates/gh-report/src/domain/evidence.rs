@@ -196,7 +196,9 @@ mod tests {
             warm_start: true,
         };
 
-        // Serialize with named fields (same as baseline.msgpack).
+        // Serialize with named fields (msgpack-named is the
+        // workspace-standard structural encoding for serde types
+        // crossing the cherry-pit storage boundary).
         let encoded = rmp_serde::to_vec_named(&metadata).expect("serialize");
 
         // Deserialize back — warm_start should be preserved.

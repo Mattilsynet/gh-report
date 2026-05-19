@@ -281,6 +281,7 @@ mod tests {
                     repo_count: 1,
                     batch_id: run.run_id.clone(),
                     timestamp: jiff::Timestamp::now().to_string(),
+                    snapshot_signature: "test-sig".to_string(),
                 },
                 &corr,
             )

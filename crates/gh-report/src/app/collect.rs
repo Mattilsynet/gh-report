@@ -18,7 +18,7 @@
 //! 7. Render HTML report and update in-memory cache
 //! 8. Release run lock
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -456,11 +456,14 @@ pub(crate) enum SweepPhase {
 pub(crate) struct SweepSaga {
     /// Current phase.
     phase: SweepPhase,
-    /// Evidence from checkpoint resume.
+    /// Evidence carried forward from a prior run (δ.3c-ii: sourced from the
+    /// projection via event-log replay; was previously the on-disk
+    /// checkpoint).
     completed: HashMap<String, Arc<RepositoryEvidence>>,
     /// Evidence reused from previous baseline.
     baseline_cache: HashMap<String, Arc<RepositoryEvidence>>,
-    /// Number of repos resumed from checkpoint.
+    /// Number of repos resumed from the projection (δ.3c-ii: was previously
+    /// the checkpoint-resumed count).
     resumed_count: usize,
     /// Number of repos reused from baseline.
     baseline_reused: usize,
@@ -470,8 +473,6 @@ pub(crate) struct SweepSaga {
     run_timestamp: String,
     /// Content hash of the org-level alert snapshot.
     snapshot_signature: String,
-    /// Path to the date-scoped checkpoint file.
-    checkpoint_path: std::path::PathBuf,
     /// Budget pause notification channel.
     pause_notify: Arc<tokio::sync::Notify>,
     /// Org-level alert summary.
@@ -492,6 +493,11 @@ impl SweepSaga {
         org_alert: OrgAlertContext,
         state: &Arc<AppState>,
     ) -> Self {
+        // δ.3c-ii: `config` retained for call-site stability; the previous
+        // `checkpoint_path` field initializer is gone alongside on-disk
+        // checkpoint retirement.
+        let _ = config;
+
         let pause_notify = Arc::new(tokio::sync::Notify::new());
         ctx.client
             .set_budget_pause_notify(Arc::clone(&pause_notify));
@@ -511,7 +517,6 @@ impl SweepSaga {
             sweep_start: std::time::Instant::now(),
             run_timestamp: run.timestamp(),
             snapshot_signature: checkpoint::build_snapshot_signature(org_alert.snapshot.as_ref()),
-            checkpoint_path: checkpoint::checkpoint_path(&config.store_dir, &run.date()),
             pause_notify,
             org_summary,
             client: Arc::clone(&ctx.client),
@@ -537,8 +542,8 @@ impl SweepSaga {
         inventory: &InventoryLoad,
         state: &Arc<AppState>,
     ) -> Result<(), AppError> {
-        // Phase 1: Resume from checkpoint.
-        self.step_resume(inventory, config, state)?;
+        // Phase 1: Resume from event log (δ.3c-ii: pure phase transition).
+        self.step_resume(inventory, config, state);
 
         // Emit progress: resumed repos.
         Self::emit_progress(run, corr_ctx, inventory.active_repos.len() as u64, state).await;
@@ -570,31 +575,31 @@ impl SweepSaga {
         Ok(())
     }
 
-    /// Phase 1: Resume from checkpoint.
+    /// Phase 1: Init → Resumed transition.
     ///
-    /// Loads the date-scoped checkpoint file and pre-populates the
-    /// evidence store with resumed entries.
+    /// δ.3c-ii: on-disk checkpoint resume is retired. The projection
+    /// (rebuilt at boot via event-log replay per CHE-0051:R5 +
+    /// CHE-0048:R2) is the durable state; carry-forward of partial
+    /// in-progress runs collapses into `step_baseline`'s
+    /// `reuse_from_baseline`, which now sources from the projection
+    /// and applies the same `should_reuse(updated_at)` staleness
+    /// check that prior-run evidence used to receive on the baseline
+    /// path. This step is therefore a pure phase transition retained
+    /// for state-machine stability.
     fn step_resume(
         &mut self,
         inventory: &InventoryLoad,
         config: &RuntimeConfig,
         state: &Arc<AppState>,
-    ) -> Result<(), AppError> {
+    ) {
         debug_assert_eq!(self.phase, SweepPhase::Init);
-
-        let (completed, resumed_count) = resume_and_populate(
-            &self.checkpoint_path,
-            &self.run_timestamp,
-            &self.snapshot_signature,
-            inventory,
-            config,
-            state,
-        )?;
-
-        self.completed = completed;
-        self.resumed_count = resumed_count;
+        // Parameters retained for call-site signature stability with
+        // sibling `step_*` fns; the data they referenced (checkpoint
+        // file + current-inventory filtering) is no longer consulted
+        // here. `state` is still passed because future phases may
+        // reintroduce a resume-specific projection read.
+        let _ = (inventory, config, state);
         self.phase = SweepPhase::Resumed;
-        Ok(())
     }
 
     /// Phase 2: Reuse evidence from the previous baseline.
@@ -604,29 +609,30 @@ impl SweepSaga {
     fn step_baseline(
         &mut self,
         inventory: &InventoryLoad,
-        config: &RuntimeConfig,
+        // δ.3c-ii: `_config` retained for call-site symmetry with sibling
+        // `step_*` phase fns (`step_resume`, `step_inventory`, etc.); store_dir
+        // is no longer needed now that the baseline is sourced from the
+        // in-memory projection rather than `<store_dir>/baseline.msgpack`.
+        _config: &RuntimeConfig,
         state: &Arc<AppState>,
     ) {
         debug_assert_eq!(self.phase, SweepPhase::Resumed);
 
+        // δ.3c-ii: baseline now sourced from the projection (rebuilt at
+        // boot via event-log replay per CHE-0051:R5 + CHE-0048:R2).
+        // The previous `load_baseline(store_dir)` on-disk read is retired;
+        // the prior `projection.load_baseline(...)` bulk-write that
+        // re-inserted these same entries into the projection is now dead
+        // code (projection is already the source) and removed. CHE-0048:R2
+        // sole-writer discipline strengthens: fewer authorised mutation
+        // sites, single source of truth.
         self.baseline_cache = reuse_from_baseline(
             &inventory.active_repos,
             &self.completed,
             &self.run_timestamp,
-            &config.store_dir,
+            state,
         );
         self.baseline_reused = self.baseline_cache.len();
-
-        // M2.cd (W3): bulk-load baseline-reused entries into the projection
-        // at startup, before any bus dispatch (parent D2, pre-mortem #7).
-        // Sole-writer authorisation per CHE-0048:R2 — projection's
-        // `load_baseline` is the only direct mutation path at v0.1.
-        let baseline_entries: Vec<RepositoryEvidence> = self
-            .baseline_cache
-            .values()
-            .map(|ev| (**ev).clone())
-            .collect();
-        state.lock_projection().load_baseline(baseline_entries);
 
         self.phase = SweepPhase::BaselineReused;
     }
@@ -676,6 +682,7 @@ impl SweepSaga {
                     repo_count: inventory.active_repos.len() as u64,
                     batch_id: run.run_id.clone(),
                     timestamp: jiff::Timestamp::now().to_string(),
+                    snapshot_signature: self.snapshot_signature.clone(),
                 },
                 corr_ctx,
             )
@@ -783,8 +790,10 @@ impl SweepSaga {
         }
     }
 
-    /// Phase 4: Finalize — snapshot evidence, build report, publish,
-    /// save baseline, clean up checkpoint.
+    /// Phase 4: Finalize — snapshot evidence, build report, publish.
+    ///
+    /// δ.3c-ii: on-disk baseline + checkpoint persistence retired; the
+    /// previous "save baseline, clean up checkpoint" actions are gone.
     async fn step_finalize(
         &mut self,
         config: &RuntimeConfig,
@@ -797,10 +806,6 @@ impl SweepSaga {
         debug_assert_eq!(self.phase, SweepPhase::BatchDrained);
 
         let result = finalize_and_publish(FinalizeParams {
-            baseline_cache: &self.baseline_cache,
-            run_timestamp: &self.run_timestamp,
-            snapshot_signature: &self.snapshot_signature,
-            checkpoint_path: &self.checkpoint_path,
             config,
             run,
             inventory,
@@ -1026,65 +1031,17 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
     Ok(true)
 }
 
-/// Phase 1: Attempt to resume from a checkpoint and pre-populate the evidence store.
-///
-/// Returns `(completed_map, resumed_count)`.
-fn resume_and_populate(
-    checkpoint_path: &std::path::Path,
-    run_timestamp: &str,
-    snapshot_signature: &str,
-    inventory: &InventoryLoad,
-    config: &RuntimeConfig,
-    state: &Arc<AppState>,
-) -> Result<(HashMap<String, Arc<RepositoryEvidence>>, usize), AppError> {
-    let current_keys: HashSet<String> = inventory
-        .active_repos
-        .iter()
-        .map(|r| r.inventory_key.clone())
-        .collect();
-
-    let resume_result = checkpoint::try_resume(
-        checkpoint_path,
-        run_timestamp,
-        snapshot_signature,
-        &current_keys,
-        !config.no_resume,
-    )
-    .map_err(AppError::Persistence)?;
-
-    if resume_result.rotated {
-        warn!("checkpoint was rotated due to corruption or schema mismatch");
-    }
-
-    let completed = resume_result.completed;
-    let resumed_count = completed.len();
-
-    if resumed_count > 0 {
-        info!(
-            resumed = resumed_count,
-            total = inventory.active_repos.len(),
-            "resumed from checkpoint"
-        );
-    }
-
-    // M2.cd (W4): bulk-load checkpoint-resumed entries into the projection
-    // at startup, before any bus dispatch (parent D2, pre-mortem #7).
-    // Sole-writer authorisation per CHE-0048:R2.
-    let resumed_entries: Vec<RepositoryEvidence> =
-        completed.values().map(|ev| (**ev).clone()).collect();
-    state
-        .lock_projection()
-        .load_resumed_checkpoint(resumed_entries);
-
-    Ok((completed, resumed_count))
-}
+// δ.3c-ii: `resume_and_populate` retired. Same-day-resume mechanics
+// collapse into the projection (rebuilt at boot from the event log per
+// CHE-0051:R5 + CHE-0048:R2). Repositories with unchanged `updated_at`
+// are still reused via `reuse_from_baseline` → `should_reuse`.
 
 /// Arguments for [`finalize_and_publish`].
+///
+/// δ.3c-ii: `baseline_cache`, `run_timestamp`, `snapshot_signature`, and
+/// `checkpoint_path` are gone — they only fed the on-disk checkpoint
+/// write, which is retired.
 struct FinalizeParams<'a> {
-    baseline_cache: &'a HashMap<String, Arc<RepositoryEvidence>>,
-    run_timestamp: &'a str,
-    snapshot_signature: &'a str,
-    checkpoint_path: &'a std::path::Path,
     config: &'a RuntimeConfig,
     run: &'a mut RunMetadata,
     inventory: &'a InventoryLoad,
@@ -1096,8 +1053,12 @@ struct FinalizeParams<'a> {
     state: &'a Arc<AppState>,
 }
 
-/// Phase 4: Snapshot the evidence store, persist checkpoint, build evidence,
-/// render + cache the HTML, save baseline, and export the repo-detail cache.
+/// Phase 4: Snapshot the evidence store, build evidence, render + cache
+/// the HTML, and export the repo-detail cache.
+///
+/// δ.3c-ii: on-disk baseline + checkpoint persistence is retired. The
+/// projection is the durable read-model (rebuilt at boot via event-log
+/// replay per CHE-0051:R5 + CHE-0048:R2).
 ///
 /// Returns `(page_count, warm_start)` so the caller can fire the terminal
 /// [`PublishEvidence`] command **after** [`CompleteSweep`] has been
@@ -1105,10 +1066,6 @@ struct FinalizeParams<'a> {
 /// `SweepCompleted`).
 async fn finalize_and_publish(params: FinalizeParams<'_>) -> Result<(usize, bool), AppError> {
     let FinalizeParams {
-        baseline_cache,
-        run_timestamp,
-        snapshot_signature,
-        checkpoint_path,
         config,
         run,
         inventory,
@@ -1121,22 +1078,6 @@ async fn finalize_and_publish(params: FinalizeParams<'_>) -> Result<(usize, bool
     } = params;
 
     let evidence_repos = state.lock_projection().sorted_snapshot();
-
-    // Persist final checkpoint (checkpoint-resumed + freshly-evaluated only).
-    if !evidence_repos.is_empty() {
-        let checkpoint_results: HashMap<String, Arc<RepositoryEvidence>> = evidence_repos
-            .iter()
-            .filter(|ev| !baseline_cache.contains_key(&ev.repository.inventory_key))
-            .map(|ev| (ev.repository.inventory_key.clone(), Arc::new(ev.clone())))
-            .collect();
-        if !checkpoint_results.is_empty() {
-            let final_data =
-                build_checkpoint_data(run_timestamp, snapshot_signature, checkpoint_results);
-            if let Err(e) = checkpoint::save_checkpoint(checkpoint_path, &final_data) {
-                warn!(error = %e, "failed to save final checkpoint");
-            }
-        }
-    }
 
     let rate_limit_warnings = client
         .rate_limit_warnings
@@ -1162,16 +1103,12 @@ async fn finalize_and_publish(params: FinalizeParams<'_>) -> Result<(usize, bool
 
     run.complete();
 
-    // Save baseline from evidence store and remove checkpoint.
-    let new_baseline = baseline::build_baseline(&evidence.repositories);
-    match baseline::save_baseline(&config.store_dir, &new_baseline) {
-        Ok(()) => {
-            checkpoint::remove_checkpoint(checkpoint_path);
-        }
-        Err(e) => {
-            warn!(error = %e, "failed to save baseline — keeping checkpoint");
-        }
-    }
+    // δ.3c-ii: baseline persistence retired. The previous block here saved
+    // `<store_dir>/baseline.msgpack` and removed `<run>-checkpoint.msgpack`;
+    // both files are gone. State lives in the event log (replayed into the
+    // projection at boot per CHE-0051:R5 + CHE-0048:R2), and the saga's
+    // `completed` map is in-process only — discarded on process exit and
+    // re-derived from the event log on next boot.
 
     // Export repo detail cache for cross-run caching.
     let entries = client.export_cache();
@@ -1334,20 +1271,16 @@ pub(crate) async fn warm_start_from_baseline(
     config: &RuntimeConfig,
     state: &Arc<AppState>,
 ) -> bool {
-    let baseline = crate::infra::baseline::load_baseline(&config.store_dir);
-    let Some(baseline) = baseline else {
-        info!("no baseline found — skipping warm start");
-        return false;
+    // δ.3c-ii: warm-start now sources evidence from the projection
+    // (rebuilt at boot via event-log replay per CHE-0051:R5 +
+    // CHE-0048:R2). The on-disk `baseline.msgpack` read is retired.
+    let repos: Vec<RepositoryEvidence> = {
+        let projection = state.lock_projection();
+        projection.repositories.values().cloned().collect()
     };
 
-    let repos: Vec<RepositoryEvidence> = baseline
-        .entries
-        .into_values()
-        .map(|entry| entry.evidence)
-        .collect();
-
     if repos.is_empty() {
-        info!("baseline is empty — skipping warm start");
+        info!("projection is empty — skipping warm start");
         return false;
     }
 
@@ -1419,6 +1352,10 @@ pub(crate) async fn warm_start_from_baseline(
                 repo_count: warm_repo_count,
                 batch_id: warm_batch_id.clone(),
                 timestamp: run.timestamp(),
+                // Warm-start synthesizes a sweep lifecycle for a previously-
+                // completed run; there is no live org-snapshot in scope here.
+                // The empty-signature sentinel matches `build_snapshot_signature(None)`.
+                snapshot_signature: cherry_pit_storage::build_snapshot_signature(None),
             },
             &warm_corr,
         )
@@ -1575,72 +1512,73 @@ fn reuse_from_baseline(
     repositories: &[Arc<Repository>],
     completed: &HashMap<String, Arc<RepositoryEvidence>>,
     run_timestamp: &str,
-    store_dir: &std::path::Path,
+    state: &Arc<AppState>,
 ) -> HashMap<String, Arc<RepositoryEvidence>> {
     let pending_before_baseline: Vec<&Arc<Repository>> = repositories
         .iter()
         .filter(|r| !completed.contains_key(&r.inventory_key))
         .collect();
 
-    let loaded_baseline = baseline::load_baseline(store_dir);
     let mut baseline_cache: HashMap<String, Arc<RepositoryEvidence>> = HashMap::new();
 
-    if let Some(ref bl) = loaded_baseline {
-        for repo in &pending_before_baseline {
-            if let Some(entry) = bl.entries.get(&repo.inventory_key)
-                && baseline::should_reuse(&entry.updated_at, repo.updated_at.as_deref())
-            {
-                // If the baseline has dependabot Enabled but the repo's
-                // pushed_at is stale (> 90 days), skip reuse so the
-                // inactivity heuristic can re-evaluate and infer Paused.
-                if entry.evidence.checks.dependabot_security_updates.status
-                    == DependabotStatus::Enabled
-                    && crate::domain::time::is_dependabot_inactive(
-                        repo.pushed_at.as_deref(),
-                        run_timestamp,
-                    )
-                {
-                    debug!(
-                        repo = %repo.name,
-                        "skipping baseline reuse: dependabot may be auto-paused (inactive >90 days)"
-                    );
-                    continue;
-                }
-
-                debug!(
-                    repo = %repo.name,
-                    updated_at = %entry.updated_at,
-                    "reusing baseline evidence"
-                );
-                baseline_cache.insert(repo.inventory_key.clone(), Arc::new(entry.evidence.clone()));
-            }
+    // δ.3c-ii: source the baseline from the projection (rebuilt at boot
+    // via event-log replay per CHE-0051:R5 + CHE-0048:R2). The projection
+    // is keyed by `domain_key`, which equals `Repository::inventory_key`
+    // by contract (see `domain/events.rs:55` and `projection.rs:94`).
+    let projection = state.lock_projection();
+    for repo in &pending_before_baseline {
+        let Some(evidence) = projection.repositories.get(&repo.inventory_key) else {
+            continue;
+        };
+        // `BaselineEntry.updated_at` was historically a denormalised copy
+        // of `evidence.repository.updated_at`; reconstruct that view via
+        // `as_deref().unwrap_or("")` so `should_reuse` empty-string guard
+        // (baseline.rs:177) preserves the prior None-rejects-reuse
+        // semantics.
+        let baseline_updated_at = evidence
+            .repository
+            .updated_at
+            .as_deref()
+            .unwrap_or_default();
+        if !baseline::should_reuse(baseline_updated_at, repo.updated_at.as_deref()) {
+            continue;
         }
-
-        if !baseline_cache.is_empty() {
-            info!(
-                reused = baseline_cache.len(),
-                total = repositories.len(),
-                "reused evidence from baseline"
+        // If the baseline has dependabot Enabled but the repo's
+        // pushed_at is stale (> 90 days), skip reuse so the
+        // inactivity heuristic can re-evaluate and infer Paused.
+        if evidence.checks.dependabot_security_updates.status == DependabotStatus::Enabled
+            && crate::domain::time::is_dependabot_inactive(repo.pushed_at.as_deref(), run_timestamp)
+        {
+            debug!(
+                repo = %repo.name,
+                "skipping baseline reuse: dependabot may be auto-paused (inactive >90 days)"
             );
+            continue;
         }
+
+        debug!(
+            repo = %repo.name,
+            updated_at = %baseline_updated_at,
+            "reusing baseline evidence"
+        );
+        baseline_cache.insert(repo.inventory_key.clone(), Arc::new(evidence.clone()));
+    }
+    drop(projection);
+
+    if !baseline_cache.is_empty() {
+        info!(
+            reused = baseline_cache.len(),
+            total = repositories.len(),
+            "reused evidence from baseline"
+        );
     }
 
     baseline_cache
 }
 
-/// Build a checkpoint data structure from the current collection state.
-fn build_checkpoint_data(
-    run_timestamp: &str,
-    snapshot_signature: &str,
-    results: HashMap<String, Arc<RepositoryEvidence>>,
-) -> checkpoint::Checkpoint {
-    checkpoint::Checkpoint {
-        schema_version: config::EVIDENCE_SCHEMA_VERSION.to_string(),
-        run_timestamp: run_timestamp.to_string(),
-        secret_scanning_snapshot_signature: snapshot_signature.to_string(),
-        results,
-    }
-}
+// δ.3c-ii: `build_checkpoint_data` retired alongside on-disk
+// `<run>-checkpoint.msgpack`. Sweep-level checkpoints are gone;
+// projection sub-checkpoints (CHE-0048:R1) are unaffected.
 
 // ── Partial publisher ───────────────────────────────────────────────
 
@@ -2330,7 +2268,7 @@ mod tests {
 
         let mut saga = make_test_saga(&config, &run_meta);
 
-        saga.step_resume(&inventory, &config, &state).unwrap();
+        saga.step_resume(&inventory, &config, &state);
         assert_eq!(*saga.phase(), SweepPhase::Resumed);
         assert_eq!(saga.resumed_count, 0);
     }
@@ -2358,7 +2296,7 @@ mod tests {
 
         saga.step_baseline(&inventory, &config, &state);
         assert_eq!(*saga.phase(), SweepPhase::BaselineReused);
-        // No baseline file exists, so 0 reused.
+        // Projection is empty (no upstream replay seeded it), so 0 reused.
         assert_eq!(saga.baseline_reused, 0);
     }
 
@@ -2441,7 +2379,7 @@ mod tests {
     ///
     /// Defaults to `SweepPhase::Init` when called via [`make_test_saga`].
     fn make_test_saga_in(
-        config: &RuntimeConfig,
+        _config: &RuntimeConfig,
         run: &RunMetadata,
         phase: SweepPhase,
     ) -> SweepSaga {
@@ -2454,7 +2392,6 @@ mod tests {
             sweep_start: std::time::Instant::now(),
             run_timestamp: run.timestamp(),
             snapshot_signature: "test-snapshot-sig".to_string(),
-            checkpoint_path: checkpoint::checkpoint_path(&config.store_dir, &run.date()),
             pause_notify: Arc::new(tokio::sync::Notify::new()),
             org_summary: Arc::new(test_org_summary()),
             client: test_github_client(),
@@ -2536,37 +2473,39 @@ mod tests {
         )
     }
 
-    /// Seed a checkpoint file containing the given evidence entries.
-    fn seed_checkpoint(
-        checkpoint_path: &std::path::Path,
-        run_timestamp: &str,
-        entries: Vec<(&str, RepositoryEvidence)>,
-    ) {
-        let results: HashMap<String, Arc<RepositoryEvidence>> = entries
-            .into_iter()
-            .map(|(key, ev)| (format!("id-{key}"), Arc::new(ev)))
-            .collect();
-        let ckpt = build_checkpoint_data(run_timestamp, "test-snapshot-sig", results);
-        checkpoint::save_checkpoint(checkpoint_path, &ckpt).unwrap();
-    }
+    // δ.3c-ii: `seed_checkpoint` retired. Same-day-resume mechanics no
+    // longer have an on-disk surface to seed; tests that previously
+    // exercised resume validate it via the projection replay path.
 
-    /// Seed a baseline file containing the given evidence entries.
-    fn seed_baseline(store_dir: &std::path::Path, entries: Vec<(&str, &str, RepositoryEvidence)>) {
-        let mut bl_entries = HashMap::new();
-        for (name, updated_at, evidence) in entries {
-            bl_entries.insert(
-                format!("id-{name}"),
-                baseline::BaselineEntry {
-                    updated_at: updated_at.to_string(),
-                    evidence,
-                },
-            );
-        }
-        let bl = baseline::Baseline {
-            schema_version: config::EVIDENCE_SCHEMA_VERSION.to_string(),
-            entries: bl_entries,
-        };
-        baseline::save_baseline(store_dir, &bl).unwrap();
+    /// Seed projection state to simulate a populated baseline.
+    ///
+    /// δ.3c-ii: the on-disk `baseline.msgpack` is retired; baseline
+    /// reuse now reads from the projection (rebuilt at boot via
+    /// event-log replay per CHE-0051:R5 + CHE-0048:R2). Tests seed the
+    /// projection directly via `Projection::load_baseline`.
+    ///
+    /// The `_store_dir` argument is retained for call-site stability
+    /// (tests still pass `dir.path()`); it is unused.
+    fn seed_baseline(
+        _store_dir: &std::path::Path,
+        state: &Arc<AppState>,
+        entries: Vec<(&str, &str, RepositoryEvidence)>,
+    ) {
+        let projected: Vec<RepositoryEvidence> = entries
+            .into_iter()
+            .map(|(_name, updated_at, mut evidence)| {
+                // The pre-pivot baseline file carried `updated_at`
+                // alongside the evidence; post-pivot the projection
+                // reads it from `evidence.repository.updated_at`.
+                // Stamp it here so call sites that didn't already set
+                // it stay correct (defensive — most do set it).
+                if evidence.repository.updated_at.is_none() {
+                    evidence.repository.updated_at = Some(updated_at.to_string());
+                }
+                evidence
+            })
+            .collect();
+        state.lock_projection().load_baseline(projected);
     }
 
     /// Run saga through `step_resume` and `step_baseline` (no worker pool needed).
@@ -2576,15 +2515,79 @@ mod tests {
         config: &RuntimeConfig,
         state: &Arc<AppState>,
     ) {
-        saga.step_resume(inventory, config, state).unwrap();
+        saga.step_resume(inventory, config, state);
         saga.step_baseline(inventory, config, state);
     }
 
     // ── Migrated saga tests — Category A (checkpoint/baseline) ─────
 
-    /// Test 4: Pre-existing checkpoint data is loaded and repos are resumed.
+    // δ.3c-ii: `saga_resumes_from_checkpoint` rewritten as three
+    // named cases of `saga_resumes_from_event_log_*`. The event-log →
+    // projection arrival path itself is covered upstream in
+    // `projection_runtime::tests::snapshot_fast_path_skips_replayed_events`
+    // (and siblings). Here we assert only the saga-level seam: given
+    // a projection populated by *some* upstream source (boot replay in
+    // prod, `seed_baseline` in test), unchanged repos reuse via
+    // `reuse_from_baseline` and are excluded from the pending set.
+
+    /// Saga-level same-day resume — every inventory repo already in
+    /// projection: all reused, none enqueued.
     #[tokio::test]
-    async fn saga_resumes_from_checkpoint() {
+    async fn saga_resumes_from_event_log_zero_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10);
+
+        let mut saga = make_test_saga(&config, &run);
+        let ctx = make_test_collection_context();
+
+        // Pre-populate projection (mimics what boot event-log replay
+        // would produce in prod via `AppState::snapshot_fast_path_init`).
+        let mut e1 = sample_repo("repo-1");
+        e1.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
+        let mut e2 = sample_repo("repo-2");
+        e2.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
+        seed_baseline(
+            dir.path(),
+            &state,
+            vec![
+                ("repo-1", "2026-04-10T00:00:00Z", e1),
+                ("repo-2", "2026-04-10T00:00:00Z", e2),
+            ],
+        );
+
+        let inventory = InventoryLoad {
+            active_repos: vec![
+                arc_repo_with_updated_at("repo-1", Some("2026-04-10T00:00:00Z")),
+                arc_repo_with_updated_at("repo-2", Some("2026-04-10T00:00:00Z")),
+            ],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        assert_eq!(saga.baseline_reused, 2);
+
+        // Pending empty ⇒ step_enqueue_and_await goes straight to BatchDrained.
+        saga.step_enqueue_and_await(
+            &config,
+            &run,
+            &run.correlation_context(),
+            &ctx,
+            &inventory,
+            &state,
+        )
+        .await
+        .unwrap();
+        assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
+        assert_eq!(state.lock_projection().len(), 2);
+    }
+
+    /// Saga-level same-day resume — subset of inventory in projection:
+    /// reused subset reported in `baseline_reused`; remainder pending.
+    #[tokio::test]
+    async fn saga_resumes_from_event_log_partial_fresh() {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
         let run = test_run_meta();
@@ -2592,13 +2595,44 @@ mod tests {
 
         let mut saga = make_test_saga(&config, &run);
 
-        // Seed checkpoint with evidence for "repo-1".
-        let evidence_1 = sample_repo("repo-1");
-        seed_checkpoint(
-            &saga.checkpoint_path,
-            &run.timestamp(),
-            vec![("repo-1", evidence_1)],
+        // Pre-populate projection with repo-1 only.
+        let mut e1 = sample_repo("repo-1");
+        e1.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
+        seed_baseline(
+            dir.path(),
+            &state,
+            vec![("repo-1", "2026-04-10T00:00:00Z", e1)],
         );
+
+        let inventory = InventoryLoad {
+            active_repos: vec![
+                arc_repo_with_updated_at("repo-1", Some("2026-04-10T00:00:00Z")),
+                arc_repo("repo-2"),
+            ],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        assert_eq!(saga.baseline_reused, 1);
+        // repo-1 already in projection from seed; repo-2 not yet.
+        assert!(state.lock_projection().get("id-repo-1").is_some());
+        assert!(state.lock_projection().get("id-repo-2").is_none());
+    }
+
+    /// Saga-level same-day resume — empty projection: nothing reused;
+    /// all inventory enqueued for fresh evaluation.
+    #[tokio::test]
+    async fn saga_resumes_from_event_log_all_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10);
+
+        let mut saga = make_test_saga(&config, &run);
+        let _ = dir; // tempdir kept alive only for the config root
+
+        // Projection deliberately empty — no seed_baseline call.
 
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1"), arc_repo("repo-2")],
@@ -2606,12 +2640,9 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga.step_resume(&inventory, &config, &state).unwrap();
-
-        assert_eq!(*saga.phase(), SweepPhase::Resumed);
-        assert_eq!(saga.resumed_count, 1);
-        // Evidence store should contain the resumed repo.
-        assert!(state.lock_projection().get("id-repo-1").is_some());
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        assert_eq!(saga.baseline_reused, 0);
+        assert!(state.lock_projection().get("id-repo-1").is_none());
         assert!(state.lock_projection().get("id-repo-2").is_none());
     }
 
@@ -2630,6 +2661,7 @@ mod tests {
         evidence_1.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
         seed_baseline(
             dir.path(),
+            &state,
             vec![("repo-1", "2026-04-10T00:00:00Z", evidence_1)],
         );
 
@@ -2665,6 +2697,7 @@ mod tests {
         evidence.repository.updated_at = Some("2026-04-09T00:00:00Z".to_string());
         seed_baseline(
             dir.path(),
+            &state,
             vec![("repo-1", "2026-04-09T00:00:00Z", evidence)],
         );
 
@@ -2684,52 +2717,19 @@ mod tests {
             saga.baseline_reused, 0,
             "changed updated_at should prevent reuse"
         );
-        assert!(state.lock_projection().get("id-repo-1").is_none());
+        // δ.3c-ii: stale `lock_projection().get(...).is_none()` side-
+        // channel removed — `seed_baseline` now writes directly to the
+        // projection (mimicking boot replay), so projection membership
+        // is no longer a proxy for "reuse did not happen". The
+        // `baseline_reused == 0` counter is the load-bearing assertion.
     }
 
-    /// Test 12: Checkpoint + baseline work together correctly.
-    #[tokio::test]
-    async fn saga_checkpoint_and_baseline_interaction() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = config_with_dir(dir.path());
-        let run = test_run_meta();
-        let state = AppState::new_with_cache_capacity(10);
-
-        let mut saga = make_test_saga(&config, &run);
-
-        // Seed checkpoint for "repo-1".
-        seed_checkpoint(
-            &saga.checkpoint_path,
-            &run.timestamp(),
-            vec![("repo-1", sample_repo("repo-1"))],
-        );
-
-        // Seed baseline for "repo-2" with matching updated_at.
-        let mut evidence_2 = sample_repo("repo-2");
-        evidence_2.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
-        seed_baseline(
-            dir.path(),
-            vec![("repo-2", "2026-04-10T00:00:00Z", evidence_2)],
-        );
-
-        let inventory = InventoryLoad {
-            active_repos: vec![
-                arc_repo("repo-1"),
-                arc_repo_with_updated_at("repo-2", Some("2026-04-10T00:00:00Z")),
-                arc_repo("repo-3"),
-            ],
-            archived_repos: 0,
-            inventory_fetched_at: None,
-        };
-
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
-
-        assert_eq!(saga.resumed_count, 1);
-        assert_eq!(saga.baseline_reused, 1);
-        assert!(state.lock_projection().get("id-repo-1").is_some());
-        assert!(state.lock_projection().get("id-repo-2").is_some());
-        assert!(state.lock_projection().get("id-repo-3").is_none());
-    }
+    // δ.3c-ii: `saga_checkpoint_and_baseline_interaction` retired.
+    // The mid-sweep `step_resume` ingestion path is gone; same-day
+    // resume now happens via event-log replay at boot (CHE-0051:R5)
+    // and the saga's `step_resume` is a phase-transition no-op.
+    // Coverage of "resumed + baseline + fresh" hybrid runs is split
+    // across `saga_resumes_from_event_log` and `saga_reuses_baseline`.
 
     /// Test 13: No `updated_at` → no baseline reuse.
     #[tokio::test]
@@ -2746,6 +2746,7 @@ mod tests {
         evidence.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
         seed_baseline(
             dir.path(),
+            &state,
             vec![("repo-1", "2026-04-10T00:00:00Z", evidence)],
         );
 
@@ -2759,114 +2760,22 @@ mod tests {
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
 
         assert_eq!(saga.baseline_reused, 0);
-        assert!(state.lock_projection().get("id-repo-1").is_none());
+        // δ.3c-ii: stale side-channel `is_none()` check removed; see
+        // `saga_reevaluates_when_baseline_updated_at_changes`.
     }
 
-    /// Test 14: All repos from baseline → no checkpoint file written.
-    #[tokio::test]
-    async fn saga_baseline_only_produces_no_checkpoint() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = config_with_dir(dir.path());
-        let run = test_run_meta();
-        let state = AppState::new_with_cache_capacity(10);
+    // δ.3c-ii: `saga_baseline_only_produces_no_checkpoint` retired.
+    // The load-bearing assertion was `!saga.checkpoint_path.exists()`;
+    // the on-disk checkpoint surface is gone, so the assertion is no
+    // longer constructible. Coverage of "all-reused → no fresh
+    // evaluation → BatchDrained" remains in `saga_reuses_baseline`.
 
-        let mut saga = make_test_saga(&config, &run);
-        let ctx = make_test_collection_context();
-
-        // Seed baseline covering all repos.
-        let mut evidence = sample_repo("repo-1");
-        evidence.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
-        seed_baseline(
-            dir.path(),
-            vec![("repo-1", "2026-04-10T00:00:00Z", evidence)],
-        );
-
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo_with_updated_at(
-                "repo-1",
-                Some("2026-04-10T00:00:00Z"),
-            )],
-            archived_repos: 0,
-            inventory_fetched_at: None,
-        };
-
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
-
-        // All repos from baseline → pending is empty.
-        assert_eq!(saga.baseline_reused, 1);
-
-        // step_enqueue_and_await with no pending repos → BatchDrained immediately.
-        saga.step_enqueue_and_await(
-            &config,
-            &run,
-            &run.correlation_context(),
-            &ctx,
-            &inventory,
-            &state,
-        )
-        .await
-        .unwrap();
-        assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
-
-        // Checkpoint should not exist (only freshly evaluated repos go to checkpoint,
-        // and all repos came from baseline).
-        assert!(!saga.checkpoint_path.exists());
-    }
-
-    /// Test 16: All resumed/baseline → no fresh evaluation needed.
-    #[tokio::test]
-    async fn saga_resumed_plus_baseline_with_zero_fresh() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = config_with_dir(dir.path());
-        let run = test_run_meta();
-        let state = AppState::new_with_cache_capacity(10);
-
-        let mut saga = make_test_saga(&config, &run);
-        let ctx = make_test_collection_context();
-
-        // Seed checkpoint for "repo-1".
-        seed_checkpoint(
-            &saga.checkpoint_path,
-            &run.timestamp(),
-            vec![("repo-1", sample_repo("repo-1"))],
-        );
-
-        // Seed baseline for "repo-2" with matching updated_at.
-        let mut evidence_2 = sample_repo("repo-2");
-        evidence_2.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
-        seed_baseline(
-            dir.path(),
-            vec![("repo-2", "2026-04-10T00:00:00Z", evidence_2)],
-        );
-
-        let inventory = InventoryLoad {
-            active_repos: vec![
-                arc_repo("repo-1"),
-                arc_repo_with_updated_at("repo-2", Some("2026-04-10T00:00:00Z")),
-            ],
-            archived_repos: 0,
-            inventory_fetched_at: None,
-        };
-
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
-        assert_eq!(saga.resumed_count, 1);
-        assert_eq!(saga.baseline_reused, 1);
-
-        // No pending repos → step_enqueue_and_await goes directly to BatchDrained.
-        saga.step_enqueue_and_await(
-            &config,
-            &run,
-            &run.correlation_context(),
-            &ctx,
-            &inventory,
-            &state,
-        )
-        .await
-        .unwrap();
-        assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
-        // Both repos present in evidence store.
-        assert_eq!(state.lock_projection().len(), 2);
-    }
+    // δ.3c-ii: `saga_resumed_plus_baseline_with_zero_fresh` retired.
+    // The test mixed two retired surfaces (sweep-level checkpoint
+    // resume + on-disk baseline) and exercised neither under projection-
+    // sourced semantics. Coverage of "all reused → no fresh evaluation"
+    // remains in the rewritten `saga_resumes_from_event_log` and
+    // `saga_reuses_baseline`.
 
     // ── Migrated saga tests — Category B (worker pool) ─────────────
 
@@ -2968,53 +2877,11 @@ mod tests {
         state.work_queue.close();
     }
 
-    /// Test 3: Checkpoint file exists after evaluation completes.
-    #[tokio::test]
-    async fn saga_creates_checkpoint() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = config_with_dir(dir.path());
-        let mut run = test_run_meta();
-        let state = AppState::new_with_cache_capacity(10);
-        let ctx = make_test_collection_context();
-
-        let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
-            |repo: &Repository, ts: &str| Ok(sample_repo_from_domain(repo, ts)),
-        )));
-
-        let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 2);
-
-        let mut saga = make_test_saga(&config, &run);
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("repo-1")],
-            archived_repos: 0,
-            inventory_fetched_at: None,
-        };
-
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
-        saga.step_enqueue_and_await(
-            &config,
-            &run,
-            &run.correlation_context(),
-            &ctx,
-            &inventory,
-            &state,
-        )
-        .await
-        .unwrap();
-
-        // Finalize writes the checkpoint.
-        let corr_ctx = run.correlation_context();
-        saga.step_finalize(&config, &mut run, &corr_ctx, &ctx, &inventory, &state)
-            .await
-            .unwrap();
-
-        assert_eq!(*saga.phase(), SweepPhase::Completed);
-        // Baseline is saved and checkpoint removed on success.
-        // The baseline file should exist.
-        assert!(baseline::baseline_path(dir.path()).exists());
-
-        state.work_queue.close();
-    }
+    // δ.3c-ii: `saga_creates_checkpoint` retired. Sweep-level on-disk
+    // checkpoints + baselines are gone; the file-existence assertion
+    // it made (`baseline_path(...).exists()`) is no longer a meaningful
+    // post-condition. Behavioural successor: state lives in the event
+    // log and is replayed into the projection at boot.
 
     /// Test 5: Evidence store contains all expected repos (saga path
     /// does not guarantee sorted order — reframed from legacy test).
@@ -3238,62 +3105,12 @@ mod tests {
         assert!(delivery_result.is_ok(), "delivery loop should exit cleanly");
     }
 
-    /// Test 15: Checkpoint survives baseline save failure.
-    ///
-    /// Simulates baseline save failure by creating a directory at the
-    /// baseline path (`atomic_write_bytes` fails on a directory target).
-    #[tokio::test]
-    async fn saga_checkpoint_survives_baseline_save_failure() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = config_with_dir(dir.path());
-        let mut run = test_run_meta();
-        let state = AppState::new_with_cache_capacity(10);
-        let ctx = make_test_collection_context();
-
-        let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
-            |repo: &Repository, ts: &str| Ok(sample_repo_from_domain(repo, ts)),
-        )));
-
-        let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 2);
-
-        let mut saga = make_test_saga(&config, &run);
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("repo-1")],
-            archived_repos: 0,
-            inventory_fetched_at: None,
-        };
-
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
-        saga.step_enqueue_and_await(
-            &config,
-            &run,
-            &run.correlation_context(),
-            &ctx,
-            &inventory,
-            &state,
-        )
-        .await
-        .unwrap();
-
-        // Create a directory at the baseline path to force save failure.
-        let baseline_path = baseline::baseline_path(dir.path());
-        std::fs::create_dir_all(&baseline_path).unwrap();
-
-        // Finalize writes checkpoint first, then attempts baseline save (fails).
-        let corr_ctx = run.correlation_context();
-        saga.step_finalize(&config, &mut run, &corr_ctx, &ctx, &inventory, &state)
-            .await
-            .unwrap();
-
-        assert_eq!(*saga.phase(), SweepPhase::Completed);
-        // Checkpoint should still exist because baseline save failed.
-        assert!(
-            saga.checkpoint_path.exists(),
-            "checkpoint should survive baseline save failure"
-        );
-
-        state.work_queue.close();
-    }
+    // δ.3c-ii: `saga_checkpoint_survives_baseline_save_failure` retired.
+    // The "baseline save failure → checkpoint survives" crash-safety
+    // mode it asserted is no longer applicable: on-disk baseline + sweep
+    // checkpoint persistence is gone, and durability of the event log
+    // is `cherry-pit-pardosa`'s domain (fsync-per-record, exclusive
+    // flock; CHE-0043:R1), not gh-report's.
 
     // ── Sub-mission 4 — EvidencePublished ordering (CHE-0054:R1.c/e) ─────
     //
@@ -3434,6 +3251,7 @@ mod tests {
                     repo_count: 1,
                     batch_id: run.run_id.clone(),
                     timestamp: jiff::Timestamp::now().to_string(),
+                    snapshot_signature: "test-sig".to_string(),
                 },
                 &corr_ctx,
             )
@@ -3511,6 +3329,7 @@ mod tests {
         evidence.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
         seed_baseline(
             dir.path(),
+            &state,
             vec![("repo-1", "2026-04-10T00:00:00Z", evidence)],
         );
 

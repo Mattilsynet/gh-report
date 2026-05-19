@@ -77,14 +77,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     // Handle --dump-baseline before initializing tracing (pure stdout output).
+    //
+    // δ.3c-ii: baseline.msgpack is gone. The dump now replays the event
+    // log through the projection runtime and renders the resulting
+    // in-memory state via `build_baseline`. Byte-equivalent JSON shape
+    // is preserved (same `Baseline { schema_version, entries }`); the
+    // only operator-visible change is that --org is now required (the
+    // event/projection stores are per-org on disk).
     if cli.dump_baseline {
-        match gh_report::infra::baseline::dump_baseline(&cli.store_dir) {
+        let org = cli.org.as_deref().ok_or(
+            "--org is required when using --dump-baseline (δ.3c-ii: event/projection stores are per-org)",
+        )?;
+        let events_dir = cli.store_dir.join("events").join(org);
+        let projections_dir = cli.store_dir.join("projections").join(org);
+        let app_state = gh_report::app::state::AppState::with_stores(&events_dir, projections_dir);
+        if let Err(e) = app_state.snapshot_fast_path_init().await {
+            eprintln!("error: projection init failed: {e}");
+            std::process::exit(1);
+        }
+        match app_state.dump_baseline_json() {
             Ok(json) => {
                 println!("{json}");
                 return Ok(());
             }
             Err(e) => {
-                eprintln!("error: {e}");
+                eprintln!("error: serialise baseline: {e}");
                 std::process::exit(1);
             }
         }

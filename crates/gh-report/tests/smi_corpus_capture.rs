@@ -200,6 +200,7 @@ async fn run_aggregate_happy_path(run: &RunSvc, ctx: &CorrelationContext) {
             repo_count: 2,
             batch_id: BATCH_OK.into(),
             timestamp: TS_T0.into(),
+            snapshot_signature: "test-sig-t0".into(),
         },
         ctx,
     )
@@ -261,6 +262,7 @@ async fn run_aggregate_failure_path(run: &RunSvc, ctx: &CorrelationContext) {
             repo_count: 1,
             batch_id: BATCH_FAIL.into(),
             timestamp: TS_T5.into(),
+            snapshot_signature: "test-sig-t5".into(),
         },
         ctx,
     )
