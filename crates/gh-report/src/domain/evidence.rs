@@ -1,6 +1,7 @@
 //! Evidence artifact types produced by collection runs.
 
 use pardosa_encoding::Encode;
+use pardosa_genome::GenomeSafe;
 use serde::{Deserialize, Serialize};
 
 use super::auth::{AuthMode, Capability, TokenTier};
@@ -9,27 +10,18 @@ use super::metrics::{AggregatedMetrics, CollectionStatistics, SecretScanningObse
 use super::repository::Repository;
 
 /// Information about the most recent commit on a repository's default branch.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// Wire format: fields encoded in struct declaration order via the
+/// `GenomeSafe`-emitted `Encode`. Field reorder is a wire-format break
+/// (CHE-0064:R2 + PAR-0024:R5).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, GenomeSafe)]
 pub struct LastCommitInfo {
     /// GitHub login of the committer (e.g., `"octocat"`), if available.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub committer_login: Option<String>,
     /// Display name of the committer from the git commit object.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub committer_name: Option<String>,
     /// ISO 8601 timestamp of the commit.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_date: Option<String>,
-}
-
-// Wire format: fields encoded in struct declaration order via `Encode::encode`.
-// Field reorder is a wire-format break (CHE-0064:R2 + PAR-0024:R5).
-impl Encode for LastCommitInfo {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.committer_login.encode(out);
-        self.committer_name.encode(out);
-        self.commit_date.encode(out);
-    }
 }
 
 /// A repository with its collected check results (evidence).
@@ -40,7 +32,7 @@ impl Encode for LastCommitInfo {
 /// across async tasks wrap with `Arc::new(evidence.repository)` at the call
 /// site; cross-snapshot sharing semantics (CHE-0048) are preserved by those
 /// runtime Arcs, not by the field type.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, GenomeSafe)]
 pub struct RepositoryEvidence {
     /// The repository this evidence pertains to.
     pub repository: Repository,
@@ -48,27 +40,13 @@ pub struct RepositoryEvidence {
     pub checks: RepositoryChecks,
     /// Information about the most recent commit on the default branch.
     /// `None` when the data could not be collected (API error, empty repo, etc.).
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_commit: Option<LastCommitInfo>,
 }
 
-/// Wire format: fields encoded in struct declaration order via
-/// `Encode::encode`. Field reorder is a wire-format break; new fields
-/// must be appended (CHE-0064:R2 + PAR-0024:R5).
-///
-/// # Wire format
-///
-/// 1. `repository: Repository` — delegates to `<Repository as Encode>::encode`.
-/// 2. `checks: RepositoryChecks` — composite.
-/// 3. `last_commit: Option<LastCommitInfo>` — `Option<T>` blanket
-///    writes a 1-byte tag then optionally the inner encoding.
-impl Encode for RepositoryEvidence {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.repository.encode(out);
-        self.checks.encode(out);
-        self.last_commit.encode(out);
-    }
-}
+// Wire format documentation retained for the derive-emitted Encode:
+// fields encode in struct declaration order via `Encode::encode` —
+// `repository`, `checks`, `last_commit`. Field reorder is a wire-format
+// break; new fields must be appended (CHE-0064:R2 + PAR-0024:R5).
 
 /// Assessment metadata for a collection run.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
