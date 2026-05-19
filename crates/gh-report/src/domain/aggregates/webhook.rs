@@ -210,6 +210,7 @@ mod tests {
             repo_count: 1,
             batch_id: "b".into(),
             timestamp: ts(),
+            snapshot_signature: None,
         });
     }
 

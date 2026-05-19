@@ -91,6 +91,7 @@ mod tests {
                     repo_count: 3,
                     batch_id: "test-batch".into(),
                     timestamp: now_str(),
+                    snapshot_signature: None,
                 },
                 1,
             ),

@@ -210,6 +210,11 @@ impl HandleCommand<StartSweep> for Run {
             repo_count: cmd.repo_count,
             batch_id: cmd.batch_id,
             timestamp: cmd.timestamp,
+            // snapshot_signature: populated in δ.3c-ii (bead adr-fmt-baao9)
+            // by threading `build_snapshot_signature(...)` through
+            // `StartSweep`; `None` placeholder during δ.3c-i lands the
+            // wire-format-additive field without changing the call-graph.
+            snapshot_signature: None,
         }])
     }
 }
@@ -310,6 +315,7 @@ mod tests {
             repo_count: 3,
             batch_id: "b1".into(),
             timestamp: ts(),
+            snapshot_signature: None,
         });
         r
     }

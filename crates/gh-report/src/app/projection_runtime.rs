@@ -359,6 +359,7 @@ mod tests {
             repo_count: 1,
             batch_id: "b".into(),
             timestamp: "2026-04-20T12:00:00Z".into(),
+            snapshot_signature: None,
         }
     }
 
