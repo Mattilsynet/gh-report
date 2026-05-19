@@ -224,16 +224,29 @@ plus `bd query` by F-prefix title.
 ### Track 7 — gh-report → pardosa hard cut (NEW; gated on Track 6 atomic-ship complete)
 
 Goal: discharge **C2**. Migrate `gh-report`'s persistence from the named
-MessagePack EventStore (CHE-0031) onto `pardosa-genome` files. Hard cut: no
+MessagePack EventStore onto `pardosa-genome` files. Hard cut: no
 dual-write, no importer. First post-cut run re-scrapes the GitHub API and
 rebuilds local state from scratch. User confirmed (2026-05-17): no production
 deployments exist; data loss in the migration is acceptable cost.
 
+**LANDED (δ.3a–δ.4, mission `pardosa-genome-adoption-schism`).** Tracks
+7.1–7.3 executed under a revised plan that did not draft a supersession
+ADR. Persistence swap landed via `7137ed3` (δ.3a: file-backed
+`PardosaEventStore` in `cherry-pit-pardosa`) + `cf8adad` (δ.3b: gh-report
+wiring swap via `SharedStore`). The msgpack-baseline and per-run
+checkpoint surfaces — originally framed by the abandoned plan as
+durable artefacts — were retired entirely via `30505fc` + `63236ac`
+(δ.3c: replay-as-rebuild per CHE-0048 line 24 exemption + CHE-0022:R6).
+The event log on pardosa-genome files is the sole durable artefact;
+derived state rebuilds via replay. See
+`crates/pardosa-genome/ADOPTION.md` (commit `e400ec7`, δ.5) "gh-report
+case study" for the longer treatment.
+
 | # | Task | Deliverable | Verify |
 |---|------|-------------|--------|
 | 7.1 | PardosaEventStore adapter completeness | Verify Track 2.2 `PardosaEventStore` impl behind `cherry_pit_core::EventStore` covers everything gh-report uses (append, load, CAS via `expected_sequence`, conformance tests). If partial, close the gap. | `cargo test --workspace --test '*_conformance'` green with PardosaEventStore registered. |
-| 7.2 | gh-report EventStore swap | Replace gh-report's msgpack-store wiring with `PardosaEventStore`. Delete msgpack on-disk format code + tests. Update CHE-0031 references in code to point at the supersession ADR (7.3). Atomic commit-set per CHE-0022:R1. | `cargo test -p gh-report` green; `cargo build --workspace` green; no msgpack-store references remain (`rg -n 'msgpack.*store\|MsgpackEventStore' crates/gh-report/src/`). |
-| 7.3 | Supersession ADR | Draft new CHE-#### ADR superseding CHE-0031 (named-msgpack → pardosa-genome). Cite Track 7.2 commit-set as implementation evidence. Per AFM-0020:R1, `References:` first target = CHE-0031. Per GND-0007:R4, CHE-0031 transitions to `Superseded` with retirement section. **Always-escalate ADR draft per FOCUS.md §6** — already ratified 2026-05-17. | `cargo run -p adr-fmt -- --lint` warnings-only; `cargo run -p adr-fmt -- --refs CHE-0031` shows the new ADR. |
+| 7.2 | gh-report EventStore swap | **LANDED δ.3b (`cf8adad`).** Replaced gh-report's msgpack-store wiring with `PardosaFileEventStore` via `SharedStore`. msgpack on-disk format code subsequently retired in δ.3c (`63236ac`). The "update code references to a supersession ADR" sub-task is moot — no supersession ADR was drafted (see 7.3). Atomic commit-set landed per CHE-0022:R1. | `cargo test -p gh-report` green at HEAD; `cargo build --workspace` green at HEAD; msgpack-store references zero per `rg -n 'msgpack.*store\|MsgpackEventStore' crates/gh-report/src/`. |
+| 7.3 | ~~Supersession ADR~~ → **Amendment landing** | **SUPERSEDED (δ.4, `e81adfb`).** The originally-planned new supersession ADR was not drafted. The persistence pivot was codified instead by amending CHE-0022 with R6 (event payloads MUST NOT carry computed aggregates; derived state reconstructed by replay per CHE-0048 + CHE-0048:R4 rebuild method). The retirement of the msgpack-baseline and checkpoint surfaces flows from that single amendment plus CHE-0048's line-24 replay-as-rebuild exemption (added δ.0, `c933fc6`) — no separate supersession was warranted. The originally-planned msgpack EventStore framing referenced here became inert when the on-disk surface was retired entirely; consequently no inbound-ref repointing was required either (see 7.3 risk-register entry below). | `cargo run -p adr-fmt -- --lint` exit 0 at HEAD; CHE-0022:R6 + CHE-0048 line-24 exemption together carry the doctrine load. |
 | 7.4 | SMI replay green on fresh log | First post-cut gh-report run re-scrapes GitHub API and writes a fresh pardosa-genome event log. SMI invariants (Track 4.0) preserved across the cut. | `rg -n 'sequence_tracker\|run_index\|repo_index\|delivery_index' crates/gh-report/src/` zero hits; `cargo test -p gh-report --test smi_replay_equivalence` green. |
 | 7.5 | Memory Image bootstrap (replay + snapshot invariants) | (a) **Bootstrap replay**: on `AppState` construction (or first read), scan `events/<org>/` via the EventStore's enumeration API, load each aggregate's envelopes, fold into `Run` / `Repo` / `Delivery` aggregate state, populate `runs_by_key` / `repos_by_key` / `deliveries_by_id` / `next_seq` from the folded result. Reserve `AggregateId(1)` for `OrgGovernance` (no real aggregate may collide with it). (b) **Snapshot subordination**: tag `BaselineEntry` with `last_applied_sequence: NonZeroU64` per aggregate; on load, discard any entry whose aggregate's event log is newer; document `baseline.msgpack` as an event-log-subordinate boot-acceleration snapshot of *aggregate state* (not a projection cache). (c) Task body refined once `@oracle` (ADR coverage for Memory Image bootstrap) and `@copernicus` (`RepoEvaluated` ↔ `RepositoryEvidence` field-completeness) report back. **Triggering evidence**: post-eval2 analysis of `/tmp/gh-report-eval-store/` — 87 fragmented aggregate files (ids 627→713) across 4 runs for the same 561 repos, because `state.rs` constructs `runs_by_key` / `repos_by_key` / `deliveries_by_id` / `next_seq` as `HashMap::new()` on every restart with no event-log replay. | `cargo test -p gh-report --test bootstrap_replay` exit 0: append N events under store dir A; drop and recreate `AppState` pointing at A; assert (i) routing indices populated for every domain key present in events; (ii) next append on an existing domain key reuses its `AggregateId` (no new aggregate file created); (iii) `last_seq` advances from the loaded value, not from 1. Plus `cargo test -p gh-report --test baseline_subordinate_to_events` exit 0: write baseline, append a `RepoEvaluated` past the baseline sequence, restart, assert baseline entry was discarded and projection rebuilt from event. |
 
@@ -460,8 +473,8 @@ in line (key types change; three-index structure preserved).
 Verify: `cargo test -p gh-report --all-features` exit 0;
 `rg -n 'domain_key: String\|batch_id: String\|repo_name: String\|timestamp: String' crates/gh-report/src/domain/`
 returns zero hits inside command + event types (current baseline: 42
-hits per assessment `adr-fmt-2ww8n` finding 1); existing CHE-0031:R3 /
-CHE-0038:R4 golden fixtures re-pass byte-unchanged (transparent
+hits per assessment `adr-fmt-2ww8n` finding 1); pardosa-genome canonical-bytes invariant per
+CHE-0064:R2 + existing CHE-0038:R4 golden fixtures re-pass byte-unchanged (transparent
 newtype invariant); trybuild compile-fail fixtures land per
 CHE-0028:R1/R3 + CHE-0038:R2 for each VO's negative case.
 
@@ -486,7 +499,7 @@ landing as separate-but-sequential sub-missions, each linus-reviewed:
     WebhookEvent keeps `4u8` — NOT renumber from 0 within each enum.
     Canonical-bytes anchor: **CHE-0064:R2** (hand-rolled `Encode`,
     no derive). `event_type()` strings are immutable per CHE-0010:R2
-    + CHE-0022:R4. msgpack named tags unchanged per CHE-0031:R1.
+    + CHE-0022:R4. Per-variant discriminant bytes unchanged per CHE-0064:R2 (pardosa-genome canonical-bytes invariant via `pardosa_encoding::Encode`).
 
 (b) **Tension-2 lock retirement** at
     `crates/gh-report/src/projection.rs:18-26` (single `OrgGovernance`
@@ -526,7 +539,7 @@ split using committed binary fixture);
 zero hits;
 `rg -n 'Tension-2\|single aggregate.*OrgGovernance' crates/gh-report/src/projection.rs`
 zero hits in live code;
-existing CHE-0031:R3 / CHE-0038:R4 serde golden fixtures re-pass
+pardosa-genome canonical bytes per CHE-0064:R2 + existing CHE-0038:R4 serde golden fixtures re-pass
 byte-unchanged (per CHE-0022:R2 + CHE-0064:R2 canonical-bytes
 invariant); `cargo run -p adr-fmt -- --lint` warnings-only.
 
@@ -612,7 +625,7 @@ in its code citations.
 | 10.3 hand-rolled `impl Encode` per-aggregate enum renumbers discriminants from 0 within each enum, breaking pardosa-genome canonical bytes (frontier hash rebuilds on every restart) | M | H | Per-variant discriminant map locked to original umbrella byte assignment (Run: `0,3,5,6,7,8`; Repo: `1,2`; Webhook: `4`) and called out in the commit body. Verify: `cargo test -p gh-report --test pardosa_chain_continuity` (new fixture-based test in 10.3) appends pre-split events, restarts under post-split code, asserts frontier hash byte-identical. Abort criterion A1 if this fails after ≤ 2 hopper sub-mission attempts. |
 | 10.3 Tension-2 retirement + multi-projection composition surface in `cherry-pit-projection` is closed against per-aggregate `Projection` impls | M | M | I0 preflight: read `crates/cherry-pit-projection/src/lib.rs` before any code edit; if no public primitive admits the composition, halt and back-brief moltke. CHE-0054:R8 already permits the dep edge; the open question is API shape, not dependency direction. |
 | 10.3 ADR amendments on CHE-0054 / CHE-0048 cascade beyond wording-only (`adr-fmt --refs CHE-0054` shows ≥ 8 inbound references) | M | M | Mission 10.3 preflight runs `adr-fmt --refs CHE-0054` and `adr-fmt --refs CHE-0048`; if inbound-ref count exceeds 5 per target, hopper back-briefs moltke before code work starts (PM4). |
-| 10.2 VO migration breaks event payload `#[derive(Serialize, Deserialize)]` interaction with `serde(transparent)` newtype + `serde(tag = "type")` enum | M | M | Two-increment TDD: (1) newtype with constructors + `serde(transparent)` + hand-rolled `Encode` impl, red test round-trips newtype alone; (2) migrate ONE command struct field, verify, then the rest. Failure at (2) does not need to revert (1). Existing serde golden fixtures (CHE-0031:R3) are the post-each-increment gate. Abort criterion A2. |
+| 10.2 VO migration breaks event payload `#[derive(Serialize, Deserialize)]` interaction with `serde(transparent)` newtype + `serde(tag = "type")` enum | M | M | Two-increment TDD: (1) newtype with constructors + `serde(transparent)` + hand-rolled `Encode` impl, red test round-trips newtype alone; (2) migrate ONE command struct field, verify, then the rest. Failure at (2) does not need to revert (1). Existing serde golden fixtures, anchored against CHE-0064:R2 canonical bytes, are the post-each-increment gate. Abort criterion A2. |
 | 10.4 Merger ADR wording inadvertently amends CHE-0054:R4 ("Each aggregate has a dedicated ApplicationService") by phrasing Merger as the realisation | L | M | Prose discipline: "per-aggregate services *delegate* triad to shared Merger; per-aggregate identity preserved at service-method boundary". Linus reviews specifically for amendment-vs-amplification (PM6). |
 | Track 10 ↔ Track 7 ordering: 7's hard cut to pardosa makes 10.3's chain-continuity test load-bearing | L | H | 10 gates on Track 7 complete; pre-cut msgpack store is not in 10's contract surface. Frontier-continuity is a pardosa-only concern post-cut. |
 | Track 10 ↔ Track 9 ordering: 9's `FORMAT_VERSION=4` lands during/before 10 | L | M | 10 gates on Track 9 complete (per master sequencing); 10.3's canonical-bytes invariant is asserted against the v4 wire, not v3. |
@@ -647,7 +660,7 @@ Track 4.4  validate.rs → cherry-pit-web
   ▼
 Track 5    SEC-0003 bind-in-library; adr-fmt-spsd closes
   ▼
-Track 7    gh-report → pardosa hard cut; CHE-0031 supersede; SMI green
+Track 7    gh-report → pardosa hard cut [LANDED δ.3a–δ.4]; SMI green
   ▼
 Track 9    pardosa serialization + file-storage correctness hardening
            (FORMAT_VERSION 3 → 4, hard-reject; absorbs §G #18 sub-mission 3)
@@ -670,7 +683,7 @@ gated on Track 6 atomic-ship complete — same gate applies to Track 7.
 | Track 4.4 reveals validate.rs surface needs gh-report-specific bits that conflict with adr-srv | M | M | Surface in evidence artefact, decide before coding. Halt-and-handback if conflict implies CHE-0049 / CHE-0050 amendment. |
 | Track 3 ↔ Track 6 coupling (parallel start, sequenced first-write) misjudged | M | M | First-write gate enforced via Track 3.A explicit "gated on Track 6 atomic-ship" annotation. If 3.1/3.2 inadvertently introduce a pardosa write path before Track 6 closes, halt and audit. |
 | Track 7 hard cut loses unrecoverable state | L | L | No prod deployments per user (2026-05-17). First post-cut run re-scrapes GitHub API; local state rebuilds. Acceptable cost. |
-| Track 7 CHE-0031 supersession ADR inbound-ref repointing | L | M | Run `cargo run -p adr-fmt -- --refs CHE-0031` before Track 7.3; repoint each citation per AFM-0020 / GND-0007:R2. |
+| ~~Track 7 supersession ADR inbound-ref repointing~~ [OBSOLETE δ.4] | — | — | The supersession ADR was not drafted (see Track 7.3). The persistence pivot was codified by amending CHE-0022 with R6 (`e81adfb`); no separate supersession ADR exists, so no inbound-ref repointing was needed. |
 | Track 8 "idiomatic" subjective, audit becomes bikeshedding | M | M | Authored from existing CHE ADRs only; no new criteria invented in Track 8. Disagreements escalate as ADR drafts (8.4), not as 8.1 churn. |
 | Scope creep ("while we're at it…") | H | M | Strict track boundaries; injection queue for discovered work; gardener pass between tracks. |
 | Track 6 wire-format change strands v2 readers | L | H | F2a includes read-only migration path (v2 streams decode with zero-hash sentinel); F2f tamper-injection test asserts v2→v3 read still works. Halt-and-handback if migration path proves infeasible. |
