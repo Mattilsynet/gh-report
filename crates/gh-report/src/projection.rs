@@ -4,7 +4,8 @@
 //! only. This module lands the type + `Projection` impl skeleton so later
 //! sub-missions can wire it:
 //!
-//! - **B3'** wires `MsgpackFileStore` as the `EventStore`.
+//! - **B3'** wires `PardosaFileEventStore` as the `EventStore`
+//!   (δ.3b, CHE-0043).
 //! - **B4'** wires `FileProjectionStore<EvidenceProjection>` snapshot persistence.
 //! - **B5'** wires `ProjectionDriver` + `InProcessEventBus` (snapshot-fast-path).
 //! - **B6'** extends `RepoEvaluated` with a `RepositoryEvidence` payload (CHE-0022
@@ -58,7 +59,7 @@ use crate::domain::evidence::{AssessmentMetadata, RepositoryEvidence};
 /// exactly one aggregate per process — the org-scoped `OrgGovernance`. The
 /// cherry-pit-core [`AggregateId`] type is a [`NonZeroU64`], not a string.
 /// We therefore pin a singleton numeric id of `1` here; org scoping comes
-/// from the parent directory of the [`MsgpackFileStore`] (
+/// from the parent directory of the [`PardosaFileEventStore`] (
 /// `<store_dir>/events/<org>/`), not from the id itself.
 ///
 /// Wired at WU-6 v2 B3' (charter `wu6v2-charter-1778415390`,
@@ -66,10 +67,10 @@ use crate::domain::evidence::{AssessmentMetadata, RepositoryEvidence};
 /// — every `event_store.create` / `event_store.append` / `event_store.load`
 /// call in gh-report uses this constant.
 ///
-/// The on-disk artefact is `<store_dir>/events/<org>/1.msgpack`. The
-/// `1.msgpack` filename is owned by `MsgpackFileStore` and is not
-/// configurable (cherry-pit-gateway hard-codes
-/// `format!("{}.msgpack", id.get())` per CHE-0036:R1).
+/// The on-disk artefact is `<store_dir>/events/<org>/1.pardosa`. The
+/// `1.pardosa` filename is owned by `PardosaFileEventStore` and is not
+/// configurable (cherry-pit-pardosa hard-codes
+/// `format!("{}.pardosa", id.get())` per CHE-0036:R1).
 pub const ORG_GOVERNANCE_AGGREGATE_ID: AggregateId = AggregateId::new(NonZeroU64::MIN);
 
 /// Marker type for the gh-report consistency boundary.

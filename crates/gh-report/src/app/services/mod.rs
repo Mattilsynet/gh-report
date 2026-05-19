@@ -32,7 +32,7 @@
 //!
 //! Per moltke instruction: hopper picks at Inc B7'a-5/6 wiring.
 //! Resolution: **per-aggregate concrete `EventStore` instances** (three
-//! `Arc<MsgpackFileStore<DomainEvent>>`, one per service). CHE-0054:R8
+//! `Arc<PardosaFileEventStore<DomainEvent>>`, one per service). CHE-0054:R8
 //! permits either; per-aggregate keeps each service self-contained
 //! and matches the per-aggregate write-coordination granularity
 //! justified by R4. `AppState` wiring (Inc B7'a-6) materialises the

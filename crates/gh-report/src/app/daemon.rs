@@ -83,12 +83,13 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     // durable stores at sibling subtrees per BC-v2-13 (events/ and
     // projections/ disjoint):
     //
-    //   <store_dir>/events/<org>/      — MsgpackFileStore<DomainEvent>
+    //   <store_dir>/events/<org>/      — PardosaFileEventStore<DomainEvent>
     //   <store_dir>/projections/<org>/ — FileProjectionStore<EvidenceProjection>
     //
-    // Both stores are constructed lazily — directories are created on
-    // first write — so this never touches disk during startup. Held
-    // but not yet exercised:
+    // The event-store directory is created and locked at `open` time
+    // (CHE-0043:R1 — exclusive advisory flock on {dir}/.lock held for
+    // the store's lifetime). The projection-store directory is created
+    // lazily on first write. Held but not yet exercised:
     //   - B5' wires ProjectionDriverExt to consume both stores
     //     (snapshot fast-path replay, CHE-0051:R5).
     //   - B7' rewrites collectors to call event_store.append(...)
@@ -105,7 +106,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     // sees the up-to-date projection. Failure here aborts startup
     // (the daemon cannot serve correct evidence with a broken
     // projection runtime).
-    if let Err(e) = app_state.snapshot_fast_path_init(&events_dir).await {
+    if let Err(e) = app_state.snapshot_fast_path_init().await {
         error!(error = %e, "projection runtime init failed");
         return Err(AppError::Persistence(PersistenceError::LoadFailed {
             reason: format!("projection runtime init failed: {e}"),

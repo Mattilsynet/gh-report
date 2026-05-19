@@ -43,12 +43,21 @@ pardosa-encoding = { workspace = true }
 # (`std` + `derive`) enable the derive macro; no extra feature flags needed.
 pardosa-genome = { workspace = true }
 
-# cherry-pit-gateway — durable EventStore impl (MsgpackFileStore) per
-# BC-v2-12 + CHE-0036:R1. Wired at WU-6 v2 B3' (charter
-# wu6v2-charter-1778415390); single MsgpackFileStore<DomainEvent>
-# instance per process at <store_dir>/events/<org>/, with the singleton
-# aggregate id `ORG_GOVERNANCE_AGGREGATE_ID = NonZeroU64::new(1)` per
-# Tension-2 single-aggregate lock.
+# cherry-pit-pardosa — durable EventStore impl (PardosaFileEventStore)
+# per CHE-0043:R1 (advisory flock-on-open held for store lifetime) +
+# CHE-0036:R1. Replaces the cherry-pit-gateway MsgpackFileStore wiring
+# under δ.3a/δ.3b of mission pardosa-genome-adoption-schism. Single
+# Arc<PardosaFileEventStore<DomainEvent>> per process at
+# <store_dir>/events/<org>/, shared into ProjectionDriver via the
+# SharedStore newtype in app::projection_runtime (preserves single-handle-
+# per-directory under CHE-0043:R1).
+cherry-pit-pardosa = { workspace = true }
+
+# cherry-pit-gateway — InProcessEventBus<DomainEvent> only. The
+# MsgpackFileStore<DomainEvent> wiring was replaced by cherry-pit-pardosa's
+# PardosaFileEventStore under δ.3b; this edge will be retired once the
+# bus is itself migrated. Aggregate id remains the singleton
+# `ORG_GOVERNANCE_AGGREGATE_ID = NonZeroU64::new(1)` per Tension-2.
 cherry-pit-gateway = { workspace = true }
 
 # cherry-pit-agent — root composition crate. WU-6 v2 B5' uses

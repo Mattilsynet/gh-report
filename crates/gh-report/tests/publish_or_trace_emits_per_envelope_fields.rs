@@ -17,7 +17,7 @@
 //!   `Merger::with_bus_for_test`, the canonical test-only ctor added
 //!   for this class of test (shared by step-4 / step-5 reroute tests;
 //!   not re-litigated per-step).
-//! - Wire a real `MsgpackFileStore` (persistence still succeeds —
+//! - Wire a real `PardosaFileEventStore` (persistence still succeeds —
 //!   CHE-0024:R1) and a `FailingBus` that returns `Err(BusError)`
 //!   from `publish`. Spawn the Merger over both via
 //!   `with_bus_for_test`; drive a single `MergerCommand::StartSweep`
@@ -33,7 +33,7 @@ use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
 
 use cherry_pit_core::{AggregateId, BusError, CorrelationContext, EventBus, EventEnvelope};
-use cherry_pit_gateway::MsgpackFileStore;
+use cherry_pit_pardosa::PardosaFileEventStore;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
 use tracing::Subscriber;
@@ -109,10 +109,13 @@ impl<S: Subscriber> Layer<S> for CaptureLayer {
 
 #[tokio::test]
 async fn publish_failure_emits_structured_error_per_envelope() {
-    // Persistence: real MsgpackFileStore (publish failure is non-fatal
+    // Persistence: real PardosaFileEventStore (publish failure is non-fatal
     // per CHE-0024:R1; events still durable).
     let dir = TempDir::new().expect("tempdir");
-    let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(dir.path()));
+    let store = Arc::new(
+        PardosaFileEventStore::<DomainEvent>::open(dir.path())
+            .expect("CHE-0043:R1 flock acquisition on fresh tempdir"),
+    );
     let bus: Arc<FailingBus> = Arc::new(FailingBus);
     let runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>> =
         Arc::new(Mutex::new(HashMap::new()));

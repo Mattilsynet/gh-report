@@ -10,7 +10,7 @@
 //!    CHE-0051:R5 + CHE-0048:R2. On daemon start: load the persisted
 //!    snapshot + checkpoint via [`FileProjectionStore`]; replay only
 //!    events whose `sequence > checkpoint.last_sequence` from the
-//!    [`MsgpackFileStore`] event store. Cold start (no checkpoint or no
+//!    [`PardosaFileEventStore`] event store. Cold start (no checkpoint or no
 //!    snapshot) replays the full stream into `EvidenceProjection::default()`.
 //!    Per CHE-0048:R2, a present snapshot with an *absent* checkpoint
 //!    must be treated as "rebuild" — the snapshot is discarded and the
@@ -43,16 +43,17 @@
 //!   `EvidenceProjection` per process, keyed by the singleton
 //!   [`crate::projection::ORG_GOVERNANCE_AGGREGATE_ID`].
 //!
-//! ## File-lock note (concurrent `MsgpackFileStore` instances)
+//! ## File-lock note (single-handle-per-directory under CHE-0043:R1)
 //!
-//! Per `cherry_pit_gateway::MsgpackFileStore::ensure_fenced`: an
-//! advisory `flock(2)` is acquired on the store directory **only on
-//! `create`/`append`** — `load` is lock-free. The startup replay path
-//! constructs a transient `MsgpackFileStore` purely for the driver's
-//! `replay`-side `load(...)` call; this never contends with the
-//! collector-side writer's flock (which is acquired by the persistent
-//! `event_store` handle held by `AppState`). The transient store is
-//! dropped after replay completes.
+//! Per [`PardosaFileEventStore::open`]: an exclusive advisory `flock(2)`
+//! on `{dir}/.lock` is acquired at open time and held for the store's
+//! entire lifetime (CHE-0043:R1). A second `open(...)` against the
+//! same directory while the first store is alive returns
+//! [`StoreError::StoreLocked`]. The startup replay path therefore does
+//! NOT construct a transient store; it shares the durable
+//! `Arc<PardosaFileEventStore<DomainEvent>>` held by `AppState` into
+//! the [`ProjectionDriver`] via the [`SharedStore`] newtype below.
+//! One canonical store handle per directory, ever.
 //!
 //! ## Why a `Mutex<EvidenceProjection>` and not lock-free
 //!
@@ -69,14 +70,86 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use cherry_pit_agent::{InProcessEventBus, ProjectionDriverExt};
-use cherry_pit_core::{AggregateId, EventStore};
-use cherry_pit_gateway::MsgpackFileStore;
+use cherry_pit_core::{
+    AggregateId, CorrelationContext, EventEnvelope, EventStore, StoreCreateResult, StoreError,
+};
+use cherry_pit_pardosa::PardosaFileEventStore;
 use cherry_pit_projection::{
     FileProjectionStore, ProjectionDriver, ProjectionError, ProjectionResult,
 };
+use std::num::NonZeroU64;
 
 use crate::domain::events::DomainEvent;
 use crate::projection::EvidenceProjection;
+
+/// Shareable handle around an [`Arc<PardosaFileEventStore<E>>`].
+///
+/// The pardosa store acquires an exclusive advisory flock on its
+/// directory at `open` time and holds it for the store's lifetime
+/// (CHE-0043:R1). A second `open(...)` over the same directory while
+/// the first handle is alive returns [`StoreError::StoreLocked`]. The
+/// startup replay path needs a [`ProjectionDriver`] *over the same
+/// directory the durable `event_store` already owns*; this newtype
+/// lets the driver own a `SharedStore` by value while the underlying
+/// store is shared with `AppState` via the inner `Arc`. The driver's
+/// only call into the store is `load(...)` (the replay primitive); no
+/// second flock is taken because the inner `PardosaFileEventStore` is
+/// the *same* one `AppState` already opened.
+///
+/// All [`EventStore`] methods delegate transparently to the inner
+/// store via deref-through-Arc.
+#[derive(Clone)]
+pub struct SharedStore<E>(Arc<PardosaFileEventStore<E>>)
+where
+    E: cherry_pit_core::DomainEvent + pardosa_encoding::Decode + pardosa_encoding::Encode;
+
+impl<E> SharedStore<E>
+where
+    E: cherry_pit_core::DomainEvent + pardosa_encoding::Decode + pardosa_encoding::Encode,
+{
+    /// Wrap a shared [`PardosaFileEventStore`] for driver use.
+    #[must_use]
+    pub fn new(inner: Arc<PardosaFileEventStore<E>>) -> Self {
+        Self(inner)
+    }
+}
+
+impl<E> EventStore for SharedStore<E>
+where
+    E: cherry_pit_core::DomainEvent + pardosa_encoding::Decode + pardosa_encoding::Encode,
+{
+    type Event = E;
+
+    fn load(
+        &self,
+        id: AggregateId,
+    ) -> impl std::future::Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send
+    {
+        let store = Arc::clone(&self.0);
+        async move { store.load(id).await }
+    }
+
+    fn create(
+        &self,
+        events: Vec<Self::Event>,
+        context: CorrelationContext,
+    ) -> impl std::future::Future<Output = StoreCreateResult<Self::Event>> + Send {
+        let store = Arc::clone(&self.0);
+        async move { store.create(events, context).await }
+    }
+
+    fn append(
+        &self,
+        id: AggregateId,
+        expected_sequence: NonZeroU64,
+        events: Vec<Self::Event>,
+        context: CorrelationContext,
+    ) -> impl std::future::Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send
+    {
+        let store = Arc::clone(&self.0);
+        async move { store.append(id, expected_sequence, events, context).await }
+    }
+}
 
 /// Output of [`snapshot_fast_path_startup`]: the materialised projection
 /// state and the highest sequence applied.
@@ -130,8 +203,7 @@ pub struct StartupState {
 /// [`ProjectionError::CorruptData`] from
 /// `EventEnvelope::validate_stream`.
 pub async fn snapshot_fast_path_startup(
-    event_store: &MsgpackFileStore<DomainEvent>,
-    event_store_dir: &std::path::Path,
+    event_store: Arc<PardosaFileEventStore<DomainEvent>>,
     projection_store: &FileProjectionStore<EvidenceProjection>,
     aggregate_id: AggregateId,
 ) -> ProjectionResult<StartupState> {
@@ -154,8 +226,9 @@ pub async fn snapshot_fast_path_startup(
         None => (EvidenceProjection::default(), 0_u64, false),
     };
 
-    // Load full stream from the event store. cherry_pit_gateway::load
-    // is lock-free (no flock contention with the writer). Validation
+    // Load full stream from the shared durable event store. The driver
+    // (constructed below) shares the same Arc, so no second open() —
+    // and therefore no second flock — is taken (CHE-0043:R1). Validation
     // happens inside cherry_pit_core::EventEnvelope::validate_stream
     // when invoked through ProjectionDriver::replay; here we filter
     // ourselves and apply via ProjectionDriverExt::apply_one, so we
@@ -169,15 +242,14 @@ pub async fn snapshot_fast_path_startup(
 
     // Construct a transient driver to satisfy the brief's wiring
     // shape ("ProjectionDriver + ProjectionDriverExt"). The driver
-    // holds a fresh MsgpackFileStore<DomainEvent> handle pointing at
-    // the same on-disk dir; this is safe because (a) the driver is
-    // never asked to write — only `apply_one` is used here, and
-    // `apply_one`'s default impl delegates to `Projection::apply`
-    // without touching the store, and (b) the writer-side flock is
-    // only acquired on create/append, which this transient handle
-    // never calls.
-    let transient_store = MsgpackFileStore::<DomainEvent>::new(event_store_dir);
-    let driver = ProjectionDriver::<EvidenceProjection, _>::new(transient_store);
+    // wraps SharedStore<DomainEvent>(Arc::clone(&event_store)); under
+    // CHE-0043:R1 this is the only safe pattern (a fresh open() on
+    // the same dir would return StoreError::StoreLocked because the
+    // caller's Arc still owns the directory flock). apply_one's
+    // default impl never calls into the store, so the shared handle
+    // is read-only on this path in practice.
+    let driver =
+        ProjectionDriver::<EvidenceProjection, _>::new(SharedStore::new(Arc::clone(&event_store)));
 
     let mut last_seq = replay_from_seq;
     for envelope in stream
@@ -302,7 +374,8 @@ mod tests {
         std::fs::create_dir_all(&projections_dir).expect("mkdir projections");
 
         // Seed the event store with 3 events via create + append.
-        let event_store = MsgpackFileStore::<DomainEvent>::new(&events_dir);
+        let event_store =
+            Arc::new(PardosaFileEventStore::<DomainEvent>::open(&events_dir).expect("open"));
         let ctx = CorrelationContext::none();
         let (id, initial) = event_store
             .create(vec![sweep_started(), repo_removed("ghost-1")], ctx.clone())
@@ -319,7 +392,7 @@ mod tests {
         let projection_store =
             FileProjectionStore::<EvidenceProjection>::new(&projections_dir, "evidence");
 
-        let state = snapshot_fast_path_startup(&event_store, &events_dir, &projection_store, id)
+        let state = snapshot_fast_path_startup(Arc::clone(&event_store), &projection_store, id)
             .await
             .expect("startup");
 
@@ -344,7 +417,8 @@ mod tests {
         std::fs::create_dir_all(&projections_dir).expect("mkdir projections");
 
         // Seed event store with seq 1..=3.
-        let event_store = MsgpackFileStore::<DomainEvent>::new(&events_dir);
+        let event_store =
+            Arc::new(PardosaFileEventStore::<DomainEvent>::open(&events_dir).expect("open"));
         let ctx = CorrelationContext::none();
         let (id, initial) = event_store
             .create(vec![sweep_started(), repo_removed("k1")], ctx.clone())
@@ -367,7 +441,7 @@ mod tests {
             .await
             .expect("persist");
 
-        let state = snapshot_fast_path_startup(&event_store, &events_dir, &projection_store, id)
+        let state = snapshot_fast_path_startup(Arc::clone(&event_store), &projection_store, id)
             .await
             .expect("startup");
 
@@ -396,7 +470,8 @@ mod tests {
         std::fs::create_dir_all(&events_dir).expect("mkdir e");
         std::fs::create_dir_all(&projections_dir).expect("mkdir p");
 
-        let event_store = MsgpackFileStore::<DomainEvent>::new(&events_dir);
+        let event_store =
+            Arc::new(PardosaFileEventStore::<DomainEvent>::open(&events_dir).expect("open"));
         let ctx = CorrelationContext::none();
         let (id, initial) = event_store
             .create(vec![sweep_started()], ctx)
@@ -414,7 +489,7 @@ mod tests {
         assert!(snap_path.exists());
         assert!(!projection_store.checkpoint_path(id).exists());
 
-        let state = snapshot_fast_path_startup(&event_store, &events_dir, &projection_store, id)
+        let state = snapshot_fast_path_startup(Arc::clone(&event_store), &projection_store, id)
             .await
             .expect("startup");
 
@@ -434,8 +509,11 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp");
         let events_dir = tmp.path().join("events");
         std::fs::create_dir_all(&events_dir).expect("mkdir");
-        let store = MsgpackFileStore::<DomainEvent>::new(&events_dir);
-        let driver = Arc::new(ProjectionDriver::<EvidenceProjection, _>::new(store));
+        let store =
+            Arc::new(PardosaFileEventStore::<DomainEvent>::open(&events_dir).expect("open"));
+        let driver = Arc::new(ProjectionDriver::<EvidenceProjection, _>::new(
+            SharedStore::new(Arc::clone(&store)),
+        ));
 
         let projection_state = Arc::new(Mutex::new(EvidenceProjection::default()));
         let checkpoint_seq = Arc::new(AtomicU64::new(NO_SEQUENCE_APPLIED));
@@ -469,8 +547,11 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp");
         let events_dir = tmp.path().join("events");
         std::fs::create_dir_all(&events_dir).expect("mkdir");
-        let store = MsgpackFileStore::<DomainEvent>::new(&events_dir);
-        let driver = Arc::new(ProjectionDriver::<EvidenceProjection, _>::new(store));
+        let store =
+            Arc::new(PardosaFileEventStore::<DomainEvent>::open(&events_dir).expect("open"));
+        let driver = Arc::new(ProjectionDriver::<EvidenceProjection, _>::new(
+            SharedStore::new(Arc::clone(&store)),
+        ));
 
         let projection_state = Arc::new(Mutex::new(EvidenceProjection::default()));
         let checkpoint_seq = Arc::new(AtomicU64::new(0));
