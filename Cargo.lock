@@ -43,6 +43,7 @@ dependencies = [
  "pardosa-encoding",
  "pardosa-genome",
  "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tower",
