@@ -49,14 +49,17 @@ expression: evidence
         "required_reviewers": 1,
         "has_status_checks": true,
         "admin_equivalent": true,
-        "has_broad_bypass": false
+        "has_broad_bypass": false,
+        "reason": null
       },
       "timestamp": "2026-04-09T12:00:00+00:00"
     },
     "codeowners": {
       "status": "conforming",
       "path": ".github/CODEOWNERS",
-      "timestamp": "2026-04-09T12:00:00+00:00"
+      "timestamp": "2026-04-09T12:00:00+00:00",
+      "parsed": null,
+      "truncation": null
     }
   }
 }
