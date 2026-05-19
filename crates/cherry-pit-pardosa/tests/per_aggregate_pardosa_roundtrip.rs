@@ -54,9 +54,7 @@ impl pardosa_encoding::Encode for TestEvent {
 }
 
 impl pardosa_encoding::Decode for TestEvent {
-    fn decode(
-        d: &mut pardosa_encoding::Decoder<'_>,
-    ) -> Result<Self, pardosa_encoding::EventError> {
+    fn decode(d: &mut pardosa_encoding::Decoder<'_>) -> Result<Self, pardosa_encoding::EventError> {
         let tag = <u8 as pardosa_encoding::Decode>::decode(d)?;
         match tag {
             0 => {

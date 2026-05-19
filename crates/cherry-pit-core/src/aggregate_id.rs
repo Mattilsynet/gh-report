@@ -90,9 +90,7 @@ impl pardosa_encoding::Encode for AggregateId {
 // PAR-0024:R5 (Decode mirrors Encode; the encoding crate's traits are
 // deliberately not `#[derive]`-able).
 impl pardosa_encoding::Decode for AggregateId {
-    fn decode(
-        d: &mut pardosa_encoding::Decoder<'_>,
-    ) -> Result<Self, pardosa_encoding::EventError> {
+    fn decode(d: &mut pardosa_encoding::Decoder<'_>) -> Result<Self, pardosa_encoding::EventError> {
         let inner = <NonZeroU64 as pardosa_encoding::Decode>::decode(d)?;
         Ok(Self(inner))
     }
@@ -202,8 +200,7 @@ mod tests {
             let id = id(v);
             let bytes = pardosa_encoding::to_vec(&id);
             assert_eq!(bytes.len(), 8, "AggregateId encodes to 8 LE bytes");
-            let back: AggregateId =
-                pardosa_encoding::from_bytes(&bytes).expect("decode");
+            let back: AggregateId = pardosa_encoding::from_bytes(&bytes).expect("decode");
             assert_eq!(back, id);
         }
     }
@@ -213,8 +210,8 @@ mod tests {
         // NonZeroU64::decode rejects 0u64 as InvalidInput; AggregateId
         // inherits the rejection through delegation.
         let bytes = pardosa_encoding::to_vec(&0u64);
-        let err = pardosa_encoding::from_bytes::<AggregateId>(&bytes)
-            .expect_err("zero must be rejected");
+        let err =
+            pardosa_encoding::from_bytes::<AggregateId>(&bytes).expect_err("zero must be rejected");
         assert_eq!(err, pardosa_encoding::EventError::InvalidInput);
     }
 
