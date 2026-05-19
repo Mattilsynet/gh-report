@@ -725,6 +725,264 @@ mod tests {
         }
     }
 
+    /// Byte-equality guard for the hand-rolled `Encode` impl on `DomainEvent`
+    /// (sub-mission δ.1 of pardosa-genome-adoption-schism).
+    ///
+    /// Locks the wire format of all 9 variants — plus the `evidence:
+    /// Some(_)` arm of `RepoEvaluated` — to literal byte sequences. δ.2's
+    /// `#[derive(GenomeSafe)]` swap must reproduce these bytes exactly; any
+    /// divergence is a wire-format break that would silently invalidate
+    /// existing `baseline.msgpack` files.
+    ///
+    /// Determinism: every payload uses literal `&str`/`u64`/`bool` values and
+    /// a stable `test_fixtures::all_passing_evidence` fixture (no
+    /// `jiff::Timestamp::now()`, no RNG, no `HashMap` on the encoded path).
+    ///
+    /// Maintenance: when adding a new `DomainEvent` variant, append a new
+    /// case here and capture its bytes via the `RECAPTURE` workflow below.
+    /// Editing an existing case's literal is a wire-format break — bounce
+    /// to the pardosa-genome-adoption-schism mission tree, do not silently
+    /// re-baseline.
+    //
+    // 10 variant cases as struct-literal payloads are structurally bound by
+    // the enum shape (see the parallel allow on `Encode::encode` above);
+    // extracting per-case helpers would add noise without reducing risk.
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn wire_format_byte_equality() {
+        use crate::test_fixtures;
+        use pardosa_encoding::Encode;
+
+        // Deterministic Some(evidence) payload: builder is timestamp-free
+        // (constant fixture timestamps) and contains no HashMap-backed
+        // fields on the Encode path.
+        let evidence = test_fixtures::all_passing_evidence("repo-1");
+
+        let cases: Vec<(&'static str, DomainEvent, &'static [u8])> = vec![
+            (
+                "SweepStarted",
+                DomainEvent::SweepStarted {
+                    org: "test-org".into(),
+                    repo_count: 42,
+                    batch_id: "batch-001".into(),
+                    timestamp: "2024-01-01T00:00:00Z".into(),
+                },
+                EXPECTED_SWEEP_STARTED,
+            ),
+            (
+                "RepoEvaluated/None",
+                DomainEvent::RepoEvaluated {
+                    domain_key: "id-repo-1".into(),
+                    repo_name: "repo-1".into(),
+                    success: true,
+                    source: "scheduled_batch".into(),
+                    duration_ms: 1234,
+                    timestamp: "2024-01-01T00:00:00Z".into(),
+                    evidence: None,
+                },
+                EXPECTED_REPO_EVALUATED_NONE,
+            ),
+            (
+                "RepoEvaluated/Some",
+                DomainEvent::RepoEvaluated {
+                    domain_key: "id-repo-1".into(),
+                    repo_name: "repo-1".into(),
+                    success: true,
+                    source: "scheduled_batch".into(),
+                    duration_ms: 1234,
+                    timestamp: "2024-01-01T00:00:00Z".into(),
+                    evidence: Some(Box::new(evidence.clone())),
+                },
+                EXPECTED_REPO_EVALUATED_SOME,
+            ),
+            (
+                "RepoRemoved",
+                DomainEvent::RepoRemoved {
+                    domain_key: "id-old-repo".into(),
+                    repo_name: "old-repo".into(),
+                    timestamp: "2024-01-01T00:00:00Z".into(),
+                },
+                EXPECTED_REPO_REMOVED,
+            ),
+            (
+                "SweepCompleted",
+                DomainEvent::SweepCompleted {
+                    batch_id: "batch-001".into(),
+                    duration_ms: 5000,
+                    repo_count: 42,
+                    timestamp: "2024-01-01T00:00:00Z".into(),
+                },
+                EXPECTED_SWEEP_COMPLETED,
+            ),
+            (
+                "WebhookReceived",
+                DomainEvent::WebhookReceived {
+                    action: "enqueue".into(),
+                    repo: Some("my-repo".into()),
+                    timestamp: "2024-01-01T00:00:00Z".into(),
+                },
+                EXPECTED_WEBHOOK_RECEIVED,
+            ),
+            (
+                "EvidencePublished",
+                DomainEvent::EvidencePublished {
+                    page_count: 5,
+                    warm_start: true,
+                    timestamp: "2024-01-01T00:00:00Z".into(),
+                },
+                EXPECTED_EVIDENCE_PUBLISHED,
+            ),
+            (
+                "PartialEvidenceRendered",
+                DomainEvent::PartialEvidenceRendered {
+                    batch_id: "batch-001".into(),
+                    page_count: 3,
+                    pending_repos: 7,
+                    timestamp: "2024-01-01T00:00:00Z".into(),
+                },
+                EXPECTED_PARTIAL_EVIDENCE_RENDERED,
+            ),
+            (
+                "SweepFailed",
+                DomainEvent::SweepFailed {
+                    batch_id: "batch-001".into(),
+                    error: "timeout".into(),
+                    duration_ms: 7200,
+                    timestamp: "2024-01-01T00:00:00Z".into(),
+                },
+                EXPECTED_SWEEP_FAILED,
+            ),
+            (
+                "SweepProgress",
+                DomainEvent::SweepProgress {
+                    batch_id: "batch-001".into(),
+                    completed: 25,
+                    total: 100,
+                    timestamp: "2024-01-01T00:00:00Z".into(),
+                },
+                EXPECTED_SWEEP_PROGRESS,
+            ),
+        ];
+
+        // Determinism check (package_abort_if #1): encode twice, compare.
+        // Any divergence here means the hand-rolled encoder is
+        // non-deterministic and δ.2 cannot proceed.
+        for (name, event, _) in &cases {
+            let mut a = Vec::new();
+            let mut b = Vec::new();
+            event.encode(&mut a);
+            event.encode(&mut b);
+            assert_eq!(a, b, "non-deterministic encoding for variant {name}");
+        }
+
+        // Byte-equality assertion. We collect ALL mismatches first so a
+        // single run surfaces every diverged variant — useful when
+        // recapturing after an authorized wire-format change (paste each
+        // printed literal back into its EXPECTED_* constant in one go).
+        let mut mismatches: Vec<String> = Vec::new();
+        for (name, event, expected) in &cases {
+            let mut actual = Vec::new();
+            event.encode(&mut actual);
+            if actual.as_slice() != *expected {
+                mismatches.push(format!(
+                    "  {name}: const for this variant should be:\n    {}",
+                    fmt_bytes_as_literal(&actual),
+                ));
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "wire-format mismatch in {} variant(s):\n{}",
+            mismatches.len(),
+            mismatches.join("\n"),
+        );
+    }
+
+    /// Render a byte slice as a Rust `&[u8]` literal for easy paste-back
+    /// into the `EXPECTED_*` constants when (re)capturing the wire format.
+    fn fmt_bytes_as_literal(bytes: &[u8]) -> String {
+        use std::fmt::Write as _;
+        let mut s = String::from("&[");
+        for (i, b) in bytes.iter().enumerate() {
+            if i > 0 {
+                s.push_str(", ");
+            }
+            let _ = write!(s, "{b}");
+        }
+        s.push(']');
+        s
+    }
+
+    // ── Captured wire-format snapshots (RECAPTURE workflow) ──
+    //
+    // To regenerate after an authorized wire-format change: set the
+    // EXPECTED_* slice to `&[]`, run the test, copy the printed
+    // `actual = &[…]` literal back into the constant, re-run green.
+    // Do NOT recapture casually — the whole point is to detect drift.
+
+    const EXPECTED_SWEEP_STARTED: &[u8] = &[
+        0, 8, 0, 0, 0, 116, 101, 115, 116, 45, 111, 114, 103, 42, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0,
+        98, 97, 116, 99, 104, 45, 48, 48, 49, 20, 0, 0, 0, 50, 48, 50, 52, 45, 48, 49, 45, 48, 49,
+        84, 48, 48, 58, 48, 48, 58, 48, 48, 90,
+    ];
+    const EXPECTED_REPO_EVALUATED_NONE: &[u8] = &[
+        1, 9, 0, 0, 0, 105, 100, 45, 114, 101, 112, 111, 45, 49, 6, 0, 0, 0, 114, 101, 112, 111,
+        45, 49, 1, 15, 0, 0, 0, 115, 99, 104, 101, 100, 117, 108, 101, 100, 95, 98, 97, 116, 99,
+        104, 210, 4, 0, 0, 0, 0, 0, 0, 20, 0, 0, 0, 50, 48, 50, 52, 45, 48, 49, 45, 48, 49, 84, 48,
+        48, 58, 48, 48, 58, 48, 48, 90, 0,
+    ];
+    const EXPECTED_REPO_EVALUATED_SOME: &[u8] = &[
+        1, 9, 0, 0, 0, 105, 100, 45, 114, 101, 112, 111, 45, 49, 6, 0, 0, 0, 114, 101, 112, 111,
+        45, 49, 1, 15, 0, 0, 0, 115, 99, 104, 101, 100, 117, 108, 101, 100, 95, 98, 97, 116, 99,
+        104, 210, 4, 0, 0, 0, 0, 0, 0, 20, 0, 0, 0, 50, 48, 50, 52, 45, 48, 49, 45, 48, 49, 84, 48,
+        48, 58, 48, 48, 58, 48, 48, 90, 1, 9, 0, 0, 0, 105, 100, 45, 114, 101, 112, 111, 45, 49, 0,
+        6, 0, 0, 0, 114, 101, 112, 111, 45, 49, 0, 0, 4, 0, 0, 0, 109, 97, 105, 110, 0, 9, 0, 0, 0,
+        105, 100, 45, 114, 101, 112, 111, 45, 49, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 25,
+        0, 0, 0, 50, 48, 50, 54, 45, 48, 52, 45, 48, 57, 84, 49, 50, 58, 48, 48, 58, 48, 48, 43,
+        48, 48, 58, 48, 48, 0, 1, 0, 1, 0, 25, 0, 0, 0, 50, 48, 50, 54, 45, 48, 52, 45, 48, 57, 84,
+        49, 50, 58, 48, 48, 58, 48, 48, 43, 48, 48, 58, 48, 48, 0, 0, 25, 0, 0, 0, 50, 48, 50, 54,
+        45, 48, 52, 45, 48, 57, 84, 49, 50, 58, 48, 48, 58, 48, 48, 43, 48, 48, 58, 48, 48, 0, 4,
+        0, 0, 0, 109, 97, 105, 110, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 25, 0, 0, 0, 50, 48,
+        50, 54, 45, 48, 52, 45, 48, 57, 84, 49, 50, 58, 48, 48, 58, 48, 48, 43, 48, 48, 58, 48, 48,
+        0, 1, 18, 0, 0, 0, 46, 103, 105, 116, 104, 117, 98, 47, 67, 79, 68, 69, 79, 87, 78, 69, 82,
+        83, 25, 0, 0, 0, 50, 48, 50, 54, 45, 48, 52, 45, 48, 57, 84, 49, 50, 58, 48, 48, 58, 48,
+        48, 43, 48, 48, 58, 48, 48, 0, 0, 0,
+    ];
+    const EXPECTED_REPO_REMOVED: &[u8] = &[
+        2, 11, 0, 0, 0, 105, 100, 45, 111, 108, 100, 45, 114, 101, 112, 111, 8, 0, 0, 0, 111, 108,
+        100, 45, 114, 101, 112, 111, 20, 0, 0, 0, 50, 48, 50, 52, 45, 48, 49, 45, 48, 49, 84, 48,
+        48, 58, 48, 48, 58, 48, 48, 90,
+    ];
+    const EXPECTED_SWEEP_COMPLETED: &[u8] = &[
+        3, 9, 0, 0, 0, 98, 97, 116, 99, 104, 45, 48, 48, 49, 136, 19, 0, 0, 0, 0, 0, 0, 42, 0, 0,
+        0, 0, 0, 0, 0, 20, 0, 0, 0, 50, 48, 50, 52, 45, 48, 49, 45, 48, 49, 84, 48, 48, 58, 48, 48,
+        58, 48, 48, 90,
+    ];
+    const EXPECTED_WEBHOOK_RECEIVED: &[u8] = &[
+        4, 7, 0, 0, 0, 101, 110, 113, 117, 101, 117, 101, 1, 7, 0, 0, 0, 109, 121, 45, 114, 101,
+        112, 111, 20, 0, 0, 0, 50, 48, 50, 52, 45, 48, 49, 45, 48, 49, 84, 48, 48, 58, 48, 48, 58,
+        48, 48, 90,
+    ];
+    const EXPECTED_EVIDENCE_PUBLISHED: &[u8] = &[
+        5, 5, 0, 0, 0, 0, 0, 0, 0, 1, 20, 0, 0, 0, 50, 48, 50, 52, 45, 48, 49, 45, 48, 49, 84, 48,
+        48, 58, 48, 48, 58, 48, 48, 90,
+    ];
+    const EXPECTED_PARTIAL_EVIDENCE_RENDERED: &[u8] = &[
+        6, 9, 0, 0, 0, 98, 97, 116, 99, 104, 45, 48, 48, 49, 3, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0,
+        0, 0, 0, 20, 0, 0, 0, 50, 48, 50, 52, 45, 48, 49, 45, 48, 49, 84, 48, 48, 58, 48, 48, 58,
+        48, 48, 90,
+    ];
+    const EXPECTED_SWEEP_FAILED: &[u8] = &[
+        7, 9, 0, 0, 0, 98, 97, 116, 99, 104, 45, 48, 48, 49, 7, 0, 0, 0, 116, 105, 109, 101, 111,
+        117, 116, 32, 28, 0, 0, 0, 0, 0, 0, 20, 0, 0, 0, 50, 48, 50, 52, 45, 48, 49, 45, 48, 49,
+        84, 48, 48, 58, 48, 48, 58, 48, 48, 90,
+    ];
+    const EXPECTED_SWEEP_PROGRESS: &[u8] = &[
+        8, 9, 0, 0, 0, 98, 97, 116, 99, 104, 45, 48, 48, 49, 25, 0, 0, 0, 0, 0, 0, 0, 100, 0, 0, 0,
+        0, 0, 0, 0, 20, 0, 0, 0, 50, 48, 50, 52, 45, 48, 49, 45, 48, 49, 84, 48, 48, 58, 48, 48,
+        58, 48, 48, 90,
+    ];
+
     #[test]
     fn event_type_returns_correct_discriminator() {
         let ts = now_str();
