@@ -350,6 +350,21 @@ impl AppState {
     pub fn next_seq_for_test(&self) -> Arc<Mutex<HashMap<AggregateId, NonZeroU64>>> {
         Arc::clone(&self.next_seq)
     }
+
+    /// Test-only accessor for the materialised `projection_state`.
+    /// See [`Self::runs_by_key_for_test`] for the doctrinal rationale.
+    ///
+    /// Integration test `tests/bootstrap_replay.rs::
+    /// restart_rehydrates_projection_state` asserts that the
+    /// cross-aggregate boot replay (bd `adr-fmt-5rwbu`) populates
+    /// this state from every aggregate, not just the
+    /// `ORG_GOVERNANCE_AGGREGATE_ID` singleton.
+    #[doc(hidden)]
+    pub fn projection_state_for_test(
+        &self,
+    ) -> Arc<Mutex<crate::projection::EvidenceProjection>> {
+        Arc::clone(&self.projection_state)
+    }
 }
 
 // ── Service-construction helper ─────────────────────────────────────
