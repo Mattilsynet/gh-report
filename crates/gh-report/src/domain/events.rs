@@ -67,7 +67,7 @@ use crate::domain::evidence::RepositoryEvidence;
 ///
 /// | Discriminant | Variant                    | Payload fields (declaration order)                                                                  |
 /// |--------------|----------------------------|-----------------------------------------------------------------------------------------------------|
-/// | `0u8`        | `SweepStarted`             | `org`, `repo_count`, `batch_id`, `timestamp`                                                        |
+/// | `0u8`        | `SweepStarted`             | `org`, `repo_count`, `batch_id`, `timestamp`, `snapshot_signature`                                  |
 /// | `1u8`        | `RepoEvaluated`            | `domain_key`, `repo_name`, `success`, `source`, `duration_ms`, `timestamp`, `evidence`              |
 /// | `2u8`        | `RepoRemoved`              | `domain_key`, `repo_name`, `timestamp`                                                              |
 /// | `3u8`        | `SweepCompleted`           | `batch_id`, `duration_ms`, `repo_count`, `timestamp`                                                |
@@ -98,6 +98,19 @@ pub enum DomainEvent {
         batch_id: String,
         /// ISO 8601 UTC timestamp.
         timestamp: String,
+        /// Snapshot signature this sweep was keyed to (SHA-256 of the
+        /// org-level alert summary minus `run_timestamp`); audit-trail
+        /// surface for the replay-as-rebuild baseline (CHE-0048:24 /
+        /// CHE-0065). `None` until δ.3c-ii (bead `adr-fmt-baao9`)
+        /// threads `build_snapshot_signature` through `StartSweep`;
+        /// kept `Option` for backward-tolerance per CHE-0064:R2
+        /// additive evolution.
+        //
+        // Tail placement is load-bearing: pardosa-encoding emits
+        // payload fields in declaration order, so appending here
+        // preserves prefix-compatibility with the δ.1 byte-equality
+        // discipline (CHE-0022:R5 + PAR-0024:R5).
+        snapshot_signature: Option<String>,
     } = 0,
 
     /// A single repository was evaluated (success or failure).
@@ -341,6 +354,7 @@ mod tests {
             repo_count: 42,
             batch_id: "batch-001".into(),
             timestamp: "2026-04-20T12:00:00Z".into(),
+            snapshot_signature: None,
         };
         assert_eq!(event.event_type(), "SweepStarted");
         let DomainEvent::SweepStarted {
@@ -547,6 +561,7 @@ mod tests {
                 repo_count: 10,
                 batch_id: "b".into(),
                 timestamp: ts.clone(),
+                snapshot_signature: None,
             },
             DomainEvent::RepoEvaluated {
                 domain_key: "k".into(),
@@ -645,6 +660,7 @@ mod tests {
                     repo_count: 42,
                     batch_id: "batch-001".into(),
                     timestamp: "2024-01-01T00:00:00Z".into(),
+                    snapshot_signature: None,
                 },
                 EXPECTED_SWEEP_STARTED,
             ),
@@ -799,10 +815,21 @@ mod tests {
     // `actual = &[…]` literal back into the constant, re-run green.
     // Do NOT recapture casually — the whole point is to detect drift.
 
+    // δ.3c-i (bead adr-fmt-syjan): SweepStarted gained
+    // `snapshot_signature: Option<String>` at the tail of its payload
+    // (additive evolution per CHE-0022:R5 + PAR-0024:R5). Pardosa-encoding
+    // emits payload fields in declaration order, so the new bytes are
+    // the prior bytes followed by the `Option` discriminant (and value
+    // when `Some`). The regenerated literal for `snapshot_signature:
+    // None` is the original δ.1 bytes (commit 1eeedeb) with a single
+    // trailing `0u8` — mechanical confirmation of prefix-compatibility.
+    // δ.3c-ii (bead adr-fmt-baao9) will populate the production emit
+    // with `Some(build_snapshot_signature(...))` but this fixture stays
+    // `None` because byte-equality cases need stable small payloads.
     const EXPECTED_SWEEP_STARTED: &[u8] = &[
         0, 8, 0, 0, 0, 116, 101, 115, 116, 45, 111, 114, 103, 42, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0,
         98, 97, 116, 99, 104, 45, 48, 48, 49, 20, 0, 0, 0, 50, 48, 50, 52, 45, 48, 49, 45, 48, 49,
-        84, 48, 48, 58, 48, 48, 58, 48, 48, 90,
+        84, 48, 48, 58, 48, 48, 58, 48, 48, 90, 0,
     ];
     const EXPECTED_REPO_EVALUATED_NONE: &[u8] = &[
         1, 9, 0, 0, 0, 105, 100, 45, 114, 101, 112, 111, 45, 49, 6, 0, 0, 0, 114, 101, 112, 111,
@@ -872,6 +899,7 @@ mod tests {
                     repo_count: 1,
                     batch_id: "b".into(),
                     timestamp: ts.clone(),
+                    snapshot_signature: None,
                 },
                 "SweepStarted",
             ),

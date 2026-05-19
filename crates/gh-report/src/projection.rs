@@ -358,6 +358,7 @@ mod tests {
                 repo_count: 1,
                 batch_id: "b".into(),
                 timestamp: ts.clone(),
+                snapshot_signature: None,
             },
             DomainEvent::RepoEvaluated {
                 domain_key: "id-r".into(),
