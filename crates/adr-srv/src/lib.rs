@@ -1,14 +1,47 @@
 #![forbid(unsafe_code)]
 
-//! adr-srv — service skeleton scraping the ADR corpus via the adr-fmt
-//! library (AFM-0026:R1 surface). Skeleton stage: no pardosa bridge,
-//! no service endpoints, no idempotency state.
+//! adr-srv — service crate scraping the ADR corpus via the adr-fmt
+//! library (AFM-0026:R1 surface) and projecting records into pardosa-
+//! genome event envelopes via the `ApplicationService` pattern
+//! (CHE-0054:R8/R10 carve-out: no agent / gateway / `App<...>`).
 //!
-//! See AFM-0027 for the adr-fmt ↔ adr-srv boundary.
+//! See AFM-0027 for the adr-fmt ↔ adr-srv boundary and CHE-0054:R8/R10
+//! for the bespoke-service rationale.
+//!
+//! ## Module layout (CHE-0030 + AFM-0026:R1)
+//!
+//! Internal modules are private; the public surface is the explicit
+//! `pub use` block below. CHE-0030:R1 binds cherry-domain crates to
+//! private `mod` + `pub use` re-exports so internal reorganisation
+//! is non-breaking.
+//!
+//! ## M1.2 skeleton
+//!
+//! This mission lands the wire-byte-stable substrate for M1.3 (scrape
+//! pipeline) and M1.4 (GraphQL schema). The `AdrIngested` payload
+//! shape is frozen here; subsequent missions add behaviour, not
+//! payload reshape (CHE-0022:R5 additive evolution only).
+
+mod app;
+mod domain;
+mod graphql;
 
 use std::path::{Path, PathBuf};
 
-pub use adr_fmt::{AdrRecord, Config, LoadError, Tier, load_quiet, resolve_corpus_root};
+// ── AFM-0026:R1 surface re-exports (preserved from M1.1) ──────────
+pub use adr_fmt::{AdrRecord, Config, LoadError, load_quiet, resolve_corpus_root};
+
+// ── adr-srv domain surface ────────────────────────────────────────
+pub use domain::{
+    AdrDate, AdrDateError, AdrDocument, AdrFrontmatter, AdrId, AdrIdError, AdrIngested, BodyHash,
+    KNOWN_DOMAINS, Status, Tier,
+};
+
+// ── ApplicationService surface (CHE-0054:R8/R10) ──────────────────
+pub use app::{AdrService, AppState};
+
+// ── GraphQL stub (M1.4 lands real schema) ─────────────────────────
+pub use graphql::schema_stub;
 
 /// Minimal probe that the AFM-0026:R1 surface compiles and is callable
 /// from this crate. Loads the workspace `adr-fmt.toml` and resolves the
