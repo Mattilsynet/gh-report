@@ -1,5 +1,5 @@
 ---
-source: src/domain/evidence.rs
+source: crates/gh-report/src/domain/evidence.rs
 expression: evidence
 ---
 {
@@ -12,9 +12,15 @@ expression: evidence
     "default_branch": "main",
     "archived": false,
     "inventory_key": "id-snapshot-repo",
+    "updated_at": null,
     "has_issues": true,
+    "pushed_at": null,
+    "created_at": null,
+    "description": null,
     "fork": false,
-    "topics": []
+    "html_url": null,
+    "topics": [],
+    "license_spdx": null
   },
   "checks": {
     "security_policy": {

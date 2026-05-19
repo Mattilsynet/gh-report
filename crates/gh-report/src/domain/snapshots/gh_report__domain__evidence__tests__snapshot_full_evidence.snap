@@ -113,9 +113,15 @@ expression: evidence
         "default_branch": "main",
         "archived": false,
         "inventory_key": "id-snap-repo",
+        "updated_at": null,
         "has_issues": true,
+        "pushed_at": null,
+        "created_at": null,
+        "description": null,
         "fork": false,
-        "topics": []
+        "html_url": null,
+        "topics": [],
+        "license_spdx": null
       },
       "checks": {
         "security_policy": {

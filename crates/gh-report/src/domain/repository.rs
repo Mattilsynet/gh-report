@@ -1,5 +1,6 @@
 //! Repository domain model.
 
+use pardosa_genome::GenomeSafe;
 use serde::{Deserialize, Serialize};
 
 /// A normalized repository from inventory.
@@ -13,7 +14,7 @@ use serde::{Deserialize, Serialize};
 /// `topics`, `license_spdx`, `language`, `node_id`, `has_issues`) is
 /// excluded so that checkpoint and baseline deduplication are not
 /// affected by cosmetic changes to these fields.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, GenomeSafe)]
 pub struct Repository {
     /// Numeric or node ID from GitHub API.
     pub id: String,
@@ -33,34 +34,25 @@ pub struct Repository {
     pub inventory_key: String,
     /// ISO 8601 timestamp of last update (settings change or push).
     /// Used by baseline mechanism to detect changes.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
 
     // ── Informational metadata (excluded from PartialEq/Eq) ─────
     /// Whether the repository has issues enabled.
-    #[serde(default)]
     pub has_issues: bool,
     /// ISO 8601 timestamp of the last git push. Unlike `updated_at`,
     /// this reflects actual code activity (not settings changes).
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub pushed_at: Option<String>,
     /// ISO 8601 timestamp of when the repository was created.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
     /// Short description of the repository.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Whether this repository is a fork of another repository.
-    #[serde(default)]
     pub fork: bool,
     /// Browser URL for the repository (e.g., `https://github.com/org/repo`).
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub html_url: Option<String>,
     /// Topic tags applied to the repository.
-    #[serde(default)]
     pub topics: Vec<String>,
     /// SPDX license identifier (e.g., `"MIT"`, `"Apache-2.0"`), if detected.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub license_spdx: Option<String>,
 }
 
@@ -85,7 +77,7 @@ impl PartialEq for Repository {
 impl Eq for Repository {}
 
 /// Repository visibility.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, GenomeSafe)]
 #[repr(u8)]
 #[serde(rename_all = "lowercase")]
 pub enum Visibility {
@@ -112,42 +104,6 @@ impl Repository {
     #[must_use]
     pub fn is_public(&self) -> bool {
         self.visibility == Visibility::Public
-    }
-}
-
-// Wire format: fields encoded in struct declaration order, each via
-// `Encode::encode`. Field reorder is a wire-format break; new fields
-// must be appended (CHE-0064:R2 + PAR-0024:R5).
-impl pardosa_encoding::Encode for Repository {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.id.encode(out);
-        self.node_id.encode(out);
-        self.name.encode(out);
-        self.visibility.encode(out);
-        self.language.encode(out);
-        self.default_branch.encode(out);
-        self.archived.encode(out);
-        self.inventory_key.encode(out);
-        self.updated_at.encode(out);
-        self.has_issues.encode(out);
-        self.pushed_at.encode(out);
-        self.created_at.encode(out);
-        self.description.encode(out);
-        self.fork.encode(out);
-        self.html_url.encode(out);
-        self.topics.encode(out);
-        self.license_spdx.encode(out);
-    }
-}
-
-// Wire format: one `u8` discriminant per variant declaration order.
-impl pardosa_encoding::Encode for Visibility {
-    fn encode(&self, out: &mut Vec<u8>) {
-        match self {
-            Self::Public => out.push(0u8),
-            Self::Internal => out.push(1u8),
-            Self::Private => out.push(2u8),
-        }
     }
 }
 
