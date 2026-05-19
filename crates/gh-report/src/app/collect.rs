@@ -2627,8 +2627,7 @@ mod tests {
 
         // Seed baseline for "repo-1" with a specific updated_at.
         let mut evidence_1 = sample_repo("repo-1");
-        evidence_1.repository.updated_at =
-            Some("2026-04-10T00:00:00Z".to_string());
+        evidence_1.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
         seed_baseline(
             dir.path(),
             vec![("repo-1", "2026-04-10T00:00:00Z", evidence_1)],
@@ -2663,8 +2662,7 @@ mod tests {
 
         // Seed baseline with old updated_at.
         let mut evidence = sample_repo("repo-1");
-        evidence.repository.updated_at =
-            Some("2026-04-09T00:00:00Z".to_string());
+        evidence.repository.updated_at = Some("2026-04-09T00:00:00Z".to_string());
         seed_baseline(
             dir.path(),
             vec![("repo-1", "2026-04-09T00:00:00Z", evidence)],
@@ -2708,8 +2706,7 @@ mod tests {
 
         // Seed baseline for "repo-2" with matching updated_at.
         let mut evidence_2 = sample_repo("repo-2");
-        evidence_2.repository.updated_at =
-            Some("2026-04-10T00:00:00Z".to_string());
+        evidence_2.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
         seed_baseline(
             dir.path(),
             vec![("repo-2", "2026-04-10T00:00:00Z", evidence_2)],
@@ -2746,8 +2743,7 @@ mod tests {
 
         // Seed baseline for "repo-1".
         let mut evidence = sample_repo("repo-1");
-        evidence.repository.updated_at =
-            Some("2026-04-10T00:00:00Z".to_string());
+        evidence.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
         seed_baseline(
             dir.path(),
             vec![("repo-1", "2026-04-10T00:00:00Z", evidence)],
@@ -2779,8 +2775,7 @@ mod tests {
 
         // Seed baseline covering all repos.
         let mut evidence = sample_repo("repo-1");
-        evidence.repository.updated_at =
-            Some("2026-04-10T00:00:00Z".to_string());
+        evidence.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
         seed_baseline(
             dir.path(),
             vec![("repo-1", "2026-04-10T00:00:00Z", evidence)],
@@ -2838,8 +2833,7 @@ mod tests {
 
         // Seed baseline for "repo-2" with matching updated_at.
         let mut evidence_2 = sample_repo("repo-2");
-        evidence_2.repository.updated_at =
-            Some("2026-04-10T00:00:00Z".to_string());
+        evidence_2.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
         seed_baseline(
             dir.path(),
             vec![("repo-2", "2026-04-10T00:00:00Z", evidence_2)],
@@ -3514,8 +3508,7 @@ mod tests {
         // restore. Single repo is enough; we're testing lifecycle
         // event ordering, not evidence content.
         let mut evidence = sample_repo("repo-1");
-        evidence.repository.updated_at =
-            Some("2026-04-10T00:00:00Z".to_string());
+        evidence.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
         seed_baseline(
             dir.path(),
             vec![("repo-1", "2026-04-10T00:00:00Z", evidence)],

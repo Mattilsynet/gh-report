@@ -1490,8 +1490,7 @@ mod tests {
     fn view_model_stale_rate_with_stale_active_repos() {
         let mut evidence = sample_evidence();
         // Make repo-1 stale by setting updated_at to 3 years ago
-        evidence.repositories[0].repository.updated_at =
-            Some("2023-01-01T00:00:00Z".to_string());
+        evidence.repositories[0].repository.updated_at = Some("2023-01-01T00:00:00Z".to_string());
         evidence.collection_statistics.archived_repos = 2;
 
         let vm = ReportViewModel::from_evidence(&evidence, &CoverageTiers::default());
