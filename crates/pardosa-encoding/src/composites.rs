@@ -286,6 +286,24 @@ impl<T: Encode + ToOwned + ?Sized> Encode for Cow<'_, T> {
     }
 }
 
+/// GEN-0019:R1 — `Box<T>` is wire- and hash-transparent over `T`; decode
+/// delegates to `T::decode` and wraps the result. Implicit `Sized` bound
+/// (cannot be `?Sized`: `decode` returns `Self` by value).
+impl<T: Decode> Decode for Box<T> {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
+        Ok(Box::new(T::decode(d)?))
+    }
+}
+
+/// GEN-0019:R1 — `Arc<T>` is wire- and hash-transparent over `T`; decode
+/// delegates to `T::decode` and wraps the result. Implicit `Sized` bound
+/// (cannot be `?Sized`: `decode` returns `Self` by value).
+impl<T: Decode> Decode for Arc<T> {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, EventError> {
+        Ok(Arc::new(T::decode(d)?))
+    }
+}
+
 impl<T: ?Sized> Encode for PhantomData<T> {
     fn encode(&self, _out: &mut Vec<u8>) {}
 }
@@ -395,8 +413,10 @@ impl Decode for NonZeroU64 {
 mod tests {
     use crate::composites::encode_len_prefix;
     use crate::{Decode, Encode, EventError, from_bytes, to_vec};
+    use alloc::boxed::Box;
     use alloc::collections::BTreeMap;
     use alloc::string::String;
+    use alloc::sync::Arc;
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -746,5 +766,17 @@ mod tests {
         s.insert(vec![1, 1]);
         s.insert(vec![2]);
         rt(s);
+    }
+
+    #[test]
+    fn roundtrip_box_u64() {
+        // GEN-0019:R1 — Box<T> is hash- and wire-transparent over T.
+        rt(Box::new(0xDEAD_BEEF_CAFE_F00D_u64));
+    }
+
+    #[test]
+    fn roundtrip_arc_u32() {
+        // GEN-0019:R1 — Arc<T> is hash- and wire-transparent over T.
+        rt(Arc::new(0xCAFEBABE_u32));
     }
 }
