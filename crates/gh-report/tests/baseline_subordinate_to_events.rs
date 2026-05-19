@@ -35,7 +35,9 @@
 use std::path::PathBuf;
 
 fn infra_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src").join("infra")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("infra")
 }
 
 /// Returns matches of `pattern` across all `.rs` files under
@@ -45,9 +47,8 @@ fn infra_dir() -> PathBuf {
 fn grep_infra(pattern: &str) -> Vec<(String, usize, String)> {
     let dir = infra_dir();
     let mut hits = Vec::new();
-    let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
-        panic!("read_dir({}) failed: {e}", dir.display())
-    });
+    let entries = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("read_dir({}) failed: {e}", dir.display()));
     for entry in entries {
         let entry = entry.expect("dir entry");
         let path = entry.path();
