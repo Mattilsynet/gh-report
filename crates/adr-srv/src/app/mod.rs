@@ -5,5 +5,5 @@
 mod service;
 mod state;
 
-pub use service::AdrService;
+pub use service::{AdrService, IngestOutcome};
 pub use state::AppState;

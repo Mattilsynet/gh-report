@@ -25,6 +25,7 @@
 mod app;
 mod domain;
 mod graphql;
+pub mod scrape;
 
 use std::path::{Path, PathBuf};
 
@@ -38,7 +39,7 @@ pub use domain::{
 };
 
 // ── ApplicationService surface (CHE-0054:R8/R10) ──────────────────
-pub use app::{AdrService, AppState};
+pub use app::{AdrService, AppState, IngestOutcome};
 
 // ── GraphQL stub (M1.4 lands real schema) ─────────────────────────
 pub use graphql::schema_stub;
