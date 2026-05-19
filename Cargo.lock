@@ -485,10 +485,12 @@ name = "cherry-pit-pardosa"
 version = "0.1.0"
 dependencies = [
  "cherry-pit-core",
+ "cherry-pit-gateway",
  "jiff",
  "pardosa",
  "pardosa-encoding",
  "serde",
+ "tempfile",
  "tokio",
  "tokio-test",
  "uuid",
