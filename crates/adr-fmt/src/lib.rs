@@ -72,7 +72,7 @@ mod rules;
 // a new alias would exceed the minimum-surface mandate.
 pub use config::{Config, LoadError, load_quiet, resolve_corpus_root};
 pub use containment::{ContainmentError, contained_join, contained_join_optional};
-pub use model::{AdrId, AdrRecord, DomainDir, Tier, parse_adr_id};
+pub use model::{AdrId, AdrRecord, DomainDir, RelVerb, Relationship, Status, Tier, parse_adr_id};
 pub use parser::{ParseOutcome, parse_domain, parse_stale};
 pub use report::{Diagnostic, Severity};
 
