@@ -60,9 +60,7 @@ use crate::error::EnvelopeError;
 ///     }
 /// }
 /// ```
-pub trait DomainEvent:
-    Clone + Send + Sync + 'static + pardosa_encoding::Encode
-{
+pub trait DomainEvent: Clone + Send + Sync + 'static + pardosa_encoding::Encode {
     /// A stable string identifier for this event type.
     ///
     /// Used for routing, schema registry, and deserialization dispatch.
@@ -393,17 +391,13 @@ impl<E> pardosa_encoding::Decode for EventEnvelope<E>
 where
     E: DomainEvent + pardosa_encoding::Decode,
 {
-    fn decode(
-        d: &mut pardosa_encoding::Decoder<'_>,
-    ) -> Result<Self, pardosa_encoding::EventError> {
+    fn decode(d: &mut pardosa_encoding::Decoder<'_>) -> Result<Self, pardosa_encoding::EventError> {
         let event_id = <uuid::Uuid as pardosa_encoding::Decode>::decode(d)?;
         let aggregate_id = <AggregateId as pardosa_encoding::Decode>::decode(d)?;
         let sequence = <NonZeroU64 as pardosa_encoding::Decode>::decode(d)?;
         let timestamp = <jiff::Timestamp as pardosa_encoding::Decode>::decode(d)?;
-        let correlation_id =
-            <Option<uuid::Uuid> as pardosa_encoding::Decode>::decode(d)?;
-        let causation_id =
-            <Option<uuid::Uuid> as pardosa_encoding::Decode>::decode(d)?;
+        let correlation_id = <Option<uuid::Uuid> as pardosa_encoding::Decode>::decode(d)?;
+        let causation_id = <Option<uuid::Uuid> as pardosa_encoding::Decode>::decode(d)?;
         let payload = <E as pardosa_encoding::Decode>::decode(d)?;
         Self::new(
             event_id,
@@ -547,8 +541,7 @@ mod tests {
         .unwrap();
 
         let bytes = pardosa_encoding::to_vec(&envelope);
-        let back: EventEnvelope<TestEvent> =
-            pardosa_encoding::from_bytes(&bytes).expect("decode");
+        let back: EventEnvelope<TestEvent> = pardosa_encoding::from_bytes(&bytes).expect("decode");
 
         assert_eq!(back.event_id(), envelope.event_id());
         assert_eq!(back.aggregate_id(), envelope.aggregate_id());

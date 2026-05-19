@@ -255,9 +255,7 @@ where
             if cursor + 4 > buf.len() {
                 break;
             }
-            let len_bytes: [u8; 4] = buf[cursor..cursor + 4]
-                .try_into()
-                .expect("4-byte slice");
+            let len_bytes: [u8; 4] = buf[cursor..cursor + 4].try_into().expect("4-byte slice");
             let len = u32::from_le_bytes(len_bytes) as usize;
             cursor += 4;
 
@@ -290,10 +288,7 @@ where
 
     /// Acquire (or lazily allocate) the per-aggregate write mutex.
     fn aggregate_write_lock(&self, id: AggregateId) -> std::sync::Arc<Mutex<()>> {
-        let mut locks = self
-            .write_locks
-            .lock()
-            .expect("write_locks mutex poisoned");
+        let mut locks = self.write_locks.lock().expect("write_locks mutex poisoned");
         locks
             .entry(id)
             .or_insert_with(|| std::sync::Arc::new(Mutex::new(())))
@@ -303,7 +298,11 @@ where
     /// Append the encoded envelopes to the aggregate's log file.
     /// Synchronous fsync after the write per the sync-policy doctrine
     /// (see module docstring).
-    fn write_records(&self, id: AggregateId, envelopes: &[EventEnvelope<E>]) -> Result<(), StoreError>
+    fn write_records(
+        &self,
+        id: AggregateId,
+        envelopes: &[EventEnvelope<E>],
+    ) -> Result<(), StoreError>
     where
         E: pardosa_encoding::Encode,
     {
