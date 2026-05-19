@@ -238,13 +238,12 @@ pub struct AppState {
     pub(crate) merger_handle: tokio::task::JoinHandle<()>,
 
     /// Shared per-aggregate last-applied-sequence tracker
-    /// (CHE-0054:R6 / CHE-0042:R3). Populated by service `append`
-    /// paths in B7'b-2..6 to support caller-tracked optimistic
-    /// concurrency control.
-    #[expect(dead_code, reason = "B7'b-2..6 populates and reads this tracker")]
+    /// (CHE-0054:R6 / CHE-0042:R3). Populated by
+    /// [`Self::bootstrap_replay_indices`] at boot (Track 7.5, M3)
+    /// and by service `append` paths during live operation.
     pub(crate) next_seq: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
 
-    // ── Domain-key → AggregateId indices (CHE-0054:R5) ──────────
+    // ── Domain-key → AggregateId indices (CHE-0054:R5, amended M3) ─
     //
     // Placeholder shape: `Mutex<HashMap<String, AggregateId>>`.
     //
@@ -259,13 +258,14 @@ pub struct AppState {
     //      exist to constrain it,
     //   3. compile the AppState shape that B7'a-6 requires.
     //
-    // Indices are constructed empty and never populated in B7'a;
-    // the load path that consults them lands in B7'b.
-    #[expect(dead_code, reason = "B7'b populates and reads these indices")]
+    // Bootstrap behaviour (CHE-0054:R5 amended in M3 of
+    // `phase2-v2-completion-1779400000`): `runs_by_key` and
+    // `repos_by_key` are populated eagerly from event-log replay at
+    // `AppState` construction (see `bootstrap_replay_indices`).
+    // `deliveries_by_id` remains lazy-populated because the
+    // `WebhookReceived` payload does not carry `delivery_id`.
     pub(crate) runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>>,
-    #[expect(dead_code, reason = "B7'b populates and reads these indices")]
     pub(crate) repos_by_key: Arc<Mutex<HashMap<String, AggregateId>>>,
-    #[expect(dead_code, reason = "B7'b populates and reads these indices")]
     pub(crate) deliveries_by_id: Arc<Mutex<HashMap<String, AggregateId>>>,
 }
 
@@ -306,6 +306,39 @@ impl AppState {
         self.projection_state
             .lock()
             .expect("projection_state mutex poisoned")
+    }
+
+    /// Test-only accessor for the `runs_by_key` routing index.
+    ///
+    /// Returns the shared `Arc<Mutex<_>>` handle so integration tests
+    /// (`crates/gh-report/tests/bootstrap_replay.rs`) can assert
+    /// post-bootstrap population. Not intended for production callers:
+    /// production code routes through the Merger task which holds its
+    /// own `Arc<Mutex<_>>` clone (see `merger.rs:230-232`).
+    #[doc(hidden)]
+    pub fn runs_by_key_for_test(&self) -> Arc<Mutex<HashMap<String, AggregateId>>> {
+        Arc::clone(&self.runs_by_key)
+    }
+
+    /// Test-only accessor for the `repos_by_key` routing index.
+    /// See [`Self::runs_by_key_for_test`] for the doctrinal rationale.
+    #[doc(hidden)]
+    pub fn repos_by_key_for_test(&self) -> Arc<Mutex<HashMap<String, AggregateId>>> {
+        Arc::clone(&self.repos_by_key)
+    }
+
+    /// Test-only accessor for the `deliveries_by_id` routing index.
+    /// See [`Self::runs_by_key_for_test`] for the doctrinal rationale.
+    #[doc(hidden)]
+    pub fn deliveries_by_id_for_test(&self) -> Arc<Mutex<HashMap<String, AggregateId>>> {
+        Arc::clone(&self.deliveries_by_id)
+    }
+
+    /// Test-only accessor for the `next_seq` per-aggregate tracker.
+    /// See [`Self::runs_by_key_for_test`] for the doctrinal rationale.
+    #[doc(hidden)]
+    pub fn next_seq_for_test(&self) -> Arc<Mutex<HashMap<AggregateId, NonZeroU64>>> {
+        Arc::clone(&self.next_seq)
     }
 }
 
@@ -633,6 +666,14 @@ impl AppState {
             std::sync::atomic::Ordering::Release,
         );
 
+        // Memory-Image bootstrap (Track 7.5 / CHE-0054:R5 amended,
+        // CHE-0048 line-24 exemption, CHE-0022:R6): rebuild the four
+        // routing indices by replaying the durable event log. Without
+        // this, every post-restart command that resolves a Run by
+        // `batch_id` or a Repo by `domain_key` would `RoutingMiss`
+        // until the merger re-creates the aggregate from scratch.
+        self.bootstrap_replay_indices(Arc::clone(event_store)).await?;
+
         // Register the bus handler that keeps the in-memory state
         // current as new envelopes are published. The driver wraps a
         // SharedStore over the same durable Arc held in self.event_store;
@@ -656,6 +697,166 @@ impl AppState {
             "projection runtime initialised (B5')"
         );
         Ok(true)
+    }
+
+    /// Memory-Image bootstrap: rebuild routing indices from the
+    /// durable event log (Track 7.5; CHE-0054:R5 amended in M3 of
+    /// `phase2-v2-completion-1779400000`).
+    ///
+    /// ## What this populates
+    ///
+    /// | `DomainEvent` variant     | Index populated     | Routing key            |
+    /// |---------------------------|---------------------|------------------------|
+    /// | `SweepStarted`            | `runs_by_key`       | `batch_id`             |
+    /// | `RepoEvaluated`           | `repos_by_key`      | `domain_key`           |
+    /// | (all variants)            | `next_seq`          | aggregate's max seq    |
+    ///
+    /// ## What this does NOT populate
+    ///
+    /// - `deliveries_by_id`: the `WebhookReceived` event payload does
+    ///   not carry the `delivery_id` (it lives only on the originating
+    ///   `RecordDelivery` command). The routing key is not on the
+    ///   wire, so eager replay cannot rebuild this index. Per the
+    ///   amended CHE-0054:R5, this index remains lazy-populated —
+    ///   each restart starts with an empty `deliveries_by_id` and
+    ///   subsequent `RecordDelivery` commands accumulate entries via
+    ///   the merger's `handle_ingest_webhook`. The `WebhookDelivery`
+    ///   aggregate is a one-shot (degenerate) aggregate per
+    ///   `webhook_service.rs:35-40`; duplicate-`delivery_id`
+    ///   detection is a call-site concern, not an index invariant.
+    ///
+    /// - The `OrgGovernance` singleton aggregate at
+    ///   [`crate::projection::ORG_GOVERNANCE_AGGREGATE_ID`]
+    ///   (= `AggregateId(1)`, reserved per CHE-0054:R11 added in M3):
+    ///   its state is materialised into `projection_state` by
+    ///   `snapshot_fast_path_startup` above; no routing index entry
+    ///   needed (it is keyed by the singleton id, not a domain key).
+    ///
+    /// ## Why this is safe to run on every boot
+    ///
+    /// `Projection::apply` is idempotent over the same
+    /// `EventEnvelope` sequence per CHE-0048:R3, and the routing-key
+    /// extraction here is a pure function of the envelope payload —
+    /// no derived state is fabricated (CHE-0022:R6).
+    ///
+    /// ## Errors
+    ///
+    /// Surfaces `cherry_pit_projection::ProjectionError::Infrastructure`
+    /// on `list_aggregates` or `load` failures from the event store.
+    async fn bootstrap_replay_indices(
+        &self,
+        event_store: Arc<PardosaFileEventStore<DomainEvent>>,
+    ) -> Result<(), cherry_pit_projection::ProjectionError> {
+        use cherry_pit_core::EventStore as _;
+
+        let aggregate_ids = event_store.list_aggregates().map_err(|e| {
+            cherry_pit_projection::ProjectionError::Infrastructure(
+                format!("list_aggregates failed during bootstrap replay: {e}").into(),
+            )
+        })?;
+
+        // Per-aggregate loop: await `load` *without* holding any
+        // index guard (would be a `MutexGuard` held across await,
+        // which clippy::await_holding_lock rightly forbids — and
+        // would deadlock with the merger if it had been spawned).
+        // Guards are acquired in a tight scope after the await
+        // resolves. The merger has not been spawned yet at this
+        // point, so contention is zero in practice; the discipline
+        // matters because it survives future refactors that may
+        // reorder spawn vs. bootstrap.
+        for aggregate_id in aggregate_ids {
+            let envelopes = event_store.load(aggregate_id).await.map_err(|e| {
+                cherry_pit_projection::ProjectionError::Infrastructure(
+                    format!("load({aggregate_id:?}) failed during bootstrap replay: {e}").into(),
+                )
+            })?;
+
+            let mut runs = self
+                .runs_by_key
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut repos = self
+                .repos_by_key
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut next_seq = self
+                .next_seq
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+            let mut max_seq: Option<NonZeroU64> = None;
+            for env in &envelopes {
+                let seq = env.sequence();
+                max_seq = Some(max_seq.map_or(seq, |m| m.max(seq)));
+
+                // Variant → index routing. The match is exhaustive
+                // so adding a new `DomainEvent` variant produces a
+                // compile error here, forcing a re-decision on
+                // routing destination. The empty-body arms below
+                // are split rather than merged so each carries the
+                // routing rationale next to the variant — merging
+                // would hide why each variant is excluded.
+                #[allow(
+                    clippy::match_same_arms,
+                    reason = "per-variant rationale comments justify split arms"
+                )]
+                match env.payload() {
+                    DomainEvent::SweepStarted { batch_id, .. } => {
+                        runs.entry(batch_id.clone()).or_insert(aggregate_id);
+                    }
+                    DomainEvent::RepoEvaluated { domain_key, .. }
+                    | DomainEvent::RepoRemoved { domain_key, .. } => {
+                        repos.entry(domain_key.clone()).or_insert(aggregate_id);
+                    }
+                    // SweepCompleted/Failed/Progress/PartialEvidenceRendered
+                    // belong to a Run aggregate but carry `batch_id` only
+                    // as a back-reference, not as a routing-key origin —
+                    // the `SweepStarted` arm above already indexes the
+                    // Run by `batch_id`. No additional index entry.
+                    DomainEvent::SweepCompleted { .. }
+                    | DomainEvent::SweepFailed { .. }
+                    | DomainEvent::SweepProgress { .. }
+                    | DomainEvent::PartialEvidenceRendered { .. } => {}
+                    // WebhookReceived: payload lacks `delivery_id`; see
+                    // function-level doc-comment for why
+                    // `deliveries_by_id` is not populated here.
+                    DomainEvent::WebhookReceived { .. } => {}
+                    // EvidencePublished is emitted against the
+                    // OrgGovernance singleton aggregate; no routing
+                    // index participation.
+                    DomainEvent::EvidencePublished { .. } => {}
+                }
+            }
+
+            if let Some(seq) = max_seq {
+                next_seq.insert(aggregate_id, seq);
+            }
+        }
+
+        // Re-acquire briefly for the structured-log summary; cheap
+        // because no contention exists at boot.
+        let runs_len = self
+            .runs_by_key
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len();
+        let repos_len = self
+            .repos_by_key
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len();
+        let agg_len = self
+            .next_seq
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len();
+        tracing::info!(
+            runs_indexed = runs_len,
+            repos_indexed = repos_len,
+            aggregates_tracked = agg_len,
+            "bootstrap replay populated routing indices (CHE-0054:R5)"
+        );
+        Ok(())
     }
 
     /// Render the current in-memory projection as a JSON-encoded
