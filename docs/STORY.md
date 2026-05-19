@@ -355,6 +355,19 @@ the ADRs to know what an invariant is, not STORY. STORY is the
 orientation document, read once for context; ADRs are the operating
 catalogue, read continuously.
 
+**ADR edits are autonomous-permitted during long-running missions.**
+Solon is designed for jobs that run autonomously for long stretches.
+ADR drafts, amendments, supersessions, and retirements may land
+mid-mission without user-in-the-loop ratification at each edit,
+provided every edit is committed to git (the audit trail),
+`adr-fmt --lint` stays exit-0 after each commit, a per-ADR audit bead
+is filed under `adr-touched,mission:<id>`, and moltke's
+mission-complete report enumerates every touched ADR for user review.
+The full rules live in FOCUS.md § 6 ("long-autonomous-job exception").
+**STORY edits are *not* covered by this exception** — STORY is apex
+and its edits remain user-ratified per the override-never-silent rule
+above.
+
 ---
 
 ## 10. How to read further
@@ -375,3 +388,4 @@ catalogue, read continuously.
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 0.1 | 2026-05-19 | acje + agent | Initial draft. Apex over ADR corpus on *why* + *where to play*; override-never-silent rule (§ 9). Drafted such that `story-override` is empty at landing. |
+| 0.2 | 2026-05-19 | acje + agent | § 9 amended: ADR edits during long-running missions are autonomous-permitted (drafts, amendments, supersessions, retirements). Audit trail = git history + per-ADR `adr-touched,mission:<id>` bead + mission-complete report enumerating touched ADRs for user review. STORY edits remain user-ratified (apex doctrine unchanged). Full rules in FOCUS.md § 6 "long-autonomous-job exception". |

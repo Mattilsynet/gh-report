@@ -204,28 +204,67 @@ Per-phase task list and exit criteria: see `docs/c4/roadmap.md`.
 Same baseline as construction phase: low-risk = act with stated
 assumption; medium+ = ask; high-risk = always ask.
 
+**Long-autonomous-job exception (ADR edits).** Solon is designed for
+jobs that may run autonomously for long stretches without user-in-the-
+loop ratification at every architectural decision. ADR edits — drafting
+new ADRs, amending existing ones, marking ADRs `Superseded` /
+`Retired`, and any `adr-fmt.toml` change that follows from an ADR
+landing — are **autonomous-permitted during a mission**, subject to the
+following discipline:
+
+1. **Git is the audit trail.** Every ADR edit is a normal commit; the
+   message states the ADR id(s) touched, the change class
+   (draft / amend / supersede / retire), and the parent rule or
+   mission id. No special branching; history is the record.
+2. **`adr-fmt --lint` must stay exit-0** after every commit that
+   touches the corpus. Warnings allowed (AFM-0003); errors are not.
+   Hopper verifies this in the same TDD increment that landed the
+   edit; failure halts and back-briefs moltke as a `SurpriseKind`.
+3. **Per-ADR audit bead.** Every touched ADR gets a bd bead with label
+   `adr-touched,mission:<id>` recording: ADR id, change class,
+   one-line rationale, commit sha. Bodies live in the bead's
+   `description` field per AGENTS.md § Beads. Short rationale is
+   sufficient; the full reasoning lives in the ADR itself plus the
+   commit.
+4. **Explicit communication at job completion.** Moltke's
+   mission-complete report to the user **must enumerate** every ADR
+   touched during the mission (`bd query --label
+   adr-touched,mission:<id>`), grouped by change class, with commit
+   sha(s). The user reviews on completion — not on every edit.
+5. **STORY.md is *not* covered by this exception.** STORY edits remain
+   user-ratified (always-escalate, below). STORY is apex; its edit
+   cadence is coarse-grained and rare by design.
+6. **Reversal.** If the user, on reviewing the completion report,
+   disagrees with an ADR edit, the standard supersession mechanism
+   applies (new ADR superseding the disputed one; AFM-0020 parent
+   edge). Git history preserves the disputed version. No retroactive
+   force-push, no amend.
+
+This exception **does not** weaken any § 2 invariant; the invariant
+list remains binding. An ADR edit that would weaken a § 2 invariant
+remains always-escalate (see below).
+
 **Always escalate** (high risk):
 
-- Drafting a new CHE ADR.
-- Editing an existing CHE ADR. (Supersede via new ADR + user ratification.)
-- Weakening any §2 invariant.
+- **Weakening any § 2 invariant** (regardless of whether via direct
+  ADR edit or supersession).
 - **Phase boundary advancement** (declaring Phase N → Phase N+1) — user
   ratifies each transition.
 - **crates.io publication** or any equivalent irreversible release
   action. Refinement does not publish.
-- Changes to `adr-fmt.toml` corpus configuration.
 - **Edits to `docs/STORY.md`, and any ADR amendments they entail.**
   STORY is apex over the ADR corpus on *why* and *where to play*; on
   disagreement, the ADR is rewritten or superseded. STORY edits and
   the consequent ADR edits land as one user-ratified commit-set.
   Unratified disagreement is a release blocker — file `story-override`
   beads per defected ADR; never act on the unresolved gap. See
-  STORY.md § 9.
+  STORY.md § 9. The long-autonomous-job exception does **not** apply.
 - **Edits to `docs/CLOSURE.md` that change the v0.1 exit gate**
   composition, the closure inventory, or the in-scope / out-of-scope
   boundary. Recording a closed-gate tick is routine, not escalation.
   Declaring v0.1 shipped (annotating `Status: Discharged` and
   archiving to `docs/stale/`) is always-escalate.
+- **Edits to FOCUS.md itself**, including this § 6 policy.
 
 **Escalate after exhausting cheap evidence** (medium risk):
 
@@ -430,7 +469,9 @@ Disagreement-resolution rule (cross-references STORY.md § 9):
 - **STORY ↔ FOCUS / roadmap / CLOSURE.** STORY overrides; the
   operational document amends to match.
 - **ADR ↔ ADR.** Existing supersedes mechanism (S0xx, AFM-0020 parent
-  edges). No change.
+  edges). No change. **ADR edits during a mission are autonomous-
+  permitted** under the long-autonomous-job exception in § 6;
+  moltke enumerates touched ADRs in the mission-complete report.
 - **FOCUS ↔ roadmap ↔ CLOSURE.** FOCUS is the recipe; roadmap is the
   live state; CLOSURE indexes roadmap at the v0.1-relevant grain.
   CLOSURE never duplicates roadmap content — it points at it.
@@ -452,3 +493,4 @@ per § 6.
 | 0.8     | 2026-05-17 | acje + agent | **User-ratified Phase 2 v2 completion criteria** synced from `docs/c4/roadmap.md` v0.9: C1 = adr-srv operational in **read-only mode** (scrape ADRs → pardosa-genome → GraphQL Query); C2 = gh-report stores internal state in pardosa-genome files (hard cut, re-scrape GitHub API; no prod deployments); C3 = idiomatic architectural-organization audit across `adr-srv` / `gh-report` / `cherry-pit-*` / `pardosa-*`. **§3 row updated** to enumerate all remaining tracks (3 read-only, 4.4, 5, 6, 7, 8). **§7 guardrail added**: "First persisted pardosa event in any consumer" gated on Track 6 atomic-ship complete — formalises the user direction that PAR-0021 F2 chain + F9 type-surface (`FORMAT_VERSION = 3`) land before any consumer writes. "Parallel" means concurrent agents on disjoint crate trees, not concurrent first-writes. **§8 verify block rewritten**: Track 3 verify drops `graphql_write_e2e` + `lint_integration` (retired to Phase 3 injection-queue items 3 + 4); adds Track 3.A `scrape_pipeline`; adds Track 6 atomic-ship verify (`FORMAT_VERSION = 3` grep + `tamper_injection` test); adds Track 7 (`gh-report` on pardosa, msgpack-store zero hits, CHE-0031 supersession ADR refs); adds Track 8 (`track:8,remediation` bd query). §2 invariants unchanged. §6 escalation policy unchanged. Track 6 atomic-ship preserved (Epic 6.A + 6.B together, per user direction). Track 4.4 + Track 5 placement preserved (sequenced after Track 3.3, per user "as early as possible in Phase 2" direction). Companion: `docs/c4/roadmap.md` v0.9. |
 | 0.9     | 2026-05-18 | acje + agent | **§4.3 (Phase 3 — Harden) extended** with one paragraph pointing at the cross-cutting RST hardening ideas register as the source of Phase-3 language-doctrine candidates (advisory framing; numbering reserved-not-assigned; no decisions taken). Roadmap Phase-3 task #13 (§F) reviews the register against in-flight work; drafting any RST ADR remains user-ratified per §6 (always-escalate: new ADR). §8 verify block cross-reference updated to reflect roadmap §G renumber ("items 3 + 4" → "§G items 16 + 17"). §2 invariants unchanged. §6 escalation policy unchanged. Companion: `docs/c4/roadmap.md` v1.1. |
 | 1.0     | 2026-05-19 | acje + agent | **STORY.md + CLOSURE.md anchored into governance.** §0 gains a prerequisite-reading block pointing at the two new documents. §6 always-escalate list gains two entries: (a) STORY.md edits + entailed ADR amendments, ratified as one commit-set (apex-over-ADR per STORY.md §9; `story-override` beads block release while open); (b) CLOSURE.md exit-gate composition / scope-boundary changes (recording a closed-gate tick is routine, not escalation; declaring v0.1 shipped is). New §9 Document Hierarchy fixes the six-document topology (STORY apex, ADR binding, FOCUS recipe, roadmap dashboard, CLOSURE v0.1 gate, AGENTS orthogonal) and codifies disagreement-resolution rules across the layers. Old §9 Revision History renumbered to §10. §2 invariants unchanged. §3 starting state unchanged. Companion: `docs/STORY.md` v0.1, `docs/CLOSURE.md` v0.1. |
+| 1.1     | 2026-05-19 | acje + agent | **Long-autonomous-job exception added to § 6.** ADR edits (drafts, amendments, supersessions, retirements; including any `adr-fmt.toml` change that follows from an ADR landing) are autonomous-permitted during a mission. Discipline: (1) git is the audit trail — every ADR edit is a normal commit citing ADR id + change class + mission id; (2) `adr-fmt --lint` stays exit-0 after every corpus-touching commit (warnings allowed per AFM-0003); (3) per-ADR audit bead with label `adr-touched,mission:<id>` and one-line rationale + commit sha; (4) moltke enumerates every touched ADR in the mission-complete report for user review; (5) STORY edits are **not** covered — they remain user-ratified (apex doctrine unchanged); (6) reversal via standard supersession + AFM-0020 parent edge; no force-push, no amend. Always-escalate list tightened: removed "Drafting a new CHE ADR", "Editing an existing CHE ADR", and "Changes to `adr-fmt.toml` corpus configuration" (now covered by the exception). Added "Edits to FOCUS.md itself" (was implicit). "Weakening any § 2 invariant" remains always-escalate regardless of edit mechanism. § 9 Document Hierarchy disagreement-resolution rule for ADR ↔ ADR amended to note autonomous edits during missions. Companions: `docs/STORY.md` v0.2 (§ 9 amended), `docs/CLOSURE.md` v0.2 (§ 7 amended). |
