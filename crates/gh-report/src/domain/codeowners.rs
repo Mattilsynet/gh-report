@@ -4,6 +4,7 @@
 //! live in the domain layer because they appear in [`super::checks::CodeownersResult`]
 //! and in evidence serialization, making them part of the core domain model.
 
+use pardosa_genome::GenomeSafe;
 use serde::{Deserialize, Serialize};
 
 /// Reason a CODEOWNERS file was found but not parsed.
@@ -32,7 +33,7 @@ use serde::{Deserialize, Serialize};
 /// CodeownersTruncationReason::OversizedBase64.encode(&mut out);
 /// assert_eq!(out, vec![1u8]);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, GenomeSafe)]
 #[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum CodeownersTruncationReason {
@@ -46,21 +47,6 @@ pub enum CodeownersTruncationReason {
     DecodeFailed = 3,
     /// Decoded bytes were not valid UTF-8.
     InvalidUtf8 = 4,
-}
-
-// Wire format: u8 discriminant per declaration order. Reorder or insert is a
-// wire-format break (CHE-0064:R2 + PAR-0024:R5); new variants must append.
-impl pardosa_encoding::Encode for CodeownersTruncationReason {
-    fn encode(&self, out: &mut Vec<u8>) {
-        let discriminant: u8 = match self {
-            Self::NotBase64Encoded => 0,
-            Self::OversizedBase64 => 1,
-            Self::ContentMissing => 2,
-            Self::DecodeFailed => 3,
-            Self::InvalidUtf8 => 4,
-        };
-        out.push(discriminant);
-    }
 }
 
 /// Parsed CODEOWNERS file content.
@@ -83,7 +69,7 @@ impl pardosa_encoding::Encode for CodeownersTruncationReason {
 /// parsed.encode(&mut out);
 /// assert!(!out.is_empty());
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, GenomeSafe)]
 pub struct ParsedCodeowners {
     /// Individual CODEOWNERS entries (pattern + owners).
     pub entries: Vec<CodeownersEntry>,
@@ -94,19 +80,7 @@ pub struct ParsedCodeowners {
     /// counted here — only over-length lines that were dropped without
     /// being parsed. Surfaced for observability so silent data loss is
     /// detectable from evidence alone.
-    #[serde(default)]
     pub skipped_lines: u32,
-}
-
-// Wire format: fields encoded in struct declaration order via `Encode::encode`.
-// Field reorder is a wire-format break; new fields must be appended
-// (CHE-0064:R2 + PAR-0024:R5).
-impl pardosa_encoding::Encode for ParsedCodeowners {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.entries.encode(out);
-        self.unique_owners.encode(out);
-        self.skipped_lines.encode(out);
-    }
 }
 
 /// A single CODEOWNERS entry: a file pattern and its owners.
@@ -128,20 +102,10 @@ impl pardosa_encoding::Encode for ParsedCodeowners {
 /// entry.encode(&mut out);
 /// assert!(!out.is_empty());
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, GenomeSafe)]
 pub struct CodeownersEntry {
     /// File pattern (e.g., `*.js`, `src/`, `/docs/`).
     pub pattern: String,
     /// Owner references (e.g., `@org/team`, `@user`).
     pub owners: Vec<String>,
-}
-
-// Wire format: fields encoded in struct declaration order via `Encode::encode`.
-// Field reorder is a wire-format break; new fields must be appended
-// (CHE-0064:R2 + PAR-0024:R5).
-impl pardosa_encoding::Encode for CodeownersEntry {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.pattern.encode(out);
-        self.owners.encode(out);
-    }
 }
