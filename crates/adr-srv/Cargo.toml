@@ -10,7 +10,35 @@ publish = false
 workspace = true
 
 [dependencies]
+# adr-fmt library surface (AFM-0026:R1) — already wired in M1.1.
 adr-fmt = { path = "../adr-fmt" }
+
+# Event-sourcing substrate (CHE-0054:R8/R10 carve-out — no agent/gateway/App).
+cherry-pit-core = { workspace = true }
+cherry-pit-pardosa = { workspace = true }
+# SEC-0003 path-segment sanitisation surface (used in M1.3 scrape).
+cherry-pit-web = { workspace = true }
+
+# Domain encoding (CHE-0064:R2 canonical bytes; GenomeSafe derive emits both
+# Encode and Decode impls — see crates/pardosa-derive/src/lib.rs L26-33).
+pardosa-encoding = { workspace = true }
+pardosa-genome = { workspace = true }
+
+# Wire substrate.
+axum = { workspace = true }
+async-graphql = { workspace = true }
+async-graphql-axum = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+
+# Domain primitives.
+jiff = { workspace = true }
+xxhash-rust = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tower = { workspace = true }
+http = { workspace = true }
 
 [[bin]]
 name = "adr-srv"
