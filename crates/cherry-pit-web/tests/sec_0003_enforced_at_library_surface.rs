@@ -1,17 +1,22 @@
-//! Smoke tests for **CHE-0062** library-attached availability layers on
-//! `build_projection_router`.
+//! SEC-0003 — Availability — Bound All Resource Consumption.
 //!
-//! Three SEC-0003 enforcement points are exercised here as the
-//! cherry-pit-web-side smoke; the load-bearing validation is gh-report's
-//! existing SEC-0003 test sites at
-//! `crates/gh-report/src/infra/server/server.rs:1236,:2164,:2209,:3144,:3559`
-//! which target the cherry-pit-web router once Track 4.3 migrates them.
+//! Library-surface enforcement smoke for `build_projection_router`.
+//! Mechanism ADR: CHE-0062 (library-attached availability layers).
 //!
-//! - R1 body cap → 413 (`tower_http::limit::RequestBodyLimitLayer`)
-//! - R3 inflight cap → 503 with **shedding-not-queueing** semantics
-//!   (`http_concurrency_limit` middleware)
-//! - R3 WS cap → 503 on upgrade when semaphore exhausted
-//!   (`Arc<Semaphore>::try_acquire_owned` in `ws_handler`)
+//! - **R1** (bounded allocation): body cap → 413 via
+//!   `tower_http::limit::RequestBodyLimitLayer`.
+//! - **R3** (backpressure): inflight cap → 503 with shedding-not-queueing
+//!   semantics (`http_concurrency_limit` middleware); WS upgrade cap →
+//!   503 via `Arc<Semaphore>::try_acquire_owned` in `ws_handler`.
+//! - **R2** (bounded iteration/recursion): NOT exercised here — R2 is a
+//!   structural property of handler code with no library-attached layer
+//!   surface. See SEC-0003 for the rule; enforcement sites live in
+//!   `gh-report` and `cherry-pit-web` handler implementations.
+//!
+//! The load-bearing R1/R3 validation lives at gh-report's SEC-0003 test
+//! sites (`crates/gh-report/src/infra/server/server.rs:1236,:2164,:2209,
+//! :3144,:3559`); this file exercises the cherry-pit-web-side library
+//! surface that those sites delegate to once Track 4.3 migrates them.
 
 #![cfg(feature = "projection")]
 
@@ -25,8 +30,9 @@ use cherry_pit_web::{LayerLimits, ProjectionState, build_projection_router};
 use common::MockProjectionSource;
 use tower::ServiceExt;
 
-/// CHE-0062:R1 — body bytes exceeding `LayerLimits.max_body_bytes` get
-/// `413 Payload Too Large` before reaching the handler.
+/// SEC-0003:R1 (bounded allocation) — body bytes exceeding
+/// `LayerLimits.max_body_bytes` get `413 Payload Too Large` before
+/// reaching the handler. Mechanism: CHE-0062.
 ///
 /// `RequestBodyLimitLayer` short-circuits with 413 on
 /// `Content-Length > max` *before* dispatching to a route, so the
@@ -89,7 +95,8 @@ async fn body_under_max_passes_layer() {
     );
 }
 
-/// CHE-0062:R1 — exhausting the inflight semaphore returns 503.
+/// SEC-0003:R3 (backpressure) — exhausting the inflight semaphore
+/// returns 503. Mechanism: CHE-0062 (`http_concurrency_limit`).
 ///
 /// With `max_inflight_requests = 0` the `try_acquire` fails immediately
 /// for every request: this proves the middleware is wired and exercises
@@ -121,8 +128,9 @@ async fn inflight_zero_permits_returns_503() {
     );
 }
 
-/// CHE-0062:R1 — WS upgrade is rejected with 503 when the WS semaphore
-/// has no permits.
+/// SEC-0003:R3 (backpressure) — WS upgrade is rejected with 503 when
+/// the WS semaphore has no permits. Mechanism: CHE-0062
+/// (`Arc<Semaphore>::try_acquire_owned` on the upgrade path).
 ///
 /// With `max_ws_connections = 0` `try_acquire_owned` fails on every
 /// upgrade attempt, returning 503 before the WS handshake. We exercise
@@ -171,9 +179,10 @@ async fn ws_zero_permits_returns_503() {
     server.abort();
 }
 
-/// CHE-0062:R1 — WS upgrade succeeds when a permit is available, then
-/// the permit is released on disconnect (a fresh upgrade succeeds after
-/// the prior session ends). Mirrors the donor's
+/// SEC-0003:R3 (backpressure) — WS upgrade succeeds when a permit is
+/// available, then the permit is released on disconnect (a fresh
+/// upgrade succeeds after the prior session ends). Mechanism: CHE-0062.
+/// Mirrors the donor's
 /// `server.rs:2209::ws_semaphore_permit_released_on_disconnect` smoke.
 #[tokio::test]
 async fn ws_permit_released_on_disconnect() {
