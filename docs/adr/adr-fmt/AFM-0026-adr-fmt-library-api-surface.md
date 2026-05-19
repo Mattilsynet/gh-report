@@ -1,7 +1,7 @@
 # AFM-0026. adr-fmt Library API Surface
 
 Date: 2026-05-18
-Last-reviewed: 2026-05-18
+Last-reviewed: 2026-05-19
 Tier: S
 Status: Accepted
 
@@ -30,6 +30,13 @@ into a future `adr-fmt-core` split without consumer-side change.
 `adr-srv` is the sole intended consumer. Pinning a small surface now
 is cheaper than negotiating a wider one later.
 
+Amendment 2026-05-19 (Phase 2 v2 M1.3): R1 broadened to add
+`model::{Status, Relationship, RelVerb}`. The `adr-srv` scrape
+pipeline projects `AdrRecord`s into the `AdrIngested` event payload
+and names these three types directly. They were already public on
+`model`; the amendment moves them into the pinned crate-root re-export
+set so `adr-srv` does not name a private path. No new types.
+
 ## Decision
 
 Pin the `adr-fmt` library API to a flat re-export set at the crate
@@ -42,7 +49,7 @@ R1 [5]: The library exposes exactly these items at the crate root via
   internal reorganisation is non-breaking for consumers:
   `config::{Config, LoadError, load_quiet, resolve_corpus_root}`,
   `containment::{ContainmentError, contained_join, contained_join_optional}`,
-  `model::{AdrRecord, DomainDir, AdrId, Tier, parse_adr_id}`,
+  `model::{AdrRecord, DomainDir, AdrId, Tier, Status, Relationship, RelVerb, parse_adr_id}`,
   `parser::{parse_domain, parse_stale, ParseOutcome}`,
   `report::{Diagnostic, Severity}`.
   `config::load` is intentionally absent; adding it requires a

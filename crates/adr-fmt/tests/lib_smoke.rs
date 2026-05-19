@@ -12,7 +12,8 @@
 //! Q2 minimum set — see oracle bd adr-fmt-d7ao:
 //!   - `Config`, `LoadError`, `load_quiet`, `resolve_corpus_root`
 //!   - `ContainmentError`, `contained_join`, `contained_join_optional`
-//!   - `AdrId`, `AdrRecord`, `DomainDir`, `Tier`, `parse_adr_id`
+//!   - `AdrId`, `AdrRecord`, `DomainDir`, `Tier`, `Status`,
+//!     `Relationship`, `RelVerb`, `parse_adr_id`
 //!   - `ParseOutcome`, `parse_domain`, `parse_stale`
 //!   - `Diagnostic`, `Severity`
 //!
@@ -53,7 +54,7 @@ fn lib_api_modules_resolve() {
         adr_fmt::Diagnostic::warning("T999", Path::new("probe.md"), 1, String::from("probe"));
 
     // model — Tier, DomainDir, AdrId, AdrRecord (via parse_adr_id),
-    // parse_adr_id
+    // parse_adr_id, Status, Relationship, RelVerb
     let _: adr_fmt::Tier = adr_fmt::Tier::A;
     let _: adr_fmt::DomainDir = adr_fmt::DomainDir {
         path: PathBuf::from("/tmp/probe"),
@@ -62,6 +63,11 @@ fn lib_api_modules_resolve() {
     };
     let _: Option<adr_fmt::AdrId> = adr_fmt::parse_adr_id("PRB-0001");
     // AdrRecord named via fn-pointer signature below.
+    // Status, Relationship, RelVerb — AFM-0026:R1 (Phase 2 v2 M1.3
+    // amendment); adr-srv's scrape projection names these.
+    let _: adr_fmt::Status = adr_fmt::Status::Accepted;
+    let _: adr_fmt::RelVerb = adr_fmt::RelVerb::References;
+    let _: fn() -> Vec<adr_fmt::Relationship> = || Vec::new();
 
     // containment — ContainmentError, contained_join,
     // contained_join_optional
