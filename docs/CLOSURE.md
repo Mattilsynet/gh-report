@@ -277,7 +277,7 @@ v0.3 closure document does not yet exist; it will when v0.3 begins.
 ## 7. Governance of this document
 
 `CLOSURE.md` is **always-escalate** for content changes. Per FOCUS.md
-§ 6 (once codified there in the anchoring step):
+§ 6 (codified during the anchoring step):
 
 - Adding a checkbox tick (i.e. recording a closed gate item) is
   routine; not an escalation. The check is the gate's truth, not a
@@ -288,6 +288,13 @@ v0.3 closure document does not yet exist; it will when v0.3 begins.
 - Declaring v0.1 shipped — i.e. annotating this document
   `Status: Discharged` and archiving to `docs/stale/` — is
   always-escalate. User ratifies.
+
+**ADR edits during closing missions are autonomous-permitted** per
+FOCUS.md § 6 "long-autonomous-job exception". The closing missions
+in § 2 may draft, amend, supersede, or retire ADRs without per-edit
+ratification; moltke's mission-complete report enumerates touched
+ADRs for user review. STORY edits, CLOSURE structural edits, and
+§ 2 invariant weakening remain always-escalate.
 
 Cross-link discipline: if `roadmap.md` re-shapes a track,
 CLOSURE.md's one-line row updates; the per-task table does not
@@ -300,3 +307,4 @@ migrate here. CLOSURE.md is an index, never a copy.
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 0.1 | 2026-05-19 | acje + agent | Initial draft. v0.1 = Phase 2 v2 exit; mirrors `roadmap.md` exit gate and adds the `story-override` zero-open governance check. |
+| 0.2 | 2026-05-19 | acje + agent | § 7 amended: ADR edits during closing missions are autonomous-permitted per FOCUS.md § 6 "long-autonomous-job exception". STORY edits + CLOSURE structural edits + § 2 invariant weakening remain always-escalate. No exit-gate composition change. |
