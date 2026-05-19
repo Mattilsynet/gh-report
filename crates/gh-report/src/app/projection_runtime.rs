@@ -10,7 +10,7 @@
 //!    CHE-0051:R5 + CHE-0048:R2. On daemon start: load the persisted
 //!    snapshot + checkpoint via [`FileProjectionStore`]; replay only
 //!    events whose `sequence > checkpoint.last_sequence` from the
-//!    [`PardosaFileEventStore`] event store. Cold start (no checkpoint or no
+//!    [`InMemoryEventStore`] event store. Cold start (no checkpoint or no
 //!    snapshot) replays the full stream into `EvidenceProjection::default()`.
 //!    Per CHE-0048:R2, a present snapshot with an *absent* checkpoint
 //!    must be treated as "rebuild" — the snapshot is discarded and the
@@ -43,17 +43,16 @@
 //!   `EvidenceProjection` per process, keyed by the singleton
 //!   [`crate::projection::ORG_GOVERNANCE_AGGREGATE_ID`].
 //!
-//! ## File-lock note (single-handle-per-directory under CHE-0043:R1)
+//! ## File-lock note (historical — no longer load-bearing)
 //!
-//! Per [`PardosaFileEventStore::open`]: an exclusive advisory `flock(2)`
-//! on `{dir}/.lock` is acquired at open time and held for the store's
-//! entire lifetime (CHE-0043:R1). A second `open(...)` against the
-//! same directory while the first store is alive returns
-//! [`StoreError::StoreLocked`]. The startup replay path therefore does
-//! NOT construct a transient store; it shares the durable
-//! `Arc<PardosaFileEventStore<DomainEvent>>` held by `AppState` into
-//! the [`ProjectionDriver`] via the [`SharedStore`] newtype below.
-//! One canonical store handle per directory, ever.
+//! (was: `PardosaFileEventStore::open` acquired an exclusive advisory
+//! `flock(2)` on `{dir}/.lock` at open time and held it for the store's
+//! lifetime under CHE-0043:R1; the startup replay path therefore shared
+//! the durable `Arc<PardosaFileEventStore<DomainEvent>>` held by
+//! `AppState` into the [`ProjectionDriver`] via the [`SharedStore`]
+//! newtype below. See follow-up bd issue for the PGNO-backed successor;
+//! [`SharedStore`] survives the substitution to keep the consumer
+//! surface stable.)
 //!
 //! ## Why a `Mutex<EvidenceProjection>` and not lock-free
 //!
@@ -73,7 +72,7 @@ use cherry_pit_agent::{InProcessEventBus, ProjectionDriverExt};
 use cherry_pit_core::{
     AggregateId, CorrelationContext, EventEnvelope, EventStore, StoreCreateResult, StoreError,
 };
-use cherry_pit_pardosa::PardosaFileEventStore;
+use cherry_pit_core::testing::InMemoryEventStore;
 use cherry_pit_projection::{
     FileProjectionStore, ProjectionDriver, ProjectionError, ProjectionResult,
 };
@@ -82,41 +81,36 @@ use std::num::NonZeroU64;
 use crate::domain::events::DomainEvent;
 use crate::projection::EvidenceProjection;
 
-/// Shareable handle around an [`Arc<PardosaFileEventStore<E>>`].
+/// Shareable handle around an [`Arc<InMemoryEventStore<E>>`].
 ///
-/// The pardosa store acquires an exclusive advisory flock on its
-/// directory at `open` time and holds it for the store's lifetime
-/// (CHE-0043:R1). A second `open(...)` over the same directory while
-/// the first handle is alive returns [`StoreError::StoreLocked`]. The
-/// startup replay path needs a [`ProjectionDriver`] *over the same
-/// directory the durable `event_store` already owns*; this newtype
-/// lets the driver own a `SharedStore` by value while the underlying
-/// store is shared with `AppState` via the inner `Arc`. The driver's
-/// only call into the store is `load(...)` (the replay primitive); no
-/// second flock is taken because the inner `PardosaFileEventStore` is
-/// the *same* one `AppState` already opened.
+/// Interim substrate until the PGNO-backed successor `EventStore` lands
+/// (follow-up to mission `cherry-pit-pardosa-deletion-1779215265`); the
+/// newtype is preserved because its consumer surface (`SharedStore`
+/// constructor + `EventStore` impl) is referenced throughout the
+/// runtime, but the historical flock semantics (CHE-0043:R1) no
+/// longer apply — `InMemoryEventStore` has no on-disk surface.
 ///
 /// All [`EventStore`] methods delegate transparently to the inner
 /// store via deref-through-Arc.
 #[derive(Clone)]
-pub struct SharedStore<E>(Arc<PardosaFileEventStore<E>>)
+pub struct SharedStore<E>(Arc<InMemoryEventStore<E>>)
 where
-    E: cherry_pit_core::DomainEvent + pardosa_encoding::Decode + pardosa_encoding::Encode;
+    E: cherry_pit_core::DomainEvent;
 
 impl<E> SharedStore<E>
 where
-    E: cherry_pit_core::DomainEvent + pardosa_encoding::Decode + pardosa_encoding::Encode,
+    E: cherry_pit_core::DomainEvent,
 {
-    /// Wrap a shared [`PardosaFileEventStore`] for driver use.
+    /// Wrap a shared [`InMemoryEventStore`] for driver use.
     #[must_use]
-    pub fn new(inner: Arc<PardosaFileEventStore<E>>) -> Self {
+    pub fn new(inner: Arc<InMemoryEventStore<E>>) -> Self {
         Self(inner)
     }
 }
 
 impl<E> EventStore for SharedStore<E>
 where
-    E: cherry_pit_core::DomainEvent + pardosa_encoding::Decode + pardosa_encoding::Encode,
+    E: cherry_pit_core::DomainEvent,
 {
     type Event = E;
 
@@ -203,7 +197,7 @@ pub struct StartupState {
 /// [`ProjectionError::CorruptData`] from
 /// `EventEnvelope::validate_stream`.
 pub async fn snapshot_fast_path_startup(
-    event_store: Arc<PardosaFileEventStore<DomainEvent>>,
+    event_store: Arc<InMemoryEventStore<DomainEvent>>,
     projection_store: &FileProjectionStore<EvidenceProjection>,
     aggregate_id: AggregateId,
 ) -> ProjectionResult<StartupState> {
@@ -376,7 +370,9 @@ mod tests {
 
         // Seed the event store with 3 events via create + append.
         let event_store =
-            Arc::new(PardosaFileEventStore::<DomainEvent>::open(&events_dir).expect("open"));
+            Arc::new(InMemoryEventStore::<DomainEvent>::new());
+            // (was: PardosaFileEventStore::<DomainEvent>::open(&events_dir).expect("open"); see follow-up bd issue)
+            let _ = &events_dir;
         let ctx = CorrelationContext::none();
         let (id, initial) = event_store
             .create(vec![sweep_started(), repo_removed("ghost-1")], ctx.clone())
@@ -419,7 +415,9 @@ mod tests {
 
         // Seed event store with seq 1..=3.
         let event_store =
-            Arc::new(PardosaFileEventStore::<DomainEvent>::open(&events_dir).expect("open"));
+            Arc::new(InMemoryEventStore::<DomainEvent>::new());
+            // (was: PardosaFileEventStore::<DomainEvent>::open(&events_dir).expect("open"); see follow-up bd issue)
+            let _ = &events_dir;
         let ctx = CorrelationContext::none();
         let (id, initial) = event_store
             .create(vec![sweep_started(), repo_removed("k1")], ctx.clone())
@@ -472,7 +470,9 @@ mod tests {
         std::fs::create_dir_all(&projections_dir).expect("mkdir p");
 
         let event_store =
-            Arc::new(PardosaFileEventStore::<DomainEvent>::open(&events_dir).expect("open"));
+            Arc::new(InMemoryEventStore::<DomainEvent>::new());
+            // (was: PardosaFileEventStore::<DomainEvent>::open(&events_dir).expect("open"); see follow-up bd issue)
+            let _ = &events_dir;
         let ctx = CorrelationContext::none();
         let (id, initial) = event_store
             .create(vec![sweep_started()], ctx)
@@ -511,7 +511,9 @@ mod tests {
         let events_dir = tmp.path().join("events");
         std::fs::create_dir_all(&events_dir).expect("mkdir");
         let store =
-            Arc::new(PardosaFileEventStore::<DomainEvent>::open(&events_dir).expect("open"));
+            Arc::new(InMemoryEventStore::<DomainEvent>::new());
+            // (was: PardosaFileEventStore::<DomainEvent>::open(&events_dir).expect("open"); see follow-up bd issue)
+            let _ = &events_dir;
         let driver = Arc::new(ProjectionDriver::<EvidenceProjection, _>::new(
             SharedStore::new(Arc::clone(&store)),
         ));
@@ -549,7 +551,9 @@ mod tests {
         let events_dir = tmp.path().join("events");
         std::fs::create_dir_all(&events_dir).expect("mkdir");
         let store =
-            Arc::new(PardosaFileEventStore::<DomainEvent>::open(&events_dir).expect("open"));
+            Arc::new(InMemoryEventStore::<DomainEvent>::new());
+            // (was: PardosaFileEventStore::<DomainEvent>::open(&events_dir).expect("open"); see follow-up bd issue)
+            let _ = &events_dir;
         let driver = Arc::new(ProjectionDriver::<EvidenceProjection, _>::new(
             SharedStore::new(Arc::clone(&store)),
         ));
