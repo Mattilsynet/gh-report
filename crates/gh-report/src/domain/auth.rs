@@ -8,13 +8,14 @@
 //! For runtime classification logic (scope parsing, capability probing),
 //! see [`crate::github::auth`].
 
+use pardosa_genome::GenomeSafe;
 use serde::{Deserialize, Serialize};
 
 /// Supported authentication modes.
 ///
 /// Describes how the application authenticated with the GitHub API.
 /// Serialized into evidence artifacts for audit trail purposes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, GenomeSafe)]
 #[repr(u8)]
 #[non_exhaustive]
 pub enum AuthMode {
@@ -43,26 +44,12 @@ impl std::fmt::Display for AuthMode {
     }
 }
 
-// Wire format: one `u8` discriminant per variant declaration order.
-// Variant reorder is a wire-format break: extending requires appending a
-// new variant, never inserting (CHE-0064:R2 + PAR-0024:R5).
-impl pardosa_encoding::Encode for AuthMode {
-    fn encode(&self, out: &mut Vec<u8>) {
-        match self {
-            Self::Pat => out.push(0u8),
-            Self::GitHubApp => out.push(1u8),
-            Self::GhCliFallback => out.push(2u8),
-            Self::Unknown => out.push(3u8),
-        }
-    }
-}
-
 /// Token capability tier based on available OAuth scopes.
 ///
 /// - Full: {repo, read:org, `security_events`} all present
 /// - Limited: Some scopes present but not the full set
 /// - Unknown: Unable to determine (e.g. GitHub App, fine-grained PAT, or unavailable)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, GenomeSafe)]
 #[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum TokenTier {
@@ -84,23 +71,12 @@ impl std::fmt::Display for TokenTier {
     }
 }
 
-// Wire format: one `u8` discriminant per variant declaration order.
-impl pardosa_encoding::Encode for TokenTier {
-    fn encode(&self, out: &mut Vec<u8>) {
-        match self {
-            Self::Full => out.push(0u8),
-            Self::Limited => out.push(1u8),
-            Self::Unknown => out.push(2u8),
-        }
-    }
-}
-
 /// An optional GitHub API capability that can be probed at startup.
 ///
 /// Each variant maps to a specific API family. Using an enum instead of
 /// string keys ensures typos are caught at compile time — a misspelled
 /// capability can never silently skip a security check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, GenomeSafe)]
 #[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
@@ -117,15 +93,6 @@ impl std::fmt::Display for Capability {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::OrgSecretScanningAlerts => write!(f, "org_secret_scanning_alerts"),
-        }
-    }
-}
-
-// Wire format: one `u8` discriminant per variant declaration order.
-impl pardosa_encoding::Encode for Capability {
-    fn encode(&self, out: &mut Vec<u8>) {
-        match self {
-            Self::OrgSecretScanningAlerts => out.push(0u8),
         }
     }
 }
