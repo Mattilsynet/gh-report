@@ -2144,8 +2144,7 @@ mod tests {
                 test_fixtures::codeowners_with_owners(&["@org/team-xss"]),
             ),
         );
-        repo.repository.description =
-            Some("<img onerror=alert(1)>".to_string());
+        repo.repository.description = Some("<img onerror=alert(1)>".to_string());
         repo.last_commit = Some(LastCommitInfo {
             committer_login: Some("<b>bold</b>".to_string()),
             committer_name: Some("<i>italic</i>".to_string()),

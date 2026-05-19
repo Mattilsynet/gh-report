@@ -38,6 +38,11 @@ cherry-pit-core = { workspace = true }
 # default per commit-2b convention.
 pardosa-encoding = { workspace = true }
 
+# pardosa-genome — GenomeSafe derive substrate for sub-04-impls slices 1–6
+# (auth, codeowners, repository, checks, evidence, events). default features
+# (`std` + `derive`) enable the derive macro; no extra feature flags needed.
+pardosa-genome = { workspace = true }
+
 # cherry-pit-gateway — durable EventStore impl (MsgpackFileStore) per
 # BC-v2-12 + CHE-0036:R1. Wired at WU-6 v2 B3' (charter
 # wu6v2-charter-1778415390); single MsgpackFileStore<DomainEvent>

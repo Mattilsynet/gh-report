@@ -106,6 +106,9 @@ pardosa = { path = "crates/pardosa", version = "0.2.0" }
 # enable `Encode for uuid::Uuid` and `Encode for jiff::Timestamp`, both
 # of which appear as EventEnvelope field types (cherry-pit-core/src/event.rs).
 pardosa-encoding = { path = "crates/pardosa-encoding", version = "0.1.0", features = ["uuid", "jiff"] }
+# pardosa-genome: GenomeSafe derive substrate. default-features = ["std", "derive"]
+# already enables the GenomeSafe derive (via pardosa-derive); no extra features needed.
+pardosa-genome = { path = "crates/pardosa-genome", version = "0.1.0" }
 
 # === Async runtime extras ===
 tokio-util = { version = "0.7", default-features = false }
