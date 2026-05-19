@@ -40,6 +40,10 @@
 
 #![forbid(unsafe_code)]
 
+mod file_store;
+
+pub use file_store::PardosaFileEventStore;
+
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::num::NonZeroU64;
@@ -332,6 +336,106 @@ impl<E: DomainEvent> PardosaEventStore<E> {
             .sequence();
         state.last_sequence.insert(id, new_last);
         Ok(envelopes)
+    }
+}
+
+// ─── Replay (file-backed wrapper consumes this) ──────────────────
+//
+// `replay_envelopes` repopulates the inner Dragline from already-built
+// envelopes. Used by `PardosaFileEventStore::open` to restore in-memory
+// state from on-disk logs without re-fabricating envelope identity
+// (CHE-0042:R1 — envelopes survive append→load byte-identical, so
+// replay must not regenerate event_id/timestamp/sequence).
+//
+// Pre-condition: `by_aggregate` keys are dense from `AggregateId(1)`
+// upward in sorted order (1, 2, 3, ...) — the file-store enumerator
+// guarantees this via sorted dir-walk of `{id}.pardosa` files. Gaps
+// (a purged-and-deleted aggregate id) would break pardosa's
+// `next_domain_id()` allocation lock-step. v0.1 file-backed store
+// never deletes aggregate files, so gaps cannot arise organically;
+// any operator-induced gap is detected here and rejected.
+impl<E: DomainEvent> PardosaEventStore<E> {
+    /// Replay envelopes into the inner Dragline at construction time.
+    ///
+    /// # Errors
+    ///
+    /// - [`StoreError::CorruptData`] if `by_aggregate` keys are not
+    ///   dense from `AggregateId(1)` (gap = corrupt restore).
+    /// - [`StoreError::Infrastructure`] for any pardosa-substrate
+    ///   failure during replay.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned (unrecoverable
+    /// invariant violation from another thread).
+    pub fn replay_envelopes(
+        &self,
+        by_aggregate: BTreeMap<AggregateId, Vec<EventEnvelope<E>>>,
+    ) -> Result<(), StoreError> {
+        let mut state = self.state.lock().expect("PardosaEventStore mutex poisoned");
+        // Walk in BTreeMap sorted order. Assert dense-from-1 — see the
+        // module-level rationale above.
+        let mut expected = NonZeroU64::new(1).expect("1 is non-zero");
+        for (id, envelopes) in by_aggregate {
+            if id.get() != expected.get() {
+                return Err(StoreError::CorruptData(Box::<
+                    dyn std::error::Error + Send + Sync,
+                >::from(format!(
+                    "replay aggregate-id gap: expected {expected}, got {id} \
+                     (file-backed store does not delete aggregate files)",
+                ))));
+            }
+            let Some(first) = envelopes.first().cloned() else {
+                // Empty file — skip; allocation lock-step preserved
+                // because we don't call next_domain_id.
+                expected = expected
+                    .checked_add(1)
+                    .expect("AggregateId overflow during replay");
+                continue;
+            };
+
+            // Verify the on-disk stream is structurally valid before
+            // touching the substrate (CHE-0042:R4).
+            EventEnvelope::validate_stream(id, &envelopes)
+                .map_err(|e| StoreError::CorruptData(Box::new(e)))?;
+
+            let next_domain = state.dragline.next_domain_id();
+            let alloc_id = domain_to_aggregate(next_domain)?;
+            if alloc_id != id {
+                return Err(StoreError::CorruptData(Box::<
+                    dyn std::error::Error + Send + Sync,
+                >::from(format!(
+                    "replay allocation mismatch: pardosa would assign {alloc_id} \
+                     but on-disk aggregate is {id}",
+                ))));
+            }
+
+            let timestamp = first.timestamp().as_microsecond();
+            state
+                .dragline
+                .create(timestamp, first)
+                .map_err(pardosa_err)?;
+
+            for env in envelopes.iter().skip(1) {
+                let ts = env.timestamp().as_microsecond();
+                state
+                    .dragline
+                    .update(next_domain, ts, env.clone())
+                    .map_err(pardosa_err)?;
+            }
+
+            state.by_aggregate.insert(id, next_domain);
+            let last_seq = envelopes
+                .last()
+                .expect("non-empty by checks above")
+                .sequence();
+            state.last_sequence.insert(id, last_seq);
+
+            expected = expected
+                .checked_add(1)
+                .expect("AggregateId overflow during replay");
+        }
+        Ok(())
     }
 }
 

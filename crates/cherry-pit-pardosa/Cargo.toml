@@ -24,12 +24,10 @@ pardosa = { workspace = true }
 # Envelope construction uses jiff::Timestamp and uuid::Uuid::now_v7.
 jiff = { workspace = true }
 uuid = { workspace = true }
-# Trimmed per actual imports in src/lib.rs (oracle adr-fmt-byuj §1.2 invited
-# trim during execution): no thiserror (StoreError variants constructed via
-# Box<dyn Error>::from), no tokio/async-nats/tracing/serde/pardosa-traits/
-# pardosa-encoding/pardosa-genome/pardosa-derive — none of those surfaces
-# is touched by the v0.1 adapter. SM-6 conformance harness or later
-# milestones may re-add as actual call-sites materialise.
+# δ.3a — file-backed store decodes EventEnvelope<E> off disk under the
+# narrower `where E: pardosa_encoding::Decode` bound at the use site
+# (CHE-0064:R2 keeps the DomainEvent supertrait Encode-only).
+pardosa-encoding = { workspace = true }
 
 [dev-dependencies]
 # SM-6: re-pull cherry-pit-core with the `testing` feature so the
@@ -46,3 +44,10 @@ pardosa-encoding = { workspace = true }
 tokio = { workspace = true }
 tokio-test = { workspace = true }
 serde = { workspace = true }
+# δ.3a — file-backed conformance + roundtrip + lock tests need
+# `tempfile::TempDir` for per-scenario isolation (CHE-0038:R5).
+tempfile = { workspace = true }
+# δ.3a — stale-lock evidence test reuses the cherry-pit-gateway
+# helper (`stale_lock_evidence` is generic over a `Path` and lives
+# on the public surface), avoiding duplication. Dev-only.
+cherry-pit-gateway = { workspace = true }
