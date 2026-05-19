@@ -180,7 +180,7 @@ async fn bootstrap_replay_populates_routing_indices() {
 /// in-memory store substitute would drop state. The bug under test
 /// is in the boot-replay LOGIC, not in persistence; the in-process
 /// test exercises the relevant code path directly via the same
-/// AppState handle (seed → init → assert) by reaching into
+/// `AppState` handle (seed → init → assert) by reaching into
 /// `app_state.event_store` (a `pub` field) to seed the same store
 /// the init path will read.
 #[tokio::test]
