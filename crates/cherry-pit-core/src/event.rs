@@ -376,6 +376,48 @@ impl<E: DomainEvent> pardosa_encoding::Encode for EventEnvelope<E> {
     }
 }
 
+// δ.3a-pre — symmetric Decode under the narrower per-store bound
+// (`where E: pardosa_encoding::Decode`), NOT a widening of the
+// `DomainEvent` supertrait (CHE-0064 keeps the supertrait `Encode`-only).
+// Callers that need to decode envelopes (file-backed `EventStore`,
+// δ.3a) add the `E: Decode` bound at the use site.
+//
+// Field order is read verbatim in the order `Encode` emits them; any
+// reordering here is a wire-format break. Construction goes through
+// the validating `EventEnvelope::new` so the CHE-0042:R1 nil-event-id
+// rejection applies to bytes coming off disk too — corrupt input fails
+// loudly. `EnvelopeError` collapses to
+// `pardosa_encoding::EventError::InvalidInput`, matching the C2
+// "all decoder-local failures surface as InvalidInput" convention.
+impl<E> pardosa_encoding::Decode for EventEnvelope<E>
+where
+    E: DomainEvent + pardosa_encoding::Decode,
+{
+    fn decode(
+        d: &mut pardosa_encoding::Decoder<'_>,
+    ) -> Result<Self, pardosa_encoding::EventError> {
+        let event_id = <uuid::Uuid as pardosa_encoding::Decode>::decode(d)?;
+        let aggregate_id = <AggregateId as pardosa_encoding::Decode>::decode(d)?;
+        let sequence = <NonZeroU64 as pardosa_encoding::Decode>::decode(d)?;
+        let timestamp = <jiff::Timestamp as pardosa_encoding::Decode>::decode(d)?;
+        let correlation_id =
+            <Option<uuid::Uuid> as pardosa_encoding::Decode>::decode(d)?;
+        let causation_id =
+            <Option<uuid::Uuid> as pardosa_encoding::Decode>::decode(d)?;
+        let payload = <E as pardosa_encoding::Decode>::decode(d)?;
+        Self::new(
+            event_id,
+            aggregate_id,
+            sequence,
+            timestamp,
+            correlation_id,
+            causation_id,
+            payload,
+        )
+        .map_err(|_| pardosa_encoding::EventError::InvalidInput)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,6 +443,25 @@ mod tests {
                     out.push(0u8);
                     value.encode(out);
                 }
+            }
+        }
+    }
+
+    // δ.3a-pre — symmetric Decode for the test fixture so the envelope
+    // round-trip can exercise the new `EventEnvelope<E>: Decode` impl.
+    // Discriminant byte mirrors the Encode tag; unknown discriminants
+    // collapse to InvalidInput per the C2 convention.
+    impl pardosa_encoding::Decode for TestEvent {
+        fn decode(
+            d: &mut pardosa_encoding::Decoder<'_>,
+        ) -> Result<Self, pardosa_encoding::EventError> {
+            let tag = <u8 as pardosa_encoding::Decode>::decode(d)?;
+            match tag {
+                0 => {
+                    let value = <String as pardosa_encoding::Decode>::decode(d)?;
+                    Ok(TestEvent::Happened { value })
+                }
+                _ => Err(pardosa_encoding::EventError::InvalidInput),
             }
         }
     }
@@ -431,6 +492,95 @@ mod tests {
             prop_assert_eq!(back.sequence(), envelope.sequence());
             prop_assert_eq!(back.payload(), envelope.payload());
         }
+
+        // δ.3a-pre — symmetric pardosa-encoding round-trip mirroring the
+        // msgpack proptest above. Covers seq > 1, multi-byte payload,
+        // and (via the unit test below) optional correlation/causation
+        // present + absent.
+        #[test]
+        fn envelope_pardosa_encoding_roundtrip(
+            seq in 1..=u64::MAX,
+            value in "[a-zA-Z0-9]{0,50}",
+        ) {
+            let id = AggregateId::new(NonZeroU64::new(1).unwrap());
+            let sequence = NonZeroU64::new(seq).unwrap();
+            let envelope = EventEnvelope::new(
+                uuid::Uuid::now_v7(),
+                id,
+                sequence,
+                jiff::Timestamp::now(),
+                None,
+                None,
+                TestEvent::Happened { value: value.clone() },
+            ).unwrap();
+
+            let bytes = pardosa_encoding::to_vec(&envelope);
+            let back: EventEnvelope<TestEvent> =
+                pardosa_encoding::from_bytes(&bytes).expect("decode");
+
+            prop_assert_eq!(back.event_id(), envelope.event_id());
+            prop_assert_eq!(back.aggregate_id(), envelope.aggregate_id());
+            prop_assert_eq!(back.sequence(), envelope.sequence());
+            prop_assert_eq!(back.timestamp(), envelope.timestamp());
+            prop_assert_eq!(back.correlation_id(), envelope.correlation_id());
+            prop_assert_eq!(back.causation_id(), envelope.causation_id());
+            prop_assert_eq!(back.payload(), envelope.payload());
+        }
+    }
+
+    #[test]
+    fn envelope_pardosa_encoding_roundtrip_with_correlation_and_causation() {
+        // Exercise the Some(uuid) branches of correlation_id/causation_id,
+        // and sequence > 1 with a multi-byte payload.
+        let id = AggregateId::new(NonZeroU64::new(42).unwrap());
+        let envelope = EventEnvelope::new(
+            uuid::Uuid::now_v7(),
+            id,
+            NonZeroU64::new(7).unwrap(),
+            jiff::Timestamp::from_second(1_700_000_000).unwrap(),
+            Some(uuid::Uuid::now_v7()),
+            Some(uuid::Uuid::now_v7()),
+            TestEvent::Happened {
+                value: "multi-byte payload ✓".into(),
+            },
+        )
+        .unwrap();
+
+        let bytes = pardosa_encoding::to_vec(&envelope);
+        let back: EventEnvelope<TestEvent> =
+            pardosa_encoding::from_bytes(&bytes).expect("decode");
+
+        assert_eq!(back.event_id(), envelope.event_id());
+        assert_eq!(back.aggregate_id(), envelope.aggregate_id());
+        assert_eq!(back.sequence(), envelope.sequence());
+        assert_eq!(back.timestamp(), envelope.timestamp());
+        assert_eq!(back.correlation_id(), envelope.correlation_id());
+        assert_eq!(back.causation_id(), envelope.causation_id());
+        assert_eq!(back.payload(), envelope.payload());
+    }
+
+    #[test]
+    fn envelope_pardosa_encoding_rejects_nil_event_id() {
+        // Craft bytes with a nil event_id; decode must reject via the
+        // EventEnvelope::new validation path (CHE-0042:R1).
+        let id = AggregateId::new(NonZeroU64::new(1).unwrap());
+        // Build a syntactically-valid envelope via direct construction
+        // (bypassing `new`'s validation, since we're in the same module)
+        // then encode it. The decoder will route through `new` and
+        // reject the nil event_id.
+        let bad = EventEnvelope {
+            event_id: uuid::Uuid::nil(),
+            aggregate_id: id,
+            sequence: NonZeroU64::new(1).unwrap(),
+            timestamp: jiff::Timestamp::from_second(1_700_000_000).unwrap(),
+            correlation_id: None,
+            causation_id: None,
+            payload: TestEvent::Happened { value: "x".into() },
+        };
+        let bytes = pardosa_encoding::to_vec(&bad);
+        let err = pardosa_encoding::from_bytes::<EventEnvelope<TestEvent>>(&bytes)
+            .expect_err("nil event_id must be rejected");
+        assert_eq!(err, pardosa_encoding::EventError::InvalidInput);
     }
 
     #[test]
