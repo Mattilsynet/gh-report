@@ -32,8 +32,8 @@ use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
 
+use cherry_pit_core::testing::InMemoryEventStore;
 use cherry_pit_core::{AggregateId, BusError, CorrelationContext, EventBus, EventEnvelope};
-use cherry_pit_pardosa::PardosaFileEventStore;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
 use tracing::Subscriber;
@@ -109,13 +109,13 @@ impl<S: Subscriber> Layer<S> for CaptureLayer {
 
 #[tokio::test]
 async fn publish_failure_emits_structured_error_per_envelope() {
-    // Persistence: real PardosaFileEventStore (publish failure is non-fatal
-    // per CHE-0024:R1; events still durable).
+    // Persistence: interim InMemoryEventStore (publish failure is non-fatal
+    // per CHE-0024:R1; events still durable in-process for this test's
+    // scope. Interim substrate; see follow-up to mission
+    // cherry-pit-pardosa-deletion-1779215265 for the PGNO-backed successor).
     let dir = TempDir::new().expect("tempdir");
-    let store = Arc::new(
-        PardosaFileEventStore::<DomainEvent>::open(dir.path())
-            .expect("CHE-0043:R1 flock acquisition on fresh tempdir"),
-    );
+    let _ = dir.path(); // (was: PardosaFileEventStore::<DomainEvent>::open(dir.path()); see follow-up bd issue)
+    let store = Arc::new(InMemoryEventStore::<DomainEvent>::new());
     let bus: Arc<FailingBus> = Arc::new(FailingBus);
     let runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>> =
         Arc::new(Mutex::new(HashMap::new()));

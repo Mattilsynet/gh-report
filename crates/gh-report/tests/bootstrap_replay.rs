@@ -22,7 +22,8 @@
 //! aggregate id.
 //!
 //! Post-fix: those maps are populated by enumerating
-//! `PardosaFileEventStore::list_aggregates()` and folding each
+//! `InMemoryEventStore::list_aggregates()` (via the
+//! [`cherry_pit_core::ListableEventStore`] trait) and folding each
 //! aggregate's envelopes into the index that matches its variant.
 //!
 //! ## Routing rules verified
@@ -44,16 +45,19 @@
 
 use std::sync::Arc;
 
+use cherry_pit_core::testing::InMemoryEventStore;
 use cherry_pit_core::{CorrelationContext, EventStore};
-use cherry_pit_pardosa::PardosaFileEventStore;
 use gh_report::app::state::AppState;
 use gh_report::domain::events::DomainEvent;
 
 #[tokio::test]
+#[ignore = "depends on cross-restart persistence; InMemoryEventStore substitute (cherry-pit-pardosa-deletion-1779215265) drops state on each `with_stores` call. Re-enable when the PGNO-backed successor EventStore lands (R-B/R-C of mission cpp-cl-b1 introduce a fresh test on top of this harness)."]
 async fn bootstrap_replay_populates_routing_indices() {
-    // ── Arrange: seed a PardosaFileEventStore with one Run and one
-    // Repo aggregate, then drop the store handle to release the
-    // CHE-0043:R1 flock.
+    // ── Arrange: seed an InMemoryEventStore with one Run and one
+    // Repo aggregate, then drop the store handle.
+    // (was: a PardosaFileEventStore seeded over a tempdir; the restart
+    // path then re-opened the same dir. Under the in-memory substitute
+    // there is no shared substrate — see follow-up bd issue.)
     let tmp = tempfile::tempdir().expect("tempdir");
     let events_dir = tmp.path().join("events");
     let projections_dir = tmp.path().join("projections");
@@ -61,10 +65,8 @@ async fn bootstrap_replay_populates_routing_indices() {
     std::fs::create_dir_all(&projections_dir).expect("mk projections dir");
 
     {
-        let store = Arc::new(
-            PardosaFileEventStore::<DomainEvent>::open(&events_dir)
-                .expect("open store for seeding"),
-        );
+        let store = Arc::new(InMemoryEventStore::<DomainEvent>::new());
+        let _ = &events_dir; // (was: open over events_dir; see follow-up bd issue)
         let ctx = CorrelationContext::none();
 
         // Run aggregate: SweepStarted with batch_id "batch-replay-001".

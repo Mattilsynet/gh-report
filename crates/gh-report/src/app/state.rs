@@ -31,8 +31,8 @@ use std::sync::atomic::AtomicU64;
 
 use arc_swap::ArcSwap;
 use cherry_pit_agent::InProcessEventBus;
-use cherry_pit_core::AggregateId;
-use cherry_pit_pardosa::PardosaFileEventStore;
+use cherry_pit_core::testing::InMemoryEventStore;
+use cherry_pit_core::{AggregateId, ListableEventStore};
 use cherry_pit_projection::FileProjectionStore;
 use jiff::Timestamp;
 
@@ -41,6 +41,16 @@ pub use crate::infra::server::state::{CachedPage, PageUpdateEvent};
 
 // Re-export DomainEvent for convenience.
 pub use crate::domain::events::DomainEvent;
+
+/// Interim event-store concrete type used by gh-report.
+///
+/// This alias is the single point at which the in-process `EventStore`
+/// substitute is named for the gh-report consumer. The
+/// cherry-pit-pardosa removal (mission
+/// `cherry-pit-pardosa-deletion-1779215265`) left no file-backed
+/// substrate; the follow-up consumer-rewrite-over-PGNO bd-issue will
+/// repoint this alias to the PGNO-backed successor.
+pub type EventStoreImpl = InMemoryEventStore<DomainEvent>;
 
 // Re-export sub-aggregates for convenience.
 pub use crate::app::evidence_service::EvidenceState;
@@ -126,7 +136,7 @@ pub struct AppState {
     ///
     /// `None` only in test-builder paths that don't supply a
     /// `store_dir`. Daemon construction always supplies it.
-    pub event_store: Option<Arc<PardosaFileEventStore<DomainEvent>>>,
+    pub event_store: Option<Arc<EventStoreImpl>>,
 
     /// Durable projection snapshot + checkpoint store.
     ///
@@ -365,23 +375,19 @@ fn build_services(
 }
 
 /// Per-construction unique placeholder path. Used by `AppState::new()`
-/// (test/no-store path) and other no-store constructors. Files leak into
-/// OS temp dir; volume is bounded; OS reclaims.
-///
-/// History: previously a single shared path. B7'c migrations route
-/// tests-of-production-paths through `PardosaFileEventStore.create`,
-/// which acquires a per-directory `.lock` flock at `open` time
-/// (CHE-0043:R1, held for the store's lifetime); under parallel test
-/// execution that would panic with `StoreLocked` on any shared path.
-/// A unique UUID suffix per call eliminates the contention by ensuring
-/// each constructor opens a distinct directory.
+/// (test/no-store path) and other no-store constructors. The directory
+/// is now a vestigial argument under the `InMemoryEventStore` substitute
+/// (see follow-up bd issue for the PGNO-backed successor); kept so the
+/// public signatures don't churn and R-B/R-C can re-introduce a
+/// file-backed substrate later.
 fn noop_events_dir() -> std::path::PathBuf {
     std::env::temp_dir().join(format!("gh-report-noop-events-{}", uuid::Uuid::new_v4()))
 }
 
 /// Register the projection handler on the bus using a transient
-/// (apply-only, never-written) [`PardosaFileEventStore`] over a
-/// noop directory (unique per call — see [`noop_events_dir`]).
+/// [`InMemoryEventStore`] (interim substrate until the PGNO-backed
+/// successor `EventStore` lands — follow-up to mission
+/// `cherry-pit-pardosa-deletion-1779215265`).
 ///
 /// M2.cd — post-cutover the projection is the sole read-model
 /// authority (CHE-0048:R2). Every `AppState` constructor must wire
@@ -408,10 +414,8 @@ fn register_default_projection_handler(
     use crate::app::projection_runtime::{SharedStore, register_projection_handler};
     use cherry_pit_projection::ProjectionDriver;
 
-    let transient_store = Arc::new(
-        PardosaFileEventStore::<DomainEvent>::open(noop_events_dir())
-            .expect("open PardosaFileEventStore over fresh noop dir (CHE-0043:R1 flock)"),
-    );
+    let transient_store = Arc::new(InMemoryEventStore::<DomainEvent>::new());
+    // (was: PardosaFileEventStore::<DomainEvent>::open(noop_events_dir()); see follow-up bd issue)
     let driver = Arc::new(
         ProjectionDriver::<crate::projection::EvidenceProjection, _>::new(SharedStore::new(
             transient_store,
@@ -452,10 +456,8 @@ impl AppState {
         let deliveries_by_id = Arc::new(Mutex::new(HashMap::new()));
         let next_seq = Arc::new(Mutex::new(HashMap::new()));
         let noop_dir = noop_events_dir();
-        let rs = Arc::new(
-            PardosaFileEventStore::<DomainEvent>::open(&noop_dir)
-                .expect("open PardosaFileEventStore over fresh noop dir (CHE-0043:R1 flock)"),
-        );
+        let _ = &noop_dir; // (was: open PardosaFileEventStore over &noop_dir; see follow-up bd issue)
+        let rs = Arc::new(InMemoryEventStore::<DomainEvent>::new());
         let (merger_tx, merger_handle) = Merger::spawn(
             rs,
             Arc::clone(&bus),
@@ -500,50 +502,47 @@ impl AppState {
         })
     }
 
-    /// Create a new `AppState` wired with both durable stores:
-    /// a [`PardosaFileEventStore`] event store at `<store_dir>/events/<org>/`
-    /// and a [`FileProjectionStore`] projection snapshot store at
-    /// `<store_dir>/projections/<org>/`.
+    /// Create a new `AppState` wired with both stores.
     ///
-    /// WU-6 v2 B3' + B4' composition root (charter
-    /// `wu6v2-charter-1778415390`). Both stores are constructed
-    /// lazily — the directories are created at open time but no
-    /// payload is touched until the first write.
+    /// Interim substrate: the event store is an in-process
+    /// [`InMemoryEventStore`] (no persistence across restarts); the
+    /// projection store is the durable [`FileProjectionStore`] at
+    /// `<store_dir>/projections/<org>/`. Follow-up to mission
+    /// `cherry-pit-pardosa-deletion-1779215265` will repoint
+    /// [`EventStoreImpl`] to the PGNO-backed successor and restore
+    /// the on-disk events/ subtree described below.
     ///
-    /// Per the `AdjustIntent` option-2 file layout the per-org subtrees
-    /// are siblings (BC-v2-13: events/ and projections/ disjoint):
+    /// `events_dir` is retained on the public signature so the daemon
+    /// caller does not churn while the successor lands; under the
+    /// in-memory substitute it is ignored at construction time. Commit 3
+    /// of mission `cpp-cl-b1` adds a `tracing::info!` at boot announcing
+    /// the dropped argument, and a `--in-memory` CLI flag that gates
+    /// daemon boot (panic-at-boot otherwise — silent persistence loss
+    /// is unacceptable).
     ///
-    /// - `<store_dir>/events/<org>/1.pardosa` — single
-    ///   [`PardosaFileEventStore`] per-aggregate log (the singleton
-    ///   [`crate::projection::ORG_GOVERNANCE_AGGREGATE_ID`] per
-    ///   Tension-2). cherry-pit-pardosa composes filenames as
-    ///   `{aggregate_id}.pardosa` and acquires `{dir}/.lock` at
-    ///   `open` time (CHE-0043:R1).
+    /// File-layout note retained for the successor:
+    ///
+    /// - `<store_dir>/events/<org>/…` — per-aggregate event log, owned
+    ///   by the PGNO-backed successor `EventStore`. The singleton
+    ///   [`crate::projection::ORG_GOVERNANCE_AGGREGATE_ID`] applies per
+    ///   Tension-2.
     /// - `<store_dir>/projections/<org>/1-evidence.snapshot.msgpack`
     ///   and `…1-evidence.checkpoint.msgpack` — paired snapshot +
-    ///   checkpoint per CHE-0048:R1/R2 (msgpack format retained per
-    ///   CHE-0048; projection store is separate from the event store).
-    ///
-    /// The [`PardosaFileEventStore`] is opened **once** and the single
-    /// `Arc` is shared into the Merger (write path) and held on
-    /// `event_store` (read path / `snapshot_fast_path_init` driver
-    /// share). One canonical store handle per directory, ever — the
-    /// `.lock` flock is acquired by exactly one `open(...)` call.
+    ///   checkpoint per CHE-0048:R1/R2.
     ///
     /// # Panics
     ///
-    /// Panics if [`PardosaFileEventStore::open`] fails on `events_dir`.
-    /// This is an infrastructure-level failure (filesystem error,
-    /// permissions, or another process already holding the CHE-0043:R1
-    /// advisory flock on the same directory); halting daemon startup
-    /// is the correct response — the daemon cannot serve correct
-    /// evidence without exclusive write access to its event log.
+    /// Panics if [`FileProjectionStore::new`] fails on `projections_dir`.
+    /// (was: also panicked on `PardosaFileEventStore::open` flock
+    /// acquisition over `events_dir`; see follow-up bd issue.)
     #[must_use]
     pub fn with_stores(events_dir: &Path, projections_dir: PathBuf) -> Arc<Self> {
-        let event_store = Arc::new(
-            PardosaFileEventStore::<DomainEvent>::open(events_dir)
-                .expect("open PardosaFileEventStore over events_dir (CHE-0043:R1 flock)"),
-        );
+        // (was: PardosaFileEventStore::<DomainEvent>::open(events_dir); see follow-up bd issue
+        // for the PGNO-backed successor. `events_dir` is retained on the public signature so
+        // the daemon caller need not change; under InMemoryEventStore it is ignored — see
+        // commit 3 for the boot-time `tracing::info!` and the `--in-memory` flag gate.)
+        let _ = events_dir;
+        let event_store = Arc::new(InMemoryEventStore::<DomainEvent>::new());
         let projection_store = Arc::new(
             FileProjectionStore::<crate::projection::EvidenceProjection>::new(
                 projections_dir,
@@ -610,13 +609,15 @@ impl AppState {
     /// This preserves the existing test surface without forcing every
     /// builder caller through the durable-store path.
     ///
-    /// The shared `Arc<PardosaFileEventStore<DomainEvent>>` held on
-    /// `self.event_store` is the single canonical handle to the events
-    /// directory (CHE-0043:R1 — the `.lock` flock is held for the
-    /// store's lifetime). The driver wraps that Arc via
+    /// The shared `Arc<EventStoreImpl>` held on `self.event_store` is
+    /// the single canonical handle to the event log. The driver wraps
+    /// that Arc via
     /// [`crate::app::projection_runtime::SharedStore`]; no separate
-    /// directory path is threaded through, because no second `open`
-    /// is performed.
+    /// directory path is threaded through. (Interim substrate is
+    /// [`InMemoryEventStore`] — follow-up to mission
+    /// `cherry-pit-pardosa-deletion-1779215265` will repoint
+    /// [`EventStoreImpl`] to the PGNO-backed successor and restore the
+    /// CHE-0043:R1 flock semantics.)
     ///
     /// # Errors
     ///
@@ -746,7 +747,7 @@ impl AppState {
     /// on `list_aggregates` or `load` failures from the event store.
     async fn bootstrap_replay_indices(
         &self,
-        event_store: Arc<PardosaFileEventStore<DomainEvent>>,
+        event_store: Arc<EventStoreImpl>,
     ) -> Result<(), cherry_pit_projection::ProjectionError> {
         use cherry_pit_core::EventStore as _;
 
@@ -962,10 +963,8 @@ impl AppStateBuilder {
         let deliveries_by_id = Arc::new(Mutex::new(HashMap::new()));
         let next_seq = Arc::new(Mutex::new(HashMap::new()));
         let noop_dir = noop_events_dir();
-        let rs = Arc::new(
-            PardosaFileEventStore::<DomainEvent>::open(&noop_dir)
-                .expect("open PardosaFileEventStore over fresh noop dir (CHE-0043:R1 flock)"),
-        );
+        let _ = &noop_dir; // (was: open PardosaFileEventStore over &noop_dir; see follow-up bd issue)
+        let rs = Arc::new(InMemoryEventStore::<DomainEvent>::new());
         let (merger_tx, merger_handle) = Merger::spawn(
             rs,
             Arc::clone(&bus),

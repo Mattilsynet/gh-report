@@ -4,8 +4,10 @@
 //! only. This module lands the type + `Projection` impl skeleton so later
 //! sub-missions can wire it:
 //!
-//! - **B3'** wires `PardosaFileEventStore` as the `EventStore`
-//!   (δ.3b, CHE-0043).
+//! - **B3'** wires `InMemoryEventStore` as the interim `EventStore`
+//!   (substitute for the deleted `PardosaFileEventStore`; follow-up to
+//!   mission `cherry-pit-pardosa-deletion-1779215265` will repoint to
+//!   the PGNO-backed successor).
 //! - **B4'** wires `FileProjectionStore<EvidenceProjection>` snapshot persistence.
 //! - **B5'** wires `ProjectionDriver` + `InProcessEventBus` (snapshot-fast-path).
 //! - **B6'** extends `RepoEvaluated` with a `RepositoryEvidence` payload (CHE-0022
@@ -59,18 +61,23 @@ use crate::domain::evidence::{AssessmentMetadata, RepositoryEvidence};
 /// exactly one aggregate per process — the org-scoped `OrgGovernance`. The
 /// cherry-pit-core [`AggregateId`] type is a [`NonZeroU64`], not a string.
 /// We therefore pin a singleton numeric id of `1` here; org scoping comes
-/// from the parent directory of the [`PardosaFileEventStore`] (
-/// `<store_dir>/events/<org>/`), not from the id itself.
+/// from the parent directory of the event store (
+/// `<store_dir>/events/<org>/` — interim substrate is
+/// [`cherry_pit_core::testing::InMemoryEventStore`]; see follow-up to
+/// mission `cherry-pit-pardosa-deletion-1779215265`), not from the id
+/// itself.
 ///
 /// Wired at WU-6 v2 B3' (charter `wu6v2-charter-1778415390`,
 /// `AdjustIntent` option 2). Reused at B5' driver wiring and B7' collectors
 /// — every `event_store.create` / `event_store.append` / `event_store.load`
 /// call in gh-report uses this constant.
 ///
-/// The on-disk artefact is `<store_dir>/events/<org>/1.pardosa`. The
-/// `1.pardosa` filename is owned by `PardosaFileEventStore` and is not
-/// configurable (cherry-pit-pardosa hard-codes
-/// `format!("{}.pardosa", id.get())` per CHE-0036:R1).
+/// The on-disk artefact path is historical: under the interim
+/// [`cherry_pit_core::testing::InMemoryEventStore`] substitute there is
+/// no on-disk surface. (was: `<store_dir>/events/<org>/1.pardosa`,
+/// where `1.pardosa` was owned by `PardosaFileEventStore` per
+/// CHE-0036:R1; see follow-up to mission
+/// `cherry-pit-pardosa-deletion-1779215265`.)
 pub const ORG_GOVERNANCE_AGGREGATE_ID: AggregateId = AggregateId::new(NonZeroU64::MIN);
 
 /// Marker type for the gh-report consistency boundary.

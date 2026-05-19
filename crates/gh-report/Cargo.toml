@@ -30,7 +30,16 @@ cherry-pit-storage = { version = "0.1.0", path = "../cherry-pit-storage" }
 # cherry-pit-core — CHE-0048 EDA foundational traits (Projection, DomainEvent,
 # EventEnvelope). Single-aggregate posture per Tension-2 lock; no
 # CommandGateway/Aggregate/HandleCommand wiring (S5.b lock).
-cherry-pit-core = { workspace = true }
+#
+# `testing` feature: required for the interim `InMemoryEventStore<DomainEvent>`
+# substitute wired in `src/app/state.rs` and `src/app/projection_runtime.rs`
+# after the cherry-pit-pardosa removal (mission
+# `cherry-pit-pardosa-deletion-1779215265`). The feature is gated under
+# `#[cfg(any(test, feature = "testing"))]` in cherry-pit-core; gh-report uses
+# it from non-test code intentionally because the daemon now requires the
+# `--in-memory` flag (no durable substrate exists until the PGNO-backed
+# successor lands — follow-up bd issue).
+cherry-pit-core = { workspace = true, features = ["testing"] }
 
 # pardosa-encoding — CHE-0064:R2 supertrait of CoreDomainEvent. Required for
 # the hand-rolled `Encode` impls on this crate's domain types (PAR-0024:R5

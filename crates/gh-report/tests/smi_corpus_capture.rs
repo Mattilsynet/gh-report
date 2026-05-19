@@ -37,7 +37,9 @@
 //!
 //! Every payload-side identifier (`batch_id`, `domain_key`,
 //! `delivery_id`, timestamps) is a literal string constant. The fresh
-//! tempdir-backed `PardosaFileEventStore` assigns `AggregateId`s from a
+//! tempdir-backed `InMemoryEventStore` (interim substitute for the
+//! removed `PardosaFileEventStore`; see follow-up to mission
+//! `cherry-pit-pardosa-deletion-1779215265`) assigns `AggregateId`s from a
 //! `u64` counter starting at 1, so a fresh store always produces the
 //! same id sequence for the same scenario. Envelope `event_id` (Uuid)
 //! and envelope `timestamp` are runtime metadata, intentionally NOT
@@ -77,7 +79,7 @@ use std::sync::{Arc, Mutex};
 
 use cherry_pit_agent::InProcessEventBus;
 use cherry_pit_core::{AggregateId, CorrelationContext, EventStore};
-use cherry_pit_pardosa::PardosaFileEventStore;
+use cherry_pit_core::testing::InMemoryEventStore;
 
 use gh_report::app::services::Merger;
 use gh_report::app::services::repo_service::RepoService;
@@ -129,10 +131,8 @@ async fn capture_pre_smi_corpus() {
     // tightened from the single-index shorthand used in the pre-3a
     // capture harness).
     let store_dir = tempfile::tempdir().expect("tempdir");
-    let store = Arc::new(
-        PardosaFileEventStore::<DomainEvent>::open(store_dir.path())
-            .expect("CHE-0043:R1 flock acquisition on fresh tempdir"),
-    );
+    let _ = store_dir.path(); // (was: PardosaFileEventStore::<DomainEvent>::open(store_dir.path()); see follow-up bd issue)
+    let store = Arc::new(InMemoryEventStore::<DomainEvent>::new());
     let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
     let runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -390,7 +390,7 @@ fn collect_aggregate_ids(
 }
 
 async fn load_payload_sequence(
-    store: &Arc<PardosaFileEventStore<DomainEvent>>,
+    store: &Arc<InMemoryEventStore<DomainEvent>>,
     aggregate_ids: &[AggregateId],
 ) -> Vec<DomainEvent> {
     let mut out: Vec<DomainEvent> = Vec::new();
@@ -404,7 +404,7 @@ async fn load_payload_sequence(
 }
 
 async fn fold_projection(
-    store: &Arc<PardosaFileEventStore<DomainEvent>>,
+    store: &Arc<InMemoryEventStore<DomainEvent>>,
     aggregate_ids: &[AggregateId],
 ) -> EvidenceProjection {
     let mut projection = EvidenceProjection::default();

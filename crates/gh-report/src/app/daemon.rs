@@ -89,7 +89,10 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     // durable stores at sibling subtrees per BC-v2-13 (events/ and
     // projections/ disjoint):
     //
-    //   <store_dir>/events/<org>/      — PardosaFileEventStore<DomainEvent>
+    //   <store_dir>/events/<org>/      — InMemoryEventStore<DomainEvent>
+    //                                     (interim substrate until the PGNO-backed
+    //                                     successor EventStore lands; follow-up to
+    //                                     mission cherry-pit-pardosa-deletion-1779215265)
     //   <store_dir>/projections/<org>/ — FileProjectionStore<EvidenceProjection>
     //
     // The event-store directory is created and locked at `open` time
