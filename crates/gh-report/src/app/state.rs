@@ -249,7 +249,7 @@ pub struct AppState {
 
     /// Shared per-aggregate last-applied-sequence tracker
     /// (CHE-0054:R6 / CHE-0042:R3). Populated by
-    /// [`Self::bootstrap_replay_indices`] at boot (Track 7.5, M3)
+    /// [`Self::bootstrap_replay_state`] at boot (Track 7.5, M3)
     /// and by service `append` paths during live operation.
     pub(crate) next_seq: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
 
@@ -271,7 +271,7 @@ pub struct AppState {
     // Bootstrap behaviour (CHE-0054:R5 amended in M3 of
     // `phase2-v2-completion-1779400000`): `runs_by_key` and
     // `repos_by_key` are populated eagerly from event-log replay at
-    // `AppState` construction (see `bootstrap_replay_indices`).
+    // `AppState` construction (see `bootstrap_replay_state`).
     // `deliveries_by_id` remains lazy-populated because the
     // `WebhookReceived` payload does not carry `delivery_id`.
     pub(crate) runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>>,
@@ -688,7 +688,7 @@ impl AppState {
         // this, every post-restart command that resolves a Run by
         // `batch_id` or a Repo by `domain_key` would `RoutingMiss`
         // until the merger re-creates the aggregate from scratch.
-        self.bootstrap_replay_indices(Arc::clone(event_store))
+        self.bootstrap_replay_state(Arc::clone(event_store))
             .await?;
 
         // Register the bus handler that keeps the in-memory state
@@ -716,9 +716,11 @@ impl AppState {
         Ok(true)
     }
 
-    /// Memory-Image bootstrap: rebuild routing indices from the
-    /// durable event log (Track 7.5; CHE-0054:R5 amended in M3 of
-    /// `phase2-v2-completion-1779400000`).
+    /// Memory-Image bootstrap: rebuild routing indices AND projection
+    /// state from the durable event log (Track 7.5; CHE-0054:R5
+    /// amended in M3 of `phase2-v2-completion-1779400000`;
+    /// projection-fold added in mission `cpp-r-b-r-c` per bd
+    /// `adr-fmt-5rwbu`).
     ///
     /// ## What this populates
     ///
@@ -760,7 +762,7 @@ impl AppState {
     ///
     /// Surfaces `cherry_pit_projection::ProjectionError::Infrastructure`
     /// on `list_aggregates` or `load` failures from the event store.
-    async fn bootstrap_replay_indices(
+    async fn bootstrap_replay_state(
         &self,
         event_store: Arc<EventStoreImpl>,
     ) -> Result<(), cherry_pit_projection::ProjectionError> {

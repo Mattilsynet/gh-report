@@ -161,7 +161,8 @@ async fn bootstrap_replay_populates_routing_indices() {
 /// into `projection_state` only for `ORG_GOVERNANCE_AGGREGATE_ID` (=1).
 /// `RepoEvaluated` envelopes are emitted by per-repo aggregates on
 /// `AggregateId(2..)` and are never folded — `projection_state.
-/// repositories` stays empty even though `bootstrap_replay_indices`
+/// repositories` stays empty even though `bootstrap_replay_state`
+/// (renamed from `bootstrap_replay_indices` in mission `cpp-r-b-r-c`)
 /// successfully walked the same envelopes (and populated `repos_by_key`).
 ///
 /// Test shape: seed one `SweepStarted` on a Run aggregate (gets
@@ -217,7 +218,7 @@ async fn restart_rehydrates_projection_state() {
     // Aggregate(2): RepoEvaluated with non-None evidence. The
     // pre-fix projection-fold SKIPS this aggregate (id != 1) so
     // projection_state.repositories stays empty after init —
-    // even though bootstrap_replay_indices walks the envelope and
+    // even though bootstrap_replay_state walks the envelope and
     // populates repos_by_key. Post-fix: the unified replay folds
     // this envelope into projection_state via Projection::apply,
     // and the RepoEvaluated arm inserts the repo by domain_key.

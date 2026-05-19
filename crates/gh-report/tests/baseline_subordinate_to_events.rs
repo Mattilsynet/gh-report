@@ -13,8 +13,10 @@
 //! Post-retirement, the event log is the **only** durable boot
 //! source; aggregate state is rebuilt on every `AppState`
 //! construction via [`AppState::snapshot_fast_path_init`] +
-//! `bootstrap_replay_indices` (landed in M3 of
-//! `phase2-v2-completion-1779400000`).
+//! `bootstrap_replay_state` (landed as `bootstrap_replay_indices`
+//! in M3 of `phase2-v2-completion-1779400000`; renamed +
+//! scope-expanded to also fold `projection_state` in mission
+//! `cpp-r-b-r-c` per bd `adr-fmt-5rwbu`).
 //!
 //! ## What this test asserts
 //!
@@ -92,7 +94,7 @@ fn save_baseline_is_retired() {
 
 /// `fn load_baseline` was the on-disk read entry-point retired by
 /// `63236ac`. Aggregate state is reconstructed via event-log replay
-/// (`bootstrap_replay_indices`), not by reading a sibling msgpack file.
+/// (`bootstrap_replay_state`), not by reading a sibling msgpack file.
 ///
 /// Note: a `load_baseline` *method* exists on `EvidenceProjection`
 /// (`src/projection.rs`) — that method ingests in-memory
