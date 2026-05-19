@@ -21,10 +21,10 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use adr_srv::scrape::{ScrapeReport, scrape_corpus};
-use adr_srv::{AdrId, AdrIngested, AdrService};
+use adr_srv::{AdrCorpus, AdrId, AdrIngested, AdrService};
 use cherry_pit_core::EventStore;
 use cherry_pit_pardosa::PardosaFileEventStore;
 use tempfile::TempDir;
@@ -132,8 +132,9 @@ async fn first_scrape_emits_one_event_per_adr_file() {
     let store: PardosaFileEventStore<AdrIngested> =
         PardosaFileEventStore::open(store_dir.path()).expect("open store");
     let service = AdrService::new(Arc::new(store));
+    let corpus: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
 
-    let report: ScrapeReport = scrape_corpus(&service, &marker_dir)
+    let report: ScrapeReport = scrape_corpus(&service, &marker_dir, &corpus)
         .await
         .expect("scrape ok");
 
@@ -157,14 +158,15 @@ async fn second_scrape_emits_zero_events_unchanged_corpus() {
     let store: PardosaFileEventStore<AdrIngested> =
         PardosaFileEventStore::open(store_dir.path()).expect("open store");
     let service = AdrService::new(Arc::new(store));
+    let corpus: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
 
-    let first = scrape_corpus(&service, &marker_dir)
+    let first = scrape_corpus(&service, &marker_dir, &corpus)
         .await
         .expect("scrape 1");
     assert!(first.events_emitted >= 2, "first scrape emits");
 
     // Second scrape against same service + same corpus → idempotent.
-    let second = scrape_corpus(&service, &marker_dir)
+    let second = scrape_corpus(&service, &marker_dir, &corpus)
         .await
         .expect("scrape 2");
     assert_eq!(
@@ -185,8 +187,11 @@ async fn references_preserve_order_and_duplicates() {
     let store: Arc<PardosaFileEventStore<AdrIngested>> =
         Arc::new(PardosaFileEventStore::open(store_dir.path()).expect("open store"));
     let service = AdrService::new(Arc::clone(&store));
+    let corpus: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
 
-    let _ = scrape_corpus(&service, &marker_dir).await.expect("scrape");
+    let _ = scrape_corpus(&service, &marker_dir, &corpus)
+        .await
+        .expect("scrape");
 
     // Find the AFM-0002 aggregate via the service index and load its
     // events. References must be [AFM-0001, AFM-0003, AFM-0001] in
@@ -224,7 +229,8 @@ async fn replay_on_boot_rebuilds_index_so_re_scrape_is_idempotent() {
         let store: PardosaFileEventStore<AdrIngested> =
             PardosaFileEventStore::open(store_dir.path()).expect("open store 1");
         let service = AdrService::new(Arc::new(store));
-        let r = scrape_corpus(&service, &marker_dir)
+        let corpus: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
+        let r = scrape_corpus(&service, &marker_dir, &corpus)
             .await
             .expect("scrape 1");
         assert!(r.events_emitted >= 2);
@@ -235,11 +241,12 @@ async fn replay_on_boot_rebuilds_index_so_re_scrape_is_idempotent() {
     // so the re-scrape is a no-op.
     let store2: PardosaFileEventStore<AdrIngested> =
         PardosaFileEventStore::open(store_dir.path()).expect("reopen store 2");
-    let service2 = AdrService::new_with_replay(Arc::new(store2))
+    let corpus2: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
+    let service2 = AdrService::new_with_replay(Arc::new(store2), &corpus2)
         .await
         .expect("new_with_replay ok");
 
-    let r2 = scrape_corpus(&service2, &marker_dir)
+    let r2 = scrape_corpus(&service2, &marker_dir, &corpus2)
         .await
         .expect("scrape 2");
     assert_eq!(
@@ -256,8 +263,9 @@ async fn changed_body_emits_new_event() {
     let store: PardosaFileEventStore<AdrIngested> =
         PardosaFileEventStore::open(store_dir.path()).expect("open store");
     let service = AdrService::new(Arc::new(store));
+    let corpus: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
 
-    let first = scrape_corpus(&service, &marker_dir)
+    let first = scrape_corpus(&service, &marker_dir, &corpus)
         .await
         .expect("scrape 1");
     assert!(first.events_emitted >= 2);
@@ -276,7 +284,7 @@ async fn changed_body_emits_new_event() {
     writeln!(f, "\nAppended sentence to change body hash.").expect("append");
     drop(f);
 
-    let second = scrape_corpus(&service, &marker_dir)
+    let second = scrape_corpus(&service, &marker_dir, &corpus)
         .await
         .expect("scrape 2");
     assert_eq!(
