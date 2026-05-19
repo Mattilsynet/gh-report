@@ -411,3 +411,28 @@ pub trait HashChainedEventStore: EventStore {
 /// architectural assumption it makes observable), PAR-0004
 /// (substrate-level enforcement origin).
 pub trait SingleWriterEventStore: EventStore {}
+
+/// Optional [`EventStore`] capability: the substrate can enumerate every
+/// known `AggregateId` cheaply.
+///
+/// Cherry-pit treats aggregate enumeration as a substrate-level
+/// capability: not every store needs to expose it (CHE-0005:R1 — base
+/// `EventStore` is the minimum port), but boot-time projection replay
+/// (gh-report, adr-srv) needs to walk every aggregate stream.
+///
+/// File-backed substrates (PGNO and its predecessors) enumerate cheaply
+/// by directory listing; in-process stores enumerate by reading the
+/// keyset of their stream map. Stores that cannot enumerate without
+/// `O(stream)` cost (future remote substrates) should not implement this
+/// trait — callers must reach for an external index instead.
+pub trait ListableEventStore: EventStore {
+    /// Return every `AggregateId` known to the store, in unspecified
+    /// order. Empty `Vec` for an empty store; never `Err` for an empty
+    /// store. Errors reflect substrate I/O failure only.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Infrastructure`] if the substrate fails to
+    /// enumerate (e.g. filesystem I/O error on a file-backed store).
+    fn list_aggregates(&self) -> Result<Vec<AggregateId>, StoreError>;
+}

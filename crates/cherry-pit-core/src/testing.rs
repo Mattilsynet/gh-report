@@ -41,7 +41,7 @@ use crate::bus::EventBus;
 use crate::correlation::CorrelationContext;
 use crate::error::{StoreCreateResult, StoreError};
 use crate::event::{DomainEvent, EventEnvelope};
-use crate::store::EventStore;
+use crate::store::{EventStore, ListableEventStore};
 
 // ─── FakeBus ───────────────────────────────────────────────────────
 
@@ -301,6 +301,16 @@ impl<E: DomainEvent> EventStore for InMemoryEventStore<E> {
             .expect("stream existence checked above under same lock");
         stream_mut.extend(new_envelopes.iter().cloned());
         Ok(new_envelopes)
+    }
+}
+
+impl<E: DomainEvent> ListableEventStore for InMemoryEventStore<E> {
+    fn list_aggregates(&self) -> Result<Vec<AggregateId>, StoreError> {
+        let state = self
+            .state
+            .lock()
+            .expect("InMemoryEventStore mutex poisoned");
+        Ok(state.streams.keys().copied().collect())
     }
 }
 
