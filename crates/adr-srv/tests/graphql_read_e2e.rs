@@ -181,8 +181,8 @@ async fn adr_by_id_returns_null_for_unknown_adr() {
         .await;
     assert!(resp.errors.is_empty(), "errors: {:?}", resp.errors);
 
-    let data: AdrByIdData = from_value(Value::from_json(resp.data.into_json().unwrap()).unwrap())
-        .expect("deserialise");
+    let data: AdrByIdData =
+        from_value(Value::from_json(resp.data.into_json().unwrap()).unwrap()).expect("deserialise");
     assert!(data.adr_by_id.is_none(), "unknown id must resolve to null");
 }
 
@@ -197,8 +197,8 @@ async fn adr_by_id_returns_null_for_unparseable_id() {
         .execute(Request::new(r#"{ adrById(id: "not an adr id") { id } }"#))
         .await;
     assert!(resp.errors.is_empty(), "errors: {:?}", resp.errors);
-    let data: AdrByIdData = from_value(Value::from_json(resp.data.into_json().unwrap()).unwrap())
-        .expect("deserialise");
+    let data: AdrByIdData =
+        from_value(Value::from_json(resp.data.into_json().unwrap()).unwrap()).expect("deserialise");
     assert!(data.adr_by_id.is_none());
 }
 
@@ -213,8 +213,8 @@ async fn all_adrs_lists_every_adr_in_btreemap_order() {
         .execute(Request::new(r#"{ allAdrs { id title } }"#))
         .await;
     assert!(resp.errors.is_empty(), "errors: {:?}", resp.errors);
-    let data: AllAdrsData = from_value(Value::from_json(resp.data.into_json().unwrap()).unwrap())
-        .expect("deserialise");
+    let data: AllAdrsData =
+        from_value(Value::from_json(resp.data.into_json().unwrap()).unwrap()).expect("deserialise");
 
     let ids: Vec<&str> = data.all_adrs.iter().map(|a| a.id.as_str()).collect();
     assert_eq!(
@@ -232,36 +232,26 @@ async fn adrs_by_domain_filters_by_prefix() {
     let schema = build_schema(Arc::clone(&corpus));
 
     let resp_afm = schema
-        .execute(Request::new(
-            r#"{ adrsByDomain(domain: "AFM") { id } }"#,
-        ))
+        .execute(Request::new(r#"{ adrsByDomain(domain: "AFM") { id } }"#))
         .await;
-    assert!(
-        resp_afm.errors.is_empty(),
-        "errors: {:?}",
-        resp_afm.errors
-    );
-    let data_afm: AdrsByDomainData = from_value(
-        Value::from_json(resp_afm.data.into_json().unwrap()).unwrap(),
-    )
-    .expect("deserialise AFM");
-    let ids: Vec<&str> = data_afm.adrs_by_domain.iter().map(|a| a.id.as_str()).collect();
+    assert!(resp_afm.errors.is_empty(), "errors: {:?}", resp_afm.errors);
+    let data_afm: AdrsByDomainData =
+        from_value(Value::from_json(resp_afm.data.into_json().unwrap()).unwrap())
+            .expect("deserialise AFM");
+    let ids: Vec<&str> = data_afm
+        .adrs_by_domain
+        .iter()
+        .map(|a| a.id.as_str())
+        .collect();
     assert_eq!(ids, vec!["AFM-0001", "AFM-0002", "AFM-0003"]);
 
     let resp_che = schema
-        .execute(Request::new(
-            r#"{ adrsByDomain(domain: "CHE") { id } }"#,
-        ))
+        .execute(Request::new(r#"{ adrsByDomain(domain: "CHE") { id } }"#))
         .await;
-    assert!(
-        resp_che.errors.is_empty(),
-        "errors: {:?}",
-        resp_che.errors
-    );
-    let data_che: AdrsByDomainData = from_value(
-        Value::from_json(resp_che.data.into_json().unwrap()).unwrap(),
-    )
-    .expect("deserialise CHE");
+    assert!(resp_che.errors.is_empty(), "errors: {:?}", resp_che.errors);
+    let data_che: AdrsByDomainData =
+        from_value(Value::from_json(resp_che.data.into_json().unwrap()).unwrap())
+            .expect("deserialise CHE");
     assert!(
         data_che.adrs_by_domain.is_empty(),
         "no CHE ADRs in this corpus"
@@ -285,9 +275,7 @@ async fn projection_reflects_body_mutation_on_rescrape() {
 
     let schema = build_schema(Arc::clone(&corpus));
     let resp1 = schema
-        .execute(Request::new(
-            r#"{ adrById(id: "AFM-0001") { bodyHash } }"#,
-        ))
+        .execute(Request::new(r#"{ adrById(id: "AFM-0001") { bodyHash } }"#))
         .await;
     assert!(resp1.errors.is_empty());
     let h1: serde_json::Value = resp1.data.into_json().unwrap();
@@ -304,9 +292,7 @@ async fn projection_reflects_body_mutation_on_rescrape() {
         .expect("scrape 2");
 
     let resp2 = schema
-        .execute(Request::new(
-            r#"{ adrById(id: "AFM-0001") { bodyHash } }"#,
-        ))
+        .execute(Request::new(r#"{ adrById(id: "AFM-0001") { bodyHash } }"#))
         .await;
     assert!(resp2.errors.is_empty());
     let h2: serde_json::Value = resp2.data.into_json().unwrap();

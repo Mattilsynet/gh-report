@@ -14,6 +14,9 @@ target/
 .ooda/*
 !.ooda/.gitkeep
 
+# adr-srv runtime event store (per-developer; rebuildable from corpus)
+.adr-srv/
+
 # LLM scratch notes (pre-research drafts, not intentional docs)
 docs/notes/
 
