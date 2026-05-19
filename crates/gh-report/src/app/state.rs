@@ -672,7 +672,8 @@ impl AppState {
         // this, every post-restart command that resolves a Run by
         // `batch_id` or a Repo by `domain_key` would `RoutingMiss`
         // until the merger re-creates the aggregate from scratch.
-        self.bootstrap_replay_indices(Arc::clone(event_store)).await?;
+        self.bootstrap_replay_indices(Arc::clone(event_store))
+            .await?;
 
         // Register the bus handler that keeps the in-memory state
         // current as new envelopes are published. The driver wraps a
