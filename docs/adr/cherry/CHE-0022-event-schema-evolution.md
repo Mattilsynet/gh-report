@@ -1,13 +1,13 @@
 # CHE-0022. Event Schema Evolution Strategy
 
 Date: 2026-04-25
-Last-reviewed: 2026-05-18
+Last-reviewed: 2026-05-19
 Tier: B
 Status: Accepted
 
 ## Related
 
-References: CHE-0010, CHE-0009, CHE-0021, CHE-0065, CHE-0038, GEN-0015
+References: CHE-0010, CHE-0009, CHE-0021, CHE-0065, CHE-0038, GEN-0015, CHE-0048, CHE-0051
 
 ## Context
 
@@ -35,6 +35,12 @@ R3 [5]: Adding, removing, or reshaping fields on existing variants
 R4 [5]: event_type() strings are immutable once events exist in a log
 R5 [5]: Do not use #[non_exhaustive] on domain event enums; exhaustive
   matching in apply is required
+R6 [5]: Event payloads MUST NOT carry computed aggregates —
+  summaries, counts, rollups, cross-aggregate joins. Payloads carry
+  only raw signals within a single aggregate's scope (state updates,
+  hashes, timestamps, pure-function signatures). Derived state is
+  reconstructed by replay (CHE-0051:R5) and persists, if at all,
+  only as a CHE-0048 projection checkpoint — never inside an event
 
 1. **New enum variants**: allowed. Adding a variant is intentionally
    a compile-breaking change — all `apply` implementations must be
@@ -54,6 +60,11 @@ R5 [5]: Do not use #[non_exhaustive] on domain event enums; exhaustive
    in `apply` to maintain `state = f(events)`.
 6. **Structural migration**: deferred to Pardosa (log-to-log rewrite
    with upcasters).
+7. **No computed aggregates in payloads**: events carry raw signals
+   within their own aggregate's scope; derived views are reconstructed
+   by replay (CHE-0051:R5) and live only there. δ.3c-ii (gh-report
+   commit `63236ac`) retired `baseline.msgpack` and the sweep-level
+   checkpoint precisely because they encoded such a parallel truth.
 
 ## Consequences
 
@@ -66,3 +77,4 @@ R5 [5]: Do not use #[non_exhaustive] on domain event enums; exhaustive
   and on-disk-incompatible; rolling back code requires re-scrape. Silent data loss
   from ignoring unknown events is worse than a loud failure.
 - **Golden-file serde regression** (CHE-0038) catches accidental format changes from dependency updates by comparing a deterministic envelope against a committed fixture byte-for-byte.
+- **Derived state lives only in projections** — CHE-0048 checkpoint topology, reconstructed via CHE-0051:R5 replay. A parallel truth in event payloads is the failure mode δ.3c-ii eliminated (gh-report commit `63236ac`).
