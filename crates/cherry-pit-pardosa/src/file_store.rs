@@ -286,6 +286,43 @@ where
         self.dir.join(format!("{}.{}", id.get(), LOG_EXTENSION))
     }
 
+    /// Enumerate the `AggregateId`s persisted in this store's directory.
+    ///
+    /// Returned in ascending order. The result reflects the on-disk
+    /// `{id}.pardosa` files; aggregates that exist only in memory of a
+    /// concurrent process are not observable here (this store holds the
+    /// directory's advisory flock, so concurrent writers are impossible).
+    ///
+    /// Used by consumers that need to replay every aggregate without an
+    /// external index — e.g. adr-srv's `replay_indices` (M1.3) which
+    /// rebuilds its `AdrId → AggregateId` map by loading each persisted
+    /// aggregate's first event.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Infrastructure`] on directory-read failure.
+    /// Files with non-`u64` stems or extensions other than `.pardosa` are
+    /// silently skipped (foreign files in the store dir are tolerated).
+    pub fn list_aggregates(&self) -> Result<Vec<AggregateId>, StoreError> {
+        let mut ids: Vec<AggregateId> = Vec::new();
+        for entry in std::fs::read_dir(&self.dir).map_err(infrastructure)? {
+            let entry = entry.map_err(infrastructure)?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some(LOG_EXTENSION) {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let Ok(n) = stem.parse::<u64>() else { continue };
+            let Some(nz) = std::num::NonZeroU64::new(n) else {
+                continue;
+            };
+            ids.push(AggregateId::new(nz));
+        }
+        ids.sort();
+        Ok(ids)
+    }
+
     /// Acquire (or lazily allocate) the per-aggregate write mutex.
     fn aggregate_write_lock(&self, id: AggregateId) -> std::sync::Arc<Mutex<()>> {
         let mut locks = self.write_locks.lock().expect("write_locks mutex poisoned");
