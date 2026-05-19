@@ -412,6 +412,7 @@ mod tests {
                 repo_count: 3,
                 batch_id: batch_id.into(),
                 timestamp: "2026-05-10T12:00:00Z".into(),
+                snapshot_signature: "test-sig".into(),
             },
             &ctx,
         )
@@ -641,6 +642,7 @@ mod tests {
             repo_count: 3,
             batch_id: "batch-001".into(),
             timestamp: "2026-05-10T12:00:00Z".into(),
+            snapshot_signature: "test-sig".into(),
         };
         let ctx = CorrelationContext::none();
 
@@ -725,6 +727,7 @@ mod tests {
                 repo_count: 4,
                 batch_id: batch_id.into(),
                 timestamp: "2026-05-17T10:00:00Z".into(),
+                snapshot_signature: "test-sig".into(),
             },
             &ctx,
         )

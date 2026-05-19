@@ -6,17 +6,23 @@
 //!
 //! ## Startup order
 //!
-//! 1. **Warm-start** — if a `baseline.msgpack` exists from a previous run,
-//!    render the dashboard from it and populate the HTML cache immediately.
-//!    This lets the server respond to page requests within seconds of
-//!    startup, serving stale-but-valid data until the first API collection
-//!    completes and replaces the cache atomically.
-//! 2. **Start the web server** — binds immediately (serves warm-start data
-//!    or returns 503 if no baseline was available).
-//! 3. **Background collection** — the initial API collection and subsequent
+//! 1. **Projection runtime init** — `snapshot_fast_path_init` replays
+//!    the event log (or fast-paths from the latest projection snapshot
+//!    per CHE-0048:R1) so the in-memory `EvidenceProjection` is current
+//!    before any reader can observe it (CHE-0048:R2 — projection is
+//!    the source of truth at boot; δ.3c-ii retired the prior
+//!    `baseline.msgpack` snapshot file).
+//! 2. **Warm-start** — render the dashboard from the projection and
+//!    populate the HTML cache so the server can respond to page
+//!    requests within seconds. Falls through gracefully if the
+//!    projection is empty (fresh install) — the server returns 503
+//!    until the first sweep completes.
+//! 3. **Start the web server** — binds immediately (serves warm-start
+//!    data or returns 503 if the projection was empty).
+//! 4. **Background collection** — the initial API collection and subsequent
 //!    scheduled runs happen in a background task. Each successful run
 //!    atomically updates the HTML cache.
-//! 4. **Worker pool** — started lazily by `AppState::ensure_worker_pool()`
+//! 5. **Worker pool** — started lazily by `AppState::ensure_worker_pool()`
 //!    inside `collect::run_collection_inner()` after the first successful
 //!    credential resolution. The pool persists across collection runs
 //!    (shared between sweep and webhook jobs).

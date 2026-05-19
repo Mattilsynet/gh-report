@@ -626,7 +626,9 @@ mod tests {
     /// Some(_)` arm of `RepoEvaluated` — to literal byte sequences. δ.2's
     /// `#[derive(GenomeSafe)]` swap must reproduce these bytes exactly; any
     /// divergence is a wire-format break that would silently invalidate
-    /// existing `baseline.msgpack` files.
+    /// the persisted event log (δ.3c-ii retired the prior
+    /// `baseline.msgpack` snapshot; the event log is now the only
+    /// durable representation).
     ///
     /// Determinism: every payload uses literal `&str`/`u64`/`bool` values and
     /// a stable `test_fixtures::all_passing_evidence` fixture (no

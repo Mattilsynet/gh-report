@@ -141,6 +141,13 @@ pub struct StartSweep {
     pub repo_count: u64,
     pub batch_id: String,
     pub timestamp: String,
+    // Content hash of the org-level secret-scanning alert snapshot
+    // (SHA-256 hex; produced by `cherry_pit_storage::build_snapshot_signature`).
+    // Computed by the saga at sweep construction; carried inline on the
+    // command so the `HandleCommand<StartSweep>` impl remains pure
+    // per CHE-0008:R1. Surfaces on the resulting `SweepStarted` event
+    // (δ.3c-ii, bead adr-fmt-baao9).
+    pub snapshot_signature: String,
 }
 impl Command for StartSweep {}
 
@@ -210,11 +217,7 @@ impl HandleCommand<StartSweep> for Run {
             repo_count: cmd.repo_count,
             batch_id: cmd.batch_id,
             timestamp: cmd.timestamp,
-            // snapshot_signature: populated in δ.3c-ii (bead adr-fmt-baao9)
-            // by threading `build_snapshot_signature(...)` through
-            // `StartSweep`; `None` placeholder during δ.3c-i lands the
-            // wire-format-additive field without changing the call-graph.
-            snapshot_signature: None,
+            snapshot_signature: Some(cmd.snapshot_signature),
         }])
     }
 }
@@ -421,6 +424,7 @@ mod tests {
                 repo_count: 3,
                 batch_id: "b1".into(),
                 timestamp: ts(),
+                snapshot_signature: "test-sig".into(),
             })
             .unwrap();
         assert_eq!(events.len(), 1);
@@ -436,6 +440,7 @@ mod tests {
                 repo_count: 1,
                 batch_id: "b2".into(),
                 timestamp: ts(),
+                snapshot_signature: "test-sig".into(),
             })
             .unwrap_err();
         assert_eq!(err, RunError::AlreadyStarted(RunPhase::Started));
