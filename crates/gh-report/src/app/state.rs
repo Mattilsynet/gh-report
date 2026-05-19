@@ -32,7 +32,7 @@ use std::sync::atomic::AtomicU64;
 use arc_swap::ArcSwap;
 use cherry_pit_agent::InProcessEventBus;
 use cherry_pit_core::AggregateId;
-use cherry_pit_gateway::MsgpackFileStore;
+use cherry_pit_pardosa::PardosaFileEventStore;
 use cherry_pit_projection::FileProjectionStore;
 use jiff::Timestamp;
 
@@ -122,11 +122,11 @@ pub struct AppState {
     /// `bus.publish(...)` per BC-v2-1 / CHE-0024:R1
     /// persist-then-publish ordering. Until B7', the field exists for
     /// B5' driver wiring (snapshot-fast-path replay) and to surface a
-    /// non-zero `cargo tree` dep on cherry-pit-gateway.
+    /// non-zero `cargo tree` dep on cherry-pit-pardosa.
     ///
     /// `None` only in test-builder paths that don't supply a
     /// `store_dir`. Daemon construction always supplies it.
-    pub event_store: Option<Arc<MsgpackFileStore<DomainEvent>>>,
+    pub event_store: Option<Arc<PardosaFileEventStore<DomainEvent>>>,
 
     /// Durable projection snapshot + checkpoint store.
     ///
@@ -336,15 +336,19 @@ fn build_services(
 /// OS temp dir; volume is bounded; OS reclaims.
 ///
 /// History: previously a single shared path. B7'c migrations route
-/// tests-of-production-paths through `MsgpackFileStore.create`, which
-/// acquires a per-path lock; under parallel test execution that panicked
-/// with `StoreLocked`. A unique suffix per call eliminates the contention.
+/// tests-of-production-paths through `PardosaFileEventStore.create`,
+/// which acquires a per-directory `.lock` flock at `open` time
+/// (CHE-0043:R1, held for the store's lifetime); under parallel test
+/// execution that would panic with `StoreLocked` on any shared path.
+/// A unique UUID suffix per call eliminates the contention by ensuring
+/// each constructor opens a distinct directory.
 fn noop_events_dir() -> std::path::PathBuf {
     std::env::temp_dir().join(format!("gh-report-noop-events-{}", uuid::Uuid::new_v4()))
 }
 
 /// Register the projection handler on the bus using a transient
-/// (apply-only, never-written) `MsgpackFileStore`.
+/// (apply-only, never-written) [`PardosaFileEventStore`] over a
+/// noop directory (unique per call — see [`noop_events_dir`]).
 ///
 /// M2.cd — post-cutover the projection is the sole read-model
 /// authority (CHE-0048:R2). Every `AppState` constructor must wire
@@ -368,12 +372,17 @@ fn register_default_projection_handler(
     projection_state: &Arc<Mutex<crate::projection::EvidenceProjection>>,
     checkpoint_seq: &Arc<AtomicU64>,
 ) {
-    use crate::app::projection_runtime::register_projection_handler;
+    use crate::app::projection_runtime::{SharedStore, register_projection_handler};
     use cherry_pit_projection::ProjectionDriver;
 
-    let transient_store = MsgpackFileStore::<DomainEvent>::new(noop_events_dir());
+    let transient_store = Arc::new(
+        PardosaFileEventStore::<DomainEvent>::open(noop_events_dir())
+            .expect("open PardosaFileEventStore over fresh noop dir (CHE-0043:R1 flock)"),
+    );
     let driver = Arc::new(
-        ProjectionDriver::<crate::projection::EvidenceProjection, _>::new(transient_store),
+        ProjectionDriver::<crate::projection::EvidenceProjection, _>::new(SharedStore::new(
+            transient_store,
+        )),
     );
     register_projection_handler(
         bus,
@@ -395,6 +404,13 @@ impl AppState {
     /// leaves both `None` — used by test paths that don't need
     /// durable persistence. Daemon construction calls
     /// [`Self::with_stores`] instead.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the unique tempdir-based noop event-store directory
+    /// cannot acquire the CHE-0043:R1 advisory flock at `open` time.
+    /// This is an infrastructure-level failure (disk full, permissions,
+    /// no `/tmp`) at startup of a test path; halting is appropriate.
     #[must_use]
     pub fn new() -> Arc<Self> {
         let bus = Arc::new(InProcessEventBus::new());
@@ -403,7 +419,10 @@ impl AppState {
         let deliveries_by_id = Arc::new(Mutex::new(HashMap::new()));
         let next_seq = Arc::new(Mutex::new(HashMap::new()));
         let noop_dir = noop_events_dir();
-        let rs = Arc::new(MsgpackFileStore::<DomainEvent>::new(&noop_dir));
+        let rs = Arc::new(
+            PardosaFileEventStore::<DomainEvent>::open(&noop_dir)
+                .expect("open PardosaFileEventStore over fresh noop dir (CHE-0043:R1 flock)"),
+        );
         let (merger_tx, merger_handle) = Merger::spawn(
             rs,
             Arc::clone(&bus),
@@ -449,29 +468,49 @@ impl AppState {
     }
 
     /// Create a new `AppState` wired with both durable stores:
-    /// a [`MsgpackFileStore`] event store at `<store_dir>/events/<org>/`
+    /// a [`PardosaFileEventStore`] event store at `<store_dir>/events/<org>/`
     /// and a [`FileProjectionStore`] projection snapshot store at
     /// `<store_dir>/projections/<org>/`.
     ///
     /// WU-6 v2 B3' + B4' composition root (charter
     /// `wu6v2-charter-1778415390`). Both stores are constructed
-    /// lazily — the directories are not touched until the first
-    /// write — so neither path needs to exist.
+    /// lazily — the directories are created at open time but no
+    /// payload is touched until the first write.
     ///
     /// Per the `AdjustIntent` option-2 file layout the per-org subtrees
     /// are siblings (BC-v2-13: events/ and projections/ disjoint):
     ///
-    /// - `<store_dir>/events/<org>/1.msgpack` — single
-    ///   [`MsgpackFileStore`] file (the singleton
+    /// - `<store_dir>/events/<org>/1.pardosa` — single
+    ///   [`PardosaFileEventStore`] per-aggregate log (the singleton
     ///   [`crate::projection::ORG_GOVERNANCE_AGGREGATE_ID`] per
-    ///   Tension-2). cherry-pit-gateway hard-codes the
-    ///   `{aggregate_id}.msgpack` filename per CHE-0036:R1.
+    ///   Tension-2). cherry-pit-pardosa composes filenames as
+    ///   `{aggregate_id}.pardosa` and acquires `{dir}/.lock` at
+    ///   `open` time (CHE-0043:R1).
     /// - `<store_dir>/projections/<org>/1-evidence.snapshot.msgpack`
     ///   and `…1-evidence.checkpoint.msgpack` — paired snapshot +
-    ///   checkpoint per CHE-0048:R1/R2.
+    ///   checkpoint per CHE-0048:R1/R2 (msgpack format retained per
+    ///   CHE-0048; projection store is separate from the event store).
+    ///
+    /// The [`PardosaFileEventStore`] is opened **once** and the single
+    /// `Arc` is shared into the Merger (write path) and held on
+    /// `event_store` (read path / `snapshot_fast_path_init` driver
+    /// share). One canonical store handle per directory, ever — the
+    /// `.lock` flock is acquired by exactly one `open(...)` call.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`PardosaFileEventStore::open`] fails on `events_dir`.
+    /// This is an infrastructure-level failure (filesystem error,
+    /// permissions, or another process already holding the CHE-0043:R1
+    /// advisory flock on the same directory); halting daemon startup
+    /// is the correct response — the daemon cannot serve correct
+    /// evidence without exclusive write access to its event log.
     #[must_use]
     pub fn with_stores(events_dir: &Path, projections_dir: PathBuf) -> Arc<Self> {
-        let event_store = Arc::new(MsgpackFileStore::<DomainEvent>::new(events_dir));
+        let event_store = Arc::new(
+            PardosaFileEventStore::<DomainEvent>::open(events_dir)
+                .expect("open PardosaFileEventStore over events_dir (CHE-0043:R1 flock)"),
+        );
         let projection_store = Arc::new(
             FileProjectionStore::<crate::projection::EvidenceProjection>::new(
                 projections_dir,
@@ -483,9 +522,8 @@ impl AppState {
         let repos_by_key = Arc::new(Mutex::new(HashMap::new()));
         let deliveries_by_id = Arc::new(Mutex::new(HashMap::new()));
         let next_seq = Arc::new(Mutex::new(HashMap::new()));
-        let rs = Arc::new(MsgpackFileStore::<DomainEvent>::new(events_dir));
         let (merger_tx, merger_handle) = Merger::spawn(
-            rs,
+            Arc::clone(&event_store),
             Arc::clone(&bus),
             Arc::clone(&runs_by_key),
             Arc::clone(&repos_by_key),
@@ -539,13 +577,13 @@ impl AppState {
     /// This preserves the existing test surface without forcing every
     /// builder caller through the durable-store path.
     ///
-    /// `event_store_dir` is passed explicitly because
-    /// [`MsgpackFileStore`] does not expose its underlying directory
-    /// (no `dir()` accessor in cherry-pit-gateway as of this writing;
-    /// see I2 follow-up bead). The caller already owns the
-    /// `PathBuf` it used to construct the AppState-held event store
-    /// (see [`crate::app::daemon::run`]) so threading it through is
-    /// the most reversible interpretation.
+    /// The shared `Arc<PardosaFileEventStore<DomainEvent>>` held on
+    /// `self.event_store` is the single canonical handle to the events
+    /// directory (CHE-0043:R1 — the `.lock` flock is held for the
+    /// store's lifetime). The driver wraps that Arc via
+    /// [`crate::app::projection_runtime::SharedStore`]; no separate
+    /// directory path is threaded through, because no second `open`
+    /// is performed.
     ///
     /// # Errors
     ///
@@ -557,10 +595,9 @@ impl AppState {
     /// to abort startup.
     pub async fn snapshot_fast_path_init(
         &self,
-        event_store_dir: &std::path::Path,
     ) -> Result<bool, cherry_pit_projection::ProjectionError> {
         use crate::app::projection_runtime::{
-            register_projection_handler, snapshot_fast_path_startup,
+            SharedStore, register_projection_handler, snapshot_fast_path_startup,
         };
         use crate::projection::ORG_GOVERNANCE_AGGREGATE_ID;
         use cherry_pit_projection::ProjectionDriver;
@@ -575,8 +612,7 @@ impl AppState {
         };
 
         let startup = snapshot_fast_path_startup(
-            event_store.as_ref(),
-            event_store_dir,
+            Arc::clone(event_store),
             projection_store.as_ref(),
             ORG_GOVERNANCE_AGGREGATE_ID,
         )
@@ -598,12 +634,14 @@ impl AppState {
         );
 
         // Register the bus handler that keeps the in-memory state
-        // current as new envelopes are published. The driver holds a
-        // transient MsgpackFileStore (apply_one never writes — see
-        // ProjectionDriverExt::apply_one default impl).
-        let transient_store = MsgpackFileStore::<DomainEvent>::new(event_store_dir);
+        // current as new envelopes are published. The driver wraps a
+        // SharedStore over the same durable Arc held in self.event_store;
+        // no second `open(...)` is performed (CHE-0043:R1 — the
+        // directory `.lock` is already held by the AppState handle).
         let driver = Arc::new(
-            ProjectionDriver::<crate::projection::EvidenceProjection, _>::new(transient_store),
+            ProjectionDriver::<crate::projection::EvidenceProjection, _>::new(SharedStore::new(
+                Arc::clone(event_store),
+            )),
         );
         register_projection_handler(
             self.bus.as_ref(),
@@ -674,6 +712,14 @@ impl AppStateBuilder {
     }
 
     /// Build the `Arc<AppState>`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the unique tempdir-based noop event-store directory
+    /// cannot acquire the CHE-0043:R1 advisory flock at `open` time.
+    /// This is an infrastructure-level failure (disk full, permissions,
+    /// no `/tmp`) at builder construction in a test path; halting is
+    /// appropriate.
     #[must_use]
     pub fn build(self) -> Arc<AppState> {
         let github = match self.cache_capacity {
@@ -687,7 +733,10 @@ impl AppStateBuilder {
         let deliveries_by_id = Arc::new(Mutex::new(HashMap::new()));
         let next_seq = Arc::new(Mutex::new(HashMap::new()));
         let noop_dir = noop_events_dir();
-        let rs = Arc::new(MsgpackFileStore::<DomainEvent>::new(&noop_dir));
+        let rs = Arc::new(
+            PardosaFileEventStore::<DomainEvent>::open(&noop_dir)
+                .expect("open PardosaFileEventStore over fresh noop dir (CHE-0043:R1 flock)"),
+        );
         let (merger_tx, merger_handle) = Merger::spawn(
             rs,
             Arc::clone(&bus),

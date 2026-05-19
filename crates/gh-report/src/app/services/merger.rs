@@ -55,7 +55,7 @@ use std::sync::{Arc, Mutex};
 
 use cherry_pit_agent::InProcessEventBus;
 use cherry_pit_core::{AggregateId, CorrelationContext, EventBus};
-use cherry_pit_gateway::MsgpackFileStore;
+use cherry_pit_pardosa::PardosaFileEventStore;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::domain::aggregates::repo::{RecordEvaluation, RecordRemoval, RepoError};
@@ -86,7 +86,7 @@ const MERGER_CHANNEL_CAPACITY: usize = 1024;
 /// gh-report (CHE-0005:R1 + CHE-0054 §"Open γ" resolution at Inc
 /// B7'a-6) — so binding the types at the Merger surface is
 /// type-safe and ergonomic.
-type Store = MsgpackFileStore<DomainEvent>;
+type Store = PardosaFileEventStore<DomainEvent>;
 /// Concrete monomorphisation of the in-process bus. See [`Store`].
 type Bus = InProcessEventBus<DomainEvent>;
 

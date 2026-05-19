@@ -311,7 +311,7 @@ mod tests {
 
     use cherry_pit_agent::InProcessEventBus;
     use cherry_pit_core::{AggregateId, EventEnvelope, EventStore};
-    use cherry_pit_gateway::MsgpackFileStore;
+    use cherry_pit_pardosa::PardosaFileEventStore;
     use tempfile::TempDir;
 
     use crate::app::services::merger::Merger;
@@ -319,7 +319,7 @@ mod tests {
 
     /// Build a Track 4.0/3b-shaped `RunService` backed by:
     ///
-    /// - A tempdir [`MsgpackFileStore`] (Gap-β bead `adr-fmt-luxw`),
+    /// - A tempdir [`PardosaFileEventStore`] (Gap-β bead `adr-fmt-luxw`),
     /// - An [`InProcessEventBus`] for fan-out,
     /// - A [`Merger`] task spawned over the same store/bus/indices/tracker
     ///   so the assertions below observe the Merger-driven shared state
@@ -338,14 +338,17 @@ mod tests {
     )]
     fn build_service() -> (
         TempDir,
-        Arc<MsgpackFileStore<DomainEvent>>,
+        Arc<PardosaFileEventStore<DomainEvent>>,
         Arc<InProcessEventBus<DomainEvent>>,
         Arc<Mutex<HashMap<String, AggregateId>>>,
         Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
         RunService,
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(dir.path()));
+        let store = Arc::new(
+            PardosaFileEventStore::<DomainEvent>::open(dir.path())
+                .expect("CHE-0043:R1 flock acquisition on fresh tempdir"),
+        );
         let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
         let runs_by_key = Arc::new(Mutex::new(HashMap::new()));
         let repos_by_key = Arc::new(Mutex::new(HashMap::new()));
@@ -489,7 +492,7 @@ mod tests {
         assert_tracker_seq(&tracker, assigned_id, 5);
 
         // (4) Single per-aggregate file (CHE-0036:R1).
-        assert_single_msgpack_file(&dir, assigned_id);
+        assert_single_pardosa_file(&dir, assigned_id);
     }
 
     /// Assert the stored envelope sequence for the run lifecycle test:
@@ -575,20 +578,20 @@ mod tests {
         );
     }
 
-    /// Assert the on-disk store contains exactly one `<id>.msgpack`
+    /// Assert the on-disk store contains exactly one `<id>.pardosa`
     /// file, satisfying CHE-0036:R1 (one file per aggregate).
-    fn assert_single_msgpack_file(dir: &TempDir, id: AggregateId) {
-        let store_file = dir.path().join(format!("{id}.msgpack"));
+    fn assert_single_pardosa_file(dir: &TempDir, id: AggregateId) {
+        let store_file = dir.path().join(format!("{id}.pardosa"));
         assert!(store_file.exists(), "single per-aggregate file");
         let entries: Vec<_> = std::fs::read_dir(dir.path())
             .expect("readdir")
             .filter_map(Result::ok)
-            .filter(|e| e.path().extension().is_some_and(|ext| ext == "msgpack"))
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "pardosa"))
             .collect();
         assert_eq!(
             entries.len(),
             1,
-            "exactly one .msgpack file under the store dir"
+            "exactly one .pardosa file under the store dir"
         );
     }
 
@@ -663,10 +666,10 @@ mod tests {
         };
         assert_eq!(tracked_seq.get(), 1, "first event has sequence 1");
 
-        let store_file = dir.path().join(format!("{assigned_id}.msgpack"));
+        let store_file = dir.path().join(format!("{assigned_id}.pardosa"));
         assert!(
             store_file.exists(),
-            "MsgpackFileStore should have created {store_file:?}"
+            "PardosaFileEventStore should have created {store_file:?}"
         );
         let loaded = store.load(assigned_id).await.expect("load should succeed");
         assert_eq!(loaded.len(), 1, "exactly one envelope persisted");

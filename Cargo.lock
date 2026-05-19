@@ -1190,6 +1190,7 @@ dependencies = [
  "cherry-pit-agent",
  "cherry-pit-core",
  "cherry-pit-gateway",
+ "cherry-pit-pardosa",
  "cherry-pit-projection",
  "cherry-pit-storage",
  "cherry-pit-web",

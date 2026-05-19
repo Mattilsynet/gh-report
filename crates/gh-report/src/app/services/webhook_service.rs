@@ -168,7 +168,7 @@ mod tests {
 
     use cherry_pit_agent::InProcessEventBus;
     use cherry_pit_core::{AggregateId, EventEnvelope, EventStore};
-    use cherry_pit_gateway::MsgpackFileStore;
+    use cherry_pit_pardosa::PardosaFileEventStore;
     use tempfile::TempDir;
 
     use crate::app::services::merger::Merger;
@@ -176,7 +176,7 @@ mod tests {
 
     /// Build a Track 4.0/5-shaped `WebhookService` backed by a
     /// [`Merger`] task spawned over a shared tempdir
-    /// [`MsgpackFileStore`] + [`InProcessEventBus`] + the three
+    /// [`PardosaFileEventStore`] + [`InProcessEventBus`] + the three
     /// routing indices + sequence tracker. Symmetric to the
     /// `RunService` 3b and `RepoService` step-4 test harnesses.
     ///
@@ -190,14 +190,17 @@ mod tests {
     )]
     fn build_service() -> (
         TempDir,
-        Arc<MsgpackFileStore<DomainEvent>>,
+        Arc<PardosaFileEventStore<DomainEvent>>,
         Arc<InProcessEventBus<DomainEvent>>,
         Arc<Mutex<HashMap<String, AggregateId>>>,
         Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
         WebhookService,
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(dir.path()));
+        let store = Arc::new(
+            PardosaFileEventStore::<DomainEvent>::open(dir.path())
+                .expect("CHE-0043:R1 flock acquisition on fresh tempdir"),
+        );
         let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
         let runs_by_key = Arc::new(Mutex::new(HashMap::new()));
         let repos_by_key = Arc::new(Mutex::new(HashMap::new()));
@@ -305,12 +308,12 @@ mod tests {
         assert_eq!(tracked_seq.get(), 1);
 
         // Single per-aggregate file (CHE-0036:R1).
-        let store_file = dir.path().join(format!("{assigned_id}.msgpack"));
+        let store_file = dir.path().join(format!("{assigned_id}.pardosa"));
         assert!(store_file.exists());
         let entries: Vec<_> = std::fs::read_dir(dir.path())
             .expect("readdir")
             .filter_map(Result::ok)
-            .filter(|e| e.path().extension().is_some_and(|ext| ext == "msgpack"))
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "pardosa"))
             .collect();
         assert_eq!(entries.len(), 1);
     }
@@ -322,7 +325,7 @@ mod tests {
     /// Documents the explicit Track-4.0 contract: idempotency
     /// against duplicate `delivery_id`s is a call-site concern
     /// (`webhook/mod.rs` `seen_deliveries` cache), NOT a service
-    /// invariant. Two msgpack files exist, each with one event at
+    /// invariant. Two pardosa files exist, each with one event at
     /// sequence 1. The index records the **first** assignment
     /// (`or_insert` semantics inside the Merger arm) and the
     /// `next_seq` records both assigned ids.
@@ -361,7 +364,7 @@ mod tests {
         let entries: Vec<_> = std::fs::read_dir(dir.path())
             .expect("readdir")
             .filter_map(Result::ok)
-            .filter(|e| e.path().extension().is_some_and(|ext| ext == "msgpack"))
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "pardosa"))
             .collect();
         assert_eq!(
             entries.len(),
