@@ -6,27 +6,25 @@
 //!
 //! ## What this module wires
 //!
-//! 1. **Snapshot-fast-path startup** ([`snapshot_fast_path_startup`]) per
-//!    CHE-0051:R5 + CHE-0048:R2. On daemon start: load the persisted
-//!    snapshot + checkpoint via [`FileProjectionStore`]; replay only
-//!    events whose `sequence > checkpoint.last_sequence` from the
-//!    [`InMemoryEventStore`] event store. Cold start (no checkpoint or no
-//!    snapshot) replays the full stream into `EvidenceProjection::default()`.
-//!    Per CHE-0048:R2, a present snapshot with an *absent* checkpoint
-//!    must be treated as "rebuild" — the snapshot is discarded and the
-//!    full stream is replayed (the persist invariant guarantees the
-//!    checkpoint is written strictly after the snapshot, so a missing
-//!    checkpoint signals a crash mid-`persist`).
+//! **Bus-driven incremental projection updates**
+//! ([`register_projection_handler`]) per CHE-0051:R2/R5 + CHE-0024:§7.
+//! The handler closure registered against [`InProcessEventBus::register`]
+//! locks the shared projection state, calls
+//! [`ProjectionDriverExt::apply_one`] (which delegates to
+//! [`Projection::apply`]), and updates the running checkpoint
+//! sequence atomic. Synchronous fan-out per CHE-0024:§7 — handlers
+//! do NOT spawn or await.
 //!
-//! 2. **Bus-driven incremental projection updates**
-//!    ([`register_projection_handler`]) per CHE-0051:R2/R5 + CHE-0024:§7.
-//!    The handler closure registered against [`InProcessEventBus::register`]
-//!    locks the shared projection state, calls
-//!    [`ProjectionDriverExt::apply_one`] (which delegates to
-//!    [`Projection::apply`]), and updates the running checkpoint
-//!    sequence atomic. Synchronous fan-out per CHE-0024:§7 — handlers
-//!    do NOT spawn or await.
-//!
+//! Boot-time projection rehydration moved to
+//! [`crate::app::state::AppState::bootstrap_replay_state`] under bd
+//! `adr-fmt-5rwbu` (cpp-r-b-r-c): a single unified replay covering
+//! every aggregate, folding events into both routing indices and
+//! projection state — superseding the per-aggregate
+//! snapshot+checkpoint fast-path (`snapshot_fast_path_startup`,
+//! removed) which only rehydrated `ORG_GOVERNANCE_AGGREGATE_ID`. The
+//! CHE-0048 line-24 replay-as-rebuild exemption applies: there is no
+//! on-disk snapshot/checkpoint surface in the current
+//! `InMemoryEventStore`-backed build.
 //! ## What this module does NOT wire (locked-out)
 //!
 //! - **No [`cherry_pit_agent::App`]**: the agent's `App` requires a
@@ -73,9 +71,7 @@ use cherry_pit_core::{
     AggregateId, CorrelationContext, EventEnvelope, EventStore, StoreCreateResult, StoreError,
 };
 use cherry_pit_core::testing::InMemoryEventStore;
-use cherry_pit_projection::{
-    FileProjectionStore, ProjectionDriver, ProjectionError, ProjectionResult,
-};
+use cherry_pit_projection::ProjectionDriver;
 use std::num::NonZeroU64;
 
 use crate::domain::events::DomainEvent;
@@ -145,122 +141,6 @@ where
     }
 }
 
-/// Output of [`snapshot_fast_path_startup`]: the materialised projection
-/// state and the highest sequence applied.
-///
-/// Cold start (no snapshot) returns `last_applied_sequence = 0`.
-#[derive(Debug)]
-pub struct StartupState {
-    /// Materialised projection (snapshot + post-checkpoint replay folded in).
-    pub projection: EvidenceProjection,
-    /// Highest event sequence folded into [`Self::projection`]. `0` when
-    /// the event stream is empty.
-    pub last_applied_sequence: u64,
-    /// `true` when a usable snapshot+checkpoint pair was loaded; `false`
-    /// when the cold-start full-replay path was taken.
-    pub used_snapshot_fast_path: bool,
-}
-
-/// Startup procedure per CHE-0051:R5 + CHE-0048:R2.
-///
-/// Sequence:
-///
-/// 1. Load checkpoint via `projection_store.load_checkpoint(id)`. If
-///    absent → cold start (full replay; persist invariant means no
-///    checkpoint ⇒ no trustworthy snapshot).
-/// 2. Load snapshot via `projection_store.load_snapshot(id)`. If absent
-///    despite checkpoint present → corrupt-state condition; treat as
-///    cold start and surface a `tracing::warn`.
-/// 3. Load full event stream from `event_store`. Filter envelopes by
-///    `seq > checkpoint.last_sequence`.
-/// 4. Apply each filtered envelope to the snapshot in order via
-///    [`ProjectionDriverExt::apply_one`].
-///
-/// Returns the materialised state. The caller stores it under
-/// `Arc<Mutex<EvidenceProjection>>` and registers a bus handler via
-/// [`register_projection_handler`].
-///
-/// ## Concurrency / aborts
-///
-/// Pre-mortem B5' abort: cold-start replay >10× warm-start under
-/// synthetic load. The fast-path filter (`seq > checkpoint`) is an
-/// `O(N)` scan of the loaded stream; on a warm checkpoint where N
-/// post-checkpoint events is small this is dominated by snapshot
-/// deserialisation cost (single msgpack file). Cold start replays
-/// the full log (linear in stream length).
-///
-/// # Errors
-///
-/// Surfaces [`ProjectionError`] from snapshot/checkpoint load,
-/// [`ProjectionError::Infrastructure`] wrapping
-/// `cherry_pit_core::StoreError` from event-store load, or
-/// [`ProjectionError::CorruptData`] from
-/// `EventEnvelope::validate_stream`.
-pub async fn snapshot_fast_path_startup(
-    event_store: Arc<InMemoryEventStore<DomainEvent>>,
-    projection_store: &FileProjectionStore<EvidenceProjection>,
-    aggregate_id: AggregateId,
-) -> ProjectionResult<StartupState> {
-    let checkpoint = projection_store.load_checkpoint(aggregate_id).await?;
-
-    let (mut projection, replay_from_seq, used_fast_path) = match checkpoint {
-        Some(cp) => {
-            if let Some(snap) = projection_store.load_snapshot(aggregate_id).await? {
-                (snap, cp.last_sequence(), true)
-            } else {
-                tracing::warn!(
-                    aggregate_id = %aggregate_id.get(),
-                    last_sequence = cp.last_sequence(),
-                    "checkpoint present but snapshot missing — invariant violation; \
-                     falling back to cold-start full replay"
-                );
-                (EvidenceProjection::default(), 0_u64, false)
-            }
-        }
-        None => (EvidenceProjection::default(), 0_u64, false),
-    };
-
-    // Load full stream from the shared durable event store. The driver
-    // (constructed below) shares the same Arc, so no second open() —
-    // and therefore no second flock — is taken (CHE-0043:R1). Validation
-    // happens inside cherry_pit_core::EventEnvelope::validate_stream
-    // when invoked through ProjectionDriver::replay; here we filter
-    // ourselves and apply via ProjectionDriverExt::apply_one, so we
-    // run validate_stream explicitly to preserve CHE-0042:R4 semantics.
-    let stream = event_store
-        .load(aggregate_id)
-        .await
-        .map_err(|e| ProjectionError::Infrastructure(Box::new(e)))?;
-    cherry_pit_core::EventEnvelope::validate_stream(aggregate_id, &stream)
-        .map_err(|e| ProjectionError::CorruptData(Box::new(e)))?;
-
-    // Construct a transient driver to satisfy the brief's wiring
-    // shape ("ProjectionDriver + ProjectionDriverExt"). The driver
-    // wraps SharedStore<DomainEvent>(Arc::clone(&event_store)); under
-    // CHE-0043:R1 this is the only safe pattern (a fresh open() on
-    // the same dir would return StoreError::StoreLocked because the
-    // caller's Arc still owns the directory flock). apply_one's
-    // default impl never calls into the store, so the shared handle
-    // is read-only on this path in practice.
-    let driver =
-        ProjectionDriver::<EvidenceProjection, _>::new(SharedStore::new(Arc::clone(&event_store)));
-
-    let mut last_seq = replay_from_seq;
-    for envelope in stream
-        .iter()
-        .filter(|e| e.sequence().get() > replay_from_seq)
-    {
-        driver.apply_one(&mut projection, envelope);
-        last_seq = envelope.sequence().get();
-    }
-
-    Ok(StartupState {
-        projection,
-        last_applied_sequence: last_seq,
-        used_snapshot_fast_path: used_fast_path,
-    })
-}
-
 /// Register a bus handler that drives [`ProjectionDriverExt::apply_one`]
 /// for every published envelope.
 ///
@@ -322,7 +202,7 @@ mod tests {
     use super::*;
 
     use crate::projection::ORG_GOVERNANCE_AGGREGATE_ID;
-    use cherry_pit_core::{CorrelationContext, EventEnvelope};
+    use cherry_pit_core::EventEnvelope;
     use jiff::Timestamp;
     use std::num::NonZeroU64;
 
@@ -355,150 +235,6 @@ mod tests {
             timestamp: "2026-04-20T12:00:00Z".into(),
             snapshot_signature: None,
         }
-    }
-
-    /// Cold start (no snapshot, no checkpoint) replays the full event
-    /// stream into a fresh `EvidenceProjection::default()`. Pre-flight
-    /// for the snapshot-fast-path branch.
-    #[tokio::test]
-    async fn cold_start_replays_full_log_when_no_checkpoint() {
-        let tmp = tempfile::tempdir().expect("tmp");
-        let events_dir = tmp.path().join("events");
-        let projections_dir = tmp.path().join("projections");
-        std::fs::create_dir_all(&events_dir).expect("mkdir events");
-        std::fs::create_dir_all(&projections_dir).expect("mkdir projections");
-
-        // Seed the event store with 3 events via create + append.
-        let event_store =
-            Arc::new(InMemoryEventStore::<DomainEvent>::new());
-            // (was: PardosaFileEventStore::<DomainEvent>::open(&events_dir).expect("open"); see follow-up bd issue)
-            let _ = &events_dir;
-        let ctx = CorrelationContext::none();
-        let (id, initial) = event_store
-            .create(vec![sweep_started(), repo_removed("ghost-1")], ctx.clone())
-            .await
-            .expect("create");
-        // The store assigns its own next id; we only support the
-        // singleton in production but the test store is fresh.
-        let last_seq_nz = initial.last().expect("non-empty").sequence();
-        event_store
-            .append(id, last_seq_nz, vec![repo_removed("ghost-2")], ctx)
-            .await
-            .expect("append");
-
-        let projection_store =
-            FileProjectionStore::<EvidenceProjection>::new(&projections_dir, "evidence");
-
-        let state = snapshot_fast_path_startup(Arc::clone(&event_store), &projection_store, id)
-            .await
-            .expect("startup");
-
-        assert!(!state.used_snapshot_fast_path, "no snapshot ⇒ cold path");
-        assert_eq!(state.last_applied_sequence, 3);
-        // Both RepoRemoved events are no-op-on-empty per
-        // EvidenceProjection::apply, so repositories stays empty;
-        // assertion is on the sequence accounting (the substantive
-        // proof of cold-replay).
-        assert!(state.projection.repositories.is_empty());
-    }
-
-    /// Snapshot-fast-path: when a snapshot+checkpoint exist, only
-    /// envelopes with `seq > checkpoint.last_sequence` are applied.
-    /// This is the load-bearing B5' assertion.
-    #[tokio::test]
-    async fn snapshot_fast_path_skips_replayed_events() {
-        let tmp = tempfile::tempdir().expect("tmp");
-        let events_dir = tmp.path().join("events");
-        let projections_dir = tmp.path().join("projections");
-        std::fs::create_dir_all(&events_dir).expect("mkdir events");
-        std::fs::create_dir_all(&projections_dir).expect("mkdir projections");
-
-        // Seed event store with seq 1..=3.
-        let event_store =
-            Arc::new(InMemoryEventStore::<DomainEvent>::new());
-            // (was: PardosaFileEventStore::<DomainEvent>::open(&events_dir).expect("open"); see follow-up bd issue)
-            let _ = &events_dir;
-        let ctx = CorrelationContext::none();
-        let (id, initial) = event_store
-            .create(vec![sweep_started(), repo_removed("k1")], ctx.clone())
-            .await
-            .expect("create");
-        let last_seq_nz = initial.last().expect("nonempty").sequence();
-        event_store
-            .append(id, last_seq_nz, vec![repo_removed("k2")], ctx)
-            .await
-            .expect("append");
-
-        // Persist a snapshot tagged with checkpoint.last_sequence = 2,
-        // simulating "we've already applied envelopes 1 and 2; the
-        // restart must apply only envelope 3."
-        let projection_store =
-            FileProjectionStore::<EvidenceProjection>::new(&projections_dir, "evidence");
-        let snap = EvidenceProjection::default();
-        projection_store
-            .persist(id, &snap, 2)
-            .await
-            .expect("persist");
-
-        let state = snapshot_fast_path_startup(Arc::clone(&event_store), &projection_store, id)
-            .await
-            .expect("startup");
-
-        assert!(
-            state.used_snapshot_fast_path,
-            "snapshot present ⇒ fast path"
-        );
-        assert_eq!(state.last_applied_sequence, 3, "only seq 3 applied");
-    }
-
-    /// Per CHE-0048:R2: a present snapshot with an *absent* checkpoint
-    /// signals a crash mid-`persist`. Treat as "rebuild" (cold start),
-    /// not "trust snapshot".
-    #[tokio::test]
-    async fn orphan_snapshot_without_checkpoint_falls_back_to_cold_start() {
-        // FileProjectionStore::load_checkpoint validates identity, so
-        // we can't easily simulate "checkpoint exists, snapshot does
-        // not" through the public API in one direction without
-        // hand-writing files. The reverse case ("snapshot exists,
-        // checkpoint missing") is the actual CHE-0048:R2 invariant
-        // and is tested directly: load_checkpoint returns None ⇒ cold
-        // start regardless of any orphan snapshot.
-        let tmp = tempfile::tempdir().expect("tmp");
-        let events_dir = tmp.path().join("events");
-        let projections_dir = tmp.path().join("projections");
-        std::fs::create_dir_all(&events_dir).expect("mkdir e");
-        std::fs::create_dir_all(&projections_dir).expect("mkdir p");
-
-        let event_store =
-            Arc::new(InMemoryEventStore::<DomainEvent>::new());
-            // (was: PardosaFileEventStore::<DomainEvent>::open(&events_dir).expect("open"); see follow-up bd issue)
-            let _ = &events_dir;
-        let ctx = CorrelationContext::none();
-        let (id, initial) = event_store
-            .create(vec![sweep_started()], ctx)
-            .await
-            .expect("create");
-        let _ = initial;
-
-        // Hand-write a snapshot file with NO sibling checkpoint.
-        let projection_store =
-            FileProjectionStore::<EvidenceProjection>::new(&projections_dir, "evidence");
-        let snap_path = projection_store.snapshot_path(id);
-        let bytes =
-            rmp_serde::encode::to_vec_named(&EvidenceProjection::default()).expect("encode");
-        std::fs::write(&snap_path, bytes).expect("write orphan snapshot");
-        assert!(snap_path.exists());
-        assert!(!projection_store.checkpoint_path(id).exists());
-
-        let state = snapshot_fast_path_startup(Arc::clone(&event_store), &projection_store, id)
-            .await
-            .expect("startup");
-
-        assert!(
-            !state.used_snapshot_fast_path,
-            "checkpoint absent ⇒ cold path even though snapshot exists"
-        );
-        assert_eq!(state.last_applied_sequence, 1);
     }
 
     /// Bus handler wiring: a registered handler mutates the shared

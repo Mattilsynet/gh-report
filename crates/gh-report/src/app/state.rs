@@ -193,11 +193,13 @@ pub struct AppState {
     /// registered handler via `PoisonError::into_inner`.
     ///
     /// Initialised to `EvidenceProjection::default()` by both
-    /// constructors. Populated by
-    /// [`crate::app::projection_runtime::snapshot_fast_path_startup`]
-    /// which the daemon calls **after** `with_stores` and **before**
-    /// warm-start (CHE-0048:R2 — the snapshot is the source of truth
-    /// for state at boot).
+    /// constructors. Populated by [`Self::bootstrap_replay_state`]
+    /// (called from [`Self::snapshot_fast_path_init`]) during
+    /// daemon boot: a single unified replay folds every aggregate's
+    /// events into both routing indices and projection state. The
+    /// CHE-0048 line-24 replay-as-rebuild exemption applies — there
+    /// is no on-disk snapshot/checkpoint under the
+    /// `InMemoryEventStore`-backed build (bd `adr-fmt-5rwbu`).
     pub(crate) projection_state: Arc<Mutex<crate::projection::EvidenceProjection>>,
 
     /// Last-applied envelope sequence for the projection state.
@@ -645,13 +647,10 @@ impl AppState {
     pub async fn snapshot_fast_path_init(
         &self,
     ) -> Result<bool, cherry_pit_projection::ProjectionError> {
-        use crate::app::projection_runtime::{
-            SharedStore, register_projection_handler, snapshot_fast_path_startup,
-        };
-        use crate::projection::ORG_GOVERNANCE_AGGREGATE_ID;
+        use crate::app::projection_runtime::{SharedStore, register_projection_handler};
         use cherry_pit_projection::ProjectionDriver;
 
-        let (Some(event_store), Some(projection_store)) =
+        let (Some(event_store), Some(_projection_store)) =
             (self.event_store.as_ref(), self.projection_store.as_ref())
         else {
             tracing::debug!(
@@ -660,36 +659,27 @@ impl AppState {
             return Ok(false);
         };
 
-        let startup = snapshot_fast_path_startup(
-            Arc::clone(event_store),
-            projection_store.as_ref(),
-            ORG_GOVERNANCE_AGGREGATE_ID,
-        )
-        .await?;
+        // Memory-Image bootstrap (Track 7.5 / CHE-0054:R5 amended,
+        // CHE-0048 line-24 exemption, CHE-0022:R6, mission cpp-r-b-r-c
+        // / bd adr-fmt-5rwbu): rebuild the four routing indices AND
+        // projection_state by replaying the durable event log. The
+        // returned max-sequence is the boot's last-applied checkpoint
+        // (currently the highest envelope sequence across every
+        // aggregate; pre-fix this was the singleton aggregate's
+        // last_applied_sequence and was supplied by
+        // snapshot_fast_path_startup, now deleted as redundant with
+        // the unified replay).
+        let last_applied_sequence = self
+            .bootstrap_replay_state(Arc::clone(event_store))
+            .await?;
 
-        // Replace the projection state with the materialised one and
-        // initialise the checkpoint atomic. No bus handler is yet
-        // registered, so no concurrent writer can race this.
-        {
-            let mut guard = self
-                .projection_state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *guard = startup.projection;
-        }
+        // Initialise the checkpoint atomic from the boot replay's
+        // max-sequence observation. No bus handler is yet registered,
+        // so no concurrent writer can race this.
         self.projection_checkpoint_seq.store(
-            startup.last_applied_sequence,
+            last_applied_sequence,
             std::sync::atomic::Ordering::Release,
         );
-
-        // Memory-Image bootstrap (Track 7.5 / CHE-0054:R5 amended,
-        // CHE-0048 line-24 exemption, CHE-0022:R6): rebuild the four
-        // routing indices by replaying the durable event log. Without
-        // this, every post-restart command that resolves a Run by
-        // `batch_id` or a Repo by `domain_key` would `RoutingMiss`
-        // until the merger re-creates the aggregate from scratch.
-        self.bootstrap_replay_state(Arc::clone(event_store))
-            .await?;
 
         // Register the bus handler that keeps the in-memory state
         // current as new envelopes are published. The driver wraps a
@@ -708,10 +698,17 @@ impl AppState {
             Arc::clone(&self.projection_checkpoint_seq),
         );
 
+        // "snapshot fast path" is now a stale framing — the unified
+        // replay in bootstrap_replay_state is the only boot path
+        // (CHE-0048 line-24 exemption: no projection-snapshot file is
+        // written, every boot replays the full log). The function name
+        // is retained for ABI stability across the binary entry point
+        // (`bin/gh-report.rs::main`) and will be retired in the
+        // follow-up consumer-rewrite-over-PGNO mission.
         tracing::info!(
-            used_snapshot_fast_path = startup.used_snapshot_fast_path,
-            last_applied_sequence = startup.last_applied_sequence,
-            "projection runtime initialised (B5')"
+            last_applied_sequence,
+            "projection runtime initialised via bootstrap_replay_state (B5'; \
+             cpp-r-b-r-c / bd adr-fmt-5rwbu)"
         );
         Ok(true)
     }
@@ -766,7 +763,7 @@ impl AppState {
     async fn bootstrap_replay_state(
         &self,
         event_store: Arc<EventStoreImpl>,
-    ) -> Result<(), cherry_pit_projection::ProjectionError> {
+    ) -> Result<u64, cherry_pit_projection::ProjectionError> {
         use cherry_pit_core::EventStore as _;
 
         let aggregate_ids = event_store.list_aggregates().map_err(|e| {
@@ -774,6 +771,16 @@ impl AppState {
                 format!("list_aggregates failed during bootstrap replay: {e}").into(),
             )
         })?;
+
+        // Global max-sequence across every aggregate's replay.
+        // Forward-port of the pre-fix snapshot_fast_path_startup's
+        // single-aggregate last_applied_sequence: with the unified
+        // replay covering all aggregates, the boot's "checkpoint" is
+        // the highest envelope sequence we observed anywhere. The bus
+        // handler uses fetch_max(AcqRel) on every subsequent publish,
+        // so this initial value is a lower bound that converges to the
+        // true high-water mark as events flow.
+        let mut global_max_seq: u64 = 0;
 
         // Per-aggregate loop: await `load` *without* holding any
         // index guard (would be a `MutexGuard` held across await,
@@ -873,6 +880,7 @@ impl AppState {
 
             if let Some(seq) = max_seq {
                 next_seq.insert(aggregate_id, seq);
+                global_max_seq = global_max_seq.max(seq.get());
             }
         }
 
@@ -897,9 +905,11 @@ impl AppState {
             runs_indexed = runs_len,
             repos_indexed = repos_len,
             aggregates_tracked = agg_len,
-            "bootstrap replay populated routing indices (CHE-0054:R5)"
+            last_applied_sequence = global_max_seq,
+            "bootstrap replay populated routing indices and projection_state \
+             (CHE-0054:R5, cpp-r-b-r-c / bd adr-fmt-5rwbu)"
         );
-        Ok(())
+        Ok(global_max_seq)
     }
 
     /// Render the current in-memory projection as a JSON-encoded
