@@ -26,6 +26,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use adr_fmt::{
     AdrRecord, Config, DomainDir, LoadError, RelVerb, Status as AdrFmtStatus, Tier as AdrFmtTier,
@@ -38,6 +39,7 @@ use crate::domain::adr_id::AdrId;
 use crate::domain::body_hash::BodyHash;
 use crate::domain::events::AdrIngested;
 use crate::domain::frontmatter::{AdrFrontmatter, Status, Tier};
+use crate::projection::AdrCorpus;
 
 /// Summary of one scrape pass.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -116,6 +118,7 @@ impl From<std::io::Error> for ScrapeError {
 pub async fn scrape_corpus(
     service: &AdrService,
     marker_dir: &Path,
+    corpus: &Arc<Mutex<AdrCorpus>>,
 ) -> Result<ScrapeReport, ScrapeError> {
     let config: Config = load_quiet(marker_dir)?;
     let corpus_root =
@@ -142,7 +145,7 @@ pub async fn scrape_corpus(
         }
         let outcome = parse_domain(&dir).map_err(ScrapeError::Parse)?;
         for record in outcome.records {
-            ingest_record(service, &record, &mut report).await?;
+            ingest_record(service, &record, &mut report, corpus).await?;
         }
         // Surface per-file parser diagnostics into the scrape report
         // for visibility. Display via the report-module API.
@@ -156,7 +159,7 @@ pub async fn scrape_corpus(
     if stale_dir.is_dir() {
         let outcome = parse_stale(&stale_dir, &config).map_err(ScrapeError::Parse)?;
         for record in outcome.records {
-            ingest_record(service, &record, &mut report).await?;
+            ingest_record(service, &record, &mut report, corpus).await?;
         }
         for diag in outcome.diagnostics {
             report.diagnostics.push(format!("parser: {}", diag.message));
@@ -174,6 +177,7 @@ async fn ingest_record(
     service: &AdrService,
     record: &AdrRecord,
     report: &mut ScrapeReport,
+    corpus: &Arc<Mutex<AdrCorpus>>,
 ) -> Result<(), ScrapeError> {
     report.records_seen += 1;
 
@@ -187,7 +191,7 @@ async fn ingest_record(
         }
     };
 
-    match service.ingest_if_changed(projected).await? {
+    match service.ingest_if_changed(projected, corpus).await? {
         IngestOutcome::Created | IngestOutcome::Appended => {
             report.events_emitted += 1;
         }

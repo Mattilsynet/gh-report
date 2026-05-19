@@ -36,12 +36,13 @@ use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
 
-use cherry_pit_core::{AggregateId, CorrelationContext, EventStore, StoreError};
+use cherry_pit_core::{AggregateId, CorrelationContext, EventStore, Projection, StoreError};
 use cherry_pit_pardosa::PardosaFileEventStore;
 
 use crate::domain::adr_id::AdrId;
 use crate::domain::aggregate::AdrDocument;
 use crate::domain::events::AdrIngested;
+use crate::projection::AdrCorpus;
 
 /// Outcome of [`AdrService::ingest_if_changed`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,8 +93,12 @@ impl AdrService {
     }
 
     /// Construct a new `AdrService` and replay every aggregate already
-    /// in the store, populating `adrs_by_id`, `next_seq`, and
-    /// `latest_body_hash`.
+    /// in the store, populating `adrs_by_id`, `next_seq`,
+    /// `latest_body_hash`, AND the supplied `AdrCorpus` projection.
+    ///
+    /// The corpus is owned by `AppState` and threaded in here so that
+    /// the boot-time replay seeds the read model AND the per-aggregate
+    /// indices in one pass (CHE-0048:R5 in-memory replay election).
     ///
     /// # Errors
     /// Surfaces `StoreError` from `store.load(id)` for any aggregate
@@ -103,12 +108,13 @@ impl AdrService {
     ///
     /// # Panics
     /// Panics on a poisoned `adrs_by_id` / `next_seq` /
-    /// `latest_body_hash` mutex. Mutexes are private to this service
-    /// and only held for short index updates; poisoning indicates a
-    /// prior panic inside the service and is treated as
-    /// non-recoverable.
+    /// `latest_body_hash` / `corpus` mutex. Mutexes are private to
+    /// this service (or single-owner in `AppState`) and only held for
+    /// short index updates; poisoning indicates a prior panic and is
+    /// treated as non-recoverable.
     pub async fn new_with_replay(
         store: Arc<PardosaFileEventStore<AdrIngested>>,
+        corpus: &Arc<Mutex<AdrCorpus>>,
     ) -> Result<Self, StoreError> {
         let service = Self::new(Arc::clone(&store));
 
@@ -149,6 +155,17 @@ impl AdrService {
                 .lock()
                 .expect("latest_body_hash mutex not poisoned")
                 .insert(id, doc.body_hash);
+
+            // Project the full stream into the AdrCorpus. Held lock
+            // is per-aggregate-stream, not for the whole replay loop,
+            // to minimise contention if a future caller queries
+            // mid-replay (none today; defensive).
+            {
+                let mut guard = corpus.lock().expect("corpus mutex not poisoned");
+                for env in &envelopes {
+                    guard.apply(env);
+                }
+            }
         }
 
         Ok(service)
@@ -180,12 +197,13 @@ impl AdrService {
     }
 
     /// Ingest a parsed `AdrIngested` event with body-hash idempotency
-    /// (AFM-0027:R4).
+    /// (AFM-0027:R4), updating the supplied `AdrCorpus` projection
+    /// in lock-step on every appended/created envelope.
     ///
     /// - No prior aggregate for `event.id` → `store.create`,
     ///   [`IngestOutcome::Created`].
     /// - Prior aggregate, `event.body_hash` matches latest projection
-    ///   → no-op, [`IngestOutcome::Unchanged`].
+    ///   → no-op, [`IngestOutcome::Unchanged`] (corpus untouched).
     /// - Prior aggregate, `event.body_hash` differs → `store.append`
     ///   with tracked `expected_sequence`, [`IngestOutcome::Appended`].
     ///
@@ -196,11 +214,15 @@ impl AdrService {
     ///
     /// # Panics
     /// Panics on a poisoned `adrs_by_id` / `next_seq` /
-    /// `latest_body_hash` mutex (see [`Self::new_with_replay`] § Panics).
-    /// Also panics on the documented invariant that `store.create` and
-    /// `store.append` return a non-empty envelope vector; an empty
-    /// return would indicate a broken substrate.
-    pub async fn ingest_if_changed(&self, event: AdrIngested) -> Result<IngestOutcome, StoreError> {
+    /// `latest_body_hash` / `corpus` mutex (see [`Self::new_with_replay`]
+    /// § Panics). Also panics on the documented invariant that
+    /// `store.create` and `store.append` return a non-empty envelope
+    /// vector; an empty return would indicate a broken substrate.
+    pub async fn ingest_if_changed(
+        &self,
+        event: AdrIngested,
+        corpus: &Arc<Mutex<AdrCorpus>>,
+    ) -> Result<IngestOutcome, StoreError> {
         let adr_id = event.id.clone();
         let existing = self.lookup(&adr_id);
 
@@ -232,6 +254,16 @@ impl AdrService {
                     .lock()
                     .expect("latest_body_hash mutex not poisoned")
                     .insert(agg_id, body_hash);
+
+                // Project AFTER per-service indices to minimise lock
+                // interleaving (corpus lock acquired only once the
+                // per-aggregate locks are released).
+                {
+                    let mut guard = corpus.lock().expect("corpus mutex not poisoned");
+                    for env in &envelopes {
+                        guard.apply(env);
+                    }
+                }
                 Ok(IngestOutcome::Created)
             }
             Some(agg_id) => {
@@ -280,6 +312,12 @@ impl AdrService {
                     .lock()
                     .expect("latest_body_hash mutex not poisoned")
                     .insert(agg_id, new_body_hash);
+                {
+                    let mut guard = corpus.lock().expect("corpus mutex not poisoned");
+                    for env in &envelopes {
+                        guard.apply(env);
+                    }
+                }
                 Ok(IngestOutcome::Appended)
             }
         }

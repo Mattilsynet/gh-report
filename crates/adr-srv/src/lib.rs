@@ -25,6 +25,7 @@
 mod app;
 mod domain;
 mod graphql;
+mod projection;
 pub mod scrape;
 
 use std::path::{Path, PathBuf};
@@ -41,8 +42,11 @@ pub use domain::{
 // ── ApplicationService surface (CHE-0054:R8/R10) ──────────────────
 pub use app::{AdrService, AppState, IngestOutcome};
 
-// ── GraphQL stub (M1.4 lands real schema) ─────────────────────────
-pub use graphql::schema_stub;
+// ── Read-side projection (CHE-0048:R5/R6) ─────────────────────────
+pub use projection::AdrCorpus;
+
+// ── GraphQL Query schema (M1.4) ───────────────────────────────────
+pub use graphql::{AdrGql, AdrRef, AdrSchema, Query, build_schema};
 
 /// Minimal probe that the AFM-0026:R1 surface compiles and is callable
 /// from this crate. Loads the workspace `adr-fmt.toml` and resolves the

@@ -54,6 +54,52 @@ impl Tier {
     pub fn rank(self) -> u8 {
         self as u8
     }
+
+    /// Single-letter token (`"S"`, `"A"`, `"B"`, `"C"`, `"D"`).
+    /// GraphQL `AdrGql.tier` projection (M1.4) is the only caller.
+    // Stable token surface for GraphQL read-side; widening to a
+    // longer label would be a wire break for any downstream client.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::S => "S",
+            Self::A => "A",
+            Self::B => "B",
+            Self::C => "C",
+            Self::D => "D",
+        }
+    }
+}
+
+impl core::fmt::Display for Tier {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Status {
+    /// Single-token name (`"Draft"`, `"Proposed"`, …).
+    // Pinned token surface for GraphQL `AdrGql.status` projection
+    // (M1.4): avoids relying on Debug-formatting whose output is
+    // technically allowed to drift between rustc versions.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Draft => "Draft",
+            Self::Proposed => "Proposed",
+            Self::Accepted => "Accepted",
+            Self::Rejected => "Rejected",
+            Self::Deprecated => "Deprecated",
+            Self::Superseded => "Superseded",
+            Self::Invalid => "Invalid",
+        }
+    }
+}
+
+impl core::fmt::Display for Status {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// ADR lifecycle status mirror of `adr_fmt::model::Status`.

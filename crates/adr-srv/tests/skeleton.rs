@@ -12,11 +12,11 @@
 //!   - axum `/health` router returns 200.
 
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use adr_srv::{
-    AdrDate, AdrDocument, AdrFrontmatter, AdrId, AdrIngested, AdrService, AppState, BodyHash,
-    Status, Tier,
+    AdrCorpus, AdrDate, AdrDocument, AdrFrontmatter, AdrId, AdrIngested, AdrService, AppState,
+    BodyHash, Status, Tier, build_schema,
 };
 use cherry_pit_pardosa::PardosaFileEventStore;
 
@@ -227,8 +227,10 @@ fn app_state_constructs_from_service() {
     let store: PardosaFileEventStore<AdrIngested> =
         PardosaFileEventStore::open(dir.path()).expect("open store");
     let service = Arc::new(AdrService::new(Arc::new(store)));
-    let state = AppState::new(Arc::clone(&service));
-    // AppState::clone is cheap (Arc); verify it works.
+    let corpus: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
+    let schema = build_schema(Arc::clone(&corpus));
+    let state = AppState::new(Arc::clone(&service), Arc::clone(&corpus), schema);
+    // AppState::clone is cheap (Arc + schema-arc); verify it works.
     let _cloned = state.clone();
 }
 
@@ -253,9 +255,10 @@ async fn health_route_returns_200() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-// ── schema_stub callable ───────────────────────────────────────────
+// ── schema constructor smoke ───────────────────────────────────────
 
 #[test]
-fn schema_stub_is_callable() {
-    let () = adr_srv::schema_stub();
+fn build_schema_constructs() {
+    let corpus: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
+    let _schema = build_schema(corpus);
 }
