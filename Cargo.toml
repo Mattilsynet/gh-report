@@ -9,7 +9,6 @@ members = [
     "crates/cherry-pit-projection",
     "crates/cherry-pit-wq",
     "crates/cherry-pit-storage",
-    "crates/cherry-pit-pardosa",
     "crates/cherry-pit-web",
     "crates/gh-report",
     "crates/pardosa",
@@ -110,7 +109,6 @@ cherry-pit-gateway = { path = "crates/cherry-pit-gateway", version = "0.1.0" }
 cherry-pit-projection = { path = "crates/cherry-pit-projection", version = "0.1.0" }
 cherry-pit-web = { path = "crates/cherry-pit-web", version = "0.1.0" }
 cherry-pit-agent = { path = "crates/cherry-pit-agent", version = "0.1.0" }
-cherry-pit-pardosa = { path = "crates/cherry-pit-pardosa", version = "0.1.0" }
 pardosa = { path = "crates/pardosa", version = "0.2.0" }
 # CHE-0064: pardosa-encoding is part of cherry-pit-core's substrate ring
 # (admitted by CHE-0064 amending CHE-0029:R4). Features `uuid` + `jiff`

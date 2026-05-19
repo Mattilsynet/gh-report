@@ -64,7 +64,6 @@ crates = [
     "cherry-pit-agent",
     "cherry-pit-wq",
     "cherry-pit-storage",
-    "cherry-pit-pardosa",
     "gh-report",
 ]
 

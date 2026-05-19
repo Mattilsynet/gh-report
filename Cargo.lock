@@ -36,7 +36,6 @@ dependencies = [
  "async-graphql-axum",
  "axum",
  "cherry-pit-core",
- "cherry-pit-pardosa",
  "cherry-pit-web",
  "http",
  "jiff",
@@ -633,22 +632,6 @@ dependencies = [
  "serde",
  "tempfile",
  "tokio",
- "uuid",
-]
-
-[[package]]
-name = "cherry-pit-pardosa"
-version = "0.1.0"
-dependencies = [
- "cherry-pit-core",
- "cherry-pit-gateway",
- "jiff",
- "pardosa",
- "pardosa-encoding",
- "serde",
- "tempfile",
- "tokio",
- "tokio-test",
  "uuid",
 ]
 
@@ -1399,7 +1382,6 @@ dependencies = [
  "cherry-pit-agent",
  "cherry-pit-core",
  "cherry-pit-gateway",
- "cherry-pit-pardosa",
  "cherry-pit-projection",
  "cherry-pit-storage",
  "cherry-pit-web",
