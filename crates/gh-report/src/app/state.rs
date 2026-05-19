@@ -729,6 +729,7 @@ impl AppState {
     /// | `SweepStarted`            | `runs_by_key`       | `batch_id`             |
     /// | `RepoEvaluated`           | `repos_by_key`      | `domain_key`           |
     /// | (all variants)            | `next_seq`          | aggregate's max seq    |
+    /// | (all variants)            | `projection_state`  | via `Projection::apply` per envelope |
     ///
     /// ## What this does NOT populate
     ///
@@ -789,6 +790,29 @@ impl AppState {
                     format!("load({aggregate_id:?}) failed during bootstrap replay: {e}").into(),
                 )
             })?;
+
+            // Fold every envelope into projection_state via
+            // Projection::apply. Pre-fix (bd adr-fmt-5rwbu) only the
+            // ORG_GOVERNANCE_AGGREGATE_ID singleton was folded —
+            // RepoEvaluated envelopes on per-repo aggregates
+            // (AggregateId(2..)) reached bootstrap_replay_indices but
+            // never reached the projection. Idempotent per CHE-0048:R3
+            // and Projection::apply is infallible per CHE-0009:R1, so
+            // the fold is safe to run unconditionally on every boot.
+            // Smallest-scope guard — released before the routing-index
+            // guards below — keeps lock ordering acyclic and avoids
+            // holding across the next iteration's `event_store.load`
+            // await (clippy::await_holding_lock).
+            {
+                use cherry_pit_core::Projection as _;
+                let mut projection_guard = self
+                    .projection_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                for env in &envelopes {
+                    projection_guard.apply(env);
+                }
+            }
 
             let mut runs = self
                 .runs_by_key
