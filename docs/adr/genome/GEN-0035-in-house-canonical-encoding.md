@@ -8,7 +8,7 @@ Status: Accepted
 ## Related
 
 References: GEN-0001, GEN-0032, GEN-0033, PAR-0024, CHE-0045
-Supersedes: GEN-0007, GEN-0012, GEN-0017, GEN-0020, GEN-0022, GEN-0023
+Supersedes: GEN-0007, GEN-0012, GEN-0017, GEN-0020, GEN-0021, GEN-0022, GEN-0023
 
 ## Context
 
