@@ -14,6 +14,7 @@ members = [
     "crates/pardosa",
     "crates/pardosa-derive",
     "crates/pardosa-encoding",
+    "crates/pardosa-eventstore",
     "crates/pardosa-genome",
     "crates/pardosa-traits",
 ]
