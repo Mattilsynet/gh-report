@@ -17,6 +17,9 @@ target/
 # adr-srv runtime event store (per-developer; rebuildable from corpus)
 .adr-srv/
 
+# gh-report runtime event store (per-developer; rebuildable from GitHub API)
+.ghr-store/
+
 # LLM scratch notes (pre-research drafts, not intentional docs)
 docs/notes/
 
