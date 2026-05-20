@@ -257,17 +257,23 @@ async fn persist_batch<E: DomainEvent + pardosa_encoding::Encode>(
     writer: &mut tokio::fs::File,
     envelopes: &[EventEnvelope<E>],
 ) -> Result<(), StoreError> {
+    // Coalesce N frames into a single buffer so one batch == one write_all,
+    // then one fsync. write_frame is sync into Vec<u8>; the async syscall
+    // only happens once per batch.
+    let mut batch_buf: Vec<u8> = Vec::new();
     for envelope in envelopes {
         let body = encode_envelope(envelope);
-        let mut frame_buf = Vec::with_capacity(body.len() + 12);
-        write_frame(&mut frame_buf, &body).map_err(|e| {
+        batch_buf.reserve(body.len() + 12);
+        write_frame(&mut batch_buf, &body).map_err(|e| {
             StoreError::Infrastructure(Box::<dyn std::error::Error + Send + Sync>::from(format!(
-                "frame encode: {e}"
+                "encode/write frame batch: {e}"
             )))
         })?;
-        writer.write_all(&frame_buf).await.map_err(|e| {
+    }
+    if !batch_buf.is_empty() {
+        writer.write_all(&batch_buf).await.map_err(|e| {
             StoreError::Infrastructure(Box::<dyn std::error::Error + Send + Sync>::from(format!(
-                "write frame: {e}"
+                "write batch: {e}"
             )))
         })?;
     }
