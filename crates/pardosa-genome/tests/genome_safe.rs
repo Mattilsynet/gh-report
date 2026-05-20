@@ -670,3 +670,54 @@ fn genome_ord_btreemap_with_string_key() {
 fn genome_ord_btreeset_with_u32() {
     let _ = <std::collections::BTreeSet<u32> as GenomeSafe>::SCHEMA_HASH;
 }
+
+// ---------------------------------------------------------------------------
+// GEN-0035:R9 — enum discriminant value participates in SCHEMA_HASH
+// ---------------------------------------------------------------------------
+
+// Two enums identical in *type name*, variant names, and variant positions,
+// differing only in their explicit repr(u8) discriminant *values*. Per
+// GEN-0035:R9 (GEN-0003 input rules carried forward unchanged — names AND
+// discriminants contribute to schema-bytes) and GEN-0035:R4 (wire byte is
+// the explicit repr(u8) value, not the 0-indexed position), distinct
+// discriminant values MUST produce distinct SCHEMA_HASH values. If they
+// don't, the wire format and the schema fingerprint disagree: two payloads
+// with different on-wire bytes would advertise the same schema.
+//
+// The enums are placed in sibling modules so they share the unqualified
+// identifier `Discriminants`; this isolates the test to the discriminant
+// fold (the variant-name fold and the `enum:Discriminants` seed match
+// byte-for-byte across both).
+
+mod disc_a {
+    use super::{Deserialize, GenomeSafe, Serialize};
+    #[derive(Serialize, Deserialize, GenomeSafe)]
+    #[repr(u8)]
+    pub enum Discriminants {
+        First = 0,
+        Second = 1,
+        Third = 2,
+    }
+}
+
+mod disc_b {
+    use super::{Deserialize, GenomeSafe, Serialize};
+    #[derive(Serialize, Deserialize, GenomeSafe)]
+    #[repr(u8)]
+    pub enum Discriminants {
+        First = 10,
+        Second = 20,
+        Third = 30,
+    }
+}
+
+#[test]
+fn enum_discriminant_values_change_schema_hash() {
+    let a = <disc_a::Discriminants as GenomeSafe>::SCHEMA_HASH;
+    let b = <disc_b::Discriminants as GenomeSafe>::SCHEMA_HASH;
+    assert_ne!(
+        a, b,
+        "GEN-0035:R9 — enum discriminant values must participate in SCHEMA_HASH; \
+         got identical hashes for enums differing only in repr(u8) discriminant values"
+    );
+}
