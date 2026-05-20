@@ -1,9 +1,10 @@
-//! `pardosa-eventstore` — persistent file-per-aggregate `EventStore`
-//! backend.
+//! `pardosa-eventstore` — unified-log persistent `EventStore` backend.
 //!
-//! See [`PardosaLogEventStore`] for the entrypoint. Wire format is
-//! length-prefixed xxh64-framed `pardosa_encoding::Encode` envelopes,
-//! one file per aggregate, advisory `RunLock` on `<root>/.lock`.
+//! All aggregates share a single append-only log file `<root>/log`,
+//! holding one writer file descriptor regardless of aggregate count.
+//! Wire format is length-prefixed xxh64-framed
+//! `pardosa_encoding::Encode`-encoded envelopes; advisory `RunLock`
+//! on `<root>/.lock`.
 
 #![forbid(unsafe_code)]
 

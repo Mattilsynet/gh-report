@@ -420,11 +420,12 @@ mod tests {
         assert_eq!(seq.get(), expected);
     }
 
-    /// Assert that the aggregate's on-disk artefact exists exactly once
-    /// at `<dir>/<id>.log` under [`PardosaLogEventStore`]
-    /// (CHE-0036:R1 — file-per-aggregate).
-    fn assert_single_pardosa_file(dir: &TempDir, id: AggregateId) {
-        let expected = dir.path().join(format!("{}.log", id.get()));
+    /// Assert that the unified event log exists at `<dir>/log` under
+    /// [`PardosaLogEventStore`]. `_id` is retained for call-site
+    /// clarity; under the unified-log layout every aggregate's events
+    /// land in the same file.
+    fn assert_single_pardosa_file(dir: &TempDir, _id: AggregateId) {
+        let expected = dir.path().join("log");
         assert!(
             expected.exists(),
             "expected `{}` to exist under {}",

@@ -307,14 +307,15 @@ mod tests {
         };
         assert_eq!(tracked_seq.get(), 1);
 
-        // CHE-0036:R1 — exactly one `<assigned_id>.log` file exists
-        // under `dir` after the first append.
-        let expected = dir.path().join(format!("{}.log", assigned_id.get()));
+        // Under PardosaLogEventStore every aggregate's events land in
+        // the shared unified log at `<dir>/log`.
+        let expected = dir.path().join("log");
         assert!(
             expected.exists(),
             "expected `{}` to exist after first append",
             expected.display(),
         );
+        let _ = assigned_id;
     }
 
     /// Step-5 — fresh-per-delivery semantics: two ingests with the

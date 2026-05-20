@@ -1,7 +1,7 @@
 [package]
 name = "pardosa-eventstore"
 version = "0.1.0"
-description = "File-per-aggregate persistent EventStore backend for cherry-pit, length-prefixed xxh64-framed pardosa-encoding envelopes"
+description = "Unified-log persistent EventStore backend for cherry-pit, length-prefixed xxh64-framed pardosa-encoding envelopes"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
