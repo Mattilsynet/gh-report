@@ -398,8 +398,8 @@ mod tests {
     }
 
     /// Build a test `AppState` with a known webhook secret.
-    fn test_state_with_secret(secret: &str) -> Arc<AppState> {
-        AppState::new_with_webhook_secret(secret)
+    async fn test_state_with_secret(secret: &str) -> Arc<AppState> {
+        AppState::new_with_webhook_secret(secret).await
     }
 
     fn build_test_app(state: Arc<AppState>) -> Router {
@@ -415,7 +415,7 @@ mod tests {
 
     #[tokio::test]
     async fn webhook_invalid_hmac() {
-        let state = test_state_with_secret("test-secret");
+        let state = test_state_with_secret("test-secret").await;
         let app = build_test_app(state);
 
         let body = b"{}";
@@ -434,7 +434,7 @@ mod tests {
 
     #[tokio::test]
     async fn webhook_missing_signature() {
-        let state = test_state_with_secret("test-secret");
+        let state = test_state_with_secret("test-secret").await;
         let app = build_test_app(state);
 
         let request = Request::builder()
@@ -451,7 +451,7 @@ mod tests {
 
     #[tokio::test]
     async fn webhook_missing_event_header() {
-        let state = test_state_with_secret("test-secret");
+        let state = test_state_with_secret("test-secret").await;
         let secret = state
             .webhook()
             .secret
@@ -478,7 +478,7 @@ mod tests {
 
     #[tokio::test]
     async fn webhook_missing_delivery_header() {
-        let state = test_state_with_secret("test-secret");
+        let state = test_state_with_secret("test-secret").await;
         let secret = state
             .webhook()
             .secret
@@ -505,7 +505,7 @@ mod tests {
 
     #[tokio::test]
     async fn webhook_valid_enqueue() {
-        let state = test_state_with_secret("test-secret");
+        let state = test_state_with_secret("test-secret").await;
         let secret = state
             .webhook()
             .secret
@@ -537,7 +537,7 @@ mod tests {
 
     #[tokio::test]
     async fn webhook_replay_duplicate() {
-        let state = test_state_with_secret("test-secret");
+        let state = test_state_with_secret("test-secret").await;
         let secret = state
             .webhook()
             .secret
@@ -582,7 +582,7 @@ mod tests {
 
     #[tokio::test]
     async fn webhook_malformed_json() {
-        let state = test_state_with_secret("test-secret");
+        let state = test_state_with_secret("test-secret").await;
         let secret = state
             .webhook()
             .secret
@@ -610,7 +610,7 @@ mod tests {
 
     #[tokio::test]
     async fn webhook_ignored_event_returns_200() {
-        let state = test_state_with_secret("test-secret");
+        let state = test_state_with_secret("test-secret").await;
         let secret = state
             .webhook()
             .secret
@@ -638,7 +638,7 @@ mod tests {
 
     #[tokio::test]
     async fn dedup_returns_200_not_503() {
-        let state = test_state_with_secret("test-secret");
+        let state = test_state_with_secret("test-secret").await;
         let secret = state
             .webhook()
             .secret
@@ -685,7 +685,7 @@ mod tests {
 
     #[tokio::test]
     async fn webhook_repository_deleted_returns_200() {
-        let state = test_state_with_secret("test-secret");
+        let state = test_state_with_secret("test-secret").await;
         let secret = state
             .webhook()
             .secret
@@ -717,7 +717,7 @@ mod tests {
 
     #[tokio::test]
     async fn webhook_body_over_1mb_returns_413() {
-        let state = test_state_with_secret("test-secret");
+        let state = test_state_with_secret("test-secret").await;
         let secret = state
             .webhook()
             .secret
@@ -746,7 +746,7 @@ mod tests {
 
     #[tokio::test]
     async fn webhook_push_debounce_within_window() {
-        let state = test_state_with_secret("test-secret");
+        let state = test_state_with_secret("test-secret").await;
         let secret = state
             .webhook()
             .secret

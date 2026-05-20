@@ -18,7 +18,7 @@ use adr_srv::{
     AdrCorpus, AdrDate, AdrDocument, AdrFrontmatter, AdrId, AdrIngested, AdrService, AppState,
     BodyHash, Status, Tier, build_schema,
 };
-use cherry_pit_pardosa::PardosaFileEventStore;
+use pardosa_eventstore::PardosaLogEventStore as PardosaFileEventStore;
 
 fn sample_event() -> AdrIngested {
     AdrIngested {
@@ -210,22 +210,24 @@ fn adr_document_apply_updates_state_from_event() {
 
 // ── AdrService against PardosaFileEventStore ───────────────────────
 
-#[test]
-fn adr_service_constructs_against_pardosa_file_event_store() {
+#[tokio::test]
+async fn adr_service_constructs_against_pardosa_file_event_store() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store: PardosaFileEventStore<AdrIngested> =
-        PardosaFileEventStore::open(dir.path()).expect("open store");
+    let store: PardosaFileEventStore<AdrIngested> = PardosaFileEventStore::open(dir.path())
+        .await
+        .expect("open store");
     let service = AdrService::new(Arc::new(store));
     // store() accessor reaches the inner Arc — proves the service is
     // wired to the store, not just constructed and discarded.
     let _store_ref = service.store();
 }
 
-#[test]
-fn app_state_constructs_from_service() {
+#[tokio::test]
+async fn app_state_constructs_from_service() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store: PardosaFileEventStore<AdrIngested> =
-        PardosaFileEventStore::open(dir.path()).expect("open store");
+    let store: PardosaFileEventStore<AdrIngested> = PardosaFileEventStore::open(dir.path())
+        .await
+        .expect("open store");
     let service = Arc::new(AdrService::new(Arc::new(store)));
     let corpus: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
     let schema = build_schema(Arc::clone(&corpus));

@@ -31,14 +31,14 @@ cherry-pit-storage = { version = "0.1.0", path = "../cherry-pit-storage" }
 # EventEnvelope). Single-aggregate posture per Tension-2 lock; no
 # CommandGateway/Aggregate/HandleCommand wiring (S5.b lock).
 #
-# `testing` feature: required for the interim `InMemoryEventStore<DomainEvent>`
-# substitute wired in `src/app/state.rs` and `src/app/projection_runtime.rs`
-# after the cherry-pit-pardosa removal (mission
-# `cherry-pit-pardosa-deletion-1779215265`). The feature is gated under
-# `#[cfg(any(test, feature = "testing"))]` in cherry-pit-core; gh-report uses
-# it from non-test code intentionally because the daemon now requires the
-# `--in-memory` flag (no durable substrate exists until the PGNO-backed
-# successor lands — follow-up bd issue).
+# `testing` feature: needed for `InMemoryEventStore<DomainEvent>` as a
+# **test double** inside `#[cfg(test)]` modules in `src/app/state.rs` and
+# `src/app/projection_runtime.rs`. Production paths use
+# `pardosa-eventstore::PardosaLogEventStore` exclusively. The feature
+# cannot be relegated to `[dev-dependencies]` because the same crate
+# alias is used in both production (`EventStore` trait imports) and
+# test code, and Cargo would treat the two activations as conflicting
+# unification states.
 cherry-pit-core = { workspace = true, features = ["testing"] }
 
 # pardosa-encoding — CHE-0064:R2 supertrait of CoreDomainEvent. Required for
@@ -52,11 +52,15 @@ pardosa-encoding = { workspace = true }
 # (`std` + `derive`) enable the derive macro; no extra feature flags needed.
 pardosa-genome = { workspace = true }
 
+# pardosa-eventstore — persistent file-per-aggregate EventStore backend
+# wired by AppState::with_stores. Replaces the InMemoryEventStore interim
+# substrate; CHE-0043:R1 flock semantics restored via the crate's
+# <root>/.lock acquisition on open.
+pardosa-eventstore = { path = "../pardosa-eventstore" }
+
 # cherry-pit-gateway — InProcessEventBus<DomainEvent> only.
-# Persistence substrate (formerly cherry-pit-pardosa::PardosaFileEventStore)
-# was removed in the cherry-pit-pardosa cleanup; the daemon now requires
-# --in-memory until a successor PGNO-backed EventStore lands (follow-up
-# bd-issue). Aggregate id remains the singleton
+# Durable persistence substrate is `pardosa-eventstore::PardosaLogEventStore`
+# (above). Aggregate id remains the singleton
 # `ORG_GOVERNANCE_AGGREGATE_ID = NonZeroU64::new(1)` per Tension-2.
 cherry-pit-gateway = { workspace = true }
 

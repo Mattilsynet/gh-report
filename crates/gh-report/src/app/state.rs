@@ -31,10 +31,12 @@ use std::sync::atomic::AtomicU64;
 
 use arc_swap::ArcSwap;
 use cherry_pit_agent::InProcessEventBus;
+#[cfg(test)]
 use cherry_pit_core::testing::InMemoryEventStore;
 use cherry_pit_core::{AggregateId, ListableEventStore};
 use cherry_pit_projection::FileProjectionStore;
 use jiff::Timestamp;
+use pardosa_eventstore::{OpenError, PardosaLogEventStore};
 
 // Re-export server-state types referenced via this module.
 pub use crate::infra::server::state::{CachedPage, PageUpdateEvent};
@@ -42,15 +44,15 @@ pub use crate::infra::server::state::{CachedPage, PageUpdateEvent};
 // Re-export DomainEvent for convenience.
 pub use crate::domain::events::DomainEvent;
 
-/// Interim event-store concrete type used by gh-report.
+/// Concrete event-store type wired into gh-report.
 ///
-/// This alias is the single point at which the in-process `EventStore`
-/// substitute is named for the gh-report consumer. The
-/// cherry-pit-pardosa removal (mission
-/// `cherry-pit-pardosa-deletion-1779215265`) left no file-backed
-/// substrate; the follow-up consumer-rewrite-over-PGNO bd-issue will
-/// repoint this alias to the PGNO-backed successor.
-pub type EventStoreImpl = InMemoryEventStore<DomainEvent>;
+/// The persistent file-per-aggregate backend
+/// [`pardosa_eventstore::PardosaLogEventStore`] restores the CHE-0043:R1
+/// flock semantics via `<root>/.lock`. All production paths construct
+/// the store via [`AppState::with_stores`]; test paths that don't need
+/// durable persistence construct an `AppState` without an `event_store`
+/// (see [`AppState::new`] under `#[cfg(test)]`).
+pub type EventStoreImpl = PardosaLogEventStore<DomainEvent>;
 
 // Re-export sub-aggregates for convenience.
 pub use crate::app::evidence_service::EvidenceState;
@@ -198,8 +200,8 @@ pub struct AppState {
     /// daemon boot: a single unified replay folds every aggregate's
     /// events into both routing indices and projection state. The
     /// CHE-0048 line-24 replay-as-rebuild exemption applies — there
-    /// is no on-disk snapshot/checkpoint under the
-    /// `InMemoryEventStore`-backed build (bd `adr-fmt-5rwbu`).
+    /// is no on-disk snapshot/checkpoint surface; the durable event
+    /// log under [`PardosaLogEventStore`] is the SSOT (bd `adr-fmt-5rwbu`).
     pub(crate) projection_state: Arc<Mutex<crate::projection::EvidenceProjection>>,
 
     /// Last-applied envelope sequence for the projection state.
@@ -362,9 +364,7 @@ impl AppState {
     /// this state from every aggregate, not just the
     /// `ORG_GOVERNANCE_AGGREGATE_ID` singleton.
     #[doc(hidden)]
-    pub fn projection_state_for_test(
-        &self,
-    ) -> Arc<Mutex<crate::projection::EvidenceProjection>> {
+    pub fn projection_state_for_test(&self) -> Arc<Mutex<crate::projection::EvidenceProjection>> {
         Arc::clone(&self.projection_state)
     }
 }
@@ -391,20 +391,33 @@ fn build_services(
     (run, repo, webhook)
 }
 
-/// Per-construction unique placeholder path. Used by `AppState::new()`
-/// (test/no-store path) and other no-store constructors. The directory
-/// is now a vestigial argument under the `InMemoryEventStore` substitute
-/// (see follow-up bd issue for the PGNO-backed successor); kept so the
-/// public signatures don't churn and R-B/R-C can re-introduce a
-/// file-backed substrate later.
-fn noop_events_dir() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("gh-report-noop-events-{}", uuid::Uuid::new_v4()))
+/// Per-construction unique tempdir + opened [`PardosaLogEventStore`].
+/// Used by test-only constructors ([`AppState::new`],
+/// [`AppStateBuilder::build`]) which don't model a real persistence
+/// scope but need a live `EventStore` handle for the Merger task.
+///
+/// The directory is leaked (`TempDir::keep`) so the
+/// CHE-0043:R1 flock held by [`PardosaLogEventStore`] survives for
+/// the lifetime of the test; same pollution profile as the previous
+/// `noop_events_dir` helper. `/tmp` cleanup is the OS's problem.
+#[cfg(test)]
+async fn noop_event_store() -> Arc<PardosaLogEventStore<DomainEvent>> {
+    let dir = tempfile::tempdir().expect("test tempdir");
+    let path = dir.keep();
+    Arc::new(
+        PardosaLogEventStore::<DomainEvent>::open(&path)
+            .await
+            .expect("open noop test event store"),
+    )
 }
 
 /// Register the projection handler on the bus using a transient
-/// [`InMemoryEventStore`] (interim substrate until the PGNO-backed
-/// successor `EventStore` lands — follow-up to mission
-/// `cherry-pit-pardosa-deletion-1779215265`).
+/// [`InMemoryEventStore`] as the driver substrate.
+///
+/// Test paths only ([`AppState::new`], [`AppStateBuilder::build`]) —
+/// production wires the durable store via
+/// [`AppState::snapshot_fast_path_init`] which constructs its own
+/// `SharedStore` over the `AppState::event_store` Arc.
 ///
 /// M2.cd — post-cutover the projection is the sole read-model
 /// authority (CHE-0048:R2). Every `AppState` constructor must wire
@@ -423,6 +436,7 @@ fn noop_events_dir() -> std::path::PathBuf {
 /// callers that need durable rebuild (`with_stores` →
 /// `snapshot_fast_path_init`) replace the projection state and
 /// re-register a handler over the durable store at startup.
+#[cfg(test)]
 fn register_default_projection_handler(
     bus: &InProcessEventBus<DomainEvent>,
     projection_state: &Arc<Mutex<crate::projection::EvidenceProjection>>,
@@ -432,7 +446,6 @@ fn register_default_projection_handler(
     use cherry_pit_projection::ProjectionDriver;
 
     let transient_store = Arc::new(InMemoryEventStore::<DomainEvent>::new());
-    // (was: PardosaFileEventStore::<DomainEvent>::open(noop_events_dir()); see follow-up bd issue)
     let driver = Arc::new(
         ProjectionDriver::<crate::projection::EvidenceProjection, _>::new(SharedStore::new(
             transient_store,
@@ -448,6 +461,7 @@ fn register_default_projection_handler(
 
 // ── Constructors ────────────────────────────────────────────────────
 
+#[cfg(test)]
 impl AppState {
     /// Create a new `AppState` (for daemon mode).
     ///
@@ -465,16 +479,13 @@ impl AppState {
     /// cannot acquire the CHE-0043:R1 advisory flock at `open` time.
     /// This is an infrastructure-level failure (disk full, permissions,
     /// no `/tmp`) at startup of a test path; halting is appropriate.
-    #[must_use]
-    pub fn new() -> Arc<Self> {
+    pub async fn new() -> Arc<Self> {
         let bus = Arc::new(InProcessEventBus::new());
         let runs_by_key = Arc::new(Mutex::new(HashMap::new()));
         let repos_by_key = Arc::new(Mutex::new(HashMap::new()));
         let deliveries_by_id = Arc::new(Mutex::new(HashMap::new()));
         let next_seq = Arc::new(Mutex::new(HashMap::new()));
-        let noop_dir = noop_events_dir();
-        let _ = &noop_dir; // (was: open PardosaFileEventStore over &noop_dir; see follow-up bd issue)
-        let rs = Arc::new(InMemoryEventStore::<DomainEvent>::new());
+        let rs = noop_event_store().await;
         let (merger_tx, merger_handle) = Merger::spawn(
             rs,
             Arc::clone(&bus),
@@ -518,48 +529,50 @@ impl AppState {
             deliveries_by_id,
         })
     }
+}
 
+impl AppState {
     /// Create a new `AppState` wired with both stores.
     ///
-    /// Interim substrate: the event store is an in-process
-    /// [`InMemoryEventStore`] (no persistence across restarts); the
-    /// projection store is the durable [`FileProjectionStore`] at
-    /// `<store_dir>/projections/<org>/`. Follow-up to mission
-    /// `cherry-pit-pardosa-deletion-1779215265` will repoint
-    /// [`EventStoreImpl`] to the PGNO-backed successor and restore
-    /// the on-disk events/ subtree described below.
+    /// Opens [`PardosaLogEventStore`] over `<events_dir>` (acquiring the
+    /// CHE-0043:R1 advisory lock at `<events_dir>/.lock` and replaying
+    /// any existing per-aggregate logs) and constructs the durable
+    /// [`FileProjectionStore`] over `<projections_dir>`. This is the
+    /// only constructor that wires both durable stores; the daemon
+    /// (`crate::app::daemon`) and the `--dump-baseline` branch of the
+    /// CLI (`crate::bin::gh-report::main`) are the two production
+    /// callers.
     ///
-    /// `events_dir` is retained on the public signature so the daemon
-    /// caller does not churn while the successor lands; under the
-    /// in-memory substitute it is ignored at construction time. Commit 3
-    /// of mission `cpp-cl-b1` adds a `tracing::info!` at boot announcing
-    /// the dropped argument, and a `--in-memory` CLI flag that gates
-    /// daemon boot (panic-at-boot otherwise — silent persistence loss
-    /// is unacceptable).
+    /// File-layout note:
     ///
-    /// File-layout note retained for the successor:
-    ///
-    /// - `<store_dir>/events/<org>/…` — per-aggregate event log, owned
-    ///   by the PGNO-backed successor `EventStore`. The singleton
+    /// - `<store_dir>/events/<org>/<aggregate-id>.log` — per-aggregate
+    ///   event log owned by [`PardosaLogEventStore`]. The singleton
     ///   [`crate::projection::ORG_GOVERNANCE_AGGREGATE_ID`] applies per
-    ///   Tension-2.
+    ///   Tension-2; an additional per-repo aggregate file is created
+    ///   on first `RepoEvaluated` for each repo.
     /// - `<store_dir>/projections/<org>/1-evidence.snapshot.msgpack`
     ///   and `…1-evidence.checkpoint.msgpack` — paired snapshot +
     ///   checkpoint per CHE-0048:R1/R2.
     ///
+    /// `<store_dir>/events/<org>/.lock` is held for the lifetime of the
+    /// returned `AppState`; a second daemon process pointed at the same
+    /// directory will fail [`OpenError::Lock`] at open time per
+    /// CHE-0043:R1.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpenError`] from [`PardosaLogEventStore::open`] —
+    /// lock contention, directory I/O, or a corrupt envelope discovered
+    /// during boot-time recovery.
+    ///
     /// # Panics
     ///
     /// Panics if [`FileProjectionStore::new`] fails on `projections_dir`.
-    /// (was: also panicked on `PardosaFileEventStore::open` flock
-    /// acquisition over `events_dir`; see follow-up bd issue.)
-    #[must_use]
-    pub fn with_stores(events_dir: &Path, projections_dir: PathBuf) -> Arc<Self> {
-        // (was: PardosaFileEventStore::<DomainEvent>::open(events_dir); see follow-up bd issue
-        // for the PGNO-backed successor. `events_dir` is retained on the public signature so
-        // the daemon caller need not change; under InMemoryEventStore it is ignored — see
-        // commit 3 for the boot-time `tracing::info!` and the `--in-memory` flag gate.)
-        let _ = events_dir;
-        let event_store = Arc::new(InMemoryEventStore::<DomainEvent>::new());
+    pub async fn with_stores(
+        events_dir: &Path,
+        projections_dir: PathBuf,
+    ) -> Result<Arc<Self>, OpenError> {
+        let event_store = Arc::new(PardosaLogEventStore::<DomainEvent>::open(events_dir).await?);
         let projection_store = Arc::new(
             FileProjectionStore::<crate::projection::EvidenceProjection>::new(
                 projections_dir,
@@ -580,7 +593,7 @@ impl AppState {
             Arc::clone(&next_seq),
         );
         let (run_service, repo_service, webhook_service) = build_services(merger_tx);
-        Arc::new(Self {
+        Ok(Arc::new(Self {
             started_at: Timestamp::now(),
             current_run: ArcSwap::from_pointee(None),
             last_completed_run: ArcSwap::from_pointee(None),
@@ -604,7 +617,7 @@ impl AppState {
             runs_by_key,
             repos_by_key,
             deliveries_by_id,
-        })
+        }))
     }
 }
 
@@ -630,11 +643,9 @@ impl AppState {
     /// the single canonical handle to the event log. The driver wraps
     /// that Arc via
     /// [`crate::app::projection_runtime::SharedStore`]; no separate
-    /// directory path is threaded through. (Interim substrate is
-    /// [`InMemoryEventStore`] — follow-up to mission
-    /// `cherry-pit-pardosa-deletion-1779215265` will repoint
-    /// [`EventStoreImpl`] to the PGNO-backed successor and restore the
-    /// CHE-0043:R1 flock semantics.)
+    /// directory path is threaded through, and the CHE-0043:R1 advisory
+    /// lock acquired by [`PardosaLogEventStore::open`] in `with_stores`
+    /// remains held for the lifetime of the `AppState` handle.
     ///
     /// # Errors
     ///
@@ -669,17 +680,13 @@ impl AppState {
         // last_applied_sequence and was supplied by
         // snapshot_fast_path_startup, now deleted as redundant with
         // the unified replay).
-        let last_applied_sequence = self
-            .bootstrap_replay_state(Arc::clone(event_store))
-            .await?;
+        let last_applied_sequence = self.bootstrap_replay_state(Arc::clone(event_store)).await?;
 
         // Initialise the checkpoint atomic from the boot replay's
         // max-sequence observation. No bus handler is yet registered,
         // so no concurrent writer can race this.
-        self.projection_checkpoint_seq.store(
-            last_applied_sequence,
-            std::sync::atomic::Ordering::Release,
-        );
+        self.projection_checkpoint_seq
+            .store(last_applied_sequence, std::sync::atomic::Ordering::Release);
 
         // Register the bus handler that keeps the in-memory state
         // current as new envelopes are published. The driver wraps a
@@ -957,17 +964,20 @@ impl AppState {
 ///     .webhook_secret("test-secret")
 ///     .build();
 /// ```
+#[cfg(test)]
 pub struct AppStateBuilder {
     cache_capacity: Option<u64>,
     webhook_secret: Option<secrecy::SecretString>,
 }
 
+#[cfg(test)]
 impl Default for AppStateBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(test)]
 impl AppStateBuilder {
     /// Create a builder with default values.
     #[must_use]
@@ -1001,8 +1011,7 @@ impl AppStateBuilder {
     /// This is an infrastructure-level failure (disk full, permissions,
     /// no `/tmp`) at builder construction in a test path; halting is
     /// appropriate.
-    #[must_use]
-    pub fn build(self) -> Arc<AppState> {
+    pub async fn build(self) -> Arc<AppState> {
         let github = match self.cache_capacity {
             Some(cap) => GithubState::with_cache_capacity(cap),
             None => GithubState::new(),
@@ -1013,9 +1022,7 @@ impl AppStateBuilder {
         let repos_by_key = Arc::new(Mutex::new(HashMap::new()));
         let deliveries_by_id = Arc::new(Mutex::new(HashMap::new()));
         let next_seq = Arc::new(Mutex::new(HashMap::new()));
-        let noop_dir = noop_events_dir();
-        let _ = &noop_dir; // (was: open PardosaFileEventStore over &noop_dir; see follow-up bd issue)
-        let rs = Arc::new(InMemoryEventStore::<DomainEvent>::new());
+        let rs = noop_event_store().await;
         let (merger_tx, merger_handle) = Merger::spawn(
             rs,
             Arc::clone(&bus),
@@ -1063,17 +1070,19 @@ impl AppStateBuilder {
 }
 
 /// Legacy convenience constructors (delegate to builder).
+#[cfg(test)]
 impl AppState {
     /// Create an `AppState` with a custom cache capacity (for testing).
-    #[must_use]
-    pub fn new_with_cache_capacity(capacity: u64) -> Arc<Self> {
-        AppStateBuilder::new().cache_capacity(capacity).build()
+    pub async fn new_with_cache_capacity(capacity: u64) -> Arc<Self> {
+        AppStateBuilder::new()
+            .cache_capacity(capacity)
+            .build()
+            .await
     }
 
     /// Create an `AppState` with a known webhook secret (for testing).
-    #[must_use]
-    pub fn new_with_webhook_secret(secret: &str) -> Arc<Self> {
-        AppStateBuilder::new().webhook_secret(secret).build()
+    pub async fn new_with_webhook_secret(secret: &str) -> Arc<Self> {
+        AppStateBuilder::new().webhook_secret(secret).build().await
     }
 }
 
@@ -1191,7 +1200,7 @@ mod tests {
 
     #[tokio::test]
     async fn cache_respects_max_capacity() {
-        let state = AppState::new_with_cache_capacity(3);
+        let state = AppState::new_with_cache_capacity(3).await;
         let cache = &state.github().repo_detail_cache;
 
         // Insert 4 entries into a cache with capacity 3.
@@ -1222,7 +1231,7 @@ mod tests {
 
     #[tokio::test]
     async fn cache_stores_and_retrieves_details() {
-        let state = AppState::new();
+        let state = AppState::new().await;
         let cache = &state.github().repo_detail_cache;
 
         let detail = CachedRepoDetail {
@@ -1245,7 +1254,7 @@ mod tests {
 
     #[tokio::test]
     async fn cache_iter_round_trip() {
-        let state = AppState::new_with_cache_capacity(100);
+        let state = AppState::new_with_cache_capacity(100).await;
         let cache = &state.github().repo_detail_cache;
 
         // Insert entries.
@@ -1287,26 +1296,29 @@ mod tests {
 
     #[tokio::test]
     async fn html_cache_starts_empty() {
-        let state = AppState::new();
+        let state = AppState::new().await;
         assert!(state.evidence().html_cache.load().is_none());
     }
 
     #[tokio::test]
     async fn builder_default_produces_valid_state() {
-        let state = AppStateBuilder::new().build();
+        let state = AppStateBuilder::new().build().await;
         assert!(state.webhook().secret.is_none());
         assert!(state.evidence().html_cache.load().is_none());
     }
 
     #[tokio::test]
     async fn builder_with_webhook_secret() {
-        let state = AppStateBuilder::new().webhook_secret("test-secret").build();
+        let state = AppStateBuilder::new()
+            .webhook_secret("test-secret")
+            .build()
+            .await;
         assert!(state.webhook().secret.is_some());
     }
 
     #[tokio::test]
     async fn builder_with_cache_capacity() {
-        let state = AppStateBuilder::new().cache_capacity(5).build();
+        let state = AppStateBuilder::new().cache_capacity(5).build().await;
         let cache = &state.github().repo_detail_cache;
         // Insert 6 entries into a cache with capacity 5.
         for i in 0..6 {
@@ -1330,7 +1342,7 @@ mod tests {
 
     #[tokio::test]
     async fn sub_aggregate_accessors_return_correct_references() {
-        let state = AppStateBuilder::new().webhook_secret("s").build();
+        let state = AppStateBuilder::new().webhook_secret("s").build().await;
         // Verify accessors compile and return the right types.
         let _wh: &WebhookState = state.webhook();
         let _gh: &GithubState = state.github();
@@ -1342,7 +1354,8 @@ mod tests {
         let state = AppStateBuilder::new()
             .cache_capacity(7)
             .webhook_secret("combo-secret")
-            .build();
+            .build()
+            .await;
         // Webhook secret is set.
         assert!(state.webhook().secret.is_some());
         // Cache capacity is respected.
@@ -1369,7 +1382,7 @@ mod tests {
     #[tokio::test]
     async fn is_ready_false_when_no_run_and_no_cache() {
         use crate::infra::server::state::ServerState;
-        let state = AppStateBuilder::new().build();
+        let state = AppStateBuilder::new().build().await;
         assert!(
             !state.is_ready(),
             "should not be ready with no run and no cache"
@@ -1379,7 +1392,7 @@ mod tests {
     #[tokio::test]
     async fn is_ready_true_when_html_cache_populated() {
         use crate::infra::server::state::ServerState;
-        let state = AppStateBuilder::new().build();
+        let state = AppStateBuilder::new().build().await;
         // Populate the HTML cache.
         let mut pages = HashMap::new();
         pages.insert(

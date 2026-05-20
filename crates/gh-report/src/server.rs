@@ -89,15 +89,15 @@ mod tests {
         .unwrap_or_else(|_| panic!("server at {addr} did not become ready within {timeout:?}"));
     }
 
-    fn state_no_cache() -> Arc<AppState> {
-        AppState::new()
+    async fn state_no_cache() -> Arc<AppState> {
+        AppState::new().await
     }
 
     // ── Status endpoint with governance-specific fields ──────────
 
     #[tokio::test]
     async fn status_endpoint_returns_json() {
-        let state = state_no_cache();
+        let state = state_no_cache().await;
         let app = build_router(state);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -123,7 +123,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_endpoint_valid_json_with_concurrent_run() {
-        let state = state_no_cache();
+        let state = state_no_cache().await;
 
         let run = crate::domain::run::RunMetadata::new(
             "TestOrg".into(),
@@ -157,7 +157,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_reflects_completed_run() {
-        let state = state_no_cache();
+        let state = state_no_cache().await;
 
         let mut run = crate::domain::run::RunMetadata::new(
             "TestOrg".into(),
@@ -193,7 +193,7 @@ mod tests {
 
     #[tokio::test]
     async fn readyz_returns_200_after_completed_run() {
-        let state = state_no_cache();
+        let state = state_no_cache().await;
 
         let mut run = crate::domain::run::RunMetadata::new(
             "Org".into(),
@@ -230,7 +230,7 @@ mod tests {
         use crate::test_fixtures;
         use futures_util::StreamExt;
 
-        let state = state_no_cache();
+        let state = state_no_cache().await;
         let app = build_router(Arc::clone(&state));
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

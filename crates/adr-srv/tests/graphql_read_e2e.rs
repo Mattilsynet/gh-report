@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use adr_srv::scrape::scrape_corpus;
 use adr_srv::{AdrCorpus, AdrIngested, AdrService, build_schema};
 use async_graphql::{Request, Value, from_value};
-use cherry_pit_pardosa::PardosaFileEventStore;
+use pardosa_eventstore::PardosaLogEventStore as PardosaFileEventStore;
 use serde::Deserialize;
 use tempfile::TempDir;
 
@@ -75,8 +75,9 @@ foundation = false
 async fn scrape_and_corpus() -> (Arc<Mutex<AdrCorpus>>, TempDir, TempDir) {
     let (marker_dir, tmp_corpus) = build_corpus();
     let store_tmp = TempDir::new().expect("store tempdir");
-    let store: PardosaFileEventStore<AdrIngested> =
-        PardosaFileEventStore::open(store_tmp.path()).expect("open store");
+    let store: PardosaFileEventStore<AdrIngested> = PardosaFileEventStore::open(store_tmp.path())
+        .await
+        .expect("open store");
     let service = AdrService::new(Arc::new(store));
     let corpus: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
     scrape_corpus(&service, &marker_dir, &corpus)
@@ -265,8 +266,9 @@ async fn adrs_by_domain_filters_by_prefix() {
 async fn projection_reflects_body_mutation_on_rescrape() {
     let (marker_dir, _tmp_corpus) = build_corpus();
     let store_tmp = TempDir::new().expect("store tempdir");
-    let store: PardosaFileEventStore<AdrIngested> =
-        PardosaFileEventStore::open(store_tmp.path()).expect("open store");
+    let store: PardosaFileEventStore<AdrIngested> = PardosaFileEventStore::open(store_tmp.path())
+        .await
+        .expect("open store");
     let service = AdrService::new(Arc::new(store));
     let corpus: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
     scrape_corpus(&service, &marker_dir, &corpus)

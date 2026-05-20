@@ -310,46 +310,44 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use cherry_pit_agent::InProcessEventBus;
-    use cherry_pit_core::testing::InMemoryEventStore;
     use cherry_pit_core::{AggregateId, EventEnvelope, EventStore};
     use tempfile::TempDir;
 
     use crate::app::services::merger::Merger;
+    use crate::app::state::EventStoreImpl;
     use crate::domain::events::DomainEvent;
+    use pardosa_eventstore::PardosaLogEventStore;
 
     /// Build a Track 4.0/3b-shaped `RunService` backed by:
     ///
-    /// - A tempdir [`InMemoryEventStore`] (Gap-β bead `adr-fmt-luxw`).
-    ///   Interim substrate until the PGNO-backed successor `EventStore` lands
-    ///   (follow-up to mission cherry-pit-pardosa-deletion-1779215265);
+    /// - A tempdir [`PardosaLogEventStore`] (Gap-β bead `adr-fmt-luxw`);
     /// - An [`InProcessEventBus`] for fan-out,
     /// - A [`Merger`] task spawned over the same store/bus/indices/tracker
     ///   so the assertions below observe the Merger-driven shared state
     ///   exactly as production will at 3b/4/5.
     ///
-    /// Returns the tempdir, the durable handles for direct inspection,
-    /// and the [`RunService`] under test. The Merger
+    /// Returns the tempdir (kept alive for the test — drop releases the
+    /// CHE-0043:R1 flock on `{dir}/.lock`), the durable handles for
+    /// direct inspection, and the [`RunService`] under test. The Merger
     /// [`tokio::task::JoinHandle`] is intentionally dropped here —
     /// the task is kept alive by the [`mpsc::Sender`] inside the
     /// service; dropping the handle without aborting lets the task run
     /// for the test scope (the handle does **not** abort on drop, see
     /// `tokio::task::JoinHandle` docs).
-    #[expect(
-        clippy::type_complexity,
-        reason = "test helper returns the four shared handles plus the service; factoring would obscure the wiring under test"
-    )]
-    fn build_service() -> (
+    async fn build_service() -> (
         TempDir,
-        Arc<InMemoryEventStore<DomainEvent>>,
+        Arc<EventStoreImpl>,
         Arc<InProcessEventBus<DomainEvent>>,
         Arc<Mutex<HashMap<String, AggregateId>>>,
         Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
         RunService,
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(InMemoryEventStore::<DomainEvent>::new());
-        // tempdir kept for future PGNO-backed substrate; ignored under InMemoryEventStore.
-        let _ = dir.path();
+        let store = Arc::new(
+            PardosaLogEventStore::<DomainEvent>::open(dir.path())
+                .await
+                .expect("open test event store"),
+        );
         let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
         let runs_by_key = Arc::new(Mutex::new(HashMap::new()));
         let repos_by_key = Arc::new(Mutex::new(HashMap::new()));
@@ -372,7 +370,7 @@ mod tests {
         // Smoke test: 3b constructor surface compiles and yields a
         // service whose handle (the mpsc::Sender) is wired to a live
         // Merger task. Behaviour is covered by the lifecycle test.
-        let (_dir, _store, _bus, _index, _tracker, _svc) = build_service();
+        let (_dir, _store, _bus, _index, _tracker, _svc) = build_service().await;
     }
 
     /// 3b — full Run lifecycle exercising all five service surfaces
@@ -391,7 +389,7 @@ mod tests {
     /// arrives on the bus before the reply resolves).
     #[tokio::test]
     async fn run_lifecycle_appends_persists_and_publishes_through_merger() {
-        let (dir, store, bus, index, tracker, svc) = build_service();
+        let (dir, store, bus, index, tracker, svc) = build_service().await;
 
         let captured: Arc<Mutex<Vec<EventEnvelope<DomainEvent>>>> =
             Arc::new(Mutex::new(Vec::new()));
@@ -580,14 +578,17 @@ mod tests {
         );
     }
 
-    /// Asserted in-process that the aggregate is reachable; the on-disk
-    /// `<id>.pardosa` file assertion no longer applies under the interim
-    /// `InMemoryEventStore` substitute (see follow-up to mission
-    /// `cherry-pit-pardosa-deletion-1779215265`).
+    /// Assert that the aggregate's on-disk artefact exists exactly once
+    /// at `<dir>/<id>.log` under [`PardosaLogEventStore`]
+    /// (CHE-0036:R1 — file-per-aggregate).
     fn assert_single_pardosa_file(dir: &TempDir, id: AggregateId) {
-        // (was: assert_eq! that exactly one `<id>.pardosa` exists under dir.
-        // InMemoryEventStore has no on-disk surface; see follow-up bd issue.)
-        let _ = (dir, id);
+        let expected = dir.path().join(format!("{}.log", id.get()));
+        assert!(
+            expected.exists(),
+            "expected `{}` to exist under {}",
+            expected.display(),
+            dir.path().display(),
+        );
     }
 
     /// CHE-0024:R1 — append-path called for an unknown `batch_id`
@@ -595,7 +596,7 @@ mod tests {
     /// Merger arm preserves the error verbatim across the channel.
     #[tokio::test]
     async fn record_progress_on_unknown_batch_id_returns_routing_miss() {
-        let (_dir, _store, _bus, _index, _tracker, svc) = build_service();
+        let (_dir, _store, _bus, _index, _tracker, svc) = build_service().await;
         let ctx = CorrelationContext::none();
         let cmd = RecordProgress {
             batch_id: "never-registered".into(),
@@ -619,7 +620,7 @@ mod tests {
     /// `start_sweep_create_path_persists_and_publishes` test.
     #[tokio::test]
     async fn start_sweep_create_path_persists_and_publishes_through_merger() {
-        let (_dir, store, bus, index, tracker, svc) = build_service();
+        let (dir, store, bus, index, tracker, svc) = build_service().await;
 
         let captured: Arc<Mutex<Vec<EventEnvelope<DomainEvent>>>> =
             Arc::new(Mutex::new(Vec::new()));
@@ -662,10 +663,14 @@ mod tests {
         };
         assert_eq!(tracked_seq.get(), 1, "first event has sequence 1");
 
-        // (was: assert that `<dir>/{assigned_id}.pardosa` exists — checked
-        // durable file creation. InMemoryEventStore has no on-disk surface;
-        // see follow-up bd issue for the PGNO-backed successor.)
-        let _ = assigned_id; // retain shadow binding for the load() below
+        // Under PardosaLogEventStore the assigned aggregate has a durable
+        // file at `<dir>/{assigned_id}.log` (CHE-0036:R1).
+        let expected = dir.path().join(format!("{}.log", assigned_id.get()));
+        assert!(
+            expected.exists(),
+            "expected `{}` to exist after first append",
+            expected.display(),
+        );
         let loaded = store.load(assigned_id).await.expect("load should succeed");
         assert_eq!(loaded.len(), 1, "exactly one envelope persisted");
         assert_eq!(loaded[0].sequence().get(), 1, "first event has sequence 1");
@@ -708,7 +713,7 @@ mod tests {
     )]
     #[tokio::test]
     async fn render_partial_between_progress_and_complete() {
-        let (_dir, store, _bus, index, tracker, svc) = build_service();
+        let (_dir, store, _bus, index, tracker, svc) = build_service().await;
 
         let ctx = CorrelationContext::none();
         let batch_id = "batch-partial-001";

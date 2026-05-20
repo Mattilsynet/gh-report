@@ -185,40 +185,39 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use cherry_pit_agent::InProcessEventBus;
-    use cherry_pit_core::testing::InMemoryEventStore;
     use cherry_pit_core::{AggregateId, EventEnvelope, EventStore};
     use tempfile::TempDir;
 
     use crate::app::services::merger::Merger;
+    use crate::app::state::EventStoreImpl;
     use crate::domain::events::DomainEvent;
+    use pardosa_eventstore::PardosaLogEventStore;
 
     /// Build a Track 4.0/4-shaped `RepoService` backed by a [`Merger`]
-    /// task spawned over a shared tempdir [`InMemoryEventStore`] +
+    /// task spawned over a shared tempdir [`PardosaLogEventStore`] +
     /// [`InProcessEventBus`] + the three routing indices + sequence
     /// tracker. Symmetric to the `RunService` 3b test harness.
-    /// Interim substrate until the PGNO-backed successor `EventStore` lands
-    /// (follow-up to mission cherry-pit-pardosa-deletion-1779215265).
     ///
-    /// Returns the tempdir, the durable handles for direct inspection,
-    /// and the [`RepoService`] under test. The Merger
+    /// Returns the tempdir (kept alive for the duration of the test —
+    /// drop releases the CHE-0043:R1 flock the store holds on
+    /// `{dir}/.lock`), the durable handles for direct inspection, and
+    /// the [`RepoService`] under test. The Merger
     /// [`tokio::task::JoinHandle`] is intentionally dropped — the task
     /// is kept alive by the [`mpsc::Sender`] inside the service.
-    #[expect(
-        clippy::type_complexity,
-        reason = "test helper returns the four shared handles plus the service; factoring would obscure the wiring under test"
-    )]
-    fn build_service() -> (
+    async fn build_service() -> (
         TempDir,
-        Arc<InMemoryEventStore<DomainEvent>>,
+        Arc<EventStoreImpl>,
         Arc<InProcessEventBus<DomainEvent>>,
         Arc<Mutex<HashMap<String, AggregateId>>>,
         Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
         RepoService,
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(InMemoryEventStore::<DomainEvent>::new());
-        // tempdir kept for future PGNO-backed substrate; ignored under InMemoryEventStore.
-        let _ = dir.path();
+        let store = Arc::new(
+            PardosaLogEventStore::<DomainEvent>::open(dir.path())
+                .await
+                .expect("open test event store"),
+        );
         let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
         let runs_by_key = Arc::new(Mutex::new(HashMap::new()));
         let repos_by_key = Arc::new(Mutex::new(HashMap::new()));
@@ -241,7 +240,7 @@ mod tests {
         // Smoke test: step-4 constructor surface compiles and yields a
         // service whose handle (the mpsc::Sender) is wired to a live
         // Merger task. Behaviour is covered by the lifecycle test.
-        let (_dir, _store, _bus, _index, _tracker, _svc) = build_service();
+        let (_dir, _store, _bus, _index, _tracker, _svc) = build_service().await;
     }
 
     /// Step-4 — full Repo lifecycle exercising both service surfaces
@@ -262,7 +261,7 @@ mod tests {
     /// aggregate.
     #[tokio::test]
     async fn repo_lifecycle_lazy_creates_then_appends_then_terminates_through_merger() {
-        let (dir, store, bus, index, tracker, svc) = build_service();
+        let (dir, store, bus, index, tracker, svc) = build_service().await;
 
         let captured: Arc<Mutex<Vec<EventEnvelope<DomainEvent>>>> =
             Arc::new(Mutex::new(Vec::new()));
@@ -421,14 +420,17 @@ mod tests {
         assert_eq!(seq.get(), expected);
     }
 
-    /// Asserted in-process that the aggregate is reachable; the on-disk
-    /// `<id>.pardosa` file assertion no longer applies under the interim
-    /// `InMemoryEventStore` substitute (see follow-up to mission
-    /// `cherry-pit-pardosa-deletion-1779215265`).
+    /// Assert that the aggregate's on-disk artefact exists exactly once
+    /// at `<dir>/<id>.log` under [`PardosaLogEventStore`]
+    /// (CHE-0036:R1 — file-per-aggregate).
     fn assert_single_pardosa_file(dir: &TempDir, id: AggregateId) {
-        // (was: assert_eq! that exactly one `<id>.pardosa` exists under dir.
-        // InMemoryEventStore has no on-disk surface; see follow-up bd issue.)
-        let _ = (dir, id);
+        let expected = dir.path().join(format!("{}.log", id.get()));
+        assert!(
+            expected.exists(),
+            "expected `{}` to exist under {}",
+            expected.display(),
+            dir.path().display(),
+        );
     }
 
     /// Step-4 — covers the lazy-create branch on `record_removal`:
@@ -436,7 +438,7 @@ mod tests {
     /// (allowed per CHE-0054:R2 — no pre-evaluation precondition).
     #[tokio::test]
     async fn repo_removal_lazy_creates_when_never_evaluated_through_merger() {
-        let (_dir, store, _bus, index, tracker, svc) = build_service();
+        let (_dir, store, _bus, index, tracker, svc) = build_service().await;
 
         let ctx = CorrelationContext::none();
         let domain_key = "ghost/never-seen";

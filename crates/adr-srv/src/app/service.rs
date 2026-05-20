@@ -5,7 +5,7 @@
 //!
 //! adr-srv does NOT depend on `cherry-pit-agent` or `cherry-pit-gateway`.
 //! The `ApplicationService` consumes `cherry_pit_core::EventStore`
-//! directly via `PardosaFileEventStore<AdrIngested>`. Indices
+//! directly via `PardosaLogEventStore<AdrIngested>`. Indices
 //! (`adrs_by_id`) and per-aggregate sequence tracker (`next_seq`)
 //! are owned here rather than in a separate `App<...>` per CHE-0054:R8.
 //!
@@ -24,7 +24,7 @@
 //!   projection, return `Unchanged` with zero new events; if `body_hash`
 //!   differs, call `store.append` with the tracked `expected_sequence`.
 //! - `new_with_replay(store)` — replay-on-boot constructor: enumerates
-//!   on-disk aggregates via `PardosaFileEventStore::list_aggregates`,
+//!   on-disk aggregates via `PardosaLogEventStore::list_aggregates`,
 //!   folds each stream via `AdrDocument::from_first` + `apply`, and
 //!   populates `adrs_by_id` + `next_seq` so a re-scrape against the
 //!   same store is idempotent.
@@ -36,8 +36,10 @@ use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
 
-use cherry_pit_core::{AggregateId, CorrelationContext, EventStore, Projection, StoreError};
-use cherry_pit_pardosa::PardosaFileEventStore;
+use cherry_pit_core::{
+    AggregateId, CorrelationContext, EventStore, ListableEventStore, Projection, StoreError,
+};
+use pardosa_eventstore::PardosaLogEventStore;
 
 use crate::domain::adr_id::AdrId;
 use crate::domain::aggregate::AdrDocument;
@@ -60,7 +62,7 @@ pub enum IngestOutcome {
 /// `ApplicationService` for the `AdrDocument` aggregate.
 pub struct AdrService {
     /// Event store. `Arc` so `AppState::clone` is cheap.
-    store: Arc<PardosaFileEventStore<AdrIngested>>,
+    store: Arc<PardosaLogEventStore<AdrIngested>>,
     /// Per-aggregate last-applied-sequence tracker (CHE-0054:R6 /
     /// CHE-0042:R3) — the `expected_sequence` passed to
     /// `store.append`.
@@ -83,7 +85,7 @@ impl AdrService {
     /// already contain aggregates from a prior process — `new`
     /// assumes a virgin store.
     #[must_use]
-    pub fn new(store: Arc<PardosaFileEventStore<AdrIngested>>) -> Self {
+    pub fn new(store: Arc<PardosaLogEventStore<AdrIngested>>) -> Self {
         Self {
             store,
             next_seq: Arc::new(Mutex::new(HashMap::new())),
@@ -102,7 +104,7 @@ impl AdrService {
     ///
     /// # Errors
     /// Surfaces `StoreError` from `store.load(id)` for any aggregate
-    /// listed by `PardosaFileEventStore::list_aggregates` that fails
+    /// listed by `PardosaLogEventStore::list_aggregates` that fails
     /// to load. A `list_aggregates` IO failure is wrapped in
     /// `StoreError::Infrastructure`.
     ///
@@ -113,7 +115,7 @@ impl AdrService {
     /// short index updates; poisoning indicates a prior panic and is
     /// treated as non-recoverable.
     pub async fn new_with_replay(
-        store: Arc<PardosaFileEventStore<AdrIngested>>,
+        store: Arc<PardosaLogEventStore<AdrIngested>>,
         corpus: &Arc<Mutex<AdrCorpus>>,
     ) -> Result<Self, StoreError> {
         let service = Self::new(Arc::clone(&store));
@@ -174,7 +176,7 @@ impl AdrService {
     /// Access the underlying event store. Used by replay-on-boot
     /// paths and by tests.
     #[must_use]
-    pub fn store(&self) -> &Arc<PardosaFileEventStore<AdrIngested>> {
+    pub fn store(&self) -> &Arc<PardosaLogEventStore<AdrIngested>> {
         &self.store
     }
 

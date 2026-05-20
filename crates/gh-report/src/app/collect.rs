@@ -2259,7 +2259,7 @@ mod tests {
             crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
         );
 
-        let state = AppState::new_with_cache_capacity(10);
+        let state = AppState::new_with_cache_capacity(10).await;
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1"), arc_repo("repo-2")],
             archived_repos: 0,
@@ -2285,7 +2285,7 @@ mod tests {
             crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
         );
 
-        let state = AppState::new_with_cache_capacity(10);
+        let state = AppState::new_with_cache_capacity(10).await;
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1")],
             archived_repos: 0,
@@ -2537,7 +2537,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
         let run = test_run_meta();
-        let state = AppState::new_with_cache_capacity(10);
+        let state = AppState::new_with_cache_capacity(10).await;
 
         let mut saga = make_test_saga(&config, &run);
         let ctx = make_test_collection_context();
@@ -2591,7 +2591,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
         let run = test_run_meta();
-        let state = AppState::new_with_cache_capacity(10);
+        let state = AppState::new_with_cache_capacity(10).await;
 
         let mut saga = make_test_saga(&config, &run);
 
@@ -2627,7 +2627,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
         let run = test_run_meta();
-        let state = AppState::new_with_cache_capacity(10);
+        let state = AppState::new_with_cache_capacity(10).await;
 
         let mut saga = make_test_saga(&config, &run);
         let _ = dir; // tempdir kept alive only for the config root
@@ -2652,7 +2652,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
         let run = test_run_meta();
-        let state = AppState::new_with_cache_capacity(10);
+        let state = AppState::new_with_cache_capacity(10).await;
 
         let mut saga = make_test_saga(&config, &run);
 
@@ -2688,7 +2688,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
         let run = test_run_meta();
-        let state = AppState::new_with_cache_capacity(10);
+        let state = AppState::new_with_cache_capacity(10).await;
 
         let mut saga = make_test_saga(&config, &run);
 
@@ -2737,7 +2737,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
         let run = test_run_meta();
-        let state = AppState::new_with_cache_capacity(10);
+        let state = AppState::new_with_cache_capacity(10).await;
 
         let mut saga = make_test_saga(&config, &run);
 
@@ -2785,7 +2785,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
         let run = test_run_meta();
-        let state = AppState::new_with_cache_capacity(10);
+        let state = AppState::new_with_cache_capacity(10).await;
         let ctx = make_test_collection_context();
 
         let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
@@ -2829,7 +2829,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
         let run = test_run_meta();
-        let state = AppState::new_with_cache_capacity(10);
+        let state = AppState::new_with_cache_capacity(10).await;
         let ctx = make_test_collection_context();
 
         let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
@@ -2890,7 +2890,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
         let run = test_run_meta();
-        let state = AppState::new_with_cache_capacity(10);
+        let state = AppState::new_with_cache_capacity(10).await;
         let ctx = make_test_collection_context();
 
         let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
@@ -2937,7 +2937,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
         let run = test_run_meta();
-        let state = AppState::new_with_cache_capacity(10);
+        let state = AppState::new_with_cache_capacity(10).await;
         let ctx = make_test_collection_context();
 
         let evaluator: Arc<PanickingEvaluator> = Arc::new(PanickingEvaluator);
@@ -2983,7 +2983,7 @@ mod tests {
         assert_eq!(config.max_workers, config::MIN_WORKERS);
 
         let run = test_run_meta();
-        let state = AppState::new_with_cache_capacity(10);
+        let state = AppState::new_with_cache_capacity(10).await;
         let ctx = make_test_collection_context();
 
         let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
@@ -3025,7 +3025,7 @@ mod tests {
         assert_eq!(config.max_workers, config::MAX_WORKERS);
 
         let run = test_run_meta();
-        let state = AppState::new_with_cache_capacity(10);
+        let state = AppState::new_with_cache_capacity(10).await;
         let ctx = make_test_collection_context();
 
         let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
@@ -3066,7 +3066,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
         let run = test_run_meta();
-        let state = AppState::new_with_cache_capacity(10);
+        let state = AppState::new_with_cache_capacity(10).await;
         let ctx = make_test_collection_context();
 
         let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
@@ -3154,7 +3154,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
         let mut run = test_run_meta();
-        let state = AppState::new_with_cache_capacity(10);
+        let state = AppState::new_with_cache_capacity(10).await;
         let ctx = make_test_collection_context();
 
         let captured = capture_bus(&state.bus);
@@ -3233,7 +3233,7 @@ mod tests {
     async fn partial_publisher_emits_partial_evidence_rendered_never_evidence_published() {
         use crate::domain::events::DomainEvent;
 
-        let state = AppState::new_with_cache_capacity(10);
+        let state = AppState::new_with_cache_capacity(10).await;
         let captured = capture_bus(&state.bus);
 
         let run = test_run_meta();
@@ -3320,7 +3320,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
-        let state = AppState::new_with_cache_capacity(10);
+        let state = AppState::new_with_cache_capacity(10).await;
 
         // Seed a baseline so warm_start_from_baseline has something to
         // restore. Single repo is enough; we're testing lifecycle
