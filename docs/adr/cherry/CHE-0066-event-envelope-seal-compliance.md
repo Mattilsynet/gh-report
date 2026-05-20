@@ -8,23 +8,27 @@ Status: Accepted
 ## Related
 
 References: CHE-0064, GEN-0035, GEN-0037, PAR-0024
-Supersedes: CHE-0064:R2, CHE-0064:R3
 
 ## Context
 
 GEN-0035:R7 mandates that `Encode` and `Decode` are sealed via a
 private supertrait pattern, preventing downstream impls outside the
-workspace derive macros. CHE-0064:R2 / R3 carved an exception:
-`EventEnvelope<E>` and `AggregateId` were permitted hand-rolled
-`Encode` impls because they did not derive `GenomeSafe` at the time
-the ADR was written. The exception is incompatible with closing the
+workspace derive macros. An earlier draft of CHE-0064 carved an
+exception: `EventEnvelope<E>` and `AggregateId` were permitted
+hand-rolled `Encode` impls because they did not derive `GenomeSafe`
+at the time. The exception is incompatible with closing the
 GEN-0035:R7 seal without enumerated workspace-internal escapes.
 
 Closing the seal cleanly is preferred over admitting per-crate
 exceptions: enumerated exceptions inflate the trait-coherence story,
 require ADR amendments for each new structural carrier, and erode
 the type-system guarantee that wire emission goes through the
-blessed path.
+blessed path. This ADR retires that carve-out; CHE-0064 is amended
+in place per AFM-0029:R2 to delete the obsolete rules and renumber
+its surviving content. The two ADRs together describe the current
+state: CHE-0064 governs `cherry-pit-core`'s permitted dependency on
+`pardosa-encoding` and the Dragline writer-side bound; CHE-0066
+governs the seal-compliant derive path for the structural carriers.
 
 ## Decision
 
@@ -33,9 +37,9 @@ R1 [5]: `cherry_pit_core::EventEnvelope<E>` derives `GenomeSafe`
   `Encode` and `Decode` impls per GEN-0037:R4.
 
 R2 [5]: `cherry_pit_core::AggregateId` derives `GenomeSafe`. Any
-  newtype wrapper structure preserved by the current hand-rolled
-  impl must be expressible via the derive; if not, the type is
-  restructured.
+  newtype wrapper structure preserved by the pre-amendment
+  hand-rolled impl must be expressible via the derive; if not, the
+  type is restructured.
 
 R3 [5]: The `DomainEvent` payload bound tightens from
   `E: pardosa_encoding::Encode` to `E: pardosa_genome::GenomeSafe`.
@@ -44,9 +48,9 @@ R3 [5]: The `DomainEvent` payload bound tightens from
   derive composition on `EventEnvelope<E>` mechanical: `E:
   GenomeSafe` ⇒ `EventEnvelope<E>: GenomeSafe` via the derive.
 
-R4 [5]: The hand-rolled `impl Encode for EventEnvelope<E>` and
-  `impl Encode for AggregateId` (CHE-0064:R3) are removed in the
-  same commit as the derive additions. No transitional period:
+R4 [5]: The pre-amendment hand-rolled `impl Encode for
+  EventEnvelope<E>` and `impl Encode for AggregateId` are removed in
+  the same commit as the derive additions. No transitional period:
   the derives produce byte-identical output, verified by a
   golden-bytes regression test against the pre-amendment hand-rolled
   output.
