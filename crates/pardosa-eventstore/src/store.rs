@@ -1,16 +1,4 @@
-//! [`PardosaLogEventStore`] — file-per-aggregate persistent event store.
-//!
-//! Layout: `<root>/<aggregate_id>.log` per stream, `<root>/.lock` for
-//! single-writer exclusion. Each log file is a sequence of length-prefixed
-//! xxh64-trailered [`pardosa_encoding::to_vec(&EventEnvelope<E>)`] frames.
-//!
-//! Recovery on [`open`](PardosaLogEventStore::open): scan the root, for
-//! each `<digits>.log` run [`frame::read_all_frames_valid`], decode each
-//! body into `EventEnvelope<E>`, truncate any torn tail back to the last
-//! valid frame boundary, and rebuild the in-memory slot. The store's
-//! `next_id` is seeded as `max(seen_ids) + 1`.
-
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
@@ -32,30 +20,18 @@ use tracing::info;
 use crate::error::OpenError;
 use crate::frame::{read_all_frames_valid, write_frame};
 
-/// Filename of the per-root `RunLock` lock file.
-///
-/// CHE-0043:R1 mandates `<store_dir>/.lock` for `MsgpackFileStore`; the
-/// same pattern is adopted here for cross-substrate consistency.
 const LOCK_FILENAME: &str = ".lock";
+const LOG_FILENAME: &str = "log";
 
-/// Suffix for per-aggregate log files. Filename is `<aggregate_id>.log`
-/// where `<aggregate_id>` is a base-10 `u64` ≥ 1.
-const LOG_SUFFIX: &str = ".log";
-
-/// File-per-aggregate persistent [`cherry_pit_core::EventStore`].
+/// Unified-log persistent [`cherry_pit_core::EventStore`].
 ///
-/// Generic over the domain-event type `E`. The struct itself does not
-/// require `E: Decode` — that bound is added at the impl sites that
-/// deserialise (per CHE-0064 δ.3a-pre).
+/// All aggregates share one append-only file `<root>/log`; a single
+/// `tokio::fs::File` (under a writer mutex) serves every append.
 pub struct PardosaLogEventStore<E: DomainEvent> {
     root: PathBuf,
-    /// RAII guard — drop releases the `.lock` file.
     _lock: RunLock,
-    /// Per-aggregate writer slots. The mutex serialises append IO on a
-    /// single stream while allowing disjoint aggregates to proceed in
-    /// parallel.
-    slots: DashMap<AggregateId, Arc<Mutex<AggregateSlot<E>>>>,
-    /// Next aggregate id to assign on `create`. Seeded from boot scan.
+    writer: Mutex<tokio::fs::File>,
+    aggregates: DashMap<AggregateId, Arc<Mutex<AggregateSlot<E>>>>,
     next_id: AtomicU64,
     _phantom: PhantomData<fn() -> E>,
 }
@@ -64,7 +40,7 @@ impl<E: DomainEvent> std::fmt::Debug for PardosaLogEventStore<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PardosaLogEventStore")
             .field("root", &self.root)
-            .field("streams", &self.slots.len())
+            .field("streams", &self.aggregates.len())
             .field(
                 "next_id",
                 &self.next_id.load(std::sync::atomic::Ordering::SeqCst),
@@ -73,19 +49,8 @@ impl<E: DomainEvent> std::fmt::Debug for PardosaLogEventStore<E> {
     }
 }
 
-/// In-memory state of a single aggregate's stream.
-///
-/// Fields are populated by [`PardosaLogEventStore::open`] but only
-/// consumed by `append` / `load` in Q.1.3; silence the read-side
-/// dead-code lint until that wiring lands.
-#[allow(dead_code)]
 pub(crate) struct AggregateSlot<E: DomainEvent> {
-    /// Append-mode handle to `<root>/<id>.log`. New frames go to the end.
-    pub(crate) file: tokio::fs::File,
-    /// Decoded envelope history, sequence-ordered (1..=N).
     pub(crate) events: Vec<EventEnvelope<E>>,
-    /// Next sequence number to assign on append. Equals
-    /// `events.last().sequence().get() + 1`, or 1 when empty.
     pub(crate) next_seq: u64,
 }
 
@@ -93,23 +58,12 @@ impl<E> PardosaLogEventStore<E>
 where
     E: DomainEvent + Decode,
 {
-    /// Open or create the event store at `root`.
-    ///
-    /// 1. `create_dir_all(root)` so we can lock and write.
-    /// 2. Acquire `<root>/.lock` via [`cherry_pit_storage::acquire`].
-    /// 3. Scan `root` for `<digits>.log`; reject any other entry as
-    ///    [`OpenError::UnknownFile`] except the lock file itself.
-    /// 4. For each log: frame-scan, decode every body as
-    ///    `EventEnvelope<E>`, truncate any torn tail, populate a slot.
-    /// 5. Seed `next_id = max(seen_id) + 1` (or 1 if empty).
+    /// Open or create the unified-log event store at `root`.
     ///
     /// # Errors
     ///
-    /// Returns any [`OpenError`] variant — see the type for the
-    /// catalogue. All failures are recoverable by operator action
-    /// (clearing a stale lock, repairing or removing a malformed file).
+    /// Returns any [`OpenError`] variant.
     pub async fn open(root: &Path) -> Result<Self, OpenError> {
-        // (1) Ensure the directory exists.
         tokio::fs::create_dir_all(root)
             .await
             .map_err(|source| OpenError::CreateDir {
@@ -117,9 +71,6 @@ where
                 source,
             })?;
 
-        // (2) Acquire the run lock. `acquire` is synchronous; the call
-        // is bounded (a few sub-millisecond filesystem ops) so we run
-        // it inline rather than offloading to `spawn_blocking`.
         let run_id = format!(
             "pardosa-eventstore-{}-{}",
             std::process::id(),
@@ -133,80 +84,31 @@ where
                 }
             })?;
 
-        // (3) Scan the directory. Collect filenames first so we can sort
-        // for deterministic recovery order (helps the boot-log read like
-        // a sequence of independent decisions).
-        let mut entries = Vec::new();
-        let mut read_dir = tokio::fs::read_dir(root)
+        let log_path = root.join(LOG_FILENAME);
+        let recovered = recover_log::<E>(&log_path)?;
+
+        let writer = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
             .await
-            .map_err(|source| OpenError::Scan {
-                path: root.to_path_buf(),
+            .map_err(|source| OpenError::OpenLog {
+                path: log_path.clone(),
                 source,
             })?;
-        while let Some(entry) = read_dir
-            .next_entry()
-            .await
-            .map_err(|source| OpenError::Scan {
-                path: root.to_path_buf(),
-                source,
-            })?
-        {
-            entries.push(entry.path());
-        }
-        entries.sort();
 
-        let slots: DashMap<AggregateId, Arc<Mutex<AggregateSlot<E>>>> = DashMap::new();
-        let mut seen_ids: HashSet<u64> = HashSet::new();
-        let mut total_envelopes: u64 = 0;
-        let mut truncated_tails: u64 = 0;
-
-        for path in entries {
-            let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            if file_name == LOCK_FILENAME {
-                continue;
-            }
-            let Some(stem) = file_name.strip_suffix(LOG_SUFFIX) else {
-                return Err(OpenError::UnknownFile { path });
-            };
-            let aggregate_u64: u64 = stem
-                .parse()
-                .map_err(|_| OpenError::UnknownFile { path: path.clone() })?;
-            let Some(nz) = NonZeroU64::new(aggregate_u64) else {
-                return Err(OpenError::UnknownFile { path });
-            };
-            let aggregate_id = AggregateId::new(nz);
-
-            let (envelopes, truncated, file) = recover_stream::<E>(&path, aggregate_id).await?;
-            total_envelopes += envelopes.len() as u64;
-            if truncated {
-                truncated_tails += 1;
-            }
-
-            let next_seq = envelopes.last().map_or(1u64, |e| e.sequence().get() + 1);
-            seen_ids.insert(aggregate_u64);
-            slots.insert(
-                aggregate_id,
-                Arc::new(Mutex::new(AggregateSlot {
-                    file,
-                    events: envelopes,
-                    next_seq,
-                })),
-            );
+        let aggregates: DashMap<AggregateId, Arc<Mutex<AggregateSlot<E>>>> = DashMap::new();
+        for (id, slot) in recovered.slots {
+            aggregates.insert(id, Arc::new(Mutex::new(slot)));
         }
 
-        // (5) Seed next_id.
-        let next_id = seen_ids
-            .iter()
-            .copied()
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1);
+        let next_id = recovered.max_seen_id.saturating_add(1);
 
         info!(
             root = %root.display(),
-            streams = slots.len(),
-            envelopes = total_envelopes,
-            truncated_tails,
+            streams = aggregates.len(),
+            envelopes = recovered.envelopes,
+            torn_tail_truncated = recovered.truncated_tail,
             next_id,
             "pardosa-eventstore opened"
         );
@@ -214,144 +116,97 @@ where
         Ok(Self {
             root: root.to_path_buf(),
             _lock: lock,
-            slots,
+            writer: Mutex::new(writer),
+            aggregates,
             next_id: AtomicU64::new(next_id),
             _phantom: PhantomData,
         })
     }
 
-    /// The root directory backing this store. Useful for diagnostics
-    /// and tests; production code should not depend on it.
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }
 }
 
-/// Recover one aggregate's stream from disk.
-///
-/// Reads every well-formed frame, decodes each as `EventEnvelope<E>`,
-/// truncates the file to the last valid boundary if a torn tail was
-/// detected, and returns an append-mode handle ready for new frames.
-async fn recover_stream<E>(
-    path: &Path,
-    aggregate_id: AggregateId,
-) -> Result<(Vec<EventEnvelope<E>>, bool, tokio::fs::File), OpenError>
+struct RecoveredLog<E: DomainEvent> {
+    slots: HashMap<AggregateId, AggregateSlot<E>>,
+    truncated_tail: bool,
+    envelopes: u64,
+    max_seen_id: u64,
+}
+
+fn recover_log<E>(log_path: &Path) -> Result<RecoveredLog<E>, OpenError>
 where
     E: DomainEvent + Decode,
 {
-    // Read the file via std::fs (cheap; the recovery path is one-shot at
-    // boot, not on the hot append path). This keeps `frame::read_all_frames_valid`
-    // a pure synchronous helper.
-    let bytes = std::fs::read(path).map_err(|source| OpenError::ReadLog {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let bytes = match std::fs::read(log_path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(source) => {
+            return Err(OpenError::ReadLog {
+                path: log_path.to_path_buf(),
+                source,
+            });
+        }
+    };
     let file_len = bytes.len() as u64;
     let mut cursor = std::io::Cursor::new(&bytes);
     let (bodies, valid_end) =
         read_all_frames_valid(&mut cursor).map_err(|source| OpenError::ReadLog {
-            path: path.to_path_buf(),
+            path: log_path.to_path_buf(),
             source,
         })?;
 
-    let mut envelopes = Vec::with_capacity(bodies.len());
+    let mut slots: HashMap<AggregateId, AggregateSlot<E>> = HashMap::new();
+    let mut max_seen: u64 = 0;
     for (frame_index, body) in bodies.iter().enumerate() {
         let envelope = pardosa_encoding::from_bytes::<EventEnvelope<E>>(body).map_err(|_| {
             OpenError::DecodeEnvelope {
-                path: path.to_path_buf(),
+                path: log_path.to_path_buf(),
                 frame_index,
             }
         })?;
-        // Cross-stream defence: a renamed file should not silently bind
-        // its envelopes to a new id. `validate_stream` runs later (per
-        // the trait contract on `load`); here we just reject the
-        // simplest cross-stream mistake upfront so recovery fails loud.
-        if envelope.aggregate_id() != aggregate_id {
-            return Err(OpenError::DecodeEnvelope {
-                path: path.to_path_buf(),
-                frame_index,
-            });
-        }
-        envelopes.push(envelope);
+        let id = envelope.aggregate_id();
+        max_seen = max_seen.max(id.get());
+        let slot = slots.entry(id).or_insert_with(|| AggregateSlot {
+            events: Vec::new(),
+            next_seq: 1,
+        });
+        let seq = envelope.sequence().get();
+        slot.events.push(envelope);
+        slot.next_seq = seq + 1;
     }
+    let total_envelopes = bodies.len() as u64;
 
     let truncated = valid_end < file_len;
     if truncated {
-        // Truncate via std::fs::OpenOptions — we need write access
-        // briefly, distinct from the append handle returned below.
         let file = std::fs::OpenOptions::new()
             .write(true)
-            .open(path)
+            .open(log_path)
             .map_err(|source| OpenError::Truncate {
-                path: path.to_path_buf(),
+                path: log_path.to_path_buf(),
                 source,
             })?;
         file.set_len(valid_end)
             .map_err(|source| OpenError::Truncate {
-                path: path.to_path_buf(),
+                path: log_path.to_path_buf(),
                 source,
             })?;
-    }
-
-    // Open the append handle that the runtime store will hold.
-    let file = OpenOptions::new()
-        .append(true)
-        .open(path)
-        .await
-        .map_err(|source| OpenError::OpenLog {
-            path: path.to_path_buf(),
+        file.sync_all().map_err(|source| OpenError::Truncate {
+            path: log_path.to_path_buf(),
             source,
         })?;
+    }
 
-    Ok((envelopes, truncated, file))
+    Ok(RecoveredLog {
+        slots,
+        truncated_tail: truncated,
+        envelopes: total_envelopes,
+        max_seen_id: max_seen,
+    })
 }
 
-// `write_frame` is part of the frame module's public-within-crate API;
-// keep the symbol live for Q.1.3 (`append` / `create` write frames).
-#[allow(dead_code)]
-fn _keep_write_frame_alive<W: std::io::Write>(w: &mut W, body: &[u8]) -> std::io::Result<()> {
-    write_frame(w, body)
-}
-
-// ─── EventStore impl (Q.1.3) ────────────────────────────────────────
-//
-// Persist-then-publish discipline (CHE-0024:R2): we serialise the
-// envelope, frame it, write it to the append-mode file handle, fsync
-// (`sync_all`), and only then mutate in-memory state and return
-// success. A process kill at any point before `sync_all` returns
-// leaves the on-disk frame either fully present or absent (the xxh64
-// trailer makes torn tails self-evident on recovery); after `sync_all`
-// returns the frame is durable. In-memory state always trails durable
-// state — a torn writer surfaces on the next `open()` and is recovered
-// by truncating the torn tail (see `recover_stream`).
-//
-// The per-slot `tokio::sync::Mutex` is held across the entire
-// write + fsync. This is the intended discipline: it serialises
-// appenders on a single stream so the on-disk sequence and the
-// in-memory `next_seq` never diverge under concurrent writers.
-// `clippy::await_holding_lock` is *not* the right lint here — it
-// targets `std::sync::Mutex` (a blocking primitive); the tokio mutex
-// is async-aware and designed to be held across `.await`. We do not
-// suppress the lint at module scope because clippy correctly does not
-// fire on `tokio::sync::Mutex`; if it ever does, an `#[allow]` at the
-// impl site with this rationale is the right fix.
-
-/// Pre-encode an `EventEnvelope` to a single Vec for `write_frame`.
-///
-/// Serialisation runs outside the per-slot mutex (no shared state),
-/// then the frame write happens under the mutex. This minimises the
-/// critical section to file I/O only.
-fn encode_envelope<E: DomainEvent + pardosa_encoding::Encode>(
-    envelope: &EventEnvelope<E>,
-) -> Vec<u8> {
-    pardosa_encoding::to_vec(envelope)
-}
-
-/// Build one envelope batch — mirrors `cherry_pit_core::testing::build_envelopes`.
-///
-/// One shared timestamp per batch (atomic), `event_id` via `uuid::Uuid::now_v7`
-/// (CHE-0033:R1). Sequence starts at `start_sequence + 1`.
 fn build_envelopes<E: DomainEvent>(
     id: AggregateId,
     start_sequence: u64,
@@ -390,33 +245,33 @@ fn build_envelopes<E: DomainEvent>(
     Ok(envelopes)
 }
 
-/// Persist a batch of envelopes to an open append handle: one framed
-/// write per envelope, followed by a single `sync_all`.
-///
-/// Holds the caller's mutex guard for the entire duration — this is the
-/// intentional persist-then-publish boundary.
+fn encode_envelope<E: DomainEvent + pardosa_encoding::Encode>(
+    envelope: &EventEnvelope<E>,
+) -> Vec<u8> {
+    pardosa_encoding::to_vec(envelope)
+}
+
+/// Persist a batch under the shared writer mutex: `write_all` + `fsync`,
+/// then return. In-memory state mutates only after this returns Ok.
 async fn persist_batch<E: DomainEvent + pardosa_encoding::Encode>(
-    file: &mut tokio::fs::File,
+    writer: &mut tokio::fs::File,
     envelopes: &[EventEnvelope<E>],
 ) -> Result<(), StoreError> {
     for envelope in envelopes {
         let body = encode_envelope(envelope);
-        // Build the full frame in memory then issue one write_all — this
-        // matches `write_frame`'s contract but avoids the sync-only
-        // signature mismatch (the helper is `std::io::Write`-based).
         let mut frame_buf = Vec::with_capacity(body.len() + 12);
         write_frame(&mut frame_buf, &body).map_err(|e| {
             StoreError::Infrastructure(Box::<dyn std::error::Error + Send + Sync>::from(format!(
                 "frame encode: {e}"
             )))
         })?;
-        file.write_all(&frame_buf).await.map_err(|e| {
+        writer.write_all(&frame_buf).await.map_err(|e| {
             StoreError::Infrastructure(Box::<dyn std::error::Error + Send + Sync>::from(format!(
                 "write frame: {e}"
             )))
         })?;
     }
-    file.sync_all().await.map_err(|e| {
+    writer.sync_all().await.map_err(|e| {
         StoreError::Infrastructure(Box::<dyn std::error::Error + Send + Sync>::from(format!(
             "fsync: {e}"
         )))
@@ -431,15 +286,12 @@ where
     type Event = E;
 
     async fn load(&self, id: AggregateId) -> Result<Vec<EventEnvelope<Self::Event>>, StoreError> {
-        let Some(slot_arc) = self.slots.get(&id).map(|r| Arc::clone(r.value())) else {
-            // CHE-0019:R1 — unknown aggregate returns empty vec, not error.
+        let Some(slot_arc) = self.aggregates.get(&id).map(|r| Arc::clone(r.value())) else {
             return Ok(Vec::new());
         };
         let guard = slot_arc.lock().await;
         let events = guard.events.clone();
         drop(guard);
-        // CHE-0042:R4 — honour the conformance shape even though in-process
-        // construction makes corruption structurally impossible.
         EventEnvelope::validate_stream(id, &events)
             .map_err(|e| StoreError::CorruptData(Box::new(e)))?;
         Ok(events)
@@ -458,11 +310,6 @@ where
             )));
         }
 
-        // Allocate a fresh id. The boot scan seeded `next_id` past the
-        // max persisted id; `fetch_add` then advances monotonically.
-        // Concurrent creators race on `fetch_add` and each gets a
-        // distinct id; the `create_new(true)` O_EXCL open below is the
-        // final defence against any aliasing.
         let raw_id = self
             .next_id
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -473,31 +320,18 @@ where
         })?;
         let id = AggregateId::new(nz);
 
-        // O_EXCL create — if the file exists, the allocator is wrong
-        // (would only happen on a stale `next_id`); surface loudly.
-        let path = self.root.join(format!("{raw_id}.log"));
-        let mut file = OpenOptions::new()
-            .write(true)
-            .append(true)
-            .create_new(true)
-            .open(&path)
-            .await
-            .map_err(|e| {
-                StoreError::Infrastructure(Box::<dyn std::error::Error + Send + Sync>::from(
-                    format!("create {}: {e}", path.display()),
-                ))
-            })?;
-
         let envelopes = build_envelopes(id, 0, events, &context)?;
-        persist_batch(&mut file, &envelopes).await?;
+
+        let mut writer = self.writer.lock().await;
+        persist_batch(&mut writer, &envelopes).await?;
+        drop(writer);
 
         let next_seq = envelopes.last().map_or(1u64, |e| e.sequence().get() + 1);
         let slot = Arc::new(Mutex::new(AggregateSlot {
-            file,
             events: envelopes.clone(),
             next_seq,
         }));
-        self.slots.insert(id, slot);
+        self.aggregates.insert(id, slot);
 
         Ok((id, envelopes))
     }
@@ -510,11 +344,10 @@ where
         context: CorrelationContext,
     ) -> Result<Vec<EventEnvelope<Self::Event>>, StoreError> {
         if events.is_empty() {
-            // CHE-0005 / store.rs:242 — empty append is a no-op.
             return Ok(Vec::new());
         }
 
-        let Some(slot_arc) = self.slots.get(&id).map(|r| Arc::clone(r.value())) else {
+        let Some(slot_arc) = self.aggregates.get(&id).map(|r| Arc::clone(r.value())) else {
             return Err(StoreError::Infrastructure(Box::<
                 dyn std::error::Error + Send + Sync,
             >::from(format!(
@@ -522,11 +355,10 @@ where
             ))));
         };
 
-        // Hold the per-slot mutex across the optimistic check, the
-        // write, and the fsync. This is the persist-then-publish
-        // boundary: in-memory `next_seq` only advances after `sync_all`
-        // returns. `tokio::sync::Mutex` is async-aware; holding it
-        // across `.await` is correct and supported.
+        // Slot mutex serialises per-aggregate sequence assignment; the
+        // writer mutex serialises the shared file. Lock order is
+        // slot-first then writer to keep the optimistic check coherent
+        // with the persisted prefix.
         let mut guard = slot_arc.lock().await;
 
         let actual_sequence = guard.next_seq.saturating_sub(1);
@@ -539,7 +371,10 @@ where
         }
 
         let envelopes = build_envelopes(id, expected_sequence.get(), events, &context)?;
-        persist_batch(&mut guard.file, &envelopes).await?;
+
+        let mut writer = self.writer.lock().await;
+        persist_batch(&mut writer, &envelopes).await?;
+        drop(writer);
 
         guard.events.extend(envelopes.iter().cloned());
         if let Some(last) = guard.events.last() {
@@ -554,7 +389,7 @@ where
     E: DomainEvent + Decode,
 {
     fn list_aggregates(&self) -> Result<Vec<AggregateId>, StoreError> {
-        Ok(self.slots.iter().map(|entry| *entry.key()).collect())
+        Ok(self.aggregates.iter().map(|entry| *entry.key()).collect())
     }
 }
 
@@ -562,11 +397,6 @@ where
 mod tests {
     use super::*;
 
-    /// A trivial `DomainEvent + Encode + Decode` fixture for the
-    /// open-on-empty-dir test. Mirrors the pattern in
-    /// `cherry-pit-core::event::tests::TestEvent` but lives here so the
-    /// test crate has no extra dep on cherry-pit-core's test-only
-    /// surface.
     #[derive(Debug, Clone, PartialEq)]
     enum TestEvent {
         Tick,
@@ -604,19 +434,9 @@ mod tests {
         let store = PardosaLogEventStore::<TestEvent>::open(dir.path())
             .await
             .expect("open empty dir");
-        assert!(store.slots.is_empty());
+        assert!(store.aggregates.is_empty());
         assert_eq!(store.next_id.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert!(dir.path().join(".lock").exists());
-    }
-
-    #[tokio::test]
-    async fn open_rejects_unknown_file() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("not-a-log.txt"), b"garbage").unwrap();
-        let err = PardosaLogEventStore::<TestEvent>::open(dir.path())
-            .await
-            .expect_err("unknown file must reject");
-        assert!(matches!(err, OpenError::UnknownFile { .. }));
     }
 
     #[tokio::test]
@@ -717,7 +537,6 @@ mod tests {
             .create(vec![TestEvent::Tick], CorrelationContext::none())
             .await
             .unwrap();
-        // Last seq is 1; supplying 5 should conflict.
         let err = store
             .append(
                 id,
