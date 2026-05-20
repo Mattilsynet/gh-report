@@ -201,6 +201,10 @@ proptest = { workspace = true }
 # Temp directories for test isolation
 tempfile = { workspace = true }
 
+# Cross-process binary smoke (Q.4 persistence smoke).
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+
 # WebSocket test client
 tokio-tungstenite = { workspace = true }
 
