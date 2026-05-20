@@ -27,11 +27,31 @@ pub(crate) fn build_hash_expr(input: &DeriveInput) -> syn::Result<TokenStream2> 
                 .map(|v| {
                     let vname = v.ident.to_string();
                     let field_hashes = build_field_hash_exprs(&v.fields);
+                    // GEN-0035:R9 — fold the explicit repr(u8) discriminant
+                    // *value* into SCHEMA_HASH alongside the variant name.
+                    // The wire byte (GEN-0035:R4) is this explicit value, not
+                    // the 0-indexed position; the schema fingerprint must
+                    // mirror the wire so two enums identical in shape but
+                    // differing in discriminant assignment hash distinctly.
+                    // `reject.rs::validate_enum_repr_u8` guarantees
+                    // `v.discriminant` is `Some((_, ExprLit{Lit::Int, ..}))`
+                    // by the time we get here.
+                    let disc_lit = v
+                        .discriminant
+                        .as_ref()
+                        .map(|(_, expr)| expr)
+                        .expect("validate_enum_repr_u8 ensures explicit discriminant");
                     quote! {
                         h = ::pardosa_genome::schema_hash_combine(
                             h,
                             ::pardosa_genome::schema_hash_bytes(
                                 concat!("variant:", #vname).as_bytes()
+                            ),
+                        );
+                        h = ::pardosa_genome::schema_hash_combine(
+                            h,
+                            ::pardosa_genome::schema_hash_bytes(
+                                &[(#disc_lit) as u8],
                             ),
                         );
                         #(#field_hashes)*
