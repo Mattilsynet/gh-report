@@ -26,25 +26,10 @@ Bead labels: `phase:1-cleanup` | `phase:2-generalize` | `phase:3-harden`.
 
 ## Phase state
 
-Phase 1 (Cleanup) completed 2026-05-14. Phase 2 v1 (Generalize)
-superseded by v2 on 2026-05-14.
-
 | Phase | Status | Remaining |
 |-------|--------|-----------|
-| 2 — Generalize v2 | active | Tracks 3 (read-only re-scope) + 4.4 + 5 + 6 + 7 + 8 |
+| 2 — Generalize v2 | active | Tracks 3 (read-only re-scope) + 4.4 + 5 + 6 + 7 + 8 + 9 + 10 |
 | 3 — Harden       | not started | 12 tasks (+1 injection, +2 from Track 3 retirement) |
-
----
-
-## Phase 1 — Cleanup (closed 2026-05-14)
-
-- Closed; exit criteria met. Audit: `bd query --label phase:1-cleanup`.
-
----
-
-## Phase 2 v1 — Generalize (superseded 2026-05-14)
-
-- Superseded by v2. Closures in bd under `phase:2-generalize`. Lessons migrated to `AGENTS.md § Commands` "Verify-command gotchas".
 
 ---
 
@@ -72,8 +57,7 @@ the gaps surface as code-level friction (not ADR commentary).
   `cherry-pit-*`, and `pardosa-*` crates, operationalised as a checklist
   derived from existing CHE ADRs.
 
-**Status**: Tracks 0, 0.5, 1, 2, 4 closed. Tracks 3 (read-only re-scope),
-4.4, 5, 6, 7, 8 remaining.
+**Status**: see "Phase 2 v2 sequencing (remaining)" below.
 
 **Exit when (mechanical, all in CI)**:
 
@@ -229,24 +213,17 @@ dual-write, no importer. First post-cut run re-scrapes the GitHub API and
 rebuilds local state from scratch. User confirmed (2026-05-17): no production
 deployments exist; data loss in the migration is acceptable cost.
 
-**LANDED (δ.3a–δ.4, mission `pardosa-genome-adoption-schism`).** Tracks
-7.1–7.3 executed under a revised plan that did not draft a supersession
-ADR. Persistence swap landed via `7137ed3` (δ.3a: file-backed
-`PardosaEventStore` in `cherry-pit-pardosa`) + `cf8adad` (δ.3b: gh-report
-wiring swap via `SharedStore`). The msgpack-baseline and per-run
-checkpoint surfaces — originally framed by the abandoned plan as
-durable artefacts — were retired entirely via `30505fc` + `63236ac`
-(δ.3c: replay-as-rebuild per CHE-0048 line 24 exemption + CHE-0022:R6).
-The event log on pardosa-genome files is the sole durable artefact;
-derived state rebuilds via replay. See
-`crates/pardosa-genome/ADOPTION.md` (commit `e400ec7`, δ.5) "gh-report
-case study" for the longer treatment.
+**Tracks 7.1–7.3 landed** (mission `pardosa-genome-adoption-schism`). Persistence
+swap to `pardosa-genome` files complete; msgpack-baseline and per-run checkpoint
+surfaces retired (replay-as-rebuild per CHE-0022:R6 + CHE-0048 line-24 exemption).
+See `crates/pardosa-genome/ADOPTION.md` "gh-report case study" for the longer
+treatment.
 
 | # | Task | Deliverable | Verify |
 |---|------|-------------|--------|
 | 7.1 | PardosaEventStore adapter completeness | Verify Track 2.2 `PardosaEventStore` impl behind `cherry_pit_core::EventStore` covers everything gh-report uses (append, load, CAS via `expected_sequence`, conformance tests). If partial, close the gap. | `cargo test --workspace --test '*_conformance'` green with PardosaEventStore registered. |
-| 7.2 | gh-report EventStore swap | **LANDED δ.3b (`cf8adad`).** Replaced gh-report's msgpack-store wiring with `PardosaFileEventStore` via `SharedStore`. msgpack on-disk format code subsequently retired in δ.3c (`63236ac`). The "update code references to a supersession ADR" sub-task is moot — no supersession ADR was drafted (see 7.3). Atomic commit-set landed per CHE-0022:R1. | `cargo test -p gh-report` green at HEAD; `cargo build --workspace` green at HEAD; msgpack-store references zero per `rg -n 'msgpack.*store\|MsgpackEventStore' crates/gh-report/src/`. |
-| 7.3 | ~~Supersession ADR~~ → **Amendment landing** | **SUPERSEDED (δ.4, `e81adfb`).** The originally-planned new supersession ADR was not drafted. The persistence pivot was codified instead by amending CHE-0022 with R6 (event payloads MUST NOT carry computed aggregates; derived state reconstructed by replay per CHE-0048 + CHE-0048:R4 rebuild method). The retirement of the msgpack-baseline and checkpoint surfaces flows from that single amendment plus CHE-0048's line-24 replay-as-rebuild exemption (added δ.0, `c933fc6`) — no separate supersession was warranted. The originally-planned msgpack EventStore framing referenced here became inert when the on-disk surface was retired entirely; consequently no inbound-ref repointing was required either (see 7.3 risk-register entry below). | `cargo run -p adr-fmt -- --lint` exit 0 at HEAD; CHE-0022:R6 + CHE-0048 line-24 exemption together carry the doctrine load. |
+| 7.2 | gh-report EventStore swap | Replaced gh-report's msgpack-store wiring with `PardosaFileEventStore` via `SharedStore`. msgpack on-disk format code retired. | `cargo test -p gh-report` green at HEAD; `cargo build --workspace` green at HEAD; msgpack-store references zero per `rg -n 'msgpack.*store\|MsgpackEventStore' crates/gh-report/src/`. |
+| 7.3 | CHE-0022 R6 amendment | Persistence pivot codified by amending CHE-0022 with R6 (event payloads MUST NOT carry computed aggregates; derived state reconstructed by replay per CHE-0048 + CHE-0048:R4) plus CHE-0048 line-24 replay-as-rebuild exemption. No separate supersession ADR drafted. | `cargo run -p adr-fmt -- --lint` exit 0 at HEAD; CHE-0022:R6 + CHE-0048 line-24 exemption together carry the doctrine load. |
 | 7.4 | SMI replay green on fresh log | First post-cut gh-report run re-scrapes GitHub API and writes a fresh pardosa-genome event log. SMI invariants (Track 4.0) preserved across the cut. | `rg -n 'sequence_tracker\|run_index\|repo_index\|delivery_index' crates/gh-report/src/` zero hits; `cargo test -p gh-report --test smi_replay_equivalence` green. |
 | 7.5 | Memory Image bootstrap (replay + snapshot invariants) | (a) **Bootstrap replay**: on `AppState` construction (or first read), scan `events/<org>/` via the EventStore's enumeration API, load each aggregate's envelopes, fold into `Run` / `Repo` / `Delivery` aggregate state, populate `runs_by_key` / `repos_by_key` / `deliveries_by_id` / `next_seq` from the folded result. Reserve `AggregateId(1)` for `OrgGovernance` (no real aggregate may collide with it). (b) **Snapshot subordination**: tag `BaselineEntry` with `last_applied_sequence: NonZeroU64` per aggregate; on load, discard any entry whose aggregate's event log is newer; document `baseline.msgpack` as an event-log-subordinate boot-acceleration snapshot of *aggregate state* (not a projection cache). (c) Task body refined once `@oracle` (ADR coverage for Memory Image bootstrap) and `@copernicus` (`RepoEvaluated` ↔ `RepositoryEvidence` field-completeness) report back. **Triggering evidence**: post-eval2 analysis of `/tmp/gh-report-eval-store/` — 87 fragmented aggregate files (ids 627→713) across 4 runs for the same 561 repos, because `state.rs` constructs `runs_by_key` / `repos_by_key` / `deliveries_by_id` / `next_seq` as `HashMap::new()` on every restart with no event-log replay. | `cargo test -p gh-report --test bootstrap_replay` exit 0: append N events under store dir A; drop and recreate `AppState` pointing at A; assert (i) routing indices populated for every domain key present in events; (ii) next append on an existing domain key reuses its `AggregateId` (no new aggregate file created); (iii) `last_seq` advances from the loaded value, not from 1. Plus `cargo test -p gh-report --test baseline_subordinate_to_events` exit 0: write baseline, append a `RepoEvaluated` past the baseline sequence, restart, assert baseline entry was discarded and projection rebuilt from event. |
 
@@ -438,22 +415,6 @@ implementation uses `String` (zero hits for the type).
 §G #20.** Each mission is a single landing with a mechanical verify.
 Mission packages live in bd (epic `adr-fmt-u3pim`); per-mission
 contracts under `mission:track10-ddd-vernon-1779131035`.
-
-#### 10.1 — Scope ratification (this roadmap edit)
-
-Deliverable: this Track 10 section — replace the prior draft with the
-moltke-authored final shape carried in contract `adr-fmt-bjc2e`. Fix
-PAR-0024:R5 → CHE-0064:R2 misattribution under 10.3; reframe 10.4 from
-"extract `ApplicationService<A,S,B>`" or "amend `CommandGateway`" to
-**doc-only ADR codifying the Merger pattern** (CHE-0054:R8/R10
-preserved per oracle bead `adr-fmt-fyrlo`); move 10.5 to Phase 3 §G #20
-with rationale citing CHE-0022 silence on event-payload field removal.
-Pure documentation change; no code edits.
-
-Verify: `awk '/^### .*10\.[1-5]/' docs/c4/roadmap.md` lists 10.1, 10.2,
-10.3, 10.4 under Track 10 and 10.5 under §G; `rg -n 'PAR-0024:R5' docs/c4/roadmap.md`
-returns zero hits under the Track 10 block; mission contract
-`adr-fmt-bjc2e` V1–V6 exit 0.
 
 #### 10.2 — Value Objects + `RepoIdentity` newtype (gh-report)
 
@@ -683,7 +644,6 @@ gated on Track 6 atomic-ship complete — same gate applies to Track 7.
 | Track 4.4 reveals validate.rs surface needs gh-report-specific bits that conflict with adr-srv | M | M | Surface in evidence artefact, decide before coding. Halt-and-handback if conflict implies CHE-0049 / CHE-0050 amendment. |
 | Track 3 ↔ Track 6 coupling (parallel start, sequenced first-write) misjudged | M | M | First-write gate enforced via Track 3.A explicit "gated on Track 6 atomic-ship" annotation. If 3.1/3.2 inadvertently introduce a pardosa write path before Track 6 closes, halt and audit. |
 | Track 7 hard cut loses unrecoverable state | L | L | No prod deployments per user (2026-05-17). First post-cut run re-scrapes GitHub API; local state rebuilds. Acceptable cost. |
-| ~~Track 7 supersession ADR inbound-ref repointing~~ [OBSOLETE δ.4] | — | — | The supersession ADR was not drafted (see Track 7.3). The persistence pivot was codified by amending CHE-0022 with R6 (`e81adfb`); no separate supersession ADR exists, so no inbound-ref repointing was needed. |
 | Track 8 "idiomatic" subjective, audit becomes bikeshedding | M | M | Authored from existing CHE ADRs only; no new criteria invented in Track 8. Disagreements escalate as ADR drafts (8.4), not as 8.1 churn. |
 | Scope creep ("while we're at it…") | H | M | Strict track boundaries; injection queue for discovered work; gardener pass between tracks. |
 | Track 6 wire-format change strands v2 readers | L | H | F2a includes read-only migration path (v2 streams decode with zero-hash sentinel); F2f tamper-injection test asserts v2→v3 read still works. Halt-and-handback if migration path proves infeasible. |
@@ -903,15 +863,4 @@ Cross-phase discovery audit trail lives in bd
 
 ## Revision history
 
-| Version | Date       | Changes |
-|---------|------------|---------|
-| 0.1–0.5 | 2026-05-13 → 2026-05-16 | Initial axis detail → high-level task list; ceremony strip; Phase 2 v1→v2 supersession; Track 4.0 SMI promoted to mechanical exit criterion; LOC-gate amendment. |
-| 0.6     | 2026-05-16 | Retracted v0.5 LOC-gate amendment; removed `scripts/prod-loc`, `scripts/track4-verify`, CI `track4-gates` job. |
-| 0.7     | 2026-05-16 | Pruned closed Phase 1, Phase 2 v1, and closed Phase 2 v2 Tracks 0/0.5/1/2/4 sub-sections; injection log replaced with bd query pointer. |
-| 0.8     | 2026-05-17 | Surfaced Track 6 (pardosa-genome file-format hardening): Epic 6.A PAR-0021 + Epic 6.B F9 + 6 adjacent loose tasks. |
-| 0.9     | 2026-05-17 | User-ratified Phase 2 v2 C1/C2/C3 exit criteria; Track 3 re-scoped read-only; added Track 7 (gh-report → pardosa hard cut) and Track 8 (C3 audit). |
-| 1.0     | 2026-05-18 | Added Phase 3 §G workspace hash-algorithm consolidation. |
-| 1.1     | 2026-05-18 | Renumbered Phase 3 tasks 1–18 contiguously; added §F RST doctrine group (task #13). |
-| 1.2     | 2026-05-18 | Added Memory Image bootstrap refinement; Track 7 grows 4 → 5 sub-tasks (new 7.5); filed Phase 3 §G #19 SweepProgress ordering. |
-| 1.3     | 2026-05-18 | Added Track 7.5 probe-then-mission execution plan annex. |
-| 1.4     | 2026-05-18 | Added Track 9 (pardosa serialization + file-storage correctness hardening, 4 missions); absorbed §G #18 sub-mission (3). |
+See `git log -- docs/c4/roadmap.md` for revision history.
