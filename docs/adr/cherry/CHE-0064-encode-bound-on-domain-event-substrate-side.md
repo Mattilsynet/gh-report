@@ -1,7 +1,7 @@
 # CHE-0064. Encode Bound on DomainEvent for Substrate-Side Hash Chaining
 
 Date: 2026-05-18
-Last-reviewed: 2026-05-18
+Last-reviewed: 2026-05-20
 
 Tier: B
 Status: Accepted
@@ -32,28 +32,14 @@ R1 [5]: `cherry-pit-core` MAY depend on `pardosa-encoding` in addition
   transitive closure must remain inside that exclusion to preserve the
   CHE-0029 de-scalability invariant.
 
-R2 [5]: `cherry-pit-core::DomainEvent` carries `pardosa_encoding::Encode`
-  as a supertrait; every workspace `impl DomainEvent for X` therefore
-  requires a matching `impl Encode for X`. For the `cherry-pit-core`
-  structural carriers (`EventEnvelope<E>`, `AggregateId` — see R3),
-  the impl is hand-rolled because those types do not derive
-  `GenomeSafe`. For `GenomeSafe`-deriving event-payload types, the
-  matching `Encode` is emitted per GEN-0037:R4 — no separate
-  `#[derive(Encode)]` exists.
-
-R3 [5]: `cherry-pit-core` hosts `impl Encode for EventEnvelope<E>` and
-  `impl Encode for AggregateId` as the type-owner. The impls are
-  hand-rolled and match the field-by-field pattern in
-  `crates/pardosa/src/event.rs` and `crates/pardosa-encoding/src/lib.rs`.
-
-R4 [5]: `pardosa::Dragline`'s writer-side bound on `T` is tightened to
+R2 [5]: `pardosa::Dragline`'s writer-side bound on `T` is tightened to
   `T: pardosa_encoding::Encode` on the methods that produce
   `precursor_hash` (`update`, `detach`, `rescue`), and the three writer
   sites currently emitting `[0u8; 32]` (dragline.rs L428, L483, L585
   at HEAD) compute `precursor_hash_of(&pardosa_encoding::to_vec(
   predecessor))` instead.
 
-R5 [5]: `Dragline::verify_precursor_chains` extends its structural
+R3 [5]: `Dragline::verify_precursor_chains` extends its structural
   check by recomputing BLAKE3 of each predecessor's canonical encoding
   and asserting equality with the stored `precursor_hash`; mismatch
   returns a new `PardosaError::PrecursorHashMismatch { event_id,
@@ -65,13 +51,10 @@ R5 [5]: `Dragline::verify_precursor_chains` extends its structural
   end-to-end; CHE-0060 frontier-hash impls (separate mission) gain a
   canonical encoder they can reuse.
 
-− becomes harder: every new `impl DomainEvent for X` in the workspace
-  must ship a hand-rolled `impl Encode for X` alongside; the compiler
-  surfaces omissions, but the cost is borne at every aggregate
-  introduction.
+− becomes harder: writer-side `encode_to_vec` allocates per append.
+  Reclaim is Phase-3 follow-up; this ADR accepts the regression unless
+  it exceeds 50% wall-clock on existing proptests.
 
-risks/migration: writer-side `encode_to_vec` allocates per append.
-Reclaim is Phase-3 follow-up; this ADR accepts the regression unless
-it exceeds 50% wall-clock on existing proptests. CHE-0029:R6 closure
-check is reasserted in this mission's verify pipeline; any transitive
-breach by `pardosa-encoding` halts the work before commit.
+risks/migration: CHE-0029:R6 closure check is reasserted in this
+mission's verify pipeline; any transitive breach by `pardosa-encoding`
+halts the work before commit.
