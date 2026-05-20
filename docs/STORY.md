@@ -249,7 +249,7 @@ Five crates implementing the append-only behavioural substrate:
 
 | Crate | Role |
 |-------|------|
-| `pardosa-traits` | Substrate-agnostic trait surface; `Event`, `Stream`, hash-chain primitives. |
+| `pardosa-traits` | Substrate-agnostic trait surface: `EventSafe` (marker for canonically-encodable types), `Validate` + `ValidationCost`, and `Timestamp`. No event-stream or hash-chain types live here. |
 | `pardosa-encoding` | Canonical-encoding primitives; `no_std`-clean substrate ring per CHE-0064. |
 | `pardosa-derive` | `GenomeSafe` derive macro; compile-time rejection of non-deterministic types per GEN-0004. |
 | `pardosa-genome` | Wire format; fixed layout, schema-hash-stamped, frontier-hashed files. |
