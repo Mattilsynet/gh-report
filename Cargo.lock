@@ -1391,6 +1391,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "askama",
+ "assert_cmd",
  "axum",
  "base64",
  "bytes",
@@ -1415,6 +1416,7 @@ dependencies = [
  "pardosa-genome",
  "pem",
  "percent-encoding",
+ "predicates",
  "proptest",
  "reqwest",
  "rmp-serde",
