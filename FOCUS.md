@@ -1,19 +1,15 @@
 # FOCUS.md — Architectural Refinement Phase
 
 **Genre**: Refinement recipe
-**Status**: Draft
-**Phase**: Architectural Refinement (successor to Cherry-Pit Construction)
 **Reader**: AI agent — moltke decomposing into hopper missions, or hopper directly
-**Predecessor**: `FOCUS-cherry-pit-construction.md` (archived 2026-05-13 at EVAL-GATE PASS)
 
 ---
 
 ## 0. How to Read This Document
 
-You are an agent. The previous phase asked **"does cherry-pit-* compile, test, and
-load-bear inside gh-report?"**— answered YES. The refinement phase prescribes: "Generalize
-the cherry-pit-* architecture such that it is idiomatic with DDD; EDA and Hexagonal
-architectural concepts and fit for a wide range of applications"
+The refinement phase prescribes: "Generalize the cherry-pit-* architecture such
+that it is idiomatic with DDD; EDA and Hexagonal architectural concepts and fit
+for a wide range of applications"
 
 ```rust
 struct RefinementRecipe {
@@ -90,7 +86,7 @@ Live state — point-in-time snapshots have been removed; query the SSOTs.
 | Item | Pointer |
 |------|---------|
 | Active phase | Phase 2 v2 (Generalization by Construction) |
-| Remaining Phase 2 v2 tracks | Track 3 (adr-srv, read-only re-scope), Track 4.4 (validate.rs migration), Track 5 (SEC-0003 bind-in-library), Track 6 (pardosa-genome file format; PAR-0021 + F9 atomic-ship), Track 7 (gh-report → pardosa hard cut), Track 8 (C3 idiomatic audit) |
+| Remaining Phase 2 v2 tracks | see `docs/c4/roadmap.md` § Phase state |
 | Closed-track / closed-task history | bd, labels `phase:1-cleanup` / `phase:2-generalize` |
 | Live track-level dashboard | `docs/c4/roadmap.md` |
 | ADR corpus state | `cargo run -p adr-fmt -- --tree CHE` (and PAR / GEN / AFM) |
@@ -486,11 +482,4 @@ per § 6.
 
 ## 10. Revision History
 
-| Version | Date       | Author | Changes |
-|---------|------------|--------|---------|
-| 0.1–0.6 | 2026-05-13 → 2026-05-16 | acje + agent | Phase model adoption, ceremony strip, Phase 2 v1→v2 supersession, Track 4.0 SMI injection, LOC-gate amend-then-retract. See git log + bd for detail. |
-| 0.7     | 2026-05-16 | acje + agent | **v0.6 amendment retracted; LOC gate sunset entirely; bespoke scripts removed.** Half-day audit of `scripts/prod-loc` (574 LOC syn-AST production-LOC counter) + `scripts/track4-verify` (711 LOC, 13-criterion harness) found: ~10 of the 13 `track4-verify` criteria duplicate existing CI jobs (`build`, `test`, `clippy`, `fmt`); the unique value (LOC non-regression gate, SMI rg checks, audit-trail/alias verifications) collapses to 4-6 inline CI shell steps; the LOC gate the tooling enforced is itself a proxy gate (architectural substance — duplication deleted, libraries consolidated — is observable in commit diffs and ADRs, not in a line count). User verdict (verbatim): *"the gain is too small and the cost of drift and clutter is real. remove"*. Actions: (1) `git rm -r scripts/prod-loc scripts/track4-verify scripts/citation-diff`; (2) `git rm scripts/{adr_agg,adr_rules,loc,loc_agg}.awk` (the "honest historical record" of v0.6 was equally subject to the drift-and-clutter verdict); (3) `.gitignore` re-adds `scripts/` so future throwaway tooling does not silently accumulate — promote any genuinely durable tool to its own `crates/` member with an ADR justifying it; (4) `.github/workflows/ci.yml` job `track4-gates` deleted; (5) §3 row + §8 Track-4 verify block rewritten to reflect retraction. **Doctrine lesson recorded:** v0.6 amended a malformed gate by building tooling to enforce the amendment — substituted measurement infrastructure for the underlying question "is the gate's substance worth measuring at all?". v0.7 answers no. Track 4 epic `adr-fmt-ysaa` remains CLOSED — retraction does not reopen exit criteria, it removes mechanical enforcement that was duplicative of `cargo test` / `cargo clippy` / `cargo fmt` plus the substance evidence already in CHE-0062 / CHE-0049-Amendment-Part-2 / SMI-1..SMI-5. Net code change: −1285 LOC bespoke scripts + −15 LOC `.gitignore` un-ignore + −16 LOC CI job, −1 CI job, +1 `.gitignore` rule. §2 invariants unchanged. §6/§7 guardrails unchanged. SM2 (doc_markdown sweep, also retracted 2026-05-16) is a sibling failure mode — both rounds demonstrated that **building tools to enforce a gate is a higher-order ceremony**: the tool exists, therefore the gate must be real, therefore the proxy is treated as substance. Companion: `docs/c4/roadmap.md` v0.6. |
-| 0.8     | 2026-05-17 | acje + agent | **User-ratified Phase 2 v2 completion criteria** synced from `docs/c4/roadmap.md` v0.9: C1 = adr-srv operational in **read-only mode** (scrape ADRs → pardosa-genome → GraphQL Query); C2 = gh-report stores internal state in pardosa-genome files (hard cut, re-scrape GitHub API; no prod deployments); C3 = idiomatic architectural-organization audit across `adr-srv` / `gh-report` / `cherry-pit-*` / `pardosa-*`. **§3 row updated** to enumerate all remaining tracks (3 read-only, 4.4, 5, 6, 7, 8). **§7 guardrail added**: "First persisted pardosa event in any consumer" gated on Track 6 atomic-ship complete — formalises the user direction that PAR-0021 F2 chain + F9 type-surface (`FORMAT_VERSION = 3`) land before any consumer writes. "Parallel" means concurrent agents on disjoint crate trees, not concurrent first-writes. **§8 verify block rewritten**: Track 3 verify drops `graphql_write_e2e` + `lint_integration` (retired to Phase 3 injection-queue items 3 + 4); adds Track 3.A `scrape_pipeline`; adds Track 6 atomic-ship verify (`FORMAT_VERSION = 3` grep + `tamper_injection` test); adds Track 7 (`gh-report` on pardosa, msgpack-store zero hits, CHE-0031 supersession ADR refs); adds Track 8 (`track:8,remediation` bd query). §2 invariants unchanged. §6 escalation policy unchanged. Track 6 atomic-ship preserved (Epic 6.A + 6.B together, per user direction). Track 4.4 + Track 5 placement preserved (sequenced after Track 3.3, per user "as early as possible in Phase 2" direction). Companion: `docs/c4/roadmap.md` v0.9. |
-| 0.9     | 2026-05-18 | acje + agent | **§4.3 (Phase 3 — Harden) extended** with one paragraph pointing at the cross-cutting RST hardening ideas register as the source of Phase-3 language-doctrine candidates (advisory framing; numbering reserved-not-assigned; no decisions taken). Roadmap Phase-3 task #13 (§F) reviews the register against in-flight work; drafting any RST ADR remains user-ratified per §6 (always-escalate: new ADR). §8 verify block cross-reference updated to reflect roadmap §G renumber ("items 3 + 4" → "§G items 16 + 17"). §2 invariants unchanged. §6 escalation policy unchanged. Companion: `docs/c4/roadmap.md` v1.1. |
-| 1.0     | 2026-05-19 | acje + agent | **STORY.md + CLOSURE.md anchored into governance.** §0 gains a prerequisite-reading block pointing at the two new documents. §6 always-escalate list gains two entries: (a) STORY.md edits + entailed ADR amendments, ratified as one commit-set (apex-over-ADR per STORY.md §9; `story-override` beads block release while open); (b) CLOSURE.md exit-gate composition / scope-boundary changes (recording a closed-gate tick is routine, not escalation; declaring v0.1 shipped is). New §9 Document Hierarchy fixes the six-document topology (STORY apex, ADR binding, FOCUS recipe, roadmap dashboard, CLOSURE v0.1 gate, AGENTS orthogonal) and codifies disagreement-resolution rules across the layers. Old §9 Revision History renumbered to §10. §2 invariants unchanged. §3 starting state unchanged. Companion: `docs/STORY.md` v0.1, `docs/CLOSURE.md` v0.1. |
-| 1.1     | 2026-05-19 | acje + agent | **Long-autonomous-job exception added to § 6.** ADR edits (drafts, amendments, supersessions, retirements; including any `adr-fmt.toml` change that follows from an ADR landing) are autonomous-permitted during a mission. Discipline: (1) git is the audit trail — every ADR edit is a normal commit citing ADR id + change class + mission id; (2) `adr-fmt --lint` stays exit-0 after every corpus-touching commit (warnings allowed per AFM-0003); (3) per-ADR audit bead with label `adr-touched,mission:<id>` and one-line rationale + commit sha; (4) moltke enumerates every touched ADR in the mission-complete report for user review; (5) STORY edits are **not** covered — they remain user-ratified (apex doctrine unchanged); (6) reversal via standard supersession + AFM-0020 parent edge; no force-push, no amend. Always-escalate list tightened: removed "Drafting a new CHE ADR", "Editing an existing CHE ADR", and "Changes to `adr-fmt.toml` corpus configuration" (now covered by the exception). Added "Edits to FOCUS.md itself" (was implicit). "Weakening any § 2 invariant" remains always-escalate regardless of edit mechanism. § 9 Document Hierarchy disagreement-resolution rule for ADR ↔ ADR amended to note autonomous edits during missions. Companions: `docs/STORY.md` v0.2 (§ 9 amended), `docs/CLOSURE.md` v0.2 (§ 7 amended). |
+See `git log -- FOCUS.md` for revision history.
