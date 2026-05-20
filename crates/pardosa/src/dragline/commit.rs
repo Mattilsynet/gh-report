@@ -98,6 +98,7 @@ impl<T> Dragline<T> {
     // `Fiber::check_advance` here and replayed via
     // `Fiber::advance_unchecked` in apply).
 
+    // TODO(PAR-0008): publish to NATS / genome file between `prepare` and `apply_prepared`; in-memory apply runs only after durable ACK. See docs/adr/pardosa/PAR-0008-publish-then-apply-durable-first.md.
     pub(super) fn commit_atomic<F>(&mut self, prepare: F) -> Result<AppendResult, PardosaError>
     where
         T: Encode,
@@ -128,6 +129,7 @@ impl<T> Dragline<T> {
 
         // Roll the frontier before appending so the canonical bytes of this
         // event are included. BLAKE3(current_frontier || event_bytes) per PAR-0021:R3.
+        // TODO(PAR-0018): materialise event bytes in `reserve`, carry them on `ReservedEvent`, and reduce `apply` to a pure delta-application step. See docs/adr/pardosa/PAR-0018-reserve-commit-api-discipline.md.
         let event_bytes = to_vec(&event);
         self.frontier = frontier_roll(self.frontier, &event_bytes);
 

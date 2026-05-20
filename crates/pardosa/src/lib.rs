@@ -11,6 +11,8 @@ pub mod fiber;
 pub mod fiber_state;
 pub mod frontier;
 
+// TODO(PAR-0022): land `pub mod sim` (`pardosa::sim::Harness`) here — seeded scheduler + stubbed edge drivers (NATS, clock, RNG, entropy) for deterministic simulation testing. See docs/adr/pardosa/PAR-0022-deterministic-simulation-harness.md.
+
 pub use dragline::{AppendResult, Dragline};
 pub use error::PardosaError;
 pub use event::{DomainId, Event, Index};
