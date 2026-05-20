@@ -167,41 +167,40 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use cherry_pit_agent::InProcessEventBus;
-    use cherry_pit_core::testing::InMemoryEventStore;
     use cherry_pit_core::{AggregateId, EventEnvelope, EventStore, ListableEventStore};
     use tempfile::TempDir;
 
     use crate::app::services::merger::Merger;
+    use crate::app::state::EventStoreImpl;
     use crate::domain::events::DomainEvent;
+    use pardosa_eventstore::PardosaLogEventStore;
 
     /// Build a Track 4.0/5-shaped `WebhookService` backed by a
     /// [`Merger`] task spawned over a shared tempdir
-    /// [`InMemoryEventStore`] + [`InProcessEventBus`] + the three
+    /// [`PardosaLogEventStore`] + [`InProcessEventBus`] + the three
     /// routing indices + sequence tracker. Symmetric to the
     /// `RunService` 3b and `RepoService` step-4 test harnesses.
-    /// Interim substrate until the PGNO-backed successor `EventStore` lands
-    /// (follow-up to mission cherry-pit-pardosa-deletion-1779215265).
     ///
-    /// Returns the tempdir, the durable handles for direct
-    /// inspection, and the [`WebhookService`] under test. The Merger
+    /// Returns the tempdir (kept alive for the test — drop releases
+    /// the CHE-0043:R1 flock on `{dir}/.lock`), the durable handles
+    /// for direct inspection, and the [`WebhookService`] under test.
+    /// The Merger
     /// [`tokio::task::JoinHandle`] is intentionally dropped — the
     /// task is kept alive by the [`mpsc::Sender`] inside the service.
-    #[expect(
-        clippy::type_complexity,
-        reason = "test helper returns the four shared handles plus the service; factoring would obscure the wiring under test"
-    )]
-    fn build_service() -> (
+    async fn build_service() -> (
         TempDir,
-        Arc<InMemoryEventStore<DomainEvent>>,
+        Arc<EventStoreImpl>,
         Arc<InProcessEventBus<DomainEvent>>,
         Arc<Mutex<HashMap<String, AggregateId>>>,
         Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
         WebhookService,
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(InMemoryEventStore::<DomainEvent>::new());
-        // tempdir kept for future PGNO-backed substrate; ignored under InMemoryEventStore.
-        let _ = dir.path();
+        let store = Arc::new(
+            PardosaLogEventStore::<DomainEvent>::open(dir.path())
+                .await
+                .expect("open test event store"),
+        );
         let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
         let runs_by_key = Arc::new(Mutex::new(HashMap::new()));
         let repos_by_key = Arc::new(Mutex::new(HashMap::new()));
@@ -221,7 +220,7 @@ mod tests {
 
     #[tokio::test]
     async fn with_merger_tx_constructs_service() {
-        let (_dir, _store, _bus, _index, _tracker, _svc) = build_service();
+        let (_dir, _store, _bus, _index, _tracker, _svc) = build_service().await;
     }
 
     /// Step-5 — single ingest produces one aggregate with one
@@ -241,7 +240,7 @@ mod tests {
     /// aggregate.
     #[tokio::test]
     async fn ingest_create_path_single_event_through_merger() {
-        let (dir, store, bus, index, tracker, svc) = build_service();
+        let (dir, store, bus, index, tracker, svc) = build_service().await;
 
         let captured: Arc<Mutex<Vec<EventEnvelope<DomainEvent>>>> =
             Arc::new(Mutex::new(Vec::new()));
@@ -308,10 +307,14 @@ mod tests {
         };
         assert_eq!(tracked_seq.get(), 1);
 
-        // (was: Single per-aggregate `<assigned_id>.pardosa` file
-        // CHE-0036:R1 check. InMemoryEventStore has no on-disk surface;
-        // see follow-up to mission cherry-pit-pardosa-deletion-1779215265.)
-        let _ = (&assigned_id, dir.path());
+        // CHE-0036:R1 — exactly one `<assigned_id>.log` file exists
+        // under `dir` after the first append.
+        let expected = dir.path().join(format!("{}.log", assigned_id.get()));
+        assert!(
+            expected.exists(),
+            "expected `{}` to exist after first append",
+            expected.display(),
+        );
     }
 
     /// Step-5 — fresh-per-delivery semantics: two ingests with the
@@ -327,7 +330,7 @@ mod tests {
     /// `next_seq` records both assigned ids.
     #[tokio::test]
     async fn ingest_fresh_per_delivery_does_not_dedupe_on_delivery_id_through_merger() {
-        let (dir, store, _bus, index, tracker, svc) = build_service();
+        let (_dir, store, _bus, index, tracker, svc) = build_service().await;
 
         let ctx = CorrelationContext::none();
         let delivery_id = "duplicate-delivery";
@@ -356,12 +359,8 @@ mod tests {
         .await
         .expect("second ingest with same delivery_id");
 
-        // Two distinct aggregates exist (CHE-0036:R1 behavioural claim;
-        // was: count of `<id>.pardosa` files on disk. InMemoryEventStore
-        // has no on-disk surface, so we read the aggregate roster directly
-        // via ListableEventStore. See follow-up to mission
-        // cherry-pit-pardosa-deletion-1779215265.)
-        let _ = dir;
+        // Two distinct aggregates exist (CHE-0036:R1): each ingest mints a
+        // distinct aggregate file under `dir`.
         let aggregates = store.list_aggregates().expect("list_aggregates");
         assert_eq!(
             aggregates.len(),

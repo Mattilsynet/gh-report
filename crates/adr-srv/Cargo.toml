@@ -14,10 +14,9 @@ workspace = true
 adr-fmt = { path = "../adr-fmt" }
 
 # Event-sourcing substrate (CHE-0054:R8/R10 carve-out — no agent/gateway/App).
-# Persistence impl formerly cherry-pit-pardosa::PardosaFileEventStore;
-# the crate has been removed and the service must be wired with an
-# in-memory store until a PGNO-backed successor lands (follow-up bd-issue).
+# Persistence via pardosa-eventstore (length-prefixed+xxh64 frame, file-per-aggregate).
 cherry-pit-core = { workspace = true }
+pardosa-eventstore = { workspace = true }
 # SEC-0003 path-segment sanitisation surface (used in M1.3 scrape).
 cherry-pit-web = { workspace = true }
 

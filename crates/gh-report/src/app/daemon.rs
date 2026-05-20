@@ -89,10 +89,9 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     // durable stores at sibling subtrees per BC-v2-13 (events/ and
     // projections/ disjoint):
     //
-    //   <store_dir>/events/<org>/      — InMemoryEventStore<DomainEvent>
-    //                                     (interim substrate until the PGNO-backed
-    //                                     successor EventStore lands; follow-up to
-    //                                     mission cherry-pit-pardosa-deletion-1779215265)
+    //   <store_dir>/events/<org>/      — PardosaLogEventStore<DomainEvent>
+    //                                     (file-per-aggregate, xxh64-framed
+    //                                     pardosa_encoding::Encode envelopes)
     //   <store_dir>/projections/<org>/ — FileProjectionStore<EvidenceProjection>
     //
     // The event-store directory is created and locked at `open` time
@@ -105,7 +104,13 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     //     then bus.publish(...) per BC-v2-1 / CHE-0024:R1.
     let events_dir = config.store_dir.join("events").join(&config.org_name);
     let projections_dir = config.store_dir.join("projections").join(&config.org_name);
-    let app_state = AppState::with_stores(&events_dir, projections_dir);
+    let app_state = AppState::with_stores(&events_dir, projections_dir)
+        .await
+        .map_err(|source| {
+            AppError::Persistence(PersistenceError::LoadFailed {
+                reason: format!("open event store at {}: {source}", events_dir.display()),
+            })
+        })?;
 
     // ── Step 1b: Snapshot-fast-path projection runtime init (B5') ─
     // Replays events past the persisted checkpoint into the

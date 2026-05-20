@@ -367,13 +367,13 @@ mod tests {
     use crate::app::state::AppState;
     use std::error::Error;
 
-    fn test_state() -> Arc<AppState> {
-        AppState::new()
+    async fn test_state() -> Arc<AppState> {
+        AppState::new().await
     }
 
     #[tokio::test]
     async fn event_repository_deleted() {
-        let state = test_state();
+        let state = test_state().await;
         let body = serde_json::json!({
             "action": "deleted",
             "repository": { "id": 123, "name": "test-repo" }
@@ -392,7 +392,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_repository_created() {
-        let state = test_state();
+        let state = test_state().await;
         let body = serde_json::json!({
             "action": "created",
             "repository": {
@@ -409,7 +409,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_repository_deleted_absent_key() {
-        let state = test_state();
+        let state = test_state().await;
         // M2.cd: post-cutover the projection is the read-model authority;
         // assert lookup of an absent key returns `None` (no panic).
         let key = "nonexistent";
@@ -419,7 +419,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_branch_protection_disabled() {
-        let state = test_state();
+        let state = test_state().await;
         let body = serde_json::json!({
             "action": "disabled",
             "repository": { "id": 789, "name": "bp-repo" }
@@ -435,7 +435,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_dependabot_alert_created() {
-        let state = test_state();
+        let state = test_state().await;
         let body = serde_json::json!({
             "action": "created",
             "repository": { "id": 100, "name": "dep-repo" }
@@ -447,7 +447,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_unknown_type() {
-        let state = test_state();
+        let state = test_state().await;
         let body = b"{}";
         let result = map_event_to_action("star", body, &state).unwrap();
         assert!(matches!(result, WebhookAction::Ignore));
@@ -583,7 +583,7 @@ mod tests {
 
     #[tokio::test]
     async fn push_event_full_json_round_trip() {
-        let state = test_state();
+        let state = test_state().await;
         let body = serde_json::json!({
             "ref": "refs/heads/main",
             "repository": {
@@ -603,7 +603,7 @@ mod tests {
 
     #[tokio::test]
     async fn push_event_irrelevant_returns_ignore() {
-        let state = test_state();
+        let state = test_state().await;
         let body = serde_json::json!({
             "ref": "refs/heads/main",
             "repository": {
@@ -623,7 +623,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_repository_archived_returns_remove() {
-        let state = test_state();
+        let state = test_state().await;
         let body = serde_json::json!({
             "action": "archived",
             "repository": { "id": 888, "name": "archived-repo", "archived": true }
@@ -638,7 +638,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_repository_lifecycle_actions_return_enqueue() {
-        let state = test_state();
+        let state = test_state().await;
         for action in &["unarchived", "publicized", "privatized"] {
             let body = serde_json::json!({
                 "action": action,
@@ -659,7 +659,7 @@ mod tests {
 
     #[tokio::test]
     async fn push_event_empty_commits_returns_ignore() {
-        let state = test_state();
+        let state = test_state().await;
         let body = serde_json::json!({
             "ref": "refs/heads/main",
             "repository": {
@@ -691,7 +691,7 @@ mod tests {
 
     #[tokio::test]
     async fn generic_enqueue_missing_repository_returns_error() {
-        let state = test_state();
+        let state = test_state().await;
         let body = serde_json::json!({ "action": "created" });
         let result = map_event_to_action("dependabot_alert", body.to_string().as_bytes(), &state);
         assert!(matches!(result, Err(WebhookError::MissingRepository)));
@@ -699,7 +699,7 @@ mod tests {
 
     #[tokio::test]
     async fn repository_event_invalid_json_returns_error() {
-        let state = test_state();
+        let state = test_state().await;
         let result = map_event_to_action("repository", b"{{bad", &state);
         assert!(matches!(result, Err(WebhookError::InvalidJson(_))));
     }

@@ -24,7 +24,7 @@ use axum::{Router, routing::get, routing::post_service};
 
 use adr_srv::scrape::scrape_corpus;
 use adr_srv::{AdrCorpus, AdrIngested, AdrService, build_schema};
-use cherry_pit_pardosa::PardosaFileEventStore;
+use pardosa_eventstore::PardosaLogEventStore;
 
 #[tokio::main]
 async fn main() {
@@ -52,16 +52,17 @@ async fn main() {
         eprintln!("create store dir {}: {e}", store_path.display());
         std::process::exit(1);
     }
-    let store: PardosaFileEventStore<AdrIngested> = match PardosaFileEventStore::open(&store_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!(
-                "PardosaFileEventStore::open({}) failed: {e}",
-                store_path.display()
-            );
-            std::process::exit(1);
-        }
-    };
+    let store: PardosaLogEventStore<AdrIngested> =
+        match PardosaLogEventStore::open(&store_path).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!(
+                    "PardosaLogEventStore::open({}) failed: {e}",
+                    store_path.display()
+                );
+                std::process::exit(1);
+            }
+        };
     let store = Arc::new(store);
 
     // (3) replay → service + projection. CHE-0065: AdrCorpus is

@@ -32,9 +32,9 @@
 //!
 //! Per moltke instruction: hopper picks at Inc B7'a-5/6 wiring.
 //! Resolution: **per-aggregate concrete `EventStore` instances** (three
-//! `Arc<InMemoryEventStore<DomainEvent>>`, one per service). CHE-0054:R8
-//! Interim substrate until the PGNO-backed successor `EventStore` lands
-//! (follow-up to mission cherry-pit-pardosa-deletion-1779215265).
+//! `Arc<EventStoreImpl>`, one per service, where `EventStoreImpl` is the
+//! durable `pardosa_eventstore::PardosaLogEventStore<DomainEvent>`).
+//! CHE-0054:R8
 //! permits either; per-aggregate keeps each service self-contained
 //! and matches the per-aggregate write-coordination granularity
 //! justified by R4. `AppState` wiring (Inc B7'a-6) materialises the
@@ -42,10 +42,10 @@
 //!
 //! ## Open ε — `Option<Arc<...Service>>` smell
 //!
-//! Resolved at Inc B7'a-6 wiring time, not here. The skeletons make
-//! no assumption either way — `AppState::new()` may construct services
-//! eagerly (no Option) or lazily (Option) depending on whether an
-//! in-memory `EventStore` exists in the workspace yet (oracle Gap-β).
+//! Resolved at Inc B7'a-6 wiring time, not here. `AppState::new()`
+//! constructs services eagerly against the durable
+//! [`pardosa_eventstore::PardosaLogEventStore`] substrate; no
+//! `Option`-around-service wiring remains.
 
 pub mod merger;
 pub mod repo_service;

@@ -18,14 +18,10 @@
 //! The `#[serde(tag = "type")]` discriminator was removed in an
 //! earlier sub-mission and `event_type()` returns the `PascalCase`
 //! Rust variant name. `Serialize`/`Deserialize` derives remain on
-//! `DomainEvent` — they are load-bearing for the current
-//! `PardosaFileEventStore<DomainEvent>` instantiation in
-//! `cherry-pit-pardosa` (δ.3b, CHE-0043) — historically; the substrate
-//! has been swapped for `InMemoryEventStore<DomainEvent>` (interim
-//! until the PGNO-backed successor lands per follow-up to mission
-//! `cherry-pit-pardosa-deletion-1779215265`) and cannot be dropped
-//! without an atomic consumer-side swap. Without `#[serde(tag)]`,
-//! serde's default enum
+//! `DomainEvent` — they are load-bearing for the
+//! [`pardosa_eventstore::PardosaLogEventStore<DomainEvent>`] substrate
+//! and cannot be dropped without an atomic consumer-side swap.
+//! Without `#[serde(tag)]`, serde's default enum
 //! representation is external tagging (`{"RepoEvaluated": {...}}`),
 //! but no production path inspects that shape — wire identity flows
 //! through `Encode` and `event_type()`.

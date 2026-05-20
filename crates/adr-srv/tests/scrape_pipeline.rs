@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use adr_srv::scrape::{ScrapeReport, scrape_corpus};
 use adr_srv::{AdrCorpus, AdrId, AdrIngested, AdrService};
 use cherry_pit_core::EventStore;
-use cherry_pit_pardosa::PardosaFileEventStore;
+use pardosa_eventstore::PardosaLogEventStore as PardosaFileEventStore;
 use tempfile::TempDir;
 
 /// Build a synthetic ADR corpus + `adr-fmt.toml` marker in a tempdir.
@@ -129,8 +129,9 @@ R1 [4]: Synthetic.
 async fn first_scrape_emits_one_event_per_adr_file() {
     let (marker_dir, _guard) = build_synthetic_corpus();
     let store_dir = TempDir::new().expect("store tempdir");
-    let store: PardosaFileEventStore<AdrIngested> =
-        PardosaFileEventStore::open(store_dir.path()).expect("open store");
+    let store: PardosaFileEventStore<AdrIngested> = PardosaFileEventStore::open(store_dir.path())
+        .await
+        .expect("open store");
     let service = AdrService::new(Arc::new(store));
     let corpus: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
 
@@ -155,8 +156,9 @@ async fn first_scrape_emits_one_event_per_adr_file() {
 async fn second_scrape_emits_zero_events_unchanged_corpus() {
     let (marker_dir, _guard) = build_synthetic_corpus();
     let store_dir = TempDir::new().expect("store tempdir");
-    let store: PardosaFileEventStore<AdrIngested> =
-        PardosaFileEventStore::open(store_dir.path()).expect("open store");
+    let store: PardosaFileEventStore<AdrIngested> = PardosaFileEventStore::open(store_dir.path())
+        .await
+        .expect("open store");
     let service = AdrService::new(Arc::new(store));
     let corpus: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
 
@@ -184,8 +186,11 @@ async fn second_scrape_emits_zero_events_unchanged_corpus() {
 async fn references_preserve_order_and_duplicates() {
     let (marker_dir, _guard) = build_synthetic_corpus();
     let store_dir = TempDir::new().expect("store tempdir");
-    let store: Arc<PardosaFileEventStore<AdrIngested>> =
-        Arc::new(PardosaFileEventStore::open(store_dir.path()).expect("open store"));
+    let store: Arc<PardosaFileEventStore<AdrIngested>> = Arc::new(
+        PardosaFileEventStore::open(store_dir.path())
+            .await
+            .expect("open store"),
+    );
     let service = AdrService::new(Arc::clone(&store));
     let corpus: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
 
@@ -227,7 +232,9 @@ async fn replay_on_boot_rebuilds_index_so_re_scrape_is_idempotent() {
     // First service: open store, scrape, drop service (and store).
     {
         let store: PardosaFileEventStore<AdrIngested> =
-            PardosaFileEventStore::open(store_dir.path()).expect("open store 1");
+            PardosaFileEventStore::open(store_dir.path())
+                .await
+                .expect("open store 1");
         let service = AdrService::new(Arc::new(store));
         let corpus: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
         let r = scrape_corpus(&service, &marker_dir, &corpus)
@@ -239,8 +246,9 @@ async fn replay_on_boot_rebuilds_index_so_re_scrape_is_idempotent() {
     // Second service: open SAME store dir via new_with_replay. The
     // replay path must populate adrs_by_id from on-disk aggregates
     // so the re-scrape is a no-op.
-    let store2: PardosaFileEventStore<AdrIngested> =
-        PardosaFileEventStore::open(store_dir.path()).expect("reopen store 2");
+    let store2: PardosaFileEventStore<AdrIngested> = PardosaFileEventStore::open(store_dir.path())
+        .await
+        .expect("reopen store 2");
     let corpus2: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
     let service2 = AdrService::new_with_replay(Arc::new(store2), &corpus2)
         .await
@@ -260,8 +268,9 @@ async fn replay_on_boot_rebuilds_index_so_re_scrape_is_idempotent() {
 async fn changed_body_emits_new_event() {
     let (marker_dir, _guard) = build_synthetic_corpus();
     let store_dir = TempDir::new().expect("store tempdir");
-    let store: PardosaFileEventStore<AdrIngested> =
-        PardosaFileEventStore::open(store_dir.path()).expect("open store");
+    let store: PardosaFileEventStore<AdrIngested> = PardosaFileEventStore::open(store_dir.path())
+        .await
+        .expect("open store");
     let service = AdrService::new(Arc::new(store));
     let corpus: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
 

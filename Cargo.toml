@@ -119,6 +119,7 @@ pardosa-encoding = { path = "crates/pardosa-encoding", version = "0.1.0", featur
 # pardosa-genome: GenomeSafe derive substrate. default-features = ["std", "derive"]
 # already enables the GenomeSafe derive (via pardosa-derive); no extra features needed.
 pardosa-genome = { path = "crates/pardosa-genome", version = "0.1.0" }
+pardosa-eventstore = { path = "crates/pardosa-eventstore", version = "0.1.0" }
 
 # === Async runtime extras ===
 tokio-util = { version = "0.7", default-features = false }

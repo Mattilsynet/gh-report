@@ -23,8 +23,11 @@
 //! snapshot+checkpoint fast-path (`snapshot_fast_path_startup`,
 //! removed) which only rehydrated `ORG_GOVERNANCE_AGGREGATE_ID`. The
 //! CHE-0048 line-24 replay-as-rebuild exemption applies: there is no
-//! on-disk snapshot/checkpoint surface in the current
-//! `InMemoryEventStore`-backed build.
+//! on-disk snapshot/checkpoint surface in the current build — the
+//! durable event log under [`PardosaLogEventStore`] is the SSOT and
+//! the projection is rebuilt by replay on every boot.
+//!
+//! [`PardosaLogEventStore`]: pardosa_eventstore::PardosaLogEventStore
 //! ## What this module does NOT wire (locked-out)
 //!
 //! - **No [`cherry_pit_agent::App`]**: the agent's `App` requires a
@@ -41,16 +44,15 @@
 //!   `EvidenceProjection` per process, keyed by the singleton
 //!   [`crate::projection::ORG_GOVERNANCE_AGGREGATE_ID`].
 //!
-//! ## File-lock note (historical — no longer load-bearing)
+//! ## File-lock note
 //!
-//! (was: `PardosaFileEventStore::open` acquired an exclusive advisory
-//! `flock(2)` on `{dir}/.lock` at open time and held it for the store's
-//! lifetime under CHE-0043:R1; the startup replay path therefore shared
-//! the durable `Arc<PardosaFileEventStore<DomainEvent>>` held by
-//! `AppState` into the [`ProjectionDriver`] via the [`SharedStore`]
-//! newtype below. See follow-up bd issue for the PGNO-backed successor;
-//! [`SharedStore`] survives the substitution to keep the consumer
-//! surface stable.)
+//! `PardosaLogEventStore::open` acquires an exclusive advisory
+//! `flock(2)` on `<root>/.lock` at open time and holds it for the
+//! store's lifetime (CHE-0043:R1). The startup replay path therefore
+//! shares the durable `Arc<PardosaLogEventStore<DomainEvent>>` held
+//! by `AppState` into the [`ProjectionDriver`] via the [`SharedStore`]
+//! newtype below — there is no second `open` call and therefore no
+//! contention on the directory lock.
 //!
 //! ## Why a `Mutex<EvidenceProjection>` and not lock-free
 //!
@@ -70,43 +72,45 @@ use cherry_pit_agent::{InProcessEventBus, ProjectionDriverExt};
 use cherry_pit_core::{
     AggregateId, CorrelationContext, EventEnvelope, EventStore, StoreCreateResult, StoreError,
 };
-use cherry_pit_core::testing::InMemoryEventStore;
 use cherry_pit_projection::ProjectionDriver;
 use std::num::NonZeroU64;
 
 use crate::domain::events::DomainEvent;
 use crate::projection::EvidenceProjection;
 
-/// Shareable handle around an [`Arc<InMemoryEventStore<E>>`].
+/// Shareable handle around any `Arc<S>` where `S: EventStore`.
 ///
-/// Interim substrate until the PGNO-backed successor `EventStore` lands
-/// (follow-up to mission `cherry-pit-pardosa-deletion-1779215265`); the
-/// newtype is preserved because its consumer surface (`SharedStore`
-/// constructor + `EventStore` impl) is referenced throughout the
-/// runtime, but the historical flock semantics (CHE-0043:R1) no
-/// longer apply — `InMemoryEventStore` has no on-disk surface.
+/// Generic over the concrete store so production paths can wrap
+/// [`pardosa_eventstore::PardosaLogEventStore`] while test paths reuse
+/// `cherry_pit_core::testing::InMemoryEventStore`. The newtype gives
+/// the `ProjectionDriver` a `Clone`able handle without leaking the
+/// concrete store type into the driver's generic surface beyond what
+/// the trait already requires.
 ///
 /// All [`EventStore`] methods delegate transparently to the inner
 /// store via deref-through-Arc.
 #[derive(Clone)]
-pub struct SharedStore<E>(Arc<InMemoryEventStore<E>>)
-where
-    E: cherry_pit_core::DomainEvent;
-
-impl<E> SharedStore<E>
+pub struct SharedStore<E, S>(Arc<S>)
 where
     E: cherry_pit_core::DomainEvent,
+    S: EventStore<Event = E>;
+
+impl<E, S> SharedStore<E, S>
+where
+    E: cherry_pit_core::DomainEvent,
+    S: EventStore<Event = E>,
 {
-    /// Wrap a shared [`InMemoryEventStore`] for driver use.
+    /// Wrap a shared `Arc<S>` for driver use.
     #[must_use]
-    pub fn new(inner: Arc<InMemoryEventStore<E>>) -> Self {
+    pub fn new(inner: Arc<S>) -> Self {
         Self(inner)
     }
 }
 
-impl<E> EventStore for SharedStore<E>
+impl<E, S> EventStore for SharedStore<E, S>
 where
     E: cherry_pit_core::DomainEvent,
+    S: EventStore<Event = E> + Send + Sync,
 {
     type Event = E;
 
@@ -203,6 +207,7 @@ mod tests {
 
     use crate::projection::ORG_GOVERNANCE_AGGREGATE_ID;
     use cherry_pit_core::EventEnvelope;
+    use cherry_pit_core::testing::InMemoryEventStore;
     use jiff::Timestamp;
     use std::num::NonZeroU64;
 
@@ -246,10 +251,10 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp");
         let events_dir = tmp.path().join("events");
         std::fs::create_dir_all(&events_dir).expect("mkdir");
-        let store =
-            Arc::new(InMemoryEventStore::<DomainEvent>::new());
-            // (was: PardosaFileEventStore::<DomainEvent>::open(&events_dir).expect("open"); see follow-up bd issue)
-            let _ = &events_dir;
+        // Test double: InMemoryEventStore is gated under #[cfg(test)] and
+        // exercises the same `EventStore` surface SharedStore<E, S> wraps.
+        let _ = &events_dir;
+        let store = Arc::new(InMemoryEventStore::<DomainEvent>::new());
         let driver = Arc::new(ProjectionDriver::<EvidenceProjection, _>::new(
             SharedStore::new(Arc::clone(&store)),
         ));
@@ -286,10 +291,10 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp");
         let events_dir = tmp.path().join("events");
         std::fs::create_dir_all(&events_dir).expect("mkdir");
-        let store =
-            Arc::new(InMemoryEventStore::<DomainEvent>::new());
-            // (was: PardosaFileEventStore::<DomainEvent>::open(&events_dir).expect("open"); see follow-up bd issue)
-            let _ = &events_dir;
+        // Test double: InMemoryEventStore is gated under #[cfg(test)] and
+        // exercises the same `EventStore` surface SharedStore<E, S> wraps.
+        let _ = &events_dir;
+        let store = Arc::new(InMemoryEventStore::<DomainEvent>::new());
         let driver = Arc::new(ProjectionDriver::<EvidenceProjection, _>::new(
             SharedStore::new(Arc::clone(&store)),
         ));

@@ -64,17 +64,6 @@ struct Cli {
     #[arg(long)]
     dump_baseline: bool,
 
-    /// Use an in-memory event store for the daemon run.
-    ///
-    /// REQUIRED until a durable PGNO-backed `EventStore` impl lands
-    /// (follow-up to mission `cherry-pit-pardosa-deletion-1779215265`).
-    /// Without this flag, `main` panics at boot — silent persistence
-    /// loss is not acceptable.
-    ///
-    /// With this flag, events are NOT persisted across restarts.
-    #[arg(long)]
-    in_memory: bool,
-
     /// Number of concurrent repository workers.
     #[arg(long, default_value_t = config::DEFAULT_MAX_WORKERS)]
     max_workers: usize,
@@ -92,22 +81,6 @@ struct Cli {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    // cherry-pit-pardosa removal (mission
-    // cherry-pit-pardosa-deletion-1779215265) left no durable EventStore
-    // substrate. The daemon path must therefore opt in to the transient
-    // in-memory substitute via `--in-memory`, or panic at boot. Silent
-    // persistence loss is not acceptable. `--dump-baseline` is exempt
-    // because it is a one-shot read against whatever store state exists
-    // for the current invocation (in-memory means an empty replay).
-    assert!(
-        cli.dump_baseline || cli.in_memory,
-        "gh-report: no persistent EventStore is wired (cherry-pit-pardosa \
-         was removed; PGNO-backed successor pending). Re-run with \
-         --in-memory to use a transient in-process store, accepting that \
-         events will NOT survive restart. See follow-up bd issue \
-         (consumer-rewrite-over-pgno).",
-    );
-
     // Handle --dump-baseline before initializing tracing (pure stdout output).
     //
     // δ.3c-ii: baseline.msgpack is gone. The dump now replays the event
@@ -122,7 +95,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
         let events_dir = cli.store_dir.join("events").join(org);
         let projections_dir = cli.store_dir.join("projections").join(org);
-        let app_state = gh_report::app::state::AppState::with_stores(&events_dir, projections_dir);
+        let app_state =
+            gh_report::app::state::AppState::with_stores(&events_dir, projections_dir).await?;
         if let Err(e) = app_state.snapshot_fast_path_init().await {
             eprintln!("error: projection init failed: {e}");
             std::process::exit(1);
@@ -279,26 +253,9 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_in_memory() {
-        let cli =
-            Cli::try_parse_from(["gh-report", "--org", "test-org", "--in-memory"]).unwrap();
-        assert!(cli.in_memory);
-    }
-
-    #[test]
-    fn cli_default_no_in_memory() {
-        let cli = Cli::try_parse_from(["gh-report", "--org", "test-org"]).unwrap();
-        assert!(!cli.in_memory);
-    }
-
-    #[test]
-    fn cli_dump_baseline_does_not_require_in_memory() {
-        // --dump-baseline is a one-shot read; the panic-at-boot guard
-        // exempts it. Parsing is sufficient to confirm the flag combo
-        // is valid; main()'s runtime gate is exercised separately.
+    fn cli_dump_baseline_parses() {
         let cli =
             Cli::try_parse_from(["gh-report", "--org", "test-org", "--dump-baseline"]).unwrap();
         assert!(cli.dump_baseline);
-        assert!(!cli.in_memory);
     }
 }

@@ -45,9 +45,8 @@
 
 use std::sync::Arc;
 
-use cherry_pit_core::testing::InMemoryEventStore;
 use cherry_pit_core::{CorrelationContext, EventStore};
-use gh_report::app::state::AppState;
+use gh_report::app::state::{AppState, EventStoreImpl};
 use gh_report::domain::checks::{
     BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersResult,
     CodeownersStatus, DependabotResult, DependabotStatus, RepositoryChecks, SecretScanningResult,
@@ -56,15 +55,12 @@ use gh_report::domain::checks::{
 use gh_report::domain::events::DomainEvent;
 use gh_report::domain::evidence::RepositoryEvidence;
 use gh_report::domain::repository::{Repository, Visibility};
+use pardosa_eventstore::PardosaLogEventStore;
 
 #[tokio::test]
-#[ignore = "depends on cross-restart persistence; InMemoryEventStore substitute (cherry-pit-pardosa-deletion-1779215265) drops state on each `with_stores` call. Re-enable when the PGNO-backed successor EventStore lands (R-B/R-C of mission cpp-cl-b1 introduce a fresh test on top of this harness)."]
 async fn bootstrap_replay_populates_routing_indices() {
-    // ── Arrange: seed an InMemoryEventStore with one Run and one
-    // Repo aggregate, then drop the store handle.
-    // (was: a PardosaFileEventStore seeded over a tempdir; the restart
-    // path then re-opened the same dir. Under the in-memory substitute
-    // there is no shared substrate — see follow-up bd issue.)
+    // ── Arrange: seed a PardosaLogEventStore with one Run and one
+    // Repo aggregate, then drop the store handle (flock released).
     let tmp = tempfile::tempdir().expect("tempdir");
     let events_dir = tmp.path().join("events");
     let projections_dir = tmp.path().join("projections");
@@ -72,8 +68,11 @@ async fn bootstrap_replay_populates_routing_indices() {
     std::fs::create_dir_all(&projections_dir).expect("mk projections dir");
 
     {
-        let store = Arc::new(InMemoryEventStore::<DomainEvent>::new());
-        let _ = &events_dir; // (was: open over events_dir; see follow-up bd issue)
+        let store = Arc::new(
+            PardosaLogEventStore::<DomainEvent>::open(&events_dir)
+                .await
+                .expect("open seed store"),
+        );
         let ctx = CorrelationContext::none();
 
         // Run aggregate: SweepStarted with batch_id "batch-replay-001".
@@ -108,7 +107,9 @@ async fn bootstrap_replay_populates_routing_indices() {
 
     // ── Act: construct AppState over the seeded events dir and run
     // the bootstrap path.
-    let app_state = AppState::with_stores(&events_dir, projections_dir);
+    let app_state = AppState::with_stores(&events_dir, projections_dir)
+        .await
+        .expect("with_stores");
     app_state
         .snapshot_fast_path_init()
         .await
@@ -191,8 +192,10 @@ async fn restart_rehydrates_projection_state() {
     std::fs::create_dir_all(&events_dir).expect("mk events dir");
     std::fs::create_dir_all(&projections_dir).expect("mk projections dir");
 
-    let app_state = AppState::with_stores(&events_dir, projections_dir);
-    let event_store: &Arc<InMemoryEventStore<DomainEvent>> = app_state
+    let app_state = AppState::with_stores(&events_dir, projections_dir)
+        .await
+        .expect("with_stores");
+    let event_store: &Arc<EventStoreImpl> = app_state
         .event_store
         .as_ref()
         .expect("event_store wired by with_stores");
