@@ -295,6 +295,7 @@ impl<T> Dragline<T> {
     /// Panics if the fiber disappears from the lookup between the
     /// read-check and the mutable update — impossible under single-threaded
     /// access.
+    // TODO(PAR-0017): drive `LockedRescuePolicy` (`PreserveAuditTrail` vs `AcceptDataLoss`) from the server-mediated state-machine bus; current `_policy` is consumed but unobserved. See docs/adr/pardosa/PAR-0017-state-machine-bus-architecture.md.
     pub fn rescue(
         &mut self,
         domain_id: DomainId,
@@ -405,6 +406,7 @@ impl<T> Dragline<T> {
     /// Panics if the fiber disappears from the lookup between the
     /// read-check and the mutable update — impossible under single-threaded
     /// access.
+    // TODO(PAR-0017): route `MigrationPolicy` decisions through the state-machine bus rather than direct library calls. See docs/adr/pardosa/PAR-0017-state-machine-bus-architecture.md.
     pub fn migrate_fiber(
         &mut self,
         domain_id: DomainId,
