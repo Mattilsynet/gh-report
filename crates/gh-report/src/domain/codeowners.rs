@@ -4,7 +4,7 @@
 //! live in the domain layer because they appear in [`super::checks::CodeownersResult`]
 //! and in evidence serialization, making them part of the core domain model.
 
-use pardosa_encoding::Encode;
+use cherry_pit_core::pardosa_encoding::Encode;
 use serde::{Deserialize, Serialize};
 
 /// Reason a CODEOWNERS file was found but not parsed.
@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// ```
 /// use gh_report::domain::codeowners::CodeownersTruncationReason;
-/// use pardosa_encoding::Encode;
+/// use cherry_pit_core::pardosa_encoding::Encode;
 /// let mut out = Vec::new();
 /// CodeownersTruncationReason::OversizedBase64.encode(&mut out);
 /// assert_eq!(out, vec![1u8]);
@@ -65,7 +65,7 @@ impl Encode for CodeownersTruncationReason {
 ///
 /// ```
 /// use gh_report::domain::codeowners::ParsedCodeowners;
-/// use pardosa_encoding::Encode;
+/// use cherry_pit_core::pardosa_encoding::Encode;
 /// let parsed = ParsedCodeowners {
 ///     entries: Vec::new(),
 ///     unique_owners: Vec::new(),
@@ -107,7 +107,7 @@ impl Encode for ParsedCodeowners {
 ///
 /// ```
 /// use gh_report::domain::codeowners::CodeownersEntry;
-/// use pardosa_encoding::Encode;
+/// use cherry_pit_core::pardosa_encoding::Encode;
 /// let entry = CodeownersEntry {
 ///     pattern: "*.rs".to_string(),
 ///     owners: vec!["@team".to_string()],

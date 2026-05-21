@@ -247,7 +247,7 @@ fn smi_msgpack_on_disk_format_byte_equivalent() {
 /// `src/domain/events.rs`.
 #[test]
 fn sweep_started_snapshot_signature_encode_byte_stable() {
-    use pardosa_encoding::to_vec;
+    use cherry_pit_core::pardosa_encoding::to_vec;
 
     let original = DomainEvent::SweepStarted {
         org: "test-org".into(),

@@ -1,6 +1,6 @@
 //! Evidence artifact types produced by collection runs.
 
-use pardosa_encoding::Encode;
+use cherry_pit_core::pardosa_encoding::Encode;
 use serde::{Deserialize, Serialize};
 
 use super::auth::{AuthMode, Capability, TokenTier};

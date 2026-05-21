@@ -34,34 +34,22 @@ cherry-pit-storage = { version = "0.1.0", path = "../cherry-pit-storage" }
 # `testing` feature: needed for `InMemoryEventStore<DomainEvent>` as a
 # **test double** inside `#[cfg(test)]` modules in `src/app/state.rs` and
 # `src/app/projection_runtime.rs`. Production paths use
-# `pardosa-eventstore::PardosaLogEventStore` exclusively. The feature
-# cannot be relegated to `[dev-dependencies]` because the same crate
-# alias is used in both production (`EventStore` trait imports) and
-# test code, and Cargo would treat the two activations as conflicting
-# unification states.
+# `cherry_pit_gateway::MsgpackFileStore<DomainEvent>` exclusively. The
+# feature cannot be relegated to `[dev-dependencies]` because the same
+# crate alias is used in both production (`EventStore` trait imports)
+# and test code, and Cargo would treat the two activations as
+# conflicting unification states.
 cherry-pit-core = { workspace = true, features = ["testing"] }
 
-# pardosa-encoding — CHE-0064:R2 supertrait of CoreDomainEvent. Required for
-# the hand-rolled `Encode` impls on this crate's domain types (PAR-0024:R5
-# prohibits `derive(Encode)`). Features `uuid` + `jiff` carried from workspace
-# default per commit-2b convention.
-pardosa-encoding = { workspace = true }
-
-# pardosa-genome — GenomeSafe derive substrate for sub-04-impls slices 1–6
-# (auth, codeowners, repository, checks, evidence, events). default features
-# (`std` + `derive`) enable the derive macro; no extra feature flags needed.
-pardosa-genome = { workspace = true }
-
-# pardosa-eventstore — persistent file-per-aggregate EventStore backend
-# wired by AppState::with_stores. Replaces the InMemoryEventStore interim
-# substrate; CHE-0043:R1 flock semantics restored via the crate's
-# <root>/.lock acquisition on open.
-pardosa-eventstore = { path = "../pardosa-eventstore" }
-
-# cherry-pit-gateway — InProcessEventBus<DomainEvent> only.
-# Durable persistence substrate is `pardosa-eventstore::PardosaLogEventStore`
-# (above). Aggregate id remains the singleton
-# `ORG_GOVERNANCE_AGGREGATE_ID = NonZeroU64::new(1)` per Tension-2.
+# cherry-pit-gateway — durable persistence substrate
+# (`MsgpackFileStore<DomainEvent>`, file-per-aggregate `.msgpack` files
+# under `<events_dir>` with CHE-0043:R1 flock held on `.lock`) plus
+# `InProcessEventBus<DomainEvent>` for in-process fan-out. Aggregate
+# id remains the singleton `ORG_GOVERNANCE_AGGREGATE_ID =
+# NonZeroU64::new(1)` per Tension-2. The `Encode` trait used by
+# hand-rolled impls on gh-report domain types is re-exported from
+# `cherry-pit-core` (CHE-0064:R2 supertrait) — gh-report does not
+# name the underlying encoding crate directly.
 cherry-pit-gateway = { workspace = true }
 
 # cherry-pit-agent — root composition crate. WU-6 v2 B5' uses
