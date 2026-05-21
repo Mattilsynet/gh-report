@@ -316,7 +316,7 @@ mod tests {
     use crate::app::services::merger::Merger;
     use crate::app::state::EventStoreImpl;
     use crate::domain::events::DomainEvent;
-    use pardosa_eventstore::PardosaLogEventStore;
+    use cherry_pit_gateway::MsgpackFileStore;
 
     /// Build a Track 4.0/3b-shaped `RunService` backed by:
     ///
@@ -334,6 +334,7 @@ mod tests {
     /// service; dropping the handle without aborting lets the task run
     /// for the test scope (the handle does **not** abort on drop, see
     /// `tokio::task::JoinHandle` docs).
+    #[expect(clippy::unused_async, reason = "preserves .await callers")]
     async fn build_service() -> (
         TempDir,
         Arc<EventStoreImpl>,
@@ -343,11 +344,7 @@ mod tests {
         RunService,
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(
-            PardosaLogEventStore::<DomainEvent>::open(dir.path())
-                .await
-                .expect("open test event store"),
-        );
+        let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(dir.path()));
         let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
         let runs_by_key = Arc::new(Mutex::new(HashMap::new()));
         let repos_by_key = Arc::new(Mutex::new(HashMap::new()));
@@ -492,7 +489,7 @@ mod tests {
         assert_tracker_seq(&tracker, assigned_id, 5);
 
         // (4) Single per-aggregate file (CHE-0036:R1).
-        assert_single_pardosa_file(&dir, assigned_id);
+        assert_single_msgpack_file(&dir, assigned_id);
     }
 
     /// Assert the stored envelope sequence for the run lifecycle test:
@@ -578,12 +575,10 @@ mod tests {
         );
     }
 
-    /// Assert that the unified event log exists at `<dir>/log` under
-    /// [`PardosaLogEventStore`]. `_id` is retained for call-site
-    /// clarity; under the unified-log layout every aggregate's events
-    /// land in the same file.
-    fn assert_single_pardosa_file(dir: &TempDir, _id: AggregateId) {
-        let expected = dir.path().join("log");
+    /// Assert that the singleton aggregate's msgpack file exists at
+    /// `<dir>/<id>.msgpack` under [`MsgpackFileStore`].
+    fn assert_single_msgpack_file(dir: &TempDir, id: AggregateId) {
+        let expected = dir.path().join(format!("{}.msgpack", id.get()));
         assert!(
             expected.exists(),
             "expected `{}` to exist under {}",
@@ -664,9 +659,9 @@ mod tests {
         };
         assert_eq!(tracked_seq.get(), 1, "first event has sequence 1");
 
-        // Under PardosaLogEventStore every aggregate's events land in
-        // the shared unified log at `<dir>/log`.
-        let expected = dir.path().join("log");
+        // Under MsgpackFileStore each aggregate's events land in
+        // `<dir>/<id>.msgpack`.
+        let expected = dir.path().join(format!("{}.msgpack", assigned_id.get()));
         assert!(
             expected.exists(),
             "expected `{}` to exist after first append",

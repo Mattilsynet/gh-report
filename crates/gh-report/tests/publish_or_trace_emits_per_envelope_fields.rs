@@ -33,7 +33,7 @@ use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
 
 use cherry_pit_core::{AggregateId, BusError, CorrelationContext, EventBus, EventEnvelope};
-use pardosa_eventstore::PardosaLogEventStore;
+use cherry_pit_gateway::MsgpackFileStore;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
 use tracing::Subscriber;
@@ -109,15 +109,11 @@ impl<S: Subscriber> Layer<S> for CaptureLayer {
 
 #[tokio::test]
 async fn publish_failure_emits_structured_error_per_envelope() {
-    // Persistence: PardosaLogEventStore over a tempdir. Publish failure
-    // is non-fatal per CHE-0024:R1; events stay durable in the log even
-    // when the bus refuses them.
+    // Persistence: MsgpackFileStore over a tempdir. Publish failure
+    // is non-fatal per CHE-0024:R1; events stay durable in the per-aggregate
+    // msgpack files even when the bus refuses them.
     let dir = TempDir::new().expect("tempdir");
-    let store = Arc::new(
-        PardosaLogEventStore::<DomainEvent>::open(dir.path())
-            .await
-            .expect("open test event store"),
-    );
+    let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(dir.path()));
     let bus: Arc<FailingBus> = Arc::new(FailingBus);
     let runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>> =
         Arc::new(Mutex::new(HashMap::new()));

@@ -4,27 +4,26 @@
 //! (commands) or how it was delivered (infrastructure). Each variant
 //! captures the essential facts of a state transition.
 //!
-//! ## Encoding (pardosa-genome adoption — δ.2.b)
+//! ## Encoding (hand-rolled per PAR-0024:R5)
 //!
-//! `DomainEvent` derives `pardosa_encoding::Encode` via
-//! `#[derive(GenomeSafe)]` — the discriminant table and per-variant
-//! field order live on the enum's own rustdoc below. Emission is
-//! declaration-order for both the `u8` variant discriminant (via
-//! `#[repr(u8)]` + explicit `Variant = 0..=8` literals) and each
-//! variant's payload fields, per GEN-0037:R4. `Encode` satisfies the
-//! supertrait required on `cherry_pit_core::DomainEvent` per amended
-//! CHE-0010 and advances pardosa-genome adoption per CHE-0065:R1.
+//! `DomainEvent` carries a hand-rolled `pardosa_encoding::Encode` impl
+//! — the discriminant table and per-variant field order live on the
+//! enum's own rustdoc below. Emission is declaration-order for both the
+//! `u8` variant discriminant (via `#[repr(u8)]` + explicit
+//! `Variant = 0..=8` literals) and each variant's payload fields, per
+//! GEN-0037:R4. `Encode` satisfies the supertrait required on
+//! `cherry_pit_core::DomainEvent` per amended CHE-0010.
 //!
 //! The `#[serde(tag = "type")]` discriminator was removed in an
 //! earlier sub-mission and `event_type()` returns the `PascalCase`
 //! Rust variant name. `Serialize`/`Deserialize` derives remain on
 //! `DomainEvent` — they are load-bearing for the
-//! [`pardosa_eventstore::PardosaLogEventStore<DomainEvent>`] substrate
-//! and cannot be dropped without an atomic consumer-side swap.
-//! Without `#[serde(tag)]`, serde's default enum
-//! representation is external tagging (`{"RepoEvaluated": {...}}`),
-//! but no production path inspects that shape — wire identity flows
-//! through `Encode` and `event_type()`.
+//! `cherry_pit_gateway::MsgpackFileStore<DomainEvent>` substrate and
+//! cannot be dropped without an atomic consumer-side swap. Without
+//! `#[serde(tag)]`, serde's default enum representation is external
+//! tagging (`{"RepoEvaluated": {...}}`), but no production path
+//! inspects that shape — wire identity flows through `Encode` and
+//! `event_type()`.
 //!
 //! ## Variant evolution (CHE-0022:R5)
 //!
@@ -37,7 +36,7 @@
 //! to update the discriminant table on the enum's rustdoc and append
 //! the next `Variant = N` literal.
 
-use pardosa_genome::GenomeSafe;
+use pardosa_encoding::Encode;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::evidence::RepositoryEvidence;
@@ -53,16 +52,16 @@ use crate::domain::evidence::RepositoryEvidence;
 /// - Timestamps are ISO 8601 UTC strings (from `jiff::Timestamp::now()`).
 /// - `domain_key` values match the `inventory_key` on `Repository`.
 ///
-/// ## Wire format (GEN-0037:R4 + pardosa-derive)
+/// ## Wire format (GEN-0037:R4, hand-rolled)
 ///
-/// The `GenomeSafe` derive emits a `pardosa_encoding::Encode` impl that
-/// writes the `u8` discriminant (via `#[repr(u8)]` + explicit
-/// `Variant = 0..=8` literals below) followed by each payload field in
-/// declaration order. Variant reorder, insertion, removal, or field
-/// reorder within a variant is a wire-format break; new variants must
-/// be appended at the end with the next discriminant, and new fields
-/// must be appended at the end of their variant (CHE-0064:R2 +
-/// PAR-0024:R5 + CHE-0022:R5 additive evolution).
+/// The hand-rolled `Encode` impl below writes the `u8` discriminant
+/// (via `#[repr(u8)]` + explicit `Variant = 0..=8` literals) followed
+/// by each payload field in declaration order. Variant reorder,
+/// insertion, removal, or field reorder within a variant is a
+/// wire-format break; new variants must be appended at the end with
+/// the next discriminant, and new fields must be appended at the end
+/// of their variant (CHE-0064:R2 + PAR-0024:R5 + CHE-0022:R5 additive
+/// evolution).
 ///
 /// | Discriminant | Variant                    | Payload fields (declaration order)                                                                  |
 /// |--------------|----------------------------|-----------------------------------------------------------------------------------------------------|
@@ -79,7 +78,7 @@ use crate::domain::evidence::RepositoryEvidence;
 /// `RepoEvaluated.evidence: Option<Box<RepositoryEvidence>>` resolves
 /// via the `Option<T>` blanket → `Box<T>` blanket →
 /// `<RepositoryEvidence as Encode>::encode` chain in `pardosa-encoding`.
-#[derive(Debug, Clone, Serialize, Deserialize, GenomeSafe)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum DomainEvent {
     /// A scheduled sweep has started.
@@ -228,6 +227,130 @@ pub enum DomainEvent {
         /// ISO 8601 UTC timestamp.
         timestamp: String,
     } = 8,
+}
+
+impl Encode for DomainEvent {
+    // Nine-variant match; one arm per `DomainEvent` variant. Splitting
+    // into helpers per variant buys nothing — each arm is a straight
+    // sequence of field-encode calls with no shared structure.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "9 enum variants × ~12 lines each = 112 lines"
+    )]
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::SweepStarted {
+                org,
+                repo_count,
+                batch_id,
+                timestamp,
+                snapshot_signature,
+            } => {
+                out.push(0u8);
+                org.encode(out);
+                repo_count.encode(out);
+                batch_id.encode(out);
+                timestamp.encode(out);
+                snapshot_signature.encode(out);
+            }
+            Self::RepoEvaluated {
+                domain_key,
+                repo_name,
+                success,
+                source,
+                duration_ms,
+                timestamp,
+                evidence,
+            } => {
+                out.push(1u8);
+                domain_key.encode(out);
+                repo_name.encode(out);
+                success.encode(out);
+                source.encode(out);
+                duration_ms.encode(out);
+                timestamp.encode(out);
+                evidence.encode(out);
+            }
+            Self::RepoRemoved {
+                domain_key,
+                repo_name,
+                timestamp,
+            } => {
+                out.push(2u8);
+                domain_key.encode(out);
+                repo_name.encode(out);
+                timestamp.encode(out);
+            }
+            Self::SweepCompleted {
+                batch_id,
+                duration_ms,
+                repo_count,
+                timestamp,
+            } => {
+                out.push(3u8);
+                batch_id.encode(out);
+                duration_ms.encode(out);
+                repo_count.encode(out);
+                timestamp.encode(out);
+            }
+            Self::WebhookReceived {
+                action,
+                repo,
+                timestamp,
+            } => {
+                out.push(4u8);
+                action.encode(out);
+                repo.encode(out);
+                timestamp.encode(out);
+            }
+            Self::EvidencePublished {
+                page_count,
+                warm_start,
+                timestamp,
+            } => {
+                out.push(5u8);
+                page_count.encode(out);
+                warm_start.encode(out);
+                timestamp.encode(out);
+            }
+            Self::PartialEvidenceRendered {
+                batch_id,
+                page_count,
+                pending_repos,
+                timestamp,
+            } => {
+                out.push(6u8);
+                batch_id.encode(out);
+                page_count.encode(out);
+                pending_repos.encode(out);
+                timestamp.encode(out);
+            }
+            Self::SweepFailed {
+                batch_id,
+                error,
+                duration_ms,
+                timestamp,
+            } => {
+                out.push(7u8);
+                batch_id.encode(out);
+                error.encode(out);
+                duration_ms.encode(out);
+                timestamp.encode(out);
+            }
+            Self::SweepProgress {
+                batch_id,
+                completed,
+                total,
+                timestamp,
+            } => {
+                out.push(8u8);
+                batch_id.encode(out);
+                completed.encode(out);
+                total.encode(out);
+                timestamp.encode(out);
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for DomainEvent {
@@ -622,11 +745,11 @@ mod tests {
     /// (sub-mission δ.1 of pardosa-genome-adoption-schism).
     ///
     /// Locks the wire format of all 9 variants — plus the `evidence:
-    /// Some(_)` arm of `RepoEvaluated` — to literal byte sequences. δ.2's
-    /// `#[derive(GenomeSafe)]` swap must reproduce these bytes exactly; any
-    /// divergence is a wire-format break that would silently invalidate
-    /// the persisted event log (δ.3c-ii retired the prior
-    /// `baseline.msgpack` snapshot; the event log is now the only
+    /// Some(_)` arm of `RepoEvaluated` — to literal byte sequences. Any
+    /// future edit to the hand-rolled `Encode` impl must reproduce these
+    /// bytes exactly; any divergence is a wire-format break that would
+    /// silently invalidate the persisted event log (δ.3c-ii retired the
+    /// prior `baseline.msgpack` snapshot; the event log is now the only
     /// durable representation).
     ///
     /// Determinism: every payload uses literal `&str`/`u64`/`bool` values and

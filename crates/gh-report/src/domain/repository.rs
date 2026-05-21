@@ -1,6 +1,6 @@
 //! Repository domain model.
 
-use pardosa_genome::GenomeSafe;
+use pardosa_encoding::Encode;
 use serde::{Deserialize, Serialize};
 
 /// A normalized repository from inventory.
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 /// `topics`, `license_spdx`, `language`, `node_id`, `has_issues`) is
 /// excluded so that checkpoint and baseline deduplication are not
 /// affected by cosmetic changes to these fields.
-#[derive(Debug, Clone, Serialize, Deserialize, GenomeSafe)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Repository {
     /// Numeric or node ID from GitHub API.
     pub id: String,
@@ -56,6 +56,28 @@ pub struct Repository {
     pub license_spdx: Option<String>,
 }
 
+impl Encode for Repository {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.id.encode(out);
+        self.node_id.encode(out);
+        self.name.encode(out);
+        self.visibility.encode(out);
+        self.language.encode(out);
+        self.default_branch.encode(out);
+        self.archived.encode(out);
+        self.inventory_key.encode(out);
+        self.updated_at.encode(out);
+        self.has_issues.encode(out);
+        self.pushed_at.encode(out);
+        self.created_at.encode(out);
+        self.description.encode(out);
+        self.fork.encode(out);
+        self.html_url.encode(out);
+        self.topics.encode(out);
+        self.license_spdx.encode(out);
+    }
+}
+
 // ── Manual PartialEq / Eq ───────────────────────────────────────────
 //
 // Only identity and structural fields participate in equality.
@@ -77,7 +99,7 @@ impl PartialEq for Repository {
 impl Eq for Repository {}
 
 /// Repository visibility.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 #[serde(rename_all = "lowercase")]
 pub enum Visibility {
@@ -87,6 +109,12 @@ pub enum Visibility {
     Internal = 1,
     /// The repository is only visible to users with explicit access.
     Private = 2,
+}
+
+impl Encode for Visibility {
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.push(*self as u8);
+    }
 }
 
 impl std::fmt::Display for Visibility {

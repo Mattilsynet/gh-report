@@ -8,14 +8,18 @@
 //! For runtime classification logic (scope parsing, capability probing),
 //! see [`crate::github::auth`].
 
-use pardosa_genome::GenomeSafe;
+use pardosa_encoding::Encode;
 use serde::{Deserialize, Serialize};
 
 /// Supported authentication modes.
 ///
 /// Describes how the application authenticated with the GitHub API.
 /// Serialized into evidence artifacts for audit trail purposes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, GenomeSafe)]
+//
+// Wire format: hand-rolled `Encode` emits `*self as u8` per
+// `#[repr(u8)]` discriminant. Variant reorder/insert is a wire-format
+// break; new variants append (CHE-0064:R2 + PAR-0024:R5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 #[non_exhaustive]
 pub enum AuthMode {
@@ -31,6 +35,12 @@ pub enum AuthMode {
     /// Unknown or not yet determined (used as default before credential discovery).
     #[serde(rename = "unknown")]
     Unknown = 3,
+}
+
+impl Encode for AuthMode {
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.push(*self as u8);
+    }
 }
 
 impl std::fmt::Display for AuthMode {
@@ -49,7 +59,7 @@ impl std::fmt::Display for AuthMode {
 /// - Full: {repo, read:org, `security_events`} all present
 /// - Limited: Some scopes present but not the full set
 /// - Unknown: Unable to determine (e.g. GitHub App, fine-grained PAT, or unavailable)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum TokenTier {
@@ -59,6 +69,12 @@ pub enum TokenTier {
     Limited = 1,
     /// Unable to determine (e.g., GitHub App, fine-grained PAT).
     Unknown = 2,
+}
+
+impl Encode for TokenTier {
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.push(*self as u8);
+    }
 }
 
 impl std::fmt::Display for TokenTier {
@@ -76,12 +92,18 @@ impl std::fmt::Display for TokenTier {
 /// Each variant maps to a specific API family. Using an enum instead of
 /// string keys ensures typos are caught at compile time — a misspelled
 /// capability can never silently skip a security check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
     /// Organization-level secret scanning alerts.
     OrgSecretScanningAlerts = 0,
+}
+
+impl Encode for Capability {
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.push(*self as u8);
+    }
 }
 
 impl Capability {

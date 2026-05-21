@@ -36,7 +36,7 @@ use cherry_pit_core::testing::InMemoryEventStore;
 use cherry_pit_core::{AggregateId, ListableEventStore};
 use cherry_pit_projection::FileProjectionStore;
 use jiff::Timestamp;
-use pardosa_eventstore::{OpenError, PardosaLogEventStore};
+use cherry_pit_gateway::MsgpackFileStore;
 
 // Re-export server-state types referenced via this module.
 pub use crate::infra::server::state::{CachedPage, PageUpdateEvent};
@@ -47,12 +47,13 @@ pub use crate::domain::events::DomainEvent;
 /// Concrete event-store type wired into gh-report.
 ///
 /// The persistent file-per-aggregate backend
-/// [`pardosa_eventstore::PardosaLogEventStore`] restores the CHE-0043:R1
-/// flock semantics via `<root>/.lock`. All production paths construct
-/// the store via [`AppState::with_stores`]; test paths that don't need
-/// durable persistence construct an `AppState` without an `event_store`
-/// (see [`AppState::new`] under `#[cfg(test)]`).
-pub type EventStoreImpl = PardosaLogEventStore<DomainEvent>;
+/// [`cherry_pit_gateway::MsgpackFileStore`] writes one `<id>.msgpack`
+/// file per aggregate under `<events_dir>` and holds a `.lock` flock
+/// per CHE-0043:R1 (acquired lazily on first write). All production
+/// paths construct the store via [`AppState::with_stores`]; test paths
+/// that don't need durable persistence construct an `AppState` without
+/// an `event_store` (see [`AppState::new`] under `#[cfg(test)]`).
+pub type EventStoreImpl = MsgpackFileStore<DomainEvent>;
 
 // Re-export sub-aggregates for convenience.
 pub use crate::app::evidence_service::EvidenceState;
@@ -127,14 +128,6 @@ pub struct AppState {
     /// `<store_dir>/events/<org>/`; the singleton aggregate id is
     /// [`crate::projection::ORG_GOVERNANCE_AGGREGATE_ID`] (Tension-2
     /// single-aggregate lock).
-    ///
-    /// **B3' is additive wiring only**: this handle is constructed and
-    /// held but is **not yet exercised** by collectors. B7' lands the
-    /// collector rewrite that calls `event_store.append(...)` then
-    /// `bus.publish(...)` per BC-v2-1 / CHE-0024:R1
-    /// persist-then-publish ordering. Until B7', the field exists for
-    /// B5' driver wiring (snapshot-fast-path replay) and to surface a
-    /// non-zero `cargo tree` dep on cherry-pit-pardosa.
     ///
     /// `None` only in test-builder paths that don't supply a
     /// `store_dir`. Daemon construction always supplies it.
@@ -391,24 +384,22 @@ fn build_services(
     (run, repo, webhook)
 }
 
-/// Per-construction unique tempdir + opened [`PardosaLogEventStore`].
+/// Per-construction unique tempdir + [`MsgpackFileStore`].
 /// Used by test-only constructors ([`AppState::new`],
 /// [`AppStateBuilder::build`]) which don't model a real persistence
 /// scope but need a live `EventStore` handle for the Merger task.
 ///
-/// The directory is leaked (`TempDir::keep`) so the
-/// CHE-0043:R1 flock held by [`PardosaLogEventStore`] survives for
-/// the lifetime of the test; same pollution profile as the previous
-/// `noop_events_dir` helper. `/tmp` cleanup is the OS's problem.
+/// The directory is leaked (`TempDir::keep`) so the CHE-0043:R1 flock
+/// held by [`MsgpackFileStore`] (acquired lazily on first write)
+/// survives for the lifetime of the test; same pollution profile as
+/// the previous `noop_events_dir` helper. `/tmp` cleanup is the OS's
+/// problem.
 #[cfg(test)]
-async fn noop_event_store() -> Arc<PardosaLogEventStore<DomainEvent>> {
+#[expect(clippy::unused_async, reason = "preserves .await callers")]
+async fn noop_event_store() -> Arc<MsgpackFileStore<DomainEvent>> {
     let dir = tempfile::tempdir().expect("test tempdir");
     let path = dir.keep();
-    Arc::new(
-        PardosaLogEventStore::<DomainEvent>::open(&path)
-            .await
-            .expect("open noop test event store"),
-    )
+    Arc::new(MsgpackFileStore::<DomainEvent>::new(path))
 }
 
 /// Register the projection handler on the bus using a transient
@@ -545,34 +536,42 @@ impl AppState {
     ///
     /// File-layout note:
     ///
-    /// - `<store_dir>/events/<org>/<aggregate-id>.log` — per-aggregate
-    ///   event log owned by [`PardosaLogEventStore`]. The singleton
-    ///   [`crate::projection::ORG_GOVERNANCE_AGGREGATE_ID`] applies per
-    ///   Tension-2; an additional per-repo aggregate file is created
-    ///   on first `RepoEvaluated` for each repo.
+    /// - `<store_dir>/events/<org>/<aggregate-id>.msgpack` —
+    ///   per-aggregate event log owned by [`MsgpackFileStore`]. The
+    ///   singleton [`crate::projection::ORG_GOVERNANCE_AGGREGATE_ID`]
+    ///   applies per Tension-2; an additional per-repo aggregate file
+    ///   is created on first `RepoEvaluated` for each repo.
     /// - `<store_dir>/projections/<org>/1-evidence.snapshot.msgpack`
     ///   and `…1-evidence.checkpoint.msgpack` — paired snapshot +
     ///   checkpoint per CHE-0048:R1/R2.
     ///
     /// `<store_dir>/events/<org>/.lock` is held for the lifetime of the
-    /// returned `AppState`; a second daemon process pointed at the same
-    /// directory will fail [`OpenError::Lock`] at open time per
-    /// CHE-0043:R1.
+    /// returned `AppState` (acquired lazily on first write); a second
+    /// daemon process attempting to write to the same directory will
+    /// fail at write time per CHE-0043:R1.
     ///
     /// # Errors
     ///
-    /// Returns [`OpenError`] from [`PardosaLogEventStore::open`] —
-    /// lock contention, directory I/O, or a corrupt envelope discovered
-    /// during boot-time recovery.
+    /// Currently infallible — [`MsgpackFileStore::new`] is synchronous
+    /// and infallible; the `Result` shape is retained so callers don't
+    /// churn and future fallible-init variants remain a no-API-break.
     ///
     /// # Panics
     ///
     /// Panics if [`FileProjectionStore::new`] fails on `projections_dir`.
+    // `MsgpackFileStore::new` is sync+infallible, so the body has no
+    // awaits, but `with_stores` is called via `.await` from `main.rs`,
+    // the daemon, every test that constructs a real AppState, and the
+    // tempdir test harness in this file. Removing `async` cascades
+    // dozens of caller updates and rules out future fallible-init
+    // variants. Keeping `async` preserves API stability per brief S2
+    // ("keep the Result shape … preserves callers").
+    #[expect(clippy::unused_async, reason = "preserves .await callers; brief S2")]
     pub async fn with_stores(
         events_dir: &Path,
         projections_dir: PathBuf,
-    ) -> Result<Arc<Self>, OpenError> {
-        let event_store = Arc::new(PardosaLogEventStore::<DomainEvent>::open(events_dir).await?);
+    ) -> Result<Arc<Self>, std::io::Error> {
+        let event_store = Arc::new(MsgpackFileStore::<DomainEvent>::new(events_dir));
         let projection_store = Arc::new(
             FileProjectionStore::<crate::projection::EvidenceProjection>::new(
                 projections_dir,

@@ -173,7 +173,7 @@ mod tests {
     use crate::app::services::merger::Merger;
     use crate::app::state::EventStoreImpl;
     use crate::domain::events::DomainEvent;
-    use pardosa_eventstore::PardosaLogEventStore;
+    use cherry_pit_gateway::MsgpackFileStore;
 
     /// Build a Track 4.0/5-shaped `WebhookService` backed by a
     /// [`Merger`] task spawned over a shared tempdir
@@ -187,6 +187,7 @@ mod tests {
     /// The Merger
     /// [`tokio::task::JoinHandle`] is intentionally dropped — the
     /// task is kept alive by the [`mpsc::Sender`] inside the service.
+    #[expect(clippy::unused_async, reason = "preserves .await callers")]
     async fn build_service() -> (
         TempDir,
         Arc<EventStoreImpl>,
@@ -196,11 +197,7 @@ mod tests {
         WebhookService,
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(
-            PardosaLogEventStore::<DomainEvent>::open(dir.path())
-                .await
-                .expect("open test event store"),
-        );
+        let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(dir.path()));
         let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
         let runs_by_key = Arc::new(Mutex::new(HashMap::new()));
         let repos_by_key = Arc::new(Mutex::new(HashMap::new()));
@@ -307,9 +304,9 @@ mod tests {
         };
         assert_eq!(tracked_seq.get(), 1);
 
-        // Under PardosaLogEventStore every aggregate's events land in
-        // the shared unified log at `<dir>/log`.
-        let expected = dir.path().join("log");
+        // Under MsgpackFileStore each aggregate's events land in
+        // `<dir>/<id>.msgpack`.
+        let expected = dir.path().join(format!("{}.msgpack", assigned_id.get()));
         assert!(
             expected.exists(),
             "expected `{}` to exist after first append",

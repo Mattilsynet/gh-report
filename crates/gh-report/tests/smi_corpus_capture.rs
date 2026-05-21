@@ -78,7 +78,7 @@ use std::sync::{Arc, Mutex};
 use cherry_pit_agent::InProcessEventBus;
 use cherry_pit_core::{AggregateId, CorrelationContext, EventStore};
 use gh_report::app::state::EventStoreImpl;
-use pardosa_eventstore::PardosaLogEventStore;
+use cherry_pit_gateway::MsgpackFileStore;
 
 use gh_report::app::services::Merger;
 use gh_report::app::services::repo_service::RepoService;
@@ -130,11 +130,7 @@ async fn capture_pre_smi_corpus() {
     // tightened from the single-index shorthand used in the pre-3a
     // capture harness).
     let store_dir = tempfile::tempdir().expect("tempdir");
-    let store = Arc::new(
-        PardosaLogEventStore::<DomainEvent>::open(store_dir.path())
-            .await
-            .expect("open smi_corpus_capture event store"),
-    );
+    let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(store_dir.path()));
     let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
     let runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>> =
         Arc::new(Mutex::new(HashMap::new()));
