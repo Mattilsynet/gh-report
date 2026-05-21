@@ -241,7 +241,6 @@ distinct addressable unit of state or behaviour:
 | `cherry-pit-web` | Axum-based HTTP surface; binds SEC-0003 resource layers at the library boundary. |
 | `cherry-pit-wq` | Work-queue primitives. |
 | `cherry-pit-storage` | File-system storage primitives; baseline snapshots subordinate to the event log. |
-| `cherry-pit-pardosa` | Adapter wrapping `pardosa::Dragline` behind `cherry_pit_core::EventStore`. |
 
 ### 6.2 pardosa
 
