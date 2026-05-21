@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use cherry_pit_core::{
-    AggregateId, CorrelationContext, DomainEvent, EventEnvelope, EventStore, StoreError,
+    AggregateId, CorrelationContext, DomainEvent, EventEnvelope, EventStore, ListableEventStore,
+    StoreError,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -543,6 +544,47 @@ impl<E: DomainEvent + Serialize + DeserializeOwned> EventStore for MsgpackFileSt
         self.write_atomic(&path, &existing).await?;
 
         Ok(new_envelopes)
+    }
+}
+
+impl<E: DomainEvent + Serialize + DeserializeOwned> ListableEventStore for MsgpackFileStore<E> {
+    /// Enumerate aggregate IDs by scanning the store directory for
+    /// `*.msgpack` files (skipping `.msgpack.tmp` orphans and the
+    /// `.lock` sentinel) and parsing each stem as a `u64`.
+    ///
+    /// Non-existent directory is treated as an empty store
+    /// (`Ok(vec![])`), matching the `scan_max_id` `NotFound` branch
+    /// and [CHE-0067]: a never-written store enumerates as empty,
+    /// not as an error.
+    fn list_aggregates(&self) -> Result<Vec<AggregateId>, StoreError> {
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(infrastructure_error(e)),
+        };
+
+        let mut ids = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(infrastructure_error)?;
+            let path = entry.path();
+            // Only files whose extension is exactly `msgpack` — this
+            // excludes `.msgpack.tmp` orphans (extension `tmp`) and
+            // the `.lock` sentinel (extension `lock`).
+            if path.extension().and_then(|s| s.to_str()) != Some("msgpack") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let Ok(raw) = stem.parse::<u64>() else {
+                continue;
+            };
+            let Some(nz) = NonZeroU64::new(raw) else {
+                continue;
+            };
+            ids.push(AggregateId::new(nz));
+        }
+        Ok(ids)
     }
 }
 
@@ -2296,5 +2338,51 @@ mod tests {
             !has_tmp_file(dir.path()).await,
             "CHE-0032:R2: .msgpack.tmp must be cleaned up after rename failure"
         );
+    }
+
+    // ── ListableEventStore (CHE-0067) ───────────────────────────────
+
+    #[tokio::test]
+    async fn list_aggregates_empty_store_returns_empty_vec() {
+        // A never-written store has no directory yet — list_aggregates
+        // must return `Ok(vec![])`, not an I/O error.
+        let dir = tempfile::tempdir().unwrap();
+        let store = MsgpackFileStore::<TestEvent>::new(dir.path().join("never-created"));
+
+        let ids = store.list_aggregates().expect("list on missing dir is Ok");
+        assert!(ids.is_empty(), "missing dir enumerates as empty");
+
+        // Also: an existing-but-empty dir is empty.
+        let store2 = MsgpackFileStore::<TestEvent>::new(dir.path());
+        let ids2 = store2.list_aggregates().expect("list on empty dir is Ok");
+        assert!(ids2.is_empty(), "empty dir enumerates as empty");
+    }
+
+    #[tokio::test]
+    async fn list_aggregates_returns_all_created_ids() {
+        // After two creates, list_aggregates returns both ids,
+        // ignoring `.lock` and any `.tmp` artefacts in the directory.
+        let dir = tempfile::tempdir().unwrap();
+        let store = MsgpackFileStore::<TestEvent>::new(dir.path());
+
+        let (id1, _) = store
+            .create(vec![TestEvent::Created { name: "a".into() }], no_ctx())
+            .await
+            .unwrap();
+        let (id2, _) = store
+            .create(vec![TestEvent::Created { name: "b".into() }], no_ctx())
+            .await
+            .unwrap();
+
+        // Pre-plant noise: a stray `.tmp` (orphan from a prior crashed
+        // write) and ensure the `.lock` sentinel that ensure_fenced
+        // creates does not appear in the result.
+        tokio::fs::write(dir.path().join("99.msgpack.tmp"), b"junk")
+            .await
+            .unwrap();
+
+        let mut ids = store.list_aggregates().expect("list is Ok");
+        ids.sort_by_key(|id| id.get());
+        assert_eq!(ids, vec![id1, id2], "list returns exactly the created ids");
     }
 }
