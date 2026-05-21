@@ -221,17 +221,6 @@ mod tests {
         }
     }
 
-    impl pardosa_encoding::Encode for TestEvent {
-        fn encode(&self, out: &mut Vec<u8>) {
-            match self {
-                Self::Happened { value } => {
-                    out.push(0u8);
-                    pardosa_encoding::Encode::encode(value, out);
-                }
-            }
-        }
-    }
-
     fn envelope(value: u32, seq: u64) -> EventEnvelope<TestEvent> {
         EventEnvelope::new(
             uuid::Uuid::now_v7(),

@@ -52,14 +52,6 @@ impl DomainEvent for E {
     }
 }
 
-impl pardosa_encoding::Encode for E {
-    fn encode(&self, out: &mut Vec<u8>) {
-        match self {
-            Self::Happened => out.push(0u8),
-        }
-    }
-}
-
 #[derive(Debug, Default)]
 struct Agg;
 impl Aggregate for Agg {

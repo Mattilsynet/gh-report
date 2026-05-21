@@ -39,15 +39,6 @@ impl DomainEvent for E1 {
         "e1"
     }
 }
-// CHE-0064:R2 — Encode hand-rolled so the cascade does not obscure
-// the real assertion (Gateway = G mismatch at AppState::new).
-impl pardosa_encoding::Encode for E1 {
-    fn encode(&self, out: &mut Vec<u8>) {
-        match self {
-            Self::Created => out.push(0u8),
-        }
-    }
-}
 #[derive(Default)]
 struct A1;
 impl Aggregate for A1 {
@@ -72,14 +63,6 @@ enum E2 {
 impl DomainEvent for E2 {
     fn event_type(&self) -> &'static str {
         "e2"
-    }
-}
-// CHE-0064:R2 — Encode hand-rolled (see E1 above).
-impl pardosa_encoding::Encode for E2 {
-    fn encode(&self, out: &mut Vec<u8>) {
-        match self {
-            Self::Created => out.push(0u8),
-        }
     }
 }
 #[derive(Default)]

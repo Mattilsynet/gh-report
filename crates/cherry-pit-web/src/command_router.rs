@@ -143,12 +143,6 @@ pub enum DispatchOutcome {
 /// impl DomainEvent for E {
 ///     fn event_type(&self) -> &'static str { "e.created" }
 /// }
-/// // CHE-0064:R2 — hand-rolled Encode is mandatory; not derive-able.
-/// impl pardosa_encoding::Encode for E {
-///     fn encode(&self, out: &mut Vec<u8>) {
-///         match self { Self::Created => out.push(0u8) }
-///     }
-/// }
 /// #[derive(Default)]
 /// struct A;
 /// impl Aggregate for A {

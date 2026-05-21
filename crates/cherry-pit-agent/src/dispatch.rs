@@ -335,14 +335,6 @@ mod tests {
         }
     }
 
-    impl pardosa_encoding::Encode for Ev {
-        fn encode(&self, out: &mut Vec<u8>) {
-            match self {
-                Self::Happened => out.push(0u8),
-            }
-        }
-    }
-
     #[derive(Debug, PartialEq, Eq)]
     enum Out {
         DoThing,

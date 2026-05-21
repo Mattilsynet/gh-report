@@ -27,10 +27,6 @@ jiff = { workspace = true }
 
 [dev-dependencies]
 cherry-pit-core = { workspace = true, features = ["testing"] }
-# CHE-0064:R2 — fixture events in this crate's tests hand-roll
-# `impl pardosa_encoding::Encode for X` alongside their
-# `impl DomainEvent for X` per the supertrait tightening.
-pardosa-encoding = { workspace = true }
 proptest = { workspace = true }
 tempfile = { workspace = true }
 futures-util = { workspace = true }
