@@ -1,5 +1,0 @@
-error: EVT-001: GenomeSafe cannot be derived for unions
- --> tests/compile_fail/union_type.rs:4:7
-  |
-4 | union Bad {
-  |       ^^^

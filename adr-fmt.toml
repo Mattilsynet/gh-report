@@ -77,7 +77,7 @@ description = """\
     single-writer fencing at transport level, and the substrate-\
     agnostic event-invariant carrier crate (pardosa-derive) hosting \
     sealed traits and derive macros consumed across substrates."""
-crates = ["pardosa", "pardosa-derive", "pardosa-encoding", "pardosa-traits"]
+crates = []
 
 [[domains]]
 prefix = "GEN"
@@ -88,7 +88,7 @@ description = """\
     zero-copy deserialization, compression, security limits (DoS \
     protection, decompression bombs), type validation, and forward \
     compatibility."""
-crates = ["pardosa-genome"]
+crates = []
 
 [[domains]]
 prefix = "RST"

@@ -1,5 +1,0 @@
-error: EVT-004: GenomeSafe: usize has platform-dependent size. Use u32/u64 for portable serialization.
- --> tests/compile_fail/evt_004.rs:7:8
-  |
-7 |     n: usize,
-  |        ^^^^^

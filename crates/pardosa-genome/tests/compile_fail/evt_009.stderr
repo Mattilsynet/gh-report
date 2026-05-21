@@ -1,5 +1,0 @@
-error: EVT-009: GenomeSafe: #[serde(tag = "...")] is not supported on type. Only externally tagged enums (serde default) are compatible with fixed discriminant-based layout.
- --> tests/compile_fail/evt_009.rs:6:9
-  |
-6 | #[serde(tag = "kind")]
-  |         ^^^

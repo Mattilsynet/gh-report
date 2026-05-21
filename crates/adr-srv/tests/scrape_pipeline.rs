@@ -182,9 +182,8 @@ async fn second_scrape_emits_zero_events_unchanged_corpus() {
 async fn references_preserve_order_and_duplicates() {
     let (marker_dir, _guard) = build_synthetic_corpus();
     let store_dir = TempDir::new().expect("store tempdir");
-    let store: Arc<PardosaFileEventStore<AdrIngested>> = Arc::new(
-        PardosaFileEventStore::new(store_dir.path()),
-    );
+    let store: Arc<PardosaFileEventStore<AdrIngested>> =
+        Arc::new(PardosaFileEventStore::new(store_dir.path()));
     let service = AdrService::new(Arc::clone(&store));
     let corpus: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
 

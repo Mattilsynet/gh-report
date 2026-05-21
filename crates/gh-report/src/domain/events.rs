@@ -214,7 +214,6 @@ pub enum DomainEvent {
     } = 8,
 }
 
-
 impl std::fmt::Display for DomainEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
