@@ -609,7 +609,6 @@ name = "cherry-pit-core"
 version = "0.1.0"
 dependencies = [
  "jiff",
- "pardosa-encoding",
  "proptest",
  "rmp-serde",
  "serde",

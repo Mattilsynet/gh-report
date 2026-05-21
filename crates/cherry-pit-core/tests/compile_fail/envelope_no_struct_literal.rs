@@ -16,14 +16,6 @@ impl DomainEvent for TestEvent {
     }
 }
 
-impl pardosa_encoding::Encode for TestEvent {
-    fn encode(&self, out: &mut Vec<u8>) {
-        match self {
-            TestEvent::Created => out.push(0u8),
-        }
-    }
-}
-
 fn main() {
     let _envelope = EventEnvelope::<TestEvent> {
         event_id: uuid::Uuid::now_v7(),

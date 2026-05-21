@@ -26,19 +26,12 @@ use crate::event::{DomainEvent, EventEnvelope};
 ///
 /// ```
 /// use cherry_pit_core::{Policy, DomainEvent, EventEnvelope};
-/// use pardosa_encoding::Encode;
 /// use serde::{Serialize, Deserialize};
 ///
 /// #[derive(Debug, Clone, Serialize, Deserialize)]
 /// enum OrderEvent { Placed }
 /// impl DomainEvent for OrderEvent {
 ///     fn event_type(&self) -> &'static str { "order.placed" }
-/// }
-/// // CHE-0064:R2 — hand-rolled Encode per PAR-0024:R5.
-/// impl Encode for OrderEvent {
-///     fn encode(&self, out: &mut Vec<u8>) {
-///         match self { OrderEvent::Placed => out.push(0u8) }
-///     }
 /// }
 ///
 /// enum NotifyAction { SendEmail(String) }
@@ -94,14 +87,6 @@ mod tests {
     impl DomainEvent for OrderEvent {
         fn event_type(&self) -> &'static str {
             "order.placed"
-        }
-    }
-    // CHE-0064:R2 — hand-rolled Encode (no derive) per PAR-0024:R5.
-    impl pardosa_encoding::Encode for OrderEvent {
-        fn encode(&self, out: &mut Vec<u8>) {
-            match self {
-                OrderEvent::Placed => out.push(0u8),
-            }
         }
     }
 
