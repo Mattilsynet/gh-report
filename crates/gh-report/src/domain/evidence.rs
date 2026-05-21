@@ -1,7 +1,6 @@
 //! Evidence artifact types produced by collection runs.
 
 use pardosa_encoding::Encode;
-use pardosa_genome::GenomeSafe;
 use serde::{Deserialize, Serialize};
 
 use super::auth::{AuthMode, Capability, TokenTier};
@@ -12,9 +11,9 @@ use super::repository::Repository;
 /// Information about the most recent commit on a repository's default branch.
 ///
 /// Wire format: fields encoded in struct declaration order via the
-/// `GenomeSafe`-emitted `Encode`. Field reorder is a wire-format break
+/// hand-rolled `Encode`. Field reorder is a wire-format break
 /// (CHE-0064:R2 + PAR-0024:R5).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LastCommitInfo {
     /// GitHub login of the committer (e.g., `"octocat"`), if available.
     pub committer_login: Option<String>,
@@ -24,15 +23,23 @@ pub struct LastCommitInfo {
     pub commit_date: Option<String>,
 }
 
+impl Encode for LastCommitInfo {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.committer_login.encode(out);
+        self.committer_name.encode(out);
+        self.commit_date.encode(out);
+    }
+}
+
 /// A repository with its collected check results (evidence).
 ///
 /// `repository` is owned: GEN-0045:R4 forbids Arc-as-field in
-/// `GenomeSafe`-deriving structs because shared ownership does not survive
-/// serialisation. Consumers that need to fan out the same `Repository`
-/// across async tasks wrap with `Arc::new(evidence.repository)` at the call
-/// site; cross-snapshot sharing semantics (CHE-0048) are preserved by those
-/// runtime Arcs, not by the field type.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, GenomeSafe)]
+/// types whose wire format is locked because shared ownership does not
+/// survive serialisation. Consumers that need to fan out the same
+/// `Repository` across async tasks wrap with `Arc::new(evidence.repository)`
+/// at the call site; cross-snapshot sharing semantics (CHE-0048) are
+/// preserved by those runtime Arcs, not by the field type.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RepositoryEvidence {
     /// The repository this evidence pertains to.
     pub repository: Repository,
@@ -41,6 +48,14 @@ pub struct RepositoryEvidence {
     /// Information about the most recent commit on the default branch.
     /// `None` when the data could not be collected (API error, empty repo, etc.).
     pub last_commit: Option<LastCommitInfo>,
+}
+
+impl Encode for RepositoryEvidence {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.repository.encode(out);
+        self.checks.encode(out);
+        self.last_commit.encode(out);
+    }
 }
 
 // Wire format documentation retained for the derive-emitted Encode:

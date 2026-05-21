@@ -3,7 +3,7 @@
 //! These are the internal domain representations of per-repository check outcomes.
 //! They use strongly typed enums rather than free-form strings.
 
-use pardosa_genome::GenomeSafe;
+use pardosa_encoding::Encode;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::codeowners::ParsedCodeowners;
@@ -16,7 +16,7 @@ use crate::domain::codeowners::ParsedCodeowners;
 /// `secret_scanning`, `dependabot_security_updates`, `branch_protection`,
 /// `codeowners`. Field reorder is a wire-format break (CHE-0064:R2 +
 /// PAR-0024:R5); new fields must append.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, GenomeSafe)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RepositoryChecks {
     /// Security policy check result.
     pub security_policy: SecurityPolicyResult,
@@ -41,7 +41,7 @@ pub struct RepositoryChecks {
 /// Fields encode in declaration order via `Encode::encode`: `status`,
 /// `evidence`, `path`, `timestamp`. Field reorder is a wire-format break
 /// (CHE-0064:R2 + PAR-0024:R5); new fields must append.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecurityPolicyResult {
     /// Whether a security policy was detected.
     pub status: SecurityPolicyStatus,
@@ -69,7 +69,7 @@ pub struct SecurityPolicyResult {
 /// SecurityPolicyStatus::Fail.encode(&mut out);
 /// assert_eq!(out, vec![1u8]);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum SecurityPolicyStatus {
@@ -95,7 +95,7 @@ pub enum SecurityPolicyStatus {
 /// SecurityPolicyEvidence::File.encode(&mut out);
 /// assert_eq!(out, vec![1u8]);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum SecurityPolicyEvidence {
@@ -128,7 +128,7 @@ pub enum SecurityPolicyEvidence {
 /// `has_open_alerts`, `alerts_observable`, `reason`, `timestamp`. Field
 /// reorder is a wire-format break (CHE-0064:R2 + PAR-0024:R5); new fields
 /// must append.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecretScanningResult {
     /// Whether secret scanning is enabled on the repository.
     pub status: SecretScanningStatus,
@@ -157,7 +157,7 @@ pub struct SecretScanningResult {
 /// SecretScanningStatus::Disabled.encode(&mut out);
 /// assert_eq!(out, vec![1u8]);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum SecretScanningStatus {
@@ -189,7 +189,7 @@ impl std::fmt::Display for SecretScanningStatus {
 /// Fields encode in declaration order via `Encode::encode`: `status`, `reason`,
 /// `timestamp`. Field reorder is a wire-format break (CHE-0064:R2 +
 /// PAR-0024:R5); new fields must append.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DependabotResult {
     /// Whether Dependabot security updates are enabled on the repository.
     pub status: DependabotStatus,
@@ -214,7 +214,7 @@ pub struct DependabotResult {
 /// DependabotStatus::Paused.encode(&mut out);
 /// assert_eq!(out, vec![1u8]);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum DependabotStatus {
@@ -246,7 +246,7 @@ impl std::fmt::Display for DependabotStatus {
 /// Fields encode in declaration order via `Encode::encode`: `status`, `details`,
 /// `timestamp`. Field reorder is a wire-format break (CHE-0064:R2 +
 /// PAR-0024:R5); new fields must append.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BranchProtectionResult {
     /// Overall branch protection status.
     pub status: BranchProtectionStatus,
@@ -271,7 +271,7 @@ pub struct BranchProtectionResult {
 /// BranchProtectionStatus::Partial.encode(&mut out);
 /// assert_eq!(out, vec![1u8]);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum BranchProtectionStatus {
@@ -300,7 +300,7 @@ impl std::fmt::Display for BranchProtectionStatus {
 /// `has_pr`, `required_reviewers`, `has_status_checks`, `admin_equivalent`,
 /// `has_broad_bypass`, `reason`. Field reorder is a wire-format break
 /// (CHE-0064:R2 + PAR-0024:R5); new fields must append.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BranchProtectionDetails {
     /// Name of the repository's default branch.
     pub default_branch: String,
@@ -483,7 +483,7 @@ impl BranchControls {
 /// Fields encode in declaration order via `Encode::encode`: `status`, `path`,
 /// `timestamp`, `parsed`, `truncation`. Field reorder is a wire-format break
 /// (CHE-0064:R2 + PAR-0024:R5); new fields must append.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodeownersResult {
     /// Whether a CODEOWNERS file was found and in a conforming location.
     pub status: CodeownersStatus,
@@ -515,7 +515,7 @@ pub struct CodeownersResult {
 /// CodeownersStatus::NonConforming.encode(&mut out);
 /// assert_eq!(out, vec![1u8]);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum CodeownersStatus {
@@ -537,6 +537,115 @@ impl std::fmt::Display for CodeownersStatus {
             Self::Absent => write!(f, "absent"),
             Self::Unknown => write!(f, "unknown"),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hand-rolled `Encode` impls (declaration-order fields; `*self as u8` for
+// `#[repr(u8)]` enums). Field/variant reorder is a wire-format break;
+// new fields/variants must append (CHE-0064:R2 + PAR-0024:R5).
+// ---------------------------------------------------------------------------
+
+impl Encode for RepositoryChecks {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.security_policy.encode(out);
+        self.secret_scanning.encode(out);
+        self.dependabot_security_updates.encode(out);
+        self.branch_protection.encode(out);
+        self.codeowners.encode(out);
+    }
+}
+
+impl Encode for SecurityPolicyResult {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.status.encode(out);
+        self.evidence.encode(out);
+        self.path.encode(out);
+        self.timestamp.encode(out);
+    }
+}
+
+impl Encode for SecurityPolicyStatus {
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.push(*self as u8);
+    }
+}
+
+impl Encode for SecurityPolicyEvidence {
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.push(*self as u8);
+    }
+}
+
+impl Encode for SecretScanningResult {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.status.encode(out);
+        self.has_open_alerts.encode(out);
+        self.alerts_observable.encode(out);
+        self.reason.encode(out);
+        self.timestamp.encode(out);
+    }
+}
+
+impl Encode for SecretScanningStatus {
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.push(*self as u8);
+    }
+}
+
+impl Encode for DependabotResult {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.status.encode(out);
+        self.reason.encode(out);
+        self.timestamp.encode(out);
+    }
+}
+
+impl Encode for DependabotStatus {
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.push(*self as u8);
+    }
+}
+
+impl Encode for BranchProtectionResult {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.status.encode(out);
+        self.details.encode(out);
+        self.timestamp.encode(out);
+    }
+}
+
+impl Encode for BranchProtectionStatus {
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.push(*self as u8);
+    }
+}
+
+impl Encode for BranchProtectionDetails {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.default_branch.encode(out);
+        self.has_pr.encode(out);
+        self.required_reviewers.encode(out);
+        self.has_status_checks.encode(out);
+        self.admin_equivalent.encode(out);
+        self.has_broad_bypass.encode(out);
+        self.reason.encode(out);
+    }
+}
+
+impl Encode for CodeownersResult {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.status.encode(out);
+        self.path.encode(out);
+        self.timestamp.encode(out);
+        self.parsed.encode(out);
+        self.truncation.encode(out);
+    }
+}
+
+impl Encode for CodeownersStatus {
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.push(*self as u8);
     }
 }
 

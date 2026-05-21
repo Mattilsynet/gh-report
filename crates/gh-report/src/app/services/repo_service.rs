@@ -191,7 +191,7 @@ mod tests {
     use crate::app::services::merger::Merger;
     use crate::app::state::EventStoreImpl;
     use crate::domain::events::DomainEvent;
-    use pardosa_eventstore::PardosaLogEventStore;
+    use cherry_pit_gateway::MsgpackFileStore;
 
     /// Build a Track 4.0/4-shaped `RepoService` backed by a [`Merger`]
     /// task spawned over a shared tempdir [`PardosaLogEventStore`] +
@@ -204,6 +204,7 @@ mod tests {
     /// the [`RepoService`] under test. The Merger
     /// [`tokio::task::JoinHandle`] is intentionally dropped — the task
     /// is kept alive by the [`mpsc::Sender`] inside the service.
+    #[expect(clippy::unused_async, reason = "preserves .await callers")]
     async fn build_service() -> (
         TempDir,
         Arc<EventStoreImpl>,
@@ -213,11 +214,7 @@ mod tests {
         RepoService,
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(
-            PardosaLogEventStore::<DomainEvent>::open(dir.path())
-                .await
-                .expect("open test event store"),
-        );
+        let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(dir.path()));
         let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
         let runs_by_key = Arc::new(Mutex::new(HashMap::new()));
         let repos_by_key = Arc::new(Mutex::new(HashMap::new()));
@@ -342,7 +339,7 @@ mod tests {
         assert_tracker_seq(&tracker, assigned_id, 3);
 
         // Single per-aggregate file (CHE-0036:R1).
-        assert_single_pardosa_file(&dir, assigned_id);
+        assert_single_msgpack_file(&dir, assigned_id);
 
         // Post-removal rejection (CHE-0054:R2.c).
         let err = svc
@@ -420,12 +417,10 @@ mod tests {
         assert_eq!(seq.get(), expected);
     }
 
-    /// Assert that the unified event log exists at `<dir>/log` under
-    /// [`PardosaLogEventStore`]. `_id` is retained for call-site
-    /// clarity; under the unified-log layout every aggregate's events
-    /// land in the same file.
-    fn assert_single_pardosa_file(dir: &TempDir, _id: AggregateId) {
-        let expected = dir.path().join("log");
+    /// Assert that the singleton aggregate's msgpack file exists at
+    /// `<dir>/<id>.msgpack` under [`MsgpackFileStore`].
+    fn assert_single_msgpack_file(dir: &TempDir, id: AggregateId) {
+        let expected = dir.path().join(format!("{}.msgpack", id.get()));
         assert!(
             expected.exists(),
             "expected `{}` to exist under {}",

@@ -234,14 +234,20 @@ fn smi_msgpack_on_disk_format_byte_equivalent() {
 /// `domain/events.rs`).
 ///
 /// Not gated behind `#[ignore]`: the test operates on the hand-rolled
-/// `Encode` / `Decode` impls directly, independent of the SMI corpus
-/// fixture that's still in flight under CHE-0065. δ.3c-ii (bead
-/// `adr-fmt-baao9`) consumes this contract when it threads
-/// `build_snapshot_signature(...)` through `StartSweep`; the encoded
-/// `Some(_)` payload must reach the projection unchanged.
+/// `Encode` impl directly. δ.3c-ii (bead `adr-fmt-baao9`) consumes
+/// this contract when it threads `build_snapshot_signature(...)`
+/// through `StartSweep`; the encoded `Some(_)` payload must reach the
+/// projection unchanged.
+///
+/// The prior `from_bytes` (Decode) round-trip was retired in the
+/// pardosa-removal mission: gh-report no longer depends on
+/// `pardosa-encoding::Decode`; persistence reads use serde via
+/// `MsgpackFileStore`. `Encode` byte-stability is locked by the
+/// `events::tests` byte-equality regression at
+/// `src/domain/events.rs`.
 #[test]
-fn sweep_started_snapshot_signature_round_trip() {
-    use pardosa_encoding::{from_bytes, to_vec};
+fn sweep_started_snapshot_signature_encode_byte_stable() {
+    use pardosa_encoding::to_vec;
 
     let original = DomainEvent::SweepStarted {
         org: "test-org".into(),
@@ -252,23 +258,14 @@ fn sweep_started_snapshot_signature_round_trip() {
     };
 
     let bytes = to_vec(&original);
-    let decoded: DomainEvent =
-        from_bytes(&bytes).expect("decode SweepStarted with Some(snapshot_signature)");
-
-    let DomainEvent::SweepStarted {
-        org,
-        repo_count,
-        batch_id,
-        timestamp,
-        snapshot_signature,
-    } = decoded
-    else {
-        panic!("expected SweepStarted variant after round-trip");
-    };
-
-    assert_eq!(org, "test-org");
-    assert_eq!(repo_count, 42);
-    assert_eq!(batch_id, "batch-001");
-    assert_eq!(timestamp, "2026-04-20T12:00:00Z");
-    assert_eq!(snapshot_signature.as_deref(), Some("test-sig"));
+    // First byte is the variant discriminant (SweepStarted = 0u8).
+    assert_eq!(bytes[0], 0u8, "SweepStarted discriminant must be 0");
+    // The Some(_) tag (1u8) appears after the four leading String
+    // fields; we don't pin the exact offset here — the comprehensive
+    // byte-equality regression in src/domain/events.rs locks the full
+    // wire format.
+    assert!(
+        bytes.contains(&1u8),
+        "encoded SweepStarted with Some(snapshot_signature) must contain the Some-tag"
+    );
 }

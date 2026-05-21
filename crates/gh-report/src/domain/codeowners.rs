@@ -4,7 +4,7 @@
 //! live in the domain layer because they appear in [`super::checks::CodeownersResult`]
 //! and in evidence serialization, making them part of the core domain model.
 
-use pardosa_genome::GenomeSafe;
+use pardosa_encoding::Encode;
 use serde::{Deserialize, Serialize};
 
 /// Reason a CODEOWNERS file was found but not parsed.
@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 /// CodeownersTruncationReason::OversizedBase64.encode(&mut out);
 /// assert_eq!(out, vec![1u8]);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, GenomeSafe)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum CodeownersTruncationReason {
@@ -47,6 +47,12 @@ pub enum CodeownersTruncationReason {
     DecodeFailed = 3,
     /// Decoded bytes were not valid UTF-8.
     InvalidUtf8 = 4,
+}
+
+impl Encode for CodeownersTruncationReason {
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.push(*self as u8);
+    }
 }
 
 /// Parsed CODEOWNERS file content.
@@ -69,7 +75,7 @@ pub enum CodeownersTruncationReason {
 /// parsed.encode(&mut out);
 /// assert!(!out.is_empty());
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParsedCodeowners {
     /// Individual CODEOWNERS entries (pattern + owners).
     pub entries: Vec<CodeownersEntry>,
@@ -81,6 +87,14 @@ pub struct ParsedCodeowners {
     /// being parsed. Surfaced for observability so silent data loss is
     /// detectable from evidence alone.
     pub skipped_lines: u32,
+}
+
+impl Encode for ParsedCodeowners {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.entries.encode(out);
+        self.unique_owners.encode(out);
+        self.skipped_lines.encode(out);
+    }
 }
 
 /// A single CODEOWNERS entry: a file pattern and its owners.
@@ -102,10 +116,17 @@ pub struct ParsedCodeowners {
 /// entry.encode(&mut out);
 /// assert!(!out.is_empty());
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, GenomeSafe)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodeownersEntry {
     /// File pattern (e.g., `*.js`, `src/`, `/docs/`).
     pub pattern: String,
     /// Owner references (e.g., `@org/team`, `@user`).
     pub owners: Vec<String>,
+}
+
+impl Encode for CodeownersEntry {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.pattern.encode(out);
+        self.owners.encode(out);
+    }
 }

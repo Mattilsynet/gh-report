@@ -55,11 +55,11 @@ use gh_report::domain::checks::{
 use gh_report::domain::events::DomainEvent;
 use gh_report::domain::evidence::RepositoryEvidence;
 use gh_report::domain::repository::{Repository, Visibility};
-use pardosa_eventstore::PardosaLogEventStore;
+use cherry_pit_gateway::MsgpackFileStore;
 
 #[tokio::test]
 async fn bootstrap_replay_populates_routing_indices() {
-    // ── Arrange: seed a PardosaLogEventStore with one Run and one
+    // ── Arrange: seed a MsgpackFileStore with one Run and one
     // Repo aggregate, then drop the store handle (flock released).
     let tmp = tempfile::tempdir().expect("tempdir");
     let events_dir = tmp.path().join("events");
@@ -68,11 +68,7 @@ async fn bootstrap_replay_populates_routing_indices() {
     std::fs::create_dir_all(&projections_dir).expect("mk projections dir");
 
     {
-        let store = Arc::new(
-            PardosaLogEventStore::<DomainEvent>::open(&events_dir)
-                .await
-                .expect("open seed store"),
-        );
+        let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(&events_dir));
         let ctx = CorrelationContext::none();
 
         // Run aggregate: SweepStarted with batch_id "batch-replay-001".
@@ -154,10 +150,6 @@ async fn bootstrap_replay_populates_routing_indices() {
     }
 }
 
-/// Regression test for the cross-aggregate projection-rehydration gap
-/// documented in bd issue `adr-fmt-5rwbu` (mission
-/// `cherry-pit-pardosa-deletion-1779215265`, R-B of the cleanup arc).
-///
 /// At HEAD (pre-fix), `AppState::snapshot_fast_path_init` folds events
 /// into `projection_state` only for `ORG_GOVERNANCE_AGGREGATE_ID` (=1).
 /// `RepoEvaluated` envelopes are emitted by per-repo aggregates on
