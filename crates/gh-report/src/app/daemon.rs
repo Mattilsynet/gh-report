@@ -89,7 +89,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     // durable stores at sibling subtrees per BC-v2-13 (events/ and
     // projections/ disjoint):
     //
-    //   <store_dir>/events/<org>/      — PardosaLogEventStore<DomainEvent>
+    //   <store_dir>/events/<org>/      — MsgpackFileStore<DomainEvent>
     //                                     (file-per-aggregate, xxh64-framed
     //                                     pardosa_encoding::Encode envelopes)
     //   <store_dir>/projections/<org>/ — FileProjectionStore<EvidenceProjection>

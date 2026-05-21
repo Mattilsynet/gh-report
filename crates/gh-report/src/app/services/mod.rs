@@ -33,7 +33,7 @@
 //! Per moltke instruction: hopper picks at Inc B7'a-5/6 wiring.
 //! Resolution: **per-aggregate concrete `EventStore` instances** (three
 //! `Arc<EventStoreImpl>`, one per service, where `EventStoreImpl` is the
-//! durable `pardosa_eventstore::PardosaLogEventStore<DomainEvent>`).
+//! durable `cherry_pit_gateway::MsgpackFileStore<DomainEvent>`).
 //! CHE-0054:R8
 //! permits either; per-aggregate keeps each service self-contained
 //! and matches the per-aggregate write-coordination granularity
@@ -44,7 +44,7 @@
 //!
 //! Resolved at Inc B7'a-6 wiring time, not here. `AppState::new()`
 //! constructs services eagerly against the durable
-//! [`pardosa_eventstore::PardosaLogEventStore`] substrate; no
+//! [`cherry_pit_gateway::MsgpackFileStore`] substrate; no
 //! `Option`-around-service wiring remains.
 
 pub mod merger;

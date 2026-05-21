@@ -320,7 +320,7 @@ mod tests {
 
     /// Build a Track 4.0/3b-shaped `RunService` backed by:
     ///
-    /// - A tempdir [`PardosaLogEventStore`] (Gap-β bead `adr-fmt-luxw`);
+    /// - A tempdir [`MsgpackFileStore`] (Gap-β bead `adr-fmt-luxw`);
     /// - An [`InProcessEventBus`] for fan-out,
     /// - A [`Merger`] task spawned over the same store/bus/indices/tracker
     ///   so the assertions below observe the Merger-driven shared state

@@ -24,10 +24,10 @@
 //! removed) which only rehydrated `ORG_GOVERNANCE_AGGREGATE_ID`. The
 //! CHE-0048 line-24 replay-as-rebuild exemption applies: there is no
 //! on-disk snapshot/checkpoint surface in the current build — the
-//! durable event log under [`PardosaLogEventStore`] is the SSOT and
+//! durable event log under [`MsgpackFileStore`] is the SSOT and
 //! the projection is rebuilt by replay on every boot.
 //!
-//! [`PardosaLogEventStore`]: pardosa_eventstore::PardosaLogEventStore
+//! [`MsgpackFileStore`]: cherry_pit_gateway::MsgpackFileStore
 //! ## What this module does NOT wire (locked-out)
 //!
 //! - **No [`cherry_pit_agent::App`]**: the agent's `App` requires a
@@ -46,12 +46,12 @@
 //!
 //! ## File-lock note
 //!
-//! `PardosaLogEventStore::open` acquires an exclusive advisory
-//! `flock(2)` on `<root>/.lock` at open time and holds it for the
-//! store's lifetime (CHE-0043:R1). The startup replay path therefore
-//! shares the durable `Arc<PardosaLogEventStore<DomainEvent>>` held
+//! `MsgpackFileStore` acquires an exclusive advisory `flock(2)` on
+//! `<root>/.lock` lazily on first write and holds it for the store's
+//! lifetime (CHE-0043:R1). The startup replay path therefore
+//! shares the durable `Arc<MsgpackFileStore<DomainEvent>>` held
 //! by `AppState` into the [`ProjectionDriver`] via the [`SharedStore`]
-//! newtype below — there is no second `open` call and therefore no
+//! newtype below — there is no second store handle and therefore no
 //! contention on the directory lock.
 //!
 //! ## Why a `Mutex<EvidenceProjection>` and not lock-free
@@ -81,7 +81,7 @@ use crate::projection::EvidenceProjection;
 /// Shareable handle around any `Arc<S>` where `S: EventStore`.
 ///
 /// Generic over the concrete store so production paths can wrap
-/// [`pardosa_eventstore::PardosaLogEventStore`] while test paths reuse
+/// [`cherry_pit_gateway::MsgpackFileStore`] while test paths reuse
 /// `cherry_pit_core::testing::InMemoryEventStore`. The newtype gives
 /// the `ProjectionDriver` a `Clone`able handle without leaking the
 /// concrete store type into the driver's generic surface beyond what
