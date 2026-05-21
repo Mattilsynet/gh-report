@@ -1,5 +1,0 @@
-error: EVT-002: GenomeSafe: HashMap has non-deterministic iteration order. Use BTreeMap for deterministic serialization.
- --> tests/compile_fail/ref_hashmap.rs:6:20
-  |
-6 |     data: &'static HashMap<String, u32>,
-  |                    ^^^^^^^^^^^^^^^^^^^^

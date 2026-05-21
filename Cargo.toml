@@ -11,12 +11,6 @@ members = [
     "crates/cherry-pit-storage",
     "crates/cherry-pit-web",
     "crates/gh-report",
-    "crates/pardosa",
-    "crates/pardosa-derive",
-    "crates/pardosa-encoding",
-    "crates/pardosa-eventstore",
-    "crates/pardosa-genome",
-    "crates/pardosa-traits",
 ]
 
 [workspace.package]
@@ -110,16 +104,6 @@ cherry-pit-gateway = { path = "crates/cherry-pit-gateway", version = "0.1.0" }
 cherry-pit-projection = { path = "crates/cherry-pit-projection", version = "0.1.0" }
 cherry-pit-web = { path = "crates/cherry-pit-web", version = "0.1.0" }
 cherry-pit-agent = { path = "crates/cherry-pit-agent", version = "0.1.0" }
-pardosa = { path = "crates/pardosa", version = "0.2.0" }
-# CHE-0064: pardosa-encoding is part of cherry-pit-core's substrate ring
-# (admitted by CHE-0064 amending CHE-0029:R4). Features `uuid` + `jiff`
-# enable `Encode for uuid::Uuid` and `Encode for jiff::Timestamp`, both
-# of which appear as EventEnvelope field types (cherry-pit-core/src/event.rs).
-pardosa-encoding = { path = "crates/pardosa-encoding", version = "0.1.0", features = ["uuid", "jiff"] }
-# pardosa-genome: GenomeSafe derive substrate. default-features = ["std", "derive"]
-# already enables the GenomeSafe derive (via pardosa-derive); no extra features needed.
-pardosa-genome = { path = "crates/pardosa-genome", version = "0.1.0" }
-pardosa-eventstore = { path = "crates/pardosa-eventstore", version = "0.1.0" }
 
 # === Async runtime extras ===
 tokio-util = { version = "0.7", default-features = false }
