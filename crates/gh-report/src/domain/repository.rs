@@ -1,6 +1,5 @@
 //! Repository domain model.
 
-use cherry_pit_core::pardosa_encoding::Encode;
 use serde::{Deserialize, Serialize};
 
 /// A normalized repository from inventory.
@@ -56,28 +55,6 @@ pub struct Repository {
     pub license_spdx: Option<String>,
 }
 
-impl Encode for Repository {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.id.encode(out);
-        self.node_id.encode(out);
-        self.name.encode(out);
-        self.visibility.encode(out);
-        self.language.encode(out);
-        self.default_branch.encode(out);
-        self.archived.encode(out);
-        self.inventory_key.encode(out);
-        self.updated_at.encode(out);
-        self.has_issues.encode(out);
-        self.pushed_at.encode(out);
-        self.created_at.encode(out);
-        self.description.encode(out);
-        self.fork.encode(out);
-        self.html_url.encode(out);
-        self.topics.encode(out);
-        self.license_spdx.encode(out);
-    }
-}
-
 // ── Manual PartialEq / Eq ───────────────────────────────────────────
 //
 // Only identity and structural fields participate in equality.
@@ -109,12 +86,6 @@ pub enum Visibility {
     Internal = 1,
     /// The repository is only visible to users with explicit access.
     Private = 2,
-}
-
-impl Encode for Visibility {
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.push(*self as u8);
-    }
 }
 
 impl std::fmt::Display for Visibility {

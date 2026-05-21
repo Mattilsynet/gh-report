@@ -3,7 +3,6 @@
 //! These are the internal domain representations of per-repository check outcomes.
 //! They use strongly typed enums rather than free-form strings.
 
-use cherry_pit_core::pardosa_encoding::Encode;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::codeowners::ParsedCodeowners;
@@ -64,10 +63,7 @@ pub struct SecurityPolicyResult {
 ///
 /// ```
 /// use gh_report::domain::checks::SecurityPolicyStatus;
-/// use cherry_pit_core::pardosa_encoding::Encode;
-/// let mut out = Vec::new();
-/// SecurityPolicyStatus::Fail.encode(&mut out);
-/// assert_eq!(out, vec![1u8]);
+/// assert_eq!(SecurityPolicyStatus::Fail as u8, 1);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
@@ -90,10 +86,7 @@ pub enum SecurityPolicyStatus {
 ///
 /// ```
 /// use gh_report::domain::checks::SecurityPolicyEvidence;
-/// use cherry_pit_core::pardosa_encoding::Encode;
-/// let mut out = Vec::new();
-/// SecurityPolicyEvidence::File.encode(&mut out);
-/// assert_eq!(out, vec![1u8]);
+/// assert_eq!(SecurityPolicyEvidence::File as u8, 1);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
@@ -152,10 +145,7 @@ pub struct SecretScanningResult {
 ///
 /// ```
 /// use gh_report::domain::checks::SecretScanningStatus;
-/// use cherry_pit_core::pardosa_encoding::Encode;
-/// let mut out = Vec::new();
-/// SecretScanningStatus::Disabled.encode(&mut out);
-/// assert_eq!(out, vec![1u8]);
+/// assert_eq!(SecretScanningStatus::Disabled as u8, 1);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
@@ -209,10 +199,7 @@ pub struct DependabotResult {
 ///
 /// ```
 /// use gh_report::domain::checks::DependabotStatus;
-/// use cherry_pit_core::pardosa_encoding::Encode;
-/// let mut out = Vec::new();
-/// DependabotStatus::Paused.encode(&mut out);
-/// assert_eq!(out, vec![1u8]);
+/// assert_eq!(DependabotStatus::Paused as u8, 1);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
@@ -266,10 +253,7 @@ pub struct BranchProtectionResult {
 ///
 /// ```
 /// use gh_report::domain::checks::BranchProtectionStatus;
-/// use cherry_pit_core::pardosa_encoding::Encode;
-/// let mut out = Vec::new();
-/// BranchProtectionStatus::Partial.encode(&mut out);
-/// assert_eq!(out, vec![1u8]);
+/// assert_eq!(BranchProtectionStatus::Partial as u8, 1);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
@@ -510,10 +494,7 @@ pub struct CodeownersResult {
 ///
 /// ```
 /// use gh_report::domain::checks::CodeownersStatus;
-/// use cherry_pit_core::pardosa_encoding::Encode;
-/// let mut out = Vec::new();
-/// CodeownersStatus::NonConforming.encode(&mut out);
-/// assert_eq!(out, vec![1u8]);
+/// assert_eq!(CodeownersStatus::NonConforming as u8, 1);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
@@ -537,115 +518,6 @@ impl std::fmt::Display for CodeownersStatus {
             Self::Absent => write!(f, "absent"),
             Self::Unknown => write!(f, "unknown"),
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Hand-rolled `Encode` impls (declaration-order fields; `*self as u8` for
-// `#[repr(u8)]` enums). Field/variant reorder is a wire-format break;
-// new fields/variants must append (CHE-0064:R2 + PAR-0024:R5).
-// ---------------------------------------------------------------------------
-
-impl Encode for RepositoryChecks {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.security_policy.encode(out);
-        self.secret_scanning.encode(out);
-        self.dependabot_security_updates.encode(out);
-        self.branch_protection.encode(out);
-        self.codeowners.encode(out);
-    }
-}
-
-impl Encode for SecurityPolicyResult {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.status.encode(out);
-        self.evidence.encode(out);
-        self.path.encode(out);
-        self.timestamp.encode(out);
-    }
-}
-
-impl Encode for SecurityPolicyStatus {
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.push(*self as u8);
-    }
-}
-
-impl Encode for SecurityPolicyEvidence {
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.push(*self as u8);
-    }
-}
-
-impl Encode for SecretScanningResult {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.status.encode(out);
-        self.has_open_alerts.encode(out);
-        self.alerts_observable.encode(out);
-        self.reason.encode(out);
-        self.timestamp.encode(out);
-    }
-}
-
-impl Encode for SecretScanningStatus {
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.push(*self as u8);
-    }
-}
-
-impl Encode for DependabotResult {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.status.encode(out);
-        self.reason.encode(out);
-        self.timestamp.encode(out);
-    }
-}
-
-impl Encode for DependabotStatus {
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.push(*self as u8);
-    }
-}
-
-impl Encode for BranchProtectionResult {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.status.encode(out);
-        self.details.encode(out);
-        self.timestamp.encode(out);
-    }
-}
-
-impl Encode for BranchProtectionStatus {
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.push(*self as u8);
-    }
-}
-
-impl Encode for BranchProtectionDetails {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.default_branch.encode(out);
-        self.has_pr.encode(out);
-        self.required_reviewers.encode(out);
-        self.has_status_checks.encode(out);
-        self.admin_equivalent.encode(out);
-        self.has_broad_bypass.encode(out);
-        self.reason.encode(out);
-    }
-}
-
-impl Encode for CodeownersResult {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.status.encode(out);
-        self.path.encode(out);
-        self.timestamp.encode(out);
-        self.parsed.encode(out);
-        self.truncation.encode(out);
-    }
-}
-
-impl Encode for CodeownersStatus {
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.push(*self as u8);
     }
 }
 

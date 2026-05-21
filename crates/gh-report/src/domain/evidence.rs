@@ -1,6 +1,5 @@
 //! Evidence artifact types produced by collection runs.
 
-use cherry_pit_core::pardosa_encoding::Encode;
 use serde::{Deserialize, Serialize};
 
 use super::auth::{AuthMode, Capability, TokenTier};
@@ -9,10 +8,6 @@ use super::metrics::{AggregatedMetrics, CollectionStatistics, SecretScanningObse
 use super::repository::Repository;
 
 /// Information about the most recent commit on a repository's default branch.
-///
-/// Wire format: fields encoded in struct declaration order via the
-/// hand-rolled `Encode`. Field reorder is a wire-format break
-/// (CHE-0064:R2 + PAR-0024:R5).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LastCommitInfo {
     /// GitHub login of the committer (e.g., `"octocat"`), if available.
@@ -21,14 +16,6 @@ pub struct LastCommitInfo {
     pub committer_name: Option<String>,
     /// ISO 8601 timestamp of the commit.
     pub commit_date: Option<String>,
-}
-
-impl Encode for LastCommitInfo {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.committer_login.encode(out);
-        self.committer_name.encode(out);
-        self.commit_date.encode(out);
-    }
 }
 
 /// A repository with its collected check results (evidence).
@@ -49,19 +36,6 @@ pub struct RepositoryEvidence {
     /// `None` when the data could not be collected (API error, empty repo, etc.).
     pub last_commit: Option<LastCommitInfo>,
 }
-
-impl Encode for RepositoryEvidence {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.repository.encode(out);
-        self.checks.encode(out);
-        self.last_commit.encode(out);
-    }
-}
-
-// Wire format documentation retained for the derive-emitted Encode:
-// fields encode in struct declaration order via `Encode::encode` —
-// `repository`, `checks`, `last_commit`. Field reorder is a wire-format
-// break; new fields must be appended (CHE-0064:R2 + PAR-0024:R5).
 
 /// Assessment metadata for a collection run.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -98,26 +72,6 @@ pub struct AssessmentMetadata {
     /// rather than a fresh API collection.
     #[serde(default)]
     pub warm_start: bool,
-}
-
-// Wire format: fields encoded in struct declaration order via `Encode::encode`.
-// Field reorder is a wire-format break; new fields must be appended
-// (CHE-0064:R2 + PAR-0024:R5).
-impl Encode for AssessmentMetadata {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.date.encode(out);
-        self.organization.encode(out);
-        self.schema_version.encode(out);
-        self.run_timestamp.encode(out);
-        self.run_id.encode(out);
-        self.token_tier.encode(out);
-        self.token_scopes.encode(out);
-        self.auth_mode.encode(out);
-        self.rate_limit_warnings.encode(out);
-        self.unavailable_capabilities.encode(out);
-        self.inventory_fetched_at.encode(out);
-        self.warm_start.encode(out);
-    }
 }
 
 /// Complete evidence artifact for a collection run.
