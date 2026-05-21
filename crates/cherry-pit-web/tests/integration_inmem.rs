@@ -63,21 +63,6 @@ impl DomainEvent for CounterEvent {
     }
 }
 
-impl pardosa_encoding::Encode for CounterEvent {
-    fn encode(&self, out: &mut Vec<u8>) {
-        match self {
-            Self::Created { initial } => {
-                out.push(0u8);
-                pardosa_encoding::Encode::encode(initial, out);
-            }
-            Self::Incremented { by } => {
-                out.push(1u8);
-                pardosa_encoding::Encode::encode(by, out);
-            }
-        }
-    }
-}
-
 #[derive(Default)]
 struct Counter {
     count: u32,

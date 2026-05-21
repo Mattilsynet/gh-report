@@ -9,34 +9,34 @@ warning: unused imports: `BusError` and `EventBus`
    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
 
 error[E0271]: type mismatch resolving `<InProcessEventBus<EvB> as EventBus>::Event == EvA`
-   --> tests/compile_fail/mismatched_event_types.rs:116:9
-    |
-113 |     let _app = App::new(
-    |                -------- required by a bound introduced by this call
+  --> tests/compile_fail/mismatched_event_types.rs:99:9
+   |
+96 |     let _app = App::new(
+   |                -------- required by a bound introduced by this call
 ...
-116 |         InProcessEventBus::<EvB>::new(),
-    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `EvA`, found `EvB`
-    |
+99 |         InProcessEventBus::<EvB>::new(),
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `EvA`, found `EvB`
+   |
 note: required by a bound in `App::<G, S, B, P, D>::new`
-   --> src/app.rs
-    |
-    |     B: EventBus<Event = EventOf<G>>,
-    |                 ^^^^^^^^^^^^^^^^^^ required by this bound in `App::<G, S, B, P, D>::new`
+  --> src/app.rs
+   |
+   |     B: EventBus<Event = EventOf<G>>,
+   |                 ^^^^^^^^^^^^^^^^^^ required by this bound in `App::<G, S, B, P, D>::new`
 ...
-    |     pub fn new(gateway: G, store: S, bus: B, projections: P, dead_letter: D) -> Self {
-    |            --- required by a bound in this associated function
+   |     pub fn new(gateway: G, store: S, bus: B, projections: P, dead_letter: D) -> Self {
+   |            --- required by a bound in this associated function
 
 error[E0271]: type mismatch resolving `<InProcessEventBus<EvB> as EventBus>::Event == EvA`
-   --> tests/compile_fail/mismatched_event_types.rs:113:16
+   --> tests/compile_fail/mismatched_event_types.rs:96:16
     |
-113 |       let _app = App::new(
+ 96 |       let _app = App::new(
     |  ________________^
-114 | |         GwA,
-115 | |         StoreA,
-116 | |         InProcessEventBus::<EvB>::new(),
-117 | |         (),
-118 | |         TracingDeadLetterSink::new(),
-119 | |     );
+ 97 | |         GwA,
+ 98 | |         StoreA,
+ 99 | |         InProcessEventBus::<EvB>::new(),
+100 | |         (),
+101 | |         TracingDeadLetterSink::new(),
+102 | |     );
     | |_____^ expected `EvA`, found `EvB`
     |
 note: required by a bound in `App`

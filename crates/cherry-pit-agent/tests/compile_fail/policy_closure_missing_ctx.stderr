@@ -9,10 +9,10 @@ warning: unused imports: `BusError` and `EventBus`
    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
 
 error[E0593]: closure is expected to take 3 arguments, but it takes 2 arguments
-   --> tests/compile_fail/policy_closure_missing_ctx.rs:106:9
-    |
-106 |     app.register_policy(
-    |         ^^^^^^^^^^^^^^^ expected closure that takes 3 arguments
-107 |         P,
-108 |         |_out, _gw: &Gw| async move { Ok(()) },
-    |         ---------------- takes 2 arguments
+  --> tests/compile_fail/policy_closure_missing_ctx.rs:97:9
+   |
+97 |     app.register_policy(
+   |         ^^^^^^^^^^^^^^^ expected closure that takes 3 arguments
+98 |         P,
+99 |         |_out, _gw: &Gw| async move { Ok(()) },
+   |         ---------------- takes 2 arguments

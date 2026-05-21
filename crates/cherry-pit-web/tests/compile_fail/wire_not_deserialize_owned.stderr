@@ -1,13 +1,13 @@
 error[E0277]: the trait bound `W: serde::Deserialize<'de>` is not satisfied
-   --> tests/compile_fail/wire_not_deserialize_owned.rs:118:17
+   --> tests/compile_fail/wire_not_deserialize_owned.rs:109:17
     |
-118 |     type Wire = W;
+109 |     type Wire = W;
     |                 ^ unsatisfied trait bound
     |
 help: the trait `for<'de> Deserialize<'de>` is not implemented for `W`
-   --> tests/compile_fail/wire_not_deserialize_owned.rs:112:1
+   --> tests/compile_fail/wire_not_deserialize_owned.rs:103:1
     |
-112 | struct W;
+103 | struct W;
     | ^^^^^^^^
     = note: for local types consider adding `#[derive(serde::Deserialize)]` to your `W` type
     = note: for types from other crates check whether the crate offers a `serde` feature flag
