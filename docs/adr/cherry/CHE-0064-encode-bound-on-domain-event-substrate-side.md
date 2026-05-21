@@ -15,7 +15,7 @@ References: CHE-0029, CHE-0060, PAR-0021, GEN-0037, CHE-0058
 PAR-0021:R5 requires every persisted event to carry `precursor_hash =
 BLAKE3(canonical encode of predecessor)`. The hash is produced
 substrate-side inside `pardosa::Dragline::update/detach/rescue`, which
-holds `Dragline<EventEnvelope<E>>` in `cherry-pit-pardosa`. Computing
+holds `Dragline<EventEnvelope<E>>`. Computing
 the hash requires `EventEnvelope<E>: pardosa_encoding::Encode`, which in
 turn requires `E: Encode` and `AggregateId: Encode`. CHE-0060:R2 placed
 encoding locality at the trait-output boundary (frontier hashing in the
