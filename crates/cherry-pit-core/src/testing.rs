@@ -995,17 +995,6 @@ mod tests {
             "test.happened"
         }
     }
-    // CHE-0064:R2 — hand-rolled Encode (no derive) per PAR-0024:R5.
-    impl pardosa_encoding::Encode for TestEvent {
-        fn encode(&self, out: &mut Vec<u8>) {
-            match self {
-                TestEvent::Happened { value } => {
-                    out.push(0u8);
-                    value.encode(out);
-                }
-            }
-        }
-    }
 
     // ── FakeBus ───────────────────────────────────────────────
 

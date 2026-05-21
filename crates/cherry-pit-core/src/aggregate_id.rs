@@ -74,28 +74,6 @@ impl fmt::Display for AggregateId {
     }
 }
 
-// CHE-0064:R2 — hand-rolled Encode (no derive) per PAR-0024:R5.
-// Delegates verbatim to the inner `NonZeroU64`'s canonical encoding
-// (pardosa-encoding/src/lib.rs Encode for NonZeroU64). Wire-identical
-// to a bare `u64` LE — niche-optimisation of AggregateId is irrelevant
-// on the wire.
-impl pardosa_encoding::Encode for AggregateId {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.0.encode(out);
-    }
-}
-
-// Symmetric Decode — delegates to NonZeroU64's Decode, which rejects the
-// 0u64 niche violation as EventError::InvalidInput. Hand-rolled per
-// PAR-0024:R5 (Decode mirrors Encode; the encoding crate's traits are
-// deliberately not `#[derive]`-able).
-impl pardosa_encoding::Decode for AggregateId {
-    fn decode(d: &mut pardosa_encoding::Decoder<'_>) -> Result<Self, pardosa_encoding::EventError> {
-        let inner = <NonZeroU64 as pardosa_encoding::Decode>::decode(d)?;
-        Ok(Self(inner))
-    }
-}
-
 impl From<NonZeroU64> for AggregateId {
     fn from(id: NonZeroU64) -> Self {
         Self(id)
@@ -193,29 +171,6 @@ mod tests {
     }
 
     #[test]
-    fn pardosa_encoding_roundtrip() {
-        // δ.3a-pre — symmetric Encode/Decode via pardosa-encoding.
-        // Wire-identical to bare u64 LE per the Encode comment above.
-        for v in [1u64, 42, u64::MAX] {
-            let id = id(v);
-            let bytes = pardosa_encoding::to_vec(&id);
-            assert_eq!(bytes.len(), 8, "AggregateId encodes to 8 LE bytes");
-            let back: AggregateId = pardosa_encoding::from_bytes(&bytes).expect("decode");
-            assert_eq!(back, id);
-        }
-    }
-
-    #[test]
-    fn pardosa_encoding_rejects_zero() {
-        // NonZeroU64::decode rejects 0u64 as InvalidInput; AggregateId
-        // inherits the rejection through delegation.
-        let bytes = pardosa_encoding::to_vec(&0u64);
-        let err =
-            pardosa_encoding::from_bytes::<AggregateId>(&bytes).expect_err("zero must be rejected");
-        assert_eq!(err, pardosa_encoding::EventError::InvalidInput);
-    }
-
-    #[test]
     fn hash_consistent() {
         use std::collections::HashSet;
         let mut set = HashSet::new();
@@ -279,16 +234,6 @@ mod tests {
                 let id = AggregateId::new(NonZeroU64::new(val).unwrap());
                 let bytes = rmp_serde::to_vec(&id).unwrap();
                 let back: AggregateId = rmp_serde::from_slice(&bytes).unwrap();
-                prop_assert_eq!(back, id);
-            }
-
-            #[test]
-            fn aggregate_id_pardosa_encoding_roundtrip(val in 1..=u64::MAX) {
-                // δ.3a-pre — symmetric pardosa-encoding round-trip.
-                let id = AggregateId::new(NonZeroU64::new(val).unwrap());
-                let bytes = pardosa_encoding::to_vec(&id);
-                let back: AggregateId =
-                    pardosa_encoding::from_bytes(&bytes).expect("decode");
                 prop_assert_eq!(back, id);
             }
         }

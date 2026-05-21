@@ -40,7 +40,6 @@ use crate::event::DomainEvent;
 ///
 /// ```
 /// use cherry_pit_core::{Aggregate, DomainEvent};
-/// use pardosa_encoding::Encode;
 /// use serde::{Serialize, Deserialize};
 ///
 /// #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,12 +47,6 @@ use crate::event::DomainEvent;
 ///
 /// impl DomainEvent for CounterEvent {
 ///     fn event_type(&self) -> &'static str { "counter.incremented" }
-/// }
-/// // CHE-0064:R2 — hand-rolled Encode (no derive) per PAR-0024:R5.
-/// impl Encode for CounterEvent {
-///     fn encode(&self, out: &mut Vec<u8>) {
-///         match self { CounterEvent::Incremented => out.push(0u8) }
-///     }
 /// }
 ///
 /// #[derive(Default)]
@@ -110,19 +103,12 @@ pub trait Aggregate: Default + Send + Sync + 'static {
 ///
 /// ```
 /// use cherry_pit_core::{Aggregate, HandleCommand, Command, DomainEvent};
-/// use pardosa_encoding::Encode;
 /// use serde::{Serialize, Deserialize};
 ///
 /// #[derive(Debug, Clone, Serialize, Deserialize)]
 /// enum CounterEvent { Incremented }
 /// impl DomainEvent for CounterEvent {
 ///     fn event_type(&self) -> &'static str { "counter.incremented" }
-/// }
-/// // CHE-0064:R2 — hand-rolled Encode per PAR-0024:R5.
-/// impl Encode for CounterEvent {
-///     fn encode(&self, out: &mut Vec<u8>) {
-///         match self { CounterEvent::Incremented => out.push(0u8) }
-///     }
 /// }
 ///
 /// #[derive(Default)]
@@ -188,18 +174,6 @@ mod tests {
     impl DomainEvent for CounterEvent {
         fn event_type(&self) -> &'static str {
             "counter.incremented"
-        }
-    }
-
-    // CHE-0064:R2 — hand-rolled Encode (no derive) per PAR-0024:R5.
-    impl pardosa_encoding::Encode for CounterEvent {
-        fn encode(&self, out: &mut Vec<u8>) {
-            match self {
-                CounterEvent::Incremented(v) => {
-                    out.push(0u8);
-                    v.encode(out);
-                }
-            }
         }
     }
 

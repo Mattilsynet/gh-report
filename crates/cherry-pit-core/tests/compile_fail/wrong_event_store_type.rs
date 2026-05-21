@@ -16,14 +16,6 @@ impl DomainEvent for OrderEvent {
     }
 }
 
-impl pardosa_encoding::Encode for OrderEvent {
-    fn encode(&self, out: &mut Vec<u8>) {
-        match self {
-            OrderEvent::Placed => out.push(0u8),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum UserEvent {
     Registered,
@@ -32,14 +24,6 @@ enum UserEvent {
 impl DomainEvent for UserEvent {
     fn event_type(&self) -> &'static str {
         "user.registered"
-    }
-}
-
-impl pardosa_encoding::Encode for UserEvent {
-    fn encode(&self, out: &mut Vec<u8>) {
-        match self {
-            UserEvent::Registered => out.push(0u8),
-        }
     }
 }
 

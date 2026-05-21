@@ -75,15 +75,6 @@ mod store;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
-// Re-export `pardosa_encoding` so downstream crates implementing the
-// `DomainEvent` supertrait bound (CHE-0064:R2) can reach the `Encode`
-// trait without naming `pardosa-encoding` as a direct manifest entry.
-// Upstream pardosa-removal mission (gh-report) requires gh-report not
-// to name pardosa-* crates directly; this re-export is the load-bearing
-// affordance that makes that possible without dragging the encoding
-// crate's public surface inside cherry-pit-core itself.
-pub use pardosa_encoding;
-
 pub use aggregate::{Aggregate, HandleCommand};
 pub use aggregate_id::AggregateId;
 pub use bus::{CommandBus, EventBus};

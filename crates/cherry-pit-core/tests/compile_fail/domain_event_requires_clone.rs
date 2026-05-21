@@ -1,8 +1,8 @@
 /// Verifies that `DomainEvent` enforces the `Clone` supertrait
-/// (CHE-0010, amended 2026-05-18). Full supertrait set: Clone + Send +
-/// Sync + 'static + pardosa_encoding::Encode. `Clone` is exercised
-/// here as the most demonstrative single bound; the other bounds are
-/// covered by analogous reasoning.
+/// (CHE-0010, amended). Full supertrait set: Clone + Send + Sync +
+/// 'static + serde::Serialize + serde::de::DeserializeOwned. `Clone`
+/// is exercised here as the most demonstrative single bound; the
+/// other bounds are covered by analogous reasoning.
 use cherry_pit_core::DomainEvent;
 use serde::{Deserialize, Serialize};
 
