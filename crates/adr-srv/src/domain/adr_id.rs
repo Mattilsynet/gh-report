@@ -1,15 +1,11 @@
 //! `AdrId` — domain-prefix + zero-padded numeric identifier for an
-//! ADR. Newtype over the parsed-from-filename id, NOT `String`, per
-//! GEN-0042 / GEN-0045:R3 (no `&str` / `&String` in canonical-bytes
-//! event payload positions).
+//! ADR. Newtype over the parsed-from-filename id.
 //!
 //! Wire shape (load-bearing, frozen for M1.2 onward):
-//! 1. `domain: String` — emitted via `pardosa-encoding`'s `String`
-//!    Encode impl (length-prefixed UTF-8).
-//! 2. `number: u16` — fixed-width little-endian per pardosa-encoding's
-//!    primitive impl. `u16` is sufficient: AFM-0001 reserves
-//!    `0001..=9999`; `u16::MAX` = 65535 covers that range with margin
-//!    and keeps the on-disk payload smaller than `u32`.
+//! 1. `domain: String` — emitted via msgpack's `str` representation.
+//! 2. `number: u16` — fixed-width integer per msgpack. `u16` is
+//!    sufficient: AFM-0001 reserves `0001..=9999`; `u16::MAX` = 65535
+//!    covers that range with margin.
 //!
 //! Display: `"AFM-0001"`. `FromStr`: parses `"AFM-0001"` → `AdrId`.
 //! Construction validates the domain against the prefix set
@@ -19,7 +15,7 @@
 use core::fmt;
 use core::str::FromStr;
 
-use pardosa_genome::GenomeSafe;
+use serde::{Deserialize, Serialize};
 
 /// Domain prefixes mirrored from `adr-fmt.toml` `[domains.*]` entries.
 /// Kept as a static slice — runtime config-loading would couple this
@@ -63,7 +59,7 @@ impl fmt::Display for AdrIdError {
 impl std::error::Error for AdrIdError {}
 
 /// Newtype over the parsed-from-filename ADR id.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, GenomeSafe)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct AdrId {
     /// Domain prefix, e.g. `"AFM"`, `"CHE"`, `"PAR"`. One of
     /// [`KNOWN_DOMAINS`].
