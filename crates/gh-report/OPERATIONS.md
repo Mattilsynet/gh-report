@@ -394,7 +394,11 @@ Version history is maintained forward-only from this point. Prior versions exist
 
 When bumping, append a row with the new version, the date, and a one-line note describing what shape change drove the bump. The version of `EVIDENCE_SCHEMA_VERSION` is also surfaced in the report metadata so a baseline file's version is observable via `gh-report --dump-baseline`.
 
+### Event log format migration (2026-05)
 
+The durable event log under `<events_dir>` (typically `store/events/`) changed substrate from the pardosa append-only log (`pardosa_eventstore::PardosaLogEventStore`, segmented `.log` files) to MessagePack file-per-aggregate (`cherry_pit_gateway::MsgpackFileStore`, one `<aggregate-id>.msgpack` file per aggregate, atomic rewrite-on-append). The wire format of each event payload (the hand-rolled `pardosa_encoding::Encode` byte layout for `DomainEvent`) is unchanged.
+
+**Operator action on upgrade: wipe-and-restart.** The two substrates are not co-readable. Before starting the upgraded binary, stop the running daemon, delete the contents of `<events_dir>` (e.g. `rm -rf store/events/*`), and start the new binary. The next collection cycle will rebuild the event log from a fresh first append; baseline + checkpoint files under `store/` are unaffected and need not be touched. CHE-0043:R1 flock semantics (advisory lock on `<events_dir>/.lock`) are preserved across the change.
 
 ### systemd (recommended)
 
