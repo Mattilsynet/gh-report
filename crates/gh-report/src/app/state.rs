@@ -194,7 +194,7 @@ pub struct AppState {
     /// events into both routing indices and projection state. The
     /// CHE-0048 line-24 replay-as-rebuild exemption applies — there
     /// is no on-disk snapshot/checkpoint surface; the durable event
-    /// log under [`PardosaLogEventStore`] is the SSOT (bd `adr-fmt-5rwbu`).
+    /// log under [`MsgpackFileStore`] is the SSOT (bd `adr-fmt-5rwbu`).
     pub(crate) projection_state: Arc<Mutex<crate::projection::EvidenceProjection>>,
 
     /// Last-applied envelope sequence for the projection state.
@@ -525,9 +525,10 @@ impl AppState {
 impl AppState {
     /// Create a new `AppState` wired with both stores.
     ///
-    /// Opens [`PardosaLogEventStore`] over `<events_dir>` (acquiring the
-    /// CHE-0043:R1 advisory lock at `<events_dir>/.lock` and replaying
-    /// any existing per-aggregate logs) and constructs the durable
+    /// Constructs a [`MsgpackFileStore`] over `<events_dir>` (the
+    /// CHE-0043:R1 flock on `<events_dir>/.lock` is acquired lazily on
+    /// first write; per-aggregate `<id>.msgpack` files materialise on
+    /// first append) and constructs the durable
     /// [`FileProjectionStore`] over `<projections_dir>`. This is the
     /// only constructor that wires both durable stores; the daemon
     /// (`crate::app::daemon`) and the `--dump-baseline` branch of the
@@ -643,7 +644,7 @@ impl AppState {
     /// that Arc via
     /// [`crate::app::projection_runtime::SharedStore`]; no separate
     /// directory path is threaded through, and the CHE-0043:R1 advisory
-    /// lock acquired by [`PardosaLogEventStore::open`] in `with_stores`
+    /// lock acquired by [`MsgpackFileStore`] on first write in `with_stores`
     /// remains held for the lifetime of the `AppState` handle.
     ///
     /// # Errors

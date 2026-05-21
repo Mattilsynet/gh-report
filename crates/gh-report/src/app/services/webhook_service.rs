@@ -177,7 +177,7 @@ mod tests {
 
     /// Build a Track 4.0/5-shaped `WebhookService` backed by a
     /// [`Merger`] task spawned over a shared tempdir
-    /// [`PardosaLogEventStore`] + [`InProcessEventBus`] + the three
+    /// [`MsgpackFileStore`] + [`InProcessEventBus`] + the three
     /// routing indices + sequence tracker. Symmetric to the
     /// `RunService` 3b and `RepoService` step-4 test harnesses.
     ///

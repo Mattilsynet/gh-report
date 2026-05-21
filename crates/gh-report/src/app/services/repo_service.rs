@@ -194,7 +194,7 @@ mod tests {
     use cherry_pit_gateway::MsgpackFileStore;
 
     /// Build a Track 4.0/4-shaped `RepoService` backed by a [`Merger`]
-    /// task spawned over a shared tempdir [`PardosaLogEventStore`] +
+    /// task spawned over a shared tempdir [`MsgpackFileStore`] +
     /// [`InProcessEventBus`] + the three routing indices + sequence
     /// tracker. Symmetric to the `RunService` 3b test harness.
     ///

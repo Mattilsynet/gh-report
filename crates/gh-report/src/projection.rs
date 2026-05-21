@@ -4,7 +4,7 @@
 //! only. This module lands the type + `Projection` impl skeleton so later
 //! sub-missions can wire it:
 //!
-//! - **B3'** wires [`pardosa_eventstore::PardosaLogEventStore`] as the
+//! - **B3'** wires [`cherry_pit_gateway::MsgpackFileStore`] as the
 //!   durable `EventStore`.
 //! - **B4'** wires `FileProjectionStore<EvidenceProjection>` snapshot persistence.
 //! - **B5'** wires `ProjectionDriver` + `InProcessEventBus` (snapshot-fast-path).
@@ -67,8 +67,8 @@ use crate::domain::evidence::{AssessmentMetadata, RepositoryEvidence};
 /// — every `event_store.create` / `event_store.append` / `event_store.load`
 /// call in gh-report uses this constant.
 ///
-/// On-disk artefact path under [`PardosaLogEventStore`]:
-/// `<store_dir>/events/<org>/1.log` (file-per-aggregate, owned
+/// On-disk artefact path under [`cherry_pit_gateway::MsgpackFileStore`]:
+/// `<store_dir>/events/<org>/1.msgpack` (file-per-aggregate, owned
 /// exclusively while the CHE-0043:R1 flock on `<store_dir>/events/<org>/.lock`
 /// is held).
 pub const ORG_GOVERNANCE_AGGREGATE_ID: AggregateId = AggregateId::new(NonZeroU64::MIN);

@@ -37,7 +37,7 @@
 //!
 //! Every payload-side identifier (`batch_id`, `domain_key`,
 //! `delivery_id`, timestamps) is a literal string constant. The fresh
-//! tempdir-backed [`PardosaLogEventStore`] assigns `AggregateId`s from a
+//! tempdir-backed [`MsgpackFileStore`] assigns `AggregateId`s from a
 //! `u64` counter starting at 1, so a fresh store always produces the
 //! same id sequence for the same scenario. Envelope `event_id` (Uuid)
 //! and envelope `timestamp` are runtime metadata, intentionally NOT

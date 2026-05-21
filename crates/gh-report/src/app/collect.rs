@@ -3105,13 +3105,6 @@ mod tests {
         assert!(delivery_result.is_ok(), "delivery loop should exit cleanly");
     }
 
-    // δ.3c-ii: `saga_checkpoint_survives_baseline_save_failure` retired.
-    // The "baseline save failure → checkpoint survives" crash-safety
-    // mode it asserted is no longer applicable: on-disk baseline + sweep
-    // checkpoint persistence is gone, and durability of the event log
-    // is `cherry-pit-pardosa`'s domain (fsync-per-record, exclusive
-    // flock; CHE-0043:R1), not gh-report's.
-
     // ── Sub-mission 4 — EvidencePublished ordering (CHE-0054:R1.c/e) ─────
     //
     // Invariants under test, as observed on the event bus:
