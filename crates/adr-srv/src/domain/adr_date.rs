@@ -3,24 +3,11 @@
 //!
 //! Why a bespoke newtype rather than `jiff::civil::Date`?
 //!
-//! `pardosa-encoding` ships `Encode`/`Decode` impls for
-//! `jiff::Timestamp` (instant; nanoseconds since epoch) but NOT for
-//! `jiff::civil::Date`. The canonical-bytes payload positions in
-//! `AdrFrontmatter` need `Encode`/`Decode` (CHE-0064:R2), so we
-//! cannot place `jiff::civil::Date` there without either:
-//!   (a) adding a foreign Encode/Decode impl in pardosa-encoding for
-//!       `civil::Date` — that's a substrate change, out of scope for
-//!       this mission;
-//!   (b) treating the date as midnight-UTC `jiff::Timestamp` —
-//!       semantically wrong (ADR dates are wall-clock, not instants;
-//!       conversion implies a timezone choice that is not in the
-//!       parsed source); or
-//!   (c) shipping a wire-shape-explicit `(year, month, day)`
-//!       newtype here.
-//!
-//! Choice (c). The wire shape is `(i16 year, u8 month, u8 day)`,
-//! 4 bytes total. Civil-date semantics preserved; no jiff
-//! foreign-encode dependency.
+//! `jiff::civil::Date` does not implement `serde::Serialize`/`Deserialize`
+//! by default (jiff's serde feature gates a string representation via
+//! `jiff::fmt::serde`, not the value itself). Civil-date semantics
+//! preserved via a wire-shape-explicit `(year, month, day)` newtype:
+//! 4 bytes total via msgpack, no jiff foreign-impl dependency.
 //!
 //! `jiff::civil::Date` is still the parsed-from-ADR-frontmatter
 //! representation at the M1.3 boundary; M1.3 will convert at the
@@ -28,11 +15,11 @@
 
 use core::fmt;
 
-use pardosa_genome::GenomeSafe;
+use serde::{Deserialize, Serialize};
 
 /// Calendar date with no time component. Wire shape:
-/// `(i16 year, u8 month, u8 day)`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, GenomeSafe)]
+/// `(i16 year, u8 month, u8 day)` via msgpack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct AdrDate {
     /// Proleptic Gregorian year. `i16` admits negative years (BCE)
     /// for symmetry with `jiff::civil::Date::MIN.year() = -9999`;

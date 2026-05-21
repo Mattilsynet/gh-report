@@ -5,10 +5,9 @@
 //!   - `AdrId::from_str("AFM-0001")` succeeds; displays as `"AFM-0001"`.
 //!   - `AdrId::from_str("invalid")` returns `Err`.
 //!   - `BodyHash::compute(b"hello")` deterministic.
-//!   - `AdrIngested` round-trips through `pardosa_encoding::to_vec`
-//!     + `from_bytes` byte-identical.
+//!   - `AdrIngested` round-trips through msgpack (rmp-serde) byte-identical.
 //!   - `AdrDocument::apply` updates state from event.
-//!   - `AdrService::new(store)` constructs against `PardosaFileEventStore::open`.
+//!   - `AdrService::new(store)` constructs against `MsgpackFileStore::new`.
 //!   - axum `/health` router returns 200.
 
 use std::str::FromStr;
@@ -18,7 +17,7 @@ use adr_srv::{
     AdrCorpus, AdrDate, AdrDocument, AdrFrontmatter, AdrId, AdrIngested, AdrService, AppState,
     BodyHash, Status, Tier, build_schema,
 };
-use pardosa_eventstore::PardosaLogEventStore as PardosaFileEventStore;
+use cherry_pit_gateway::MsgpackFileStore;
 
 fn sample_event() -> AdrIngested {
     AdrIngested {
@@ -140,28 +139,28 @@ fn adr_date_rejects_invalid_month_and_day() {
     assert!(AdrDate::new(2026, 4, 31).is_err()); // April has 30 days
 }
 
-// ── AdrIngested canonical-bytes round-trip (CHE-0064:R2 + abort_if (d)) ─
+// ── AdrIngested msgpack round-trip ─────────────────────────────────
 
 #[test]
 fn adr_ingested_round_trips_byte_identical() {
     let event = sample_event();
-    let bytes = pardosa_encoding::to_vec(&event);
-    let decoded: AdrIngested = pardosa_encoding::from_bytes(&bytes).expect("decode AdrIngested");
+    let bytes = rmp_serde::to_vec_named(&event).expect("encode AdrIngested");
+    let decoded: AdrIngested = rmp_serde::from_slice(&bytes).expect("decode AdrIngested");
     assert_eq!(decoded, event, "round-trip must preserve value");
 
-    // Re-encode and compare bytes — the canonical-bytes invariant
-    // requires byte-identity, not just value-identity (CHE-0064:R2).
-    let bytes2 = pardosa_encoding::to_vec(&decoded);
+    // Re-encode and compare bytes — msgpack is deterministic for a
+    // given Serialize impl.
+    let bytes2 = rmp_serde::to_vec_named(&decoded).expect("re-encode AdrIngested");
     assert_eq!(
         bytes, bytes2,
-        "re-encode must produce byte-identical output (CHE-0064:R2 canonical bytes)"
+        "re-encode must produce byte-identical output"
     );
 }
 
 #[test]
 fn adr_ingested_encodes_to_non_empty_bytes() {
     let event = sample_event();
-    let bytes = pardosa_encoding::to_vec(&event);
+    let bytes = rmp_serde::to_vec_named(&event).expect("encode AdrIngested");
     assert!(!bytes.is_empty(), "encoded event must have bytes");
 }
 
@@ -208,14 +207,12 @@ fn adr_document_apply_updates_state_from_event() {
     assert!(next.references.is_empty());
 }
 
-// ── AdrService against PardosaFileEventStore ───────────────────────
+// ── AdrService against MsgpackFileStore ────────────────────────────
 
 #[tokio::test]
-async fn adr_service_constructs_against_pardosa_file_event_store() {
+async fn adr_service_constructs_against_msgpack_file_store() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store: PardosaFileEventStore<AdrIngested> = PardosaFileEventStore::open(dir.path())
-        .await
-        .expect("open store");
+    let store: MsgpackFileStore<AdrIngested> = MsgpackFileStore::new(dir.path());
     let service = AdrService::new(Arc::new(store));
     // store() accessor reaches the inner Arc — proves the service is
     // wired to the store, not just constructed and discarded.
@@ -225,9 +222,7 @@ async fn adr_service_constructs_against_pardosa_file_event_store() {
 #[tokio::test]
 async fn app_state_constructs_from_service() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store: PardosaFileEventStore<AdrIngested> = PardosaFileEventStore::open(dir.path())
-        .await
-        .expect("open store");
+    let store: MsgpackFileStore<AdrIngested> = MsgpackFileStore::new(dir.path());
     let service = Arc::new(AdrService::new(Arc::new(store)));
     let corpus: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
     let schema = build_schema(Arc::clone(&corpus));

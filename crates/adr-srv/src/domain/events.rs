@@ -1,13 +1,13 @@
 //! Domain events for the `AdrDocument` aggregate.
 //!
-//! ## Wire-format invariant (CHE-0064:R2 + CHE-0022:R5)
+//! ## Wire-format invariant (CHE-0022:R5)
 //!
 //! `AdrIngested` is the single event type for M1. M1.3 onward MUST
 //! NOT change its payload shape — only additive evolution (tail-
-//! appended fields) is permitted per CHE-0022:R5, and even those
-//! changes are deferred to a future ADR. The canonical-bytes
-//! invariant (CHE-0022:R2 + CHE-0064:R2) requires that an event
-//! emitted today decodes identically forever.
+//! appended fields) is permitted per CHE-0022:R5. On-disk encoding
+//! is msgpack (self-describing) via
+//! `cherry_pit_gateway::MsgpackFileStore`; additive field changes
+//! are wire-compatible without re-baselining.
 //!
 //! Future events (e.g. `AdrRatified`, `AdrSuperseded`, `AdrRetired`)
 //! land as additional types in this module in Phase 3; the M1 single-
@@ -20,9 +20,9 @@
 //! 3. `body_hash: BodyHash`
 //! 4. `references: Vec<AdrId>`
 //!
-//! Reorder, removal, or non-tail insertion is a wire break.
+//! Reorder or removal is a wire break; tail-append is safe.
 
-use pardosa_genome::GenomeSafe;
+use serde::{Deserialize, Serialize};
 
 use crate::domain::adr_id::AdrId;
 use crate::domain::body_hash::BodyHash;
@@ -34,7 +34,7 @@ use crate::domain::frontmatter::AdrFrontmatter;
 /// `body_hash` enables M1.3's idempotency check (re-scrape: skip if
 /// the file's `body_hash` matches the last `AdrIngested.body_hash`
 /// for this `id`).
-#[derive(Clone, Debug, PartialEq, Eq, GenomeSafe)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdrIngested {
     /// Parsed ADR identifier (e.g. `AFM-0001`).
     pub id: AdrId,

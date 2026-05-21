@@ -8,7 +8,7 @@
 //! local fields with locally-controlled wire shape.
 //!
 //! Wire shape (load-bearing, frozen for M1.2 onward; field order is
-//! `pardosa-genome` declaration-order per GEN-0037:R4):
+//! serde declaration-order via msgpack):
 //!   1. `title: String`
 //!   2. `date: AdrDate`
 //!   3. `last_reviewed: AdrDate`
@@ -19,7 +19,7 @@
 //! `adr_fmt::model::{Tier, Status}`, but with locally-controlled
 //! wire identity). Variant order is appended-only (CHE-0022:R5).
 
-use pardosa_genome::GenomeSafe;
+use serde::{Deserialize, Serialize};
 
 use crate::domain::adr_date::AdrDate;
 
@@ -31,7 +31,7 @@ use crate::domain::adr_date::AdrDate;
 /// but the values are pinned here, not inherited.
 ///
 /// Variants appended only (CHE-0022:R5).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Tier {
     /// Paradigm / intent.
@@ -112,7 +112,7 @@ impl core::fmt::Display for Status {
 /// evolution.
 ///
 /// Variants appended only (CHE-0022:R5).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Status {
     /// Draft — pre-proposal.
@@ -145,7 +145,7 @@ pub enum Status {
 ///
 /// NOT a re-export of `adr_fmt::model::AdrRecord` per AFM-0027:R3 —
 /// adr-srv re-projects.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, GenomeSafe)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AdrFrontmatter {
     /// ADR title (the `# Title` heading, not the filename slug).
     pub title: String,
