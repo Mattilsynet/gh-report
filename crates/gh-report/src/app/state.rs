@@ -34,9 +34,9 @@ use cherry_pit_agent::InProcessEventBus;
 #[cfg(test)]
 use cherry_pit_core::testing::InMemoryEventStore;
 use cherry_pit_core::{AggregateId, ListableEventStore};
+use cherry_pit_gateway::MsgpackFileStore;
 use cherry_pit_projection::FileProjectionStore;
 use jiff::Timestamp;
-use cherry_pit_gateway::MsgpackFileStore;
 
 // Re-export server-state types referenced via this module.
 pub use crate::infra::server::state::{CachedPage, PageUpdateEvent};

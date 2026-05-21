@@ -77,8 +77,8 @@ use std::sync::{Arc, Mutex};
 
 use cherry_pit_agent::InProcessEventBus;
 use cherry_pit_core::{AggregateId, CorrelationContext, EventStore};
-use gh_report::app::state::EventStoreImpl;
 use cherry_pit_gateway::MsgpackFileStore;
+use gh_report::app::state::EventStoreImpl;
 
 use gh_report::app::services::Merger;
 use gh_report::app::services::repo_service::RepoService;

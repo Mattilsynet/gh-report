@@ -46,6 +46,7 @@
 use std::sync::Arc;
 
 use cherry_pit_core::{CorrelationContext, EventStore};
+use cherry_pit_gateway::MsgpackFileStore;
 use gh_report::app::state::{AppState, EventStoreImpl};
 use gh_report::domain::checks::{
     BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersResult,
@@ -55,7 +56,6 @@ use gh_report::domain::checks::{
 use gh_report::domain::events::DomainEvent;
 use gh_report::domain::evidence::RepositoryEvidence;
 use gh_report::domain::repository::{Repository, Visibility};
-use cherry_pit_gateway::MsgpackFileStore;
 
 #[tokio::test]
 async fn bootstrap_replay_populates_routing_indices() {
