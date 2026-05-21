@@ -8,17 +8,12 @@
 //! For runtime classification logic (scope parsing, capability probing),
 //! see [`crate::github::auth`].
 
-use cherry_pit_core::pardosa_encoding::Encode;
 use serde::{Deserialize, Serialize};
 
 /// Supported authentication modes.
 ///
 /// Describes how the application authenticated with the GitHub API.
 /// Serialized into evidence artifacts for audit trail purposes.
-//
-// Wire format: hand-rolled `Encode` emits `*self as u8` per
-// `#[repr(u8)]` discriminant. Variant reorder/insert is a wire-format
-// break; new variants append (CHE-0064:R2 + PAR-0024:R5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 #[non_exhaustive]
@@ -35,12 +30,6 @@ pub enum AuthMode {
     /// Unknown or not yet determined (used as default before credential discovery).
     #[serde(rename = "unknown")]
     Unknown = 3,
-}
-
-impl Encode for AuthMode {
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.push(*self as u8);
-    }
 }
 
 impl std::fmt::Display for AuthMode {
@@ -71,12 +60,6 @@ pub enum TokenTier {
     Unknown = 2,
 }
 
-impl Encode for TokenTier {
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.push(*self as u8);
-    }
-}
-
 impl std::fmt::Display for TokenTier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -98,12 +81,6 @@ impl std::fmt::Display for TokenTier {
 pub enum Capability {
     /// Organization-level secret scanning alerts.
     OrgSecretScanningAlerts = 0,
-}
-
-impl Encode for Capability {
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.push(*self as u8);
-    }
 }
 
 impl Capability {
