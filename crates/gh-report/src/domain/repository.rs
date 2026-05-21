@@ -1,6 +1,6 @@
 //! Repository domain model.
 
-use pardosa_encoding::Encode;
+use cherry_pit_core::pardosa_encoding::Encode;
 use serde::{Deserialize, Serialize};
 
 /// A normalized repository from inventory.

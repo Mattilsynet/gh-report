@@ -8,7 +8,7 @@
 //! For runtime classification logic (scope parsing, capability probing),
 //! see [`crate::github::auth`].
 
-use pardosa_encoding::Encode;
+use cherry_pit_core::pardosa_encoding::Encode;
 use serde::{Deserialize, Serialize};
 
 /// Supported authentication modes.

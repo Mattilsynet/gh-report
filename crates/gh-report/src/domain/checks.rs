@@ -3,7 +3,7 @@
 //! These are the internal domain representations of per-repository check outcomes.
 //! They use strongly typed enums rather than free-form strings.
 
-use pardosa_encoding::Encode;
+use cherry_pit_core::pardosa_encoding::Encode;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::codeowners::ParsedCodeowners;
@@ -64,7 +64,7 @@ pub struct SecurityPolicyResult {
 ///
 /// ```
 /// use gh_report::domain::checks::SecurityPolicyStatus;
-/// use pardosa_encoding::Encode;
+/// use cherry_pit_core::pardosa_encoding::Encode;
 /// let mut out = Vec::new();
 /// SecurityPolicyStatus::Fail.encode(&mut out);
 /// assert_eq!(out, vec![1u8]);
@@ -90,7 +90,7 @@ pub enum SecurityPolicyStatus {
 ///
 /// ```
 /// use gh_report::domain::checks::SecurityPolicyEvidence;
-/// use pardosa_encoding::Encode;
+/// use cherry_pit_core::pardosa_encoding::Encode;
 /// let mut out = Vec::new();
 /// SecurityPolicyEvidence::File.encode(&mut out);
 /// assert_eq!(out, vec![1u8]);
@@ -152,7 +152,7 @@ pub struct SecretScanningResult {
 ///
 /// ```
 /// use gh_report::domain::checks::SecretScanningStatus;
-/// use pardosa_encoding::Encode;
+/// use cherry_pit_core::pardosa_encoding::Encode;
 /// let mut out = Vec::new();
 /// SecretScanningStatus::Disabled.encode(&mut out);
 /// assert_eq!(out, vec![1u8]);
@@ -209,7 +209,7 @@ pub struct DependabotResult {
 ///
 /// ```
 /// use gh_report::domain::checks::DependabotStatus;
-/// use pardosa_encoding::Encode;
+/// use cherry_pit_core::pardosa_encoding::Encode;
 /// let mut out = Vec::new();
 /// DependabotStatus::Paused.encode(&mut out);
 /// assert_eq!(out, vec![1u8]);
@@ -266,7 +266,7 @@ pub struct BranchProtectionResult {
 ///
 /// ```
 /// use gh_report::domain::checks::BranchProtectionStatus;
-/// use pardosa_encoding::Encode;
+/// use cherry_pit_core::pardosa_encoding::Encode;
 /// let mut out = Vec::new();
 /// BranchProtectionStatus::Partial.encode(&mut out);
 /// assert_eq!(out, vec![1u8]);
@@ -510,7 +510,7 @@ pub struct CodeownersResult {
 ///
 /// ```
 /// use gh_report::domain::checks::CodeownersStatus;
-/// use pardosa_encoding::Encode;
+/// use cherry_pit_core::pardosa_encoding::Encode;
 /// let mut out = Vec::new();
 /// CodeownersStatus::NonConforming.encode(&mut out);
 /// assert_eq!(out, vec![1u8]);
