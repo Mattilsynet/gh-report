@@ -36,7 +36,7 @@
 //! to update the discriminant table on the enum's rustdoc and append
 //! the next `Variant = N` literal.
 
-        use cherry_pit_core::pardosa_encoding::Encode;
+use cherry_pit_core::pardosa_encoding::Encode;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::evidence::RepositoryEvidence;
@@ -769,7 +769,7 @@ mod tests {
     #[test]
     fn wire_format_byte_equality() {
         use crate::test_fixtures;
-use cherry_pit_core::pardosa_encoding::Encode;
+        use cherry_pit_core::pardosa_encoding::Encode;
 
         // Deterministic Some(evidence) payload: builder is timestamp-free
         // (constant fixture timestamps) and contains no HashMap-backed

@@ -26,8 +26,8 @@
 use std::sync::Arc;
 
 use cherry_pit_core::{CorrelationContext, EventStore};
-use gh_report::domain::events::DomainEvent;
 use cherry_pit_gateway::MsgpackFileStore;
+use gh_report::domain::events::DomainEvent;
 
 use assert_cmd::Command;
 
