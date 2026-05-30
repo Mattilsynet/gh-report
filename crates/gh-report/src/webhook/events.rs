@@ -413,7 +413,7 @@ mod tests {
         // M2.cd: post-cutover the projection is the read-model authority;
         // assert lookup of an absent key returns `None` (no panic).
         let key = "nonexistent";
-        let evidence = state.lock_projection().get(key);
+        let evidence = state.projection_get(key);
         assert!(evidence.is_none());
     }
 
