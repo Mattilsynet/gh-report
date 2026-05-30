@@ -914,7 +914,7 @@ impl SweepSaga {
         // `EvidenceProjection::len()` returns `usize` (collection size); the
         // event field is `u64` per GEN-0004:R1. Cast is lossless on every
         // pardosa target per PAR-0011 (64-bit gate).
-        let completed = state.lock_projection().len() as u64;
+        let completed = state.projection_len() as u64;
         if let Err(e) = state
             .run_service
             .record_progress(
@@ -1077,7 +1077,7 @@ async fn finalize_and_publish(params: FinalizeParams<'_>) -> Result<(usize, bool
         state,
     } = params;
 
-    let evidence_repos = state.lock_projection().sorted_snapshot();
+    let evidence_repos = state.projection_snapshot();
 
     let rate_limit_warnings = client
         .rate_limit_warnings
@@ -1642,9 +1642,7 @@ fn spawn_partial_publisher_from_store(
                     // reader). Guard scoped to this statement; the cloned
                     // `Vec` is owned across the subsequent `.await`
                     // (D-CD-3: never hold a `MutexGuard` across `.await`).
-                    let all_evidence = state
-                        .lock_projection()
-                        .sorted_snapshot();
+                    let all_evidence = state.projection_snapshot();
 
                     let evidence = build_evidence(BuildEvidenceParams {
                         repositories: all_evidence,

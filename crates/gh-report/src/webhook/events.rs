@@ -320,7 +320,7 @@ fn resolve_or_build_repo(
 ) -> Arc<Repository> {
     // M2.cd: read from projection (CHE-0048:R2 sole-reader). Guard scoped to
     // the temporary in the `if let` head; dropped before any subsequent work.
-    if let Some(evidence) = state.lock_projection().get(inventory_key) {
+    if let Some(evidence) = state.projection_get(inventory_key) {
         Arc::new(evidence.repository)
     } else {
         build_repository_from_payload(payload)
@@ -335,7 +335,7 @@ fn resolve_repo_from_store(
     state: &AppState,
 ) -> Arc<Repository> {
     // M2.cd: read from projection (CHE-0048:R2 sole-reader).
-    if let Some(evidence) = state.lock_projection().get(inventory_key) {
+    if let Some(evidence) = state.projection_get(inventory_key) {
         Arc::new(evidence.repository)
     } else {
         // Minimal fallback for push events where we only have id + name.
