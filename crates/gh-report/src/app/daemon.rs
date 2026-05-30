@@ -398,7 +398,7 @@ async fn handle_failure_outcome(
     // direct-write to `store` deleted (W2). The `RepoEvaluated`
     // failure envelope below carries the synthesised failure
     // evidence; `EvidenceProjection::apply` materialises it.
-    let existing = state.lock_projection().get(&domain_key);
+    let existing = state.projection_get(&domain_key);
     let (repo_name, evidence_for_event) = if let Some(existing) = existing {
         let name = existing.repository.name.clone();
         let failure = collect::failure_evidence(

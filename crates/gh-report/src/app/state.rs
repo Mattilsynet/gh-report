@@ -321,7 +321,6 @@ impl AppState {
     /// reads `len`, releases. Safe to call from async contexts —
     /// no `MutexGuard` escapes (D-CD-3). Panics on poisoned mutex
     /// to match [`Self::lock_projection`].
-    #[allow(dead_code)]
     pub(crate) fn projection_len(&self) -> usize {
         self.lock_projection().len()
     }
@@ -332,7 +331,6 @@ impl AppState {
     /// Lock-and-release accessor over
     /// [`crate::projection::EvidenceProjection::get`]; the guard does
     /// not escape (D-CD-3). Panics on poisoned mutex.
-    #[allow(dead_code)]
     pub(crate) fn projection_get(
         &self,
         key: &str,
@@ -345,7 +343,6 @@ impl AppState {
     /// Lock-and-release accessor; equivalent to
     /// `self.projection_get(key).is_some()` but avoids the clone.
     /// Guard does not escape (D-CD-3); panics on poisoned mutex.
-    #[allow(dead_code)]
     pub(crate) fn projection_contains(&self, key: &str) -> bool {
         self.lock_projection().get(key).is_some()
     }
@@ -357,7 +354,6 @@ impl AppState {
     /// guard does not escape (D-CD-3). Panics on poisoned mutex. Cost
     /// is `O(n log n)` per call; see the underlying method for
     /// ordering rationale.
-    #[allow(dead_code)]
     pub(crate) fn projection_snapshot(&self) -> Vec<crate::domain::evidence::RepositoryEvidence> {
         self.lock_projection().sorted_snapshot()
     }

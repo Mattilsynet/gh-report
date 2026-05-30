@@ -205,7 +205,7 @@ async fn execute_remove(
     // to preserve the prior `had_evidence` semantics (used to gate
     // the `RepoRemoved` publish — we still only emit it when the
     // key existed pre-removal). Guard scoped to this statement.
-    let had_evidence = state.lock_projection().get(&inventory_key).is_some();
+    let had_evidence = state.projection_contains(&inventory_key);
     if let Err(e) = state
         .webhook_service
         .ingest(
