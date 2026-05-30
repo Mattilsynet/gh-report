@@ -315,6 +315,53 @@ impl AppState {
             .expect("projection_state mutex poisoned")
     }
 
+    /// Number of repositories materialised in `projection_state`.
+    ///
+    /// Lock-and-release accessor: acquires the projection mutex,
+    /// reads `len`, releases. Safe to call from async contexts —
+    /// no `MutexGuard` escapes (D-CD-3). Panics on poisoned mutex
+    /// to match [`Self::lock_projection`].
+    #[allow(dead_code)]
+    pub(crate) fn projection_len(&self) -> usize {
+        self.lock_projection().len()
+    }
+
+    /// Look up evidence for `key` in `projection_state`, returning an
+    /// owned clone.
+    ///
+    /// Lock-and-release accessor over
+    /// [`crate::projection::EvidenceProjection::get`]; the guard does
+    /// not escape (D-CD-3). Panics on poisoned mutex.
+    #[allow(dead_code)]
+    pub(crate) fn projection_get(
+        &self,
+        key: &str,
+    ) -> Option<crate::domain::evidence::RepositoryEvidence> {
+        self.lock_projection().get(key)
+    }
+
+    /// True when `key` is materialised in `projection_state`.
+    ///
+    /// Lock-and-release accessor; equivalent to
+    /// `self.projection_get(key).is_some()` but avoids the clone.
+    /// Guard does not escape (D-CD-3); panics on poisoned mutex.
+    #[allow(dead_code)]
+    pub(crate) fn projection_contains(&self, key: &str) -> bool {
+        self.lock_projection().get(key).is_some()
+    }
+
+    /// Sorted snapshot of all evidence in `projection_state`.
+    ///
+    /// Lock-and-release wrapper over
+    /// [`crate::projection::EvidenceProjection::sorted_snapshot`]; the
+    /// guard does not escape (D-CD-3). Panics on poisoned mutex. Cost
+    /// is `O(n log n)` per call; see the underlying method for
+    /// ordering rationale.
+    #[allow(dead_code)]
+    pub(crate) fn projection_snapshot(&self) -> Vec<crate::domain::evidence::RepositoryEvidence> {
+        self.lock_projection().sorted_snapshot()
+    }
+
     /// Test-only accessor for the `runs_by_key` routing index.
     ///
     /// Returns the shared `Arc<Mutex<_>>` handle so integration tests
