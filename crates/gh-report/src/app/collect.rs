@@ -2582,7 +2582,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
-        assert_eq!(state.lock_projection().len(), 2);
+        assert_eq!(state.projection_len(), 2);
     }
 
     /// Saga-level same-day resume — subset of inventory in projection:
@@ -2617,8 +2617,8 @@ mod tests {
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
         assert_eq!(saga.baseline_reused, 1);
         // repo-1 already in projection from seed; repo-2 not yet.
-        assert!(state.lock_projection().get("id-repo-1").is_some());
-        assert!(state.lock_projection().get("id-repo-2").is_none());
+        assert!(state.projection_contains("id-repo-1"));
+        assert!(!state.projection_contains("id-repo-2"));
     }
 
     /// Saga-level same-day resume — empty projection: nothing reused;
@@ -2643,8 +2643,8 @@ mod tests {
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
         assert_eq!(saga.baseline_reused, 0);
-        assert!(state.lock_projection().get("id-repo-1").is_none());
-        assert!(state.lock_projection().get("id-repo-2").is_none());
+        assert!(!state.projection_contains("id-repo-1"));
+        assert!(!state.projection_contains("id-repo-2"));
     }
 
     /// Test 10: Unchanged repos reuse baseline evidence.
@@ -2680,7 +2680,7 @@ mod tests {
 
         assert_eq!(*saga.phase(), SweepPhase::BaselineReused);
         assert_eq!(saga.baseline_reused, 1);
-        assert!(state.lock_projection().get("id-repo-1").is_some());
+        assert!(state.projection_contains("id-repo-1"));
     }
 
     /// Test 11: Changed `updated_at` forces re-evaluation (no baseline reuse).
@@ -2815,10 +2815,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
-        assert_eq!(state.lock_projection().len(), 3);
-        assert!(state.lock_projection().get("id-repo-1").is_some());
-        assert!(state.lock_projection().get("id-repo-2").is_some());
-        assert!(state.lock_projection().get("id-repo-3").is_some());
+        assert_eq!(state.projection_len(), 3);
+        assert!(state.projection_contains("id-repo-1"));
+        assert!(state.projection_contains("id-repo-2"));
+        assert!(state.projection_contains("id-repo-3"));
 
         // Shut down worker pool.
         state.work_queue.close();
@@ -2866,12 +2866,12 @@ mod tests {
 
         assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
         // Passing repo is in the evidence store.
-        assert!(state.lock_projection().get("id-pass-repo").is_some());
+        assert!(state.projection_contains("id-pass-repo"));
         // Failing repo: delivery_loop does not insert failure evidence for
         // fresh repos (no pre-existing entry to overwrite). The repo is
         // simply absent — the saga still completes (failure isolation).
         assert!(
-            state.lock_projection().get("id-fail-repo").is_none(),
+            !state.projection_contains("id-fail-repo"),
             "fresh repo failure produces no evidence entry in saga path"
         );
 
@@ -2920,7 +2920,7 @@ mod tests {
         .await
         .unwrap();
 
-        let snapshot = state.lock_projection().sorted_snapshot();
+        let snapshot = state.projection_snapshot();
         let mut found_names: Vec<String> =
             snapshot.iter().map(|e| e.repository.name.clone()).collect();
         found_names.sort();
@@ -3013,7 +3013,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
-        assert_eq!(state.lock_projection().len(), 1);
+        assert_eq!(state.projection_len(), 1);
 
         state.work_queue.close();
     }
@@ -3056,7 +3056,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
-        assert_eq!(state.lock_projection().len(), 1);
+        assert_eq!(state.projection_len(), 1);
 
         state.work_queue.close();
     }
@@ -3096,7 +3096,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
-        assert_eq!(state.lock_projection().len(), 2);
+        assert_eq!(state.projection_len(), 2);
 
         // Close the queue and verify worker pool + delivery shut down cleanly.
         state.work_queue.close();
