@@ -48,7 +48,7 @@ async fn main() {
     // ADR_SRV_STORE for ops. Store directory is created on first run.
     let store_path = std::env::var("ADR_SRV_STORE")
         .map_or_else(|_| cwd.join(".adr-srv").join("store"), PathBuf::from);
-    if let Err(e) = std::fs::create_dir_all(&store_path) {
+    if let Err(e) = tokio::fs::create_dir_all(&store_path).await {
         eprintln!("create store dir {}: {e}", store_path.display());
         std::process::exit(1);
     }

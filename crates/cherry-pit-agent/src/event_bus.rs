@@ -36,15 +36,18 @@
 //! `register` on the impl (not on a trait surface that App would have to
 //! re-declare).
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use cherry_pit_core::{BusError, DomainEvent, EventBus, EventEnvelope};
 
 /// Synchronous closure invoked for each published envelope.
 ///
 /// Per CHE-0024:§7 in-process semantics, handlers run synchronously
-/// inside `publish` — no spawn, no async.
-type HandlerFn<E> = Box<dyn Fn(&EventEnvelope<E>) + Send + Sync>;
+/// inside `publish` — no spawn, no async. Stored under `Arc` so the
+/// copy-on-write registration path (see [`InProcessEventBus::register`])
+/// rebuilds the snapshot vector by cheap pointer clones rather than
+/// moving the underlying closures.
+type HandlerFn<E> = Arc<dyn Fn(&EventEnvelope<E>) + Send + Sync>;
 
 /// In-process synchronous event bus implementing
 /// [`cherry_pit_core::EventBus`] per CHE-0051:R2.
@@ -60,14 +63,17 @@ type HandlerFn<E> = Box<dyn Fn(&EventEnvelope<E>) + Send + Sync>;
 ///
 /// ## Concurrency
 ///
-/// Backed by `std::sync::Mutex<Vec<HandlerFn<E>>>`. Registration and
-/// publication take the lock briefly. Handlers themselves run while the
-/// lock is held, so handlers must not call back into `register` or
-/// `publish` on the same bus instance (re-entrant lock acquisition would
-/// deadlock). This is consistent with the synchronous-fanout contract
-/// (CHE-0024:§7) — handlers should be cheap notification fan-out, not
-/// command dispatch. Command dispatch routes through `CommandGateway`
-/// in `App` (S5).
+/// Backed by `std::sync::Mutex<Arc<Vec<HandlerFn<E>>>>` (copy-on-write).
+/// Registration briefly takes the lock to swap in a fresh `Arc<Vec<…>>`
+/// carrying the appended handler. Publication briefly takes the lock to
+/// clone the current snapshot `Arc`, releases the lock, then invokes
+/// each handler against the snapshot. The handler-vector lock is
+/// therefore never held across handler invocation, so a handler may
+/// safely re-enter the bus (`register` or `publish` on the same
+/// instance) without deadlocking on the bus's own mutex. The
+/// synchronous-fanout contract (CHE-0024:§7) is preserved: handlers
+/// still run synchronously inside `publish` before the returned future
+/// resolves.
 ///
 /// ## Failure model
 ///
@@ -78,7 +84,7 @@ type HandlerFn<E> = Box<dyn Fn(&EventEnvelope<E>) + Send + Sync>;
 /// routing of failed *policy outputs* is `App`'s job (S5/S6), not the
 /// bus's.
 pub struct InProcessEventBus<E: DomainEvent> {
-    handlers: Mutex<Vec<HandlerFn<E>>>,
+    handlers: Mutex<Arc<Vec<HandlerFn<E>>>>,
 }
 
 impl<E: DomainEvent> InProcessEventBus<E> {
@@ -86,7 +92,7 @@ impl<E: DomainEvent> InProcessEventBus<E> {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            handlers: Mutex::new(Vec::new()),
+            handlers: Mutex::new(Arc::new(Vec::new())),
         }
     }
 
@@ -103,19 +109,27 @@ impl<E: DomainEvent> InProcessEventBus<E> {
     /// is `Send + Sync + 'static` (the `EventBus` port requires it) and
     /// publication may happen across threads (e.g. tokio multi-threaded
     /// runtime).
+    ///
+    /// Registration is **copy-on-write**: the current handler vector is
+    /// cloned, the new handler is appended to the clone, and the bus
+    /// swaps the snapshot `Arc` under a brief lock. Existing snapshots
+    /// observed by an in-flight `publish` continue to fire over the
+    /// pre-registration handler set; subsequent publishes observe the
+    /// new handler. This is the mechanism that makes reentrant
+    /// `register` from inside a handler safe (no deadlock on the bus's
+    /// own mutex).
     pub fn register<F>(&self, handler: F)
     where
         F: Fn(&EventEnvelope<E>) + Send + Sync + 'static,
     {
-        // Lock-poison fallback: a poisoned lock means a previous handler
-        // panicked while holding the registration lock. We still want to
-        // allow further registration, so recover the inner Vec via
-        // `into_inner` semantics on the poison error.
         let mut guard = self
             .handlers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.push(Box::new(handler));
+        let mut next: Vec<HandlerFn<E>> = Vec::with_capacity(guard.len() + 1);
+        next.extend(guard.iter().map(Arc::clone));
+        next.push(Arc::new(handler));
+        *guard = Arc::new(next);
     }
 
     /// Number of currently registered handlers.
@@ -164,37 +178,32 @@ impl<E: DomainEvent> EventBus for InProcessEventBus<E> {
     ///
     /// **Handlers run synchronously inside `publish` — no awaiting on
     /// publisher-held locks (CHE-0051:R8 advisory).** Each registered
-    /// handler is invoked from the body of this method while the
-    /// handler-vector mutex is held. The handler-vector lock itself
-    /// is released *before* the returned future is awaited (see the
-    /// scoped `guard` block below), so awaiting `publish()` does not
-    /// hold the bus's own lock across an await point. However, when
-    /// a handler — such as the `App::run` callback — bridges into
+    /// handler is invoked from the body of this method, but the
+    /// handler-vector mutex is released *before* fan-out begins: the
+    /// snapshot `Arc<Vec<…>>` of handlers is cloned under a brief lock
+    /// and then the guard is dropped, so handler bodies never run with
+    /// the bus's own mutex held. Reentrant `register` / `publish` from
+    /// within a handler is therefore deadlock-safe at the bus boundary.
+    ///
+    /// The advisory continues to apply at the *publisher* boundary:
+    /// when a handler — such as the `App::run` callback — bridges into
     /// async via `Handle::block_on(...)`, any future driven by that
     /// `block_on` that tries to acquire a lock the *publisher* holds
-    /// will deadlock: the publisher's task is parked inside
-    /// `publish()`, the worker is parked inside `block_on`, and no
-    /// progress is made. Caller contract: do **not** await on a
-    /// publisher-held lock from inside a registered handler, and do
-    /// **not** hold a blocking lock across a `bus.publish(...).await`
-    /// from publishing code. See `App::run`'s `# Hazards` section.
+    /// will still deadlock. See `App::run`'s `# Hazards` section.
     fn publish(
         &self,
         events: &[EventEnvelope<Self::Event>],
     ) -> impl std::future::Future<Output = Result<(), BusError>> + Send {
-        // Snapshot work synchronously, hand back a ready future. The
-        // handler-vector lock is released before the future is returned,
-        // so awaiting publish() never holds the lock across an await
-        // point.
-        {
+        let snapshot: Arc<Vec<HandlerFn<Self::Event>>> = {
             let guard = self
                 .handlers
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for envelope in events {
-                for handler in guard.iter() {
-                    handler(envelope);
-                }
+            Arc::clone(&guard)
+        };
+        for envelope in events {
+            for handler in snapshot.iter() {
+                handler(envelope);
             }
         }
         async move { Ok(()) }
