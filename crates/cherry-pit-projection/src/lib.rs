@@ -264,32 +264,36 @@ impl<P> FileProjectionStore<P> {
     /// on the same instance (or any clone, since the `OnceLock` is shared
     /// via `Arc`) are no-ops. Returns [`ProjectionError::StoreLocked`]
     /// (CHE-0043:R3) when contended.
-    fn acquire_lock(&self) -> ProjectionResult<()> {
+    async fn acquire_lock(&self) -> ProjectionResult<()> {
         if self.lock.get().is_some() {
             return Ok(());
         }
-        std::fs::create_dir_all(&self.dir)
-            .map_err(|e| ProjectionError::Infrastructure(Box::new(e)))?;
+        let dir = self.dir.clone();
         let path = self.lock_path();
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .map_err(|e| ProjectionError::Infrastructure(Box::new(e)))?;
-        match file.try_lock() {
-            Ok(()) => {
-                // Race-tolerant: if another thread on this process won
-                // `set`, drop our handle (its lock subsumes ours).
-                let _ = self.lock.set(file);
-                Ok(())
+        let lock = Arc::clone(&self.lock);
+        tokio::task::spawn_blocking(move || -> ProjectionResult<()> {
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| ProjectionError::Infrastructure(Box::new(e)))?;
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)
+                .map_err(|e| ProjectionError::Infrastructure(Box::new(e)))?;
+            match file.try_lock() {
+                Ok(()) => {
+                    let _ = lock.set(file);
+                    Ok(())
+                }
+                Err(std::fs::TryLockError::WouldBlock) => Err(ProjectionError::StoreLocked),
+                Err(std::fs::TryLockError::Error(e)) => {
+                    Err(ProjectionError::Infrastructure(Box::new(e)))
+                }
             }
-            Err(std::fs::TryLockError::WouldBlock) => Err(ProjectionError::StoreLocked),
-            Err(std::fs::TryLockError::Error(e)) => {
-                Err(ProjectionError::Infrastructure(Box::new(e)))
-            }
-        }
+        })
+        .await
+        .map_err(|e| ProjectionError::Infrastructure(Box::new(e)))?
     }
 
     /// CHE-0047:R1 — remove orphaned `*.tmp` files from the store
@@ -410,7 +414,7 @@ where
         projection: &P,
         last_sequence: u64,
     ) -> ProjectionResult<()> {
-        self.acquire_lock()?;
+        self.acquire_lock().await?;
         self.sweep_orphan_tmp().await?;
         let snapshot = rmp_serde::encode::to_vec_named(projection)
             .map_err(|e| ProjectionError::Infrastructure(Box::new(e)))?;
@@ -550,7 +554,7 @@ where
         ),
     )]
     async fn delete_inner(&self, aggregate_id: AggregateId) -> ProjectionResult<()> {
-        self.acquire_lock()?;
+        self.acquire_lock().await?;
         remove_if_exists(self.checkpoint_path(aggregate_id)).await?;
         sync_dir(&self.dir).await?;
         tracing::info!(
@@ -574,7 +578,7 @@ where
         aggregate_id: AggregateId,
         projection: &P,
     ) -> ProjectionResult<()> {
-        self.acquire_lock()?;
+        self.acquire_lock().await?;
         let snapshot = rmp_serde::encode::to_vec_named(projection)
             .map_err(|e| ProjectionError::Infrastructure(Box::new(e)))?;
         write_atomic(&self.snapshot_path(aggregate_id), snapshot).await?;
@@ -871,7 +875,7 @@ where
     where
         P: Serialize + DeserializeOwned + Clone,
     {
-        backend.acquire_lock()?;
+        backend.acquire_lock().await?;
         backend.sweep_orphan_tmp().await?;
         backend.delete(aggregate_id).await?;
         self.project_to_file(aggregate_id, correlation, backend)

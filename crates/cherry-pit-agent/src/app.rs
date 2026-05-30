@@ -289,42 +289,40 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if called outside an active multi-thread tokio runtime.
-    /// The synchronous `register` callback bridges into async
-    /// dispatch via [`tokio::runtime::Handle::try_current`] +
-    /// `block_on`; both require a running multi-thread runtime
-    /// (single-thread flavour deadlocks on `block_on` of a future
-    /// that needs the same worker).
+    /// Panics if called outside an active tokio runtime. The synchronous
+    /// `register` callback bridges into async dispatch via
+    /// [`tokio::runtime::Handle::try_current`] + `Handle::spawn`; both
+    /// require a running tokio runtime.
     ///
     /// # Hazards
     ///
-    /// **Re-entrant `block_on` + caller-held mutex (CHE-0051:R8
-    /// advisory).** The `bus.register(...)` callback installed below
-    /// is invoked *synchronously* by the bus inside its `publish()`
-    /// call (see [`InProcessEventBus::publish`] and CHE-0024:§7).
-    /// That callback then re-enters the async runtime via
-    /// `Handle::block_on(...)` to drive policy dispatch. If the
-    /// publishing code path holds a `std::sync::Mutex` (or any
-    /// blocking lock) across the `publish().await` point, and any
-    /// dispatch closure or downstream `gateway.send(...)` future
-    /// awaits on that same lock, the chain deadlocks: the publisher
-    /// holds the lock, the dispatcher's `block_on`-ed future cannot
-    /// acquire it, and the multi-thread runtime cannot make progress
-    /// on the publisher's side because the worker is parked inside
-    /// `block_on`.
+    /// **Reentrant `block_on` removed (CHE-0051:R8 advisory residual).**
+    /// The `bus.register(...)` callback installed below is invoked
+    /// *synchronously* by the bus inside its `publish()` call (see
+    /// [`InProcessEventBus::publish`] and CHE-0024:§7), but the
+    /// callback now hands the per-envelope dispatch future to
+    /// [`tokio::runtime::Handle::spawn`] rather than blocking on it via
+    /// `block_on`. The synchronous-fanout contract is preserved at the
+    /// bus boundary (the callback runs synchronously inside `publish`
+    /// and returns immediately) while the worker thread is no longer
+    /// parked across policy dispatch — the previous deadlock surface
+    /// where a publisher-held mutex could not be acquired by a
+    /// `block_on`-ed dispatch future is gone.
     ///
-    /// Mitigation: never hold a blocking mutex across a
-    /// `publish().await` from caller code, and never await on a
-    /// publisher-held mutex from inside a registered policy dispatch
-    /// closure. `tokio::sync::Mutex` is not a workaround — the
-    /// hazard is the *re-entrant* shape, not the lock kind.
+    /// Per-envelope dispatch ordering relative to `publish().await` is
+    /// **not** guaranteed: dispatch runs on a tokio task scheduled by
+    /// the spawn, so `publish().await` may return before policy
+    /// dispatch completes. This matches CHE-0024:R1's persist-then-
+    /// publish semantics (persistence is durable before `publish`;
+    /// post-publish dispatch is non-fatal at the system level) and
+    /// CHE-0046:R2 (terminal failures dead-lettered, non-aborting).
     ///
     /// # Errors
     ///
     /// Currently never returns `Err` — per-envelope failures are
-    /// dead-lettered or logged, not propagated. The signature
-    /// preserves the option for future bus-level errors per
-    /// CHE-0051:R8.
+    /// dead-lettered or logged inside the spawned dispatch task, not
+    /// propagated. The signature preserves the option for future
+    /// bus-level errors per CHE-0051:R8.
     ///
     /// Per **COM-0025:R1**, retry orchestration for `Retryable`
     /// per-envelope failures is the responsibility of the consumer
@@ -347,20 +345,14 @@ where
             let gateway = Arc::clone(&gateway);
             let dead_letter = Arc::clone(&dead_letter);
             let handle = tokio::runtime::Handle::try_current().expect(
-                "App::run requires a multi-thread tokio runtime; \
+                "App::run requires an active tokio runtime; \
                  Handle::try_current() returned no active runtime. \
-                 Wrap your main in #[tokio::main(flavor = \"multi_thread\")].",
+                 Wrap your main in #[tokio::main].",
             );
-            handle.block_on(async move {
+            handle.spawn(async move {
                 if let Err(err) =
                     dispatch::dispatch_one(&policies, &envelope, &*gateway, &*dead_letter).await
                 {
-                    // Per CHE-0046:R1–R2: Terminal failures are
-                    // dead-lettered inside dispatch_one and return
-                    // Ok; this branch only fires on Retryable
-                    // failures, which the sync callback cannot
-                    // propagate to a caller. Log and move on so the
-                    // bus stays live for subsequent envelopes.
                     tracing::error!(
                         error = %err,
                         event_id = %envelope.event_id(),
@@ -569,9 +561,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn run_returns_on_shutdown_signal() {
-        // S6: run() now subscribes to the InProcessEventBus and awaits
-        // shutdown; the multi-thread flavour is required by the
-        // block_on bridge inside the register callback.
         let app = fresh_app_inproc();
         let result = app.run(async {}).await;
         assert!(result.is_ok());

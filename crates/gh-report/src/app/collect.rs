@@ -1134,15 +1134,18 @@ async fn prepare_collection(
     run: &RunMetadata,
     state: &Arc<AppState>,
 ) -> Result<CollectionSetup, AppError> {
-    std::fs::create_dir_all(&config.store_dir).map_err(PersistenceError::Io)?;
-    let lock_guard = lock::acquire(
-        &config.store_dir,
-        &run.run_id,
-        lock::DEFAULT_LOCK_TTL,
-        config.force_unlock,
-    )
+    let store_dir = config.store_dir.clone();
+    let run_id = run.run_id.clone();
+    let force_unlock = config.force_unlock;
+    let lock_guard = tokio::task::spawn_blocking(move || -> Result<lock::RunLock, AppError> {
+        std::fs::create_dir_all(&store_dir).map_err(PersistenceError::Io)?;
+        lock::acquire(&store_dir, &run_id, lock::DEFAULT_LOCK_TTL, force_unlock)
+            .map_err(AppError::Persistence)
+    })
+    .await
+    .map_err(|e| AppError::Persistence(PersistenceError::Io(std::io::Error::other(e))))?
     .map_err(|e| {
-        if let PersistenceError::LockFailed { ref reason } = e {
+        if let AppError::Persistence(PersistenceError::LockFailed { ref reason }) = e {
             let lock_file = lock::lock_path(&config.store_dir);
             warn!(
                 reason = %reason,
@@ -1150,7 +1153,7 @@ async fn prepare_collection(
                 "collection already in progress; remove lock manually or re-run with --force-unlock"
             );
         }
-        AppError::Persistence(e)
+        e
     })?;
     info!("run lock acquired");
 
