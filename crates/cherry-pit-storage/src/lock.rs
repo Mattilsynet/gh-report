@@ -20,7 +20,6 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::error::PersistenceError;
-#[cfg(test)]
 use crate::fs::atomic_write_text;
 
 /// Default stale-lock TTL: 4 hours.
@@ -93,6 +92,36 @@ impl RunLock {
     /// be deleted.
     pub fn release(self) -> Result<(), PersistenceError> {
         self.delete_lock_file()
+    }
+
+    /// Refresh the lock's `created_at` to now, so a long-running holder
+    /// is not mistaken for a stale lock and reclaimed by another
+    /// process. Callers (typically long-running daemons) invoke this
+    /// well inside the configured stale-lock TTL.
+    ///
+    /// Rewrites the lock file atomically via [`atomic_write_text`], so
+    /// concurrent readers never observe a partial-write state. The
+    /// in-memory `metadata` is updated only on a successful write.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistenceError::LockFailed`] if metadata
+    /// serialization fails; otherwise propagates any error from the
+    /// underlying atomic write as [`PersistenceError::AtomicWriteFailed`]
+    /// or [`PersistenceError::Io`].
+    pub fn renew(&mut self) -> Result<(), PersistenceError> {
+        let refreshed = LockMetadata {
+            run_id: self.metadata.run_id.clone(),
+            pid: self.metadata.pid,
+            created_at: Timestamp::now(),
+        };
+        let json =
+            serde_json::to_string_pretty(&refreshed).map_err(|e| PersistenceError::LockFailed {
+                reason: format!("failed to serialize lock metadata: {e}"),
+            })?;
+        atomic_write_text(&self.path, &json)?;
+        self.metadata = refreshed;
+        Ok(())
     }
 
     fn delete_lock_file(&self) -> Result<(), PersistenceError> {
@@ -863,7 +892,66 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let missing = dir.path().join("nonexistent.lock");
 
-        // Should not panic — just logs a warning.
         force_remove_lock(&missing);
+    }
+
+    // ── renew ─────────────────────────────────────────────────
+
+    #[test]
+    fn renew_updates_created_at_and_keeps_run_id_and_pid() {
+        let dir = TempDir::new().unwrap();
+        let mut lock = acquire(
+            dir.path(),
+            "long-running",
+            DEFAULT_LOCK_TTL,
+            false,
+            DEFAULT_LOCK_FILENAME,
+        )
+        .unwrap();
+        let original_created_at = lock.metadata.created_at;
+        let original_pid = lock.metadata.pid;
+
+        std::thread::sleep(Duration::from_millis(20));
+        lock.renew().unwrap();
+
+        assert_eq!(lock.metadata.run_id, "long-running");
+        assert_eq!(lock.metadata.pid, original_pid);
+        assert!(
+            lock.metadata.created_at > original_created_at,
+            "renew() must advance created_at"
+        );
+
+        let on_disk = read_lock(lock.path()).unwrap();
+        assert_eq!(on_disk.run_id, "long-running");
+        assert_eq!(on_disk.created_at, lock.metadata.created_at);
+    }
+
+    #[test]
+    fn renewed_lock_is_not_reclaimed_by_other_acquire() {
+        let dir = TempDir::new().unwrap();
+        let mut lock = acquire(
+            dir.path(),
+            "long-running",
+            Duration::from_millis(100),
+            false,
+            DEFAULT_LOCK_FILENAME,
+        )
+        .unwrap();
+
+        std::thread::sleep(Duration::from_millis(50));
+        lock.renew().unwrap();
+        std::thread::sleep(Duration::from_millis(70));
+
+        let result = acquire(
+            dir.path(),
+            "other",
+            Duration::from_millis(100),
+            false,
+            DEFAULT_LOCK_FILENAME,
+        );
+        assert!(
+            result.is_err(),
+            "renewed lock should still be live (post-renew elapsed < TTL)"
+        );
     }
 }
