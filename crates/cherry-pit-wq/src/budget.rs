@@ -16,16 +16,18 @@
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
+use tokio::sync::Notify;
 use tracing::{info, warn};
 
 /// A budget gate that limits the number of API calls per epoch.
 ///
-/// CAS-based counter: never increments past the limit. Workers that see
-/// `current >= limit` block on the epoch mutex. Exactly one worker sleeps
-/// for the wait duration and resets the counter; others re-check and
-/// proceed.
+/// CAS-based counter: never increments past the limit. When the limit is
+/// reached, exactly one worker is elected (via the `resetting` flag) to
+/// sleep for the wait duration and reset the counter; the remaining
+/// workers register on `epoch_advanced` and are woken when the elected
+/// worker completes the reset. No async mutex is held across the sleep.
 #[non_exhaustive]
 pub struct BudgetGate {
     /// Epoch-local call counter. Reset to 0 after each cooldown.
@@ -36,15 +38,21 @@ pub struct BudgetGate {
     limit: u64,
     /// How long to sleep when the budget is exhausted.
     wait_duration: Duration,
-    /// Mutex that serializes epoch transitions.
-    gate: tokio::sync::Mutex<()>,
+    /// Election flag for the epoch-transition sleeper. CAS false→true
+    /// elects the unique sleeper; the elected worker clears it back to
+    /// false after resetting `calls` and before waking waiters.
+    resetting: AtomicBool,
+    /// Fires when an epoch transition completes (or aborts early). Woken
+    /// waiters re-check `calls` and either CAS-increment or re-attempt
+    /// the election.
+    epoch_advanced: Notify,
     /// Optional notification channel for budget pause events.
     ///
     /// Uses `std::sync::Mutex` for interior mutability so the notify can
     /// be attached after the gate is wrapped in `Arc`. The mutex is held
     /// only long enough to clone the `Arc<Notify>` — never across await
     /// points.
-    pause_notify: StdMutex<Option<Arc<tokio::sync::Notify>>>,
+    pause_notify: StdMutex<Option<Arc<Notify>>>,
 }
 
 impl std::fmt::Debug for BudgetGate {
@@ -72,14 +80,15 @@ impl BudgetGate {
             total_calls: AtomicU64::new(0),
             limit,
             wait_duration,
-            gate: tokio::sync::Mutex::new(()),
+            resetting: AtomicBool::new(false),
+            epoch_advanced: Notify::new(),
             pause_notify: StdMutex::new(None),
         }
     }
 
     /// Attach a `Notify` that fires when the budget is exhausted (before sleeping).
     #[must_use]
-    pub fn with_pause_notify(self, notify: Arc<tokio::sync::Notify>) -> Self {
+    pub fn with_pause_notify(self, notify: Arc<Notify>) -> Self {
         *self
             .pause_notify
             .lock()
@@ -92,7 +101,7 @@ impl BudgetGate {
     /// Safe to call on a shared `Arc<BudgetGate>` — uses interior mutability.
     /// Replaces any previously attached `Notify`. Callers must ensure no
     /// partial publisher is still awaiting the old `Notify` before replacing it.
-    pub fn set_pause_notify(&self, notify: Arc<tokio::sync::Notify>) {
+    pub fn set_pause_notify(&self, notify: Arc<Notify>) {
         *self
             .pause_notify
             .lock()
@@ -101,8 +110,10 @@ impl BudgetGate {
 
     /// Acquire one API call permit.
     ///
-    /// Returns immediately if budget is available. Blocks (sleeps) if the
-    /// epoch limit is reached, then resets and returns.
+    /// Returns immediately if budget is available. If the epoch limit is
+    /// reached, exactly one caller is elected to sleep `wait_duration`
+    /// and reset the counter; the rest wait on `epoch_advanced` without
+    /// holding any async mutex across the sleep.
     pub async fn acquire(&self) {
         loop {
             let current = self.calls.load(Ordering::Acquire);
@@ -120,32 +131,42 @@ impl BudgetGate {
                     Err(_) => continue,
                 }
             }
-            // At limit — epoch transition.
+            if self
+                .resetting
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
             {
-                let _g = self.gate.lock().await;
-                // Double-check: another worker may have already reset.
-                if self.calls.load(Ordering::Acquire) >= self.limit {
-                    warn!(
-                        calls = self.limit,
-                        wait_secs = self.wait_duration.as_secs(),
-                        "API budget exhausted, pausing collection"
-                    );
-                    // Clone the notify Arc inside the std::sync::Mutex, then
-                    // drop the guard before calling notify_one(). The mutex
-                    // is held for <1μs (pointer clone only).
-                    let notify = self
-                        .pause_notify
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .clone();
-                    if let Some(n) = notify {
-                        n.notify_one();
-                    }
-                    tokio::time::sleep(self.wait_duration).await;
-                    self.calls.store(0, Ordering::Release);
-                    info!("API budget replenished, resuming collection");
+                let guard = ResetGuard { gate: self };
+                if self.calls.load(Ordering::Acquire) < self.limit {
+                    drop(guard);
+                    continue;
                 }
+                warn!(
+                    calls = self.limit,
+                    wait_secs = self.wait_duration.as_secs(),
+                    "API budget exhausted, pausing collection"
+                );
+                let notify = self
+                    .pause_notify
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                if let Some(n) = notify {
+                    n.notify_one();
+                }
+                tokio::time::sleep(self.wait_duration).await;
+                self.calls.store(0, Ordering::Release);
+                drop(guard);
+                info!("API budget replenished, resuming collection");
+                continue;
             }
+            let notified = self.epoch_advanced.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.calls.load(Ordering::Acquire) < self.limit {
+                continue;
+            }
+            notified.await;
         }
     }
 
@@ -159,6 +180,17 @@ impl BudgetGate {
     #[must_use]
     pub fn total_calls_made(&self) -> u64 {
         self.total_calls.load(Ordering::Relaxed)
+    }
+}
+
+struct ResetGuard<'a> {
+    gate: &'a BudgetGate,
+}
+
+impl Drop for ResetGuard<'_> {
+    fn drop(&mut self) {
+        self.gate.resetting.store(false, Ordering::Release);
+        self.gate.epoch_advanced.notify_waiters();
     }
 }
 
@@ -345,5 +377,71 @@ mod tests {
         tokio::time::advance(Duration::from_secs(11)).await;
 
         assert!(notified.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn late_waiters_join_in_flight_epoch_transition() {
+        tokio::time::pause();
+        let pause = Arc::new(tokio::sync::Notify::new());
+        let gate = Arc::new(
+            BudgetGate::new(2, Duration::from_secs(10)).with_pause_notify(Arc::clone(&pause)),
+        );
+
+        gate.acquire().await;
+        gate.acquire().await;
+        assert_eq!(gate.calls_made(), 2);
+
+        let g_first = Arc::clone(&gate);
+        let first = tokio::spawn(async move { g_first.acquire().await });
+
+        pause.notified().await;
+        assert_eq!(gate.calls_made(), 2);
+
+        let mut late = Vec::new();
+        for _ in 0..4 {
+            let g = Arc::clone(&gate);
+            late.push(tokio::spawn(async move { g.acquire().await }));
+        }
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(11)).await;
+
+        first.await.unwrap();
+        for h in late {
+            h.await.unwrap();
+        }
+
+        assert_eq!(gate.total_calls_made(), 7);
+        assert!(gate.calls_made() <= 2);
+    }
+
+    #[tokio::test]
+    async fn cancelled_resetter_releases_election_and_wakes_waiters() {
+        tokio::time::pause();
+        let pause = Arc::new(tokio::sync::Notify::new());
+        let gate = Arc::new(
+            BudgetGate::new(2, Duration::from_secs(10)).with_pause_notify(Arc::clone(&pause)),
+        );
+
+        gate.acquire().await;
+        gate.acquire().await;
+        assert_eq!(gate.calls_made(), 2);
+
+        let g_doomed = Arc::clone(&gate);
+        let doomed = tokio::spawn(async move { g_doomed.acquire().await });
+
+        pause.notified().await;
+        doomed.abort();
+        let _ = doomed.await;
+
+        let g_next = Arc::clone(&gate);
+        let next = tokio::spawn(async move { g_next.acquire().await });
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(11)).await;
+
+        next.await.unwrap();
+        assert_eq!(gate.total_calls_made(), 3);
+        assert_eq!(gate.calls_made(), 1);
     }
 }
