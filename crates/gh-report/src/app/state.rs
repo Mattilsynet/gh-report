@@ -103,6 +103,9 @@ pub static CACHED_WS_JS: LazyLock<CachedPage> =
 /// - [`webhook()`](Self::webhook) — webhook secret, replay, debounce
 /// - [`github()`](Self::github) — budget gate, rate limit, client, cache
 /// - [`evidence()`](Self::evidence) — evidence store, HTML cache, WS broadcast, org summary, batch tracker
+pub(crate) type WorkerPoolHandles =
+    std::sync::Mutex<Option<(tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>)>>;
+
 pub struct AppState {
     // ── Cross-cutting fields ────────────────────────────────────
     /// When this service instance started.
@@ -117,9 +120,12 @@ pub struct AppState {
     pub(crate) work_queue: Arc<WorkQueue<JobContext>>,
     /// Guard ensuring the worker pool + delivery task are started exactly once.
     /// Initialized by `ensure_worker_pool()` after the first successful
-    /// credential resolution. Tuple: (`worker_pool_handle`, `delivery_task_handle`).
-    pub(crate) worker_pool_started:
-        tokio::sync::OnceCell<(tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>)>,
+    /// credential resolution. The outer `OnceCell` enforces single-init; the
+    /// inner `Mutex<Option<...>>` lets the shutdown path *take* both handles
+    /// (`tokio::sync::OnceCell` exposes no owning-take through `&self`) so
+    /// they can be awaited to drain. Tuple: (`worker_pool_handle`,
+    /// `delivery_task_handle`).
+    pub(crate) worker_pool_started: tokio::sync::OnceCell<WorkerPoolHandles>,
 
     /// Durable per-aggregate event store.
     ///
@@ -1191,11 +1197,41 @@ impl AppState {
                 });
 
                 tracing::info!("worker pool started");
-                (pool_handle, delivery_handle)
+                std::sync::Mutex::new(Some((pool_handle, delivery_handle)))
             })
             .await;
 
         started_now
+    }
+
+    /// Drain the worker pool: `take()` both `JoinHandle`s from the
+    /// `OnceCell` (if any were ever started) and `await` each with an
+    /// individual timeout. Returns the pair of `(pool_drained,
+    /// delivery_drained)` booleans where `true` means the task exited
+    /// cleanly within the timeout. Caller logs the outcome.
+    ///
+    /// Idempotent: calling twice returns `(false, false)` the second
+    /// time because the handles were already taken.
+    pub(crate) async fn drain_worker_pool(&self, per_handle_timeout: std::time::Duration) -> (bool, bool) {
+        let Some(slot) = self.worker_pool_started.get() else {
+            return (false, false);
+        };
+        let taken = {
+            let mut guard = slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.take()
+        };
+        let Some((pool_handle, delivery_handle)) = taken else {
+            return (false, false);
+        };
+        let pool_ok = tokio::time::timeout(per_handle_timeout, pool_handle)
+            .await
+            .is_ok();
+        let delivery_ok = tokio::time::timeout(per_handle_timeout, delivery_handle)
+            .await
+            .is_ok();
+        (pool_ok, delivery_ok)
     }
 }
 
