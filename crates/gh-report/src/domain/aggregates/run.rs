@@ -127,6 +127,18 @@ pub enum RunError {
     /// caller's `if let Err warn!` arm logs and continues.
     #[error("routing index has no AggregateId for batch_id={0:?}")]
     RoutingMiss(String),
+    /// Underlying `EventStore` operation (load/create/append) failed.
+    /// Never produced by `Aggregate::handle()` (CHE-0008:R1 keeps the
+    /// aggregate pure); raised at the merger boundary when the store
+    /// returns `cherry_pit_core::StoreError`.
+    #[error("storage error: {0}")]
+    Storage(String),
+}
+
+impl From<cherry_pit_core::StoreError> for RunError {
+    fn from(err: cherry_pit_core::StoreError) -> Self {
+        Self::Storage(err.to_string())
+    }
 }
 
 // --- Commands (CHE-0054:R4 use cases) ---------------------------------

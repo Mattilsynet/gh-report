@@ -432,7 +432,7 @@ where
         let domain_key = cmd.batch_id.clone();
         let existing_id = super::shared::lookup(&self.runs_by_key, &domain_key);
         let (envelopes, last_seq) =
-            super::shared::load_envelopes_or_empty(&self.store, existing_id).await;
+            super::shared::load_envelopes_or_empty(&self.store, existing_id).await?;
         let mut state = crate::domain::aggregates::run::Run::default();
         for env in &envelopes {
             state.apply(env.payload());
@@ -450,7 +450,7 @@ where
             new_events,
             ctx,
         )
-        .await;
+        .await?;
         super::shared::publish_or_trace(&self.bus, &new_envelopes, "SweepStarted").await;
         Ok(())
     }
@@ -465,9 +465,9 @@ where
         use cherry_pit_core::HandleCommand;
 
         let id = self.resolve_run_id(batch_id)?;
-        let (state, last_seq) = self.load_and_fold_run(id).await;
+        let (state, last_seq) = self.load_and_fold_run(id).await?;
         let new_events = state.handle(cmd)?;
-        let new_envelopes = self.append_and_track(id, last_seq, new_events, ctx).await;
+        let new_envelopes = self.append_and_track(id, last_seq, new_events, ctx).await?;
         super::shared::publish_or_trace(&self.bus, &new_envelopes, "SweepProgress").await;
         Ok(())
     }
@@ -482,9 +482,9 @@ where
         use cherry_pit_core::HandleCommand;
 
         let id = self.resolve_run_id(batch_id)?;
-        let (state, last_seq) = self.load_and_fold_run(id).await;
+        let (state, last_seq) = self.load_and_fold_run(id).await?;
         let new_events = state.handle(cmd)?;
-        let new_envelopes = self.append_and_track(id, last_seq, new_events, ctx).await;
+        let new_envelopes = self.append_and_track(id, last_seq, new_events, ctx).await?;
         super::shared::publish_or_trace(&self.bus, &new_envelopes, "SweepCompleted").await;
         Ok(())
     }
@@ -499,9 +499,9 @@ where
         use cherry_pit_core::HandleCommand;
 
         let id = self.resolve_run_id(batch_id)?;
-        let (state, last_seq) = self.load_and_fold_run(id).await;
+        let (state, last_seq) = self.load_and_fold_run(id).await?;
         let new_events = state.handle(cmd)?;
-        let new_envelopes = self.append_and_track(id, last_seq, new_events, ctx).await;
+        let new_envelopes = self.append_and_track(id, last_seq, new_events, ctx).await?;
         super::shared::publish_or_trace(&self.bus, &new_envelopes, "SweepFailed").await;
         Ok(())
     }
@@ -516,9 +516,9 @@ where
         use cherry_pit_core::HandleCommand;
 
         let id = self.resolve_run_id(batch_id)?;
-        let (state, last_seq) = self.load_and_fold_run(id).await;
+        let (state, last_seq) = self.load_and_fold_run(id).await?;
         let new_events = state.handle(cmd)?;
-        let new_envelopes = self.append_and_track(id, last_seq, new_events, ctx).await;
+        let new_envelopes = self.append_and_track(id, last_seq, new_events, ctx).await?;
         super::shared::publish_or_trace(&self.bus, &new_envelopes, "EvidencePublished").await;
         Ok(())
     }
@@ -538,9 +538,9 @@ where
         use cherry_pit_core::HandleCommand;
 
         let id = self.resolve_run_id(batch_id)?;
-        let (state, last_seq) = self.load_and_fold_run(id).await;
+        let (state, last_seq) = self.load_and_fold_run(id).await?;
         let new_events = state.handle(cmd)?;
-        let new_envelopes = self.append_and_track(id, last_seq, new_events, ctx).await;
+        let new_envelopes = self.append_and_track(id, last_seq, new_events, ctx).await?;
         super::shared::publish_or_trace(&self.bus, &new_envelopes, "PartialEvidenceRendered").await;
         Ok(())
     }
@@ -558,7 +558,7 @@ where
 
         let existing_id = super::shared::lookup(&self.repos_by_key, domain_key);
         let (envelopes, last_seq) =
-            super::shared::load_envelopes_or_empty(&self.store, existing_id).await;
+            super::shared::load_envelopes_or_empty(&self.store, existing_id).await?;
         let mut state = crate::domain::aggregates::repo::Repo::default();
         for env in &envelopes {
             state.apply(env.payload());
@@ -576,7 +576,7 @@ where
             new_events,
             ctx,
         )
-        .await;
+        .await?;
         super::shared::publish_or_trace(&self.bus, &new_envelopes, "RepoEvaluated").await;
         Ok(())
     }
@@ -592,7 +592,7 @@ where
 
         let existing_id = super::shared::lookup(&self.repos_by_key, domain_key);
         let (envelopes, last_seq) =
-            super::shared::load_envelopes_or_empty(&self.store, existing_id).await;
+            super::shared::load_envelopes_or_empty(&self.store, existing_id).await?;
         let mut state = crate::domain::aggregates::repo::Repo::default();
         for env in &envelopes {
             state.apply(env.payload());
@@ -610,7 +610,7 @@ where
             new_events,
             ctx,
         )
-        .await;
+        .await?;
         super::shared::publish_or_trace(&self.bus, &new_envelopes, "RepoRemoved").await;
         Ok(())
     }
@@ -628,11 +628,7 @@ where
         let delivery_id = cmd.delivery_id.clone();
         let state = crate::domain::aggregates::webhook::WebhookDelivery::default();
         let new_events = state.handle(cmd)?;
-        let (assigned_id, new_envelopes) = self
-            .store
-            .create(new_events, ctx.clone())
-            .await
-            .expect("EventStore::create failure path enriched in B7'c");
+        let (assigned_id, new_envelopes) = self.store.create(new_events, ctx.clone()).await?;
         {
             let mut guard = self
                 .deliveries_by_id
@@ -673,14 +669,10 @@ where
     async fn load_and_fold_run(
         &self,
         id: AggregateId,
-    ) -> (crate::domain::aggregates::run::Run, NonZeroU64) {
+    ) -> Result<(crate::domain::aggregates::run::Run, NonZeroU64), RunError> {
         use cherry_pit_core::{Aggregate, EventStore};
 
-        let envelopes = self
-            .store
-            .load(id)
-            .await
-            .expect("EventStore::load failure path enriched in B7'c");
+        let envelopes = self.store.load(id).await?;
         let mut state = crate::domain::aggregates::run::Run::default();
         for env in &envelopes {
             state.apply(env.payload());
@@ -688,8 +680,12 @@ where
         let last_seq = envelopes
             .last()
             .map(cherry_pit_core::EventEnvelope::sequence)
-            .expect("indexed AggregateId must have ≥1 envelope (corrupt routing otherwise)");
-        (state, last_seq)
+            .ok_or_else(|| {
+                RunError::Storage(format!(
+                    "indexed AggregateId {id} has zero envelopes (routing index stale)"
+                ))
+            })?;
+        Ok((state, last_seq))
     }
 
     /// Lifted from [`super::run_service::RunService::append_and_track`].
@@ -699,14 +695,13 @@ where
         last_seq: NonZeroU64,
         new_events: Vec<DomainEvent>,
         ctx: &CorrelationContext,
-    ) -> Vec<cherry_pit_core::EventEnvelope<DomainEvent>> {
+    ) -> Result<Vec<cherry_pit_core::EventEnvelope<DomainEvent>>, RunError> {
         use cherry_pit_core::EventStore;
 
         let new_envelopes = self
             .store
             .append(id, last_seq, new_events, ctx.clone())
-            .await
-            .expect("EventStore::append failure path enriched in B7'c");
+            .await?;
         if let Some(env) = new_envelopes.last() {
             let next = env.sequence();
             let mut guard = self
@@ -715,6 +710,6 @@ where
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard.insert(id, next);
         }
-        new_envelopes
+        Ok(new_envelopes)
     }
 }
