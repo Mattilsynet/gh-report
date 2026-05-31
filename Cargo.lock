@@ -568,6 +568,7 @@ dependencies = [
 name = "cherry-pit-core"
 version = "0.1.0"
 dependencies = [
+ "cherry-pit-core",
  "jiff",
  "proptest",
  "rmp-serde",
