@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use cherry_pit_core::{
     AggregateId, CorrelationContext, DomainEvent, EventEnvelope, EventStore, ListableEventStore,
@@ -48,10 +49,11 @@ use serde::de::DeserializeOwned;
 /// # ID assignment ([CHE-0035:R1])
 ///
 /// New aggregates get sequential `u64` IDs starting from 1 via
-/// [`create`](EventStore::create). A global mutex guarantees
-/// monotonicity. The next ID is lazily initialized by scanning the
+/// [`create`](EventStore::create). Allocation is serialized by an
+/// atomic counter; the counter is lazily seeded by scanning the
 /// directory for the highest existing numeric filename on the first
-/// `create` call.
+/// `create` call ([CHE-0035:R1]). Seeding runs exactly once per
+/// store instance via an async `OnceCell`.
 ///
 /// # Concurrency ([CHE-0035])
 ///
@@ -144,9 +146,12 @@ use serde::de::DeserializeOwned;
 /// ```
 pub struct MsgpackFileStore<E: DomainEvent> {
     dir: PathBuf,
-    /// Next aggregate ID to assign. `None` means uninitialized —
-    /// first `create` call scans the directory to find the max.
-    next_id: tokio::sync::Mutex<Option<u64>>,
+    /// Lazy counter seeded from a one-shot directory scan. The
+    /// `OnceCell` serializes the seeding step (so `scan_max_id` runs
+    /// at most once per store instance), and the inner `AtomicU64`
+    /// serializes per-call allocation without holding any guard
+    /// across `.await`.
+    next_id: tokio::sync::OnceCell<AtomicU64>,
     /// Per-aggregate write locks. `scc::HashMap` is lock-free for
     /// concurrent reads and uses fine-grained locking for writes —
     /// no poison risk, no contention on the map itself.
@@ -179,7 +184,7 @@ impl<E: DomainEvent + Serialize + DeserializeOwned> MsgpackFileStore<E> {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Self {
             dir: dir.into(),
-            next_id: tokio::sync::Mutex::new(None),
+            next_id: tokio::sync::OnceCell::new(),
             locks: scc::HashMap::new(),
             dir_lock: tokio::sync::OnceCell::new(),
             temp_recovery: tokio::sync::OnceCell::new(),
@@ -452,26 +457,23 @@ impl<E: DomainEvent + Serialize + DeserializeOwned> EventStore for MsgpackFileSt
             )));
         }
 
-        // Assign next ID under lock.
-        let id = {
-            let mut next = self.next_id.lock().await;
-            let n = if let Some(n) = *next {
-                n
-            } else {
+        let counter = self
+            .next_id
+            .get_or_try_init(|| async {
                 let max = self.scan_max_id().await?;
-                max.checked_add(1).ok_or_else(|| {
+                let start = max.checked_add(1).ok_or_else(|| {
                     infrastructure_error(io::Error::other("aggregate ID overflow"))
-                })?
-            };
-            let after = n
-                .checked_add(1)
-                .ok_or_else(|| infrastructure_error(io::Error::other("aggregate ID overflow")))?;
-            *next = Some(after);
-            let nz = NonZeroU64::new(n).ok_or_else(|| {
-                infrastructure_error(io::Error::other("aggregate ID must be non-zero"))
-            })?;
-            AggregateId::new(nz)
-        };
+                })?;
+                Ok::<_, StoreError>(AtomicU64::new(start))
+            })
+            .await?;
+        let n = counter
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| v.checked_add(1))
+            .map_err(|_| infrastructure_error(io::Error::other("aggregate ID overflow")))?;
+        let nz = NonZeroU64::new(n).ok_or_else(|| {
+            infrastructure_error(io::Error::other("aggregate ID must be non-zero"))
+        })?;
+        let id = AggregateId::new(nz);
 
         let envelopes = Self::build_envelopes(id, 0, events, &context)?;
         let path = self.aggregate_path(id);
@@ -1312,10 +1314,53 @@ mod tests {
             .map(|r| r.unwrap().unwrap())
             .collect();
 
-        let mut ids: Vec<_> = results.iter().map(|(id, _)| *id).collect();
-        ids.sort();
-        ids.dedup();
-        assert_eq!(ids.len(), 10, "all 10 creates should get unique IDs");
+        let mut ids: Vec<u64> = results.iter().map(|(id, _)| id.get()).collect();
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            (1..=10).collect::<Vec<_>>(),
+            "concurrent first creates must yield the contiguous range 1..=10 (no gaps, no duplicates)"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_first_creates_after_existing_files_seed_once() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::create_dir_all(dir.path()).await.unwrap();
+        for id in [1u64, 2, 5, 17] {
+            tokio::fs::write(dir.path().join(format!("{id}.msgpack")), b"placeholder")
+                .await
+                .unwrap();
+        }
+
+        let store = Arc::new(MsgpackFileStore::<TestEvent>::new(dir.path()));
+
+        let mut handles = Vec::new();
+        for i in 0..16 {
+            let s = Arc::clone(&store);
+            handles.push(tokio::spawn(async move {
+                s.create(
+                    vec![TestEvent::Created {
+                        name: format!("agg-{i}"),
+                    }],
+                    no_ctx(),
+                )
+                .await
+            }));
+        }
+        let results: Vec<_> = futures_util::future::join_all(handles)
+            .await
+            .into_iter()
+            .map(|r| r.unwrap().unwrap())
+            .collect();
+
+        let mut ids: Vec<u64> = results.iter().map(|(id, _)| id.get()).collect();
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            (18u64..=33).collect::<Vec<_>>(),
+            "scan must seed from max existing id (17) exactly once; 16 concurrent first creates must occupy 18..=33"
+        );
     }
 
     #[tokio::test]
