@@ -41,3 +41,10 @@ trybuild = { workspace = true }
 serde_json = { workspace = true }
 rmp-serde = { workspace = true }
 toml = { workspace = true }
+# Self dev-dep activates the `testing` feature for integration tests
+# (`tests/*.rs`) without exposing the `testing` module in normal
+# downstream builds. Cargo unifies features across the test graph, so
+# the integration-test compilation sees `pub mod testing` while
+# downstream production builds that depend on cherry-pit-core without
+# `features = ["testing"]` still get the gated-out surface.
+cherry-pit-core = { path = ".", features = ["testing"] }
