@@ -473,4 +473,127 @@ mod tests {
         };
         assert_eq!(tracked_seq.get(), 1);
     }
+
+    /// Regression test for the formerly-documented I1 TOCTOU on the
+    /// routing-index create-path (bd `adr-fmt-1uwm`, since closed).
+    ///
+    /// Fans out `N = 32` concurrent `record_evaluation` calls against
+    /// the **same** `domain_key`, then asserts the invariants that
+    /// hold iff the create-path is single-flighted across the
+    /// (`lookup` → `EventStore::create` → `index.or_insert`)
+    /// sequence:
+    ///
+    /// 1. Exactly one routing-index entry materialises (`assigned_id`
+    ///    is well-defined).
+    /// 2. Exactly one per-aggregate `.msgpack` file lands under the
+    ///    [`MsgpackFileStore`] root — *no orphan stream*. Pre-fix,
+    ///    each interleaved create-path would emit a distinct
+    ///    `AggregateId`, producing one file per losing creator that
+    ///    the index never points back to.
+    /// 3. The single stream contains exactly `N` envelopes with
+    ///    monotonic sequences `1..=N` (1 create + `N-1` appends).
+    /// 4. The next-sequence tracker records `N` for that
+    ///    `AggregateId`.
+    ///
+    /// Serialization is provided by the [`Merger`] task being the
+    /// sole writer (single-task command processor at
+    /// `merger::Merger::run` — every command runs to completion
+    /// before the next is dequeued). The test runs on a
+    /// multi-threaded runtime to maximise the chance of exposing any
+    /// future regression that bypasses the Merger or re-introduces a
+    /// pre-Merger check-then-act on the routing index.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_same_domain_key_evaluations_create_exactly_one_aggregate() {
+        const N: usize = 32;
+
+        let (dir, store, _bus, index, tracker, svc) = build_service().await;
+
+        let svc = Arc::new(svc);
+        let ctx = CorrelationContext::none();
+        let domain_key = "octocat/concurrent-create";
+
+        let mut handles = Vec::with_capacity(N);
+        for i in 0..N {
+            let svc = Arc::clone(&svc);
+            let ctx = ctx.clone();
+            let dk = domain_key.to_owned();
+            handles.push(tokio::spawn(async move {
+                svc.record_evaluation(
+                    &dk,
+                    RecordEvaluation {
+                        domain_key: dk.clone(),
+                        repo_name: "concurrent-create".into(),
+                        success: i % 2 == 0,
+                        source: "scheduled_batch".into(),
+                        duration_ms: u64::try_from(i).unwrap(),
+                        timestamp: "2026-05-31T00:00:00Z".into(),
+                        evidence: None,
+                    },
+                    &ctx,
+                )
+                .await
+            }));
+        }
+        for h in handles {
+            h.await
+                .expect("task join")
+                .expect("record_evaluation under contention");
+        }
+
+        let assigned_id = {
+            let guard = index
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(
+                guard.len(),
+                1,
+                "routing index must have exactly one entry for the single domain_key, got {}",
+                guard.len()
+            );
+            *guard.get(domain_key).expect("index should map domain_key")
+        };
+
+        let msgpack_files: Vec<std::path::PathBuf> = std::fs::read_dir(dir.path())
+            .expect("read tempdir")
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .is_some_and(|ext| ext == "msgpack")
+            })
+            .collect();
+        assert_eq!(
+            msgpack_files.len(),
+            1,
+            "expected exactly one per-aggregate file (no orphan streams), found {msgpack_files:?}"
+        );
+
+        let loaded = store.load(assigned_id).await.expect("load");
+        assert_eq!(
+            loaded.len(),
+            N,
+            "stream should contain exactly N envelopes (1 create + N-1 appends)"
+        );
+        for (i, env) in loaded.iter().enumerate() {
+            assert_eq!(
+                env.sequence().get(),
+                u64::try_from(i + 1).unwrap(),
+                "envelope {i} should have monotonic sequence {}",
+                i + 1
+            );
+        }
+
+        let tracked_seq = {
+            let guard = tracker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard.get(&assigned_id).expect("tracker entry")
+        };
+        assert_eq!(
+            tracked_seq.get(),
+            u64::try_from(N).unwrap(),
+            "tracker should reflect the last appended sequence"
+        );
+    }
 }
