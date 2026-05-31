@@ -308,26 +308,19 @@ mod tests {
     async fn single_worker_processes_job() {
         let queue = Arc::new(WorkQueue::new(10));
         queue.enqueue(make_job("key-1"));
+        queue.close();
 
         let (tx, mut rx) = mpsc::channel(16);
 
-        let q = Arc::clone(&queue);
-        let handle = tokio::spawn(async move {
-            run_worker_pool(
-                q,
-                Arc::new(EchoExecutor),
-                Arc::new(BudgetGate::new(1000, Duration::from_secs(1))),
-                Arc::new(RateLimitState::default()),
-                WorkerPoolConfig { worker_count: 1 },
-                tx,
-            )
-            .await;
-        });
-
-        // Give the worker time to process, then close queue so workers exit.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        queue.close();
-        handle.await.unwrap();
+        run_worker_pool(
+            Arc::clone(&queue),
+            Arc::new(EchoExecutor),
+            Arc::new(BudgetGate::new(1000, Duration::from_secs(1))),
+            Arc::new(RateLimitState::default()),
+            WorkerPoolConfig { worker_count: 1 },
+            tx,
+        )
+        .await;
 
         let mut outcomes = Vec::new();
         while let Some(o) = rx.recv().await {
@@ -351,26 +344,20 @@ mod tests {
         for i in 0..10 {
             queue.enqueue(make_job(&format!("k{i}")));
         }
+        queue.close();
 
         let (tx, mut rx) = mpsc::channel(64);
         let count = Arc::new(AtomicUsize::new(0));
 
-        let q = Arc::clone(&queue);
-        let handle = tokio::spawn(async move {
-            run_worker_pool(
-                q,
-                Arc::new(EchoExecutor),
-                Arc::new(BudgetGate::new(1000, Duration::from_secs(1))),
-                Arc::new(RateLimitState::default()),
-                WorkerPoolConfig { worker_count: 4 },
-                tx,
-            )
-            .await;
-        });
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        queue.close();
-        handle.await.unwrap();
+        run_worker_pool(
+            Arc::clone(&queue),
+            Arc::new(EchoExecutor),
+            Arc::new(BudgetGate::new(1000, Duration::from_secs(1))),
+            Arc::new(RateLimitState::default()),
+            WorkerPoolConfig { worker_count: 4 },
+            tx,
+        )
+        .await;
 
         while rx.recv().await.is_some() {
             count.fetch_add(1, Ordering::Relaxed);
@@ -382,25 +369,19 @@ mod tests {
     async fn executor_error_produces_failure_outcome() {
         let queue = Arc::new(WorkQueue::new(10));
         queue.enqueue(make_job("fail-key"));
+        queue.close();
 
         let (tx, mut rx) = mpsc::channel(16);
 
-        let q = Arc::clone(&queue);
-        let handle = tokio::spawn(async move {
-            run_worker_pool(
-                q,
-                Arc::new(FailExecutor),
-                Arc::new(BudgetGate::new(1000, Duration::from_secs(1))),
-                Arc::new(RateLimitState::default()),
-                WorkerPoolConfig { worker_count: 1 },
-                tx,
-            )
-            .await;
-        });
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        queue.close();
-        handle.await.unwrap();
+        run_worker_pool(
+            Arc::clone(&queue),
+            Arc::new(FailExecutor),
+            Arc::new(BudgetGate::new(1000, Duration::from_secs(1))),
+            Arc::new(RateLimitState::default()),
+            WorkerPoolConfig { worker_count: 1 },
+            tx,
+        )
+        .await;
 
         let mut outcomes = Vec::new();
         while let Some(o) = rx.recv().await {
@@ -486,24 +467,18 @@ mod tests {
             JobSource::ScheduledBatch,
             ctx.clone(),
         ));
+        queue.close();
 
         let (tx, mut rx) = mpsc::channel(16);
-        let q = Arc::clone(&queue);
-        let handle = tokio::spawn(async move {
-            run_worker_pool(
-                q,
-                Arc::new(EchoExecutor),
-                Arc::new(BudgetGate::new(1000, Duration::from_secs(1))),
-                Arc::new(RateLimitState::default()),
-                WorkerPoolConfig { worker_count: 1 },
-                tx,
-            )
-            .await;
-        });
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        queue.close();
-        handle.await.unwrap();
+        run_worker_pool(
+            Arc::clone(&queue),
+            Arc::new(EchoExecutor),
+            Arc::new(BudgetGate::new(1000, Duration::from_secs(1))),
+            Arc::new(RateLimitState::default()),
+            WorkerPoolConfig { worker_count: 1 },
+            tx,
+        )
+        .await;
 
         let outcome = rx.recv().await.expect("expected one outcome");
         match outcome {
@@ -528,24 +503,18 @@ mod tests {
             JobSource::ScheduledBatch,
             ctx.clone(),
         ));
+        queue.close();
 
         let (tx, mut rx) = mpsc::channel(16);
-        let q = Arc::clone(&queue);
-        let handle = tokio::spawn(async move {
-            run_worker_pool(
-                q,
-                Arc::new(FailExecutor),
-                Arc::new(BudgetGate::new(1000, Duration::from_secs(1))),
-                Arc::new(RateLimitState::default()),
-                WorkerPoolConfig { worker_count: 1 },
-                tx,
-            )
-            .await;
-        });
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        queue.close();
-        handle.await.unwrap();
+        run_worker_pool(
+            Arc::clone(&queue),
+            Arc::new(FailExecutor),
+            Arc::new(BudgetGate::new(1000, Duration::from_secs(1))),
+            Arc::new(RateLimitState::default()),
+            WorkerPoolConfig { worker_count: 1 },
+            tx,
+        )
+        .await;
 
         let outcome = rx.recv().await.expect("expected one outcome");
         match outcome {
