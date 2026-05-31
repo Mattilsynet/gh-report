@@ -120,10 +120,7 @@ async fn reentrant_register_from_handler_does_not_deadlock() {
         bus_c.publish(&[env(1)]).await.unwrap();
     })
     .await;
-    assert!(
-        result.is_ok(),
-        "reentrant register from handler deadlocked"
-    );
+    assert!(result.is_ok(), "reentrant register from handler deadlocked");
 
     let count_before = bus.handler_count();
     assert!(
@@ -162,10 +159,7 @@ async fn reentrant_publish_from_handler_does_not_deadlock() {
         bus_c.publish(&[env(1)]).await.unwrap();
     })
     .await;
-    assert!(
-        result.is_ok(),
-        "reentrant publish from handler deadlocked"
-    );
+    assert!(result.is_ok(), "reentrant publish from handler deadlocked");
 
     let got = observed.lock().unwrap().clone();
     assert!(
