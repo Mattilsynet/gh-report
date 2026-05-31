@@ -53,6 +53,11 @@ use crate::domain::run::RunMetadata;
 use crate::error::{AppError, ConfigError, PersistenceError};
 use tracing::{debug, error, info, warn};
 
+/// Bounded per-handle timeout for the worker-pool and delivery-task
+/// drain at daemon shutdown. The total drain budget at shutdown is
+/// `2 ×` this value (pool then delivery, sequentially).
+const WORKER_POOL_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Start the daemon (warm-start + web server + background collection).
 ///
 /// 1. Reads the `PORT` env var (default 8080).
@@ -215,14 +220,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     .await;
 
     // ── Step 5: Graceful shutdown ───────────────────────────────
-    // Close the work queue so the worker pool drains remaining jobs
-    // and exits cleanly. This must happen before aborting the
-    // collection task to avoid losing in-flight webhook jobs.
-    app_state.work_queue.close();
-
-    // The collection task may already be shutting down cooperatively
-    // via its own SIGTERM handler (collect.rs). abort() is a superset
-    // that forcibly drops the task if it hasn't exited yet.
+    shutdown_workers(&app_state).await;
     collection_loop.abort();
 
     // The logging handler is a synchronous closure registered on
@@ -236,6 +234,31 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
 
     info!("daemon stopped");
     Ok(())
+}
+
+/// Drain the worker pool + delivery task on daemon shutdown.
+///
+/// Closes the work queue first so the pool stops accepting new jobs and
+/// finishes those in flight, then awaits both handles with an individual
+/// timeout. Total drain budget upper-bounded at `2 ×
+/// WORKER_POOL_DRAIN_TIMEOUT`.
+async fn shutdown_workers(app_state: &Arc<AppState>) {
+    app_state.work_queue.close();
+    let (pool_drained, delivery_drained) = app_state
+        .drain_worker_pool(WORKER_POOL_DRAIN_TIMEOUT)
+        .await;
+    if !pool_drained {
+        warn!(
+            timeout_secs = WORKER_POOL_DRAIN_TIMEOUT.as_secs(),
+            "worker pool did not drain within timeout"
+        );
+    }
+    if !delivery_drained {
+        warn!(
+            timeout_secs = WORKER_POOL_DRAIN_TIMEOUT.as_secs(),
+            "delivery task did not drain within timeout"
+        );
+    }
 }
 
 /// Delivery task: consumes job outcomes from the worker pool channel.
