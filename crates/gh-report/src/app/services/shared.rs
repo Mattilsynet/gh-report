@@ -84,7 +84,7 @@ use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
 
-use cherry_pit_core::{AggregateId, CorrelationContext, EventBus, EventEnvelope, EventStore};
+use cherry_pit_core::{AggregateId, CorrelationContext, EventBus, EventEnvelope, EventStore, StoreError};
 
 use crate::domain::events::DomainEvent;
 
@@ -129,28 +129,34 @@ pub(super) fn lookup(
 /// state via [`cherry_pit_core::Aggregate::apply`].
 ///
 /// Returns the loaded envelopes alongside the last-applied sequence
-/// (for caller-tracked CAS, CHE-0054:R6). Panics on
-/// `EventStore::load` failure (typed surface in B7'c) or when the
-/// indexed aggregate has zero events (corrupt routing).
+/// (for caller-tracked CAS, CHE-0054:R6).
+///
+/// # Errors
+///
+/// Returns [`StoreError`] when `EventStore::load` fails or when an
+/// indexed `AggregateId` resolves to zero envelopes (`StoreError::CorruptData` —
+/// the routing index referenced a stream that no longer exists).
 pub(super) async fn load_envelopes_or_empty<S>(
     store: &Arc<S>,
     existing_id: Option<AggregateId>,
-) -> (Vec<EventEnvelope<DomainEvent>>, Option<NonZeroU64>)
+) -> Result<(Vec<EventEnvelope<DomainEvent>>, Option<NonZeroU64>), StoreError>
 where
     S: EventStore<Event = DomainEvent>,
 {
     let Some(id) = existing_id else {
-        return (Vec::new(), None);
+        return Ok((Vec::new(), None));
     };
-    let envelopes = store
-        .load(id)
-        .await
-        .expect("EventStore::load failure path enriched in B7'c");
+    let envelopes = store.load(id).await?;
     let last_seq = envelopes
         .last()
         .map(cherry_pit_core::EventEnvelope::sequence)
-        .expect("indexed AggregateId must have ≥1 envelope (corrupt routing otherwise)");
-    (envelopes, Some(last_seq))
+        .ok_or_else(|| {
+            StoreError::CorruptData(
+                format!("indexed AggregateId {id} has zero envelopes (routing index stale)")
+                    .into(),
+            )
+        })?;
+    Ok((envelopes, Some(last_seq)))
 }
 
 /// Persist `new_events` via either the create-path
@@ -159,10 +165,6 @@ where
 /// routing index (create-path only, via `or_insert`) and the
 /// sequence tracker (both paths).
 ///
-/// Panics on `EventStore::create` / `EventStore::append` failure or
-/// the `(Some, None)` shape (indexed but unloaded — caught earlier
-/// by [`load_envelopes_or_empty`]).
-///
 /// **I1 TOCTOU**: [`lookup`] followed by this helper is a
 /// check-then-act sequence on the routing index. Safe in this crate
 /// because every call site lives inside an arm of the single-task
@@ -170,6 +172,14 @@ where
 /// module-level "I1 TOCTOU resolution" docs. The brief
 /// `std::sync::Mutex` guard taken to perform `or_insert` is released
 /// before any `await` on storage I/O.
+///
+/// # Errors
+///
+/// Returns [`StoreError`] when the underlying `EventStore::create`
+/// or `EventStore::append` call fails, or `StoreError::CorruptData`
+/// when called with the `(Some, None)` shape (indexed `AggregateId`
+/// without a tracked `last_seq` — a routing/load bug that
+/// [`load_envelopes_or_empty`] normally surfaces first).
 pub(super) async fn create_or_append<S>(
     handles: PersistHandles<'_, S>,
     domain_key: &str,
@@ -177,17 +187,13 @@ pub(super) async fn create_or_append<S>(
     last_seq: Option<NonZeroU64>,
     new_events: Vec<DomainEvent>,
     ctx: &CorrelationContext,
-) -> Vec<EventEnvelope<DomainEvent>>
+) -> Result<Vec<EventEnvelope<DomainEvent>>, StoreError>
 where
     S: EventStore<Event = DomainEvent>,
 {
     match (existing_id, last_seq) {
         (None, _) => {
-            let (assigned_id, envs) = handles
-                .store
-                .create(new_events, ctx.clone())
-                .await
-                .expect("EventStore::create failure path enriched in B7'c");
+            let (assigned_id, envs) = handles.store.create(new_events, ctx.clone()).await?;
             {
                 let mut guard = handles
                     .index
@@ -203,14 +209,13 @@ where
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 guard.insert(assigned_id, seq);
             }
-            envs
+            Ok(envs)
         }
         (Some(id), Some(seq)) => {
             let envs = handles
                 .store
                 .append(id, seq, new_events, ctx.clone())
-                .await
-                .expect("EventStore::append failure path enriched in B7'c");
+                .await?;
             if let Some(env) = envs.last() {
                 let next = env.sequence();
                 let mut guard = handles
@@ -219,14 +224,15 @@ where
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 guard.insert(id, next);
             }
-            envs
+            Ok(envs)
         }
-        (Some(_), None) => {
-            unreachable!(
-                "indexed AggregateId without last_seq is a routing/load bug; \
-                 load_envelopes_or_empty enforces ≥1 envelope when existing_id is Some"
+        (Some(id), None) => Err(StoreError::CorruptData(
+            format!(
+                "indexed AggregateId {id} without last_seq; \
+                 load_envelopes_or_empty should have surfaced this first"
             )
-        }
+            .into(),
+        )),
     }
 }
 
