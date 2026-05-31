@@ -255,6 +255,12 @@ pub struct GitHubClient {
     /// the timestamp backward.
     halted_until: AtomicU64,
     credential: tokio::sync::Mutex<GitHubCredential>,
+    /// Single-flight serializer for credential refresh attempts.
+    ///
+    /// Held across the HTTP token exchange so at most one refresh is in
+    /// flight at a time. Distinct from `credential` so the credential data
+    /// mutex is never held across an `.await` of `exchange_installation_token`.
+    refresh_lock: tokio::sync::Mutex<()>,
     /// GitHub App config, if using App authentication (needed for token refresh).
     app_config: Option<GitHubAppConfig>,
     /// Auth metadata collected from API response headers.
@@ -408,6 +414,7 @@ impl GitHubClient {
             halted_until: AtomicU64::new(0),
             credential_expires_at: AtomicU64::new(credential.expires_at_unix()),
             credential: tokio::sync::Mutex::new(credential),
+            refresh_lock: tokio::sync::Mutex::new(()),
             app_config,
             auth_metadata: StdMutex::new(None),
             budget,
@@ -501,16 +508,18 @@ impl GitHubClient {
     /// Ensure the credential is valid, refreshing if necessary.
     ///
     /// Uses double-checked locking: a lock-free atomic check on the fast path,
-    /// then acquires the credential mutex and re-checks before refreshing.
+    /// then acquires a dedicated `refresh_lock` (separate from the credential
+    /// data mutex) and re-checks before refreshing. The HTTP token exchange
+    /// is performed without holding the credential data lock, so other
+    /// readers of `credential` are never blocked on network I/O.
     async fn ensure_credential(&self) -> Result<(), GitHubApiError> {
-        // Fast path: no lock needed
         if !self.credential_needs_refresh() {
             return Ok(());
         }
 
-        // Slow path: acquire mutex, then re-check
-        let mut cred = self.credential.lock().await;
-        if !cred.needs_refresh(TOKEN_REFRESH_BUFFER) {
+        let _refresh_guard = self.refresh_lock.lock().await;
+
+        if !self.credential_needs_refresh() {
             return Ok(());
         }
 
@@ -526,9 +535,6 @@ impl GitHubClient {
         let new_cred = self.exchange_installation_token(app_config).await?;
         let new_expiry = new_cred.expires_at_unix();
 
-        // SECURITY: Zeroize the intermediate Bearer string on drop.
-        // The HeaderValue copy is an accepted residual risk — reqwest/hyper
-        // have no zeroizing HeaderValue variant.
         let auth_value = Zeroizing::new(format!("Bearer {}", new_cred.token.expose_secret()));
         let new_header = HeaderValue::from_str(&auth_value).map_err(|_| {
             GitHubApiError::AuthenticationFailed {
@@ -536,9 +542,10 @@ impl GitHubClient {
             }
         })?;
 
-        // Update ordering: credential → auth_header → expiry (expiry last with Release).
-        // Connection pool is preserved — only the per-request auth header changes.
-        *cred = new_cred;
+        {
+            let mut cred = self.credential.lock().await;
+            *cred = new_cred;
+        }
         self.auth_header.store(Arc::new(new_header));
         self.credential_expires_at
             .store(new_expiry, Ordering::Release);
