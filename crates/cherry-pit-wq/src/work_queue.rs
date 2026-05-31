@@ -372,23 +372,12 @@ mod tests {
 
     #[tokio::test]
     async fn channel_close_returns_none() {
-        let q = Arc::new(WorkQueue::new(10));
+        let q = WorkQueue::new(10);
         q.enqueue(make_job("a"));
-
-        let q2 = Arc::clone(&q);
-        let handle = tokio::spawn(async move {
-            let j = q2.dequeue().await;
-            assert!(j.is_some());
-            assert_eq!(j.unwrap().domain_key, "a");
-            // Next dequeue blocks until channel closed.
-            let j2 = q2.dequeue().await;
-            assert!(j2.is_none());
-        });
-
-        // Give worker time to dequeue first item.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let j = q.dequeue().await.expect("queued item");
+        assert_eq!(j.domain_key, "a");
         q.close();
-        handle.await.unwrap();
+        assert!(q.dequeue().await.is_none());
     }
 
     #[tokio::test]
@@ -496,28 +485,22 @@ mod tests {
 
     // ── enqueue_batch tests ────────────────────────────────────────
 
-    #[test]
-    fn batch_enqueue_counts() {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(async {
-            let q = WorkQueue::new(10);
-            let items: Vec<(DomainKey, String)> = (0..5)
-                .map(|i| (format!("k{i}"), format!("ctx{i}")))
-                .collect();
-            let result = enqueue_batch(
-                &q,
-                items,
-                &JobSource::ScheduledBatch,
-                &CorrelationContext::none(),
-            );
-            assert_eq!(result.total, 5);
-            assert_eq!(result.accepted, 5);
-            assert_eq!(result.deduplicated, 0);
-            assert_eq!(result.rejected, 0);
-        });
+    #[tokio::test]
+    async fn batch_enqueue_counts() {
+        let q = WorkQueue::new(10);
+        let items: Vec<(DomainKey, String)> = (0..5)
+            .map(|i| (format!("k{i}"), format!("ctx{i}")))
+            .collect();
+        let result = enqueue_batch(
+            &q,
+            items,
+            &JobSource::ScheduledBatch,
+            &CorrelationContext::none(),
+        );
+        assert_eq!(result.total, 5);
+        assert_eq!(result.accepted, 5);
+        assert_eq!(result.deduplicated, 0);
+        assert_eq!(result.rejected, 0);
     }
 
     #[test]
