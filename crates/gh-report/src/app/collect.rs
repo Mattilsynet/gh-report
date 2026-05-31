@@ -549,13 +549,27 @@ impl SweepSaga {
         self.step_resume(inventory, config, state);
 
         // Emit progress: resumed repos.
-        Self::emit_progress(run, corr_ctx, inventory.active_repos.len() as u64, state).await;
+        Self::emit_progress(
+            run,
+            corr_ctx,
+            self.completed.len() as u64,
+            inventory.active_repos.len() as u64,
+            state,
+        )
+        .await;
 
         // Phase 2: Reuse from baseline.
         self.step_baseline(inventory, config, state);
 
         // Emit progress: resumed + baseline-reused repos.
-        Self::emit_progress(run, corr_ctx, inventory.active_repos.len() as u64, state).await;
+        Self::emit_progress(
+            run,
+            corr_ctx,
+            (self.completed.len() + self.baseline_cache.len()) as u64,
+            inventory.active_repos.len() as u64,
+            state,
+        )
+        .await;
 
         // Phase 3: Enqueue pending repos and await batch completion.
         self.step_enqueue_and_await(config, run, corr_ctx, ctx, inventory, state)
@@ -739,8 +753,8 @@ impl SweepSaga {
                 self.phase = SweepPhase::BatchDrained;
 
                 // Emit final progress (all complete).
-                Self::emit_progress(run, corr_ctx, inventory.active_repos.len() as u64, state)
-                    .await;
+                let total = inventory.active_repos.len() as u64;
+                Self::emit_progress(run, corr_ctx, total, total, state).await;
             }
             Ok(Ok(false)) => {
                 // All jobs rejected — clean abort.
@@ -915,25 +929,13 @@ impl SweepSaga {
         u64::try_from(self.sweep_start.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
-    /// Emit a `SweepProgress` event with the current completion count.
-    ///
-    /// Uses the evidence store length as the source of truth — it includes
-    /// resumed, baseline-reused, batch-completed, and any concurrent
-    /// webhook-triggered entries. The count is advisory (observability only).
-    ///
-    /// Associated function (no `&self`) because all required state is passed
-    /// explicitly via `run` and `state`; kept in `impl SweepSaga` for the
-    /// semantic grouping.
     async fn emit_progress(
         run: &RunMetadata,
         corr_ctx: &CorrelationContext,
+        completed: u64,
         total: u64,
         state: &Arc<AppState>,
     ) {
-        // `EvidenceProjection::len()` returns `usize` (collection size); the
-        // event field is `u64` per GEN-0004:R1. Cast is lossless on every
-        // pardosa target per PAR-0011 (64-bit gate).
-        let completed = state.projection_len() as u64;
         if let Err(e) = state
             .run_service
             .record_progress(
@@ -3444,11 +3446,23 @@ mod tests {
         saga.step_start_sweep(&config, &run, &corr_ctx, &inventory, &state)
             .await;
         saga.step_resume(&inventory, &config, &state);
-        SweepSaga::emit_progress(&run, &corr_ctx, inventory.active_repos.len() as u64, &state)
-            .await;
+        SweepSaga::emit_progress(
+            &run,
+            &corr_ctx,
+            saga.current_run_completed(),
+            inventory.active_repos.len() as u64,
+            &state,
+        )
+        .await;
         saga.step_baseline(&inventory, &config, &state);
-        SweepSaga::emit_progress(&run, &corr_ctx, inventory.active_repos.len() as u64, &state)
-            .await;
+        SweepSaga::emit_progress(
+            &run,
+            &corr_ctx,
+            saga.current_run_completed(),
+            inventory.active_repos.len() as u64,
+            &state,
+        )
+        .await;
 
         tokio::task::yield_now().await;
 
@@ -3462,11 +3476,17 @@ mod tests {
             .position(|e| matches!(e, DomainEvent::SweepStarted { .. }))
             .expect("CHE-0054:R1.a — SweepStarted must appear on the bus");
 
-        let progress_positions: Vec<usize> = events
+        let progress_events: Vec<(usize, u64, u64)> = events
             .iter()
             .enumerate()
-            .filter_map(|(i, e)| matches!(e, DomainEvent::SweepProgress { .. }).then_some(i))
+            .filter_map(|(i, e)| match e {
+                DomainEvent::SweepProgress {
+                    completed, total, ..
+                } => Some((i, *completed, *total)),
+                _ => None,
+            })
             .collect();
+        let progress_positions: Vec<usize> = progress_events.iter().map(|t| t.0).collect();
 
         assert_eq!(
             progress_positions.len(),
@@ -3482,5 +3502,107 @@ mod tests {
             "CHE-0054:R1.a — SweepStarted ({started_at}) must precede every \
              SweepProgress (positions: {progress_positions:?})"
         );
+
+        let completed_seq: Vec<(u64, u64)> = progress_events.iter().map(|t| (t.1, t.2)).collect();
+        assert_eq!(
+            completed_seq,
+            vec![(0, 1), (0, 1)],
+            "SweepProgress.completed must reflect current-run active-inventory \
+             progress, not EvidenceProjection cardinality"
+        );
+    }
+
+    #[tokio::test]
+    async fn sweep_progress_completed_reflects_current_run_not_projection_len() {
+        use crate::domain::events::DomainEvent;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta();
+        let corr_ctx = run.correlation_context();
+        let state = AppState::new_with_cache_capacity(10).await;
+
+        let mut contaminant = sample_repo("repo-not-in-inventory");
+        contaminant.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
+        seed_baseline(
+            dir.path(),
+            &state,
+            vec![("repo-not-in-inventory", "2026-04-10T00:00:00Z", contaminant)],
+        );
+
+        let mut reused = sample_repo("repo-reused");
+        reused.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
+        seed_baseline(
+            dir.path(),
+            &state,
+            vec![("repo-reused", "2026-04-10T00:00:00Z", reused)],
+        );
+
+        let inventory = InventoryLoad {
+            active_repos: vec![
+                arc_repo_with_updated_at("repo-reused", Some("2026-04-10T00:00:00Z")),
+                arc_repo("repo-pending"),
+            ],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+        let total = inventory.active_repos.len() as u64;
+        assert_eq!(total, 2);
+
+        let captured = capture_bus(&state.bus);
+        let mut saga = make_test_saga(&config, &run);
+
+        saga.step_start_sweep(&config, &run, &corr_ctx, &inventory, &state)
+            .await;
+        saga.step_resume(&inventory, &config, &state);
+
+        SweepSaga::emit_progress(&run, &corr_ctx, saga.current_run_completed(), total, &state)
+            .await;
+
+        saga.step_baseline(&inventory, &config, &state);
+        assert_eq!(saga.baseline_reused, 1, "repo-reused must reuse baseline");
+
+        SweepSaga::emit_progress(&run, &corr_ctx, saga.current_run_completed(), total, &state)
+            .await;
+
+        tokio::task::yield_now().await;
+
+        let events = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+
+        let progress: Vec<(u64, u64)> = events
+            .iter()
+            .filter_map(|e| match e {
+                DomainEvent::SweepProgress {
+                    completed, total, ..
+                } => Some((*completed, *total)),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            progress.len(),
+            2,
+            "expected 2 SweepProgress emits (post-resume, post-baseline); got {progress:?}"
+        );
+        assert_eq!(
+            progress[0],
+            (0, 2),
+            "post-resume completed must be 0/2 (current-run inventory progress, \
+             not projection_len which includes contaminant + reused = 2)"
+        );
+        assert_eq!(
+            progress[1],
+            (1, 2),
+            "post-baseline completed must be 1/2 (repo-reused counts, contaminant does not)"
+        );
+    }
+
+    impl SweepSaga {
+        fn current_run_completed(&self) -> u64 {
+            (self.completed.len() + self.baseline_cache.len()) as u64
+        }
     }
 }
