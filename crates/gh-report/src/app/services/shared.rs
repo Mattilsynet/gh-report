@@ -32,29 +32,45 @@
 //! linus on Inc 5. `WebhookService` still adopts [`publish_or_trace`]
 //! for the publish step.
 //!
-//! ## I1 TOCTOU carry (B7'b → B7'c+)
+//! ## I1 TOCTOU resolution (Track 4.0/3a Merger)
 //!
-//! Both [`lookup`] + [`create_or_append`] together form a
+//! In isolation, [`lookup`] + [`create_or_append`] would form a
 //! check-then-act sequence on `Arc<Mutex<HashMap<String,
 //! AggregateId>>>`: two concurrent service calls on the same
-//! `domain_key` can both observe `lookup → None`, then both call
-//! `EventStore::create`, then both call `index.entry(...).or_insert(...)`.
-//! The second call's `or_insert` is a no-op (correct routing
-//! preserved), but its `EventStore::create` produces an **orphan
-//! aggregate stream** on disk that the index never points to. The
-//! `next_seq` likewise records an unreachable entry. Not
-//! exercised by current tests; cross-thread concurrency on a single
-//! `RepoService` / `RunService` instance is not part of the B7'b
-//! threat model. Tracked in bd `adr-fmt-1uwm`; resolution candidates:
+//! `domain_key` could in principle both observe `lookup → None`,
+//! both call `EventStore::create`, and both call
+//! `index.entry(...).or_insert(...)`. The second `or_insert` would
+//! be a no-op (correct routing preserved) but its
+//! `EventStore::create` would produce an **orphan aggregate stream**
+//! on disk that the index never points to, with `next_seq` likewise
+//! recording an unreachable entry.
 //!
-//! 1. Hold the index lock across `EventStore::create` (serialises
-//!    create-path on the routing index — not the per-aggregate
-//!    write path).
-//! 2. Use `DashMap::entry` semantics natively (per the brief's
-//!    original `Arc<DashMap<...>>` intent — current `HashMap`
-//!    behind `Mutex` was the B7'b simplification).
-//! 3. Per-`domain_key` `tokio::sync::Mutex` keyed in a side map
-//!    (highest cost, finest granularity).
+//! At Track 4.0/3a this window was closed structurally: every call
+//! site for [`lookup`] / [`create_or_append`] now lives inside an arm
+//! of [`super::merger::Merger::run`], a single-task command
+//! processor that awaits each command's full triad (load → handle →
+//! create-or-append → publish) before dequeuing the next. Two
+//! concurrent same-`domain_key` service calls serialise at the
+//! [`tokio::sync::mpsc`] front-door, so the second observer always
+//! sees the first creator's index entry — exactly one
+//! `EventStore::create` per key, no orphan stream. This is the
+//! "per-domain-key single-flight / equivalent" requirement at the
+//! coarsest granularity the current sole-writer SMI invariant
+//! permits; finer keying (per-key `tokio::sync::Mutex` side map)
+//! becomes interesting only if the Merger is later sharded.
+//!
+//! Note that [`create_or_append`] still releases the brief
+//! `std::sync::Mutex` guard on the routing index **before** the
+//! `await` on `EventStore::create` — the lock is taken only to
+//! perform the `or_insert`, never held across storage I/O.
+//!
+//! Regression pin: see
+//! `super::repo_service::tests::concurrent_same_domain_key_evaluations_create_exactly_one_aggregate`
+//! — fans out 32 concurrent same-`domain_key` `record_evaluation`
+//! calls and asserts exactly one routing entry, one `.msgpack` file,
+//! `N` envelopes with monotonic sequences, and tracker `= N`. The
+//! test fails immediately if anyone reintroduces a per-service
+//! direct call path that bypasses the Merger.
 //!
 //! [`RunService::start_sweep`]: super::run_service::RunService::start_sweep
 //! [`RepoService`]: super::repo_service::RepoService
@@ -147,9 +163,13 @@ where
 /// the `(Some, None)` shape (indexed but unloaded — caught earlier
 /// by [`load_envelopes_or_empty`]).
 ///
-/// **I1 TOCTOU**: `lookup` followed by this helper is a
-/// check-then-act sequence on the index. See module docs for the
-/// carry note (bd `adr-fmt-1uwm`).
+/// **I1 TOCTOU**: [`lookup`] followed by this helper is a
+/// check-then-act sequence on the routing index. Safe in this crate
+/// because every call site lives inside an arm of the single-task
+/// [`super::merger::Merger`] which serialises commands per the
+/// module-level "I1 TOCTOU resolution" docs. The brief
+/// `std::sync::Mutex` guard taken to perform `or_insert` is released
+/// before any `await` on storage I/O.
 pub(super) async fn create_or_append<S>(
     handles: PersistHandles<'_, S>,
     domain_key: &str,
