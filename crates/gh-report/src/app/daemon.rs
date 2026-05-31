@@ -58,6 +58,42 @@ use tracing::{debug, error, info, warn};
 /// `2 ×` this value (pool then delivery, sequentially).
 const WORKER_POOL_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Bounded budget for cooperative drain of the scheduled collection
+/// task on daemon shutdown. After this elapses, the task is forcibly
+/// aborted and a warning is emitted; any in-flight persist→publish is
+/// recovered by `EventStore` boot replay (CHE-0024:R3 persist-before-
+/// publish ordering keeps this consistent).
+const COLLECTION_DRAIN_TIMEOUT: Duration = Duration::from_mins(1);
+
+/// Outcome of waiting for the next scheduled collection tick.
+#[derive(Debug)]
+enum NextTick {
+    Run,
+    Cancel,
+}
+
+/// Wait for either the scheduled interval to elapse or a cancellation
+/// signal, whichever comes first. The watch channel makes cancellation
+/// sticky: a signal sent before the next call is observed immediately,
+/// and a signal arriving during the sleep wins the `select!` (biased
+/// branch). This guarantees no further `collect::run` is started after
+/// shutdown is requested.
+async fn next_collection_tick(
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+    interval: Duration,
+) -> NextTick {
+    if *cancel.borrow() {
+        return NextTick::Cancel;
+    }
+    tokio::select! {
+        biased;
+        _ = cancel.changed() => NextTick::Cancel,
+        () = tokio::time::sleep(interval) => {
+            if *cancel.borrow() { NextTick::Cancel } else { NextTick::Run }
+        }
+    }
+}
+
 /// Start the daemon (warm-start + web server + background collection).
 ///
 /// 1. Reads the `PORT` env var (default 8080).
@@ -159,41 +195,13 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     // ── Step 4: Background collection (initial + loop) ──────────
     // `force_unlock` is one-shot: applies to the initial run only.
     let force_flag = Arc::new(AtomicBool::new(config.force_unlock));
-    let collection_loop = {
-        let loop_config = config.clone();
-        let loop_state = Arc::clone(&app_state);
-        let loop_force = Arc::clone(&force_flag);
-        tokio::spawn(async move {
-            // Initial collection (first iteration, no sleep).
-            {
-                let mut cfg = loop_config.clone();
-                cfg.force_unlock = loop_force.fetch_and(false, Ordering::AcqRel);
-                match collect::run(cfg, Arc::clone(&loop_state)).await {
-                    Ok(()) => info!("initial collection complete"),
-                    Err(AppError::Persistence(PersistenceError::LockFailed { ref reason })) => {
-                        warn!(reason = %reason, "initial collection skipped: lock held");
-                    }
-                    Err(e) => error!(error = %e, "initial collection failed — will retry"),
-                }
-            }
-
-            // Scheduled loop.
-            loop {
-                tokio::time::sleep(Duration::from_secs(config::COLLECTION_INTERVAL_SECS)).await;
-                let mut cfg = loop_config.clone();
-                cfg.force_unlock = loop_force.load(Ordering::Acquire);
-                match collect::run(cfg, Arc::clone(&loop_state)).await {
-                    Ok(()) => {
-                        info!("scheduled collection complete");
-                    }
-                    Err(AppError::Persistence(PersistenceError::LockFailed { ref reason })) => {
-                        warn!(reason = %reason, "collection skipped: lock held");
-                    }
-                    Err(e) => error!(error = %e, "scheduled collection failed"),
-                }
-            }
-        })
-    };
+    let (collect_cancel_tx, collect_cancel_rx) = tokio::sync::watch::channel(false);
+    let mut collection_loop = spawn_collection_loop(
+        config.clone(),
+        Arc::clone(&app_state),
+        Arc::clone(&force_flag),
+        collect_cancel_rx,
+    );
 
     // ── Build extra routes ─────────────────────────────────────────
     // Status endpoint is always registered. Webhook route is conditional
@@ -221,7 +229,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
 
     // ── Step 5: Graceful shutdown ───────────────────────────────
     shutdown_workers(&app_state).await;
-    collection_loop.abort();
+    drain_collection_loop(&collect_cancel_tx, &mut collection_loop).await;
 
     // The logging handler is a synchronous closure registered on
     // `app_state.bus` (no task), so there is nothing to abort here —
@@ -258,6 +266,88 @@ async fn shutdown_workers(app_state: &Arc<AppState>) {
             timeout_secs = WORKER_POOL_DRAIN_TIMEOUT.as_secs(),
             "delivery task did not drain within timeout"
         );
+    }
+}
+
+/// Spawn the background collection task: one initial run with the
+/// caller-supplied `force_unlock` flag, then a scheduled loop that
+/// honours a cooperative cancellation signal between iterations. The
+/// loop never cancels an in-flight `collect::run`; persist→publish
+/// runs to completion before the next tick is considered.
+fn spawn_collection_loop(
+    config: RuntimeConfig,
+    state: Arc<AppState>,
+    force_flag: Arc<AtomicBool>,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        {
+            let mut cfg = config.clone();
+            cfg.force_unlock = force_flag.fetch_and(false, Ordering::AcqRel);
+            match collect::run(cfg, Arc::clone(&state)).await {
+                Ok(()) => info!("initial collection complete"),
+                Err(AppError::Persistence(PersistenceError::LockFailed { ref reason })) => {
+                    warn!(reason = %reason, "initial collection skipped: lock held");
+                }
+                Err(e) => error!(error = %e, "initial collection failed — will retry"),
+            }
+        }
+
+        loop {
+            match next_collection_tick(
+                &mut cancel,
+                Duration::from_secs(crate::config::COLLECTION_INTERVAL_SECS),
+            )
+            .await
+            {
+                NextTick::Cancel => {
+                    info!("collection loop cancelled — exiting");
+                    return;
+                }
+                NextTick::Run => {}
+            }
+            let mut cfg = config.clone();
+            cfg.force_unlock = force_flag.load(Ordering::Acquire);
+            match collect::run(cfg, Arc::clone(&state)).await {
+                Ok(()) => info!("scheduled collection complete"),
+                Err(AppError::Persistence(PersistenceError::LockFailed { ref reason })) => {
+                    warn!(reason = %reason, "collection skipped: lock held");
+                }
+                Err(e) => error!(error = %e, "scheduled collection failed"),
+            }
+        }
+    })
+}
+
+/// Cooperative shutdown of the scheduled collection task.
+///
+/// Sends the cancel signal so the loop exits between scheduled
+/// iterations rather than mid-`collect::run`, then awaits the
+/// `JoinHandle` with a bounded budget. On timeout the task is forcibly
+/// aborted and a structured warning is emitted: the outcome of any
+/// in-flight persist→publish is unknown to this process, but
+/// `EventStore` boot replay reconciles state on next startup
+/// (CHE-0024:R3 persist-before-publish ensures the durable record is
+/// the source of truth).
+async fn drain_collection_loop(
+    cancel: &tokio::sync::watch::Sender<bool>,
+    handle: &mut tokio::task::JoinHandle<()>,
+) {
+    let _ = cancel.send(true);
+    match tokio::time::timeout(COLLECTION_DRAIN_TIMEOUT, &mut *handle).await {
+        Ok(Ok(())) => info!("collection task drained cleanly"),
+        Ok(Err(join_err)) => warn!(
+            error = %join_err,
+            "collection task ended abnormally during drain",
+        ),
+        Err(_) => {
+            warn!(
+                timeout_secs = COLLECTION_DRAIN_TIMEOUT.as_secs(),
+                "collection task forced abort: outcome of any in-flight persist→publish is unknown to this process; EventStore boot replay will reconcile on next startup",
+            );
+            handle.abort();
+            let _ = handle.await;
+        }
     }
 }
 
@@ -573,5 +663,31 @@ mod tests {
     fn resolve_bind_address_rejects_whitespace_only() {
         let result = resolve_bind_address_with(|_| Some("   ".to_string()));
         assert!(matches!(result, Err(ConfigError::InvalidValue { .. })));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn next_tick_returns_run_when_interval_elapses_first() {
+        let (_tx, mut rx) = tokio::sync::watch::channel(false);
+        let outcome = next_collection_tick(&mut rx, Duration::from_secs(10)).await;
+        assert!(matches!(outcome, NextTick::Run));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn next_tick_returns_cancel_when_signalled_during_sleep() {
+        let (tx, mut rx) = tokio::sync::watch::channel(false);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let _ = tx.send(true);
+        });
+        let outcome = next_collection_tick(&mut rx, Duration::from_hours(1)).await;
+        assert!(matches!(outcome, NextTick::Cancel));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn next_tick_returns_cancel_when_already_signalled_before_call() {
+        let (tx, mut rx) = tokio::sync::watch::channel(false);
+        let _ = tx.send(true);
+        let outcome = next_collection_tick(&mut rx, Duration::from_hours(1)).await;
+        assert!(matches!(outcome, NextTick::Cancel));
     }
 }
