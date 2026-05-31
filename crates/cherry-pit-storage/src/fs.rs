@@ -59,8 +59,21 @@ pub fn atomic_write_bytes(path: &Path, data: &[u8]) -> Result<(), PersistenceErr
             reason: format!("failed to persist temp file: {e}"),
         })?;
 
+    fsync_parent_dir(dir)?;
+
     trace!(path = %path.display(), "atomic write complete");
     Ok(())
+}
+
+fn fsync_parent_dir(dir: &Path) -> Result<(), PersistenceError> {
+    let dir_handle = fs::File::open(dir).map_err(|e| PersistenceError::AtomicWriteFailed {
+        reason: format!("failed to open parent dir for fsync: {e}"),
+    })?;
+    dir_handle
+        .sync_all()
+        .map_err(|e| PersistenceError::AtomicWriteFailed {
+            reason: format!("failed to fsync parent dir: {e}"),
+        })
 }
 
 #[cfg(test)]
@@ -112,5 +125,17 @@ mod tests {
         atomic_write_bytes(&path, b"").unwrap();
         let content = std::fs::read(&path).unwrap();
         assert!(content.is_empty());
+    }
+
+    #[test]
+    fn atomic_write_recreates_removed_parent_dir() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("nested").join("file.bin");
+        atomic_write_bytes(&path, b"first").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"first");
+        let parent = path.parent().unwrap().to_path_buf();
+        std::fs::remove_dir_all(&parent).unwrap();
+        atomic_write_bytes(&path, b"second").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
     }
 }
