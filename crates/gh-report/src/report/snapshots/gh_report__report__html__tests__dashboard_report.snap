@@ -216,7 +216,7 @@ expression: "&pages[\"report.html\"]"
                     <td class="text-right">3</td>
                 </tr>
                 <tr>
-                    <td title="Repos with CODEOWNERS in the repo root (non-preferred location).">Non-Conforming (<code>CODEOWNERS</code>)</td>
+                    <td title="Repos with CODEOWNERS in the repo root (non-preferred location).">Non-Preferred Location (<code>CODEOWNERS</code>)</td>
                     <td class="text-right">1</td>
                 </tr>
                 <tr>
