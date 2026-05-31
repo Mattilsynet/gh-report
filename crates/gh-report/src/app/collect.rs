@@ -542,6 +542,9 @@ impl SweepSaga {
         inventory: &InventoryLoad,
         state: &Arc<AppState>,
     ) -> Result<(), AppError> {
+        self.step_start_sweep(config, run, corr_ctx, inventory, state)
+            .await;
+
         // Phase 1: Resume from event log (δ.3c-ii: pure phase transition).
         self.step_resume(inventory, config, state);
 
@@ -637,6 +640,42 @@ impl SweepSaga {
         self.phase = SweepPhase::BaselineReused;
     }
 
+    /// Phase 0: Register the sweep aggregate via `RunService::start_sweep`.
+    ///
+    /// CHE-0054:R1.a requires `SweepStarted` to be the first event of any
+    /// `Run` instance, and CHE-0054:R5 routes subsequent commands through
+    /// `runs_by_key` which is populated by the merger arm of `start_sweep`.
+    /// Invoking this before `step_resume` ensures the two pre-batch
+    /// `emit_progress` calls in `run_to_completion` no longer hit an empty
+    /// routing index (which previously surfaced as `RunError::RoutingMiss`
+    /// swallowed by the non-fatal `SweepProgress publish failed` warn arm).
+    /// Publish failure here remains non-fatal per CHE-0024:R1.
+    async fn step_start_sweep(
+        &self,
+        config: &RuntimeConfig,
+        run: &RunMetadata,
+        corr_ctx: &CorrelationContext,
+        inventory: &InventoryLoad,
+        state: &Arc<AppState>,
+    ) {
+        if let Err(e) = state
+            .run_service
+            .start_sweep(
+                StartSweep {
+                    org: config.org_name.clone(),
+                    repo_count: inventory.active_repos.len() as u64,
+                    batch_id: run.run_id.clone(),
+                    timestamp: jiff::Timestamp::now().to_string(),
+                    snapshot_signature: self.snapshot_signature.clone(),
+                },
+                corr_ctx,
+            )
+            .await
+        {
+            warn!(error = %e, "SweepStarted publish failed, non-fatal");
+        }
+    }
+
     /// Phase 3: Enqueue pending repos and await batch completion with timeout.
     ///
     /// If no repos are pending (all resumed or reused), transitions directly
@@ -670,26 +709,6 @@ impl SweepSaga {
             pending = pending.len(),
             "enqueuing pending repos via work queue"
         );
-
-        if let Err(e) = state
-            .run_service
-            .start_sweep(
-                StartSweep {
-                    org: config.org_name.clone(),
-                    // Vec::len() → u64: lossless on every pardosa target per
-                    // PAR-0011 (64-bit gate); event field width fixed at
-                    // u64 per GEN-0004:R1.
-                    repo_count: inventory.active_repos.len() as u64,
-                    batch_id: run.run_id.clone(),
-                    timestamp: jiff::Timestamp::now().to_string(),
-                    snapshot_signature: self.snapshot_signature.clone(),
-                },
-                corr_ctx,
-            )
-            .await
-        {
-            warn!(error = %e, "SweepStarted publish failed, non-fatal");
-        }
 
         if pending.is_empty() {
             self.phase = SweepPhase::BatchDrained;
@@ -2509,13 +2528,24 @@ mod tests {
         state.lock_projection().load_baseline(projected);
     }
 
-    /// Run saga through `step_resume` and `step_baseline` (no worker pool needed).
-    fn saga_run_resume_and_baseline(
+    /// Run saga through `step_start_sweep`, `step_resume`, and `step_baseline`.
+    ///
+    /// Mirrors the pre-batch portion of `run_to_completion`. Includes
+    /// `step_start_sweep` so the `runs_by_key` routing index is populated
+    /// before downstream test sequences invoke `step_enqueue_and_await` /
+    /// `step_finalize` (which issue `RecordProgress` / `CompleteSweep` /
+    /// `FailSweep` / `PublishEvidence` and would otherwise route through
+    /// an empty index — see CHE-0054:R1.a and R5).
+    async fn saga_run_resume_and_baseline(
         saga: &mut SweepSaga,
         inventory: &InventoryLoad,
         config: &RuntimeConfig,
+        run: &RunMetadata,
         state: &Arc<AppState>,
     ) {
+        let corr_ctx = run.correlation_context();
+        saga.step_start_sweep(config, run, &corr_ctx, inventory, state)
+            .await;
         saga.step_resume(inventory, config, state);
         saga.step_baseline(inventory, config, state);
     }
@@ -2567,7 +2597,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
         assert_eq!(saga.baseline_reused, 2);
 
         // Pending empty ⇒ step_enqueue_and_await goes straight to BatchDrained.
@@ -2614,7 +2644,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
         assert_eq!(saga.baseline_reused, 1);
         // repo-1 already in projection from seed; repo-2 not yet.
         assert!(state.projection_contains("id-repo-1"));
@@ -2641,7 +2671,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
         assert_eq!(saga.baseline_reused, 0);
         assert!(!state.projection_contains("id-repo-1"));
         assert!(!state.projection_contains("id-repo-2"));
@@ -2676,7 +2706,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
 
         assert_eq!(*saga.phase(), SweepPhase::BaselineReused);
         assert_eq!(saga.baseline_reused, 1);
@@ -2712,7 +2742,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
 
         assert_eq!(
             saga.baseline_reused, 0,
@@ -2758,7 +2788,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
 
         assert_eq!(saga.baseline_reused, 0);
         // δ.3c-ii: stale side-channel `is_none()` check removed; see
@@ -2802,7 +2832,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
         saga.step_enqueue_and_await(
             &config,
             &run,
@@ -2852,7 +2882,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
         saga.step_enqueue_and_await(
             &config,
             &run,
@@ -2908,7 +2938,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
         saga.step_enqueue_and_await(
             &config,
             &run,
@@ -2952,7 +2982,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
         saga.step_enqueue_and_await(
             &config,
             &run,
@@ -3000,7 +3030,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
         saga.step_enqueue_and_await(
             &config,
             &run,
@@ -3043,7 +3073,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
         saga.step_enqueue_and_await(
             &config,
             &run,
@@ -3083,7 +3113,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
         saga.step_enqueue_and_await(
             &config,
             &run,
@@ -3165,7 +3195,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &state);
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
         saga.step_enqueue_and_await(
             &config,
             &run,
@@ -3376,6 +3406,81 @@ mod tests {
             completed_at < published_at,
             "CHE-0054:R1.c — warm-start SweepCompleted ({completed_at}) must precede \
              EvidencePublished ({published_at})"
+        );
+    }
+
+    /// Regression: CHE-0054:R1.a — `SweepStarted` is the first event of
+    /// any `Run` instance. Pre-fix, `run_to_completion` issued two
+    /// `RecordProgress` calls (after `step_resume` and `step_baseline`)
+    /// **before** `start_sweep` ran inside `step_enqueue_and_await`,
+    /// leaving the `runs_by_key` routing index empty for those calls.
+    /// Both emits returned `RunError::RoutingMiss` and were swallowed
+    /// by the non-fatal `warn!("SweepProgress publish failed, …")` arm
+    /// (collect.rs:932), producing the two warnings observed on every
+    /// scheduled/warm-start run. The fix hoists `start_sweep` to a
+    /// dedicated `step_start_sweep` invoked before `step_resume`.
+    ///
+    /// This test mirrors `run_to_completion`'s pre-batch sequence and
+    /// asserts the two `SweepProgress` emits reach the bus and strictly
+    /// follow `SweepStarted`.
+    #[tokio::test]
+    async fn sweep_progress_publishes_after_start_sweep_no_routing_miss() {
+        use crate::domain::events::DomainEvent;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta();
+        let corr_ctx = run.correlation_context();
+        let state = AppState::new_with_cache_capacity(10).await;
+        let captured = capture_bus(&state.bus);
+
+        let mut saga = make_test_saga(&config, &run);
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo("repo-1")],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga.step_start_sweep(&config, &run, &corr_ctx, &inventory, &state)
+            .await;
+        saga.step_resume(&inventory, &config, &state);
+        SweepSaga::emit_progress(&run, &corr_ctx, inventory.active_repos.len() as u64, &state)
+            .await;
+        saga.step_baseline(&inventory, &config, &state);
+        SweepSaga::emit_progress(&run, &corr_ctx, inventory.active_repos.len() as u64, &state)
+            .await;
+
+        tokio::task::yield_now().await;
+
+        let events = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+
+        let started_at = events
+            .iter()
+            .position(|e| matches!(e, DomainEvent::SweepStarted { .. }))
+            .expect("CHE-0054:R1.a — SweepStarted must appear on the bus");
+
+        let progress_positions: Vec<usize> = events
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| matches!(e, DomainEvent::SweepProgress { .. }).then_some(i))
+            .collect();
+
+        assert_eq!(
+            progress_positions.len(),
+            2,
+            "both pre-batch RecordProgress emits must reach the bus; pre-fix \
+             the routing index was empty (start_sweep ran inside \
+             step_enqueue_and_await) and both emits were swallowed by \
+             RunError::RoutingMiss producing the two `SweepProgress publish \
+             failed` warnings"
+        );
+        assert!(
+            progress_positions.iter().all(|&p| p > started_at),
+            "CHE-0054:R1.a — SweepStarted ({started_at}) must precede every \
+             SweepProgress (positions: {progress_positions:?})"
         );
     }
 }
