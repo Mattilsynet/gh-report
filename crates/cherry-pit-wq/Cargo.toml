@@ -9,7 +9,7 @@ repository.workspace = true
 authors.workspace = true
 homepage = "https://github.com/acje/solon/tree/main/crates/cherry-pit-wq"
 documentation = "https://docs.rs/cherry-pit-wq"
-keywords = ["worker-pool", "rate-limit", "pagination", "cherry-pit"]
+keywords = ["worker-pool", "rate-limit", "cherry-pit"]
 categories = ["asynchronous", "concurrency"]
 readme = "README.md"
 
@@ -20,7 +20,6 @@ workspace = true
 cherry-pit-core = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 tracing = { workspace = true }
-http = { workspace = true }
 scc = { workspace = true }
 futures-util = { workspace = true }
 

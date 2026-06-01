@@ -19,13 +19,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use cherry_pit_core::CorrelationContext;
+use cherry_pit_core::{CorrelationContext, DomainKey, JobSource};
 use scc::HashSet as SccHashSet;
 use tokio::sync::mpsc;
-
-/// Type alias for domain-specific identifiers. The reactor never inspects
-/// this value — domain code assigns semantic meaning (e.g., numeric repo ID).
-pub type DomainKey = String;
 
 /// A unit of work submitted to the reactor.
 ///
@@ -74,18 +70,6 @@ impl<C: Send + Sync + 'static> JobSpec<C> {
             correlation,
         }
     }
-}
-
-/// Origin of a job (observability only — zero effect on queue ordering).
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub enum JobSource {
-    /// Part of a scheduled batch scrape.
-    ScheduledBatch,
-    /// Triggered by an external event (e.g., webhook, notification).
-    External { id: String, kind: String },
-    /// Initial load at startup.
-    InitialLoad,
 }
 
 /// Result of an enqueue attempt.

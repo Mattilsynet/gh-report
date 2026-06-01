@@ -763,7 +763,7 @@ impl GitHubClient {
             }
         };
 
-        self.rate_limit.update_from_headers(response.headers());
+        crate::github::rate_limit::update_from_headers(&self.rate_limit, response.headers());
         let status = response.status().as_u16();
 
         // Extract ETag for the side-channel (used by repo_details for conditional requests).
@@ -880,7 +880,7 @@ impl GitHubClient {
                 Err(outcome) => return outcome,
             };
 
-            self.rate_limit.update_from_headers(response.headers());
+            crate::github::rate_limit::update_from_headers(&self.rate_limit, response.headers());
             let status = response.status().as_u16();
 
             if !response.status().is_success() {
@@ -1152,7 +1152,7 @@ impl GitHubClient {
             }
         };
 
-        self.rate_limit.update_from_headers(response.headers());
+        crate::github::rate_limit::update_from_headers(&self.rate_limit, response.headers());
         let status = response.status().as_u16();
         let new_etag = response
             .headers()
@@ -1747,7 +1747,7 @@ mod tests {
                 config::API_BUDGET_LIMIT,
                 Duration::from_secs(config::API_BUDGET_WAIT_SECS),
             )),
-            Arc::new(RateLimitState::default()),
+            Arc::new(crate::github::rate_limit::new_default()),
         )
     }
 

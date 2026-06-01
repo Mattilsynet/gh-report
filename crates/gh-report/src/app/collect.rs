@@ -2400,7 +2400,7 @@ mod tests {
                     1000,
                     std::time::Duration::from_mins(1),
                 )),
-                Arc::new(crate::github::rate_limit::RateLimitState::default()),
+                Arc::new(crate::github::rate_limit::new_default()),
             )
             .expect("test client construction should not fail"),
         )

@@ -57,7 +57,7 @@ impl GithubState {
                 crate::config::API_BUDGET_LIMIT,
                 Duration::from_secs(crate::config::API_BUDGET_WAIT_SECS),
             )),
-            rate_limit_state: Arc::new(RateLimitState::default()),
+            rate_limit_state: Arc::new(crate::github::rate_limit::new_default()),
             client: tokio::sync::OnceCell::new(),
             repo_detail_cache: build_cache(clamped),
         }
