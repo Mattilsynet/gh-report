@@ -825,8 +825,12 @@ impl SweepSaga {
 
     /// Phase 4: Finalize — snapshot evidence, build report, publish.
     ///
-    /// δ.3c-ii: on-disk baseline + checkpoint persistence retired; the
-    /// previous "save baseline, clean up checkpoint" actions are gone.
+    /// CHE-0068:R2 — the visible terminal commit (html-cache replace +
+    /// WS broadcast) is sequenced strictly after `SweepCompleted` has
+    /// been published. The render *computation* runs first (so a
+    /// render failure still maps to `SweepFailed`), then the barrier
+    /// event publishes, then the rendered pages commit, then the
+    /// terminal `EvidencePublished` event publishes (CHE-0054:R1.c).
     async fn step_finalize(
         &mut self,
         config: &RuntimeConfig,
@@ -851,10 +855,8 @@ impl SweepSaga {
         })
         .await;
 
-        match &result {
-            Ok((page_count, warm_start)) => {
-                let page_count = *page_count;
-                let warm_start = *warm_start;
+        match result {
+            Ok((pages, warm_start)) => {
                 self.phase = SweepPhase::Completed;
                 if let Err(e) = state
                     .run_service
@@ -873,19 +875,13 @@ impl SweepSaga {
                     warn!(error = %e, "SweepCompleted publish failed, non-fatal");
                 }
 
-                // Terminal PublishEvidence MUST follow SweepCompleted
-                // (CHE-0054:R1.c). Fire-and-forget on Err mirrors the
-                // existing non-fatal pattern; the rewritten warn! reflects
-                // that, post-reorder, this branch is only reached on an
-                // unexpected aggregate/merger rejection (defence-in-depth).
+                let page_count = commit_cached_pages(state, run, pages);
+
                 if let Err(e) = state
                     .run_service
                     .publish_evidence(
                         &run.run_id,
                         PublishEvidence {
-                            // page_count source is `Vec::len()` (HTML pages);
-                            // lossless usize→u64 cast per PAR-0011 64-bit gate,
-                            // event-field width fixed at u64 per GEN-0004:R1.
                             page_count: page_count as u64,
                             warm_start,
                             timestamp: jiff::Timestamp::now().to_string(),
@@ -896,6 +892,7 @@ impl SweepSaga {
                 {
                     warn!(error = %e, "post-complete publish unexpectedly rejected");
                 }
+                Ok(())
             }
             Err(e) => {
                 let error_msg = e.to_string();
@@ -918,10 +915,9 @@ impl SweepSaga {
                 {
                     warn!(error = %pub_err, "SweepFailed publish failed, non-fatal");
                 }
+                Err(e)
             }
         }
-
-        result.map(|_| ())
     }
 
     /// Elapsed time since sweep start, in milliseconds (clamped to u64).
@@ -1074,18 +1070,21 @@ struct FinalizeParams<'a> {
     state: &'a Arc<AppState>,
 }
 
-/// Phase 4: Snapshot the evidence store, build evidence, render + cache
-/// the HTML, and export the repo-detail cache.
+/// Phase 4: Snapshot the evidence store, build evidence, render the
+/// HTML cache, and export the repo-detail cache. **Does not commit
+/// the rendered cache** — CHE-0068:R2 requires the visible
+/// (html-cache replace + WS broadcast) step to fire strictly after
+/// `SweepCompleted` has been published. The caller
+/// ([`SweepSaga::step_finalize`]) commits the returned
+/// [`HashMap<String, CachedPage>`] via [`commit_cached_pages`] after
+/// publishing the barrier event.
 ///
 /// δ.3c-ii: on-disk baseline + checkpoint persistence is retired. The
 /// projection is the durable read-model (rebuilt at boot via event-log
 /// replay per CHE-0051:R5 + CHE-0048:R2).
-///
-/// Returns `(page_count, warm_start)` so the caller can fire the terminal
-/// [`PublishEvidence`] command **after** [`CompleteSweep`] has been
-/// recorded (CHE-0054:R1.c — `EvidencePublished` may only follow
-/// `SweepCompleted`).
-async fn finalize_and_publish(params: FinalizeParams<'_>) -> Result<(usize, bool), AppError> {
+async fn finalize_and_publish(
+    params: FinalizeParams<'_>,
+) -> Result<(HashMap<String, CachedPage>, bool), AppError> {
     let FinalizeParams {
         config,
         run,
@@ -1116,22 +1115,11 @@ async fn finalize_and_publish(params: FinalizeParams<'_>) -> Result<(usize, bool
         archived_repos: inventory.archived_repos,
     });
 
-    // Render + cache only — the terminal PublishEvidence command is
-    // issued by the caller (`step_finalize`) AFTER CompleteSweep, per
-    // CHE-0054:R1.c.
-    let page_count = render_and_cache_evidence(config, run, &evidence, state).await?;
+    let pages = build_cached_pages(config, &evidence).await?;
     let warm_start = evidence.assessment_metadata.warm_start;
 
     run.complete();
 
-    // δ.3c-ii: baseline persistence retired. The previous block here saved
-    // `<store_dir>/baseline.msgpack` and removed `<run>-checkpoint.msgpack`;
-    // both files are gone. State lives in the event log (replayed into the
-    // projection at boot per CHE-0051:R5 + CHE-0048:R2), and the saga's
-    // `completed` map is in-process only — discarded on process exit and
-    // re-derived from the event log on next boot.
-
-    // Export repo detail cache for cross-run caching.
     let entries = client.export_cache();
     if !entries.is_empty() {
         let cache = &state.github().repo_detail_cache;
@@ -1147,7 +1135,7 @@ async fn finalize_and_publish(params: FinalizeParams<'_>) -> Result<(usize, bool
         "collection run complete"
     );
 
-    Ok((page_count, warm_start))
+    Ok((pages, warm_start))
 }
 
 async fn prepare_collection(
@@ -1426,12 +1414,32 @@ pub(crate) async fn warm_start_from_baseline(
 /// `page_count`. No domain-command call — caller decides which run
 /// command to issue (terminal [`PublishEvidence`] post-`CompleteSweep`,
 /// or non-terminal [`RenderPartial`] mid-sweep) per CHE-0054:R1.c/e.
+///
+/// Thin wrapper around [`build_cached_pages`] +
+/// [`commit_cached_pages`]; callers that need the CHE-0068:R2 two-phase
+/// "render before barrier, commit after barrier" ordering call the
+/// pair directly (see [`step_finalize`]).
 pub(crate) async fn render_and_cache_evidence(
     config: &RuntimeConfig,
     run: &RunMetadata,
     evidence: &Evidence,
     state: &Arc<AppState>,
 ) -> Result<usize, AppError> {
+    let pages = build_cached_pages(config, evidence).await?;
+    Ok(commit_cached_pages(state, run, pages))
+}
+
+/// Render dashboard HTML and build the per-page zstd-compressed cache
+/// entries on the blocking thread pool. Pure compute — no shared state
+/// is mutated and no broadcast fires. Fallible (template rendering /
+/// blocking-task join). CHE-0068:R2 two-phase render: callers that
+/// need barrier-aligned visibility commit the result via
+/// [`commit_cached_pages`] strictly after the barrier event has been
+/// published.
+pub(crate) async fn build_cached_pages(
+    config: &RuntimeConfig,
+    evidence: &Evidence,
+) -> Result<HashMap<String, CachedPage>, AppError> {
     let pages = html::render_dashboard(evidence, &config.dashboard_config)?;
     info!(
         page_count = pages.len(),
@@ -1439,14 +1447,7 @@ pub(crate) async fn render_and_cache_evidence(
         "dashboard pages rendered"
     );
 
-    // Build the in-memory cache on the blocking thread pool to avoid
-    // starving the async executor during zstd compression + SHA-256
-    // hashing (CPU-bound, ~10-50 ms per page at quality 6).
-    // Static assets (style.css, ws.js) use pre-computed LazyLock<CachedPage>
-    // instances — their zstd compression and SHA-256 hash are computed
-    // once at first access and cloned via Bytes refcount increment (~1 ns)
-    // on subsequent publishes.
-    let cache: HashMap<String, CachedPage> = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         pages
             .into_iter()
             .map(|(path, content)| {
@@ -1464,28 +1465,38 @@ pub(crate) async fn render_and_cache_evidence(
         AppError::Report(crate::error::ReportError::TemplateRenderFailed {
             reason: format!("cache build task panicked: {e}"),
         })
-    })?;
+    })
+}
 
+/// Commit pre-built cached pages: atomically replace the html cache
+/// pointer and notify WebSocket subscribers. CHE-0068:R2 — this is the
+/// observable "render visible" moment, separated from the upstream
+/// compute step so callers can serialise it strictly after a barrier
+/// event (terminal commit fires only after `SweepCompleted` has been
+/// published). Infallible — `ws_broadcast::Sender::send` returning
+/// `Err` means "no current subscribers" and is intentionally ignored
+/// per the pre-existing wire-protocol contract.
+pub(crate) fn commit_cached_pages(
+    state: &Arc<AppState>,
+    run: &RunMetadata,
+    cache: HashMap<String, CachedPage>,
+) -> usize {
     let page_count = cache.len();
-
-    // Extract keys BEFORE store() moves cache into the Arc.
     let page_keys: Vec<String> = cache.keys().cloned().collect();
 
     state.evidence().html_cache.store(Arc::new(Some(cache)));
     info!(page_count, run_id = %run.run_id, "html cache updated");
 
-    // Notify connected WebSocket clients of the cache update.
-    // SendError (no receivers) is not an error — ignored intentionally.
     let _ = state
         .evidence()
         .ws_broadcast
         .send(crate::app::state::PageUpdateEvent::new(
             page_keys,
-            String::new(), // empty = full sweep / warm-start
+            String::new(),
             jiff::Timestamp::now().to_string(),
         ));
 
-    Ok(page_count)
+    page_count
 }
 
 /// Legacy combined helper — renders + caches + fires the terminal
@@ -1637,7 +1648,7 @@ fn spawn_partial_publisher_from_store(
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
     let handle = tokio::spawn(async move {
-        let debounce_duration = std::time::Duration::from_secs(1);
+        let debounce_duration = crate::config::PARTIAL_RENDER_MAX_STALENESS;
         let mut pending = false;
         let debounce_timer = tokio::time::sleep(debounce_duration);
         tokio::pin!(debounce_timer);
@@ -3242,6 +3253,117 @@ mod tests {
             completed_at < published_at,
             "CHE-0054:R1.c — SweepCompleted ({completed_at}) must precede \
              EvidencePublished ({published_at}); pre-fix order was reversed"
+        );
+
+        state.work_queue.close();
+    }
+
+    /// CHE-0068:R2 — the terminal *visible* commit (html-cache replace
+    /// + WS broadcast) must occur strictly after `SweepCompleted` has
+    /// been published. Asserted via a bus handler that snapshots the
+    /// `html_cache` pointer state at the moment each barrier event is
+    /// delivered: at `SweepCompleted` the cache must still hold the
+    /// pre-finalize state; at `EvidencePublished` it must hold the
+    /// fresh terminal render.
+    #[tokio::test]
+    async fn step_finalize_commits_html_cache_after_sweep_completed() {
+        use crate::domain::events::DomainEvent;
+        use std::collections::HashMap as StdHashMap;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let mut run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10).await;
+        let ctx = make_test_collection_context();
+
+        let sentinel_key = "__sentinel_pre_finalize__".to_string();
+        let mut sentinel_map: StdHashMap<String, crate::app::state::CachedPage> = StdHashMap::new();
+        sentinel_map.insert(
+            sentinel_key.clone(),
+            crate::app::state::CachedPage::new(&sentinel_key, b"sentinel".to_vec()),
+        );
+        state
+            .evidence()
+            .html_cache
+            .store(Arc::new(Some(sentinel_map)));
+
+        let observations: Arc<std::sync::Mutex<Vec<(&'static str, bool)>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observations_handle = Arc::clone(&observations);
+        let state_handle = Arc::clone(&state);
+        state.bus.register(move |env| {
+            let tag = match env.payload() {
+                DomainEvent::SweepCompleted { .. } => "SweepCompleted",
+                DomainEvent::EvidencePublished { .. } => "EvidencePublished",
+                _ => return,
+            };
+            let guard = state_handle.evidence().html_cache.load();
+            let has_sentinel = guard
+                .as_ref()
+                .as_ref()
+                .is_some_and(|m| m.contains_key("__sentinel_pre_finalize__"));
+            observations_handle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((tag, has_sentinel));
+        });
+
+        let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
+            |repo: &Repository, ts: &str| Ok(sample_repo_from_domain(repo, ts)),
+        )));
+        let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 2);
+
+        let mut saga = make_test_saga(&config, &run);
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo("repo-1")],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
+        saga.step_enqueue_and_await(
+            &config,
+            &run,
+            &run.correlation_context(),
+            &ctx,
+            &inventory,
+            &state,
+        )
+        .await
+        .unwrap();
+
+        let corr_ctx = run.correlation_context();
+        saga.step_finalize(&config, &mut run, &corr_ctx, &ctx, &inventory, &state)
+            .await
+            .unwrap();
+
+        tokio::task::yield_now().await;
+
+        let obs = observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+
+        let sweep_completed = obs
+            .iter()
+            .find(|(tag, _)| *tag == "SweepCompleted")
+            .expect("SweepCompleted observation must exist");
+        let evidence_published = obs
+            .iter()
+            .find(|(tag, _)| *tag == "EvidencePublished")
+            .expect("EvidencePublished observation must exist");
+
+        assert!(
+            sweep_completed.1,
+            "CHE-0068:R2 — at the moment SweepCompleted is delivered, \
+             html_cache must still hold pre-finalize state (sentinel present); \
+             observed cache already mutated (sentinel absent)"
+        );
+        assert!(
+            !evidence_published.1,
+            "CHE-0068:R2 — at the moment EvidencePublished is delivered, \
+             html_cache must hold the fresh terminal render (sentinel evicted); \
+             observed stale cache still containing sentinel"
         );
 
         state.work_queue.close();
