@@ -1,24 +1,30 @@
 //! # cherry-pit-wq
 //!
 //! Domain-agnostic concurrency and resource-pacing primitives for
-//! cherry-pit consumers. Absorbs `work_queue`, `worker_pool`, `budget`,
-//! and `rate_limit` from the donor `quics-aggregate` crate under a
-//! cherry-pit-named surface per CHE-0052 (renamed per CHE-0055 §R8).
+//! cherry-pit consumers: bounded deduplicated work queue, worker pool,
+//! API-call budget gate, and a generic rate-limit observer. Per
+//! CHE-0055 G5 the surface is runtime-neutral and policy-free —
+//! source-specific concerns (HTTP header shapes, GitHub thresholds,
+//! pagination) belong to the calling adapter crate.
 //!
 //! ## v0.1 surface
 //!
-//! The flat re-export set below is the SemVer-public API. Internal module
-//! structure is implementation detail per CHE-0052:R3 / CHE-0030:R2.
+//! The flat re-export set below is the SemVer-public API. Shared
+//! work-execution types ([`DomainKey`], [`JobSource`], [`JobOutcome`])
+//! originate in [`cherry_pit_core`] and are re-exported here for
+//! ergonomic single-crate import; their canonical home is core.
+//! Internal module structure is implementation detail per
+//! CHE-0052:R3 / CHE-0030:R2.
 //!
 //! ## Correlation propagation (v0.1)
 //!
 //! `JobSpec<C>` carries `pub correlation: CorrelationContext` and the
 //! worker pool propagates that chain end-to-end into the emitted
-//! `JobOutcome::{Success,Failure}` per CHE-0055 G5 (ratified 2026-05-12),
-//! which closes the CHE-0052 v0.2 deferral. No synthesis at the worker
-//! boundary; the producer chooses the chain (`CorrelationContext::none()`
-//! for user-initiated work, `::correlated(uuid)` / `::new(corr, cause)`
-//! for policy-driven work).
+//! [`JobOutcome::Success`]/[`JobOutcome::Failure`] per CHE-0055 G5
+//! (ratified 2026-05-12), which closes the CHE-0052 v0.2 deferral.
+//! No synthesis at the worker boundary; the producer chooses the chain
+//! (`CorrelationContext::none()` for user-initiated work,
+//! `::correlated(uuid)` / `::new(corr, cause)` for policy-driven work).
 //!
 //! ## Runtime neutrality (CHE-0052:R5)
 //!
@@ -78,11 +84,9 @@ mod work_queue;
 mod worker_pool;
 
 pub use budget::BudgetGate;
-pub use rate_limit::{HALT_THRESHOLD, RateLimitState, WARN_THRESHOLD};
+pub use cherry_pit_core::{DomainKey, JobOutcome, JobSource};
+pub use rate_limit::{RateLimitObservation, RateLimitState};
 pub use work_queue::{
-    BatchEnqueueResult, BatchTracker, DomainKey, EnqueueResult, JobSource, JobSpec, WorkQueue,
-    enqueue_batch,
+    BatchEnqueueResult, BatchTracker, EnqueueResult, JobSpec, WorkQueue, enqueue_batch,
 };
-pub use worker_pool::{
-    JobExecutor, JobOutcome, WorkerPoolConfig, run_worker_pool, shutdown_worker_pool,
-};
+pub use worker_pool::{JobExecutor, WorkerPoolConfig, run_worker_pool, shutdown_worker_pool};

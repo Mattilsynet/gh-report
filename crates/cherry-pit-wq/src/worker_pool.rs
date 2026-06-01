@@ -23,39 +23,11 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use cherry_pit_core::CorrelationContext;
+use cherry_pit_core::{DomainKey, JobOutcome};
 
 use crate::budget::BudgetGate;
 use crate::rate_limit::RateLimitState;
-use crate::work_queue::{DomainKey, JobSource, WorkQueue};
-
-/// Result of processing a single job.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum JobOutcome<R> {
-    /// Job completed successfully.
-    Success {
-        domain_key: DomainKey,
-        result: R,
-        source: JobSource,
-        duration: Duration,
-        /// Correlation chain propagated from the originating
-        /// [`crate::JobSpec`] (CHE-0055 G5 / CHE-0052:R6 reinstated v0.1).
-        correlation: CorrelationContext,
-    },
-    /// Job failed.
-    Failure {
-        domain_key: DomainKey,
-        error: String,
-        source: JobSource,
-        duration: Duration,
-        /// Correlation chain propagated from the originating
-        /// [`crate::JobSpec`] — equal to the spec's correlation so that
-        /// dead-letter / failure consumers observe the same chain
-        /// (CHE-0055 G5 / CHE-0052:R6 reinstated v0.1).
-        correlation: CorrelationContext,
-    },
-}
+use crate::work_queue::WorkQueue;
 
 /// Defines how to execute a job for a domain key.
 ///
@@ -259,7 +231,8 @@ pub async fn shutdown_worker_pool(handles: Vec<JoinHandle<()>>, timeout: Duratio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::work_queue::{JobSource, JobSpec, WorkQueue};
+    use crate::work_queue::{JobSpec, WorkQueue};
+    use cherry_pit_core::{CorrelationContext, JobSource};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Mock executor that returns the domain key as the result.
@@ -335,6 +308,7 @@ mod tests {
                 assert_eq!(result, "key-1");
             }
             JobOutcome::Failure { .. } => panic!("expected success"),
+            _ => panic!("unexpected JobOutcome variant"),
         }
     }
 
@@ -396,6 +370,7 @@ mod tests {
                 assert!(error.contains("simulated"));
             }
             JobOutcome::Success { .. } => panic!("expected failure"),
+            _ => panic!("unexpected JobOutcome variant"),
         }
     }
 
@@ -487,6 +462,7 @@ mod tests {
                 assert_eq!(correlation.correlation_id(), Some(corr_id));
             }
             JobOutcome::Failure { .. } => panic!("expected success"),
+            _ => panic!("unexpected JobOutcome variant"),
         }
     }
 
@@ -523,6 +499,7 @@ mod tests {
                 assert_eq!(correlation.correlation_id(), Some(corr_id));
             }
             JobOutcome::Success { .. } => panic!("expected failure"),
+            _ => panic!("unexpected JobOutcome variant"),
         }
     }
 }

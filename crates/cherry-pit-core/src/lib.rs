@@ -66,6 +66,7 @@ mod idempotency;
 mod policy;
 mod projection;
 mod store;
+mod work;
 
 // CHE-0058 carve-out: feature-gated `pub mod` for test fixtures.
 // Visibility is opt-in via `--features testing` for downstream consumers
@@ -94,3 +95,4 @@ pub use store::{
     EventStore, HashChainedEventStore, ListableEventStore, PurgeableEventStore,
     SingleWriterEventStore,
 };
+pub use work::{DomainKey, JobOutcome, JobSource};

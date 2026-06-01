@@ -662,7 +662,6 @@ version = "0.1.0"
 dependencies = [
  "cherry-pit-core",
  "futures-util",
- "http",
  "scc",
  "tokio",
  "tokio-test",
