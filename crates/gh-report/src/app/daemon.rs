@@ -252,9 +252,8 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
 /// WORKER_POOL_DRAIN_TIMEOUT`.
 async fn shutdown_workers(app_state: &Arc<AppState>) {
     app_state.work_queue.close();
-    let (pool_drained, delivery_drained) = app_state
-        .drain_worker_pool(WORKER_POOL_DRAIN_TIMEOUT)
-        .await;
+    let (pool_drained, delivery_drained) =
+        app_state.drain_worker_pool(WORKER_POOL_DRAIN_TIMEOUT).await;
     if !pool_drained {
         warn!(
             timeout_secs = WORKER_POOL_DRAIN_TIMEOUT.as_secs(),

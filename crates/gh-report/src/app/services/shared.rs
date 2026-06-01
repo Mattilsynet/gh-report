@@ -84,7 +84,9 @@ use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
 
-use cherry_pit_core::{AggregateId, CorrelationContext, EventBus, EventEnvelope, EventStore, StoreError};
+use cherry_pit_core::{
+    AggregateId, CorrelationContext, EventBus, EventEnvelope, EventStore, StoreError,
+};
 
 use crate::domain::events::DomainEvent;
 
@@ -152,8 +154,7 @@ where
         .map(cherry_pit_core::EventEnvelope::sequence)
         .ok_or_else(|| {
             StoreError::CorruptData(
-                format!("indexed AggregateId {id} has zero envelopes (routing index stale)")
-                    .into(),
+                format!("indexed AggregateId {id} has zero envelopes (routing index stale)").into(),
             )
         })?;
     Ok((envelopes, Some(last_seq)))
