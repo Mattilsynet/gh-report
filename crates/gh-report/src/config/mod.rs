@@ -106,6 +106,16 @@ pub const API_BUDGET_WAIT_SECS: u64 = 3600;
 /// Work queue capacity (max pending jobs). 10x headroom over typical org size.
 pub const WORK_QUEUE_CAPACITY: usize = 10_000;
 
+/// Default maximum visible staleness for the partial-render coalescing
+/// window, per CHE-0068:R3.
+///
+/// The partial publisher coalesces `RepoEvaluated`-driven render
+/// triggers into at most one render per `PARTIAL_RENDER_MAX_STALENESS`
+/// interval. CHE-0068 picks ten seconds as the starting heuristic
+/// balancing user-perceived freshness against render and broadcast
+/// cost; revisit on load data.
+pub const PARTIAL_RENDER_MAX_STALENESS: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Secret alert age bucket definitions: (label, `min_days`, `max_days`).
 ///
 /// `max_days` of `None` means unbounded.
