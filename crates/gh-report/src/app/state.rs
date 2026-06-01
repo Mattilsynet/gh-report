@@ -1213,7 +1213,10 @@ impl AppState {
     ///
     /// Idempotent: calling twice returns `(false, false)` the second
     /// time because the handles were already taken.
-    pub(crate) async fn drain_worker_pool(&self, per_handle_timeout: std::time::Duration) -> (bool, bool) {
+    pub(crate) async fn drain_worker_pool(
+        &self,
+        per_handle_timeout: std::time::Duration,
+    ) -> (bool, bool) {
         let Some(slot) = self.worker_pool_started.get() else {
             return (false, false);
         };
