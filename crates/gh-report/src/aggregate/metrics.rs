@@ -39,10 +39,14 @@ fn count_as_u32(n: usize) -> u32 {
 
 /// Compute collection statistics from repository evidence.
 ///
-/// Only non-archived repositories are counted in `total_repos` and the
-/// per-visibility breakdowns. `archived_repos` is set to `0` here;
-/// the caller (`build_evidence`) overrides it with the count captured
-/// during inventory loading (before archived repos are filtered out).
+/// `total_repos` and the per-visibility breakdowns count only non-archived
+/// repositories. `archived_repos` is derived from the input slice — any
+/// archived [`RepositoryEvidence`] entries surfaced by the projection (or
+/// by replay during warm-start) are reflected directly. In normal live
+/// collections the inventory loader counts archived repos before they
+/// are stripped from the active set and passes that count through
+/// `BuildEvidenceParams::archived_repos`, which still overrides the
+/// derived value via `build_evidence`.
 #[must_use]
 pub fn build_collection_statistics(repositories: &[RepositoryEvidence]) -> CollectionStatistics {
     let active: Vec<_> = repositories
@@ -50,12 +54,19 @@ pub fn build_collection_statistics(repositories: &[RepositoryEvidence]) -> Colle
         .filter(|r| !r.repository.archived)
         .collect();
 
+    let archived_count = count_as_u32(
+        repositories
+            .iter()
+            .filter(|r| r.repository.archived)
+            .count(),
+    );
+
     CollectionStatistics {
         total_repos: count_as_u32(active.len()),
         public_repos: count_by_visibility(&active, Visibility::Public),
         internal_repos: count_by_visibility(&active, Visibility::Internal),
         private_repos: count_by_visibility(&active, Visibility::Private),
-        archived_repos: 0,
+        archived_repos: archived_count,
     }
 }
 
@@ -80,8 +91,11 @@ fn count_by_visibility(active: &[&RepositoryEvidence], visibility: Visibility) -
 ///
 /// Aggregation semantics:
 ///
-/// - **Security policy**: only counted over **public** non-archived repos.
-///   Denominator is total public repos.
+/// - **Security policy**: counted over **all public** repositories,
+///   including archived ones. Denominator is total public repos
+///   (archived + active). Archived public repos with a security policy
+///   on file are intentionally included so the count reflects the
+///   organisation's published policy surface, not just its active one.
 /// - **Secret scanning, Dependabot, branch protection, CODEOWNERS**: counted
 ///   over **all** non-archived repos. Denominator is total active repos.
 /// - **Open secret alert prevalence**: denominator is the number of repos
@@ -92,7 +106,7 @@ pub fn aggregate_metrics(repositories: &[RepositoryEvidence]) -> AggregatedMetri
         .iter()
         .filter(|r| !r.repository.archived)
         .collect();
-    let public_policy: Vec<_> = active
+    let public_policy: Vec<_> = repositories
         .iter()
         .filter(|r| r.repository.visibility == Visibility::Public)
         .collect();
@@ -211,7 +225,7 @@ pub fn aggregate_metrics(repositories: &[RepositoryEvidence]) -> AggregatedMetri
 /// - pass + evidence=file → `via_file`
 /// - fail → `missing`
 /// - unknown → `unknown`
-fn count_policy_statuses(public_repos: &[&&RepositoryEvidence]) -> PolicyCounts {
+fn count_policy_statuses(public_repos: &[&RepositoryEvidence]) -> PolicyCounts {
     let mut counts = PolicyCounts::default();
     for repo in public_repos {
         let policy = &repo.checks.security_policy;
@@ -777,7 +791,6 @@ mod tests {
                     codeowners_absent(),
                 ),
             ),
-            // Archived — should be excluded.
             make_repository_evidence(
                 "archived-1",
                 Visibility::Public,
@@ -839,16 +852,14 @@ mod tests {
         let repos = sample_repos();
         let metrics = aggregate_metrics(&repos);
 
-        // 3 public repos: pass_setting=1, fail=1, unknown=1
-        assert_eq!(metrics.policy_counts.via_setting, 1);
+        assert_eq!(metrics.policy_counts.via_setting, 2);
         assert_eq!(metrics.policy_counts.via_file, 0);
         assert_eq!(metrics.policy_counts.missing, 1);
         assert_eq!(metrics.policy_counts.unknown, 1);
 
-        // Denominator is total public = 3, numerator is pass = 1
-        assert_eq!(metrics.security_policy_coverage.numerator, 1);
-        assert_eq!(metrics.security_policy_coverage.denominator, 3);
-        assert_eq!(metrics.security_policy_coverage.rate, Some(33.3));
+        assert_eq!(metrics.security_policy_coverage.numerator, 2);
+        assert_eq!(metrics.security_policy_coverage.denominator, 4);
+        assert_eq!(metrics.security_policy_coverage.rate, Some(50.0));
     }
 
     #[test]
@@ -949,8 +960,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_metrics_excludes_archived() {
-        // Only the archived repo
+    fn aggregate_metrics_archived_public_repo_included_in_security_policy() {
         let repos = vec![make_repository_evidence(
             "archived",
             Visibility::Public,
@@ -964,8 +974,9 @@ mod tests {
             ),
         )];
         let metrics = aggregate_metrics(&repos);
-        assert_eq!(metrics.security_policy_coverage.numerator, 0);
-        assert_eq!(metrics.security_policy_coverage.denominator, 0);
+        assert_eq!(metrics.security_policy_coverage.numerator, 1);
+        assert_eq!(metrics.security_policy_coverage.denominator, 1);
+        assert_eq!(metrics.branch_protection_coverage.denominator, 0);
     }
 
     #[test]
@@ -1302,13 +1313,13 @@ mod tests {
         let repos = sample_repos();
         let metrics = aggregate_metrics(&repos);
 
-        // Policy extra: observable_repositories = via_setting(1) + via_file(0) + missing(1) = 2
+        // Policy extra: observable_repositories = via_setting(2) + via_file(0) + missing(1) = 3
         assert_eq!(
             metrics
                 .security_policy_coverage
                 .extra
                 .get("observable_repositories"),
-            Some(&serde_json::json!(2))
+            Some(&serde_json::json!(3))
         );
         assert_eq!(
             metrics.security_policy_coverage.extra.get("unknown"),
@@ -2062,5 +2073,106 @@ mod tests {
         assert_eq!(non_stale_1.numerator, non_stale_2.numerator);
         assert_eq!(non_stale_1.denominator, non_stale_2.denominator);
         assert_eq!(non_stale_1.rate, non_stale_2.rate);
+    }
+
+    #[test]
+    fn collection_statistics_counts_archived_repos_from_input() {
+        let repos = vec![
+            make_repository_evidence(
+                "active-pub",
+                Visibility::Public,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_conforming(),
+                ),
+            ),
+            make_repository_evidence(
+                "archived-pub-1",
+                Visibility::Public,
+                true,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_conforming(),
+                ),
+            ),
+            make_repository_evidence(
+                "archived-priv",
+                Visibility::Private,
+                true,
+                make_checks(
+                    policy_fail(),
+                    secret_disabled(),
+                    dependabot_disabled(),
+                    branch_fail(),
+                    codeowners_absent(),
+                ),
+            ),
+        ];
+        let stats = build_collection_statistics(&repos);
+        assert_eq!(stats.total_repos, 1);
+        assert_eq!(stats.public_repos, 1);
+        assert_eq!(
+            stats.archived_repos, 2,
+            "archived_repos must reflect archived entries present in the input \
+             (warm-start glitch: count was hardcoded to 0)"
+        );
+    }
+
+    #[test]
+    fn aggregate_metrics_includes_archived_public_repos_with_security_policy() {
+        let repos = vec![
+            make_repository_evidence(
+                "pub-active-pass",
+                Visibility::Public,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_conforming(),
+                ),
+            ),
+            make_repository_evidence(
+                "pub-archived-pass",
+                Visibility::Public,
+                true,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_conforming(),
+                ),
+            ),
+            make_repository_evidence(
+                "pub-archived-fail",
+                Visibility::Public,
+                true,
+                make_checks(
+                    policy_fail(),
+                    secret_disabled(),
+                    dependabot_disabled(),
+                    branch_fail(),
+                    codeowners_absent(),
+                ),
+            ),
+        ];
+        let metrics = aggregate_metrics(&repos);
+
+        assert_eq!(metrics.policy_counts.via_setting, 2);
+        assert_eq!(metrics.policy_counts.missing, 1);
+        assert_eq!(metrics.security_policy_coverage.numerator, 2);
+        assert_eq!(metrics.security_policy_coverage.denominator, 3);
+
+        let active_only_branch = metrics.branch_protection_coverage;
+        assert_eq!(active_only_branch.denominator, 1);
     }
 }
