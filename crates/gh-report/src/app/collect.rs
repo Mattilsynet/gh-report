@@ -3727,4 +3727,51 @@ mod tests {
             (self.completed.len() + self.baseline_cache.len()) as u64
         }
     }
+
+    #[tokio::test]
+    async fn commit_cached_pages_broadcasts_page_update_event() {
+        let state = AppState::new_with_cache_capacity(10).await;
+        let run = test_run_meta();
+
+        let mut rx = state.evidence().ws_broadcast.subscribe();
+
+        let mut cache: HashMap<String, crate::app::state::CachedPage> = HashMap::new();
+        cache.insert(
+            "index.html".to_string(),
+            crate::app::state::CachedPage::new("index.html", b"<html>x</html>".to_vec()),
+        );
+        cache.insert(
+            "report.html".to_string(),
+            crate::app::state::CachedPage::new("report.html", b"<html>y</html>".to_vec()),
+        );
+
+        let page_count = commit_cached_pages(&state, &run, cache);
+        assert_eq!(page_count, 2);
+
+        let guard = state.evidence().html_cache.load();
+        let pages = guard
+            .as_ref()
+            .as_ref()
+            .expect("html_cache must be populated after commit_cached_pages");
+        assert!(pages.contains_key("index.html"));
+        assert!(pages.contains_key("report.html"));
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect(
+                "commit_cached_pages must broadcast a PageUpdateEvent so connected \
+                 browser clients are notified — no projection/cache update may \
+                 silently mutate browser-visible server state",
+            )
+            .expect("ws_broadcast channel must not be closed");
+
+        let mut keys: Vec<String> = event.pages.iter().map(|s| s.as_ref().to_owned()).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["index.html".to_string(), "report.html".to_string()],
+            "PageUpdateEvent.pages must list every cache key written so the \
+             client can decide whether to reload"
+        );
+    }
 }
