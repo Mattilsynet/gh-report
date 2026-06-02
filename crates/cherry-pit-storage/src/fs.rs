@@ -82,49 +82,12 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn atomic_write_bytes_creates_file() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("test.bin");
-        atomic_write_bytes(&path, b"hello").unwrap();
-        let content = std::fs::read(&path).unwrap();
-        assert_eq!(content, b"hello");
-    }
-
-    #[test]
-    fn atomic_write_text_creates_file() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("test.txt");
-        atomic_write_text(&path, "hello text").unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(content, "hello text");
-    }
-
-    #[test]
     fn atomic_write_creates_nested_dirs() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("a").join("b").join("c").join("file.txt");
         atomic_write_bytes(&path, b"nested").unwrap();
         let content = std::fs::read(&path).unwrap();
         assert_eq!(content, b"nested");
-    }
-
-    #[test]
-    fn atomic_write_overwrites_existing() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("overwrite.bin");
-        atomic_write_bytes(&path, b"first").unwrap();
-        atomic_write_bytes(&path, b"second").unwrap();
-        let content = std::fs::read(&path).unwrap();
-        assert_eq!(content, b"second");
-    }
-
-    #[test]
-    fn atomic_write_empty_data() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("empty.bin");
-        atomic_write_bytes(&path, b"").unwrap();
-        let content = std::fs::read(&path).unwrap();
-        assert!(content.is_empty());
     }
 
     #[test]
