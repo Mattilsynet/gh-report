@@ -40,7 +40,7 @@ use std::sync::Arc;
 use axum::Router;
 use cherry_pit_web::{
     LayerLimits, PageEntry, PageUpdate, ProjectionSource, ProjectionState, build_projection_router,
-    normalize_request_path,
+    normalize_request_path, sanitize_path_segment,
 };
 use proptest::prelude::*;
 use tokio::net::TcpListener;
@@ -201,6 +201,57 @@ proptest! {
                 "key starts with '/': {:?}", result.key
             );
         }
+    }
+
+    #[test]
+    fn normalize_request_path_is_idempotent_under_slash_wrap(input in "\\PC{0,500}") {
+        if let Some(first) = normalize_request_path(&input) {
+            prop_assume!(first.key != "index.html");
+            let wrapped = format!("/{}", first.key);
+            let second = normalize_request_path(&wrapped)
+                .expect("re-wrapped key normalises");
+            prop_assert_eq!(&second.key, &first.key);
+        }
+    }
+}
+
+proptest! {
+    #[test]
+    fn sanitize_segment_never_panics(input in "\\PC{0,200}") {
+        let _ = sanitize_path_segment(&input, "field");
+    }
+
+    #[test]
+    fn sanitize_segment_rejects_traversal_slash_backslash(
+        prefix in "[a-z]{0,8}",
+        marker in proptest::sample::select(vec!["..", "/", "\\"]),
+        suffix in "[a-z]{0,8}",
+    ) {
+        let input = format!("{prefix}{marker}{suffix}");
+        prop_assert!(sanitize_path_segment(&input, "field").is_err());
+    }
+
+    #[test]
+    fn sanitize_segment_rejects_control_characters(
+        prefix in "[a-z]{0,8}",
+        ctrl in 0_u32..0x20,
+        suffix in "[a-z]{0,8}",
+    ) {
+        let ch = char::from_u32(ctrl).expect("ASCII control char");
+        let input = format!("{prefix}{ch}{suffix}");
+        prop_assert!(sanitize_path_segment(&input, "field").is_err());
+    }
+
+    #[test]
+    fn sanitize_segment_accepts_safe_alphabet(name in "[A-Za-z0-9_\\-]{1,32}") {
+        let out = sanitize_path_segment(&name, "field")
+            .expect("safe alphabet accepted");
+        prop_assert_eq!(out.as_ref(), name.as_str());
+    }
+
+    #[test]
+    fn sanitize_segment_rejects_empty(field in "[a-z]{1,16}") {
+        prop_assert!(sanitize_path_segment("", &field).is_err());
     }
 }
 

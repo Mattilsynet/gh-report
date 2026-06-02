@@ -45,4 +45,30 @@ proptest! {
         prop_assert_eq!(ctx.correlation_id(), Some(event_id));
         prop_assert_eq!(ctx.causation_id(), Some(event_id));
     }
+
+    #[test]
+    fn correlation_for_causation_always_equals_event_id(
+        corr_opt in proptest::option::of(uuid_strategy()),
+        event_id in uuid_strategy(),
+    ) {
+        let ctx = correlation_for(corr_opt, event_id);
+        prop_assert_eq!(ctx.causation_id(), Some(event_id));
+    }
+
+    #[test]
+    fn correlation_for_is_referentially_transparent(
+        corr_opt in proptest::option::of(uuid_strategy()),
+        event_id in uuid_strategy(),
+    ) {
+        let first = correlation_for(corr_opt, event_id);
+        let second = correlation_for(corr_opt, event_id);
+        prop_assert_eq!(first, second);
+    }
+
+    #[test]
+    fn correlation_for_with_equal_uuids_is_well_formed(event_id in uuid_strategy()) {
+        let ctx = correlation_for(Some(event_id), event_id);
+        prop_assert_eq!(ctx.correlation_id(), Some(event_id));
+        prop_assert_eq!(ctx.causation_id(), Some(event_id));
+    }
 }

@@ -1449,6 +1449,57 @@ mod tests {
             });
         }
 
+        #[test]
+        fn safe_file_component_output_is_in_allowed_alphabet(input in "\\PC{0,32}") {
+            let out = safe_file_component(&input);
+            for ch in out.chars() {
+                proptest::prop_assert!(
+                    ch.is_ascii_alphanumeric() || ch == '_' || ch == '-',
+                    "unexpected char {ch:?} in {out:?} from {input:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn safe_file_component_is_idempotent(input in "\\PC{0,32}") {
+            let once = safe_file_component(&input);
+            let twice = safe_file_component(&once);
+            proptest::prop_assert_eq!(once, twice);
+        }
+
+        #[test]
+        fn persist_is_last_writer_wins_on_checkpoint(
+            first in 1_u64..1_000_000,
+            second in 1_u64..1_000_000,
+        ) {
+            let rt = tokio::runtime::Runtime::new().expect("runtime");
+            rt.block_on(async move {
+                let id = aggregate_id(1);
+                let dir = tempfile::tempdir().expect("tempdir");
+                let backend = FileProjectionStore::<CounterView>::new(dir.path(), "counter");
+
+                backend
+                    .persist(id, &CounterView { total: first }, first)
+                    .await
+                    .expect("first persist");
+                backend
+                    .persist(id, &CounterView { total: second }, second)
+                    .await
+                    .expect("second persist");
+
+                let checkpoint = backend
+                    .load_checkpoint(id)
+                    .await
+                    .expect("load checkpoint")
+                    .expect("checkpoint exists");
+                assert_eq!(checkpoint.last_sequence(), second);
+                assert_eq!(
+                    backend.load_snapshot(id).await.expect("load snapshot"),
+                    Some(CounterView { total: second })
+                );
+            });
+        }
+
         /// CHE-0048:R3 — `apply` is deterministic and idempotent over a
         /// fixed event stream: replaying the same envelope sequence twice
         /// against fresh projections yields equal final states. Two
