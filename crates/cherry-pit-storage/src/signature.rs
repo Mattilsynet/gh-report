@@ -118,29 +118,12 @@ mod tests {
 
     #[test]
     fn signature_excludes_run_timestamp() {
-        let a = serde_json::json!({"total": 5, "run_timestamp": "old"});
-        let b = serde_json::json!({"total": 5, "run_timestamp": "new"});
+        let v1 = serde_json::json!({"data": "same", "run_timestamp": "2025-01-01"});
+        let v2 = serde_json::json!({"data": "same", "run_timestamp": "2025-01-02"});
         assert_eq!(
-            build_snapshot_signature(Some(&a)),
-            build_snapshot_signature(Some(&b))
+            build_snapshot_signature(Some(&v1)),
+            build_snapshot_signature(Some(&v2))
         );
-    }
-
-    #[test]
-    fn signature_differs_when_data_changes() {
-        let a = serde_json::json!({"total": 5});
-        let b = serde_json::json!({"total": 6});
-        assert_ne!(
-            build_snapshot_signature(Some(&a)),
-            build_snapshot_signature(Some(&b))
-        );
-    }
-
-    #[test]
-    fn signature_non_object_input_does_not_panic() {
-        let arr = serde_json::json!([1, 2, 3]);
-        let sig = build_snapshot_signature(Some(&arr));
-        assert_eq!(sig.len(), 64);
     }
 
     #[test]

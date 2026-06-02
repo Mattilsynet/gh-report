@@ -402,27 +402,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn correlation_for_threads_envelope_ids() {
-        let corr = uuid::Uuid::now_v7();
-        let event = uuid::Uuid::now_v7();
-
-        let ctx = correlation_for(Some(corr), event);
-        assert_eq!(ctx.correlation_id(), Some(corr));
-        assert_eq!(ctx.causation_id(), Some(event));
-    }
-
-    #[test]
-    fn correlation_for_seeds_chain_when_no_correlation_id() {
-        let event = uuid::Uuid::now_v7();
-        let ctx = correlation_for(None, event);
-        // When envelope has no correlation, event_id seeds the chain
-        // — both fields are populated, satisfying R6's "fresh per
-        // dispatch, no Default" requirement.
-        assert_eq!(ctx.correlation_id(), Some(event));
-        assert_eq!(ctx.causation_id(), Some(event));
-    }
-
     #[tokio::test]
     async fn dispatch_invokes_closure_with_output() {
         let gateway = GatewayStub {

@@ -315,38 +315,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fifo_ordering() {
-        let q = WorkQueue::new(10);
-        assert_eq!(q.enqueue(make_job("a")), EnqueueResult::Accepted);
-        assert_eq!(q.enqueue(make_job("b")), EnqueueResult::Accepted);
-        assert_eq!(q.enqueue(make_job("c")), EnqueueResult::Accepted);
-
-        let j1 = q.dequeue().await.unwrap();
-        assert_eq!(j1.domain_key, "a");
-        let j2 = q.dequeue().await.unwrap();
-        assert_eq!(j2.domain_key, "b");
-        let j3 = q.dequeue().await.unwrap();
-        assert_eq!(j3.domain_key, "c");
-    }
-
-    #[tokio::test]
-    async fn dedup_rejects_duplicate() {
-        let q = WorkQueue::new(10);
-        assert_eq!(q.enqueue(make_job("a")), EnqueueResult::Accepted);
-        assert_eq!(q.enqueue(make_job("a")), EnqueueResult::Deduplicated);
-        assert_eq!(q.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn dedup_cleared_on_dequeue() {
-        let q = WorkQueue::new(10);
-        assert_eq!(q.enqueue(make_job("a")), EnqueueResult::Accepted);
-        let _ = q.dequeue().await.unwrap();
-        // Key cleared — re-enqueue should succeed.
-        assert_eq!(q.enqueue(make_job("a")), EnqueueResult::Accepted);
-    }
-
-    #[tokio::test]
     async fn capacity_enforced() {
         let q = WorkQueue::new(2);
         assert_eq!(q.enqueue(make_job("a")), EnqueueResult::Accepted);

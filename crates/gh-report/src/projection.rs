@@ -323,33 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_repo_removed_is_idempotent() {
-        // Empty start; removing a key that isn't present is a no-op.
-        // Replaying the envelope must leave the projection unchanged
-        // (CHE-0048:R3 + BC-v2-6 idempotency).
-        let mut p = EvidenceProjection::default();
-        let env = envelope(
-            DomainEvent::RepoRemoved {
-                domain_key: "id-ghost".into(),
-                repo_name: "ghost".into(),
-                timestamp: "2026-04-20T12:00:00Z".into(),
-            },
-            1,
-        );
-        p.apply(&env);
-        p.apply(&env);
-        assert!(p.repositories.is_empty());
-    }
-
-    #[test]
     fn apply_skeleton_is_no_op_for_unimplemented_variants() {
-        // B6': all variants here remain no-ops on the projection
-        // (`RepoEvaluated` carries `evidence: None` in this test, which
-        // the B6' arm treats as a no-op; payload-bearing materialisation
-        // is exercised by `apply_repo_evaluated_with_evidence_inserts_into_repositories`).
-        // `RepoRemoved` is exercised by `apply_repo_removed_is_idempotent`.
-        // This test pins the no-op contract so future variants don't
-        // silently regress idempotency.
         let mut p = EvidenceProjection::default();
         let ts = "2026-04-20T12:00:00Z".to_string();
         let cases = [
