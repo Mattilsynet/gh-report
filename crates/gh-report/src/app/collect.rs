@@ -1230,22 +1230,29 @@ async fn prepare_collection(
 
 async fn load_active_repositories(client: &GitHubClient) -> Result<InventoryLoad, AppError> {
     let inv = inventory::build_inventory_from_api(client, None).await?;
-    let inventory_fetched_at = inv.inventory_fetched_at.clone();
-    let archived_count =
-        u32::try_from(inv.repositories.iter().filter(|r| r.archived).count()).unwrap_or(u32::MAX);
-    let active_repos: Vec<Arc<Repository>> = inv
+    let load = inventory_load_from_payload(inv);
+    info!(total = load.active_repos.len(), "repository inventory loaded");
+    Ok(load)
+}
+
+fn inventory_load_from_payload(payload: inventory::InventoryPayload) -> InventoryLoad {
+    let inventory_fetched_at = payload.inventory_fetched_at;
+    let archived_repos = count_archived(&payload.repositories);
+    let active_repos: Vec<Arc<Repository>> = payload
         .repositories
         .into_iter()
         .filter(|r| !r.archived)
         .map(Arc::new)
         .collect();
-    info!(total = active_repos.len(), "repository inventory loaded");
-
-    Ok(InventoryLoad {
+    InventoryLoad {
         active_repos,
         inventory_fetched_at,
-        archived_repos: archived_count,
-    })
+        archived_repos,
+    }
+}
+
+fn count_archived(repos: &[Repository]) -> u32 {
+    u32::try_from(repos.iter().filter(|r| r.archived).count()).unwrap_or(u32::MAX)
 }
 
 async fn collect_org_alert_context(
