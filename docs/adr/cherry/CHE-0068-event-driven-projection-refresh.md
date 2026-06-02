@@ -22,7 +22,7 @@ R1 [7]: Within gh-report's evidence projection, each persisted-and-published `Re
 
 R2 [8]: `SweepCompleted` and batch-drain events act as render and finalization barriers; terminal render plus client broadcast occur only after the barrier event has applied, never mid-batch, preserving CHE-0054:R1.c ordering on terminal publication.
 
-R3 [9]: Render and broadcast MAY coalesce intermediate `RepoEvaluated` arrivals within a configurable window; default maximum visible staleness is ten seconds, balancing user-perceived freshness against render and broadcast cost.
+R3 [9]: Render and broadcast MAY coalesce intermediate `RepoEvaluated` arrivals within a configurable window; default maximum visible staleness is one second, balancing user-perceived freshness against render and broadcast cost.
 
 R4 [7]: Replay from `EventStore` using durable checkpoints per CHE-0024:R3 and CHE-0048 remains the projection correctness mechanism; coalescing is a render-side optimisation and never modifies persisted state or the canonical event sequence.
 

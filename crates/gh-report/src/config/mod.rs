@@ -111,10 +111,10 @@ pub const WORK_QUEUE_CAPACITY: usize = 10_000;
 ///
 /// The partial publisher coalesces `RepoEvaluated`-driven render
 /// triggers into at most one render per `PARTIAL_RENDER_MAX_STALENESS`
-/// interval. CHE-0068 picks ten seconds as the starting heuristic
+/// interval. CHE-0068 picks one second as the starting heuristic
 /// balancing user-perceived freshness against render and broadcast
 /// cost; revisit on load data.
-pub const PARTIAL_RENDER_MAX_STALENESS: std::time::Duration = std::time::Duration::from_secs(10);
+pub const PARTIAL_RENDER_MAX_STALENESS: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Secret alert age bucket definitions: (label, `min_days`, `max_days`).
 ///
