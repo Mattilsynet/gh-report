@@ -2401,4 +2401,149 @@ mod tests {
         ids.sort_by_key(|id| id.get());
         assert_eq!(ids, vec![id1, id2], "list returns exactly the created ids");
     }
+
+    mod proptests_eda {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn rt() -> tokio::runtime::Runtime {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+        }
+
+        fn evs(n: usize) -> Vec<TestEvent> {
+            (0..n)
+                .map(|i| TestEvent::Created {
+                    name: format!("e{i}"),
+                })
+                .collect()
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig { cases: 16, ..ProptestConfig::default() })]
+
+            #[test]
+            fn create_append_reload_is_monotone_and_durable(
+                create_n in 1usize..5,
+                batches in proptest::collection::vec(1usize..4, 1..4),
+            ) {
+                let dir = tempfile::tempdir().unwrap();
+                let store = MsgpackFileStore::new(dir.path());
+                let runtime = rt();
+
+                let (id, created) = runtime.block_on(
+                    store.create(evs(create_n), no_ctx()),
+                ).unwrap();
+                let mut last_seq = created.last().unwrap().sequence();
+                let mut total = create_n;
+
+                for batch_n in &batches {
+                    let appended = runtime.block_on(store.append(
+                        id,
+                        last_seq,
+                        evs(*batch_n),
+                        no_ctx(),
+                    )).unwrap();
+                    prop_assert_eq!(appended.len(), *batch_n);
+                    for (i, e) in appended.iter().enumerate() {
+                        let expected = last_seq.get() + 1 + u64::try_from(i).unwrap();
+                        prop_assert_eq!(e.sequence().get(), expected);
+                        prop_assert_eq!(e.aggregate_id(), id);
+                    }
+                    total += batch_n;
+                    last_seq = appended.last().unwrap().sequence();
+                }
+
+                let all = runtime.block_on(store.load(id)).unwrap();
+                prop_assert_eq!(all.len(), total);
+                for (i, e) in all.iter().enumerate() {
+                    let expected = u64::try_from(i).unwrap() + 1;
+                    prop_assert_eq!(e.sequence().get(), expected);
+                    prop_assert_eq!(e.aggregate_id(), id);
+                    prop_assert!(!e.event_id().is_nil());
+                }
+            }
+
+            #[test]
+            fn reload_after_restart_preserves_stream(
+                n in 1usize..6,
+            ) {
+                let dir = tempfile::tempdir().unwrap();
+                let runtime = rt();
+
+                let (id, original) = {
+                    let store = MsgpackFileStore::new(dir.path());
+                    runtime.block_on(store.create(evs(n), no_ctx())).unwrap()
+                };
+
+                let store2 = MsgpackFileStore::<TestEvent>::new(dir.path());
+                let loaded = runtime.block_on(store2.load(id)).unwrap();
+
+                prop_assert_eq!(loaded.len(), n);
+                for (i, e) in loaded.iter().enumerate() {
+                    let expected = u64::try_from(i).unwrap() + 1;
+                    prop_assert_eq!(e.sequence().get(), expected);
+                    prop_assert_eq!(e.event_id(), original[i].event_id());
+                    prop_assert_eq!(e.payload().clone(), original[i].payload().clone());
+                }
+            }
+
+            #[test]
+            fn append_rejects_any_stale_expected_sequence(
+                create_n in 2usize..6,
+                stale_raw in 1u64..1_000,
+            ) {
+                let dir = tempfile::tempdir().unwrap();
+                let store = MsgpackFileStore::new(dir.path());
+                let runtime = rt();
+
+                let (id, created) = runtime.block_on(
+                    store.create(evs(create_n), no_ctx()),
+                ).unwrap();
+                let real = created.last().unwrap().sequence().get();
+                prop_assume!(stale_raw != real);
+                let stale = NonZeroU64::new(stale_raw).unwrap();
+                let err = runtime.block_on(store.append(
+                    id,
+                    stale,
+                    evs(1),
+                    no_ctx(),
+                )).unwrap_err();
+                match err {
+                    StoreError::ConcurrencyConflict {
+                        aggregate_id,
+                        expected_sequence,
+                        actual_sequence,
+                    } => {
+                        prop_assert_eq!(aggregate_id, id);
+                        prop_assert_eq!(expected_sequence, stale);
+                        prop_assert_eq!(actual_sequence, real);
+                    }
+                    other => prop_assert!(false, "expected ConcurrencyConflict, got {other:?}"),
+                }
+                let loaded = runtime.block_on(store.load(id)).unwrap();
+                prop_assert_eq!(loaded.len(), create_n);
+            }
+
+            #[test]
+            fn create_assigns_distinct_sequential_ids(k in 1usize..8) {
+                let dir = tempfile::tempdir().unwrap();
+                let store = MsgpackFileStore::new(dir.path());
+                let runtime = rt();
+
+                let mut ids = Vec::with_capacity(k);
+                for i in 0..k {
+                    let (id, _) = runtime.block_on(store.create(
+                        vec![TestEvent::Created { name: format!("agg{i}") }],
+                        no_ctx(),
+                    )).unwrap();
+                    ids.push(id.get());
+                }
+                let expected: Vec<u64> = (1..=u64::try_from(k).unwrap()).collect();
+                prop_assert_eq!(ids, expected);
+            }
+        }
+    }
 }

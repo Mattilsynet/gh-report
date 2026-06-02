@@ -1220,4 +1220,156 @@ mod tests {
         assert!(s.load_snapshot(id).is_none());
         assert!(s.load_checkpoint(id).is_none());
     }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn evs(n: usize) -> Vec<TestEvent> {
+            (0..n)
+                .map(|i| TestEvent::Happened {
+                    value: u32::try_from(i).unwrap(),
+                })
+                .collect()
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+
+            #[test]
+            fn create_yields_contiguous_sequences_from_one(n in 1usize..16) {
+                let s = store();
+                let (id, envs) = block_on(s.create(evs(n), CorrelationContext::none())).unwrap();
+                prop_assert_eq!(envs.len(), n);
+                for (i, e) in envs.iter().enumerate() {
+                    let expected = u64::try_from(i).unwrap() + 1;
+                    prop_assert_eq!(e.sequence().get(), expected);
+                    prop_assert_eq!(e.aggregate_id(), id);
+                }
+                let loaded = block_on(s.load(id)).unwrap();
+                prop_assert_eq!(loaded.len(), n);
+                for (i, e) in loaded.iter().enumerate() {
+                    let expected = u64::try_from(i).unwrap() + 1;
+                    prop_assert_eq!(e.sequence().get(), expected);
+                }
+            }
+
+            #[test]
+            fn append_extends_stream_monotone_across_batches(
+                create_n in 1usize..6,
+                batches in proptest::collection::vec(1usize..5, 1..5),
+            ) {
+                let s = store();
+                let (id, created) = block_on(
+                    s.create(evs(create_n), CorrelationContext::none()),
+                ).unwrap();
+                let mut last_seq = created.last().unwrap().sequence();
+                let mut total = create_n;
+                for batch_n in &batches {
+                    let appended = block_on(s.append(
+                        id,
+                        last_seq,
+                        evs(*batch_n),
+                        CorrelationContext::none(),
+                    )).unwrap();
+                    prop_assert_eq!(appended.len(), *batch_n);
+                    for (i, e) in appended.iter().enumerate() {
+                        let expected = last_seq.get() + 1 + u64::try_from(i).unwrap();
+                        prop_assert_eq!(e.sequence().get(), expected);
+                        prop_assert_eq!(e.aggregate_id(), id);
+                    }
+                    total += batch_n;
+                    last_seq = appended.last().unwrap().sequence();
+                }
+                let all = block_on(s.load(id)).unwrap();
+                prop_assert_eq!(all.len(), total);
+                for (i, e) in all.iter().enumerate() {
+                    let expected = u64::try_from(i).unwrap() + 1;
+                    prop_assert_eq!(e.sequence().get(), expected);
+                    prop_assert_eq!(e.aggregate_id(), id);
+                }
+            }
+
+            #[test]
+            fn append_rejects_any_stale_expected_sequence(
+                create_n in 2usize..8,
+                stale_raw in 1u64..10_000,
+            ) {
+                let s = store();
+                let (id, created) = block_on(
+                    s.create(evs(create_n), CorrelationContext::none()),
+                ).unwrap();
+                let real = created.last().unwrap().sequence().get();
+                prop_assume!(stale_raw != real);
+                let stale = NonZeroU64::new(stale_raw).unwrap();
+                let err = block_on(s.append(
+                    id,
+                    stale,
+                    evs(1),
+                    CorrelationContext::none(),
+                )).unwrap_err();
+                match err {
+                    StoreError::ConcurrencyConflict {
+                        aggregate_id,
+                        expected_sequence,
+                        actual_sequence,
+                    } => {
+                        prop_assert_eq!(aggregate_id, id);
+                        prop_assert_eq!(expected_sequence, stale);
+                        prop_assert_eq!(actual_sequence, real);
+                    }
+                    other => prop_assert!(false, "expected ConcurrencyConflict, got {other:?}"),
+                }
+                let loaded = block_on(s.load(id)).unwrap();
+                prop_assert_eq!(loaded.len(), create_n);
+            }
+
+            #[test]
+            fn separate_aggregates_get_distinct_sequential_ids(k in 1usize..12) {
+                let s = store();
+                let mut ids = Vec::with_capacity(k);
+                for i in 0..k {
+                    let (id, _) = block_on(s.create(
+                        vec![TestEvent::Happened { value: u32::try_from(i).unwrap() }],
+                        CorrelationContext::none(),
+                    )).unwrap();
+                    ids.push(id.get());
+                }
+                let expected: Vec<u64> = (1..=u64::try_from(k).unwrap()).collect();
+                prop_assert_eq!(ids, expected);
+            }
+
+            #[test]
+            fn fake_bus_records_duplicate_publishes_in_order(n in 1usize..16) {
+                let bus: FakeBus<TestEvent> = FakeBus::new();
+                let id = AggregateId::new(NonZeroU64::new(1).unwrap());
+                let envs: Vec<EventEnvelope<TestEvent>> = (1..=n)
+                    .map(|i| {
+                        EventEnvelope::new(
+                            uuid::Uuid::now_v7(),
+                            id,
+                            NonZeroU64::new(u64::try_from(i).unwrap()).unwrap(),
+                            jiff::Timestamp::now(),
+                            None,
+                            None,
+                            TestEvent::Happened { value: u32::try_from(i).unwrap() },
+                        )
+                        .unwrap()
+                    })
+                    .collect();
+                block_on(bus.publish(&envs)).unwrap();
+                block_on(bus.publish(&envs)).unwrap();
+                let log = bus.published();
+                prop_assert_eq!(log.len(), n * 2);
+                for (i, e) in log[..n].iter().enumerate() {
+                    let expected = u64::try_from(i).unwrap() + 1;
+                    prop_assert_eq!(e.sequence().get(), expected);
+                }
+                for (i, e) in log[n..].iter().enumerate() {
+                    let expected = u64::try_from(i).unwrap() + 1;
+                    prop_assert_eq!(e.sequence().get(), expected);
+                }
+            }
+        }
+    }
 }
