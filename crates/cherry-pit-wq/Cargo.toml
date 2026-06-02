@@ -27,3 +27,4 @@ futures-util = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 tokio-test = { workspace = true }
 uuid = { workspace = true }
+proptest = { workspace = true }
