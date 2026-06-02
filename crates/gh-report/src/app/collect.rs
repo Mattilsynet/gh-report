@@ -1276,7 +1276,9 @@ async fn collect_org_alert_context(
 /// - `html_cache` uses [`ArcSwap`] for atomic swap — concurrent reads
 ///   from the server always see a consistent snapshot.
 /// - The warm-start evidence uses placeholder `AssessmentMetadata` (auth
-///   fields set to Unknown, `archived_repos: 0`, `warm_start: true`).
+///   fields set to Unknown, `warm_start: true`). `archived_repos` in
+///   `collection_statistics` is derived from the baseline repos via
+///   [`metrics::build_collection_statistics`] rather than zeroed.
 ///   Templates detect `warm_start` and display a "Cached" badge.
 /// - The first real collection atomically replaces the warm-start cache.
 pub(crate) async fn warm_start_from_baseline(
@@ -1303,9 +1305,7 @@ pub(crate) async fn warm_start_from_baseline(
         config::EVIDENCE_SCHEMA_VERSION.to_string(),
     );
 
-    let mut collection_stats = metrics::build_collection_statistics(&repos);
-    // archived_repos is unknown from baseline alone; default to 0.
-    collection_stats.archived_repos = 0;
+    let collection_stats = metrics::build_collection_statistics(&repos);
     let mut aggregated = metrics::aggregate_metrics(&repos);
     metrics::enrich_owner_metrics_with_lifecycle(
         &mut aggregated.owner_metrics,
