@@ -932,20 +932,20 @@ mod tests {
         let mut lock = acquire(
             dir.path(),
             "long-running",
-            Duration::from_millis(100),
+            Duration::from_secs(1),
             false,
             DEFAULT_LOCK_FILENAME,
         )
         .unwrap();
 
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(500));
         lock.renew().unwrap();
-        std::thread::sleep(Duration::from_millis(70));
+        std::thread::sleep(Duration::from_millis(700));
 
         let result = acquire(
             dir.path(),
             "other",
-            Duration::from_millis(100),
+            Duration::from_secs(1),
             false,
             DEFAULT_LOCK_FILENAME,
         );
