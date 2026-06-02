@@ -1231,7 +1231,10 @@ async fn prepare_collection(
 async fn load_active_repositories(client: &GitHubClient) -> Result<InventoryLoad, AppError> {
     let inv = inventory::build_inventory_from_api(client, None).await?;
     let load = inventory_load_from_payload(inv);
-    info!(total = load.active_repos.len(), "repository inventory loaded");
+    info!(
+        total = load.active_repos.len(),
+        "repository inventory loaded"
+    );
     Ok(load)
 }
 
