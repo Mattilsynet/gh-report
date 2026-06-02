@@ -217,7 +217,7 @@ struct InventoryLoad {
     active_repos: Vec<Arc<Repository>>,
     /// ISO 8601 timestamp of when inventory was fetched from API.
     inventory_fetched_at: Option<String>,
-    /// Number of archived repositories excluded from `active_repos`.
+    /// Number of archived repositories present in the fetched inventory.
     archived_repos: u32,
 }
 
@@ -1238,12 +1238,8 @@ async fn load_active_repositories(client: &GitHubClient) -> Result<InventoryLoad
 fn inventory_load_from_payload(payload: inventory::InventoryPayload) -> InventoryLoad {
     let inventory_fetched_at = payload.inventory_fetched_at;
     let archived_repos = count_archived(&payload.repositories);
-    let active_repos: Vec<Arc<Repository>> = payload
-        .repositories
-        .into_iter()
-        .filter(|r| !r.archived)
-        .map(Arc::new)
-        .collect();
+    let active_repos: Vec<Arc<Repository>> =
+        payload.repositories.into_iter().map(Arc::new).collect();
     InventoryLoad {
         active_repos,
         inventory_fetched_at,
@@ -1927,6 +1923,48 @@ mod tests {
 
     fn sample_repo(name: &str) -> RepositoryEvidence {
         test_fixtures::all_passing_evidence(name)
+    }
+
+    fn inventory_payload_with(repos: Vec<Repository>) -> inventory::InventoryPayload {
+        inventory::InventoryPayload {
+            schema_version: config::INVENTORY_SCHEMA_VERSION.to_string(),
+            organization: "TestOrg".to_string(),
+            generated_at: "2026-06-02T00:00:00+00:00".to_string(),
+            repositories: repos,
+            inventory_fetched_at: Some("2026-06-02T00:00:01+00:00".to_string()),
+        }
+    }
+
+    #[test]
+    fn inventory_load_from_payload_keeps_archived_in_active_repos() {
+        let payload = inventory_payload_with(vec![
+            test_fixtures::make_repository("active-pub", false, Visibility::Public),
+            test_fixtures::make_repository("archived-pub", true, Visibility::Public),
+            test_fixtures::make_repository("active-priv", false, Visibility::Private),
+        ]);
+
+        let load = inventory_load_from_payload(payload);
+
+        let names: Vec<&str> = load.active_repos.iter().map(|r| r.name.as_str()).collect();
+        assert!(
+            names.contains(&"archived-pub"),
+            "archived repos must flow through to active_repos so the evaluator pipeline emits RepoEvaluated events for them; got {names:?}",
+        );
+        assert_eq!(load.active_repos.len(), 3);
+        assert_eq!(load.archived_repos, 1);
+    }
+
+    #[test]
+    fn inventory_load_from_payload_archived_count_matches_archived_input() {
+        let payload = inventory_payload_with(vec![
+            test_fixtures::make_repository("a", true, Visibility::Public),
+            test_fixtures::make_repository("b", true, Visibility::Private),
+            test_fixtures::make_repository("c", false, Visibility::Public),
+        ]);
+
+        let load = inventory_load_from_payload(payload);
+
+        assert_eq!(load.archived_repos, 2);
     }
 
     fn sample_config() -> RuntimeConfig {
