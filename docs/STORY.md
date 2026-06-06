@@ -1,49 +1,23 @@
 # Solon — Story
 
-**Status**: Draft v0.1
+**Status**: Draft v0.2
 **Genre**: Strategic intent. Where to play; how to win.
-**Reader**: A human or agent landing on this repo for the first time, or
-re-orienting after a long absence.
-**Authority**: Apex over the ADR corpus on questions of *why* and *where to
-play*. See § 9 for the disagreement-resolution rule.
-**Companions**: `docs/CLOSURE.md` (v0.1 exit gate), `FOCUS.md` (refinement
-recipe), `docs/c4/roadmap.md` (live dashboard), `AGENTS.md` (agent
-doctrine), `docs/adr/` (binding doctrine corpus).
 
 ---
 
 ## 1. Solon — the name and the stance
 
-Solon was the Athenian lawgiver who, in 594 BC, drafted a small set of
-reforms, swore the citizenry to honour them for a decade, and then left
-the city so he could not be pressed into amending them. His reforms
-succeeded not because they were comprehensive but because they were
-*few*, *observable*, and *ratified*. They were enabling constraints —
-they made some games illegal so that other games became playable.
+Solon was the Athenian lawgiver who drafted a small set of reforms, swore the citizenry to honour them for a decade, and then left the city so he could not be pressed into amending them. His reforms succeeded not because they were comprehensive but because they were *few*, *observable*, and *ratified*. They were enabling constraints. They made some games illegal so that other games became playable.
 
-This repository takes the same posture. We are not trying to write down
-every rule of good software design. We are trying to identify the small
-set of constraints whose enforcement makes correct software easier to
-build than incorrect software — and to encode those constraints in
-Rust types, in lint rules, in event-store invariants, in the shape of
-the crate graph. The constraints are few enough to be read end-to-end,
-observable enough to be checked mechanically, and ratified enough that
-an agent can cite the rule it is operating under.
+This repository takes the same posture. We are not trying to write down every rule of good software design. We are trying to identify the small set of constraints whose enforcement makes correct software easier to build than incorrect software — and to encode those constraints.
 
-The repository is called **Solon** because that is the discipline we
-are trying to inherit: lay down the foundation, then trust the
-constraints to do their work.
+The repository is called **Solon** because that is the discipline we are trying to inherit: lay down the foundation, then trust the constraints to do their work.
 
 ---
 
 ## 2. What we are building
 
-Solon ships a set of Rust library crates and a small ADR corpus that,
-together, let humans and AI agents collaborate on building correct,
-durable software *fast*. The speed comes from the constraints, not in
-spite of them: when the type system rejects illegal architectures and
-the event store rejects illegal histories, the search space an agent
-must explore collapses by orders of magnitude.
+Solon ships a set of Rust library crates and a ADR corpus that, together, let humans and AI agents collaborate on building correct, durable software. The speed comes from the constraints, not in spite of them: when the type system rejects illegal architectures and the event store rejects illegal histories, the search space an agent must explore collapses by orders of magnitude.
 
 The deliverables, end-to-end:
 
@@ -366,25 +340,3 @@ The full rules live in FOCUS.md § 6 ("long-autonomous-job exception").
 **STORY edits are *not* covered by this exception** — STORY is apex
 and its edits remain user-ratified per the override-never-silent rule
 above.
-
----
-
-## 10. How to read further
-
-- `docs/CLOSURE.md` — the v0.1 exit gate; what "fully functional" means.
-- `FOCUS.md` — the refinement recipe; the standing how-we-work doc.
-- `docs/c4/roadmap.md` — the live track-level dashboard.
-- `docs/c4/cherry.md`, `docs/c4/gh-report.md` — C4-L2 container views.
-- `docs/adr/` — the binding doctrine corpus. Start with the domain
-  index in § 4.3 above.
-- `AGENTS.md` — agent collaboration doctrine for this repo.
-- `crates/<name>/README.md` — per-crate docs.
-
----
-
-## 11. Revision history
-
-| Version | Date | Author | Changes |
-|---------|------|--------|---------|
-| 0.1 | 2026-05-19 | acje + agent | Initial draft. Apex over ADR corpus on *why* + *where to play*; override-never-silent rule (§ 9). Drafted such that `story-override` is empty at landing. |
-| 0.2 | 2026-05-19 | acje + agent | § 9 amended: ADR edits during long-running missions are autonomous-permitted (drafts, amendments, supersessions, retirements). Audit trail = git history + per-ADR `adr-touched,mission:<id>` bead + mission-complete report enumerating touched ADRs for user review. STORY edits remain user-ratified (apex doctrine unchanged). Full rules in FOCUS.md § 6 "long-autonomous-job exception". |
