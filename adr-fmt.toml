@@ -68,29 +68,6 @@ crates = [
 ]
 
 [[domains]]
-prefix = "PAR"
-name = "Pardosa Domain"
-directory = "pardosa"
-description = """\
-    EDA storage layer: fiber semantics, stream management, \
-    NATS/JetStream transport, migration model, backpressure, \
-    single-writer fencing at transport level, and the substrate-\
-    agnostic event-invariant carrier crate (pardosa-derive) hosting \
-    sealed traits and derive macros consumed across substrates."""
-crates = []
-
-[[domains]]
-prefix = "GEN"
-name = "Genome Domain"
-directory = "genome"
-description = """\
-    Binary serialization format: wire layout, schema hashing, \
-    zero-copy deserialization, compression, security limits (DoS \
-    protection, decompression bombs), type validation, and forward \
-    compatibility."""
-crates = []
-
-[[domains]]
 prefix = "RST"
 name = "Rust Domain"
 directory = "rust"
