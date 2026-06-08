@@ -1,0 +1,50 @@
+[package]
+name = "pardosa"
+version = "0.4.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "EDA storage layer implementing fiber semantics"
+license.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/pardosa"
+keywords = ["pardosa", "eda", "event-driven", "fiber", "storage"]
+categories = ["database", "data-structures"]
+
+[lints]
+workspace = true
+
+[lib]
+name = "pardosa"
+path = "src/lib.rs"
+
+[features]
+# Exposes test-only seams under `pardosa::store::test_support`
+# (`InMemoryBackend`, `JetStreamRecoveryJournal*`, plus the in-tree
+# `LiveNatsServer` re-export wiring per ADR-0018 §D7 and ADR-0022 §D11).
+# Off by default; downstream test harnesses opt in via dev-dependencies.
+# Excluded from semver guarantees (ADR-0009 §judgement-primary).
+test-support = []
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+pardosa-wire = { path = "../pardosa-wire", version = "=0.1.0", features = ["blake3"] }
+blake3 = { workspace = true }
+pardosa-schema = { path = "../pardosa-schema", version = "=0.1.0" }
+pardosa-file = { path = "../pardosa-file", version = "=0.1.0" }
+pardosa-nats = { path = "../pardosa-nats", version = "=0.1.0" }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+trybuild = { workspace = true }
+serde_json = { workspace = true }
+pardosa-wire = { path = "../pardosa-wire", version = "=0.1.0" }
+pardosa-derive = { path = "../pardosa-derive", version = "=0.1.0" }
+pardosa-file = { path = "../pardosa-file", version = "=0.1.0", features = ["test-support"] }
+pardosa-nats = { path = "../pardosa-nats", version = "=0.1.0", features = ["test-support"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time"] }
+tempfile = { workspace = true }
+async-nats = { workspace = true }
+

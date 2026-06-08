@@ -1,0 +1,22 @@
+error[E0599]: no associated function or constant named `open_with_migration` found for struct `store::inner::EventStore<T, W>` in the current scope
+ --> tests/ui/no_open_with_migration.rs:4:32
+  |
+4 |     let _ = EventStore::<u64>::open_with_migration(Path::new("/tmp/x.pgno"));
+  |                                ^^^^^^^^^^^^^^^^^^^ associated function or constant not found in `store::inner::EventStore<u64>`
+  |
+note: if you're trying to build a new `store::inner::EventStore<u64>` consider using one of the following associated functions:
+      store::inner::lifecycle::<impl store::inner::EventStore<T>>::open_with_backend
+      store::inner::lifecycle::<impl store::inner::EventStore<T>>::open_with_publisher
+ --> src/store/inner/lifecycle.rs
+  |
+  |       pub fn open_with_backend<B: AuthoritativeBackend>(backend: B) -> Result<Self, PardosaError> {
+  |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+  | /     pub fn open_with_publisher(
+  | |         path: &Path,
+  | |         publish_sidecar: PathBuf,
+  | |         stream_name: String,
+  | |         anchor_interval: u64,
+  | |         publisher: Box<dyn FrontierPublisher>,
+  | |     ) -> Result<Self, PardosaError> {
+  | |___________________________________^

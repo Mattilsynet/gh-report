@@ -1,0 +1,5 @@
+error: EVT-014: GenomeSafe: Use `OrderedF64` / `RealF64` from pardosa_schema::floats per your NaN/Inf policy, or `EventF64` when the payload must round-trip NaN/±Inf as event tags; raw `f64` lacks a canonical total order.
+ --> tests/compile_fail/f64_field_rejected.rs:4:13
+  |
+4 |     weight: f64,
+  |             ^^^

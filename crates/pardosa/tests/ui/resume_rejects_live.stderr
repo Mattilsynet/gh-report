@@ -1,0 +1,13 @@
+error[E0308]: mismatched types
+ --> tests/ui/resume_rejects_live.rs:4:27
+  |
+4 |     let _ = writer.resume(live, 1u64);
+  |                    ------ ^^^^ expected `DetachedFiber`, found `LiveFiber`
+  |                    |
+  |                    arguments to this method are incorrect
+  |
+note: method defined here
+ --> src/store/inner.rs
+  |
+  |     pub fn resume(
+  |            ^^^^^^

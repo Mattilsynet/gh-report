@@ -1,0 +1,5 @@
+error: EVT-014: GenomeSafe: Map- and set-shaped event payloads are forbidden by Solon doctrine (STORY §4.2): enumerate keys as named struct fields or an enum, or store the map outside the event store.
+  --> tests/compile_fail/btreeset_non_genome_ord.rs:10:12
+   |
+10 |     items: BTreeSet<MyItem>,
+   |            ^^^^^^^^^^^^^^^^

@@ -1,0 +1,49 @@
+[package]
+name = "pardosa-schema"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Typed-payload vocabulary: GenomeSafe marker, bounded wrappers, float wrappers, CharScalar"
+license.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/pardosa-schema"
+keywords = ["pardosa", "schema", "derive", "events", "encoding"]
+categories = ["data-structures", "encoding"]
+
+[lints]
+workspace = true
+
+[lib]
+name = "pardosa_schema"
+path = "src/lib.rs"
+
+[features]
+default = ["std", "derive", "uuid"]
+# `std` forwards to `pardosa-wire/std` (the alloc-only blanket impls in
+# that crate). `pardosa-schema` itself has no `#[cfg(feature = "std")]`
+# references; the toggle exists for downstream `default-features = false`
+# parity. Kept for SemVer stability.
+std = ["pardosa-wire/std"]
+# Enable the `#[derive(GenomeSafe)]` / `#[derive(HasEventSchemaSource)]`
+# proc-macros via `pardosa-derive`. Drop to skip the proc-macro
+# build-graph entirely.
+derive = ["dep:pardosa-derive"]
+# Enable `uuid::Uuid` as a `GenomeSafe` newtype source plus
+# `pardosa-wire/uuid` forwarding.
+uuid = ["dep:uuid", "pardosa-wire/uuid"]
+
+[dependencies]
+serde = { workspace = true }
+xxhash-rust = { workspace = true }
+pardosa-derive = { path = "../pardosa-derive", version = "=0.1.0", optional = true }
+pardosa-wire = { path = "../pardosa-wire", version = "=0.1.0" }
+uuid = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+proptest = { workspace = true }
+trybuild = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

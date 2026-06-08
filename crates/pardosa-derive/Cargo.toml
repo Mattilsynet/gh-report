@@ -1,0 +1,24 @@
+[package]
+name = "pardosa-derive"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Substrate-agnostic event-invariant carrier: sealed traits and derive macros for pardosa events"
+license.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/pardosa-derive"
+keywords = ["pardosa", "derive", "proc-macro", "events", "schema"]
+categories = ["development-tools::procedural-macro-helpers"]
+
+[lints]
+workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }
+proc-macro-crate = { workspace = true }

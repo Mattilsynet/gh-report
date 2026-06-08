@@ -1,0 +1,31 @@
+[package]
+name = "pardosa-nats"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "JetStream-backed authoritative-storage substrate for pardosa (ADR-0022 §D10)"
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[lib]
+name = "pardosa_nats"
+path = "src/lib.rs"
+
+[features]
+test-support = ["dep:tempfile", "tokio/rt-multi-thread"]
+
+[dependencies]
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+async-nats = { workspace = true }
+bytes = { workspace = true }
+blake3 = { workspace = true }
+futures-util = { version = "0.3", default-features = false }
+tempfile = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+tempfile = { workspace = true }

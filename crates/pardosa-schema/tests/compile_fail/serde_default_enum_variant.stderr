@@ -1,0 +1,18 @@
+error: GenomeSafe: enum must be #[repr(u8)] for canonical encoding (GEN-0035:R4). Annotate the enum with `#[repr(u8)]` and give each variant an explicit discriminant literal (e.g. `Variant = 0`).
+ --> tests/compile_fail/serde_default_enum_variant.rs:3:6
+  |
+3 | enum Bad {
+  |      ^^^
+
+error: cannot find attribute `serde` in this scope
+ --> tests/compile_fail/serde_default_enum_variant.rs:4:7
+  |
+4 |     #[serde(default)]
+  |       ^^^^^
+  |
+  = note: `serde` is in scope, but it is a crate, not an attribute
+help: `serde` is an attribute that can be used by the derive macros `Deserialize` and `Serialize`, you might be missing a `derive` attribute
+  |
+3 + #[derive(Deserialize, Serialize)]
+4 | enum Bad {
+  |

@@ -25,8 +25,7 @@
 
 use std::future::Future;
 use std::num::NonZeroU64;
-use std::sync::Arc;
-use std::task::{Context, Poll, Wake, Waker};
+use std::task::{Context, Poll, Waker};
 
 use cherry_pit_core::testing::InMemoryEventStore;
 use cherry_pit_core::testing::conformance::{
@@ -37,14 +36,8 @@ use serde::{Deserialize, Serialize};
 
 // ── Hand-rolled block_on (no tokio in core, CHE-0029:R4) ───────────
 
-struct NoopWaker;
-impl Wake for NoopWaker {
-    fn wake(self: Arc<Self>) {}
-}
-
 fn block_on<F: Future>(fut: F) -> F::Output {
-    let waker: Waker = Arc::new(NoopWaker).into();
-    let mut cx = Context::from_waker(&waker);
+    let mut cx = Context::from_waker(Waker::noop());
     let mut fut = std::pin::pin!(fut);
     loop {
         if let Poll::Ready(v) = fut.as_mut().poll(&mut cx) {

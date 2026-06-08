@@ -1,0 +1,5 @@
+error: EVT-006: GenomeSafe: #[serde(flatten)] is not supported on field. Flattening causes serde to emit serialize_map instead of serialize_struct, breaking fixed-layout serialization.
+ --> tests/compile_fail/evt_006.rs:7:13
+  |
+7 |     #[serde(flatten)]
+  |             ^^^^^^^

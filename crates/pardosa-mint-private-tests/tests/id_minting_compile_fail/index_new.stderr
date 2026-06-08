@@ -1,0 +1,15 @@
+error[E0603]: struct `Index` is private
+ --> tests/id_minting_compile_fail/index_new.rs:1:14
+  |
+1 | use pardosa::Index;
+  |              ^^^^^ private struct
+  |
+note: the struct `Index` is defined here
+ --> $WORKSPACE/crates/pardosa/src/lib.rs
+  |
+  | pub(crate) use event::{Event, EventId, FiberId, Index};
+  |                                                 ^^^^^
+help: import `Index` directly
+  |
+1 | use pardosa::event::index::Index;
+  |              ++++++++++++++

@@ -1,0 +1,11 @@
+error[E0599]: no associated function or constant named `new` found for struct `EventId` in the current scope
+ --> tests/id_minting_compile_fail/event_id_new.rs:3:22
+  |
+3 |     let _ = EventId::new(42);
+  |                      ^^^ associated function or constant not found in `EventId`
+  |
+help: there is a method `ne` with a similar name
+  |
+3 -     let _ = EventId::new(42);
+3 +     let _ = EventId::ne(42);
+  |

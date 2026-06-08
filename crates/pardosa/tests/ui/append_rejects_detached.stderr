@@ -1,0 +1,13 @@
+error[E0308]: mismatched types
+ --> tests/ui/append_rejects_detached.rs:4:27
+  |
+4 |     let _ = writer.append(detached, 1u64);
+  |                    ------ ^^^^^^^^ expected `LiveFiber`, found `DetachedFiber`
+  |                    |
+  |                    arguments to this method are incorrect
+  |
+note: method defined here
+ --> src/store/inner.rs
+  |
+  |     pub fn append(&mut self, fiber: LiveFiber, event: T) -> Result<AppendReceipt, PardosaError> {
+  |            ^^^^^^

@@ -1,0 +1,10 @@
+error[E0624]: method `commit_offset` is private
+  --> tests/ui/no_pub_commit_offset.rs:17:17
+   |
+17 |     let _ = cur.commit_offset(id);
+   |                 ^^^^^^^^^^^^^ private method
+   |
+  ::: src/store/inner.rs
+   |
+   |     pub(crate) fn commit_offset(&mut self, id: EventId) -> Result<(), PardosaError> {
+   |     ------------------------------------------------------------------------------- private method defined here

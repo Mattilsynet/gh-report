@@ -1,0 +1,10 @@
+error[E0624]: associated function `new` is private
+ --> tests/ui/no_pub_lsn_new.rs:4:18
+  |
+4 |     let _ = Lsn::new(0);
+  |                  ^^^ private associated function
+  |
+ ::: src/durability.rs
+  |
+  |     pub(crate) const fn new(value: u64) -> Self {
+  |     ------------------------------------------- private associated function defined here

@@ -1,0 +1,5 @@
+error[E0599]: no method named `append_to` found for struct `store::inner::StoreReader<'a, T, W>` in the current scope
+ --> tests/ui/reader_has_no_append_to.rs:4:20
+  |
+4 |     let _ = reader.append_to(fiber, 1u64);
+  |                    ^^^^^^^^^ method not found in `store::inner::StoreReader<'_, u64>`

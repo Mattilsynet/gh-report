@@ -1,0 +1,5 @@
+error[E0432]: unresolved import `pardosa::reader`
+ --> tests/ui/no_root_reader_module.rs:1:14
+  |
+1 | use pardosa::reader::EventLogReader;
+  |              ^^^^^^ could not find `reader` in `pardosa`

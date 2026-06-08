@@ -1,0 +1,5 @@
+error[E0599]: no associated function or constant named `try_new` found for struct `Event<T>` in the current scope
+ --> tests/ui/no_pub_event_try_new.rs:6:20
+  |
+6 |     let _ = Event::try_new(event_id, fiber_id, false, Precursor::Genesis, [0u8; 32], ());
+  |                    ^^^^^^^ associated function or constant not found in `Event<_>`

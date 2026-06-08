@@ -1,0 +1,25 @@
+[package]
+name = "pardosa-test-support-harness"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "In-workspace harness exercising pardosa::store::test_support seams (ADR-0018 §D7, ADR-0022 §D11). Holds integration tests that need the cfg-gated test-support surface so the production crate `pardosa` keeps no self dev-dependency and rust-analyzer sees no `pardosa → pardosa` workspace cycle (mission pardosa-test-matrix-split-20260606)."
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+pardosa = { path = "../pardosa", version = "=0.4.0", features = ["test-support"] }
+pardosa-file = { path = "../pardosa-file", version = "=0.1.0", features = ["test-support"] }
+pardosa-nats = { path = "../pardosa-nats", version = "=0.1.0", features = ["test-support"] }
+pardosa-schema = { path = "../pardosa-schema", version = "=0.1.0" }
+pardosa-wire = { path = "../pardosa-wire", version = "=0.1.0" }
+proptest = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time"] }
+async-nats = { workspace = true }

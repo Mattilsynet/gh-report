@@ -1,0 +1,5 @@
+error: EVT-014: GenomeSafe: Map- and set-shaped event payloads are forbidden by Solon doctrine (STORY §4.2): enumerate keys as named struct fields or an enum, or store the map outside the event store.
+ --> tests/compile_fail/nested_hashmap.rs:5:15
+  |
+5 |     data: Vec<HashMap<String, u32>>,
+  |               ^^^^^^^^^^^^^^^^^^^^

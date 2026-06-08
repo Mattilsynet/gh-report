@@ -11,12 +11,23 @@ members = [
     "crates/cherry-pit-storage",
     "crates/cherry-pit-web",
     "crates/gh-report",
+    "crates/pardosa",
+    "crates/pardosa-derive",
+    "crates/pardosa-file",
+    "crates/pardosa-cli",
+    "crates/pardosa-nats",
+    "crates/pardosa-schema",
+    "crates/pardosa-wire",
+    "crates/comment-free",
+    "crates/pardosa-mint-private-tests",
+    "crates/pardosa-test-support-harness",
 ]
 
 [workspace.package]
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0 OR MIT"
+homepage = "https://github.com/acje/solon"
 repository = "https://github.com/acje/solon"
 authors = ["acje"]
 
@@ -63,8 +74,10 @@ sha2 = "0.11"
 # xxhash-rust: xxh3-128 for adr-srv body_hash (AFM-0027:R4 — body_hash is
 # adr-srv's concern; computed from raw ADR file bytes). Already present
 # as a transitive dep via pardosa-genome (`n-rust` family); promoted to a
-# workspace-tier entry so adr-srv can name it directly.
-xxhash-rust = { version = "0.8", features = ["xxh3"] }
+# workspace-tier entry so adr-srv can name it directly. const_xxh3 and
+# xxh64 features added for pardosa-schema (compile-time schema hashing)
+# and pardosa-file (.pgno container/manifest checksums) respectively.
+xxhash-rust = { version = "0.8", features = ["xxh3", "const_xxh3", "xxh64"] }
 zstd = { version = "0.13", default-features = false }
 # GEN-0041 no_std floor: BLAKE3 with default-features off keeps it
 # `no_std`-clean for pardosa-encoding's `#![no_std]` substrate. PAR-0021 R1
@@ -81,12 +94,14 @@ tracing = "0.1"
 thiserror = "2"
 
 # === Benchmarking ===
-# criterion 0.5 statistical bench harness. dev-dependency only;
+# criterion 0.8 statistical bench harness. dev-dependency only;
 # pardosa-encoding stays no_std (lib build does not pull criterion).
 # default-features off keeps the dep surface minimal (no html_reports;
 # downstream crates can opt in via `features = ["html_reports"]` if
-# needed for a specific bench).
-criterion = { version = "0.5", default-features = false }
+# needed for a specific bench). Bumped from 0.5 to 0.8 to match the
+# rescue-pardosa workspace tier when the Pardosa crates were imported
+# (mission pardosa-migration-1748376000).
+criterion = { version = "0.8", default-features = false }
 
 # === Misc ===
 fastrand = "2"
@@ -104,6 +119,19 @@ cherry-pit-gateway = { path = "crates/cherry-pit-gateway", version = "0.1.0" }
 cherry-pit-projection = { path = "crates/cherry-pit-projection", version = "0.1.0" }
 cherry-pit-web = { path = "crates/cherry-pit-web", version = "0.1.0" }
 cherry-pit-agent = { path = "crates/cherry-pit-agent", version = "0.1.0" }
+
+# === Pardosa workspace tier (mission pardosa-migration-1748376000) ===
+# Added when the active Pardosa crates were imported from rescue-pardosa.
+# proc-macro-crate is consumed by pardosa-derive to discover the
+# pardosa-genome / pardosa-traits crate names at macro-expansion time
+# (PAR-0027:R1 fully-qualified-path emission). syn/quote/proc-macro2 are
+# the standard proc-macro tooling tier. async-nats is the JetStream
+# authoritative-storage substrate for pardosa-nats (ADR-0022 §D10).
+proc-macro-crate = "3"
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "extra-traits"] }
+async-nats = { version = "0.49", default-features = false, features = ["server_2_14", "jetstream", "ring"] }
 
 # === Async runtime extras ===
 tokio-util = { version = "0.7", default-features = false }

@@ -1,0 +1,5 @@
+error[E0599]: no method named `sync` found for struct `store::inner::StoreReader<'a, T, W>` in the current scope
+ --> tests/ui/reader_has_no_sync.rs:4:20
+  |
+4 |     let _ = reader.sync();
+  |                    ^^^^ method not found in `store::inner::StoreReader<'_, u64>`

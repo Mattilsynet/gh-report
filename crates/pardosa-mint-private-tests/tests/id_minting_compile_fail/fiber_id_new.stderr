@@ -1,0 +1,15 @@
+error[E0603]: struct `FiberId` is private
+ --> tests/id_minting_compile_fail/fiber_id_new.rs:1:14
+  |
+1 | use pardosa::FiberId;
+  |              ^^^^^^^ private struct
+  |
+note: the struct `FiberId` is defined here
+ --> $WORKSPACE/crates/pardosa/src/lib.rs
+  |
+  | pub(crate) use event::{Event, EventId, FiberId, Index};
+  |                                        ^^^^^^^
+help: import `FiberId` directly
+  |
+1 | use pardosa::event::fiber_id::FiberId;
+  |              +++++++++++++++++

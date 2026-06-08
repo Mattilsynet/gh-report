@@ -1,0 +1,5 @@
+error[E0432]: unresolved import `pardosa::store::MigrationPolicy`
+ --> tests/ui/no_migration_policy.rs:1:5
+  |
+1 | use pardosa::store::MigrationPolicy;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `MigrationPolicy` in `store`

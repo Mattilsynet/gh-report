@@ -1,0 +1,7 @@
+error[E0277]: the trait bound `EventId: From<u64>` is not satisfied
+ --> tests/id_minting_compile_fail/event_id_from_u64.rs:3:27
+  |
+3 |     let _: EventId = 7u64.into();
+  |                           ^^^^ the trait `From<u64>` is not implemented for `EventId`
+  |
+  = note: required for `u64` to implement `Into<EventId>`

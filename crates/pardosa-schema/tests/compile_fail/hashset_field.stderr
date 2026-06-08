@@ -1,0 +1,5 @@
+error: EVT-014: GenomeSafe: Map- and set-shaped event payloads are forbidden by Solon doctrine (STORY §4.2): enumerate keys as named struct fields or an enum, or store the map outside the event store.
+ --> tests/compile_fail/hashset_field.rs:5:12
+  |
+5 |     items: HashSet<String>,
+  |            ^^^^^^^^^^^^^^^

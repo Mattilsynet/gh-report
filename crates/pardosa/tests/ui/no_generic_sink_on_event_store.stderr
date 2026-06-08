@@ -1,0 +1,13 @@
+error[E0107]: type alias takes 1 generic argument but 2 generic arguments were supplied
+ --> tests/ui/no_generic_sink_on_event_store.rs:2:23
+  |
+2 | fn misuse() -> Option<EventStore<u64, std::io::Cursor<Vec<u8>>>> {
+  |                       ^^^^^^^^^^    -------------------------- help: remove the unnecessary generic argument
+  |                       |
+  |                       expected 1 generic argument
+  |
+note: type alias defined here, with 1 generic parameter: `T`
+ --> src/store.rs
+  |
+  | pub type EventStore<T> = inner::EventStore<T, std::fs::File>;
+  |          ^^^^^^^^^^ -

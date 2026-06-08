@@ -1,0 +1,5 @@
+error[E0432]: unresolved import `pardosa::writer`
+ --> tests/ui/no_root_writer_module.rs:1:14
+  |
+1 | use pardosa::writer::EventLog;
+  |              ^^^^^^ could not find `writer` in `pardosa`

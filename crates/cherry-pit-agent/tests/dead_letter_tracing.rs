@@ -192,18 +192,11 @@ async fn tracing_dead_letter_sink_renders_none_uuid_fields() {
 /// (sync) followed by `async move { Ok(()) }` — yields immediately.
 fn futures_block_on<F: std::future::Future>(mut fut: F) -> F::Output {
     use std::pin::Pin;
-    use std::sync::Arc;
-    use std::task::{Context, Poll, Wake, Waker};
-
-    struct Noop;
-    impl Wake for Noop {
-        fn wake(self: Arc<Self>) {}
-    }
+    use std::task::{Context, Poll, Waker};
 
     // SAFETY: fut is on the stack and not moved after this point.
     let fut = unsafe { Pin::new_unchecked(&mut fut) };
-    let waker = Waker::from(Arc::new(Noop));
-    let mut cx = Context::from_waker(&waker);
+    let mut cx = Context::from_waker(Waker::noop());
     match fut.poll(&mut cx) {
         Poll::Ready(v) => v,
         Poll::Pending => panic!("TracingDeadLetterSink::record future must be Ready on first poll"),

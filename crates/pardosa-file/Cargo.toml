@@ -1,0 +1,45 @@
+[package]
+name = "pardosa-file"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Payload-opaque .pgno file container (writer, reader, format constants)"
+license.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/pardosa-file"
+keywords = ["pardosa", "storage", "file-format", "container", "wal"]
+categories = ["filesystem", "database-implementations"]
+
+[lints]
+workspace = true
+
+[lib]
+name = "pardosa_file"
+path = "src/lib.rs"
+
+[features]
+default = []
+# Optional zstd compression for event/message payload bodies only. Native
+# `.pgno` structures (header, schema source, index, footer, checksums)
+# remain uncompressed regardless. See ADR-0006.
+zstd = ["dep:zstd"]
+# Exposes test-only fault-injection sinks under `pardosa_file::test_support`.
+# Off by default; downstream test harnesses opt in via dev-dependencies. The
+# surface is `#[doc(hidden)]` and excluded from semver guarantees (ADR-0009
+# §judgement-primary). Used by `pardosa`'s journal failure-injection suite
+# (rescue-pardosa-qf9h.8).
+test-support = []
+
+[dependencies]
+xxhash-rust = { workspace = true }
+zstd = { version = "0.13", default-features = false, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+trybuild = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "reader_index"
+harness = false

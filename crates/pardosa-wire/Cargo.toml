@@ -1,0 +1,47 @@
+[package]
+name = "pardosa-wire"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "In-house canonical encoding format for pardosa events (GEN-0035)"
+license.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/pardosa-wire"
+keywords = ["pardosa", "encoding", "serialization", "no-std", "binary"]
+categories = ["encoding", "no-std"]
+
+[lints]
+workspace = true
+
+[lib]
+name = "pardosa_wire"
+path = "src/lib.rs"
+
+[features]
+default = ["std"]
+# `std` is historical naming; the feature gates `alloc::Box` /
+# `alloc::Arc` blanket impls in `src/blankets.rs`. The crate is otherwise
+# `no_std`-only via `extern crate alloc`. Kept for SemVer stability —
+# renaming to `alloc` would break downstream Cargo.toml feature names.
+std = []
+# Enable `uuid::Uuid` foreign-type integration (Encode/Decode/EventSafe).
+uuid = ["dep:uuid"]
+# Enable `blake3::Hash` foreign-type integration plus `Precursor` digest
+# helpers.
+blake3 = ["dep:blake3"]
+
+[dependencies]
+uuid = { workspace = true, optional = true }
+blake3 = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "encoding"
+harness = false
+
+[package.metadata.docs.rs]
+all-features = true

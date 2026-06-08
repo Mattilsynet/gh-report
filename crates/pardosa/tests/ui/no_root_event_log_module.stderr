@@ -1,0 +1,5 @@
+error[E0432]: unresolved import `pardosa::event_log`
+ --> tests/ui/no_root_event_log_module.rs:1:14
+  |
+1 | use pardosa::event_log::EventLog;
+  |              ^^^^^^^^^ could not find `event_log` in `pardosa`

@@ -1,0 +1,5 @@
+error: EVT-005: GenomeSafe: isize has platform-dependent size. Use i32/i64 for portable serialization.
+ --> tests/compile_fail/nested_isize.rs:4:20
+  |
+4 |     offset: Option<isize>,
+  |                    ^^^^^

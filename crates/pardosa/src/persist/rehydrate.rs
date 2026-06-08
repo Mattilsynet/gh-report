@@ -1,0 +1,236 @@
+use super::error::{Error, RehydrateInvariant, ValidatedReplayError};
+use super::validated::stream_validated;
+use crate::dragline::Line;
+use crate::frontier::Frontier;
+use crate::{Event, Fiber, FiberId, FiberState, PardosaError};
+use pardosa_file::{Reader, Syncable, Writer};
+use pardosa_schema::GenomeSafe;
+use pardosa_wire::{Decode, Encode, Validate, from_bytes, to_vec};
+use std::collections::{HashMap, HashSet};
+use std::io::{Read, Seek};
+/// Write a `Line`'s full event line to `sink` as a `.pgno`
+/// container, optionally embedding `schema_source` in the footer.
+///
+/// Supplied at the call site (not via `T: HasEventSchemaSource`) so
+/// adopters can attach a runtime-known descriptor via
+/// `EventLog::with_schema_source`.
+///
+/// # Errors
+/// [`Error::File`] for framing/encoding errors from `pardosa-file`,
+/// or [`Error::Io`] propagated from the underlying writer.
+pub(crate) fn persist_with_source<T, W>(
+    dragline: &Line<T>,
+    sink: &mut W,
+    schema_source: Option<&'static str>,
+) -> Result<(), Error>
+where
+    T: Encode + GenomeSafe,
+    W: Syncable,
+{
+    if let Err(kind) = dragline.check_persistable() {
+        return Err(Error::UnpersistableState { kind });
+    }
+    let mut writer = Writer::new(sink, Event::<T>::ENVELOPE_HASH);
+    if let Some(source) = schema_source {
+        writer = writer.with_schema_source(source);
+    }
+    for event in dragline.read_line() {
+        let bytes = to_vec(event);
+        writer.write_message(&bytes)?;
+    }
+    writer.finish()?;
+    Ok(())
+}
+/// Rehydrate a `Line<T>` from a `.pgno` container by streaming the
+/// event line through the commit pipeline.
+///
+/// ADR-0020 reader bound: `T: Decode + GenomeSafe` only — no
+/// `Encode`. The chain-frontier is folded over the canonical bytes
+/// returned by [`Reader::read_message`] (byte-identical to
+/// `to_vec(event)`), so no re-encoding is required.
+///
+/// # Errors
+///
+/// [`Error::File`] / [`Error::SchemaHashMismatch`] on container
+/// header errors; [`Error::Decode`] on per-event decode failure;
+/// [`Error::InvariantViolation`] on structural rebuild failure.
+pub(crate) fn rehydrate_unchecked<T, R>(source: R) -> Result<Line<T>, Error>
+where
+    T: Decode + GenomeSafe,
+    R: Read + Seek,
+{
+    let mut reader = Reader::open(source)?;
+    let found = reader.schema_hash();
+    let expected = Event::<T>::ENVELOPE_HASH;
+    if found != expected {
+        return Err(Error::SchemaHashMismatch { expected, found });
+    }
+    let n = reader.index().len();
+    let mut events: Vec<Event<T>> = Vec::with_capacity(n);
+    let mut frontier = Frontier::GENESIS;
+    for i in 0..n {
+        let bytes = reader.read_message(i).map_err(Error::File)?;
+        frontier = frontier.roll(&bytes);
+        let event: Event<T> = from_bytes(&bytes).map_err(Error::Decode)?;
+        events.push(event);
+    }
+    rebuild_dragline_with_frontier(events, frontier)
+        .map_err(|e| Error::InvariantViolation(RehydrateInvariant::from(e)))
+}
+/// Drain a fallible `Event<T>` stream into the supplied pre-sized
+/// destination Vec, surfacing the first per-item `Err` and short-
+/// circuiting (no further reads). Retained for the validated
+/// rehydrate path that drives [`ValidatedEventStream`].
+///
+/// [`ValidatedEventStream`]: super::ValidatedEventStream
+fn stream_fold_line<I, T, E>(stream: I, mut dst: Vec<Event<T>>) -> Result<Vec<Event<T>>, E>
+where
+    I: IntoIterator<Item = Result<Event<T>, E>>,
+{
+    for item in stream {
+        dst.push(item?);
+    }
+    Ok(dst)
+}
+/// Bound-free structural rebuild used by both rehydrate paths
+/// (ADR-0020 reader bound). Trusts the supplied `frontier` (rolled
+/// from raw persisted bytes by the caller) and walks the line to
+/// derive the canonical `(lookup, next_id, next_event_id)` set with
+/// the same algorithm `verify_supplied_against_canonical` enforces.
+///
+/// Skips precursor-hash validation by construction — the "unchecked"
+/// rehydrate path contract; the checked/validated streams perform
+/// per-event precursor-hash checks on raw bytes before this is
+/// reached on the validated path.
+fn rebuild_dragline_with_frontier<T>(
+    events: Vec<Event<T>>,
+    frontier: Frontier,
+) -> Result<Line<T>, PardosaError> {
+    let mut lookup: HashMap<FiberId, (Fiber, FiberState)> = HashMap::new();
+    let purged_ids: HashSet<FiberId> = HashSet::new();
+    let mut max_fiber_id: Option<FiberId> = None;
+    let mut next_event_id: u64 = 0;
+    for (i, event) in events.iter().enumerate() {
+        let position_u64 = u64::try_from(i).expect("line position fits u64");
+        if event.event_id().value() != position_u64 {
+            return Err(PardosaError::FiberInvariant(
+                crate::error::FiberInvariantKind::Integrity(
+                    crate::error::IntegrityKind::EventIdPositionMismatch {
+                        event_id: event.event_id().value(),
+                        position: position_u64,
+                    },
+                ),
+            ));
+        }
+        let idx = crate::Index::from_decoded(position_u64);
+        let did = event.fiber_id();
+        max_fiber_id = Some(match max_fiber_id {
+            None => did,
+            Some(prev) if did.value() > prev.value() => did,
+            Some(prev) => prev,
+        });
+        match lookup.get_mut(&did) {
+            None => {
+                let fiber = Fiber::new(idx, 1, idx)?;
+                let state = if event.detached() {
+                    FiberState::Detached
+                } else {
+                    FiberState::Defined
+                };
+                lookup.insert(did, (fiber, state));
+            }
+            Some((fiber, state)) => {
+                fiber.advance(idx)?;
+                if event.detached() {
+                    *state = FiberState::Detached;
+                } else {
+                    *state = FiberState::Defined;
+                }
+            }
+        }
+        next_event_id = event
+            .event_id()
+            .value()
+            .checked_add(1)
+            .ok_or(PardosaError::IndexOverflow)?;
+    }
+    let next_id = match max_fiber_id {
+        None => FiberId::from_decoded(0),
+        Some(m) => m.checked_next()?,
+    };
+    Ok(Line::from_parts_no_verify(
+        events,
+        lookup,
+        purged_ids,
+        next_id,
+        crate::EventId::from_decoded(next_event_id),
+        false,
+        frontier,
+    ))
+}
+/// Validate-aware variant of [`rehydrate_unchecked`] (o1ix.6, roadmap correctness 6).
+///
+/// Streams via [`stream_validated`] (which enforces per-envelope
+/// shape and payload `Validate` checks per event) and folds the
+/// resulting events back into a `Line<T>` via the same internal
+/// rebuild step as [`rehydrate_unchecked`].
+///
+/// # Errors
+/// Returns [`ValidatedReplayError`] for any per-event failure or
+/// container-header error; folds the rebuild-time invariant failure
+/// into [`ValidatedReplayError::Replay`] with
+/// [`Error::InvariantViolation`].
+pub(crate) fn rehydrate_validated<T, R>(
+    source: R,
+) -> Result<Line<T>, ValidatedReplayError<<T as Validate>::Error>>
+where
+    T: Decode + GenomeSafe + Validate,
+    R: Read + Seek,
+{
+    let mut stream = stream_validated::<R, T>(source, None)?;
+    let cap = stream.inner.reader.index().len();
+    let events: Vec<Event<T>> = Vec::with_capacity(cap);
+    let events = stream_fold_line(&mut stream, events)?;
+    let frontier = stream.inner.frontier();
+    rebuild_dragline_with_frontier(events, frontier)
+        .map_err(|e| ValidatedReplayError::Replay(Error::InvariantViolation(e.into())))
+}
+/// Append-shape sibling of [`persist_with_source`] (roadmap IO-PG-1).
+///
+/// Byte-identical wire output to [`persist_with_source`] for the
+/// same `Line<T>`, but via [`pardosa_file::AppendWriter`] instead
+/// of [`pardosa_file::Writer`] — the append sink lets the
+/// backend-keyed write path stage bodies incrementally without
+/// requiring `Seek` on the substrate.
+///
+/// Preserves I1 (append → replay byte identity) and I9
+/// (`EventStore<T>` arity unchanged) per oracle summary
+/// `rescue-pardosa-v0id`.
+///
+/// # Errors
+///
+/// [`Error::File`] for framing/encoding errors; [`Error::Io`]
+/// propagated from the underlying sink.
+pub(crate) fn persist_with_source_append<T, W>(
+    dragline: &Line<T>,
+    sink: &mut W,
+    schema_source: Option<&'static str>,
+) -> Result<(), Error>
+where
+    T: Encode + GenomeSafe,
+    W: Syncable,
+{
+    if let Err(kind) = dragline.check_persistable() {
+        return Err(Error::UnpersistableState { kind });
+    }
+    let mut writer = pardosa_file::AppendWriter::new(sink, Event::<T>::ENVELOPE_HASH);
+    if let Some(source) = schema_source {
+        writer = writer.with_schema_source(source);
+    }
+    for event in dragline.read_line() {
+        let bytes = to_vec(event);
+        writer.append_message(&bytes)?;
+    }
+    writer.finish()?;
+    Ok(())
+}

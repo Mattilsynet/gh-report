@@ -1,0 +1,26 @@
+error[E0277]: the trait bound `Outsider: Sealed` is not satisfied
+ --> tests/compile_fail/sealed_eventsafe_external_impl.rs:7:20
+  |
+7 | impl EventSafe for Outsider {}
+  |                    ^^^^^^^^ unsatisfied trait bound
+  |
+help: the trait `Sealed` is not implemented for `Outsider`
+ --> tests/compile_fail/sealed_eventsafe_external_impl.rs:3:1
+  |
+3 | struct Outsider;
+  | ^^^^^^^^^^^^^^^
+  = help: the following other types implement trait `Sealed`:
+            ()
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+            (T0, T1, T2, T3, T4, T5)
+            (T0, T1, T2, T3, T4, T5, T6)
+            (T0, T1, T2, T3, T4, T5, T6, T7)
+          and $N others
+note: required by a bound in `EventSafe`
+ --> $WORKSPACE/crates/pardosa-wire/src/traits.rs
+  |
+  | pub trait EventSafe: sealed::Sealed {}
+  |                      ^^^^^^^^^^^^^^ required by this bound in `EventSafe`

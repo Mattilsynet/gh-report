@@ -1,0 +1,5 @@
+error: EVT-014: GenomeSafe: Use `EventString<MAX>` or `NonEmptyEventString<MAX>` from pardosa_schema::bounded; raw `String` is unbounded and refused.
+ --> tests/compile_fail/string_field_rejected.rs:4:11
+  |
+4 |     name: String,
+  |           ^^^^^^

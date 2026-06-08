@@ -1,0 +1,5 @@
+error: EVT-007: GenomeSafe: #[serde(untagged)] is not supported on type. Untagged enums bypass variant serialization, causing silent data corruption in fixed-layout formats.
+ --> tests/compile_fail/evt_007.rs:4:9
+  |
+4 | #[serde(untagged)]
+  |         ^^^^^^^^

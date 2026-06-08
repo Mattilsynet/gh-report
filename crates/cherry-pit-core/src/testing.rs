@@ -959,8 +959,7 @@ pub mod conformance {
 mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
-    use std::sync::Arc;
-    use std::task::{Context, Poll, Wake, Waker};
+    use std::task::{Context, Poll, Waker};
 
     // Minimal hand-rolled block_on (~30 lines, zero deps) so smoke tests
     // can await futures without pulling tokio. CHE-0029:R4 inviolate.
@@ -968,13 +967,8 @@ mod tests {
     // on a no-op Waker — adequate for fixtures whose async paths never
     // actually yield (every future here is ready immediately because the
     // operations are sync under a Mutex).
-    struct NoopWaker;
-    impl Wake for NoopWaker {
-        fn wake(self: Arc<Self>) {}
-    }
     fn block_on<F: Future>(fut: F) -> F::Output {
-        let waker: Waker = Arc::new(NoopWaker).into();
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(Waker::noop());
         // Pinning to the stack: `fut` is not moved after this point and
         // is dropped at end of scope. `Box::pin` would allocate; pin! does
         // not.

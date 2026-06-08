@@ -1,0 +1,5 @@
+error: EVT-011: GenomeSafe: #[serde(skip_serializing_if = "...")] is not supported on field. Conditional field omission breaks fixed-layout serialization.
+ --> tests/compile_fail/evt_011.rs:5:13
+  |
+5 |     #[serde(skip_serializing_if = "Option::is_none")]
+  |             ^^^^^^^^^^^^^^^^^^^
