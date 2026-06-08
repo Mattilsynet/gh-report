@@ -14,7 +14,7 @@
 #   podman run --rm -p 8080:8080 -e GITHUB_TOKEN=ghp_... -e BIND_ADDRESS=0.0.0.0 gh-report --org MyOrg
 
 # ── Stage 1: Build ───────────────────────────────────────────────
-FROM rust:1.95.0-bookworm@sha256:225aa827d55fae9816a0492284592827e794a5247c6c6a961c3b471b344295ec AS builder
+FROM rust:1.96.0-bookworm@sha256:13c186980fa33cc12759b429662a1322939dbe697484b7c33b47dd2698d28460 AS builder
 
 # cmake + clang + perl: required by aws-lc-sys (transitive dep of jsonwebtoken).
 # --no-install-recommends keeps the layer small.
@@ -24,10 +24,10 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Pin toolchain via env var — the base image ships 1.95.0 but
+# Pin toolchain via env var — the base image ships 1.96.0 but
 # without this, rustup may try to re-verify on each cargo invocation.
 # rust-toolchain.toml is intentionally excluded from the build context.
-ENV RUSTUP_TOOLCHAIN=1.95.0
+ENV RUSTUP_TOOLCHAIN=1.96.0
 
 # Copy workspace manifest and lockfile first for dependency layer caching.
 COPY Cargo.toml Cargo.lock ./

@@ -434,7 +434,7 @@ References: CHE-0001, RST-0005, SEC-0002, COM-0017, GND-0005
 #### cherry-pit-gateway
 | Constraint | Source ADRs | Enforcement |
 |------------|-------------|-------------|
-| RPITIT async methods | CHE-0025, CHE-0052 | MSRV 1.95 |
+| RPITIT async methods | CHE-0025, CHE-0052 | MSRV 1.96 |
 | MessagePack named encoding | CHE-0031, CHE-0044 | Serialization |
 | Atomic writes (temp+rename) | CHE-0032, CHE-0053 | File I/O |
 | Global ID mutex + per-aggregate locks | CHE-0035 | Concurrency |

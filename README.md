@@ -2,7 +2,7 @@
 
 Enabling constraints for agent-first development
 
-Cherry-pit and Pardosa are library families primarily for coding agents. Cherry-pit constrains compositions that could quietly break how the system fits together. Pardosa constrains behavior that could quietly break what the system remembers. The rules both crates enforce live in a sizable ADR corpus of 215+ documents docs/adr/, each averaging about 5 rules.
+Cherry-pit is a library family primarily for coding agents. It constrains compositions that could quietly break how the system fits together. The rules it enforces live in a sizable ADR corpus of 215+ documents under docs/adr/, each averaging about 5 rules.
 
 A Rust workspace shipping binaries (`adr-fmt`, `adr-srv` (TBD), `gh-report`)
 plus their supporting library crates and a governed ADR corpus.
@@ -11,6 +11,8 @@ plus their supporting library crates and a governed ADR corpus.
 
 - **`adr-fmt`** — read-only ADR template and link-integrity validator.
   See [`crates/adr-fmt/`](crates/adr-fmt/).
+- **`adr-srv`** — GraphQL service over a projection of the ADR corpus.
+  See [`crates/adr-srv/`](crates/adr-srv/).
 - **`gh-report`** — GitHub organisation evidence collector and HTML
   reporter. Built on a family of internal `cherry-pit-*` crates
   providing an event-sourcing substrate (core, gateway, projection,
@@ -18,9 +20,7 @@ plus their supporting library crates and a governed ADR corpus.
   [`crates/gh-report/`](crates/gh-report/).
 - **ADR corpus** at [`docs/adr/`](docs/adr/). Two domains are actively
   edited: `adr-fmt/` (prefix `AFM`) governs the validator; `cherry/`
-  (prefix `CHE`) governs cherry-pit and gh-report. The `pardosa/` and
-  `genome/` domains are under construction — their crate directories
-  exist under `crates/` but are not yet Cargo workspace members.
+  (prefix `CHE`) governs cherry-pit, adr-srv, and gh-report.
   Foundation domains (`ground`, `common`, `rust`, `security`, `flow`)
   supply cross-cutting principles applied to all crates.
 

@@ -28,7 +28,7 @@ Pin the Rust toolchain via `rust-toolchain.toml` at the workspace
 root on stable channel. MSRV matches the pinned version.
 
 R1 [5]: The `rust-toolchain.toml` specifies a stable major.minor
-  channel (e.g. `"1.95"`), never `"stable"` or nightly
+  channel (e.g. `"1.96"`), never `"stable"` or nightly
 R2 [5]: MSRV in `[workspace.package].rust-version` matches the
   pinned toolchain channel exactly
 R3 [5]: The Rust edition is declared once in `[workspace.package]`

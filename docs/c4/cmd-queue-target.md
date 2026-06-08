@@ -409,7 +409,7 @@ Business code is **untouched** under the shim strategy
 - **No unified `ApiPaceConfig` builder.** Speculative abstraction without a second consumer to validate it.
 - **No durable / cross-process queue.** Stays in-process (CHE-0052:R8). Durability remains the EventStore's job.
 - **No priority / WSJF queue ordering.** FLO-0001 conformance (cost-of-delay scheduling) is v0.2 territory; today's queue is FIFO with `JobSource` as observability-only.
-- **No work in `cherry-pit-projection`, `cherry-pit-gateway`, `cherry-pit-agent`, `cherry-pit-web`, `pardosa`.** They don't consume `cherry-pit-runtime` today (`rg -l 'cherry_pit_runtime' crates/` returns only `cherry-pit-runtime` itself + `gh-report`).
+- **No work in `cherry-pit-projection`, `cherry-pit-gateway`, `cherry-pit-agent`, `cherry-pit-web`.** They don't consume `cherry-pit-runtime` today (`rg -l 'cherry_pit_runtime' crates/` returns only `cherry-pit-runtime` itself + `gh-report`).
 
 ---
 

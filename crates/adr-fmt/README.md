@@ -108,7 +108,7 @@ project's `Cargo.lock` takes over and this one is ignored.
 
 This tool's own decisions live under `docs/adr/adr-fmt/` (prefix `AFM`).
 The repository also retains a multi-domain reference corpus
-(`cherry`, `common`, `genome`, `ground`, `pardosa`, `rust`, `security`)
+(`cherry`, `common`, `flow`, `ground`, `rust`, `security`)
 used to validate the tool against non-trivial real-world ADR sets.
 
 Cross-domain governance documents:

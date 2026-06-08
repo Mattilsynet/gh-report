@@ -289,24 +289,7 @@ Refinement-phase guardrails. Items deferred to a later phase are marked
 with their phase target; items permanently out of scope are marked
 "permanent".
 
-- **Pardosa as second EventStore impl** — Phase 2 v2 activates
-  `crates/pardosa`, `crates/pardosa-genome`, `crates/pardosa-derive`
-  as workspace members and wraps them behind `cherry_pit_core::EventStore`.
-  Wrapping shape determined by **Track 0.5 (Pardosa research)** verdict
-  (purged-state ↔ aggregate lifecycle, identity model, correlation/causation
-  propagation, prior-art survey). NATS / JetStream lights up **for tests
-  only** (embedded `nats-server`) — production NATS deploy, SEC-0010 (TLS),
-  and SEC-0011 (hash-chain) remain Phase 3.
-- **First persisted pardosa event in any consumer.** Gated on Track 6
-  atomic-ship complete (PAR-0021 F2 chain + F9 type-surface together,
-  `FORMAT_VERSION = 3` in tree). Roadmap Tracks 3.A (adr-srv ADR scrape)
-  and 7 (gh-report hard cut) carry this gate explicitly. "Parallel" in
-  the roadmap means concurrent agents on disjoint crate trees, not
-  concurrent first-writes onto a still-changing wire format. Phase 2
-  v2 only; lifts once Track 6 closes.
-- **CHE-0044 object_store backend.** Still deferred to Phase 3 review;
-  decoupled from pardosa activation. Phase 3 may lift the deferral or
-  confirm it.
+- **CHE-0044 object_store backend.** Still deferred to Phase 3 review.
 - **Add async runtime dependencies to `cherry-pit-core`.** Permanent.
   Invariants CHE-0018:R3 / CHE-0029:R4.
 - **Introduce `Box<dyn EventStore>`.** Permanent. Invariant CHE-0005:R1.
@@ -369,17 +352,6 @@ for c in cherry-pit-core cherry-pit-gateway cherry-pit-web cherry-pit-agent \
   cargo tree -p "$c" -e features 2>&1 | rg -q async-trait && exit 1 || true
 done
 
-# Track 2.1: pardosa workspace activation
-cargo build --workspace                     # pardosa* now workspace members
-cargo run -p adr-fmt -- --tree PAR          # PAR domain reachable
-cargo run -p adr-fmt -- --context pardosa   # crate-resolved context
-
-# Track 2.2: pardosa as second EventStore (load-bearing)
-cargo test -p <pardosa-store-crate> --test '*_conformance'
-
-# Track 2.3: NATS substrate, tests-only
-cargo test -p <pardosa-store-crate> --features nats
-
 # Track 3: adr-srv read-only (Phase 2 v2 re-scope 2026-05-17)
 # C1 — adr-srv operational; ADR corpus scraped, served via GraphQL Query.
 cargo test -p adr-srv
@@ -395,21 +367,6 @@ cargo run  -p adr-srv &                           # smoke: server starts
 
 # Track 5: SEC-0003 bind-in-library integration test (test name TBD per chosen mechanism)
 cargo test -p cherry-pit-web --test sec_0003_enforced_at_library_surface
-
-# Track 6: pardosa-genome file-format atomic-ship (Epic 6.A PAR-0021 + Epic 6.B F9).
-# Gate for any first persisted event in adr-srv (Track 3.A) or gh-report (Track 7).
-rg -n 'FORMAT_VERSION *= *3' crates/pardosa-genome/src/format.rs
-cargo test -p pardosa-genome
-cargo test -p pardosa-genome --test tamper_injection   # F2f
-
-# Track 7: gh-report → pardosa hard cut. C2 discharged here.
-cargo test -p gh-report                           # green on pardosa-genome backend
-rg -n 'msgpack.*store|MsgpackEventStore' crates/gh-report/src/   # zero hits
-cargo run -p adr-fmt -- --refs CHE-0031           # supersession ADR cites CHE-0031
-
-# Track 4.0 SMI invariant maintained across Track 7 cut-over:
-rg -n 'sequence_tracker|run_index|repo_index|delivery_index' crates/gh-report/src/ && exit 1 || true
-cargo test -p gh-report --test smi_replay_equivalence
 
 # Track 8: C3 idiomatic architectural-organization audit.
 # Audit-report bead + per-crate remediation beads under labels track:8,remediation.

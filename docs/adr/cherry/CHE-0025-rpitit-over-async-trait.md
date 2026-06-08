@@ -17,7 +17,7 @@ Cherry-pit's port traits (EventStore, CommandBus, CommandGateway, EventBus) are 
 
 All async port traits use RPITIT (`impl Future` in return position)
 instead of the `async_trait` proc macro. The minimum supported Rust
-version is 1.95 (edition 2024).
+version is 1.96 (edition 2024).
 
 R1 [9]: All async port traits use impl Future in return position
   instead of the async_trait proc macro
@@ -30,4 +30,4 @@ R2 [9]: No heap allocation per async trait method call via
 - Object safety permanently sacrificed — no `dyn EventStore`. Consistent with single-aggregate design (concrete types everywhere).
 - The `Send` bound on returned futures constrains adapter implementations.
 - Trait signatures use explicit `-> impl Future<...> + Send` rather than `async fn` sugar.
-- MSRV of 1.95 excludes older toolchains. Acceptable for a pre-1.0 project.
+- MSRV of 1.96 excludes older toolchains. Acceptable for a pre-1.0 project.

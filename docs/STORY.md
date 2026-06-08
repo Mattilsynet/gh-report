@@ -17,7 +17,7 @@ The repository is called **Solon** because that is the discipline we are trying 
 
 ## 2. What we are building
 
-Solon ships a set of Rust library crates and a ADR corpus that, together, let humans and AI agents collaborate on building correct, durable software. The speed comes from the constraints, not in spite of them: when the type system rejects illegal architectures and the event store rejects illegal histories, the search space an agent must explore collapses by orders of magnitude.
+Solon ships a set of Rust library crates and a ADR corpus that, together, let humans and AI agents collaborate on building correct, durable software. The speed comes from the constraints, not in spite of them: when the type system rejects illegal architectures, the search space an agent must explore collapses by orders of magnitude.
 
 The deliverables, end-to-end:
 
@@ -25,14 +25,11 @@ The deliverables, end-to-end:
   hexagonal architecture, expressed as Rust traits and types so that
   illegal compositions (multiple writers per aggregate, async work
   inside the domain, leaky aggregate identity) do not type-check.
-- **`pardosa*`** — the behavioural substrate. An append-only event
-  store with hash-chained integrity, single-writer-per-stream, a
-  canonical wire format (`pardosa-genome`), and a derive macro that
-  prevents non-deterministic types from being persisted.
-- **`adr-fmt`** (and the forthcoming **`adr-srv`**) — the governance
-  plane. The validator that keeps the ADR corpus internally consistent,
-  dogfooded against itself; soon the GraphQL service that lets agents
-  query "what rules apply to this crate?" without parsing markdown.
+- **`adr-fmt`** and **`adr-srv`** — the governance plane. `adr-fmt` is
+  the validator that keeps the ADR corpus internally consistent,
+  dogfooded against itself; `adr-srv` is the GraphQL service that lets
+  agents query "what rules apply to this crate?" without parsing
+  markdown.
 - **`gh-report`** — the first real consumer. A GitHub-organisation
   evidence collector that proves the substrate carries non-trivial
   load.
@@ -80,7 +77,7 @@ review, add documentation, add observability. Solon's bet is
 *subtractive*: remove enough degrees of freedom that the remaining
 moves are obviously correct.
 
-We work on three planes.
+We work on two planes.
 
 ### 4.1 Compositional — cherry-pit
 
@@ -106,33 +103,9 @@ CHE-0008 (pure command handling), CHE-0018 (sync domain, async
 infrastructure), CHE-0029 (acyclic crate DAG), CHE-0030 (flat public
 API).
 
-### 4.2 Behavioural — pardosa + genome
+### 4.2 Doctrinal — the ADR corpus
 
-The pardosa crate family constrains how the system remembers. It
-makes illegal histories unobservable:
-
-- **Append-only event log.** History does not retroactively change.
-- **Single writer per stream.** Concurrent writers do not exist; the
-  question of write conflict does not arise.
-- **Hash-chained events with a per-stream frontier.** Tampering with
-  history is detectable; the integrity check is local.
-- **Canonical wire format (`pardosa-genome`).** Fixed layout, no
-  schema evolution within a major version, compile-time rejection of
-  non-deterministic types.
-- **`GenomeSafe` marker trait, enforced by derive.** Types that cannot
-  be deterministically serialised cannot be persisted; the compiler
-  prevents the class of bug.
-
-Anchors in the corpus: PAR-0004 (single writer per stream), PAR-0006
-(genome as primary serialization), PAR-0008 (publish-then-apply),
-PAR-0021 (frontier hash + per-fiber hash chain), GEN-0001 (serde-native
-serialization + GenomeSafe), GEN-0002 (no schema evolution), GEN-0004
-(reject non-deterministic types), GEN-0006 (zero-copy deserialization
-under `forbid(unsafe_code)`).
-
-### 4.3 Doctrinal — the ADR corpus
-
-The ADR corpus is the third plane. Every architectural rule lives in
+The ADR corpus is the second plane. Every architectural rule lives in
 a document with an id, a parent, a lifecycle, citations, and a
 ratification trail. Rules are not floating opinions; they are
 typed objects.
@@ -148,8 +121,6 @@ The corpus organises rules into domains:
 | Domain | Prefix | Purpose | Status |
 |--------|--------|---------|--------|
 | Cherry-pit | `CHE` | Substrate doctrine for the cherry-pit family | Live |
-| Pardosa | `PAR` | Event-store and stream doctrine | Live |
-| Genome | `GEN` | Canonical-encoding and wire-format doctrine | Live |
 | adr-fmt | `AFM` | Validator self-governance | Live |
 | Common | `COM` | Cross-cutting design principles (Ousterhout-derived) | Reference |
 | Ground | `GND` | Intent + back-briefing (Auftragstaktik-derived) | Reference |
@@ -193,7 +164,7 @@ rules that operationalises it in Rust:
 
 The lineage is not academic. Each rule was admitted to the corpus
 because it answered a concrete question we hit while writing
-cherry-pit, pardosa, or gh-report.
+cherry-pit or gh-report.
 
 ---
 
@@ -216,30 +187,18 @@ distinct addressable unit of state or behaviour:
 | `cherry-pit-wq` | Work-queue primitives. |
 | `cherry-pit-storage` | File-system storage primitives; baseline snapshots subordinate to the event log. |
 
-### 6.2 pardosa
-
-Five crates implementing the append-only behavioural substrate:
-
-| Crate | Role |
-|-------|------|
-| `pardosa-traits` | Substrate-agnostic trait surface: `EventSafe` (marker for canonically-encodable types), `Validate` + `ValidationCost`, and `Timestamp`. No event-stream or hash-chain types live here. |
-| `pardosa-encoding` | Canonical-encoding primitives; `no_std`-clean substrate ring per CHE-0064. |
-| `pardosa-derive` | `GenomeSafe` derive macro; compile-time rejection of non-deterministic types per GEN-0004. |
-| `pardosa-genome` | Wire format; fixed layout, schema-hash-stamped, frontier-hashed files. |
-| `pardosa` | The runtime: streams, fibers, draglines, the actual writer. |
-
-### 6.3 Governance plane
+### 6.2 Governance plane
 
 | Crate | Role |
 |-------|------|
 | `adr-fmt` | Read-only validator and query surface for the ADR corpus. Frozen CLI per AFM-0001. |
-| `adr-srv` (Phase 2 v2) | GraphQL service over a `pardosa-genome` projection of the ADR corpus. Read-only in v0.1. |
+| `adr-srv` | GraphQL service over a projection of the ADR corpus. Read-only in v0.1. |
 
-### 6.4 The consumer
+### 6.3 The consumer
 
 | Crate | Role |
 |-------|------|
-| `gh-report` | GitHub-organisation evidence collector. First non-trivial consumer of the substrate; load-bearing proof that cherry-pit + pardosa carry real work. |
+| `gh-report` | GitHub-organisation evidence collector. First non-trivial consumer of the substrate; load-bearing proof that cherry-pit carries real work. |
 
 ---
 
@@ -261,8 +220,6 @@ agent) do not have to rediscover them:
 - **Schema evolution as a first-class feature.** Within a major
   version, the wire format does not change. Cross-major migration is
   a deliberate, ratified operation, not a runtime convenience.
-- **Cross-language reads of `pardosa-genome` files.** Rust-only for
-  v0.1; cross-language reach is a deferred decision (GEN-0031).
 - **Public-facing API stability commitments before v0.3.** We freeze
   invariants; we do not yet freeze surface. See `CLOSURE.md` for the
   versioning ladder.
@@ -275,17 +232,14 @@ scale, smaller blast radius, smaller substrate. That is the trade.
 ## 8. Where we are now
 
 Solon is mid-construction. The cherry-pit family compiles and tests
-green; the pardosa family is activated as workspace members; gh-report
-runs and produces evidence. The ADR corpus is internally consistent
-under `adr-fmt --lint`.
+green; gh-report runs and produces evidence. The ADR corpus is
+internally consistent under `adr-fmt --lint`.
 
 What remains for **v0.1** is enumerated in `docs/CLOSURE.md`. The
-short form: the second non-trivial consumer (`adr-srv`, read-only on
-pardosa), the persistence migration of `gh-report` onto
-`pardosa-genome`, the wire-format hardening of `pardosa-genome` itself
-(PAR-0021 frontier hash; F9 event-payload type tightening), the DDD
-tactical-pattern alignment of `gh-report`, and an idiomatic-architecture
-audit across every workspace crate.
+short form: stand up `adr-srv` as a second non-trivial consumer of
+the cherry-pit substrate, complete the DDD tactical-pattern alignment
+of `gh-report`, and run an idiomatic-architecture audit across every
+workspace crate.
 
 Beyond v0.1 lies **v0.2 (Harden)** — fuzz, proptest, TLA+ for temporal
 invariants, Smithy for interface contracts — and **v0.3 (Publish)** —

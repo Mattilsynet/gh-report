@@ -28,8 +28,9 @@ R3 [10]: A second process on the same directory gets
 
 1. **Lazy** — acquired on first write via `tokio::sync::OnceCell`,
    not on construction. Read-only operations (`load`) do not fence.
-2. **Exclusive** — uses `std::fs::File::try_lock()` (Rust 1.95+
-   native `flock(2)` wrapper). A second process attempting the same
+2. **Exclusive** — uses `std::fs::File::try_lock()` (stabilised in
+   Rust 1.95 as a native `flock(2)` wrapper; available under the
+   workspace MSRV of 1.96). A second process attempting the same
    directory gets `StoreError::StoreLocked`.
 3. **Process-scoped** — the `std::fs::File` handle lives in the
    `OnceCell` for the `MsgpackFileStore` lifetime. The OS releases
@@ -52,8 +53,9 @@ file.try_lock().map_err(|e| match e {
 })?;
 ```
 
-No external crate is needed — Rust 1.95 stabilized `File::try_lock()`
-and `File::lock()` in `std::fs`.
+No external crate is needed — `File::try_lock()` and `File::lock()`
+were stabilised in `std::fs` in Rust 1.95 and are available under the
+workspace MSRV of 1.96.
 
 ## Consequences
 
