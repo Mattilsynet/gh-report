@@ -13,7 +13,7 @@
 //!
 //! Every helper in this file is a compile-time bound check that is
 //! intentionally never called at runtime — `dead_code` is the expected
-//! state, and #[expect] fails closed when a helper gains a real caller
+//! state, and #[`expect`] fails closed when a helper gains a real caller
 //! (which would be a sign the bound check has been turned into a
 //! behavioural test and should be moved elsewhere).
 
