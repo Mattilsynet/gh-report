@@ -12,7 +12,15 @@ References: PGN-0001, PGN-0002, PGN-0008
 
 ## Context
 
-Source rescue ADR-0023 (`FiberIndex<K>` identity contract — Accepted as a design contract). PGN-0008 keeps domain identity out of the substrate: `FiberId` is dragline-local routing identity and domain causality keys live in payload. This ADR pins the semantic contract for an optional typed mapping from an application-owned causality key `K` to one or more fibers on a single journal. `FiberIndex<K>`, `FiberLookup<F>`, and `ExtractError` are publicly re-exported from `pardosa::store` and `pardosa::prelude` today (`crates/pardosa/src/store.rs` and `crates/pardosa/src/prelude.rs`); construction is opt-in via the reader-side `StoreReader::fiber_index` method, and a journal opened without that call pays no per-event indexing cost. The substrate persists no part of `K`.
+Source rescue ADR-0023 (`FiberIndex<K>` identity contract). PGN-0008
+keeps domain identity out of the substrate: `FiberId` is dragline-local
+routing identity and domain causality keys live in payload. This ADR
+pins the semantic contract for an optional typed mapping from an
+application-owned causality key `K` to one or more fibers on a single
+journal. `FiberIndex<K>` is publicly admitted under the `pardosa::store`
+façade (PGN-0008 R1), construction is opt-in via the reader side of the
+façade, and a journal opened without an index pays no per-event
+indexing cost. The substrate persists no part of `K`.
 
 ## Decision
 
@@ -50,8 +58,7 @@ R6 [5]: No writer method accepts an `expected_version`-shaped parameter
 − becomes harder: substrate-side enforcement of "one fiber per `K`"
   (the substrate offers no opinion; the adopter enforces via payload-side
   domain logic); cross-journal `K`-correlation (still payload-owned).
-risks/migration: shipping `FiberIndex<K>` against an unpinned contract is
-  the exact failure mode this ADR exists to prevent; the implementation
-  mission's gate is contract conformance with the rules above. No
-  `.pgno` change, no `Lsn` constructor widening, no `FiberId`
+risks/migration: any `FiberIndex<K>` implementation conforms to the
+  rules above as its acceptance contract; this ADR introduces no
+  `.pgno` change, no `Lsn` constructor widening, and no `FiberId`
   visibility change.

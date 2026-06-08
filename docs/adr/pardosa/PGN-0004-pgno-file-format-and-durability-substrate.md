@@ -21,9 +21,18 @@ Sources rescue ADR-0006 (`.pgno` byte layout frozen for v0.x) and rescue ADR-001
 R1 [5]: Schema hash mismatch surfaces as a typed variant at `Reader::open`
   before any payload byte is decoded — the schema hash is the load-bearing
   gate; the format-version bump is the redundant outer guard.
-R2 [5]: Per-message checksum is `xxh64` over the stored (post-compression)
-  bytes; the reader validates the stored checksum before decompression and
-  bounds decompressed output by `ReaderOptions::max_decompressed_message_bytes`.
+R2 [5]: Per-message checksum is `xxh64` over the stored
+  (post-compression) bytes. The reader enforces decompression-bomb
+  mitigation in a fixed order: (1) schema-hash gate per R1; (2)
+  validate stored `xxh64` on raw post-compression bytes before
+  invoking the decompressor; (3) reject any `msg_data_size` header
+  exceeding `ReaderOptions::max_decompressed_message_bytes` before
+  allocation; (4) reject any zstd `Frame_Content_Size` exceeding the
+  same cap before allocation; (5) decompress under a bounded
+  `ZSTD_d_maxWindowLog` (22, 4 MiB); (6) verify post-decompression
+  length matches `msg_data_size`. The default value of
+  `max_decompressed_message_bytes` is 1 GiB and is owned here;
+  PGN-0013 does not restate it.
 R3 [5]: `Syncable` is sealed via a private `sealed::Sealed` supertrait; the
   impl set is closed in-tree (`Vec<u8>`, `Cursor<Vec<u8>>`, `std::fs::File`,
   `BufWriter<W: Syncable>`, `&mut W`).

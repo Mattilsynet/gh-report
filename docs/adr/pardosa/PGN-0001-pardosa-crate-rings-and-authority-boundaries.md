@@ -39,6 +39,13 @@ R6 [5]: Every break under the clean-break posture records `breaking? Y`
   plus a one-line scope description in `docs/adr/pgn/CHANGELOG.md` under
   `[Unreleased]`; PGN release-governance entries live there until a
   repo-level `CHANGELOG.md` is established.
+R7 [5]: A PGN ADR that defines a sealed trait or codec contract carries
+  the closed in-tree impl inventory for that contract in its own rule
+  set (impl-inventory authority follows trait authority); a PGN ADR's
+  Decision and Rules state contracts and invariants only, never
+  status-of-today (which symbols ship versus which are deferred to a
+  follow-up mission). Status-of-today belongs in
+  `docs/adr/pgn/CHANGELOG.md` per R6.
 
 ## Consequences
 

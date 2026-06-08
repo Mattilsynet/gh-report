@@ -96,7 +96,7 @@ foundation = true
 [[domains]]
 prefix = "PGN"
 name = "Pardosa-Genome Consolidated Domain"
-directory = "pgn"
+directory = "pardosa"
 description = """\
     Consolidated event-store substrate decisions for the pardosa \
     workspace: ring direction and substrate purity, fiber semantics \

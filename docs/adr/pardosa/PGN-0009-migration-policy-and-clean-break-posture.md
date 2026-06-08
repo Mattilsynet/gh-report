@@ -12,7 +12,15 @@ References: PGN-0001, PGN-0008
 
 ## Context
 
-Sources rescue ADR-0019 (open-time migration policy — Accepted as a design contract; implementation gated on a follow-up mission) and rescue ADR-0017 (pre-deployment clean-break posture). PGN-0008 reserves the `EventStore::open_with_migration` slot but ships no symbol; this ADR pins the semantic contract that the future implementation mission satisfies. The clean-break posture authorises pre-publish surface breaks when they restore a doctrinal rule and bounds soft-deprecation windows to one minor cycle. Out-of-band `pardosa::store::migrate::migrate_keep` remains the only public migration path until the implementation lands.
+Sources rescue ADR-0019 (open-time migration policy as a design
+contract) and rescue ADR-0017 (pre-deployment clean-break posture).
+PGN-0008 reserves the `EventStore::open_with_migration` slot; this ADR
+pins the semantic contract that any `MigrationPolicy` implementation
+satisfies. The clean-break posture authorises pre-publish surface
+breaks when they restore a doctrinal rule and bounds soft-deprecation
+windows to one minor cycle. `pardosa::store::migrate::migrate_keep` is
+an authorised out-of-band migration path under this contract per the
+allowed-direction set below.
 
 ## Decision
 
@@ -49,7 +57,7 @@ R7 [4]: Substrate purity (PGN-0001), sealed-trait closure (PGN-0003 /
 − becomes harder: cross-backend live migration (out of scope; the recipe
   is a Phase 6 docs artefact, not a code seam); silently accepting a
   doctrine violation as "tolerable pre-1.0".
-risks/migration: ADR-0019 is design-only; ships no Rust types. The
-  closed direction set narrows future flexibility — `InPlace` and snapshot-
-  shaped policies require amendments. `.pgno` byte layout (PGN-0004) and
-  schema-hash derivation (PGN-0003) are unchanged.
+risks/migration: the closed direction set narrows future flexibility —
+  `InPlace` and snapshot-shaped policies require amendments. `.pgno`
+  byte layout (PGN-0004) and schema-hash derivation (PGN-0003) are
+  unchanged by this ADR.

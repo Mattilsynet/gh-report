@@ -12,7 +12,7 @@ References: PGN-0001, PGN-0003, PGN-0007
 
 ## Context
 
-Sources rescue ADR-0018 (public `EventStore<T>` façade) and rescue ADR-0020 (`EventSafe` decoupled from codec traits — read against PGN-0003). `pardosa::store` is the sole adopter-facing module on the runtime crate; ring-internal primitives (`authoritative`, `backend`, `cursor`, `dragline`, `event`, `fiber`, `frontier`, etc.) are all `pub(crate)` and unreachable from downstream crates. The historical root-level kit-of-parts (`pardosa::reader`, `pardosa::writer`, `pardosa::event_log`) does not exist as a current public surface — those root modules are not shipped as source files in the runtime crate. The façade composes existing runtime primitives into one entry: open / append / per-fiber read / line tail / same-fiber causal walk. `FiberId` is dragline-local — domain identity and causality live in payload (PGN-0011 names the routing accelerator).
+Sources rescue ADR-0018 (public `EventStore<T>` façade) and rescue ADR-0020 (`EventSafe` decoupled from codec traits — read against PGN-0003). `pardosa::store` is the sole adopter-facing module on the runtime crate; ring-internal primitives (`authoritative`, `backend`, `cursor`, `dragline`, `event`, `fiber`, `frontier`, etc.) are all `pub(crate)` and unreachable from downstream crates. Root-level kit-of-parts façades (`pardosa::reader`, `pardosa::writer`, `pardosa::event_log`) are outside the adopter-facing surface. The façade composes existing runtime primitives into one entry: open / append / per-fiber read / line tail / same-fiber causal walk. `FiberId` is dragline-local — domain identity and causality live in payload (PGN-0011 names the routing accelerator).
 
 ## Decision
 
@@ -23,8 +23,9 @@ R1 [5]: `pardosa::store` is the sole adopter-facing module on the runtime
   re-exports the same items (broadening nothing); every ring-internal
   module (`authoritative`, `backend`, `cursor`, `dragline`, `event`,
   `fiber`, `frontier`, etc.) is `pub(crate)` and unreachable from
-  downstream crates. No root-level `pardosa::reader`, `pardosa::writer`,
-  or `pardosa::event_log` module is shipped as source.
+  downstream crates. Root-level `pardosa::reader`, `pardosa::writer`,
+  and `pardosa::event_log` façades are outside the adopter-facing
+  surface.
 R2 [5]: Public bounds are operation-specific, not façade-wide: writer paths
   require `T: Encode + GenomeSafe`; reader and cursor paths require
   `T: Decode + GenomeSafe`. `EventSafe` is inherited through `GenomeSafe`
@@ -45,10 +46,13 @@ R6 [5]: `cursor.tail()` is global consumer ACK/resume over the journal's
   event line, not fiber history and not a causal-history cursor;
   `commit_offset(EventId)` is `pub(crate)` and `commit_consumed(&Event<T>)`
   is the sole adopter-facing acknowledgement verb.
-R7 [5]: No public `open_with_migration` or `MigrationPolicy` symbol ships
-  until the PGN-0009 migration implementation mission lands; out-of-band
-  `pardosa::store::migrate::migrate_keep` remains the only public migration
-  path.
+R7 [5]: `EventStore::open_with_migration` and the associated
+  `MigrationPolicy` surface are admitted under PGN-0009 (the
+  contract is pinned there); the public symbol set, when shipped,
+  conforms to PGN-0009 R1–R5. Out-of-band
+  `pardosa::store::migrate::migrate_keep` is an authorised
+  migration entry under this façade per PGN-0009's allowed-direction
+  set.
 
 ## Consequences
 
