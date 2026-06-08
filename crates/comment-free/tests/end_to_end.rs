@@ -394,7 +394,11 @@ fn dry_run_unchanged_file_emits_no_diff() {
 #[test]
 fn write_mode_summary_says_mode_write() {
     let td = tempfile::tempdir().unwrap();
-    write(td.path(), "a.rs", "/// see [Type](Type)\npub struct Type;\n");
+    write(
+        td.path(),
+        "a.rs",
+        "/// see [Type](Type)\npub struct Type;\n",
+    );
     let out = run(td.path());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
