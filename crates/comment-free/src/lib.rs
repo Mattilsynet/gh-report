@@ -1,4 +1,4 @@
-//! Pure logic for the `comment-free` tool: parse, re-emit, lint doc-comment budget.
+//! Pure logic for the `comment-free` tool: byte-preserving doc-payload rewrite, and doc-comment budget linter.
 #![forbid(unsafe_code)]
 #![warn(clippy::pedantic)]
 #![warn(clippy::missing_const_for_fn)]
@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{Attribute, File, Meta, Token};
@@ -20,20 +20,6 @@ pub enum CommentFreeError {
     /// ROOT path passed on the CLI is not a directory.
     #[error("ROOT is not a directory")]
     NotADirectory,
-    /// Working tree under ROOT is dirty and `--force-dirty` was not passed.
-    #[error("git working tree is dirty:\n{0}")]
-    GitDirty(String),
-    /// ROOT is not inside a git repository.
-    #[error("not a git repository")]
-    GitNotARepo,
-    /// `git` invocation failed (missing binary, IO error, non-zero exit).
-    #[error("git unavailable: {0}")]
-    GitUnavailable(String),
-    /// `rustfmt` binary is not available on PATH or failed its smoke test;
-    /// rewrite mode refuses to proceed because every file would otherwise
-    /// fail individually downstream.
-    #[error("rustfmt unavailable: {0}")]
-    RustfmtUnavailable(String),
     /// Generic IO error surfaced from `std::io`.
     #[error("io error: {0}")]
     Io(#[from] io::Error),
@@ -45,10 +31,6 @@ impl From<&CommentFreeError> for ExitCode {
     fn from(e: &CommentFreeError) -> Self {
         match e {
             CommentFreeError::NotADirectory => Self::from(2),
-            CommentFreeError::GitDirty(_)
-            | CommentFreeError::GitNotARepo
-            | CommentFreeError::GitUnavailable(_)
-            | CommentFreeError::RustfmtUnavailable(_) => Self::from(3),
             CommentFreeError::DocLintFailure => Self::from(4),
             CommentFreeError::Io(_) => Self::from(1),
         }
@@ -67,355 +49,22 @@ pub enum FileOutcome {
 pub struct ProcessOptions {
     pub dry_run: bool,
     pub context: usize,
-    /// Rust edition passed to `rustfmt --edition`. Must match the workspace
-    /// edition for the post-process to produce `cargo fmt`-compatible output.
-    pub edition: String,
-    /// Apply [`rewrite_rustdoc_link_idioms`] to every doc-comment payload
-    /// (`///`, `//!`, `#[doc = "..."]`, `cfg_attr(_, doc = "...")`) before
-    /// re-emission. Default `false`: doc-comment text is preserved verbatim.
-    pub rustdoc_link_idioms: bool,
-}
-/// Preflight: `rustfmt` is invokable and accepts
-/// `--edition <edition>` before rewrite dirties files.
-/// Returns the trimmed version string. Without this a
-/// missing/broken `rustfmt` produces per-file `IO_ERROR`
-/// + exit 5 instead of one actionable diagnostic.
-///
-/// Runs `rustfmt --edition <edition> --version`; `--version`
-/// exits 0 only when the binary is present AND the edition is
-/// accepted, so bogus editions surface here, not per-file.
-///
-/// # Errors
-/// `Err(String)` when rustfmt cannot be spawned (missing
-/// binary, I/O) or exits non-zero (unrecognised edition).
-/// Suitable for direct user display.
-pub fn rustfmt_available(edition: &str) -> Result<String, String> {
-    let out = Command::new("rustfmt")
-        .arg("--edition")
-        .arg(edition)
-        .arg("--version")
-        .output()
-        .map_err(|e| format!("rustfmt spawn failed: {e}"))?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-        return Err(format!(
-            "rustfmt --edition {edition} --version exited {}: {}",
-            out.status.code().unwrap_or(-1),
-            stderr.trim()
-        ));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-/// Run `rustfmt --edition <edition> --emit stdout` over `src` and return its
-/// stdout. Reads from rustfmt's stdin; no temp file. Errors carry rustfmt's
-/// stderr verbatim. Required so rewrite output matches `cargo fmt`; without
-/// this, prettyplease's line-wrap heuristic diverges from rustfmt on
-/// moderately-long match arms and struct-literal fields.
-fn format_with_rustfmt(src: &str, edition: &str) -> Result<String, String> {
-    use std::io::Write as _;
-    let mut child = Command::new("rustfmt")
-        .arg("--edition")
-        .arg(edition)
-        .arg("--emit")
-        .arg("stdout")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("rustfmt spawn failed: {e}"))?;
-    child
-        .stdin
-        .as_mut()
-        .ok_or_else(|| "rustfmt stdin unavailable".to_string())?
-        .write_all(src.as_bytes())
-        .map_err(|e| format!("rustfmt stdin write failed: {e}"))?;
-    let out = child
-        .wait_with_output()
-        .map_err(|e| format!("rustfmt wait failed: {e}"))?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-        return Err(format!(
-            "rustfmt exited {}: {}",
-            out.status.code().unwrap_or(-1),
-            stderr.trim()
-        ));
-    }
-    String::from_utf8(out.stdout).map_err(|e| format!("rustfmt stdout not utf-8: {e}"))
-}
-/// Pair of bare line-comment markers the rewrite pass must
-/// preserve.
-///
-/// Plain `//` comments are dropped by `syn`'s lexer, so the
-/// `syn` + `prettyplease` round-trip in [`process_file`]
-/// loses them. A small set of markers are load-bearing
-/// (sentinel tests grep for them), so the rewrite re-injects
-/// them around a named anchor macro after `rustfmt`.
-///
-/// See [`DEFAULT_PRESERVED_MARKERS`] and the
-/// `preserves_auto_trait_policy_markers` test.
-#[derive(Debug, Clone, Copy)]
-pub struct PreservedMarkerPair {
-    /// Substring identifying the opening marker line.
-    /// Substring (not full-line) match tolerates whitespace
-    /// drift in the host comment.
-    pub begin_token: &'static str,
-    /// Substring identifying the closing marker line.
-    pub end_token: &'static str,
-    /// Macro name (no `!`) whose invocation anchors
-    /// re-injection. BEGIN goes above the macro call; END
-    /// goes below its closing brace.
-    pub anchor_macro: &'static str,
-}
-/// Marker pairs preserved by [`process_file`] by default.
-///
-/// `AUTO-TRAIT-POLICY-BEGIN` / `-END` brackets the `assert_auto_traits!`
-/// block in each crate's `lib.rs` (mission rescue-pardosa-59y0). The
-/// paired sentinel test `tests/auto_trait_policy.rs` greps for these
-/// markers in `lib.rs`, so the rewrite pass must restore them.
-pub const DEFAULT_PRESERVED_MARKERS: &[PreservedMarkerPair] = &[PreservedMarkerPair {
-    begin_token: "AUTO-TRAIT-POLICY-BEGIN",
-    end_token: "AUTO-TRAIT-POLICY-END",
-    anchor_macro: "assert_auto_traits",
-}];
-/// Re-inject [`DEFAULT_PRESERVED_MARKERS`] pairs lost in the
-/// `syn` + `prettyplease` + `rustfmt` round-trip.
-///
-/// For each pair: if both tokens exist in `original`, transplant the
-/// `BEGIN..END` region over the equivalent rewritten span anchored on
-/// `<anchor_macro>!`. The span extends through the closing brace of
-/// the N-th anchor invocation, so multi-block shapes survive.
-///
-/// Fallback (only begin token present): inject `// <begin>` /
-/// `// <end>` around the sole anchor. Ambiguous anchor leaves
-/// `rewritten` untouched. Prose comments outside the region drop.
-#[must_use]
-pub fn restore_preserved_markers(original: &str, rewritten: &str) -> String {
-    let mut out = rewritten.to_string();
-    for pair in DEFAULT_PRESERVED_MARKERS {
-        if !original.contains(pair.begin_token) {
-            continue;
-        }
-        if let Some(patched) = transplant_marker_region(original, &out, pair) {
-            out = patched;
-            continue;
-        }
-        if out.contains(pair.begin_token) && out.contains(pair.end_token) {
-            continue;
-        }
-        if let Some(patched) = inject_marker_pair(&out, pair) {
-            out = patched;
-        }
-    }
-    out
-}
-fn transplant_marker_region(
-    original: &str,
-    rewritten: &str,
-    pair: &PreservedMarkerPair,
-) -> Option<String> {
-    let begin_pos = original.find(pair.begin_token)?;
-    let end_pos = original[begin_pos..]
-        .find(pair.end_token)
-        .map(|o| begin_pos + o)?;
-    let begin_line_start = original[..begin_pos].rfind('\n').map_or(0, |p| p + 1);
-    let end_line_end = original[end_pos..]
-        .find('\n')
-        .map_or(original.len(), |off| end_pos + off + 1);
-    let original_region = &original[begin_line_start..end_line_end];
-    let needle = format!("{}!", pair.anchor_macro);
-    let macro_count = count_non_overlapping(original_region, &needle);
-    if macro_count == 0 {
-        return None;
-    }
-    let first_macro_pos = rewritten.find(&needle)?;
-    let rewritten_region_start = rewritten[..first_macro_pos]
-        .rfind('\n')
-        .map_or(0, |p| p + 1);
-    let mut cursor = first_macro_pos;
-    let mut last_close = cursor;
-    for _ in 0..macro_count {
-        let macro_pos = rewritten[cursor..].find(&needle).map(|o| cursor + o)?;
-        let after_bang = macro_pos + needle.len();
-        let brace_rel = rewritten[after_bang..].find('{')?;
-        let brace_pos = after_bang + brace_rel;
-        let close_excl = balanced_close(rewritten, brace_pos)?;
-        last_close = close_excl;
-        cursor = close_excl;
-    }
-    let rewritten_region_end = rewritten[last_close..]
-        .find('\n')
-        .map_or(rewritten.len(), |off| last_close + off + 1);
-    let region = strip_non_marker_line_comments(original_region, pair);
-    let mut out = String::with_capacity(rewritten.len() + region.len());
-    out.push_str(&rewritten[..rewritten_region_start]);
-    out.push_str(&region);
-    if !region.ends_with('\n') {
-        out.push('\n');
-    }
-    out.push_str(&rewritten[rewritten_region_end..]);
-    Some(out)
-}
-fn strip_non_marker_line_comments(region: &str, pair: &PreservedMarkerPair) -> String {
-    let mut out = String::with_capacity(region.len());
-    for line in region.split_inclusive('\n') {
-        let trimmed = line.trim_start();
-        let is_comment = trimmed.starts_with("//");
-        let is_marker =
-            is_comment && (line.contains(pair.begin_token) || line.contains(pair.end_token));
-        if is_comment && !is_marker {
-            continue;
-        }
-        out.push_str(line);
-    }
-    out
-}
-fn count_non_overlapping(haystack: &str, needle: &str) -> usize {
-    if needle.is_empty() {
-        return 0;
-    }
-    let mut n = 0;
-    let mut i = 0;
-    while let Some(rel) = haystack[i..].find(needle) {
-        n += 1;
-        i += rel + needle.len();
-    }
-    n
-}
-fn balanced_close(text: &str, open_pos: usize) -> Option<usize> {
-    let bytes = text.as_bytes();
-    if open_pos >= bytes.len() || bytes[open_pos] != b'{' {
-        return None;
-    }
-    let mut depth: i32 = 1;
-    let mut i = open_pos + 1;
-    while i < bytes.len() && depth > 0 {
-        match bytes[i] {
-            b'{' => depth += 1,
-            b'}' => depth -= 1,
-            _ => {}
-        }
-        i += 1;
-    }
-    if depth == 0 { Some(i) } else { None }
-}
-/// Splice `pair` around the anchor macro invocation in `text`, returning
-/// `None` if the anchor cannot be located or its body braces are
-/// unbalanced. Internal helper for [`restore_preserved_markers`].
-fn inject_marker_pair(text: &str, pair: &PreservedMarkerPair) -> Option<String> {
-    let needle = format!("{}!", pair.anchor_macro);
-    let macro_pos = text.find(&needle)?;
-    let after_bang = macro_pos + needle.len();
-    let brace_rel = text[after_bang..].find('{')?;
-    let brace_pos = after_bang + brace_rel;
-    let bytes = text.as_bytes();
-    let mut depth: i32 = 1;
-    let mut i = brace_pos + 1;
-    while i < bytes.len() && depth > 0 {
-        match bytes[i] {
-            b'{' => depth += 1,
-            b'}' => depth -= 1,
-            _ => {}
-        }
-        i += 1;
-    }
-    if depth != 0 {
-        return None;
-    }
-    let body_close_excl = i;
-    let line_start = text[..macro_pos].rfind('\n').map_or(0, |p| p + 1);
-    let line_end = text[body_close_excl..]
-        .find('\n')
-        .map_or(text.len(), |off| body_close_excl + off + 1);
-    let mut out =
-        String::with_capacity(text.len() + pair.begin_token.len() + pair.end_token.len() + 8);
-    out.push_str(&text[..line_start]);
-    out.push_str("// ");
-    out.push_str(pair.begin_token);
-    out.push('\n');
-    out.push_str(&text[line_start..line_end]);
-    if !text[..line_end].ends_with('\n') {
-        out.push('\n');
-    }
-    out.push_str("// ");
-    out.push_str(pair.end_token);
-    out.push('\n');
-    out.push_str(&text[line_end..]);
-    Some(out)
-}
-/// Parse `path`, strip non-doc comments via `syn` + `prettyplease`,
-/// then format with `rustfmt` so output matches `cargo fmt` for the
-/// edition. Rewrites only when the result differs from the original.
-/// Markers in [`DEFAULT_PRESERVED_MARKERS`] are re-injected around
-/// their anchor macro post-format (`//` comments don't survive
-/// `syn`'s lexer).
-///
-/// Doc-comment content is preserved verbatim; surface syntax (`///`
-/// vs `#[doc = "..."]`) and whitespace may normalise.
-///
-/// When `opts.rustdoc_link_idioms` is set, dispatches to
-/// [`process_file_rustdoc_link_idioms_only`] — a byte-preserving
-/// doc-only pass that skips prettyplease, rustfmt, and markers.
-#[must_use]
-pub fn process_file(path: &Path, opts: &ProcessOptions) -> FileOutcome {
-    if opts.rustdoc_link_idioms {
-        return process_file_rustdoc_link_idioms_only(path, opts.dry_run, opts.context);
-    }
-    let original = match fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => return FileOutcome::IoError(e.to_string()),
-    };
-    let ast: File = match syn::parse_file(&original) {
-        Ok(f) => f,
-        Err(e) => return FileOutcome::ParseError(e.to_string()),
-    };
-    let intermediate = prettyplease::unparse(&ast);
-    if original.chars().all(char::is_whitespace) {
-        return FileOutcome::Unchanged;
-    }
-    let rewritten = match format_with_rustfmt(&intermediate, &opts.edition) {
-        Ok(s) => s,
-        Err(e) => return FileOutcome::IoError(e),
-    };
-    let rewritten = restore_preserved_markers(&original, &rewritten);
-    if rewritten == original {
-        return FileOutcome::Unchanged;
-    }
-    if opts.dry_run {
-        let diff = unified_diff(path, &original, &rewritten, opts.context);
-        FileOutcome::Rewritten { diff: Some(diff) }
-    } else {
-        match fs::write(path, rewritten) {
-            Ok(()) => FileOutcome::Rewritten { diff: None },
-            Err(e) => FileOutcome::IoError(e.to_string()),
-        }
-    }
 }
 /// Byte-preserving rewrite pass for doc-comment and doc-attribute
-/// payloads. Used by `--rewrite --rustdoc-link-idioms`.
+/// payloads.
 ///
-/// Skips `prettyplease`, `rustfmt`, and [`restore_preserved_markers`];
-/// every byte outside a doc surface is preserved verbatim. Surfaces:
-///
-/// ```text
-/// /// outer line doc
-/// //! inner line doc
-/// #[doc = "..."]      #![doc = "..."]
-/// #[cfg_attr(_, doc = "...")]
-/// ```
-///
-/// Block doc comments (`/** ... */`) are skipped: the lexer strips
-/// leading `*`, so in-memory payload and source bytes diverge.
+/// Mutates ONLY `///`, `//!`, `#[doc = "..."]`, `#![doc = "..."]`, and
+/// `#[cfg_attr(_, doc = "...")]` payload text via
+/// [`rewrite_rustdoc_link_idioms`]. Every byte outside a doc surface
+/// (non-doc `//`, `/* */`, block doc comments `/** */`, whitespace,
+/// attribute placement) is preserved verbatim. `rustfmt` is not invoked.
 ///
 /// Per item, contiguous runs of line docs and unconditional
 /// `#[doc = "..."]` attributes join with `\n`, transform once via
 /// [`rewrite_rustdoc_link_idioms`], then split back; `cfg_attr`
 /// payloads transform in isolation.
 #[must_use]
-pub fn process_file_rustdoc_link_idioms_only(
-    path: &Path,
-    dry_run: bool,
-    context: usize,
-) -> FileOutcome {
+pub fn process_file(path: &Path, opts: &ProcessOptions) -> FileOutcome {
     let original = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => return FileOutcome::IoError(e.to_string()),
@@ -432,8 +81,8 @@ pub fn process_file_rustdoc_link_idioms_only(
     if rewritten == original {
         return FileOutcome::Unchanged;
     }
-    if dry_run {
-        let diff = unified_diff(path, &original, &rewritten, context);
+    if opts.dry_run {
+        let diff = unified_diff(path, &original, &rewritten, opts.context);
         FileOutcome::Rewritten { diff: Some(diff) }
     } else {
         match fs::write(path, rewritten) {
@@ -591,22 +240,16 @@ const fn impl_item_attrs(item: &syn::ImplItem) -> Option<&Vec<Attribute>> {
 fn collect_attr_run_splices(attrs: &[Attribute], original: &str, out: &mut Vec<DocSplice>) {
     let mut i = 0;
     while i < attrs.len() {
-        let Some(_) = doc_attr_literal_span(&attrs[i], original, DocShape::SafeLineOrAttr) else {
+        let Some(_) = doc_attr_literal_span(&attrs[i], original) else {
             i += 1;
             continue;
         };
         let start = i;
-        while i < attrs.len()
-            && doc_attr_literal_span(&attrs[i], original, DocShape::SafeLineOrAttr).is_some()
-        {
+        while i < attrs.len() && doc_attr_literal_span(&attrs[i], original).is_some() {
             i += 1;
         }
         emit_run_splices(&attrs[start..i], original, out);
     }
-}
-#[derive(Debug, Clone, Copy)]
-enum DocShape {
-    SafeLineOrAttr,
 }
 /// Return the byte-range and shape of a doc literal's storage in
 /// `original` if `attr` is one of:
@@ -616,11 +259,7 @@ enum DocShape {
 ///
 /// Returns `None` for non-`doc` attributes, `cfg_attr`, and block
 /// doc comments (`/** … */`).
-fn doc_attr_literal_span(
-    attr: &Attribute,
-    original: &str,
-    _shape: DocShape,
-) -> Option<DocLiteralSite> {
+fn doc_attr_literal_span(attr: &Attribute, original: &str) -> Option<DocLiteralSite> {
     let Meta::NameValue(nv) = &attr.meta else {
         return None;
     };
@@ -682,7 +321,7 @@ fn classify_doc_literal(body: &str) -> Option<DocLiteralKind> {
 fn emit_run_splices(run: &[Attribute], original: &str, out: &mut Vec<DocSplice>) {
     let sites: Vec<DocLiteralSite> = run
         .iter()
-        .filter_map(|a| doc_attr_literal_span(a, original, DocShape::SafeLineOrAttr))
+        .filter_map(|a| doc_attr_literal_span(a, original))
         .collect();
     if sites.is_empty() {
         return;
@@ -829,59 +468,6 @@ pub fn is_cfg_attr(attr: &Attribute) -> bool {
         _ => false,
     }
 }
-/// Result of probing git for the state of a working tree.
-#[derive(Debug)]
-pub enum GitState {
-    Clean,
-    Dirty(String),
-    NotARepo,
-    GitUnavailable(String),
-}
-/// Probe git for whether `root` is inside a clean working tree.
-///
-/// Scoped to `root` via a pathspec (`-- .`), so a dirty sibling subtree
-/// elsewhere in the same repository does not cause `GitState::Dirty`.
-#[must_use]
-pub fn git_state(root: &Path) -> GitState {
-    let inside = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .output();
-    let inside = match inside {
-        Ok(o) => o,
-        Err(e) => return GitState::GitUnavailable(e.to_string()),
-    };
-    if !inside.status.success() {
-        return GitState::NotARepo;
-    }
-    let answer = String::from_utf8_lossy(&inside.stdout).trim().to_string();
-    if answer != "true" {
-        return GitState::NotARepo;
-    }
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["status", "--porcelain", "--", "."])
-        .output();
-    let status = match status {
-        Ok(o) => o,
-        Err(e) => return GitState::GitUnavailable(e.to_string()),
-    };
-    if !status.status.success() {
-        return GitState::GitUnavailable(format!(
-            "git status exited {}",
-            status.status.code().unwrap_or(-1)
-        ));
-    }
-    let out = String::from_utf8_lossy(&status.stdout);
-    if out.trim().is_empty() {
-        GitState::Clean
-    } else {
-        let summary: String = out.lines().take(10).collect::<Vec<_>>().join("\n");
-        GitState::Dirty(summary)
-    }
-}
 /// Walk `root` and return every file path that looks like documentation.
 ///
 /// Skips dotfiles/dotdirs, `target/`, and common vendor/build directories
@@ -923,7 +509,7 @@ pub const SKIP_DIRS: &[&str] = &["target", "node_modules", "vendor", "dist", "bu
 ///
 /// The `docs/`/`doc/` rule is **scoped to the first relative component
 /// under `root`**, so `src/docs/mod.rs` or `crates/foo/doc/inner.rs` do
-/// NOT match. This narrows the strip-mode `DOC_WARN` noise to genuine
+/// NOT match. This narrows the rewrite-mode `DOC_WARN` noise to genuine
 /// top-level documentation directories.
 #[must_use]
 pub fn is_doc_path(path: &Path, root: &Path) -> bool {
@@ -1127,214 +713,6 @@ fn cfg_attr_doc_payloads(attr: &Attribute) -> Vec<String> {
     }
     out
 }
-/// Walk `file`, mutating every doc-comment payload through
-/// [`rewrite_rustdoc_link_idioms`]. Reaches every surface
-/// [`doc_lint_file`] inspects (top-level attrs, items, trait/impl
-/// items, fields, variants).
-///
-/// Per item, contiguous runs of unconditional `#[doc = "..."]`
-/// attributes are joined with `\n`, transformed once (so a fenced
-/// block spanning multiple `///` lines tracks fence state correctly),
-/// then split back per attribute — the transform is line-count
-/// invariant. `cfg_attr(_, doc = "...")` payloads transform
-/// independently (different gating predicates).
-pub fn apply_rustdoc_link_idioms_to_ast(file: &mut syn::File) {
-    use syn::visit_mut::VisitMut;
-    struct Visitor;
-    impl VisitMut for Visitor {
-        fn visit_file_mut(&mut self, node: &mut syn::File) {
-            rewrite_attrs_doc_links(&mut node.attrs);
-            syn::visit_mut::visit_file_mut(self, node);
-        }
-        fn visit_item_mut(&mut self, node: &mut syn::Item) {
-            if let Some(attrs) = item_attrs_mut(node) {
-                rewrite_attrs_doc_links(attrs);
-            }
-            syn::visit_mut::visit_item_mut(self, node);
-        }
-        fn visit_trait_item_mut(&mut self, node: &mut syn::TraitItem) {
-            if let Some(attrs) = trait_item_attrs_mut(node) {
-                rewrite_attrs_doc_links(attrs);
-            }
-            syn::visit_mut::visit_trait_item_mut(self, node);
-        }
-        fn visit_impl_item_mut(&mut self, node: &mut syn::ImplItem) {
-            if let Some(attrs) = impl_item_attrs_mut(node) {
-                rewrite_attrs_doc_links(attrs);
-            }
-            syn::visit_mut::visit_impl_item_mut(self, node);
-        }
-        fn visit_field_mut(&mut self, node: &mut syn::Field) {
-            rewrite_attrs_doc_links(&mut node.attrs);
-            syn::visit_mut::visit_field_mut(self, node);
-        }
-        fn visit_variant_mut(&mut self, node: &mut syn::Variant) {
-            rewrite_attrs_doc_links(&mut node.attrs);
-            syn::visit_mut::visit_variant_mut(self, node);
-        }
-    }
-    Visitor.visit_file_mut(file);
-}
-/// Borrow the `attrs` slot of any `syn::Item` variant that carries one.
-const fn item_attrs_mut(item: &mut syn::Item) -> Option<&mut Vec<Attribute>> {
-    use syn::Item::{
-        Const, Enum, ExternCrate, Fn, Impl, Macro, Mod, Static, Struct, Trait, TraitAlias, Type,
-        Union, Use,
-    };
-    Some(match item {
-        Const(i) => &mut i.attrs,
-        Enum(i) => &mut i.attrs,
-        ExternCrate(i) => &mut i.attrs,
-        Fn(i) => &mut i.attrs,
-        Impl(i) => &mut i.attrs,
-        Macro(i) => &mut i.attrs,
-        Mod(i) => &mut i.attrs,
-        Static(i) => &mut i.attrs,
-        Struct(i) => &mut i.attrs,
-        Trait(i) => &mut i.attrs,
-        TraitAlias(i) => &mut i.attrs,
-        Type(i) => &mut i.attrs,
-        Union(i) => &mut i.attrs,
-        Use(i) => &mut i.attrs,
-        _ => return None,
-    })
-}
-const fn trait_item_attrs_mut(item: &mut syn::TraitItem) -> Option<&mut Vec<Attribute>> {
-    use syn::TraitItem::{Const, Fn, Macro, Type};
-    Some(match item {
-        Const(i) => &mut i.attrs,
-        Fn(i) => &mut i.attrs,
-        Macro(i) => &mut i.attrs,
-        Type(i) => &mut i.attrs,
-        _ => return None,
-    })
-}
-const fn impl_item_attrs_mut(item: &mut syn::ImplItem) -> Option<&mut Vec<Attribute>> {
-    use syn::ImplItem::{Const, Fn, Macro, Type};
-    Some(match item {
-        Const(i) => &mut i.attrs,
-        Fn(i) => &mut i.attrs,
-        Macro(i) => &mut i.attrs,
-        Type(i) => &mut i.attrs,
-        _ => return None,
-    })
-}
-/// Apply the link-idiom transform to one item's `attrs` slice.
-///
-/// Contiguous runs of unconditional `#[doc = "..."]` are joined and
-/// transformed together; `cfg_attr(_, doc = "...")` payloads are each
-/// transformed in isolation (they may be gated independently).
-fn rewrite_attrs_doc_links(attrs: &mut [Attribute]) {
-    let mut i = 0;
-    while i < attrs.len() {
-        if doc_string_payload(&attrs[i]).is_some() {
-            let start = i;
-            while i < attrs.len() && doc_string_payload(&attrs[i]).is_some() {
-                i += 1;
-            }
-            rewrite_doc_run(&mut attrs[start..i]);
-            continue;
-        }
-        if is_cfg_attr(&attrs[i]) {
-            rewrite_cfg_attr_doc_payloads(&mut attrs[i]);
-        }
-        i += 1;
-    }
-}
-/// Join, transform, and split-back a contiguous run of `#[doc = "..."]`
-/// attributes. The transform is line-count-preserving, so the split has
-/// the same length as the input — assigned 1:1 back into each attribute.
-fn rewrite_doc_run(run: &mut [Attribute]) {
-    if run.is_empty() {
-        return;
-    }
-    let originals: Vec<String> = run
-        .iter()
-        .map(|a| doc_string_payload(a).unwrap_or_default())
-        .collect();
-    let joined = originals.join("\n");
-    let rewritten = rewrite_rustdoc_link_idioms(&joined);
-    if rewritten == joined {
-        return;
-    }
-    let parts: Vec<&str> = rewritten.split('\n').collect();
-    if parts.len() != originals.len() {
-        return;
-    }
-    for (attr, new) in run.iter_mut().zip(parts) {
-        set_doc_string_payload(attr, new);
-    }
-}
-/// Rewrite every `doc = "..."` payload inside a `#[cfg_attr(_, ...)]`
-/// list independently. Predicate position is left untouched.
-fn rewrite_cfg_attr_doc_payloads(attr: &mut Attribute) {
-    let Meta::List(list) = &mut attr.meta else {
-        return;
-    };
-    if !list.path.is_ident("cfg_attr") {
-        return;
-    }
-    let parsed: Result<Punctuated<Meta, Token![,]>, _> =
-        list.parse_args_with(Punctuated::parse_terminated);
-    let Ok(mut metas) = parsed else {
-        return;
-    };
-    let mut changed = false;
-    for meta in metas.iter_mut().skip(1) {
-        if let Meta::NameValue(nv) = meta
-            && nv.path.is_ident("doc")
-            && let syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Str(s),
-                ..
-            }) = &mut nv.value
-        {
-            let original = s.value();
-            let rewritten = rewrite_rustdoc_link_idioms(&original);
-            if rewritten != original {
-                *s = syn::LitStr::new(&rewritten, s.span());
-                changed = true;
-            }
-        }
-    }
-    if !changed {
-        return;
-    }
-    list.tokens = quote::quote!(#metas);
-}
-/// Return the string payload of `#[doc = "..."]`, if it's literal.
-fn doc_string_payload(attr: &Attribute) -> Option<String> {
-    let Meta::NameValue(nv) = &attr.meta else {
-        return None;
-    };
-    if !nv.path.is_ident("doc") {
-        return None;
-    }
-    let syn::Expr::Lit(syn::ExprLit {
-        lit: syn::Lit::Str(s),
-        ..
-    }) = &nv.value
-    else {
-        return None;
-    };
-    Some(s.value())
-}
-/// Replace the string payload of a `#[doc = "..."]` attribute in place.
-fn set_doc_string_payload(attr: &mut Attribute, new: &str) {
-    let Meta::NameValue(nv) = &mut attr.meta else {
-        return;
-    };
-    if !nv.path.is_ident("doc") {
-        return;
-    }
-    let syn::Expr::Lit(syn::ExprLit {
-        lit: syn::Lit::Str(s),
-        ..
-    }) = &mut nv.value
-    else {
-        return;
-    };
-    *s = syn::LitStr::new(new, s.span());
-}
 /// Count words in `doc_text`, excluding fenced code.
 ///
 /// Recognises ` ``` ` and `~~~` fences. Fail-closed: if a fence opens but
@@ -1506,83 +884,6 @@ fn impl_item_label_and_attrs(item: &syn::ImplItem) -> Option<(String, &[Attribut
         _ => return None,
     };
     Some((label, attrs, line))
-}
-#[cfg(test)]
-mod short_circuit_tests {
-    //! Regression coverage for the `process_file` short-circuit predicate.
-    //!
-    //! History: an earlier version skipped rustfmt whenever
-    //! `prettyplease::unparse` returned bytes equal to the original. That
-    //! masked rustfmt-only divergences on files that happened to be
-    //! prettyplease fixpoints. The current predicate is narrowed to
-    //! whitespace-only originals, preserving the empty-file
-    //! `Unchanged` contract without bypassing rustfmt on real code.
-    use super::{FileOutcome, ProcessOptions, process_file};
-    use std::fs;
-    fn opts() -> ProcessOptions {
-        ProcessOptions {
-            dry_run: true,
-            context: 3,
-            edition: "2024".to_string(),
-            rustdoc_link_idioms: false,
-        }
-    }
-    #[test]
-    fn whitespace_only_file_short_circuits_to_unchanged() {
-        let td = tempfile::tempdir().unwrap();
-        let path = td.path().join("a.rs");
-        fs::write(&path, "   \n\t\n  \n").unwrap();
-        match process_file(&path, &opts()) {
-            FileOutcome::Unchanged => {}
-            other => panic!("expected Unchanged for whitespace-only file, got {other:?}"),
-        }
-    }
-    #[test]
-    fn empty_file_short_circuits_to_unchanged() {
-        let td = tempfile::tempdir().unwrap();
-        let path = td.path().join("a.rs");
-        fs::write(&path, "").unwrap();
-        match process_file(&path, &opts()) {
-            FileOutcome::Unchanged => {}
-            other => panic!("expected Unchanged for empty file, got {other:?}"),
-        }
-    }
-    #[test]
-    fn prettyplease_fixpoint_still_runs_rustfmt() {
-        let src = "impl Foo {\n    \
-                       fn bar(&self) -> Result<u32, E> {\n        \
-                           match self.kind {\n            \
-                               0 => Ok(0),\n            \
-                               tag => {\n                \
-                                   Err(E::TagOutOfRange {\n                    \
-                                       tag: u32::from(tag),\n                \
-                                   })\n            \
-                               }\n        \
-                           }\n    \
-                       }\n\
-                   }\n";
-        let ast: syn::File = syn::parse_str(src).expect("parse fixture");
-        let intermediate = prettyplease::unparse(&ast);
-        assert_eq!(
-            intermediate, src,
-            "fixture is not a prettyplease fixpoint; revise it so this M1 \
-             regression test exercises the narrowed short-circuit"
-        );
-        let td = tempfile::tempdir().unwrap();
-        let path = td.path().join("a.rs");
-        fs::write(&path, src).unwrap();
-        match process_file(&path, &opts()) {
-            FileOutcome::Rewritten { diff: Some(d) } => {
-                assert!(
-                    d.contains("tag => Err("),
-                    "expected rustfmt-inlined arm in diff, got:\n{d}"
-                );
-            }
-            other => {
-                panic!("expected Rewritten with diff (rustfmt should reformat), got {other:?}")
-            }
-        }
-    }
 }
 #[cfg(test)]
 mod doc_lint_tests {
@@ -2086,41 +1387,10 @@ fn is_rust_ident(s: &str) -> bool {
 mod rustdoc_link_idiom_tests {
     use super::{is_codeish_token, rewrite_rustdoc_link_idioms};
     #[test]
-    fn multibyte_utf8_survives_ast_pass() {
-        use syn::parse_quote;
-        let mut f: syn::File = parse_quote! {
-            #[doc = " hello — world (em-dash)"]
-            #[doc = " русский (Cyrillic)"]
-            #[doc = " 日本語 (CJK)"]
-            #[doc = " emoji 🦀"]
-            pub fn x() {}
-        };
-        super::apply_rustdoc_link_idioms_to_ast(&mut f);
-        let out = prettyplease::unparse(&f);
-        for needle in ['—', 'й', '本', '🦀'] {
-            assert!(
-                out.contains(needle),
-                "char {needle:?} lost in round-trip:\n{out}"
-            );
-        }
-    }
-    #[test]
     fn multibyte_utf8_survives_rewrite_pure() {
         let input = "see [Type] — also русский and 🦀";
         let out = super::rewrite_rustdoc_link_idioms(input);
         assert_eq!(out, "see [`Type`] — also русский and 🦀");
-    }
-    #[test]
-    fn em_dash_survives_litstr_new_via_set_payload() {
-        use syn::Attribute;
-        use syn::parse_quote;
-        let mut a: Attribute = parse_quote!(#[doc = " starting payload"]);
-        super::set_doc_string_payload(&mut a, " hello — world");
-        let payload = super::doc_string_payload(&a).unwrap();
-        assert!(
-            payload.contains('—'),
-            "em-dash lost via set_doc_string_payload: payload={payload:?}"
-        );
     }
     fn rw(s: &str) -> String {
         rewrite_rustdoc_link_idioms(s)

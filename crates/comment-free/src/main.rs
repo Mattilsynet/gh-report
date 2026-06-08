@@ -3,8 +3,8 @@
 #![warn(clippy::missing_const_for_fn)]
 use clap::Parser;
 use comment_free::{
-    CommentFreeError, DOC_LINT_DOCTRINE_MSG, DocBudget, FileOutcome, GitState, ProcessOptions,
-    SKIP_DIRS, doc_lint_file, git_state, process_file, rustfmt_available, scan_doc_files,
+    CommentFreeError, DOC_LINT_DOCTRINE_MSG, DocBudget, FileOutcome, ProcessOptions, SKIP_DIRS,
+    doc_lint_file, process_file, scan_doc_files,
 };
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -13,8 +13,7 @@ use walkdir::WalkDir;
 #[command(
     name = "comment-free",
     about = "Doc-comment linter for Rust crates (default). \
-             Use --rewrite to reformat .rs files via prettyplease + rustfmt; non-doc `//` and `/* */` comments are removed as a side-effect of the AST round-trip. \
-             Use --rewrite --rustdoc-link-idioms for a byte-preserving doc-only pass that normalises a small set of Rust intra-doc link idioms without touching any non-doc bytes.",
+             Use --rewrite for a byte-preserving rewrite of doc-link idioms in `///`, `//!`, `#[doc=...]`, and `#[cfg_attr(_, doc=...)]` payloads. Non-doc bytes are preserved verbatim; rustfmt is not invoked.",
     long_about = "Default mode is a read-only doc-comment budget linter: walks ROOT for .rs files \
                   and reports doc comments whose prose word count exceeds --doc-max-words. \
                   Fenced code blocks (` ``` ` or `~~~`) are excluded from the count; the \
@@ -24,23 +23,12 @@ use walkdir::WalkDir;
                   followed by a DOC_LINT_MSG line carrying the project doctrine. Doc comments \
                   are NEVER deleted by this tool.\n\
                   \n\
-                  Two rewrite modes exist:\n\
-                  \n\
-                  1) `--rewrite` (legacy full pipeline): reformats .rs files via `syn` -> \
-                  `prettyplease` -> `rustfmt --edition <EDITION>`. Non-doc `//` and `/* */` \
-                  comments are removed as a side-effect of the AST round-trip. Doc-comment \
-                  CONTENT is preserved, but surface syntax (`///` vs `#[doc = \"...\"]`) and \
-                  whitespace may normalise; the entire file is reformatted to rustfmt's \
-                  canonical style. Requires a clean git working tree under ROOT unless \
-                  --force-dirty is passed.\n\
-                  \n\
-                  2) `--rewrite --rustdoc-link-idioms` (safe subpath): byte-preserving \
-                  doc-only rewrite. Mutates ONLY `///`, `//!`, `#[doc = \"...\"]`, \
-                  `#![doc = \"...\"]`, and `#[cfg_attr(_, doc = \"...\")]` payload text via \
-                  the rustdoc-link idiom normaliser; every other byte in the source is \
-                  preserved verbatim. Does NOT run `prettyplease` or `rustfmt`, does NOT \
-                  strip non-doc `//` and `/* */` comments, does NOT touch block doc \
-                  comments (`/** */`). This is the safe-to-dogfood subpath.\n\
+                  `--rewrite` is a byte-preserving doc-only pass: mutates ONLY `///`, `//!`, \
+                  `#[doc = \"...\"]`, `#![doc = \"...\"]`, and `#[cfg_attr(_, doc = \"...\")]` \
+                  payload text via the rustdoc-link idiom normaliser. Every other byte in the \
+                  source is preserved verbatim. Does NOT run rustfmt, does NOT strip non-doc \
+                  `//` and `/* */` comments, does NOT touch block doc comments (`/** */`). \
+                  Line-count-preserving and idempotent.\n\
                   \n\
                   --dry-run is always safe in both modes.\n\
                   \n\
@@ -48,74 +36,20 @@ use walkdir::WalkDir;
                     0  clean (no findings, no errors)\n\
                     1  catastrophic / unmapped IO error\n\
                     2  invalid CLI arguments (clap rejection)\n\
-                    3  git state error in rewrite mode (dirty / not-a-repo / git missing)\n\
                     4  doc-lint findings observed (default mode)\n\
                     5  per-file parse/IO errors observed during processing (both modes)\n\
                   \n\
                   Output streams: findings (DOC_LINT, REWRITE, WOULD_REWRITE, diffs) on \
                   stdout; metadata (SUMMARY, DOC_WARN, errors) on stderr."
 )]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "clap-derived CLI surface: each bool maps to one orthogonal user-facing flag (--rewrite, --dry-run, --force-dirty, --rustdoc-link-idioms); collapsing to a state-machine enum would obscure that mapping and complicate `requires=` constraints"
-)]
 struct Options {
     #[arg(default_value = ".", value_name = "ROOT")]
     root: PathBuf,
-    /// Reformat .rs files to rustfmt's canonical style (whitespace,
-    /// line-wrap, attribute placement may change). Pipeline is
-    /// `syn` -> `prettyplease` -> `rustfmt --edition <EDITION>`. Non-doc
-    /// `//` and `/* */` comments are discarded as a side-effect of the
-    /// AST round-trip. Doc-comment content (`///`, `//!`, `#[doc=...]`,
-    /// `#[doc(...)]`, and `doc` payloads inside `cfg_attr`) is preserved,
-    /// though surface syntax may normalise.
-    ///
-    /// When combined with `--rustdoc-link-idioms`, dispatches to the
-    /// byte-preserving safe subpath instead — see that flag's docs.
-    #[arg(long)]
-    rewrite: bool,
-    /// Preview the rewrite as a unified diff without modifying files.
-    /// Only meaningful with `--rewrite`. Default (lint) mode is
-    /// already read-only; `--dry-run` is meaningful only with
-    /// `--rewrite` (enforced by clap).
-    #[arg(long, short = 'n', requires = "rewrite")]
-    dry_run: bool,
-    /// Bypass the clean-tree check when rewriting.
-    /// Only meaningful with `--rewrite`.
-    #[arg(long, requires = "rewrite")]
-    force_dirty: bool,
-    /// Unified-diff context line count (used with `--dry-run`).
-    /// Only meaningful with `--rewrite`.
-    #[arg(long, default_value_t = 3, value_name = "N", requires = "rewrite")]
-    context: usize,
-    /// Word budget for doc-comment prose. Fenced code blocks (` ``` `
-    /// or `~~~`) are excluded from the count; the doctrine allows 0-3
-    /// such fenced examples per doc comment and they do not consume
-    /// the budget.
-    #[arg(long, default_value_t = 80, value_name = "N")]
-    doc_max_words: usize,
-    /// Rust edition passed to `rustfmt --edition` during the post-process
-    /// step. Default `2024` matches this workspace; override when
-    /// rewriting code on an older edition. Has no effect when
-    /// `--rustdoc-link-idioms` is also passed (the safe subpath does not
-    /// invoke rustfmt).
-    #[arg(
-        long,
-        default_value = "2024",
-        value_name = "EDITION",
-        requires = "rewrite"
-    )]
-    edition: String,
-    /// Opt-in pass that rewrites mechanically-safe Rust intra-doc
-    /// link idioms inside doc comments and doc attributes. Requires
-    /// `--rewrite`.
-    ///
-    /// Dispatches to a BYTE-PRESERVING SAFE SUBPATH: only `///`,
-    /// `//!`, `#[doc = "..."]`, `#![doc = "..."]`, and
-    /// `#[cfg_attr(_, doc = "...")]` payloads are mutated.
-    /// `prettyplease` and `rustfmt` are not run, non-doc comments are
-    /// not stripped, block doc comments (`/** */`) are not touched.
-    /// Line-count-preserving and idempotent.
+    /// Byte-preserving rewrite of doc-link idioms inside `///`, `//!`,
+    /// `#[doc = "..."]`, `#![doc = "..."]`, and `#[cfg_attr(_, doc = "...")]`
+    /// payloads. Every other byte in the source is preserved verbatim.
+    /// rustfmt is not invoked; non-doc comments survive; block doc
+    /// comments (`/** */`) are left untouched.
     ///
     /// Examples (left -> right):
     ///
@@ -128,8 +62,23 @@ struct Options {
     ///
     /// Skipped: URL targets, reference-style links, prose labels,
     /// targets with generics/disambiguators, fenced or inline code.
-    #[arg(long, requires = "rewrite")]
-    rustdoc_link_idioms: bool,
+    #[arg(long)]
+    rewrite: bool,
+    /// Preview the rewrite as a unified diff without modifying files.
+    /// Only meaningful with `--rewrite`. Default (lint) mode is
+    /// already read-only.
+    #[arg(long, short = 'n', requires = "rewrite")]
+    dry_run: bool,
+    /// Unified-diff context line count (used with `--dry-run`).
+    /// Only meaningful with `--rewrite`.
+    #[arg(long, default_value_t = 3, value_name = "N", requires = "rewrite")]
+    context: usize,
+    /// Word budget for doc-comment prose. Fenced code blocks (` ``` `
+    /// or `~~~`) are excluded from the count; the doctrine allows 0-3
+    /// such fenced examples per doc comment and they do not consume
+    /// the budget.
+    #[arg(long, default_value_t = 80, value_name = "N")]
+    doc_max_words: usize,
 }
 fn main() -> ExitCode {
     let opts = Options::parse();
@@ -140,33 +89,6 @@ fn main() -> ExitCode {
             match &e {
                 CommentFreeError::NotADirectory => {
                     eprintln!("error: {} is not a directory", opts.root.display());
-                }
-                CommentFreeError::GitDirty(summary) => {
-                    eprintln!(
-                        "error: refusing to rewrite files: git working tree is dirty\n\
-                         {summary}\n\
-                         pass --force-dirty to override, or --dry-run to preview without writing"
-                    );
-                }
-                CommentFreeError::GitNotARepo => {
-                    eprintln!(
-                        "error: refusing to rewrite files: {} is not inside a git repository\n\
-                         pass --force-dirty to override, or --dry-run to preview without writing",
-                        opts.root.display()
-                    );
-                }
-                CommentFreeError::GitUnavailable(msg) => {
-                    eprintln!(
-                        "error: refusing to rewrite files: could not query git state: {msg}\n\
-                         pass --force-dirty to override, or --dry-run to preview without writing"
-                    );
-                }
-                CommentFreeError::RustfmtUnavailable(msg) => {
-                    eprintln!(
-                        "error: refusing to rewrite files: {msg}\n\
-                         install rustfmt (`rustup component add rustfmt`) or check that \
-                         --edition is a value your rustfmt accepts"
-                    );
                 }
                 other => {
                     eprintln!("error: {other}");
@@ -181,7 +103,7 @@ fn run(opts: &Options) -> Result<u32, CommentFreeError> {
         return Err(CommentFreeError::NotADirectory);
     }
     if opts.rewrite {
-        run_strip(opts)
+        Ok(run_rewrite(opts))
     } else {
         run_lint(opts)
     }
@@ -238,18 +160,7 @@ fn walk_rs_files(root: &Path) -> impl Iterator<Item = PathBuf> + use<'_> {
             .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("rs"))
     })
 }
-fn run_strip(opts: &Options) -> Result<u32, CommentFreeError> {
-    rustfmt_available(&opts.edition).map_err(CommentFreeError::RustfmtUnavailable)?;
-    if !opts.dry_run && !opts.force_dirty {
-        match git_state(&opts.root) {
-            GitState::Clean => {}
-            GitState::Dirty(summary) => return Err(CommentFreeError::GitDirty(summary)),
-            GitState::NotARepo => return Err(CommentFreeError::GitNotARepo),
-            GitState::GitUnavailable(msg) => {
-                return Err(CommentFreeError::GitUnavailable(msg));
-            }
-        }
-    }
+fn run_rewrite(opts: &Options) -> u32 {
     let doc_warnings = scan_doc_files(&opts.root);
     for path in &doc_warnings {
         eprintln!("DOC_WARN\t{}", path.display());
@@ -264,8 +175,6 @@ fn run_strip(opts: &Options) -> Result<u32, CommentFreeError> {
     let process_opts = ProcessOptions {
         dry_run: opts.dry_run,
         context: opts.context,
-        edition: opts.edition.clone(),
-        rustdoc_link_idioms: opts.rustdoc_link_idioms,
     };
     let mut rewritten = 0u32;
     let mut unchanged = 0u32;
@@ -297,13 +206,13 @@ fn run_strip(opts: &Options) -> Result<u32, CommentFreeError> {
         }
     }
     let mode = if opts.dry_run { "dry-run" } else { "write" };
-    print_summary_strip(mode, rewritten, unchanged, errors);
-    Ok(errors)
+    print_summary_rewrite(mode, rewritten, unchanged, errors);
+    errors
 }
-/// Strip-mode summary emitter. Emits to stderr (consistent with the
+/// Rewrite-mode summary emitter. Emits to stderr (consistent with the
 /// metadata-vs-data convention: findings/diffs/REWRITE lines are data on
 /// stdout; the summary is metadata about the run on stderr).
-fn print_summary_strip(mode: &str, rewritten: u32, unchanged: u32, errors: u32) {
+fn print_summary_rewrite(mode: &str, rewritten: u32, unchanged: u32, errors: u32) {
     eprintln!(
         "SUMMARY\tmode={mode}\trewritten={rewritten}\tunchanged={unchanged}\terrors={errors}"
     );

@@ -7,7 +7,6 @@ const fn bin() -> &'static str {
 fn run(root: &Path) -> std::process::Output {
     Command::new(bin())
         .arg("--rewrite")
-        .arg("--force-dirty")
         .arg(root)
         .output()
         .expect("failed to spawn comment-free")
@@ -29,266 +28,285 @@ fn read(dir: &Path, name: &str) -> String {
     fs::read_to_string(dir.join("src").join(name)).expect("read fixture")
 }
 #[test]
-fn preserves_auto_trait_policy_markers() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "// AUTO-TRAIT-POLICY-BEGIN\n\
-                    // Mission rescue-pardosa-59y0: bucket every pub type.\n\
-                    assert_auto_traits! {\n    \
-                        SendSync { Foo, Bar }\n    \
-                        SendOnly { }\n    \
-                        NotSend { }\n\
-                    }\n\
-                    // AUTO-TRAIT-POLICY-END\n\
-                    pub struct Foo;\n\
-                    pub struct Bar;\n";
-    write(td.path(), "lib.rs", original);
-    run(td.path());
-    let out = read(td.path(), "lib.rs");
-    assert!(
-        out.contains("AUTO-TRAIT-POLICY-BEGIN"),
-        "BEGIN marker missing after rewrite:\n{out}"
-    );
-    assert!(
-        out.contains("AUTO-TRAIT-POLICY-END"),
-        "END marker missing after rewrite:\n{out}"
-    );
-    let begin = out.find("AUTO-TRAIT-POLICY-BEGIN").unwrap();
-    let end = out.find("AUTO-TRAIT-POLICY-END").unwrap();
-    assert!(begin < end, "markers in wrong order:\n{out}");
-    let between = &out[begin..end];
-    assert!(
-        between.contains("assert_auto_traits"),
-        "assert_auto_traits! not between markers:\n{out}"
-    );
-    assert!(
-        !out.contains("Mission rescue-pardosa-59y0"),
-        "ordinary line comment leaked through marker preservation:\n{out}"
-    );
-}
-#[test]
-fn preserves_auto_trait_policy_markers_around_multiple_macro_blocks() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "// AUTO-TRAIT-POLICY-BEGIN\n\
-                    // Mission rescue-pardosa-59y0: bucket every pub type.\n\
-                    assert_auto_traits! {\n    \
-                        SendSync { Foo, Bar }\n    \
-                        SendOnly { }\n    \
-                        NotSend { }\n\
-                    }\n\
-                    #[cfg(any(test, feature = \"test-support\"))]\n\
-                    assert_auto_traits! {\n    \
-                        SendSync { Gated }\n\
-                    }\n\
-                    // AUTO-TRAIT-POLICY-END\n\
-                    pub struct Foo;\n\
-                    pub struct Bar;\n\
-                    #[cfg(any(test, feature = \"test-support\"))]\n\
-                    pub struct Gated;\n";
-    write(td.path(), "lib.rs", original);
-    run(td.path());
-    let out = read(td.path(), "lib.rs");
-    assert!(
-        out.contains("AUTO-TRAIT-POLICY-BEGIN"),
-        "BEGIN marker missing after rewrite:\n{out}"
-    );
-    assert!(
-        out.contains("AUTO-TRAIT-POLICY-END"),
-        "END marker missing after rewrite:\n{out}"
-    );
-    let begin = out.find("AUTO-TRAIT-POLICY-BEGIN").unwrap();
-    let end = out.find("AUTO-TRAIT-POLICY-END").unwrap();
-    assert!(begin < end, "markers in wrong order:\n{out}");
-    let between = &out[begin..end];
-    let macro_count = between.matches("assert_auto_traits").count();
-    assert_eq!(
-        macro_count, 2,
-        "expected both assert_auto_traits! blocks between markers, found {macro_count}:\n{out}"
-    );
-    assert!(
-        between.contains("cfg(any(test, feature = \"test-support\"))")
-            || between.contains("cfg (any (test , feature = \"test-support\"))")
-            || between.contains("test-support"),
-        "cfg-gated second block must stay inside markers:\n{out}"
-    );
-    assert!(
-        !out.contains("Mission rescue-pardosa-59y0"),
-        "ordinary line comment leaked through marker preservation:\n{out}"
-    );
-}
-#[test]
-fn auto_trait_policy_markers_unaffected_when_absent() {
-    let td = tempfile::tempdir().unwrap();
-    write(td.path(), "lib.rs", "// kill me\nfn f() {}\n");
-    run(td.path());
-    let out = read(td.path(), "lib.rs");
-    assert!(
-        !out.contains("AUTO-TRAIT-POLICY"),
-        "marker spuriously injected:\n{out}"
-    );
-    assert!(!out.contains("kill me"), "// not stripped:\n{out}");
-}
-#[test]
-fn preserves_outer_line_doc() {
+fn rewrite_preserves_outer_line_doc_payload() {
     let td = tempfile::tempdir().unwrap();
     write(td.path(), "a.rs", "/// outer doc\nfn f() {}\n");
     run(td.path());
     let out = read(td.path(), "a.rs");
-    assert!(out.contains("outer doc"), "outer /// lost:\n{out}");
+    assert!(out.contains("outer doc"), "outer /// payload lost:\n{out}");
 }
 #[test]
-fn preserves_inner_line_doc() {
+fn rewrite_preserves_inner_line_doc_payload() {
     let td = tempfile::tempdir().unwrap();
     write(td.path(), "a.rs", "//! crate-level inner doc\nfn f() {}\n");
     run(td.path());
     let out = read(td.path(), "a.rs");
-    assert!(out.contains("crate-level inner doc"), "//! lost:\n{out}");
+    assert!(
+        out.contains("crate-level inner doc"),
+        "//! payload lost:\n{out}"
+    );
 }
 #[test]
-fn preserves_explicit_doc_attr() {
+fn rewrite_preserves_non_doc_line_comments() {
     let td = tempfile::tempdir().unwrap();
-    write(
-        td.path(),
-        "a.rs",
-        "#[doc = \"explicit doc payload\"]\nfn f() {}\n",
+    let original = "// keep me line comment\nfn f() {}\n";
+    write(td.path(), "a.rs", original);
+    run(td.path());
+    let out = read(td.path(), "a.rs");
+    assert_eq!(
+        out, original,
+        "safe rewrite must preserve non-doc line comments verbatim; got:\n{out}"
     );
+}
+#[test]
+fn rewrite_preserves_block_comments() {
+    let td = tempfile::tempdir().unwrap();
+    let original = "/* keep me block */\nfn f() { let _x = /* keep inline */ 1; }\n";
+    write(td.path(), "a.rs", original);
+    run(td.path());
+    let out = read(td.path(), "a.rs");
+    assert_eq!(
+        out, original,
+        "safe rewrite must preserve block comments verbatim; got:\n{out}"
+    );
+}
+#[test]
+fn rewrite_preserves_marker_text_inside_string_literal_byte_identical() {
+    let td = tempfile::tempdir().unwrap();
+    let original = r#"pub const BEGIN_MARKER: &str = "// AUTO-TRAIT-POLICY-BEGIN";
+pub const END_MARKER: &str = "// AUTO-TRAIT-POLICY-END";
+pub fn f() {}
+"#;
+    write(td.path(), "a.rs", original);
+    run(td.path());
+    let out = read(td.path(), "a.rs");
+    assert_eq!(
+        out, original,
+        "marker text inside string literal must not be treated as a real marker region; safe path must preserve every non-doc byte. got:\n{out}"
+    );
+}
+#[test]
+fn rewrite_preserves_fixture_with_marker_and_anchor_in_string_literal() {
+    let td = tempfile::tempdir().unwrap();
+    let original = "fn build_fixture() -> &'static str {\n    \
+                    \"// AUTO-TRAIT-POLICY-BEGIN\\n\\\n                     \
+                    assert_auto_traits! {\\n    \\\n                         \
+                        SendSync { Foo }\\n\\\n                     \
+                    }\\n\\\n                     \
+                    // AUTO-TRAIT-POLICY-END\\n\"\n\
+                    }\n\
+                    pub fn caller() { let _ = build_fixture(); }\n";
+    write(td.path(), "a.rs", original);
+    run(td.path());
+    let out = read(td.path(), "a.rs");
+    assert_eq!(
+        out, original,
+        "marker text + assert_auto_traits! anchor *both* inside a string literal must round-trip byte-identical under safe rewrite. got:\n{out}"
+    );
+}
+#[test]
+fn rewrite_preserves_quote_macro_invocation_byte_identical() {
+    let td = tempfile::tempdir().unwrap();
+    let original = "fn build_tokens() -> proc_macro2::TokenStream {\n    \
+                    let metas: proc_macro2::TokenStream = Default::default();\n    \
+                    quote::quote!(#metas)\n\
+                    }\n";
+    write(td.path(), "a.rs", original);
+    run(td.path());
+    let out = read(td.path(), "a.rs");
+    assert_eq!(
+        out, original,
+        "quote!(#metas) outside any doc comment must round-trip byte-identical under safe rewrite. got:\n{out}"
+    );
+}
+#[test]
+fn rewrite_preserves_preserved_markers_const_byte_identical() {
+    let td = tempfile::tempdir().unwrap();
+    let original = "pub struct PreservedMarkerPair {\n    \
+                    pub begin_token: &'static str,\n    \
+                    pub end_token: &'static str,\n    \
+                    pub anchor_macro: &'static str,\n\
+                    }\n\
+                    pub const DEFAULT_PRESERVED_MARKERS: &[PreservedMarkerPair] = &[PreservedMarkerPair {\n    \
+                        begin_token: \"AUTO-TRAIT-POLICY-BEGIN\",\n    \
+                        end_token: \"AUTO-TRAIT-POLICY-END\",\n    \
+                        anchor_macro: \"assert_auto_traits\",\n\
+                    }];\n";
+    write(td.path(), "a.rs", original);
+    run(td.path());
+    let out = read(td.path(), "a.rs");
+    assert_eq!(
+        out, original,
+        "struct literal must round-trip byte-identical under safe rewrite. got:\n{out}"
+    );
+}
+#[test]
+fn rewrite_preserves_non_doc_bytes_when_no_doc_changes() {
+    let td = tempfile::tempdir().unwrap();
+    let original = "use pardosa::store::{Event, FiberId};\n\
+                    use pardosa::store::{ExtractError, FiberIndex, FiberLookup};\n\
+                    fn _names_used() {\n    \
+                        let _: FiberIndex<u64> = FiberIndex::empty();\n    \
+                        let _: FiberLookup<FiberId> = FiberLookup::Empty;\n\
+                    }\n";
+    write(td.path(), "a.rs", original);
+    run(td.path());
+    let out = read(td.path(), "a.rs");
+    assert_eq!(
+        out, original,
+        "safe rewrite must not touch non-doc bytes when no doc-link idioms are present; got:\n{out}"
+    );
+}
+#[test]
+fn rewrite_rewrites_outer_line_doc() {
+    let td = tempfile::tempdir().unwrap();
+    let original = "/// see [Type](Type) here\npub struct Type;\n";
+    write(td.path(), "a.rs", original);
+    run(td.path());
+    let out = read(td.path(), "a.rs");
+    assert_eq!(
+        out, "/// see [`Type`] here\npub struct Type;\n",
+        "outer /// doc-link idiom must be rewritten; got:\n{out}"
+    );
+}
+#[test]
+fn rewrite_rewrites_inner_line_doc() {
+    let td = tempfile::tempdir().unwrap();
+    let original = "//! crate-level [Type](Type) doc\npub struct Type;\n";
+    write(td.path(), "a.rs", original);
+    run(td.path());
+    let out = read(td.path(), "a.rs");
+    assert_eq!(
+        out, "//! crate-level [`Type`] doc\npub struct Type;\n",
+        "inner //! doc-link idiom must be rewritten; got:\n{out}"
+    );
+}
+#[test]
+fn rewrite_rewrites_explicit_doc_attr() {
+    let td = tempfile::tempdir().unwrap();
+    let original = "#[doc = \" see [Type](Type) here\"]\npub struct Type;\n";
+    write(td.path(), "a.rs", original);
+    run(td.path());
+    let out = read(td.path(), "a.rs");
+    assert_eq!(
+        out, "#[doc = \" see [`Type`] here\"]\npub struct Type;\n",
+        "#[doc=\"...\"] doc-link idiom must be rewritten; got:\n{out}"
+    );
+}
+#[test]
+fn rewrite_rewrites_cfg_attr_doc() {
+    let td = tempfile::tempdir().unwrap();
+    let original = "#[cfg_attr(test, doc = \" see [Type](Type) here\")]\npub struct Type;\n";
+    write(td.path(), "a.rs", original);
+    run(td.path());
+    let out = read(td.path(), "a.rs");
+    assert_eq!(
+        out, "#[cfg_attr(test, doc = \" see [`Type`] here\")]\npub struct Type;\n",
+        "cfg_attr(_, doc=\"...\") doc-link idiom must be rewritten; got:\n{out}"
+    );
+}
+#[test]
+fn rewrite_is_idempotent() {
+    let td = tempfile::tempdir().unwrap();
+    let original = "/// see [Type](Type) and [`Other`]\npub struct Type;\npub struct Other;\n";
+    write(td.path(), "a.rs", original);
+    run(td.path());
+    let pass1 = read(td.path(), "a.rs");
+    run(td.path());
+    let pass2 = read(td.path(), "a.rs");
+    assert_eq!(
+        pass1, pass2,
+        "safe rewrite must be idempotent; pass1:\n{pass1}\npass2:\n{pass2}"
+    );
+}
+#[test]
+fn rewrite_preserves_line_count() {
+    let td = tempfile::tempdir().unwrap();
+    let original = "/// summary line 1\n\
+                    /// see [Type](Type) here\n\
+                    ///\n\
+                    /// # Errors\n\
+                    ///\n\
+                    /// none\n\
+                    pub struct Type;\n\
+                    fn helper() {\n    \
+                        let _ = 1;\n\
+                    }\n";
+    let lines_before = original.matches('\n').count();
+    write(td.path(), "a.rs", original);
+    run(td.path());
+    let out = read(td.path(), "a.rs");
+    let lines_after = out.matches('\n').count();
+    assert_eq!(
+        lines_before, lines_after,
+        "safe rewrite must preserve line count; before={lines_before}, after={lines_after}\n--- BEFORE ---\n{original}--- AFTER ---\n{out}"
+    );
+}
+#[test]
+fn rewrite_preserves_block_doc_comment_unchanged() {
+    let td = tempfile::tempdir().unwrap();
+    let original = "/** see [Type](Type) here */\npub struct Type;\n";
+    write(td.path(), "a.rs", original);
     run(td.path());
     let out = read(td.path(), "a.rs");
     assert!(
-        out.contains("explicit doc payload"),
-        "#[doc=\"...\"] lost:\n{out}"
+        out.starts_with("/**"),
+        "block /** ... */ doc must be left textually as a block doc by the safe path (no AST round-trip); got:\n{out}"
+    );
+    assert!(
+        out.contains("[Type](Type)") || out.contains("[`Type`]"),
+        "block doc payload should either be left verbatim (preferred) or be rewritten in place — but it must not be deleted; got:\n{out}"
     );
 }
 #[test]
-fn preserves_doc_hidden() {
+fn dry_run_emits_only_doc_line_changes() {
     let td = tempfile::tempdir().unwrap();
-    write(td.path(), "a.rs", "#[doc(hidden)]\npub fn f() {}\n");
+    let original = "use std::collections::HashMap;\n\
+                    use std::collections::BTreeMap;\n\
+                    /// see [Type](Type)\n\
+                    pub struct Type;\n\
+                    fn helper(m: HashMap<u32, u32>, b: BTreeMap<u32, u32>) -> usize {\n    \
+                        m.len() + b.len()\n\
+                    }\n";
+    write(td.path(), "a.rs", original);
+    let out = run_dry(td.path());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let plus_minus: Vec<&str> = stdout
+        .lines()
+        .filter(|l| {
+            (l.starts_with('+') && !l.starts_with("+++"))
+                || (l.starts_with('-') && !l.starts_with("---"))
+        })
+        .collect();
+    for line in &plus_minus {
+        let body = &line[1..];
+        let trimmed = body.trim_start();
+        assert!(
+            trimmed.starts_with("///")
+                || trimmed.starts_with("//!")
+                || trimmed.starts_with("#[doc")
+                || trimmed.starts_with("#![doc")
+                || trimmed.starts_with("#[cfg_attr"),
+            "diff line outside doc surface in safe rewrite: {line:?}\nfull stdout:\n{stdout}"
+        );
+    }
+}
+#[test]
+fn rewrite_does_not_inject_auto_trait_markers() {
+    let td = tempfile::tempdir().unwrap();
+    let original = "/// see [Type](Type)\npub struct Type;\n";
+    write(td.path(), "a.rs", original);
     run(td.path());
     let out = read(td.path(), "a.rs");
     assert!(
-        out.contains("doc(hidden)") || out.contains("doc (hidden)"),
-        "#[doc(hidden)] lost:\n{out}"
+        !out.contains("AUTO-TRAIT-POLICY"),
+        "safe rewrite must not invoke any marker restoration logic; got:\n{out}"
     );
-}
-#[test]
-fn preserves_cfg_attr_doc() {
-    let td = tempfile::tempdir().unwrap();
-    write(
-        td.path(),
-        "a.rs",
-        "#[cfg_attr(test, doc = \"gated doc payload\")]\nfn f() {}\n",
-    );
-    run(td.path());
-    let out = read(td.path(), "a.rs");
-    assert!(
-        out.contains("gated doc payload"),
-        "cfg_attr doc payload lost:\n{out}"
-    );
-}
-#[test]
-fn preserves_doc_inside_macro_rules() {
-    let td = tempfile::tempdir().unwrap();
-    write(
-        td.path(),
-        "a.rs",
-        "macro_rules! m {\n    () => {\n        /// inside macro doc\n        fn g() {}\n    };\n}\n",
-    );
-    run(td.path());
-    let out = read(td.path(), "a.rs");
-    assert!(
-        out.contains("inside macro doc") || out.contains("# [doc"),
-        "doc inside macro_rules lost:\n{out}"
-    );
-}
-#[test]
-fn preserves_outer_doc_on_field_and_variant() {
-    let td = tempfile::tempdir().unwrap();
-    write(
-        td.path(),
-        "a.rs",
-        "struct S {\n    /// field doc\n    x: u8,\n}\n\nenum E {\n    /// variant doc\n    V,\n}\n",
-    );
-    run(td.path());
-    let out = read(td.path(), "a.rs");
-    assert!(out.contains("field doc"), "field doc lost:\n{out}");
-    assert!(out.contains("variant doc"), "variant doc lost:\n{out}");
-}
-#[test]
-fn strips_line_comment_above_item() {
-    let td = tempfile::tempdir().unwrap();
-    write(td.path(), "a.rs", "// kill me line comment\nfn f() {}\n");
-    run(td.path());
-    let out = read(td.path(), "a.rs");
-    assert!(!out.contains("kill me"), "// survived:\n{out}");
-}
-#[test]
-fn strips_block_comment() {
-    let td = tempfile::tempdir().unwrap();
-    write(
-        td.path(),
-        "a.rs",
-        "/* kill me block */\nfn f() { let _x = /* inline kill */ 1; }\n",
-    );
-    run(td.path());
-    let out = read(td.path(), "a.rs");
-    assert!(!out.contains("kill me"), "/* */ survived:\n{out}");
-    assert!(
-        !out.contains("inline kill"),
-        "inline /* */ survived:\n{out}"
-    );
-}
-#[test]
-fn strips_line_comment_inside_fn_body() {
-    let td = tempfile::tempdir().unwrap();
-    write(
-        td.path(),
-        "a.rs",
-        "fn f() {\n    // kill me inner\n    let _x = 1;\n}\n",
-    );
-    run(td.path());
-    let out = read(td.path(), "a.rs");
-    assert!(!out.contains("kill me inner"), "inner // survived:\n{out}");
-}
-#[test]
-fn strips_line_comment_inside_macro_invocation() {
-    let td = tempfile::tempdir().unwrap();
-    write(
-        td.path(),
-        "a.rs",
-        "fn f() {\n    println!(\n        \"x\" // kill me macro arg\n    );\n}\n",
-    );
-    run(td.path());
-    let out = read(td.path(), "a.rs");
-    assert!(
-        !out.contains("kill me macro arg"),
-        "// in macro survived:\n{out}"
-    );
-}
-#[test]
-fn strips_non_doc_but_preserves_doc_in_same_file() {
-    let td = tempfile::tempdir().unwrap();
-    write(
-        td.path(),
-        "a.rs",
-        "//! keep inner\n\n// kill outer line\n/// keep outer\nfn f() {\n    // kill inner line\n    /* kill block */\n    let _x = 1;\n}\n",
-    );
-    run(td.path());
-    let out = read(td.path(), "a.rs");
-    assert!(out.contains("keep inner"), "//! lost:\n{out}");
-    assert!(out.contains("keep outer"), "/// lost:\n{out}");
-    assert!(
-        !out.contains("kill outer line"),
-        "outer // survived:\n{out}"
-    );
-    assert!(
-        !out.contains("kill inner line"),
-        "inner // survived:\n{out}"
-    );
-    assert!(!out.contains("kill block"), "/* */ survived:\n{out}");
 }
 #[test]
 fn leaves_unparseable_file_untouched() {
     let td = tempfile::tempdir().unwrap();
-    let original = "/// keep doc on broken file\n// kill on broken file\nfn f() {\n";
+    let original = "/// keep doc on broken file\n// keep on broken file\nfn f() {\n";
     write(td.path(), "broken.rs", original);
     let out = run(td.path());
     let after = read(td.path(), "broken.rs");
@@ -302,7 +320,7 @@ fn leaves_unparseable_file_untouched() {
 #[test]
 fn dry_run_does_not_modify_files() {
     let td = tempfile::tempdir().unwrap();
-    let original = "// kill me\nfn f() {}\n";
+    let original = "/// see [Type](Type)\npub struct Type;\n";
     write(td.path(), "a.rs", original);
     let _ = run_dry(td.path());
     let after = read(td.path(), "a.rs");
@@ -311,7 +329,7 @@ fn dry_run_does_not_modify_files() {
 #[test]
 fn dry_run_emits_unified_diff() {
     let td = tempfile::tempdir().unwrap();
-    let original = "// kill me\nfn f() {}\n";
+    let original = "/// see [Type](Type)\npub struct Type;\n";
     write(td.path(), "a.rs", original);
     let out = run_dry(td.path());
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -329,8 +347,8 @@ fn dry_run_emits_unified_diff() {
     );
     assert!(stdout.contains("@@"), "no hunk marker:\n{stdout}");
     assert!(
-        stdout.contains("-// kill me"),
-        "removed line not shown in diff:\n{stdout}"
+        stdout.contains("+/// see [`Type`]"),
+        "rewritten line not shown in diff:\n{stdout}"
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -341,7 +359,7 @@ fn dry_run_emits_unified_diff() {
 #[test]
 fn dry_run_short_flag_works() {
     let td = tempfile::tempdir().unwrap();
-    let original = "// kill me\nfn f() {}\n";
+    let original = "/// see [Type](Type)\npub struct Type;\n";
     write(td.path(), "a.rs", original);
     let out = Command::new(bin())
         .arg("--rewrite")
@@ -376,7 +394,7 @@ fn dry_run_unchanged_file_emits_no_diff() {
 #[test]
 fn write_mode_summary_says_mode_write() {
     let td = tempfile::tempdir().unwrap();
-    write(td.path(), "a.rs", "// kill me\nfn f() {}\n");
+    write(td.path(), "a.rs", "/// see [Type](Type)\npub struct Type;\n");
     let out = run(td.path());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -431,53 +449,6 @@ fn scan_doc_files_skips_vendor_dirs() {
         );
     }
 }
-/// Initialise a git repo at `dir`, configure user, and make an initial commit.
-fn git_init_repo(dir: &Path) {
-    let run = |args: &[&str]| {
-        let out = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .expect("git");
-        assert!(out.status.success(), "git {args:?} failed: {out:?}");
-    };
-    run(&["init", "-q", "-b", "main"]);
-    run(&["config", "user.email", "test@example.invalid"]);
-    run(&["config", "user.name", "test"]);
-    run(&["config", "commit.gpgsign", "false"]);
-    fs::write(dir.join(".gitkeep"), "").expect("write");
-    run(&["add", ".gitkeep"]);
-    run(&["commit", "-q", "-m", "init"]);
-}
-#[test]
-fn git_state_ignores_dirty_sibling() {
-    let td = tempfile::tempdir().unwrap();
-    git_init_repo(td.path());
-    fs::create_dir_all(td.path().join("src")).expect("mkdir");
-    fs::create_dir_all(td.path().join("sibling")).expect("mkdir");
-    fs::write(td.path().join("src/a.rs"), "fn f() {}\n").expect("write");
-    let _ = Command::new("git")
-        .args(["add", "."])
-        .current_dir(td.path())
-        .output();
-    let _ = Command::new("git")
-        .args(["commit", "-q", "-m", "seed"])
-        .current_dir(td.path())
-        .output();
-    fs::write(td.path().join("sibling/dirty.rs"), "fn x() {}\n").expect("write");
-    let out = Command::new(bin())
-        .arg("--rewrite")
-        .arg(td.path().join("src"))
-        .output()
-        .expect("failed to spawn comment-free");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        out.status.success(),
-        "expected exit 0 (clean scoped subtree), got {:?}\nstderr: {stderr}\nstdout: {stdout}",
-        out.status.code()
-    );
-}
 #[test]
 fn dry_run_without_rewrite_is_rejected() {
     let td = tempfile::tempdir().unwrap();
@@ -495,10 +466,11 @@ fn dry_run_without_rewrite_is_rejected() {
     );
 }
 #[test]
-fn force_dirty_without_rewrite_is_rejected() {
+fn force_dirty_flag_is_gone() {
     let td = tempfile::tempdir().unwrap();
     write(td.path(), "a.rs", "fn f() {}\n");
     let out = Command::new(bin())
+        .arg("--rewrite")
         .arg("--force-dirty")
         .arg(td.path())
         .output()
@@ -506,12 +478,47 @@ fn force_dirty_without_rewrite_is_rejected() {
     assert_eq!(
         out.status.code(),
         Some(2),
-        "clap should require --rewrite alongside --force-dirty (exit 2), got {:?}",
+        "--force-dirty must be rejected by clap (flag removed); got exit {:?}",
         out.status.code()
     );
 }
 #[test]
-fn strip_with_parse_error_exits_five() {
+fn edition_flag_is_gone() {
+    let td = tempfile::tempdir().unwrap();
+    write(td.path(), "a.rs", "fn f() {}\n");
+    let out = Command::new(bin())
+        .arg("--rewrite")
+        .arg("--edition")
+        .arg("2024")
+        .arg(td.path())
+        .output()
+        .expect("failed to spawn comment-free");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "--edition must be rejected by clap (flag removed); got exit {:?}",
+        out.status.code()
+    );
+}
+#[test]
+fn rustdoc_link_idioms_flag_is_gone() {
+    let td = tempfile::tempdir().unwrap();
+    write(td.path(), "a.rs", "fn f() {}\n");
+    let out = Command::new(bin())
+        .arg("--rewrite")
+        .arg("--rustdoc-link-idioms")
+        .arg(td.path())
+        .output()
+        .expect("failed to spawn comment-free");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "--rustdoc-link-idioms must be rejected by clap (flag removed); got exit {:?}",
+        out.status.code()
+    );
+}
+#[test]
+fn rewrite_with_parse_error_exits_five() {
     let td = tempfile::tempdir().unwrap();
     write(td.path(), "broken.rs", "fn f( {\n");
     write(td.path(), "ok.rs", "fn g() {}\n");
@@ -521,7 +528,7 @@ fn strip_with_parse_error_exits_five() {
     assert_eq!(
         out.status.code(),
         Some(5),
-        "strip-mode per-file error must exit 5:\nstdout: {stdout}\nstderr: {stderr}"
+        "rewrite per-file parse error must exit 5:\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
         stderr.contains("PARSE_ERROR"),
@@ -751,23 +758,35 @@ fn dry_run_processes_crates_and_src_but_skips_target_and_docs() {
     let td = tempfile::tempdir().unwrap();
     let root = td.path();
     fs::create_dir_all(root.join("src")).expect("mkdir src");
-    fs::write(root.join("src/lib.rs"), "// removable\nfn s() {}\n").expect("write src");
+    fs::write(
+        root.join("src/lib.rs"),
+        "/// see [Type](Type)\npub struct Type;\n",
+    )
+    .expect("write src");
     fs::create_dir_all(root.join("crates/foo/src")).expect("mkdir crates/foo/src");
     fs::write(
         root.join("crates/foo/src/lib.rs"),
-        "// removable\nfn c() {}\n",
+        "/// see [Type](Type)\npub struct Type;\n",
     )
     .expect("write crates");
     fs::create_dir_all(root.join("target/package/foo-0.1.0/src")).expect("mkdir target subtree");
     fs::write(
         root.join("target/package/foo-0.1.0/src/lib.rs"),
-        "// removable\nfn t() {}\n",
+        "/// see [Type](Type)\npub struct Type;\n",
     )
     .expect("write target");
     fs::create_dir_all(root.join("docs")).expect("mkdir docs");
-    fs::write(root.join("docs/example.rs"), "// removable\nfn d() {}\n").expect("write docs");
+    fs::write(
+        root.join("docs/example.rs"),
+        "/// see [Type](Type)\npub struct Type;\n",
+    )
+    .expect("write docs");
     fs::create_dir_all(root.join("scripts")).expect("mkdir scripts");
-    fs::write(root.join("scripts/helper.rs"), "// removable\nfn h() {}\n").expect("write scripts");
+    fs::write(
+        root.join("scripts/helper.rs"),
+        "/// see [Type](Type)\npub struct Type;\n",
+    )
+    .expect("write scripts");
     let out = run_dry(root);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -842,7 +861,11 @@ fn non_rust_files_under_allowed_roots_are_ignored() {
     let td = tempfile::tempdir().unwrap();
     let root = td.path();
     fs::create_dir_all(root.join("src")).expect("mkdir src");
-    fs::write(root.join("src/lib.rs"), "// removable\nfn s() {}\n").expect("write rs");
+    fs::write(
+        root.join("src/lib.rs"),
+        "/// see [Type](Type)\npub struct Type;\n",
+    )
+    .expect("write rs");
     fs::write(root.join("src/script.py"), "# python\nprint('hi')\n").expect("write py");
     fs::write(root.join("src/notes.md"), "# notes\n").expect("write md");
     let out = run_dry(root);
@@ -864,8 +887,16 @@ fn root_without_crates_or_src_processes_nothing() {
     let td = tempfile::tempdir().unwrap();
     let root = td.path();
     fs::create_dir_all(root.join("docs")).expect("mkdir docs");
-    fs::write(root.join("docs/example.rs"), "// removable\nfn d() {}\n").expect("write docs");
-    fs::write(root.join("stray.rs"), "// removable\nfn x() {}\n").expect("write stray");
+    fs::write(
+        root.join("docs/example.rs"),
+        "/// see [Type](Type)\npub struct Type;\n",
+    )
+    .expect("write docs");
+    fs::write(
+        root.join("stray.rs"),
+        "/// see [Type](Type)\npub struct Type;\n",
+    )
+    .expect("write stray");
     let out = run_dry(root);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -885,118 +916,17 @@ fn root_without_crates_or_src_processes_nothing() {
         "summary should reflect zero work:\n{stderr}"
     );
 }
-/// Check whether `src` survives `rustfmt --check` (i.e. cargo fmt would
-/// leave it untouched). Writes to a temp file because `rustfmt --check`
-/// on stdin reports diffs on stdout but still exits 0; the file-path form
-/// returns non-zero exit on divergence.
-fn rustfmt_check(src: &str) -> bool {
-    let td = tempfile::tempdir().expect("rustfmt_check tempdir");
-    let path = td.path().join("probe.rs");
-    fs::write(&path, src).expect("write probe");
-    let out = Command::new("rustfmt")
-        .arg("--edition")
-        .arg("2024")
-        .arg("--check")
-        .arg(&path)
-        .output()
-        .expect("spawn rustfmt");
-    out.status.success()
-}
-#[test]
-fn rewrite_output_passes_rustfmt_check() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "// strip me\n\
-                    use std::fmt;\n\
-                    pub enum DecodeError {\n    \
-                        BufferUnderflow,\n    \
-                        TagOutOfRange { tag: u32 },\n    \
-                        LengthOutOfRange { len: u32, max: u32 },\n    \
-                        TrailingBytes,\n\
-                    }\n\
-                    impl fmt::Display for DecodeError {\n    \
-                        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n        \
-                            match self {\n            \
-                                DecodeError::BufferUnderflow => {\n                \
-                                    f.write_str(\"buffer underflow: not enough bytes\")\n            \
-                                }\n            \
-                                DecodeError::TagOutOfRange { tag } => write!(f, \"tag out of range: {tag}\"),\n            \
-                                DecodeError::LengthOutOfRange { len, max } => {\n                \
-                                    write!(f, \"length out of range: {len} exceeds max {max}\")\n            \
-                                }\n            \
-                                DecodeError::TrailingBytes => f.write_str(\"trailing bytes\"),\n        \
-                            }\n    \
-                        }\n\
-                    }\n\
-                    fn decode(b: u8) -> Result<DecodeError, DecodeError> {\n    \
-                        match b {\n        \
-                            0 => Ok(DecodeError::BufferUnderflow),\n        \
-                            tag => Err(DecodeError::TagOutOfRange { tag: u32::from(tag) }),\n    \
-                        }\n\
-                    }\n";
-    write(td.path(), "a.rs", original);
-    let out = run(td.path());
-    assert!(
-        out.status.success(),
-        "rewrite failed: stderr={}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let after = read(td.path(), "a.rs");
-    assert!(
-        !after.contains("strip me"),
-        "comment not stripped:\n{after}"
-    );
-    assert!(
-        rustfmt_check(&after),
-        "comment-free output is not rustfmt-clean:\n{after}"
-    );
-}
-#[test]
-fn dry_run_diff_target_is_rustfmt_normalized() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "// strip me\n\
-                    use std::fmt;\n\
-                    pub enum DecodeError {\n    \
-                        BufferUnderflow,\n    \
-                        TagOutOfRange { tag: u32 },\n\
-                    }\n\
-                    impl fmt::Display for DecodeError {\n    \
-                        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n        \
-                            match self {\n            \
-                                DecodeError::BufferUnderflow => {\n                \
-                                    f.write_str(\"buffer underflow: not enough bytes\")\n            \
-                                }\n            \
-                                DecodeError::TagOutOfRange { tag } => write!(f, \"tag: {tag}\"),\n        \
-                            }\n    \
-                        }\n\
-                    }\n";
-    write(td.path(), "a.rs", original);
-    let out = run_dry(td.path());
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("WOULD_REWRITE"),
-        "no WOULD_REWRITE:\n{stdout}"
-    );
-    let plus_lines: Vec<&str> = stdout
-        .lines()
-        .filter(|l| l.starts_with('+') && !l.starts_with("+++"))
-        .collect();
-    let plus_blob = plus_lines.join("\n");
-    assert!(
-        plus_blob.contains("BufferUnderflow => f.write_str("),
-        "expected rustfmt-style single-line match arm in dry-run diff, '+' lines:\n{plus_blob}"
-    );
-    assert!(
-        !plus_blob.contains("BufferUnderflow => {"),
-        "prettyplease-style wrapped arm leaked into dry-run diff target, '+' lines:\n{plus_blob}"
-    );
-}
 #[test]
 fn root_inside_crates_subtree_is_processed_directly() {
     let td = tempfile::tempdir().unwrap();
     let root = td.path();
     let scoped = root.join("crates/foo");
     fs::create_dir_all(scoped.join("src")).expect("mkdir crates/foo/src");
-    fs::write(scoped.join("src/lib.rs"), "// removable\nfn c() {}\n").expect("write");
+    fs::write(
+        scoped.join("src/lib.rs"),
+        "/// see [Type](Type)\npub struct Type;\n",
+    )
+    .expect("write");
     let out = Command::new(bin())
         .arg("--rewrite")
         .arg("--dry-run")
@@ -1008,448 +938,5 @@ fn root_inside_crates_subtree_is_processed_directly() {
     assert!(
         stdout.contains("src/lib.rs"),
         "expected src/lib.rs WOULD_REWRITE when ROOT is inside crates/:\n{stdout}"
-    );
-}
-fn run_idioms(root: &Path) -> std::process::Output {
-    Command::new(bin())
-        .arg("--rewrite")
-        .arg("--force-dirty")
-        .arg("--rustdoc-link-idioms")
-        .arg(root)
-        .output()
-        .expect("failed to spawn comment-free")
-}
-fn run_idioms_dry(root: &Path) -> std::process::Output {
-    Command::new(bin())
-        .arg("--rewrite")
-        .arg("--dry-run")
-        .arg("--rustdoc-link-idioms")
-        .arg(root)
-        .output()
-        .expect("failed to spawn comment-free")
-}
-#[test]
-fn rustdoc_link_idioms_requires_rewrite() {
-    let td = tempfile::tempdir().unwrap();
-    write(td.path(), "a.rs", "fn f() {}\n");
-    let out = Command::new(bin())
-        .arg("--rustdoc-link-idioms")
-        .arg(td.path())
-        .output()
-        .expect("failed to spawn comment-free");
-    assert_eq!(
-        out.status.code(),
-        Some(2),
-        "clap should require --rewrite alongside --rustdoc-link-idioms (exit 2), got {:?}",
-        out.status.code()
-    );
-}
-#[test]
-fn default_rewrite_preserves_doc_link_text() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "/// see [Type](Type) here\npub fn f() {}\n";
-    write(td.path(), "a.rs", original);
-    run(td.path());
-    let out = read(td.path(), "a.rs");
-    assert!(
-        out.contains("[Type](Type)"),
-        "default --rewrite must not normalise doc-link idioms, got:\n{out}"
-    );
-    assert!(
-        !out.contains("[`Type`]"),
-        "default --rewrite must not introduce ticked shortcut, got:\n{out}"
-    );
-}
-#[test]
-fn idioms_flag_collapses_redundant_explicit_link() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "/// see [Type](Type) here\npub struct Type;\n";
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let out = read(td.path(), "a.rs");
-    assert!(
-        out.contains("[`Type`]"),
-        "expected ticked shortcut after collapse, got:\n{out}"
-    );
-    assert!(
-        !out.contains("[Type](Type)"),
-        "redundant explicit link survived, got:\n{out}"
-    );
-}
-#[test]
-fn idioms_flag_ticks_shortcut_when_codeish() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "/// the [Type] applies\npub struct Type;\n";
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let out = read(td.path(), "a.rs");
-    assert!(
-        out.contains("[`Type`]"),
-        "expected ticked shortcut, got:\n{out}"
-    );
-}
-#[test]
-fn idioms_flag_retains_explicit_target_ticks_label() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "/// call [begin](Self::begin) first\n\
-                    pub struct S;\n\
-                    impl S {\n    \
-                        pub fn begin(&self) {}\n\
-                    }\n";
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let out = read(td.path(), "a.rs");
-    assert!(
-        out.contains("[`begin`](Self::begin)"),
-        "expected label ticked, target retained, got:\n{out}"
-    );
-}
-#[test]
-fn idioms_flag_skips_fenced_code() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "/// before\n\
-                    /// ```\n\
-                    /// let _: [Type] = todo!();\n\
-                    /// [Type](Type)\n\
-                    /// ```\n\
-                    /// after\n\
-                    pub struct Type;\n";
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let out = read(td.path(), "a.rs");
-    assert!(
-        out.contains("let _: [Type] = todo!();"),
-        "fenced [Type] must survive, got:\n{out}"
-    );
-    assert!(
-        out.contains("[Type](Type)"),
-        "fenced [Type](Type) must survive, got:\n{out}"
-    );
-}
-#[test]
-fn idioms_flag_skips_inline_code_span() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "/// use `[Type]` syntax verbatim\npub struct Type;\n";
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let out = read(td.path(), "a.rs");
-    assert!(
-        out.contains("`[Type]`"),
-        "inline code span must survive, got:\n{out}"
-    );
-}
-#[test]
-fn idioms_flag_skips_url_link() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "/// see [docs](https://example.com)\npub fn f() {}\n";
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let out = read(td.path(), "a.rs");
-    assert!(
-        out.contains("[docs](https://example.com)"),
-        "URL link must survive, got:\n{out}"
-    );
-}
-#[test]
-fn idioms_flag_skips_reference_style() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "/// see [Type][ref] later\n\
-                    ///\n\
-                    /// [ref]: https://example.com\n\
-                    pub struct Type;\n";
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let out = read(td.path(), "a.rs");
-    assert!(
-        out.contains("[Type][ref]"),
-        "reference-style link must survive, got:\n{out}"
-    );
-    assert!(
-        out.contains("[ref]: https://example.com"),
-        "reference definition must survive, got:\n{out}"
-    );
-}
-#[test]
-fn idioms_flag_skips_prose_label() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "/// see [the writer](Writer) for\npub struct Writer;\n";
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let out = read(td.path(), "a.rs");
-    assert!(
-        out.contains("[the writer](Writer)"),
-        "prose label must not be rewritten, got:\n{out}"
-    );
-}
-#[test]
-fn idioms_flag_dry_run_does_not_modify_file() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "/// see [Type](Type)\npub struct Type;\n";
-    write(td.path(), "a.rs", original);
-    let out = run_idioms_dry(td.path());
-    let after = read(td.path(), "a.rs");
-    assert_eq!(after, original, "dry-run must not write");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("WOULD_REWRITE") && stdout.contains("[`Type`]"),
-        "dry-run diff should show the would-be rewrite, got stdout:\n{stdout}"
-    );
-}
-#[test]
-fn idioms_flag_preserves_fence_state_across_doc_lines() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "/// before [A]\n\
-                    /// ```\n\
-                    /// [B](B)\n\
-                    /// ```\n\
-                    /// after [C]\n\
-                    pub fn f() {}\n";
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let out = read(td.path(), "a.rs");
-    assert!(
-        out.contains("[`A`]"),
-        "[A] outside fence should tick:\n{out}"
-    );
-    assert!(
-        out.contains("[B](B)"),
-        "[B](B) inside fence must survive:\n{out}"
-    );
-    assert!(
-        out.contains("[`C`]"),
-        "[C] outside fence should tick:\n{out}"
-    );
-}
-#[test]
-fn safe_idiom_path_does_not_treat_marker_in_string_literal_as_marker() {
-    let td = tempfile::tempdir().unwrap();
-    let original = r#"pub const BEGIN_MARKER: &str = "// AUTO-TRAIT-POLICY-BEGIN";
-pub const END_MARKER: &str = "// AUTO-TRAIT-POLICY-END";
-pub fn f() {}
-"#;
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let out = read(td.path(), "a.rs");
-    assert_eq!(
-        out, original,
-        "marker text inside string literal must not be treated as a real marker region; safe idiom path must preserve every non-doc byte. got:\n{out}"
-    );
-}
-#[test]
-fn safe_idiom_path_does_not_corrupt_fixture_with_marker_and_anchor_in_string_literal() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "fn build_fixture() -> &'static str {\n    \
-                    \"// AUTO-TRAIT-POLICY-BEGIN\\n\\\n                     \
-                    assert_auto_traits! {\\n    \\\n                         \
-                        SendSync { Foo }\\n\\\n                     \
-                    }\\n\\\n                     \
-                    // AUTO-TRAIT-POLICY-END\\n\"\n\
-                    }\n\
-                    pub fn caller() { let _ = build_fixture(); }\n";
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let out = read(td.path(), "a.rs");
-    assert_eq!(
-        out, original,
-        "marker text + assert_auto_traits! anchor *both* inside a string literal must round-trip byte-identical under safe idiom path (this is exactly the end_to_end.rs corruption class). got:\n{out}"
-    );
-}
-#[test]
-fn safe_idiom_path_preserves_quote_macro_invocation_byte_identical() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "fn build_tokens() -> proc_macro2::TokenStream {\n    \
-                    let metas: proc_macro2::TokenStream = Default::default();\n    \
-                    quote::quote!(#metas)\n\
-                    }\n";
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let out = read(td.path(), "a.rs");
-    assert_eq!(
-        out, original,
-        "quote!(#metas) outside any doc comment must round-trip byte-identical under safe idiom path. got:\n{out}"
-    );
-}
-#[test]
-fn safe_idiom_path_preserves_preserved_markers_const_byte_identical() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "pub struct PreservedMarkerPair {\n    \
-                    pub begin_token: &'static str,\n    \
-                    pub end_token: &'static str,\n    \
-                    pub anchor_macro: &'static str,\n\
-                    }\n\
-                    pub const DEFAULT_PRESERVED_MARKERS: &[PreservedMarkerPair] = &[PreservedMarkerPair {\n    \
-                        begin_token: \"AUTO-TRAIT-POLICY-BEGIN\",\n    \
-                        end_token: \"AUTO-TRAIT-POLICY-END\",\n    \
-                        anchor_macro: \"assert_auto_traits\",\n\
-                    }];\n";
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let out = read(td.path(), "a.rs");
-    assert_eq!(
-        out, original,
-        "DEFAULT_PRESERVED_MARKERS struct literal must round-trip byte-identical under safe idiom path. got:\n{out}"
-    );
-}
-#[test]
-fn safe_idiom_path_preserves_non_doc_bytes_when_no_doc_changes() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "use pardosa::store::{Event, FiberId};\n\
-                    use pardosa::store::{ExtractError, FiberIndex, FiberLookup};\n\
-                    fn _names_used() {\n    \
-                        let _: FiberIndex<u64> = FiberIndex::empty();\n    \
-                        let _: FiberLookup<FiberId> = FiberLookup::Empty;\n\
-                    }\n";
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let out = read(td.path(), "a.rs");
-    assert_eq!(
-        out, original,
-        "safe idiom path must not touch non-doc bytes when no doc-link idioms are present; got:\n{out}"
-    );
-}
-#[test]
-fn safe_idiom_path_rewrites_outer_line_doc() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "/// see [Type](Type) here\npub struct Type;\n";
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let out = read(td.path(), "a.rs");
-    assert_eq!(
-        out, "/// see [`Type`] here\npub struct Type;\n",
-        "outer /// doc-link idiom must be rewritten; got:\n{out}"
-    );
-}
-#[test]
-fn safe_idiom_path_rewrites_inner_line_doc() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "//! crate-level [Type](Type) doc\npub struct Type;\n";
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let out = read(td.path(), "a.rs");
-    assert_eq!(
-        out, "//! crate-level [`Type`] doc\npub struct Type;\n",
-        "inner //! doc-link idiom must be rewritten; got:\n{out}"
-    );
-}
-#[test]
-fn safe_idiom_path_rewrites_explicit_doc_attr() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "#[doc = \" see [Type](Type) here\"]\npub struct Type;\n";
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let out = read(td.path(), "a.rs");
-    assert_eq!(
-        out, "#[doc = \" see [`Type`] here\"]\npub struct Type;\n",
-        "#[doc=\"...\"] doc-link idiom must be rewritten; got:\n{out}"
-    );
-}
-#[test]
-fn safe_idiom_path_rewrites_cfg_attr_doc() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "#[cfg_attr(test, doc = \" see [Type](Type) here\")]\npub struct Type;\n";
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let out = read(td.path(), "a.rs");
-    assert_eq!(
-        out, "#[cfg_attr(test, doc = \" see [`Type`] here\")]\npub struct Type;\n",
-        "cfg_attr(_, doc=\"...\") doc-link idiom must be rewritten; got:\n{out}"
-    );
-}
-#[test]
-fn safe_idiom_path_is_idempotent() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "/// see [Type](Type) and [`Other`]\npub struct Type;\npub struct Other;\n";
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let pass1 = read(td.path(), "a.rs");
-    run_idioms(td.path());
-    let pass2 = read(td.path(), "a.rs");
-    assert_eq!(
-        pass1, pass2,
-        "safe idiom path must be idempotent; pass1:\n{pass1}\npass2:\n{pass2}"
-    );
-}
-#[test]
-fn safe_idiom_path_preserves_line_count() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "/// summary line 1\n\
-                    /// see [Type](Type) here\n\
-                    ///\n\
-                    /// # Errors\n\
-                    ///\n\
-                    /// none\n\
-                    pub struct Type;\n\
-                    fn helper() {\n    \
-                        let _ = 1;\n\
-                    }\n";
-    let lines_before = original.matches('\n').count();
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let out = read(td.path(), "a.rs");
-    let lines_after = out.matches('\n').count();
-    assert_eq!(
-        lines_before, lines_after,
-        "safe idiom path must preserve line count; before={lines_before}, after={lines_after}\n--- BEFORE ---\n{original}--- AFTER ---\n{out}"
-    );
-}
-#[test]
-fn safe_idiom_path_preserves_block_doc_comment_unchanged() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "/** see [Type](Type) here */\npub struct Type;\n";
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let out = read(td.path(), "a.rs");
-    assert!(
-        out.starts_with("/**"),
-        "block /** ... */ doc must be left textually as a block doc by the safe path (no AST round-trip); got:\n{out}"
-    );
-    assert!(
-        out.contains("[Type](Type)") || out.contains("[`Type`]"),
-        "block doc payload should either be left verbatim (preferred) or be rewritten in place — but it must not be deleted; got:\n{out}"
-    );
-}
-#[test]
-fn safe_idiom_path_dry_run_emits_only_doc_line_changes() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "use std::collections::HashMap;\n\
-                    use std::collections::BTreeMap;\n\
-                    /// see [Type](Type)\n\
-                    pub struct Type;\n\
-                    fn helper(m: HashMap<u32, u32>, b: BTreeMap<u32, u32>) -> usize {\n    \
-                        m.len() + b.len()\n\
-                    }\n";
-    write(td.path(), "a.rs", original);
-    let out = run_idioms_dry(td.path());
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let plus_minus: Vec<&str> = stdout
-        .lines()
-        .filter(|l| {
-            (l.starts_with('+') && !l.starts_with("+++"))
-                || (l.starts_with('-') && !l.starts_with("---"))
-        })
-        .collect();
-    for line in &plus_minus {
-        let body = &line[1..];
-        let trimmed = body.trim_start();
-        assert!(
-            trimmed.starts_with("///")
-                || trimmed.starts_with("//!")
-                || trimmed.starts_with("#[doc")
-                || trimmed.starts_with("#![doc")
-                || trimmed.starts_with("#[cfg_attr"),
-            "diff line outside doc surface in safe idiom path: {line:?}\nfull stdout:\n{stdout}"
-        );
-    }
-}
-#[test]
-fn safe_idiom_path_does_not_inject_auto_trait_markers() {
-    let td = tempfile::tempdir().unwrap();
-    let original = "/// see [Type](Type)\npub struct Type;\n";
-    write(td.path(), "a.rs", original);
-    run_idioms(td.path());
-    let out = read(td.path(), "a.rs");
-    assert!(
-        !out.contains("AUTO-TRAIT-POLICY"),
-        "safe idiom path must not invoke marker restoration logic; got:\n{out}"
     );
 }
