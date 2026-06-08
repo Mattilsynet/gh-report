@@ -1619,11 +1619,6 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // NOTE: HTTP rejection in production release builds cannot be tested as a
-    // unit test because `cfg!(test)` is always true in the test binary. The
-    // enforcement is validated by the cfg expression:
-    //   `!cfg!(any(debug_assertions, test)) && parsed.scheme() == "http"`
-
     #[test]
     fn validate_api_base_url_rejects_file_scheme() {
         let result = validate_api_base_url("file:///etc/passwd");

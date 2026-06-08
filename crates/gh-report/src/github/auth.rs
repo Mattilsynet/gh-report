@@ -456,10 +456,6 @@ fn read_private_key_file(path: &str) -> Result<String, GitHubApiError> {
         });
     }
 
-    // On Unix, check file permissions — reject if group or other can read.
-    // NOTE: This checks Unix mode bits only. macOS ACLs and filesystem-level
-    // encryption are not validated. Users relying on ACL-based access control
-    // should additionally verify permissions manually.
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;

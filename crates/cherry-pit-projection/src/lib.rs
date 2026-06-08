@@ -1,24 +1,5 @@
-//! # cherry-pit-projection
-//!
 //! Read-side adapters that drive [`cherry_pit_core::Projection`] from a
-//! typed [`cherry_pit_core::EventStore`].
-//!
-//! CHE-0048 fixes this crate's shape: single aggregate type per driver,
-//! no `Box<dyn Projection>`, in-memory and file-based backends, and
-//! checkpointed replay where the snapshot is written before the checkpoint.
-//! The file backend intentionally re-implements the gateway crate's
-//! atomic temp-file + rename + directory-sync pattern (CHE-0032/CHE-0043)
-//! rather than extracting a shared utility crate mid-WU.
-//!
-//! TODO: if more crates need the same filesystem primitive, introduce a
-//! dedicated ADR for a shared utility crate instead of copy-pasting again.
-//!
-//! Adoption of `cherry-pit-storage` (the eventual home of the
-//! shared atomic-write + dir-sync helpers) is **explicitly deferred** for
-//! v0.1 of this crate, mirroring the gateway-crate R12 carve-out per
-//! CHE-0053 R8. The deferral is tracked under the WU-3 closure epic
-//! (bd `adr-fmt-hh07`, sub-mission SM-3.5); revisit when a third call
-//! site lands or when CHE-0053 R8 is rescinded.
+//! typed [`cherry_pit_core::EventStore`] per CHE-0048.
 
 #![forbid(unsafe_code)]
 

@@ -1694,15 +1694,6 @@ fn spawn_partial_publisher_from_store(
                         archived_repos: pp.archived_repos,
                     });
 
-                    // Partial-render path (CHE-0054:R1.e): emit
-                    // `PartialEvidenceRendered` (non-terminal) — never the
-                    // terminal `EvidencePublished`, which is reserved for
-                    // post-`SweepCompleted` (CHE-0054:R1.c).
-                    //
-                    // TODO: derive `pending_repos` from the inventory once
-                    // a clean RunMetadata API exists; 0 is sufficient for
-                    // the invariant (PartialEvidenceRendered admissibility)
-                    // and downstream consumers tolerate it.
                     let pending_repos: u64 = 0;
 
                     match render_and_cache_evidence(
