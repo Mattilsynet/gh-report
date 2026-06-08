@@ -12,7 +12,7 @@ References: PGN-0001, PGN-0002, PGN-0008
 
 ## Context
 
-Source rescue ADR-0023 (`FiberIndex<K>` identity contract — Accepted as a design contract; implementation gated on a follow-up mission). PGN-0008 keeps domain identity out of the substrate: `FiberId` is dragline-local routing identity and domain causality keys live in payload. This ADR pins the semantic contract for an optional typed mapping from an application-owned causality key `K` to one or more fibers on a single journal, so a future implementation mission can land against a written contract rather than a fresh design pass. No public symbol ships until the implementation mission lands; once it lands, `FiberIndex<K>` is default-public under `pardosa::store` with opt-in construction.
+Source rescue ADR-0023 (`FiberIndex<K>` identity contract — Accepted as a design contract). PGN-0008 keeps domain identity out of the substrate: `FiberId` is dragline-local routing identity and domain causality keys live in payload. This ADR pins the semantic contract for an optional typed mapping from an application-owned causality key `K` to one or more fibers on a single journal. `FiberIndex<K>`, `FiberLookup<F>`, and `ExtractError` are publicly re-exported from `pardosa::store` and `pardosa::prelude` today (`crates/pardosa/src/store.rs` and `crates/pardosa/src/prelude.rs`); construction is opt-in via the reader-side `StoreReader::fiber_index` method, and a journal opened without that call pays no per-event indexing cost. The substrate persists no part of `K`.
 
 ## Decision
 

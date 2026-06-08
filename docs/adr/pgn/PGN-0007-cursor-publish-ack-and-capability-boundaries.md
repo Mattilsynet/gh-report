@@ -16,7 +16,7 @@ Sources rescue ADR-0011 (cursor semantics & resume), rescue ADR-0015 (publisher 
 
 ## Decision
 
-`Cursor<T>` is a sync `Iterator`-shaped GAT trait with `tail()`, `commit_offset(EventId)`, and `acked_offset() -> Option<EventId>`. Resume is exclusive. One cursor per source. `JournalCursor::commit_offset` persists to a sidecar (8 LE bytes, fsync per commit, no atomic rename). `FrontierPublisher::publish` returns `Result<(), PublishError>`; failed anchors halt the drain and re-buffer in roll order, bounded by `anchor_buffer_cap`. The writer-side `<journal>.publish` sidecar records the last-published anchor, fsynced after every successful publish. Two within-runtime façades — `pardosa::reader::prelude` and `pardosa::writer::prelude` — pin the capability boundary; the legacy mixed `pardosa::prelude` is removed (PGN-0009 clean break).
+`Cursor<T>` is a sync `Iterator`-shaped GAT trait with `tail()`, `commit_offset(EventId)`, and `acked_offset() -> Option<EventId>`. Resume is exclusive. One cursor per source. `JournalCursor::commit_offset` persists to a sidecar (8 LE bytes, fsync per commit, no atomic rename). `FrontierPublisher::publish` returns `Result<(), PublishError>`; failed anchors halt the drain and re-buffer in roll order, bounded by `anchor_buffer_cap`. The writer-side `<journal>.publish` sidecar records the last-published anchor, fsynced after every successful publish. The capability boundary is enforced type-level inside the runtime ring (`StoreReader<'_, T>` cannot name writer authority); the current adopter-facing surface is `pardosa::store` (sole adopter-facing module per PGN-0008 R1) plus the ergonomic single-glob `pardosa::prelude` that re-exports the same items, broadening nothing — ring-specific `pardosa::reader::prelude` / `pardosa::writer::prelude` façades are not current public API.
 
 R1 [5]: `Cursor<T>` is a sync GAT-bearing trait with `tail`, `commit_offset`,
   and `acked_offset`; resume is exclusive (yield events whose `event_id >
@@ -35,10 +35,12 @@ R5 [5]: The pending-anchor buffer is bounded by `anchor_buffer_cap`
   (default `65_536`); overflow surfaces as
   `PardosaError::AnchorBufferOverflow { cap }` from the offending
   `commit_event` with no-op-on-`Err` (no append, no roll, no advance).
-R6 [5]: Reader components receive `DraglineView<'_, T>`; `pardosa::reader::
-  prelude` cannot name `Writer`, `Syncable`, `Journal::commit_event`,
-  `Dragline::create`, `FrontierPublisher`, `PublishError`, or
-  `AppendResult` — the boundary is type-level, not feature-flag-level.
+R6 [5]: Reader components receive `DraglineView<'_, T>`; the
+  adopter-facing `StoreReader<'_, T>` (and any future ring-specific
+  reader prelude) cannot name `StoreWriter` authority, `Syncable`,
+  `FrontierPublisher`, `PublishError`, or substrate append paths —
+  the boundary is type-level, not feature-flag-level (mirrored by
+  PGN-0008 R3 compile-fail tests).
 R7 [5]: The `<journal>.publish` writer-owned watermark sidecar is fsynced
   after every successful publish; on restart, anchors with
   `event_id > watermark` are reconstructed from `.pgno` in commit order

@@ -18,9 +18,11 @@ Source rescue ADR-0009 (semver policy). Five crates publish to crates.io: `pardo
 
 `cargo-semver-checks --baseline rev:<last-tag>` runs in CI on every PR as an advisory signal, not an auto-merge block. Author judgement is the primary gate. Every PR touching a public type, fn signature, trait bound, or enum variant records a CHANGELOG entry under `[Unreleased]` with an explicit `breaking? Y/N` line. All five publishable crates ship `0.x` until the 1.0 trigger fires; at trigger time they bump simultaneously to `1.0.0`. Wire-format breakage is a major-version event for `pardosa-file` post-publish.
 
-R1 [5]: A PR that changes public surface without a `CHANGELOG.md` entry
+R1 [5]: A PR that changes public surface without a CHANGELOG entry
   under `[Unreleased]` is rejected at review; CHANGELOG is the
-  authoritative audit trail.
+  authoritative audit trail. PGN release-governance entries live in
+  `docs/adr/pgn/CHANGELOG.md` until a repo-level `CHANGELOG.md` is
+  established.
 R2 [5]: Pre-1.0, `0.x → 0.(x+1)` is reserved for breaking changes and
   `0.x.y → 0.x.(y+1)` is reserved for non-breaking changes — stricter
   than Cargo defaults but matching adopter expectations.
@@ -29,9 +31,9 @@ R3 [5]: Adding a variant to a `#[non_exhaustive]` enum that has always
   policy; `cargo-semver-checks` flags are overridden by the CHANGELOG
   entry.
 R4 [5]: Wire-format breakage in `pardosa-file` is a major-version event
-  post-publish; pre-publish, every break is recorded in the CHANGELOG
-  under the PGN-0009 clean-break posture and ships paired with
-  regenerated golden fixtures.
+  post-publish; pre-publish, every break is recorded in
+  `docs/adr/pgn/CHANGELOG.md` under the PGN-0009 clean-break posture
+  and ships paired with regenerated golden fixtures.
 R5 [5]: The 1.0 trigger ("first external dependent stabilises") and the
   simultaneous bump of all five publishable crates is recorded in a
   follow-up ADR at the time of the bump; the reasoning is narrative,

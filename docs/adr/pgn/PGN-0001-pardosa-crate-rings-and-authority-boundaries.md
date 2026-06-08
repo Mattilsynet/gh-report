@@ -25,13 +25,20 @@ R2 [5]: Substrate crates must not depend on `thiserror`, `tokio`, `async-trait`,
 R3 [5]: Every workspace crate sets `#![forbid(unsafe_code)]` at the crate root,
   including test-support crates; no `cfg_attr` carve-outs are permitted.
 R4 [5]: External consumers depend only on `pardosa` and import items via
-  `pardosa::reader::prelude` or `pardosa::writer::prelude`; substrate paths
-  are reached through `pardosa::__derive_support` for derive expansions.
+  the canonical `pardosa::store` module or the ergonomic single-glob
+  `pardosa::prelude` (which re-exports the same items, broadening
+  nothing); substrate paths are reached through
+  `pardosa::__derive_support` for derive expansions. Ring-specific
+  `pardosa::reader::prelude` / `pardosa::writer::prelude` façades are
+  not current public API; the capability boundary is enforced
+  type-level via `StoreReader`/`StoreWriter` per PGN-0008 R3.
 R5 [4]: While pre-publish and no external dependent exists, prefer the smallest
   patch that restores the violated doctrinal rule exactly, even if breaking,
   over a soft-deprecation shim.
-R6 [5]: Every break under the clean-break posture records `breaking? Y` plus a
-  one-line scope description in `CHANGELOG.md` under `[Unreleased]`.
+R6 [5]: Every break under the clean-break posture records `breaking? Y`
+  plus a one-line scope description in `docs/adr/pgn/CHANGELOG.md` under
+  `[Unreleased]`; PGN release-governance entries live there until a
+  repo-level `CHANGELOG.md` is established.
 
 ## Consequences
 
