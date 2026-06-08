@@ -40,6 +40,12 @@ docs/notes/
 # any per-crate runs that materialise a nested store/ tree.
 store/
 **/store/
+# Source-module exception: the pardosa crate has a legitimate src/store/
+# directory. Negate so the broader **/store/ rule above does not silently
+# hide its contents from git/CI. Add further negations here if other crates
+# introduce a src/store/ source module.
+!crates/pardosa/src/store/
+!crates/pardosa/src/store/**
 
 # Bespoke scripts. The Track-4 experiment (prod-loc, track4-verify, awk
 # loc/adr counters, citation-diff) was retracted 2026-05-16 — drift +
