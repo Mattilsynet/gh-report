@@ -117,6 +117,34 @@ crates = []
 foundation = true
 
 [[domains]]
+prefix = "PGN"
+name = "Pardosa-Genome Consolidated Domain"
+directory = "pgn"
+description = """\
+    Consolidated event-store substrate decisions for the pardosa \
+    workspace: ring direction and substrate purity, fiber semantics \
+    and event identity, canonical wire encoding and schema-hash \
+    gating, .pgno container durability, frontier chaining and \
+    trusted anchors, typed error taxonomy, cursor and capability \
+    boundaries, the public EventStore facade, migration policy, \
+    backend abstraction with NATS/JetStream constraints, FiberIndex \
+    routing accelerator, and semver governance. Sources rescue \
+    ADR-0002..0023; rescue ADRs take precedence over the legacy \
+    Solon PAR/GEN material, which is incorporated only where \
+    non-conflicting. PAR/GEN retirement/stale moves are deferred."""
+crates = [
+    "pardosa",
+    "pardosa-wire",
+    "pardosa-schema",
+    "pardosa-file",
+    "pardosa-derive",
+    "pardosa-cli",
+    "pardosa-nats",
+    "pardosa-mint-private-tests",
+    "pardosa-test-support-harness",
+]
+
+[[domains]]
 prefix = "AFM"
 name = "adr-fmt Domain"
 directory = "adr-fmt"
