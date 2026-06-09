@@ -187,14 +187,40 @@ async fn worker_loop<C, R, E>(
     }
 }
 
-/// Wait for the rate limit to reset with exponential backoff.
+/// Wait until [`RateLimitState::should_halt`] returns `false`.
+///
+/// When [`RateLimitState::load_reset`] is `Some(reset)` and `reset` is in
+/// the future, sleeps until then plus a small slack. Otherwise sleeps via
+/// capped exponential backoff (1s → 60s). Both sleeps are capped at
+/// 60s per iteration so a stale `reset` value cannot park the worker
+/// indefinitely.
 async fn wait_for_rate_limit_reset(state: &RateLimitState) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let max_sleep = Duration::from_mins(1);
+    let reset_slack = Duration::from_secs(2);
     let mut backoff = Duration::from_secs(1);
-    let max_backoff = Duration::from_mins(1);
 
     while state.should_halt() {
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(max_backoff);
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+
+        let sleep = match state.load_reset() {
+            Some(reset) if reset > now_secs => {
+                let wait_secs = reset - now_secs;
+                Duration::from_secs(wait_secs)
+                    .saturating_add(reset_slack)
+                    .min(max_sleep)
+            }
+            _ => {
+                let b = backoff;
+                backoff = (backoff * 2).min(max_sleep);
+                b
+            }
+        };
+
+        tokio::time::sleep(sleep).await;
     }
 }
 
@@ -224,6 +250,7 @@ pub async fn shutdown_worker_pool(handles: Vec<JoinHandle<()>>, timeout: Duratio
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rate_limit::RateLimitObservation;
     use crate::work_queue::{JobSpec, WorkQueue};
     use cherry_pit_core::{CorrelationContext, JobSource};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -491,5 +518,76 @@ mod tests {
             JobOutcome::Success { .. } => panic!("expected failure"),
             _ => panic!("unexpected JobOutcome variant"),
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_rate_limit_reset_returns_when_should_halt_becomes_false() {
+        let state = Arc::new(RateLimitState::with_thresholds(50, 100));
+        state.observe(RateLimitObservation::new().with_remaining(0));
+        assert!(state.should_halt());
+
+        let waiter = {
+            let state = Arc::clone(&state);
+            tokio::spawn(async move { wait_for_rate_limit_reset(&state).await })
+        };
+
+        tokio::time::advance(Duration::from_millis(100)).await;
+        assert!(!waiter.is_finished(), "must not return while halted");
+
+        state.observe(RateLimitObservation::new().with_remaining(500));
+        tokio::time::advance(Duration::from_secs(2)).await;
+        waiter.await.expect("waiter did not complete");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_rate_limit_reset_sleeps_until_reset_when_known() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let state = Arc::new(RateLimitState::with_thresholds(50, 100));
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_secs();
+        state.observe(
+            RateLimitObservation::new()
+                .with_remaining(0)
+                .with_reset(now_secs + 30),
+        );
+        assert!(state.should_halt());
+
+        let waiter = {
+            let state = Arc::clone(&state);
+            tokio::spawn(async move { wait_for_rate_limit_reset(&state).await })
+        };
+
+        tokio::time::advance(Duration::from_secs(5)).await;
+        assert!(
+            !waiter.is_finished(),
+            "must not return before reset elapses (would indicate fallback polling)"
+        );
+
+        tokio::time::advance(Duration::from_secs(30)).await;
+        state.observe(RateLimitObservation::new().with_remaining(500));
+        tokio::time::advance(Duration::from_secs(3)).await;
+        waiter.await.expect("waiter did not complete after reset");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_rate_limit_reset_falls_back_when_reset_unknown() {
+        let state = Arc::new(RateLimitState::with_thresholds(50, 100));
+        state.observe(RateLimitObservation::new().with_remaining(0));
+        assert_eq!(state.load_reset(), None);
+        assert!(state.should_halt());
+
+        let waiter = {
+            let state = Arc::clone(&state);
+            tokio::spawn(async move { wait_for_rate_limit_reset(&state).await })
+        };
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(!waiter.is_finished(), "fallback backoff still pending");
+
+        state.observe(RateLimitObservation::new().with_remaining(500));
+        tokio::time::advance(Duration::from_secs(3)).await;
+        waiter.await.expect("waiter did not complete via fallback path");
     }
 }
