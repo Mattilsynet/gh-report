@@ -267,14 +267,13 @@ pub fn parse_adr_file(
 /// Parse the H1 title line: `# PREFIX-NNNN. Title text`.
 fn parse_title(lines: &[&str], expected_prefix: &str) -> Option<(AdrId, String, usize)> {
     for (i, line) in lines.iter().enumerate() {
-        if let Some(rest) = line.strip_prefix("# ") {
-            if let Some(dot_pos) = rest.find(". ")
-                && let Some(id) = parse_adr_id(&rest[..dot_pos])
-                && id.prefix == expected_prefix
-            {
-                let title = rest[dot_pos + 2..].to_owned();
-                return Some((id, title, i + 1));
-            }
+        if let Some(rest) = line.strip_prefix("# ")
+            && let Some(dot_pos) = rest.find(". ")
+            && let Some(id) = parse_adr_id(&rest[..dot_pos])
+            && id.prefix == expected_prefix
+        {
+            let title = rest[dot_pos + 2..].to_owned();
+            return Some((id, title, i + 1));
         }
     }
     None

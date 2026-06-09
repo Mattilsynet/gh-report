@@ -310,10 +310,10 @@ impl<P> FileProjectionStore<P> {
             let companion = path.with_extension("msgpack");
             match tokio::fs::metadata(&companion).await {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    if let Err(e) = tokio::fs::remove_file(&path).await {
-                        if e.kind() != std::io::ErrorKind::NotFound {
-                            return Err(ProjectionError::Infrastructure(Box::new(e)));
-                        }
+                    if let Err(e) = tokio::fs::remove_file(&path).await
+                        && e.kind() != std::io::ErrorKind::NotFound
+                    {
+                        return Err(ProjectionError::Infrastructure(Box::new(e)));
                     }
                 }
                 Err(e) => return Err(ProjectionError::Infrastructure(Box::new(e))),

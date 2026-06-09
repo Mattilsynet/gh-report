@@ -39,18 +39,18 @@ pub fn check(record: &AdrRecord, domain_prefixes: &[&str], diags: &mut Vec<Diagn
         return;
     }
 
-    if let Some(file_id) = parse_adr_id_from_filename_stem(&file_name[..file_name.len() - 3]) {
-        if file_id.prefix != record.id.prefix || file_id.number != record.id.number {
-            diags.push(Diagnostic::warning(
-                "N002",
-                &record.file_path,
-                record.title_line,
-                format!(
-                    "filename ID `{file_id}` does not match H1 title ID `{}`",
-                    record.id
-                ),
-            ));
-        }
+    if let Some(file_id) = parse_adr_id_from_filename_stem(&file_name[..file_name.len() - 3])
+        && (file_id.prefix != record.id.prefix || file_id.number != record.id.number)
+    {
+        diags.push(Diagnostic::warning(
+            "N002",
+            &record.file_path,
+            record.title_line,
+            format!(
+                "filename ID `{file_id}` does not match H1 title ID `{}`",
+                record.id
+            ),
+        ));
     }
 
     let prefix_len = record.id.prefix.len() + 6;

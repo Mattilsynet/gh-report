@@ -588,6 +588,8 @@ mod tests {
 
         state.observe(RateLimitObservation::new().with_remaining(500));
         tokio::time::advance(Duration::from_secs(3)).await;
-        waiter.await.expect("waiter did not complete via fallback path");
+        waiter
+            .await
+            .expect("waiter did not complete via fallback path");
     }
 }

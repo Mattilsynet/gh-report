@@ -77,10 +77,10 @@ pub async fn correlation_layer(mut request: Request, next: Next) -> Response {
     request.extensions_mut().insert(ctx.clone());
 
     let mut response = next.run(request).await;
-    if let Some(corr) = ctx.correlation_id() {
-        if let Ok(value) = HeaderValue::from_str(&corr.to_string()) {
-            response.headers_mut().insert(ECHO_HEADER, value);
-        }
+    if let Some(corr) = ctx.correlation_id()
+        && let Ok(value) = HeaderValue::from_str(&corr.to_string())
+    {
+        response.headers_mut().insert(ECHO_HEADER, value);
     }
     response
 }

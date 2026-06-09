@@ -487,12 +487,10 @@ fn resolve_cache_key<'a>(
 
     let no_ext = !has_extension(key);
 
-    if has_trailing_slash || no_ext {
-        if key != "index.html" && !key.ends_with("/index.html") {
-            let index_key = format!("{key}/index.html");
-            if let Some(page) = cache.get(&index_key) {
-                return Some(page);
-            }
+    if (has_trailing_slash || no_ext) && key != "index.html" && !key.ends_with("/index.html") {
+        let index_key = format!("{key}/index.html");
+        if let Some(page) = cache.get(&index_key) {
+            return Some(page);
         }
     }
 
