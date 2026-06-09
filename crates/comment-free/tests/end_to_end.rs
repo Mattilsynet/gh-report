@@ -1867,3 +1867,99 @@ fn doc_lint_header_record_round_trip_parses() {
         "header doctrine field must carry the full doctrine sentence: {doctrine}"
     );
 }
+#[test]
+fn rewrite_summary_record_emitted_on_stderr_with_counters() {
+    let td = tempfile::tempdir().unwrap();
+    write(
+        td.path(),
+        "a.rs",
+        "// kill me\nlet x = 1; // tail\nfn f() {}\n",
+    );
+    let out = run(td.path());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let line = stderr
+        .lines()
+        .find(|l| l.starts_with("REWRITE_SUMMARY\t"))
+        .unwrap_or_else(|| panic!("no REWRITE_SUMMARY line on stderr:\n{stderr}"));
+    for field in [
+        "comments_removed=",
+        "inline_trimmed=",
+        "blank_lines_collapsed=",
+        "doc_links_rewritten=",
+        "safety_preserved=",
+        "auto_trait_preserved=",
+        "v=1",
+    ] {
+        assert!(
+            line.contains(field),
+            "REWRITE_SUMMARY missing `{field}` field: {line}"
+        );
+    }
+}
+#[test]
+fn rewrite_summary_record_counts_aggregate_over_files() {
+    let td = tempfile::tempdir().unwrap();
+    write(td.path(), "a.rs", "// one\nfn a() {}\n");
+    write(td.path(), "b.rs", "// two\n// three\nfn b() {}\n");
+    let out = run(td.path());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let line = stderr
+        .lines()
+        .find(|l| l.starts_with("REWRITE_SUMMARY\t"))
+        .expect("REWRITE_SUMMARY present");
+    assert!(
+        line.contains("comments_removed=3"),
+        "expected aggregate comments_removed=3 across two files: {line}"
+    );
+}
+#[test]
+fn rewrite_summary_record_present_in_dry_run() {
+    let td = tempfile::tempdir().unwrap();
+    write(td.path(), "a.rs", "// removed\nfn f() {}\n");
+    let out = run_dry(td.path());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.lines().any(|l| l.starts_with("REWRITE_SUMMARY\t")),
+        "REWRITE_SUMMARY must be emitted in --dry-run too:\n{stderr}"
+    );
+}
+#[test]
+fn existing_summary_record_unchanged_shape() {
+    let td = tempfile::tempdir().unwrap();
+    write(td.path(), "a.rs", "// removed\nfn f() {}\n");
+    let out = run(td.path());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let summary = stderr
+        .lines()
+        .find(|l| l.starts_with("SUMMARY\tmode=write\t"))
+        .expect("legacy SUMMARY present");
+    for field in ["rewritten=", "unchanged=", "errors="] {
+        assert!(
+            summary.contains(field),
+            "legacy SUMMARY missing `{field}` field: {summary}"
+        );
+    }
+}
+#[test]
+fn rewrite_record_grammar_constant_documents_record() {
+    let grammar = comment_free::REWRITE_RECORD_GRAMMAR;
+    for needle in [
+        "REWRITE_SUMMARY",
+        "comments_removed",
+        "inline_trimmed",
+        "blank_lines_collapsed",
+        "doc_links_rewritten",
+        "safety_preserved",
+        "auto_trait_preserved",
+        "v=<N>",
+    ] {
+        assert!(
+            grammar.contains(needle),
+            "REWRITE_RECORD_GRAMMAR missing `{needle}`:\n{grammar}"
+        );
+    }
+}
+#[test]
+fn rewrite_record_version_constant_is_one() {
+    assert_eq!(comment_free::REWRITE_RECORD_VERSION, 1);
+}

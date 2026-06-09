@@ -4,7 +4,8 @@
 use clap::Parser;
 use comment_free::{
     CommentFreeError, DOC_LINT_DOCTRINE_MSG, DOC_LINT_RECORD_VERSION, DocBudget, FileOutcome,
-    ProcessOptions, SKIP_DIRS, doc_lint_file, process_file, scan_doc_files,
+    ProcessOptions, REWRITE_RECORD_VERSION, RewriteCounts, SKIP_DIRS, doc_lint_file, process_file,
+    scan_doc_files,
 };
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -205,10 +206,12 @@ fn run_strip(opts: &Options) -> Result<u32, CommentFreeError> {
     let mut rewritten = 0u32;
     let mut unchanged = 0u32;
     let mut errors = 0u32;
+    let mut counts_total = RewriteCounts::default();
     for path in walk_rs_files(&opts.root) {
         match process_file(&path, &process_opts) {
-            FileOutcome::Rewritten { diff } => {
+            FileOutcome::Rewritten { diff, counts } => {
                 rewritten += 1;
+                counts_total += counts;
                 if opts.dry_run {
                     println!("WOULD_REWRITE\t{}", path.display());
                     if let Some(d) = diff {
@@ -233,6 +236,7 @@ fn run_strip(opts: &Options) -> Result<u32, CommentFreeError> {
     }
     let mode = if opts.dry_run { "dry-run" } else { "write" };
     print_summary_strip(mode, rewritten, unchanged, errors);
+    print_rewrite_summary(mode, &counts_total);
     Ok(errors)
 }
 /// Strip-mode summary emitter. Emits to stderr (consistent with the
@@ -241,6 +245,23 @@ fn run_strip(opts: &Options) -> Result<u32, CommentFreeError> {
 fn print_summary_strip(mode: &str, rewritten: u32, unchanged: u32, errors: u32) {
     eprintln!(
         "SUMMARY\tmode={mode}\trewritten={rewritten}\tunchanged={unchanged}\terrors={errors}"
+    );
+}
+/// Structured per-counter summary emitter for rewrite mode. Additive
+/// to [`print_summary_strip`]: both lines are emitted on stderr. The
+/// record grammar is published as
+/// [`comment_free::REWRITE_RECORD_GRAMMAR`] and the format version as
+/// [`comment_free::REWRITE_RECORD_VERSION`].
+fn print_rewrite_summary(mode: &str, counts: &RewriteCounts) {
+    let v = REWRITE_RECORD_VERSION;
+    eprintln!(
+        "REWRITE_SUMMARY\tmode={mode}\tcomments_removed={cr}\tinline_trimmed={it}\tblank_lines_collapsed={blc}\tdoc_links_rewritten={dlr}\tsafety_preserved={sp}\tauto_trait_preserved={atp}\tv={v}",
+        cr = counts.comments_removed,
+        it = counts.inline_trimmed,
+        blc = counts.blank_lines_collapsed,
+        dlr = counts.doc_links_rewritten,
+        sp = counts.safety_preserved,
+        atp = counts.auto_trait_preserved,
     );
 }
 /// Lint-mode summary emitter. Writes to stderr (consistent with metadata

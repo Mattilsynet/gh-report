@@ -44,6 +44,76 @@ pub const DOC_LINT_RECORD_GRAMMAR: &str = "\
 DOC_LINT_HEADER\\tkind=<KIND>\\tv=<N>\\tdoctrine=<STRING>\\n
 DOC_LINT_HINT\\t<PATH>:<LINE>\\titem=<LABEL>\\twords=<U32>\\tbudget=<U32>\\tkind=<KIND>\\tv=<N>\\n
 DOC_LINT_TRUNCATED\\tkind=<KIND>\\tremaining=<U32>\\tv=<N>\\n";
+/// Stable record-format version emitted on every `REWRITE_SUMMARY`
+/// line as `v=<N>`. Independent of [`DOC_LINT_RECORD_VERSION`]: the
+/// rewrite-summary record family evolves on its own cadence. Consumers
+/// reject records whose `v=` exceeds the version they understand;
+/// bumped on any incompatible field-shape change.
+pub const REWRITE_RECORD_VERSION: u32 = 1;
+/// Grammar of the structured rewrite-summary record emitted on stderr
+/// at the end of every `--rewrite` run (including `--dry-run`), in
+/// BNF-ish form. Stable across patch versions for a fixed
+/// [`REWRITE_RECORD_VERSION`]; intended for external agent parsers
+/// and for the binary's `--help` output.
+///
+/// Tab characters (`\t`) separate fields; every record terminates
+/// with `\n`. Field order is fixed.
+///
+/// ```text
+/// REWRITE_SUMMARY\tmode=<MODE>\tcomments_removed=<U32>\tinline_trimmed=<U32>\tblank_lines_collapsed=<U32>\tdoc_links_rewritten=<U32>\tsafety_preserved=<U32>\tauto_trait_preserved=<U32>\tv=<N>\n
+/// ```
+///
+/// `<MODE>` is `write` or `dry-run`, matching the legacy `SUMMARY`
+/// record's `mode=` field. The counters aggregate across every
+/// processed file in the run. The record is additive: the legacy
+/// `SUMMARY\tmode=…\trewritten=…\tunchanged=…\terrors=…` line is
+/// emitted unchanged on the same stream.
+pub const REWRITE_RECORD_GRAMMAR: &str = "\
+REWRITE_SUMMARY\\tmode=<MODE>\\tcomments_removed=<U32>\\tinline_trimmed=<U32>\\tblank_lines_collapsed=<U32>\\tdoc_links_rewritten=<U32>\\tsafety_preserved=<U32>\\tauto_trait_preserved=<U32>\\tv=<N>\\n";
+/// Per-file counters surfaced by the rewrite passes. Aggregated across
+/// files in `main`'s `REWRITE_SUMMARY` emission. All fields default to
+/// zero. The struct is marked `#[non_exhaustive]` so additional
+/// counters can be added without a breaking change; construct with
+/// `RewriteCounts::default()` and update fields explicitly.
+///
+/// - `comments_removed` — non-doc line and block comments dropped.
+/// - `inline_trimmed` — solo-line drops are NOT counted here; this is
+///   the count of mid-line (post-code) drops that triggered the inline
+///   trailing-whitespace trim. Equals `comments_removed` minus the
+///   solo-line drops.
+/// - `blank_lines_collapsed` — symmetric-pad collapses (one per
+///   removed comment block whose source had blanks on BOTH sides).
+/// - `doc_links_rewritten` — splices applied by the doc-link idiom
+///   canonicaliser, one per rewritten literal span.
+/// - `safety_preserved` — `// SAFETY:` / `// SAFETY` lines kept.
+/// - `auto_trait_preserved` — `AUTO-TRAIT-POLICY-{BEGIN,END}` lines
+///   kept.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RewriteCounts {
+    pub comments_removed: u32,
+    pub inline_trimmed: u32,
+    pub blank_lines_collapsed: u32,
+    pub doc_links_rewritten: u32,
+    pub safety_preserved: u32,
+    pub auto_trait_preserved: u32,
+}
+impl std::ops::AddAssign for RewriteCounts {
+    fn add_assign(&mut self, rhs: Self) {
+        self.comments_removed = self.comments_removed.saturating_add(rhs.comments_removed);
+        self.inline_trimmed = self.inline_trimmed.saturating_add(rhs.inline_trimmed);
+        self.blank_lines_collapsed = self
+            .blank_lines_collapsed
+            .saturating_add(rhs.blank_lines_collapsed);
+        self.doc_links_rewritten = self
+            .doc_links_rewritten
+            .saturating_add(rhs.doc_links_rewritten);
+        self.safety_preserved = self.safety_preserved.saturating_add(rhs.safety_preserved);
+        self.auto_trait_preserved = self
+            .auto_trait_preserved
+            .saturating_add(rhs.auto_trait_preserved);
+    }
+}
 /// All terminal-error variants raised by the `comment-free` binary.
 #[derive(Debug, thiserror::Error)]
 pub enum CommentFreeError {
@@ -69,7 +139,10 @@ impl From<&CommentFreeError> for ExitCode {
 /// Outcome of processing one source file.
 #[derive(Debug)]
 pub enum FileOutcome {
-    Rewritten { diff: Option<String> },
+    Rewritten {
+        diff: Option<String>,
+        counts: RewriteCounts,
+    },
     Unchanged,
     ParseError(String),
     IoError(String),
@@ -109,21 +182,26 @@ pub fn process_file(path: &Path, opts: &ProcessOptions) -> FileOutcome {
         Err(e) => return FileOutcome::ParseError(e.to_string()),
     };
     let splices = collect_doc_splices(&ast, &original);
+    let doc_links_rewritten = u32::try_from(splices.len()).unwrap_or(u32::MAX);
     let after_links = if splices.is_empty() {
         original.clone()
     } else {
         apply_splices(&original, splices)
     };
-    let rewritten = strip_line_comments(&after_links);
+    let (rewritten, mut counts) = strip_line_comments_with_counts(&after_links);
+    counts.doc_links_rewritten = doc_links_rewritten;
     if rewritten == original {
         return FileOutcome::Unchanged;
     }
     if opts.dry_run {
         let diff = unified_diff(path, &original, &rewritten, opts.context);
-        FileOutcome::Rewritten { diff: Some(diff) }
+        FileOutcome::Rewritten {
+            diff: Some(diff),
+            counts,
+        }
     } else {
         match fs::write(path, rewritten) {
-            Ok(()) => FileOutcome::Rewritten { diff: None },
+            Ok(()) => FileOutcome::Rewritten { diff: None, counts },
             Err(e) => FileOutcome::IoError(e.to_string()),
         }
     }
@@ -194,7 +272,29 @@ pub fn line_comment_is_preserved(line_comment_body: &str) -> bool {
 /// trigger this collapse.
 #[must_use]
 pub fn strip_line_comments(src: &str) -> String {
+    strip_line_comments_with_counts(src).0
+}
+/// Like [`strip_line_comments`] but also returns a [`RewriteCounts`]
+/// tally of the strip pass:
+///
+/// - `comments_removed` — non-doc `//` and `/* */` tokens dropped.
+/// - `inline_trimmed` — subset of `comments_removed` where the
+///   dropped comment sat mid-line after code (a non-zero amount of
+///   horizontal whitespace was trimmed back from `out`).
+/// - `blank_lines_collapsed` — one per completed solo-line drop run
+///   whose source had at least one blank line BOTH above and below
+///   the block (the symmetric-pad collapse path).
+/// - `safety_preserved` — `// SAFETY:` / `// SAFETY` lines kept.
+/// - `auto_trait_preserved` — `AUTO-TRAIT-POLICY-{BEGIN,END}` lines
+///   kept.
+///
+/// `doc_links_rewritten` is left at the default (0); the doc-link
+/// pass is upstream of this strip pass and surfaces its own count
+/// through [`process_file`].
+#[must_use]
+pub fn strip_line_comments_with_counts(src: &str) -> (String, RewriteCounts) {
     let mut out = String::with_capacity(src.len());
+    let mut counts = RewriteCounts::default();
     let mut cursor = 0usize;
     let mut pending_blank_collapse = false;
     let mut drop_run: Option<DropRun> = None;
@@ -206,15 +306,34 @@ pub fn strip_line_comments(src: &str) -> String {
             token.kind,
             TokenKind::LineComment { .. } | TokenKind::BlockComment { .. }
         );
-        let drop = match token.kind {
-            TokenKind::LineComment { doc_style: None } => !line_comment_is_preserved(text),
-            TokenKind::BlockComment { doc_style: None, .. } => true,
-            _ => false,
+        let (drop, preserved_kind) = match token.kind {
+            TokenKind::LineComment { doc_style: None } => {
+                if line_comment_is_preserved(text) {
+                    (false, classify_preserved_token(text))
+                } else {
+                    (true, PreservedKind::None)
+                }
+            }
+            TokenKind::BlockComment { doc_style: None, .. } => (true, PreservedKind::None),
+            _ => (false, PreservedKind::None),
         };
+        match preserved_kind {
+            PreservedKind::None => {}
+            PreservedKind::Safety => {
+                counts.safety_preserved = counts.safety_preserved.saturating_add(1);
+            }
+            PreservedKind::AutoTrait => {
+                counts.auto_trait_preserved = counts.auto_trait_preserved.saturating_add(1);
+            }
+        }
         if drop {
             let before_comment = &src[..end - text.len()];
             let was_line_alone = line_was_blank_before(before_comment);
-            trim_trailing_whitespace_to_last_newline(&mut out);
+            let trimmed_horizontal = trim_trailing_whitespace_to_last_newline(&mut out);
+            counts.comments_removed = counts.comments_removed.saturating_add(1);
+            if !was_line_alone && trimmed_horizontal > 0 {
+                counts.inline_trimmed = counts.inline_trimmed.saturating_add(1);
+            }
             if was_line_alone {
                 if drop_run.is_none() {
                     drop_run = Some(DropRun {
@@ -240,6 +359,7 @@ pub fn strip_line_comments(src: &str) -> String {
                 && run.blanks_below_emitted >= 1
             {
                 pop_one_trailing_newline(&mut out);
+                counts.blank_lines_collapsed = counts.blank_lines_collapsed.saturating_add(1);
             }
             out.push_str(text);
             if !matches!(token.kind, TokenKind::Whitespace) || !is_comment {
@@ -252,8 +372,33 @@ pub fn strip_line_comments(src: &str) -> String {
         && run.blanks_below_emitted >= 1
     {
         pop_one_trailing_newline(&mut out);
+        counts.blank_lines_collapsed = counts.blank_lines_collapsed.saturating_add(1);
     }
-    out
+    (out, counts)
+}
+/// Tag returned by [`classify_preserved_token`] identifying which
+/// preserved-marker family a kept `//` comment belongs to. Used by
+/// [`strip_line_comments_with_counts`] to increment the corresponding
+/// `RewriteCounts` field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreservedKind {
+    None,
+    Safety,
+    AutoTrait,
+}
+/// Classify a preserved line-comment by the substring token that kept
+/// it alive. `AUTO-TRAIT-POLICY-{BEGIN,END}` markers take precedence
+/// over the `SAFETY` family for counting purposes — a single line
+/// containing both substrings is rare in practice and the auto-trait
+/// guarantee is the stronger signal.
+fn classify_preserved_token(text: &str) -> PreservedKind {
+    if text.contains("AUTO-TRAIT-POLICY-BEGIN") || text.contains("AUTO-TRAIT-POLICY-END") {
+        PreservedKind::AutoTrait
+    } else if text.contains("SAFETY:") || text.contains("SAFETY ") {
+        PreservedKind::Safety
+    } else {
+        PreservedKind::None
+    }
 }
 /// State captured while inside a contiguous run of solo-line non-doc
 /// comment drops. `blanks_above` is the count of blank lines that
@@ -313,11 +458,16 @@ fn line_was_blank_before(prefix: &str) -> bool {
 /// In-place: drop any trailing run of horizontal whitespace from `s`,
 /// leaving prior `\n` and earlier content intact. Used to clean up the
 /// indentation that preceded a stripped solo-line comment so the
-/// collapse leaves no trailing-whitespace residue.
-fn trim_trailing_whitespace_to_last_newline(s: &mut String) {
+/// collapse leaves no trailing-whitespace residue, and to trim the
+/// inline whitespace between code and a removed mid-line comment.
+/// Returns the number of characters popped.
+fn trim_trailing_whitespace_to_last_newline(s: &mut String) -> usize {
+    let mut popped = 0;
     while matches!(s.chars().last(), Some(' ' | '\t')) {
         s.pop();
+        popped += 1;
     }
+    popped
 }
 /// One byte-range replacement against the original source.
 ///
@@ -1537,6 +1687,62 @@ mod process_file_tests {
         let src = "let x = 1; // tail\n\nlet y = 2;\n";
         let expected = "let x = 1;\n\nlet y = 2;\n";
         assert_eq!(strip_line_comments(src), expected);
+    }
+    #[test]
+    fn strip_line_comments_with_counts_zero_on_clean_source() {
+        let (out, counts) = super::strip_line_comments_with_counts("fn f() {}\n");
+        assert_eq!(out, "fn f() {}\n");
+        assert_eq!(counts, super::RewriteCounts::default());
+    }
+    #[test]
+    fn strip_line_comments_with_counts_counts_solo_line_drops() {
+        let (_, counts) =
+            super::strip_line_comments_with_counts("// a\n// b\nfn f() {}\n// c\n");
+        assert_eq!(counts.comments_removed, 3);
+        assert_eq!(counts.inline_trimmed, 0);
+    }
+    #[test]
+    fn strip_line_comments_with_counts_counts_inline_trim() {
+        let (_, counts) =
+            super::strip_line_comments_with_counts("let x = 1; // a\nlet y = 2; /* b */\n");
+        assert_eq!(counts.comments_removed, 2);
+        assert_eq!(counts.inline_trimmed, 2);
+    }
+    #[test]
+    fn strip_line_comments_with_counts_counts_blank_lines_collapsed() {
+        let (_, counts) = super::strip_line_comments_with_counts(
+            "fn a() {}\n\n// removed\n\nfn b() {}\n",
+        );
+        assert_eq!(counts.comments_removed, 1);
+        assert_eq!(counts.blank_lines_collapsed, 1);
+    }
+    #[test]
+    fn strip_line_comments_with_counts_does_not_count_blank_collapse_for_asymmetric() {
+        let (_, counts) =
+            super::strip_line_comments_with_counts("fn a() {}\n\n// removed\nfn b() {}\n");
+        assert_eq!(counts.comments_removed, 1);
+        assert_eq!(counts.blank_lines_collapsed, 0);
+    }
+    #[test]
+    fn strip_line_comments_with_counts_counts_safety_preserved() {
+        let (_, counts) =
+            super::strip_line_comments_with_counts("// SAFETY: invariant\nfn f() {}\n");
+        assert_eq!(counts.comments_removed, 0);
+        assert_eq!(counts.safety_preserved, 1);
+    }
+    #[test]
+    fn strip_line_comments_with_counts_counts_auto_trait_preserved() {
+        let src = "// AUTO-TRAIT-POLICY-BEGIN\nfn f() {}\n// AUTO-TRAIT-POLICY-END\n";
+        let (_, counts) = super::strip_line_comments_with_counts(src);
+        assert_eq!(counts.comments_removed, 0);
+        assert_eq!(counts.auto_trait_preserved, 2);
+    }
+    #[test]
+    fn strip_line_comments_thin_wrapper_matches_full() {
+        let src = "// a\nfn f() {}\n";
+        let direct = super::strip_line_comments(src);
+        let (with_counts, _) = super::strip_line_comments_with_counts(src);
+        assert_eq!(direct, with_counts);
     }
 }
 #[cfg(test)]
