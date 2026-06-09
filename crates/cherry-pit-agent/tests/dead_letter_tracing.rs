@@ -182,14 +182,12 @@ async fn tracing_dead_letter_sink_renders_none_uuid_fields() {
 /// Minimal future-blocker for a future known to be `Ready` on first
 /// poll. The [`TracingDeadLetterSink::record`] body is `tracing::error!`
 /// (sync) followed by `async move { Ok(()) }` — yields immediately.
-fn futures_block_on<F: std::future::Future>(mut fut: F) -> F::Output {
-    use std::pin::Pin;
+fn futures_block_on<F: std::future::Future>(fut: F) -> F::Output {
     use std::task::{Context, Poll, Waker};
 
-    // SAFETY: fut is on the stack and not moved after this point.
-    let fut = unsafe { Pin::new_unchecked(&mut fut) };
+    let mut fut = Box::pin(fut);
     let mut cx = Context::from_waker(Waker::noop());
-    match fut.poll(&mut cx) {
+    match fut.as_mut().poll(&mut cx) {
         Poll::Ready(v) => v,
         Poll::Pending => panic!("TracingDeadLetterSink::record future must be Ready on first poll"),
     }
