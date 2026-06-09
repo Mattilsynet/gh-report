@@ -12,11 +12,12 @@
 //! ## Crash-safety
 //!
 //! `atomic_write_bytes` and `atomic_write_text` use the temp-file +
-//! fsync + rename pattern. File contents are fsynced before rename;
-//! the parent directory is **not** fsynced after rename. This
-//! guarantees durability against process crashes but not against
-//! power-loss on all filesystems. Changing this contract is a
-//! SemVer-major break (CHE-0053:R6).
+//! fsync + rename + parent-dir-fsync pattern. File contents are
+//! fsynced before rename, and the parent directory is fsynced after
+//! rename so the rename itself is durable on filesystems whose
+//! `fsync(dir)` propagates directory-entry changes (ext4, xfs, zfs;
+//! see CHE-0032:R3). Weakening this guarantee — e.g. dropping the
+//! parent-dir fsync — is a SemVer-major break (CHE-0053:R6).
 //!
 //! ## Synchronous-only
 //!
