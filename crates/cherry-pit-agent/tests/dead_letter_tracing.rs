@@ -53,11 +53,7 @@ impl<'a> MakeWriter<'a> for VecWriter {
 /// Strip volatile fields (timestamp prefix, UUIDs) so the assertion
 /// targets only the schema, not the values.
 fn redact(s: &str) -> String {
-    // Drop the leading timestamp `YYYY-MM-DDTHH:MM:SS.ffffffZ ` that
-    // the default fmt layer prepends; everything from " ERROR" onward
-    // is the schema we care about.
     let after_ts = s.find(" ERROR ").map_or(s, |idx| &s[idx + 1..]).to_string();
-    // Replace UUIDv7 hex (8-4-4-4-12) with a stable token.
     regex_lite_uuid(&after_ts)
 }
 
@@ -81,7 +77,6 @@ fn regex_lite_uuid(s: &str) -> String {
 }
 
 fn is_uuid_at(b: &[u8]) -> bool {
-    // 8-4-4-4-12 hex with hyphens at 8, 13, 18, 23
     if b.len() < 36 {
         return false;
     }
@@ -124,9 +119,6 @@ async fn tracing_dead_letter_sink_emits_pinned_schema() {
             "OrderNotifier",
             "smtp 421".into(),
         );
-        // record() is async but the future is Ready on first poll —
-        // a tiny block_on suffices and keeps the test sync within
-        // the with_default scope.
         futures_block_on(sink.record(record)).unwrap();
     });
 
@@ -233,9 +225,6 @@ fn dead_letter_record_field_shape_is_locked() {
     });
 
     let captured = writer.snapshot();
-    // Lock every public field name verbatim. If a field is renamed or
-    // dropped, this assertion fails — and the failing field name is
-    // visible in the diff.
     for field in [
         "event_id=",
         "correlation_id=",

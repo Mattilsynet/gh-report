@@ -61,9 +61,6 @@ pub fn parse_domain(dir: &DomainDir) -> Result<ParseOutcome, String> {
     ))
     .expect("valid regex");
 
-    // `entries.flatten()` discards per-entry `io::Error`s (file
-    // vanished mid-iter, transient FS errors). These are rare and
-    // accepted as silent skips per Phase 4 design.
     for entry in entries.flatten() {
         let file_name = entry.file_name();
         let name = file_name.to_string_lossy();
@@ -80,8 +77,6 @@ pub fn parse_domain(dir: &DomainDir) -> Result<ParseOutcome, String> {
                 outcome.diagnostics.extend(file_outcome.diagnostics);
             }
             Err(e) => {
-                // Read failure on a file that matched the filename
-                // pattern. Surface as P001 (advisory-only per AFM-0003).
                 outcome.diagnostics.push(Diagnostic::warning(
                     "P001",
                     &entry.path(),
@@ -135,7 +130,6 @@ pub fn parse_stale(stale_dir: &Path, config: &Config) -> Result<ParseOutcome, St
             continue;
         }
 
-        // Try each prefix to find which domain this stale ADR belongs to
         for (prefix, re) in &prefixes {
             if re.is_match(&name) {
                 match parse_adr_file(&entry.path(), prefix, true) {
@@ -201,7 +195,6 @@ pub fn parse_adr_file(
         return Ok(outcome);
     }
 
-    // --- H1: title and ID ---
     let Some((id, title, title_line)) = parse_title(&lines, expected_prefix) else {
         outcome.diagnostics.push(Diagnostic::warning(
             "P002",
@@ -215,42 +208,28 @@ pub fn parse_adr_file(
         return Ok(outcome);
     };
 
-    // --- Metadata fields ---
     let (date, _) = find_field(&lines, "Date:");
     let (last_reviewed, _) = find_field(&lines, "Last-reviewed:");
     let (tier, _) = find_tier_field(&lines);
 
-    // --- Status ---
-    // Preamble `Status:` metadata field only. The legacy `## Status` H2
-    // fallback (reading the value from the section body) is removed —
-    // corpus has zero remaining users (afm-drop-legacy-status-1).
-    // We still detect the presence of a `## Status` H2 so T005c can
-    // fire and guide migration to the preamble field.
     let (status, status_line, status_raw) = find_status_field(&lines);
     let status_from_section = status.is_none() && has_heading(&lines, "Status");
 
-    // --- Related ---
     let (relationships, has_related, _related_has_placeholder) = find_relationships(&lines);
 
-    // --- Required sections ---
     let has_context = has_heading(&lines, "Context");
     let has_decision = has_heading(&lines, "Decision");
     let has_consequences = has_heading(&lines, "Consequences");
     let has_retirement = has_heading(&lines, "Retirement");
 
-    // --- Section ordering and word counts ---
     let (section_order, section_word_counts) = analyze_sections(&lines);
 
-    // --- Crates field ---
     let crates = find_crates_field(&lines);
 
-    // --- Parent-cross-domain field ---
     let (parent_cross_domain, parent_cross_domain_reason) = find_parent_cross_domain_field(&lines);
 
-    // --- Decision section content and tagged rules ---
     let decision_rules = extract_tagged_rules(&lines);
 
-    // --- Code block metrics ---
     let (max_code_block_lines, _code_block_count, max_code_block_line) =
         measure_code_blocks(&lines);
 
@@ -289,7 +268,6 @@ pub fn parse_adr_file(
 fn parse_title(lines: &[&str], expected_prefix: &str) -> Option<(AdrId, String, usize)> {
     for (i, line) in lines.iter().enumerate() {
         if let Some(rest) = line.strip_prefix("# ") {
-            // Expected format: "PREFIX-NNNN. Title text"
             if let Some(dot_pos) = rest.find(". ")
                 && let Some(id) = parse_adr_id(&rest[..dot_pos])
                 && id.prefix == expected_prefix
@@ -335,7 +313,6 @@ fn find_tier_field(lines: &[&str]) -> (Option<Tier>, usize) {
 /// Find `Status:` metadata field in the preamble (before first H2 heading).
 fn find_status_field(lines: &[&str]) -> (Option<Status>, usize, Option<String>) {
     for (i, line) in lines.iter().enumerate() {
-        // Stop at first H2 — metadata preamble is above sections
         if line.starts_with("## ") {
             break;
         }
@@ -375,13 +352,11 @@ fn find_relationships(lines: &[&str]) -> (Vec<Relationship>, bool, bool) {
             if line.starts_with("## ") {
                 break;
             }
-            // Detect `—` or `- —` placeholder for empty Related
             let trimmed = line.trim();
             if trimmed == "—" || trimmed == "- —" {
                 has_placeholder = true;
                 continue;
             }
-            // Parse pipe-separated format: "Verb: targets | Verb: targets"
             let segments: Vec<&str> = trimmed.split(" | ").collect();
             for segment in &segments {
                 let segment = segment.trim();
@@ -424,7 +399,6 @@ fn analyze_sections(lines: &[&str]) -> (Vec<String>, HashMap<String, usize>) {
     let mut in_code_block = false;
 
     for line in lines {
-        // Track code block boundaries
         if line.starts_with("```") {
             in_code_block = !in_code_block;
             continue;
@@ -435,7 +409,6 @@ fn analyze_sections(lines: &[&str]) -> (Vec<String>, HashMap<String, usize>) {
         }
 
         if let Some(heading) = line.strip_prefix("## ") {
-            // Flush previous section
             if let Some(ref section) = current_section {
                 word_counts.insert(section.clone(), current_words);
             }
@@ -445,12 +418,10 @@ fn analyze_sections(lines: &[&str]) -> (Vec<String>, HashMap<String, usize>) {
             current_section = Some(name);
             current_words = 0;
         } else if current_section.is_some() && !line.is_empty() {
-            // Count words in non-empty, non-heading, non-code lines
             current_words += line.split_whitespace().count();
         }
     }
 
-    // Flush last section
     if let Some(ref section) = current_section {
         word_counts.insert(section.clone(), current_words);
     }
@@ -470,7 +441,6 @@ fn find_crates_field(lines: &[&str]) -> Vec<String> {
             }
             return value.split(',').map(|s| s.trim().to_owned()).collect();
         }
-        // Stop searching at first H2 — metadata preamble is above sections
         if line.starts_with("## ") {
             break;
         }
@@ -495,7 +465,6 @@ fn find_parent_cross_domain_field(lines: &[&str]) -> (Option<AdrId>, String) {
             if value.is_empty() {
                 return (None, String::new());
             }
-            // Split on em-dash, ASCII hyphen, or whitespace boundary
             let (id_part, reason) = split_id_and_reason(value);
             if let Some(id) = parse_adr_id(id_part.trim()) {
                 return (Some(id), reason.trim().to_owned());
@@ -508,15 +477,12 @@ fn find_parent_cross_domain_field(lines: &[&str]) -> (Option<AdrId>, String) {
 
 /// Split a `PREFIX-NNNN — reason` string into ID and reason parts.
 fn split_id_and_reason(value: &str) -> (&str, &str) {
-    // Try em-dash first
     if let Some(idx) = value.find('—') {
         return (&value[..idx], &value[idx + '—'.len_utf8()..]);
     }
-    // Try " - " (ASCII hyphen with surrounding whitespace)
     if let Some(idx) = value.find(" - ") {
         return (&value[..idx], &value[idx + 3..]);
     }
-    // Try first whitespace as boundary (ID has no spaces)
     if let Some(idx) = value.find(char::is_whitespace) {
         return (&value[..idx], &value[idx..]);
     }
@@ -561,23 +527,18 @@ fn extract_tagged_rules(lines: &[&str]) -> Vec<TaggedRule> {
             let mut text = caps.get(3).unwrap().as_str().trim().to_owned();
             let rule_line = i + 1;
 
-            // Collect continuation lines
             i += 1;
             while i < lines.len() {
                 let next = lines[i];
-                // Blank line terminates continuation
                 if next.trim().is_empty() {
                     break;
                 }
-                // Next section terminates
                 if next.starts_with("## ") {
                     break;
                 }
-                // New tagged rule terminates
                 if TAGGED_RULE_RE.is_match(next) {
                     break;
                 }
-                // Must be indented ≥2 spaces to be continuation
                 if next.len() >= 2 && next.starts_with("  ") {
                     text.push(' ');
                     text.push_str(next.trim());
@@ -624,7 +585,7 @@ fn strip_annotation(s: &str) -> &str {
 fn measure_code_blocks(lines: &[&str]) -> (usize, usize, usize) {
     let mut in_block = false;
     let mut current_lines = 0usize;
-    let mut current_start = 0usize; // 1-indexed
+    let mut current_start = 0usize;
     let mut max_lines = 0usize;
     let mut max_start = 0usize;
     let mut block_count = 0usize;
@@ -632,17 +593,15 @@ fn measure_code_blocks(lines: &[&str]) -> (usize, usize, usize) {
     for (i, line) in lines.iter().enumerate() {
         if line.starts_with("```") {
             if in_block {
-                // Closing fence
                 if current_lines > max_lines {
                     max_lines = current_lines;
                     max_start = current_start;
                 }
                 in_block = false;
             } else {
-                // Opening fence
                 in_block = true;
                 current_lines = 0;
-                current_start = i + 1; // 1-indexed
+                current_start = i + 1;
                 block_count += 1;
             }
         } else if in_block {
@@ -650,7 +609,6 @@ fn measure_code_blocks(lines: &[&str]) -> (usize, usize, usize) {
         }
     }
 
-    // Unclosed block — count what we have
     if in_block && current_lines > max_lines {
         max_lines = current_lines;
         max_start = current_start;
@@ -797,7 +755,6 @@ mod tests {
         let (max, count, start) = measure_code_blocks(&lines);
         assert_eq!(max, 0);
         assert_eq!(count, 1);
-        // Empty block has 0 content lines — no "largest block" to point to
         assert_eq!(start, 0);
     }
 
@@ -812,7 +769,6 @@ mod tests {
 
     #[test]
     fn measure_code_blocks_fence_lines_excluded() {
-        // Opening and closing fence lines should not be counted
         let lines = vec!["```", "only_this", "```"];
         let (max, count, start) = measure_code_blocks(&lines);
         assert_eq!(max, 1, "only content line counted, not fences");
@@ -906,7 +862,6 @@ mod tests {
             "That is all.",
         ];
         let (_, counts) = analyze_sections(&lines);
-        // Only prose words counted: "We decided to use this approach." (6) + "That is all." (3) = 9
         assert_eq!(counts["Decision"], 9);
     }
 
@@ -1050,7 +1005,6 @@ mod tests {
 
     #[test]
     fn find_parent_cross_domain_stops_at_h2() {
-        // Field appearing after first H2 is ignored
         let lines = vec![
             "# CHE-0042. Title",
             "",
@@ -1064,8 +1018,6 @@ mod tests {
 
     #[test]
     fn find_parent_cross_domain_garbage_after_colon() {
-        // Completely malformed value (no recognizable ID) — must
-        // return None for the ID without panicking.
         let lines = vec![
             "# CHE-0042. Title",
             "",
@@ -1080,7 +1032,6 @@ mod tests {
 
     #[test]
     fn find_parent_cross_domain_lowercase_prefix_rejected() {
-        // ADR ID prefixes are uppercase; lowercase is malformed.
         let lines = vec![
             "# CHE-0042. Title",
             "",
@@ -1251,13 +1202,8 @@ mod tests {
         assert!(rules.is_empty(), "old format should not be parsed");
     }
 
-    // ── Status metadata field tests ────────────────────────────────────
-
-    // ── Parser-stage diagnostic emission (AFM-0017) ─────────────────
-
     #[test]
     fn parse_adr_file_empty_file_emits_p002() {
-        // Write a 0-byte file and verify P002 is emitted with no record
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("CHE-0001-empty.md");
         fs::write(&path, "").expect("write empty file");
@@ -1296,8 +1242,6 @@ mod tests {
 
     #[test]
     fn parse_adr_file_wrong_prefix_h1_emits_p002() {
-        // H1 has a valid format but the prefix doesn't match the expected one
-        // (the file is in the CHE domain dir but its H1 says PAR-0001)
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("CHE-0001-wrong-prefix.md");
         fs::write(&path, "# PAR-0001. Wrong prefix\n").expect("write file");
@@ -1313,10 +1257,6 @@ mod tests {
 
     #[test]
     fn parse_adr_file_h1_with_trailing_space_emits_p002() {
-        // Regression: lenient predecessor accepted "# CHE-0001 . Title"
-        // by trimming "CHE-0001 " before ID parse. Strict parse_adr_id
-        // rejects the trailing space, surfacing the malformed H1 as P002
-        // rather than silently accepting it.
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("CHE-0001-trailing-space.md");
         fs::write(&path, "# CHE-0001 . Title\n").expect("write file");
@@ -1347,7 +1287,6 @@ mod tests {
 
     #[test]
     fn parse_adr_file_unreadable_returns_err() {
-        // Point at a path that does not exist — fs::read_to_string fails
         let outcome = parse_adr_file(
             Path::new("/nonexistent/path/that/should/never/exist/CHE-0001.md"),
             "CHE",
@@ -1358,7 +1297,6 @@ mod tests {
 
     #[test]
     fn parse_domain_unreadable_dir_returns_err() {
-        // Build a DomainDir pointing at a non-existent path
         let domain_dir = DomainDir {
             prefix: "CHE".to_string(),
             name: "Cherry-pit Test".to_string(),
@@ -1380,9 +1318,6 @@ mod tests {
 
     #[test]
     fn parse_domain_with_unreadable_file_emits_p001() {
-        // Set up a real domain directory with one valid file and one
-        // file that matches the prefix pattern but is a directory
-        // (fs::read_to_string on a directory returns Err on Unix and Windows)
         let dir = tempfile::tempdir().expect("tempdir");
         let valid_path = dir.path().join("CHE-0001-valid.md");
         fs::write(
@@ -1391,8 +1326,6 @@ mod tests {
         )
         .expect("write valid");
 
-        // Create a *directory* whose name matches the ADR filename pattern;
-        // read_to_string will fail with EISDIR.
         fs::create_dir(dir.path().join("CHE-0002-actually-a-dir.md"))
             .expect("create masquerading dir");
 
@@ -1415,16 +1348,11 @@ mod tests {
 
     #[test]
     fn parse_stale_with_unreadable_file_emits_p001() {
-        // Mirror parse_domain test but for stale: a file matching a configured
-        // domain prefix that fails read_to_string surfaces as P001.
         let dir = tempfile::tempdir().expect("tempdir");
 
-        // Create a directory whose name matches the CHE-NNNN-* pattern
-        // — read_to_string returns EISDIR.
         fs::create_dir(dir.path().join("CHE-0099-actually-a-dir.md"))
             .expect("create masquerading dir");
 
-        // Build a Config in-memory (skipping TOML round-trip).
         let config_toml = r#"
 [corpus]
 root = "docs/adr"
@@ -1483,7 +1411,6 @@ crates = []
 
     #[test]
     fn find_status_field_stops_at_h2() {
-        // Status: after a ## heading should NOT be picked up as metadata
         let lines = vec![
             "# CHE-0001. Title",
             "Date: 2026-04-27",
@@ -1496,19 +1423,16 @@ crates = []
         assert_eq!(status, None);
     }
 
-    // ── Pipe-separated Related edge cases ──────────────────────────────
-
     #[test]
     fn find_relationships_empty_section_returns_no_rels() {
         let lines = vec!["## Related", "", "", "## Context"];
         let (rels, found, _) = find_relationships(&lines);
-        assert!(found); // section heading exists
-        assert!(rels.is_empty()); // but no relationships parsed
+        assert!(found);
+        assert!(rels.is_empty());
     }
 
     #[test]
     fn find_relationships_old_bullet_format_not_parsed() {
-        // Old format with "- Verb: target" should NOT produce relationships
         let lines = vec![
             "## Related",
             "",
@@ -1518,8 +1442,8 @@ crates = []
             "## Context",
         ];
         let (rels, found, _) = find_relationships(&lines);
-        assert!(found); // section heading exists
-        assert!(rels.is_empty()); // bullets don't parse as pipe-format
+        assert!(found);
+        assert!(rels.is_empty());
     }
 
     #[test]
@@ -1551,7 +1475,6 @@ crates = []
 
     #[test]
     fn find_relationships_no_space_pipe_not_parsed() {
-        // Pipe without surrounding spaces is NOT a valid separator
         let lines = vec![
             "## Related",
             "",
@@ -1561,11 +1484,6 @@ crates = []
         ];
         let (rels, found, _) = find_relationships(&lines);
         assert!(found);
-        // "Root: CHE-0001|References: CHE-0002" is treated as one segment;
-        // verb_str = "Root", targets_str = "CHE-0001|References: CHE-0002".
-        // The strict parse_adr_id rejects trailing text, so rels is empty —
-        // which is the correct outcome: malformed Related lines should not
-        // partially parse.
         assert!(
             rels.is_empty(),
             "no-space pipe should not split into segments and strict ID parser \
@@ -1575,7 +1493,6 @@ crates = []
 
     #[test]
     fn find_relationships_multi_line_content() {
-        // Multiple lines within Related section (each is an independent pipe-format line)
         let lines = vec![
             "## Related",
             "",
@@ -1629,7 +1546,6 @@ crates = []
         );
         assert_eq!(line, 3);
 
-        // Tier: after H2 should not be found
         let lines_after = vec!["# CHE-0001. Title", "", "## Context", "", "Tier: A"];
         let (tier2, _) = find_tier_field(&lines_after);
         assert_eq!(

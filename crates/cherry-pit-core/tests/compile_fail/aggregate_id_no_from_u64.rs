@@ -3,6 +3,5 @@
 use cherry_pit_core::AggregateId;
 
 fn main() {
-    // This must fail: From<u64> is not implemented.
     let _id: AggregateId = AggregateId::from(5_u64);
 }

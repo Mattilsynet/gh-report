@@ -19,12 +19,7 @@ use cherry_pit_agent::correlation_for;
 use proptest::prelude::*;
 
 fn uuid_strategy() -> impl Strategy<Value = uuid::Uuid> {
-    any::<u128>().prop_map(|n| {
-        // Use from_u128 so proptest shrinks toward simpler values.
-        // We don't need uuid v7 timestamps for the invariant; any
-        // 128-bit identity works.
-        uuid::Uuid::from_u128(n.max(1))
-    })
+    any::<u128>().prop_map(|n| uuid::Uuid::from_u128(n.max(1)))
 }
 
 proptest! {

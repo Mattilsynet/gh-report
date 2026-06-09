@@ -4,6 +4,5 @@
 use cherry_pit_core::CorrelationContext;
 
 fn main() {
-    // This must fail: Default is not implemented.
     let _ctx = CorrelationContext::default();
 }

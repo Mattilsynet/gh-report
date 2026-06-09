@@ -63,10 +63,6 @@ use super::config::ValidatedConfig;
 use super::error::ServerError;
 use super::state::ServerState;
 
-// ===========================================================================
-// Content-encoding negotiation
-// ===========================================================================
-
 /// Supported response encodings, in preference order.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Encoding {
@@ -95,7 +91,6 @@ fn negotiate_encoding(accept: &HeaderValue) -> Encoding {
             None => (part, None),
         };
 
-        // Parse q-value, defaulting to 1.0.
         let quality = params
             .and_then(|p| {
                 p.split(';').find_map(|param| {
@@ -118,10 +113,6 @@ fn negotiate_encoding(accept: &HeaderValue) -> Encoding {
         Encoding::Identity
     }
 }
-
-// ===========================================================================
-// WebSocket handler for real-time page update notifications
-// ===========================================================================
 
 /// Server-side ping interval for WebSocket keepalive (seconds).
 const WS_PING_INTERVAL_SECS: u64 = 30;
@@ -165,27 +156,22 @@ const WS_MAX_MESSAGE_SIZE: usize = 4096;
 /// reverse proxy) to restrict access to authorized clients.
 fn validate_ws_origin(headers: &HeaderMap) -> bool {
     let Some(origin) = headers.get(header::ORIGIN) else {
-        // No Origin header → non-browser client (not subject to CSWSH).
         return true;
     };
     let Ok(origin_str) = origin.to_str() else {
-        // Non-ASCII Origin → reject.
         return false;
     };
 
-    // Step 1: Extract and validate scheme.
     let Some((scheme, after_scheme)) = origin_str.split_once("://") else {
-        return false; // Malformed Origin (no scheme).
+        return false;
     };
 
-    // Only allow http and https schemes.
     let default_port = match scheme {
         "https" => "443",
         "http" => "80",
-        _ => return false, // Reject ftp://, file://, etc.
+        _ => return false,
     };
 
-    // Step 2: Extract host:port from Origin (strip any trailing path).
     // SAFETY: `split('/').next()` on any `&str` always returns `Some`.
     let origin_authority = after_scheme
         .split('/')
@@ -193,21 +179,16 @@ fn validate_ws_origin(headers: &HeaderMap) -> bool {
         .expect("split always yields at least one element");
 
     let Some(host_hdr) = headers.get(header::HOST) else {
-        // No Host header at all → cannot validate, reject.
         return false;
     };
     let Ok(host_str) = host_hdr.to_str() else {
         return false;
     };
 
-    // Exact match (including port) is the common case.
     if origin_authority == host_str {
         return true;
     }
 
-    // Step 3: Normalize by stripping default ports, then compare.
-    // Split "host:port" into (hostname, port). If no port or port equals
-    // the scheme's default, normalize to hostname-only for comparison.
     let origin_normalized = normalize_authority(origin_authority, default_port);
     let host_normalized = normalize_authority(host_str, default_port);
 
@@ -224,7 +205,6 @@ fn validate_ws_origin(headers: &HeaderMap) -> bool {
 /// `"example.com"` → `("example.com", "")`.
 /// `"[::1]:8080"` → `("[::1]", "8080")`.
 fn normalize_authority<'a>(authority: &'a str, default_port: &str) -> (&'a str, &'a str) {
-    // IPv6 bracket notation: [addr]:port
     if authority.starts_with('[')
         && let Some(bracket_end) = authority.find(']')
     {
@@ -236,10 +216,8 @@ fn normalize_authority<'a>(authority: &'a str, default_port: &str) -> (&'a str, 
             }
             return (hostname, port);
         }
-        // No port after bracket — return whole thing as hostname.
         return (authority, "");
     }
-    // Malformed or no bracket — fall through to rsplit_once.
 
     match authority.rsplit_once(':') {
         Some((hostname, port)) if port == default_port => (hostname, ""),
@@ -283,7 +261,6 @@ async fn ws_handler<S: ServerState>(
     Extension(ws_sem): Extension<Arc<tokio::sync::Semaphore>>,
     headers: HeaderMap,
 ) -> Response {
-    // CSWSH protection: reject cross-origin WebSocket upgrades.
     if !validate_ws_origin(&headers) {
         warn!("rejected WebSocket upgrade: Origin does not match Host");
         return StatusCode::FORBIDDEN.into_response();
@@ -317,60 +294,49 @@ async fn ws_session<S: ServerState>(
     let (mut sender, mut receiver) = socket.split();
     let mut rx = state.ws_broadcast().subscribe();
 
-    // Send initial connected message.
     if sender
         .send(Message::Text(r#"{"type":"connected"}"#.into()))
         .await
         .is_err()
     {
-        return; // client disconnected immediately
+        return;
     }
 
-    // gh-report-specific: WS ping/pong keepalive (30s ping, 10s pong deadline) absent
-    // from cherry-pit-web — see deferred bead adr-fmt-65n4
     let mut ping_interval =
         tokio::time::interval(std::time::Duration::from_secs(WS_PING_INTERVAL_SECS));
-    ping_interval.tick().await; // consume the immediate first tick
+    ping_interval.tick().await;
 
     let mut awaiting_pong = false;
     let pong_deadline = std::time::Duration::from_secs(WS_PONG_DEADLINE_SECS);
-    // Initialize to far future — only armed when a Ping is sent.
     let far_future = tokio::time::Instant::now() + std::time::Duration::from_hours(24);
     let pong_timeout = tokio::time::sleep_until(far_future);
     tokio::pin!(pong_timeout);
 
     loop {
         tokio::select! {
-            // Branch 1: Receive from client (Pong, Close, or discard).
             msg = receiver.next() => {
                 match msg {
                     Some(Ok(Message::Pong(_))) => {
                         awaiting_pong = false;
-                        // Disarm the pong deadline timer.
                         pong_timeout.as_mut().reset(far_future);
                     }
                     Some(Ok(Message::Close(_)) | Err(_)) | None => break,
-                    _ => {} // discard text/binary from client
+                    _ => {}
                 }
             }
 
-            // Branch 2: Forward broadcast events to client.
             result = rx.recv() => {
                 match result {
                     Ok(event) => {
-                        // Use pre-serialized JSON — zero per-connection
-                        // serialization cost (O(1) vs O(N) for N clients).
                         if sender
                             .send(Message::Text((*event.json).into()))
                             .await
                             .is_err()
                         {
-                            break; // client disconnected
+                            break;
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        // gh-report-specific: lag → text-frame `{"type":"reload"}` (templates
-                        // depend on this); cherry-pit-web uses close-1001 — see deferred bead adr-fmt-65n4
                         debug!(missed = n, "ws client lagged — sending reload signal");
                         if sender
                             .send(Message::Text(r#"{"type":"reload"}"#.into()))
@@ -384,25 +350,19 @@ async fn ws_session<S: ServerState>(
                 }
             }
 
-            // Branch 3: Send periodic ping.
             _ = ping_interval.tick() => {
                 if awaiting_pong {
-                    // Pong still outstanding from previous ping. The pong
-                    // deadline timer (Branch 4) will handle the eviction.
-                    // Skip sending another ping — one outstanding is enough.
                     continue;
                 }
                 if sender.send(Message::Ping(vec![].into())).await.is_err() {
                     break;
                 }
                 awaiting_pong = true;
-                // Arm the pong deadline timer.
                 pong_timeout.as_mut().reset(
                     tokio::time::Instant::now() + pong_deadline
                 );
             }
 
-            // Branch 4: Pong deadline expired — client is unresponsive.
             () = &mut pong_timeout, if awaiting_pong => {
                 debug!("ws client missed pong deadline — closing");
                 break;
@@ -410,13 +370,8 @@ async fn ws_session<S: ServerState>(
         }
     }
 
-    // Best-effort close frame (ignore errors — client may already be gone).
     let _ = sender.send(Message::Close(None)).await;
 }
-
-// ===========================================================================
-// Response building helper
-// ===========================================================================
 
 /// Build a full HTTP response from a cached page.
 ///
@@ -434,7 +389,6 @@ fn serve_page(
 ) -> Response {
     let has_compressed = page.body_zstd.is_some();
 
-    // Check If-None-Match for conditional request (304 Not Modified).
     if !skip_etag_check
         && let Some(if_none_match) = request_headers.get(axum::http::header::IF_NONE_MATCH)
         && etag_weak_match(if_none_match, &page.etag)
@@ -456,7 +410,6 @@ fn serve_page(
         return resp;
     }
 
-    // Negotiate content encoding.
     let encoding = request_headers
         .get(axum::http::header::ACCEPT_ENCODING)
         .map_or(Encoding::Identity, negotiate_encoding);
@@ -496,7 +449,6 @@ fn serve_page(
         );
     }
 
-    // SVG XSS mitigation: override CSP to block script execution.
     if page.content_type == "image/svg+xml" {
         resp.headers_mut().insert(
             axum::http::header::CONTENT_SECURITY_POLICY,
@@ -506,10 +458,6 @@ fn serve_page(
 
     resp
 }
-
-// ===========================================================================
-// Fallback resolution
-// ===========================================================================
 
 /// Check if a key has a file extension (contains a `.` in the last path segment).
 ///
@@ -533,16 +481,13 @@ fn resolve_cache_key<'a>(
     key: &str,
     has_trailing_slash: bool,
 ) -> Option<&'a super::state::CachedPage> {
-    // 1. Direct match.
     if let Some(page) = cache.get(key) {
         return Some(page);
     }
 
     let no_ext = !has_extension(key);
 
-    // 2. Directory index fallback.
     if has_trailing_slash || no_ext {
-        // Guard against self-referential lookup.
         if key != "index.html" && !key.ends_with("/index.html") {
             let index_key = format!("{key}/index.html");
             if let Some(page) = cache.get(&index_key) {
@@ -551,7 +496,6 @@ fn resolve_cache_key<'a>(
         }
     }
 
-    // 3. Clean URL fallback (e.g., /about → about.html).
     if !has_trailing_slash && no_ext {
         let html_key = format!("{key}.html");
         if let Some(page) = cache.get(&html_key) {
@@ -561,10 +505,6 @@ fn resolve_cache_key<'a>(
 
     None
 }
-
-// ===========================================================================
-// Cache fallback handler
-// ===========================================================================
 
 /// Axum fallback handler that serves pages from the in-memory HTML cache.
 ///
@@ -577,15 +517,11 @@ fn resolve_cache_key<'a>(
 /// - **400** for paths that fail normalisation (traversal, null bytes, etc.).
 /// - **404** for valid paths not present in the cache (serves custom error
 ///   page if configured).
-// gh-report-specific: custom 404 via `error_page_key` page-fallback; cherry-pit-web
-// returns plain 404 — see deferred bead adr-fmt-65n4
 async fn cache_fallback<S: ServerState>(
     State(state): State<Arc<S>>,
     Extension(error_page_key): Extension<Option<Arc<str>>>,
     request: Request,
 ) -> Response {
-    // Reject non-GET/HEAD methods early — no point normalising paths or
-    // looking up the cache for POST/PUT/DELETE/PATCH on a read-only service.
     if request.method() != Method::GET && request.method() != Method::HEAD {
         return (
             StatusCode::METHOD_NOT_ALLOWED,
@@ -597,27 +533,22 @@ async fn cache_fallback<S: ServerState>(
 
     let raw_path = request.uri().path();
 
-    // Normalise the path (security gate).
     let Some(normalized) = normalize_request_path(raw_path) else {
         warn!(path = %raw_path, "rejected path: failed normalisation");
         return (StatusCode::BAD_REQUEST, "bad request").into_response();
     };
 
-    // Load the current cache snapshot.
     let cache_guard = state.html_cache().load();
     let Some(cache) = cache_guard.as_ref() else {
-        // No collection has completed yet.
         info!(path = %normalized.key, "cache not populated: returning 503");
         return (StatusCode::SERVICE_UNAVAILABLE, "reports not yet available").into_response();
     };
 
-    // Resolve through fallback chain.
     if let Some(page) = resolve_cache_key(cache, &normalized.key, normalized.has_trailing_slash) {
         debug!(path = %normalized.key, "cache hit: serving page");
         return serve_page(page, request.headers(), StatusCode::OK, false);
     }
 
-    // Custom error page fallback.
     if let Some(ref epk) = error_page_key
         && let Some(error_page) = cache.get(epk.as_ref())
     {
@@ -639,7 +570,6 @@ fn etag_weak_match(client_val: &HeaderValue, server_val: &HeaderValue) -> bool {
         v.strip_prefix(b"W/").unwrap_or(v)
     }
 
-    // RFC 7232 §3.2: "If-None-Match: *" matches any current representation.
     if client_val.as_bytes() == b"*" {
         return true;
     }
@@ -685,7 +615,6 @@ pub(crate) async fn start<S: ServerState>(
     addr_tx: Option<tokio::sync::oneshot::Sender<SocketAddr>>,
     extra_routes: Option<Router<Arc<S>>>,
 ) -> Result<(), ServerError> {
-    // Warn that the server binds to all interfaces.
     if bind_address != "127.0.0.1" && bind_address != "::1" && bind_address != "localhost" {
         warn!(
             bind = %bind_address,
@@ -696,7 +625,6 @@ pub(crate) async fn start<S: ServerState>(
 
     let app = build_router(state, config, extra_routes);
 
-    // Parse the bind address.
     let addr: SocketAddr =
         format!("{bind_address}:{port}")
             .parse()
@@ -707,7 +635,6 @@ pub(crate) async fn start<S: ServerState>(
 
     info!(%addr, "content server listening (in-memory cache)");
 
-    // Bind and serve.
     let listener = TcpListener::bind(addr)
         .await
         .map_err(|e| ServerError::BindFailed {
@@ -715,7 +642,6 @@ pub(crate) async fn start<S: ServerState>(
             source: e,
         })?;
 
-    // Send the actual bound address (resolves ephemeral port 0).
     if let Some(tx) = addr_tx {
         let _ = tx.send(listener.local_addr().expect("listener bound successfully"));
     }
@@ -759,21 +685,13 @@ pub(crate) fn build_router<S: ServerState>(
     config: &ValidatedConfig,
     extra_routes: Option<Router<Arc<S>>>,
 ) -> Router {
-    // Create the per-instance concurrency semaphore from config.
     let http_semaphore = Arc::new(tokio::sync::Semaphore::new(config.concurrency_limit()));
     let ws_semaphore = Arc::new(tokio::sync::Semaphore::new(config.ws_max_connections()));
     let body_limit = config.max_request_body_bytes();
-    // gh-report-specific: per-deployment `csp_override` threaded into security_headers;
-    // cherry-pit-web hardcodes default CSP — see deferred bead adr-fmt-65n4
     let csp: HeaderValue = HeaderValue::from_str(config.csp_override().unwrap_or(DEFAULT_CSP))
         .expect("CSP validated by builder");
     let error_page_key: Option<Arc<str>> = config.error_page_key().map(Into::into);
 
-    // Built-in routes + fallback with a body limit (e.g., 1 KB for
-    // read-only endpoints). Using `.layer()` (not `.route_layer()`) so the
-    // body limit also covers the cache fallback handler.
-    // Extra routes (e.g., webhook) are merged separately and bring their
-    // own body-limit layer, enabling different limits per route group.
     let builtin_routes = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz::<S>))
@@ -781,8 +699,6 @@ pub(crate) fn build_router<S: ServerState>(
         .fallback(cache_fallback::<S>)
         .layer(RequestBodyLimitLayer::new(body_limit));
 
-    // Start with built-in routes (including fallback), then merge extra
-    // routes which bring their own body-limit layer.
     let mut router = Router::new().merge(builtin_routes);
 
     if let Some(extra) = extra_routes {
@@ -794,15 +710,10 @@ pub(crate) fn build_router<S: ServerState>(
         .layer(Extension(error_page_key))
         .layer(Extension(ws_semaphore))
         .layer(http_trace_layer())
-        // HTTP concurrency limit: per-instance semaphore replaces the
-        // static LazyLock for test isolation and configurability.
         .layer(middleware::from_fn(move |request, next| {
             let sem = Arc::clone(&http_semaphore);
             http_concurrency_limit(sem, request, next)
         }))
-        // Security headers: single middleware replaces 6 separate
-        // SetResponseHeaderLayer wrappers, reducing tower Service nesting
-        // and virtual dispatch overhead on every request.
         .layer(middleware::from_fn(move |req, next| {
             let csp = csp.clone();
             security_headers(req, next, csp)
@@ -816,9 +727,6 @@ pub(crate) fn build_router<S: ServerState>(
 /// the primary rate limiting should be at the ingress layer (Cloud Run,
 /// reverse proxy). Returns 503 Service Unavailable when the limit is
 /// reached, shedding load immediately rather than queuing.
-// gh-report-specific: kept local to avoid widening cherry-pit-web public surface
-// mid-Track-4.3. CHE-0030:R1 discipline. Future: re-export from cherry-pit-web
-// in a separate mission. See deferred bead adr-fmt-65n4.
 async fn http_concurrency_limit(
     semaphore: Arc<tokio::sync::Semaphore>,
     request: Request,
@@ -831,17 +739,11 @@ async fn http_concurrency_limit(
     next.run(request).await
 }
 
-// ===========================================================================
-// Health handlers
-// ===========================================================================
-
 /// Zero-allocation liveness probe. Returns a static JSON body — no
 /// `serde_json::json!()` construction, no heap allocation per call.
 ///
 /// Also suitable as a Kubernetes `startupProbe` target: always returns
 /// 200, proving the process is alive and listening.
-// gh-report-specific: `/healthz` (unversioned) returning `{"status":"ok"}`;
-// cherry-pit-web exposes `/v1/healthz` with `{"v":1,"status":"ok"}` — see deferred bead adr-fmt-65n4
 async fn healthz() -> impl IntoResponse {
     (
         StatusCode::OK,
@@ -868,10 +770,6 @@ async fn readyz<S: ServerState>(State(state): State<Arc<S>>) -> impl IntoRespons
     }
 }
 
-// ===========================================================================
-// Tests
-// ===========================================================================
-
 #[cfg(test)]
 mod tests {
     use super::super::config::ServerConfig;
@@ -879,8 +777,6 @@ mod tests {
     use super::*;
     use arc_swap::ArcSwap;
     use std::collections::HashMap;
-
-    // ── MockServerState for testing ─────────────────────────────
 
     /// Minimal `ServerState` implementation for testing the server layer
     /// in isolation from any domain-specific state.
@@ -918,8 +814,6 @@ mod tests {
         }
     }
 
-    // ── Helper: wait for server to accept connections ────────────
-
     /// Poll the server with exponential backoff until it accepts a TCP
     /// connection.  Replaces `sleep(50ms)` which is racy under CI load.
     ///
@@ -942,8 +836,6 @@ mod tests {
         .unwrap_or_else(|_| panic!("server at {addr} did not become ready within {timeout:?}"));
     }
 
-    // ── Helper: create state with populated cache ────────────────
-
     fn state_with_cache(pages: &[(&str, &str)]) -> Arc<MockServerState> {
         let state = MockServerState::new();
         let mut map = HashMap::new();
@@ -964,8 +856,6 @@ mod tests {
     fn default_config() -> ValidatedConfig {
         ServerConfig::builder().build().unwrap()
     }
-
-    // ── normalize_request_path unit tests ───────────────────────
 
     #[test]
     fn normalize_root_to_index() {
@@ -1017,7 +907,6 @@ mod tests {
 
     #[test]
     fn normalize_rejects_encoded_dotdot() {
-        // %2e = '.', %2f = '/'
         assert_eq!(normalize_request_path("/%2e%2e/secret.txt"), None);
         assert_eq!(normalize_request_path("/%2e%2e%2fsecret.txt"), None);
     }
@@ -1035,7 +924,6 @@ mod tests {
 
     #[test]
     fn normalize_double_encoded_is_harmless() {
-        // %252e%252e → decodes to literal "%2e%2e" (no dots), safe cache key.
         let result = normalize_request_path("/%252e%252e/secret.txt").unwrap();
         assert!(!result.key.contains(".."));
     }
@@ -1048,11 +936,8 @@ mod tests {
 
     #[test]
     fn normalize_rejects_invalid_utf8() {
-        // %FF is not valid UTF-8 start byte in isolation.
         assert_eq!(normalize_request_path("/%FF"), None);
     }
-
-    // ── Cache-based serving tests ───────────────────────────────
 
     #[tokio::test]
     async fn server_serves_cached_pages() {
@@ -1135,13 +1020,11 @@ mod tests {
 
         wait_for_server(addr).await;
 
-        // Raw traversal.
         let resp = reqwest::get(format!("http://{addr}/../secret.txt"))
             .await
             .unwrap();
         assert_ne!(resp.status(), 200);
 
-        // Encoded traversal.
         let resp = reqwest::get(format!("http://{addr}/%2e%2e/secret.txt"))
             .await
             .unwrap();
@@ -1167,13 +1050,11 @@ mod tests {
 
         wait_for_server(addr).await;
 
-        // GET / should return index.html.
         let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
         assert_eq!(resp.status(), 200);
         let body = resp.text().await.unwrap();
         assert_eq!(body, "<html>dashboard</html>");
 
-        // GET /report.html still works.
         let resp = reqwest::get(format!("http://{addr}/report.html"))
             .await
             .unwrap();
@@ -1241,11 +1122,9 @@ mod tests {
 
         wait_for_server(addr).await;
 
-        // Verify v1.
         let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
         assert_eq!(resp.text().await.unwrap(), "<html>v1</html>");
 
-        // Swap cache to v2.
         let mut map = HashMap::new();
         map.insert(
             "index.html".to_string(),
@@ -1253,7 +1132,6 @@ mod tests {
         );
         state.html_cache.store(Arc::new(Some(map)));
 
-        // Verify v2 is served immediately.
         let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
         assert_eq!(
             resp.text().await.unwrap(),
@@ -1263,8 +1141,6 @@ mod tests {
 
         handle.abort();
     }
-
-    // ── Health / readyz / status endpoint tests ────────────────
 
     #[tokio::test]
     async fn healthz_returns_200_ok() {
@@ -1338,7 +1214,6 @@ mod tests {
     async fn readyz_returns_200_after_completed_run() {
         let state = state_no_cache();
 
-        // Simulate readiness without a completed run.
         state
             .is_ready_override
             .store(true, std::sync::atomic::Ordering::Release);
@@ -1391,8 +1266,6 @@ mod tests {
         let result = handle.await.unwrap();
         assert!(result.is_ok());
     }
-
-    // ── Security headers ────────────────────────────────────────
 
     fn assert_security_headers(resp: &reqwest::Response, endpoint: &str) {
         assert_eq!(
@@ -1515,8 +1388,6 @@ mod tests {
 
         handle.abort();
     }
-
-    // ── ETag / Cache-Control tests ──────────────────────────────
 
     #[tokio::test]
     async fn cached_page_includes_etag_and_no_cache() {
@@ -1722,8 +1593,6 @@ mod tests {
         assert!(!etag_weak_match(&a, &b));
     }
 
-    // ── Encoding negotiation tests ──────────────────────────────
-
     #[test]
     fn negotiate_prefers_zstd() {
         let hdr = HeaderValue::from_static("gzip, deflate, zstd");
@@ -1753,8 +1622,6 @@ mod tests {
         let hdr = HeaderValue::from_static("zstd;level=1;q=0, gzip");
         assert_eq!(negotiate_encoding(&hdr), Encoding::Identity);
     }
-
-    // ── Pre-compression integration tests ───────────────────────
 
     #[tokio::test]
     async fn compressed_response_has_content_encoding_and_vary() {
@@ -1833,8 +1700,6 @@ mod tests {
 
         handle.abort();
     }
-
-    // ── WebSocket tests ─────────────────────────────────────────
 
     fn msg_text(msg: tokio_tungstenite::tungstenite::Message) -> String {
         msg.into_text()
@@ -2025,8 +1890,6 @@ mod tests {
         handle.abort();
     }
 
-    // ── WebSocket semaphore tests ───────────────────────────────
-
     #[tokio::test]
     async fn ws_semaphore_exhaustion_returns_503() {
         use futures_util::StreamExt;
@@ -2120,8 +1983,6 @@ mod tests {
         handle.abort();
     }
 
-    // ── WebSocket multi-client fanout test ───────────────────────
-
     #[tokio::test]
     async fn ws_broadcast_reaches_all_connected_clients() {
         use futures_util::StreamExt;
@@ -2173,8 +2034,6 @@ mod tests {
         handle.abort();
     }
 
-    // ── WebSocket graceful shutdown test ─────────────────────────
-
     #[tokio::test]
     async fn ws_session_ends_on_broadcast_close() {
         use futures_util::StreamExt;
@@ -2213,8 +2072,6 @@ mod tests {
             "WebSocket stream should drain after close + server abort"
         );
     }
-
-    // ── WebSocket /ws.js content-type integration test ──────────
 
     #[tokio::test]
     async fn ws_js_has_correct_content_type_and_zstd() {
@@ -2259,8 +2116,6 @@ mod tests {
 
         handle.abort();
     }
-
-    // ── WebSocket max message size test ──────────────────────────
 
     #[tokio::test]
     async fn ws_rejects_oversized_client_message() {
@@ -2309,8 +2164,6 @@ mod tests {
 
         handle.abort();
     }
-
-    // ── Origin validation unit tests ────────────────────────────
 
     #[test]
     fn origin_validation_same_origin_matches() {
@@ -2455,8 +2308,6 @@ mod tests {
         assert!(validate_ws_origin(&headers));
     }
 
-    // ── WebSocket CSWSH integration test ────────────────────────
-
     #[tokio::test]
     async fn ws_cross_origin_upgrade_rejected() {
         let state = state_no_cache();
@@ -2501,8 +2352,6 @@ mod tests {
 
         handle.abort();
     }
-
-    // ── HTTP method filtering tests ─────────────────────────────
 
     #[tokio::test]
     async fn post_to_cached_page_returns_405() {
@@ -2691,8 +2540,6 @@ mod tests {
         handle.abort();
     }
 
-    // ── NormalizedPath trailing slash tests ──────────────────────
-
     #[test]
     fn normalized_path_trailing_slash_about() {
         let result = normalize_request_path("/about/").unwrap();
@@ -2706,8 +2553,6 @@ mod tests {
         assert_eq!(result.key, "about");
         assert!(!result.has_trailing_slash);
     }
-
-    // ── Fallback resolution chain unit tests ────────────────────
 
     #[test]
     fn resolve_direct_match() {
@@ -2736,7 +2581,6 @@ mod tests {
             "about/index.html".to_string(),
             CachedPage::new("about/index.html", b"<html>about</html>".to_vec()),
         );
-        // No trailing slash, no extension → tries both about/index.html and about.html
         assert!(resolve_cache_key(&cache, "about", false).is_some());
     }
 
@@ -2747,7 +2591,6 @@ mod tests {
             "about.html".to_string(),
             CachedPage::new("about.html", b"<html>about</html>".to_vec()),
         );
-        // No trailing slash, no extension, no about/index.html → tries about.html
         assert!(resolve_cache_key(&cache, "about", false).is_some());
     }
 
@@ -2758,7 +2601,6 @@ mod tests {
             "index.html".to_string(),
             CachedPage::new("index.html", b"<html>root</html>".to_vec()),
         );
-        // Should find index.html directly, not try index.html/index.html
         assert!(resolve_cache_key(&cache, "index.html", false).is_some());
     }
 
@@ -2769,7 +2611,6 @@ mod tests {
             "blog/index.html".to_string(),
             CachedPage::new("blog/index.html", b"<html>blog</html>".to_vec()),
         );
-        // Direct match — should not try blog/index.html/index.html
         assert!(resolve_cache_key(&cache, "blog/index.html", false).is_some());
     }
 
@@ -2778,8 +2619,6 @@ mod tests {
         let cache = HashMap::new();
         assert!(resolve_cache_key(&cache, "nonexistent", false).is_none());
     }
-
-    // ── Fallback resolution integration tests ───────────────────
 
     #[tokio::test]
     async fn get_about_serves_about_index_html() {
@@ -2841,8 +2680,6 @@ mod tests {
         handle.abort();
     }
 
-    // ── Custom error page tests ─────────────────────────────────
-
     #[tokio::test]
     async fn custom_404_page_served_on_miss() {
         let state = state_with_cache(&[
@@ -2893,7 +2730,6 @@ mod tests {
         let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         wait_for_server(addr).await;
 
-        // First request to get the ETag of the error page.
         let resp = reqwest::get(format!("http://{addr}/nonexistent"))
             .await
             .unwrap();
@@ -2906,7 +2742,6 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // Second request with If-None-Match — should still get 404, not 304.
         let client = reqwest::Client::new();
         let resp = client
             .get(format!("http://{addr}/also-nonexistent"))
@@ -2918,8 +2753,6 @@ mod tests {
 
         handle.abort();
     }
-
-    // ── SVG XSS mitigation tests ────────────────────────────────
 
     #[tokio::test]
     async fn svg_response_has_restrictive_csp() {
@@ -2942,7 +2775,6 @@ mod tests {
             .unwrap()
             .to_str()
             .unwrap();
-        // Verify exact SVG CSP — must NOT be the global DEFAULT_CSP.
         assert_eq!(
             csp, SVG_CSP,
             "SVG should use restrictive SVG_CSP, not global DEFAULT_CSP"
@@ -2950,8 +2782,6 @@ mod tests {
 
         handle.abort();
     }
-
-    // ── Extra routes inheritance tests (PUBLISH BLOCKER) ────────
 
     #[tokio::test]
     async fn extra_routes_inherit_security_headers() {
@@ -2982,7 +2812,6 @@ mod tests {
             .concurrency_limit(1)
             .build()
             .unwrap();
-        // Extra route that holds the semaphore for 500ms.
         let extra = Router::new().route(
             "/slow",
             get_route(|| async {
@@ -2997,7 +2826,6 @@ mod tests {
         let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         wait_for_server(addr).await;
 
-        // First request occupies the single permit.
         let client = reqwest::Client::new();
         let slow_handle = tokio::spawn({
             let client = client.clone();
@@ -3005,10 +2833,8 @@ mod tests {
             async move { client.get(&url).send().await.unwrap() }
         });
 
-        // Give the slow request time to acquire the permit.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        // Second request should be rejected with 503.
         let resp = client
             .get(format!("http://{addr}/index.html"))
             .send()
@@ -3020,7 +2846,6 @@ mod tests {
             "concurrent request should get 503 when concurrency_limit=1"
         );
 
-        // Clean up.
         let slow_resp = slow_handle.await.unwrap();
         assert_eq!(slow_resp.status(), 200);
         handle.abort();
@@ -3036,7 +2861,6 @@ mod tests {
             .build()
             .unwrap();
 
-        // Extra route with a larger body limit (1 MB).
         let extra = Router::new()
             .route(
                 "/upload",
@@ -3053,9 +2877,8 @@ mod tests {
         let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         wait_for_server(addr).await;
 
-        let large_body = vec![b'x'; 2048]; // 2KB > 1KB limit
+        let large_body = vec![b'x'; 2048];
 
-        // Built-in route should reject large body.
         let client = reqwest::Client::new();
         let resp = client
             .post(format!("http://{addr}/index.html"))
@@ -3069,7 +2892,6 @@ mod tests {
             "built-in route should reject body > max_request_body_bytes"
         );
 
-        // Extra route should accept large body (its own 1MB limit).
         let resp = client
             .post(format!("http://{addr}/upload"))
             .body(large_body)
@@ -3092,11 +2914,8 @@ mod tests {
 
         let state = state_with_cache(&[("index.html", "<html>ok</html>")]);
         let extra = Router::new().route("/healthz", get_route(|| async { "shadowed" }));
-        // This should panic because /healthz conflicts with the built-in route.
         let _app = build_router(state, &default_config(), Some(extra));
     }
-
-    // ── Concurrency limit real shedding test ────────────────────
 
     #[tokio::test]
     async fn concurrency_limit_sheds_load_real() {
@@ -3107,7 +2926,6 @@ mod tests {
             .concurrency_limit(1)
             .build()
             .unwrap();
-        // Extra route that holds the semaphore.
         let extra = Router::new().route(
             "/hold",
             get_route(|| async {
@@ -3124,7 +2942,6 @@ mod tests {
 
         let client = reqwest::Client::new();
 
-        // Hold a request to occupy the single permit.
         let hold_handle = tokio::spawn({
             let client = client.clone();
             let url = format!("http://{addr}/hold");
@@ -3133,7 +2950,6 @@ mod tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        // Concurrent requests should get 503.
         let futures: Vec<_> = (0..3)
             .map(|_| {
                 let client = client.clone();
@@ -3156,14 +2972,8 @@ mod tests {
         handle.abort();
     }
 
-    // ── If-None-Match multi-value (known limitation) ────────────
-
     #[tokio::test]
     async fn if_none_match_multi_value_returns_200() {
-        // RFC 7232 §3.2 allows multiple ETags in If-None-Match.
-        // Our implementation compares only the full header value
-        // (single-value), so multi-value always returns 200.
-        // This is a documented known limitation.
         let state = state_with_cache(&[("index.html", "<html>etag test</html>")]);
         let app = build_router(state, &default_config(), None);
 
@@ -3172,7 +2982,6 @@ mod tests {
         let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         wait_for_server(addr).await;
 
-        // First request to get the ETag.
         let resp = reqwest::get(format!("http://{addr}/index.html"))
             .await
             .unwrap();
@@ -3185,7 +2994,6 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // Send multi-value If-None-Match: W/"old", <actual-etag>
         let client = reqwest::Client::new();
         let multi_value = format!(r#"W/"old", {etag}"#);
         let resp = client
@@ -3194,7 +3002,6 @@ mod tests {
             .send()
             .await
             .unwrap();
-        // Known limitation: multi-value comparison not supported → 200.
         assert_eq!(
             resp.status(),
             200,
@@ -3203,8 +3010,6 @@ mod tests {
 
         handle.abort();
     }
-
-    // ── MIME type integration tests ─────────────────────────────
 
     #[tokio::test]
     async fn wasm_has_correct_content_type() {
@@ -3287,8 +3092,6 @@ mod tests {
         handle.abort();
     }
 
-    // ── is_ready four-combination matrix ────────────────────────
-
     #[test]
     fn is_ready_neither_cache_nor_override() {
         let state = MockServerState::new();
@@ -3330,8 +3133,6 @@ mod tests {
             .store(true, std::sync::atomic::Ordering::Release);
         assert!(state.is_ready());
     }
-
-    // ── CSP override tests ──────────────────────────────────────
 
     #[tokio::test]
     async fn custom_csp_override_appears_in_response() {
@@ -3395,8 +3196,6 @@ mod tests {
         handle.abort();
     }
 
-    // ── start() error handling tests ────────────────────────────
-
     #[tokio::test]
     async fn start_with_invalid_bind_address() {
         let state = state_no_cache();
@@ -3419,8 +3218,6 @@ mod tests {
             "invalid bind address should return InvalidAddress, got: {result:?}"
         );
     }
-
-    // ── Config-driven ws_max_connections test ────────────────────
 
     #[tokio::test]
     async fn ws_max_connections_config_honored() {
@@ -3449,7 +3246,6 @@ mod tests {
         let (mut ws2, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
         let _ = ws2.next().await;
 
-        // Third connection should be rejected.
         let result = tokio_tungstenite::connect_async(&url).await;
         match result {
             Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
@@ -3464,13 +3260,8 @@ mod tests {
         handle.abort();
     }
 
-    // ── Concurrency limit test ──────────────────────────────────
-
     #[tokio::test]
     async fn concurrency_limit_sheds_load() {
-        // Verify the concurrency semaphore is created from config by checking
-        // that a config with limit=1 still serves requests (basic sanity) and
-        // that the router doesn't panic on construction.
         let state = state_with_cache(&[("index.html", "<html>ok</html>")]);
         let config = ServerConfig::builder()
             .concurrency_limit(1)
@@ -3487,7 +3278,6 @@ mod tests {
 
         wait_for_server(addr).await;
 
-        // Sequential request succeeds with concurrency_limit=1.
         let resp = reqwest::get(format!("http://{addr}/index.html"))
             .await
             .unwrap();
@@ -3495,8 +3285,6 @@ mod tests {
 
         handle.abort();
     }
-
-    // ── HEAD response tests ─────────────────────────────────────
 
     #[tokio::test]
     async fn head_returns_empty_body_with_content_length() {
@@ -3521,7 +3309,6 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), 200);
 
-        // HEAD response body should be empty.
         let resp_body = resp.bytes().await.unwrap();
         assert!(
             resp_body.is_empty(),
@@ -3531,8 +3318,6 @@ mod tests {
 
         handle.abort();
     }
-
-    // ── normalize_authority IPv6 tests (Finding 9.1) ────────────
 
     #[test]
     fn normalize_authority_ipv6_loopback_no_port() {
@@ -3562,23 +3347,18 @@ mod tests {
         assert_eq!(port, "9090");
     }
 
-    // ── has_extension edge cases (Finding 9.3) ──────────────────
-
     #[test]
     fn has_extension_dotted_directory_no_ext() {
-        // "v2.0/about" — dot is in the directory part, not the filename.
         assert!(!has_extension("v2.0/about"));
     }
 
     #[test]
     fn has_extension_trailing_dot() {
-        // "file." has a dot in the last segment.
         assert!(has_extension("file."));
     }
 
     #[test]
     fn has_extension_hidden_file() {
-        // ".hidden" has a dot in the last segment.
         assert!(has_extension(".hidden"));
     }
 
@@ -3592,16 +3372,12 @@ mod tests {
         assert!(has_extension("style.css"));
     }
 
-    // ── etag_weak_match wildcard (Finding 3.10) ─────────────────
-
     #[test]
     fn etag_weak_match_wildcard() {
         let client = HeaderValue::from_static("*");
         let server = HeaderValue::from_static("W/\"abc123\"");
         assert!(etag_weak_match(&client, &server));
     }
-
-    // ── Proptest: normalize_request_path ─────────────────────────
 
     mod proptest_path {
         use super::*;
@@ -3657,8 +3433,6 @@ mod tests {
         }
     }
 
-    // ── Proptest: validate_ws_origin ─────────────────────────────
-
     mod proptest_origin {
         use super::*;
         use proptest::prelude::*;
@@ -3704,7 +3478,6 @@ mod tests {
                 origin_host in "[a-z]{3,8}\\.[a-z]{2,4}",
                 host in "[a-z]{3,8}\\.[a-z]{2,4}",
             ) {
-                // Only test when hosts are genuinely different.
                 prop_assume!(origin_host != host);
                 let origin = format!("https://{origin_host}");
                 let mut headers = HeaderMap::new();

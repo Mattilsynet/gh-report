@@ -212,7 +212,6 @@ impl CachedPage {
 pub(crate) fn compute_etag(body: &[u8]) -> HeaderValue {
     use std::fmt::Write;
     let hash = Sha256::digest(body);
-    // W/" (3) + 32 hex chars + " (1) = 36 bytes
     let mut etag_str = String::with_capacity(36);
     etag_str.push_str("W/\"");
     for b in &hash[..16] {

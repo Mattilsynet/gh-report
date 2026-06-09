@@ -34,25 +34,21 @@ impl DomainEvent for TestEvent {
 async fn stale_lock_evidence_reports_filesystem_metadata() {
     let dir = tempfile::tempdir().unwrap();
 
-    // ── 1. Fresh tempdir: no .lock yet ──────────────────────────────
     let none = stale_lock_evidence(dir.path()).expect("metadata probe succeeds");
     assert!(none.is_none(), "no .lock present before first write");
 
-    // ── 2. Trigger lock acquisition via a real store write ──────────
     let store = MsgpackFileStore::<TestEvent>::new(dir.path());
     store
         .create(vec![TestEvent::Tick], CorrelationContext::none())
         .await
         .expect("create succeeds on fresh tempdir");
 
-    // Sanity: .lock now exists per CHE-0043:R1.
     let lock_path = dir.path().join(".lock");
     assert!(
         lock_path.exists(),
         ".lock sentinel must exist after first write (CHE-0043:R1)"
     );
 
-    // ── 3. Helper now reports evidence ──────────────────────────────
     let evidence = stale_lock_evidence(dir.path())
         .expect("metadata probe succeeds")
         .expect("lock should be present after first write");
@@ -67,10 +63,6 @@ async fn stale_lock_evidence_reports_filesystem_metadata() {
         "lock_path must be {{store_dir}}/.lock"
     );
 
-    // Size must match filesystem (sentinel is typically zero-length;
-    // we only assert agreement with the actual file metadata, not a
-    // specific value, since the implementation reserves the right to
-    // write a marker).
     let fs_meta = std::fs::metadata(&lock_path).expect("stat .lock");
     assert_eq!(
         evidence.lock_size,
@@ -83,7 +75,6 @@ async fn stale_lock_evidence_reports_filesystem_metadata() {
         "lock_mtime must match filesystem metadata"
     );
 
-    // ── 4. Absent-dir case ──────────────────────────────────────────
     let absent = dir.path().join("does-not-exist");
     let none2 = stale_lock_evidence(&absent).expect("absent dir is not an error");
     assert!(none2.is_none(), "absent dir reports None, not Err");

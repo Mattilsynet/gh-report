@@ -31,16 +31,10 @@ fn app_new_smoke() {
 
 #[test]
 fn register_policy_order_independent() {
-    // assemble() registers one policy; constructing twice must
-    // yield the same registry size regardless of construction order
-    // (the fixture only has one cross-aggregate policy, so this
-    // collapses to "two independent assembles agree on count").
     let a = assemble();
     let b = assemble();
     assert_eq!(a.app.policy_count(), b.app.policy_count());
 }
-
-// ── Tiny inline aggregate + sink probe to lock dead-letter routing ──
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 enum E {
@@ -133,11 +127,6 @@ fn count_dead_letters(sink: &CaptureSink) -> usize {
 
 #[test]
 fn dead_letter_default_routes_terminal_count() {
-    // Construct an App with a CaptureSink and confirm it accepts the
-    // dead-letter port shape; the actual end-to-end Terminal routing
-    // is exercised by `src/dispatch.rs::tests::terminal_error_routes_to_dead_letter`
-    // (count==1) and the per-envelope publish chain. Here we lock
-    // that the sink interface accepts an N=3 batch deterministically.
     let sink = CaptureSink::default();
     let _app = App::new(
         GwStub,
@@ -146,8 +135,6 @@ fn dead_letter_default_routes_terminal_count() {
         (),
         sink.clone(),
     );
-    // Direct sink invocation × 3 — proves the sink itself is callable
-    // outside the dispatcher loop, locking the count-3 contract.
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -170,15 +157,6 @@ fn dead_letter_default_routes_terminal_count() {
 
 #[test]
 fn dead_letter_does_not_route_retriable_via_default_sink() {
-    // CHE-0046 + CHE-0024:R5 + CHE-0051:R7: only Terminal failures route
-    // to the dead-letter sink. The TracingDeadLetterSink itself is
-    // category-agnostic (it records anything handed to it) — the
-    // *filtering* lives in `dispatch::dispatch_one`. This test locks
-    // the negative space at the sink-interface level: a Retriable
-    // record passed by mistake would still be recorded, so the
-    // sink does NOT pre-filter. The dispatcher integration-test
-    // (`src/dispatch.rs::tests::retryable_error_propagates_without_dead_letter`)
-    // covers the dispatcher's filtering side of this contract.
     let sink = TracingDeadLetterSink::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -196,7 +174,4 @@ fn dead_letter_does_not_route_retriable_via_default_sink() {
         .await
         .unwrap();
     });
-    // No assertion needed beyond "did not panic / did not error" —
-    // the property under test is "sink remains category-agnostic;
-    // dispatcher is responsible for not invoking sink on Retriable".
 }

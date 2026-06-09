@@ -57,8 +57,6 @@ impl Tier {
 
     /// Single-letter token (`"S"`, `"A"`, `"B"`, `"C"`, `"D"`).
     /// GraphQL `AdrGql.tier` projection (M1.4) is the only caller.
-    // Stable token surface for GraphQL read-side; widening to a
-    // longer label would be a wire break for any downstream client.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -79,9 +77,6 @@ impl core::fmt::Display for Tier {
 
 impl Status {
     /// Single-token name (`"Draft"`, `"Proposed"`, …).
-    // Pinned token surface for GraphQL `AdrGql.status` projection
-    // (M1.4): avoids relying on Debug-formatting whose output is
-    // technically allowed to drift between rustc versions.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -132,14 +127,6 @@ pub enum Status {
     /// Status line in source did not parse to a known variant.
     Invalid = 6,
 }
-
-// adr-fmt → adr-srv `Status` / `Tier` conversion bridges land in M1.3
-// alongside the scrape pipeline. AFM-0026:R1 does not currently
-// re-export `adr_fmt::Status` (only `Tier`); the conversion call
-// site in M1.3 is the right place to decide whether to (a) amend
-// AFM-0026:R1's surface to add `Status`, or (b) bridge via a local
-// helper that pattern-matches against `adr_fmt::parse_domain`
-// output. M1.2's job is wire-shape pinning only.
 
 /// Subset of ADR frontmatter exposed via adr-srv's GraphQL surface.
 ///

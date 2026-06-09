@@ -284,7 +284,6 @@ mod tests {
     #[tokio::test]
     async fn publish_with_zero_handlers_is_noop() {
         let bus: InProcessEventBus<TestEvent> = InProcessEventBus::new();
-        // No panic, no error, no handler invocation possible.
         bus.publish(&[envelope(1, 1), envelope(2, 2)])
             .await
             .unwrap();
@@ -327,7 +326,6 @@ mod tests {
             .await
             .unwrap();
 
-        // 3 handlers × 2 envelopes = 6 invocations, ordered envelope-major.
         let log = recorded.lock().unwrap().clone();
         assert_eq!(log.len(), 6);
         assert_eq!(

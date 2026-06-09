@@ -59,8 +59,6 @@ use gh_report::domain::repository::{Repository, Visibility};
 
 #[tokio::test]
 async fn bootstrap_replay_populates_routing_indices() {
-    // ── Arrange: seed a MsgpackFileStore with one Run and one
-    // Repo aggregate, then drop the store handle (flock released).
     let tmp = tempfile::tempdir().expect("tempdir");
     let events_dir = tmp.path().join("events");
     let projections_dir = tmp.path().join("projections");
@@ -71,7 +69,6 @@ async fn bootstrap_replay_populates_routing_indices() {
         let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(&events_dir));
         let ctx = CorrelationContext::none();
 
-        // Run aggregate: SweepStarted with batch_id "batch-replay-001".
         let run_event = DomainEvent::SweepStarted {
             org: "test-org".into(),
             repo_count: 3,
@@ -84,7 +81,6 @@ async fn bootstrap_replay_populates_routing_indices() {
             .await
             .expect("create Run aggregate");
 
-        // Repo aggregate: RepoEvaluated with domain_key "id-repo-alpha".
         let repo_event = DomainEvent::RepoEvaluated {
             domain_key: "id-repo-alpha".into(),
             repo_name: "repo-alpha".into(),
@@ -99,10 +95,7 @@ async fn bootstrap_replay_populates_routing_indices() {
             .await
             .expect("create Repo aggregate");
     }
-    // store dropped — flock released.
 
-    // ── Act: construct AppState over the seeded events dir and run
-    // the bootstrap path.
     let app_state = AppState::with_stores(&events_dir, projections_dir)
         .await
         .expect("with_stores");
@@ -111,7 +104,6 @@ async fn bootstrap_replay_populates_routing_indices() {
         .await
         .expect("snapshot_fast_path_init");
 
-    // ── Assert: routing indices populated from replay.
     let runs_arc = app_state.runs_by_key_for_test();
     let runs = runs_arc.lock().expect("runs_by_key lock");
     assert!(
@@ -138,7 +130,6 @@ async fn bootstrap_replay_populates_routing_indices() {
         "next_seq must track both aggregates (Run + Repo); got {} entries",
         next_seq.len()
     );
-    // Every aggregate's first event has sequence 1.
     for (agg_id, seq) in next_seq.iter() {
         assert_eq!(
             seq.get(),
@@ -193,11 +184,6 @@ async fn restart_rehydrates_projection_state() {
         .expect("event_store wired by with_stores");
     let ctx = CorrelationContext::none();
 
-    // Aggregate(1): SweepStarted on a Run aggregate. The pre-fix
-    // projection-fold processes this id, but SweepStarted is a no-op
-    // arm in EvidenceProjection::apply — so this seeded event is
-    // irrelevant to the assertion. Its purpose is to *consume*
-    // AggregateId(1) so the subsequent create lands on id 2.
     let run_event = DomainEvent::SweepStarted {
         org: "test-org".into(),
         repo_count: 1,
@@ -210,13 +196,6 @@ async fn restart_rehydrates_projection_state() {
         .await
         .expect("create Run aggregate");
 
-    // Aggregate(2): RepoEvaluated with non-None evidence. The
-    // pre-fix projection-fold SKIPS this aggregate (id != 1) so
-    // projection_state.repositories stays empty after init —
-    // even though bootstrap_replay_state walks the envelope and
-    // populates repos_by_key. Post-fix: the unified replay folds
-    // this envelope into projection_state via Projection::apply,
-    // and the RepoEvaluated arm inserts the repo by domain_key.
     let repo_event = DomainEvent::RepoEvaluated {
         domain_key: "owner/repo-rehydrate".into(),
         repo_name: "repo-rehydrate".into(),
@@ -231,15 +210,11 @@ async fn restart_rehydrates_projection_state() {
         .await
         .expect("create Repo aggregate");
 
-    // Act: drive the boot-replay path.
     app_state
         .snapshot_fast_path_init()
         .await
         .expect("snapshot_fast_path_init");
 
-    // Assert: projection_state.repositories contains the Repo's
-    // domain_key. Pre-fix this fails (map is empty). Post-fix it
-    // passes.
     let projection_arc = app_state.projection_state_for_test();
     let projection = projection_arc.lock().expect("projection mutex");
     assert!(

@@ -63,8 +63,6 @@ pub async fn security_headers(request: Request, next: Next, csp: HeaderValue) ->
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
-    // Only set CSP if the handler didn't already set a response-specific
-    // override (e.g., SVG XSS mitigation sets a restrictive CSP).
     if !headers.contains_key(header::CONTENT_SECURITY_POLICY) {
         headers.insert(header::CONTENT_SECURITY_POLICY, csp);
     }
@@ -133,7 +131,6 @@ mod tests {
 
     #[tokio::test]
     async fn preserves_handler_set_csp() {
-        // Handler sets a restrictive CSP; middleware must not overwrite it.
         let app = Router::new()
             .route(
                 "/",

@@ -200,11 +200,9 @@ impl<E: DomainEvent + Serialize + DeserializeOwned> MsgpackFileStore<E> {
     }
 
     fn get_lock(&self, id: u64) -> Arc<tokio::sync::Mutex<()>> {
-        // Fast path: lock already exists — read without blocking writers.
         if let Some(lock) = self.locks.read_sync(&id, |_, v| Arc::clone(v)) {
             return lock;
         }
-        // Slow path: insert a new lock if still absent.
         self.locks
             .entry_sync(id)
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
@@ -373,8 +371,6 @@ impl<E: DomainEvent + Serialize + DeserializeOwned> MsgpackFileStore<E> {
             .await
             .map_err(infrastructure_error)?;
 
-        // Use a unique temp file per aggregate to prevent collisions
-        // between concurrent writes to different aggregates.
         let tmp_name = format!(
             "{}.tmp",
             path.file_name().and_then(|n| n.to_str()).unwrap_or("tmp")
@@ -389,12 +385,6 @@ impl<E: DomainEvent + Serialize + DeserializeOwned> MsgpackFileStore<E> {
             tmp_file
                 .write_all(&bytes_for_write)
                 .map_err(infrastructure_error)?;
-            // CHE-0032:R3 — temp-file durability fence before rename.
-            // No runtime assertion of `sync_all` invocation exists: per
-            // CHE-0038:R5 (no mock frameworks) and the lack of portable
-            // syscall instrumentation in `#[tokio::test]`, the invariant
-            // is enforced by static review of these two call sites
-            // (here and the parent-dir sync at the bottom of this fn).
             tmp_file.sync_all().map_err(infrastructure_error)?;
             Ok(())
         })
@@ -409,10 +399,6 @@ impl<E: DomainEvent + Serialize + DeserializeOwned> MsgpackFileStore<E> {
         let dir = self.dir.clone();
         tokio::task::spawn_blocking(move || -> Result<(), StoreError> {
             let dir_file = std::fs::File::open(dir).map_err(infrastructure_error)?;
-            // CHE-0032:R3 — parent-dir sync after rename (durability of
-            // the rename's metadata update). See the static-review note
-            // above the tmp-file `sync_all` site for why this is not
-            // covered by a runtime assertion (CHE-0038:R5).
             dir_file.sync_all().map_err(infrastructure_error)?;
             Ok(())
         })
@@ -501,9 +487,6 @@ impl<E: DomainEvent + Serialize + DeserializeOwned> EventStore for MsgpackFileSt
 
         let path = self.aggregate_path(id);
 
-        // Load existing events — the aggregate must have been created
-        // via `create()` first. If the file does not exist, the
-        // aggregate was never created and append is not valid.
         let mut existing: Vec<EventEnvelope<E>> = match tokio::fs::read(&path).await {
             Ok(bytes) => Self::deserialize_and_validate_stream(id, &bytes)?,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -514,7 +497,6 @@ impl<E: DomainEvent + Serialize + DeserializeOwned> EventStore for MsgpackFileSt
             Err(e) => return Err(infrastructure_error(e)),
         };
 
-        // Optimistic concurrency check.
         let actual_sequence = existing.last().map_or(0, |e| e.sequence().get());
         if actual_sequence != expected_sequence.get() {
             return Err(StoreError::ConcurrencyConflict {
@@ -524,8 +506,6 @@ impl<E: DomainEvent + Serialize + DeserializeOwned> EventStore for MsgpackFileSt
             });
         }
 
-        // Build envelopes inside the lock so timestamps are monotonic
-        // with sequence numbers.
         let new_envelopes = Self::build_envelopes(id, expected_sequence.get(), events, &context)?;
 
         existing.extend(new_envelopes.iter().cloned());
@@ -555,9 +535,6 @@ impl<E: DomainEvent + Serialize + DeserializeOwned> ListableEventStore for Msgpa
         for entry in entries {
             let entry = entry.map_err(infrastructure_error)?;
             let path = entry.path();
-            // Only files whose extension is exactly `msgpack` — this
-            // excludes `.msgpack.tmp` orphans (extension `tmp`) and
-            // the `.lock` sentinel (extension `lock`).
             if path.extension().and_then(|s| s.to_str()) != Some("msgpack") {
                 continue;
             }
@@ -630,8 +607,6 @@ mod tests {
         false
     }
 
-    // ── create ──────────────────────────────────────────────────────
-
     #[tokio::test]
     async fn create_assigns_sequential_ids() {
         let dir = tempfile::tempdir().unwrap();
@@ -679,10 +654,8 @@ mod tests {
             *envelopes[1].payload(),
             TestEvent::Updated { name: "b".into() }
         );
-        // UUID v7 — both should be non-nil and different.
         assert!(!envelopes[0].event_id().is_nil());
         assert_ne!(envelopes[0].event_id(), envelopes[1].event_id());
-        // Same timestamp within the batch.
         assert_eq!(envelopes[0].timestamp(), envelopes[1].timestamp());
     }
 
@@ -703,7 +676,6 @@ mod tests {
     async fn create_survives_restart() {
         let dir = tempfile::tempdir().unwrap();
 
-        // First store instance creates two aggregates.
         {
             let store = MsgpackFileStore::new(dir.path());
             store
@@ -716,8 +688,6 @@ mod tests {
                 .unwrap();
         }
 
-        // Second store instance (simulates process restart) should
-        // continue from 3.
         let store = MsgpackFileStore::new(dir.path());
         let (id, _) = store
             .create(vec![TestEvent::Created { name: "c".into() }], no_ctx())
@@ -730,12 +700,10 @@ mod tests {
     async fn directory_scan_ignores_non_numeric() {
         let dir = tempfile::tempdir().unwrap();
 
-        // Pre-create a file with a non-numeric name.
         tokio::fs::create_dir_all(dir.path()).await.unwrap();
         tokio::fs::write(dir.path().join("old-format.msgpack"), b"junk")
             .await
             .unwrap();
-        // Also create a numeric file to seed the counter.
         {
             let store = MsgpackFileStore::new(dir.path());
             store
@@ -744,7 +712,6 @@ mod tests {
                 .unwrap();
         }
 
-        // New store should scan, skip "old-format", find "1", assign 2.
         let store = MsgpackFileStore::new(dir.path());
         let (id, _) = store
             .create(vec![TestEvent::Created { name: "b".into() }], no_ctx())
@@ -752,8 +719,6 @@ mod tests {
             .unwrap();
         assert_eq!(id, agg_id(2));
     }
-
-    // ── load ────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn load_nonexistent_returns_empty() {
@@ -768,7 +733,6 @@ mod tests {
     async fn corrupt_file_returns_error() {
         let dir = tempfile::tempdir().unwrap();
 
-        // Write garbage to a store file.
         tokio::fs::create_dir_all(dir.path()).await.unwrap();
         tokio::fs::write(dir.path().join("1.msgpack"), b"not valid msgpack")
             .await
@@ -855,8 +819,6 @@ mod tests {
             "expected CorruptData for aggregate mismatch, got: {result:?}"
         );
     }
-
-    // ── create + load roundtrip ─────────────────────────────────────
 
     #[tokio::test]
     async fn create_and_load_roundtrip() {
@@ -954,8 +916,6 @@ mod tests {
         assert_eq!(loaded[1].sequence().get(), 2);
     }
 
-    // ── append ──────────────────────────────────────────────────────
-
     #[tokio::test]
     async fn append_and_load_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
@@ -1051,7 +1011,6 @@ mod tests {
         let result = store.append(id, nz(1), vec![], no_ctx()).await.unwrap();
         assert!(result.is_empty());
 
-        // Original event still there, nothing else.
         let loaded = store.load(id).await.unwrap();
         assert_eq!(loaded.len(), 1);
     }
@@ -1087,14 +1046,11 @@ mod tests {
         assert!(!envelopes[0].event_id().is_nil());
         assert_ne!(envelopes[0].event_id(), envelopes[1].event_id());
 
-        // Verify they match what's on disk.
         let loaded = store.load(id).await.unwrap();
         assert_eq!(loaded.len(), 3);
         assert_eq!(*loaded[1].payload(), *envelopes[0].payload());
         assert_eq!(*loaded[2].payload(), *envelopes[1].payload());
     }
-
-    // ── concurrency ─────────────────────────────────────────────────
 
     #[tokio::test]
     async fn concurrency_conflict_detected() {
@@ -1111,7 +1067,6 @@ mod tests {
             .await
             .unwrap();
 
-        // First append succeeds.
         store
             .append(
                 id,
@@ -1122,7 +1077,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Second append with stale expected_sequence fails.
         let result = store
             .append(
                 id,
@@ -1155,7 +1109,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Spawn 5 concurrent appends, all expecting sequence 1.
         let mut handles = Vec::new();
         for i in 0..5 {
             let s = Arc::clone(&store);
@@ -1190,8 +1143,6 @@ mod tests {
             "remaining writers should get ConcurrencyConflict"
         );
     }
-
-    // ── isolation ───────────────────────────────────────────────────
 
     #[tokio::test]
     async fn separate_aggregates_isolated() {
@@ -1230,8 +1181,6 @@ mod tests {
         assert_ne!(id1, id2);
     }
 
-    // ── misc ────────────────────────────────────────────────────────
-
     #[test]
     fn default_uses_store_dir() {
         let store = MsgpackFileStore::<TestEvent>::default();
@@ -1243,7 +1192,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = MsgpackFileStore::new(dir.path());
 
-        // Create.
         let (id, created) = store
             .create(
                 vec![TestEvent::Created {
@@ -1256,7 +1204,6 @@ mod tests {
         assert_eq!(created.len(), 1);
         assert_eq!(created[0].sequence().get(), 1);
 
-        // Append.
         let appended = store
             .append(
                 id,
@@ -1271,7 +1218,6 @@ mod tests {
         assert_eq!(appended.len(), 1);
         assert_eq!(appended[0].sequence().get(), 2);
 
-        // Full history.
         let all = store.load(id).await.unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].aggregate_id(), id);
@@ -1283,8 +1229,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = MsgpackFileStore::new(dir.path());
 
-        // Loading a never-created aggregate returns empty — the bus
-        // layer maps this to AggregateNotFound.
         let events: Vec<EventEnvelope<TestEvent>> = store.load(agg_id(42)).await.unwrap();
         assert!(events.is_empty());
     }
@@ -1368,14 +1312,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = MsgpackFileStore::new(dir.path());
 
-        // Create an aggregate first.
         let (id, _) = store
             .create(vec![TestEvent::Created { name: "a".into() }], no_ctx())
             .await
             .unwrap();
 
-        // Attempt to append with start_sequence near u64::MAX.
-        // This should fail with an overflow error, not panic.
         let result = store
             .append(
                 id,
@@ -1385,19 +1326,11 @@ mod tests {
             )
             .await;
 
-        // The concurrency check will fire first (actual_sequence=1 != u64::MAX),
-        // but the overflow would also be caught in build_envelopes.
         assert!(result.is_err());
     }
 
-    // ── backward compatibility ──────────────────────────────────────
-
     #[tokio::test]
     async fn deserializes_old_format_without_correlation_fields() {
-        // Simulate a msgpack file written before correlation_id and
-        // causation_id were added: serialize with named keys but
-        // without the new fields. The #[serde(default)] on
-        // EventEnvelope ensures missing fields default to None.
         #[derive(Serialize)]
         struct OldEnvelope {
             event_id: uuid::Uuid,
@@ -1418,7 +1351,6 @@ mod tests {
             payload: TestEvent::Created { name: "old".into() },
         }];
 
-        // Use named encoding (map format) — same as the store uses.
         let bytes = rmp_serde::encode::to_vec_named(&old).unwrap();
         tokio::fs::write(dir.path().join("1.msgpack"), &bytes)
             .await
@@ -1451,11 +1383,9 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify initial creation has None for both fields.
         assert!(created[0].correlation_id().is_none());
         assert!(created[0].causation_id().is_none());
 
-        // Reload and verify None survives serialization roundtrip.
         let loaded = store.load(id).await.unwrap();
         assert!(loaded[0].correlation_id().is_none());
         assert!(loaded[0].causation_id().is_none());
@@ -1463,8 +1393,6 @@ mod tests {
 
     #[tokio::test]
     async fn correlation_and_causation_some_values_roundtrip() {
-        // Verify that Some(uuid) values survive a write/load cycle
-        // by manually constructing an envelope with populated fields.
         let dir = tempfile::tempdir().unwrap();
         tokio::fs::create_dir_all(dir.path()).await.unwrap();
 
@@ -1515,7 +1443,6 @@ mod tests {
         assert_eq!(created[0].correlation_id(), Some(corr));
         assert_eq!(created[0].causation_id(), Some(cause));
 
-        // Verify values survive load roundtrip.
         let loaded = store.load(id).await.unwrap();
         assert_eq!(loaded[0].correlation_id(), Some(corr));
         assert_eq!(loaded[0].causation_id(), Some(cause));
@@ -1553,7 +1480,6 @@ mod tests {
         assert_eq!(appended[0].correlation_id(), Some(corr));
         assert_eq!(appended[0].causation_id(), Some(cause));
 
-        // Original event should still have None.
         let loaded = store.load(id).await.unwrap();
         assert!(loaded[0].correlation_id().is_none());
         assert_eq!(loaded[1].correlation_id(), Some(corr));
@@ -1580,7 +1506,6 @@ mod tests {
         assert_eq!(created[0].correlation_id(), Some(corr));
         assert!(created[0].causation_id().is_none());
 
-        // Verify roundtrip.
         let loaded = store.load(id).await.unwrap();
         assert_eq!(loaded[0].correlation_id(), Some(corr));
         assert!(loaded[0].causation_id().is_none());
@@ -1588,8 +1513,6 @@ mod tests {
 
     #[tokio::test]
     async fn old_format_with_zero_sequence_rejected_on_load() {
-        // Serialize an envelope with sequence=0 (invalid) and verify
-        // that loading it fails — NonZeroU64 serde rejects zero.
         #[derive(serde::Serialize)]
         struct BadEnvelope {
             event_id: uuid::Uuid,
@@ -1627,17 +1550,11 @@ mod tests {
         );
     }
 
-    // ── append-to-uncreated guard ───────────────────────────────────
-
     #[tokio::test]
     async fn append_to_uncreated_aggregate_fails() {
         let dir = tempfile::tempdir().unwrap();
         let store = MsgpackFileStore::<TestEvent>::new(dir.path());
 
-        // Append to a never-created aggregate must fail with a
-        // file-not-found guard — callers must use create() first.
-        // The sequence value is irrelevant; the guard fires before
-        // the concurrency check.
         let result = store
             .append(
                 agg_id(999),
@@ -1662,17 +1579,11 @@ mod tests {
         );
     }
 
-    // ── additional coverage ─────────────────────────────────────────
-
     #[tokio::test]
     async fn create_does_not_overwrite_existing_file() {
-        // Manually place a file at the path that create() would
-        // assign. Verify the store skips that ID and does not
-        // silently overwrite the existing file.
         let dir = tempfile::tempdir().unwrap();
         tokio::fs::create_dir_all(dir.path()).await.unwrap();
 
-        // Plant a sentinel file at 1.msgpack.
         let sentinel = b"sentinel data";
         tokio::fs::write(dir.path().join("1.msgpack"), sentinel)
             .await
@@ -1680,7 +1591,6 @@ mod tests {
 
         let store = MsgpackFileStore::<TestEvent>::new(dir.path());
 
-        // create() should scan and discover 1.msgpack, then assign ID 2.
         let (id, _) = store
             .create(
                 vec![TestEvent::Created {
@@ -1693,19 +1603,15 @@ mod tests {
 
         assert_eq!(id.get(), 2, "should skip the occupied ID");
 
-        // Verify the sentinel file is untouched.
         let data = tokio::fs::read(dir.path().join("1.msgpack")).await.unwrap();
         assert_eq!(data, sentinel, "existing file must not be overwritten");
     }
 
     #[tokio::test]
     async fn scan_max_id_with_gaps() {
-        // Files 1.msgpack and 5.msgpack exist (gap at 2-4).
-        // After restart, next ID should be 6.
         let dir = tempfile::tempdir().unwrap();
         let store = MsgpackFileStore::<TestEvent>::new(dir.path());
 
-        // Create IDs 1–5 by writing files directly.
         tokio::fs::create_dir_all(dir.path()).await.unwrap();
         for id_val in [1u64, 5] {
             let id = agg_id(id_val);
@@ -1729,7 +1635,6 @@ mod tests {
                 .unwrap();
         }
 
-        // Simulate restart — new store instance.
         let store2 = MsgpackFileStore::<TestEvent>::new(dir.path());
 
         let (id, _) = store2
@@ -1748,12 +1653,9 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_create_and_append() {
-        // Interleave create and append operations concurrently.
-        // Verify no data corruption.
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(MsgpackFileStore::new(dir.path()));
 
-        // Seed an aggregate so append has a target.
         let (seed_id, _) = store
             .create(
                 vec![TestEvent::Created {
@@ -1766,7 +1668,6 @@ mod tests {
 
         let mut handles = Vec::new();
 
-        // 5 concurrent creates.
         for i in 0..5 {
             let s = Arc::clone(&store);
             handles.push(tokio::spawn(async move {
@@ -1781,8 +1682,6 @@ mod tests {
             }));
         }
 
-        // 5 concurrent appends to the seed aggregate — at most one
-        // can succeed (all use expected_sequence 1).
         for i in 0..5 {
             let s = Arc::clone(&store);
             handles.push(tokio::spawn(async move {
@@ -1805,14 +1704,12 @@ mod tests {
             .map(|r| r.unwrap())
             .collect();
 
-        // All 5 creates must succeed.
         let creates: Vec<_> = results
             .iter()
             .filter(|r| r.as_ref().ok().is_some_and(|v| v.0 == "create"))
             .collect();
         assert_eq!(creates.len(), 5, "all creates should succeed");
 
-        // Exactly 1 append succeeds, 4 get ConcurrencyConflict.
         let append_ok = results
             .iter()
             .filter(|r| r.as_ref().ok().is_some_and(|v| v.0 == "append"))
@@ -1821,7 +1718,6 @@ mod tests {
         assert_eq!(append_ok, 1, "exactly one append should win");
         assert_eq!(append_err, 4, "four appends should get ConcurrencyConflict");
 
-        // All created aggregates should have unique IDs.
         let mut created_ids: Vec<u64> = creates
             .iter()
             .map(|r| r.as_ref().unwrap().1.get())
@@ -1833,7 +1729,6 @@ mod tests {
 
     #[tokio::test]
     async fn temp_file_cleaned_up_after_successful_write() {
-        // After a successful write, no .tmp file should remain.
         let dir = tempfile::tempdir().unwrap();
         let store = MsgpackFileStore::new(dir.path());
 
@@ -1847,7 +1742,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Check that no .tmp files remain.
         let mut entries = tokio::fs::read_dir(dir.path()).await.unwrap();
         while let Some(entry) = entries.next_entry().await.unwrap() {
             let name = entry.file_name();
@@ -1858,7 +1752,6 @@ mod tests {
             );
         }
 
-        // The actual file should exist.
         let path = dir.path().join(format!("{}.msgpack", id.get()));
         assert!(path.exists(), "aggregate file should exist");
     }
@@ -1889,14 +1782,11 @@ mod tests {
         );
     }
 
-    // ── fencing ──────────────────────────────────────────────────────
-
     #[tokio::test]
     async fn single_store_acquires_lock_successfully() {
         let dir = tempfile::tempdir().unwrap();
         let store = MsgpackFileStore::new(dir.path());
 
-        // First create triggers ensure_fenced — should succeed.
         let result = store
             .create(
                 vec![TestEvent::Created {
@@ -1907,7 +1797,6 @@ mod tests {
             .await;
         assert!(result.is_ok(), "first store should acquire lock");
 
-        // .lock file should exist.
         assert!(
             dir.path().join(".lock").exists(),
             ".lock sentinel file should be created"
@@ -1918,7 +1807,6 @@ mod tests {
     async fn second_store_same_dir_fails_with_store_locked() {
         let dir = tempfile::tempdir().unwrap();
 
-        // First store acquires the lock.
         let store1 = MsgpackFileStore::new(dir.path());
         store1
             .create(
@@ -1930,7 +1818,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Second store on the same directory should fail.
         let store2 = MsgpackFileStore::<TestEvent>::new(dir.path());
         let result = store2
             .create(
@@ -1951,7 +1838,6 @@ mod tests {
     async fn lock_released_on_drop_allows_reacquisition() {
         let dir = tempfile::tempdir().unwrap();
 
-        // First store acquires and then drops the lock.
         {
             let store = MsgpackFileStore::new(dir.path());
             store
@@ -1964,9 +1850,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        // store is dropped here — lock released.
 
-        // New store should acquire the lock successfully.
         let store2 = MsgpackFileStore::<TestEvent>::new(dir.path());
         let result = store2
             .append(
@@ -1983,9 +1867,6 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_ensure_fenced_does_not_deadlock() {
-        // Two concurrent create() calls on a fresh store both trigger
-        // ensure_fenced. OnceCell serializes them — one wins, the
-        // other waits and reuses. Neither should deadlock or error.
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(MsgpackFileStore::new(dir.path()));
 
@@ -2009,19 +1890,14 @@ mod tests {
             .map(|r| r.unwrap())
             .collect();
 
-        // All should succeed — same process, same OnceCell.
         assert!(
             results.iter().all(std::result::Result::is_ok),
             "all concurrent creates should succeed within same store"
         );
     }
 
-    // ── M9: concurrent read during write observes consistent snapshot ─
-
     #[tokio::test]
     async fn concurrent_read_during_write_is_consistent() {
-        // CHE-0035:R3 — reads are lock-free and observe either the
-        // pre-write or post-write state, never a partial/torn write.
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(MsgpackFileStore::new(dir.path()));
 
@@ -2035,7 +1911,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Spawn a writer that appends 10 events sequentially.
         let writer_store = Arc::clone(&store);
         let writer = tokio::spawn(async move {
             for seq in 1..=10u64 {
@@ -2052,16 +1927,12 @@ mod tests {
             }
         });
 
-        // Concurrent readers — each load must return a valid,
-        // gap-free prefix of the event stream.
         let mut readers = Vec::new();
         for _ in 0..20 {
             let s = Arc::clone(&store);
             readers.push(tokio::spawn(async move {
                 let events = s.load(id).await.unwrap();
-                // Stream must be non-empty (at least the create event).
                 assert!(!events.is_empty(), "load must return at least the seed");
-                // Sequences must be contiguous 1..=N.
                 for (i, env) in events.iter().enumerate() {
                     assert_eq!(
                         env.sequence().get(),
@@ -2079,12 +1950,8 @@ mod tests {
         }
     }
 
-    // ── M10: one file per aggregate (filesystem shape) ──────────────
-
     #[tokio::test]
     async fn one_file_per_aggregate_filesystem_shape() {
-        // CHE-0036:R1 — after N appends to one aggregate, exactly one
-        // `<id>.msgpack` file exists under the store directory.
         let dir = tempfile::tempdir().unwrap();
         let store = MsgpackFileStore::new(dir.path());
 
@@ -2112,7 +1979,6 @@ mod tests {
                 .unwrap();
         }
 
-        // Count .msgpack files — should be exactly one.
         let mut msgpack_count = 0u32;
         let mut entries = tokio::fs::read_dir(dir.path()).await.unwrap();
         while let Some(entry) = entries.next_entry().await.unwrap() {
@@ -2124,17 +1990,12 @@ mod tests {
         }
         assert_eq!(msgpack_count, 1, "exactly one .msgpack file per aggregate");
 
-        // And it must be named after the aggregate ID.
         let expected = dir.path().join(format!("{}.msgpack", id.get()));
         assert!(expected.exists(), "file must be named <id>.msgpack");
     }
 
-    // ── M11: full rewrite — file grows monotonically ────────────────
-
     #[tokio::test]
     async fn append_rewrites_full_history_monotonic_growth() {
-        // CHE-0036:R2 — every append rewrites the entire stream, so
-        // the file size must grow monotonically with each append.
         let dir = tempfile::tempdir().unwrap();
         let store = MsgpackFileStore::new(dir.path());
 
@@ -2173,8 +2034,6 @@ mod tests {
         }
     }
 
-    // ── proptest ────────────────────────────────────────────────────
-
     mod proptests {
         use super::*;
         use proptest::prelude::*;
@@ -2196,7 +2055,6 @@ mod tests {
 
                 prop_assert_eq!(envelopes.len(), count);
 
-                // Sequences must be strictly monotonically increasing.
                 for window in envelopes.windows(2) {
                     prop_assert!(
                         window[1].sequence() > window[0].sequence(),
@@ -2206,9 +2064,7 @@ mod tests {
                     );
                 }
 
-                // First sequence = start + 1.
                 prop_assert_eq!(envelopes[0].sequence().get(), start + 1);
-                // Last sequence = start + count.
                 prop_assert_eq!(
                     envelopes.last().unwrap().sequence().get(),
                     start + count as u64
@@ -2242,7 +2098,6 @@ mod tests {
                         rt.block_on(async {
                             let dir = tempfile::tempdir().unwrap();
 
-                            // Phase 1: create + append with first store handle.
                             let (id, total_written) = {
                                 let store = MsgpackFileStore::new(dir.path());
                                 let create_events: Vec<TestEvent> = create_names
@@ -2265,11 +2120,9 @@ mod tests {
                                 (id, written)
                             };
 
-                            // Phase 2: reload from a FRESH store handle.
                             let store2 = MsgpackFileStore::<TestEvent>::new(dir.path());
                             let loaded = store2.load(id).await.unwrap();
 
-                            // Deterministic: same count, payloads, sequences.
                             assert_eq!(loaded.len(), total_written.len());
                             for (w, l) in total_written.iter().zip(loaded.iter()) {
                                 assert_eq!(w.sequence(), l.sequence());
@@ -2277,7 +2130,6 @@ mod tests {
                                 assert_eq!(w.aggregate_id(), l.aggregate_id());
                             }
 
-                            // Sequences strictly monotonic.
                             for window in loaded.windows(2) {
                                 assert!(
                                     window[1].sequence() > window[0].sequence(),
@@ -2291,8 +2143,6 @@ mod tests {
                 .unwrap();
         }
     }
-
-    // ── CHE-0032:R2 — rename-failure cleans up temp file ────────────
 
     /// CHE-0032:R2 — when the atomic rename in `write_atomic` fails,
     /// the `.msgpack.tmp` artefact MUST be removed so subsequent
@@ -2313,7 +2163,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = MsgpackFileStore::<TestEvent>::new(dir.path());
 
-        // First create succeeds → 1.msgpack written, next_id cached = 2.
         store
             .create(
                 vec![TestEvent::Created {
@@ -2324,13 +2173,10 @@ mod tests {
             .await
             .expect("first create succeeds on fresh tempdir");
 
-        // Pre-create 2.msgpack as a non-empty directory: the rename in
-        // write_atomic will target this path and fail.
         let blocker = dir.path().join("2.msgpack");
         tokio::fs::create_dir(&blocker).await.unwrap();
         tokio::fs::write(blocker.join("child"), b"x").await.unwrap();
 
-        // Second create should fail at the rename step.
         let result = store
             .create(
                 vec![TestEvent::Created {
@@ -2340,35 +2186,25 @@ mod tests {
             )
             .await;
 
-        // SC-i: error classification is Infrastructure (rename wraps
-        // its io::Error via `infrastructure_error`).
         assert!(
             matches!(result.as_ref().unwrap_err(), StoreError::Infrastructure(_)),
             "rename failure must surface as StoreError::Infrastructure, got: {result:?}"
         );
 
-        // SC-ii: CHE-0032:R2 — no orphaned `.msgpack.tmp` after the
-        // failed rename. The cleanup branch in `write_atomic` removes
-        // the temp file before returning the wrapped error.
         assert!(
             !has_tmp_file(dir.path()).await,
             "CHE-0032:R2: .msgpack.tmp must be cleaned up after rename failure"
         );
     }
 
-    // ── ListableEventStore (CHE-0067) ───────────────────────────────
-
     #[tokio::test]
     async fn list_aggregates_empty_store_returns_empty_vec() {
-        // A never-written store has no directory yet — list_aggregates
-        // must return `Ok(vec![])`, not an I/O error.
         let dir = tempfile::tempdir().unwrap();
         let store = MsgpackFileStore::<TestEvent>::new(dir.path().join("never-created"));
 
         let ids = store.list_aggregates().expect("list on missing dir is Ok");
         assert!(ids.is_empty(), "missing dir enumerates as empty");
 
-        // Also: an existing-but-empty dir is empty.
         let store2 = MsgpackFileStore::<TestEvent>::new(dir.path());
         let ids2 = store2.list_aggregates().expect("list on empty dir is Ok");
         assert!(ids2.is_empty(), "empty dir enumerates as empty");
@@ -2376,8 +2212,6 @@ mod tests {
 
     #[tokio::test]
     async fn list_aggregates_returns_all_created_ids() {
-        // After two creates, list_aggregates returns both ids,
-        // ignoring `.lock` and any `.tmp` artefacts in the directory.
         let dir = tempfile::tempdir().unwrap();
         let store = MsgpackFileStore::<TestEvent>::new(dir.path());
 
@@ -2390,9 +2224,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Pre-plant noise: a stray `.tmp` (orphan from a prior crashed
-        // write) and ensure the `.lock` sentinel that ensure_fenced
-        // creates does not appear in the result.
         tokio::fs::write(dir.path().join("99.msgpack.tmp"), b"junk")
             .await
             .unwrap();

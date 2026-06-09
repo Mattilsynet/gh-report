@@ -291,15 +291,6 @@ pub trait EventStore: Send + Sync + 'static {
     ) -> impl Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send;
 }
 
-// ─── Extension traits (CHE-0057) ───────────────────────────────────
-//
-// Optional EventStore capabilities are surfaced as supertrait-bounded
-// extension traits per CHE-0057:R1–R2. Each capability lives here
-// alongside `EventStore`, extends it, and is opted into by
-// implementations. Method signatures are append-only per CHE-0057:R5;
-// removal or signature change requires superseding the per-extension
-// ADR (CHE-0059 / CHE-0060 / CHE-0061).
-
 /// Optional [`EventStore`] capability: the substrate supports physical
 /// purge of an aggregate's event history followed by re-creation under
 /// the same id with a fresh stream (e.g. pardosa's PAR-0001 fiber

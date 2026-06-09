@@ -37,9 +37,6 @@ pub(crate) async fn fetch_last_commit(
         }
     };
 
-    // Percent-encode the branch name for the query string parameter.
-    // Branch names can contain `/` (e.g., `feature/login`), `&`, `#`, etc.
-    // which would corrupt the URL if interpolated raw.
     let encoded_branch: String =
         utf8_percent_encode(&repo.default_branch, NON_ALPHANUMERIC).to_string();
 
@@ -103,7 +100,6 @@ mod tests {
 
     #[test]
     fn percent_encodes_branch_with_special_chars() {
-        // Verify that branch names with special characters are properly encoded.
         let encoded: String =
             utf8_percent_encode("feature/login&fix", NON_ALPHANUMERIC).to_string();
         assert_eq!(encoded, "feature%2Flogin%26fix");

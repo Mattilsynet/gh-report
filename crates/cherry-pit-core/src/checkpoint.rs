@@ -93,8 +93,6 @@ mod tests {
     fn new_constructs_with_given_fields() {
         let id = sample_id(42);
         let cp = ProjectionCheckpoint::new(id, "counter_view", 7);
-        // Round-trip via Debug as a smoke test that fields are stored
-        // (accessor coverage is asserted below).
         let dbg = format!("{cp:?}");
         assert!(
             dbg.contains("42"),
@@ -122,10 +120,8 @@ mod tests {
         let cp = ProjectionCheckpoint::new(id, "view", 0);
         let cloned = cp.clone();
         assert_eq!(cp, cloned);
-        // Distinguishability — differing sequence breaks equality.
         let other = ProjectionCheckpoint::new(id, "view", 1);
         assert_ne!(cp, other);
-        // Distinguishability — differing projection name breaks equality.
         let other2 = ProjectionCheckpoint::new(id, "view2", 0);
         assert_ne!(cp, other2);
     }

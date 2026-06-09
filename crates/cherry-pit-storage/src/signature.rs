@@ -15,7 +15,6 @@ use sha2::{Digest, Sha256};
 pub fn build_snapshot_signature(snapshot: Option<&serde_json::Value>) -> String {
     let canonical = match snapshot {
         Some(serde_json::Value::Object(map)) => {
-            // Build canonical JSON directly, filtering run_timestamp without cloning
             let mut keys: Vec<&str> = map
                 .keys()
                 .filter(|k| k.as_str() != "run_timestamp")
@@ -106,14 +105,12 @@ pub(crate) fn escape_json_string(s: &str) -> String {
 mod tests {
     use super::*;
 
-    // ── build_snapshot_signature ────────────────────────────────────
-
     #[test]
     fn signature_none_is_deterministic() {
         let s1 = build_snapshot_signature(None);
         let s2 = build_snapshot_signature(None);
         assert_eq!(s1, s2);
-        assert_eq!(s1.len(), 64); // SHA-256 hex
+        assert_eq!(s1.len(), 64);
     }
 
     #[test]
@@ -143,8 +140,6 @@ mod tests {
         );
     }
 
-    // ── canonical_json ──────────────────────────────────────────────
-
     #[test]
     fn canonical_json_sorts_keys() {
         let val = serde_json::json!({"z": 1, "a": 2, "m": 3});
@@ -173,8 +168,6 @@ mod tests {
         let val = serde_json::json!({"a": null, "b": true, "c": false});
         assert_eq!(canonical_json(&val), r#"{"a":null,"b":true,"c":false}"#);
     }
-
-    // ── escape_json_string ───────────────────────────────────────────
 
     #[test]
     fn escape_json_string_backslash() {
@@ -225,7 +218,6 @@ mod tests {
         let val = serde_json::json!({"key\"with\\escapes": 1, "normal": 2});
         let sig = build_snapshot_signature(Some(&val));
         assert_eq!(sig.len(), 64);
-        // Deterministic
         assert_eq!(sig, build_snapshot_signature(Some(&val)));
     }
 
@@ -240,8 +232,6 @@ mod tests {
         assert_eq!(sig.len(), 64);
     }
 
-    // ── canonical_json proptest ─────────────────────────────────────
-
     mod proptests {
         use super::*;
         use proptest::prelude::*;
@@ -254,24 +244,17 @@ mod tests {
                     .prop_map(|n| serde_json::Value::Number(serde_json::Number::from(n))),
                 "[a-zA-Z0-9 _]{0,20}".prop_map(serde_json::Value::String),
             ];
-            leaf.prop_recursive(
-                3,  // depth
-                32, // desired size
-                4,  // items per collection
-                |inner| {
-                    prop_oneof![
-                        prop::collection::vec(inner.clone(), 0..4)
-                            .prop_map(serde_json::Value::Array),
-                        prop::collection::hash_map("[a-z]{1,5}", inner, 0..4).prop_map(|map| {
-                            serde_json::Value::Object(map.into_iter().collect::<serde_json::Map<
-                                String,
-                                serde_json::Value,
-                            >>(
-                            ))
-                        }),
-                    ]
-                },
-            )
+            leaf.prop_recursive(3, 32, 4, |inner| {
+                prop_oneof![
+                    prop::collection::vec(inner.clone(), 0..4).prop_map(serde_json::Value::Array),
+                    prop::collection::hash_map("[a-z]{1,5}", inner, 0..4).prop_map(|map| {
+                        serde_json::Value::Object(
+                            map.into_iter()
+                                .collect::<serde_json::Map<String, serde_json::Value>>(),
+                        )
+                    }),
+                ]
+            })
         }
 
         proptest! {

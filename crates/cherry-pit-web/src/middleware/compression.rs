@@ -26,7 +26,6 @@ use sha2::{Digest, Sha256};
 pub fn compute_etag(body: &[u8]) -> HeaderValue {
     use std::fmt::Write;
     let hash = Sha256::digest(body);
-    // W/" (3) + 32 hex chars + " (1) = 36 bytes
     let mut etag_str = String::with_capacity(36);
     etag_str.push_str("W/\"");
     for b in &hash[..16] {
@@ -63,10 +62,6 @@ pub fn compress_zstd(body: &[u8]) -> Option<Vec<u8>> {
     }
     zstd::stream::encode_all(std::io::Cursor::new(body), 19).ok()
 }
-
-// ===========================================================================
-// Content-encoding negotiation (RFC 7231 §5.3.4)
-// ===========================================================================
 
 /// Supported response encodings, in preference order.
 ///
@@ -112,7 +107,6 @@ pub(crate) fn negotiate_encoding(accept: &HeaderValue) -> Encoding {
             None => (part, None),
         };
 
-        // Parse q-value, defaulting to 1.0.
         let quality = params
             .and_then(|p| {
                 p.split(';').find_map(|param| {
@@ -156,9 +150,6 @@ mod tests {
 
     #[test]
     fn compress_zstd_rejects_oversize_input() {
-        // R1 mitigation: bodies larger than MAX_PRECOMPRESS_BYTES return None
-        // so callers fall back to identity serving rather than blocking on a
-        // worst-case level-19 compression at the cache-population stage.
         let oversize = vec![0u8; MAX_PRECOMPRESS_BYTES + 1];
         assert!(
             compress_zstd(&oversize).is_none(),
@@ -168,15 +159,12 @@ mod tests {
 
     #[test]
     fn compress_zstd_accepts_at_limit() {
-        // Boundary case: exactly MAX_PRECOMPRESS_BYTES is still compressible.
         let at_limit = vec![0u8; MAX_PRECOMPRESS_BYTES];
         assert!(
             compress_zstd(&at_limit).is_some(),
             "inputs at exactly MAX_PRECOMPRESS_BYTES must compress"
         );
     }
-
-    // ── negotiate_encoding ────────────────────────────────────────────
 
     /// Reproduces the simplified inline check at the prior call site so the
     /// strict-superset assertion below is anchored to the actual replaced
@@ -191,11 +179,6 @@ mod tests {
 
     #[test]
     fn negotiate_encoding_strict_superset_of_simplified() {
-        // For every header value the simplified version accepted, the new
-        // parser MUST also return Encoding::Zstd. (The converse — the new
-        // parser rejecting headers the simplified version accepted — is
-        // permitted only when the header has q=0, which the simplified
-        // version wrongly accepted; that direction is asserted below.)
         let accepted_by_simplified = [
             "zstd",
             "zstd,gzip",
@@ -225,9 +208,6 @@ mod tests {
 
     #[test]
     fn negotiate_encoding_honours_q_zero_refusal() {
-        // RFC 7231 §5.3.4: `q=0` is an explicit refusal. The simplified
-        // inline check wrongly accepted this; the new parser correctly
-        // rejects.
         let h = HeaderValue::from_static("zstd;q=0");
         assert!(
             simplified_accepts_zstd(&h),
@@ -260,17 +240,12 @@ mod tests {
 
     #[test]
     fn negotiate_encoding_malformed_q_value_defaults_to_one() {
-        // Unparseable q-value → params are silently skipped and the
-        // default 1.0 applies. Matches the donor's behaviour: prefer
-        // serving over rejecting a marginal header.
         let h = HeaderValue::from_static("zstd;q=notanumber");
         assert_eq!(negotiate_encoding(&h), Encoding::Zstd);
     }
 
     #[test]
     fn negotiate_encoding_wildcard_alone_is_identity() {
-        // The donor parses `*` as a name (not a wildcard); it does not
-        // satisfy `name == "zstd"`. Identity is the correct fallback.
         let h = HeaderValue::from_static("*;q=0.5");
         assert_eq!(negotiate_encoding(&h), Encoding::Identity);
     }

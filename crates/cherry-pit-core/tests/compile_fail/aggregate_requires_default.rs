@@ -16,8 +16,6 @@ impl cherry_pit_core::DomainEvent for NoopEvent {
     }
 }
 
-// Foo lacks `#[derive(Default)]` — the `impl Aggregate` below must be
-// rejected because `Aggregate: Default + Send + Sync + 'static`.
 struct Foo;
 
 impl Aggregate for Foo {

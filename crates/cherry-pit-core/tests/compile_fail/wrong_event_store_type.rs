@@ -61,8 +61,6 @@ impl EventStore for OrderStore {
 
 fn main() {
     let store = OrderStore;
-    // This should fail: OrderStore produces OrderEvent, not UserEvent.
-    // The future's Output type won't match.
     let future = store.load(AggregateId::new(NonZeroU64::new(1).unwrap()));
     let _: std::pin::Pin<
         Box<dyn Future<Output = Result<Vec<EventEnvelope<UserEvent>>, StoreError>>>,

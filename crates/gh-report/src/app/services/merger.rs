@@ -419,8 +419,6 @@ where
         }
     }
 
-    // ── Run aggregate arms (lifted from RunService) ──────────────────
-
     /// Lifted from [`super::run_service::RunService::start_sweep`].
     async fn handle_start_sweep(
         &self,
@@ -545,8 +543,6 @@ where
         Ok(())
     }
 
-    // ── Repo aggregate arms (lifted from RepoService) ────────────────
-
     /// Lifted from [`super::repo_service::RepoService::record_evaluation`].
     async fn handle_record_evaluation(
         &self,
@@ -615,8 +611,6 @@ where
         Ok(())
     }
 
-    // ── Webhook aggregate arm (lifted from WebhookService) ───────────
-
     /// Lifted from [`super::webhook_service::WebhookService::ingest`].
     async fn handle_ingest_webhook(
         &self,
@@ -647,8 +641,6 @@ where
         super::shared::publish_or_trace(&self.bus, &new_envelopes, "WebhookReceived").await;
         Ok(())
     }
-
-    // ── Private append-path helpers (lifted from RunService) ─────────
 
     /// Lifted from [`super::run_service::RunService::resolve_id`].
     /// Specialised to the Run routing index; Repo uses the

@@ -238,11 +238,6 @@ impl Projection for EvidenceProjection {
     type Event = DomainEvent;
 
     fn apply(&mut self, envelope: &EventEnvelope<Self::Event>) {
-        // Exhaustive match — adding a new `DomainEvent` variant must
-        // produce a compile error here, forcing the maintainer to decide
-        // whether the projection materialises or ignores it.
-        // (B6' will replace many of these no-ops with payload-driven
-        // mutations.)
         match envelope.payload() {
             DomainEvent::SweepStarted { .. }
             | DomainEvent::SweepCompleted { .. }
@@ -250,30 +245,18 @@ impl Projection for EvidenceProjection {
             | DomainEvent::SweepProgress { .. }
             | DomainEvent::WebhookReceived { .. }
             | DomainEvent::EvidencePublished { .. }
-            | DomainEvent::PartialEvidenceRendered { .. } => {
-                // No-op until B6' extends payloads. Placeholder match
-                // arms keep the projection idempotent (CHE-0048:R3) and
-                // exhaustive against future variants.
-            }
+            | DomainEvent::PartialEvidenceRendered { .. } => {}
             DomainEvent::RepoEvaluated {
                 domain_key,
                 evidence,
                 ..
             } => {
-                // B6': insert when the envelope carries evidence. `None`
-                // is a no-op (transitional / metadata-only path or pre-B6'
-                // legacy envelope per CHE-0022 additive evolution).
-                // Idempotent: replaying the same envelope re-inserts the
-                // same value (BTreeMap::insert overwrites with identical
-                // input → same end state).
                 if let Some(ev) = evidence {
                     self.repositories
                         .insert(domain_key.clone(), ev.as_ref().clone());
                 }
             }
             DomainEvent::RepoRemoved { domain_key, .. } => {
-                // Removal is idempotent on `BTreeMap::remove` — replaying
-                // the envelope produces the same end state.
                 self.repositories.remove(domain_key);
             }
         }
@@ -289,7 +272,6 @@ impl Projection for EvidenceProjection {
 /// variant name as the wire discriminator (post CHE-0065 pivot).
 impl CoreDomainEvent for DomainEvent {
     fn event_type(&self) -> &'static str {
-        // Delegate to the existing inherent method on `DomainEvent`.
         DomainEvent::event_type(self)
     }
 }
@@ -373,7 +355,6 @@ mod tests {
             },
         ];
         for (i, ev) in cases.into_iter().enumerate() {
-            // Sequence numbers are 1-based; offset to keep them unique.
             let seq = (i as u64) + 1;
             p.apply(&envelope(ev, seq));
         }
@@ -383,10 +364,6 @@ mod tests {
 
     #[test]
     fn apply_repo_evaluated_with_evidence_inserts_into_repositories() {
-        // B6': `RepoEvaluated` now carries `evidence: Option<RepositoryEvidence>`.
-        // When `Some`, the projection inserts it under `domain_key`. Replaying
-        // the same envelope is idempotent (BTreeMap::insert overwrites with
-        // the same value — last-writer-wins on identical input).
         use crate::test_fixtures;
 
         let mut p = EvidenceProjection::default();
@@ -407,7 +384,6 @@ mod tests {
         assert_eq!(p.repositories.len(), 1);
         assert_eq!(p.repositories.get("id-repo-1"), Some(&evidence));
 
-        // Idempotent replay.
         p.apply(&env);
         assert_eq!(p.repositories.len(), 1);
         assert_eq!(p.repositories.get("id-repo-1"), Some(&evidence));
@@ -415,11 +391,6 @@ mod tests {
 
     #[test]
     fn apply_repo_evaluated_without_evidence_is_no_op() {
-        // B6': Failure-path emissions may carry `evidence: None` (the
-        // failure_evidence helper exists but emitters that don't have a
-        // RepositoryEvidence handy can omit it). In that case, the
-        // projection makes no entry — the read model only reflects what
-        // was actually evaluated.
         let mut p = EvidenceProjection::default();
         let env = envelope(
             DomainEvent::RepoEvaluated {
@@ -439,9 +410,6 @@ mod tests {
 
     #[test]
     fn core_domain_event_impl_returns_pascalcase_discriminator() {
-        // Pin the trait impl: `CoreDomainEvent::event_type` must equal
-        // the inherent method. Post CHE-0065 pivot, discriminators are
-        // PascalCase variant names (no longer serde-derived).
         let ev = DomainEvent::RepoRemoved {
             domain_key: "k".into(),
             repo_name: "r".into(),
@@ -452,8 +420,6 @@ mod tests {
             "RepoRemoved"
         );
     }
-
-    // ── M2.b inherent-impl query + bulk-load API ────────────────────
 
     fn ev_envelope(domain_key: &str, name: &str, seq: u64) -> EventEnvelope<DomainEvent> {
         use crate::test_fixtures;
@@ -492,10 +458,6 @@ mod tests {
 
     #[test]
     fn sorted_snapshot_orders_by_id_then_name() {
-        // Pre-mortem #1 mitigation: insert in non-trivial order
-        // (`b`, `a`, `c`) and assert the snapshot comes back sorted
-        // by `(repository.id, repository.name)` per the projection's
-        // own sort discipline (CHE-0048:R2).
         let mut p = EvidenceProjection::default();
         p.apply(&ev_envelope("id-b", "b", 1));
         p.apply(&ev_envelope("id-a", "a", 2));
@@ -515,10 +477,6 @@ mod tests {
     fn load_baseline_merges_into_existing_entries() {
         use crate::test_fixtures;
         let mut p = EvidenceProjection::default();
-        // Seed an existing entry that load_baseline must preserve
-        // (merge-semantics: saga calls W4 load_resumed_checkpoint
-        // first, then W3 load_baseline; the second call must not
-        // evict the first call's entries).
         p.apply(&ev_envelope("id-prior", "prior", 1));
         let entries = vec![
             test_fixtures::all_passing_evidence("a"),
@@ -536,8 +494,6 @@ mod tests {
         use crate::test_fixtures;
         let mut p = EvidenceProjection::default();
         p.load_baseline(vec![test_fixtures::all_passing_evidence("a")]);
-        // Re-load same key with a different evidence value; the
-        // later call must win (last-writer-wins on key collision).
         let updated = test_fixtures::all_passing_evidence("a");
         p.load_baseline(vec![updated.clone()]);
         assert_eq!(p.len(), 1);

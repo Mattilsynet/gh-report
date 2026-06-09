@@ -18,11 +18,6 @@ use tower_http::classify::{ServerErrorsAsFailures, SharedClassifier};
 use tower_http::trace::TraceLayer;
 use tracing::{Span, debug, info, info_span};
 
-// ---------------------------------------------------------------------------
-// Hook types — zero-sized so the surrounding `TraceLayer` stays `Clone`
-// without dragging closure-capture lifetimes into the public return type.
-// ---------------------------------------------------------------------------
-
 #[derive(Clone, Copy)]
 #[doc(hidden)]
 pub struct MakeHttpSpan;
@@ -98,9 +93,6 @@ mod tests {
 
     #[test]
     fn http_trace_layer_is_clone() {
-        // Hooks are zero-sized; cloning the layer is a refcount bump on
-        // the shared classifier. Asserts the helper is usable in
-        // multi-router composition without ceremony.
         let layer = http_trace_layer();
         let _cloned = layer.clone();
     }

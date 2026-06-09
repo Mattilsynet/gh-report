@@ -10,8 +10,6 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
-// ── helpers ─────────────────────────────────────────────────────────
-
 /// Minimal adr-fmt.toml for a single-domain test corpus (override-only format).
 const MINIMAL_CONFIG: &str = r#"
 [corpus]
@@ -391,7 +389,6 @@ fn setup_multi_corpus(
     let adr_root = dir.path().join("docs/adr");
 
     fs::create_dir_all(&adr_root).expect("create adr root");
-    // Marker file lives at the workspace root (tempdir root), not at adr_root.
     fs::write(dir.path().join("adr-fmt.toml"), config).expect("write config");
 
     for (domain_dir_name, adrs) in domains {
@@ -430,8 +427,6 @@ fn adr_fmt_in(dir: &TempDir) -> Command {
     cmd
 }
 
-// ── default mode (guidelines) ──────────────────────────────────────
-
 #[test]
 fn default_mode_with_config_shows_governance() {
     let dir = setup_corpus(MINIMAL_CONFIG, &[("TST-0001-valid-test-adr.md", VALID_ADR)]);
@@ -445,7 +440,6 @@ fn default_mode_with_config_shows_governance() {
 
 #[test]
 fn default_mode_without_config_shows_setup_guide() {
-    // No adr-fmt.toml anywhere up the chain → setup guide is printed.
     let dir = TempDir::new().expect("create tempdir");
 
     adr_fmt_in(&dir)
@@ -453,8 +447,6 @@ fn default_mode_without_config_shows_setup_guide() {
         .success()
         .stdout(predicate::str::contains("adr-fmt").and(predicate::str::contains("QUICK START")));
 }
-
-// ── lint mode ──────────────────────────────────────────────────────
 
 #[test]
 fn valid_corpus_clean_output() {
@@ -467,21 +459,8 @@ fn valid_corpus_clean_output() {
         .stdout(predicate::str::contains("0 warning(s)"));
 }
 
-// ── legacy `[[rules]]` deprecation surface ─────────────────────────
-//
-// AFM-0003: the advisory channel must remain credible. The legacy
-// rule-declaration format (with `category` + `description` populated
-// inline rather than relying on hardcoded definitions) is deprecated;
-// users still on it must see exactly one stderr `warning:` per run
-// against their *selected* marker. Walk-up traversal uses `load_quiet`
-// so skipped markers do not pollute stderr; the warning fires once in
-// `main.rs` after marker selection. This test pins both halves.
-
 #[test]
 fn legacy_rule_declaration_emits_deprecation_warning() {
-    // Config carries a legacy [[rules]] block with category+description
-    // populated, mimicking pre-AFM-0009 configs that haven't been
-    // migrated to the override-only format.
     let legacy_config = r#"
 [corpus]
 root = "docs/adr"
@@ -562,15 +541,12 @@ fn empty_domain_directory_graceful() {
 fn lint_output_on_stdout() {
     let dir = setup_corpus(MINIMAL_CONFIG, &[("TST-0001-valid-test-adr.md", VALID_ADR)]);
 
-    // Verify diagnostics go to stdout
     adr_fmt_in(&dir)
         .args(["--lint"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Diagnostics"));
 }
-
-// ── T016 tagged rules ──────────────────────────────────────────────
 
 #[test]
 fn t016_missing_tagged_rules() {
@@ -590,7 +566,6 @@ fn t016_missing_tagged_rules() {
 fn t016_draft_not_exempt() {
     let dir = setup_corpus(MINIMAL_CONFIG, &[("TST-0005-draft-adr.md", DRAFT_ADR)]);
 
-    // Draft ADRs are no longer exempt from T016 — should appear in lint output
     adr_fmt_in(&dir)
         .args(["--lint"])
         .assert()
@@ -616,15 +591,12 @@ fn t016_gap_in_rule_ids() {
 fn t016_tagged_rules_present_no_warning() {
     let dir = setup_corpus(MINIMAL_CONFIG, &[("TST-0001-valid-test-adr.md", VALID_ADR)]);
 
-    // VALID_ADR has tagged rules — no T016
     adr_fmt_in(&dir)
         .args(["--lint"])
         .assert()
         .success()
         .stdout(predicate::str::contains("T016").not());
 }
-
-// ── T005c legacy status section ────────────────────────────────────
 
 #[test]
 fn t005c_legacy_status_section() {
@@ -644,15 +616,12 @@ fn t005c_legacy_status_section() {
 fn t005c_preamble_status_field_no_warning() {
     let dir = setup_corpus(MINIMAL_CONFIG, &[("TST-0001-valid-test-adr.md", VALID_ADR)]);
 
-    // VALID_ADR uses `Status: Accepted` preamble field — no T005c
     adr_fmt_in(&dir)
         .args(["--lint"])
         .assert()
         .success()
         .stdout(predicate::str::contains("T005c").not());
 }
-
-// ── T002 missing Date field ─────────────────────────────────────────
 
 #[test]
 fn t002_missing_date_field() {
@@ -667,8 +636,6 @@ fn t002_missing_date_field() {
         .success()
         .stdout(predicate::str::contains("T002"));
 }
-
-// ── T016 layer warning → lint exit(0), advisory per AFM-0003 ───────
 
 /// ADR with invalid layer (0) — triggers warning-severity T016.
 const INVALID_LAYER_ADR: &str = "\
@@ -767,8 +734,6 @@ fn lint_multiple_warnings_exits_zero() {
         .stdout(predicate::str::contains("error(s)").not());
 }
 
-// ── refs mode ──────────────────────────────────────────────────────
-
 #[test]
 fn refs_returns_inbound_refs() {
     let dir = setup_corpus(
@@ -795,7 +760,6 @@ fn refs_returns_inbound_refs() {
 fn refs_empty_for_isolated_target() {
     let dir = setup_corpus(MINIMAL_CONFIG, &[("TST-0001-valid-test-adr.md", VALID_ADR)]);
 
-    // Isolated ADR: header rendered, then "No references found."
     adr_fmt_in(&dir)
         .args(["--refs", "TST-0001"])
         .assert()
@@ -836,8 +800,6 @@ fn refs_excludes_stale_referrers() {
         &[("TST-0010-stale-adr.md", STALE_ADR)],
     );
 
-    // TST-0001 is referenced by stale TST-0010 (Supersedes edge);
-    // stale referrers must be filtered out — empty refs list expected.
     adr_fmt_in(&dir)
         .args(["--refs", "TST-0001"])
         .assert()
@@ -869,14 +831,11 @@ fn lint_stale_stub_emits_no_stub_aware_warnings() {
     let output = assert.get_output();
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // Confirm the stale stub was actually processed (guards against a
-    // vacuous pass if the path filter misses every diagnostic).
     assert!(
         stdout.contains("188 ADR(s)") || stdout.contains("ADR(s)"),
         "lint output should report scanned-ADR count:\n{stdout}"
     );
 
-    // Tolerate POSIX and Windows path separators when filtering.
     let stale_lines: Vec<&str> = stdout
         .lines()
         .filter(|l| l.contains("stale/TST-0010") || l.contains("stale\\TST-0010"))
@@ -896,9 +855,6 @@ fn lint_stale_stub_emits_no_stub_aware_warnings() {
 
 #[test]
 fn refs_stale_target_returns_live_referrers() {
-    // AFM-0021 R3: querying a stale ADR succeeds and lists live
-    // referrers. The target itself is in stale/, but referrers
-    // outside stale/ must still be surfaced.
     let stale_target: &str = "\
 # TST-0050. Stale Target
 
@@ -970,8 +926,6 @@ R1 [5]: We reference a stale target to test stale-target query semantics.
 
 #[test]
 fn refs_renders_sort_order_across_tiers() {
-    // Sort key: tier rank (S < A < B) → prefix → number → verb.
-    // S-tier referrer must appear before A-tier; A-tier before B-tier.
     let s_tier: &str = "\
 # TST-0030. S-tier Referrer
 
@@ -1048,8 +1002,6 @@ Must appear after S-tier and before B-tier in --refs TST-0001 output.
 
 #[test]
 fn refs_includes_cross_domain_referrers() {
-    // --refs has no domain filter: a TST referrer to COM-0001 must
-    // surface in --refs COM-0001 output.
     let cross_referrer: &str = "\
 # TST-0040. Cross-domain Referrer
 
@@ -1102,10 +1054,6 @@ R1 [5]: We reference a foundation principle from a domain ADR for the test.
 
 #[test]
 fn refs_renders_duplicate_verbs_same_source() {
-    // A single source ADR with both `References:` and `Supersedes:`
-    // edges to the same target must appear twice in --refs output:
-    // once under [References], once under [Supersedes]. References
-    // sorts before Supersedes (same source/tier/number).
     let dual_edge: &str = "\
 # TST-0060. Dual-edge Referrer
 
@@ -1159,8 +1107,6 @@ R1 [5]: We reference and supersede the same target to test verb dedup.
     );
 }
 
-// ── context mode ───────────────────────────────────────────────────
-
 #[test]
 fn context_shows_crate_rules() {
     let dir = setup_corpus(MINIMAL_CONFIG, &[("TST-0001-valid-test-adr.md", VALID_ADR)]);
@@ -1197,7 +1143,6 @@ fn context_includes_foundation() {
         &[],
     );
 
-    // Foundation domain ADRs should always be included
     adr_fmt_in(&dir)
         .args(["--context", "test-core"])
         .assert()
@@ -1215,15 +1160,12 @@ fn context_per_adr_crates_filtering() {
         ],
     );
 
-    // TST-0006 has Crates: test-core, test-api — should be included
     adr_fmt_in(&dir)
         .args(["--context", "test-core"])
         .assert()
         .success()
         .stdout(predicate::str::contains("TST-0006"));
 }
-
-// ── context output format (end-to-end) ─────────────────────────────
 
 /// ADR with multi-line tagged rules for end-to-end context output test.
 const MULTILINE_RULES_ADR: &str = "\
@@ -1281,7 +1223,6 @@ Draft exclusion verified.
 
 #[test]
 fn context_end_to_end_output_format() {
-    // Setup: foundation S-tier + domain B-tier (multi-line rules) + draft (excluded)
     let dir = setup_multi_corpus(
         MULTI_DOMAIN_CONFIG,
         &[
@@ -1308,7 +1249,6 @@ fn context_end_to_end_output_format() {
     assert!(output.status.success(), "adr-fmt should succeed");
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // ── Preamble ──
     assert!(
         stdout.contains("# Architecture Rules"),
         "missing preamble title:\n{stdout}"
@@ -1322,7 +1262,6 @@ fn context_end_to_end_output_format() {
         "missing mandate in preamble:\n{stdout}"
     );
 
-    // ── Root-grouped headers in correct order (foundation first) ──
     let com_pos = stdout
         .find("### COM-0001. Foundation Principle")
         .expect("COM-0001 root header missing");
@@ -1334,13 +1273,11 @@ fn context_end_to_end_output_format() {
         "Foundation root ({com_pos}) must appear before domain root ({tst_pos})"
     );
 
-    // ── Foundation rule with ID and layer at end ──
     assert!(
         stdout.contains("[COM-0001:R1:L5]"),
         "foundation rule should have ID:layer at end:\n{stdout}"
     );
 
-    // ── Multi-line rule text joined on single line with ID ──
     let r1_line = stdout
         .lines()
         .find(|l| l.contains("[TST-0008:R1:L5]"))
@@ -1354,13 +1291,11 @@ fn context_end_to_end_output_format() {
         "multi-line R1 continuation text must be on same line as ID:\n{r1_line}"
     );
 
-    // ── Single-line rule ──
     assert!(
         stdout.contains("- Single-line rule stays on one line. [TST-0008:R2:L5]"),
         "single-line R2 format wrong:\n{stdout}"
     );
 
-    // ── Draft exclusion ──
     assert!(
         !stdout.contains("TST-0009"),
         "draft ADR ID must not appear in context output:\n{stdout}"
@@ -1370,7 +1305,6 @@ fn context_end_to_end_output_format() {
         "draft ADR rule text must not appear in context output:\n{stdout}"
     );
 
-    // ── No old metadata noise ──
     assert!(
         !stdout.contains("| Status:"),
         "old status metadata should not appear:\n{stdout}"
@@ -1381,13 +1315,10 @@ fn context_end_to_end_output_format() {
     );
 }
 
-// ── tree mode ──────────────────────────────────────────────────────
-
 #[test]
 fn tree_produces_output() {
     let dir = setup_corpus(MINIMAL_CONFIG, &[("TST-0001-valid-test-adr.md", VALID_ADR)]);
 
-    // Use -- to separate --tree (no domain filter) from positional ADR_DIR
     adr_fmt_in(&dir)
         .args(["--tree", "--"])
         .assert()
@@ -1409,7 +1340,6 @@ fn tree_filtered_by_domain() {
         &[],
     );
 
-    // Filter to TST domain only
     adr_fmt_in(&dir)
         .args(["--tree", "TST"])
         .assert()
@@ -1432,12 +1362,6 @@ fn tree_unknown_domain_graceful() {
 
 #[test]
 fn tree_renders_cross_domain_parented_adrs_with_arrow() {
-    // HR1 regression: when an ADR's first References target is in a
-    // different domain and `Parent-cross-domain:` declares it, the
-    // ADR must render as a top-level entry in its own domain with
-    // `↑ <PARENT-ID>` annotation, NOT in the orphans section. Before
-    // the fix, --tree silently dropped the cross-domain edge and
-    // marked the ADR as orphaned, while --lint stayed quiet (HR2).
     let cross_domain_child = "\
 # TST-0002. Cross-domain child
 Date: 2026-04-27
@@ -1496,12 +1420,6 @@ Renders under TST with ↑ COM-0001 annotation.
     reason = "regression test sets up a multi-domain fixture and asserts on the rendered tree byte-for-byte; splitting would either duplicate the fixture or hide the assertion sequence"
 )]
 fn tree_cross_domain_root_renders_descendants_with_correct_indent() {
-    // HR1 regression (rigormortis follow-up): cross-domain forest
-    // roots must render their same-domain descendants with the same
-    // indent/connector pattern as native-Root subtrees. This test
-    // exercises a cross-domain root with a child and a grandchild,
-    // and checks that grandchild glyphs match the depth-2 expectation
-    // (`     │  └─ ` or `     │  ├─ ` for ongoing siblings, etc.).
     let cross_root = "\
 # TST-0002. Cross-domain root
 Date: 2026-04-27
@@ -1609,13 +1527,10 @@ None.
         .expect("binary runs");
     let stdout = String::from_utf8_lossy(&out.stdout);
 
-    // The cross-domain root renders at column 2 with no connector.
     assert!(
         stdout.contains("  TST-0002"),
         "cross-domain root must render at column 2 without connector, got:\n{stdout}",
     );
-    // Children render with the same depth-1 indent as native-root children.
-    // TST-0003 is the first child (not last) → ├─, TST-0004 last → └─.
     assert!(
         stdout.contains("     ├─ TST-0003"),
         "first child must render with ├─ at depth 1, got:\n{stdout}",
@@ -1624,14 +1539,10 @@ None.
         stdout.contains("     └─ TST-0004"),
         "last child must render with └─ at depth 1, got:\n{stdout}",
     );
-    // Grandchild under TST-0003: depth 2. Since TST-0003 has more
-    // siblings (TST-0004 follows), col-5 must be `│`. Grandchild is
-    // last (and only) child so it gets `└─` at col 8.
     assert!(
         stdout.contains("     │  └─ TST-0005"),
         "grandchild must render with │ continuation at col 5 and └─ at col 8, got:\n{stdout}",
     );
-    // Orphans section must not contain any of the test ADRs.
     let orphans_section = stdout.split("orphans").nth(1).unwrap_or("");
     assert!(
         !orphans_section.contains("TST-0002")
@@ -1641,8 +1552,6 @@ None.
         "no test ADR may appear in orphans section, got:\n{stdout}",
     );
 }
-
-// ── mutual exclusion ───────────────────────────────────────────────
 
 #[test]
 fn refs_and_context_mutually_exclusive() {
@@ -1671,8 +1580,6 @@ fn refs_and_tree_mutually_exclusive() {
         .stderr(predicate::str::contains("cannot be used with"));
 }
 
-// ── infrastructure errors ──────────────────────────────────────────
-
 #[test]
 fn help_flag_shows_usage() {
     adr_fmt()
@@ -1691,19 +1598,15 @@ fn version_flag_shows_version() {
         .stdout(predicate::str::contains("adr-fmt"));
 }
 
-// ── read-only verification ─────────────────────────────────────────
-
 #[test]
 fn no_files_modified_after_lint() {
     let dir = setup_corpus(MINIMAL_CONFIG, &[("TST-0001-valid-test-adr.md", VALID_ADR)]);
 
-    // Snapshot directory contents before
     let adr_dir = dir.path().join("docs/adr");
     let before: Vec<_> = walkdir(&adr_dir);
 
     adr_fmt_in(&dir).args(["--lint"]).assert().success();
 
-    // Verify no new files or modifications
     let after: Vec<_> = walkdir(&adr_dir);
     assert_eq!(before, after, "lint mode should not create or modify files");
 }
@@ -1745,8 +1648,6 @@ fn walk_recursive(base: &std::path::Path, dir: &std::path::Path, out: &mut Vec<S
         }
     }
 }
-
-// ── path containment ───────────────────────────────────────────────
 
 /// Config with an absolute domain directory escapes the ADR root.
 const ABSOLUTE_DOMAIN_CONFIG: &str = r#"
@@ -1885,8 +1786,6 @@ fn containment_rejects_parent_traversal_stale_directory() {
 fn containment_rejects_symlink_escape_in_domain_directory() {
     use std::os::unix::fs::symlink;
 
-    // Build a corpus with a domain directory that is a symlink pointing
-    // outside the ADR root. The lint must abort with an EscapesRoot error.
     let dir = TempDir::new().expect("create tempdir");
     let outside = dir.path().join("outside");
     fs::create_dir(&outside).expect("create outside");
@@ -1935,7 +1834,6 @@ fn containment_accepts_symlink_inside_root() {
     fs::create_dir_all(&adr_root_path).expect("create adr root");
     fs::write(dir.path().join("adr-fmt.toml"), MINIMAL_CONFIG).expect("write config");
 
-    // Real `test/` directory at adr_root/real-test, then symlink test → real-test.
     let real = adr_root_path.join("real-test");
     fs::create_dir(&real).expect("create real test dir");
     fs::write(real.join("TST-0001-valid-test-adr.md"), VALID_ADR).expect("write ADR");
@@ -1947,8 +1845,6 @@ fn containment_accepts_symlink_inside_root() {
         .success()
         .stdout(predicate::str::contains("warning(s)"));
 }
-
-// ── Parser-stage diagnostics (AFM-0017) ─────────────────────────────
 
 /// A file matching the prefix filename pattern but missing its H1
 /// title must surface as a `P002` warning instead of being silently
@@ -2034,22 +1930,14 @@ fn parser_no_p_codes_for_valid_corpus() {
         .stdout(predicate::str::contains("warning[P").not());
 }
 
-// ── real-corpus pin tests ─────────────────────────────────────────
-//
-// These run against the live `docs/adr/` corpus to pin the
-// parent-edge tree model. They protect against silent regressions
-// where a refactor to nav/output/links would, e.g., reintroduce
-// orphans, fire structural diagnostics on a known-clean corpus,
-// or drop ADRs from the tree view.
-
 /// Locate the workspace root directory (containing `adr-fmt.toml`)
 /// from this crate's manifest dir. Workspace layout:
 /// `<root>/crates/adr-fmt/Cargo.toml`.
 fn workspace_root() -> std::path::PathBuf {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest
-        .parent() // crates/
-        .and_then(|p| p.parent()) // workspace root
+        .parent()
+        .and_then(|p| p.parent())
         .expect("workspace root exists")
         .to_owned()
 }
@@ -2113,8 +2001,6 @@ fn real_corpus_tree_covers_every_adr() {
         .to_string_lossy()
         .into_owned();
 
-    // Count non-stale ADR files: any `.md` file matching the ADR ID
-    // pattern in `docs/adr/<domain>/`, excluding `stale/` archive.
     let non_stale_count = count_non_stale_adrs(&root);
     assert!(
         non_stale_count > 0,
@@ -2151,7 +2037,6 @@ fn count_non_stale_adrs(root: &str) -> usize {
         if !path.is_dir() {
             continue;
         }
-        // Skip the stale archive
         if path.file_name().is_some_and(|n| n == "stale") {
             continue;
         }
@@ -2166,8 +2051,6 @@ fn count_non_stale_adrs(root: &str) -> usize {
             let Some(name) = adr_path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            // ADR filenames are lowercase by convention (ledger L6), but
-            // use Path::extension for the canonical .md check.
             if std::path::Path::new(name)
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
@@ -2274,19 +2157,11 @@ mod adr_id_extraction_tests {
     }
 }
 
-// ─── marker discovery (walk-up) ──────────────────────────────────────
-//
-// These tests pin the discovery contract introduced when the corpus
-// path moved from a positional CLI argument to walk-up search for an
-// `adr-fmt.toml` with a valid `[corpus]` table. The CLI no longer
-// accepts an ADR-directory argument; discovery is the SSOT.
-
 /// Marker discovery walks up from a deeply-nested CWD inside the
 /// corpus and finds the toml at the workspace root.
 #[test]
 fn walks_up_to_find_marker_from_nested_cwd() {
     let dir = setup_corpus(MINIMAL_CONFIG, &[]);
-    // CWD = <tmp>/docs/adr/test/  (3 levels below marker)
     let nested = dir.path().join("docs/adr/test");
     let mut cmd = adr_fmt();
     cmd.current_dir(&nested).arg("--lint").assert().success();
@@ -2297,7 +2172,6 @@ fn walks_up_to_find_marker_from_nested_cwd() {
 #[test]
 fn walks_up_from_crate_subdirectory() {
     let dir = setup_corpus(MINIMAL_CONFIG, &[]);
-    // Simulate a crate sibling: <tmp>/crates/foo/src/
     let crate_src = dir.path().join("crates/foo/src");
     fs::create_dir_all(&crate_src).expect("create crate src");
     let mut cmd = adr_fmt();
@@ -2310,7 +2184,6 @@ fn walks_up_from_crate_subdirectory() {
 #[test]
 fn walk_up_terminates_at_filesystem_root_default_mode() {
     let dir = TempDir::new().expect("create tempdir");
-    // Empty tempdir, no toml anywhere on the way up.
     let mut cmd = adr_fmt();
     cmd.current_dir(dir.path())
         .assert()
@@ -2340,7 +2213,6 @@ fn corpus_table_missing_emits_clear_error() {
     let dir = TempDir::new().expect("create tempdir");
     fs::write(
         dir.path().join("adr-fmt.toml"),
-        // No [corpus], no [[domains]] — required field missing.
         "# stray toml\n[stale]\ndirectory = \"x\"\n",
     )
     .expect("write stray toml");
@@ -2349,8 +2221,6 @@ fn corpus_table_missing_emits_clear_error() {
         .arg("--lint")
         .assert()
         .failure()
-        // Both the per-marker skip note AND the terminal discovery
-        // error must fire — they are distinct UX signals.
         .stderr(
             predicate::str::contains("skipping").and(predicate::str::contains(
                 "no adr-fmt.toml with a valid [corpus] table",
@@ -2398,7 +2268,6 @@ fn corpus_root_symlink_escape_rejected() {
     let dir = TempDir::new().expect("create tempdir");
     let outside = TempDir::new().expect("create outside tempdir");
     fs::create_dir_all(outside.path().join("docs/adr/test")).expect("create outside corpus");
-    // Create a symlink `escape -> <outside>` inside the marker dir.
     symlink(outside.path(), dir.path().join("escape")).expect("create symlink");
     fs::write(
         dir.path().join("adr-fmt.toml"),
@@ -2419,9 +2288,6 @@ fn corpus_root_is_regular_file_rejected() {
         "[corpus]\nroot = \"not-a-dir\"\n\n[[domains]]\nprefix = \"TST\"\nname = \"x\"\ndirectory = \"test\"\ndescription = \"x\"\ncrates = []\n",
     )
     .expect("write toml");
-    // Marker is structurally valid but corpus root resolves to a file:
-    // try_marker rejects it (not a dir) → discovery walks past → no
-    // marker found at filesystem root → discovery error in --lint.
     let mut cmd = adr_fmt();
     cmd.current_dir(dir.path()).arg("--lint").assert().failure();
 }
@@ -2446,7 +2312,6 @@ fn corpus_root_nonexistent_dir() {
 #[test]
 fn walk_up_skips_malformed_toml_and_finds_parent_marker() {
     let dir = setup_corpus(MINIMAL_CONFIG, &[]);
-    // Place a malformed adr-fmt.toml deeper in the tree.
     let nested = dir.path().join("docs/adr/test");
     fs::write(nested.join("adr-fmt.toml"), "this is not valid toml ===")
         .expect("write malformed toml");
@@ -2454,7 +2319,7 @@ fn walk_up_skips_malformed_toml_and_finds_parent_marker() {
     cmd.current_dir(&nested)
         .arg("--lint")
         .assert()
-        .success() // parent marker found
+        .success()
         .stderr(predicate::str::contains("skipping"));
 }
 
@@ -2464,11 +2329,8 @@ fn walk_up_skips_malformed_toml_and_finds_parent_marker() {
 fn walk_up_skips_toml_without_corpus_and_finds_parent_marker() {
     let dir = setup_corpus(MINIMAL_CONFIG, &[]);
     let nested = dir.path().join("docs/adr/test");
-    fs::write(
-        nested.join("adr-fmt.toml"),
-        "[stale]\ndirectory = \"x\"\n", // valid toml, no [corpus]
-    )
-    .expect("write incomplete toml");
+    fs::write(nested.join("adr-fmt.toml"), "[stale]\ndirectory = \"x\"\n")
+        .expect("write incomplete toml");
     let mut cmd = adr_fmt();
     cmd.current_dir(&nested).arg("--lint").assert().success();
 }
@@ -2488,8 +2350,6 @@ fn cli_no_longer_accepts_adr_directory_arg() {
         );
 }
 
-// ─── walk-up edge cases (rigormortis-driven) ─────────────────────────
-
 /// **Pinned footgun.** A stray `adr-fmt.toml` deeper in the tree
 /// whose corpus root resolves AND whose only domain has a violating
 /// directory MASKS a valid parent marker. The masking is intentional:
@@ -2498,14 +2358,8 @@ fn cli_no_longer_accepts_adr_directory_arg() {
 /// future readers see the contract is deliberate.
 #[test]
 fn stray_marker_with_violating_domain_masks_parent() {
-    // Set up a valid parent corpus.
     let dir = setup_corpus(MINIMAL_CONFIG, &[]);
 
-    // Plant a stray marker inside the corpus tree whose corpus root
-    // resolves (it points at the parent's docs/adr) but whose only
-    // configured domain has a containment violation. The user clearly
-    // intended this stray to be the marker, so we claim it and let
-    // downstream surface the violation.
     let stray_dir = dir.path().join("docs/adr/test");
     let stray_toml = "[corpus]\nroot = \".\"\n\n[stale]\ndirectory = \"stale\"\n\n[[domains]]\nprefix = \"BAD\"\nname = \"Bad\"\ndirectory = \"../escape\"\ndescription = \"Violating domain.\"\ncrates = []\n";
     fs::write(stray_dir.join("adr-fmt.toml"), stray_toml).expect("write stray");
@@ -2515,8 +2369,6 @@ fn stray_marker_with_violating_domain_masks_parent() {
         .arg("--lint")
         .assert()
         .failure()
-        // Containment error from the stray (NOT a generic "no marker"
-        // error) — proves the stray was claimed and parent was masked.
         .stderr(predicate::str::contains("domain 'BAD'"));
 }
 
@@ -2530,10 +2382,6 @@ fn walk_up_canonicalizes_symlinked_cwd() {
 
     let dir = setup_corpus(MINIMAL_CONFIG, &[]);
 
-    // Create a symlink alias at a sibling path that points at the
-    // tempdir. CWD = <symlink>/docs/adr/test/ — lexical walk-up
-    // would traverse <symlink-parent>, NOT the resolved tempdir
-    // ancestors. Canonical walk-up resolves <symlink> first.
     let alias_parent = TempDir::new().expect("create alias tempdir");
     let alias = alias_parent.path().join("workspace-alias");
     symlink(dir.path(), &alias).expect("create symlink alias");
@@ -2547,7 +2395,6 @@ fn walk_up_canonicalizes_symlinked_cwd() {
 /// the *nearer* (deeper) marker is selected.
 #[test]
 fn walk_up_selects_nearer_marker() {
-    // Outer corpus with a unique-named ADR.
     let outer_adr = "\
 # TST-0001. Outer ADR
 
@@ -2574,8 +2421,6 @@ Outer.
 ";
     let outer = setup_corpus(MINIMAL_CONFIG, &[("TST-0001-outer.md", outer_adr)]);
 
-    // Inner corpus nested under outer/sub/ with its own marker AND
-    // a uniquely-named ADR (TST-0002 not present in outer).
     let inner_root = outer.path().join("sub");
     fs::create_dir_all(inner_root.join("docs/adr/test")).expect("create inner corpus");
     fs::write(inner_root.join("adr-fmt.toml"), MINIMAL_CONFIG).expect("write inner toml");
@@ -2611,8 +2456,6 @@ Inner.
     )
     .expect("write inner ADR");
 
-    // Run from inside the inner corpus. Discovery must stop at the
-    // inner marker, not walk through it to the outer.
     let nested = inner_root.join("docs/adr/test");
     let mut cmd = adr_fmt();
     let output = cmd
@@ -2623,14 +2466,10 @@ Inner.
     assert!(output.status.success(), "lint should succeed");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // Pin: stderr must NOT contain `skipping` (inner claimed first).
     assert!(
         !stderr.contains("skipping"),
         "inner marker should be claimed immediately, no skips expected; stderr:\n{stderr}"
     );
-    // Pin: the diagnostic for TST-9999 (a dangling reference unique
-    // to the inner ADR) must fire AND its file path must include
-    // the `sub/` segment proving the inner corpus was scanned.
     assert!(
         stdout.contains("TST-9999"),
         "inner ADR's L001 diagnostic missing — outer corpus may have won; stdout:\n{stdout}"
@@ -2653,7 +2492,6 @@ Inner.
 #[test]
 fn marker_with_empty_corpus_falls_back_to_setup_guide() {
     let dir = TempDir::new().expect("create tempdir");
-    // Marker exists, corpus root exists, but no domain dirs created.
     fs::create_dir_all(dir.path().join("docs/adr")).expect("create empty corpus");
     fs::write(dir.path().join("adr-fmt.toml"), MINIMAL_CONFIG).expect("write toml");
 
@@ -2661,8 +2499,6 @@ fn marker_with_empty_corpus_falls_back_to_setup_guide() {
     cmd.current_dir(dir.path())
         .assert()
         .success()
-        // No domain → marker not claimed → walk-up continues → root
-        // → setup guide.
         .stdout(predicate::str::contains("QUICK START"));
 }
 
@@ -2677,15 +2513,10 @@ fn unreadable_marker_aborts_discovery() {
     let dir = TempDir::new().expect("create tempdir");
     let marker = dir.path().join("adr-fmt.toml");
     fs::write(&marker, MINIMAL_CONFIG).expect("write toml");
-    // chmod 000 — no permissions for anyone.
     let mut perms = fs::metadata(&marker).expect("stat").permissions();
     perms.set_mode(0o000);
     fs::set_permissions(&marker, perms).expect("chmod 000");
 
-    // chmod 000 has no effect when running as root (CI-on-root,
-    // container builds). Probe by attempting to read the marker
-    // ourselves; if that succeeds, we're root and the test cannot
-    // exercise the unreadable path. Skip rather than fail.
     if fs::read_to_string(&marker).is_ok() {
         let _ = fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o644));
         eprintln!("skipping unreadable_marker_aborts_discovery: chmod 000 ineffective (root?)");
@@ -2695,8 +2526,6 @@ fn unreadable_marker_aborts_discovery() {
     let mut cmd = adr_fmt();
     let result = cmd.current_dir(dir.path()).arg("--lint").output();
 
-    // Best-effort restore so TempDir cleanup works even on assertion
-    // failure.
     let _ = fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o644));
 
     let output = result.expect("binary runs");
@@ -2722,7 +2551,6 @@ fn unreadable_parent_marker_aborts_discovery() {
     let dir = TempDir::new().expect("create tempdir");
     let marker = dir.path().join("adr-fmt.toml");
     fs::write(&marker, MINIMAL_CONFIG).expect("write toml");
-    // Create a sub directory to run from (no marker here).
     let nested = dir.path().join("subdir");
     fs::create_dir_all(&nested).expect("create subdir");
 
@@ -2730,7 +2558,6 @@ fn unreadable_parent_marker_aborts_discovery() {
     perms.set_mode(0o000);
     fs::set_permissions(&marker, perms).expect("chmod 000");
 
-    // Same root-skip probe as in unreadable_marker_aborts_discovery.
     if fs::read_to_string(&marker).is_ok() {
         let _ = fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o644));
         eprintln!(
@@ -2766,17 +2593,12 @@ fn unreadable_parent_marker_aborts_discovery() {
 fn symlinked_marker_file_is_accepted() {
     use std::os::unix::fs::symlink;
 
-    // Real config lives in `real-config/adr-fmt.toml` plus a corpus
-    // tree at `real-config/docs/adr/test/`. The marker symlink lives
-    // at the workspace root and points at the real file.
     let dir = TempDir::new().expect("create tempdir");
     let real_dir = dir.path().join("real-config");
     fs::create_dir_all(real_dir.join("docs/adr/test")).expect("create real corpus");
     let real_marker = real_dir.join("adr-fmt.toml");
     fs::write(&real_marker, MINIMAL_CONFIG).expect("write real toml");
 
-    // Workspace also needs its own corpus tree because resolution is
-    // relative to the symlink's parent, not the target's parent.
     fs::create_dir_all(dir.path().join("docs/adr/test")).expect("create symlink-side corpus");
     symlink(&real_marker, dir.path().join("adr-fmt.toml")).expect("create symlink");
 

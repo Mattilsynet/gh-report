@@ -9,8 +9,6 @@ use std::convert::Infallible;
 use cherry_pit_core::{Aggregate, Command, DomainEvent, EventEnvelope, HandleCommand, Policy};
 use serde::{Deserialize, Serialize};
 
-// ── Foo aggregate ────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FooEvent {
     Happened { value: u32 },
@@ -52,8 +50,6 @@ impl HandleCommand<FooDo> for Foo {
     }
 }
 
-// ── Bar aggregate ────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BarEvent {
     Pinged { from: u32 },
@@ -94,8 +90,6 @@ impl HandleCommand<BarPing> for Bar {
         Ok(vec![BarEvent::Pinged { from: cmd.from }])
     }
 }
-
-// ── Cross-aggregate policy: Foo events drive Bar pings ──────────────
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum FooToBarOutput {

@@ -219,7 +219,6 @@ impl ServerConfigBuilder {
     /// Returns `Err(ConfigError)` if any field has an invalid value.
     /// See [`ConfigError`] variants for the full list of checks.
     pub fn build(self) -> Result<ValidatedConfig, ConfigError> {
-        // Numeric limits.
         if self.concurrency_limit == 0 {
             return Err(ConfigError::ConcurrencyLimitZero);
         }
@@ -236,7 +235,6 @@ impl ServerConfigBuilder {
             return Err(ConfigError::MaxRequestBodyBytesZero);
         }
 
-        // Error page key validation.
         if let Some(ref key) = self.error_page_key {
             if key.is_empty() {
                 return Err(ConfigError::ErrorPageKeyEmpty);
@@ -255,7 +253,6 @@ impl ServerConfigBuilder {
             }
         }
 
-        // CSP validation: ASCII + no CRLF (HeaderValue::from_str requirement).
         if let Some(ref csp) = self.csp_override {
             if !csp.is_ascii() {
                 return Err(ConfigError::CspNotAscii);
@@ -329,8 +326,6 @@ impl ValidatedConfig {
 mod tests {
     use super::*;
 
-    // ── Builder defaults ────────────────────────────────────────
-
     #[test]
     fn builder_defaults_match_expected_values() {
         let config = ServerConfig::builder().build().unwrap();
@@ -345,8 +340,6 @@ mod tests {
     fn builder_default_produces_ok() {
         assert!(ServerConfig::builder().build().is_ok());
     }
-
-    // ── Builder setter methods ──────────────────────────────────
 
     #[test]
     fn builder_sets_concurrency_limit() {
@@ -393,8 +386,6 @@ mod tests {
         assert_eq!(config.error_page_key(), Some("404.html"));
     }
 
-    // ── Validation: concurrency_limit ───────────────────────────
-
     #[test]
     fn rejects_zero_concurrency_limit() {
         let err = ServerConfig::builder()
@@ -433,8 +424,6 @@ mod tests {
             .unwrap_err();
         assert_eq!(err, ConfigError::ConcurrencyLimitOverflow);
     }
-
-    // ── Validation: ws_max_connections ───────────────────────────
 
     #[test]
     fn rejects_zero_ws_max_connections() {
@@ -475,8 +464,6 @@ mod tests {
         assert_eq!(err, ConfigError::WsMaxConnectionsOverflow);
     }
 
-    // ── Validation: max_request_body_bytes ───────────────────────
-
     #[test]
     fn rejects_zero_body_limit() {
         let err = ServerConfig::builder()
@@ -494,8 +481,6 @@ mod tests {
             .unwrap();
         assert_eq!(config.max_request_body_bytes(), 1);
     }
-
-    // ── Validation: error_page_key ──────────────────────────────
 
     #[test]
     fn accepts_valid_error_page_key() {
@@ -552,8 +537,6 @@ mod tests {
         assert_eq!(err, ConfigError::ErrorPageKeyBackslash);
     }
 
-    // ── Validation: csp_override ────────────────────────────────
-
     #[test]
     fn rejects_non_ascii_csp() {
         let err = ServerConfig::builder()
@@ -599,8 +582,6 @@ mod tests {
                 .is_ok()
         );
     }
-
-    // ── Type properties ─────────────────────────────────────────
 
     #[test]
     fn validated_config_is_send_and_sync() {

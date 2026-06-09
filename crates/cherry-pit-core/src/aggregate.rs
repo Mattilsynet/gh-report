@@ -208,7 +208,6 @@ mod tests {
 
     #[test]
     fn apply_is_deterministic_under_replay() {
-        // Same event stream → same final state, twice.
         let events = [
             CounterEvent::Incremented(10),
             CounterEvent::Incremented(-3),
@@ -228,8 +227,6 @@ mod tests {
 
     #[test]
     fn apply_returns_unit_infallibly() {
-        // CHE-0009 R1: trait signature returns () — captured via type-ascription
-        // closure; if `apply` ever returned a Result, this would fail to compile.
         let mut agg = Counter::default();
         let (): () = agg.apply(&CounterEvent::Incremented(5));
         assert_eq!(agg.value, 5);

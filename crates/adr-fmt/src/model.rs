@@ -125,10 +125,6 @@ pub struct AdrRecord {
     /// when the field has only the target ID with no reason.
     /// Currently parsed but not rendered; preserved for future tree
     /// or lint surfacing (see AFM-0024).
-    // Track 3.1: lib API exposure (pub mod model) makes this field
-    // reachable from external consumers; prior cfg_attr(not(test),
-    // expect(dead_code)) removed because pub-reachability now
-    // suppresses the lint naturally. AFM-0024 rendering still deferred.
     pub parent_cross_domain_reason: String,
 }
 
@@ -302,8 +298,6 @@ impl Tier {
     ///
     /// Higher-tier ADRs need more substance; lower-tier can be brief.
     #[must_use]
-    // Each tier is a distinct semantic knob; coincident values are
-    // calibration, not a request to collapse arms.
     #[expect(
         clippy::match_same_arms,
         reason = "each tier is an independently-tunable calibration knob; coincident values are accidental, not semantic equivalence — collapsing arms would erase the calibration intent"
@@ -328,8 +322,6 @@ impl Tier {
     /// (parameter decisions should have narrow scope). S-tier is
     /// tightest at 3 — paradigm decisions reference few peers.
     #[must_use]
-    // Each tier is a distinct semantic knob; coincident values are
-    // calibration, not a request to collapse arms.
     #[expect(
         clippy::match_same_arms,
         reason = "each tier is an independently-tunable calibration knob; coincident values are accidental, not semantic equivalence — collapsing arms would erase the calibration intent"
@@ -386,7 +378,6 @@ impl Status {
     #[must_use]
     pub fn has_parenthetical(raw: &str) -> bool {
         let trimmed = raw.trim();
-        // Check for `(` after the status keyword
         trimmed.contains('(') && trimmed.contains(')')
     }
 
@@ -435,19 +426,16 @@ pub struct Relationship {
 /// guidelines output can show migration paths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RelVerb {
-    // === Permitted verbs ===
     References,
     Supersedes,
     Root,
 
-    // === Legacy verbs (parsed for recognition; no lint rule) ===
     DependsOn,
     Extends,
     Illustrates,
     ContrastsWith,
     ScopedBy,
 
-    // === Legacy reverse verbs (parsed for recognition; no lint rule) ===
     Informs,
     ExtendedBy,
     IllustratedBy,
@@ -589,13 +577,11 @@ impl fmt::Display for RelVerb {
 pub fn parse_adr_id(s: &str) -> Option<AdrId> {
     let (prefix, num_str) = s.split_once('-')?;
 
-    // Prefix: 2-4 uppercase ASCII letters.
     let prefix_len = prefix.len();
     if !(2..=4).contains(&prefix_len) || !prefix.bytes().all(|b| b.is_ascii_uppercase()) {
         return None;
     }
 
-    // Number: exactly 4 ASCII digits, no trailing junk.
     if num_str.len() != 4 || !num_str.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
@@ -631,15 +617,11 @@ pub fn parse_adr_id_from_filename_stem(stem: &str) -> Option<AdrId> {
         return None;
     }
 
-    // Take exactly 4 leading ASCII digits; reject if fewer.
     let rest_bytes = rest.as_bytes();
     if rest_bytes.len() < 4 || !rest_bytes[..4].iter().all(u8::is_ascii_digit) {
         return None;
     }
 
-    // Boundary: byte after the 4 digits must be `-` or end-of-string.
-    // Rejects "CHE-00012-foo" (digit at position 4) and "CHE-0001x"
-    // (non-dash separator).
     if rest_bytes.len() > 4 && rest_bytes[4] != b'-' {
         return None;
     }
@@ -673,7 +655,6 @@ mod tests {
 
     #[test]
     fn parse_adr_id_rejects_trailing_text() {
-        // Lenient predecessor accepted "CHE-0042-foo" → CHE-0042; strict refuses.
         assert!(parse_adr_id("CHE-0042-foo").is_none());
         assert!(parse_adr_id("CHE-0042 ").is_none());
     }
@@ -745,23 +726,17 @@ mod tests {
 
     #[test]
     fn parse_adr_id_from_filename_stem_rejects_five_digits() {
-        // Naive prefix-match would accept first 4 digits as 0001 and
-        // discard the rest. Strict boundary rejects.
         assert!(parse_adr_id_from_filename_stem("CHE-00012-foo").is_none());
     }
 
     #[test]
     fn parse_adr_id_from_filename_stem_rejects_non_dash_separator() {
-        // Naive match would accept "0001" and ignore "x". Strict
-        // boundary requires `-` or end-of-string after the 4 digits.
         assert!(parse_adr_id_from_filename_stem("CHE-0001x").is_none());
         assert!(parse_adr_id_from_filename_stem("CHE-0001_slug").is_none());
     }
 
     #[test]
     fn parse_status_superseded_with_trailing_space_returns_invalid() {
-        // "Superseded by " with empty target after trim — strict
-        // parse_adr_id rejects empty input, status falls through to Invalid.
         let s = Status::parse("Superseded by ");
         assert!(matches!(s, Status::Invalid(_)), "got {s:?}");
     }
@@ -959,23 +934,18 @@ mod tests {
     fn layer_to_tier_mapping() {
         use super::layer_to_tier;
 
-        // S-tier: layers 1-3
         assert_eq!(layer_to_tier(1), Some(Tier::S));
         assert_eq!(layer_to_tier(2), Some(Tier::S));
         assert_eq!(layer_to_tier(3), Some(Tier::S));
 
-        // A-tier: layer 4
         assert_eq!(layer_to_tier(4), Some(Tier::A));
 
-        // B-tier: layers 5-6
         assert_eq!(layer_to_tier(5), Some(Tier::B));
         assert_eq!(layer_to_tier(6), Some(Tier::B));
 
-        // C-tier: layers 7-8
         assert_eq!(layer_to_tier(7), Some(Tier::C));
         assert_eq!(layer_to_tier(8), Some(Tier::C));
 
-        // D-tier: layers 9-12
         assert_eq!(layer_to_tier(9), Some(Tier::D));
         assert_eq!(layer_to_tier(10), Some(Tier::D));
         assert_eq!(layer_to_tier(11), Some(Tier::D));

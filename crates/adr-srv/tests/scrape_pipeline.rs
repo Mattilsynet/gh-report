@@ -42,8 +42,6 @@ fn build_synthetic_corpus() -> (PathBuf, TempDir) {
     let tmp = TempDir::new().expect("tempdir");
     let marker_dir = tmp.path().to_path_buf();
 
-    // adr-fmt.toml at the marker directory. The corpus root is
-    // "adr/" relative to the marker; one domain "AFM" maps to "afm/".
     let toml = r#"
 [corpus]
 root = "adr"
@@ -65,7 +63,6 @@ foundation = false
     fs::create_dir_all(&afm_dir).expect("mkdir afm");
     fs::create_dir_all(marker_dir.join("adr").join("stale")).expect("mkdir stale");
 
-    // AFM-0001: a baseline ADR with no outbound references.
     let afm0001 = r"# AFM-0001. First Test ADR
 
 Date: 2026-05-19
@@ -92,9 +89,6 @@ R1 [5]: Synthetic decision rule for the test.
 ";
     fs::write(afm_dir.join("AFM-0001-first-test-adr.md"), afm0001).expect("write 0001");
 
-    // AFM-0002: References AFM-0001, AFM-0003, AFM-0001 — Q3
-    // duplicate-preservation case. Note AFM-0003 doesn't have to
-    // exist as a file for the parser to extract the reference id.
     let afm0002 = r"# AFM-0002. Second Test ADR
 
 Date: 2026-05-19
@@ -137,7 +131,6 @@ async fn first_scrape_emits_one_event_per_adr_file() {
         .await
         .expect("scrape ok");
 
-    // Two ADR files in the synthetic corpus → two events emitted.
     assert!(
         report.events_emitted >= 2,
         "expected >= 2 events, got {} (records_seen={})",
@@ -163,7 +156,6 @@ async fn second_scrape_emits_zero_events_unchanged_corpus() {
         .expect("scrape 1");
     assert!(first.events_emitted >= 2, "first scrape emits");
 
-    // Second scrape against same service + same corpus → idempotent.
     let second = scrape_corpus(&service, &marker_dir, &corpus)
         .await
         .expect("scrape 2");
@@ -191,9 +183,6 @@ async fn references_preserve_order_and_duplicates() {
         .await
         .expect("scrape");
 
-    // Find the AFM-0002 aggregate via the service index and load its
-    // events. References must be [AFM-0001, AFM-0003, AFM-0001] in
-    // that exact order including the duplicate.
     let afm0002 = AdrId::from_str("AFM-0002").expect("AFM-0002 parses");
     let agg_id = service
         .lookup(&afm0002)
@@ -222,7 +211,6 @@ async fn replay_on_boot_rebuilds_index_so_re_scrape_is_idempotent() {
     let (marker_dir, _guard) = build_synthetic_corpus();
     let store_dir = TempDir::new().expect("store tempdir");
 
-    // First service: open store, scrape, drop service (and store).
     {
         let store: PardosaFileEventStore<AdrIngested> =
             PardosaFileEventStore::new(store_dir.path());
@@ -234,9 +222,6 @@ async fn replay_on_boot_rebuilds_index_so_re_scrape_is_idempotent() {
         assert!(r.events_emitted >= 2);
     }
 
-    // Second service: open SAME store dir via new_with_replay. The
-    // replay path must populate adrs_by_id from on-disk aggregates
-    // so the re-scrape is a no-op.
     let store2: PardosaFileEventStore<AdrIngested> = PardosaFileEventStore::new(store_dir.path());
     let corpus2: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
     let service2 = AdrService::new_with_replay(Arc::new(store2), &corpus2)
@@ -266,9 +251,6 @@ async fn changed_body_emits_new_event() {
         .expect("scrape 1");
     assert!(first.events_emitted >= 2);
 
-    // Mutate AFM-0001: append a sentence to the Context. body_hash
-    // changes (xxh3-128 over raw bytes) → ingest_if_changed must
-    // append a new event on the second scrape.
     let p = marker_dir
         .join("adr")
         .join("afm")

@@ -56,7 +56,6 @@ pub fn verify_signature(secret: &SecretString, body: &[u8], signature_header: &s
         .expect("HMAC accepts any key size");
     mac.update(body);
 
-    // Constant-time comparison (AD5).
     mac.verify_slice(&expected).is_ok()
 }
 
@@ -104,7 +103,6 @@ mod tests {
     fn hmac_missing_prefix() {
         let secret = SecretString::from("test-secret".to_string());
         let body = b"hello world";
-        // No sha256= prefix.
         assert!(!verify_signature(&secret, body, "abcdef1234567890"));
     }
 
@@ -113,7 +111,6 @@ mod tests {
         let secret = SecretString::from("test-secret".to_string());
         let body = b"hello world";
         let sig = compute_signature("test-secret", body);
-        // Replace sha256= with sha1=.
         let sha1_sig = sig.replace("sha256=", "sha1=");
         assert!(!verify_signature(&secret, body, &sha1_sig));
     }
@@ -140,8 +137,6 @@ mod tests {
         let sig = compute_signature("wrong-secret", body);
         assert!(!verify_signature(&secret, body, &sig));
     }
-
-    // ── hex_decode unit tests ──────────────────────────────────────
 
     #[test]
     fn hex_decode_empty_string() {

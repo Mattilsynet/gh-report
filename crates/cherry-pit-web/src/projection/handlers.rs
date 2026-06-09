@@ -74,10 +74,6 @@ use super::port::ProjectionSource;
 use super::state::{PageEntry, ProjectionState};
 use crate::middleware::compression::{Encoding, negotiate_encoding};
 
-// ===========================================================================
-// Constants
-// ===========================================================================
-
 /// Default Content-Security-Policy header value applied to every response
 /// emitted by the projection adapter. Matches the donor crate's default.
 pub(crate) const DEFAULT_CSP: &str = "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'";
@@ -90,10 +86,6 @@ pub(crate) const WS_MAX_MESSAGE_SIZE: usize = 4096;
 /// signal drop-and-resync on `broadcast::RecvError::Lagged` per
 /// CHE-0049 R11.
 pub(crate) const WS_CLOSE_GOING_AWAY: CloseCode = 1001;
-
-// ===========================================================================
-// HTTP handlers
-// ===========================================================================
 
 /// Liveness probe. Always returns 200 — proves the process is alive.
 /// Static body, zero allocation.
@@ -163,7 +155,6 @@ where
             .into_response();
     };
 
-    // Strip the `/v1/` prefix; axum delivers `path` already normalised.
     let raw_path = request.uri().path();
     let key = raw_path.strip_prefix("/v1/").unwrap_or(raw_path);
 
@@ -220,7 +211,6 @@ fn resolve_page<'a>(snapshot: &'a HashMap<String, PageEntry>, key: &str) -> Opti
 fn serve_page(page: &PageEntry, request_headers: &HeaderMap, status: StatusCode) -> Response {
     let has_compressed = page.body_zstd.is_some();
 
-    // Conditional request → 304 Not Modified.
     if let Some(if_none_match) = request_headers.get(header::IF_NONE_MATCH)
         && etag_weak_match(if_none_match, &page.etag)
     {
@@ -236,12 +226,6 @@ fn serve_page(page: &PageEntry, request_headers: &HeaderMap, status: StatusCode)
         return resp;
     }
 
-    // Negotiate content encoding per RFC 7231 §5.3.4. `negotiate_encoding`
-    // is the full q-value parser (honours `q=0` refusals and quality
-    // ordering); a strict-superset behavioural-equivalence test against
-    // the prior simplified inline check
-    // (`s.split(',').any(|p| p.trim().starts_with("zstd"))`) is asserted
-    // in `middleware::compression::tests`.
     let wants_zstd = request_headers
         .get(header::ACCEPT_ENCODING)
         .is_some_and(|h| negotiate_encoding(h) == Encoding::Zstd);
@@ -291,10 +275,6 @@ fn etag_weak_match(client_val: &HeaderValue, server_val: &HeaderValue) -> bool {
     }
     strip_weak(client_val.as_bytes()) == strip_weak(server_val.as_bytes())
 }
-
-// ===========================================================================
-// WebSocket handler
-// ===========================================================================
 
 /// WebSocket upgrade handler.
 ///
@@ -357,8 +337,6 @@ pub(crate) async fn ws_session<P>(
     let (mut sender, mut receiver) = socket.split();
     let mut rx = state.source().subscribe();
 
-    // Initial "connected" envelope. Carries `"v": 1` for symmetry with
-    // the delta envelope (CHE-0049 R13).
     if sender
         .send(Message::Text(Utf8Bytes::from_static(
             r#"{"v":1,"type":"connected"}"#,
@@ -371,35 +349,22 @@ pub(crate) async fn ws_session<P>(
 
     loop {
         tokio::select! {
-            // Branch 1: client frames (discard text/binary, observe Close).
             msg = receiver.next() => {
                 match msg {
                     Some(Ok(Message::Close(_)) | Err(_)) | None => break,
-                    _ => {} // discard
+                    _ => {}
                 }
             }
 
-            // Branch 2: forward broadcast deltas to the client.
             result = rx.recv() => {
                 match result {
                     Ok(event) => {
-                        // Pre-serialised JSON — zero per-connection
-                        // serialisation cost. `Arc<str>` clone is a
-                        // refcount bump; conversion to Utf8Bytes copies
-                        // bytes (axum's `Utf8Bytes` borrows from `str`).
                         let payload: Utf8Bytes = (*event.json).to_owned().into();
                         if sender.send(Message::Text(payload)).await.is_err() {
                             break;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(_n)) => {
-                        // Per CHE-0049 R11 reconnect model: close with
-                        // 1001 "Going Away" so the client treats this
-                        // as a forced disconnect and follows the
-                        // reconnect protocol (HTTP-fetch-snapshot, then
-                        // re-attach WS). `n` is intentionally unobserved
-                        // — the close code carries the only signal that
-                        // matters.
                         let _ = sender
                             .send(Message::Close(Some(CloseFrame {
                                 code: WS_CLOSE_GOING_AWAY,
@@ -414,7 +379,6 @@ pub(crate) async fn ws_session<P>(
         }
     }
 
-    // Best-effort close (ignore errors; client may already be gone).
     let _ = sender.send(Message::Close(None)).await;
 }
 
@@ -424,7 +388,7 @@ pub(crate) async fn ws_session<P>(
 /// rejected; default ports are normalised before comparison.
 pub(crate) fn validate_ws_origin(headers: &HeaderMap) -> bool {
     let Some(origin) = headers.get(header::ORIGIN) else {
-        return true; // non-browser client; not subject to CSWSH
+        return true;
     };
     let Ok(origin_str) = origin.to_str() else {
         return false;
@@ -455,7 +419,6 @@ pub(crate) fn validate_ws_origin(headers: &HeaderMap) -> bool {
 }
 
 fn normalize_authority<'a>(authority: &'a str, default_port: &str) -> (&'a str, &'a str) {
-    // IPv6 bracketed form: `[::1]:8080`.
     if let Some(close_bracket) = authority.find(']') {
         let (host, rest) = authority.split_at(close_bracket + 1);
         let port = rest.strip_prefix(':').unwrap_or("");
@@ -469,10 +432,6 @@ fn normalize_authority<'a>(authority: &'a str, default_port: &str) -> (&'a str, 
         (authority, "")
     }
 }
-
-// ===========================================================================
-// Default CSP middleware
-// ===========================================================================
 
 /// Apply [`DEFAULT_CSP`] to every response unless an inner handler set
 /// `Content-Security-Policy` directly. Mirrors the donor's
@@ -498,10 +457,6 @@ pub(crate) async fn projection_default_csp(
     response
 }
 
-// ===========================================================================
-// Router builder (called from `super::build_projection_router`)
-// ===========================================================================
-
 /// Build the projection router with `/v1/healthz`, `/v1/readyz`,
 /// `/v1/{*path}` HTTP routes and `/ws` WS upgrade.
 ///
@@ -524,9 +479,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Header-only unit tests; full WS lifecycle lives in the
-    // `projection_ws_smoke` integration test.
 
     fn make_headers(pairs: &[(&str, &str)]) -> HeaderMap {
         let mut h = HeaderMap::new();
@@ -622,15 +574,6 @@ mod tests {
         assert!(resolve_page(&snapshot, "missing").is_none());
     }
 
-    // ── Ported from donor crate `server` tests (Phase 4b') ───
-    //
-    // Names retained byte-for-byte from donor. Donor's `resolve_cache_key`
-    // ↔ `resolve_page` (here); donor's `trailing_slash: bool` parameter is
-    // derived from the key in `resolve_page`, so tests pass the key with
-    // or without the trailing `/` to express the intended branch.
-
-    // ── etag_weak_match: extended coverage ──────────────────────
-
     #[test]
     fn etag_weak_match_identical() {
         let a = HeaderValue::from_static("W/\"abc123\"");
@@ -679,8 +622,6 @@ mod tests {
         let b = HeaderValue::from_static("W/\"abc\"");
         assert!(!etag_weak_match(&a, &b));
     }
-
-    // ── origin_validation: extended coverage ────────────────────
 
     #[test]
     fn origin_validation_same_origin_with_port() {
@@ -777,12 +718,6 @@ mod tests {
         assert!(validate_ws_origin(&headers));
     }
 
-    // ── resolve_page: extended coverage (donor's `resolve_cache_key`) ──
-    //
-    // Donor signature: `resolve_cache_key(cache, key, trailing_slash: bool)`.
-    // Here: `resolve_page(snapshot, key)` derives the trailing-slash bit
-    // from `key.ends_with('/')`. Tests pass the appropriate key form.
-
     #[test]
     fn resolve_directory_index_without_trailing_slash_no_ext() {
         let mut snapshot = HashMap::new();
@@ -790,7 +725,6 @@ mod tests {
             "about/index.html".to_string(),
             PageEntry::new("about/index.html", b"<html>about</html>".to_vec()),
         );
-        // No trailing slash, no extension → tries both about/index.html and about.html
         assert!(resolve_page(&snapshot, "about").is_some());
     }
 
@@ -801,7 +735,6 @@ mod tests {
             "index.html".to_string(),
             PageEntry::new("index.html", b"<html>root</html>".to_vec()),
         );
-        // Should find index.html directly, not try index.html/index.html
         assert!(resolve_page(&snapshot, "index.html").is_some());
     }
 
@@ -812,11 +745,8 @@ mod tests {
             "blog/index.html".to_string(),
             PageEntry::new("blog/index.html", b"<html>blog</html>".to_vec()),
         );
-        // Direct match — should not try blog/index.html/index.html
         assert!(resolve_page(&snapshot, "blog/index.html").is_some());
     }
-
-    // ── normalize_authority: IPv6 coverage (donor Finding 9.1) ──
 
     #[test]
     fn normalize_authority_ipv6_loopback_no_port() {

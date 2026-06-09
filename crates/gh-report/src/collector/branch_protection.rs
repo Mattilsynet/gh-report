@@ -137,8 +137,6 @@ pub async fn evaluate(
 ) -> BranchProtectionResult {
     trace!(repo = %repo.name, default_branch = %repo.default_branch, "evaluating branch protection");
 
-    // Validate repo name before URL interpolation — defense-in-depth against
-    // path injection from API-derived data.
     let safe_name = match sanitize_path_segment(&repo.name, "repo_name") {
         Ok(n) => n,
         Err(e) => {
@@ -160,13 +158,8 @@ pub async fn evaluate(
     };
 
     let default_branch = &repo.default_branch;
-    // default_branch is percent-encoded with NON_ALPHANUMERIC — `/` becomes `%2F`,
-    // preventing path traversal even though it appears in a path segment position.
     let encoded_branch: String = utf8_percent_encode(default_branch, NON_ALPHANUMERIC).to_string();
 
-    // Run rulesets and legacy branch protection API calls concurrently.
-    // These are completely independent calls — parallelizing reduces
-    // BP check wall time by ~2x.
     let rulesets_path = format!("/repos/{}/{}/rulesets", client.org_name, safe_name);
     let legacy_path = format!(
         "/repos/{}/{}/branches/{encoded_branch}/protection",
@@ -524,7 +517,6 @@ mod tests {
 
     #[test]
     fn summarize_ruleset_required_pull_request_reviews_type() {
-        // Both "pull_request" and "required_pull_request_reviews" are valid PR rule types
         let ruleset = serde_json::json!({
             "rules": [
                 {

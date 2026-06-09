@@ -33,10 +33,6 @@ use common::{
     http_get_with_headers, http_request, mk_snapshot, spawn_test_server_secured,
 };
 
-// ===========================================================================
-// Basic serving + 404 / 503 / traversal
-// ===========================================================================
-
 #[tokio::test]
 async fn server_serves_cached_pages() {
     let source = MockProjectionSource::new();
@@ -69,7 +65,6 @@ async fn server_returns_404_for_missing_pages() {
 #[tokio::test]
 async fn server_returns_503_before_first_collection() {
     let source = MockProjectionSource::new();
-    // No snapshot installed — `snapshot()` returns None → 503.
     let s = spawn_test_server_secured(source).await;
     let resp = http_get(s.addr, "/v1/index.html").await;
     assert_eq!(resp.status(), 503);
@@ -86,11 +81,9 @@ async fn server_rejects_directory_traversal() {
     )])));
     let s = spawn_test_server_secured(source).await;
 
-    // Raw traversal — axum's path resolver rejects.
     let resp = http_get(s.addr, "/v1/../secret.txt").await;
     assert_ne!(resp.status(), 200);
 
-    // Percent-encoded traversal — also rejected by the wildcard route.
     let resp = http_get(s.addr, "/v1/%2e%2e/secret.txt").await;
     assert_ne!(resp.status(), 200);
 
@@ -106,9 +99,6 @@ async fn server_serves_index_for_root() {
     ])));
     let s = spawn_test_server_secured(source).await;
 
-    // Dest divergence (CHE-0049 R9): no root or `/v1/` route — `/v1/{*path}`
-    // requires ≥1 segment. The donor's "serve index at root" reframes to
-    // "serve index at /v1/index.html".
     let resp = http_get(s.addr, "/v1/index.html").await;
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().await.unwrap(), "<html>dashboard</html>");
@@ -164,11 +154,9 @@ async fn cache_swap_serves_new_content() {
     )])));
     let s = spawn_test_server_secured(source.clone()).await;
 
-    // Verify v1. Dest router has no root route; address index.html explicitly.
     let resp = http_get(s.addr, "/v1/index.html").await;
     assert_eq!(resp.text().await.unwrap(), "<html>v1</html>");
 
-    // Swap snapshot to v2.
     source.set_snapshot(Some(mk_snapshot(&[(
         "index.html",
         "index.html",
@@ -185,10 +173,6 @@ async fn cache_swap_serves_new_content() {
     s.shutdown().await;
 }
 
-// ===========================================================================
-// Health / readyz
-// ===========================================================================
-
 #[tokio::test]
 async fn healthz_returns_200_ok() {
     let source = MockProjectionSource::new();
@@ -196,7 +180,6 @@ async fn healthz_returns_200_ok() {
     let resp = http_get(s.addr, "/v1/healthz").await;
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
-    // Dest carries `"v": 1` envelope (CHE-0049 R13).
     assert_eq!(body, serde_json::json!({"v": 1, "status": "ok"}));
     s.shutdown().await;
 }
@@ -215,10 +198,6 @@ async fn readyz_returns_503_before_cache() {
 
 #[tokio::test]
 async fn readyz_returns_200_with_cache_fallback() {
-    // Donor name retained. Dest readyz maps `ProjectionSource::is_ready()`;
-    // `MockProjectionSource::new()` defaults `ready = true`, so installing
-    // a snapshot is sufficient for the equivalent intent — "ready when
-    // the projection layer reports ready".
     let source = MockProjectionSource::new();
     source.set_snapshot(Some(mk_snapshot(&[(
         "index.html",
@@ -244,10 +223,6 @@ async fn readyz_returns_200_after_completed_run() {
     assert_eq!(body["status"], "ready");
     s.shutdown().await;
 }
-
-// ===========================================================================
-// Security headers
-// ===========================================================================
 
 #[tokio::test]
 async fn server_includes_security_headers_on_cached_page() {
@@ -294,10 +269,6 @@ async fn readyz_has_security_headers() {
     assert_security_headers(&resp, "/v1/readyz");
     s.shutdown().await;
 }
-
-// ===========================================================================
-// ETag / Cache-Control / If-None-Match
-// ===========================================================================
 
 #[tokio::test]
 async fn cached_page_includes_etag_and_no_cache() {
@@ -381,10 +352,6 @@ async fn etag_304_still_includes_no_cache() {
 
 #[tokio::test]
 async fn if_none_match_multi_value_returns_200() {
-    // RFC 7232 §3.2 allows multiple ETags in If-None-Match. Dest's
-    // implementation compares only the full header value (single-value),
-    // so multi-value always returns 200 — donor's documented known
-    // limitation, retained here.
     let source = MockProjectionSource::new();
     source.set_snapshot(Some(mk_snapshot(&[(
         "index.html",
@@ -415,10 +382,6 @@ async fn if_none_match_multi_value_returns_200() {
     s.shutdown().await;
 }
 
-// ===========================================================================
-// Pre-compression (zstd / identity)
-// ===========================================================================
-
 #[tokio::test]
 async fn compressed_response_has_content_encoding_and_vary() {
     let source = MockProjectionSource::new();
@@ -448,7 +411,6 @@ async fn compressed_response_has_content_encoding_and_vary() {
             .unwrap(),
         "Accept-Encoding"
     );
-    // Sanity: body decodes.
     let body = resp.bytes().await.unwrap();
     let decoded = decode_zstd(&body);
     assert_eq!(decoded, b"<html>compressed test</html>");
@@ -480,10 +442,6 @@ async fn identity_response_for_binary_has_no_content_encoding() {
     s.shutdown().await;
 }
 
-// ===========================================================================
-// WS-path non-upgrade
-// ===========================================================================
-
 #[tokio::test]
 async fn non_ws_get_to_ws_path_returns_error() {
     let source = MockProjectionSource::new();
@@ -496,10 +454,6 @@ async fn non_ws_get_to_ws_path_returns_error() {
     );
     s.shutdown().await;
 }
-
-// ===========================================================================
-// Method handling — 405 / HEAD
-// ===========================================================================
 
 #[tokio::test]
 async fn post_to_cached_page_returns_405() {
@@ -519,7 +473,6 @@ async fn post_to_cached_page_returns_405() {
         .expect("405 should include Allow header")
         .to_str()
         .unwrap();
-    // Dest emits `Allow: GET,HEAD` (no whitespace); donor used `GET, HEAD`.
     assert_eq!(allow, "GET,HEAD");
 
     s.shutdown().await;
@@ -610,10 +563,6 @@ async fn patch_to_cached_page_returns_405() {
     s.shutdown().await;
 }
 
-// ===========================================================================
-// Fallback resolution (about → about/index.html → about.html)
-// ===========================================================================
-
 #[tokio::test]
 async fn get_about_serves_about_index_html() {
     let source = MockProjectionSource::new();
@@ -656,10 +605,6 @@ async fn get_about_serves_about_html_when_no_index() {
     s.shutdown().await;
 }
 
-// ===========================================================================
-// MIME types — wasm / css
-// ===========================================================================
-
 #[tokio::test]
 async fn wasm_has_correct_content_type() {
     let source = MockProjectionSource::new();
@@ -700,10 +645,6 @@ async fn style_css_still_works_directly() {
     s.shutdown().await;
 }
 
-// ===========================================================================
-// HEAD body shape
-// ===========================================================================
-
 #[tokio::test]
 async fn head_returns_empty_body_with_content_length() {
     let source = MockProjectionSource::new();
@@ -727,20 +668,8 @@ async fn head_returns_empty_body_with_content_length() {
     s.shutdown().await;
 }
 
-// ===========================================================================
-// Encoding negotiation — 5 negotiate_* tests reframed as HTTP integration
-// (Re-task addendum at .ooda/preflight-4c-donor-audit-1778536369.md:170-186)
-// ===========================================================================
-//
-// Donor exercises `negotiate_encoding(&HeaderValue) -> Encoding` directly
-// (a private helper at server.rs:164). Dest has no `negotiate` symbol but
-// the behaviour is reachable via `Accept-Encoding` header observation
-// through `build_projection_router`. Each test asserts the observable
-// `Content-Encoding` header (or its absence) on the response.
-
 #[tokio::test]
 async fn negotiate_prefers_zstd() {
-    // donor: `Accept-Encoding: gzip, deflate, zstd` → server picks zstd.
     let source = MockProjectionSource::new();
     source.set_snapshot(Some(mk_snapshot(&[(
         "index.html",
@@ -768,7 +697,6 @@ async fn negotiate_prefers_zstd() {
 
 #[tokio::test]
 async fn negotiate_identity_when_no_zstd() {
-    // donor: `Accept-Encoding: gzip, deflate` (no zstd) → identity.
     let source = MockProjectionSource::new();
     source.set_snapshot(Some(mk_snapshot(&[(
         "index.html",
@@ -792,7 +720,6 @@ async fn negotiate_identity_when_no_zstd() {
 
 #[tokio::test]
 async fn negotiate_identity_for_unknown() {
-    // donor: `Accept-Encoding: deflate` (unknown to dest) → identity.
     let source = MockProjectionSource::new();
     source.set_snapshot(Some(mk_snapshot(&[(
         "index.html",
@@ -810,22 +737,8 @@ async fn negotiate_identity_for_unknown() {
     s.shutdown().await;
 }
 
-// NOTE on q-value tests below.
-//
-// History: the dest snapshot handler originally used a simpler
-// predicate (split-by-`,`, `trim().starts_with("zstd")`) that wrongly
-// accepted `zstd;q=0` as a request for zstd. Track 4.2.A (push-item-6)
-// replaced that predicate with the full RFC 7231 §5.3.4 q-value parser
-// ported from gh-report; the two `negotiate_rejects_q_zero*` tests
-// below now assert the donor-aligned correct behaviour.
-
 #[tokio::test]
 async fn negotiate_rejects_q_zero() {
-    // donor: `negotiate_rejects_q_zero` — `Accept-Encoding: zstd;q=0, gzip`.
-    // Track 4.2.A (push-item-6) replaced the prior simplified inline
-    // `starts_with("zstd")` predicate with the full RFC 7231 §5.3.4
-    // q-value parser ported from gh-report. The q=0 refusal is now
-    // honoured: the response MUST be identity-encoded.
     let source = MockProjectionSource::new();
     source.set_snapshot(Some(mk_snapshot(&[(
         "index.html",
@@ -850,10 +763,6 @@ async fn negotiate_rejects_q_zero() {
 
 #[tokio::test]
 async fn negotiate_rejects_q_zero_with_preceding_params() {
-    // donor: `negotiate_rejects_q_zero_with_preceding_params` —
-    // `Accept-Encoding: zstd;level=1;q=0, gzip`. Same Track 4.2.A
-    // upgrade: the parser now traverses every parameter and honours
-    // the trailing `q=0`.
     let source = MockProjectionSource::new();
     source.set_snapshot(Some(mk_snapshot(&[(
         "index.html",

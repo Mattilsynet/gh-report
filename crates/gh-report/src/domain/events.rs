@@ -71,11 +71,6 @@ pub enum DomainEvent {
         /// Target organization.
         org: String,
         /// Number of repositories to evaluate.
-        //
-        // Width fixed at u64 per GEN-0004:R1 / GEN-0032 / GEN-0037 EVT-004:
-        // platform-dependent widths are forbidden in any canonical-bytes
-        // type position. Conversion from `usize` (e.g. `Vec::len()`) lives
-        // at the constructor call sites per COM-0023.
         repo_count: u64,
         /// Unique identifier for this sweep batch.
         batch_id: String,
@@ -88,11 +83,6 @@ pub enum DomainEvent {
         /// threads `build_snapshot_signature` through `StartSweep`;
         /// kept `Option` for backward-tolerance per CHE-0064:R2
         /// additive evolution.
-        //
-        // Tail placement is load-bearing: pardosa-encoding emits
-        // payload fields in declaration order, so appending here
-        // preserves prefix-compatibility with the δ.1 byte-equality
-        // discipline (CHE-0022:R5 + PAR-0024:R5).
         snapshot_signature: Option<String>,
     } = 0,
 
@@ -320,16 +310,6 @@ mod tests {
         jiff::Timestamp::now().to_string()
     }
 
-    // Structural placeholders for the former 9 `*_serialization_round_trip`
-    // tests + the 10th `repo_evaluated_with_evidence_round_trip` test.
-    // Real wire-format round-trips through pardosa-genome land in sub-04
-    // of the pardosa-serde-swap package; for sub-03 the assertion is
-    // simply that each variant constructs, exposes its discriminator,
-    // and preserves fields under a destructuring match. The former
-    // `tag_stability_known_json_strings` and `event_type_matches_serde_tag`
-    // tests are gone — they probed serde JSON tag stability, a surface
-    // that no longer exists on `DomainEvent`.
-
     #[test]
     fn sweep_started_structural_round_trip() {
         let event = DomainEvent::SweepStarted {
@@ -378,9 +358,6 @@ mod tests {
 
     #[test]
     fn repo_evaluated_with_evidence_structural_round_trip() {
-        // The B6' `evidence: Some(_)` payload survives construction and
-        // destructuring; sub-04 will reinstate the wire-format probe
-        // through pardosa-genome.
         use crate::test_fixtures;
 
         let evidence = test_fixtures::all_passing_evidence("repo-1");

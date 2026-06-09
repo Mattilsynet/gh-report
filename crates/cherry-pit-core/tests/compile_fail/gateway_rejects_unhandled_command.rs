@@ -27,7 +27,6 @@ impl Aggregate for MyAggregate {
     fn apply(&mut self, _event: &Self::Event) {}
 }
 
-// CreateOrder IS a command and IS handled.
 struct CreateOrder;
 impl Command for CreateOrder {}
 
@@ -38,7 +37,6 @@ impl HandleCommand<CreateOrder> for MyAggregate {
     }
 }
 
-// DeleteOrder IS a command but is NOT handled by MyAggregate.
 struct DeleteOrder;
 impl Command for DeleteOrder {}
 
@@ -75,6 +73,5 @@ impl CommandGateway for MyGateway {
 
 fn main() {
     let gw = MyGateway;
-    // This should fail — MyAggregate does NOT handle DeleteOrder.
     let _fail = gw.create(DeleteOrder, CorrelationContext::none());
 }

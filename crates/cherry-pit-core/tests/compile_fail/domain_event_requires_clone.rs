@@ -6,7 +6,6 @@
 use cherry_pit_core::DomainEvent;
 use serde::{Deserialize, Serialize};
 
-// Deliberately omits `Clone` from the derive list.
 #[derive(Debug, Serialize, Deserialize)]
 struct NotCloneable {
     _x: u32,

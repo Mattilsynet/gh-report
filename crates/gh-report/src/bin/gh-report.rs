@@ -81,14 +81,6 @@ struct Cli {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    // Handle --dump-baseline before initializing tracing (pure stdout output).
-    //
-    // δ.3c-ii: baseline.msgpack is gone. The dump now replays the event
-    // log through the projection runtime and renders the resulting
-    // in-memory state via `build_baseline`. Byte-equivalent JSON shape
-    // is preserved (same `Baseline { schema_version, entries }`); the
-    // only operator-visible change is that --org is now required (the
-    // event/projection stores are per-org on disk).
     if cli.dump_baseline {
         let org = cli.org.as_deref().ok_or(
             "--org is required when using --dump-baseline (δ.3c-ii: event/projection stores are per-org)",
@@ -118,7 +110,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .as_deref()
         .ok_or("--org is required when running the daemon")?;
 
-    // Initialize tracing — format is chosen before any other work.
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
@@ -151,10 +142,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-
-// ===========================================================================
-// Tests
-// ===========================================================================
 
 #[cfg(test)]
 mod tests {
@@ -195,8 +182,6 @@ mod tests {
 
     #[test]
     fn cli_requires_org_or_dump_baseline() {
-        // Without --org or --dump-baseline, parse still succeeds
-        // (org is Optional), but main() would fail at runtime.
         let cli = Cli::try_parse_from(["gh-report"]).unwrap();
         assert!(cli.org.is_none());
         assert!(!cli.dump_baseline);

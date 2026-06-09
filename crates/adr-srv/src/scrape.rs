@@ -126,7 +126,6 @@ pub async fn scrape_corpus(
 
     let mut report = ScrapeReport::default();
 
-    // Walk each configured domain directory.
     for domain in &config.domains {
         let dir = DomainDir {
             path: corpus_root.join(&domain.directory),
@@ -134,8 +133,6 @@ pub async fn scrape_corpus(
             name: domain.name.clone(),
         };
         if !dir.path.is_dir() {
-            // Configured domain directory missing — skip rather than
-            // fail the whole scrape. Diagnostic surfaces it.
             report.diagnostics.push(format!(
                 "domain directory missing: {} (prefix {})",
                 dir.path.display(),
@@ -147,14 +144,11 @@ pub async fn scrape_corpus(
         for record in outcome.records {
             ingest_record(service, &record, &mut report, corpus).await?;
         }
-        // Surface per-file parser diagnostics into the scrape report
-        // for visibility. Display via the report-module API.
         for diag in outcome.diagnostics {
             report.diagnostics.push(format!("parser: {}", diag.message));
         }
     }
 
-    // Walk the stale archive.
     let stale_dir = corpus_root.join(&config.stale.directory);
     if stale_dir.is_dir() {
         let outcome = parse_stale(&stale_dir, &config).map_err(ScrapeError::Parse)?;
@@ -248,9 +242,6 @@ fn project(record: &AdrRecord) -> Result<AdrIngested, String> {
         .map_err(|e| format!("read file {}: {e}", record.file_path.display()))?;
     let body_hash = BodyHash::compute(&body_bytes);
 
-    // Preserve source order and duplicates. References ONLY; other
-    // verbs (Supersedes, Root, legacy) are out of scope for this
-    // event payload (M1 single-event-type contract).
     let references: Vec<AdrId> = record
         .relationships
         .iter()

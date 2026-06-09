@@ -132,18 +132,13 @@ fn event_schema_is_append_only() {
     let snapshot = parse_snapshot(&raw);
     let current = current_records();
 
-    // CHE-0022:R2 — removal or rename of a snapshot record is forbidden.
     let missing: Vec<&Record> = snapshot.difference(&current).collect();
     if !missing.is_empty() {
-        // Distinguish "variant entirely missing" (rename or removal at the
-        // variant level) from "variant present but field signature changed"
-        // (rename or removal at the field level).
         let current_names: BTreeSet<&str> = current.iter().map(|(n, _)| n.as_str()).collect();
         let mut details = String::new();
         for rec in &missing {
             let fields = rec.1.join(", ");
             if current_names.contains(rec.0.as_str()) {
-                // `write!` into String is infallible — `Write for String` never errors.
                 let _ = writeln!(
                     details,
                     "  - field signature changed for `{}` — snapshot had [{fields}]",
@@ -168,9 +163,6 @@ fn event_schema_is_append_only() {
         );
     }
 
-    // CHE-0022:R1/R3 — additive change detected. Pass with directional
-    // instructions so the maintainer updates the snapshot in a follow-up
-    // commit (or the same commit, citing CHE-0022).
     let added: Vec<&Record> = current.difference(&snapshot).collect();
     if !added.is_empty() {
         let lines: Vec<String> = added.iter().map(|r| render_record(r)).collect();

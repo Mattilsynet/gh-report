@@ -41,19 +41,6 @@ pub trait ProjectionSource: Send + Sync + 'static {
     /// Whether the adapter has caught up to a usable snapshot.
     fn is_ready(&self) -> bool;
 
-    // CHE-0049:R12 + mission wu4-web-closure SM-4.2:
-    // Seal the trait against `dyn` use. A method with a generic type
-    // parameter is excluded from a vtable, which makes the trait not
-    // dyn-compatible (object-safe). The compiler emits E0038 for any
-    // `Box<dyn ProjectionSource>` / `Arc<dyn ProjectionSource>` /
-    // `&dyn ProjectionSource` construction. The intended consumption
-    // pattern is the generic parameter `P: ProjectionSource` on
-    // `ProjectionState<P>` / `build_projection_router<P>` per CHE-0005:R1
-    // — this seal upgrades that contract from CONVENTION to COVERED,
-    // locked by the trybuild compile_fail test under `tests/compile_fail/`.
-    //
-    // Implementors provide the empty default; the method is doc-hidden
-    // and never called from public APIs.
     #[doc(hidden)]
     fn __seal_no_dyn<__Seal>(&self, _seal: __Seal) {}
 }

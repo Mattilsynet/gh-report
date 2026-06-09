@@ -39,7 +39,6 @@ pub fn compute_children(records: &[AdrRecord]) -> HashMap<AdrId, Vec<ChildEntry>
 
     for record in records {
         for rel in &record.relationships {
-            // Skip legacy reverse verbs and Root self-references
             if rel.verb.is_reverse() {
                 continue;
             }
@@ -57,7 +56,6 @@ pub fn compute_children(records: &[AdrRecord]) -> HashMap<AdrId, Vec<ChildEntry>
         }
     }
 
-    // Sort children by ID for stable output
     for entries in children.values_mut() {
         entries.sort_by(|a, b| {
             a.child
@@ -89,11 +87,9 @@ pub fn compute_parent_edges(records: &[AdrRecord]) -> HashMap<AdrId, AdrId> {
     let mut edges: HashMap<AdrId, AdrId> = HashMap::new();
 
     for record in records {
-        // Roots have no parent edge — they are forest roots
         if record.is_root() {
             continue;
         }
-        // Find the first References target (document order)
         for rel in &record.relationships {
             if rel.verb == RelVerb::References {
                 edges.insert(record.id.clone(), rel.target.clone());
@@ -157,7 +153,6 @@ pub fn walk_parent_chain<S: std::hash::BuildHasher>(
 
     loop {
         if !visited.insert(current.clone()) {
-            // Cycle detected — already saw this ID
             return Err(order);
         }
         order.push(current.clone());
@@ -233,7 +228,6 @@ mod tests {
             vec![(RelVerb::Root, make_id("CHE", 1))],
         )];
         let children = compute_children(&records);
-        // Root self-reference should NOT create a child entry
         assert!(
             children.is_empty(),
             "Root self-ref should not produce children"
@@ -290,8 +284,6 @@ mod tests {
 
     #[test]
     fn non_self_root_produces_child_entry() {
-        // Root: CHE-0005 in CHE-0002's file — semantically invalid (L008
-        // will warn) but compute_children should still produce the edge.
         let records = vec![
             make_record("CHE", 2, vec![(RelVerb::Root, make_id("CHE", 5))]),
             make_record("CHE", 5, vec![(RelVerb::Root, make_id("CHE", 5))]),
@@ -303,11 +295,8 @@ mod tests {
         assert_eq!(che5[0].verb, RelVerb::Root);
     }
 
-    // ── Parent-edge projection tests ───────────────────────────────
-
     #[test]
     fn parent_edge_is_first_references() {
-        // CHE-0003 references CHE-0002 then CHE-0001 — parent is CHE-0002
         let records = vec![
             make_record("CHE", 1, vec![(RelVerb::Root, make_id("CHE", 1))]),
             make_record("CHE", 2, vec![(RelVerb::References, make_id("CHE", 1))]),
@@ -331,7 +320,6 @@ mod tests {
 
     #[test]
     fn parent_edge_excludes_supersedes() {
-        // CHE-0002 supersedes CHE-0001 — Supersedes is NOT a parent edge
         let records = vec![
             make_record("CHE", 1, vec![(RelVerb::Root, make_id("CHE", 1))]),
             make_record("CHE", 2, vec![(RelVerb::Supersedes, make_id("CHE", 1))]),
@@ -345,7 +333,6 @@ mod tests {
 
     #[test]
     fn parent_edge_excludes_root_self() {
-        // Root with self-reference does not produce a parent edge
         let records = vec![make_record(
             "CHE",
             1,
@@ -357,7 +344,6 @@ mod tests {
 
     #[test]
     fn parent_edge_excludes_legacy_verbs() {
-        // Depends on / Extends / Informs etc are not parent edges
         let records = vec![
             make_record("CHE", 1, vec![(RelVerb::Root, make_id("CHE", 1))]),
             make_record("CHE", 2, vec![(RelVerb::DependsOn, make_id("CHE", 1))]),
@@ -372,9 +358,6 @@ mod tests {
 
     #[test]
     fn parent_edge_root_then_references_picks_references() {
-        // CHE-0002 has Root: CHE-0001 (mismatch — would warn L008) then
-        // References: CHE-0001. Root is never a parent edge regardless
-        // of position; first References wins.
         let records = vec![
             make_record("CHE", 1, vec![(RelVerb::Root, make_id("CHE", 1))]),
             make_record(
@@ -387,8 +370,6 @@ mod tests {
             ),
         ];
         let edges = compute_parent_edges(&records);
-        // CHE-0002 is_root checks Root == OWN-ID; here Root: CHE-0001
-        // is not self, so CHE-0002 is NOT a root. Parent edge = CHE-0001.
         assert_eq!(edges.get(&make_id("CHE", 2)), Some(&make_id("CHE", 1)));
     }
 
@@ -402,15 +383,12 @@ mod tests {
         let pc = compute_parent_children(&records);
         let che1 = pc.get(&make_id("CHE", 1)).unwrap();
         assert_eq!(che1.len(), 2);
-        // Sorted by (prefix, number)
         assert_eq!(che1[0].number, 2);
         assert_eq!(che1[1].number, 3);
     }
 
     #[test]
     fn parent_children_excludes_secondary_references() {
-        // CHE-0003 references CHE-0002 (parent) and CHE-0001 (secondary).
-        // CHE-0001 should NOT see CHE-0003 as a child via parent_children.
         let records = vec![
             make_record("CHE", 1, vec![(RelVerb::Root, make_id("CHE", 1))]),
             make_record("CHE", 2, vec![(RelVerb::References, make_id("CHE", 1))]),
@@ -444,8 +422,6 @@ mod tests {
 
     #[test]
     fn walk_parent_chain_detects_cycle() {
-        // Manually construct a cycle: CHE-0002 → CHE-0003 → CHE-0002
-        // (compute_parent_edges would build this if both ADRs first-ref each other)
         let mut edges: HashMap<AdrId, AdrId> = HashMap::new();
         edges.insert(make_id("CHE", 2), make_id("CHE", 3));
         edges.insert(make_id("CHE", 3), make_id("CHE", 2));
@@ -458,7 +434,6 @@ mod tests {
 
     #[test]
     fn walk_parent_chain_terminates_on_orphan() {
-        // ADR with no parent edge (e.g. broken chain) returns itself
         let edges: HashMap<AdrId, AdrId> = HashMap::new();
         let result = walk_parent_chain(&make_id("CHE", 7), &edges);
         assert_eq!(result, Ok(make_id("CHE", 7)));
@@ -466,10 +441,6 @@ mod tests {
 
     #[test]
     fn walk_parent_chain_detects_self_cycle() {
-        // Degenerate cycle: ADR's parent edge points to itself.
-        // (compute_parent_edges would reject this since References cannot
-        // contain self, but defense-in-depth: walk_parent_chain must
-        // still terminate.)
         let mut edges: HashMap<AdrId, AdrId> = HashMap::new();
         edges.insert(make_id("CHE", 5), make_id("CHE", 5));
         let result = walk_parent_chain(&make_id("CHE", 5), &edges);

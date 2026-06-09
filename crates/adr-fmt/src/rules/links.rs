@@ -61,21 +61,17 @@ use crate::nav::{compute_parent_edges, walk_parent_chain};
 use crate::report::Diagnostic;
 
 pub fn check(records: &[AdrRecord], diags: &mut Vec<Diagnostic>) {
-    // Build a lookup: AdrId → &AdrRecord
     let by_id: HashMap<&AdrId, &AdrRecord> = records.iter().map(|r| (&r.id, r)).collect();
 
     for record in records {
-        // L009: Root + References coexistence check (per-record)
         check_root_references_coexistence(record, diags);
 
-        // L008: Root self-reference mismatch (per-relationship)
         for rel in &record.relationships {
             if rel.verb == RelVerb::Root {
                 check_root_self_reference(record, rel, diags);
             }
         }
 
-        // L006: Legacy verb deprecation (per-relationship)
         for rel in &record.relationships {
             check_legacy_verb(record, rel, diags);
         }
@@ -84,14 +80,11 @@ pub fn check(records: &[AdrRecord], diags: &mut Vec<Diagnostic>) {
             check_single_link(record, rel, &by_id, diags);
         }
 
-        // L018 / L019: Parent-cross-domain field consistency
         check_parent_cross_domain_consistency(record, &by_id, diags);
     }
 
-    // L003: Supersedes-status consistency (cross-file)
     check_supersedes_consistency(records, &by_id, diags);
 
-    // L010–L017: tree-structure diagnostics (cross-file, parent-edge graph)
     check_tree_structure(records, &by_id, diags);
 }
 
@@ -103,12 +96,10 @@ fn check_single_link(
 ) {
     let target_id = &rel.target;
 
-    // Skip further link validation for Root self-references
     if rel.verb == RelVerb::Root && rel.target == source.id {
         return;
     }
 
-    // L001: Dangling link — target file not found
     if !by_id.contains_key(target_id) {
         diags.push(Diagnostic::warning(
             "L001",
@@ -122,8 +113,6 @@ fn check_single_link(
         return;
     }
 
-    // L007: Stale reference — target is in stale archive
-    // Exempt Supersedes relationships: they inherently target stale ADRs.
     if let Some(target_record) = by_id.get(target_id)
         && target_record.is_stale
         && !source.is_stale
@@ -242,7 +231,6 @@ fn check_parent_cross_domain_consistency(
         return;
     };
 
-    // L019: target must exist in the corpus.
     if !by_id.contains_key(declared) {
         diags.push(Diagnostic::warning(
             "L019",
@@ -256,7 +244,6 @@ fn check_parent_cross_domain_consistency(
         ));
     }
 
-    // L018: declared ID must match the first References target.
     let first_ref_target = record
         .relationships
         .iter()
@@ -264,9 +251,8 @@ fn check_parent_cross_domain_consistency(
         .map(|r| &r.target);
 
     match first_ref_target {
-        Some(actual) if actual == declared => {} // consistent
+        Some(actual) if actual == declared => {}
         Some(actual) => {
-            // Find the first References line for diagnostic location
             let line = record
                 .relationships
                 .iter()
@@ -286,12 +272,7 @@ fn check_parent_cross_domain_consistency(
             ));
         }
         None => {
-            // Field declared but no References at all. Either roots
-            // (which never have References) or an ADR missing them
-            // entirely — L010 covers the latter; for roots the field
-            // is meaningless, surface as L018.
             if !record.is_root() {
-                // L010 handles the missing-References case; don't pile on.
                 return;
             }
             diags.push(Diagnostic::warning(
@@ -317,7 +298,6 @@ fn check_root_references_coexistence(source: &AdrRecord, diags: &mut Vec<Diagnos
         .any(|r| r.verb == RelVerb::References);
 
     if has_root && has_references {
-        // Find line of first References entry for diagnostic location
         let ref_line = source
             .relationships
             .iter()
@@ -353,8 +333,6 @@ fn check_tree_structure(
 ) {
     let parent_edges = compute_parent_edges(records);
 
-    // Detect cycles once (L013) — emit at the lowest-numbered ADR
-    // in each cycle to make output deterministic.
     let cycle_members = detect_cycle_members(&parent_edges);
     emit_cycle_diagnostics(records, &cycle_members, diags);
 
@@ -364,12 +342,7 @@ fn check_tree_structure(
         }
         let is_root = record.is_root();
 
-        // L010: non-root ADR has no References-based parent.
-        // Root + Supersedes (root with predecessor) is exempt — roots
-        // do not need a parent edge regardless of other relationships.
         if !is_root && !parent_edges.contains_key(&record.id) {
-            // Find a sensible line: the Related section's first relationship,
-            // or fall back to status_line, or 0.
             let line = record
                 .relationships
                 .first()
@@ -388,30 +361,17 @@ fn check_tree_structure(
         }
 
         let Some(parent_id) = parent_edges.get(&record.id) else {
-            continue; // root — no further checks
+            continue;
         };
 
-        // Cycle members have a structurally invalid parent edge. L013
-        // already reports the cycle; piling on L011/L012/L016/L017
-        // (all of which evaluate parent-edge quality) adds noise
-        // without new signal — the user must break the cycle first,
-        // after which the remaining diagnostics will re-evaluate
-        // against a well-formed graph. L015 (root-first ordering)
-        // evaluates other References, not the parent edge, so it
-        // keeps firing.
         let in_cycle = cycle_members.contains(&record.id);
 
-        // Find the parent's relationship line for diagnostic location
         let parent_rel_line = record
             .relationships
             .iter()
             .find(|r| r.verb == RelVerb::References && r.target == *parent_id)
             .map_or(0, |r| r.line);
 
-        // L011: cross-domain parent (suppressed by Parent-cross-domain field)
-        // Skip when parent target is dangling — L001 already covers that defect;
-        // emitting L011 too would double-report.
-        // Skip when in cycle — L013 already reports the structural defect.
         if !in_cycle && parent_id.prefix != record.id.prefix && by_id.contains_key(parent_id) {
             let suppressed = record
                 .parent_cross_domain
@@ -432,11 +392,7 @@ fn check_tree_structure(
             }
         }
 
-        // Look up parent record for status/tier checks.
-        // L012/L016/L017 all evaluate parent-edge quality and are
-        // suppressed for cycle members (L013 dominates).
         if !in_cycle && let Some(parent_record) = by_id.get(parent_id) {
-            // L012 / L017: non-Accepted parent
             match &parent_record.status {
                 Some(Status::Accepted) => {}
                 Some(Status::SupersededBy(succ)) => {
@@ -478,9 +434,6 @@ fn check_tree_structure(
                 }
             }
 
-            // L016: parent tier lower-leverage than child tier
-            // (rank: S=0 strongest leverage, D=4 weakest; parent should
-            // be ≤ child's rank)
             if let (Some(parent_tier), Some(child_tier)) = (parent_record.tier, record.tier)
                 && parent_tier.rank() > child_tier.rank()
             {
@@ -497,9 +450,6 @@ fn check_tree_structure(
             }
         }
 
-        // L015: heuristic — parent is a root while same-domain Accepted
-        // non-root candidates appear later in References. Suspicious flat
-        // structure: a more specific parent is probably available.
         if let Some(parent_record) = by_id.get(parent_id)
             && parent_record.is_root()
         {
@@ -530,21 +480,17 @@ fn check_tree_structure(
         }
     }
 
-    // L014: non-root ADR unreachable from any root (separate pass after
-    // cycle detection so cycle members are not double-reported).
     for record in records {
         if record.is_stale || record.is_root() {
             continue;
         }
         if !parent_edges.contains_key(&record.id) {
-            continue; // already handled by L010
+            continue;
         }
         if cycle_members.contains(&record.id) {
-            continue; // L013 already covers this
+            continue;
         }
         if let Ok(terminal) = walk_parent_chain(&record.id, &parent_edges) {
-            // Skip when terminal is dangling — L001 already covers that
-            // defect; L014 would double-report on the same root cause.
             if !by_id.contains_key(&terminal) {
                 continue;
             }
@@ -566,7 +512,6 @@ fn check_tree_structure(
                 ));
             }
         }
-        // Err(_): cycle — already handled by L013
     }
 }
 
@@ -589,7 +534,6 @@ fn detect_cycle_members(parent_edges: &HashMap<AdrId, AdrId>) -> std::collection
         let mut current = start.clone();
         loop {
             if path_set.contains(&current) {
-                // Found cycle — add every node from `current` onward to cycle_set
                 if let Some(start_idx) = path.iter().position(|id| id == &current) {
                     for id in &path[start_idx..] {
                         cycle_set.insert(id.clone());
@@ -598,8 +542,6 @@ fn detect_cycle_members(parent_edges: &HashMap<AdrId, AdrId>) -> std::collection
                 break;
             }
             if globally_seen.contains(&current) {
-                // Already explored from another start; if it was in a cycle,
-                // cycle_set already contains it
                 break;
             }
             path.push(current.clone());
@@ -625,8 +567,6 @@ fn emit_cycle_diagnostics(
     if cycle_members.is_empty() {
         return;
     }
-    // Emit one diagnostic per ADR in the cycle, anchored at the
-    // first References line.
     for record in records {
         if !cycle_members.contains(&record.id) || record.is_stale {
             continue;
@@ -882,7 +822,6 @@ mod tests {
 
     #[test]
     fn legacy_forward_verb_produces_l006() {
-        // "Depends on" is a legacy forward verb → L006 with "use References".
         let records = vec![
             make_record_with_rels("CHE", 1, vec![(RelVerb::DependsOn, make_id("CHE", 2))]),
             make_record_with_rels("CHE", 2, vec![(RelVerb::Root, make_id("CHE", 2))]),
@@ -905,7 +844,6 @@ mod tests {
 
     #[test]
     fn legacy_reverse_verb_produces_l006_with_remove_guidance() {
-        // "Informs" is a legacy reverse verb → L006 with "remove (reverse verb)".
         let records = vec![
             make_record_with_rels("CHE", 1, vec![(RelVerb::Informs, make_id("CHE", 2))]),
             make_record_with_rels("CHE", 2, vec![(RelVerb::Root, make_id("CHE", 2))]),
@@ -923,7 +861,6 @@ mod tests {
 
     #[test]
     fn permitted_verbs_no_l006() {
-        // Root, References, Supersedes — all permitted, no L006.
         let mut target = make_record_with_rels("CHE", 1, vec![(RelVerb::Root, make_id("CHE", 1))]);
         target.status = Some(Status::SupersededBy(make_id("CHE", 3)));
         target.status_raw = Some("Superseded by CHE-0003".into());
@@ -950,8 +887,6 @@ mod tests {
 
     #[test]
     fn legacy_verb_with_dangling_target_emits_both_l006_and_l001() {
-        // A legacy verb pointing to a missing target should produce
-        // both diagnostics — they are independent concerns.
         let records = vec![make_record_with_rels(
             "CHE",
             1,
@@ -971,9 +906,6 @@ mod tests {
 
     #[test]
     fn legacy_verb_to_stale_target_emits_l006_and_l007() {
-        // A legacy verb pointing to a stale (but existing) target
-        // produces both L006 (verb deprecation) and L007 (stale ref).
-        // Pins the policy that lint rules co-emit on a single rel.
         let mut target = make_record_with_rels("CHE", 1, vec![(RelVerb::Root, make_id("CHE", 1))]);
         target.is_stale = true;
 
@@ -995,9 +927,6 @@ mod tests {
 
     #[test]
     fn every_legacy_verb_triggers_l006() {
-        // Bind RelVerb::legacy() to L006 emission. If a future verb
-        // joins the legacy set without a matching migration() arm,
-        // this test catches it.
         for &verb in RelVerb::legacy() {
             let records = vec![
                 make_record_with_rels("CHE", 1, vec![(verb, make_id("CHE", 2))]),
@@ -1014,11 +943,7 @@ mod tests {
 
     #[test]
     fn no_permitted_verb_triggers_l006() {
-        // Bind RelVerb::permitted() to absence of L006. Catches the
-        // inverse drift: a permitted verb accidentally returning
-        // Some(_) from migration().
         for &verb in RelVerb::permitted() {
-            // Use self-Root for Root verb, otherwise point at CHE-0002.
             let target = if verb == RelVerb::Root {
                 make_id("CHE", 1)
             } else {
@@ -1026,8 +951,6 @@ mod tests {
             };
             let mut other =
                 make_record_with_rels("CHE", 2, vec![(RelVerb::Root, make_id("CHE", 2))]);
-            // Supersedes requires the target's status to be set, else L003 fires
-            // (independent of L006). Pre-set it to keep diags clean.
             if verb == RelVerb::Supersedes {
                 other.status = Some(Status::SupersededBy(make_id("CHE", 1)));
                 other.status_raw = Some("Superseded by CHE-0001".into());
@@ -1042,11 +965,8 @@ mod tests {
         }
     }
 
-    // ── Tree-structure diagnostics (L010–L017) ─────────────────────
-
     #[test]
     fn non_root_without_references_produces_l010() {
-        // CHE-0002 has no References — should trigger L010.
         let records = vec![
             make_record_with_rels("CHE", 1, vec![(RelVerb::Root, make_id("CHE", 1))]),
             make_record_with_rels("CHE", 2, vec![]),
@@ -1061,7 +981,6 @@ mod tests {
 
     #[test]
     fn root_without_references_no_l010() {
-        // Root ADR with no References — exempt from L010.
         let records = vec![make_record_with_rels(
             "CHE",
             1,
@@ -1077,8 +996,6 @@ mod tests {
 
     #[test]
     fn root_with_supersedes_only_no_l010() {
-        // Root + Supersedes (root replacing predecessor) — still a root,
-        // exempt from L010 even though no References:.
         let mut predecessor =
             make_record_with_rels("CHE", 1, vec![(RelVerb::Root, make_id("CHE", 1))]);
         predecessor.status = Some(Status::SupersededBy(make_id("CHE", 2)));
@@ -1104,7 +1021,6 @@ mod tests {
 
     #[test]
     fn cross_domain_parent_produces_l011() {
-        // CHE-0002's first References is COM-0001 (different domain).
         let mut com_root =
             make_record_with_rels("COM", 1, vec![(RelVerb::Root, make_id("COM", 1))]);
         com_root.file_path = PathBuf::from("docs/adr/common/COM-0001-test.md");
@@ -1122,7 +1038,6 @@ mod tests {
 
     #[test]
     fn cross_domain_parent_suppressed_by_field() {
-        // Same as above but Parent-cross-domain field allows it.
         let mut com_root =
             make_record_with_rels("COM", 1, vec![(RelVerb::Root, make_id("COM", 1))]);
         com_root.file_path = PathBuf::from("docs/adr/common/COM-0001-test.md");
@@ -1143,7 +1058,6 @@ mod tests {
 
     #[test]
     fn cross_domain_suppression_only_for_named_target() {
-        // Field allows COM-0001 but parent is COM-0002 — must still warn.
         let mut com1 = make_record_with_rels("COM", 1, vec![(RelVerb::Root, make_id("COM", 1))]);
         com1.file_path = PathBuf::from("docs/adr/common/COM-0001-test.md");
         let mut com2 =
@@ -1152,7 +1066,7 @@ mod tests {
 
         let mut che =
             make_record_with_rels("CHE", 5, vec![(RelVerb::References, make_id("COM", 2))]);
-        che.parent_cross_domain = Some(make_id("COM", 1)); // wrong allowance
+        che.parent_cross_domain = Some(make_id("COM", 1));
         let records = vec![com1, com2, che];
         let mut diags = Vec::new();
         check(&records, &mut diags);
@@ -1210,7 +1124,6 @@ mod tests {
 
     #[test]
     fn parent_edge_cycle_produces_l013() {
-        // CHE-0002 → CHE-0003 → CHE-0002 cycle (no root reachable)
         let a = make_record_with_rels("CHE", 2, vec![(RelVerb::References, make_id("CHE", 3))]);
         let b = make_record_with_rels("CHE", 3, vec![(RelVerb::References, make_id("CHE", 2))]);
         let mut diags = Vec::new();
@@ -1224,9 +1137,6 @@ mod tests {
 
     #[test]
     fn secondary_reference_cycle_does_not_trigger_l013() {
-        // CHE-0002 references CHE-0001 (parent) AND CHE-0003 (secondary).
-        // CHE-0003 references CHE-0001 (parent) AND CHE-0002 (secondary).
-        // No parent-edge cycle exists — only a secondary citation cycle.
         let root = make_record_with_rels("CHE", 1, vec![(RelVerb::Root, make_id("CHE", 1))]);
         let a = make_record_with_rels(
             "CHE",
@@ -1254,19 +1164,9 @@ mod tests {
 
     #[test]
     fn unreachable_from_root_produces_l014() {
-        // Three-ADR chain CHE-0002 → CHE-0003 → CHE-0004, none of which is
-        // a root. Terminal CHE-0004 exists but `is_root()` is false, so
-        // L014 fires. (Dangling terminals are suppressed to avoid double-
-        // reporting with L001.)
         let a = make_record_with_rels("CHE", 2, vec![(RelVerb::References, make_id("CHE", 3))]);
         let b = make_record_with_rels("CHE", 3, vec![(RelVerb::References, make_id("CHE", 4))]);
-        // CHE-0004: not a root (no Root self-ref), no parent edge — chain
-        // terminates here via walk_parent_chain's "no edge" exit.
-        let c = make_record_with_rels(
-            "CHE",
-            4,
-            vec![(RelVerb::Supersedes, make_id("CHE", 99))], // forward but not References
-        );
+        let c = make_record_with_rels("CHE", 4, vec![(RelVerb::Supersedes, make_id("CHE", 99))]);
         let mut diags = Vec::new();
         check(&[a, b, c], &mut diags);
         assert!(
@@ -1277,8 +1177,6 @@ mod tests {
 
     #[test]
     fn dangling_terminal_does_not_double_report_l014() {
-        // CHE-0002 → CHE-0099 (dangling). L001 already covers the dangling
-        // reference; L014 must NOT fire to avoid double-reporting.
         let a = make_record_with_rels("CHE", 2, vec![(RelVerb::References, make_id("CHE", 99))]);
         let mut diags = Vec::new();
         check(&[a], &mut diags);
@@ -1290,9 +1188,6 @@ mod tests {
 
     #[test]
     fn dangling_cross_domain_parent_does_not_double_report_l011() {
-        // PAR-0001 → CHE-0099 (dangling cross-domain). L001 covers it;
-        // L011 must not fire (would be a misleading second diagnostic
-        // for the same root cause).
         let a = make_record_with_rels("PAR", 1, vec![(RelVerb::References, make_id("CHE", 99))]);
         let mut diags = Vec::new();
         check(&[a], &mut diags);
@@ -1317,8 +1212,6 @@ mod tests {
 
     #[test]
     fn root_first_with_local_candidate_produces_l015() {
-        // CHE-0003 references root CHE-0001 first, and same-domain
-        // Accepted non-root CHE-0002 second → L015.
         let root = make_record_with_rels("CHE", 1, vec![(RelVerb::Root, make_id("CHE", 1))]);
         let mid = make_record_with_rels("CHE", 2, vec![(RelVerb::References, make_id("CHE", 1))]);
         let leaf = make_record_with_rels(
@@ -1339,7 +1232,6 @@ mod tests {
 
     #[test]
     fn root_first_no_other_candidates_no_l015() {
-        // Root is genuine parent — no later References to consider.
         let root = make_record_with_rels("CHE", 1, vec![(RelVerb::Root, make_id("CHE", 1))]);
         let leaf = make_record_with_rels("CHE", 3, vec![(RelVerb::References, make_id("CHE", 1))]);
         let mut diags = Vec::new();
@@ -1352,8 +1244,6 @@ mod tests {
 
     #[test]
     fn l015_ignores_non_accepted_candidates() {
-        // CHE-0002 is Draft, CHE-0001 is the root parent — Draft must
-        // not be flagged as a "better candidate".
         let root = make_record_with_rels("CHE", 1, vec![(RelVerb::Root, make_id("CHE", 1))]);
         let mut mid =
             make_record_with_rels("CHE", 2, vec![(RelVerb::References, make_id("CHE", 1))]);
@@ -1376,8 +1266,6 @@ mod tests {
 
     #[test]
     fn lower_tier_parent_produces_l016() {
-        // Parent is D-tier (rank 4), child is B-tier (rank 2) → parent
-        // is lower leverage than child → L016.
         let mut parent = make_record_with_rels("CHE", 1, vec![(RelVerb::Root, make_id("CHE", 1))]);
         parent.tier = Some(Tier::D);
         let mut child =
@@ -1408,7 +1296,6 @@ mod tests {
 
     #[test]
     fn l012_l007_co_emission_for_stale_non_accepted_parent() {
-        // Pin co-emission: stale Draft parent emits both L007 and L012.
         let mut parent = make_record_with_rels("CHE", 1, vec![(RelVerb::Root, make_id("CHE", 1))]);
         parent.status = Some(Status::Draft);
         parent.is_stale = true;
@@ -1428,7 +1315,6 @@ mod tests {
 
     #[test]
     fn stale_source_skipped_for_tree_structure() {
-        // Stale source ADRs are exempt from L010-L017.
         let mut stale = make_record_with_rels("CHE", 2, vec![]);
         stale.is_stale = true;
         let mut diags = Vec::new();
@@ -1442,20 +1328,13 @@ mod tests {
         );
     }
 
-    // ── Step 8 gap-filling tests ──────────────────────────────────────
-
     #[test]
     fn cross_domain_suppression_independent_of_reason_text() {
-        // L011 suppression checks the parent_cross_domain ID only;
-        // the reason text is documentation for human reviewers and
-        // is never inspected by the rule. Verifies that an empty
-        // reason still suppresses L011 — i.e. the rule does not
-        // require non-empty reason text.
         let root = make_record_with_rels("COM", 1, vec![(RelVerb::Root, make_id("COM", 1))]);
         let mut child =
             make_record_with_rels("CHE", 5, vec![(RelVerb::References, make_id("COM", 1))]);
         child.parent_cross_domain = Some(make_id("COM", 1));
-        child.parent_cross_domain_reason = String::new(); // empty reason
+        child.parent_cross_domain_reason = String::new();
         let mut diags = Vec::new();
         check(&[root, child], &mut diags);
         assert!(
@@ -1466,23 +1345,14 @@ mod tests {
 
     #[test]
     fn l017_takes_precedence_over_l012_in_cycle() {
-        // Cycle CHE-0002 ↔ CHE-0003 where CHE-0003 is `Superseded by`.
-        // L013 (cycle) fires for both members. L017 should NOT fire on
-        // top of L013 for CHE-0002, since cycle membership is the
-        // dominant defect (cycle members are excluded from per-record
-        // status checks via the cycle_members short-circuit).
         let mut a = make_record_with_rels("CHE", 2, vec![(RelVerb::References, make_id("CHE", 3))]);
         a.status = Some(Status::Accepted);
         let mut b = make_record_with_rels("CHE", 3, vec![(RelVerb::References, make_id("CHE", 2))]);
         b.status = Some(Status::SupersededBy(make_id("CHE", 99)));
         let mut diags = Vec::new();
         check(&[a, b], &mut diags);
-        // Both members should produce L013
         let l013s: Vec<_> = diags.iter().filter(|d| d.rule == "L013").collect();
         assert_eq!(l013s.len(), 2, "expected 2× L013, got: {diags:?}");
-        // L017 should NOT fire for CHE-0002 (its parent CHE-0003 is in the cycle)
-        // We accept either: no L017 at all, OR L017 only for non-cycle-members.
-        // Since both members are in the cycle, L017 should not fire here.
         assert!(
             !diags.iter().any(|d| d.rule == "L017"),
             "L017 should not fire for cycle-member parents, got: {diags:?}"
@@ -1491,9 +1361,6 @@ mod tests {
 
     #[test]
     fn l015_does_not_fire_when_no_root_first() {
-        // CHE-0005's first ref is a non-root ADR. L015 only fires when
-        // the first ref IS a root and a same-domain non-root sibling
-        // exists later — neither condition holds here.
         let parent =
             make_record_with_rels("CHE", 2, vec![(RelVerb::References, make_id("CHE", 1))]);
         let candidate =
@@ -1502,8 +1369,8 @@ mod tests {
             "CHE",
             5,
             vec![
-                (RelVerb::References, make_id("CHE", 2)), // first ref: non-root
-                (RelVerb::References, make_id("CHE", 7)), // later: also non-root
+                (RelVerb::References, make_id("CHE", 2)),
+                (RelVerb::References, make_id("CHE", 7)),
             ],
         );
         let root = make_record_with_rels("CHE", 1, vec![(RelVerb::Root, make_id("CHE", 1))]);
@@ -1515,13 +1382,8 @@ mod tests {
         );
     }
 
-    // ── L018 / L019: Parent-cross-domain field consistency ─────────
-
     #[test]
     fn l018_fires_on_mismatch_between_field_and_first_reference() {
-        // Field declares GND-0006 but first References is COM-0001.
-        // The render-tree treats the field as authoritative only when
-        // it matches the first reference; mismatch must surface as L018.
         let com_root = make_record_with_rels("COM", 1, vec![(RelVerb::Root, make_id("COM", 1))]);
         let gnd_root = make_record_with_rels("GND", 6, vec![(RelVerb::Root, make_id("GND", 6))]);
 
@@ -1570,8 +1432,6 @@ mod tests {
 
     #[test]
     fn l019_fires_when_declared_target_does_not_exist() {
-        // Field declares GND-0099 (nonexistent). L019 must surface
-        // because L001 inspects relationship lines, not preamble fields.
         let com_root = make_record_with_rels("COM", 1, vec![(RelVerb::Root, make_id("COM", 1))]);
 
         let mut child =
@@ -1607,7 +1467,6 @@ mod tests {
 
     #[test]
     fn l018_silent_when_no_field_declared() {
-        // No Parent-cross-domain field — both rules must stay silent.
         let com_root = make_record_with_rels("COM", 1, vec![(RelVerb::Root, make_id("COM", 1))]);
         let child = make_record_with_rels("COM", 8, vec![(RelVerb::References, make_id("COM", 1))]);
 
@@ -1622,15 +1481,10 @@ mod tests {
 
     #[test]
     fn l018_fires_on_root_with_field() {
-        // A Root has no parent edge — declaring Parent-cross-domain on
-        // it is incoherent. L018 should surface this case so the field
-        // is removed.
         let mut com_root =
             make_record_with_rels("COM", 1, vec![(RelVerb::Root, make_id("COM", 1))]);
         com_root.parent_cross_domain = Some(make_id("GND", 1));
 
-        // GND-0001 must exist in the corpus or L019 will also fire,
-        // which we want to keep separate from this assertion.
         let gnd_root = make_record_with_rels("GND", 1, vec![(RelVerb::Root, make_id("GND", 1))]);
 
         let records = vec![com_root, gnd_root];
@@ -1644,18 +1498,13 @@ mod tests {
 
     #[test]
     fn l018_and_l011_co_emit_on_mismatched_field() {
-        // When Parent-cross-domain declares X but first References is
-        // Y (different domain), L018 fires for the field/References
-        // disagreement AND L011 fires because the cross-domain parent
-        // edge to Y is not suppressed (suppression names X, not Y).
-        // Pin co-emission policy: both rules encode different concerns.
         let com_root = make_record_with_rels("COM", 1, vec![(RelVerb::Root, make_id("COM", 1))]);
         let gnd_a = make_record_with_rels("GND", 1, vec![(RelVerb::Root, make_id("GND", 1))]);
         let gnd_b = make_record_with_rels("GND", 6, vec![(RelVerb::Root, make_id("GND", 6))]);
 
         let mut child =
             make_record_with_rels("COM", 8, vec![(RelVerb::References, make_id("GND", 1))]);
-        child.parent_cross_domain = Some(make_id("GND", 6)); // names a different cross-domain parent
+        child.parent_cross_domain = Some(make_id("GND", 6));
 
         let records = vec![com_root, gnd_a, gnd_b, child];
         let mut diags = Vec::new();

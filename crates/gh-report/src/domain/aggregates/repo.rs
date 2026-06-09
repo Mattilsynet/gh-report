@@ -39,10 +39,6 @@ pub struct Repo {
     /// `domain_key` from the first event seen, if any.
     pub domain_key: Option<String>,
     /// Number of `RepoEvaluated` events applied.
-    //
-    // Width fixed at u64 per GEN-0004:R1 (no platform-dependent widths
-    // in domain-model fields; cascades from `DomainEvent` field widths
-    // even though this struct is not itself serialised today).
     pub evaluation_count: u64,
 }
 
@@ -57,10 +53,6 @@ impl Aggregate for Repo {
                 }
                 if self.phase != RepoPhase::Removed {
                     self.phase = RepoPhase::Active;
-                    // saturating_add (COM-0023:R3) — `apply` is infallible
-                    // per CHE-0009:R1; saturating at u64::MAX (≈1.8e19) is
-                    // unreachable in any realistic workload and preserves
-                    // the no-panic contract of the projection path.
                     self.evaluation_count = self.evaluation_count.saturating_add(1);
                 }
             }
@@ -70,10 +62,6 @@ impl Aggregate for Repo {
                 }
                 self.phase = RepoPhase::Removed;
             }
-            // Non-Repo variants — defensively ignored. Routing is the
-            // application boundary's responsibility (CHE-0054:R5).
-            // `debug_assert!` (linus mid-review Info-1) traps
-            // mis-routing in dev/test; release preserves silent-ignore.
             DomainEvent::SweepStarted { .. }
             | DomainEvent::SweepProgress { .. }
             | DomainEvent::SweepCompleted { .. }
@@ -114,8 +102,6 @@ impl From<cherry_pit_core::StoreError> for RepoError {
     }
 }
 
-// --- Commands (CHE-0054:R4 use cases) ---------------------------------
-
 /// Record a repository evaluation.
 #[derive(Debug, Clone)]
 pub struct RecordEvaluation {
@@ -137,8 +123,6 @@ pub struct RecordRemoval {
     pub timestamp: String,
 }
 impl Command for RecordRemoval {}
-
-// --- HandleCommand impls (CHE-0008:R1 pure) ---------------------------
 
 impl HandleCommand<RecordEvaluation> for Repo {
     type Error = RepoError;
@@ -174,8 +158,6 @@ impl HandleCommand<RecordRemoval> for Repo {
     }
 }
 
-// --- Tests (CHE-0008:R3 pure-handle unit tests) -----------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,8 +178,6 @@ mod tests {
         });
     }
 
-    // --- apply (CHE-0009 infallible) ---
-
     #[test]
     fn default_repo_is_empty() {
         let r = Repo::default();
@@ -217,7 +197,6 @@ mod tests {
 
     #[test]
     fn apply_repo_evaluated_repeats_increment_counter() {
-        // CHE-0054:R2.a — RepoEvaluated may appear any number of times.
         let mut r = Repo::default();
         evaluated(&mut r);
         evaluated(&mut r);
@@ -252,9 +231,6 @@ mod tests {
 
     #[test]
     fn apply_evaluated_after_removed_does_not_revive() {
-        // CHE-0054:R2.c — defensive: even if a stray event were applied,
-        // phase stays Removed (the command path rejects this case at
-        // handle()).
         let mut r = Repo::default();
         evaluated(&mut r);
         r.apply(&DomainEvent::RepoRemoved {
@@ -269,8 +245,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "CHE-0054:R5 routing bug")]
     fn apply_panics_in_debug_on_non_repo_variant() {
-        // Per linus mid-review Info-1: dev/test traps mis-routing,
-        // release silently ignores (debug_assert no-ops).
         let mut r = Repo::default();
         r.apply(&DomainEvent::SweepStarted {
             org: "o".into(),
@@ -280,8 +254,6 @@ mod tests {
             snapshot_signature: None,
         });
     }
-
-    // --- handle (CHE-0008 pure) ---
 
     #[test]
     fn record_evaluation_from_empty_emits_event() {
@@ -357,9 +329,6 @@ mod tests {
 
     #[test]
     fn record_removal_from_empty_emits_event() {
-        // Webhook-driven removal can arrive for a repo we've never
-        // evaluated locally; allowed per CHE-0054:R2 (no
-        // pre-evaluation precondition stated).
         let r = Repo::default();
         let events = r
             .handle(RecordRemoval {

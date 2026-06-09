@@ -38,8 +38,6 @@ pub async fn evaluate(
     repo: &Repository,
     run_timestamp: &str,
 ) -> SecurityPolicyResult {
-    // Validate repo name before URL interpolation — defense-in-depth against
-    // path injection from API-derived data.
     let safe_name = match sanitize_path_segment(&repo.name, "repo_name") {
         Ok(n) => n,
         Err(e) => {
@@ -53,7 +51,6 @@ pub async fn evaluate(
         }
     };
 
-    // Non-public repos: security policy evaluation is not applicable.
     if !repo.is_public() {
         debug!(repo = %repo.name, "skipping security policy for non-public repo");
         return build_result(
@@ -67,7 +64,6 @@ pub async fn evaluate(
     trace!(repo = %repo.name, "evaluating security policy");
     let repo_details = client.repo_details(&safe_name).await;
 
-    // Check the GitHub setting first
     if repo_details.is_ok()
         && repo_details
             .data()
@@ -87,7 +83,6 @@ pub async fn evaluate(
     let mut saw_permission_denied = repo_details.status_code() == Some(403);
     let mut saw_retryable_error = repo_details.is_retryable();
 
-    // Fall back to file existence checks
     if let Some(result) = check_policy_files(
         client,
         repo,

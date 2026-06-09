@@ -66,9 +66,6 @@ mod tests {
 
         let bus: InProcessEventBus<DomainEvent> = InProcessEventBus::new();
 
-        // Register the logging subscriber AND a sibling counter handler:
-        // the counter proves the logging registration did not displace
-        // or block other handlers on the same bus (CHE-0024:§7 fan-out).
         register_logging_subscriber(&bus);
         let counter = Arc::new(AtomicU32::new(0));
         {
@@ -83,7 +80,6 @@ mod tests {
             "logging + counter handler should both be registered"
         );
 
-        // Publish two events synchronously.
         bus.publish(&[
             envelope(
                 DomainEvent::SweepStarted {
@@ -140,8 +136,6 @@ mod tests {
 
         let bus: InProcessEventBus<DomainEvent> = InProcessEventBus::new();
 
-        // Two independent handlers — proves fan-out: a counter AND the
-        // logging subscriber. Both must receive every envelope.
         let counter = Arc::new(AtomicU32::new(0));
         {
             let counter = Arc::clone(&counter);
@@ -152,7 +146,6 @@ mod tests {
         register_logging_subscriber(&bus);
         assert_eq!(bus.handler_count(), 2, "two handlers registered");
 
-        // Publish 3 events.
         let envelopes: Vec<EventEnvelope<DomainEvent>> = (0u64..3)
             .map(|i| {
                 envelope(

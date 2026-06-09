@@ -38,10 +38,8 @@ use cherry_pit_gateway::MsgpackFileStore;
 use cherry_pit_projection::FileProjectionStore;
 use jiff::Timestamp;
 
-// Re-export server-state types referenced via this module.
 pub use crate::infra::server::state::{CachedPage, PageUpdateEvent};
 
-// Re-export DomainEvent for convenience.
 pub use crate::domain::events::DomainEvent;
 
 /// Concrete event-store type wired into gh-report.
@@ -55,7 +53,6 @@ pub use crate::domain::events::DomainEvent;
 /// an `event_store` (see [`AppState::new`] under `#[cfg(test)]`).
 pub type EventStoreImpl = MsgpackFileStore<DomainEvent>;
 
-// Re-export sub-aggregates for convenience.
 pub use crate::app::evidence_service::EvidenceState;
 pub use crate::app::github_infra::GithubState;
 pub use crate::app::services::repo_service::RepoService;
@@ -67,8 +64,6 @@ pub use crate::app::webhook_context::WebhookState;
 use crate::app::collect::JobContext;
 use crate::app::work_queue::WorkQueue;
 use crate::domain::run::RunMetadata;
-
-// ── Pre-computed static assets ──────────────────────────────────────
 
 /// Embedded CSS stylesheet, compiled into the binary at build time.
 const STYLESHEET: &str = include_str!("../../templates/style.css");
@@ -107,7 +102,6 @@ pub(crate) type WorkerPoolHandles =
     std::sync::Mutex<Option<(tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>)>>;
 
 pub struct AppState {
-    // ── Cross-cutting fields ────────────────────────────────────
     /// When this service instance started.
     pub started_at: Timestamp,
     /// Currently running collection, if any.
@@ -216,7 +210,6 @@ pub struct AppState {
     /// (see [`crate::app::projection_runtime::NO_SEQUENCE_APPLIED`]).
     pub(crate) projection_checkpoint_seq: Arc<AtomicU64>,
 
-    // ── Sub-aggregates ──────────────────────────────────────────
     /// Webhook ingestion concerns (secret, replay, debounce).
     webhook: WebhookState,
     /// GitHub API infrastructure (budget, rate limit, client, cache).
@@ -224,7 +217,6 @@ pub struct AppState {
     /// Evidence data store and publication infrastructure.
     evidence: EvidenceState,
 
-    // ── ApplicationServices (CHE-0054:R4, B7'b wiring) ──────────
     /// `RunService` — load → handle → append → publish for the
     /// [`Run`](crate::domain::aggregates::run::Run) aggregate.
     /// Skeleton in B7'a; constructor + types wired in B7'b-1;
@@ -256,33 +248,10 @@ pub struct AppState {
     /// and by service `append` paths during live operation.
     pub(crate) next_seq: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
 
-    // ── Domain-key → AggregateId indices (CHE-0054:R5, amended M3) ─
-    //
-    // Placeholder shape: `Mutex<HashMap<String, AggregateId>>`.
-    //
-    // **B7'b will replace** with `DashMap<DomainKey, AggregateId>`
-    // where `DomainKey` is a typed newtype per aggregate (Run keyed
-    // by `batch_id`, Repo by `(org, repo)`, WebhookDelivery by
-    // `delivery_id`). String-keyed std-only placeholder is used
-    // here to:
-    //   1. avoid adding a new `dashmap` dep before there is an
-    //      actual reader/writer (no churn on `cargo tree`),
-    //   2. defer the typed-key design to B7'b where call-sites
-    //      exist to constrain it,
-    //   3. compile the AppState shape that B7'a-6 requires.
-    //
-    // Bootstrap behaviour (CHE-0054:R5 amended in M3 of
-    // `phase2-v2-completion-1779400000`): `runs_by_key` and
-    // `repos_by_key` are populated eagerly from event-log replay at
-    // `AppState` construction (see `bootstrap_replay_state`).
-    // `deliveries_by_id` remains lazy-populated because the
-    // `WebhookReceived` payload does not carry `delivery_id`.
     pub(crate) runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>>,
     pub(crate) repos_by_key: Arc<Mutex<HashMap<String, AggregateId>>>,
     pub(crate) deliveries_by_id: Arc<Mutex<HashMap<String, AggregateId>>>,
 }
-
-// ── Sub-aggregate accessors ─────────────────────────────────────────
 
 impl AppState {
     /// Access webhook ingestion fields (secret, replay cache, debounce cache).
@@ -412,8 +381,6 @@ impl AppState {
     }
 }
 
-// ── Service-construction helper ─────────────────────────────────────
-
 /// Build the three `ApplicationService` surfaces over a shared
 /// [`Merger`] command channel.
 ///
@@ -500,8 +467,6 @@ fn register_default_projection_handler(
     );
 }
 
-// ── Constructors ────────────────────────────────────────────────────
-
 #[cfg(test)]
 impl AppState {
     /// Create a new `AppState` (for daemon mode).
@@ -539,8 +504,6 @@ impl AppState {
         let projection_state =
             Arc::new(Mutex::new(crate::projection::EvidenceProjection::default()));
         let projection_checkpoint_seq = Arc::new(AtomicU64::new(0));
-        // M2.cd: wire bus → projection so published envelopes materialise
-        // into the read-model (CHE-0048:R2 sole-writer is `apply`).
         register_default_projection_handler(
             bus.as_ref(),
             &projection_state,
@@ -610,13 +573,6 @@ impl AppState {
     /// # Panics
     ///
     /// Panics if [`FileProjectionStore::new`] fails on `projections_dir`.
-    // `MsgpackFileStore::new` is sync+infallible, so the body has no
-    // awaits, but `with_stores` is called via `.await` from `main.rs`,
-    // the daemon, every test that constructs a real AppState, and the
-    // tempdir test harness in this file. Removing `async` cascades
-    // dozens of caller updates and rules out future fallible-init
-    // variants. Keeping `async` preserves API stability per brief S2
-    // ("keep the Result shape … preserves callers").
     #[expect(clippy::unused_async, reason = "preserves .await callers; brief S2")]
     pub async fn with_stores(
         events_dir: &Path,
@@ -671,8 +627,6 @@ impl AppState {
     }
 }
 
-// ── Snapshot-fast-path projection runtime (B5') ─────────────────────
-
 impl AppState {
     /// Boot the projection runtime: replay events past the persisted
     /// checkpoint into [`Self::projection_state`] and register the bus
@@ -720,29 +674,11 @@ impl AppState {
             return Ok(false);
         };
 
-        // Memory-Image bootstrap (Track 7.5 / CHE-0054:R5 amended,
-        // CHE-0048 line-24 exemption, CHE-0022:R6, mission cpp-r-b-r-c
-        // / bd adr-fmt-5rwbu): rebuild the four routing indices AND
-        // projection_state by replaying the durable event log. The
-        // returned max-sequence is the boot's last-applied checkpoint
-        // (currently the highest envelope sequence across every
-        // aggregate; pre-fix this was the singleton aggregate's
-        // last_applied_sequence and was supplied by
-        // snapshot_fast_path_startup, now deleted as redundant with
-        // the unified replay).
         let last_applied_sequence = self.bootstrap_replay_state(Arc::clone(event_store)).await?;
 
-        // Initialise the checkpoint atomic from the boot replay's
-        // max-sequence observation. No bus handler is yet registered,
-        // so no concurrent writer can race this.
         self.projection_checkpoint_seq
             .store(last_applied_sequence, std::sync::atomic::Ordering::Release);
 
-        // Register the bus handler that keeps the in-memory state
-        // current as new envelopes are published. The driver wraps a
-        // SharedStore over the same durable Arc held in self.event_store;
-        // no second `open(...)` is performed (CHE-0043:R1 — the
-        // directory `.lock` is already held by the AppState handle).
         let driver = Arc::new(
             ProjectionDriver::<crate::projection::EvidenceProjection, _>::new(SharedStore::new(
                 Arc::clone(event_store),
@@ -755,13 +691,6 @@ impl AppState {
             Arc::clone(&self.projection_checkpoint_seq),
         );
 
-        // "snapshot fast path" is now a stale framing — the unified
-        // replay in bootstrap_replay_state is the only boot path
-        // (CHE-0048 line-24 exemption: no projection-snapshot file is
-        // written, every boot replays the full log). The function name
-        // is retained for ABI stability across the binary entry point
-        // (`bin/gh-report.rs::main`) and will be retired in the
-        // follow-up consumer-rewrite-over-PGNO mission.
         tracing::info!(
             last_applied_sequence,
             "projection runtime initialised via bootstrap_replay_state (B5'; \
@@ -829,25 +758,8 @@ impl AppState {
             )
         })?;
 
-        // Global max-sequence across every aggregate's replay.
-        // Forward-port of the pre-fix snapshot_fast_path_startup's
-        // single-aggregate last_applied_sequence: with the unified
-        // replay covering all aggregates, the boot's "checkpoint" is
-        // the highest envelope sequence we observed anywhere. The bus
-        // handler uses fetch_max(AcqRel) on every subsequent publish,
-        // so this initial value is a lower bound that converges to the
-        // true high-water mark as events flow.
         let mut global_max_seq: u64 = 0;
 
-        // Per-aggregate loop: await `load` *without* holding any
-        // index guard (would be a `MutexGuard` held across await,
-        // which clippy::await_holding_lock rightly forbids — and
-        // would deadlock with the merger if it had been spawned).
-        // Guards are acquired in a tight scope after the await
-        // resolves. The merger has not been spawned yet at this
-        // point, so contention is zero in practice; the discipline
-        // matters because it survives future refactors that may
-        // reorder spawn vs. bootstrap.
         for aggregate_id in aggregate_ids {
             let envelopes = event_store.load(aggregate_id).await.map_err(|e| {
                 cherry_pit_projection::ProjectionError::Infrastructure(
@@ -855,18 +767,6 @@ impl AppState {
                 )
             })?;
 
-            // Fold every envelope into projection_state via
-            // Projection::apply. Pre-fix (bd adr-fmt-5rwbu) only the
-            // ORG_GOVERNANCE_AGGREGATE_ID singleton was folded —
-            // RepoEvaluated envelopes on per-repo aggregates
-            // (AggregateId(2..)) reached bootstrap_replay_indices but
-            // never reached the projection. Idempotent per CHE-0048:R3
-            // and Projection::apply is infallible per CHE-0009:R1, so
-            // the fold is safe to run unconditionally on every boot.
-            // Smallest-scope guard — released before the routing-index
-            // guards below — keeps lock ordering acyclic and avoids
-            // holding across the next iteration's `event_store.load`
-            // await (clippy::await_holding_lock).
             {
                 use cherry_pit_core::Projection as _;
                 let mut projection_guard = self
@@ -896,13 +796,6 @@ impl AppState {
                 let seq = env.sequence();
                 max_seq = Some(max_seq.map_or(seq, |m| m.max(seq)));
 
-                // Variant → index routing. The match is exhaustive
-                // so adding a new `DomainEvent` variant produces a
-                // compile error here, forcing a re-decision on
-                // routing destination. The empty-body arms below
-                // are split rather than merged so each carries the
-                // routing rationale next to the variant — merging
-                // would hide why each variant is excluded.
                 #[allow(
                     clippy::match_same_arms,
                     reason = "per-variant rationale comments justify split arms"
@@ -915,22 +808,11 @@ impl AppState {
                     | DomainEvent::RepoRemoved { domain_key, .. } => {
                         repos.entry(domain_key.clone()).or_insert(aggregate_id);
                     }
-                    // SweepCompleted/Failed/Progress/PartialEvidenceRendered
-                    // belong to a Run aggregate but carry `batch_id` only
-                    // as a back-reference, not as a routing-key origin —
-                    // the `SweepStarted` arm above already indexes the
-                    // Run by `batch_id`. No additional index entry.
                     DomainEvent::SweepCompleted { .. }
                     | DomainEvent::SweepFailed { .. }
                     | DomainEvent::SweepProgress { .. }
                     | DomainEvent::PartialEvidenceRendered { .. } => {}
-                    // WebhookReceived: payload lacks `delivery_id`; see
-                    // function-level doc-comment for why
-                    // `deliveries_by_id` is not populated here.
                     DomainEvent::WebhookReceived { .. } => {}
-                    // EvidencePublished is emitted against the
-                    // OrgGovernance singleton aggregate; no routing
-                    // index participation.
                     DomainEvent::EvidencePublished { .. } => {}
                 }
             }
@@ -941,8 +823,6 @@ impl AppState {
             }
         }
 
-        // Re-acquire briefly for the structured-log summary; cheap
-        // because no contention exists at boot.
         let runs_len = self
             .runs_by_key
             .lock()
@@ -996,8 +876,6 @@ impl AppState {
         serde_json::to_string_pretty(&baseline)
     }
 }
-
-// ── Test builder ────────────────────────────────────────────────────
 
 /// Builder for constructing `AppState` with explicit control
 /// over cache capacity and webhook secret.
@@ -1085,8 +963,6 @@ impl AppStateBuilder {
         let projection_state =
             Arc::new(Mutex::new(crate::projection::EvidenceProjection::default()));
         let projection_checkpoint_seq = Arc::new(AtomicU64::new(0));
-        // M2.cd: wire bus → projection so published envelopes materialise
-        // into the read-model (CHE-0048:R2 sole-writer is `apply`).
         register_default_projection_handler(
             bus.as_ref(),
             &projection_state,
@@ -1136,8 +1012,6 @@ impl AppState {
     }
 }
 
-// ── Worker pool lifecycle ───────────────────────────────────────────
-
 impl AppState {
     /// Ensure the long-lived worker pool and delivery task are running.
     ///
@@ -1178,7 +1052,6 @@ impl AppState {
                     >,
                 >(1024);
 
-                // Spawn delivery task.
                 let delivery_state = Arc::clone(&state);
                 let delivery_handle = tokio::spawn(crate::app::daemon::delivery_loop(
                     outcome_rx,
@@ -1239,8 +1112,6 @@ impl AppState {
     }
 }
 
-// ── Status endpoint payload ────────────────────────────────────────
-
 impl AppState {
     /// Build the JSON payload for the `/api/v1/status` endpoint.
     ///
@@ -1259,8 +1130,6 @@ impl AppState {
         })
     }
 }
-
-// ── ServerState implementation ──────────────────────────────────────
 
 impl crate::infra::server::state::ServerState for AppState {
     fn html_cache(&self) -> &ArcSwap<Option<HashMap<String, CachedPage>>> {
@@ -1286,7 +1155,6 @@ mod tests {
         let state = AppState::new_with_cache_capacity(3).await;
         let cache = &state.github().repo_detail_cache;
 
-        // Insert 4 entries into a cache with capacity 3.
         for i in 0..4 {
             cache
                 .insert(
@@ -1302,7 +1170,6 @@ mod tests {
                 )
                 .await;
         }
-        // Flush pending tasks so eviction is applied.
         cache.run_pending_tasks().await;
 
         assert!(
@@ -1340,7 +1207,6 @@ mod tests {
         let state = AppState::new_with_cache_capacity(100).await;
         let cache = &state.github().repo_detail_cache;
 
-        // Insert entries.
         for i in 0..3 {
             cache
                 .insert(
@@ -1358,14 +1224,12 @@ mod tests {
         }
         cache.run_pending_tasks().await;
 
-        // Export via iter() — same pattern as collect.rs.
         let exported: Vec<_> = cache
             .iter()
             .map(|(k, v)| ((*k).clone(), v.clone()))
             .collect();
         assert_eq!(exported.len(), 3);
 
-        // Create a new cache and seed it.
         let new_cache = crate::app::github_infra::build_cache(100);
         for (k, v) in exported {
             new_cache.insert(k, v).await;
@@ -1403,7 +1267,6 @@ mod tests {
     async fn builder_with_cache_capacity() {
         let state = AppStateBuilder::new().cache_capacity(5).build().await;
         let cache = &state.github().repo_detail_cache;
-        // Insert 6 entries into a cache with capacity 5.
         for i in 0..6 {
             cache
                 .insert(
@@ -1426,7 +1289,6 @@ mod tests {
     #[tokio::test]
     async fn sub_aggregate_accessors_return_correct_references() {
         let state = AppStateBuilder::new().webhook_secret("s").build().await;
-        // Verify accessors compile and return the right types.
         let _wh: &WebhookState = state.webhook();
         let _gh: &GithubState = state.github();
         let _ev: &EvidenceState = state.evidence();
@@ -1439,9 +1301,7 @@ mod tests {
             .webhook_secret("combo-secret")
             .build()
             .await;
-        // Webhook secret is set.
         assert!(state.webhook().secret.is_some());
-        // Cache capacity is respected.
         let cache = &state.github().repo_detail_cache;
         for i in 0..8 {
             cache
@@ -1476,7 +1336,6 @@ mod tests {
     async fn is_ready_true_when_html_cache_populated() {
         use crate::infra::server::state::ServerState;
         let state = AppStateBuilder::new().build().await;
-        // Populate the HTML cache.
         let mut pages = HashMap::new();
         pages.insert(
             "index.html".to_string(),

@@ -69,8 +69,6 @@ async fn webhook_handler(
         Err(status) => return status,
     };
 
-    // 5. Map event to action (parse before replay-cache insert so malformed
-    //    requests don't burn delivery IDs).
     let action = match map_event_to_action(&event_type, &body, &state) {
         Ok(action) => action,
         Err(e) => {
@@ -80,14 +78,10 @@ async fn webhook_handler(
                 err = %e,
                 "webhook parse error"
             );
-            // Return BAD_REQUEST without inserting into replay cache —
-            // GitHub's retry will be processed again (HMAC still gates it).
             return StatusCode::BAD_REQUEST;
         }
     };
 
-    // 6. Replay protection — atomic check-and-insert after successful parse
-    //    to avoid burning delivery IDs on malformed-after-HMAC requests.
     let entry = state
         .webhook()
         .replay_cache
@@ -139,13 +133,10 @@ fn validate_request(
     headers: &HeaderMap,
     body: &Bytes,
 ) -> Result<(String, String, CorrelationContext), StatusCode> {
-    // 1. Validate webhook secret is configured (defense in depth).
     let Some(ref secret) = state.webhook().secret else {
-        // Should not happen — route is only registered when secret is set.
         return Err(StatusCode::NOT_FOUND);
     };
 
-    // 2. Extract and validate HMAC signature.
     let Some(signature) = headers
         .get("x-hub-signature-256")
         .and_then(|v| v.to_str().ok())
@@ -158,12 +149,10 @@ fn validate_request(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    // 3. Extract event type.
     let Some(event_type) = headers.get("x-github-event").and_then(|v| v.to_str().ok()) else {
         return Err(StatusCode::BAD_REQUEST);
     };
 
-    // 4. Extract delivery ID.
     let Some(delivery_id) = headers
         .get("x-github-delivery")
         .and_then(|v| v.to_str().ok())
@@ -171,17 +160,6 @@ fn validate_request(
         return Err(StatusCode::BAD_REQUEST);
     };
 
-    // Webhook chain root (CHE-0039:R3, oracle bonus adr-fmt-l13).
-    // Each delivery is a fresh-input adapter chain root, distinct from any
-    // concurrent collect-cycle context. Constructor matches Inc 2's collect
-    // root (`correlated`); only the projection input differs.
-    //
-    // Projection: parse `delivery_id` as a hyphenated UUID. GitHub's
-    // `X-GitHub-Delivery` header is documented as a UUID. HMAC above
-    // already gates the request, so a non-UUID `delivery_id` would be
-    // malformed-after-HMAC (essentially impossible in production); `nil()`
-    // is a deterministic defensive fallback. F5: same delivery_id string ->
-    // same Uuid -> same CorrelationContext (pure function, no clock/PRNG).
     let corr_ctx = CorrelationContext::correlated(
         Uuid::parse_str(delivery_id).unwrap_or_else(|_| Uuid::nil()),
     );
@@ -199,12 +177,6 @@ async fn execute_remove(
     inventory_key: String,
     corr_ctx: &CorrelationContext,
 ) -> StatusCode {
-    // M2.cd: direct-write to `store` deleted (W5). The `RepoRemoved`
-    // envelope below drives `EvidenceProjection::apply`'s removal
-    // path (CHE-0048:R2 sole-writer). Pre-read the projection here
-    // to preserve the prior `had_evidence` semantics (used to gate
-    // the `RepoRemoved` publish — we still only emit it when the
-    // key existed pre-removal). Guard scoped to this statement.
     let had_evidence = state.projection_contains(&inventory_key);
     if let Err(e) = state
         .webhook_service
@@ -287,7 +259,6 @@ async fn execute_enqueue(
     inventory_key: String,
     repo: Arc<Repository>,
 ) -> StatusCode {
-    // Debounce check (push events only).
     if event_type == "push" {
         let now = tokio::time::Instant::now();
         if let Some(last) = state.webhook().debounce_cache.get(&inventory_key).await
@@ -308,11 +279,6 @@ async fn execute_enqueue(
             .await;
     }
 
-    // Enqueue job.
-    // Placeholder correlation: WU-8.5b will replace with a chain derived
-    // from the inbound X-Correlation-ID / delivery-id header so the webhook
-    // request's correlation reaches PageUpdate broadcast sites without
-    // synthesis (CHE-0055 G5).
     let job = JobSpec::new(
         inventory_key.clone(),
         JobContext {
@@ -553,7 +519,6 @@ mod tests {
         let body_bytes = serde_json::to_vec(&body).unwrap();
         let sig = sign(&secret, &body_bytes);
 
-        // First request — should be accepted.
         let app1 = build_test_app(Arc::clone(&state));
         let request1 = Request::builder()
             .method("POST")
@@ -566,7 +531,6 @@ mod tests {
         let response1 = app1.oneshot(request1).await.unwrap();
         assert_eq!(response1.status(), StatusCode::ACCEPTED);
 
-        // Second request with same delivery ID — replay detected.
         let app2 = build_test_app(Arc::clone(&state));
         let request2 = Request::builder()
             .method("POST")
@@ -647,7 +611,6 @@ mod tests {
             .expose_secret()
             .to_string();
 
-        // First enqueue a job for repo 77777.
         let body = serde_json::json!({
             "action": "created",
             "repository": { "id": 77777, "name": "dedup-repo" }
@@ -667,7 +630,6 @@ mod tests {
         let response1 = app1.oneshot(request1).await.unwrap();
         assert_eq!(response1.status(), StatusCode::ACCEPTED);
 
-        // Second enqueue for same repo — deduplicated by WorkQueue → 200.
         let sig2 = sign(&secret, &body_bytes);
         let app2 = build_test_app(Arc::clone(&state));
         let request2 = Request::builder()
@@ -679,7 +641,6 @@ mod tests {
             .body(Body::from(body_bytes))
             .unwrap();
         let response2 = app2.oneshot(request2).await.unwrap();
-        // WorkQueue dedup returns Deduplicated → 200 OK.
         assert_eq!(response2.status(), StatusCode::OK);
     }
 
@@ -727,7 +688,6 @@ mod tests {
             .to_string();
         let app = build_test_app(state);
 
-        // 1 MB + 1 byte exceeds the limit.
         let body = vec![b'{'; config::MAX_WEBHOOK_BODY_BYTES + 1];
         let sig = sign(&secret, &body);
 
@@ -755,7 +715,6 @@ mod tests {
             .expose_secret()
             .to_string();
 
-        // Push event touching SECURITY.md (security-relevant).
         let body = serde_json::json!({
             "ref": "refs/heads/main",
             "repository": {
@@ -772,7 +731,6 @@ mod tests {
         let body_bytes = serde_json::to_vec(&body).unwrap();
         let sig = sign(&secret, &body_bytes);
 
-        // First push — should be accepted.
         let app1 = build_test_app(Arc::clone(&state));
         let request1 = Request::builder()
             .method("POST")
@@ -785,7 +743,6 @@ mod tests {
         let response1 = app1.oneshot(request1).await.unwrap();
         assert_eq!(response1.status(), StatusCode::ACCEPTED);
 
-        // Second push within debounce window — should be debounced (200).
         let sig2 = sign(&secret, &body_bytes);
         let app2 = build_test_app(Arc::clone(&state));
         let request2 = Request::builder()

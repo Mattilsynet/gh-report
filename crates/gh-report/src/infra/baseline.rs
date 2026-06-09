@@ -144,8 +144,6 @@ mod tests {
         ev
     }
 
-    // ── should_reuse tests ─────────────────────────────────────────
-
     #[test]
     fn reuse_when_updated_at_matches() {
         assert!(should_reuse(
@@ -176,8 +174,6 @@ mod tests {
     fn no_reuse_when_baseline_is_empty() {
         assert!(!should_reuse("", Some("2026-04-09T12:00:00Z")));
     }
-
-    // ── build_baseline tests ───────────────────────────────────────
 
     #[test]
     fn build_baseline_includes_repos_with_updated_at() {
@@ -218,13 +214,11 @@ mod tests {
         let baseline = build_baseline(&[ev1, ev2]);
         assert_eq!(baseline.entries.len(), 2);
 
-        // A repo not in the list is not in the baseline.
         assert!(!baseline.entries.contains_key("id-missing"));
     }
 
     #[test]
     fn build_baseline_excludes_total_failure() {
-        // Create a total-failure evidence (all 5 checks Unknown).
         let mut ev = test_fixtures::all_passing_evidence("halted-repo");
         ev.repository.updated_at = Some("2026-04-09T12:00:00Z".to_string());
         ev.checks.security_policy.status = SecurityPolicyStatus::Unknown;
@@ -242,8 +236,6 @@ mod tests {
 
     #[test]
     fn is_total_failure_false_when_policy_not_applicable() {
-        // NotApplicable policy + 4 Unknown is NOT a total failure.
-        // NotApplicable != Unknown, so the conjunction fails.
         let mut ev = test_fixtures::all_passing_evidence("na-repo");
         ev.checks.security_policy.status = SecurityPolicyStatus::NotApplicable;
         ev.checks.secret_scanning.status = SecretScanningStatus::Unknown;
@@ -259,7 +251,6 @@ mod tests {
 
     #[test]
     fn build_baseline_keeps_partial_failure() {
-        // Only 1 check is Unknown — should still be cached.
         let mut ev = test_fixtures::all_passing_evidence("partial-repo");
         ev.repository.updated_at = Some("2026-04-09T12:00:00Z".to_string());
         ev.checks.branch_protection.status = BranchProtectionStatus::Unknown;

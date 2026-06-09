@@ -46,8 +46,6 @@ use serde::{Deserialize, Serialize};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-// ── Domain ────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 enum CounterEvent {
     Created { initial: u32 },
@@ -118,13 +116,6 @@ impl HandleCommand<IncrementCmd> for Counter {
     }
 }
 
-// ── In-memory `EventStore` (test-only) ────────────────────────────────
-//
-// Confined to this `tests/` file per the WU-4 S6 brief — never
-// `pub use`'d from the crate. Single-process Mutex is fine: tests run
-// each request through a fresh `app()` and assertions read the store
-// after the await point completes, so there's no real concurrency.
-
 #[derive(Default)]
 struct InMemStore {
     inner: Mutex<InMemInner>,
@@ -184,7 +175,6 @@ impl EventStore for InMemStore {
     type Event = CounterEvent;
 
     async fn load(&self, id: AggregateId) -> Result<Vec<EventEnvelope<Self::Event>>, StoreError> {
-        // CHE-0019 R1: unknown aggregate yields an empty Vec, not an error.
         Ok(self.snapshot(id))
     }
 
@@ -238,13 +228,6 @@ impl EventStore for InMemStore {
         Ok(envelopes)
     }
 }
-
-// ── In-memory `CommandGateway` over the store ─────────────────────────
-//
-// The cherry-pit-core gateway trait is generic over `C: Command`. We
-// implement the load → handle → persist lifecycle directly against
-// the store so each round-trip exercises real persistence, not the
-// stub from `command_router_smoke.rs`.
 
 struct InMemGateway {
     store: std::sync::Arc<InMemStore>,
@@ -324,8 +307,6 @@ impl CommandGateway for InMemGateway {
     }
 }
 
-// ── Wire DTO + `CommandRouter` impl ───────────────────────────────────
-
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum CounterWire {
@@ -380,8 +361,6 @@ impl CommandRouter for InMemRouter {
             }
             CounterWire::Increment { target, by } => {
                 let id = AggregateId::new(NonZeroU64::new(target).ok_or_else(|| {
-                    // Map invalid target to a not-found-shaped error so
-                    // we exercise the public mapping helpers consistently.
                     let err: DispatchError<IncrementError> =
                         DispatchError::Infrastructure("wire target must be non-zero".into());
                     map_dispatch_error(&err)
@@ -394,8 +373,6 @@ impl CommandRouter for InMemRouter {
         }
     }
 }
-
-// ── Test harness ──────────────────────────────────────────────────────
 
 struct Harness {
     app: Router,
@@ -447,8 +424,6 @@ fn get(uri: &str) -> Request<Body> {
         .unwrap()
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn create_round_trip_persists_events_in_store() {
     let h = harness();
@@ -480,7 +455,6 @@ async fn create_round_trip_persists_events_in_store() {
 #[tokio::test]
 async fn send_round_trip_advances_event_stream() {
     let h = harness();
-    // First create.
     let _ = h
         .app
         .clone()
@@ -491,7 +465,6 @@ async fn send_round_trip_advances_event_stream() {
         .await
         .unwrap();
 
-    // Then send an Increment.
     let response = h
         .app
         .clone()
@@ -552,7 +525,6 @@ async fn load_known_aggregate_returns_event_stream() {
 
 #[tokio::test]
 async fn load_unknown_aggregate_returns_200_with_empty_events() {
-    // CHE-0049 R7 + CHE-0019 R1: unknown aggregate is a 200, never 404.
     let h = harness();
     let response = h
         .app
@@ -577,8 +549,6 @@ async fn load_unknown_aggregate_returns_200_with_empty_events() {
 
 #[tokio::test]
 async fn rejected_command_maps_to_422_end_to_end() {
-    // CHE-0049 R4 + R6: domain-rejected commands return 422 + the
-    // typed error preserved losslessly in the body.
     let h = harness();
     let _ = h
         .app
@@ -590,7 +560,6 @@ async fn rejected_command_maps_to_422_end_to_end() {
         .await
         .unwrap();
 
-    // `IncrementCmd { by: 0 }` triggers `IncrementError("...zero...")`.
     let response = h
         .app
         .clone()
@@ -610,17 +579,12 @@ async fn rejected_command_maps_to_422_end_to_end() {
         "422 body must preserve the typed error Display: {message}"
     );
 
-    // The store stream must still be at length 1 — the rejected
-    // increment never reached `append`.
     let id = AggregateId::new(NonZeroU64::new(1).unwrap());
     assert_eq!(h.store.snapshot(id).len(), 1);
 }
 
 #[tokio::test]
 async fn correlation_round_trip_propagates_and_echoes() {
-    // CHE-0049 R5: inbound X-Correlation-ID is parsed into the
-    // CorrelationContext seen by the router AND echoed on the response
-    // header. CHE-0016 propagates it onto persisted envelopes.
     let h = harness();
     let corr = Uuid::now_v7();
 
@@ -637,35 +601,24 @@ async fn correlation_round_trip_propagates_and_echoes() {
     let response = h.app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
 
-    // Echo header on the response.
     assert_eq!(
         response.headers().get("x-correlation-id"),
         Some(&HeaderValue::from_str(&corr.to_string()).unwrap()),
         "response must echo the inbound correlation id"
     );
 
-    // The router observed the same correlation id.
     let observed = h
         .router
         .take_last_correlation()
         .expect("router must have recorded a CorrelationContext");
     assert_eq!(observed.correlation_id(), Some(corr));
 
-    // The store stamped it onto the persisted envelope.
     let id = AggregateId::new(NonZeroU64::new(1).unwrap());
     let stream = h.store.snapshot(id);
     assert_eq!(stream.len(), 1);
     assert_eq!(stream[0].correlation_id(), Some(corr));
 }
 
-// ── Compile-time trait reach (re-stated) ──────────────────────────────
-//
-// `map_store_error` is exercised indirectly through the load handler;
-// keep a direct reference here so a future refactor that drops the
-// public mapper from the surface fails this file at compile time as
-// well as the existing unit tests. #[expect] fails closed: if the
-// reachability check ever gains a real caller, this attribute fires
-// as unfulfilled and must be removed.
 #[expect(
     dead_code,
     reason = "compile-time reachability anchor for `map_store_error`; the function body is the assertion that the public mapper still type-checks at the test crate's call site."

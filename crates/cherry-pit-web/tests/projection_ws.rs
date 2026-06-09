@@ -51,10 +51,6 @@ use common::{
     MockProjectionSource, assert_envelope_v1, spawn_test_server, spawn_test_server_secured,
 };
 
-// ===========================================================================
-// Helpers
-// ===========================================================================
-
 /// Drain one Text frame and parse it as JSON. Times out after 5s.
 async fn recv_text_json(
     ws: &mut tokio_tungstenite::WebSocketStream<
@@ -72,10 +68,6 @@ async fn recv_text_json(
     };
     serde_json::from_str(&text).expect("frame not JSON")
 }
-
-// ===========================================================================
-// Upgrade + envelope basics
-// ===========================================================================
 
 /// Donor: `ws_upgrade_returns_101` (`server.rs:1979`). Asserts 101 handshake
 /// status + `connected` envelope. BC1 `"v":1` enforced via `assert_envelope_v1`.
@@ -124,7 +116,6 @@ async fn ws_receives_broadcast_update() {
     .expect("broadcast send");
 
     let parsed = recv_text_json(&mut ws).await;
-    // BC1: envelope literal `"v":1`.
     assert_envelope_v1(&parsed, "update");
     assert_eq!(parsed["repo"], "my-repo");
     assert_eq!(parsed["pages"][0], "index.html");
@@ -162,9 +153,6 @@ async fn ws_sends_reload_on_lag() {
     let connected = recv_text_json(&mut ws).await;
     assert_envelope_v1(&connected, "connected");
 
-    // Saturate the broadcast channel (cap 64) — drain none from the
-    // client so the per-session receiver lags. 200 sends is well past
-    // the capacity threshold.
     for i in 0..200u32 {
         let _ = tx.send(PageUpdate::new(
             vec![format!("page-{i}.html")],
@@ -174,9 +162,6 @@ async fn ws_sends_reload_on_lag() {
         ));
     }
 
-    // Drain frames until we see a Close with code 1001 (or a hard
-    // timeout). Earlier frames may be successfully-delivered updates
-    // queued before lag triggered.
     let mut saw_close_1001 = false;
     let result = timeout(Duration::from_secs(5), async {
         loop {
@@ -189,7 +174,7 @@ async fn ws_sends_reload_on_lag() {
                     return;
                 }
                 Some(Ok(Message::Close(None)) | Err(_)) | None => return,
-                Some(Ok(_)) => {} // earlier delta frames; keep draining
+                Some(Ok(_)) => {}
             }
         }
     })
@@ -203,10 +188,6 @@ async fn ws_sends_reload_on_lag() {
 
     server.shutdown().await;
 }
-
-// ===========================================================================
-// Security headers on the WS endpoint
-// ===========================================================================
 
 /// Donor: `ws_endpoint_has_security_headers` (`server.rs:2142`).
 /// Drives a non-upgrade GET against `/ws` and asserts the full security
@@ -225,10 +206,6 @@ async fn ws_endpoint_has_security_headers() {
 
     server.shutdown().await;
 }
-
-// ===========================================================================
-// Fanout
-// ===========================================================================
 
 /// Donor: `ws_broadcast_reaches_all_connected_clients` (`server.rs:2259`).
 /// Three concurrent clients all receive the same `PageUpdate` delta.
@@ -274,10 +251,6 @@ async fn ws_broadcast_reaches_all_connected_clients() {
     server.shutdown().await;
 }
 
-// ===========================================================================
-// Graceful shutdown
-// ===========================================================================
-
 /// Donor: `ws_session_ends_on_broadcast_close` (`server.rs:2312`). The
 /// donor's test name describes the *intent* (server-side broadcast
 /// teardown ends the session) but the donor's implementation actually
@@ -301,15 +274,8 @@ async fn ws_session_ends_on_broadcast_close() {
 
     server.shutdown().await;
 
-    // Drive teardown from the client side (donor parity). The server
-    // task is already aborted; this Close send may itself error out
-    // because the underlying TCP may already be torn down — we tolerate
-    // that.
     let _ = ws.send(Message::Close(None)).await;
 
-    // Stream must drain (Closed frame from server, or stream EOF, or
-    // tungstenite error from underlying TCP teardown). Donor allows 3s;
-    // we allow 5s for slow CI.
     let drained = timeout(Duration::from_secs(5), async {
         while let Some(_msg) = ws.next().await {}
     })
@@ -319,10 +285,6 @@ async fn ws_session_ends_on_broadcast_close() {
         "WS stream should drain after server shutdown"
     );
 }
-
-// ===========================================================================
-// Oversized client message rejection
-// ===========================================================================
 
 /// Donor: `ws_rejects_oversized_client_message` (`server.rs:2399`). The
 /// dest constrains inbound frames to `WS_MAX_MESSAGE_SIZE = 4096` bytes
@@ -358,10 +320,6 @@ async fn ws_rejects_oversized_client_message() {
     );
     server.shutdown().await;
 }
-
-// ===========================================================================
-// CSWSH defence
-// ===========================================================================
 
 /// Donor: `ws_cross_origin_upgrade_rejected` (`server.rs:2594`). Builds
 /// a raw handshake request carrying an `Origin` header from a foreign
@@ -405,19 +363,11 @@ async fn ws_cross_origin_upgrade_rejected() {
     server.shutdown().await;
 }
 
-// Compile-time reachability anchor for `CloseFrame`: kept for
-// documentation symmetry with the lag-test rewrite. #[expect] fails
-// closed: if `CloseFrame` ever gains a real caller in this file, this
-// attribute fires as unfulfilled and must be removed.
 #[expect(
     dead_code,
     reason = "compile-time reachability anchor for `CloseFrame`; the parameter type is the assertion that the import still resolves at the test crate's call site."
 )]
 fn close_frame_anchor(_f: CloseFrame) {}
-
-// ===========================================================================
-// Opportunistic pickup (sub-4d brief §"Opportunistic pickup")
-// ===========================================================================
 
 /// Donor: `non_ws_get_to_ws_path_returns_error` (`server.rs:2117`).
 /// Picked up opportunistically while implementing the WS suite: a plain

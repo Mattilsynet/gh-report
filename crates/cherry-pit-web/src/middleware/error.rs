@@ -232,11 +232,6 @@ where
             retry_after_headers(),
             ErrorBody::new(code::INFRASTRUCTURE, err),
         ),
-        // `DispatchError` is `#[non_exhaustive]` (CHE-0021 R1). A future
-        // variant would be unmapped here; safest default per CHE-0049
-        // R10 is the retryable-infrastructure shape. Contract instructs
-        // hopper to back-brief moltke on a new variant — this branch
-        // should remain dead in v0.1.
         _ => (
             StatusCode::SERVICE_UNAVAILABLE,
             retry_after_headers(),
@@ -291,9 +286,6 @@ pub fn map_store_error(err: &StoreError) -> ErrorResponse {
             retry_after_headers(),
             ErrorBody::new(code::INFRASTRUCTURE, err),
         ),
-        // `StoreError` is `#[non_exhaustive]` (CHE-0021 R1). Same
-        // conservative default as `DispatchError` — back-brief moltke if
-        // this branch ever fires.
         _ => (
             StatusCode::SERVICE_UNAVAILABLE,
             retry_after_headers(),
@@ -372,7 +364,6 @@ mod tests {
     use std::fmt;
     use std::num::NonZeroU64;
 
-    // Minimal domain error mirroring the cherry-pit-core test scaffold.
     #[derive(Debug)]
     struct DomainErr(&'static str);
     impl fmt::Display for DomainErr {
@@ -390,8 +381,6 @@ mod tests {
         h.get(RETRY_AFTER) == Some(&HeaderValue::from_static(RETRY_AFTER_SECONDS))
     }
 
-    // ── Row 1: DispatchError::Rejected → 422 + lossless body ────────────
-
     #[test]
     fn dispatch_rejected_maps_to_422_with_lossless_body() {
         let err: DispatchError<DomainErr> =
@@ -401,7 +390,6 @@ mod tests {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         assert!(headers.is_empty(), "422 carries no special headers");
         assert_eq!(body.code, "rejected");
-        // Lossless: the full Display of the wrapped DomainErr is present.
         assert!(
             body.message.contains("invariant X violated"),
             "Rejected body must preserve domain error Display losslessly: {}",
@@ -409,8 +397,6 @@ mod tests {
         );
         assert!(body.correlation_id.is_none());
     }
-
-    // ── Row 2: DispatchError::ConcurrencyConflict → 409 ─────────────────
 
     #[test]
     fn dispatch_concurrency_conflict_maps_to_409() {
@@ -429,8 +415,6 @@ mod tests {
         assert_eq!(body.code, "concurrency_conflict");
     }
 
-    // ── Row 3: DispatchError::AggregateNotFound → 404 ───────────────────
-
     #[test]
     fn dispatch_aggregate_not_found_maps_to_404() {
         let err: DispatchError<DomainErr> = DispatchError::AggregateNotFound {
@@ -442,8 +426,6 @@ mod tests {
         assert_eq!(body.code, "aggregate_not_found");
         assert!(body.message.contains("99"));
     }
-
-    // ── Row 4: DispatchError::Infrastructure → 503 + Retry-After ────────
 
     #[test]
     fn dispatch_infrastructure_maps_to_503_retryable() {
@@ -457,8 +439,6 @@ mod tests {
         );
         assert_eq!(body.code, "infrastructure");
     }
-
-    // ── Row 5: StoreError::ConcurrencyConflict → 409 ────────────────────
 
     #[test]
     fn store_concurrency_conflict_maps_to_409() {
@@ -474,8 +454,6 @@ mod tests {
         assert_eq!(body.code, "concurrency_conflict");
     }
 
-    // ── Row 6: StoreError::StoreLocked → 503 + Retry-After ──────────────
-
     #[test]
     fn store_locked_maps_to_503_with_retry_after() {
         let err = StoreError::StoreLocked {
@@ -488,8 +466,6 @@ mod tests {
         assert_eq!(body.code, "store_locked");
         assert!(body.message.contains("/data/store"));
     }
-
-    // ── Row 7: StoreError::CorruptData → 500 ────────────────────────────
 
     #[test]
     fn store_corrupt_data_maps_to_500() {
@@ -504,8 +480,6 @@ mod tests {
         assert_eq!(body.code, "corrupt_data");
     }
 
-    // ── Row 8: StoreError::Infrastructure → 503 + Retry-After ───────────
-
     #[test]
     fn store_infrastructure_maps_to_503_with_retry_after() {
         let err = StoreError::Infrastructure("disk full".into());
@@ -515,8 +489,6 @@ mod tests {
         assert!(has_retry_after(&headers));
         assert_eq!(body.code, "infrastructure");
     }
-
-    // ── Row 9: BusError → 503 + Retry-After ─────────────────────────────
 
     #[test]
     fn bus_error_maps_to_503_with_retry_after() {
@@ -528,8 +500,6 @@ mod tests {
         assert_eq!(body.code, "bus");
     }
 
-    // ── Row 10: post-persist cancellation → 202 ─────────────────────────
-
     #[test]
     fn post_persist_cancellation_maps_to_202() {
         let (status, headers, body) = post_persist_cancellation_response();
@@ -539,11 +509,8 @@ mod tests {
         assert_eq!(body.code, "accepted_unknown");
     }
 
-    // ── Invariant: 409 ONLY produced by ConcurrencyConflict variants ────
-
     #[test]
     fn http_409_is_reserved_for_concurrency_conflict() {
-        // Every non-ConcurrencyConflict DispatchError variant.
         let dispatch_others: Vec<DispatchError<DomainErr>> = vec![
             DispatchError::Rejected(DomainErr("x")),
             DispatchError::AggregateNotFound {
@@ -560,7 +527,6 @@ mod tests {
             );
         }
 
-        // Every non-ConcurrencyConflict StoreError variant.
         let store_others = [
             StoreError::StoreLocked { path: "/x".into() },
             StoreError::CorruptData("bad".into()),
@@ -575,14 +541,11 @@ mod tests {
             );
         }
 
-        // BusError and post-persist cancellation never produce 409 either.
         let (bus_status, _, _) = map_bus_error(&BusError::new("x"));
         assert_ne!(bus_status, StatusCode::CONFLICT);
         let (cancel_status, _, _) = post_persist_cancellation_response();
         assert_ne!(cancel_status, StatusCode::CONFLICT);
     }
-
-    // ── Body shape: serializes cleanly; correlation_id elided when None ─
 
     #[test]
     fn error_body_serializes_without_correlation_when_absent() {
@@ -610,8 +573,6 @@ mod tests {
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains(r#""correlation_id":"trace-abc""#));
     }
-
-    // ── CHE-0049 R5 wiring: with_correlation populates from context ────
 
     #[test]
     fn with_correlation_populates_when_id_present() {

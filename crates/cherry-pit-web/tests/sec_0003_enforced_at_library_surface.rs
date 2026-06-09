@@ -205,7 +205,6 @@ async fn ws_permit_released_on_disconnect() {
 
     let url = format!("ws://{addr}/ws");
 
-    // 1st upgrade — succeeds.
     let (mut ws1, resp1) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("1st WS connect");
@@ -215,7 +214,6 @@ async fn ws_permit_released_on_disconnect() {
         "1st upgrade must be 101 Switching Protocols"
     );
 
-    // 2nd upgrade — rejected with 503 (permit pool exhausted).
     let result = tokio_tungstenite::connect_async(&url).await;
     assert!(
         matches!(
@@ -225,11 +223,9 @@ async fn ws_permit_released_on_disconnect() {
         "2nd connection must be rejected with 503; got: {result:?}"
     );
 
-    // Drop 1st — permit returns to pool.
     ws1.close(None).await.ok();
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    // 3rd upgrade — succeeds (1st's permit was released).
     let (_ws3, resp3) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("3rd WS connect after permit release");

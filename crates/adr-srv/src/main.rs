@@ -30,8 +30,6 @@ use cherry_pit_gateway::MsgpackFileStore;
 async fn main() {
     println!("adr-srv M1.4");
 
-    // (1) discover adr-fmt.toml — hard exit so a misconfigured server
-    // surfaces the problem rather than masking it.
     let cwd: PathBuf = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let _corpus_root = match adr_srv::surface_probe(&cwd) {
         Ok(root) => {
@@ -44,8 +42,6 @@ async fn main() {
         }
     };
 
-    // (2) open event store. Default location is per-cwd; override via
-    // ADR_SRV_STORE for ops. Store directory is created on first run.
     let store_path = std::env::var("ADR_SRV_STORE")
         .map_or_else(|_| cwd.join(".adr-srv").join("store"), PathBuf::from);
     if let Err(e) = tokio::fs::create_dir_all(&store_path).await {
@@ -55,8 +51,6 @@ async fn main() {
     let store: MsgpackFileStore<AdrIngested> = MsgpackFileStore::new(&store_path);
     let store = Arc::new(store);
 
-    // (3) replay → service + projection. CHE-0065: AdrCorpus is
-    // rebuilt deterministically from the event log on every boot.
     let corpus: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
     let service = match AdrService::new_with_replay(Arc::clone(&store), &corpus).await {
         Ok(s) => s,
@@ -66,9 +60,6 @@ async fn main() {
         }
     };
 
-    // (4) one boot-time scrape. Per-record errors land in the report's
-    // diagnostics; only infra errors (resolve corpus, read dir, store
-    // append) bubble up here and abort boot.
     match scrape_corpus(&service, &cwd, &corpus).await {
         Ok(report) => println!(
             "boot scrape: {} records seen, {} events emitted, {} diagnostics",
@@ -82,8 +73,6 @@ async fn main() {
         }
     }
 
-    // (5) build the GraphQL schema once. async-graphql `Schema` is
-    // cheaply Clone (internal Arc), so axum can clone it per request.
     let schema = build_schema(Arc::clone(&corpus));
 
     let bind = std::env::var("ADR_SRV_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());

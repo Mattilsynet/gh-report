@@ -46,7 +46,6 @@ use common::MockProjectionSource;
     reason = "linear end-to-end WS smoke; splitting would obscure the flow"
 )]
 async fn ws_envelope_carries_v1_and_refuses_event_envelope_shape() {
-    // ── 1. server setup ──────────────────────────────────────────
     let source = MockProjectionSource::new();
     let tx = source.tx();
     let state = ProjectionState::from_arc(source);
@@ -65,7 +64,6 @@ async fn ws_envelope_carries_v1_and_refuses_event_envelope_shape() {
         axum::serve(listener, app).await.expect("serve");
     });
 
-    // ── 2. connect ───────────────────────────────────────────────
     let url = format!("ws://{addr}/ws");
     let (mut ws, _resp) = timeout(
         Duration::from_secs(5),
@@ -75,7 +73,6 @@ async fn ws_envelope_carries_v1_and_refuses_event_envelope_shape() {
     .expect("connect timeout")
     .expect("ws connect failed");
 
-    // First frame must be `connected` carrying `"v": 1`.
     let frame = timeout(Duration::from_secs(5), ws.next())
         .await
         .expect("recv timeout")
@@ -95,11 +92,6 @@ async fn ws_envelope_carries_v1_and_refuses_event_envelope_shape() {
         "first frame must be type=connected"
     );
 
-    // Runtime guard for raw `EventEnvelope<E>` shape. The
-    // `cherry_pit_core::EventEnvelope` carries top-level fields
-    // `event_id`, `aggregate_id`, `correlation`, `caused_by`, `payload`,
-    // `sequence`. The projection envelope must carry none of these as
-    // top-level keys.
     for forbidden in [
         "event_id",
         "aggregate_id",
@@ -115,7 +107,6 @@ async fn ws_envelope_carries_v1_and_refuses_event_envelope_shape() {
         );
     }
 
-    // ── 3. push one delta and assert envelope shape ──────────────
     let update = PageUpdate::new(
         vec!["index.html".into()],
         "test-repo".into(),
@@ -165,7 +156,6 @@ async fn ws_envelope_carries_v1_and_refuses_event_envelope_shape() {
         );
     }
 
-    // ── 4. close cleanly + shut server down ──────────────────────
     let _ = ws.send(Message::Close(None)).await;
     let _ = timeout(Duration::from_secs(2), ws.next()).await;
     server.abort();

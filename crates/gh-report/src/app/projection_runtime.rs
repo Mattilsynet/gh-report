@@ -187,11 +187,6 @@ pub fn register_projection_handler<S>(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         driver.apply_one(&mut *guard, envelope);
         let seq = envelope.sequence().get();
-        // Monotonic max-store: bus delivers envelopes in publish order
-        // but a future re-ordering subscription model (or test injection)
-        // could deliver out of order. Use fetch_max to preserve the
-        // "last_applied_sequence is monotonically non-decreasing"
-        // invariant.
         checkpoint_seq.fetch_max(seq, Ordering::AcqRel);
     });
 }
@@ -251,8 +246,6 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp");
         let events_dir = tmp.path().join("events");
         std::fs::create_dir_all(&events_dir).expect("mkdir");
-        // Test double: InMemoryEventStore is gated under #[cfg(test)] and
-        // exercises the same `EventStore` surface SharedStore<E, S> wraps.
         let _ = &events_dir;
         let store = Arc::new(InMemoryEventStore::<DomainEvent>::new());
         let driver = Arc::new(ProjectionDriver::<EvidenceProjection, _>::new(
@@ -274,10 +267,7 @@ mod tests {
             .await
             .expect("publish");
 
-        // Both envelopes applied — checkpoint advances to max sequence.
         assert_eq!(checkpoint_seq.load(Ordering::Acquire), 2);
-        // RepoRemoved on empty map is a no-op (idempotent); the
-        // assertion of interest is sequence accounting.
         assert!(projection_state.lock().unwrap().repositories.is_empty());
     }
 
@@ -291,8 +281,6 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp");
         let events_dir = tmp.path().join("events");
         std::fs::create_dir_all(&events_dir).expect("mkdir");
-        // Test double: InMemoryEventStore is gated under #[cfg(test)] and
-        // exercises the same `EventStore` surface SharedStore<E, S> wraps.
         let _ = &events_dir;
         let store = Arc::new(InMemoryEventStore::<DomainEvent>::new());
         let driver = Arc::new(ProjectionDriver::<EvidenceProjection, _>::new(
@@ -309,7 +297,6 @@ mod tests {
             Arc::clone(&checkpoint_seq),
         );
 
-        // Publish seq 5, then seq 3 (out of order).
         bus.publish(&[envelope(5, sweep_started())]).await.unwrap();
         bus.publish(&[envelope(3, sweep_started())]).await.unwrap();
 

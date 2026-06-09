@@ -124,10 +124,6 @@ where
     <G::Aggregate as Aggregate>::Event: Serialize,
     R: CommandRouter<Gateway = G> + Clone + Send + Sync + 'static,
 {
-    // Apply state to cherry-pit-web's own `/v1/` subtree first, leaving
-    // the outer router stateless (`Router<()>`). This lets consumers
-    // pass a vanilla stateless `extra_routes` for auth / non-versioned
-    // surfaces without forcing them to know `AppState`'s type.
     let v1 = Router::new()
         .nest("/v1", v1_routes::<G, S, R>())
         .layer(from_fn(correlation_layer))
@@ -184,22 +180,15 @@ where
         Ok(DispatchOutcome::Created { aggregate_id }) => {
             (StatusCode::CREATED, Json(CreatedBody { aggregate_id })).into_response()
         }
-        Ok(DispatchOutcome::Sent) => {
-            // POST /v1/aggregates is a create endpoint; a Sent outcome
-            // here indicates the consumer's router mis-routed the wire
-            // variant. 500 is the conservative response — it preserves
-            // the invariant that this endpoint never silently treats a
-            // command-on-existing dispatch as creation.
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorBody {
-                    code: "router_misroute",
-                    message: "router returned Sent on create endpoint".to_string(),
-                    correlation_id: None,
-                }),
-            )
-                .into_response()
-        }
+        Ok(DispatchOutcome::Sent) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorBody {
+                code: "router_misroute",
+                message: "router returned Sent on create endpoint".to_string(),
+                correlation_id: None,
+            }),
+        )
+            .into_response(),
         Err((status, headers, body)) => (status, headers, Json(body)).into_response(),
     }
 }
@@ -231,19 +220,15 @@ where
         .await;
     match outcome {
         Ok(DispatchOutcome::Sent) => StatusCode::OK.into_response(),
-        Ok(DispatchOutcome::Created { aggregate_id }) => {
-            // Symmetric mis-route check: send endpoint should never
-            // report a fresh creation.
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorBody {
-                    code: "router_misroute",
-                    message: format!("router returned Created({aggregate_id}) on send endpoint"),
-                    correlation_id: None,
-                }),
-            )
-                .into_response()
-        }
+        Ok(DispatchOutcome::Created { aggregate_id }) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorBody {
+                code: "router_misroute",
+                message: format!("router returned Created({aggregate_id}) on send endpoint"),
+                correlation_id: None,
+            }),
+        )
+            .into_response(),
         Err((status, headers, body)) => (status, headers, Json(body)).into_response(),
     }
 }

@@ -19,10 +19,6 @@ use crate::domain::time::parse_iso8601;
 use crate::github::client::{ApiOutcome, GitHubClient};
 use cherry_pit_web::sanitize_path_segment;
 
-// ---------------------------------------------------------------------------
-// Org-level alert aggregation
-// ---------------------------------------------------------------------------
-
 /// Derive a scope key from a repository for alert correlation.
 ///
 /// Uses the repository's `id` field, which is always populated during
@@ -78,10 +74,6 @@ fn track_timestamp(current: &mut Option<String>, candidate: &str, keep_oldest: b
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Org-level alert collection (split into helpers to keep fn size < 100 lines)
-// ---------------------------------------------------------------------------
 
 /// Build the initial failure summary for a failed org-level alert request.
 fn build_failure_summary(result: &ApiOutcome) -> OrgAlertSummary {
@@ -210,9 +202,9 @@ pub async fn collect_org_alerts(
                 client.org_name,
                 config::DEFAULT_PAGE_SIZE
             ),
-            true, // paginate
-            1,    // retries
-            60,   // timeout
+            true,
+            1,
+            60,
         )
         .await;
 
@@ -258,10 +250,6 @@ pub async fn collect_org_alerts(
     summary
 }
 
-// ---------------------------------------------------------------------------
-// Helpers shared between evaluate paths
-// ---------------------------------------------------------------------------
-
 /// Extract the `security_and_analysis.secret_scanning.status` field.
 fn extract_status(repo_details: &ApiOutcome) -> Option<SecretScanningStatus> {
     let data = repo_details.data()?;
@@ -284,13 +272,6 @@ fn build_result(
     alerts_observable: bool,
     reason: Option<&str>,
 ) -> SecretScanningResult {
-    // Invariant relied on by `aggregate::metrics::count_alert_observable_enabled`:
-    // `alerts_observable == true` implies `status == Enabled`. Org-level and per-
-    // repo evaluator paths only ever flip `alerts_observable` for enabled repos,
-    // and the open-alert prevalence numerator/denominator pair assumes this.
-    // Hard-fail in debug if a future change breaks the invariant; the production
-    // metric tightens its numerator filter (`status == Enabled && alerts_observable`)
-    // as a belt-and-braces measure.
     debug_assert!(
         !alerts_observable || status == SecretScanningStatus::Enabled,
         "secret scanning invariant violated: alerts_observable=true with status={status:?}"
@@ -303,10 +284,6 @@ fn build_result(
         timestamp: timestamp.to_string(),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Per-repository evaluation
-// ---------------------------------------------------------------------------
 
 /// Evaluate secret scanning for a repository.
 ///
@@ -326,8 +303,6 @@ pub async fn evaluate(
 ) -> SecretScanningResult {
     trace!(repo = %repo.name, has_org_summary = org_summary.is_some(), "evaluating secret scanning");
 
-    // Validate repo name before URL interpolation — defense-in-depth against
-    // path injection from API-derived data.
     let safe_name = match sanitize_path_segment(&repo.name, "repo_name") {
         Ok(n) => n,
         Err(e) => {
@@ -457,7 +432,6 @@ async fn evaluate_fallback(
         };
     }
 
-    // Last resort
     match direct_status {
         Some(s) => build_result(s, run_timestamp, None, false, Some("alerts_unavailable")),
         None => build_result(
@@ -651,14 +625,9 @@ mod tests {
 
     #[test]
     fn age_bucket_future_dated_alert() {
-        // created_at is in the future relative to `now`.
-        // The `.max(0)` guard in `age_bucket` clamps the negative age
-        // to zero, which should land in the "0_7_days" bucket.
         let now = "2026-04-01T00:00:00Z".parse::<Timestamp>().unwrap();
         assert_eq!(age_bucket("2026-04-10T00:00:00Z", now), Some("0_7_days"));
     }
-
-    // parse_iso8601 tests are in infra::time::tests.
 
     #[test]
     fn normalize_iso8601_canonical() {
@@ -751,8 +720,6 @@ mod tests {
         assert_eq!(result.reason.as_deref(), Some("alerts_unavailable"));
     }
 
-    // ── evaluate_org_permission_denied tests ──────────────────
-
     #[test]
     fn evaluate_org_permission_denied_with_direct_status() {
         let result = evaluate_org_permission_denied(
@@ -778,8 +745,6 @@ mod tests {
             "None arm should use 'permission_denied' reason"
         );
     }
-
-    // ── evaluate_org_transient_error tests ────────────────────
 
     #[test]
     fn evaluate_org_transient_error_with_direct_status() {

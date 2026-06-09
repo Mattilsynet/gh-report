@@ -35,7 +35,6 @@ pub struct Repository {
     /// Used by baseline mechanism to detect changes.
     pub updated_at: Option<String>,
 
-    // ── Informational metadata (excluded from PartialEq/Eq) ─────
     /// Whether the repository has issues enabled.
     pub has_issues: bool,
     /// ISO 8601 timestamp of the last git push. Unlike `updated_at`,
@@ -54,12 +53,6 @@ pub struct Repository {
     /// SPDX license identifier (e.g., `"MIT"`, `"Apache-2.0"`), if detected.
     pub license_spdx: Option<String>,
 }
-
-// ── Manual PartialEq / Eq ───────────────────────────────────────────
-//
-// Only identity and structural fields participate in equality.
-// Informational metadata is excluded to prevent checkpoint/baseline
-// deduplication regressions when cosmetic fields change.
 
 impl PartialEq for Repository {
     fn eq(&self, other: &Self) -> bool {
@@ -143,7 +136,6 @@ mod tests {
         let mut a = test_fixtures::make_repository("repo", false, Visibility::Public);
         let mut b = a.clone();
 
-        // Informational fields differ — should still be equal.
         a.description = Some("Old description".to_string());
         b.description = Some("New description".to_string());
         a.topics = vec!["rust".to_string()];
@@ -161,7 +153,6 @@ mod tests {
         let a = test_fixtures::make_repository("repo", false, Visibility::Public);
         let mut b = a.clone();
 
-        // Structural field differs — should NOT be equal.
         b.default_branch = "develop".to_string();
         assert_ne!(a, b, "structural field change should break equality");
     }
@@ -195,7 +186,6 @@ mod tests {
 
     #[test]
     fn visibility_deserialize_wrong_case_fails() {
-        // PascalCase is not accepted — only lowercase.
         let result = serde_json::from_str::<Visibility>("\"Public\"");
         assert!(
             result.is_err(),
@@ -218,7 +208,6 @@ mod tests {
 
     #[test]
     fn visibility_display_differs_from_serde() {
-        // Display uses title case for UI; serde uses lowercase for persistence.
         for vis in &[
             Visibility::Public,
             Visibility::Internal,

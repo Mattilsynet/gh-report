@@ -31,22 +31,12 @@
 //! bd adr-fmt-d7ao.
 
 #![forbid(unsafe_code)]
-// Pedantic-doc lints (`missing_errors_doc`, `missing_panics_doc`)
-// would fire on `pub fn` items in private modules (`parser.rs` in
-// particular) under workspace `pedantic = warn`. AGENTS.md forbids
-// refactoring `parser.rs` during v0.1 per AFM-0006. Suppress these
-// two lints crate-wide rather than touching parser.rs. Revisit when
-// parser.rs is next opened for behavioural work.
 #![allow(
     clippy::missing_errors_doc,
     clippy::missing_panics_doc,
     reason = "AGENTS.md forbids parser.rs refactor during v0.1 per AFM-0006; pedantic doc lints fire on parser's pub fns"
 )]
 
-// Internal modules — private per CHE-0030 R1. Only the items named
-// in the `pub use` block below are part of the library contract.
-// Internal reorganisation (rename a module, split a file, move a
-// helper) is a non-breaking change for downstream consumers.
 mod config;
 mod containment;
 mod context;
@@ -59,17 +49,6 @@ mod refs;
 mod report;
 mod rules;
 
-// Public library surface (CHE-0030 R1, flat `pub use`).
-//
-// Minimum set per oracle bd adr-fmt-d7ao Q2: just enough for
-// `adr-srv` (Phase 2 v2 C1) to discover an ADR corpus, parse it,
-// and surface parser-stage diagnostics. Anything beyond this set
-// must be justified by a current consumer (COM-0013 R1) and
-// re-confirmed against SEC-0004 R3 (minimal public API).
-//
-// `config::load` is intentionally absent: only `load_quiet` is
-// `pub` in `config.rs` today; oracle Q2 named both but inventing
-// a new alias would exceed the minimum-surface mandate.
 pub use config::{Config, LoadError, load_quiet, resolve_corpus_root};
 pub use containment::{ContainmentError, contained_join, contained_join_optional};
 pub use model::{AdrId, AdrRecord, DomainDir, RelVerb, Relationship, Status, Tier, parse_adr_id};
@@ -80,9 +59,6 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-
-// `Config`, `DomainDir`, `AdrId`, `parse_adr_id` are at crate root
-// via the `pub use` block above, so no `use` statements needed here.
 
 /// ADR template and link-integrity validator.
 #[derive(Parser)]
@@ -117,8 +93,6 @@ struct Cli {
 /// `--help` and `--version` are handled inside `Cli::parse_from`, which
 /// calls `process::exit` itself per clap's contract.
 ///
-// CLI dispatch shape; splitting would scatter mode-selection logic
-// without simplifying any branch.
 #[expect(
     clippy::too_many_lines,
     reason = "CLI mode dispatch; each arm is a small linear sequence and splitting would scatter the mode-selection logic without simplifying any branch"
@@ -130,15 +104,6 @@ where
 {
     let cli = Cli::parse_from(args);
 
-    // Discover marker directory by walking up from CWD looking for an
-    // `adr-fmt.toml` with a valid `[corpus]` table whose root resolves
-    // to a directory containing at least one configured domain.
-    //
-    // An unreadable marker — file exists but cannot be read — is a
-    // hard error: surface to stderr and return 1, same observable
-    // behaviour at the binary edge as pre-T2-lift (`process::exit(1)`
-    // inside `discover_marker`). Library callers that want to recover
-    // call `config::load` / `config::load_quiet` directly.
     let marker = match discover_marker() {
         Ok(opt) => opt,
         Err(msg) => {
@@ -147,15 +112,11 @@ where
         }
     };
 
-    // Default mode: guidelines
     let is_non_default_mode =
         cli.lint || cli.refs.is_some() || cli.context.is_some() || cli.tree.is_some();
 
     if !is_non_default_mode {
-        // Guidelines mode — handles both setup and governance display
         if let Some((marker_dir, config)) = marker {
-            // Resolve corpus root for the per-corpus governance display.
-            // If unresolvable, fall back to setup guide rather than abort.
             match config::resolve_corpus_root(&marker_dir, &config.corpus) {
                 Ok(_) => guidelines::print_governance(&config),
                 Err(_) => guidelines::print_setup_guide(),
@@ -166,7 +127,6 @@ where
         return 0;
     }
 
-    // Non-default modes require a discovered marker + valid corpus.
     let Some((marker_dir, config)) = marker else {
         eprintln!(
             "error: no adr-fmt.toml with a valid [corpus] table found in any parent directory"
@@ -175,11 +135,6 @@ where
         return 1;
     };
 
-    // Walk-up discovery uses `load_quiet` to suppress noise from skipped
-    // markers; fire the legacy-rule deprecation warning once here, against
-    // the selected marker only. Serves AFM-0003: the advisory channel must
-    // remain credible — config users with legacy `[[rules]]` declarations
-    // need to see exactly one deprecation note per run, not zero.
     config::emit_legacy_rule_warnings(&config);
 
     let adr_root = match config::resolve_corpus_root(&marker_dir, &config.corpus) {
@@ -221,7 +176,6 @@ where
         }
     }
 
-    // Parse stale directory (optional — may not exist in fresh repos)
     let stale_dir = match containment::contained_join_optional(&adr_root, &config.stale.directory) {
         Ok(opt) => opt,
         Err(e) => {
@@ -244,9 +198,7 @@ where
         }
     }
 
-    // Mode dispatch
     if let Some(ref adr_id_str) = cli.refs {
-        // --refs mode
         let Some(target_id) = parse_adr_id(adr_id_str) else {
             eprintln!(
                 "error: {} is not a valid ADR ID (expected PREFIX-NNNN)",
@@ -263,7 +215,6 @@ where
         };
         print!("{}", output::render_refs(&report));
     } else if let Some(ref crate_name) = cli.context {
-        // --context mode
         let groups = match context::context_grouped(crate_name, &all_records, &config) {
             Ok(g) => g,
             Err(e) => {
@@ -273,7 +224,6 @@ where
         };
         print!("{}", output::render_root_groups(crate_name, &groups));
     } else if let Some(ref domain_filter) = cli.tree {
-        // --tree mode
         let filter = if domain_filter.is_empty() {
             None
         } else {
@@ -284,14 +234,6 @@ where
             output::render_tree(&all_records, &domain_dirs, &config, filter)
         );
     } else if cli.lint {
-        // --lint mode: advisory-only per AFM-0003 R1/R2. All rule findings
-        // are warnings; exit 0 always when lint completes. Exit 1 is reserved
-        // for infrastructure errors (missing config, unreadable files,
-        // invalid configuration) handled earlier in this function via
-        // eprintln! + return 1.
-        //
-        // Parser-stage diagnostics (P### per AFM-0017) are merged with
-        // rule-stage diagnostics so the user sees one unified list.
         let mut diagnostics = parse_diagnostics;
         diagnostics.extend(rules::run_all(&all_records, &config));
         print!(
@@ -346,8 +288,6 @@ fn discover_marker() -> Result<Option<(PathBuf, Config)>, String> {
     let Ok(cwd) = std::env::current_dir() else {
         return Ok(None);
     };
-    // Canonicalize once so symlinked CWDs walk up through the
-    // resolved path, not the lexical (unresolved) path.
     let canon_cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
     let mut dir = canon_cwd.as_path();
     loop {
@@ -356,8 +296,6 @@ fn discover_marker() -> Result<Option<(PathBuf, Config)>, String> {
             match try_marker(dir) {
                 Ok(Some(pair)) => return Ok(Some(pair)),
                 Ok(None) => {
-                    // Structurally invalid (parsed but unfit). Walk
-                    // past so a stray cannot mask a valid parent.
                     eprintln!(
                         "note: skipping {}: marker is structurally invalid (no [corpus] table, \
                          missing corpus dir, no existing domain, or containment violation)",
@@ -365,14 +303,9 @@ fn discover_marker() -> Result<Option<(PathBuf, Config)>, String> {
                     );
                 }
                 Err(TryMarkerError::Parse(msg)) => {
-                    // Parse failure: skip-with-note, keep walking.
                     eprintln!("note: skipping {}: {msg}", candidate.display());
                 }
                 Err(TryMarkerError::Io(msg)) => {
-                    // Unreadable marker the user clearly created:
-                    // hard error. Return Err so the binary edge can
-                    // surface it without the library calling
-                    // `process::exit`.
                     return Err(msg);
                 }
             }
@@ -436,12 +369,9 @@ fn try_marker(marker_dir: &Path) -> Result<Option<(PathBuf, Config)>, TryMarkerE
     if !corpus_root.is_dir() {
         return Ok(None);
     }
-    // Claim the marker if any configured domain is either (a) present
-    // on disk OR (b) violating containment (downstream surfaces the
-    // error). Skip only when ALL domains are clean-but-absent.
     let any_domain_intended = config.domains.iter().any(|d| {
         match containment::contained_join_optional(&corpus_root, &d.directory) {
-            Err(_) => true, // violation → user clearly intended this marker
+            Err(_) => true,
             Ok(Some(p)) => p.is_dir(),
             Ok(None) => false,
         }

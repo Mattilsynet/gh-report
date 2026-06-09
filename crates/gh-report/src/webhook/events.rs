@@ -14,8 +14,6 @@ use tracing::debug;
 use crate::app::state::AppState;
 use crate::domain::repository::{Repository, Visibility};
 
-// ── Error type ──────────────────────────────────────────────────────
-
 /// Errors that can occur when mapping a webhook event to an action.
 #[derive(Debug)]
 pub enum WebhookError {
@@ -48,8 +46,6 @@ impl From<serde_json::Error> for WebhookError {
         Self::InvalidJson(e)
     }
 }
-
-// ── Payload DTOs ────────────────────────────────────────────────────
 
 /// Minimal webhook payload — just the repository field present in most events.
 #[derive(Debug, serde::Deserialize)]
@@ -125,8 +121,6 @@ pub struct PushCommit {
     pub removed: Vec<String>,
 }
 
-// ── Action enum ─────────────────────────────────────────────────────
-
 /// The action the webhook handler should take for a mapped event.
 #[non_exhaustive]
 pub enum WebhookAction {
@@ -141,8 +135,6 @@ pub enum WebhookAction {
     /// Event is irrelevant — return 200 OK.
     Ignore,
 }
-
-// ── Security-relevant push filtering ────────────────────────────────
 
 /// Paths that indicate a security-relevant file change.
 const SECURITY_PATHS: &[&str] = &["SECURITY.md", ".github/SECURITY.md", "docs/SECURITY.md"];
@@ -176,8 +168,6 @@ pub fn is_security_relevant_push(payload: &PushEvent) -> bool {
             })
     })
 }
-
-// ── Repository construction from payload ────────────────────────────
 
 /// Build a minimal [`Repository`] from a webhook payload.
 ///
@@ -214,8 +204,6 @@ pub fn build_repository_from_payload(payload: &WebhookRepository) -> Arc<Reposit
         license_spdx: None,
     })
 }
-
-// ── Event mapping ───────────────────────────────────────────────────
 
 /// Map a webhook event type and body to a [`WebhookAction`].
 ///
@@ -268,10 +256,6 @@ fn map_repository_event(body: &[u8], state: &AppState) -> Result<WebhookAction, 
                 repo,
             })
         }
-        // `transferred` and `renamed` are intentionally ignored. The
-        // inventory_key is the numeric repo ID which survives transfers
-        // and renames, so no evidence-store cleanup is needed. The next
-        // scheduled collection cycle picks up the new name/org.
         _ => {
             debug!(action, "ignoring repository event action");
             Ok(WebhookAction::Ignore)
@@ -318,8 +302,6 @@ fn resolve_or_build_repo(
     payload: &WebhookRepository,
     state: &AppState,
 ) -> Arc<Repository> {
-    // M2.cd: read from projection (CHE-0048:R2 sole-reader). Guard scoped to
-    // the temporary in the `if let` head; dropped before any subsequent work.
     if let Some(evidence) = state.projection_get(inventory_key) {
         Arc::new(evidence.repository)
     } else {
@@ -334,11 +316,9 @@ fn resolve_repo_from_store(
     repo_name: &str,
     state: &AppState,
 ) -> Arc<Repository> {
-    // M2.cd: read from projection (CHE-0048:R2 sole-reader).
     if let Some(evidence) = state.projection_get(inventory_key) {
         Arc::new(evidence.repository)
     } else {
-        // Minimal fallback for push events where we only have id + name.
         Arc::new(Repository {
             id: inventory_key.to_string(),
             node_id: None,
@@ -410,8 +390,6 @@ mod tests {
     #[tokio::test]
     async fn event_repository_deleted_absent_key() {
         let state = test_state().await;
-        // M2.cd: post-cutover the projection is the read-model authority;
-        // assert lookup of an absent key returns `None` (no panic).
         let key = "nonexistent";
         let evidence = state.projection_get(key);
         assert!(evidence.is_none());

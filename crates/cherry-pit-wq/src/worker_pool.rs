@@ -106,7 +106,6 @@ pub async fn run_worker_pool<C, R, E>(
         }));
     }
 
-    // Drop our copy so the channel closes when all workers exit.
     drop(outcome_tx);
 
     for handle in handles {
@@ -139,10 +138,8 @@ async fn worker_loop<C, R, E>(
         let correlation = job.correlation.clone();
         let start = std::time::Instant::now();
 
-        // Budget gate — blocks if epoch budget exhausted.
         budget_gate.acquire().await;
 
-        // Rate limit gate — wait if API rate limit exhausted.
         if rate_limit_state.should_halt() {
             tracing::warn!(
                 worker = worker_id,
@@ -152,9 +149,6 @@ async fn worker_loop<C, R, E>(
             wait_for_rate_limit_reset(&rate_limit_state).await;
         }
 
-        // Execute the job. catch_unwind guards synchronous future construction
-        // (executor panics during `execute()` call). Panics inside the async
-        // body are caught by the tokio::spawn task boundary.
         let exec_key = domain_key.clone();
         let future_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             executor.execute(&exec_key, &job.context)
@@ -209,7 +203,6 @@ async fn wait_for_rate_limit_reset(state: &RateLimitState) {
 /// Waits up to `timeout` for workers to complete, then aborts remaining.
 /// Intended for use when the caller manages `JoinHandle`s directly.
 pub async fn shutdown_worker_pool(handles: Vec<JoinHandle<()>>, timeout: Duration) {
-    // Collect AbortHandles before consuming JoinHandles via join_all.
     let abort_handles: Vec<_> = handles.iter().map(JoinHandle::abort_handle).collect();
 
     if tokio::time::timeout(timeout, futures_util::future::join_all(handles))
@@ -392,7 +385,6 @@ mod tests {
             .await;
         });
 
-        // Close immediately — workers should exit cleanly.
         queue.close();
 
         tokio::time::timeout(Duration::from_secs(2), handle)
@@ -404,10 +396,9 @@ mod tests {
     #[tokio::test]
     async fn outcome_channel_closed_workers_exit() {
         let queue = Arc::new(WorkQueue::new(10));
-        // Enqueue a job but drop the receiver immediately.
         queue.enqueue(make_job("key-1"));
         let (tx, rx) = mpsc::channel::<JobOutcome<String>>(1);
-        drop(rx); // close receiver
+        drop(rx);
 
         let q = Arc::clone(&queue);
         let handle = tokio::spawn(async move {
@@ -422,7 +413,6 @@ mod tests {
             .await;
         });
 
-        // Worker should detect channel closed and exit.
         tokio::time::timeout(Duration::from_secs(2), handle)
             .await
             .expect("workers should exit when outcome channel closed")

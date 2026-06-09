@@ -104,8 +104,8 @@ mod tests {
     #[test]
     fn copy_semantics() {
         let original = id(1);
-        let copy = original; // Copy, not move
-        assert_eq!(original, copy); // original still usable
+        let copy = original;
+        assert_eq!(original, copy);
     }
 
     #[test]
@@ -156,7 +156,6 @@ mod tests {
 
     #[test]
     fn serde_msgpack_zero_rejected() {
-        // Serialize a raw 0u64 and attempt to deserialize as AggregateId.
         let bytes = rmp_serde::to_vec(&0u64).unwrap();
         let result = rmp_serde::from_slice::<AggregateId>(&bytes);
         assert!(result.is_err());
@@ -164,7 +163,6 @@ mod tests {
 
     #[test]
     fn serde_msgpack_wire_format_matches_raw_u64() {
-        // Verify NonZeroU64 serializes identically to u64 in msgpack.
         let raw_bytes = rmp_serde::to_vec(&42u64).unwrap();
         let id_bytes = rmp_serde::to_vec(&id(42)).unwrap();
         assert_eq!(raw_bytes, id_bytes);
@@ -182,7 +180,6 @@ mod tests {
 
     #[test]
     fn const_new() {
-        // Verify new() is usable in const context.
         const NZ: NonZeroU64 = match NonZeroU64::new(1) {
             Some(v) => v,
             None => panic!("zero"),
@@ -199,7 +196,6 @@ mod tests {
 
     #[test]
     fn option_aggregate_id_same_size() {
-        // NonZeroU64 niche optimization: Option<AggregateId> is same size.
         assert_eq!(
             std::mem::size_of::<AggregateId>(),
             std::mem::size_of::<Option<AggregateId>>()

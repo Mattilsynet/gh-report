@@ -61,16 +61,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     )
 }
 
-// ===========================================================================
-// Tests — governance-specific integration tests only
-// ===========================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tokio::net::TcpListener;
-
-    // ── Helper: wait for server to accept connections ────────────
 
     async fn wait_for_server(addr: std::net::SocketAddr) {
         let timeout = std::time::Duration::from_secs(5);
@@ -92,8 +86,6 @@ mod tests {
     async fn state_no_cache() -> Arc<AppState> {
         AppState::new().await
     }
-
-    // ── Status endpoint with governance-specific fields ──────────
 
     #[tokio::test]
     async fn status_endpoint_returns_json() {
@@ -189,8 +181,6 @@ mod tests {
         handle.abort();
     }
 
-    // ── Readiness with governance-specific conditions ────────────
-
     #[tokio::test]
     async fn readyz_returns_200_after_completed_run() {
         let state = state_no_cache().await;
@@ -221,8 +211,6 @@ mod tests {
         handle.abort();
     }
 
-    // ── WebSocket e2e (evidence → broadcast → client) ────────────
-
     #[tokio::test]
     async fn ws_e2e_publish_evidence_broadcasts_to_client() {
         use crate::app::collect::publish_evidence;
@@ -242,12 +230,10 @@ mod tests {
 
         wait_for_server(addr).await;
 
-        // Connect WS client.
         let url = format!("ws://{addr}/ws");
         let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-        let _ = ws.next().await; // consume "connected"
+        let _ = ws.next().await;
 
-        // Call the real publish_evidence() function.
         let config = RuntimeConfig {
             org_name: "TestOrg".to_string(),
             no_resume: true,
@@ -268,10 +254,6 @@ mod tests {
             crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
         );
 
-        // Drive the Run aggregate through Started -> Completed so the
-        // publish_evidence helper's call to run_service.publish_evidence
-        // (post-Inc B7'c-4) finds the routing index entry. Without this,
-        // resolve_id panics per the B7'c TODO at run_service.rs:316.
         let corr = run.correlation_context();
         state
             .run_service
@@ -306,7 +288,6 @@ mod tests {
             .await
             .unwrap();
 
-        // WS client should receive an update event with page keys.
         let timeout_result =
             tokio::time::timeout(std::time::Duration::from_secs(3), ws.next()).await;
 

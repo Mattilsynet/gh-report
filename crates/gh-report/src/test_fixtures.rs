@@ -21,15 +21,11 @@ use crate::domain::repository::{Repository, Visibility};
 use crate::domain::status::CollectionStatus;
 use std::collections::HashMap;
 
-// ── Timestamps ──────────────────────────────────────────────────────
-
 /// Standard test timestamp.
 #[must_use]
 pub fn make_timestamp() -> String {
     "2026-04-09T12:00:00+00:00".to_string()
 }
-
-// ── Repository constructors ─────────────────────────────────────────
 
 /// Create a test `Repository` domain object.
 #[must_use]
@@ -54,8 +50,6 @@ pub fn make_repository(name: &str, archived: bool, visibility: Visibility) -> Re
         license_spdx: None,
     }
 }
-
-// ── Repository evidence constructors ────────────────────────────────
 
 /// Create a `RepositoryEvidence` with explicit checks.
 #[must_use]
@@ -138,8 +132,6 @@ pub fn evidence_from_repository(repo: &Repository, timestamp: &str) -> Repositor
     }
 }
 
-// ── Check result builders ───────────────────────────────────────────
-
 /// Assemble a `RepositoryChecks` from individual check results.
 #[must_use]
 pub fn make_checks(
@@ -157,8 +149,6 @@ pub fn make_checks(
         codeowners,
     }
 }
-
-// ── Security policy ─────────────────────────────────────────────────
 
 /// Security policy result: pass via GitHub API setting.
 #[must_use]
@@ -215,8 +205,6 @@ pub fn policy_not_applicable() -> SecurityPolicyResult {
     }
 }
 
-// ── Secret scanning ─────────────────────────────────────────────────
-
 /// Secret scanning result: enabled with observable alerts.
 #[must_use]
 pub fn secret_enabled_observable(has_open: bool) -> SecretScanningResult {
@@ -265,8 +253,6 @@ pub fn secret_permission_denied() -> SecretScanningResult {
     }
 }
 
-// ── Dependabot ──────────────────────────────────────────────────────
-
 /// Dependabot security updates result: enabled.
 #[must_use]
 pub fn dependabot_enabled() -> DependabotResult {
@@ -296,8 +282,6 @@ pub fn dependabot_unknown() -> DependabotResult {
         timestamp: make_timestamp(),
     }
 }
-
-// ── Branch protection ───────────────────────────────────────────────
 
 /// Branch protection result: all controls satisfied.
 #[must_use]
@@ -370,8 +354,6 @@ pub fn branch_unknown() -> BranchProtectionResult {
         timestamp: make_timestamp(),
     }
 }
-
-// ── CODEOWNERS ──────────────────────────────────────────────────────
 
 /// CODEOWNERS result: file found in conforming location (`.github/CODEOWNERS`).
 #[must_use]
@@ -477,12 +459,9 @@ pub fn make_repo_with_updated_at(
             codeowners_with_owners(owners),
         ),
     );
-    // Set updated_at on the owned repository.
     repo.repository.updated_at = updated_at.map(ToString::to_string);
     repo
 }
-
-// ── Evidence-level builders ─────────────────────────────────────────
 
 /// Standard test metadata. Override individual fields after construction
 /// when tests need specific values.

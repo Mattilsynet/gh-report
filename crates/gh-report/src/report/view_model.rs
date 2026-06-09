@@ -13,10 +13,6 @@ use crate::domain::evidence::Evidence;
 use crate::domain::metrics::OwnerType;
 use crate::domain::time::is_repo_stale;
 
-// ---------------------------------------------------------------------------
-// Coverage tier
-// ---------------------------------------------------------------------------
-
 /// Coverage tier classification for dashboard display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoverageTier {
@@ -70,10 +66,6 @@ impl CoverageTier {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Owner view model types
-// ---------------------------------------------------------------------------
-
 /// A row in the owners overview table.
 #[derive(Debug, Clone)]
 pub struct OwnerOverviewRow {
@@ -125,7 +117,6 @@ pub struct OwnerRepoRow {
     /// Per-control pass/fail status dots.
     pub controls: Vec<StatusDot>,
 
-    // ── Repository metadata ─────────────────────────────────────
     /// Short description of the repository, or `"—"` if none.
     pub description: String,
     /// Primary language, or `"—"` if none.
@@ -241,10 +232,6 @@ pub struct TopSecurityTeam {
     pub sec_score_width_class: &'static str,
 }
 
-// ---------------------------------------------------------------------------
-// Orphaned repos view model types
-// ---------------------------------------------------------------------------
-
 /// A row in the orphaned repositories table.
 ///
 /// Repos are "orphaned" when they have no identifiable code owners:
@@ -284,10 +271,6 @@ pub struct OrphanedViewModel {
     pub has_stale_repos: bool,
 }
 
-// ---------------------------------------------------------------------------
-// Slug generation
-// ---------------------------------------------------------------------------
-
 /// Generate a URL-safe slug from an owner name.
 ///
 /// Rules:
@@ -311,7 +294,7 @@ pub fn generate_slug(owner: &str) -> String {
     let stripped = owner.strip_prefix('@').unwrap_or(owner);
 
     let mut slug = String::with_capacity(stripped.len());
-    let mut prev_dash = true; // treat start as "after dash" to trim leading dashes
+    let mut prev_dash = true;
 
     for c in stripped.chars() {
         if c.is_ascii_alphanumeric() || c == '_' {
@@ -321,10 +304,8 @@ pub fn generate_slug(owner: &str) -> String {
             slug.push('-');
             prev_dash = true;
         }
-        // else: consecutive non-alnum chars → collapsed (skip)
     }
 
-    // Trim trailing dash (leading was handled by prev_dash init)
     if slug.ends_with('-') {
         slug.pop();
     }
@@ -353,7 +334,6 @@ pub fn generate_unique_slugs(owners: &[String]) -> HashMap<String, String> {
             base
         };
 
-        // Find a unique slug by appending a suffix if needed.
         let final_slug = if used_slugs.contains(&base) {
             let mut suffix = 2;
             loop {
@@ -401,7 +381,6 @@ pub fn strip_org_prefix(owner: &str) -> String {
 /// ready-to-display strings and numbers.
 #[derive(Debug, Clone)]
 pub struct ReportViewModel {
-    // ── Header ──────────────────────────────────────────────────
     /// Organization name.
     pub organization: String,
     /// Report date (YYYY-MM-DD).
@@ -411,37 +390,31 @@ pub struct ReportViewModel {
     /// Total non-archived repositories assessed.
     pub total_repos: u32,
 
-    // ── Formatted coverage strings ──────────────────────────────
     pub policy_coverage_formatted: String,
     pub dependabot_coverage_formatted: String,
     pub secret_scanning_coverage_formatted: String,
     pub branch_protection_coverage_formatted: String,
     pub codeowners_coverage_formatted: String,
 
-    // ── Policy detail counts ────────────────────────────────────
     pub policy_via_setting: u32,
     pub policy_via_file: u32,
     pub policy_missing: u32,
     pub policy_unknown: u32,
 
-    // ── Dependabot detail counts ────────────────────────────────
     pub dependabot_observable_repos: u32,
     pub dependabot_paused: u32,
     pub dependabot_disabled: u32,
     pub dependabot_unknown: u32,
 
-    // ── Secret scanning detail counts ───────────────────────────
     pub secret_scanning_observable_repos: u32,
     pub secret_scanning_disabled: u32,
     pub secret_scanning_permission_denied: u32,
     pub secret_scanning_unknown: u32,
 
-    // ── Branch protection detail counts ─────────────────────────
     pub branch_protection_partial: u32,
     pub branch_protection_fail: u32,
     pub branch_protection_unknown: u32,
 
-    // ── CODEOWNERS detail counts ────────────────────────────────
     pub codeowners_conforming: u32,
     pub codeowners_non_conforming: u32,
     pub codeowners_absent: u32,
@@ -452,31 +425,26 @@ pub struct ReportViewModel {
     /// silent data loss in the per-repo evidence.
     pub codeowners_truncated: u32,
 
-    // ── Assessment metadata ─────────────────────────────────────
     pub public_repos: u32,
     pub internal_repos: u32,
     pub private_repos: u32,
     pub rate_limit_warnings: u32,
 
-    // ── Display constants ───────────────────────────────────────
     pub conforming_codeowners_path: &'static str,
     pub non_conforming_codeowners_path: &'static str,
 
-    // ── Coverage tiers ──────────────────────────────────────────
     pub policy_tier: CoverageTier,
     pub secret_scanning_tier: CoverageTier,
     pub dependabot_tier: CoverageTier,
     pub branch_protection_tier: CoverageTier,
     pub codeowners_tier: CoverageTier,
 
-    // ── Progress bar width classes (CSP-compliant) ──────────────
     pub policy_width_class: &'static str,
     pub secret_scanning_width_class: &'static str,
     pub dependabot_width_class: &'static str,
     pub branch_protection_width_class: &'static str,
     pub codeowners_width_class: &'static str,
 
-    // ── Health Score ────────────────────────────────────────────
     /// Composite health score (geometric mean of available coverage rates).
     /// `None` when all 6 control rates are N/A (`security_policy`,
     /// `secret_scanning`, `dependabot_security_updates`, `branch_protection`,
@@ -489,7 +457,6 @@ pub struct ReportViewModel {
     /// CSS width class for the health score progress bar.
     pub health_width_class: &'static str,
 
-    // ── Archival Coverage ─────────────────────────────────────
     /// Archival coverage rate: proportion of stale-lifecycle repos
     /// (stale active + archived) that have been archived.
     /// Formula: `archived / (archived + stale_active) × 100`.
@@ -506,20 +473,16 @@ pub struct ReportViewModel {
     /// Number of active (non-archived) repos that are stale.
     pub stale_active_repos: u32,
 
-    // ── Owner overview (optional) ───────────────────────────────
     /// Owners overview data. `None` when no CODEOWNERS parsed data is available.
     pub owners: Option<OwnersViewModel>,
 
-    // ── Top security teams ──────────────────────────────────────
     /// Top 3 security teams by sec score, for the CODEOWNERS Summary box.
     /// Empty when no owner metrics are available.
     pub top_security_teams: Vec<TopSecurityTeam>,
 
-    // ── Orphaned repos ──────────────────────────────────────────
     /// Count of orphaned repositories (drives nav link label).
     pub orphaned_count: u32,
 
-    // ── Warm-start indicator ────────────────────────────────────
     /// Whether this report was rendered from a cached baseline (warm-start)
     /// rather than a fresh API collection.
     pub warm_start: bool,
@@ -663,7 +626,6 @@ pub(crate) fn compute_health_score(rates: &[Option<f64>]) -> Option<f64> {
         .iter()
         .filter_map(|r| *r)
         .map(|r| r.clamp(0.0, 100.0))
-        // Floor 0.0% to 0.1% so a single zero doesn't collapse the entire score.
         .map(|r| if r == 0.0 { 0.1 } else { r })
         .collect();
 
@@ -671,12 +633,10 @@ pub(crate) fn compute_health_score(rates: &[Option<f64>]) -> Option<f64> {
         return None;
     }
 
-    // Count is at most 6 (number of controls), well within u32 range.
     let n = f64::from(u32::try_from(available.len()).unwrap_or(u32::MAX));
     let log_sum: f64 = available.iter().map(|r| r.ln()).sum();
     let geo_mean = (log_sum / n).exp();
 
-    // Round to 1 decimal place.
     Some((geo_mean * 10.0).round() / 10.0)
 }
 
@@ -689,15 +649,8 @@ pub(crate) fn rate_to_width_class(rate: Option<f64>) -> &'static str {
     match rate {
         None => "w-0",
         Some(r) => {
-            // `f64::clamp` propagates NaN, so the subsequent `as usize` of a
-            // NaN would yield 0; the trailing `.min(...)` keeps the index
-            // in-bounds for any pathological input the cast might produce.
             let clamped = r.clamp(0.0, 100.0);
             let bucket = (clamped / 5.0).round();
-            // No stable safe API converts `f64` → `usize`; the `as` cast is
-            // the idiomatic primitive. Bounds: `bucket ∈ [0.0, 20.0]` after
-            // the clamp above, comfortably within `usize` range on every
-            // supported target.
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
@@ -768,10 +721,6 @@ fn format_run_timestamp(ts: &str) -> String {
     }
     ts.to_string()
 }
-
-// ===========================================================================
-// Tests
-// ===========================================================================
 
 #[cfg(test)]
 mod tests {
@@ -896,7 +845,6 @@ mod tests {
 
     #[test]
     fn format_run_timestamp_non_utc_converts() {
-        // +05:30 → UTC: 14:30 - 5:30 = 09:00
         assert_eq!(
             format_run_timestamp("2026-04-12T14:30:05+05:30"),
             "2026-04-12 09:00 UTC"
@@ -905,7 +853,6 @@ mod tests {
 
     #[test]
     fn format_run_timestamp_unparseable_falls_back() {
-        // Not valid RFC 3339 — returned as-is.
         assert_eq!(format_run_timestamp("2026-04-12T14:30"), "2026-04-12T14:30");
     }
 
@@ -921,7 +868,6 @@ mod tests {
 
     #[test]
     fn format_run_timestamp_no_t_separator() {
-        // jiff accepts space as T separator per RFC 3339 §5.6 note 1.
         assert_eq!(
             format_run_timestamp("2026-04-12 14:30:05+00:00"),
             "2026-04-12 14:30 UTC"
@@ -930,7 +876,6 @@ mod tests {
 
     #[test]
     fn format_run_timestamp_multibyte_no_panic() {
-        // Multi-byte UTF-8 input must not panic.
         assert_eq!(
             format_run_timestamp("日本語タイムスタンプ"),
             "日本語タイムスタンプ"
@@ -1017,11 +962,9 @@ mod tests {
         assert_eq!(super::extra_u32(&extra, "key"), 0);
     }
 
-    // ── Coverage tier tests ────────────────────────────────────
-
     #[test]
     fn tier_from_rate_pass() {
-        let tiers = CoverageTiers::default(); // 80.0 / 50.0
+        let tiers = CoverageTiers::default();
         assert_eq!(
             CoverageTier::from_rate(Some(80.0), &tiers),
             CoverageTier::Pass
@@ -1066,7 +1009,6 @@ mod tests {
 
     #[test]
     fn tier_equal_thresholds_no_warn_band() {
-        // When pass_threshold == warn_threshold, there is no warn band.
         let tiers = CoverageTiers {
             pass_threshold: 80.0,
             warn_threshold: 80.0,
@@ -1079,7 +1021,6 @@ mod tests {
             CoverageTier::from_rate(Some(79.9), &tiers),
             CoverageTier::Fail
         );
-        // No way to get Warn with equal thresholds.
     }
 
     #[test]
@@ -1117,18 +1058,13 @@ mod tests {
     #[test]
     fn view_model_tiers_computed_from_evidence() {
         let evidence = sample_evidence();
-        let tiers = CoverageTiers::default(); // 80.0 / 50.0
+        let tiers = CoverageTiers::default();
         let vm = ReportViewModel::from_evidence(&evidence, &tiers);
 
-        // policy: 80.0% → Pass
         assert_eq!(vm.policy_tier, CoverageTier::Pass);
-        // secret_scanning: 80.0% → Pass
         assert_eq!(vm.secret_scanning_tier, CoverageTier::Pass);
-        // dependabot: 70.0% → Warn
         assert_eq!(vm.dependabot_tier, CoverageTier::Warn);
-        // branch_protection: 60.0% → Warn
         assert_eq!(vm.branch_protection_tier, CoverageTier::Warn);
-        // codeowners: 70.0% → Warn
         assert_eq!(vm.codeowners_tier, CoverageTier::Warn);
     }
 
@@ -1141,8 +1077,6 @@ mod tests {
 
         assert_eq!(vm.policy_tier, CoverageTier::Na);
     }
-
-    // ── Slug generation tests ──────────────────────────────────
 
     #[test]
     fn slug_basic_team() {
@@ -1171,21 +1105,18 @@ mod tests {
 
     #[test]
     fn slug_special_characters_replaced() {
-        // Trailing `!` → `-` → trimmed
         assert_eq!(generate_slug("@org/team.name!"), "org-team-name");
         assert_eq!(generate_slug("@org/team.name"), "org-team-name");
     }
 
     #[test]
     fn slug_unicode_owner_names() {
-        // Unicode characters → dashes → collapse → trim → empty
         let slug = generate_slug("@组织/团队");
         assert!(slug.is_empty());
     }
 
     #[test]
     fn slug_empty_after_sanitization_fallback() {
-        // If slug is empty after sanitization, the caller must handle fallback.
         assert!(generate_slug("@///").is_empty());
     }
 
@@ -1199,21 +1130,16 @@ mod tests {
 
     #[test]
     fn unique_slugs_collision_disambiguation() {
-        // Two different owners that produce the same slug
         let owners = vec!["@org/team.name".to_string(), "@org/team_name".to_string()];
         let slugs = generate_unique_slugs(&owners);
-        // First one gets the base slug, second gets suffixed
         assert_eq!(slugs["@org/team.name"], "org-team-name");
         assert_eq!(slugs["@org/team_name"], "org-team_name");
     }
 
     #[test]
     fn unique_slugs_identical_owners() {
-        // Exact same slug collision
         let owners = vec!["@org/team".to_string(), "@org/team".to_string()];
         let slugs = generate_unique_slugs(&owners);
-        // Both map to same key, so last one wins in the HashMap
-        // But since they're the same owner string, there's only 1 entry
         assert_eq!(slugs.len(), 1);
     }
 
@@ -1232,8 +1158,6 @@ mod tests {
         assert_eq!(slugs["@org/team"], "org-team");
         assert_eq!(slugs["@///"], "owner-1");
     }
-
-    // ── rate_to_width_class tests ──────────────────────────────
 
     #[test]
     fn width_class_none_returns_w0() {
@@ -1267,18 +1191,11 @@ mod tests {
 
     #[test]
     fn width_class_rounds_to_nearest_5() {
-        // 2.4 rounds down to 0
         assert_eq!(rate_to_width_class(Some(2.4)), "w-0");
-        // 2.5 rounds to 5 (banker's rounding: .5 rounds to even → 0, but
-        // f64 round() uses "round half away from zero" → 1 × 5 = 5)
         assert_eq!(rate_to_width_class(Some(2.5)), "w-5");
-        // 7.4 → round(7.4/5) = round(1.48) = 1 → 5
         assert_eq!(rate_to_width_class(Some(7.4)), "w-5");
-        // 7.5 → round(7.5/5) = round(1.5) = 2 → 10
         assert_eq!(rate_to_width_class(Some(7.5)), "w-10");
-        // 33.3 → round(33.3/5) = round(6.66) = 7 → 35
         assert_eq!(rate_to_width_class(Some(33.3)), "w-35");
-        // 97.6 → round(97.6/5) = round(19.52) = 20 → 100
         assert_eq!(rate_to_width_class(Some(97.6)), "w-100");
     }
 
@@ -1290,9 +1207,6 @@ mod tests {
 
     #[test]
     fn width_class_non_finite_returns_w0() {
-        // NaN and infinities are not produced by RateMetric, but pin the
-        // behaviour for defence-in-depth: Rust's saturating float-to-int
-        // semantics map NaN → 0.
         assert_eq!(rate_to_width_class(Some(f64::NAN)), "w-0");
         assert_eq!(rate_to_width_class(Some(f64::INFINITY)), "w-100");
         assert_eq!(rate_to_width_class(Some(f64::NEG_INFINITY)), "w-0");
@@ -1300,11 +1214,8 @@ mod tests {
 
     #[test]
     fn slug_mixed_ascii_and_unicode() {
-        // Non-ASCII characters are replaced with dashes then collapsed/trimmed.
         assert_eq!(generate_slug("@org/team-名前"), "org-team");
     }
-
-    // ── compute_health_score tests ─────────────────────────────
 
     #[test]
     fn health_score_all_none_returns_none() {
@@ -1325,11 +1236,9 @@ mod tests {
 
     #[test]
     fn health_score_any_zero_floors_to_0_1() {
-        // A 0% rate is floored to 0.1%, so the geometric mean is not zero.
         let score =
             compute_health_score(&[Some(80.0), Some(0.0), Some(90.0), Some(70.0), Some(60.0)]);
         let s = score.unwrap();
-        // 0.0 is treated as 0.1 → geo mean of [80, 0.1, 90, 70, 60]
         assert!(s > 0.0, "score should not collapse to zero; got {s}");
         assert!(
             s < 30.0,
@@ -1339,7 +1248,6 @@ mod tests {
 
     #[test]
     fn health_score_excludes_none_rates() {
-        // Only 2 rates available: 80 and 80 → geometric mean = 80.0
         let score = compute_health_score(&[Some(80.0), None, None, None, Some(80.0)]);
         assert_eq!(score, Some(80.0));
     }
@@ -1352,8 +1260,6 @@ mod tests {
 
     #[test]
     fn health_score_geometric_mean_mixed_rates() {
-        // Geometric mean of [80, 70, 60, 80, 70]
-        // = (80 * 70 * 60 * 80 * 70)^(1/5) ≈ 71.5
         let score =
             compute_health_score(&[Some(80.0), Some(70.0), Some(60.0), Some(80.0), Some(70.0)]);
         let s = score.unwrap();
@@ -1362,10 +1268,8 @@ mod tests {
 
     #[test]
     fn health_score_geometric_mean_favors_balance() {
-        // Arithmetic mean of [50, 100] = 75, but geometric mean < 75
         let score = compute_health_score(&[Some(50.0), Some(100.0), None, None, None]);
         let s = score.unwrap();
-        // Geometric mean = sqrt(50 * 100) = sqrt(5000) ≈ 70.7
         assert!((s - 70.7).abs() < 0.1, "expected ~70.7, got {s}");
         assert!(
             s < 75.0,
@@ -1375,10 +1279,8 @@ mod tests {
 
     #[test]
     fn health_score_rounds_to_one_decimal() {
-        // Geometric mean of [33.3, 66.7] = sqrt(33.3 * 66.7) ≈ 47.1
         let score = compute_health_score(&[Some(33.3), Some(66.7), None, None, None]);
         let s = score.unwrap();
-        // Verify rounding: multiplied by 10, fractional part should be zero.
         assert!(
             (s * 10.0).fract().abs() < f64::EPSILON,
             "score {s} should be rounded to 1 decimal place"
@@ -1392,10 +1294,8 @@ mod tests {
 
     #[test]
     fn health_score_negative_rate_floored_via_clamp() {
-        // Negative rates are clamped to 0, then floored to 0.1
         let score = compute_health_score(&[Some(-10.0), Some(80.0), None, None, None]);
         let s = score.unwrap();
-        // geo mean of [0.1, 80] = sqrt(0.1 * 80) ≈ 2.8
         assert!(s > 0.0, "score should not be zero; got {s}");
         assert!(
             s < 5.0,
@@ -1405,9 +1305,7 @@ mod tests {
 
     #[test]
     fn health_score_rate_above_100_clamped() {
-        // Rate > 100% (numerator > denominator) gets capped at 100
         let score = compute_health_score(&[Some(120.0), Some(80.0), None, None, None]);
-        // Should behave as [100, 80] → geometric mean = sqrt(100 * 80) ≈ 89.4
         let s = score.unwrap();
         let expected = (100.0_f64 * 80.0).sqrt();
         assert!(
@@ -1418,25 +1316,19 @@ mod tests {
 
     #[test]
     fn health_score_all_same_rate() {
-        // Geometric mean of equal values is that value
         let score = compute_health_score(&[Some(50.0), Some(50.0), Some(50.0), None, None]);
         assert_eq!(score, Some(50.0));
     }
-
-    // ── Health score integration with view model ───────────────
 
     #[test]
     fn view_model_health_score_computed() {
         let evidence = sample_evidence();
         let vm = ReportViewModel::from_evidence(&evidence, &CoverageTiers::default());
 
-        // sample_evidence has 5 control rates: 80.0, 80.0, 70.0, 60.0, 70.0.
-        // stale_rate = None (no archived repos, no stale repos) → excluded.
-        // Geometric mean of 5 rates ≈ 71.5
         assert!(vm.health_score.is_some());
         let s = vm.health_score.unwrap();
         assert!((s - 71.5).abs() < 0.5, "expected ~71.5, got {s}");
-        assert_eq!(vm.health_tier, CoverageTier::Warn); // 71.5 < 80 threshold
+        assert_eq!(vm.health_tier, CoverageTier::Warn);
         assert!(vm.health_score_formatted.contains('%'));
         assert_ne!(vm.health_width_class, "w-0");
     }
@@ -1456,8 +1348,6 @@ mod tests {
         assert_eq!(vm.health_score_formatted, "N/A");
         assert_eq!(vm.health_width_class, "w-0");
     }
-
-    // ── Stale rate tests ──────────────────────────────────────────
 
     #[test]
     fn view_model_stale_rate_none_when_no_archived_no_stale() {
@@ -1479,7 +1369,6 @@ mod tests {
 
         let vm = ReportViewModel::from_evidence(&evidence, &CoverageTiers::default());
 
-        // 3 archived / (3 + 0 stale) = 100%
         assert_eq!(vm.stale_rate, Some(100.0));
         assert_eq!(vm.stale_rate_formatted, "100.0%");
         assert_eq!(vm.archived_repos, 3);
@@ -1489,13 +1378,11 @@ mod tests {
     #[test]
     fn view_model_stale_rate_with_stale_active_repos() {
         let mut evidence = sample_evidence();
-        // Make repo-1 stale by setting updated_at to 3 years ago
         evidence.repositories[0].repository.updated_at = Some("2023-01-01T00:00:00Z".to_string());
         evidence.collection_statistics.archived_repos = 2;
 
         let vm = ReportViewModel::from_evidence(&evidence, &CoverageTiers::default());
 
-        // 2 archived / (2 + 1 stale) ≈ 66.7%
         assert_eq!(vm.stale_active_repos, 1);
         assert_eq!(vm.archived_repos, 2);
         let s = vm.stale_rate.unwrap();
@@ -1506,7 +1393,6 @@ mod tests {
     fn view_model_stale_rate_included_in_health_score() {
         let mut evidence = sample_evidence();
         evidence.collection_statistics.archived_repos = 5;
-        // No stale active repos → stale_rate = 100.0% (all stale repos archived)
 
         let vm_with_stale = ReportViewModel::from_evidence(&evidence, &CoverageTiers::default());
 
@@ -1514,15 +1400,11 @@ mod tests {
         let vm_without =
             ReportViewModel::from_evidence(&evidence_no_stale, &CoverageTiers::default());
 
-        // With stale_rate = Some(100.0), health score should differ from
-        // the 5-control-only version (which has stale_rate = None)
         assert_ne!(
             vm_with_stale.health_score, vm_without.health_score,
             "stale rate should affect health score"
         );
     }
-
-    // ── strip_org_prefix tests ────────────────────────────────────
 
     #[test]
     fn strip_org_prefix_team() {

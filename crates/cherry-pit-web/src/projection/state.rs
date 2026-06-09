@@ -83,9 +83,6 @@ impl PageEntry {
         let content_length = content_length_header(body.len());
         let compressible = is_compressible_ext(ext);
         let body_zstd = if compressible {
-            // `compress_zstd` returns `None` for bodies over
-            // `MAX_PRECOMPRESS_BYTES` (caps cache-population CPU).
-            // On `None` we fall back to identity-only serving.
             let compressed = compress_zstd(&body);
             if compressed.is_none() {
                 warn!(
@@ -187,11 +184,6 @@ impl PageUpdate {
         timestamp: String,
         correlation: CorrelationContext,
     ) -> Self {
-        // Pre-serialised envelope carries `"v": 1` per CHE-0049 R13 — the
-        // WS surface's contract version. Versioning lives in the envelope
-        // (not the URL) because `/ws` is unversioned per R13 ("WS lacks a
-        // clean URL-prefix migration path"). Sibling fields preserve donor
-        // shape so existing serde consumers keep parsing.
         let json = serde_json::json!({
             "v": 1,
             "type": "update",
@@ -284,12 +276,6 @@ impl<P> std::fmt::Debug for ProjectionState<P> {
     }
 }
 
-// ── Pre-compression / content-type helpers ───────────────────────────
-//
-// Module-private; migrated alongside `PageEntry::new`. Phase 4 may
-// extract them into a shared `cache` submodule if reused — for now
-// they live next to their sole caller.
-
 /// Compute a weak `ETag` from a SHA-256 hash of `body`, truncated to 16 bytes.
 ///
 /// Format: `W/"<32 hex chars>"` — weak because the same `ETag` matches
@@ -297,7 +283,6 @@ impl<P> std::fmt::Debug for ProjectionState<P> {
 fn compute_etag(body: &[u8]) -> HeaderValue {
     use std::fmt::Write;
     let hash = Sha256::digest(body);
-    // Capacity 36 = len(`W/"`) + 32 hex chars + len(`"`).
     let mut etag_str = String::with_capacity(36);
     etag_str.push_str("W/\"");
     for b in &hash[..16] {
@@ -376,8 +361,6 @@ fn content_length_header(len: usize) -> HeaderValue {
 mod tests {
     use super::*;
 
-    // ── PageEntry::new content-type / compression tests ─────────────
-
     #[test]
     fn page_entry_compresses_html() {
         let body = "<html><body>Hello, world!</body></html>";
@@ -428,8 +411,6 @@ mod tests {
         assert_eq!(entry.content_length, "3");
         assert!(entry.content_length_zstd.is_none());
     }
-
-    // ── MIME type tests ─────────────────────────────────────────────
 
     #[test]
     fn mime_type_json() {
@@ -565,8 +546,6 @@ mod tests {
         assert!(!is_compressible_ext(Some("PNG")));
     }
 
-    // ── Compressibility tests ────────────────────────────────────────
-
     #[test]
     fn compressible_text_formats() {
         assert!(is_compressible_ext(Some("svg")));
@@ -645,8 +624,6 @@ mod tests {
         assert_eq!(hdr.to_str().unwrap(), "42");
     }
 
-    // ── PageUpdate tests ─────────────────────────────────────────────
-
     #[test]
     fn page_update_json_structure() {
         let update = PageUpdate::new(
@@ -685,8 +662,6 @@ mod tests {
         assert!(update.correlation.causation_id().is_none());
     }
 
-    // ── ProjectionState manual Debug (Info-1 closure) ────────────────
-
     /// A `ProjectionSource` impl that deliberately does NOT implement
     /// `Debug`. If `ProjectionState<P>: Debug` requires `P: Debug`,
     /// this test will not compile.
@@ -718,12 +693,9 @@ mod tests {
     fn projection_state_clone_is_cheap() {
         let state = ProjectionState::new(NonDebugProjection);
         let _cloned = state.clone();
-        // Strong count should now be 2.
         let formatted = format!("{state:?}");
         assert!(formatted.contains("strong=2"));
     }
-
-    // ── Debug elision sanity ─────────────────────────────────────────
 
     #[test]
     fn page_entry_debug_elides_body_bytes() {

@@ -49,10 +49,6 @@ pub async fn evaluate(
     repo: &Repository,
     run_timestamp: &str,
 ) -> DependabotResult {
-    // Validate repo name before URL interpolation — defense-in-depth against
-    // path injection from API-derived data. repo_details() also validates
-    // internally, but we guard at the collector entry point for consistency
-    // with all other collectors.
     let safe_name = match sanitize_path_segment(&repo.name, "repo_name") {
         Ok(n) => n,
         Err(e) => {

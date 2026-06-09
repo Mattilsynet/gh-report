@@ -15,8 +15,6 @@ use tracing::{debug, trace};
 use crate::domain::auth::AuthMode;
 use crate::error::GitHubApiError;
 
-// ── Credentials ─────────────────────────────────────────────────────
-
 /// Resolved credential for making GitHub API requests.
 ///
 /// The token is stored as a `SecretString` and is never exposed in Debug output.
@@ -30,7 +28,6 @@ pub struct GitHubCredential {
     pub expires_at: Option<Timestamp>,
 }
 
-// Manual Debug impl to ensure token is never accidentally logged.
 impl std::fmt::Debug for GitHubCredential {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GitHubCredential")
@@ -74,7 +71,6 @@ impl GitHubCredential {
     ///
     /// Returns `GitHubApiError::AuthenticationFailed` if no valid credentials are found.
     pub fn from_environment() -> Result<Self, GitHubApiError> {
-        // Try GITHUB_TOKEN environment variable first
         if let Ok(token) = std::env::var("GITHUB_TOKEN")
             && !token.is_empty()
         {
@@ -89,7 +85,6 @@ impl GitHubCredential {
             });
         }
 
-        // Fall back to gh CLI
         debug!("GITHUB_TOKEN not set, falling back to gh CLI");
         Self::from_gh_cli()
     }
@@ -161,8 +156,6 @@ impl GitHubCredential {
             .map_or(0, |ts| ts.as_second().cast_unsigned())
     }
 }
-
-// ── Token tier / scope metadata ─────────────────────────────────────
 
 use crate::domain::auth::{Capability, TokenTier};
 
@@ -298,9 +291,6 @@ fn parse_gh_auth_status_json(json_str: &str) -> AuthMetadata {
 
     let host_entries = match payload
         .get("hosts")
-        // Intentionally hardcoded to "github.com" — GitHub Enterprise Server
-        // is not a supported target.  GHES hosts would require a configurable
-        // hostname and broader changes to URL construction throughout the client.
         .and_then(|h| h.get("github.com"))
         .and_then(|e| e.as_array())
     {
@@ -308,7 +298,6 @@ fn parse_gh_auth_status_json(json_str: &str) -> AuthMetadata {
         _ => return AuthMetadata::default(),
     };
 
-    // Find the active entry, or fall back to the first entry.
     let active_entry = host_entries
         .iter()
         .find(|e| {
@@ -339,8 +328,6 @@ fn parse_gh_auth_status_json(json_str: &str) -> AuthMetadata {
         auth_mode: AuthMode::GhCliFallback,
     }
 }
-
-// ── GitHub App authentication ───────────────────────────────────────
 
 /// Parse and validate a positive `u64` from a string.
 ///
@@ -398,7 +385,7 @@ impl GitHubAppConfig {
             Ok(v) if !v.is_empty() => v,
             _ => {
                 trace!("GH_APP_ID not set, GitHub App auth not configured");
-                return Ok(None); // Not configured
+                return Ok(None);
             }
         };
 
@@ -509,7 +496,6 @@ fn validate_rsa_key_size(pem_str: &str) -> Result<(), GitHubApiError> {
     })?;
     let der = pem_data.contents();
 
-    // Extract modulus byte length from DER-encoded RSAPrivateKey.
     let modulus_bytes =
         extract_rsa_modulus_len(der).ok_or_else(|| GitHubApiError::AuthenticationFailed {
             reason: "could not parse RSA key structure to determine key size".to_string(),
@@ -530,9 +516,8 @@ fn validate_rsa_key_size(pem_str: &str) -> Result<(), GitHubApiError> {
 /// Returns the byte length of the modulus INTEGER value (leading zero
 /// stripped), or `None` if the structure is not recognisable.
 fn extract_rsa_modulus_len(der: &[u8]) -> Option<usize> {
-    let rest = skip_der_tag_len(der, 0x30)?; // outer SEQUENCE
-    let rest = skip_der_tlv(rest)?; // version INTEGER
-    // modulus INTEGER: read its value length
+    let rest = skip_der_tag_len(der, 0x30)?;
+    let rest = skip_der_tlv(rest)?;
     read_der_integer_value_len(rest)
 }
 
@@ -574,7 +559,6 @@ fn read_der_integer_value_len(data: &[u8]) -> Option<usize> {
     if data.len() < start + len || len == 0 {
         return None;
     }
-    // Strip leading zero byte (DER sign padding).
     let val = &data[start..start + len];
     if val[0] == 0x00 && len > 1 {
         Some(len - 1)
@@ -620,13 +604,10 @@ pub fn generate_app_jwt(app_config: &GitHubAppConfig) -> Result<String, GitHubAp
 
     debug!(app_id = app_config.app_id, "generating GitHub App JWT");
 
-    // Defence-in-depth: reject RSA keys shorter than 2048 bits.
     validate_rsa_key_size(app_config.private_key_pem.expose_secret())?;
 
     let now = Timestamp::now();
-    // Issue 60 seconds in the past to account for clock drift
     let iat = (now - SignedDuration::from_secs(60)).as_second();
-    // Expire in 10 minutes (GitHub's maximum)
     let exp = (now + SignedDuration::from_mins(10)).as_second();
 
     let claims = AppJwtClaims {
@@ -672,7 +653,6 @@ pub struct InstallationTokenResponse {
     pub expires_at: String,
 }
 
-// Manual Debug impl — prevent accidental token leakage in logs.
 impl std::fmt::Debug for InstallationTokenResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InstallationTokenResponse")
@@ -681,8 +661,6 @@ impl std::fmt::Debug for InstallationTokenResponse {
             .finish()
     }
 }
-
-// ── Capability probes ───────────────────────────────────────────────
 
 /// Represents the availability of a specific GitHub API capability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -776,8 +754,6 @@ mod tests {
         assert!(!debug_output.contains("ghs_"));
     }
 
-    // ── TokenTier and scope parsing ─────────────────────────────
-
     #[test]
     fn parse_oauth_scopes_basic() {
         let scopes = parse_oauth_scopes("repo, read:org, security_events");
@@ -853,8 +829,6 @@ mod tests {
         assert_eq!(meta.token_tier, TokenTier::Unknown);
         assert_eq!(meta.token_scopes, "github-app-installation");
     }
-
-    // ── gh auth status JSON parsing ──────────────────────────────
 
     #[test]
     fn parse_gh_auth_status_full_scopes() {
@@ -936,8 +910,6 @@ mod tests {
         assert_eq!(meta.token_scopes, "unknown");
     }
 
-    // ── Credential refresh ─────────────────────────────────────
-
     #[test]
     fn pat_never_needs_refresh() {
         let cred = GitHubCredential {
@@ -955,7 +927,6 @@ mod tests {
             token: SecretString::from("ghs_test"),
             expires_at: Some(Timestamp::now() + SignedDuration::from_secs(60)),
         };
-        // 5 minute buffer — token expires in 60s, so it needs refresh
         assert!(cred.needs_refresh(Duration::from_mins(5)));
     }
 
@@ -968,8 +939,6 @@ mod tests {
         };
         assert!(!cred.needs_refresh(Duration::from_mins(5)));
     }
-
-    // ── Capability set ──────────────────────────────────────────
 
     #[test]
     fn capability_set_default_cannot_run() {
@@ -1005,8 +974,6 @@ mod tests {
         assert!(!caps.is_available(Capability::OrgSecretScanningAlerts));
     }
 
-    // ── Private key file reading ─────────────────────────────────
-
     #[test]
     fn read_private_key_file_nonexistent() {
         let result = read_private_key_file("/nonexistent/path/key.pem");
@@ -1027,7 +994,6 @@ mod tests {
             "-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----\n",
         )
         .unwrap();
-        // Set to world-readable
         std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644)).unwrap();
         let result = read_private_key_file(key_path.to_str().unwrap());
         assert!(result.is_err());
@@ -1052,13 +1018,11 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // ── App ID validation ────────────────────────────────────────
-
     #[test]
     fn parse_app_id_valid() {
         assert_eq!(parse_app_id("12345").unwrap(), 12345);
         assert_eq!(parse_app_id("1").unwrap(), 1);
-        assert_eq!(parse_app_id(" 42 ").unwrap(), 42); // trimmed
+        assert_eq!(parse_app_id(" 42 ").unwrap(), 42);
     }
 
     #[test]
@@ -1078,8 +1042,6 @@ mod tests {
         assert!(parse_app_id("-1").is_err());
     }
 
-    // ── Installation ID validation ───────────────────────────────
-
     #[test]
     fn installation_id_zero_rejected() {
         let err = parse_positive_u64("0", "GH_APP_INSTALLATION_ID").unwrap_err();
@@ -1097,8 +1059,6 @@ mod tests {
             98765
         );
     }
-
-    // ── Auth mode format pinning ────────────────────────────────
 
     #[test]
     fn auth_mode_format_pinning_pat() {
@@ -1158,8 +1118,6 @@ mod tests {
 
     #[test]
     fn generate_app_jwt_rejects_1024_bit_key() {
-        // Test-only 1024-bit RSA key — never use in production.
-        // Regenerate: openssl genrsa 1024
         const WEAK_PEM: &str = "\
 -----BEGIN RSA PRIVATE KEY-----
 MIICXAIBAAKBgQDOv5aACQGdS/rWzmloZlIOrxW5S7MLHMhdAXdHAZB+EOg6WX4G
@@ -1191,8 +1149,6 @@ kZ6CvXp9LqBAJ43EJbheiVarZ2w570jbUZPsXx7UnvU=
 
     #[test]
     fn generate_app_jwt_accepts_2048_bit_key() {
-        // Test-only 2048-bit RSA key — never use in production.
-        // Regenerate: openssl genrsa 2048
         const STRONG_PEM: &str = "\
 -----BEGIN RSA PRIVATE KEY-----
 MIIEpQIBAAKCAQEA1/aBChcJ0EuJWsjHw8Dp0091xfQWMnnL/sbTJN/UuwLy/hv4

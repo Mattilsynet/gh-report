@@ -48,19 +48,6 @@ use tokio::sync::broadcast;
 
 mod common;
 
-// ===========================================================================
-// Local, blocking-aware substrate for the origin proptests
-// ===========================================================================
-//
-// `proptest!` runs cases synchronously in the test thread. The
-// HTTP-integration cases need to drive `connect_async` to completion
-// per case; we wrap each case in a fresh single-threaded
-// `tokio::runtime::Runtime` so the proptest body remains a plain `fn`
-// that returns a `Result<(), TestCaseError>`. This is the same pattern
-// the donor's `proptest_origin` block achieves implicitly (its calls
-// are synchronous — they touch a pure function). Spinning a server per
-// case is the cost of reframing.
-
 /// Minimal `ProjectionSource` impl for origin-proptest servers. No
 /// snapshot, no broadcast traffic — the upgrade path is rejected on
 /// `Origin`/`Host` checks before any handler logic runs.
@@ -130,8 +117,6 @@ async fn try_upgrade(
 
     match tokio_tungstenite::connect_async(request).await {
         Ok((mut ws, response)) => {
-            // 101 path — close the socket so the server task exits the
-            // session loop cleanly.
             use futures_util::SinkExt;
             let _ = ws
                 .send(tokio_tungstenite::tungstenite::Message::Close(None))
@@ -148,10 +133,6 @@ async fn try_upgrade(
         Err(other) => Err(format!("connect error: {other}")),
     }
 }
-
-// ===========================================================================
-// Path invariants (direct port — `normalize_request_path` is public)
-// ===========================================================================
 
 proptest! {
     /// Donor `server.rs:3745` — `normalize_request_path` never panics on
@@ -255,10 +236,6 @@ proptest! {
     }
 }
 
-// ===========================================================================
-// Origin invariants (REFRAMED — drive HTTP upgrades end-to-end)
-// ===========================================================================
-
 /// Strategy mirroring donor `server.rs:3800` — random Origin and Host
 /// header combinations.
 fn origin_host_strategy() -> impl Strategy<Value = (Option<String>, Option<String>)> {
@@ -301,10 +278,6 @@ proptest! {
     /// upgrade is accepted (non-browser client, not subject to CSWSH).
     #[test]
     fn origin_no_origin_always_true(_host in "[a-z0-9.]{1,20}") {
-        // The `Host` header on the upgrade is filled by the client
-        // library to the bind address; the donor's `host` strategy
-        // input is unused here because the dest's `validate_ws_origin`
-        // short-circuits on absent Origin before reading Host.
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -333,9 +306,6 @@ proptest! {
             .expect("build rt");
         let rejected = rt.block_on(async {
             let (addr, handle) = spawn_stub().await;
-            // Host header defaults to the bind address (127.0.0.1:PORT);
-            // the `Origin` carries a distinct random hostname so the
-            // Origin-vs-Host comparison must fail.
             let r = try_upgrade(addr, Some(&origin), None).await;
             handle.abort();
             r

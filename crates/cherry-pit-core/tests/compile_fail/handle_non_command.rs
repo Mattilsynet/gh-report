@@ -22,7 +22,6 @@ impl Aggregate for MyAggregate {
     fn apply(&mut self, _event: &Self::Event) {}
 }
 
-// NotACommand does NOT implement Command.
 struct NotACommand;
 
 impl HandleCommand<NotACommand> for MyAggregate {

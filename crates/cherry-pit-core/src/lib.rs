@@ -50,7 +50,6 @@
 //! - [`BusError`] — event bus publication errors
 //! - [`ErrorCategory`] — stable retryable/terminal error guidance
 
-// CHE-0007: No unsafe code in any cherry-pit crate.
 #![forbid(unsafe_code)]
 
 mod aggregate;
@@ -68,11 +67,6 @@ mod projection;
 mod store;
 mod work;
 
-// CHE-0058 carve-out: feature-gated `pub mod` for test fixtures.
-// Visibility is opt-in via `--features testing` for downstream consumers
-// (SM-4 conformance harness + adapter-crate integration tests); always
-// compiled in `#[cfg(test)]` so core's own tests can exercise the
-// fixtures without enabling the feature.
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 

@@ -49,10 +49,6 @@ pub struct Run {
     /// `batch_id` from the originating `SweepStarted`, if any.
     pub batch_id: Option<String>,
     /// Total repo count declared at sweep start.
-    //
-    // Width fixed at u64 per GEN-0004:R1 / GEN-0032 / GEN-0037 EVT-004:
-    // the `Run` aggregate's fields mirror the `DomainEvent` field widths,
-    // which are u64 to keep canonical-bytes target-independent.
     pub repo_count: u64,
     /// Number of repos completed (last `SweepProgress::completed`).
     pub completed: u64,
@@ -75,7 +71,6 @@ impl Aggregate for Run {
             DomainEvent::SweepProgress { completed, .. } => {
                 self.completed = *completed;
             }
-            // Non-phase-changing; invariant (e) enforced at command-handle time.
             DomainEvent::PartialEvidenceRendered { .. } => {}
             DomainEvent::SweepCompleted { .. } => {
                 self.phase = RunPhase::Completed;
@@ -86,11 +81,6 @@ impl Aggregate for Run {
             DomainEvent::EvidencePublished { .. } => {
                 self.phase = RunPhase::Published;
             }
-            // Non-Run variants — defensively ignored. Routing to the
-            // correct aggregate is the application layer's
-            // responsibility (CHE-0054:R5). `debug_assert!` (linus
-            // mid-review Info-1) traps mis-routing in dev/test while
-            // preserving silent-ignore in release per R5.
             DomainEvent::RepoEvaluated { .. }
             | DomainEvent::RepoRemoved { .. }
             | DomainEvent::WebhookReceived { .. } => {
@@ -141,24 +131,13 @@ impl From<cherry_pit_core::StoreError> for RunError {
     }
 }
 
-// --- Commands (CHE-0054:R4 use cases) ---------------------------------
-
 /// Begin a new sweep run.
 #[derive(Debug, Clone)]
 pub struct StartSweep {
     pub org: String,
-    // u64 mirrors the resulting `DomainEvent::SweepStarted.repo_count`
-    // (GEN-0004:R1 — no platform-dependent widths in domain types).
-    // Conversion from `usize` happens at the producer per COM-0023.
     pub repo_count: u64,
     pub batch_id: String,
     pub timestamp: String,
-    // Content hash of the org-level secret-scanning alert snapshot
-    // (SHA-256 hex; produced by `cherry_pit_storage::build_snapshot_signature`).
-    // Computed by the saga at sweep construction; carried inline on the
-    // command so the `HandleCommand<StartSweep>` impl remains pure
-    // per CHE-0008:R1. Surfaces on the resulting `SweepStarted` event
-    // (δ.3c-ii, bead adr-fmt-baao9).
     pub snapshot_signature: String,
 }
 impl Command for StartSweep {}
@@ -214,8 +193,6 @@ pub struct RenderPartial {
     pub timestamp: String,
 }
 impl Command for RenderPartial {}
-
-// --- HandleCommand impls (CHE-0008:R1 pure) ---------------------------
 
 impl HandleCommand<StartSweep> for Run {
     type Error = RunError;
@@ -313,8 +290,6 @@ impl HandleCommand<RenderPartial> for Run {
     }
 }
 
-// --- Tests (CHE-0008:R3 pure-handle unit tests) -----------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,8 +309,6 @@ mod tests {
         });
         r
     }
-
-    // --- apply (CHE-0009 infallible) ---
 
     #[test]
     fn default_run_is_empty() {
@@ -411,8 +384,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "CHE-0054:R5 routing bug")]
     fn apply_panics_in_debug_on_non_run_variant() {
-        // Per linus mid-review Info-1: dev/test traps mis-routing,
-        // release silently ignores (debug_assert no-ops).
         let mut r = Run::default();
         r.apply(&DomainEvent::RepoEvaluated {
             domain_key: "k".into(),
@@ -424,8 +395,6 @@ mod tests {
             evidence: None,
         });
     }
-
-    // --- handle (CHE-0008 pure) ---
 
     #[test]
     fn start_sweep_from_empty_emits_sweep_started() {
@@ -516,7 +485,6 @@ mod tests {
 
     #[test]
     fn complete_sweep_from_completed_rejects_invariant_b() {
-        // Once Completed, cannot complete again.
         let mut r = started();
         r.apply(&DomainEvent::SweepCompleted {
             batch_id: "b1".into(),
@@ -537,7 +505,6 @@ mod tests {
 
     #[test]
     fn fail_sweep_from_completed_rejects_invariant_b() {
-        // Once Completed, cannot fail (terminal-xor).
         let mut r = started();
         r.apply(&DomainEvent::SweepCompleted {
             batch_id: "b1".into(),
@@ -627,8 +594,6 @@ mod tests {
         assert_eq!(err, RunError::NotStarted(RunPhase::Completed));
     }
 
-    // --- RenderPartial (CHE-0054:R1.e) ---
-
     #[test]
     fn render_partial_from_started_emits_event() {
         let r = started();
@@ -712,9 +677,6 @@ mod tests {
 
     #[test]
     fn apply_partial_evidence_rendered_does_not_mutate_phase() {
-        // Invariant (e): PartialEvidenceRendered is non-terminal; apply
-        // must be a pure no-op on every Run field. Phase MUST stay
-        // Started; batch_id, repo_count, completed MUST be untouched.
         let mut r = started();
         let snapshot_phase = r.phase;
         let snapshot_batch = r.batch_id.clone();
@@ -734,8 +696,6 @@ mod tests {
         assert_eq!(r.repo_count, snapshot_repos);
         assert_eq!(r.completed, snapshot_completed);
     }
-
-    // --- RunError::RoutingMiss (CHE-0024:R1) ---
 
     #[test]
     fn routing_miss_display_carries_batch_id() {

@@ -130,7 +130,6 @@ mod tests {
 
     #[test]
     fn capability_display_matches_serde() {
-        // Verify that Display output matches serde serialization for all variants.
         for cap in Capability::ALL {
             let display = cap.to_string();
             let serde_str = serde_json::to_value(cap).unwrap();

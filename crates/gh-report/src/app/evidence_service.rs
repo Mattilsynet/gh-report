@@ -73,16 +73,6 @@ impl EvidenceState {
     }
 }
 
-// ── ProjectionSource impl (CHE-0049 R11, CHE-0055 §G1) ──────────────
-//
-// Bridges the legacy in-memory cache + WS broadcast types
-// (`CachedPage`, `PageUpdateEvent`) to the cherry-side migration twins
-// (`PageEntry`, `PageUpdate`). Both pairs are field-for-field
-// equivalent; `PageEntry`/`PageUpdate` only add a `correlation:
-// CorrelationContext` envelope on the WS delta. Phase 2 is a typed
-// stub — no main path consumes the resulting router today; M5 Phase 3c
-// (cherry side) and a later gh-report commit will mount it.
-
 /// Convert a legacy `CachedPage` into the cherry-side `PageEntry`.
 ///
 /// `PageEntry` is `#[non_exhaustive]`; the only public constructor is
@@ -109,15 +99,6 @@ impl ProjectionSource for EvidenceState {
     }
 
     fn subscribe(&self) -> broadcast::Receiver<PageUpdate> {
-        // Construct a side broadcast channel on-demand and spawn a
-        // transform task that re-broadcasts each `PageUpdateEvent`
-        // (legacy) as a `PageUpdate` (cherry) with
-        // `CorrelationContext::none()` — the legacy event carries no
-        // correlation. The task lives until either:
-        //  - the source sender is dropped (no more pages), or
-        //  - the returned receiver is dropped (no more subscribers).
-        // Per-call channel capacity matches the source (64) so a lagged
-        // upstream `RecvError::Lagged` is the bound, not the bridge.
         let mut source_rx = self.ws_broadcast.subscribe();
         let (bridge_tx, bridge_rx) = broadcast::channel::<PageUpdate>(64);
         tokio::spawn(async move {
@@ -133,15 +114,11 @@ impl ProjectionSource for EvidenceState {
                             CorrelationContext::none(),
                         );
                         if bridge_tx.send(update).is_err() {
-                            // No subscribers left — exit transform task.
                             break;
                         }
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        // Skip the missed batch; downstream sees lag
-                        // separately if it lags this bridge channel.
-                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
                 }
             }
         });
@@ -203,7 +180,6 @@ mod tests {
         let state = EvidenceState::new();
         let mut rx = ProjectionSource::subscribe(&state);
 
-        // Send a legacy event on the source channel.
         state
             .ws_broadcast
             .send(PageUpdateEvent::new(
@@ -213,7 +189,6 @@ mod tests {
             ))
             .expect("at least one subscriber via bridge");
 
-        // The transform task should forward it as a cherry-side PageUpdate.
         let update = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
             .await
             .expect("recv should not time out")
@@ -223,7 +198,6 @@ mod tests {
         assert_eq!(update.timestamp.as_ref(), "2026-04-15T12:00:00Z");
         assert_eq!(update.pages.len(), 1);
         assert_eq!(update.pages[0].as_ref(), "index.html");
-        // Legacy events carry no correlation; bridge fills with none().
         assert!(update.correlation.correlation_id().is_none());
         assert!(update.correlation.causation_id().is_none());
     }

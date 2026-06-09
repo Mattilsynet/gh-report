@@ -113,7 +113,6 @@ async fn no_correlation_headers_no_echo() {
 
 #[tokio::test]
 async fn malformed_traceparent_does_not_400() {
-    // W3C: receivers must not reject malformed traceparent.
     let req = Request::builder()
         .uri("/probe")
         .header("traceparent", "garbage")

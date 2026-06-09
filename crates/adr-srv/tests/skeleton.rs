@@ -37,8 +37,6 @@ fn sample_event() -> AdrIngested {
     }
 }
 
-// ── AdrId ──────────────────────────────────────────────────────────
-
 #[test]
 fn adr_id_parses_canonical_form() {
     let id = AdrId::from_str("AFM-0001").expect("AFM-0001 parses");
@@ -92,8 +90,6 @@ fn adr_id_accepts_all_known_domains() {
     }
 }
 
-// ── BodyHash ───────────────────────────────────────────────────────
-
 #[test]
 fn body_hash_is_deterministic() {
     let h1 = BodyHash::compute(b"hello");
@@ -119,8 +115,6 @@ fn body_hash_display_is_lowercase_hex_32_chars() {
     );
 }
 
-// ── AdrDate ────────────────────────────────────────────────────────
-
 #[test]
 fn adr_date_constructs_and_displays() {
     let d = AdrDate::new(2026, 5, 18).expect("valid date");
@@ -134,12 +128,10 @@ fn adr_date_constructs_and_displays() {
 fn adr_date_rejects_invalid_month_and_day() {
     assert!(AdrDate::new(2026, 0, 1).is_err());
     assert!(AdrDate::new(2026, 13, 1).is_err());
-    assert!(AdrDate::new(2026, 2, 29).is_err()); // 2026 not a leap year
-    assert!(AdrDate::new(2024, 2, 29).is_ok()); // 2024 IS a leap year
-    assert!(AdrDate::new(2026, 4, 31).is_err()); // April has 30 days
+    assert!(AdrDate::new(2026, 2, 29).is_err());
+    assert!(AdrDate::new(2024, 2, 29).is_ok());
+    assert!(AdrDate::new(2026, 4, 31).is_err());
 }
-
-// ── AdrIngested msgpack round-trip ─────────────────────────────────
 
 #[test]
 fn adr_ingested_round_trips_byte_identical() {
@@ -148,8 +140,6 @@ fn adr_ingested_round_trips_byte_identical() {
     let decoded: AdrIngested = rmp_serde::from_slice(&bytes).expect("decode AdrIngested");
     assert_eq!(decoded, event, "round-trip must preserve value");
 
-    // Re-encode and compare bytes — msgpack is deterministic for a
-    // given Serialize impl.
     let bytes2 = rmp_serde::to_vec_named(&decoded).expect("re-encode AdrIngested");
     assert_eq!(
         bytes, bytes2,
@@ -171,8 +161,6 @@ fn adr_ingested_event_type_is_stable_string() {
     assert_eq!(event.event_type(), "AdrIngested");
 }
 
-// ── AdrDocument fold ───────────────────────────────────────────────
-
 #[test]
 fn adr_document_from_first_seeds_state_from_event() {
     let event = sample_event();
@@ -188,9 +176,6 @@ fn adr_document_apply_updates_state_from_event() {
     let initial = sample_event();
     let doc = AdrDocument::from_first(&initial);
 
-    // Construct a follow-up event that mutates frontmatter + body_hash
-    // (mirrors what an `AdrReingested`-shaped event would do in M1.3
-    // when the same file is re-scraped after a content change).
     let updated_event = AdrIngested {
         id: initial.id.clone(),
         frontmatter: AdrFrontmatter {
@@ -207,15 +192,11 @@ fn adr_document_apply_updates_state_from_event() {
     assert!(next.references.is_empty());
 }
 
-// ── AdrService against MsgpackFileStore ────────────────────────────
-
 #[tokio::test]
 async fn adr_service_constructs_against_msgpack_file_store() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store: MsgpackFileStore<AdrIngested> = MsgpackFileStore::new(dir.path());
     let service = AdrService::new(Arc::new(store));
-    // store() accessor reaches the inner Arc — proves the service is
-    // wired to the store, not just constructed and discarded.
     let _store_ref = service.store();
 }
 
@@ -227,11 +208,8 @@ async fn app_state_constructs_from_service() {
     let corpus: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
     let schema = build_schema(Arc::clone(&corpus));
     let state = AppState::new(Arc::clone(&service), Arc::clone(&corpus), schema);
-    // AppState::clone is cheap (Arc + schema-arc); verify it works.
     let _cloned = state.clone();
 }
-
-// ── axum /health router boot ───────────────────────────────────────
 
 #[tokio::test]
 async fn health_route_returns_200() {
@@ -251,8 +229,6 @@ async fn health_route_returns_200() {
         .expect("oneshot resolves");
     assert_eq!(response.status(), StatusCode::OK);
 }
-
-// ── schema constructor smoke ───────────────────────────────────────
 
 #[test]
 fn build_schema_constructs() {

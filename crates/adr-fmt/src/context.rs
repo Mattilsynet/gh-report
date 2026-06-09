@@ -46,8 +46,6 @@ pub fn context_grouped(
     records: &[AdrRecord],
     config: &Config,
 ) -> Result<Vec<RootGroup>, String> {
-    // ── Step 1: Identify candidate and foundation domains ──────────
-
     let candidate_domains: Vec<&str> = config
         .domains
         .iter()
@@ -68,12 +66,9 @@ pub fn context_grouped(
         .map(|d| d.prefix.as_str())
         .collect();
 
-    // ── Step 2: Collect emission-eligible ADR IDs ──────────────────
-
     let mut eligible: HashSet<AdrId> = HashSet::new();
     let mut eligible_records: HashMap<&AdrId, &AdrRecord> = HashMap::new();
 
-    // Foundation ADRs
     for record in records {
         if record.is_stale || record.status.as_ref() != Some(&Status::Accepted) {
             continue;
@@ -87,7 +82,6 @@ pub fn context_grouped(
         }
     }
 
-    // Candidate domain ADRs (with per-ADR crate filtering)
     for prefix in &candidate_domains {
         let domain_records: Vec<&AdrRecord> = records
             .iter()
@@ -115,16 +109,8 @@ pub fn context_grouped(
         }
     }
 
-    // ── Step 3: Build parent-edge projection from ALL records ─────
-    //
-    // The tree projection includes Draft/Proposed waypoints — non-Accepted
-    // parents are advisory-only (L012) and do not break the chain. This
-    // lets descendants of a Draft mid-tier ADR still reach the root.
-
     let parent_edges = compute_parent_edges(records);
     let parent_children = compute_parent_children(records);
-
-    // ── Step 4: Identify root ADRs ────────────────────────────────
 
     let root_index: HashSet<AdrId> = records
         .iter()
@@ -133,13 +119,6 @@ pub fn context_grouped(
         .collect();
 
     let record_by_id: HashMap<&AdrId, &AdrRecord> = records.iter().map(|r| (&r.id, r)).collect();
-
-    // ── Step 5: Assign eligible ADRs to roots via parent-chain walk ─
-    //
-    // Each eligible ADR walks its parent-edge chain upward. If the chain
-    // terminates at a root, assign there. If it terminates at a non-root
-    // (orphan) or hits a cycle, the ADR remains unassigned and falls to
-    // the Unclaimed group.
 
     let mut assignment: HashMap<AdrId, AdrId> = HashMap::new();
 
@@ -153,14 +132,7 @@ pub fn context_grouped(
         {
             assignment.insert(id.clone(), terminal);
         }
-        // Ok(t) where t not a root → broken chain → unassigned
-        // Err(_): cycle in parent edges → unassigned (L013 already warns)
     }
-
-    // ── Step 6: Determine root processing order ───────────────────
-    //
-    // Foundation roots first (by min_layer ascending, then number),
-    // then domain roots (same sort).
 
     let foundation_set: HashSet<&str> = foundation_prefixes.iter().copied().collect();
 
@@ -171,16 +143,13 @@ pub fn context_grouped(
         .cloned()
         .collect();
 
-    // Sort roots: foundation first, then by min_layer, then by number
     context_roots.sort_by(|a, b| {
         let a_foundation = foundation_set.contains(a.prefix.as_str());
         let b_foundation = foundation_set.contains(b.prefix.as_str());
 
-        // Foundation before domain
         b_foundation
             .cmp(&a_foundation)
             .then_with(|| {
-                // Within group: sort by min layer of root's own rules
                 let a_min_layer = record_by_id.get(a).map_or(u8::MAX, |r| {
                     r.decision_rules
                         .iter()
@@ -201,14 +170,6 @@ pub fn context_grouped(
             .then_with(|| a.number.cmp(&b.number))
     });
 
-    // ── Step 7: BFS emission per root via parent-edge children ────
-    //
-    // Walk parent-edge children downward from each root. Secondary
-    // citations are NOT followed — they don't pull extra subtrees.
-    // BFS visited set already provides cycle safety, but parent_edges
-    // is a forest by construction (cycle members are excluded from
-    // assignment in Step 5), so cycles cannot reach this stage.
-
     let mut claimed: HashSet<AdrId> = HashSet::new();
     let mut groups: Vec<RootGroup> = Vec::new();
 
@@ -221,7 +182,6 @@ pub fn context_grouped(
         visited.insert(root_id.clone());
 
         while let Some((current_id, depth)) = queue.pop_front() {
-            // Emit rules if eligible, assigned to this root, not yet claimed
             if eligible.contains(&current_id)
                 && assignment.get(&current_id) == Some(root_id)
                 && !claimed.contains(&current_id)
@@ -240,7 +200,6 @@ pub fn context_grouped(
                 claimed.insert(current_id.clone());
             }
 
-            // Enqueue parent-edge children only
             if let Some(children) = parent_children.get(&current_id) {
                 for child in children {
                     if !visited.contains(child) {
@@ -251,7 +210,6 @@ pub fn context_grouped(
             }
         }
 
-        // Sort: layer asc → depth asc → ADR number asc → rule_id asc
         rules.sort_by(|a, b| {
             a.layer
                 .cmp(&b.layer)
@@ -273,8 +231,6 @@ pub fn context_grouped(
             rules,
         });
     }
-
-    // ── Step 8: Unclaimed fallback ─────────────────────────────────
 
     let unclaimed: Vec<&AdrId> = eligible
         .iter()
@@ -426,8 +382,6 @@ description = "test"
     fn total_rule_count(groups: &[RootGroup]) -> usize {
         groups.iter().map(|g| g.rules.len()).sum()
     }
-
-    // ── Eligibility tests ──────────────────────────────────────────
 
     #[test]
     fn includes_foundation_and_domain() {
@@ -641,12 +595,8 @@ description = "test"
         assert!(result.unwrap_err().contains("not found in any domain"));
     }
 
-    // ── Assignment tests ───────────────────────────────────────────
-
     #[test]
     fn parent_chain_assigns_to_first_references_root() {
-        // CHE-0002 references both CHE-0001 and CHE-0004 (roots).
-        // CHE-0001 listed first → CHE-0002 assigned to CHE-0001.
         let records = vec![
             make_record(
                 "CHE",
@@ -676,7 +626,6 @@ description = "test"
         let config = make_config();
         let groups = context_grouped("example-core", &records, &config).unwrap();
 
-        // CHE-0002 should appear under CHE-0001's group
         let che1_group = groups
             .iter()
             .find(|g| g.root_id == make_id("CHE", 1))
@@ -700,8 +649,6 @@ description = "test"
 
     #[test]
     fn parent_chain_walks_through_intermediates() {
-        // CHE-0003 references CHE-0002 (not a root). CHE-0002 references CHE-0001 (root).
-        // CHE-0003 should be assigned to CHE-0001 via fallback.
         let records = vec![
             make_record(
                 "CHE",
@@ -741,7 +688,6 @@ description = "test"
 
     #[test]
     fn no_rule_appears_twice() {
-        // Two roots with overlapping subtree: CHE-0003 references both.
         let records = vec![
             make_record(
                 "CHE",
@@ -771,7 +717,6 @@ description = "test"
         let config = make_config();
         let groups = context_grouped("example-core", &records, &config).unwrap();
 
-        // Count total occurrences of CHE-0003's rules
         let che3_count: usize = groups
             .iter()
             .flat_map(|g| &g.rules)
@@ -780,11 +725,8 @@ description = "test"
         assert_eq!(che3_count, 1, "CHE-0003 rule should appear exactly once");
     }
 
-    // ── BFS cycle safety ───────────────────────────────────────────
-
     #[test]
     fn cycle_does_not_loop() {
-        // CHE-0002 ↔ CHE-0003 form a cycle, both reference root CHE-0001
         let records = vec![
             make_record(
                 "CHE",
@@ -817,11 +759,8 @@ description = "test"
         let config = make_config();
         let groups = context_grouped("example-core", &records, &config).unwrap();
 
-        // Both should be present, each exactly once
         assert_eq!(total_rule_count(&groups), 3);
     }
-
-    // ── Ordering tests ─────────────────────────────────────────────
 
     #[test]
     fn foundation_roots_before_domain_roots() {
@@ -844,7 +783,6 @@ description = "test"
         let config = make_config();
         let groups = context_grouped("example-core", &records, &config).unwrap();
 
-        // Foundation (COM) should appear before domain (CHE)
         let root_ids: Vec<&AdrId> = groups.iter().map(|g| &g.root_id).collect();
         let com_pos = root_ids.iter().position(|id| id.prefix == "COM").unwrap();
         let che_pos = root_ids.iter().position(|id| id.prefix == "CHE").unwrap();
@@ -894,7 +832,6 @@ description = "test"
 
     #[test]
     fn within_same_layer_depth_then_number() {
-        // CHE-0002 is depth 1, CHE-0003 is depth 2 (via CHE-0002), both at layer 5
         let records = vec![
             make_record("CHE", 1, vec![], vec![], vec![(RelVerb::Root, "CHE", 1)]),
             make_record(
@@ -927,11 +864,8 @@ description = "test"
         );
     }
 
-    // ── Edge cases ─────────────────────────────────────────────────
-
     #[test]
     fn root_with_no_rules_but_has_children() {
-        // Root CHE-0001 has no rules, but child CHE-0002 does
         let records = vec![
             make_record("CHE", 1, vec![], vec![], vec![(RelVerb::Root, "CHE", 1)]),
             make_record(
@@ -958,7 +892,6 @@ description = "test"
 
     #[test]
     fn empty_root_group_still_created() {
-        // Root CHE-0001 has no rules and no eligible children
         let records = vec![make_record(
             "CHE",
             1,
@@ -969,7 +902,6 @@ description = "test"
         let config = make_config();
         let groups = context_grouped("example-core", &records, &config).unwrap();
 
-        // Root should not produce a group (no eligible rules)
         assert!(
             groups.is_empty(),
             "root with no rules and no children → no group"
@@ -978,9 +910,6 @@ description = "test"
 
     #[test]
     fn non_accepted_waypoint_allows_reachability() {
-        // CHE-0002 is Draft but links CHE-0001 → CHE-0003 in graph.
-        // CHE-0003 references CHE-0002 (Draft). CHE-0003 should still
-        // be assigned via fallback: CHE-0003 → CHE-0002 → CHE-0001.
         let mut draft = make_record(
             "CHE",
             2,
@@ -1024,7 +953,6 @@ description = "test"
 
     #[test]
     fn unclaimed_fallback_when_unreachable() {
-        // CHE-0002 references nothing — unreachable from any root
         let records = vec![
             make_record(
                 "CHE",
@@ -1047,7 +975,6 @@ description = "test"
 
     #[test]
     fn root_processing_order_deterministic() {
-        // Same records in different input order should produce same output
         let r1 = make_record(
             "CHE",
             1,
@@ -1081,7 +1008,6 @@ description = "test"
             &config,
         )
         .unwrap();
-        // Note: can't easily clone AdrRecord, so create fresh for order B
         let r1b = make_record(
             "CHE",
             1,

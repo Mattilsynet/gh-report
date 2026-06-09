@@ -264,7 +264,6 @@ mod tests {
         .await
         .expect("ingest");
 
-        // Routing index resolves.
         let assigned_id = {
             let guard = index
                 .lock()
@@ -274,7 +273,6 @@ mod tests {
                 .expect("index should map delivery_id")
         };
 
-        // Stream contents — single envelope at sequence 1.
         let loaded = store.load(assigned_id).await.expect("load");
         assert_eq!(loaded.len(), 1, "single ingest yields single envelope");
         assert_eq!(loaded[0].sequence().get(), 1);
@@ -286,7 +284,6 @@ mod tests {
             other => panic!("expected WebhookReceived, got {other:?}"),
         }
 
-        // Bus capture.
         {
             let captured_envs = captured
                 .lock()
@@ -295,7 +292,6 @@ mod tests {
             assert_eq!(captured_envs[0].sequence().get(), 1);
         }
 
-        // Sequence tracker == 1.
         let tracked_seq = {
             let guard = tracker
                 .lock()
@@ -304,8 +300,6 @@ mod tests {
         };
         assert_eq!(tracked_seq.get(), 1);
 
-        // Under MsgpackFileStore each aggregate's events land in
-        // `<dir>/<id>.msgpack`.
         let expected = dir.path().join(format!("{}.msgpack", assigned_id.get()));
         assert!(
             expected.exists(),
@@ -357,8 +351,6 @@ mod tests {
         .await
         .expect("second ingest with same delivery_id");
 
-        // Two distinct aggregates exist (CHE-0036:R1): each ingest mints a
-        // distinct aggregate file under `dir`.
         let aggregates = store.list_aggregates().expect("list_aggregates");
         assert_eq!(
             aggregates.len(),
@@ -366,7 +358,6 @@ mod tests {
             "fresh-per-delivery: each ingest mints a distinct aggregate"
         );
 
-        // Index records the first assignment only (or_insert).
         let indexed_id = {
             let guard = index
                 .lock()
@@ -376,7 +367,6 @@ mod tests {
         let loaded = store.load(indexed_id).await.expect("load indexed");
         assert_eq!(loaded.len(), 1);
 
-        // Sequence tracker records BOTH assigned ids (each at seq 1).
         let tracker_len = {
             let guard = tracker
                 .lock()

@@ -127,10 +127,6 @@ impl AdrService {
 
         for id in ids {
             let envelopes = store.load(id).await?;
-            // `load` returns `Ok(empty)` only for unknown aggregates,
-            // but list_aggregates surfaced this id from disk — empty
-            // here would be a corrupt-stream condition. Skip rather
-            // than synthesise state.
             let Some(first) = envelopes.first() else {
                 continue;
             };
@@ -159,10 +155,6 @@ impl AdrService {
                 .expect("latest_body_hash mutex not poisoned")
                 .insert(id, doc.body_hash);
 
-            // Project the full stream into the AdrCorpus. Held lock
-            // is per-aggregate-stream, not for the whole replay loop,
-            // to minimise contention if a future caller queries
-            // mid-replay (none today; defensive).
             {
                 let mut guard = corpus.lock().expect("corpus mutex not poisoned");
                 for env in &envelopes {
@@ -258,9 +250,6 @@ impl AdrService {
                     .expect("latest_body_hash mutex not poisoned")
                     .insert(agg_id, body_hash);
 
-                // Project AFTER per-service indices to minimise lock
-                // interleaving (corpus lock acquired only once the
-                // per-aggregate locks are released).
                 {
                     let mut guard = corpus.lock().expect("corpus mutex not poisoned");
                     for env in &envelopes {

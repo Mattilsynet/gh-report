@@ -212,15 +212,10 @@ mod tests {
 
     #[test]
     fn correlation_context_is_deterministic_per_run_id() {
-        // F5 abort trigger: replay (start + checkpoint + restart) must
-        // produce equal correlation_id for the same run_id. We model
-        // restart by reconstructing RunMetadata with the same run_id
-        // from the persisted form (Deserialize-equivalent) and
-        // verifying the projected context is identical.
         let original = RunMetadata::new("Org".to_string(), "1.0".to_string());
         let restarted = RunMetadata {
             run_id: original.run_id.clone(),
-            started_at: jiff::Timestamp::now(), // intentionally different
+            started_at: jiff::Timestamp::now(),
             completed_at: None,
             organization: original.organization.clone(),
             schema_version: original.schema_version.clone(),
@@ -243,8 +238,6 @@ mod tests {
 
     #[test]
     fn correlation_context_is_cycle_rooted() {
-        // CHE-0039:R3 — a collection cycle is the root of its own
-        // chain: correlation_id is set, causation_id is None.
         let run = RunMetadata::new("Org".to_string(), "1.0".to_string());
         let ctx = run.correlation_context();
         assert!(ctx.correlation_id().is_some());
@@ -253,9 +246,6 @@ mod tests {
 
     #[test]
     fn correlation_context_projects_run_id_bytes() {
-        // Known-input determinism: a hand-crafted run_id maps to a
-        // known UUID. Pins the projection to "byte reinterpretation"
-        // — any future implementation change must update this test.
         let run = RunMetadata {
             run_id: "00112233445566778899aabbccddeeff".to_string(),
             started_at: jiff::Timestamp::now(),

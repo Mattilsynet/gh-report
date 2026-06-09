@@ -124,25 +124,6 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
         "daemon starting"
     );
 
-    // Create shared application state.
-    //
-    // WU-6 v2 B3' + B4' (charter wu6v2-charter-1778415390): wire both
-    // durable stores at sibling subtrees per BC-v2-13 (events/ and
-    // projections/ disjoint):
-    //
-    //   <store_dir>/events/<org>/      — MsgpackFileStore<DomainEvent>
-    //                                     (file-per-aggregate, xxh64-framed
-    //                                     pardosa_encoding::Encode envelopes)
-    //   <store_dir>/projections/<org>/ — FileProjectionStore<EvidenceProjection>
-    //
-    // The event-store directory is created and locked at `open` time
-    // (CHE-0043:R1 — exclusive advisory flock on {dir}/.lock held for
-    // the store's lifetime). The projection-store directory is created
-    // lazily on first write. Held but not yet exercised:
-    //   - B5' wires ProjectionDriverExt to consume both stores
-    //     (snapshot fast-path replay, CHE-0051:R5).
-    //   - B7' rewrites collectors to call event_store.append(...)
-    //     then bus.publish(...) per BC-v2-1 / CHE-0024:R1.
     let events_dir = config.store_dir.join("events").join(&config.org_name);
     let projections_dir = config.store_dir.join("projections").join(&config.org_name);
     let app_state = AppState::with_stores(&events_dir, projections_dir)
@@ -153,14 +134,6 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
             })
         })?;
 
-    // ── Step 1b: Snapshot-fast-path projection runtime init (B5') ─
-    // Replays events past the persisted checkpoint into the
-    // in-memory projection state and registers the bus handler that
-    // keeps it current. Per CHE-0048:R2 the snapshot is the source
-    // of truth at boot — must run before warm_start so any reader
-    // sees the up-to-date projection. Failure here aborts startup
-    // (the daemon cannot serve correct evidence with a broken
-    // projection runtime).
     if let Err(e) = app_state.snapshot_fast_path_init().await {
         error!(error = %e, "projection runtime init failed");
         return Err(AppError::Persistence(PersistenceError::LoadFailed {
@@ -168,32 +141,15 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
         }));
     }
 
-    // ── Step 2: Warm-start from baseline ────────────────────────
-    // Populates the HTML cache from the most recent baseline so the
-    // server can start serving immediately. Falls through gracefully
-    // if no baseline exists (server will return 503 until first
-    // collection completes).
     collect::warm_start_from_baseline(&config, &app_state).await;
 
-    // ── Step 2b: Register domain event logging handler ─────────
-    // Registers a synchronous handler on the projection-runtime bus
-    // that logs every domain event via tracing. Proves fan-out: it
-    // runs alongside the projection handler registered by
-    // `snapshot_fast_path_init` (CHE-0024:§7 — handlers invoked
-    // synchronously inside `publish`). No task to manage.
     register_logging_subscriber(&app_state.bus);
 
-    // ── Step 3: Start the web server ────────────────────────────
-    // The server blocks until the shutdown signal is received. It
-    // starts immediately — warm-start data (if available) is already
-    // in the cache.
     let shutdown = async {
         crate::infra::signal::wait_for_shutdown_signal().await;
         info!("shutdown signal received");
     };
 
-    // ── Step 4: Background collection (initial + loop) ──────────
-    // `force_unlock` is one-shot: applies to the initial run only.
     let force_flag = Arc::new(AtomicBool::new(config.force_unlock));
     let (collect_cancel_tx, collect_cancel_rx) = tokio::sync::watch::channel(false);
     let mut collection_loop = spawn_collection_loop(
@@ -203,9 +159,6 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
         collect_cancel_rx,
     );
 
-    // ── Build extra routes ─────────────────────────────────────────
-    // Status endpoint is always registered. Webhook route is conditional
-    // on WEBHOOK_SECRET being set.
     let mut extra_routes = crate::server::status_router();
     if app_state.webhook().secret.is_some() {
         info!("webhooks enabled (WEBHOOK_SECRET set)");
@@ -227,17 +180,9 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     )
     .await;
 
-    // ── Step 5: Graceful shutdown ───────────────────────────────
     shutdown_workers(&app_state).await;
     drain_collection_loop(&collect_cancel_tx, &mut collection_loop).await;
 
-    // The logging handler is a synchronous closure registered on
-    // `app_state.bus` (no task), so there is nothing to abort here —
-    // it stops being invoked as soon as nothing publishes to the bus.
-
-    // Propagate server error after cleanup. The upstream server-error type
-    // is collapsed at this boundary so the gh-report error chain does not
-    // depend on the donor crate's enum shape.
     server_result.map_err(|e| crate::error::ServerError::Runtime(e.to_string()))?;
 
     info!("daemon stopped");
@@ -384,21 +329,6 @@ pub(crate) async fn delivery_loop(
             }
         };
 
-        // Derive cycle-root CorrelationContext from the in-flight run.
-        // Daemon delivery is *inside* a collect cycle (copernicus T1.e +
-        // oracle bonus): collect::run stores RunMetadata into
-        // state.current_run before dispatching jobs whose outcomes arrive
-        // here, so current_run is Some during normal operation. The None
-        // branch is defensive — outcome arriving between cycles is a
-        // structural surprise we log but tolerate via Uuid::nil() fallback
-        // (deterministic; parallels Inc 3's webhook fallback).
-        //
-        // Reuses Inc 2's RunMetadata::correlation_context() projection;
-        // constructor is CorrelationContext::correlated(uuid_from_run_id),
-        // identical to the collect-cycle root in collect.rs (same chain).
-        //
-        // Held in scope; consumed at Inc 5 by the 2 publish sites in the
-        // `match outcome` block below when they route through publish_event.
         let corr_ctx = state.current_run.load().as_ref().as_ref().map_or_else(
             || {
                 debug!("delivery_loop: outcome arrived with no in-flight run; using nil ctx");
@@ -407,9 +337,6 @@ pub(crate) async fn delivery_loop(
             RunMetadata::correlation_context,
         );
 
-        // Upsert evidence.
-        // Invariant: delivery_loop is the sole consumer of `rx`, so the
-        // get-then-upsert sequence in the failure arm cannot race.
         match outcome {
             JobOutcome::Success {
                 domain_key, result, ..
@@ -429,7 +356,6 @@ pub(crate) async fn delivery_loop(
             }
         }
 
-        // Count down batch tracker for sweep jobs (AD3).
         if matches!(source, JobSource::ScheduledBatch) {
             let tracker_guard = state.evidence().batch_tracker.load();
             if let Some(tracker) = tracker_guard.as_ref() {
@@ -452,15 +378,6 @@ async fn handle_success_outcome(
     duration: Duration,
 ) {
     let repo_name = result.repository.name.clone();
-    // Clone for the projection envelope (CHE-0048:R2 + BC-v2-2:
-    // payload must carry the materialised state). RepositoryEvidence
-    // wraps Repository in Arc, so Clone is shallow on the heaviest
-    // field; boxed because the type is ~560 bytes and would
-    // otherwise dominate the DomainEvent enum size. B6'.
-    // M2.cd: direct-write to `store` deleted (W1). The
-    // `RepoEvaluated` envelope published below carries the
-    // evidence; `EvidenceProjection::apply` materialises it
-    // into the read-model. CHE-0048:R2 sole-writer.
     let evidence_for_event = Box::new(result);
     if let Err(e) = state
         .repo_service
@@ -501,15 +418,6 @@ async fn handle_failure_outcome(
     source: &JobSource,
     duration: Duration,
 ) {
-    // Insert failure evidence: synthetic record with Unknown
-    // statuses. Prevents stale passing data from persisting.
-    // B6': also carry the synthetic record on the
-    // `RepoEvaluated` envelope so `EvidenceProjection` reflects
-    // the failure state in the read model.
-    // M2.cd: read existing evidence from projection (sole reader);
-    // direct-write to `store` deleted (W2). The `RepoEvaluated`
-    // failure envelope below carries the synthesised failure
-    // evidence; `EvidenceProjection::apply` materialises it.
     let existing = state.projection_get(&domain_key);
     let (repo_name, evidence_for_event) = if let Some(existing) = existing {
         let name = existing.repository.name.clone();
@@ -520,9 +428,6 @@ async fn handle_failure_outcome(
         let failure_for_event = Box::new(failure);
         (name, Some(failure_for_event))
     } else {
-        // No baseline repo — we lack the inputs to synthesise
-        // RepositoryEvidence (no Repository handle). Emit
-        // metadata-only; projection treats `None` as no-op.
         (domain_key.clone(), None)
     };
     if let Err(e) = state

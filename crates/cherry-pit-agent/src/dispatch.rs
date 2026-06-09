@@ -99,12 +99,6 @@ pub fn correlation_for(
     if let Some(corr) = envelope_correlation_id {
         CorrelationContext::new(corr, event_id)
     } else {
-        // SEC-0005:R4 correlation observability — make silent
-        // chain-seed creation visible in logs. The envelope carries
-        // no upstream correlation context (CHE-0039:R3:
-        // user-initiated commands), so this dispatch seeds a fresh
-        // correlation chain from `event_id`. Without this trace,
-        // correlation-chain gaps are invisible to operators.
         tracing::debug!(
             rule = "SEC-0005:R4",
             %event_id,
@@ -182,8 +176,6 @@ where
         gateway: &'a G,
         ctx: CorrelationContext,
     ) -> DispatchFuture<'a> {
-        // Per CHE-0018:R1 react is sync — execute it before constructing
-        // the future so the future is purely the dispatch I/O.
         let outputs = self.policy.react(envelope);
         Box::pin(async move {
             for output in outputs {
@@ -239,9 +231,6 @@ where
 {
     let category = err.category();
     if category == ErrorCategory::Retryable {
-        // CHE-0046:R1 — Retryable errors do NOT enter the dead-letter
-        // route. Surface them to the caller for retry orchestration
-        // (typically the CommandGateway's retry path).
         return Err(err);
     }
 
@@ -264,8 +253,6 @@ where
         );
     }
 
-    // Terminal errors are not propagated upward after dead-lettering —
-    // dead-letter is the terminal handling.
     Ok(())
 }
 
@@ -285,7 +272,6 @@ where
     G: Send + Sync + 'static,
     D: DeadLetterSink + ?Sized,
 {
-    // see CHE-0051:R6 — context threaded through closure
     let ctx = correlation_for(envelope.correlation_id(), envelope.event_id());
 
     for adapter in policies {
@@ -445,8 +431,6 @@ mod tests {
         let env_id = env.event_id();
         let env_corr = env.correlation_id();
 
-        // Terminal failure is swallowed (dead-lettered); dispatcher
-        // returns Ok per CHE-0046:R2.
         dispatch_one(&policies, &env, &gateway, &sink)
             .await
             .unwrap();
@@ -482,13 +466,11 @@ mod tests {
         let result = dispatch_one(&policies, &envelope(1), &gateway, &sink).await;
 
         assert!(matches!(result, Err(AgentError::Bus(_))));
-        // Retryable did NOT enter the sink.
         assert_eq!(*sink.count.lock().unwrap(), 0);
     }
 
     #[tokio::test]
     async fn registration_order_independence_two_policies() {
-        // Both registration orders fire both closures.
         let gateway = GatewayStub {
             log: Mutex::new(Vec::new()),
         };
@@ -522,7 +504,6 @@ mod tests {
 
     #[tokio::test]
     async fn correlation_seeded_when_envelope_has_no_correlation_id() {
-        // Verifies the no-correlation envelope path through dispatcher.
         let gateway = GatewayStub {
             log: Mutex::new(Vec::new()),
         };
@@ -539,8 +520,6 @@ mod tests {
         dispatch_one(&policies, &env, &gateway, &sink)
             .await
             .unwrap();
-        // No assertion failures = the no-correlation path runs cleanly
-        // and seeds via event_id (verified in unit test above).
     }
 
     /// G1 — context-threading invariant per CHE-0051:R6 + CHE-0039:R3.
@@ -580,8 +559,6 @@ mod tests {
             .unwrap()
             .clone()
             .expect("closure must have been invoked with a CorrelationContext");
-        // Per CHE-0039:R3 / R6: correlation chain inherited from envelope's
-        // correlation_id; causation chain seeded from envelope's event_id.
         assert_eq!(captured_ctx.correlation_id(), env.correlation_id());
         assert_eq!(captured_ctx.causation_id(), Some(env.event_id()));
     }

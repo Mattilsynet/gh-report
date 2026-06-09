@@ -95,7 +95,7 @@ pub const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1";
 
 /// Fixed interval between collection runs (seconds). Timer starts after
 /// the previous collection completes.
-pub const COLLECTION_INTERVAL_SECS: u64 = 10_800; // 3 hours
+pub const COLLECTION_INTERVAL_SECS: u64 = 10_800;
 
 /// Maximum API calls per budget epoch before pausing.
 pub const API_BUDGET_LIMIT: u64 = 4000;
@@ -150,14 +150,14 @@ pub const REPO_CACHE_TTL_HOURS: u64 = 24;
 pub const DEFAULT_WEBHOOK_DEBOUNCE_SECS: u64 = 5;
 
 /// Maximum webhook request body size (bytes).
-pub const MAX_WEBHOOK_BODY_BYTES: usize = 1_024 * 1024; // 1 MB
+pub const MAX_WEBHOOK_BODY_BYTES: usize = 1_024 * 1024;
 
 /// Replay protection cache capacity.
 pub const REPLAY_CACHE_CAPACITY: u64 = 100_000;
 
 /// Replay protection cache TTL (seconds).
-pub const REPLAY_CACHE_TTL_SECS: u64 = 3_600; // 1 hour
+pub const REPLAY_CACHE_TTL_SECS: u64 = 3_600;
 
 /// Maximum time to wait for a sweep batch to drain before declaring
 /// timeout failure (seconds). The saga emits `SweepFailed` if exceeded.
-pub const SWEEP_TIMEOUT_SECS: u64 = 7_200; // 2 hours
+pub const SWEEP_TIMEOUT_SECS: u64 = 7_200;

@@ -57,8 +57,6 @@ fn dep_name(raw: &str) -> &str {
 fn no_async_runtime_in_transitive_closure() {
     let parsed: Lockfile = toml::from_str(LOCKFILE).expect("parse Cargo.lock");
 
-    // Index packages by name. Cargo.lock may contain multiple versions of
-    // the same crate (rare in this workspace); group their dep lists.
     let mut deps_by_name: std::collections::BTreeMap<&str, Vec<&str>> =
         std::collections::BTreeMap::new();
     for pkg in &parsed.package {
@@ -68,7 +66,6 @@ fn no_async_runtime_in_transitive_closure() {
         }
     }
 
-    // BFS from cherry-pit-core.
     let root = "cherry-pit-core";
     assert!(
         deps_by_name.contains_key(root),

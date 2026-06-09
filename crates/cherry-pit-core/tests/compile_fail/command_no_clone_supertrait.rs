@@ -7,7 +7,6 @@ struct MyCmd;
 impl Command for MyCmd {}
 
 fn needs_clone<C: Command>(c: C) {
-    // This must fail: Command does not imply Clone.
     let _ = c.clone();
 }
 

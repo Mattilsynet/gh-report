@@ -34,7 +34,6 @@ pub fn parse_codeowners(content: &str) -> ParsedCodeowners {
     let mut skipped_lines: u32 = 0;
 
     for (line_num, line) in content.lines().enumerate() {
-        // Skip lines exceeding max length.
         if line.len() > MAX_LINE_LENGTH {
             warn!(
                 line = line_num + 1,
@@ -48,29 +47,23 @@ pub fn parse_codeowners(content: &str) -> ParsedCodeowners {
 
         let trimmed = line.trim();
 
-        // Skip blank lines and comment lines.
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
 
-        // Strip inline comments: find first `#` that's preceded by whitespace.
         let effective = strip_inline_comment(trimmed);
 
-        // Split into tokens.
         let mut tokens = effective.split_whitespace();
 
-        // First token is the pattern.
         let Some(pattern) = tokens.next() else {
             continue;
         };
 
-        // Extract owners: tokens starting with `@`.
         let mut owners = Vec::new();
         for token in tokens {
             if token.starts_with('@') {
                 owners.push(token.to_string());
             } else if token.contains('@') {
-                // Email-format owner (e.g., `user@example.com`) — skip.
                 trace!(
                     line = line_num + 1,
                     token = token,
@@ -79,12 +72,9 @@ pub fn parse_codeowners(content: &str) -> ParsedCodeowners {
             }
         }
 
-        // Deduplicate owners within this entry.  `dedup()` only removes
-        // consecutive duplicates, so sort first to collapse all duplicates.
         owners.sort_unstable();
         owners.dedup();
 
-        // Track unique owners across all entries.
         for owner in &owners {
             let lower = owner.to_lowercase();
             if seen_owners.insert(lower) {
@@ -110,7 +100,6 @@ pub fn parse_codeowners(content: &str) -> ParsedCodeowners {
 /// Looks for ` #` or `\t#` (hash preceded by whitespace) and returns
 /// everything before it.
 fn strip_inline_comment(line: &str) -> &str {
-    // Find the first ` #` or `\t#` that isn't at the start.
     if let Some(pos) = line.find(" #") {
         return line[..pos].trim_end();
     }
@@ -198,7 +187,6 @@ mod tests {
     fn case_insensitive_dedup() {
         let content = "/src/ @Org/Team\n/docs/ @org/team\n";
         let result = parse_codeowners(content);
-        // Only the first-seen casing is kept.
         assert_eq!(result.unique_owners, vec!["@Org/Team"]);
     }
 
@@ -247,10 +235,7 @@ mod tests {
     fn non_consecutive_duplicates_within_entry() {
         let content = "* @org/team @alice @org/team\n";
         let result = parse_codeowners(content);
-        // Per-entry owners must be deduplicated even when non-consecutive.
-        // After sort+dedup, order is lexicographic.
         assert_eq!(result.entries[0].owners, vec!["@alice", "@org/team"]);
-        // unique_owners preserves first-seen order (from sorted entries).
         assert_eq!(result.unique_owners, vec!["@alice", "@org/team"]);
     }
 

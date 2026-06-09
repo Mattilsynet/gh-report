@@ -68,7 +68,6 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CloudLoggingLayer 
             serde_json::json!(event.metadata().target()),
         );
 
-        // Merge structured fields as top-level keys.
         for (k, v) in visitor.fields {
             json.insert(k, v);
         }
@@ -120,8 +119,6 @@ impl Visit for JsonVisitor {
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         let formatted = format!("{value:?}");
         if field.name() == "message" {
-            // tracing dispatches static format strings via record_debug.
-            // Strip surrounding quotes that Debug formatting adds to &str.
             let trimmed = formatted
                 .strip_prefix('"')
                 .and_then(|s| s.strip_suffix('"'))
@@ -145,23 +142,21 @@ fn format_rfc3339_now() -> String {
     let secs = now.as_secs();
     let micros = now.subsec_micros();
 
-    // Decompose seconds into date/time components (UTC).
     let days = secs / 86_400;
     let day_secs = secs % 86_400;
     let hour = day_secs / 3_600;
     let minute = (day_secs % 3_600) / 60;
     let second = day_secs % 60;
 
-    // Civil date from day count (algorithm from Howard Hinnant).
     let z = days.cast_signed() + 719_468;
     let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097).cast_unsigned(); // day of era [0, 146096]
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // year of era
+    let doe = z.rem_euclid(146_097).cast_unsigned();
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
     let y = yoe.cast_signed() + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day of year [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = doy - (153 * mp + 2) / 5 + 1; // day [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // month [1, 12]
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
 
     format!("{y:04}-{m:02}-{d:02}T{hour:02}:{minute:02}:{second:02}.{micros:06}Z")
@@ -177,12 +172,9 @@ mod tests {
     fn capture_stdout(f: impl FnOnce()) -> String {
         use std::sync::{Arc, Mutex};
 
-        // We redirect by using a custom layer that writes to a buffer.
-        // This is more reliable than capturing stdout which tracing writes to.
         let buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
         let buf_clone = Arc::clone(&buf);
 
-        // Create a layer that writes to our buffer instead of stdout.
         let layer = BufferLayer { buf: buf_clone };
         let subscriber = tracing_subscriber::Registry::default().with(layer);
 
@@ -248,7 +240,6 @@ mod tests {
         assert_eq!(json["entries"], 560);
         assert!(json["time"].as_str().unwrap().ends_with('Z'));
         assert!(json["target"].as_str().is_some());
-        // No sourceLocation field.
         assert!(json.get("sourceLocation").is_none());
     }
 
@@ -324,9 +315,8 @@ mod tests {
 
         let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
         let time_str = json["time"].as_str().unwrap();
-        // Must match: YYYY-MM-DDTHH:MM:SS.xxxxxxZ
         assert!(time_str.ends_with('Z'));
-        assert_eq!(time_str.len(), 27); // "2026-04-15T12:34:56.789012Z"
+        assert_eq!(time_str.len(), 27);
         assert_eq!(&time_str[4..5], "-");
         assert_eq!(&time_str[7..8], "-");
         assert_eq!(&time_str[10..11], "T");
@@ -340,7 +330,6 @@ mod tests {
 
         let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
         let target = json["target"].as_str().unwrap();
-        // Target should contain our module path.
         assert!(target.contains("cloud_logging"), "target was: {target}");
     }
 
@@ -349,7 +338,6 @@ mod tests {
         let ts = format_rfc3339_now();
         assert!(ts.ends_with('Z'));
         assert_eq!(ts.len(), 27);
-        // Sanity: year should be >= 2026.
         let year: u32 = ts[..4].parse().unwrap();
         assert!(year >= 2026);
     }

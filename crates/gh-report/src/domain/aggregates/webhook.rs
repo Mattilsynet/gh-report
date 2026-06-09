@@ -69,11 +69,6 @@ impl Aggregate for WebhookDelivery {
                 self.action = Some(action.clone());
                 self.repo.clone_from(repo);
             }
-            // Non-WebhookDelivery variants — defensively ignored.
-            // Routing is the application boundary's responsibility
-            // (CHE-0054:R5). `debug_assert!` (linus mid-review Info-1)
-            // traps mis-routing in dev/test; release preserves
-            // silent-ignore.
             DomainEvent::SweepStarted { .. }
             | DomainEvent::SweepProgress { .. }
             | DomainEvent::SweepCompleted { .. }
@@ -121,8 +116,6 @@ impl From<cherry_pit_core::StoreError> for WebhookError {
     }
 }
 
-// --- Commands (CHE-0054:R4 use cases) ---------------------------------
-
 /// Record a single received GitHub webhook delivery.
 ///
 /// `delivery_id` is the load-bearing identity carried at the
@@ -147,8 +140,6 @@ pub struct RecordDelivery {
 }
 impl Command for RecordDelivery {}
 
-// --- HandleCommand impls (CHE-0008:R1 pure) ---------------------------
-
 impl HandleCommand<RecordDelivery> for WebhookDelivery {
     type Error = WebhookError;
 
@@ -164,8 +155,6 @@ impl HandleCommand<RecordDelivery> for WebhookDelivery {
     }
 }
 
-// --- Tests (CHE-0008:R3 pure-handle unit tests) -----------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,8 +162,6 @@ mod tests {
     fn ts() -> String {
         "2026-05-10T12:00:00Z".to_string()
     }
-
-    // --- apply (CHE-0009 infallible) ---
 
     #[test]
     fn default_delivery_is_empty() {
@@ -213,9 +200,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "CHE-0054:R5 routing bug")]
     fn apply_panics_in_debug_on_non_delivery_variant() {
-        // Per linus mid-review Info-1: dev/test traps mis-routing,
-        // release silently ignores (debug_assert no-ops). Only the
-        // dev-time trap is observable in tests.
         let mut d = WebhookDelivery::default();
         d.apply(&DomainEvent::SweepStarted {
             org: "o".into(),
@@ -225,8 +209,6 @@ mod tests {
             snapshot_signature: None,
         });
     }
-
-    // --- handle (CHE-0008 pure) ---
 
     #[test]
     fn record_delivery_from_empty_emits_event() {
@@ -251,10 +233,6 @@ mod tests {
 
     #[test]
     fn record_delivery_after_received_rejects() {
-        // CHE-0054:R3 — at most one WebhookReceived per instance.
-        // The application-layer routing-cache miss path: a duplicate
-        // command for the same delivery_id reaches a freshly-loaded
-        // aggregate that already replayed the original event.
         let mut d = WebhookDelivery::default();
         d.apply(&DomainEvent::WebhookReceived {
             action: "enqueue".into(),
@@ -274,9 +252,6 @@ mod tests {
 
     #[test]
     fn record_delivery_ignore_action_emits_event() {
-        // Non-actionable webhooks (action="ignore") still produce an
-        // audit-trail event per CHE-0024:R1 persist-then-publish for
-        // any side-effecting input.
         let d = WebhookDelivery::default();
         let events = d
             .handle(RecordDelivery {

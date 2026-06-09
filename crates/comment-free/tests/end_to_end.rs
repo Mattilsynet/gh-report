@@ -594,7 +594,10 @@ fn lint_over_budget_emits_header_once_then_hint() {
     );
     let hint_count = stdout.matches("DOC_LINT_HINT\t").count();
     assert_eq!(hint_count, 1, "expected one DOC_LINT_HINT:\n{stdout}");
-    assert!(stdout.contains("DOC_LINT_HINT\t"), "missing hint:\n{stdout}");
+    assert!(
+        stdout.contains("DOC_LINT_HINT\t"),
+        "missing hint:\n{stdout}"
+    );
     let hint_line = stdout
         .lines()
         .find(|l| l.starts_with("DOC_LINT_HINT\t"))
@@ -1761,7 +1764,9 @@ fn doc_lint_hint_round_trip_parses_to_struct() {
 fn doc_lint_record_grammar_const_is_published() {
     let g = comment_free::DOC_LINT_RECORD_GRAMMAR;
     assert!(
-        g.contains("DOC_LINT_HEADER") && g.contains("DOC_LINT_HINT") && g.contains("DOC_LINT_TRUNCATED"),
+        g.contains("DOC_LINT_HEADER")
+            && g.contains("DOC_LINT_HINT")
+            && g.contains("DOC_LINT_TRUNCATED"),
         "grammar const must name all three record kinds: {g}"
     );
     for required in [

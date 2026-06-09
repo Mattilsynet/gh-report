@@ -95,7 +95,6 @@ fn try_parse_content(
         return Err(CodeownersTruncationReason::ContentMissing);
     };
 
-    // Check base64 string length before decoding.
     if raw_content.len() > MAX_BASE64_LENGTH {
         warn!(
             repo = %repo_name,
@@ -106,7 +105,6 @@ fn try_parse_content(
         return Err(CodeownersTruncationReason::OversizedBase64);
     }
 
-    // Strip embedded newlines (GitHub wraps base64 at 60 chars with \n).
     let cleaned: String = raw_content
         .chars()
         .filter(|c| *c != '\n' && *c != '\r')
@@ -156,8 +154,6 @@ pub async fn evaluate(
     repo: &Repository,
     run_timestamp: &str,
 ) -> CodeownersResult {
-    // Validate repo name before URL interpolation — defense-in-depth against
-    // path injection from API-derived data.
     let safe_name = match sanitize_path_segment(&repo.name, "repo_name") {
         Ok(n) => n,
         Err(e) => {
@@ -168,7 +164,6 @@ pub async fn evaluate(
 
     trace!(repo = %repo.name, "evaluating CODEOWNERS");
 
-    // Check conforming location: .github/CODEOWNERS
     let conforming = client
         .request(
             &format!(
@@ -201,7 +196,6 @@ pub async fn evaluate(
         return build_result(CodeownersStatus::Unknown, None, run_timestamp);
     }
 
-    // Check non-conforming location: CODEOWNERS (root)
     let non_conforming = client
         .request(
             &format!(
@@ -311,8 +305,6 @@ mod tests {
         assert_eq!(CodeownersStatus::Unknown.to_string(), "unknown");
     }
 
-    // ── try_parse_content tests ────────────────────────────────
-
     /// Encode a string as base64 (standard, no padding stripping).
     fn b64(s: &str) -> String {
         base64::engine::general_purpose::STANDARD.encode(s)
@@ -333,7 +325,6 @@ mod tests {
 
     #[test]
     fn try_parse_content_with_embedded_newlines_in_base64() {
-        // GitHub wraps base64 at 60 chars with \n; verify stripping works.
         let raw = b64("* @org/security\n");
         let wrapped = raw
             .as_bytes()
@@ -419,7 +410,6 @@ mod tests {
 
     #[test]
     fn try_parse_content_oversized_base64() {
-        // Exceed MAX_BASE64_LENGTH.
         let huge = "A".repeat(MAX_BASE64_LENGTH + 1);
         let data = serde_json::json!({
             "encoding": "base64",
@@ -441,7 +431,6 @@ mod tests {
 
     #[test]
     fn try_parse_content_invalid_utf8() {
-        // Encode raw bytes that are not valid UTF-8.
         let bad_bytes: &[u8] = &[0xFF, 0xFE, 0x00, 0x01];
         let encoded = base64::engine::general_purpose::STANDARD.encode(bad_bytes);
         let data = serde_json::json!({

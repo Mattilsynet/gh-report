@@ -213,23 +213,19 @@ mod tests {
         tokio::time::pause();
         let gate = Arc::new(BudgetGate::new(5, Duration::from_mins(1)));
 
-        // Use all 5 permits.
         for _ in 0..5 {
             gate.acquire().await;
         }
         assert_eq!(gate.calls_made(), 5);
 
-        // 6th call should block.
         let gate2 = Arc::clone(&gate);
         let handle = tokio::spawn(async move {
             gate2.acquire().await;
         });
 
-        // Advance time past the wait duration.
         tokio::time::advance(Duration::from_secs(61)).await;
         handle.await.unwrap();
 
-        // Counter should have reset and incremented by 1.
         assert_eq!(gate.calls_made(), 1);
         assert_eq!(gate.total_calls_made(), 6);
     }
@@ -247,7 +243,6 @@ mod tests {
             }));
         }
 
-        // Let the 10 acquire, then advance time for the remaining 6.
         tokio::time::advance(Duration::from_secs(61)).await;
 
         for h in handles {
@@ -255,7 +250,6 @@ mod tests {
         }
 
         assert_eq!(gate.total_calls_made(), 16);
-        // After reset, remaining 6 were served in a new epoch.
         assert!(gate.calls_made() <= 10);
     }
 
@@ -264,12 +258,10 @@ mod tests {
         tokio::time::pause();
         let gate = Arc::new(BudgetGate::new(2, Duration::from_secs(10)));
 
-        // Epoch 1: 2 calls.
         gate.acquire().await;
         gate.acquire().await;
         assert_eq!(gate.total_calls_made(), 2);
 
-        // Epoch transition via 3rd call.
         let g = Arc::clone(&gate);
         let h = tokio::spawn(async move { g.acquire().await });
         tokio::time::advance(Duration::from_secs(11)).await;
@@ -312,11 +304,9 @@ mod tests {
         let g = Arc::clone(&gate);
         tokio::spawn(async move { g.acquire().await });
 
-        // The notification should fire before the sleep completes.
         tokio::time::advance(Duration::from_millis(1)).await;
         tokio::task::yield_now().await;
 
-        // Advance past sleep so the acquire completes.
         tokio::time::advance(Duration::from_secs(11)).await;
 
         assert!(notified.await.unwrap());
@@ -351,12 +341,9 @@ mod tests {
 
     #[tokio::test]
     async fn set_pause_notify_through_arc() {
-        // Verify set_pause_notify works on an already-Arc'd BudgetGate
-        // (interior mutability via std::sync::Mutex).
         tokio::time::pause();
         let gate = Arc::new(BudgetGate::new(2, Duration::from_secs(10)));
 
-        // Attach notify AFTER wrapping in Arc — this is the webhook use case.
         let notify = Arc::new(tokio::sync::Notify::new());
         gate.set_pause_notify(Arc::clone(&notify));
 

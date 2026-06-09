@@ -123,12 +123,10 @@ impl<C: Send + Sync + 'static> WorkQueue<C> {
     /// reaches `try_send()`. This is a benign race — the second job
     /// performs a redundant re-evaluation producing the same result.
     pub fn enqueue(&self, mut job: JobSpec<C>) -> EnqueueResult {
-        // Dedup: reject if this key is already queued.
         if self.pending.insert_sync(job.domain_key.clone()).is_err() {
             tracing::info!(key = %job.domain_key, source = ?job.source, "job deduplicated");
             return EnqueueResult::Deduplicated;
         }
-        // Stamp enqueue time.
         job.enqueued_at = Some(tokio::time::Instant::now());
 
         let guard = self
@@ -284,8 +282,6 @@ impl BatchTracker {
 
     /// Wait until all tracked jobs are complete.
     pub async fn wait(&self) {
-        // Register the Notified future BEFORE checking the count to avoid
-        // the race where remaining transitions 1→0 between load and await.
         let notified = self.done.notified();
         if self.remaining.load(Ordering::Acquire) == 0 {
             return;
@@ -377,7 +373,6 @@ mod tests {
             .iter()
             .filter(|r| **r == EnqueueResult::Accepted)
             .count();
-        // Benign race: 1 or 2 accepted is fine.
         assert!(
             (1..=2).contains(&accepted),
             "expected 1-2 accepted, got {accepted}"
@@ -405,12 +400,9 @@ mod tests {
         assert!(j.enqueued_at.is_some());
     }
 
-    // ── BatchTracker tests ─────────────────────────────────────────
-
     #[tokio::test]
     async fn batch_tracker_immediate_when_zero() {
         let tracker = BatchTracker::new(0);
-        // Should return immediately.
         tracker.wait().await;
         assert_eq!(tracker.remaining(), 0);
     }
@@ -428,14 +420,11 @@ mod tests {
         let handle = tokio::spawn(async move { t.wait().await });
 
         tracker.complete_one();
-        // Should unblock.
         tokio::time::timeout(std::time::Duration::from_secs(1), handle)
             .await
             .expect("should complete within timeout")
             .unwrap();
     }
-
-    // ── enqueue_batch tests ────────────────────────────────────────
 
     #[tokio::test]
     async fn batch_enqueue_counts() {
@@ -459,8 +448,8 @@ mod tests {
     #[should_panic(expected = "called more times than initial count")]
     fn batch_tracker_underflow_panics() {
         let tracker = BatchTracker::new(1);
-        tracker.complete_one(); // ok
-        tracker.complete_one(); // should panic
+        tracker.complete_one();
+        tracker.complete_one();
     }
 
     #[tokio::test]

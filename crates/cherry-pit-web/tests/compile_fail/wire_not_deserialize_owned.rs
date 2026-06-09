@@ -96,9 +96,6 @@ impl EventStore for S {
     }
 }
 
-// Wire DTO that deliberately does NOT implement `Deserialize` /
-// `DeserializeOwned`. Only `Clone` derived, so `Send + 'static` are
-// satisfied but the serde bound on `CommandRouter::Wire` is not.
 #[derive(Clone)]
 struct W;
 
@@ -119,7 +116,5 @@ impl CommandRouter for R {
 }
 
 fn main() {
-    // Silence unused-import warnings — the failure must bite at the
-    // `impl CommandRouter for R` site above, not on missing usage here.
     let _ = std::marker::PhantomData::<(A, C, G, S)>;
 }

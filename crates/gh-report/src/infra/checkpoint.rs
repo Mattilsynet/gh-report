@@ -18,5 +18,4 @@
 //! and is still authored against the SHA-256 alert-summary scheme
 //! documented in `cherry_pit_storage`.
 
-// Re-export signature utilities (sole δ.3c-ii survivor).
 pub use cherry_pit_storage::build_snapshot_signature;

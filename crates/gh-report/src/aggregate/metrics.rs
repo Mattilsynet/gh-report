@@ -24,18 +24,10 @@ use crate::domain::metrics::{
 use crate::domain::repository::Visibility;
 use crate::domain::status::CollectionStatus;
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /// Safely convert a `usize` count to `u32`, saturating at `u32::MAX`.
 fn count_as_u32(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
-
-// ---------------------------------------------------------------------------
-// Collection statistics
-// ---------------------------------------------------------------------------
 
 /// Compute collection statistics from repository evidence.
 ///
@@ -83,10 +75,6 @@ fn count_by_visibility(active: &[&RepositoryEvidence], visibility: Visibility) -
     )
 }
 
-// ---------------------------------------------------------------------------
-// Aggregated metrics
-// ---------------------------------------------------------------------------
-
 /// Aggregate security metrics across all non-archived repositories.
 ///
 /// Aggregation semantics:
@@ -121,7 +109,6 @@ pub fn aggregate_metrics(repositories: &[RepositoryEvidence]) -> AggregatedMetri
     let total_active = count_as_u32(active.len());
     let total_public = count_as_u32(public_policy.len());
 
-    // Policy coverage: pass (via_setting + via_file) / total public repos
     let policy_pass = policy_counts
         .via_setting
         .saturating_add(policy_counts.via_file);
@@ -132,7 +119,6 @@ pub fn aggregate_metrics(repositories: &[RepositoryEvidence]) -> AggregatedMetri
         )
         .with_extra("unknown", policy_counts.unknown);
 
-    // Secret scanning coverage: enabled / total active repos
     let secret_scanning_coverage = RateMetric::new(secret_counts.enabled, total_active)
         .with_extra("disabled", secret_counts.disabled)
         .with_extra("permission_denied", secret_counts.permission_denied)
@@ -142,8 +128,6 @@ pub fn aggregate_metrics(repositories: &[RepositoryEvidence]) -> AggregatedMetri
             secret_counts.enabled.saturating_add(secret_counts.disabled),
         );
 
-    // Dependabot coverage: enabled / total active repos
-    // Paused repos are observable (known state) but not conforming.
     let dependabot_security_updates_coverage =
         RateMetric::new(dependabot_counts.enabled, total_active)
             .with_extra("paused", dependabot_counts.paused)
@@ -157,7 +141,6 @@ pub fn aggregate_metrics(repositories: &[RepositoryEvidence]) -> AggregatedMetri
                     .saturating_add(dependabot_counts.disabled),
             );
 
-    // Open secret alert prevalence: repos_with_open_alerts / observable_enabled
     let alert_observable_enabled = count_alert_observable_enabled(&active);
     let open_secret_alert_prevalence = RateMetric::new(
         secret_alert_counts.repos_with_open_alerts,
@@ -169,7 +152,6 @@ pub fn aggregate_metrics(repositories: &[RepositoryEvidence]) -> AggregatedMetri
     )
     .with_extra("unobservable", secret_alert_counts.unobservable);
 
-    // Branch protection coverage: pass / total active repos
     let branch_protection_coverage = RateMetric::new(branch_counts.pass, total_active)
         .with_extra(
             "insufficient",
@@ -184,7 +166,6 @@ pub fn aggregate_metrics(repositories: &[RepositoryEvidence]) -> AggregatedMetri
                 .saturating_add(branch_counts.fail),
         );
 
-    // CODEOWNERS coverage: (conforming + non_conforming) / total active repos
     let codeowners_present = codeowners_counts
         .conforming
         .saturating_add(codeowners_counts.non_conforming);
@@ -234,21 +215,12 @@ fn count_policy_statuses(public_repos: &[&RepositoryEvidence]) -> PolicyCounts {
                 if policy.evidence == SecurityPolicyEvidence::Setting {
                     counts.via_setting = counts.via_setting.saturating_add(1);
                 } else {
-                    // File evidence, or any other pass evidence — count as via_file (defensive)
                     counts.via_file = counts.via_file.saturating_add(1);
                 }
             }
             SecurityPolicyStatus::Fail => counts.missing = counts.missing.saturating_add(1),
             SecurityPolicyStatus::Unknown => counts.unknown = counts.unknown.saturating_add(1),
             SecurityPolicyStatus::NotApplicable => {
-                // `NotApplicable` is reserved for non-public repos. Reaching this
-                // arm with public repos indicates a data-integrity issue upstream
-                // (caller filtered on `is_public` but the status disagrees).
-                //
-                // Production: increment `unknown` so the repo is visibly accounted
-                // for (excluded from numerator, included in denominator at the
-                // count level, surfaced as observability).
-                // Debug: hard-panic so the contract violation is impossible to miss.
                 debug_assert!(
                     false,
                     "SecurityPolicyStatus::NotApplicable observed in public-repo metrics path; \
@@ -335,8 +307,6 @@ fn count_codeowners_statuses(active: &[&RepositoryEvidence]) -> CodeownersCounts
             CodeownersStatus::Absent => counts.absent = counts.absent.saturating_add(1),
             CodeownersStatus::Unknown => counts.unknown = counts.unknown.saturating_add(1),
         }
-        // Truncation is orthogonal to status: a Conforming repo can also be
-        // truncated (e.g., oversized base64 payload). Count separately.
         if repo.checks.codeowners.truncation.is_some() {
             counts.truncated = counts.truncated.saturating_add(1);
         }
@@ -363,8 +333,6 @@ fn count_secret_alert_observability(active: &[&RepositoryEvidence]) -> SecretAle
             if ss.has_open_alerts == Some(true) {
                 counts.repos_with_open_alerts = counts.repos_with_open_alerts.saturating_add(1);
             } else {
-                // has_open_alerts is Some(false) or None — both counted as "without"
-                // because unknown alert status defaults to the negative case.
                 counts.repos_without_open_alerts =
                     counts.repos_without_open_alerts.saturating_add(1);
             }
@@ -396,11 +364,6 @@ fn count_alert_observable_enabled(active: &[&RepositoryEvidence]) -> u32 {
     )
 }
 
-// ---------------------------------------------------------------------------
-// Per-owner metrics
-// ---------------------------------------------------------------------------
-
-// Canonical location: domain::metrics.
 use crate::domain::metrics::build_owner_repo_map;
 
 /// Build per-owner metrics from CODEOWNERS parsed data.
@@ -435,7 +398,6 @@ pub fn build_owner_metrics(repositories: &[RepositoryEvidence]) -> Vec<OwnerMetr
         })
         .collect();
 
-    // Sort teams before users, then alphabetically within each group.
     result.sort_by(|a, b| {
         let type_rank = |t: &OwnerType| match t {
             OwnerType::Team => 0,
@@ -483,13 +445,11 @@ pub(crate) fn enrich_owner_metrics_with_lifecycle(
 
     for owner in owners.iter_mut() {
         let Some((_, repos)) = owner_repo_map.get(&owner.owner) else {
-            // Owner not found in repo map — no repos to enrich.
             continue;
         };
 
         let total = count_as_u32(repos.len());
 
-        // ── non_stale ──────────────────────────────────────────
         let stale_count = count_as_u32(
             repos
                 .iter()
@@ -499,7 +459,6 @@ pub(crate) fn enrich_owner_metrics_with_lifecycle(
         let non_stale_count = total.saturating_sub(stale_count);
         let non_stale = RateMetric::new(non_stale_count, total);
 
-        // ── alert_free ─────────────────────────────────────────
         let observable: Vec<_> = repos
             .iter()
             .filter(|r| {
@@ -517,7 +476,6 @@ pub(crate) fn enrich_owner_metrics_with_lifecycle(
         );
         let alert_free = RateMetric::new(alert_free_count, observable_count);
 
-        // ── Insert into per_control_coverage ────────────────────
         for (key, metric) in [("non_stale", non_stale), ("alert_free", alert_free)] {
             if owner.per_control_coverage.contains_key(key) {
                 warn!(
@@ -549,7 +507,6 @@ type ControlPredicate = (&'static str, fn(&&RepositoryEvidence) -> bool);
 fn build_per_control_coverage(repos: &[&RepositoryEvidence]) -> HashMap<String, RateMetric> {
     let total = count_as_u32(repos.len());
 
-    // Security policy: custom denominator excluding NotApplicable.
     let sp_applicable: Vec<_> = repos
         .iter()
         .filter(|r| r.checks.security_policy.status != SecurityPolicyStatus::NotApplicable)
@@ -596,10 +553,6 @@ fn build_per_control_coverage(repos: &[&RepositoryEvidence]) -> HashMap<String, 
     result
 }
 
-// ---------------------------------------------------------------------------
-// Secret scanning observability summary
-// ---------------------------------------------------------------------------
-
 /// Builds the secret scanning observability summary for the organization.
 ///
 /// Combines the org-level alert summary (if collected) with per-repository
@@ -616,7 +569,6 @@ pub fn build_secret_scanning_observability_summary(
 
     let mut summary = new_observability_summary();
 
-    // Copy org-level data if available.
     if let Some(alert_summary) = org_alert_summary {
         summary.collection_status = alert_summary.collection_status;
         summary
@@ -634,7 +586,6 @@ pub fn build_secret_scanning_observability_summary(
             .clone_from(&alert_summary.newest_open_secret_alert_created_at);
     }
 
-    // Per-repo analysis.
     let per_repo = org_alert_summary.map_or(&*EMPTY_PER_REPO, |s| &s.per_repo);
 
     let mut mismatch_count: u32 = 0;
@@ -703,10 +654,6 @@ fn merge_age_buckets(source: &HashMap<String, u64>) -> HashMap<String, u32> {
     buckets
 }
 
-// ===========================================================================
-// Tests
-// ===========================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -714,11 +661,6 @@ mod tests {
     use crate::domain::repository::Visibility;
     use crate::domain::status::CollectionStatus;
     use crate::test_fixtures::*;
-
-    // ── Test helpers ────────────────────────────────────────────
-
-    // Check-result builders, make_checks, and make_repository_evidence are
-    // imported from test_fixtures.
 
     /// Create a standard set of repos for testing metrics aggregation.
     ///
@@ -806,8 +748,6 @@ mod tests {
         ]
     }
 
-    // ── Collection statistics tests ────────────────────────────
-
     #[test]
     fn collection_statistics_counts_active_repos() {
         let repos = sample_repos();
@@ -845,8 +785,6 @@ mod tests {
         assert_eq!(stats.total_repos, 0);
     }
 
-    // ── Aggregate metrics tests ────────────────────────────────
-
     #[test]
     fn aggregate_metrics_policy_counts_only_public_repos() {
         let repos = sample_repos();
@@ -867,13 +805,11 @@ mod tests {
         let repos = sample_repos();
         let metrics = aggregate_metrics(&repos);
 
-        // 5 active: enabled=2, disabled=1, permission_denied=1, unknown=1
         assert_eq!(metrics.secret_scanning_counts.enabled, 2);
         assert_eq!(metrics.secret_scanning_counts.disabled, 1);
         assert_eq!(metrics.secret_scanning_counts.permission_denied, 1);
         assert_eq!(metrics.secret_scanning_counts.unknown, 1);
 
-        // Coverage: enabled=2 / total=5 = 40%
         assert_eq!(metrics.secret_scanning_coverage.numerator, 2);
         assert_eq!(metrics.secret_scanning_coverage.denominator, 5);
         assert_eq!(metrics.secret_scanning_coverage.rate, Some(40.0));
@@ -884,12 +820,10 @@ mod tests {
         let repos = sample_repos();
         let metrics = aggregate_metrics(&repos);
 
-        // 5 active: enabled=3, disabled=1, unknown=1
         assert_eq!(metrics.dependabot_security_updates_counts.enabled, 3);
         assert_eq!(metrics.dependabot_security_updates_counts.disabled, 1);
         assert_eq!(metrics.dependabot_security_updates_counts.unknown, 1);
 
-        // Coverage: enabled=3 / total=5 = 60%
         assert_eq!(metrics.dependabot_security_updates_coverage.numerator, 3);
         assert_eq!(metrics.dependabot_security_updates_coverage.denominator, 5);
         assert_eq!(
@@ -903,13 +837,11 @@ mod tests {
         let repos = sample_repos();
         let metrics = aggregate_metrics(&repos);
 
-        // 5 active: pass=2, partial=1, fail=1, unknown=1
         assert_eq!(metrics.branch_protection_counts.pass, 2);
         assert_eq!(metrics.branch_protection_counts.partial, 1);
         assert_eq!(metrics.branch_protection_counts.fail, 1);
         assert_eq!(metrics.branch_protection_counts.unknown, 1);
 
-        // Coverage: pass=2 / total=5 = 40%
         assert_eq!(metrics.branch_protection_coverage.numerator, 2);
         assert_eq!(metrics.branch_protection_coverage.denominator, 5);
         assert_eq!(metrics.branch_protection_coverage.rate, Some(40.0));
@@ -920,13 +852,11 @@ mod tests {
         let repos = sample_repos();
         let metrics = aggregate_metrics(&repos);
 
-        // 5 active: conforming=2, non_conforming=1, absent=1, unknown=1
         assert_eq!(metrics.codeowners_counts.conforming, 2);
         assert_eq!(metrics.codeowners_counts.non_conforming, 1);
         assert_eq!(metrics.codeowners_counts.absent, 1);
         assert_eq!(metrics.codeowners_counts.unknown, 1);
 
-        // Coverage: (conforming + non_conforming)=3 / total=5 = 60%
         assert_eq!(metrics.codeowners_coverage.numerator, 3);
         assert_eq!(metrics.codeowners_coverage.denominator, 5);
         assert_eq!(metrics.codeowners_coverage.rate, Some(60.0));
@@ -937,15 +867,10 @@ mod tests {
         let repos = sample_repos();
         let metrics = aggregate_metrics(&repos);
 
-        // secret_alert_counts:
-        // repos_with_open_alerts=1 (internal-1: enabled+observable+has_open=true)
-        // repos_without_open_alerts=1 (public-1: enabled+observable+has_open=false)
-        // unobservable=3 (public-2:disabled, public-3:perm_denied, private-1:unknown)
         assert_eq!(metrics.secret_alert_counts.repos_with_open_alerts, 1);
         assert_eq!(metrics.secret_alert_counts.repos_without_open_alerts, 1);
         assert_eq!(metrics.secret_alert_counts.unobservable, 3);
 
-        // Prevalence: 1 / 2 (observable+enabled) = 50%
         assert_eq!(metrics.open_secret_alert_prevalence.numerator, 1);
         assert_eq!(metrics.open_secret_alert_prevalence.denominator, 2);
         assert_eq!(metrics.open_secret_alert_prevalence.rate, Some(50.0));
@@ -1001,8 +926,6 @@ mod tests {
         assert_eq!(metrics.security_policy_coverage.rate, Some(100.0));
     }
 
-    // ── Observability summary tests ────────────────────────────
-
     #[test]
     fn observability_summary_no_org_alert_data() {
         let repos = sample_repos();
@@ -1011,7 +934,6 @@ mod tests {
         assert_eq!(summary.collection_status, CollectionStatus::NotCollected);
         assert!(summary.collection_reason.is_none());
         assert_eq!(summary.total_open_secret_alerts, 0);
-        // Per-repo analysis still runs
         assert_eq!(summary.observable_enabled_repositories, 2);
         assert_eq!(summary.unobservable_repositories, 3);
         assert_eq!(summary.status_mismatch_count, 0);
@@ -1023,7 +945,7 @@ mod tests {
 
         let mut per_repo = HashMap::new();
         per_repo.insert(
-            "id-public-2".to_string(), // disabled repo
+            "id-public-2".to_string(),
             RepoAlertSummary {
                 open_alert_count: 2,
                 oldest_open_alert_created_at: Some("2025-01-01T00:00:00+00:00".to_string()),
@@ -1053,11 +975,9 @@ mod tests {
             summary.oldest_open_secret_alert_created_at,
             Some("2025-01-01T00:00:00+00:00".to_string())
         );
-        // status_mismatch: public-2 has disabled secret scanning but 2 open alerts
         assert_eq!(summary.status_mismatch_count, 1);
         assert_eq!(summary.observable_enabled_repositories, 2);
         assert_eq!(summary.unobservable_repositories, 3);
-        // Age buckets should include org data
         assert_eq!(
             summary.open_secret_alert_age_buckets.get("0_7_days"),
             Some(&1)
@@ -1097,7 +1017,6 @@ mod tests {
 
     #[test]
     fn observability_summary_excludes_archived_repos() {
-        // One archived repo with enabled secret scanning
         let repos = vec![make_repository_evidence(
             "archived",
             Visibility::Public,
@@ -1150,7 +1069,6 @@ mod tests {
         let repos = sample_repos();
         let metrics = aggregate_metrics(&repos);
 
-        // Verify extra fields are populated on rate metrics
         assert!(
             metrics
                 .security_policy_coverage
@@ -1190,13 +1108,8 @@ mod tests {
         assert!(metrics.codeowners_coverage.extra.contains_key("absent"));
     }
 
-    // ── Edge case tests (from rigormortis review) ──────────────
-
     #[test]
     fn has_open_alerts_none_with_observable_counted_as_without() {
-        // When alerts_observable=true but has_open_alerts=None (unknown),
-        // the repo should be counted as "without open alerts" (unknown
-        // defaults to the negative case).
         let repos = vec![make_repository_evidence(
             "repo-1",
             Visibility::Private,
@@ -1205,7 +1118,7 @@ mod tests {
                 policy_fail(),
                 SecretScanningResult {
                     status: SecretScanningStatus::Enabled,
-                    has_open_alerts: None, // Unknown
+                    has_open_alerts: None,
                     alerts_observable: true,
                     reason: None,
                     timestamp: make_timestamp(),
@@ -1223,23 +1136,17 @@ mod tests {
 
     #[test]
     fn merge_age_buckets_preserves_extra_keys() {
-        // Unknown bucket labels from the API should pass through to the
-        // output for forward-compatibility.
         let mut source = HashMap::new();
         source.insert("0_7_days".to_string(), 5_u64);
         source.insert("future_bucket_label".to_string(), 3_u64);
         let merged = merge_age_buckets(&source);
         assert_eq!(merged.get("0_7_days"), Some(&5));
         assert_eq!(merged.get("future_bucket_label"), Some(&3));
-        // Standard buckets still present
         assert_eq!(merged.get("8_30_days"), Some(&0));
     }
 
     #[test]
     fn alert_prevalence_denominator_matches_observable_enabled() {
-        // The open_secret_alert_prevalence denominator should equal
-        // repos_with_open_alerts + repos_without_open_alerts for
-        // repos that are enabled + observable.
         let repos = sample_repos();
         let metrics = aggregate_metrics(&repos);
         let expected_denominator = metrics
@@ -1254,17 +1161,6 @@ mod tests {
 
     #[test]
     fn disabled_with_observable_excluded_from_both_numerator_and_denominator() {
-        // Edge case: a repo with status=Disabled but alerts_observable=true.
-        // This violates the upstream invariant `alerts_observable ⇒ status == Enabled`
-        // (enforced by `debug_assert!` in `collector::ghas_scanning::build_result`),
-        // but if it leaks through in a release build the metric must still be
-        // internally consistent: numerator ≤ denominator. Both `count_secret_alert_observability`
-        // (numerator buckets) and `count_alert_observable_enabled` (denominator) gate
-        // on `status == Enabled && alerts_observable`, so the anomalous repo lands
-        // in `unobservable` and is excluded from the rate calculation entirely.
-        // Constructed via a literal `SecretScanningResult` (bypassing `build_result`)
-        // because the assertion is about post-construction metric behaviour, not the
-        // construction-time invariant.
         let repos = vec![
             make_repository_evidence(
                 "disabled-but-observable",
@@ -1275,7 +1171,7 @@ mod tests {
                     SecretScanningResult {
                         status: SecretScanningStatus::Disabled,
                         has_open_alerts: Some(true),
-                        alerts_observable: true, // anomalous combination
+                        alerts_observable: true,
                         reason: None,
                         timestamp: make_timestamp(),
                     },
@@ -1298,13 +1194,10 @@ mod tests {
             ),
         ];
         let metrics = aggregate_metrics(&repos);
-        // The disabled-but-observable repo is excluded from the with/without buckets.
         assert_eq!(metrics.secret_alert_counts.repos_with_open_alerts, 0);
         assert_eq!(metrics.secret_alert_counts.repos_without_open_alerts, 1);
         assert_eq!(metrics.secret_alert_counts.unobservable, 1);
-        // Denominator only counts enabled+observable = 1.
         assert_eq!(metrics.open_secret_alert_prevalence.denominator, 1);
-        // Rate: 0/1 = 0% — internally consistent (numerator ≤ denominator).
         assert_eq!(metrics.open_secret_alert_prevalence.rate, Some(0.0));
     }
 
@@ -1313,7 +1206,6 @@ mod tests {
         let repos = sample_repos();
         let metrics = aggregate_metrics(&repos);
 
-        // Policy extra: observable_repositories = via_setting(2) + via_file(0) + missing(1) = 3
         assert_eq!(
             metrics
                 .security_policy_coverage
@@ -1326,7 +1218,6 @@ mod tests {
             Some(&serde_json::json!(1))
         );
 
-        // Secret scanning extra: observable_repositories = enabled(2) + disabled(1) = 3
         assert_eq!(
             metrics
                 .secret_scanning_coverage
@@ -1335,7 +1226,6 @@ mod tests {
             Some(&serde_json::json!(3))
         );
 
-        // Branch protection extra: insufficient = partial(1) + fail(1) = 2
         assert_eq!(
             metrics.branch_protection_coverage.extra.get("insufficient"),
             Some(&serde_json::json!(2))
@@ -1345,16 +1235,15 @@ mod tests {
                 .branch_protection_coverage
                 .extra
                 .get("observable_repositories"),
-            Some(&serde_json::json!(4)) // pass(2) + partial(1) + fail(1)
+            Some(&serde_json::json!(4))
         );
 
-        // Codeowners extra
         assert_eq!(
             metrics
                 .codeowners_coverage
                 .extra
                 .get("observable_repositories"),
-            Some(&serde_json::json!(4)) // conforming(2) + non_conforming(1) + absent(1)
+            Some(&serde_json::json!(4))
         );
     }
 
@@ -1365,8 +1254,6 @@ mod tests {
         let merged = merge_age_buckets(&source);
         assert_eq!(merged.get("0_7_days"), Some(&u32::MAX));
     }
-
-    // ── Per-owner metrics tests ────────────────────────────────
 
     use crate::collector::codeowners_parser::parse_codeowners;
     use crate::domain::checks::CodeownersResult;
@@ -1391,7 +1278,6 @@ mod tests {
 
     #[test]
     fn owner_metrics_no_parsed_data() {
-        // Repos without parsed CODEOWNERS data should produce no owner metrics.
         let repos = vec![make_repository_evidence(
             "repo-1",
             Visibility::Public,
@@ -1401,7 +1287,7 @@ mod tests {
                 secret_enabled_observable(false),
                 dependabot_enabled(),
                 branch_pass(),
-                codeowners_conforming(), // parsed: None
+                codeowners_conforming(),
             ),
         )];
         let result = build_owner_metrics(&repos);
@@ -1428,7 +1314,6 @@ mod tests {
         assert_eq!(result[0].display_name, "@org/team-a");
         assert_eq!(result[0].owner_type, OwnerType::Team);
         assert_eq!(result[0].total_repos, 1);
-        // All controls pass for this repo.
         assert_eq!(
             result[0]
                 .per_control_coverage
@@ -1449,7 +1334,6 @@ mod tests {
 
     #[test]
     fn owner_metrics_multi_owner_repo() {
-        // One repo with two owners — both get the repo in their metrics.
         let repos = vec![make_repository_evidence(
             "repo-1",
             Visibility::Public,
@@ -1464,7 +1348,6 @@ mod tests {
         )];
         let result = build_owner_metrics(&repos);
         assert_eq!(result.len(), 2);
-        // Teams sort before users, then alphabetically within each group.
         assert_eq!(result[0].owner, "@org/team-a");
         assert_eq!(result[0].owner_type, OwnerType::Team);
         assert_eq!(result[0].total_repos, 1);
@@ -1475,8 +1358,6 @@ mod tests {
 
     #[test]
     fn owner_metrics_sort_teams_before_users_alphabetically() {
-        // Multiple teams and users: teams come first (alphabetically),
-        // then users (alphabetically).
         let repos = vec![make_repository_evidence(
             "repo-1",
             Visibility::Public,
@@ -1491,12 +1372,10 @@ mod tests {
         )];
         let result = build_owner_metrics(&repos);
         assert_eq!(result.len(), 4);
-        // Teams first, alphabetically
         assert_eq!(result[0].owner, "@org/alpha");
         assert_eq!(result[0].owner_type, OwnerType::Team);
         assert_eq!(result[1].owner, "@org/beta");
         assert_eq!(result[1].owner_type, OwnerType::Team);
-        // Users second, alphabetically
         assert_eq!(result[2].owner, "@alice");
         assert_eq!(result[2].owner_type, OwnerType::User);
         assert_eq!(result[3].owner, "@bob");
@@ -1526,7 +1405,6 @@ mod tests {
 
     #[test]
     fn owner_metrics_case_insensitive_dedup() {
-        // Two repos with different casings of the same owner.
         let repos = vec![
             make_repository_evidence(
                 "repo-1",
@@ -1554,12 +1432,10 @@ mod tests {
             ),
         ];
         let result = build_owner_metrics(&repos);
-        // Should be merged into one owner with 2 repos.
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].owner, "@org/team");
-        assert_eq!(result[0].display_name, "@Org/Team"); // first-seen casing
+        assert_eq!(result[0].display_name, "@Org/Team");
         assert_eq!(result[0].total_repos, 2);
-        // repo-1 passes policy, repo-2 fails → 50%
         assert_eq!(
             result[0]
                 .per_control_coverage
@@ -1590,7 +1466,6 @@ mod tests {
 
     #[test]
     fn owner_metrics_per_control_coverage() {
-        // Two repos owned by the same team, with different check outcomes.
         let repos = vec![
             make_repository_evidence(
                 "repo-1",
@@ -1621,7 +1496,6 @@ mod tests {
         assert_eq!(result.len(), 1);
         let team = &result[0];
         assert_eq!(team.total_repos, 2);
-        // 1/2 = 50% for each control that only passes in repo-1
         assert_eq!(
             team.per_control_coverage
                 .get("security_policy")
@@ -1650,8 +1524,6 @@ mod tests {
                 .numerator,
             1
         );
-        // codeowners: repo-1 is Conforming (parsed), repo-2 also Conforming
-        // (from codeowners_with_owners which sets Conforming) → 2/2 = 100%
         assert_eq!(
             team.per_control_coverage
                 .get("codeowners")
@@ -1663,8 +1535,6 @@ mod tests {
 
     #[test]
     fn owner_metrics_integrated_in_aggregate() {
-        // Verify that aggregate_metrics populates owner_metrics when
-        // parsed CODEOWNERS data is present.
         let repos = vec![make_repository_evidence(
             "repo-1",
             Visibility::Public,
@@ -1704,8 +1574,6 @@ mod tests {
         assert_eq!(metrics.owner_metrics[0].total_repos, 1);
     }
 
-    // ── build_owner_repo_map tests ─────────────────────────────
-
     #[test]
     fn owner_repo_map_empty_repos() {
         let map = build_owner_repo_map(&[]);
@@ -1714,7 +1582,6 @@ mod tests {
 
     #[test]
     fn owner_repo_map_no_parsed_codeowners() {
-        // Repos without parsed CODEOWNERS data produce no map entries.
         let repos = vec![make_repository_evidence(
             "repo-1",
             Visibility::Public,
@@ -1724,7 +1591,7 @@ mod tests {
                 secret_enabled_observable(false),
                 dependabot_enabled(),
                 branch_pass(),
-                codeowners_conforming(), // parsed: None
+                codeowners_conforming(),
             ),
         )];
         let map = build_owner_repo_map(&repos);
@@ -1755,7 +1622,6 @@ mod tests {
 
     #[test]
     fn owner_repo_map_multi_owner_repo() {
-        // One repo with two owners — both get the repo in their map entries.
         let repos = vec![make_repository_evidence(
             "shared-repo",
             Visibility::Public,
@@ -1781,7 +1647,7 @@ mod tests {
         let repos = vec![make_repository_evidence(
             "archived-repo",
             Visibility::Public,
-            true, // archived
+            true,
             make_checks(
                 policy_pass_setting(),
                 secret_enabled_observable(false),
@@ -1796,7 +1662,6 @@ mod tests {
 
     #[test]
     fn owner_repo_map_case_insensitive_dedup() {
-        // Two repos with different casings of the same owner.
         let repos = vec![
             make_repository_evidence(
                 "repo-1",
@@ -1824,10 +1689,9 @@ mod tests {
             ),
         ];
         let map = build_owner_repo_map(&repos);
-        // Should be merged into one entry with 2 repos.
         assert_eq!(map.len(), 1);
         let (display, repos_list) = &map["@org/team"];
-        assert_eq!(display, "@Org/Team"); // first-seen casing preserved
+        assert_eq!(display, "@Org/Team");
         assert_eq!(repos_list.len(), 2);
     }
 
@@ -1861,14 +1725,10 @@ mod tests {
         ];
         let map = build_owner_repo_map(&repos);
         assert_eq!(map.len(), 2);
-        // @org/alpha appears in both repos
         assert_eq!(map["@org/alpha"].1.len(), 2);
-        // @alice appears only in repo-1
         assert_eq!(map["@alice"].1.len(), 1);
         assert_eq!(map["@alice"].1[0].repository.name, "repo-1");
     }
-
-    // ── enrich_owner_metrics_with_lifecycle ─────────────────────────
 
     #[test]
     fn enrich_lifecycle_zero_repos_leaves_owner_unchanged() {
@@ -1880,7 +1740,6 @@ mod tests {
 
     #[test]
     fn enrich_lifecycle_all_fresh_repos_non_stale_is_100() {
-        // Recent updated_at → not stale
         let repos = vec![
             make_repo_with_updated_at(
                 "fresh-1",
@@ -1911,7 +1770,6 @@ mod tests {
 
     #[test]
     fn enrich_lifecycle_mixed_stale_and_fresh() {
-        // One repo updated recently, one >730 days ago
         let repos = vec![
             make_repo_with_updated_at(
                 "fresh",
@@ -1923,7 +1781,7 @@ mod tests {
             ),
             make_repo_with_updated_at(
                 "stale",
-                Some("2023-01-01T00:00:00+00:00"), // >730 days before 2026-04-09
+                Some("2023-01-01T00:00:00+00:00"),
                 true,
                 Some(false),
                 true,
@@ -1943,7 +1801,7 @@ mod tests {
     fn enrich_lifecycle_none_updated_at_treated_as_not_stale() {
         let repos = vec![make_repo_with_updated_at(
             "no-ts",
-            None, // updated_at is None → is_repo_stale returns false
+            None,
             true,
             Some(false),
             true,
@@ -1953,17 +1811,16 @@ mod tests {
         enrich_owner_metrics_with_lifecycle(&mut owners, &repos, &make_timestamp());
 
         let non_stale = owners[0].per_control_coverage.get("non_stale").unwrap();
-        assert_eq!(non_stale.numerator, 1); // treated as not-stale
+        assert_eq!(non_stale.numerator, 1);
         assert_eq!(non_stale.denominator, 1);
     }
 
     #[test]
     fn enrich_lifecycle_alert_free_zero_observable_gives_na() {
-        // No repos have secret scanning enabled + observable
         let repos = vec![make_repo_with_updated_at(
             "no-scanning",
             Some("2026-04-01T12:00:00+00:00"),
-            false, // secret scanning disabled
+            false,
             None,
             false,
             &["@org/team-a"],
@@ -1973,7 +1830,7 @@ mod tests {
 
         let alert_free = owners[0].per_control_coverage.get("alert_free").unwrap();
         assert_eq!(alert_free.denominator, 0);
-        assert_eq!(alert_free.rate, None); // N/A via RateMetric::new(0, 0)
+        assert_eq!(alert_free.rate, None);
     }
 
     #[test]
@@ -1983,7 +1840,7 @@ mod tests {
                 "clean-1",
                 Some("2026-04-01T12:00:00+00:00"),
                 true,
-                Some(false), // no open alerts
+                Some(false),
                 true,
                 &["@org/team-a"],
             ),
@@ -1991,7 +1848,7 @@ mod tests {
                 "clean-2",
                 Some("2026-04-01T12:00:00+00:00"),
                 true,
-                None, // has_open_alerts is None → not Some(true) → alert-free
+                None,
                 true,
                 &["@org/team-a"],
             ),
@@ -2020,7 +1877,7 @@ mod tests {
                 "has-alerts",
                 Some("2026-04-01T12:00:00+00:00"),
                 true,
-                Some(true), // has open alerts
+                Some(true),
                 true,
                 &["@org/team-a"],
             ),
@@ -2029,7 +1886,7 @@ mod tests {
                 Some("2026-04-01T12:00:00+00:00"),
                 true,
                 Some(false),
-                false, // alerts_observable = false → excluded from denominator
+                false,
                 &["@org/team-a"],
             ),
         ];
@@ -2037,7 +1894,6 @@ mod tests {
         enrich_owner_metrics_with_lifecycle(&mut owners, &repos, &make_timestamp());
 
         let alert_free = owners[0].per_control_coverage.get("alert_free").unwrap();
-        // Only 2 repos are observable (enabled + alerts_observable), 1 is clean
         assert_eq!(alert_free.denominator, 2);
         assert_eq!(alert_free.numerator, 1);
         assert_eq!(alert_free.rate, Some(50.0));
@@ -2062,7 +1918,6 @@ mod tests {
             .unwrap()
             .clone();
 
-        // Run again — should overwrite with same values (warns in logs)
         enrich_owner_metrics_with_lifecycle(&mut owners, &repos, &ts);
         let non_stale_2 = owners[0]
             .per_control_coverage

@@ -60,7 +60,6 @@ impl DomainEvent for TestEvent {
 async fn per_aggregate_file_roundtrip_preserves_sequence_and_payload() {
     let dir = tempfile::tempdir().unwrap();
 
-    // ── Phase 1: write via first store instance ─────────────────────
     let (id, created) = {
         let store = MsgpackFileStore::<TestEvent>::new(dir.path());
 
@@ -74,8 +73,6 @@ async fn per_aggregate_file_roundtrip_preserves_sequence_and_payload() {
             .await
             .expect("create succeeds on fresh tempdir");
 
-        // Append two more events at expected_sequence=1 (the sequence
-        // landed by `create`).
         let appended = store
             .append(
                 id,
@@ -93,10 +90,8 @@ async fn per_aggregate_file_roundtrip_preserves_sequence_and_payload() {
         assert_eq!(appended.len(), 2, "append returns two envelopes");
 
         (id, created)
-        // store dropped here → no in-memory cache survives.
     };
 
-    // ── Phase 2: reconstruct at same path, force on-disk read ───────
     let store = MsgpackFileStore::<TestEvent>::new(dir.path());
     let loaded = store
         .load(id)
@@ -109,17 +104,14 @@ async fn per_aggregate_file_roundtrip_preserves_sequence_and_payload() {
         "all three envelopes survive the persistence boundary"
     );
 
-    // Sequence order preserved (1, 2, 3) per CHE-0036 file-per-stream.
     assert_eq!(loaded[0].sequence().get(), 1);
     assert_eq!(loaded[1].sequence().get(), 2);
     assert_eq!(loaded[2].sequence().get(), 3);
 
-    // All envelopes belong to the same aggregate.
     assert_eq!(loaded[0].aggregate_id(), id);
     assert_eq!(loaded[1].aggregate_id(), id);
     assert_eq!(loaded[2].aggregate_id(), id);
 
-    // Payload equality across the persistence boundary.
     assert_eq!(
         *loaded[0].payload(),
         TestEvent::Created {
@@ -129,21 +121,14 @@ async fn per_aggregate_file_roundtrip_preserves_sequence_and_payload() {
     assert_eq!(*loaded[1].payload(), TestEvent::Updated { value: 10 });
     assert_eq!(*loaded[2].payload(), TestEvent::Updated { value: 20 });
 
-    // First envelope on disk equals the one returned by `create` —
-    // event_id, timestamp, correlation/causation all survive.
     assert_eq!(loaded[0].event_id(), created[0].event_id());
     assert_eq!(loaded[0].timestamp(), created[0].timestamp());
 
-    // ── Phase 3: per-aggregate-file invariant (CHE-0048) ────────────
-    // Count *.msgpack files only — `.lock` sentinel (CHE-0043:R1) is
-    // not an aggregate file. The invariant is: one aggregate ⇒ one
-    // `.msgpack` file.
     let mut msgpack_count = 0;
     let mut entries = tokio::fs::read_dir(dir.path()).await.unwrap();
     while let Some(entry) = entries.next_entry().await.unwrap() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        // Exclude `.msgpack.tmp` orphans (none expected, but be precise).
         if name.ends_with(".msgpack") && !name.ends_with(".msgpack.tmp") {
             msgpack_count += 1;
         }

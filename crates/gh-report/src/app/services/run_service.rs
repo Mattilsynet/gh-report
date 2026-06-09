@@ -364,9 +364,6 @@ mod tests {
 
     #[tokio::test]
     async fn with_merger_tx_constructs_service() {
-        // Smoke test: 3b constructor surface compiles and yields a
-        // service whose handle (the mpsc::Sender) is wired to a live
-        // Merger task. Behaviour is covered by the lifecycle test.
         let (_dir, _store, _bus, _index, _tracker, _svc) = build_service().await;
     }
 
@@ -401,7 +398,6 @@ mod tests {
         let ctx = CorrelationContext::none();
         let batch_id = "batch-lifecycle-001";
 
-        // 1. start
         svc.start_sweep(
             StartSweep {
                 org: "octocat".into(),
@@ -415,7 +411,6 @@ mod tests {
         .await
         .expect("start_sweep");
 
-        // 2. progress (1/3)
         svc.record_progress(
             batch_id,
             RecordProgress {
@@ -429,7 +424,6 @@ mod tests {
         .await
         .expect("record_progress 1");
 
-        // 3. progress (2/3)
         svc.record_progress(
             batch_id,
             RecordProgress {
@@ -443,7 +437,6 @@ mod tests {
         .await
         .expect("record_progress 2");
 
-        // 4. complete
         svc.complete(
             batch_id,
             CompleteSweep {
@@ -457,7 +450,6 @@ mod tests {
         .await
         .expect("complete");
 
-        // 5. publish_evidence
         svc.publish_evidence(
             batch_id,
             PublishEvidence {
@@ -470,7 +462,6 @@ mod tests {
         .await
         .expect("publish_evidence");
 
-        // Resolve the assigned id from the index.
         let assigned_id = {
             let guard = index
                 .lock()
@@ -478,17 +469,13 @@ mod tests {
             *guard.get(batch_id).expect("index should map batch_id")
         };
 
-        // (1) Stream contents.
         let loaded = store.load(assigned_id).await.expect("load");
         assert_lifecycle_stream(&loaded);
 
-        // (2) Bus captured all 5 in order.
         assert_captured_sequence(&captured, 5);
 
-        // (3) Sequence tracker == 5.
         assert_tracker_seq(&tracker, assigned_id, 5);
 
-        // (4) Single per-aggregate file (CHE-0036:R1).
         assert_single_msgpack_file(&dir, assigned_id);
     }
 
@@ -659,8 +646,6 @@ mod tests {
         };
         assert_eq!(tracked_seq.get(), 1, "first event has sequence 1");
 
-        // Under MsgpackFileStore each aggregate's events land in
-        // `<dir>/<id>.msgpack`.
         let expected = dir.path().join(format!("{}.msgpack", assigned_id.get()));
         assert!(
             expected.exists(),
@@ -714,7 +699,6 @@ mod tests {
         let ctx = CorrelationContext::none();
         let batch_id = "batch-partial-001";
 
-        // 1. start
         svc.start_sweep(
             StartSweep {
                 org: "octocat".into(),
@@ -728,7 +712,6 @@ mod tests {
         .await
         .expect("start_sweep");
 
-        // 2. progress (1/4)
         svc.record_progress(
             batch_id,
             RecordProgress {
@@ -742,7 +725,6 @@ mod tests {
         .await
         .expect("record_progress");
 
-        // 3. render_partial (first)
         svc.render_partial(
             batch_id,
             RenderPartial {
@@ -756,7 +738,6 @@ mod tests {
         .await
         .expect("render_partial 1");
 
-        // 4. render_partial (second)
         svc.render_partial(
             batch_id,
             RenderPartial {
@@ -770,7 +751,6 @@ mod tests {
         .await
         .expect("render_partial 2");
 
-        // 5. complete
         svc.complete(
             batch_id,
             CompleteSweep {
@@ -784,7 +764,6 @@ mod tests {
         .await
         .expect("complete");
 
-        // 6. publish_evidence
         svc.publish_evidence(
             batch_id,
             PublishEvidence {
@@ -855,7 +834,6 @@ mod tests {
             }
         ));
 
-        // Tracker reflects the final appended sequence.
         let guard = tracker
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);

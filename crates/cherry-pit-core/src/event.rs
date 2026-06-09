@@ -190,7 +190,6 @@ impl<E: DomainEvent> EventEnvelope<E> {
         if self.event_id.is_nil() {
             return Err(EnvelopeError::NilEventId);
         }
-        // NonZeroU64 guarantees sequence > 0 — no runtime check needed.
         Ok(())
     }
 
@@ -381,8 +380,6 @@ mod tests {
 
     #[test]
     fn envelope_msgpack_roundtrip_with_correlation_and_causation() {
-        // Exercise the Some(uuid) branches of correlation_id/causation_id,
-        // and sequence > 1 with a multi-byte payload.
         let id = AggregateId::new(NonZeroU64::new(42).unwrap());
         let envelope = EventEnvelope::new(
             uuid::Uuid::now_v7(),
@@ -439,13 +436,9 @@ mod tests {
 
     #[test]
     fn validate_catches_nil_event_id() {
-        // Construct via serde bypass (deserializing crafted msgpack).
         let nil_id = uuid::Uuid::nil();
         let id = AggregateId::new(NonZeroU64::new(1).unwrap());
 
-        // Manually build a valid envelope then serialize it with a
-        // nil event_id by crafting the struct directly (we're in the
-        // same module, so we can access private fields).
         let bad_envelope = EventEnvelope {
             event_id: nil_id,
             aggregate_id: id,
@@ -568,8 +561,6 @@ mod tests {
         ));
     }
 
-    // ── golden-file serde regression ───────────────────────────────
-
     /// Build a deterministic envelope with fixed values for golden-file
     /// comparison. Every field uses a hard-coded constant so the
     /// serialized bytes are reproducible across runs and platforms.
@@ -616,7 +607,6 @@ mod tests {
 
         let path = golden_file_path();
         if !path.exists() {
-            // First run — generate the fixture.
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, &serialized).unwrap();
             eprintln!(
@@ -635,7 +625,6 @@ mod tests {
             path.display()
         );
 
-        // Deserialize the golden file and verify field values.
         let deserialized: EventEnvelope<TestEvent> = rmp_serde::from_slice(&expected).unwrap();
         deserialized.validate().unwrap();
 

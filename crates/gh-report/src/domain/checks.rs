@@ -29,10 +29,6 @@ pub struct RepositoryChecks {
     pub codeowners: CodeownersResult,
 }
 
-// ---------------------------------------------------------------------------
-// Security Policy
-// ---------------------------------------------------------------------------
-
 /// Security policy evaluation outcome.
 ///
 /// # Wire format
@@ -109,10 +105,6 @@ pub enum SecurityPolicyEvidence {
     NotApplicable = 6,
 }
 
-// ---------------------------------------------------------------------------
-// Secret Scanning
-// ---------------------------------------------------------------------------
-
 /// Secret scanning evaluation outcome.
 ///
 /// # Wire format
@@ -168,10 +160,6 @@ impl std::fmt::Display for SecretScanningStatus {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Dependabot Security Updates
-// ---------------------------------------------------------------------------
-
 /// Dependabot security updates evaluation outcome.
 ///
 /// # Wire format
@@ -221,10 +209,6 @@ impl std::fmt::Display for DependabotStatus {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Branch Protection
-// ---------------------------------------------------------------------------
 
 /// Branch protection evaluation outcome.
 ///
@@ -456,10 +440,6 @@ impl BranchControls {
     }
 }
 
-// ---------------------------------------------------------------------------
-// CODEOWNERS
-// ---------------------------------------------------------------------------
-
 /// CODEOWNERS evaluation outcome.
 ///
 /// # Wire format
@@ -520,10 +500,6 @@ impl std::fmt::Display for CodeownersStatus {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Score Category
-// ---------------------------------------------------------------------------
 
 /// How a check status maps to score computation.
 ///
@@ -683,8 +659,6 @@ mod tests {
         assert!(merged.has_broad_bypass());
     }
 
-    // ── T2: Serde round-trip for NotApplicable ─────────────────
-
     #[test]
     fn serde_round_trip_security_policy_status_not_applicable() {
         let status = SecurityPolicyStatus::NotApplicable;
@@ -711,8 +685,6 @@ mod tests {
         let deserialized: CodeownersStatus = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, CodeownersStatus::NonConforming);
     }
-
-    // ── ScoreCategory From impls ────────────────────────────────
 
     #[test]
     fn score_category_from_security_policy() {
@@ -814,8 +786,6 @@ mod tests {
         );
     }
 
-    // ── CheckType tests ─────────────────────────────────────────
-
     #[test]
     fn check_type_serde_wire_format() {
         assert_eq!(
@@ -876,7 +846,6 @@ mod tests {
             CheckType::SecretScanning,
         ];
         types.sort();
-        // Ord follows declaration order (derive on field-less enum).
         assert_eq!(
             types,
             vec![

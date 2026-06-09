@@ -62,8 +62,6 @@ pub enum ApiOutcome {
 }
 
 impl ApiOutcome {
-    // ── Accessors ───────────────────────────────────────────────
-
     /// Whether this outcome represents a successful API call.
     #[must_use]
     pub fn is_ok(&self) -> bool {
@@ -124,8 +122,6 @@ impl ApiOutcome {
         }
     }
 
-    // ── Constructors ────────────────────────────────────────────
-
     /// Create a successful result with JSON data.
     ///
     /// Sets `status_code` to `200` by convention — this constructor
@@ -180,8 +176,6 @@ async fn read_body_limited(
     response: reqwest::Response,
     max_bytes: usize,
 ) -> Result<String, GitHubApiError> {
-    // Advisory check — server can lie, but catches honest cases early.
-    // Compare as u64 to avoid silent truncation on 32-bit platforms.
     if let Some(len) = response.content_length()
         && len > max_bytes as u64
     {
@@ -329,8 +323,6 @@ pub fn validate_api_base_url(url_str: &str) -> Result<String, GitHubApiError> {
         });
     }
 
-    // In release builds, reject HTTP to prevent tokens being sent in cleartext.
-    // Allow HTTP in debug builds and test configurations (wiremock uses HTTP).
     if !cfg!(any(debug_assertions, test)) && parsed.scheme() == "http" {
         return Err(GitHubApiError::ClientConfigError {
             reason: "API base URL must use https in release builds".to_string(),
@@ -383,7 +375,6 @@ impl GitHubClient {
                 reason: format!("cannot extract origin from API base URL: {validated_url}"),
             })?;
 
-        // Validate org_name before storing — it is interpolated into API paths
         let validated_org = cherry_pit_web::sanitize_path_segment(org_name, "org_name")
             .map(std::borrow::Cow::into_owned)
             .map_err(|e| GitHubApiError::ClientConfigError {
@@ -392,9 +383,6 @@ impl GitHubClient {
 
         let http = Self::build_http_client()?;
 
-        // SECURITY: Zeroize the intermediate Bearer string on drop.
-        // The HeaderValue copy is an accepted residual risk — reqwest/hyper
-        // have no zeroizing HeaderValue variant.
         let auth_value = Zeroizing::new(format!("Bearer {}", credential.token.expose_secret()));
         let auth_header_value = HeaderValue::from_str(&auth_value).map_err(|_| {
             GitHubApiError::AuthenticationFailed {
@@ -452,7 +440,7 @@ impl GitHubClient {
     fn credential_needs_refresh(&self) -> bool {
         let exp = self.credential_expires_at.load(Ordering::Acquire);
         if exp == 0 {
-            return false; // PAT credential, never expires
+            return false;
         }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -635,7 +623,6 @@ impl GitHubClient {
         retries: u32,
         timeout_secs: u64,
     ) -> ApiOutcome {
-        // Hard halt: rate limit budget exhausted (auto-clears after reset window).
         if self.is_halted() {
             return ApiOutcome::failure(
                 None,
@@ -647,13 +634,10 @@ impl GitHubClient {
             );
         }
 
-        // Ensure credential is valid before making the request
         if let Err(e) = self.ensure_credential().await {
             return ApiOutcome::failure(None, format!("credential refresh failed: {e}"), false);
         }
 
-        // Acquire one API call permit from the budget gate.
-        // Placed before the retry loop so retries do not double-count.
         self.budget.acquire().await;
 
         let mut stale_token_retried = false;
@@ -666,7 +650,6 @@ impl GitHubClient {
                 self.request_single(path, timeout_secs).await
             };
 
-            // Check halt after every response (rate_limit headers were just updated).
             if self.rate_limit.should_halt() {
                 let halt_until = self.rate_limit.load_reset().unwrap_or_else(|| {
                     std::time::SystemTime::now()
@@ -681,11 +664,9 @@ impl GitHubClient {
                     halt_until,
                     "rate limit halt triggered — requests blocked until reset window"
                 );
-                // Return the current result (it may be valid).
                 return result;
             }
 
-            // 401 stale-token retry: reload client and retry once
             if result.status_code() == Some(401) && !stale_token_retried {
                 stale_token_retried = true;
                 if let Err(e) = self.ensure_credential().await {
@@ -702,7 +683,6 @@ impl GitHubClient {
                 if result.status_code() == Some(429) {
                     self.rate_limit_warnings.fetch_add(1, Ordering::Relaxed);
                 }
-                // Exponential backoff with jitter: base * 2^attempt + random(0..base)
                 let base_ms = 1000u64 * 2u64.pow(attempt);
                 let jitter_ms = fastrand_jitter(base_ms);
                 let backoff = Duration::from_millis(base_ms + jitter_ms);
@@ -766,7 +746,6 @@ impl GitHubClient {
         crate::github::rate_limit::update_from_headers(&self.rate_limit, response.headers());
         let status = response.status().as_u16();
 
-        // Extract ETag for the side-channel (used by repo_details for conditional requests).
         let response_etag = response
             .headers()
             .get("etag")
@@ -857,8 +836,6 @@ impl GitHubClient {
                 break;
             }
 
-            // Halt check between pages — prevents continued API consumption
-            // after the rate limit budget is exhausted mid-pagination.
             if self.is_halted() {
                 warn!(
                     path = %path,
@@ -869,8 +846,6 @@ impl GitHubClient {
                 break;
             }
 
-            // Acquire one budget permit per page (each page is a separate HTTP call).
-            // Skipped for the first page (already acquired by request()).
             if page_count > 1 {
                 self.budget.acquire().await;
             }
@@ -891,12 +866,10 @@ impl GitHubClient {
                 return ApiOutcome::failure(Some(status), truncate_error_body(&body), retryable);
             }
 
-            // Extract next page URL from Link header, validating origin
             if let Some(candidate_url) = pagination::next_url(response.headers()) {
                 if is_same_origin(&candidate_url, &self.trusted_origin) {
                     next_url = Some(candidate_url);
                 } else {
-                    // Sanitize URL before logging to prevent log injection
                     let sanitized: String = candidate_url
                         .chars()
                         .filter(|c| !c.is_control())
@@ -906,7 +879,6 @@ impl GitHubClient {
                         url = %sanitized,
                         "rejecting pagination URL from untrusted origin"
                     );
-                    // Do NOT follow - this could be an SSRF attempt
                 }
             }
 
@@ -937,7 +909,6 @@ impl GitHubClient {
                 }
             }
 
-            // Guard against unbounded item accumulation across pages
             if all_items.len() > config::MAX_PAGINATED_ITEMS {
                 warn!(
                     items = all_items.len(),
@@ -1004,8 +975,6 @@ impl GitHubClient {
     /// `repo_name` is validated by `sanitize_path_segment` before URL interpolation
     /// to prevent path injection from API-derived data.
     pub async fn repo_details(&self, repo_name: &str) -> ApiOutcome {
-        // Check cache — fresh entries return immediately, stale entries
-        // attempt ETag revalidation.
         enum CacheHit {
             Fresh {
                 status_code: u16,
@@ -1018,8 +987,6 @@ impl GitHubClient {
             },
         }
 
-        // Validate repo_name before URL interpolation — this is a pub method
-        // called with API-derived data.
         let safe_name = match cherry_pit_web::sanitize_path_segment(repo_name, "repo_name") {
             Ok(n) => n,
             Err(e) => {
@@ -1069,9 +1036,8 @@ impl GitHubClient {
                 {
                     return outcome;
                 }
-                // ETag revalidation failed or no ETag — fall through to full request
             }
-            None => {} // Fall through to full request
+            None => {}
         }
 
         let result = self
@@ -1083,11 +1049,8 @@ impl GitHubClient {
             )
             .await;
 
-        // Read the ETag from the side-channel populated by request_single_inner.
-        // `remove` returns and clears the entry to avoid unbounded growth.
         let response_etag = self.last_response_etags.remove_sync(&path).map(|(_, v)| v);
 
-        // Cache only successful results to allow transient failure recovery
         if let ApiOutcome::Success {
             status_code,
             ref data,
@@ -1161,7 +1124,6 @@ impl GitHubClient {
             .map(String::from);
 
         if status == 304 {
-            // Not Modified — reuse cached data, mark as fresh
             debug!(repo = %repo_name, "ETag revalidation: 304 Not Modified");
             self.repo_detail_cache.upsert_sync(
                 repo_name.to_string(),
@@ -1184,7 +1146,6 @@ impl GitHubClient {
             return None;
         }
 
-        // Got a fresh 200 — parse and cache the new data
         let body = match read_body_limited(response, config::MAX_RESPONSE_BODY_BYTES).await {
             Ok(b) => b,
             Err(e) => {
@@ -1232,7 +1193,6 @@ impl GitHubClient {
                         stale: false,
                     },
                 );
-                // Read data back from the cache via closure — no guard leak.
                 self.repo_detail_cache
                     .read_sync(repo_name, |_, cached| ApiOutcome::Success {
                         status_code: cached.status_code,
@@ -1246,8 +1206,6 @@ impl GitHubClient {
             }
         }
     }
-
-    // ── Auth metadata collection ────────────────────────────────
 
     /// Collect auth metadata by inspecting API response headers.
     ///
@@ -1269,7 +1227,6 @@ impl GitHubClient {
             return meta;
         }
 
-        // Use a lightweight endpoint that still returns scope headers
         let result = self.request_single_with_headers("/user", 15).await;
 
         let meta = if let Some(headers) = result.headers() {
@@ -1277,7 +1234,6 @@ impl GitHubClient {
                 let scopes = parse_oauth_scopes(scopes_header);
                 AuthMetadata::from_scopes(&scopes, &cred_mode)
             } else {
-                // No X-OAuth-Scopes header (fine-grained PAT or GitHub App)
                 AuthMetadata {
                     token_tier: crate::domain::auth::TokenTier::Unknown,
                     token_scopes: "not-available".to_string(),
@@ -1285,7 +1241,6 @@ impl GitHubClient {
                 }
             }
         } else {
-            // Request failed — return default
             AuthMetadata::default()
         };
 
@@ -1311,8 +1266,6 @@ impl GitHubClient {
         self.budget.total_calls_made()
     }
 
-    // ── Run lifecycle ───────────────────────────────────────────
-
     /// Clear per-run caches without destroying the client.
     ///
     /// Clears the in-memory `scc::HashMap` repo detail cache and the `ETag`
@@ -1331,8 +1284,6 @@ impl GitHubClient {
         self.rate_limit_warnings
             .store(0, std::sync::atomic::Ordering::Relaxed);
     }
-
-    // ── Cross-run cache export/seed ─────────────────────────────
 
     /// Export the repo detail cache for cross-run persistence.
     ///
@@ -1418,9 +1369,8 @@ impl GitHubClient {
         let mut seeded = 0usize;
         for (key, detail) in entries {
             if detail.fetched_at < cutoff {
-                continue; // Stale entry — skip
+                continue;
             }
-            // Reconstruct a minimal JSON value with the fields collectors need.
             let mut obj = serde_json::Map::new();
             obj.insert(
                 "default_branch".to_string(),
@@ -1487,8 +1437,6 @@ impl GitHubClient {
 
                 let is_stale = match (cached_updated_at, current_updated_at.as_deref()) {
                     (Some(c), Some(cur)) => c != cur,
-                    // If either side is missing, keep the entry — no basis
-                    // for comparison.
                     _ => false,
                 };
 
@@ -1509,8 +1457,6 @@ impl GitHubClient {
         }
     }
 
-    // ── Startup capability probes ───────────────────────────────
-
     /// Probe GitHub API capabilities to determine which API families are accessible.
     ///
     /// Makes lightweight test calls to key org-level endpoints and records
@@ -1521,12 +1467,10 @@ impl GitHubClient {
     /// probed here — each collector independently calls the relevant API and
     /// handles permission errors per-repo.
     pub async fn probe_capabilities(&self) -> CapabilitySet {
-        // Mandatory: repos list
         let repos_list = self
             .probe_endpoint(&format!("/orgs/{}/repos?per_page=1", self.org_name))
             .await;
 
-        // Optional: org-level secret scanning alerts
         let org_secret_scanning_alerts = self
             .probe_endpoint(&format!(
                 "/orgs/{}/secret-scanning/alerts?per_page=1&state=open",
@@ -1612,9 +1556,6 @@ mod tests {
 
     #[test]
     fn validate_api_base_url_accepts_http_in_tests() {
-        // HTTP is allowed in test configurations (both debug and release) so
-        // wiremock-based tests work. The HTTPS enforcement only applies to
-        // non-test release builds (production).
         let result = validate_api_base_url("http://localhost:8080");
         assert!(result.is_ok());
     }
@@ -1697,12 +1638,6 @@ mod tests {
         );
     }
 
-    // ── Path sanitization tests removed (SM1 sm1-sanitize-path-1779000001):
-    //    the local sanitize_path_segment wrapper was deleted; identical
-    //    coverage now lives in cherry-pit-web at middleware/path.rs.
-
-    // ── Error body truncation tests ─────────────────────────────
-
     #[test]
     fn truncate_error_body_short() {
         let body = "short error";
@@ -1719,21 +1654,14 @@ mod tests {
 
     #[test]
     fn truncate_error_body_multibyte_utf8() {
-        // Build a string of multi-byte characters that exceeds MAX_ERROR_BODY_LEN.
-        // Each '🦀' is 4 bytes. 300 crabs = 1200 bytes > 1024.
         let body = "🦀".repeat(300);
         let result = truncate_error_body(&body);
-        // Must not panic and must be valid UTF-8
         assert!(result.ends_with("…[truncated]"));
-        // Verify the body portion (before the suffix) is ≤ MAX_ERROR_BODY_LEN bytes
         let suffix = "…[truncated]";
         let body_portion = &result[..result.len() - suffix.len()];
         assert!(body_portion.len() <= MAX_ERROR_BODY_LEN);
-        // Verify the body portion is valid UTF-8 (it is, since result is a String)
         assert!(std::str::from_utf8(body_portion.as_bytes()).is_ok());
     }
-
-    // ── HTTP response status code tests ─────────────────────────
 
     /// Helper to build default `Arc<BudgetGate>` and `Arc<RateLimitState>` for tests.
     fn test_budget_and_rate_limit() -> (Arc<BudgetGate>, Arc<RateLimitState>) {
@@ -1833,8 +1761,6 @@ mod tests {
         assert!(result.data().is_none(), "204 should have no data");
     }
 
-    // ── request_single_with_headers: header capture test ───────
-
     #[tokio::test]
     async fn request_single_with_headers_captures_oauth_scopes() {
         use wiremock::matchers::path;
@@ -1899,8 +1825,6 @@ mod tests {
         );
     }
 
-    // ── Interior mutability / credential tests ──────────────────
-
     /// PAT credentials have `credential_expires_at == 0`. The fast path in
     /// `credential_needs_refresh()` must return `false`, skipping the mutex
     /// entirely. If it mistakenly returned `true`, `ensure_credential()` would
@@ -1919,20 +1843,17 @@ mod tests {
 
         let client = build_test_client(&server.uri());
 
-        // Verify the atomic sentinel is 0 (PAT never expires)
         assert_eq!(
             client.credential_expires_at.load(Ordering::Relaxed),
             0,
             "PAT credential should have expires_at_unix == 0"
         );
 
-        // Verify the fast-path check returns false
         assert!(
             !client.credential_needs_refresh(),
             "credential_needs_refresh() should return false for PAT"
         );
 
-        // Make a real request — proves ensure_credential() is a no-op
         let result = client.request("/test/pat", false, 0, 10).await;
         assert!(
             result.is_ok(),
@@ -1952,7 +1873,6 @@ mod tests {
 
         let server = MockServer::start().await;
 
-        // Mount 200 catch-all first (lower LIFO priority)
         Mock::given(path("/test/retry"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({"recovered": true})),
@@ -1960,7 +1880,6 @@ mod tests {
             .mount(&server)
             .await;
 
-        // Mount 401 with limit 1 second (higher LIFO priority, checked first)
         Mock::given(path("/test/retry"))
             .respond_with(ResponseTemplate::new(401).set_body_string("bad credentials"))
             .up_to_n_times(1)
@@ -1968,7 +1887,6 @@ mod tests {
             .await;
 
         let client = build_test_client(&server.uri());
-        // retries=1 gives 2 attempts: first gets 401, second gets 200
         let result = client.request("/test/retry", false, 1, 10).await;
 
         assert!(
@@ -1989,16 +1907,13 @@ mod tests {
 
         let server = MockServer::start().await;
 
-        // Every call returns 401
         Mock::given(path("/test/always-401"))
             .respond_with(ResponseTemplate::new(401).set_body_string("permanently invalid"))
-            // Expect exactly 2 calls: initial attempt + one 401-triggered retry
             .expect(2)
             .mount(&server)
             .await;
 
         let client = build_test_client(&server.uri());
-        // retries=3 gives 4 attempts, but persistent 401 should bail after 2
         let result = client.request("/test/always-401", false, 3, 10).await;
 
         assert!(!result.is_ok(), "persistent 401 should fail");
@@ -2007,13 +1922,8 @@ mod tests {
             Some(401),
             "should surface the 401 status code"
         );
-        // wiremock's expect(2) verifies exactly 2 calls on MockServer drop
     }
 
-    // ── Test RSA key for GitHub App credential refresh tests ────
-    //
-    // This is a throwaway 2048-bit RSA key generated for test use only.
-    // It has no association with any real GitHub App.
     const TEST_RSA_PRIVATE_KEY: &str = "-----BEGIN RSA PRIVATE KEY-----\n\
         MIIEowIBAAKCAQEAw4UBwY51Vdbsax7WKa5BFBaFHrT8bNI9HwTUgGnDwcTDCFqD\n\
         E85jo1C7gGUb4fI0SNHXVEHF/itipUVsj+3dVNye11NmZXabZTGnPAkUaIs686bQ\n\
@@ -2053,7 +1963,6 @@ mod tests {
 
         let server = MockServer::start().await;
 
-        // Mock the installation token exchange — expect EXACTLY 1 call
         let future_expiry = (Timestamp::now() + SignedDuration::from_hours(1)).to_string();
         Mock::given(method("POST"))
             .and(path("/app/installations/12345/access_tokens"))
@@ -2065,21 +1974,17 @@ mod tests {
             .mount(&server)
             .await;
 
-        // Mock the actual API endpoint — returns 200 for all callers
         Mock::given(path("/test/concurrent"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
             .mount(&server)
             .await;
 
-        // Create GitHub App config with the test RSA key
         let app_config = GitHubAppConfig {
             app_id: 99999,
             private_key_pem: secrecy::SecretString::from(TEST_RSA_PRIVATE_KEY),
             installation_id: 12345,
         };
 
-        // Create a credential that expires in 30 seconds — well within the
-        // 5-minute TOKEN_REFRESH_BUFFER, so credential_needs_refresh() returns true.
         let soon = Timestamp::now() + SignedDuration::from_secs(30);
         let credential =
             GitHubCredential::from_installation_token("ghs_about_to_expire".to_string(), soon);
@@ -2097,13 +2002,11 @@ mod tests {
             .expect("test client construction should succeed"),
         );
 
-        // Verify the credential starts as "needs refresh"
         assert!(
             client.credential_needs_refresh(),
             "test credential should trigger refresh (within 5-min buffer)"
         );
 
-        // Spawn 10 concurrent tasks, each making a request
         let n = 10;
         let mut handles = Vec::new();
         for _ in 0..n {
@@ -2122,17 +2025,11 @@ mod tests {
             );
         }
 
-        // After refresh, credential should no longer need refresh
         assert!(
             !client.credential_needs_refresh(),
             "credential should be fresh after refresh"
         );
-
-        // wiremock's expect(1) verifies exactly 1 installation token exchange
-        // when the MockServer is dropped at end of scope.
     }
-
-    // ── ApiOutcome::is_err tests ────────────────────────────────
 
     #[test]
     fn api_outcome_is_err_for_failure() {
@@ -2152,13 +2049,10 @@ mod tests {
         assert!(outcome.is_ok());
     }
 
-    // ── Cross-run cache round-trip tests ────────────────────────
-
     #[test]
     fn export_cache_seed_cache_round_trip() {
         let client_a = build_test_client("https://api.github.com");
 
-        // Simulate a successful repo_details response cached in the scc::HashMap.
         client_a.repo_detail_cache.upsert_sync(
             "my-repo".to_string(),
             CachedResult {
@@ -2176,7 +2070,6 @@ mod tests {
             },
         );
 
-        // Export from client A.
         let exported = client_a.export_cache();
         assert_eq!(exported.len(), 1);
         let (name, detail) = &exported[0];
@@ -2187,13 +2080,11 @@ mod tests {
         assert_eq!(detail.is_security_policy_enabled, Some(true));
         assert_eq!(detail.etag.as_deref(), Some("\"abc123\""));
 
-        // Seed into client B.
         let client_b = build_test_client("https://api.github.com");
         assert!(client_b.repo_detail_cache.is_empty());
         client_b.seed_cache(exported);
         assert_eq!(client_b.repo_detail_cache.len(), 1);
 
-        // Verify the seeded entry is returned by repo_detail_cache lookup.
         let entry = client_b
             .repo_detail_cache
             .read_sync("my-repo", |_, v| v.clone())
@@ -2210,7 +2101,6 @@ mod tests {
     fn seed_cache_skips_stale_entries() {
         let client = build_test_client("https://api.github.com");
 
-        // Create a CachedRepoDetail with a fetched_at older than 24h.
         let stale_detail = crate::domain::cache::CachedRepoDetail {
             default_branch: "main".into(),
             updated_at: Some("2026-01-01T00:00:00Z".into()),
@@ -2231,7 +2121,6 @@ mod tests {
     fn evict_stale_entries_marks_mismatched_updated_at_as_stale() {
         let client = build_test_client("https://api.github.com");
 
-        // Seed an entry with updated_at = T1.
         client.repo_detail_cache.upsert_sync(
             "changed-repo".to_string(),
             CachedResult {
@@ -2245,7 +2134,6 @@ mod tests {
             },
         );
 
-        // Inventory says updated_at is now T2 (different).
         let repos = vec![(
             "changed-repo".to_string(),
             Some("2026-04-11T08:00:00Z".to_string()),
@@ -2266,7 +2154,6 @@ mod tests {
     fn evict_stale_entries_keeps_matching_entries() {
         let client = build_test_client("https://api.github.com");
 
-        // Seed an entry with updated_at = T1.
         client.repo_detail_cache.upsert_sync(
             "unchanged-repo".to_string(),
             CachedResult {
@@ -2280,7 +2167,6 @@ mod tests {
             },
         );
 
-        // Inventory confirms same updated_at.
         let repos = vec![(
             "unchanged-repo".to_string(),
             Some("2026-04-10T12:00:00Z".to_string()),
@@ -2298,7 +2184,6 @@ mod tests {
     fn evict_stale_entries_keeps_entries_when_updated_at_missing() {
         let client = build_test_client("https://api.github.com");
 
-        // Seed an entry without updated_at.
         client.repo_detail_cache.upsert_sync(
             "no-timestamp".to_string(),
             CachedResult {
@@ -2311,7 +2196,6 @@ mod tests {
             },
         );
 
-        // Inventory also has no updated_at.
         let repos = vec![("no-timestamp".to_string(), None)];
         client.evict_stale_entries(&repos);
 
@@ -2326,7 +2210,6 @@ mod tests {
     fn evict_stale_entries_keeps_entry_when_cached_has_no_updated_at() {
         let client = build_test_client("https://api.github.com");
 
-        // Cached entry has no updated_at field.
         client.repo_detail_cache.upsert_sync(
             "no-cached-ts".to_string(),
             CachedResult {
@@ -2339,7 +2222,6 @@ mod tests {
             },
         );
 
-        // Inventory has updated_at — no basis for comparison, keep entry.
         let repos = vec![(
             "no-cached-ts".to_string(),
             Some("2026-04-11T08:00:00Z".to_string()),
@@ -2357,8 +2239,6 @@ mod tests {
     fn seed_cache_accepts_entry_near_ttl_boundary() {
         let client = build_test_client("https://api.github.com");
 
-        // Entry fetched 1 second before the TTL expires. This confirms
-        // that entries within the TTL window are accepted.
         let ttl_hours = i64::try_from(crate::config::REPO_CACHE_TTL_HOURS).expect("fits in i64");
         let near_boundary_detail = crate::domain::cache::CachedRepoDetail {
             default_branch: "main".into(),
@@ -2380,8 +2260,6 @@ mod tests {
             "entry 1s before TTL expiry should be accepted"
         );
     }
-
-    // ── ETag side-channel tests ─────────────────────────────────
 
     #[tokio::test]
     async fn repo_details_captures_etag_from_response() {
@@ -2406,7 +2284,6 @@ mod tests {
 
         assert!(result.is_ok(), "repo_details should succeed");
 
-        // Verify the cache entry contains the captured ETag
         let cached = client
             .repo_detail_cache
             .read_sync("etag-repo", |_, v| v.clone())
@@ -2418,7 +2295,6 @@ mod tests {
         );
         assert!(!cached.stale, "fresh entry should not be stale");
 
-        // Verify the side-channel was cleaned up by remove()
         assert!(
             !client
                 .last_response_etags
@@ -2434,10 +2310,6 @@ mod tests {
 
         let server = MockServer::start().await;
 
-        // First call: return 200 with ETag (for the conditional request that needs a 304)
-        // We'll use wiremock's expect() to ensure the right requests happen.
-
-        // The conditional request (with If-None-Match) should return 304
         Mock::given(path("/repos/test-org/revalidate-repo"))
             .and(header("If-None-Match", "\"etag-v1\""))
             .respond_with(ResponseTemplate::new(304))
@@ -2447,7 +2319,6 @@ mod tests {
 
         let client = build_test_client(&server.uri());
 
-        // Pre-populate cache with a stale entry that has an ETag
         let cached_data = serde_json::json!({
             "default_branch": "main",
             "updated_at": "2026-04-10T00:00:00Z"
@@ -2476,7 +2347,6 @@ mod tests {
             "304 should return the cached data"
         );
 
-        // Verify cache entry is now fresh
         let cached = client
             .repo_detail_cache
             .read_sync("revalidate-repo", |_, v| v.clone())
@@ -2495,7 +2365,6 @@ mod tests {
 
         let server = MockServer::start().await;
 
-        // Conditional request (with If-None-Match) returns 500
         Mock::given(path("/repos/test-org/fallthrough-repo"))
             .and(header("If-None-Match", "\"stale-etag\""))
             .respond_with(ResponseTemplate::new(500).set_body_string("server error"))
@@ -2504,7 +2373,6 @@ mod tests {
             .mount(&server)
             .await;
 
-        // Full request (without If-None-Match) returns fresh data with new ETag
         Mock::given(path("/repos/test-org/fallthrough-repo"))
             .respond_with(
                 ResponseTemplate::new(200)
@@ -2521,7 +2389,6 @@ mod tests {
 
         let client = build_test_client(&server.uri());
 
-        // Pre-populate cache with a stale entry
         client.repo_detail_cache.upsert_sync(
             "fallthrough-repo".to_string(),
             CachedResult {
@@ -2548,7 +2415,6 @@ mod tests {
             "should return fresh data from full request, not stale cached data"
         );
 
-        // Verify cache is updated with new data and ETag
         let cached = client
             .repo_detail_cache
             .read_sync("fallthrough-repo", |_, v| v.clone())
@@ -2560,8 +2426,6 @@ mod tests {
             "cache should have the new ETag"
         );
     }
-
-    // ── halted_until tests ──────────────────────────────────────
 
     #[test]
     fn is_halted_returns_false_when_not_halted() {
@@ -2579,7 +2443,6 @@ mod tests {
     #[test]
     fn is_halted_auto_clears_past_timestamp() {
         let client = build_test_client("https://api.github.com");
-        // epoch + 1s is always in the past
         client.halted_until.store(1, Ordering::Release);
         assert!(!client.is_halted());
     }
@@ -2595,8 +2458,6 @@ mod tests {
 
     #[tokio::test]
     async fn shared_budget_gate_cumulates_across_clients() {
-        // Two sequential clients (simulating two runs) sharing the same
-        // Arc<BudgetGate> should see cumulative total_calls_made().
         use wiremock::matchers::path;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -2610,13 +2471,11 @@ mod tests {
         let (budget, rate_limit) = test_budget_and_rate_limit();
         assert_eq!(budget.total_calls_made(), 0);
 
-        // "Run 1" — one API call through budget gate via public request().
         let client1 = build_test_client_with_budget(&server.uri(), &budget, &rate_limit);
         let _ = client1.request("/test/shared", false, 0, 10).await;
         let calls_after_run1 = budget.total_calls_made();
         assert!(calls_after_run1 > 0, "budget should have recorded calls");
 
-        // "Run 2" — second client shares the same budget gate.
         let client2 = build_test_client_with_budget(&server.uri(), &budget, &rate_limit);
         let _ = client2.request("/test/shared", false, 0, 10).await;
         let calls_after_run2 = budget.total_calls_made();
@@ -2652,7 +2511,6 @@ mod tests {
         let (budget, rate_limit) = test_budget_and_rate_limit();
         let client = build_test_client_with_budget("https://api.github.com", &budget, &rate_limit);
 
-        // Populate the per-run cache via seed_cache.
         let detail = crate::domain::cache::CachedRepoDetail {
             default_branch: "main".into(),
             updated_at: Some("2026-04-14T00:00:00Z".into()),
@@ -2663,11 +2521,9 @@ mod tests {
         };
         client.seed_cache(vec![("test-repo".into(), detail)]);
 
-        // Verify the cache has the entry.
         let exported = client.export_cache();
         assert!(!exported.is_empty(), "cache should have seeded entry");
 
-        // clear_run_cache should empty the cache.
         client.clear_run_cache();
         let exported_after = client.export_cache();
         assert!(
@@ -2675,7 +2531,6 @@ mod tests {
             "cache should be empty after clear"
         );
 
-        // Budget gate state should be unaffected.
         assert_eq!(budget.total_calls_made(), 0, "budget should be untouched");
     }
 }

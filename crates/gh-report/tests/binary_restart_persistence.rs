@@ -41,7 +41,6 @@ const ORG: &str = "test-org-q4";
 #[test]
 fn dump_baseline_against_empty_store_exits_zero_with_empty_entries() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    // Bin auto-creates events/<org>/ on first open — no pre-mkdir needed.
 
     let output = Command::cargo_bin("gh-report")
         .expect("locate gh-report binary")
@@ -115,9 +114,6 @@ async fn dump_baseline_against_seeded_store_exits_zero() {
             .create(vec![event], ctx)
             .await
             .expect("create Run aggregate");
-        // store dropped at scope end — RunLock released, fsync
-        // already complete per CHE-0024 (`create` returns Ok only
-        // after `write_all + fsync`).
     }
 
     let output = Command::cargo_bin("gh-report")
@@ -147,9 +143,6 @@ async fn dump_baseline_against_seeded_store_exits_zero() {
         baseline.get("schema_version").is_some(),
         "Baseline missing schema_version; raw stdout:\n{stdout}"
     );
-    // entries may or may not be empty depending on which DomainEvent
-    // arm was seeded; SweepStarted leaves it empty by design. The
-    // load-bearing assertion is the bin-exit-zero above.
     assert!(
         baseline.get("entries").is_some(),
         "Baseline missing entries object; raw stdout:\n{stdout}"

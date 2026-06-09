@@ -109,9 +109,6 @@ impl<S: Subscriber> Layer<S> for CaptureLayer {
 
 #[tokio::test]
 async fn publish_failure_emits_structured_error_per_envelope() {
-    // Persistence: MsgpackFileStore over a tempdir. Publish failure
-    // is non-fatal per CHE-0024:R1; events stay durable in the per-aggregate
-    // msgpack files even when the bus refuses them.
     let dir = TempDir::new().expect("tempdir");
     let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(dir.path()));
     let bus: Arc<FailingBus> = Arc::new(FailingBus);
@@ -124,10 +121,6 @@ async fn publish_failure_emits_structured_error_per_envelope() {
     let tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
-    // Canonical Track 4.0 failure-injection seam: spawn the Merger
-    // over the FailingBus via the test-only ctor. The merger arm
-    // runs `publish_or_trace(&self.bus, ...)` after persistence
-    // succeeds — exactly the absorb point under test.
     let (merger_tx, _merger_handle) = Merger::<FailingBus>::with_bus_for_test(
         Arc::clone(&store),
         Arc::clone(&bus),
@@ -137,11 +130,6 @@ async fn publish_failure_emits_structured_error_per_envelope() {
         Arc::clone(&tracker),
     );
 
-    // Capture tracing events emitted while the helper runs. Use
-    // `set_default` (returns a `DefaultGuard`) rather than
-    // `with_default` so the dispatcher remains active across the
-    // `.await` below; nesting a fresh runtime inside `#[tokio::test]`
-    // is not permitted.
     let capture = CaptureLayer::default();
     let events_handle = Arc::clone(&capture.events);
     let subscriber = tracing_subscriber::registry().with(capture);
@@ -156,10 +144,6 @@ async fn publish_failure_emits_structured_error_per_envelope() {
     };
     let ctx = CorrelationContext::none();
 
-    // Drive the Merger directly: this is the post-3b architectural
-    // boundary at which `publish_or_trace` lives. The reply mirrors
-    // what `RunService::start_sweep` would receive — start_sweep
-    // returns `Ok(())` despite the bus failure (CHE-0024:R1).
     let (reply_tx, reply_rx) = oneshot::channel();
     merger_tx
         .send(MergerCommand::StartSweep {
@@ -178,7 +162,6 @@ async fn publish_failure_emits_structured_error_per_envelope() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-    // Filter to the EDA target we own.
     let eda_errors: Vec<&CapturedEvent> = captured
         .iter()
         .filter(|e| e.target == "gh_report.eda" && e.level == "ERROR")
@@ -190,9 +173,6 @@ async fn publish_failure_emits_structured_error_per_envelope() {
          got captured={captured:#?}",
     );
 
-    // Per-envelope iteration: start_sweep produces exactly 1 envelope,
-    // so we expect exactly 1 error emission for this single-envelope
-    // batch.
     assert_eq!(
         eda_errors.len(),
         1,

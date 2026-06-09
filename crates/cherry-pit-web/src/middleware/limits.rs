@@ -174,14 +174,11 @@ mod tests {
             max_inflight_requests: 2,
             max_ws_connections: 3,
         };
-        let b = a; // Copy
-        let c = a; // Copy again
+        let b = a;
+        let c = a;
         assert_eq!(b.max_body_bytes, 1);
         assert_eq!(c.max_inflight_requests, 2);
-        let _: String = format!("{a:?}"); // Debug
-        // `Clone` is contractually implied by the `Copy` bound (Rust
-        // enforces `Copy: Clone` at the trait level); calling `.clone()`
-        // here would trip `clippy::clone-on-copy`.
+        let _: String = format!("{a:?}");
     }
 
     #[test]

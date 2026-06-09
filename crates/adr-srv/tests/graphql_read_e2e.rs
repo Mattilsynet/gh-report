@@ -279,7 +279,6 @@ async fn projection_reflects_body_mutation_on_rescrape() {
     let h1: serde_json::Value = resp1.data.into_json().unwrap();
     let hash1 = h1["adrById"]["bodyHash"].as_str().unwrap().to_string();
 
-    // Mutate AFM-0001 — append text → body_hash changes.
     let p = marker_dir.join("adr").join("afm").join("AFM-0001-root.md");
     let mut body = fs::read_to_string(&p).expect("read");
     body.push_str("\nMutation appended.\n");

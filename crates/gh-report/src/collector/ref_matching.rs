@@ -33,13 +33,10 @@ pub fn ref_name_matches(pattern: &str, branch: &str, default_branch: &str) -> bo
         "~ALL" => true,
         "~DEFAULT_BRANCH" => branch_ref == default_branch_ref,
         _ => {
-            // Exact match against full ref or branch name
             if pattern == branch_ref || pattern == branch_name {
                 return true;
             }
 
-            // Pattern matching: if pattern starts with "refs/", match against full ref;
-            // otherwise match against branch name.
             let candidate = if pattern.starts_with("refs/") {
                 &branch_ref
             } else {
@@ -69,7 +66,6 @@ const MAX_SEGMENT_RECURSION_DEPTH: usize = 64;
 
 fn match_path_segments(pattern_parts: &[&str], candidate_parts: &[&str], depth: usize) -> bool {
     if depth > MAX_SEGMENT_RECURSION_DEPTH {
-        // Safety bail-out: pattern is too complex, treat as non-match
         return false;
     }
 
@@ -78,7 +74,6 @@ fn match_path_segments(pattern_parts: &[&str], candidate_parts: &[&str], depth: 
     }
 
     // SAFETY: `pattern_parts.is_empty()` is checked above, so split_first
-    // always returns Some. Using expect() for the lint gate.
     let Some((head, tail)) = pattern_parts.split_first() else {
         return false;
     };
@@ -108,7 +103,6 @@ fn match_path_segments(pattern_parts: &[&str], candidate_parts: &[&str], depth: 
 /// Consecutive `*` chars are collapsed before matching to prevent exponential
 /// backtracking. Protected with a recursion depth limit as a secondary guard.
 fn fnmatch_segment(pattern: &str, candidate: &str) -> bool {
-    // Collapse consecutive '*' to eliminate exponential branching.
     let pattern_bytes: Vec<u8> = {
         let raw = pattern.as_bytes();
         let mut out = Vec::with_capacity(raw.len());
@@ -130,7 +124,6 @@ fn fnmatch_segment(pattern: &str, candidate: &str) -> bool {
 /// the overhead of `chars().collect::<Vec<char>>()`.
 fn fnmatch_bytes(pattern: &[u8], candidate: &[u8], depth: usize) -> bool {
     if depth > config::FNMATCH_MAX_RECURSION_DEPTH {
-        // Safety bail-out: pattern is too complex, treat as non-match
         return false;
     }
 
@@ -140,7 +133,6 @@ fn fnmatch_bytes(pattern: &[u8], candidate: &[u8], depth: usize) -> bool {
 
     match pattern[0] {
         b'*' => {
-            // '*' can match zero or more characters
             (0..=candidate.len()).any(|i| fnmatch_bytes(&pattern[1..], &candidate[i..], depth + 1))
         }
         b'?' => {
@@ -178,7 +170,6 @@ pub fn ruleset_applies_to_branch(
     }
 
     let include_patterns: &[String] = if include.is_empty() {
-        // Default: include all.
         &[String::from("~ALL")]
     } else {
         include
@@ -263,7 +254,6 @@ mod tests {
 
     #[test]
     fn slash_sensitivity() {
-        // Single * should not cross slash boundaries
         assert!(!ref_name_matches("release/*", "release/v1/hotfix", "main"));
         assert!(ref_name_matches("release/**", "release/v1/hotfix", "main"));
     }
@@ -318,25 +308,18 @@ mod tests {
 
     #[test]
     fn deeply_nested_double_star_does_not_hang() {
-        // This pattern would cause combinatorial explosion without a recursion limit.
-        // 20 ** segments with a 10-segment candidate creates massive branching.
         let pattern = (0..20).map(|_| "**").collect::<Vec<_>>().join("/");
         let candidate = (0..10)
             .map(|i| format!("seg{i}"))
             .collect::<Vec<_>>()
             .join("/");
-        // Should complete quickly (either match or bail out), not hang.
         let _result = path_pattern_matches(&pattern, &candidate);
     }
 
     #[test]
     fn adversarial_fnmatch_pattern_does_not_hang() {
-        // Adversarial pattern: many * chars matched against a long candidate
-        // that doesn't end with 'b'. This triggers exponential backtracking
-        // in naive recursive matchers.
         let pattern = "*a*a*a*a*a*a*a*a*a*a";
         let candidate = "aaaaaaaaaaaaaaaaaaaab";
-        // Should return false without hanging
         assert!(!fnmatch_segment(pattern, candidate));
     }
 }

@@ -195,10 +195,8 @@ pub fn render_dashboard(
     let tiers = &config.tiers;
     let warm_start = evidence.assessment_metadata.warm_start;
 
-    // Build owner view models from metrics, if available.
     let owners_vm = build_owners_view_model(&evidence.metrics.owner_metrics, tiers);
 
-    // Build orphaned repos view model (always computed, may be empty).
     let orphaned_vm = build_orphaned_view_model(
         &evidence.repositories,
         &evidence.assessment_metadata.organization,
@@ -210,7 +208,6 @@ pub fn render_dashboard(
     vm.owners.clone_from(&owners_vm);
     vm.orphaned_count = orphaned_count;
 
-    // Compute top 3 security teams by sec score for CODEOWNERS Summary box.
     if let Some(ref ov) = owners_vm {
         vm.top_security_teams = build_top_security_teams(ov);
     }
@@ -224,7 +221,6 @@ pub fn render_dashboard(
     pages.insert("style.css".to_string(), STYLESHEET.to_string());
     pages.insert("ws.js".to_string(), WS_CLIENT_JS.to_string());
 
-    // Emit owner pages if owner metrics are available.
     if let Some(ref owners) = owners_vm {
         let owners_html = render_template(&OwnersTemplate {
             vm: owners,
@@ -235,7 +231,6 @@ pub fn render_dashboard(
         })?;
         pages.insert("owners.html".to_string(), owners_html);
 
-        // Build and emit per-owner detail pages.
         let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
         let detail_vms = build_owner_detail_view_models(
             &evidence.metrics.owner_metrics,
@@ -254,7 +249,6 @@ pub fn render_dashboard(
         }
     }
 
-    // Always emit the orphaned repos page (even if 0 orphans — shows empty state).
     let orphaned_html = render_template(&OrphansTemplate {
         vm: orphaned_vm,
         warm_start,
@@ -285,10 +279,6 @@ fn build_top_security_teams(owners: &OwnersViewModel) -> Vec<TopSecurityTeam> {
 
     let top3: Vec<&OwnerOverviewRow> = ranked.into_iter().take(3).collect();
 
-    // Podium order: [Silver(1), Gold(0), Bronze(2)]
-    // With fewer than 3 teams, degrade gracefully:
-    //   1 team  → [Gold]
-    //   2 teams → [Silver, Gold]
     let podium_order: Vec<(usize, &str, &str)> = match top3.len() {
         0 => vec![],
         1 => vec![(0, "rank-gold", "\u{1f947}")],
@@ -356,7 +346,6 @@ fn build_owners_view_model(
                 .map(|&key| build_control_cell(&m.per_control_coverage, key, tiers))
                 .collect();
 
-            // Compute per-owner sec score: geometric mean of all 6 controls.
             let sec_rates: Vec<Option<f64>> = SEC_SCORE_CONTROLS
                 .iter()
                 .map(|&key| m.per_control_coverage.get(key).and_then(|rm| rm.rate))
@@ -455,7 +444,6 @@ fn build_owner_detail_view_models(
                 })
                 .collect();
 
-            // Look up repos for this owner using the canonical (lowercase) key.
             let canonical_key = m.owner.clone();
             let org_encoded = utf8_percent_encode(organization, PATH_SEGMENT).to_string();
             let mut repo_rows: Vec<OwnerRepoRow> = owner_repo_map
@@ -468,7 +456,6 @@ fn build_owner_detail_view_models(
                 })
                 .unwrap_or_default();
 
-            // Sort repos case-insensitively by name for deterministic output.
             repo_rows.sort_by_cached_key(|r| r.repo_name.to_lowercase());
 
             let owner_type_label = m.owner_type.to_string();
@@ -478,12 +465,9 @@ fn build_owner_detail_view_models(
                 u32::try_from(repo_rows.iter().filter(|r| r.is_stale).count()).unwrap_or(u32::MAX);
             let total_repo_count = u32::try_from(repo_rows.len()).unwrap_or(u32::MAX);
 
-            // Stale proportion for this owner: stale / total × 100.
-            // Distinct from the org-level stale rate (archival coverage).
             let stale_pct = if total_repo_count == 0 {
                 None
             } else {
-                // stale/total counts are small (<100k repos); f64 has 53 bits mantissa
                 Some((f64::from(stale_repo_count) / f64::from(total_repo_count)) * 100.0)
             };
             let stale_width_class = rate_to_width_class(stale_pct);
@@ -587,7 +571,6 @@ fn build_owner_repo_row(
         visibility: repo.repository.visibility.to_string(),
         controls: build_status_dots(&repo.checks),
 
-        // ── Repository metadata ─────────────
         description: repo
             .repository
             .description
@@ -631,8 +614,6 @@ fn compute_repo_score(
     checks: &crate::domain::checks::RepositoryChecks,
     tiers: &CoverageTiers,
 ) -> (Option<f64>, String, CoverageTier, &'static str) {
-    // One entry per RepositoryChecks field; order doesn't affect scoring
-    // (all controls have equal weight) but mirrors field declaration order.
     let categories = [
         ScoreCategory::from(checks.security_policy.status),
         ScoreCategory::from(checks.secret_scanning.status),
@@ -660,7 +641,6 @@ fn compute_repo_score(
         return (None, "N/A".to_string(), CoverageTier::Na, "w-0");
     }
 
-    // pass/total are bounded by repository count (<100k); f64 has 53 bits mantissa
     let score = (f64::from(pass) / f64::from(total)) * 100.0;
     let score_rounded = (score * 10.0).round() / 10.0;
     let formatted = format!("{score_rounded:.1}%");
@@ -735,7 +715,6 @@ fn build_orphaned_view_model(
         })
         .collect();
 
-    // Sort: last committer login ascending, then repo name ascending (case-insensitive).
     rows.sort_by_cached_key(|r| {
         (
             r.last_committer_login.to_lowercase(),
@@ -764,7 +743,6 @@ fn format_date_prefix(iso_ts: Option<&str>) -> String {
     if let Some(dt) = iso_ts.and_then(parse_iso8601) {
         return dt.strftime("%Y-%m-%d").to_string();
     }
-    // Unparseable but long enough — return raw date prefix.
     if let Some(d) = iso_ts.and_then(|s| s.get(..10)) {
         return d.to_string();
     }
@@ -878,10 +856,6 @@ fn build_status_dots(checks: &crate::domain::checks::RepositoryChecks) -> Vec<St
 
     vec![policy_dot, secret_dot, dependabot_dot, branch_dot]
 }
-
-// ===========================================================================
-// Tests
-// ===========================================================================
 
 #[cfg(test)]
 mod tests {
@@ -1009,9 +983,9 @@ mod tests {
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
         let html = &pages["report.html"];
 
-        assert!(html.contains("66.7% (2/3)")); // policy
-        assert!(html.contains("80.0% (4/5)")); // secret scanning
-        assert!(html.contains("60.0% (3/5)")); // dependabot and branch
+        assert!(html.contains("66.7% (2/3)"));
+        assert!(html.contains("80.0% (4/5)"));
+        assert!(html.contains("60.0% (3/5)"));
     }
 
     #[test]
@@ -1038,12 +1012,10 @@ mod tests {
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
         let html = &pages["report.html"];
 
-        // Askama must escape the angle brackets so raw <script> tags never appear.
         assert!(
             !html.contains("<script>alert('xss')</script>"),
             "raw script tag must be escaped"
         );
-        // Askama uses XML-style numeric escapes: &#60; for '<' and &#62; for '>'.
         assert!(
             html.contains("&#60;script&#62;") || html.contains("&lt;script&gt;"),
             "expected escaped angle brackets in output"
@@ -1069,7 +1041,6 @@ mod tests {
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
         let css = &pages["style.css"];
 
-        // Verify the stylesheet contains expected selectors.
         assert!(css.contains(":root"));
         assert!(css.contains(".scorecard"));
         assert!(css.contains(".card"));
@@ -1087,8 +1058,8 @@ mod tests {
             !index.contains("<h1>"),
             "index page should have no h1 heading"
         );
-        assert!(index.contains("66.7% (2/3)")); // policy coverage
-        assert!(index.contains("80.0% (4/5)")); // secret scanning
+        assert!(index.contains("66.7% (2/3)"));
+        assert!(index.contains("80.0% (4/5)"));
     }
 
     #[test]
@@ -1105,8 +1076,6 @@ mod tests {
             index.contains("health-score"),
             "index should contain health-score CSS class"
         );
-        // Sample rates: 66.7, 80.0, 60.0, 60.0, 80.0 → plus stale_rate = None (no archived, no stale)
-        // geometric mean of [66.7, 80.0, 60.0, 60.0, 80.0] ≈ 68.8%
         assert!(
             index.contains("68.8%"),
             "health score should display the geometric mean: 68.8%"
@@ -1133,7 +1102,6 @@ mod tests {
             index.contains("Organisation Governance Score"),
             "governance score card should still appear when N/A"
         );
-        // The formatted value should be N/A
         assert!(
             index.contains("tier-na"),
             "health score card should have tier-na class when all rates are N/A"
@@ -1162,8 +1130,6 @@ mod tests {
             "raw script tag must be escaped in index"
         );
     }
-
-    // ── Status-dot mapping tests ───────────────────────────────
 
     use crate::domain::checks::{
         BranchProtectionDetails, BranchProtectionResult, CodeownersResult, CodeownersStatus,
@@ -1307,8 +1273,6 @@ mod tests {
         assert_eq!(dots[1].label, "permission denied");
     }
 
-    // ── Detail view model integration tests ────────────────────
-
     use crate::domain::codeowners::ParsedCodeowners;
 
     fn evidence_with_owner_repos() -> Evidence {
@@ -1394,7 +1358,6 @@ mod tests {
         assert_eq!(vm.summary_cards[1].label, "Secret Scanning");
         assert_eq!(vm.summary_cards[2].label, "Dependabot Status");
         assert_eq!(vm.summary_cards[3].label, "Branch Protection");
-        // Verify rates are formatted
         assert!(vm.summary_cards[0].cell.rate_formatted.contains('%'));
     }
 
@@ -1412,10 +1375,8 @@ mod tests {
 
         let (_, vm) = &detail_vms[0];
         assert_eq!(vm.repo_rows.len(), 2);
-        // Each row has 4 control status dots
         assert_eq!(vm.repo_rows[0].controls.len(), 4);
         assert_eq!(vm.repo_rows[1].controls.len(), 4);
-        // All repos should have URLs regardless of visibility
         for row in &vm.repo_rows {
             assert!(
                 row.repo_url
@@ -1442,7 +1403,6 @@ mod tests {
         );
 
         let (_, vm) = &detail_vms[0];
-        // alpha-repo sorts before beta-repo (case-insensitive)
         assert_eq!(vm.repo_rows[0].repo_name, "alpha-repo");
         assert_eq!(vm.repo_rows[1].repo_name, "beta-repo");
     }
@@ -1460,24 +1420,21 @@ mod tests {
         );
 
         let (_, vm) = &detail_vms[0];
-        // alpha-repo: policy fail, secret disabled, dependabot disabled, branch fail
         let alpha = &vm.repo_rows[0];
-        assert_eq!(alpha.controls[0].css_class, "status-fail"); // policy
-        assert_eq!(alpha.controls[1].css_class, "status-fail"); // secret
-        assert_eq!(alpha.controls[2].css_class, "status-fail"); // dependabot
-        assert_eq!(alpha.controls[3].css_class, "status-fail"); // branch
+        assert_eq!(alpha.controls[0].css_class, "status-fail");
+        assert_eq!(alpha.controls[1].css_class, "status-fail");
+        assert_eq!(alpha.controls[2].css_class, "status-fail");
+        assert_eq!(alpha.controls[3].css_class, "status-fail");
 
-        // beta-repo: all passing
         let beta = &vm.repo_rows[1];
-        assert_eq!(beta.controls[0].css_class, "status-pass"); // policy
-        assert_eq!(beta.controls[1].css_class, "status-pass"); // secret
-        assert_eq!(beta.controls[2].css_class, "status-pass"); // dependabot
-        assert_eq!(beta.controls[3].css_class, "status-pass"); // branch
+        assert_eq!(beta.controls[0].css_class, "status-pass");
+        assert_eq!(beta.controls[1].css_class, "status-pass");
+        assert_eq!(beta.controls[2].css_class, "status-pass");
+        assert_eq!(beta.controls[3].css_class, "status-pass");
     }
 
     #[test]
     fn detail_vm_no_matching_repos_shows_empty() {
-        // Owner metrics exist but no repos in evidence match
         use crate::domain::metrics::{OwnerMetrics, OwnerType};
 
         let owner_metrics = vec![OwnerMetrics {
@@ -1537,7 +1494,6 @@ mod tests {
             &evidence.assessment_metadata.run_timestamp,
         );
 
-        // Both teams should have the repo
         assert_eq!(detail_vms.len(), 2);
         let expected_url = format!(
             "{}/TestOrg/shared-repo",
@@ -1563,7 +1519,6 @@ mod tests {
         );
 
         let (_, vm) = &detail_vms[0];
-        // Both repos (including private) have real URLs
         assert_eq!(
             vm.repo_rows[0].repo_url,
             format!("{}/TestOrg/alpha-repo", config::DEFAULT_GITHUB_WEB_BASE_URL),
@@ -1611,7 +1566,6 @@ mod tests {
         assert_eq!(detail_vms.len(), 1);
         let (_, vm) = &detail_vms[0];
         assert_eq!(vm.repo_rows.len(), 1);
-        // Space → %20, # → %23; hyphens and dots stay unencoded
         assert_eq!(
             vm.repo_rows[0].repo_url,
             format!(
@@ -1620,8 +1574,6 @@ mod tests {
             ),
         );
     }
-
-    // ── Rendered HTML integration tests ────────────────────────
 
     #[test]
     fn render_owner_detail_html_repo_links_contain_href() {
@@ -1634,7 +1586,6 @@ mod tests {
             .expect("expected an owner detail page")
             .1;
 
-        // Both private and public repos should have real names and links
         assert!(
             detail_page.contains("alpha-repo"),
             "private repo name should appear in detail page"
@@ -1651,7 +1602,6 @@ mod tests {
             detail_page.contains("href=\"https://github.com/TestOrg/beta-repo\""),
             "detail page should contain href for beta-repo"
         );
-        // Verify security attributes on the links
         assert!(
             detail_page.contains("target=\"_blank\""),
             "repo links should open in a new tab"
@@ -1667,15 +1617,12 @@ mod tests {
         let evidence = evidence_with_owner_repos();
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
 
-        // Should have: index, report, style, owners, owners/detail, orphans
         assert!(pages.contains_key("owners.html"));
-        // At least one owner detail page
         let detail_pages: Vec<_> = pages.keys().filter(|k| k.starts_with("owners/")).collect();
         assert!(
             !detail_pages.is_empty(),
             "expected at least one owner detail page"
         );
-        // Owners page nav should contain the orphans link
         let owners_html = &pages["owners.html"];
         assert!(
             owners_html.contains("Orphans ("),
@@ -1694,11 +1641,9 @@ mod tests {
             .expect("expected an owner detail page")
             .1;
 
-        // All repos should appear with real names
         assert!(detail_page.contains("alpha-repo"));
         assert!(!detail_page.contains("[private repo]"));
         assert!(detail_page.contains("beta-repo"));
-        // Should contain status dots
         assert!(detail_page.contains("status-dot"));
         assert!(detail_page.contains("status-pass"));
         assert!(detail_page.contains("status-fail"));
@@ -1715,12 +1660,10 @@ mod tests {
             .expect("expected an owner detail page")
             .1;
 
-        // Mini-scorecard should have labeled cards, not numeric indices
         assert!(detail_page.contains("Security Policy"));
         assert!(detail_page.contains("Secret Scanning"));
         assert!(detail_page.contains("Dependabot"));
         assert!(detail_page.contains("Branch Protection"));
-        // Verify named control labels are present, not numeric indices.
     }
 
     #[test]
@@ -1734,7 +1677,6 @@ mod tests {
             .expect("expected an owner detail page")
             .1;
 
-        // Table headers should be data-driven from control_names
         assert!(detail_page.contains("<th class=\"text-center\">Security Policy</th>"));
         assert!(detail_page.contains("<th class=\"text-center\">Dependabot Status</th>"));
     }
@@ -1755,8 +1697,6 @@ mod tests {
             "owner detail page should contain the access-restriction warning"
         );
     }
-
-    // ── format_date_prefix tests ───────────────────────────────
 
     #[test]
     fn format_date_prefix_full_iso_timestamp() {
@@ -1783,7 +1723,6 @@ mod tests {
 
     #[test]
     fn format_date_prefix_cross_date_boundary_offset() {
-        // 23:30 at -05:00 is next day in UTC (04:30 UTC on 2026-04-10).
         assert_eq!(
             super::format_date_prefix(Some("2026-04-09T23:30:00-05:00")),
             "2026-04-10"
@@ -1798,11 +1737,8 @@ mod tests {
         );
     }
 
-    // ── OwnerRepoRow metadata field tests ──────────────────────
-
     #[test]
     fn detail_vm_repo_row_metadata_defaults_when_no_data() {
-        // Default fixtures have None for all optional metadata fields
         let evidence = evidence_with_owner_repos();
         let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
         let detail_vms = build_owner_detail_view_models(
@@ -1814,7 +1750,7 @@ mod tests {
         );
 
         let (_, vm) = &detail_vms[0];
-        let row = &vm.repo_rows[0]; // alpha-repo
+        let row = &vm.repo_rows[0];
 
         assert_eq!(row.description, "\u{2014}");
         assert_eq!(row.language, "\u{2014}");
@@ -1962,7 +1898,6 @@ mod tests {
                 test_fixtures::codeowners_with_owners(&["@org/team-stale"]),
             ),
         );
-        // 3 years before run_timestamp (2026-04-09)
         repo.repository.updated_at = Some("2023-01-01T00:00:00Z".to_string());
 
         let repos = vec![repo];
@@ -1995,8 +1930,6 @@ mod tests {
 
     #[test]
     fn render_owner_detail_html_recent_repo_no_row_stale_class() {
-        // evidence_with_owner_repos() has repos with updated_at = None
-        // (not stale) — verify no row-stale class and no stale footnote
         let evidence = evidence_with_owner_repos();
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
         let detail_page = pages
@@ -2014,8 +1947,6 @@ mod tests {
             "stale footnote should not appear when no repos are stale"
         );
     }
-
-    // ── Rendered HTML metadata column tests ────────────────────
 
     #[test]
     fn render_owner_detail_html_contains_metadata_headers() {
@@ -2053,7 +1984,6 @@ mod tests {
             detail_page.contains("<th>Visibility</th>"),
             "owner detail page should contain Visibility column header"
         );
-        // Verify visibility values appear in the rendered HTML
         assert!(
             detail_page.contains("Private"),
             "owner detail page should show Private visibility"
@@ -2077,7 +2007,6 @@ mod tests {
         );
 
         let (_, vm) = &detail_vms[0];
-        // alpha-repo is Private, beta-repo is Public
         assert_eq!(vm.repo_rows[0].visibility, "Private");
         assert_eq!(vm.repo_rows[1].visibility, "Public");
     }
@@ -2169,7 +2098,6 @@ mod tests {
             .expect("expected an owner detail page")
             .1;
 
-        // Raw HTML tags must be escaped by Askama
         assert!(
             !detail_page.contains("<img onerror=alert(1)>"),
             "raw img tag must be escaped in description"
@@ -2183,8 +2111,6 @@ mod tests {
             "raw bold tag must be escaped in committer login"
         );
     }
-
-    // ── Orphan detection tests ─────────────────────────────────
 
     #[test]
     fn is_orphaned_absent_codeowners() {
@@ -2222,8 +2148,6 @@ mod tests {
 
     #[test]
     fn is_orphaned_conforming_with_parsed_none_not_orphaned() {
-        // Conforming status with parsed: None means the file was found but
-        // content was not downloaded — not orphaned (default all_passing_evidence).
         let repo = test_fixtures::all_passing_evidence("conforming-repo");
         assert!(!super::is_orphaned(&repo));
     }
@@ -2361,12 +2285,10 @@ mod tests {
         let vm = super::build_orphaned_view_model(&repos, "TestOrg", "2026-04-09T12:00:00+00:00");
 
         assert_eq!(vm.rows.len(), 3);
-        // Alice's repos sorted by name: alpha before zeta
         assert_eq!(vm.rows[0].repo_name, "alpha-repo");
         assert_eq!(vm.rows[0].last_committer_login, "Alice");
         assert_eq!(vm.rows[1].repo_name, "zeta-repo");
         assert_eq!(vm.rows[1].last_committer_login, "Alice");
-        // Bob comes after Alice
         assert_eq!(vm.rows[2].repo_name, "beta-repo");
         assert_eq!(vm.rows[2].last_committer_login, "bob");
     }
@@ -2521,7 +2443,6 @@ mod tests {
         let evidence = sample_evidence();
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
 
-        // All pages should contain the orphaned nav link
         let index = &pages["index.html"];
         assert!(
             index.contains("Orphans ("),
@@ -2541,8 +2462,6 @@ mod tests {
         );
     }
 
-    // ── compute_repo_score tests ───────────────────────────────
-
     #[test]
     fn repo_score_all_passing() {
         let checks = make_checks_with_statuses(
@@ -2552,7 +2471,6 @@ mod tests {
             BranchProtectionStatus::Pass,
         );
         let (score, fmt, tier, wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
-        // 5/5 = 100% (includes codeowners = Conforming from make_checks_with_statuses)
         assert_eq!(score, Some(100.0));
         assert_eq!(fmt, "100.0%");
         assert_eq!(tier, CoverageTier::Pass);
@@ -2567,7 +2485,6 @@ mod tests {
             DependabotStatus::Disabled,
             BranchProtectionStatus::Fail,
         );
-        // codeowners is Conforming (from helper) → 1 pass out of 5
         let (score, _fmt, tier, _wc) =
             super::compute_repo_score(&checks, &CoverageTiers::default());
         assert_eq!(score, Some(20.0));
@@ -2582,7 +2499,6 @@ mod tests {
             DependabotStatus::Unknown,
             BranchProtectionStatus::Unknown,
         );
-        // Override codeowners to Unknown too
         let mut checks = checks;
         checks.codeowners.status = CodeownersStatus::Unknown;
 
@@ -2597,12 +2513,10 @@ mod tests {
     fn repo_score_mixed_with_unknowns_excluded() {
         let checks = make_checks_with_statuses(
             SecurityPolicyStatus::Pass,
-            SecretScanningStatus::Unknown, // excluded
+            SecretScanningStatus::Unknown,
             DependabotStatus::Disabled,
-            BranchProtectionStatus::Unknown, // excluded
+            BranchProtectionStatus::Unknown,
         );
-        // policy=pass(1), secret=excluded, dependabot=fail(0), branch=excluded
-        // codeowners=conforming(1). Total: 2 pass / 3 deterministic = 66.7%
         let (score, _fmt, tier, _wc) =
             super::compute_repo_score(&checks, &CoverageTiers::default());
         let s = score.unwrap();
@@ -2615,11 +2529,9 @@ mod tests {
         let checks = make_checks_with_statuses(
             SecurityPolicyStatus::Pass,
             SecretScanningStatus::Enabled,
-            DependabotStatus::Paused,        // fail
-            BranchProtectionStatus::Partial, // fail
+            DependabotStatus::Paused,
+            BranchProtectionStatus::Partial,
         );
-        // policy=pass, secret=pass, dependabot=fail, branch=fail, codeowners=pass
-        // 3/5 = 60%
         let (score, _fmt, _tier, _wc) =
             super::compute_repo_score(&checks, &CoverageTiers::default());
         assert_eq!(score, Some(60.0));
@@ -2629,12 +2541,10 @@ mod tests {
     fn repo_score_secret_scanning_permission_denied_excluded() {
         let checks = make_checks_with_statuses(
             SecurityPolicyStatus::Pass,
-            SecretScanningStatus::PermissionDenied, // excluded
+            SecretScanningStatus::PermissionDenied,
             DependabotStatus::Enabled,
             BranchProtectionStatus::Pass,
         );
-        // codeowners = Conforming (pass) by default.
-        // Deterministic: policy=pass, dependabot=pass, branch=pass, codeowners=pass → 4/4 = 100%
         let (score, fmt, tier, wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
         assert_eq!(score, Some(100.0));
         assert_eq!(fmt, "100.0%");
@@ -2651,11 +2561,10 @@ mod tests {
             BranchProtectionStatus::Pass,
         );
         checks.codeowners.status = CodeownersStatus::NonConforming;
-        // 4 pass / 5 total = 80%
         let (score, fmt, tier, _wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
         assert_eq!(score, Some(80.0));
         assert_eq!(fmt, "80.0%");
-        assert_eq!(tier, CoverageTier::Pass); // 80% meets default pass threshold
+        assert_eq!(tier, CoverageTier::Pass);
     }
 
     #[test]
@@ -2667,7 +2576,6 @@ mod tests {
             BranchProtectionStatus::Pass,
         );
         checks.codeowners.status = CodeownersStatus::Absent;
-        // 4 pass / 5 total = 80%
         let (score, _fmt, _tier, _wc) =
             super::compute_repo_score(&checks, &CoverageTiers::default());
         assert_eq!(score, Some(80.0));
@@ -2682,7 +2590,6 @@ mod tests {
             BranchProtectionStatus::Fail,
         );
         checks.codeowners.status = CodeownersStatus::Absent;
-        // 0 pass / 5 total = 0%
         let (score, fmt, tier, wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
         assert_eq!(score, Some(0.0));
         assert_eq!(fmt, "0.0%");
@@ -2692,7 +2599,6 @@ mod tests {
 
     #[test]
     fn repo_score_single_deterministic_control_pass() {
-        // Only policy is deterministic (pass); everything else excluded.
         let mut checks = make_checks_with_statuses(
             SecurityPolicyStatus::Pass,
             SecretScanningStatus::Unknown,
@@ -2700,7 +2606,6 @@ mod tests {
             BranchProtectionStatus::Unknown,
         );
         checks.codeowners.status = CodeownersStatus::Unknown;
-        // 1 pass / 1 total = 100%
         let (score, fmt, tier, wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
         assert_eq!(score, Some(100.0));
         assert_eq!(fmt, "100.0%");
@@ -2710,7 +2615,6 @@ mod tests {
 
     #[test]
     fn repo_score_single_deterministic_control_fail() {
-        // Only dependabot is deterministic (paused = fail); everything else excluded.
         let mut checks = make_checks_with_statuses(
             SecurityPolicyStatus::Unknown,
             SecretScanningStatus::Unknown,
@@ -2718,7 +2622,6 @@ mod tests {
             BranchProtectionStatus::Unknown,
         );
         checks.codeowners.status = CodeownersStatus::Unknown;
-        // 0 pass / 1 total = 0%
         let (score, fmt, tier, wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
         assert_eq!(score, Some(0.0));
         assert_eq!(fmt, "0.0%");
@@ -2728,19 +2631,16 @@ mod tests {
 
     #[test]
     fn repo_score_width_class_for_boundary_values() {
-        // 60% → w-60
         let checks = make_checks_with_statuses(
             SecurityPolicyStatus::Pass,
             SecretScanningStatus::Enabled,
             DependabotStatus::Paused,
             BranchProtectionStatus::Partial,
         );
-        // policy=pass, secret=pass, dependabot=fail, branch=fail, codeowners=pass → 3/5 = 60%
         let (_score, _fmt, _tier, wc) =
             super::compute_repo_score(&checks, &CoverageTiers::default());
         assert_eq!(wc, "w-60");
 
-        // 20% → w-20
         let mut checks2 = make_checks_with_statuses(
             SecurityPolicyStatus::Fail,
             SecretScanningStatus::Disabled,
@@ -2748,7 +2648,6 @@ mod tests {
             BranchProtectionStatus::Pass,
         );
         checks2.codeowners.status = CodeownersStatus::NonConforming;
-        // policy=fail(0), secret=fail(0), dependabot=fail(0), branch=pass(1), codeowners=fail(0) → 1/5 = 20%
         let (score2, _fmt2, _tier2, wc2) =
             super::compute_repo_score(&checks2, &CoverageTiers::default());
         assert_eq!(score2, Some(20.0));
@@ -2757,22 +2656,18 @@ mod tests {
 
     #[test]
     fn repo_score_width_class_rounds_non_boundary() {
-        // 66.7% → (66.7 / 5.0).round() = 13 → w-65
         let checks = make_checks_with_statuses(
             SecurityPolicyStatus::Pass,
-            SecretScanningStatus::Unknown,   // excluded
-            DependabotStatus::Disabled,      // fail
-            BranchProtectionStatus::Unknown, // excluded
+            SecretScanningStatus::Unknown,
+            DependabotStatus::Disabled,
+            BranchProtectionStatus::Unknown,
         );
-        // policy=pass(1), dependabot=fail(0), codeowners=pass(1) → 2/3 = 66.7%
         let (score, _fmt, _tier, wc) =
             super::compute_repo_score(&checks, &CoverageTiers::default());
         let s = score.unwrap();
         assert!((s - 66.7).abs() < 0.1, "expected ~66.7, got {s}");
         assert_eq!(wc, "w-65");
     }
-
-    // ── Per-owner sec score tests ──────────────────────────────
 
     #[test]
     fn owner_sec_score_computed_in_overview() {
@@ -2786,34 +2681,25 @@ mod tests {
         assert!(!owners_vm.rows.is_empty());
         let row = &owners_vm.rows[0];
 
-        // Verify sec score fields are populated
         assert!(row.sec_score.is_some(), "sec_score should be Some");
         assert!(row.sec_score_formatted.contains('%'));
-        // Width class should not be w-0 for non-N/A score
         assert_ne!(row.sec_score_width_class, "w-0");
     }
 
-    // ── T4: Pending status dots ────────────────────────────────
-
     #[test]
     fn status_dots_pending_repos_render_pending() {
-        // Simulate a repo created by failure_evidence_with_reason(_, _, "pending"):
-        // all statuses Unknown, secret_scanning.reason = Some("pending"),
-        // dependabot.reason = Some("pending"), branch_protection.details.reason = Some("pending").
         let mut checks = make_checks_with_statuses(
             SecurityPolicyStatus::Unknown,
             SecretScanningStatus::Unknown,
             DependabotStatus::Unknown,
             BranchProtectionStatus::Unknown,
         );
-        // Set pending reasons (same as failure_evidence_with_reason does)
         checks.secret_scanning.reason = Some("pending".to_string());
         checks.dependabot_security_updates.reason = Some("pending".to_string());
         checks.branch_protection.details.reason = Some("pending".to_string());
 
         let dots = build_status_dots(&checks);
 
-        // All 4 dots should render as pending, not unknown.
         for dot in &dots {
             assert_eq!(
                 dot.css_class, "status-pending",
@@ -2827,8 +2713,6 @@ mod tests {
             );
         }
     }
-
-    // ── T6: "Repo Score" column header in owner detail ─────────
 
     #[test]
     fn render_owner_detail_html_contains_repo_score_header() {
@@ -2845,15 +2729,11 @@ mod tests {
             detail_page.contains("Repo Score"),
             "owner detail page should contain 'Repo Score' header, not bare 'Score'"
         );
-        // Verify it does NOT contain a bare "Score" header (without "Repo" prefix)
-        // by checking the <th> tag specifically
         assert!(
             !detail_page.contains("<th class=\"text-center\">Score</th>"),
             "owner detail page should not have bare 'Score' column header"
         );
     }
-
-    // ── T2: NotApplicable status dots and score ────────────────
 
     #[test]
     fn status_dots_not_applicable_renders_na() {
@@ -2869,7 +2749,6 @@ mod tests {
 
         assert_eq!(dots[0].css_class, "status-na");
         assert_eq!(dots[0].label, "N/A");
-        // Other dots should be unaffected
         assert_eq!(dots[1].css_class, "status-pass");
     }
 
@@ -2882,16 +2761,11 @@ mod tests {
             BranchProtectionStatus::Pass,
         );
         checks.security_policy.evidence = SecurityPolicyEvidence::NotApplicable;
-        // codeowners is Conforming (pass) by default in make_checks_with_statuses.
-        // 4 deterministic controls (secret=pass, dependabot=pass, branch=pass, codeowners=pass)
-        // policy excluded → 4/4 = 100%
         let (score, _fmt, tier, _wc) =
             super::compute_repo_score(&checks, &CoverageTiers::default());
         assert_eq!(score, Some(100.0));
         assert_eq!(tier, CoverageTier::Pass);
     }
-
-    // ── is_pending_repo direct tests ───────────────────────────
 
     #[test]
     fn is_pending_repo_positive() {
@@ -2928,8 +2802,6 @@ mod tests {
         assert!(!super::is_pending_repo(&checks));
     }
 
-    // ── control_display_name ──────────────────────────────────────
-
     #[test]
     fn control_display_name_non_stale() {
         assert_eq!(super::control_display_name("non_stale"), "Non-Stale");
@@ -2945,12 +2817,9 @@ mod tests {
         assert_eq!(super::control_display_name("bogus"), "Unknown");
     }
 
-    // ── Podium: team-only filter + reorder ────────────────────────
-
     /// Helper to build evidence with specific owners and types.
     fn evidence_with_mixed_owner_types() -> Evidence {
         let repos = vec![
-            // Team owner: @org/security-team — all passing
             test_fixtures::make_repository_evidence(
                 "team-repo-1",
                 Visibility::Public,
@@ -2963,7 +2832,6 @@ mod tests {
                     test_fixtures::codeowners_with_owners(&["@org/security-team"]),
                 ),
             ),
-            // User owner: @alice — all passing (higher score than teams)
             test_fixtures::make_repository_evidence(
                 "user-repo-1",
                 Visibility::Public,
@@ -2976,7 +2844,6 @@ mod tests {
                     test_fixtures::codeowners_with_owners(&["@alice"]),
                 ),
             ),
-            // Team owner: @org/infra-team — all passing
             test_fixtures::make_repository_evidence(
                 "team-repo-2",
                 Visibility::Public,
@@ -2989,7 +2856,6 @@ mod tests {
                     test_fixtures::codeowners_with_owners(&["@org/infra-team"]),
                 ),
             ),
-            // Team owner: @org/dev-team — mixed (some failing)
             test_fixtures::make_repository_evidence(
                 "team-repo-3",
                 Visibility::Public,
@@ -3027,12 +2893,10 @@ mod tests {
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
         let index = &pages["index.html"];
 
-        // @alice (user) should not appear in the podium
         assert!(
             !index.contains("alice"),
             "podium should not contain user owner @alice"
         );
-        // Team owners should appear
         assert!(
             index.contains("security-team") || index.contains("infra-team"),
             "podium should contain at least one team owner"
@@ -3045,13 +2909,11 @@ mod tests {
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
         let index = &pages["index.html"];
 
-        // The gold card should be present
         assert!(
             index.contains("rank-gold"),
             "podium should contain rank-gold class"
         );
 
-        // Gold should appear after silver in the HTML (center position)
         if let (Some(silver_pos), Some(gold_pos)) =
             (index.find("rank-silver"), index.find("rank-gold"))
         {
@@ -3061,7 +2923,6 @@ mod tests {
             );
         }
 
-        // If 3 teams, bronze should appear after gold
         if let (Some(gold_pos), Some(bronze_pos)) =
             (index.find("rank-gold"), index.find("rank-bronze"))
         {
@@ -3074,7 +2935,6 @@ mod tests {
 
     #[test]
     fn podium_zero_teams_produces_empty() {
-        // Build evidence with only user owners
         let repos = vec![test_fixtures::make_repository_evidence(
             "user-only-repo",
             Visibility::Public,
@@ -3168,8 +3028,6 @@ mod tests {
         );
     }
 
-    // ── Warm-start badge in index ──────────────────────────────────
-
     #[test]
     fn warm_start_badge_visible_when_warm_start_true() {
         let mut metadata = test_fixtures::make_metadata();
@@ -3203,8 +3061,6 @@ mod tests {
             "index should not contain warm-start-badge when warm_start is false"
         );
     }
-
-    // ── Warm-start meta-refresh in all templates ───────────────────
 
     #[test]
     fn warm_start_meta_refresh_present_when_warm_start_true() {
@@ -3288,8 +3144,6 @@ mod tests {
         }
     }
 
-    // ── Header restructure ─────────────────────────────────────────
-
     #[test]
     fn header_uses_page_header_class() {
         let evidence = sample_evidence();
@@ -3302,11 +3156,8 @@ mod tests {
         );
     }
 
-    // ── owner_sec_score with lifecycle metrics ─────────────────────
-
     #[test]
     fn owner_sec_score_includes_lifecycle_controls() {
-        // Build evidence with lifecycle metrics enriched
         let evidence = evidence_with_mixed_owner_types();
         let owners_vm = super::build_owners_view_model(
             &evidence.metrics.owner_metrics,
@@ -3314,15 +3165,12 @@ mod tests {
         )
         .expect("should have owner metrics");
 
-        // Find a team owner (e.g., @org/security-team) that has all passing + lifecycle
         let security_team = owners_vm
             .rows
             .iter()
             .find(|r| r.owner.contains("security-team"))
             .expect("should find security-team");
 
-        // With all controls passing + non_stale 100% + alert_free 100%,
-        // geometric mean of six 100% values = 100%
         assert!(
             security_team.sec_score.is_some(),
             "sec_score should be computed"

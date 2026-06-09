@@ -255,10 +255,6 @@ mod tests {
     fn rejects_symlink_escape() {
         use std::os::unix::fs::symlink;
 
-        // Layout:
-        //   outside/        <-- symlink target, outside the ADR root
-        //   root/           <-- ADR root
-        //   root/escape     <-- symlink to ../outside
         let parent = tmp();
         let outside = parent.path().join("outside");
         fs::create_dir(&outside).unwrap();
@@ -289,8 +285,6 @@ mod tests {
 
     #[test]
     fn cur_dir_component_allowed() {
-        // `./domain` should be treated as `domain`. POSIX & Rust path
-        // semantics let `Component::CurDir` pass through.
         let dir = tmp();
         fs::create_dir(dir.path().join("domain")).unwrap();
         let result = contained_join(dir.path(), "./domain").unwrap();

@@ -113,28 +113,16 @@ fn ev(inventory_key: &str, id: &str, name: &str) -> RepositoryEvidence {
 
 #[test]
 fn projection_sorted_snapshot_orders_by_id_then_name_distinct_from_insertion_and_key_order() {
-    // Three repos with pairwise-distinct insertion / BTreeMap-key /
-    // (id, name) orderings — see module doc for the table.
     let a = ev("z-key-1", "b-id", "a-name");
     let b = ev("a-key-2", "c-id", "b-name");
     let c = ev("m-key-3", "a-id", "c-name");
 
-    // Populate the projection in insertion order (A, B, C) via the
-    // M2.b bulk-load API.
     let mut projection = EvidenceProjection::default();
     projection.load_baseline(vec![a.clone(), b.clone(), c.clone()]);
 
     let snapshot = projection.sorted_snapshot();
     let ids: Vec<&str> = snapshot.iter().map(|e| e.repository.id.as_str()).collect();
 
-    // ── Assertion — sort order is (id, name), not insertion, not key ──
-    //
-    // The fixture was chosen so all three orderings are pairwise
-    // distinct (see module doc table). The expected ids
-    // `[a-id, b-id, c-id]` correspond to repos C, A, B in (id, name)
-    // order. If the implementation regressed to insertion order, this
-    // would observe `[b-id, c-id, a-id]`; to BTreeMap key order,
-    // `[c-id, a-id, b-id]`.
     assert_eq!(
         ids,
         vec!["a-id", "b-id", "c-id"],
@@ -143,13 +131,8 @@ fn projection_sorted_snapshot_orders_by_id_then_name_distinct_from_insertion_and
          BTreeMap inventory_key order (would yield [c-id, a-id, b-id])"
     );
 
-    // ── Confidence checks — fixture truly is three-way distinct ──
-    //
-    // These guard against a future maintainer "simplifying" the
-    // fixture into one where the orderings coincide (the very
-    // failure mode F-LOW-1 captured).
-    let insertion_ids = ["b-id", "c-id", "a-id"]; // A, B, C
-    let key_order_ids = ["c-id", "a-id", "b-id"]; // B, C, A (sorted by inventory_key)
+    let insertion_ids = ["b-id", "c-id", "a-id"];
+    let key_order_ids = ["c-id", "a-id", "b-id"];
     assert_ne!(
         ids.as_slice(),
         insertion_ids,

@@ -57,12 +57,6 @@ use cherry_pit_gateway::MsgpackFileStore;
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 
-// ── Test event ─────────────────────────────────────────────────────
-//
-// Single Incremented variant is sufficient to drive all 6 EventStore
-// scenarios and the projection replay scenarios. Mirrors
-// `conformance_pardosa_store.rs::TestEvent`.
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 enum TestEvent {
     Incremented(i64),
@@ -73,8 +67,6 @@ impl DomainEvent for TestEvent {
         "conformance.incremented"
     }
 }
-
-// ── Projection (drives projection-over-msgpack-store registrant) ───
 
 #[derive(Default, Debug, PartialEq)]
 struct CounterView {
@@ -92,18 +84,12 @@ impl Projection for CounterView {
     }
 }
 
-// ── Registrant tests ───────────────────────────────────────────────
-
 /// Load-bearing gate for Track 7.1: all 6 `EventStore` conformance
 /// scenarios run against `MsgpackFileStore`. Failure here = the
 /// filesystem adapter has a behavioural gap relative to the trait
 /// contract. Don't relax the harness; surface to moltke as SURPRISE.
 #[tokio::test]
 async fn msgpack_file_store_conforms() {
-    // TempDirs are retained here so they outlive every store the
-    // harness builds. Without this, `make_store()`'s local TempDir
-    // would drop at the end of the factory closure and any later
-    // async I/O on the open store would race against directory removal.
     let dirs: Arc<Mutex<Vec<TempDir>>> = Arc::new(Mutex::new(Vec::new()));
 
     let factory = {

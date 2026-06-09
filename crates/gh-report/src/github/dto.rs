@@ -72,10 +72,6 @@ pub struct FeatureStatus {
     pub status: Option<String>,
 }
 
-// ===========================================================================
-// Tests
-// ===========================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,7 +114,6 @@ mod tests {
         let topics: Vec<String> = vec!["security".into(), "ci".into()];
         assert_eq!(repo.topics.as_deref(), Some(topics.as_slice()));
 
-        // Round-trip through JSON: serialize and re-deserialize.
         let json = serde_json::to_string(&repo).unwrap();
         let repo2: GhRepository = serde_json::from_str(&json).unwrap();
         assert_eq!(repo2.name, "my-repo");
@@ -167,7 +162,6 @@ mod tests {
 
     #[test]
     fn is_security_policy_enabled_rename_round_trip() {
-        // The struct field uses #[serde(rename)]; verify the wire name.
         let repo: GhRepository = serde_json::from_value(full_json()).unwrap();
         let serialized = serde_json::to_value(&repo).unwrap();
         assert_eq!(
@@ -175,8 +169,6 @@ mod tests {
             Some(&serde_json::json!(true)),
             "serialized JSON must use the renamed key"
         );
-        // Struct field name (is_security_policy_enabled) must NOT appear
-        // under its un-renamed form — serde(rename) replaces it entirely.
         assert!(
             serialized.get("is_security_policy_enabled").is_some(),
             "renamed key must be present in output"
@@ -206,7 +198,6 @@ mod tests {
 
     #[test]
     fn topics_defaults_to_none_when_missing() {
-        // topics has #[serde(default)] — verify behavior when key is absent.
         let json = serde_json::json!({ "name": "no-topics" });
         let repo: GhRepository = serde_json::from_value(json).unwrap();
         assert_eq!(repo.topics, None);

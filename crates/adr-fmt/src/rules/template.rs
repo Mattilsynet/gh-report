@@ -83,18 +83,12 @@ pub fn check(record: &AdrRecord, config: &Config, diags: &mut Vec<Diagnostic>) {
     check_structure(record, diags);
     check_section_order(record, diags);
 
-    // Resolve tier for scaling (default to B when missing — T004 fires separately)
     let tier = record.tier.unwrap_or(Tier::B);
 
-    // T015: Section word count range — tier-scaled
     let base_max_words = config
         .rule_param_u64("T015", "max_words")
         .unwrap_or(DEFAULT_MAX_WORDS);
     let effective_min = tier.min_words();
-    // Tier factor ∈ [0.6, 1.5]; base_max_words ≤ low hundreds. Product
-    // is well within u64 range; truncation/sign-loss/precision warnings
-    // are spurious at these magnitudes. No idiomatic non-cast alternative
-    // exists for `f64 → u64` after `.round()`.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_precision_loss,
@@ -104,11 +98,9 @@ pub fn check(record: &AdrRecord, config: &Config, diags: &mut Vec<Diagnostic>) {
     let effective_max = (base_max_words as f64 * tier.factor()).round() as u64;
     check_section_word_counts(record, effective_min, effective_max, tier, diags);
 
-    // T016: Tagged rules in Decision section — tier-scaled max
     let base_max_rules = config
         .rule_param_u64("T016", "max_rules")
         .unwrap_or(DEFAULT_MAX_RULES);
-    // See T015 cast rationale above.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_precision_loss,
@@ -131,11 +123,8 @@ pub fn check(record: &AdrRecord, config: &Config, diags: &mut Vec<Diagnostic>) {
         diags,
     );
 
-    // T019: Rule-tier tension — fire when Meadows layer implies a tier
-    // >1 rank from ADR tier (>2 ranks for S-tier ADRs in foundation domains).
     check_rule_tier_tension(record, tier, config, diags);
 
-    // T020: Reference load — tier-scaled limit on References: count
     check_reference_load(record, tier, diags);
 
     check_stale_lifecycle(record, config, diags);
@@ -144,7 +133,6 @@ pub fn check(record: &AdrRecord, config: &Config, diags: &mut Vec<Diagnostic>) {
 
 /// T002–T005c: Preamble metadata field checks.
 fn check_metadata(record: &AdrRecord, diags: &mut Vec<Diagnostic>) {
-    // T002: Date
     if record.date.is_none() {
         diags.push(Diagnostic::warning(
             "T002",
@@ -154,7 +142,6 @@ fn check_metadata(record: &AdrRecord, diags: &mut Vec<Diagnostic>) {
         ));
     }
 
-    // T003: Last-reviewed — required for all tiers
     if record.last_reviewed.is_none() {
         diags.push(Diagnostic::warning(
             "T003",
@@ -164,7 +151,6 @@ fn check_metadata(record: &AdrRecord, diags: &mut Vec<Diagnostic>) {
         ));
     }
 
-    // T004: Tier
     if record.tier.is_none() {
         diags.push(Diagnostic::warning(
             "T004",
@@ -174,7 +160,6 @@ fn check_metadata(record: &AdrRecord, diags: &mut Vec<Diagnostic>) {
         ));
     }
 
-    // T005: Status section
     if record.status.is_none() {
         diags.push(Diagnostic::warning(
             "T005",
@@ -184,7 +169,6 @@ fn check_metadata(record: &AdrRecord, diags: &mut Vec<Diagnostic>) {
         ));
     }
 
-    // T005c: Legacy ## Status section — migrate to preamble field
     if record.status_from_section {
         diags.push(Diagnostic::warning(
             "T005c",
@@ -199,7 +183,6 @@ fn check_metadata(record: &AdrRecord, diags: &mut Vec<Diagnostic>) {
 
 /// T006–T007: Status value and relationship validity checks.
 fn check_status_validity(record: &AdrRecord, diags: &mut Vec<Diagnostic>) {
-    // T006: Status value validity — strict keyword
     if let Some(ref raw) = record.status_raw {
         if Status::has_parenthetical(raw) {
             diags.push(Diagnostic::warning(
@@ -226,11 +209,6 @@ fn check_status_validity(record: &AdrRecord, diags: &mut Vec<Diagnostic>) {
         }
     }
 
-    // T007: Related section — must have at least one relationship.
-    // Skipped for stale stubs (per AFM-0022): a stale stub may legally
-    // omit `## Related` entirely (status field already records the
-    // successor) or carry a single `Supersedes:` edge. S007 governs
-    // the stub form positively.
     if record.is_stale {
         return;
     }
@@ -263,7 +241,6 @@ fn check_status_validity(record: &AdrRecord, diags: &mut Vec<Diagnostic>) {
 /// applies to every ADR — stubs rarely contain code, so it is
 /// effectively dormant on stale.
 fn check_structure(record: &AdrRecord, diags: &mut Vec<Diagnostic>) {
-    // T008: Context section (active ADRs only)
     if !record.is_stale && !record.has_context {
         diags.push(Diagnostic::warning(
             "T008",
@@ -273,7 +250,6 @@ fn check_structure(record: &AdrRecord, diags: &mut Vec<Diagnostic>) {
         ));
     }
 
-    // T009: Decision section (active ADRs only)
     if !record.is_stale && !record.has_decision {
         diags.push(Diagnostic::warning(
             "T009",
@@ -283,7 +259,6 @@ fn check_structure(record: &AdrRecord, diags: &mut Vec<Diagnostic>) {
         ));
     }
 
-    // T010: Consequences section (active ADRs only)
     if !record.is_stale && !record.has_consequences {
         diags.push(Diagnostic::warning(
             "T010",
@@ -293,7 +268,6 @@ fn check_structure(record: &AdrRecord, diags: &mut Vec<Diagnostic>) {
         ));
     }
 
-    // T011: Code block length
     if record.max_code_block_lines > MAX_CODE_BLOCK_LINES {
         diags.push(Diagnostic::warning(
             "T011",
@@ -311,7 +285,6 @@ fn check_structure(record: &AdrRecord, diags: &mut Vec<Diagnostic>) {
 
 /// S004–S006: Stale/active lifecycle alignment checks.
 fn check_stale_lifecycle(record: &AdrRecord, config: &Config, diags: &mut Vec<Diagnostic>) {
-    // S004: Stale ADR must have Retirement section
     if record.is_stale && !record.has_retirement {
         diags.push(Diagnostic::warning(
             "S004",
@@ -323,7 +296,6 @@ fn check_stale_lifecycle(record: &AdrRecord, config: &Config, diags: &mut Vec<Di
         ));
     }
 
-    // S005: Active ADR must NOT have Retirement section
     if !record.is_stale && record.has_retirement {
         diags.push(Diagnostic::warning(
             "S005",
@@ -335,7 +307,6 @@ fn check_stale_lifecycle(record: &AdrRecord, config: &Config, diags: &mut Vec<Di
         ));
     }
 
-    // S006: Terminal-status ADR not in stale directory
     if let Some(ref status) = record.status
         && status.is_terminal()
         && !record.is_stale
@@ -390,7 +361,6 @@ fn check_stale_stub_structure(record: &AdrRecord, diags: &mut Vec<Diagnostic>) {
         return;
     }
 
-    // Whitelist of H2 sections allowed in a stub.
     for section in &record.section_order {
         if !STUB_ALLOWED_SECTIONS.contains(&section.as_str()) {
             diags.push(Diagnostic::warning(
@@ -408,7 +378,6 @@ fn check_stale_stub_structure(record: &AdrRecord, diags: &mut Vec<Diagnostic>) {
         }
     }
 
-    // Permitted lineage verb in a stub's `## Related` section.
     for rel in &record.relationships {
         if !matches!(rel.verb, RelVerb::Supersedes) {
             diags.push(Diagnostic::warning(
@@ -445,7 +414,6 @@ fn check_section_order(record: &AdrRecord, diags: &mut Vec<Diagnostic>) {
         (false, false) => ACTIVE_SECTION_ORDER,
     };
 
-    // Filter section_order to only canonical sections
     let actual: Vec<&str> = record
         .section_order
         .iter()
@@ -453,10 +421,8 @@ fn check_section_order(record: &AdrRecord, diags: &mut Vec<Diagnostic>) {
         .filter(|s| expected.contains(s))
         .collect();
 
-    // Check that canonical sections appear in order
     let mut expected_iter = expected.iter();
     for actual_section in &actual {
-        // Advance expected_iter to find this section
         let mut found = false;
         for expected_section in expected_iter.by_ref() {
             if actual_section == expected_section {
@@ -475,7 +441,7 @@ fn check_section_order(record: &AdrRecord, diags: &mut Vec<Diagnostic>) {
                     expected.join(" → "),
                 ),
             ));
-            return; // One diagnostic is enough
+            return;
         }
     }
 }
@@ -521,7 +487,6 @@ fn check_section_word_counts(
         }
     }
 
-    // Retirement section word count range (if present)
     if record.has_retirement
         && let Some(&count) = record.section_word_counts.get("Retirement")
     {
@@ -572,7 +537,6 @@ fn check_tagged_rules(
     if record.is_stale {
         return;
     }
-    // Check for missing tagged rules
     if record.decision_rules.is_empty() {
         diags.push(Diagnostic::warning(
             "T016",
@@ -583,7 +547,6 @@ fn check_tagged_rules(
         return;
     }
 
-    // Check maximum rule count (tier-scaled)
     if record.decision_rules.len() as u64 > max_rules {
         diags.push(Diagnostic::warning(
             "T016",
@@ -597,7 +560,6 @@ fn check_tagged_rules(
         ));
     }
 
-    // Check per-rule word bounds and layer validity
     for rule in &record.decision_rules {
         let word_count = rule.text.split_whitespace().count() as u64;
         if word_count < min_rule_words {
@@ -622,7 +584,6 @@ fn check_tagged_rules(
             ));
         }
 
-        // Layer range validation: must be 1-12 (Meadows leverage points)
         if rule.layer == 0 || rule.layer > 12 {
             diags.push(Diagnostic::warning(
                 "T016",
@@ -637,7 +598,6 @@ fn check_tagged_rules(
         }
     }
 
-    // Check for non-sequential IDs
     let mut nums: Vec<u32> = Vec::new();
     for rule in &record.decision_rules {
         if let Some(num_str) = rule.id.strip_prefix('R')
@@ -684,12 +644,12 @@ fn check_rule_tier_tension(
     config: &Config,
     diags: &mut Vec<Diagnostic>,
 ) {
-    let _ = config; // config not needed for asymmetric rule; retained for signature stability
+    let _ = config;
     let adr_rank = adr_tier.rank();
 
     for rule in &record.decision_rules {
         let Some(rule_tier) = layer_to_tier(rule.layer) else {
-            continue; // Invalid layer already caught by T016
+            continue;
         };
         let rule_rank = rule_tier.rank();
         if rule_rank < adr_rank {
@@ -820,7 +780,7 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
     fn valid_record_produces_no_diagnostics() {
         use crate::model::{RelVerb, Relationship, TaggedRule};
         let mut record = make_record();
-        record.tier = Some(Tier::B); // B-tier so layer 5 aligns (no T019)
+        record.tier = Some(Tier::B);
         record.relationships = vec![Relationship {
             verb: RelVerb::Root,
             target: record.id.clone(),
@@ -957,7 +917,7 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
     fn section_out_of_order_produces_t014() {
         let mut record = make_record();
         record.section_order = vec![
-            "Context".into(), // out of order — Related should come first
+            "Context".into(),
             "Related".into(),
             "Decision".into(),
             "Consequences".into(),
@@ -1018,7 +978,7 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
     #[test]
     fn section_too_many_words_produces_t015() {
         let mut record = make_record();
-        record.tier = Some(Tier::B); // B-tier: factor 1.0, max=50
+        record.tier = Some(Tier::B);
         record.section_word_counts.insert("Context".into(), 60);
         let config = make_config();
         let mut diags = Vec::new();
@@ -1034,7 +994,7 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
 
     #[test]
     fn section_within_range_no_t015() {
-        let record = make_record(); // all sections have 15 words
+        let record = make_record();
         let config = make_config();
         let mut diags = Vec::new();
         check(&record, &config, &mut diags);
@@ -1218,13 +1178,13 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
     fn too_many_rules_produces_t016() {
         use crate::model::TaggedRule;
         let mut record = make_record();
-        record.tier = Some(Tier::B); // B-tier: factor 1.0, max_rules=10
+        record.tier = Some(Tier::B);
         record.decision_rules = (1..=11)
             .map(|i| TaggedRule {
                 id: format!("R{i}"),
                 text: "This rule has enough words to pass the minimum check here".into(),
                 line: 10 + i,
-                layer: 5, // B-tier layer — no T019 tension
+                layer: 5,
             })
             .collect();
         let config = make_config();
@@ -1243,13 +1203,13 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
     fn ten_rules_within_limit() {
         use crate::model::TaggedRule;
         let mut record = make_record();
-        record.tier = Some(Tier::B); // B-tier: factor 1.0, max_rules=10
+        record.tier = Some(Tier::B);
         record.decision_rules = (1..=10)
             .map(|i| TaggedRule {
                 id: format!("R{i}"),
                 text: "This rule has enough words to pass the minimum check here".into(),
                 line: 10 + i,
-                layer: 5, // B-tier layer — no T019 tension
+                layer: 5,
             })
             .collect();
         let config = make_config();
@@ -1270,7 +1230,7 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
         let mut record = make_record();
         record.decision_rules = vec![TaggedRule {
             id: "R1".into(),
-            text: "Too short".into(), // 2 words
+            text: "Too short".into(),
             line: 10,
             layer: 5,
         }];
@@ -1428,12 +1388,10 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
         );
     }
 
-    // ── T015 tier-scaling tests ────────────────────────────────────
-
     #[test]
     fn t015_s_tier_allows_more_words() {
         let mut record = make_record();
-        record.tier = Some(Tier::S); // factor 1.5, max=75
+        record.tier = Some(Tier::S);
         record.section_word_counts.insert("Context".into(), 70);
         let config = make_config();
         let mut diags = Vec::new();
@@ -1447,7 +1405,7 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
     #[test]
     fn t015_d_tier_tighter_limit() {
         let mut record = make_record();
-        record.tier = Some(Tier::D); // factor 0.6, max=30
+        record.tier = Some(Tier::D);
         record.section_word_counts.insert("Context".into(), 35);
         let config = make_config();
         let mut diags = Vec::new();
@@ -1464,7 +1422,7 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
     #[test]
     fn t015_s_tier_higher_minimum() {
         let mut record = make_record();
-        record.tier = Some(Tier::S); // min_words=15
+        record.tier = Some(Tier::S);
         record.section_word_counts.insert("Context".into(), 10);
         let config = make_config();
         let mut diags = Vec::new();
@@ -1478,19 +1436,17 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
         );
     }
 
-    // ── T016 tier-scaling tests ────────────────────────────────────
-
     #[test]
     fn t016_d_tier_fewer_rules_allowed() {
         use crate::model::TaggedRule;
         let mut record = make_record();
-        record.tier = Some(Tier::D); // factor 0.6, max_rules=6
+        record.tier = Some(Tier::D);
         record.decision_rules = (1..=7)
             .map(|i| TaggedRule {
                 id: format!("R{i}"),
                 text: "This rule has enough words to pass the minimum check here".into(),
                 line: 10 + i,
-                layer: 10, // D-tier layer — no T019 tension
+                layer: 10,
             })
             .collect();
         let config = make_config();
@@ -1504,8 +1460,6 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
             "7 rules should trigger T016 at D-tier (limit 6), got: {diags:?}"
         );
     }
-
-    // ── T016 layer validation tests ────────────────────────────────
 
     #[test]
     fn t016_layer_zero_is_warning() {
@@ -1587,9 +1541,6 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
     fn t016_layer_boundary_one_and_twelve_pass() {
         use crate::model::TaggedRule;
         let mut record = make_record();
-        // Use D-tier so layers 1 and 12 don't both trigger T019;
-        // layer 12 → D (distance 0), layer 1 → S (distance 4 fires T019,
-        // but we only check T016 layer errors, not T019).
         record.tier = Some(Tier::D);
         record.decision_rules = vec![
             TaggedRule {
@@ -1618,8 +1569,6 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
         );
     }
 
-    // ── T019 rule-tier tension tests ───────────────────────────────
-
     #[test]
     fn t019_aligned_rules_no_warning() {
         use crate::model::TaggedRule;
@@ -1629,7 +1578,7 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
             id: "R1".into(),
             text: "All events must be versioned with semantic version numbers always".into(),
             line: 10,
-            layer: 5, // B-tier layer, B-tier ADR → distance 0
+            layer: 5,
         }];
         let config = make_config();
         let mut diags = Vec::new();
@@ -1642,16 +1591,14 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
 
     #[test]
     fn t019_equal_tier_rank_passes() {
-        // New asymmetric rule: rule_rank < adr_rank triggers. Equal rank passes.
-        // A-tier ADR (rank 1) + L4/A-tier rule (rank 1): 1 < 1? No → passes.
         use crate::model::TaggedRule;
         let mut record = make_record();
-        record.tier = Some(Tier::A); // rank 1
+        record.tier = Some(Tier::A);
         record.decision_rules = vec![TaggedRule {
             id: "R1".into(),
             text: "All events must be versioned with semantic version numbers always".into(),
             line: 10,
-            layer: 4, // A-tier layer, rank 1 → 1 < 1? No → passes
+            layer: 4,
         }];
         let config = make_config();
         let mut diags = Vec::new();
@@ -1664,16 +1611,14 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
 
     #[test]
     fn t019_lower_leverage_rule_passes() {
-        // rule_rank > adr_rank (rule at lower leverage than ADR) → passes.
-        // A-tier ADR (rank 1) + L7/C-tier rule (rank 3): 3 < 1? No → passes.
         use crate::model::TaggedRule;
         let mut record = make_record();
-        record.tier = Some(Tier::A); // rank 1
+        record.tier = Some(Tier::A);
         record.decision_rules = vec![TaggedRule {
             id: "R1".into(),
             text: "All events must be versioned with semantic version numbers always".into(),
             line: 10,
-            layer: 7, // C-tier layer, rank 3 → 3 < 1? No → passes
+            layer: 7,
         }];
         let config = make_config();
         let mut diags = Vec::new();
@@ -1686,16 +1631,14 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
 
     #[test]
     fn t019_higher_leverage_rule_fires() {
-        // rule_rank < adr_rank (rule at higher leverage than ADR) → fires.
-        // D-tier ADR (rank 4) + L1/S-tier rule (rank 0): 0 < 4? Yes → fires.
         use crate::model::TaggedRule;
         let mut record = make_record();
-        record.tier = Some(Tier::D); // rank 4
+        record.tier = Some(Tier::D);
         record.decision_rules = vec![TaggedRule {
             id: "R1".into(),
             text: "All events must be versioned with semantic version numbers always".into(),
             line: 10,
-            layer: 1, // S-tier layer, rank 0 → 0 < 4? Yes → fires
+            layer: 1,
         }];
         let config = make_config();
         let mut diags = Vec::new();
@@ -1708,16 +1651,14 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
 
     #[test]
     fn t019_adjacent_tier_higher_leverage_fires() {
-        // A-tier ADR (rank 1) + L4/A-tier rule (rank 1): 1 < 1? No → passes.
-        // A-tier ADR (rank 1) + L1/S-tier rule (rank 0): 0 < 1? Yes → fires.
         use crate::model::TaggedRule;
         let mut record = make_record();
-        record.tier = Some(Tier::B); // rank 2
+        record.tier = Some(Tier::B);
         record.decision_rules = vec![TaggedRule {
             id: "R1".into(),
             text: "All events must be versioned with semantic version numbers always".into(),
             line: 10,
-            layer: 4, // A-tier layer, rank 1 → 1 < 2? YES → fires
+            layer: 4,
         }];
         let config = make_config();
         let mut diags = Vec::new();
@@ -1732,12 +1673,12 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
     fn t019_large_distance_produces_warning() {
         use crate::model::TaggedRule;
         let mut record = make_record();
-        record.tier = Some(Tier::D); // rank 4
+        record.tier = Some(Tier::D);
         record.decision_rules = vec![TaggedRule {
             id: "R1".into(),
             text: "All events must be versioned with semantic version numbers always".into(),
             line: 10,
-            layer: 1, // S-tier layer, rank 0 → distance 4
+            layer: 1,
         }];
         let config = make_config();
         let mut diags = Vec::new();
@@ -1756,16 +1697,14 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
 
     #[test]
     fn t019_distance_two_lower_leverage_no_warning() {
-        // S-tier ADR (rank 0) + L5/B-tier rule (rank 2): 2 < 0? No → passes.
-        // Rule at lower leverage than ADR tier is allowed under asymmetric rule.
         use crate::model::TaggedRule;
         let mut record = make_record();
-        record.tier = Some(Tier::S); // rank 0
+        record.tier = Some(Tier::S);
         record.decision_rules = vec![TaggedRule {
             id: "R1".into(),
             text: "All events must be versioned with semantic version numbers always".into(),
             line: 10,
-            layer: 5, // B-tier layer, rank 2 → 2 < 0? No → passes
+            layer: 5,
         }];
         let config = make_config();
         let mut diags = Vec::new();
@@ -1778,20 +1717,18 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
 
     #[test]
     fn t019_foundation_s_tier_lower_leverage_no_warning() {
-        // Under asymmetric rule, foundation carve-out is gone.
-        // S-tier ADR (rank 0) + L5/B-tier rule (rank 2): 2 < 0? No → passes.
         use crate::model::TaggedRule;
         let mut record = make_record();
         record.id = AdrId {
             prefix: "GND".into(),
             number: 1,
         };
-        record.tier = Some(Tier::S); // rank 0
+        record.tier = Some(Tier::S);
         record.decision_rules = vec![TaggedRule {
             id: "R1".into(),
             text: "All events must be versioned with semantic version numbers always".into(),
             line: 10,
-            layer: 5, // B-tier layer, rank 2 → 2 < 0? No → passes
+            layer: 5,
         }];
         let config = make_config();
         let mut diags = Vec::new();
@@ -1805,20 +1742,18 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
 
     #[test]
     fn t019_s_tier_rule_in_c_tier_foundation_adr_lower_leverage_no_warning() {
-        // Under asymmetric rule, a C-tier foundation ADR + L7/C-tier rule passes
-        // (C rank 3, rule rank 3: 3 < 3? No). Any rule at equal or lower leverage passes.
         use crate::model::TaggedRule;
         let mut record = make_record();
         record.id = AdrId {
             prefix: "GND".into(),
             number: 1,
         };
-        record.tier = Some(Tier::C); // rank 3
+        record.tier = Some(Tier::C);
         record.decision_rules = vec![TaggedRule {
             id: "R1".into(),
             text: "All events must be versioned with semantic version numbers always".into(),
             line: 10,
-            layer: 9, // D-tier layer, rank 4 → 4 < 3? No → passes
+            layer: 9,
         }];
         let config = make_config();
         let mut diags = Vec::new();
@@ -1832,20 +1767,18 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
 
     #[test]
     fn t019_equal_tier_no_warning() {
-        // A-tier ADR (rank 1) + L4/A-tier rule (rank 1): 1 < 1? No → passes.
-        // Equal leverage is not a violation.
         use crate::model::TaggedRule;
         let mut record = make_record();
         record.id = AdrId {
             prefix: "GND".into(),
             number: 1,
         };
-        record.tier = Some(Tier::A); // rank 1
+        record.tier = Some(Tier::A);
         record.decision_rules = vec![TaggedRule {
             id: "R1".into(),
             text: "All events must be versioned with semantic version numbers always".into(),
             line: 10,
-            layer: 4, // A-tier layer, rank 1 → 1 < 1? No → passes
+            layer: 4,
         }];
         let config = make_config();
         let mut diags = Vec::new();
@@ -1859,20 +1792,18 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
 
     #[test]
     fn t019_unknown_prefix_no_carve_out_needed() {
-        // Under asymmetric rule, domain lookup is irrelevant — no carve-outs.
-        // S-tier ADR (rank 0) + L5/B-tier rule (rank 2): 2 < 0? No → passes.
         use crate::model::TaggedRule;
         let mut record = make_record();
         record.id = AdrId {
             prefix: "ZZZ".into(),
             number: 1,
         };
-        record.tier = Some(Tier::S); // rank 0
+        record.tier = Some(Tier::S);
         record.decision_rules = vec![TaggedRule {
             id: "R1".into(),
             text: "All events must be versioned with semantic version numbers always".into(),
             line: 10,
-            layer: 5, // B-tier layer, rank 2 → 2 < 0? No → passes
+            layer: 5,
         }];
         let config = make_config();
         let mut diags = Vec::new();
@@ -1884,13 +1815,11 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
         );
     }
 
-    // ── T020 reference load tests ──────────────────────────────────
-
     #[test]
     fn t020_within_limit_no_warning() {
         use crate::model::{AdrId, RelVerb, Relationship};
         let mut record = make_record();
-        record.tier = Some(Tier::B); // max_refs=7
+        record.tier = Some(Tier::B);
         record.relationships = (1..=7)
             .map(|i| Relationship {
                 verb: RelVerb::References,
@@ -1914,7 +1843,7 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
     fn t020_over_limit_produces_warning() {
         use crate::model::{AdrId, RelVerb, Relationship};
         let mut record = make_record();
-        record.tier = Some(Tier::B); // max_refs=7
+        record.tier = Some(Tier::B);
         record.relationships = (1..=8)
             .map(|i| Relationship {
                 verb: RelVerb::References,
@@ -1939,7 +1868,7 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
     fn t020_root_and_supersedes_not_counted() {
         use crate::model::{AdrId, RelVerb, Relationship};
         let mut record = make_record();
-        record.tier = Some(Tier::S); // max_refs=3
+        record.tier = Some(Tier::S);
         record.relationships = vec![
             Relationship {
                 verb: RelVerb::Root,
@@ -1976,7 +1905,7 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
     fn t020_s_tier_tight_limit() {
         use crate::model::{AdrId, RelVerb, Relationship};
         let mut record = make_record();
-        record.tier = Some(Tier::S); // max_refs=3
+        record.tier = Some(Tier::S);
         record.relationships = (1..=4)
             .map(|i| Relationship {
                 verb: RelVerb::References,
@@ -2001,14 +1930,10 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
         );
     }
 
-    // ── Rounding edge case tests ───────────────────────────────────
-
     #[test]
     fn t015_fractional_rounding_uses_round_not_floor() {
-        // base_max_words=33, D-tier factor=0.6 → 33*0.6=19.8 → round=20
         let mut record = make_record();
         record.tier = Some(Tier::D);
-        // 20 words should be within limit (rounded up from 19.8)
         record.section_word_counts.insert("Context".into(), 20);
         let config: Config = toml::from_str(
             r#"
@@ -2047,7 +1972,6 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
 
     #[test]
     fn t015_fractional_rounding_boundary_plus_one_fires() {
-        // base_max_words=33, D-tier factor=0.6 → round(19.8)=20 → 21 exceeds
         let mut record = make_record();
         record.tier = Some(Tier::D);
         record.section_word_counts.insert("Context".into(), 21);
@@ -2086,18 +2010,16 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
         );
     }
 
-    // ── T019 missing tier fallback test ─────────────────────────────
-
     #[test]
     fn t019_missing_tier_defaults_to_b() {
         use crate::model::TaggedRule;
         let mut record = make_record();
-        record.tier = None; // defaults to B (rank 2)
+        record.tier = None;
         record.decision_rules = vec![TaggedRule {
             id: "R1".into(),
             text: "All events must be versioned with semantic version numbers always".into(),
             line: 10,
-            layer: 1, // S-tier (rank 0) → distance 2 from B → fires
+            layer: 1,
         }];
         let config = make_config();
         let mut diags = Vec::new();
@@ -2113,8 +2035,6 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
             t019.unwrap().message
         );
     }
-
-    // ── S007 stale stub-structure tests (per AFM-0022) ──────────────
 
     /// Build a stub-shaped stale record with terminal status + lineage edge.
     fn make_stale_stub() -> AdrRecord {
@@ -2133,8 +2053,6 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
             number: 2,
         }));
         record.status_raw = Some("Superseded by CHE-0002".into());
-        // Per AFM-0022: stub `## Related` carries only `Supersedes:` edges
-        // (forward direction). The reverse (Superseded by) lives in Status.
         record.relationships = vec![Relationship {
             verb: RelVerb::Supersedes,
             target: AdrId {
@@ -2162,7 +2080,6 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
     fn s007_multiple_supersedes_edges_no_fire() {
         use crate::model::{RelVerb, Relationship};
         let mut record = make_stale_stub();
-        // Stub may carry multiple Supersedes edges (chain of retirements).
         record.relationships.push(Relationship {
             verb: RelVerb::Supersedes,
             target: AdrId {
@@ -2184,8 +2101,6 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
     fn s007_superseded_by_verb_fires() {
         use crate::model::{RelVerb, Relationship};
         let mut record = make_stale_stub();
-        // Reverse direction (legacy verb) is forbidden in stub Related —
-        // it duplicates the Status: field and is a legacy form.
         record.relationships.push(Relationship {
             verb: RelVerb::SupersededBy,
             target: AdrId {
@@ -2261,10 +2176,6 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
 
     #[test]
     fn s007_non_canonical_section_name_fires() {
-        // Whitelist semantics: any H2 not in {Related, Retirement}
-        // triggers S007, not just the well-known Context/Decision/
-        // Consequences set. Pins the rule against accidental
-        // refactor to a deny-list.
         let mut record = make_stale_stub();
         record.section_order = vec!["Related".into(), "Notes".into(), "Retirement".into()];
         let config = make_config();
@@ -2314,7 +2225,6 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
     #[test]
     fn s007_stale_with_accepted_status_no_fire() {
         let mut record = make_stale_stub();
-        // Non-terminal status — rule conditions unmet, even with bad sections.
         record.status = Some(Status::Accepted);
         record.status_raw = Some("Accepted".into());
         record.section_order = vec!["Related".into(), "Context".into(), "Retirement".into()];
@@ -2331,7 +2241,6 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
     #[test]
     fn s007_active_with_terminal_status_no_fire() {
         let mut record = make_record();
-        // Terminal status outside stale dir — S006 fires, not S007.
         record.is_stale = false;
         record.status = Some(Status::SupersededBy(AdrId {
             prefix: "CHE".into(),
@@ -2346,8 +2255,6 @@ params = { max_rules = 10, min_rule_words = 7, max_rule_words = 60 }
             "active dir + terminal status must not trigger S007 (S006 covers it), got: {diags:?}"
         );
     }
-
-    // ── T-rule stale-skip pin tests (per AFM-0022) ──────────────────
 
     #[test]
     fn t007_t008_t009_t010_t016_skipped_for_stale_stub() {

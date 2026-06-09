@@ -93,7 +93,6 @@ fn main() {
         (),
         TracingDeadLetterSink::new(),
     );
-    // Closure missing the third `CorrelationContext` parameter — must fail.
     app.register_policy(
         P,
         |_out, _gw: &Gw| async move { Ok(()) },

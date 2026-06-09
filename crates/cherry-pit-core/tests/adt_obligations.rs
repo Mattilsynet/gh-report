@@ -23,8 +23,6 @@ fn m1_forbid_unsafe_code() {
 fn m3_dependency_allowlist() {
     let cargo_toml = include_str!("../Cargo.toml");
 
-    // Parse the [dependencies] section — everything between [dependencies]
-    // and the next [section] or EOF.
     let deps_start = cargo_toml
         .find("[dependencies]")
         .expect("Cargo.toml must have [dependencies]");
@@ -38,7 +36,6 @@ fn m3_dependency_allowlist() {
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        // Extract crate name (before '=' or '{').
         let name = trimmed
             .split(|c: char| c == '=' || c == '{' || c.is_whitespace())
             .next()
@@ -65,17 +62,12 @@ fn m29_no_pub_mod_in_lib() {
     let lines: Vec<&str> = lib_rs.lines().collect();
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
-        // Skip doc comments and regular comments.
         if trimmed.starts_with("//") {
             continue;
         }
         if !trimmed.starts_with("pub mod") {
             continue;
         }
-        // CHE-0058 carve-out: walk back past blank lines / comments to
-        // the previous meaningful line. If it is a `#[cfg(...)]`
-        // attribute whose predicate contains either `test` or
-        // `feature = "testing"`, the `pub mod` is permitted.
         let mut j = i;
         let prev_meaningful = loop {
             if j == 0 {
@@ -111,8 +103,6 @@ fn m29_no_pub_mod_in_lib() {
 /// zero `pub mod` declarations.
 #[test]
 fn m29b_carve_out_logic() {
-    // Inline copy of the M29 detection logic so we can drive it with
-    // synthetic input rather than the real lib.rs.
     fn check(src: &str) -> Result<(), String> {
         let lines: Vec<&str> = src.lines().collect();
         for (i, line) in lines.iter().enumerate() {
@@ -146,17 +136,11 @@ fn m29b_carve_out_logic() {
         Ok(())
     }
 
-    // Bare `pub mod` — forbidden.
     assert!(check("pub mod foo;").is_err());
-    // Gated by `cfg(test)` — permitted.
     assert!(check("#[cfg(test)]\npub mod testing;").is_ok());
-    // Gated by `cfg(feature = \"testing\")` — permitted.
     assert!(check("#[cfg(feature = \"testing\")]\npub mod testing;").is_ok());
-    // Gated by `cfg(any(test, feature = \"testing\"))` — permitted.
     assert!(check("#[cfg(any(test, feature = \"testing\"))]\npub mod testing;").is_ok());
-    // Gated by an unrelated cfg (e.g. `target_os`) — still forbidden.
     assert!(check("#[cfg(target_os = \"linux\")]\npub mod foo;").is_err());
-    // Blank line / comment between cfg and pub mod — still permitted.
     assert!(check("#[cfg(test)]\n\n// comment\npub mod testing;").is_ok());
 }
 
@@ -169,12 +153,7 @@ fn m20_aggregate_not_found_on_dispatch_error() {
 
     let id = AggregateId::new(NonZeroU64::new(1).unwrap());
     let err: DispatchError<std::io::Error> = DispatchError::AggregateNotFound { aggregate_id: id };
-    // Pattern match succeeds — variant exists on DispatchError.
     assert!(matches!(err, DispatchError::AggregateNotFound { .. }));
-
-    // StoreError has no AggregateNotFound variant — verified by absence
-    // in the source (no runtime test possible for variant absence without
-    // trybuild, but the compile-time shape is authoritative).
 }
 
 /// M22: `ErrorCategory` exposed on `DispatchError`, `StoreError`,
@@ -188,11 +167,9 @@ fn m22_error_category_on_all_error_types() {
 
     let id = AggregateId::new(NonZeroU64::new(1).unwrap());
 
-    // DispatchError
     let de: DispatchError<std::io::Error> = DispatchError::AggregateNotFound { aggregate_id: id };
     assert_eq!(de.category(), ErrorCategory::Terminal);
 
-    // StoreError
     let se = StoreError::ConcurrencyConflict {
         aggregate_id: id,
         expected_sequence: NonZeroU64::new(1).unwrap(),
@@ -200,11 +177,9 @@ fn m22_error_category_on_all_error_types() {
     };
     assert_eq!(se.category(), ErrorCategory::Retryable);
 
-    // BusError
     let be = BusError::new("test");
     assert_eq!(be.category(), ErrorCategory::Retryable);
 
-    // EnvelopeError
     let ee = EnvelopeError::NilEventId;
     assert_eq!(ee.category(), ErrorCategory::Terminal);
 }

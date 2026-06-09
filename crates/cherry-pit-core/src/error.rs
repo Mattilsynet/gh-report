@@ -351,7 +351,6 @@ mod tests {
     use super::*;
     use std::num::NonZeroU64;
 
-    // A minimal domain error for testing DispatchError<E>.
     #[derive(Debug)]
     struct TestDomainError(&'static str);
     impl fmt::Display for TestDomainError {
@@ -361,21 +360,12 @@ mod tests {
     }
     impl Error for TestDomainError {}
 
-    // ── CHE-0021 R1: non_exhaustive on all public error types ──
-
     #[test]
     fn dispatch_error_is_non_exhaustive() {
-        // This test verifies the enum is #[non_exhaustive] by confirming
-        // we can construct known variants. The non_exhaustive attribute
-        // prevents external crates from exhaustive matching — verified
-        // at the language level (attribute presence checked by m22 in
-        // adt_obligations).
         let _err: DispatchError<TestDomainError> = DispatchError::AggregateNotFound {
             aggregate_id: AggregateId::new(NonZeroU64::new(1).unwrap()),
         };
     }
-
-    // ── CHE-0021 R3: ErrorCategory on all error types ──
 
     #[test]
     fn dispatch_error_category_retryable() {
@@ -465,8 +455,6 @@ mod tests {
         );
     }
 
-    // ── CHE-0027 R1: manual Display/Error (no thiserror) ──
-
     #[test]
     fn dispatch_error_display() {
         let err: DispatchError<TestDomainError> =
@@ -516,21 +504,16 @@ mod tests {
         assert!(err2.source().is_none());
     }
 
-    // ── CHE-0015 R2: domain error preserved losslessly ──
-
     #[test]
     fn dispatch_error_preserves_domain_error() {
         let domain_err = TestDomainError("business rule X");
         let err: DispatchError<TestDomainError> = DispatchError::Rejected(domain_err);
-        // Access the inner error through pattern matching — type preserved.
         if let DispatchError::Rejected(inner) = &err {
             assert_eq!(inner.0, "business rule X");
         } else {
             panic!("expected Rejected variant");
         }
     }
-
-    // ── BusError into_inner ──
 
     #[test]
     fn bus_error_into_inner() {

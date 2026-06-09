@@ -35,22 +35,11 @@ mod error;
 mod event_bus;
 
 pub use app::*;
+pub use cherry_pit_projection::{ProjectionDriverExt, ProjectionDriverTuple};
 pub use dead_letter::*;
+pub use dispatch::correlation_for;
 pub use error::*;
 pub use event_bus::*;
-// `ProjectionDriverExt` + `ProjectionDriverTuple` relocated to
-// `cherry-pit-projection` per CHE-0057:R2 (extension-trait-with-concrete-
-// type rationale) under SM-2 of phase2-v2-track-1 (bead `adr-fmt-ugia`).
-// Re-exported here for CHE-0054:R8 backward-compat: existing consumers
-// (gh-report) import `cherry_pit_agent::ProjectionDriverExt`; that path
-// must continue to resolve.
-pub use cherry_pit_projection::{ProjectionDriverExt, ProjectionDriverTuple};
-// `dispatch` is intentionally NOT re-exported: `ErasedPolicyDispatcher` /
-// `make_adapter` / the internal `dispatch_one` routine are crate-internal
-// per CHE-0051:R4 (closure shape is the public surface; the dispatcher is
-// the agent's private routing). Only `correlation_for` is publicly useful,
-// and it is re-exported explicitly to keep the surface intentional.
-pub use dispatch::correlation_for;
 
 /// Re-export of [`cherry_pit_core::CorrelationContext`] for ergonomic
 /// access at the agent surface.

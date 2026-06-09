@@ -140,8 +140,6 @@ mod tests {
         assert_json_snapshot!(evidence);
     }
 
-    // ── Baseline backward/forward compatibility tests ───────────
-
     /// Backward compat: a `MessagePack` payload containing `warm_start: true`
     /// deserializes correctly into the current `AssessmentMetadata` struct.
     /// This guards against regressions if the field's `#[serde(default)]`
@@ -165,12 +163,8 @@ mod tests {
             warm_start: true,
         };
 
-        // Serialize with named fields (msgpack-named is the
-        // workspace-standard structural encoding for serde types
-        // crossing the cherry-pit storage boundary).
         let encoded = rmp_serde::to_vec_named(&metadata).expect("serialize");
 
-        // Deserialize back — warm_start should be preserved.
         let decoded: AssessmentMetadata = rmp_serde::from_slice(&encoded).expect("deserialize");
 
         assert!(decoded.warm_start);
@@ -185,19 +179,13 @@ mod tests {
     /// attribute ensures `warm_start` defaults to `false`.
     #[test]
     fn msgpack_forward_compat_warm_start_absent() {
-        // We can't easily build a partial msgpack map with rmp_serde's
-        // typed API, so we use serde_json as an intermediate: serialize
-        // the full struct, remove the field, then round-trip through
-        // MessagePack.
         let metadata = test_fixtures::make_metadata();
         let mut json_val = serde_json::to_value(&metadata).expect("to json");
         let obj = json_val.as_object_mut().expect("object");
         obj.remove("warm_start");
 
-        // Re-serialize to MessagePack named format via serde_json::Value.
         let msgpack = rmp_serde::to_vec_named(&json_val).expect("to msgpack");
 
-        // Deserialize into AssessmentMetadata — warm_start should default to false.
         let decoded: super::AssessmentMetadata =
             rmp_serde::from_slice(&msgpack).expect("deserialize without warm_start");
 

@@ -157,8 +157,6 @@ impl DeadLetterSink for TracingDeadLetterSink {
         &self,
         record: DeadLetterRecord,
     ) -> impl std::future::Future<Output = Result<(), Box<dyn Error + Send + Sync>>> + Send {
-        // Schema is golden-file pinned by `tests/dead_letter_tracing.rs` —
-        // do not reorder or rename fields without updating that test.
         tracing::error!(
             event_id = %record.event_id,
             correlation_id = ?record.correlation_id,

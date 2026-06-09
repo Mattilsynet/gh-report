@@ -43,8 +43,6 @@ use crate::error::{StoreCreateResult, StoreError};
 use crate::event::{DomainEvent, EventEnvelope};
 use crate::store::{EventStore, ListableEventStore};
 
-// ─── FakeBus ───────────────────────────────────────────────────────
-
 /// In-memory [`EventBus`] that records every published envelope.
 ///
 /// Publication is infallible by construction — `publish` always resolves
@@ -99,9 +97,6 @@ impl<E: DomainEvent> EventBus for FakeBus<E> {
         &self,
         events: &[EventEnvelope<Self::Event>],
     ) -> Result<(), crate::error::BusError> {
-        // Clone-on-push: trait gives us a borrow, we own a Vec internally.
-        // Synchronous mutation under Mutex inside an `async fn` body keeps
-        // the returned future Send without requiring a runtime crate.
         let owned: Vec<EventEnvelope<E>> = events.to_vec();
         self.published
             .lock()
@@ -110,8 +105,6 @@ impl<E: DomainEvent> EventBus for FakeBus<E> {
         Ok(())
     }
 }
-
-// ─── InMemoryEventStore ────────────────────────────────────────────
 
 /// In-memory [`EventStore`] matching the file-store reference behaviour.
 ///
@@ -149,7 +142,6 @@ impl<E: DomainEvent> InMemoryEventStore<E> {
         Self {
             state: Mutex::new(EventStoreState {
                 streams: HashMap::new(),
-                // CHE-0020:R2 — first store-assigned id is 1.
                 next_id: NonZeroU64::MIN,
             }),
         }
@@ -177,7 +169,6 @@ fn build_envelopes<E: DomainEvent>(
     let timestamp = jiff::Timestamp::now();
     let mut envelopes = Vec::with_capacity(events.len());
     for (i, payload) in events.into_iter().enumerate() {
-        // i_u64 + start_sequence + 1, all checked.
         let i_u64 = u64::try_from(i).unwrap_or(u64::MAX);
         let raw = start_sequence
             .checked_add(i_u64)
@@ -216,9 +207,6 @@ impl<E: DomainEvent> EventStore for InMemoryEventStore<E> {
             .lock()
             .expect("InMemoryEventStore mutex poisoned");
         let stream = state.streams.get(&id).cloned().unwrap_or_default();
-        // CHE-0042:R4 — honour the conformance shape: validate_stream is
-        // called even though the in-process construction makes corruption
-        // structurally impossible. SM-4's harness asserts this contract.
         EventEnvelope::validate_stream(id, &stream)
             .map_err(|e| StoreError::CorruptData(Box::new(e)))?;
         Ok(stream)
@@ -230,7 +218,6 @@ impl<E: DomainEvent> EventStore for InMemoryEventStore<E> {
         context: CorrelationContext,
     ) -> StoreCreateResult<Self::Event> {
         if events.is_empty() {
-            // Mirror msgpack_file.rs:445-450 — store.rs:176-177 contract.
             return Err(StoreError::Infrastructure(Box::<
                 dyn std::error::Error + Send + Sync,
             >::from(
@@ -242,8 +229,6 @@ impl<E: DomainEvent> EventStore for InMemoryEventStore<E> {
             .lock()
             .expect("InMemoryEventStore mutex poisoned");
         let id = AggregateId::new(state.next_id);
-        // Bump under the same lock so concurrent `create` calls cannot
-        // collide on id allocation.
         let bumped = state.next_id.get().checked_add(1).ok_or_else(|| {
             StoreError::Infrastructure(Box::<dyn std::error::Error + Send + Sync>::from(
                 "aggregate ID overflow",
@@ -264,7 +249,6 @@ impl<E: DomainEvent> EventStore for InMemoryEventStore<E> {
         context: CorrelationContext,
     ) -> Result<Vec<EventEnvelope<Self::Event>>, StoreError> {
         if events.is_empty() {
-            // store.rs:242 — empty append is a no-op.
             return Ok(Vec::new());
         }
         let mut state = self
@@ -272,8 +256,6 @@ impl<E: DomainEvent> EventStore for InMemoryEventStore<E> {
             .lock()
             .expect("InMemoryEventStore mutex poisoned");
 
-        // append to a never-created aggregate is an error
-        // (msgpack_file.rs:504-508 + store.rs:226-228).
         let Some(stream) = state.streams.get(&id) else {
             return Err(StoreError::Infrastructure(Box::<
                 dyn std::error::Error + Send + Sync,
@@ -282,7 +264,6 @@ impl<E: DomainEvent> EventStore for InMemoryEventStore<E> {
             ))));
         };
 
-        // Optimistic concurrency check (msgpack_file.rs:513-520).
         let actual_sequence = stream.last().map_or(0, |e| e.sequence().get());
         if actual_sequence != expected_sequence.get() {
             return Err(StoreError::ConcurrencyConflict {
@@ -293,8 +274,6 @@ impl<E: DomainEvent> EventStore for InMemoryEventStore<E> {
         }
 
         let new_envelopes = build_envelopes(id, expected_sequence.get(), events, &context)?;
-        // Re-borrow mutably to extend. (Earlier immutable borrow has ended
-        // — `stream` was consumed by the if-let above.)
         let stream_mut = state
             .streams
             .get_mut(&id)
@@ -313,8 +292,6 @@ impl<E: DomainEvent> ListableEventStore for InMemoryEventStore<E> {
         Ok(state.streams.keys().copied().collect())
     }
 }
-
-// ─── InMemoryProjectionStore ───────────────────────────────────────
 
 /// In-memory projection snapshot + checkpoint backend.
 ///
@@ -436,20 +413,6 @@ where
         state.checkpoints.remove(&aggregate_id);
     }
 }
-
-// ─── Conformance harness ───────────────────────────────────────────
-//
-// Generic `fn`s that lift the trait-doc contracts of [`EventStore`],
-// [`Aggregate`], and [`Projection`] into runtime-assertable invariants.
-// Registrants (in-memory store, gateway file-store, projection
-// file-store, and Track 2.2's pardosa-backed store) call these from
-// integration tests to prove they honour the same contract.
-//
-// Signature shape (SM-4 contract + oracle §1.3): generic `fn`s over
-// the concrete impl type — no `Box<dyn EventStore>`, no `BoxFuture`,
-// no `Pin<Box<dyn Future>>` (CHE-0005:R1 + CHE-0025:R2). Async fns
-// return RPITIT futures; caller owns the runtime. Factories return a
-// fresh store per call so each invariant scenario runs in isolation.
 
 pub mod conformance {
     //! Runtime-assertable conformance for [`EventStore`], [`Aggregate`],
@@ -615,7 +578,6 @@ pub mod conformance {
             .last()
             .expect("create returns ≥1 envelope")
             .sequence();
-        // Pick a stale expected_sequence that is NOT the real last.
         let stale = NonZeroU64::new(real_last.get().saturating_add(99)).expect("non-zero by add");
         let result = store
             .append(id, stale, vec![make_event(1)], CorrelationContext::none())
@@ -662,7 +624,6 @@ pub mod conformance {
         ME: Fn(u32) -> S::Event,
     {
         let store = make_store();
-        // Use an aggregate id far above what the store can have allocated.
         let phantom = AggregateId::new(NonZeroU64::new(987_654_321).expect("non-zero"));
         let loaded = store
             .load(phantom)
@@ -765,7 +726,6 @@ pub mod conformance {
             "second appended sequence must be contiguous",
         );
 
-        // Load the full stream and re-verify contiguity end-to-end.
         let full = store
             .load(id)
             .await
@@ -827,17 +787,14 @@ pub mod conformance {
             "assert_aggregate_conformance requires ≥1 event to distinguish default-vs-applied",
         );
 
-        // 1. default constructs without panic.
         let default_a = A::default();
 
-        // 2. default does not satisfy probe (must be distinguishable).
         assert!(
             !probe(&default_a),
             "A::default() must NOT satisfy the caller-supplied probe — the probe must \
              distinguish default-state from event-driven state (CHE-0012:R3)",
         );
 
-        // 3 + 4. apply does not panic; final state satisfies probe.
         let mut a = A::default();
         for ev in events {
             a.apply(ev);
@@ -848,7 +805,6 @@ pub mod conformance {
              the expected state transition (CHE-0009:R1)",
         );
 
-        // 5. replay determinism via the probe (two fresh applies both pass).
         let mut a2 = A::default();
         for ev in events {
             a2.apply(ev);
@@ -898,10 +854,8 @@ pub mod conformance {
         ME: Fn(u32) -> P::Event,
         C: Fn(&P, &P) -> bool,
     {
-        // 1. default constructs without panic.
         let _ = P::default();
 
-        // 2. replay-equivalence via EventStore::load.
         let store = make_store();
         let (id, _) = store
             .create(
@@ -930,10 +884,6 @@ pub mod conformance {
              fresh P::default() instances did not yield equal projections",
         );
 
-        // 3. baseline: single application equals double application
-        // result-wise — projections that fold per-envelope deterministically
-        // pass this; non-deterministic projections would diverge here.
-        // (This is the fold-side reading of CHE-0009:R1 + CHE-0048:R3.)
         let mut p3 = P::default();
         for env in &envs {
             p3.apply(env);
@@ -946,32 +896,14 @@ pub mod conformance {
     }
 }
 
-// ─── Smoke tests ───────────────────────────────────────────────────
-//
-// These are intentionally narrow: just enough to prove the fixture
-// shapes compile against the trait surfaces, the auto-increment
-// counter starts at 1, `expected_sequence` mismatch returns
-// `ConcurrencyConflict`, unknown aggregates load empty, and
-// `FakeBus::published` reflects what was published. Full conformance
-// belongs in SM-4's harness (not this sub-mission).
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
     use std::task::{Context, Poll, Waker};
 
-    // Minimal hand-rolled block_on (~30 lines, zero deps) so smoke tests
-    // can await futures without pulling tokio. CHE-0029:R4 inviolate.
-    // Allowed by oracle §1.3 second resolution path. Polls in a hot loop
-    // on a no-op Waker — adequate for fixtures whose async paths never
-    // actually yield (every future here is ready immediately because the
-    // operations are sync under a Mutex).
     fn block_on<F: Future>(fut: F) -> F::Output {
         let mut cx = Context::from_waker(Waker::noop());
-        // Pinning to the stack: `fut` is not moved after this point and
-        // is dropped at end of scope. `Box::pin` would allocate; pin! does
-        // not.
         let mut fut = std::pin::pin!(fut);
         loop {
             if let Poll::Ready(v) = fut.as_mut().poll(&mut cx) {
@@ -989,8 +921,6 @@ mod tests {
             "test.happened"
         }
     }
-
-    // ── FakeBus ───────────────────────────────────────────────
 
     #[test]
     fn fake_bus_records_published_envelopes() {
@@ -1019,8 +949,6 @@ mod tests {
         block_on(bus.publish(&[])).unwrap();
         assert!(bus.published().is_empty());
     }
-
-    // ── InMemoryEventStore ────────────────────────────────────
 
     fn store() -> InMemoryEventStore<TestEvent> {
         InMemoryEventStore::new()
@@ -1126,7 +1054,6 @@ mod tests {
             CorrelationContext::none(),
         ))
         .unwrap();
-        // Real last sequence is 1; supply 99.
         let err = block_on(s.append(
             id,
             NonZeroU64::new(99).unwrap(),
@@ -1179,8 +1106,6 @@ mod tests {
         .unwrap();
         assert!(envs.is_empty());
     }
-
-    // ── InMemoryProjectionStore ───────────────────────────────
 
     #[derive(Debug, Clone, PartialEq, Default)]
     struct CounterView {

@@ -11,8 +11,6 @@
 use crate::config::Config;
 use crate::model::{RelVerb, Tier};
 
-// ── Public API ─────────────────────────────────────────────────────
-
 /// Print the setup guide when no `adr-fmt.toml` exists.
 pub fn print_setup_guide() {
     println!("adr-fmt — ADR Governance Tool");
@@ -97,8 +95,6 @@ pub fn print_governance(config: &Config) {
     print_overrides(config);
 }
 
-// ── Mode section ───────────────────────────────────────────────────
-
 fn print_modes() {
     println!("MODES");
     println!("─────");
@@ -112,8 +108,6 @@ fn print_modes() {
     println!("  Exit codes: 0 = complete, 1 = infrastructure error");
     println!();
 }
-
-// ── Domain section ─────────────────────────────────────────────────
 
 fn print_domains(config: &Config) {
     println!("DOMAINS");
@@ -139,8 +133,6 @@ fn print_domains(config: &Config) {
         println!();
     }
 }
-
-// ── Tier section ───────────────────────────────────────────────────
 
 fn print_tiers() {
     println!("TIERS");
@@ -170,8 +162,6 @@ fn print_tiers() {
     println!();
 }
 
-// ── Lifecycle section ──────────────────────────────────────────────
-
 fn print_lifecycle() {
     println!("LIFECYCLE");
     println!("─────────");
@@ -194,8 +184,6 @@ fn print_lifecycle() {
     println!("    • Add a ## Retirement section");
     println!();
 }
-
-// ── Template section ───────────────────────────────────────────────
 
 fn print_template() {
     println!("TEMPLATE");
@@ -259,8 +247,6 @@ fn print_template() {
     println!("    P002  Missing or malformed H1 title (\"# PREFIX-NNNN. Title\")");
     println!();
 }
-
-// ── Tagged rules section ───────────────────────────────────────────
 
 fn print_tagged_rules() {
     println!("TAGGED RULES (Decision Section)");
@@ -338,8 +324,6 @@ fn print_tagged_rules() {
     println!();
 }
 
-// ── Relationship section ───────────────────────────────────────────
-
 fn print_relationships(config: &Config) {
     println!("RELATIONSHIPS");
     println!("─────────────");
@@ -403,8 +387,6 @@ fn print_relationships(config: &Config) {
     println!();
 }
 
-// ── Naming rules section ───────────────────────────────────────────
-
 fn print_naming() {
     println!("NAMING");
     println!("──────");
@@ -415,8 +397,6 @@ fn print_naming() {
     println!("    N003  Title ID matches filename ID");
     println!();
 }
-
-// ── Link rules section ─────────────────────────────────────────────
 
 fn print_link_rules() {
     println!("LINK RULES");
@@ -446,8 +426,6 @@ fn print_link_rules() {
     println!();
 }
 
-// ── Stale section ──────────────────────────────────────────────────
-
 fn print_stale(config: &Config) {
     println!("STALE DIRECTORY");
     println!("───────────────");
@@ -473,8 +451,6 @@ fn print_stale(config: &Config) {
     println!("    T007/T008/T009/T010/T016 are skipped on stale");
     println!();
 }
-
-// ── Overrides section ──────────────────────────────────────────────
 
 fn print_overrides(config: &Config) {
     if config.rules.is_empty() {
@@ -563,7 +539,6 @@ params = { min_words = 7, max_words = 50 }
     #[test]
     fn overrides_section_shown_when_params_exist() {
         let config = make_config();
-        // Should not panic — overrides section will print T015 params
         print_overrides(&config);
     }
 
@@ -586,7 +561,6 @@ crates = []
 "#,
         )
         .unwrap();
-        // No rules at all → should not print anything
         print_overrides(&config);
     }
 
@@ -595,9 +569,6 @@ crates = []
         let config = make_config();
         print_governance(&config);
 
-        // Structural canary: these strings appear in println! arguments
-        // in print_relationships, not just in test assertions. They pin
-        // the parent-edge tree model language (AFM-0020).
         let src = include_str!("guidelines.rs");
         assert!(src.contains("first References target = structural parent"));
         assert!(src.contains("walking the parent edge upward"));
@@ -608,12 +579,6 @@ crates = []
 
     #[test]
     fn relationships_no_stale_pre_tree_model_terms() {
-        // Negative canary: scan ONLY the print_relationships +
-        // print_link_rules source range for stale pre-Tree-Model
-        // terms. The forbidden list lives in a separate module-scope
-        // const (NEGATIVE_CANARY_TERMS) so this test's body itself
-        // does not contain the forbidden literals — eliminating the
-        // self-stripping brittleness of the previous implementation.
         let src = include_str!("guidelines.rs");
         let start = src
             .find("fn print_relationships")
@@ -631,15 +596,11 @@ crates = []
 
     #[test]
     fn foundation_prefixes_derived_from_config() {
-        // Config has COM as foundation — verify it appears in output.
-        // If the list were hardcoded, adding/removing a foundation
-        // domain in config would not change the output.
         let src = include_str!("guidelines.rs");
         assert!(
             src.contains("foundation_list"),
             "print_relationships must derive foundation prefixes from config"
         );
-        // Also verify no hardcoded prefix list remains
         assert!(
             !src.contains("\"COM, RST, SEC\""),
             "foundation prefixes must not be hardcoded"
@@ -648,10 +609,6 @@ crates = []
 
     #[test]
     fn tier_scaling_table_derived_from_model() {
-        // Verify the guidelines tier scaling table is generated from
-        // Tier methods, not hardcoded. The source should contain
-        // tier.factor(), tier.min_words(), tier.max_refs() calls,
-        // not literal values.
         let src = include_str!("guidelines.rs");
         assert!(
             src.contains("tier.factor()"),
@@ -665,8 +622,6 @@ crates = []
             src.contains("tier.max_refs()"),
             "tier scaling table must use Tier::max_refs()"
         );
-        // Verify no hardcoded scaling lines remain (old format had
-        // literal values in println calls for each tier)
         let needle = format!("println!(\"    {}  factor=", "S");
         assert!(
             !src.contains(&needle),

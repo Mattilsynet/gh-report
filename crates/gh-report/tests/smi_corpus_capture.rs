@@ -125,10 +125,6 @@ const DELIVERY_ID: &str = "delivery-smi-001";
 async fn capture_pre_smi_corpus() {
     let target = prepare_fixture_dir();
 
-    // Fresh store → deterministic AggregateId assignment (1, 2, 3, ...).
-    // Per-aggregate routing indices (matches AppState shape — Track 4.0
-    // tightened from the single-index shorthand used in the pre-3a
-    // capture harness).
     let store_dir = tempfile::tempdir().expect("tempdir");
     let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(store_dir.path()));
     let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
@@ -141,12 +137,6 @@ async fn capture_pre_smi_corpus() {
     let tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
-    // Spawn the Merger over the shared store/bus/indices/tracker; the
-    // Run-aggregate writes flow through `merger_tx` per Track 4.0/3b.
-    // The JoinHandle is intentionally dropped — the task is kept alive
-    // by the surviving `merger_tx` clones inside `RunService` and the
-    // local binding; the harness `.await`s every command before
-    // returning, so the task always drains its queue before drop.
     let (merger_tx, _merger_handle) = Merger::spawn(
         Arc::clone(&store),
         Arc::clone(&bus),
@@ -177,8 +167,6 @@ async fn capture_pre_smi_corpus() {
 
 fn prepare_fixture_dir() -> PathBuf {
     let target = fixtures_dir();
-    // Hygiene: start from a clean fixture dir so stale files from a
-    // previous capture don't survive a shrinking scenario.
     if target.exists() {
         fs::remove_dir_all(&target).expect("clean fixture dir");
     }
@@ -191,7 +179,6 @@ type RepoSvc = RepoService;
 type WebhookSvc = WebhookService;
 
 async fn run_aggregate_happy_path(run: &RunSvc, ctx: &CorrelationContext) {
-    // start → progress → progress → complete → publish_evidence
     run.start_sweep(
         StartSweep {
             org: "octocat".into(),
@@ -281,15 +268,6 @@ async fn run_aggregate_failure_path(run: &RunSvc, ctx: &CorrelationContext) {
 }
 
 async fn repo_aggregate_evaluate_and_remove(repo: &RepoSvc, ctx: &CorrelationContext) {
-    // `evidence: None` keeps the corpus self-contained (no dependency
-    // on `gh_report::test_fixtures`, which is `#[cfg(test)]`-gated and
-    // therefore invisible from integration tests). The projection's
-    // RepoEvaluated arm only materialises when evidence is `Some`, so
-    // this scenario exercises the RepoEvaluated *event* shape without
-    // depending on a full `RepositoryEvidence` literal. Projection
-    // materialisation drift is covered by `projection_sort_equivalence`
-    // and `projection.rs` unit tests; 4.0 changes the write path, not
-    // the projection logic.
     repo.record_evaluation(
         REPO_KEY,
         RecordEvaluation {
@@ -421,10 +399,6 @@ fn write_snapshots(
     projection: &EvidenceProjection,
     copied: &[String],
 ) {
-    // JSON with pretty + sorted keys for review-friendly diffs.
-    // `serde_json::to_string_pretty` preserves `BTreeMap` ordering
-    // (the projection uses it for repositories) so output is
-    // deterministic.
     let payload_json =
         serde_json::to_string_pretty(payload_sequence).expect("serialise payload sequence") + "\n";
     let projection_json =
@@ -435,9 +409,6 @@ fn write_snapshots(
     fs::write(target.join("projection_snapshot.json"), projection_json)
         .expect("write projection_snapshot.json");
 
-    // Manifest of captured msgpack files (numerically sorted by
-    // copy_msgpack_files) — gives the replay test a stable
-    // enumeration source without re-scanning the directory.
     let manifest = copied.join("\n") + "\n";
     fs::write(target.join("aggregate_files.txt"), manifest).expect("write aggregate_files.txt");
 

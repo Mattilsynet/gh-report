@@ -134,9 +134,6 @@ mod tests {
         )
         .expect("valid envelope");
         let outputs = p.react(&envelope);
-        // The return type is `Vec<NotifyAction>` — no `Box`, no `dyn`. Pattern
-        // matching on the concrete variant is the proof that the type is
-        // statically known to the caller.
         assert_eq!(outputs.len(), 1);
         match &outputs[0] {
             NotifyAction::SendEmail(msg) => assert_eq!(msg, "placed"),

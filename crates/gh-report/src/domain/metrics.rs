@@ -267,10 +267,6 @@ pub struct SecretScanningObservability {
     pub unobservable_repositories: u32,
 }
 
-// ---------------------------------------------------------------------------
-// Org-level alert summary DTOs
-// ---------------------------------------------------------------------------
-
 /// Per-repository open-alert summary collected from the org-level endpoint.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RepoAlertSummary {
@@ -300,10 +296,6 @@ pub struct OrgAlertSummary {
     /// ISO 8601 timestamp of the newest open alert across the organization.
     pub newest_open_secret_alert_created_at: Option<String>,
 }
-
-// ---------------------------------------------------------------------------
-// Per-owner repository mapping
-// ---------------------------------------------------------------------------
 
 use crate::domain::evidence::RepositoryEvidence;
 

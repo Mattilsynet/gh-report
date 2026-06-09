@@ -88,16 +88,9 @@ pub fn build_projection_router<P>(
 where
     P: ProjectionSource,
 {
-    // Per-instance permit pools. Each `build_projection_router` call
-    // gets its own pools so tests run in parallel without cross-talk
-    // (donor `server.rs:843-845` rationale).
     let http_semaphore = Arc::new(Semaphore::new(limits.max_inflight_requests));
     let ws_semaphore = Arc::new(Semaphore::new(limits.max_ws_connections));
 
-    // axum's `DefaultBodyLimit::disable()` lifts axum's built-in 2 MiB
-    // cap so `RequestBodyLimitLayer` is the sole authority — without it
-    // axum may short-circuit at its own default before reaching the
-    // tower-http layer, hiding the CHE-0062:R2 sizing from observation.
     handlers::build(state)
         .merge(extra_routes)
         .layer(DefaultBodyLimit::disable())

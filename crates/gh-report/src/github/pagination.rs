@@ -42,7 +42,6 @@ fn same_origin(a: &str, b: &str) -> bool {
     fn extract_origin(url: &str) -> Option<&str> {
         let sep = url.find("://")?;
         let after_scheme = &url[sep + 3..];
-        // Origin ends at first `/` after scheme, or end of string.
         let end = after_scheme.find('/').unwrap_or(after_scheme.len());
         Some(&url[..sep + 3 + end])
     }
@@ -59,17 +58,12 @@ fn same_origin(a: &str, b: &str) -> bool {
 ///
 /// The `rel` parameter is matched case-insensitively per RFC 8288.
 fn parse_next_from_link(link_header: &str) -> Option<String> {
-    // Each link-value is: `<URL>; param1; param2`, separated by commas.
-    // But commas can appear inside `<URL>`. We split on `>, ` or `>,`
-    // after the closing `>` — i.e., we find each `<...>; ...` segment
-    // by scanning for `<` and `>` delimiters.
     let mut remaining = link_header;
     while !remaining.is_empty() {
         let start = remaining.find('<')?;
         let end = remaining[start..].find('>')? + start;
         let url = &remaining[start + 1..end];
 
-        // The params follow after `>` until the next `<` or end-of-string.
         let params_start = end + 1;
         let params_end = remaining[params_start..]
             .find('<')

@@ -29,7 +29,6 @@ use cherry_pit_web::errors::ErrorEnvelope;
 use cherry_pit_web::{AppState, CommandRouter, DispatchOutcome};
 use serde::{Deserialize, Serialize};
 
-// --- Aggregate A1 + event E1 ---
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum E1 {
     Created,
@@ -55,7 +54,6 @@ impl HandleCommand<C1> for A1 {
     }
 }
 
-// --- Aggregate A2 + event E2 (distinct from A1) ---
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum E2 {
     Created,
@@ -81,7 +79,6 @@ impl HandleCommand<C2> for A2 {
     }
 }
 
-// --- Gateway G1 over A1 ---
 #[derive(Clone)]
 struct G1;
 impl CommandGateway for G1 {
@@ -107,7 +104,6 @@ impl CommandGateway for G1 {
     }
 }
 
-// --- Gateway G2 over A2 ---
 #[derive(Clone)]
 struct G2;
 impl CommandGateway for G2 {
@@ -133,7 +129,6 @@ impl CommandGateway for G2 {
     }
 }
 
-// --- EventStore matching G1 (Event = E1) ---
 struct S1;
 impl EventStore for S1 {
     type Event = E1;
@@ -154,11 +149,9 @@ impl EventStore for S1 {
     }
 }
 
-// --- Wire DTO ---
 #[derive(Deserialize)]
 struct W;
 
-// --- CommandRouter R bound to G2 (NOT G1) ---
 #[derive(Clone)]
 struct R;
 impl CommandRouter for R {
@@ -176,7 +169,5 @@ impl CommandRouter for R {
 }
 
 fn main() {
-    // G1 + S1 align, but R::Gateway = G2 ≠ G1. The `R: CommandRouter<Gateway = G>`
-    // bound on AppState::new must reject this.
     let _state = AppState::new(G1, S1, R);
 }

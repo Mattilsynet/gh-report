@@ -125,19 +125,8 @@ fn hexagonal_ports_only() {
 ///
 /// NOT reflection. NOT proc-macros. Pure type-system.
 #[test]
-fn port_traits_are_public() {
-    // Item-level fn definitions below are the load-bearing assertion.
-    // This runtime body exists only because `#[test]` requires a fn.
-}
+fn port_traits_are_public() {}
 
-// Domain traits (CHE-0004:R2 — "domain logic behind trait-based ports").
-// Each probe binds a port trait by its public path. The functions are
-// never called; #[expect(dead_code)] fails closed if any probe ever
-// becomes reachable — which would mean either the file gained an unwanted
-// caller (regression) or the lint moved (toolchain change worth noticing).
-// The `_`-prefix convention is deliberately NOT used: the prefix would
-// suppress dead_code at the rustc level, leaving #[expect] unfulfilled
-// and itself emitting an error — losing the fail-closed property.
 #[expect(
     dead_code,
     reason = "CHE-0028 probe: Aggregate port trait is publicly re-exported"
@@ -174,7 +163,6 @@ fn probe_policy<P: cherry_pit_core::Policy>() {}
 )]
 fn probe_projection<P: cherry_pit_core::Projection>() {}
 
-// Infrastructure ports (the hexagon's edges to adapters).
 #[expect(
     dead_code,
     reason = "CHE-0028 probe: CommandBus port trait is publicly re-exported"

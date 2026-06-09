@@ -74,17 +74,10 @@ pub(crate) const ECHO_HEADER: HeaderName = HeaderName::from_static("x-correlatio
 /// ```
 pub async fn correlation_layer(mut request: Request, next: Next) -> Response {
     let ctx = extract_correlation(request.headers());
-    // Stash for downstream handlers / error responders. Cloning is
-    // cheap (two `Option<Uuid>`s) and we want both this layer and any
-    // handler to be able to read the context independently.
     request.extensions_mut().insert(ctx.clone());
 
     let mut response = next.run(request).await;
     if let Some(corr) = ctx.correlation_id() {
-        // `Uuid::to_string()` produces 36 ASCII chars — always a valid
-        // header value. Conversion is infallible in practice; on the
-        // theoretical failure we silently skip the echo rather than
-        // mangle the response.
         if let Ok(value) = HeaderValue::from_str(&corr.to_string()) {
             response.headers_mut().insert(ECHO_HEADER, value);
         }

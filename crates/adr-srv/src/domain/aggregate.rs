@@ -30,7 +30,7 @@ impl AdrDocument {
     /// Phase 3 events apply field-selective updates.
     #[must_use]
     pub fn apply(self, event: &AdrIngested) -> Self {
-        let _ = self; // M1 total-replacement; suppress unused-self lint.
+        let _ = self;
         Self {
             id: event.id.clone(),
             frontmatter: event.frontmatter.clone(),

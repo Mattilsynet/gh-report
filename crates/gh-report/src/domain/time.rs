@@ -9,7 +9,7 @@ use jiff::Timestamp;
 
 /// Staleness threshold: repos with `updated_at` more than this many days
 /// before the report timestamp are considered stale.
-pub const STALE_THRESHOLD_DAYS: i64 = 730; // ~2 years
+pub const STALE_THRESHOLD_DAYS: i64 = 730;
 
 /// Dependabot inactivity threshold: repos with `pushed_at` more than this
 /// many days before the run timestamp are considered inactive.
@@ -113,8 +113,6 @@ mod tests {
         assert_eq!(ts.to_string(), "2026-04-12T14:30:05Z");
     }
 
-    // ── is_repo_stale tests ────────────────────────────────────
-
     #[test]
     fn is_repo_stale_none_updated_at_returns_false() {
         assert!(!is_repo_stale(None, "2026-04-09T12:00:00+00:00"));
@@ -175,8 +173,6 @@ mod tests {
             "2026-04-09T12:00:00+00:00",
         ));
     }
-
-    // ── is_dependabot_inactive tests ───────────────────────────
 
     #[test]
     fn dependabot_inactive_none_pushed_at_returns_false() {

@@ -58,10 +58,6 @@ pub struct DomainConfig {
     /// when domain has >1 root and rationale is empty") is not yet
     /// wired. Tracked as a follow-up to the parent-edge migration.
     #[serde(default)]
-    // Track 3.1: lib API exposure (pub mod config) makes this field
-    // reachable from external consumers; prior `#[expect(dead_code)]`
-    // removed because pub-reachability now suppresses the lint
-    // naturally. AFM-0020 R5 warning emission still deferred.
     pub multi_root_rationale: String,
 }
 
@@ -108,11 +104,6 @@ pub fn load_quiet(marker_dir: &Path) -> Result<Config, LoadError> {
 /// should treat this as a hard error rather than skip. `Parse` covers
 /// malformed TOML or a missing `[corpus]` table — discovery may skip
 /// and continue walking.
-// Per AFM-0028:R1 — public error types in the AFM-0026:R1 surface set
-// implement Display + Debug + std::error::Error. Debug is derived; Display
-// is hand-rolled per AFM-0028:R2 (single-line, human-readable). Variant
-// inner Strings already carry path/message and are public surface per
-// AFM-0026:R3, so surfacing them here is in-policy.
 #[derive(Debug)]
 pub enum LoadError {
     Io(String),
@@ -390,7 +381,6 @@ foundation = true
 
     #[test]
     fn legacy_format_still_parses() {
-        // Old-style TOML with full rule declarations still works
         let toml_str = r#"
 [corpus]
 root = "docs/adr"

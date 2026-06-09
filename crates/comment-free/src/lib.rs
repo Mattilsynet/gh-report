@@ -314,7 +314,9 @@ pub fn strip_line_comments_with_counts(src: &str) -> (String, RewriteCounts) {
                     (true, PreservedKind::None)
                 }
             }
-            TokenKind::BlockComment { doc_style: None, .. } => (true, PreservedKind::None),
+            TokenKind::BlockComment {
+                doc_style: None, ..
+            } => (true, PreservedKind::None),
             _ => (false, PreservedKind::None),
         };
         match preserved_kind {
@@ -451,9 +453,7 @@ fn pop_one_trailing_newline(s: &mut String) {
 /// the comment whose blankness is being judged.
 fn line_was_blank_before(prefix: &str) -> bool {
     let line_start = prefix.rfind('\n').map_or(0, |p| p + 1);
-    prefix[line_start..]
-        .chars()
-        .all(|c| c == ' ' || c == '\t')
+    prefix[line_start..].chars().all(|c| c == ' ' || c == '\t')
 }
 /// In-place: drop any trailing run of horizontal whitespace from `s`,
 /// leaving prior `\n` and earlier content intact. Used to clean up the
@@ -1696,8 +1696,7 @@ mod process_file_tests {
     }
     #[test]
     fn strip_line_comments_with_counts_counts_solo_line_drops() {
-        let (_, counts) =
-            super::strip_line_comments_with_counts("// a\n// b\nfn f() {}\n// c\n");
+        let (_, counts) = super::strip_line_comments_with_counts("// a\n// b\nfn f() {}\n// c\n");
         assert_eq!(counts.comments_removed, 3);
         assert_eq!(counts.inline_trimmed, 0);
     }
@@ -1710,9 +1709,8 @@ mod process_file_tests {
     }
     #[test]
     fn strip_line_comments_with_counts_counts_blank_lines_collapsed() {
-        let (_, counts) = super::strip_line_comments_with_counts(
-            "fn a() {}\n\n// removed\n\nfn b() {}\n",
-        );
+        let (_, counts) =
+            super::strip_line_comments_with_counts("fn a() {}\n\n// removed\n\nfn b() {}\n");
         assert_eq!(counts.comments_removed, 1);
         assert_eq!(counts.blank_lines_collapsed, 1);
     }

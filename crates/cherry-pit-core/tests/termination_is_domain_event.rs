@@ -71,7 +71,6 @@ fn has_terminated_variant(line: &str) -> bool {
             line[..start].chars().next_back()
         };
         if is_word_boundary(before) {
-            // Skip whitespace, then check for ',' or '}'.
             let mut rest = line[end..].chars();
             let next_non_ws = rest.by_ref().find(|c| !c.is_whitespace());
             if matches!(next_non_ws, Some(',' | '}')) {

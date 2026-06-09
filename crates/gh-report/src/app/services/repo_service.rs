@@ -234,9 +234,6 @@ mod tests {
 
     #[tokio::test]
     async fn with_merger_tx_constructs_service() {
-        // Smoke test: step-4 constructor surface compiles and yields a
-        // service whose handle (the mpsc::Sender) is wired to a live
-        // Merger task. Behaviour is covered by the lifecycle test.
         let (_dir, _store, _bus, _index, _tracker, _svc) = build_service().await;
     }
 
@@ -273,7 +270,6 @@ mod tests {
         let ctx = CorrelationContext::none();
         let domain_key = "octocat/hello";
 
-        // 1. evaluate (create-path on first reference).
         svc.record_evaluation(
             domain_key,
             RecordEvaluation {
@@ -290,7 +286,6 @@ mod tests {
         .await
         .expect("first record_evaluation");
 
-        // 2. evaluate (append-path on second reference).
         svc.record_evaluation(
             domain_key,
             RecordEvaluation {
@@ -307,7 +302,6 @@ mod tests {
         .await
         .expect("second record_evaluation");
 
-        // 3. remove (append-path, terminal).
         svc.record_removal(
             domain_key,
             RecordRemoval {
@@ -320,7 +314,6 @@ mod tests {
         .await
         .expect("record_removal");
 
-        // Routing index resolves.
         let assigned_id = {
             let guard = index
                 .lock()
@@ -328,20 +321,15 @@ mod tests {
             *guard.get(domain_key).expect("index should map domain_key")
         };
 
-        // Stream contents.
         let loaded = store.load(assigned_id).await.expect("load");
         assert_lifecycle_stream(&loaded);
 
-        // Bus captured all 3 in order.
         assert_captured_sequence(&captured, 3);
 
-        // Sequence tracker == 3.
         assert_tracker_seq(&tracker, assigned_id, 3);
 
-        // Single per-aggregate file (CHE-0036:R1).
         assert_single_msgpack_file(&dir, assigned_id);
 
-        // Post-removal rejection (CHE-0054:R2.c).
         let err = svc
             .record_evaluation(
                 domain_key,

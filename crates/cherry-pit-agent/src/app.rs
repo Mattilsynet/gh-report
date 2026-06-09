@@ -246,7 +246,6 @@ where
     {
         let adapter =
             make_adapter::<Pol, F, Fut, G>(policy, dispatch, policy_identity, output_type);
-        // Pre-`run` registration: registry is still uniquely owned.
         let registry = Arc::get_mut(&mut self.policies).expect(
             "App::register_policy called after App::run handed the registry to the \
              publish loop; register all policies before calling run",
@@ -546,7 +545,6 @@ mod tests {
 
     #[test]
     fn register_two_policies_independent_of_order() {
-        // Both orderings yield count=2; identity strings are not order-sensitive.
         let mut app1 = fresh_app();
         app1.register_policy(PolicyA, |_o, _g, _c| async move { Ok(()) }, "A", "Out");
         app1.register_policy(PolicyB, |_o, _g, _c| async move { Ok(()) }, "B", "Out");

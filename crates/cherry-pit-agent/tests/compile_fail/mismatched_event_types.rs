@@ -92,7 +92,6 @@ impl EventStore for StoreA {
 }
 
 fn main() {
-    // Bus is parameterised over the WRONG event type — App::new must reject.
     let _app = App::new(
         GwA,
         StoreA,

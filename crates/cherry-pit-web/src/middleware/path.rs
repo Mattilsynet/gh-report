@@ -68,7 +68,6 @@ pub fn sanitize_path_segment<'a>(
         });
     }
     if value.contains("..") || value.contains('/') || value.contains('\\') {
-        // Truncate untrusted input to prevent log/error amplification.
         let truncated: String = value.chars().take(100).collect();
         return Err(PathSegmentError {
             field: field_name.to_string(),
@@ -83,10 +82,6 @@ pub fn sanitize_path_segment<'a>(
     }
     Ok(Cow::Borrowed(value))
 }
-
-// ===========================================================================
-// Request path normalisation (security-critical)
-// ===========================================================================
 
 /// Result of normalising a raw URI path.
 ///
@@ -121,36 +116,27 @@ pub struct NormalizedPath {
 /// `.` path separators, so it becomes a harmless (non-existent) cache key.
 #[must_use]
 pub fn normalize_request_path(raw: &str) -> Option<NormalizedPath> {
-    // Step 1: percent-decode.
     let decoded = percent_decode_str(raw).decode_utf8().ok()?;
 
-    // Step 2: reject dangerous bytes.
     if decoded.contains('\0') || decoded.contains('\\') {
         return None;
     }
 
-    // Step 3: detect trailing slash before filtering.
     let has_trailing_slash = decoded.ends_with('/') && decoded.len() > 1;
 
-    // Step 4: split, filter empties, reject traversal.
     let mut segments: Vec<&str> = Vec::new();
     for seg in decoded.split('/') {
         if seg.is_empty() || seg == "." {
             continue;
         }
-        // Defense-in-depth: reject any segment containing ".." — not just
-        // exact-match ".." — to prevent bypass via prefixed/suffixed variants
-        // like "\x08.." that survive the exact check.
         if seg.contains("..") {
-            return None; // traversal attempt
+            return None;
         }
         segments.push(seg);
     }
 
-    // Step 5: re-join.
     let joined = segments.join("/");
 
-    // Step 6: root → index.html.
     if joined.is_empty() {
         Some(NormalizedPath {
             key: "index.html".to_string(),
@@ -167,8 +153,6 @@ pub fn normalize_request_path(raw: &str) -> Option<NormalizedPath> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── sanitize_path_segment ───────────────────────────────────
 
     #[test]
     fn accepts_normal_values() {
@@ -212,8 +196,6 @@ mod tests {
         let display = err.to_string();
         assert!(display.contains("repo_name"));
     }
-
-    // ── normalize_request_path ──────────────────────────────────
 
     #[test]
     fn normalize_root_to_index() {
@@ -265,7 +247,6 @@ mod tests {
 
     #[test]
     fn normalize_rejects_encoded_dotdot() {
-        // %2e = '.', %2f = '/'
         assert_eq!(normalize_request_path("/%2e%2e/secret.txt"), None);
         assert_eq!(normalize_request_path("/%2e%2e%2fsecret.txt"), None);
     }
@@ -283,7 +264,6 @@ mod tests {
 
     #[test]
     fn normalize_double_encoded_is_harmless() {
-        // %252e%252e → decodes to literal "%2e%2e" (no dots), safe cache key.
         let result = normalize_request_path("/%252e%252e/secret.txt").unwrap();
         assert!(!result.key.contains(".."));
     }
@@ -296,11 +276,8 @@ mod tests {
 
     #[test]
     fn normalize_rejects_invalid_utf8() {
-        // %FF is not valid UTF-8 start byte in isolation.
         assert_eq!(normalize_request_path("/%FF"), None);
     }
-
-    // ── NormalizedPath trailing-slash discrimination (Phase 4b' port) ──
 
     #[test]
     fn normalized_path_trailing_slash_about() {

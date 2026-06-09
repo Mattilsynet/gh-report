@@ -58,24 +58,19 @@ pub fn find_refs(target: &AdrId, records: &[AdrRecord]) -> Result<RefsReport, St
     let mut refs: Vec<RefEntry> = Vec::new();
 
     if let Some(entries) = children.get(target) {
-        // Build a quick lookup so we can pull source-record metadata.
         let by_id: std::collections::HashMap<&AdrId, &AdrRecord> =
             records.iter().map(|r| (&r.id, r)).collect();
 
         for entry in entries {
-            // Filter to first-class structural verbs only.
             if !matches!(entry.verb, RelVerb::References | RelVerb::Supersedes) {
                 continue;
             }
-            // Defensive self-guard: ill-formed Supersedes: SELF would
-            // surface here even though compute_children skips Root self-refs.
             if entry.child == *target {
                 continue;
             }
             let Some(source) = by_id.get(&entry.child) else {
                 continue;
             };
-            // Stale referrers excluded regardless of target's stale state.
             if source.is_stale {
                 continue;
             }
@@ -89,7 +84,6 @@ pub fn find_refs(target: &AdrId, records: &[AdrRecord]) -> Result<RefsReport, St
         }
     }
 
-    // Sort: tier rank (missing → 255) → prefix → number → verb name.
     refs.sort_by(|a, b| {
         let ta = a.source_tier.map_or(255, Tier::rank);
         let tb = b.source_tier.map_or(255, Tier::rank);
@@ -115,8 +109,6 @@ fn verb_sort_key(verb: RelVerb) -> u8 {
     match verb {
         RelVerb::References => 0,
         RelVerb::Supersedes => 1,
-        // Other verbs are filtered out before sorting; keep stable
-        // fallback for defensive completeness.
         _ => 255,
     }
 }
@@ -163,7 +155,6 @@ mod tests {
         }
     }
 
-    // 1. Multiple inbound References returned, sorted.
     #[test]
     fn multiple_references_sorted() {
         let records = vec![
@@ -177,7 +168,6 @@ mod tests {
         assert_eq!(nums, vec![2, 3, 5]);
     }
 
-    // 2. Inbound Supersedes returned.
     #[test]
     fn supersedes_counts() {
         let records = vec![
@@ -189,7 +179,6 @@ mod tests {
         assert_eq!(report.refs[0].verb, RelVerb::Supersedes);
     }
 
-    // 3. Mixed References + Supersedes from same source — two rows, deterministic order.
     #[test]
     fn mixed_verbs_same_source_deterministic() {
         let records = vec![
@@ -205,12 +194,10 @@ mod tests {
         ];
         let report = find_refs(&make_id("CHE", 1), &records).unwrap();
         assert_eq!(report.refs.len(), 2);
-        // References sorts before Supersedes regardless of document order.
         assert_eq!(report.refs[0].verb, RelVerb::References);
         assert_eq!(report.refs[1].verb, RelVerb::Supersedes);
     }
 
-    // 4. Zero inbound returns empty refs vec, not Err.
     #[test]
     fn zero_inbound_is_ok_empty() {
         let records = vec![make_record(
@@ -223,7 +210,6 @@ mod tests {
         assert_eq!(report.target_id, make_id("CHE", 1));
     }
 
-    // 5. Legacy forward verb does NOT count.
     #[test]
     fn legacy_forward_verb_excluded() {
         let records = vec![
@@ -234,7 +220,6 @@ mod tests {
         assert!(report.refs.is_empty(), "DependsOn must not contribute");
     }
 
-    // 6. Legacy reverse verb on referrer does NOT count.
     #[test]
     fn legacy_reverse_verb_excluded() {
         let records = vec![
@@ -248,7 +233,6 @@ mod tests {
         );
     }
 
-    // 7. Status: Superseded by X does NOT produce phantom inbound ref.
     #[test]
     fn status_supersededby_excluded() {
         let mut deprecated = make_record("CHE", 2, vec![(RelVerb::Root, make_id("CHE", 2))]);
@@ -264,7 +248,6 @@ mod tests {
         );
     }
 
-    // 8. Stale referrer excluded.
     #[test]
     fn stale_referrer_excluded() {
         let mut stale = make_record("CHE", 2, vec![(RelVerb::References, make_id("CHE", 1))]);
@@ -277,7 +260,6 @@ mod tests {
         assert!(report.refs.is_empty(), "stale referrer must be excluded");
     }
 
-    // 9. Stale target succeeds, returns live referrers only.
     #[test]
     fn stale_target_returns_live_referrers() {
         let mut stale_target = make_record("CHE", 1, vec![(RelVerb::Root, make_id("CHE", 1))]);
@@ -291,7 +273,6 @@ mod tests {
         assert_eq!(report.refs[0].source_id, make_id("CHE", 3));
     }
 
-    // 10. Target not found returns Err.
     #[test]
     fn unknown_target_returns_err() {
         let records = vec![make_record(
@@ -306,7 +287,6 @@ mod tests {
         }
     }
 
-    // 11. Sort order: tier rank → prefix → number → verb.
     #[test]
     fn sort_order_tier_prefix_number_verb() {
         let mut s_record = make_record("ZZZ", 9, vec![(RelVerb::References, make_id("CHE", 1))]);
@@ -332,7 +312,6 @@ mod tests {
             .iter()
             .map(|r| (r.source_id.prefix.clone(), r.source_id.number))
             .collect();
-        // S (rank 0) → A (rank 1) → B (rank 2) prefix CHE num 2 then 10.
         assert_eq!(
             order,
             vec![
@@ -344,12 +323,8 @@ mod tests {
         );
     }
 
-    // 12. Self-reference (Root verb) excluded.
     #[test]
     fn root_self_reference_excluded() {
-        // A Root self-ref is filtered by compute_children already; verify
-        // that no entry surfaces in find_refs even when querying the
-        // self-rooted ADR.
         let records = vec![make_record(
             "CHE",
             1,
@@ -359,11 +334,8 @@ mod tests {
         assert!(report.refs.is_empty(), "Root self-ref must not appear");
     }
 
-    // 13. Ill-formed self-Supersedes excluded by self-guard.
     #[test]
     fn self_supersedes_excluded() {
-        // CHE-0001 supersedes itself (malformed; lint catches elsewhere).
-        // refs::find_refs must not echo the ADR back as its own referrer.
         let records = vec![make_record(
             "CHE",
             1,
@@ -373,7 +345,6 @@ mod tests {
         assert!(report.refs.is_empty(), "self-Supersedes must not appear");
     }
 
-    // 14. Missing-tier referrer sorts last; title None preserved.
     #[test]
     fn missing_tier_sorts_last_and_title_none_preserved() {
         let mut tier_b = make_record("CHE", 2, vec![(RelVerb::References, make_id("CHE", 1))]);

@@ -33,8 +33,6 @@ use http_body_util::BodyExt;
 use serde::{Deserialize, Serialize};
 use tower::ServiceExt;
 
-// ── Stub domain ────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum StubEvent {
     Noop,
@@ -63,12 +61,6 @@ impl HandleCommand<StubCmd> for StubAggregate {
         Ok(vec![StubEvent::Noop])
     }
 }
-
-// ── Stub gateway ──────────────────────────────────────────────────────
-//
-// Inert: the smoke router never calls `create` / `send` (it short-
-// circuits in `dispatch` based on the wire payload). We still need a
-// real impl because `AppState<G, S, R>` requires a concrete `G`.
 
 struct StubGateway;
 
@@ -101,11 +93,6 @@ impl CommandGateway for StubGateway {
     }
 }
 
-// ── Stub store ────────────────────────────────────────────────────────
-//
-// Same rationale as the gateway: present to satisfy the `(G, S, R)`
-// arity, never invoked by the smoke router.
-
 struct StubStore;
 
 impl EventStore for StubStore {
@@ -133,12 +120,6 @@ impl EventStore for StubStore {
         Err(StoreError::Infrastructure("stub store".into()))
     }
 }
-
-// ── Stub router ───────────────────────────────────────────────────────
-//
-// The wire DTO carries a minimal discriminator the test uses to drive
-// each branch of the response mapping in `router.rs` without needing
-// actual gateway behaviour.
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -171,10 +152,6 @@ impl CommandRouter for StubRouter {
             }),
             StubWire::Send => Ok(DispatchOutcome::Sent),
             StubWire::RejectMe => {
-                // Mirror the production path: build the envelope
-                // through the public mapper rather than constructing
-                // it ad-hoc — preserves CHE-0049 R10 fidelity in the
-                // smoke test.
                 let err: DispatchError<RejectErr> = DispatchError::Rejected(RejectErr("nope"));
                 Err(map_dispatch_error(&err))
             }
@@ -190,8 +167,6 @@ impl std::fmt::Display for RejectErr {
     }
 }
 impl std::error::Error for RejectErr {}
-
-// ── Test harness ──────────────────────────────────────────────────────
 
 fn app() -> Router {
     let state: AppState<StubGateway, StubStore, StubRouter> =
@@ -239,7 +214,6 @@ async fn send_endpoint_returns_200() {
 
 #[tokio::test]
 async fn rejected_error_maps_to_422() {
-    // CHE-0049 R6 / S3: DispatchError::Rejected → 422 Unprocessable Entity.
     let response = app()
         .oneshot(json_post("/v1/aggregates", &StubWire::RejectMe))
         .await

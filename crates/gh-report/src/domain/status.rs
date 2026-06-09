@@ -36,10 +36,6 @@ impl fmt::Display for CollectionStatus {
     }
 }
 
-// ===========================================================================
-// Tests
-// ===========================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,7 +86,6 @@ mod tests {
 
     #[test]
     fn deserialize_wrong_case_fails() {
-        // PascalCase is not accepted — only snake_case.
         let result = serde_json::from_str::<CollectionStatus>("\"Success\"");
         assert!(
             result.is_err(),

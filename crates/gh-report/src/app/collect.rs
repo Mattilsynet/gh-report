@@ -50,8 +50,6 @@ use crate::github::client::GitHubClient;
 use crate::infra::{baseline, checkpoint, lock};
 use crate::report::html;
 
-// ── Repository evaluator trait ──────────────────────────────────────
-
 /// Abstraction for evaluating a single repository's security posture.
 ///
 /// This trait enables dependency injection: production code uses
@@ -124,19 +122,8 @@ impl RepoEvaluator for LiveEvaluator {
         let org_guard = self.org_summary.load_full();
         let org_ref = (*org_guard).as_ref().map(AsRef::as_ref);
 
-        // Pre-warm the repo_details cache. Three of the five collectors
-        // (security_policy, ghas_scanning, dependabot) call
-        // repo_details() internally. Without this pre-warm, all three
-        // miss the scc::HashMap cache simultaneously within the tokio::join!
-        // and make identical HTTP requests. A single call here populates
-        // the cache so the concurrent collectors hit it.
         let _ = self.client.repo_details(&repo.name).await;
 
-        // Run all six checks concurrently (5 security + last_commit).
-        // GitHubClient uses ArcSwap, scc::HashMap, and atomics — designed for
-        // concurrent &self access. tokio::join! completes all branches
-        // before propagating panics, unlike sequential .await which aborts
-        // on the first. Safe because the outer tokio::spawn catches panics.
         let (sp, ss, dep, bp, co, last_commit) = tokio::join!(
             security_policy::evaluate(&self.client, &repo, ts),
             ghas_scanning::evaluate(&self.client, &repo, ts, org_ref),
@@ -146,10 +133,6 @@ impl RepoEvaluator for LiveEvaluator {
             crate::collector::last_commit::fetch_last_commit(&self.client, &repo),
         );
 
-        // ── Dependabot inactivity heuristic ─────────────────
-        // If the API reports "Enabled" but the repo has had no code
-        // push in > 90 days, GitHub may have auto-paused Dependabot
-        // without the API reflecting it.  Infer "Paused" as a proxy.
         let dep = if dep.status == DependabotStatus::Enabled
             && crate::domain::time::is_dependabot_inactive(repo.pushed_at.as_deref(), ts)
         {
@@ -226,8 +209,6 @@ struct OrgAlertContext {
     snapshot: Option<serde_json::Value>,
 }
 
-// ── Main entry point ────────────────────────────────────────────────
-
 /// Execute a single collection run.
 ///
 /// Acquires a run lock, resolves credentials, builds the repository
@@ -245,10 +226,6 @@ pub async fn run(config: RuntimeConfig, state: Arc<AppState>) -> Result<(), AppE
         config.org_name.clone(),
         config::EVIDENCE_SCHEMA_VERSION.to_string(),
     );
-    // Cycle-root correlation context (CHE-0039:R1, R3). Deterministic
-    // projection of `run.run_id` per `RunMetadata::correlation_context`
-    // — gap α (WU-6 v2 B7' Inc 2). Threaded `&CorrelationContext`
-    // through the pipeline; consumed by `publish_event` at Inc 5.
     let corr_ctx = run.correlation_context();
     info!(
         run_id = %run.run_id,
@@ -256,12 +233,10 @@ pub async fn run(config: RuntimeConfig, state: Arc<AppState>) -> Result<(), AppE
         "collection run starting"
     );
 
-    // Store current run in state.
     state.current_run.store(Arc::new(Some(run.clone())));
 
     let result = run_collection_inner(&config, &mut run, &corr_ctx, &state).await;
 
-    // Clear current_run regardless.
     state.current_run.store(Arc::new(None));
 
     if result.is_ok() {
@@ -280,15 +255,10 @@ async fn run_collection_inner(
 ) -> Result<(), AppError> {
     let setup = prepare_collection(config, run, state).await?;
 
-    // Start the worker pool (idempotent) now that the GitHub client exists.
-    // Must happen before run_collection_pipeline enqueues jobs.
     state.ensure_worker_pool().await;
 
     let inventory = load_active_repositories(&setup.client).await?;
 
-    // Evict seeded cache entries whose updated_at no longer matches the
-    // current inventory. Prevents stale repo detail data from being
-    // served for repos that changed between runs.
     let stale_check: Vec<(String, Option<String>)> = inventory
         .active_repos
         .iter()
@@ -298,8 +268,6 @@ async fn run_collection_inner(
 
     let org_alert = collect_org_alert_context(&setup.client, &inventory.active_repos, run).await;
 
-    // Destructure setup so we can move `client` into CollectionContext
-    // while keeping the lock guard alive.
     let CollectionSetup {
         lock,
         client,
@@ -315,14 +283,9 @@ async fn run_collection_inner(
         budget_baseline,
     };
 
-    // Wrap the lock in Arc<Mutex<Option>> for shared access between the
-    // main flow and the signal handler. The signal handler uses try_lock()
-    // to avoid deadlock if the main flow panics while holding the mutex.
     let lock_handle = Arc::new(tokio::sync::Mutex::new(Some(lock)));
     let cancel = tokio_util::sync::CancellationToken::new();
 
-    // Spawn a signal handler that releases the lock and triggers
-    // cooperative shutdown on SIGINT (Ctrl-C) or SIGTERM.
     let signal_lock = Arc::clone(&lock_handle);
     let signal_cancel = cancel.clone();
     let signal_handle = tokio::spawn(async move {
@@ -330,7 +293,6 @@ async fn run_collection_inner(
 
         warn!("signal received — releasing lock and shutting down");
 
-        // Release the lock before cancelling.
         if let Ok(mut guard) = signal_lock.try_lock() {
             if let Some(lock) = guard.take()
                 && let Err(e) = lock.release()
@@ -341,12 +303,9 @@ async fn run_collection_inner(
             warn!("could not acquire lock handle during signal — main task may still hold it");
         }
 
-        // Cooperative cancellation — lets Tokio runtime wind down,
-        // run Drop guards, and flush tracing subscribers.
         signal_cancel.cancel();
     });
 
-    // Run the main collection pipeline, racing against cancellation.
     let result = tokio::select! {
         res = run_collection_pipeline(
             config, run, corr_ctx, ctx, &inventory, org_alert, &lock_handle, state,
@@ -359,13 +318,10 @@ async fn run_collection_inner(
         }
     };
 
-    // Normal completion: take the lock from the Arc and drop it.
     if let Some(lock) = lock_handle.lock().await.take() {
         drop(lock);
     }
 
-    // Inspect signal handler for panics (best-effort; the handler is simple
-    // and unlikely to panic, but silent loss would hide bugs).
     if signal_handle.is_finished()
         && let Err(e) = signal_handle.await
     {
@@ -388,11 +344,6 @@ async fn run_collection_inner(
 /// Orchestration is driven by [`SweepSaga`], a state machine that models
 /// each pipeline phase as an explicit state transition with domain event
 /// emission, progress tracking, and saga-level timeout.
-//
-// 8/7 args after WU-6 v2 B7' Inc 2 added `corr_ctx`. A Params-struct
-// tidying would be its own commit (R3 Tidy First) — out of scope for
-// the parameter-threading increment. Revisit at Inc 5 / B8' when the
-// helper internals consume `ctx` and the call shape settles.
 #[expect(
     clippy::too_many_arguments,
     reason = "8/7 after WU-6 v2 Inc 2 added corr_ctx; Params-struct tidying is a separate Tidy-First commit (R3) deferred until Inc 5/B8' when call shape settles"
@@ -411,8 +362,6 @@ async fn run_collection_pipeline(
     saga.run_to_completion(config, run, corr_ctx, &ctx, inventory, state)
         .await
 }
-
-// ── Sweep Saga ──────────────────────────────────────────────────────
 
 /// Current phase of the sweep saga state machine.
 ///
@@ -493,9 +442,6 @@ impl SweepSaga {
         org_alert: OrgAlertContext,
         state: &Arc<AppState>,
     ) -> Self {
-        // δ.3c-ii: `config` retained for call-site stability; the previous
-        // `checkpoint_path` field initializer is gone alongside on-disk
-        // checkpoint retirement.
         let _ = config;
 
         let pause_notify = Arc::new(tokio::sync::Notify::new());
@@ -545,10 +491,8 @@ impl SweepSaga {
         self.step_start_sweep(config, run, corr_ctx, inventory, state)
             .await;
 
-        // Phase 1: Resume from event log (δ.3c-ii: pure phase transition).
         self.step_resume(inventory, config, state);
 
-        // Emit progress: resumed repos.
         Self::emit_progress(
             run,
             corr_ctx,
@@ -558,10 +502,8 @@ impl SweepSaga {
         )
         .await;
 
-        // Phase 2: Reuse from baseline.
         self.step_baseline(inventory, config, state);
 
-        // Emit progress: resumed + baseline-reused repos.
         Self::emit_progress(
             run,
             corr_ctx,
@@ -571,12 +513,9 @@ impl SweepSaga {
         )
         .await;
 
-        // Phase 3: Enqueue pending repos and await batch completion.
         self.step_enqueue_and_await(config, run, corr_ctx, ctx, inventory, state)
             .await?;
 
-        // If sweep failed (all rejected or timed out), propagate as error
-        // so the caller does not record it as a completed run.
         if let SweepPhase::Failed { ref error } = self.phase {
             return Err(AppError::Inventory(
                 crate::error::InventoryError::ApiFetchFailed {
@@ -585,7 +524,6 @@ impl SweepSaga {
             ));
         }
 
-        // Phase 4: Finalize — build evidence, publish, save baseline.
         self.step_finalize(config, run, corr_ctx, ctx, inventory, state)
             .await?;
 
@@ -610,11 +548,6 @@ impl SweepSaga {
         state: &Arc<AppState>,
     ) {
         debug_assert_eq!(self.phase, SweepPhase::Init);
-        // Parameters retained for call-site signature stability with
-        // sibling `step_*` fns; the data they referenced (checkpoint
-        // file + current-inventory filtering) is no longer consulted
-        // here. `state` is still passed because future phases may
-        // reintroduce a resume-specific projection read.
         let _ = (inventory, config, state);
         self.phase = SweepPhase::Resumed;
     }
@@ -626,23 +559,11 @@ impl SweepSaga {
     fn step_baseline(
         &mut self,
         inventory: &InventoryLoad,
-        // δ.3c-ii: `_config` retained for call-site symmetry with sibling
-        // `step_*` phase fns (`step_resume`, `step_inventory`, etc.); store_dir
-        // is no longer needed now that the baseline is sourced from the
-        // in-memory projection rather than `<store_dir>/baseline.msgpack`.
         _config: &RuntimeConfig,
         state: &Arc<AppState>,
     ) {
         debug_assert_eq!(self.phase, SweepPhase::Resumed);
 
-        // δ.3c-ii: baseline now sourced from the projection (rebuilt at
-        // boot via event-log replay per CHE-0051:R5 + CHE-0048:R2).
-        // The previous `load_baseline(store_dir)` on-disk read is retired;
-        // the prior `projection.load_baseline(...)` bulk-write that
-        // re-inserted these same entries into the projection is now dead
-        // code (projection is already the source) and removed. CHE-0048:R2
-        // sole-writer discipline strengthens: fewer authorised mutation
-        // sites, single source of truth.
         self.baseline_cache = reuse_from_baseline(
             &inventory.active_repos,
             &self.completed,
@@ -744,20 +665,16 @@ impl SweepSaga {
             state,
         });
 
-        // Wrap the batch await with a saga-level timeout.
         let timeout_duration = std::time::Duration::from_secs(config::SWEEP_TIMEOUT_SECS);
 
         match tokio::time::timeout(timeout_duration, batch_future).await {
             Ok(Ok(true)) => {
-                // Batch completed normally.
                 self.phase = SweepPhase::BatchDrained;
 
-                // Emit final progress (all complete).
                 let total = inventory.active_repos.len() as u64;
                 Self::emit_progress(run, corr_ctx, total, total, state).await;
             }
             Ok(Ok(false)) => {
-                // All jobs rejected — clean abort.
                 let error_msg = "all jobs rejected by work queue".to_string();
                 self.phase = SweepPhase::Failed {
                     error: error_msg.clone(),
@@ -766,7 +683,6 @@ impl SweepSaga {
                     .await;
             }
             Ok(Err(e)) => {
-                // Batch error.
                 let error_msg = e.to_string();
                 self.phase = SweepPhase::Failed {
                     error: error_msg.clone(),
@@ -776,7 +692,6 @@ impl SweepSaga {
                 return Err(e);
             }
             Err(_elapsed) => {
-                // Saga-level timeout.
                 let error_msg = format!("sweep timed out after {}s", config::SWEEP_TIMEOUT_SECS);
                 warn!(
                     timeout_secs = config::SWEEP_TIMEOUT_SECS,
@@ -1048,11 +963,6 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
     Ok(true)
 }
 
-// δ.3c-ii: `resume_and_populate` retired. Same-day-resume mechanics
-// collapse into the projection (rebuilt at boot from the event log per
-// CHE-0051:R5 + CHE-0048:R2). Repositories with unchanged `updated_at`
-// are still reused via `reuse_from_baseline` → `should_reuse`.
-
 /// Arguments for [`finalize_and_publish`].
 ///
 /// δ.3c-ii: `baseline_cache`, `run_timestamp`, `snapshot_signature`, and
@@ -1166,8 +1076,6 @@ async fn prepare_collection(
     })?;
     info!("run lock acquired");
 
-    // Get or create the long-lived GitHubClient. First run constructs it;
-    // subsequent runs reuse the same client (connection pool, credentials).
     let client = state
         .github()
         .client
@@ -1187,12 +1095,9 @@ async fn prepare_collection(
         .await?;
     let client = Arc::clone(client);
 
-    // Clear per-run caches from the previous run, then re-seed from the
-    // cross-run moka cache. The ordering is: clear → seed → evaluate.
     client.clear_run_cache();
     client.reset_halt();
 
-    // Seed the repo detail cache from the cross-run moka cache (daemon mode).
     let cache = &state.github().repo_detail_cache;
     let entries: Vec<_> = cache
         .iter()
@@ -1200,7 +1105,6 @@ async fn prepare_collection(
         .collect();
     client.seed_cache(entries);
 
-    // Record budget baseline for per-run delta reporting.
     let budget_baseline = state.github().budget_gate.total_calls_made();
 
     let capabilities = client.probe_capabilities().await;
@@ -1291,9 +1195,6 @@ pub(crate) async fn warm_start_from_baseline(
     config: &RuntimeConfig,
     state: &Arc<AppState>,
 ) -> bool {
-    // δ.3c-ii: warm-start now sources evidence from the projection
-    // (rebuilt at boot via event-log replay per CHE-0051:R5 +
-    // CHE-0048:R2). The on-disk `baseline.msgpack` read is retired.
     let repos: Vec<RepositoryEvidence> = {
         let projection = state.lock_projection();
         projection.repositories.values().cloned().collect()
@@ -1318,10 +1219,6 @@ pub(crate) async fn warm_start_from_baseline(
         &repos,
         &run.timestamp(),
     );
-    // Warm-start observability: derive per-repo counts (observable_enabled,
-    // unobservable) from baseline evidence. Org-level data (total alerts, age
-    // buckets, status_mismatch_count) is zero because OrgAlertSummary is
-    // unavailable during warm-start — only a live collection populates those.
     let observability = metrics::build_secret_scanning_observability_summary(&repos, None);
 
     let evidence = Evidence {
@@ -1345,21 +1242,8 @@ pub(crate) async fn warm_start_from_baseline(
         repositories: repos,
     };
 
-    // Warm-start lifecycle synthesis (CHE-0054:R1.c): the terminal
-    // PublishEvidence inside `publish_evidence` is only admissible
-    // after SweepCompleted. Synthesise a `StartSweep → CompleteSweep`
-    // pair for this warm-start batch so the publish below lands
-    // against an aggregate in `Completed` phase.
-    //
-    // The `warm-start-` prefix on `batch_id` is the convention by
-    // which downstream consumers distinguish synthetic warm-start
-    // sweeps from real collection runs. Each call is fire-and-forget
-    // on Err (mirror existing non-fatal pattern).
     let warm_batch_id = format!("warm-start-{}", run.timestamp());
     let warm_corr = run.correlation_context();
-    // `total_repos` is u32 in evidence; widen to u64 (infallible) for the
-    // domain field (GEN-0004:R1 prohibits usize/isize; the prior code used
-    // `as usize` which was platform-dependent).
     let warm_repo_count: u64 = u64::from(evidence.collection_statistics.total_repos);
 
     if let Err(e) = state
@@ -1370,9 +1254,6 @@ pub(crate) async fn warm_start_from_baseline(
                 repo_count: warm_repo_count,
                 batch_id: warm_batch_id.clone(),
                 timestamp: run.timestamp(),
-                // Warm-start synthesizes a sweep lifecycle for a previously-
-                // completed run; there is no live org-snapshot in scope here.
-                // The empty-signature sentinel matches `build_snapshot_signature(None)`.
                 snapshot_signature: cherry_pit_storage::build_snapshot_signature(None),
             },
             &warm_corr,
@@ -1398,9 +1279,6 @@ pub(crate) async fn warm_start_from_baseline(
         warn!(error = %e, "warm-start CompleteSweep non-fatal");
     }
 
-    // `publish_evidence` fires the terminal PublishEvidence against
-    // `run.run_id`. Override the run_id for the warm-start publish
-    // so the triple is contiguous on the synthetic stream.
     let mut warm_run = run.clone();
     warm_run.run_id = warm_batch_id.clone();
 
@@ -1535,9 +1413,6 @@ pub(crate) async fn publish_evidence(
         )
         .await
     {
-        // Defence-in-depth: the application-layer reorder (CHE-0054:R1.c)
-        // means we now only enter this branch when something at the
-        // aggregate or merger layer rejected the publish unexpectedly.
         warn!(error = %e, "post-complete publish unexpectedly rejected");
     }
 
@@ -1562,20 +1437,11 @@ fn reuse_from_baseline(
 
     let mut baseline_cache: HashMap<String, Arc<RepositoryEvidence>> = HashMap::new();
 
-    // δ.3c-ii: source the baseline from the projection (rebuilt at boot
-    // via event-log replay per CHE-0051:R5 + CHE-0048:R2). The projection
-    // is keyed by `domain_key`, which equals `Repository::inventory_key`
-    // by contract (see `domain/events.rs:55` and `projection.rs:94`).
     let projection = state.lock_projection();
     for repo in &pending_before_baseline {
         let Some(evidence) = projection.repositories.get(&repo.inventory_key) else {
             continue;
         };
-        // `BaselineEntry.updated_at` was historically a denormalised copy
-        // of `evidence.repository.updated_at`; reconstruct that view via
-        // `as_deref().unwrap_or("")` so `should_reuse` empty-string guard
-        // (baseline.rs:177) preserves the prior None-rejects-reuse
-        // semantics.
         let baseline_updated_at = evidence
             .repository
             .updated_at
@@ -1584,9 +1450,6 @@ fn reuse_from_baseline(
         if !baseline::should_reuse(baseline_updated_at, repo.updated_at.as_deref()) {
             continue;
         }
-        // If the baseline has dependabot Enabled but the repo's
-        // pushed_at is stale (> 90 days), skip reuse so the
-        // inactivity heuristic can re-evaluate and infer Paused.
         if evidence.checks.dependabot_security_updates.status == DependabotStatus::Enabled
             && crate::domain::time::is_dependabot_inactive(repo.pushed_at.as_deref(), run_timestamp)
         {
@@ -1616,12 +1479,6 @@ fn reuse_from_baseline(
 
     baseline_cache
 }
-
-// δ.3c-ii: `build_checkpoint_data` retired alongside on-disk
-// `<run>-checkpoint.msgpack`. Sweep-level checkpoints are gone;
-// projection sub-checkpoints (CHE-0048:R1) are unaffected.
-
-// ── Partial publisher ───────────────────────────────────────────────
 
 /// Configuration for the partial publisher task.
 ///
@@ -1676,10 +1533,6 @@ fn spawn_partial_publisher_from_store(
                 () = &mut debounce_timer, if pending => {
                     pending = false;
 
-                    // Snapshot from projection (M2.cd; CHE-0048:R2 sole
-                    // reader). Guard scoped to this statement; the cloned
-                    // `Vec` is owned across the subsequent `.await`
-                    // (D-CD-3: never hold a `MutexGuard` across `.await`).
                     let all_evidence = state.projection_snapshot();
 
                     let evidence = build_evidence(BuildEvidenceParams {
@@ -1819,8 +1672,6 @@ fn failure_evidence_with_reason(
     }
 }
 
-// ── Evidence building ───────────────────────────────────────────────
-
 /// Parameters for building the evidence artifact.
 ///
 /// Groups the inputs to [`build_evidence`] to avoid a long positional
@@ -1893,10 +1744,6 @@ fn build_assessment_metadata(
         warm_start: false,
     }
 }
-
-// ===========================================================================
-// Tests
-// ===========================================================================
 
 #[cfg(test)]
 mod tests {
@@ -1992,8 +1839,6 @@ mod tests {
         CapabilitySet::default()
     }
 
-    // ── FnEvaluator: test wrapper ──────────────────────────────────
-
     /// Test-only wrapper that implements [`RepoEvaluator`] using a synchronous
     /// closure. The closure is wrapped in `std::sync::Mutex` to allow mutation
     /// from `&self`.
@@ -2030,8 +1875,6 @@ mod tests {
                 .await
         }
     }
-
-    // ── build_evidence tests ───────────────────────────────────────
 
     #[test]
     fn build_evidence_with_repos() {
@@ -2136,8 +1979,6 @@ mod tests {
         assert_eq!(metadata.token_scopes, "repo, read:org");
         assert_eq!(metadata.auth_mode, AuthMode::Pat);
         assert_eq!(metadata.rate_limit_warnings, 3);
-        // CapabilitySet::default() has all capabilities as NotProbed,
-        // so all 1 optional capabilities should appear as unavailable.
         assert_eq!(metadata.unavailable_capabilities.len(), 1);
         assert!(
             metadata
@@ -2180,8 +2021,6 @@ mod tests {
         test_fixtures::evidence_from_repository(repo, timestamp)
     }
 
-    // ── failure_evidence_with_reason test ───────────────────────────
-
     #[test]
     fn failure_evidence_with_reason_uses_custom_reason() {
         let repo = Arc::new(test_repository("panicked"));
@@ -2199,7 +2038,6 @@ mod tests {
             ev.checks.branch_protection.details.reason.as_deref(),
             Some("task_panicked")
         );
-        // Public repo → security_policy should be Unknown
         assert_eq!(
             ev.checks.security_policy.status,
             SecurityPolicyStatus::Unknown
@@ -2225,7 +2063,6 @@ mod tests {
             ev.checks.security_policy.evidence,
             SecurityPolicyEvidence::NotApplicable,
         );
-        // Other checks should still be Unknown
         assert_eq!(
             ev.checks.secret_scanning.status,
             SecretScanningStatus::Unknown
@@ -2251,8 +2088,6 @@ mod tests {
             SecurityPolicyEvidence::NotApplicable,
         );
     }
-
-    // ── JoinError recovery test ────────────────────────────────────
 
     /// Evaluator that always panics — used to test `JoinError` recovery.
     struct PanickingEvaluator;
@@ -2291,8 +2126,6 @@ mod tests {
     fn arc_repo_with_updated_at(name: &str, updated_at: Option<&str>) -> Arc<Repository> {
         Arc::new(test_repository_with_updated_at(name, updated_at))
     }
-
-    // ── SweepSaga tests ────────────────────────────────────────────
 
     fn test_org_summary() -> OrgAlertSummary {
         OrgAlertSummary {
@@ -2368,7 +2201,6 @@ mod tests {
 
         saga.step_baseline(&inventory, &config, &state);
         assert_eq!(*saga.phase(), SweepPhase::BaselineReused);
-        // Projection is empty (no upstream replay seeded it), so 0 reused.
         assert_eq!(saga.baseline_reused, 0);
     }
 
@@ -2444,8 +2276,6 @@ mod tests {
             .expect("test client construction should not fail"),
         )
     }
-
-    // ── Saga test harness ──────────────────────────────────────────
 
     /// Construct a `SweepSaga` for testing, starting in the given phase.
     ///
@@ -2545,10 +2375,6 @@ mod tests {
         )
     }
 
-    // δ.3c-ii: `seed_checkpoint` retired. Same-day-resume mechanics no
-    // longer have an on-disk surface to seed; tests that previously
-    // exercised resume validate it via the projection replay path.
-
     /// Seed projection state to simulate a populated baseline.
     ///
     /// δ.3c-ii: the on-disk `baseline.msgpack` is retired; baseline
@@ -2566,11 +2392,6 @@ mod tests {
         let projected: Vec<RepositoryEvidence> = entries
             .into_iter()
             .map(|(_name, updated_at, mut evidence)| {
-                // The pre-pivot baseline file carried `updated_at`
-                // alongside the evidence; post-pivot the projection
-                // reads it from `evidence.repository.updated_at`.
-                // Stamp it here so call sites that didn't already set
-                // it stay correct (defensive — most do set it).
                 if evidence.repository.updated_at.is_none() {
                     evidence.repository.updated_at = Some(updated_at.to_string());
                 }
@@ -2602,17 +2423,6 @@ mod tests {
         saga.step_baseline(inventory, config, state);
     }
 
-    // ── Migrated saga tests — Category A (checkpoint/baseline) ─────
-
-    // δ.3c-ii: `saga_resumes_from_checkpoint` rewritten as three
-    // named cases of `saga_resumes_from_event_log_*`. The event-log →
-    // projection arrival path itself is covered upstream in
-    // `projection_runtime::tests::snapshot_fast_path_skips_replayed_events`
-    // (and siblings). Here we assert only the saga-level seam: given
-    // a projection populated by *some* upstream source (boot replay in
-    // prod, `seed_baseline` in test), unchanged repos reuse via
-    // `reuse_from_baseline` and are excluded from the pending set.
-
     /// Saga-level same-day resume — every inventory repo already in
     /// projection: all reused, none enqueued.
     #[tokio::test]
@@ -2625,8 +2435,6 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
         let ctx = make_test_collection_context();
 
-        // Pre-populate projection (mimics what boot event-log replay
-        // would produce in prod via `AppState::snapshot_fast_path_init`).
         let mut e1 = sample_repo("repo-1");
         e1.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
         let mut e2 = sample_repo("repo-2");
@@ -2652,7 +2460,6 @@ mod tests {
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
         assert_eq!(saga.baseline_reused, 2);
 
-        // Pending empty ⇒ step_enqueue_and_await goes straight to BatchDrained.
         saga.step_enqueue_and_await(
             &config,
             &run,
@@ -2678,7 +2485,6 @@ mod tests {
 
         let mut saga = make_test_saga(&config, &run);
 
-        // Pre-populate projection with repo-1 only.
         let mut e1 = sample_repo("repo-1");
         e1.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
         seed_baseline(
@@ -2698,7 +2504,6 @@ mod tests {
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
         assert_eq!(saga.baseline_reused, 1);
-        // repo-1 already in projection from seed; repo-2 not yet.
         assert!(state.projection_contains("id-repo-1"));
         assert!(!state.projection_contains("id-repo-2"));
     }
@@ -2713,9 +2518,7 @@ mod tests {
         let state = AppState::new_with_cache_capacity(10).await;
 
         let mut saga = make_test_saga(&config, &run);
-        let _ = dir; // tempdir kept alive only for the config root
-
-        // Projection deliberately empty — no seed_baseline call.
+        let _ = dir;
 
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1"), arc_repo("repo-2")],
@@ -2739,7 +2542,6 @@ mod tests {
 
         let mut saga = make_test_saga(&config, &run);
 
-        // Seed baseline for "repo-1" with a specific updated_at.
         let mut evidence_1 = sample_repo("repo-1");
         evidence_1.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
         seed_baseline(
@@ -2748,7 +2550,6 @@ mod tests {
             vec![("repo-1", "2026-04-10T00:00:00Z", evidence_1)],
         );
 
-        // Inventory with matching updated_at.
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo_with_updated_at(
                 "repo-1",
@@ -2775,7 +2576,6 @@ mod tests {
 
         let mut saga = make_test_saga(&config, &run);
 
-        // Seed baseline with old updated_at.
         let mut evidence = sample_repo("repo-1");
         evidence.repository.updated_at = Some("2026-04-09T00:00:00Z".to_string());
         seed_baseline(
@@ -2784,7 +2584,6 @@ mod tests {
             vec![("repo-1", "2026-04-09T00:00:00Z", evidence)],
         );
 
-        // Inventory has a newer updated_at → mismatch.
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo_with_updated_at(
                 "repo-1",
@@ -2800,19 +2599,7 @@ mod tests {
             saga.baseline_reused, 0,
             "changed updated_at should prevent reuse"
         );
-        // δ.3c-ii: stale `lock_projection().get(...).is_none()` side-
-        // channel removed — `seed_baseline` now writes directly to the
-        // projection (mimicking boot replay), so projection membership
-        // is no longer a proxy for "reuse did not happen". The
-        // `baseline_reused == 0` counter is the load-bearing assertion.
     }
-
-    // δ.3c-ii: `saga_checkpoint_and_baseline_interaction` retired.
-    // The mid-sweep `step_resume` ingestion path is gone; same-day
-    // resume now happens via event-log replay at boot (CHE-0051:R5)
-    // and the saga's `step_resume` is a phase-transition no-op.
-    // Coverage of "resumed + baseline + fresh" hybrid runs is split
-    // across `saga_resumes_from_event_log` and `saga_reuses_baseline`.
 
     /// Test 13: No `updated_at` → no baseline reuse.
     #[tokio::test]
@@ -2824,7 +2611,6 @@ mod tests {
 
         let mut saga = make_test_saga(&config, &run);
 
-        // Seed baseline for "repo-1".
         let mut evidence = sample_repo("repo-1");
         evidence.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
         seed_baseline(
@@ -2833,9 +2619,8 @@ mod tests {
             vec![("repo-1", "2026-04-10T00:00:00Z", evidence)],
         );
 
-        // Inventory with updated_at=None → should not reuse.
         let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("repo-1")], // updated_at=None by default
+            active_repos: vec![arc_repo("repo-1")],
             archived_repos: 0,
             inventory_fetched_at: None,
         };
@@ -2843,24 +2628,7 @@ mod tests {
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
 
         assert_eq!(saga.baseline_reused, 0);
-        // δ.3c-ii: stale side-channel `is_none()` check removed; see
-        // `saga_reevaluates_when_baseline_updated_at_changes`.
     }
-
-    // δ.3c-ii: `saga_baseline_only_produces_no_checkpoint` retired.
-    // The load-bearing assertion was `!saga.checkpoint_path.exists()`;
-    // the on-disk checkpoint surface is gone, so the assertion is no
-    // longer constructible. Coverage of "all-reused → no fresh
-    // evaluation → BatchDrained" remains in `saga_reuses_baseline`.
-
-    // δ.3c-ii: `saga_resumed_plus_baseline_with_zero_fresh` retired.
-    // The test mixed two retired surfaces (sweep-level checkpoint
-    // resume + on-disk baseline) and exercised neither under projection-
-    // sourced semantics. Coverage of "all reused → no fresh evaluation"
-    // remains in the rewritten `saga_resumes_from_event_log` and
-    // `saga_reuses_baseline`.
-
-    // ── Migrated saga tests — Category B (worker pool) ─────────────
 
     /// Test 1: All repos in input appear in output evidence store.
     #[tokio::test]
@@ -2902,7 +2670,6 @@ mod tests {
         assert!(state.projection_contains("id-repo-2"));
         assert!(state.projection_contains("id-repo-3"));
 
-        // Shut down worker pool.
         state.work_queue.close();
     }
 
@@ -2947,11 +2714,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
-        // Passing repo is in the evidence store.
         assert!(state.projection_contains("id-pass-repo"));
-        // Failing repo: delivery_loop does not insert failure evidence for
-        // fresh repos (no pre-existing entry to overwrite). The repo is
-        // simply absent — the saga still completes (failure isolation).
         assert!(
             !state.projection_contains("id-fail-repo"),
             "fresh repo failure produces no evidence entry in saga path"
@@ -2959,12 +2722,6 @@ mod tests {
 
         state.work_queue.close();
     }
-
-    // δ.3c-ii: `saga_creates_checkpoint` retired. Sweep-level on-disk
-    // checkpoints + baselines are gone; the file-existence assertion
-    // it made (`baseline_path(...).exists()`) is no longer a meaningful
-    // post-condition. Behavioural successor: state lives in the event
-    // log and is replayed into the projection at boot.
 
     /// Test 5: Evidence store contains all expected repos (saga path
     /// does not guarantee sorted order — reframed from legacy test).
@@ -3046,8 +2803,6 @@ mod tests {
         .await
         .unwrap();
 
-        // Panicked worker → outcome never sent → batch tracker never
-        // reaches zero → saga-level timeout fires → Failed phase.
         assert!(
             matches!(saga.phase(), SweepPhase::Failed { .. }),
             "expected Failed phase after worker panic, got {:?}",
@@ -3115,7 +2870,6 @@ mod tests {
             |repo: &Repository, ts: &str| Ok(sample_repo_from_domain(repo, ts)),
         )));
 
-        // Use a reasonable worker count for the test (not 128).
         let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 2);
 
         let mut saga = make_test_saga(&config, &run);
@@ -3180,28 +2934,12 @@ mod tests {
         assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
         assert_eq!(state.projection_len(), 2);
 
-        // Close the queue and verify worker pool + delivery shut down cleanly.
         state.work_queue.close();
         let pool_result = pool.await;
         let delivery_result = delivery.await;
         assert!(pool_result.is_ok(), "worker pool should exit cleanly");
         assert!(delivery_result.is_ok(), "delivery loop should exit cleanly");
     }
-
-    // ── Sub-mission 4 — EvidencePublished ordering (CHE-0054:R1.c/e) ─────
-    //
-    // Invariants under test, as observed on the event bus:
-    //   T1. step_finalize emits SweepCompleted strictly before
-    //       EvidencePublished on the Run stream (R1.c).
-    //   T2. Partial publisher emits PartialEvidenceRendered while
-    //       phase == Started and NEVER EvidencePublished pre-complete
-    //       (R1.c forbidden; R1.e admissible).
-    //   T3. Warm-start synthesises SweepStarted → SweepCompleted →
-    //       EvidencePublished in order on the synthetic warm-start
-    //       batch_id stream.
-    //
-    // The bus is the operational read-surface; ordering observed there
-    // is what real consumers (projection, log, future saga) see.
 
     /// Subscribe to the bus and collect every published envelope's event
     /// into a `Vec<DomainEvent>` in publish order. Returns a shared
@@ -3264,8 +3002,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Give the synchronous in-process bus a microtask to flush;
-        // publish() is synchronous in-line so this is for paranoia only.
         tokio::task::yield_now().await;
 
         let events = captured
@@ -3426,10 +3162,6 @@ mod tests {
         let run = test_run_meta();
         let corr_ctx = run.correlation_context();
 
-        // Production order: SweepStarted, then one or more RenderPartial
-        // calls (driven by the debounce loop), then eventually
-        // SweepCompleted in step_finalize. This test exercises the
-        // pre-complete window only.
         state
             .run_service
             .start_sweep(
@@ -3474,7 +3206,6 @@ mod tests {
             .position(|e| matches!(e, DomainEvent::SweepStarted { .. }))
             .expect("SweepStarted must appear on the bus");
 
-        // At least one PartialEvidenceRendered must appear after SweepStarted.
         let partial_count = events
             .iter()
             .skip(started_at + 1)
@@ -3485,7 +3216,6 @@ mod tests {
             "CHE-0054:R1.e — partial publisher must emit PartialEvidenceRendered for each render"
         );
 
-        // EvidencePublished MUST NOT appear pre-complete (R1.c).
         let published_pre_complete = events
             .iter()
             .skip(started_at + 1)
@@ -3509,9 +3239,6 @@ mod tests {
         let config = config_with_dir(dir.path());
         let state = AppState::new_with_cache_capacity(10).await;
 
-        // Seed a baseline so warm_start_from_baseline has something to
-        // restore. Single repo is enough; we're testing lifecycle
-        // event ordering, not evidence content.
         let mut evidence = sample_repo("repo-1");
         evidence.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
         seed_baseline(
@@ -3532,9 +3259,6 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
 
-        // Locate the synthetic triple. Each event variant exposes its
-        // batch_id; we filter on the `warm-start-` prefix per the
-        // production-side convention.
         let warm_started_at = events.iter().position(|e| {
             matches!(
                 e,

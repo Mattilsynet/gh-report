@@ -34,8 +34,6 @@ use cherry_pit_core::testing::conformance::{
 use cherry_pit_core::{Aggregate, DomainEvent, EventEnvelope, Projection};
 use serde::{Deserialize, Serialize};
 
-// ── Hand-rolled block_on (no tokio in core, CHE-0029:R4) ───────────
-
 fn block_on<F: Future>(fut: F) -> F::Output {
     let mut cx = Context::from_waker(Waker::noop());
     let mut fut = std::pin::pin!(fut);
@@ -45,8 +43,6 @@ fn block_on<F: Future>(fut: F) -> F::Output {
         }
     }
 }
-
-// ── Test event / aggregate / projection ────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 enum TestEvent {
@@ -89,8 +85,6 @@ impl Projection for CounterView {
     }
 }
 
-// ── Registrant tests ───────────────────────────────────────────────
-
 #[test]
 fn in_memory_event_store_conforms() {
     let factory = || InMemoryEventStore::<TestEvent>::new();
@@ -109,7 +103,6 @@ fn counter_aggregate_conforms() {
         TestEvent::Incremented(2),
         TestEvent::Incremented(3),
     ];
-    // Probe distinguishes default (value == 0) from event-driven state.
     assert_aggregate_conformance::<Counter>(&events, |c| c.value == 6);
 }
 
@@ -126,31 +119,18 @@ fn counter_view_projection_conforms_over_in_memory_store() {
     >(factory, make_event, |a, b| a == b));
 }
 
-// ── Sanity: harness panics on a broken impl ────────────────────────
-//
-// Locks in that the harness *can* fail (i.e. it's not vacuously
-// passing). A deliberately broken probe must trip the aggregate
-// conformance assertion.
-
 #[test]
 #[should_panic(expected = "A::default() must NOT satisfy")]
 fn aggregate_harness_rejects_trivial_probe() {
-    // Probe returns true even for default — violates the default-vs-applied
-    // distinguishability invariant.
     assert_aggregate_conformance::<Counter>(&[TestEvent::Incremented(1)], |_| true);
 }
 
-// Aggregate-conformance must also reject an empty event vector
-// (the harness cannot prove distinguishability without ≥1 event).
 #[test]
 #[should_panic(expected = "requires ≥1 event")]
 fn aggregate_harness_rejects_empty_events() {
     assert_aggregate_conformance::<Counter>(&[], |_| true);
 }
 
-// NonZeroU64::saturating_add doesn't exist on stable; the harness uses
-// saturating_add on u64 inside NonZeroU64::new(...). Verify a known
-// non-trivial sequence pair to lock the math.
 #[test]
 fn stale_sequence_constant_is_sane() {
     let real_last = NonZeroU64::new(1).unwrap();

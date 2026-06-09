@@ -28,8 +28,6 @@ pub const DEFAULT_LOCK_TTL: Duration = Duration::from_hours(4);
 /// Default lock file name.
 pub const DEFAULT_LOCK_FILENAME: &str = "collector.lock";
 
-// ── Lock metadata ───────────────────────────────────────────────────
-
 /// Metadata stored inside the lock file.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[non_exhaustive]
@@ -53,8 +51,6 @@ impl LockMetadata {
         }
     }
 }
-
-// ── Lock guard ──────────────────────────────────────────────────────
 
 /// RAII guard that releases the lock file when dropped.
 ///
@@ -147,8 +143,6 @@ impl Drop for RunLock {
     }
 }
 
-// ── Acquire / check ─────────────────────────────────────────────────
-
 /// Maximum number of acquire attempts after stale-lock recovery.
 ///
 /// Handles the race where two processes both see a stale lock, both call
@@ -212,10 +206,8 @@ pub fn acquire(
 ) -> Result<RunLock, PersistenceError> {
     let lock_path = lock_dir.join(lock_filename);
 
-    // Ensure the directory exists.
     std::fs::create_dir_all(lock_dir).map_err(PersistenceError::Io)?;
 
-    // Force-unlock: remove any existing lock before proceeding.
     if force && lock_path.exists() {
         force_remove_lock(&lock_path);
     }
@@ -223,7 +215,6 @@ pub fn acquire(
     let metadata = LockMetadata::current(run_id);
 
     for _attempt in 0..MAX_ACQUIRE_ATTEMPTS {
-        // Try to create the lock file exclusively (O_CREAT | O_EXCL).
         match create_lock_exclusive(&lock_path, &metadata) {
             Ok(()) => {
                 info!(
@@ -237,7 +228,6 @@ pub fn acquire(
                 });
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                // Lock file exists — check if it's stale or corrupt.
                 if let Ok(existing) = read_lock(&lock_path) {
                     if is_stale(&existing, stale_ttl) {
                         warn!(
@@ -255,7 +245,6 @@ pub fn acquire(
                         }
                         continue;
                     }
-                    // Not stale — another process legitimately holds the lock.
                     return Err(PersistenceError::LockFailed {
                         reason: format!(
                             "lock held by run {} (pid {}, since {})",
@@ -263,21 +252,9 @@ pub fn acquire(
                         ),
                     });
                 }
-                // Lock file exists but is unreadable. Because
-                // create_lock_exclusive publishes the file via a single
-                // link(2), readers never observe an empty/partial state
-                // produced by us — the only possibilities here are
-                // NotFound (concurrent release between AlreadyExists and
-                // now) or external garbage at the path.
                 match std::fs::metadata(&lock_path) {
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        // File was deleted between the AlreadyExists error
-                        // and now (another process released). Retry.
-                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                     _ => {
-                        // Anything else — non-empty unparseable, zero-byte
-                        // file from external `touch`, etc. — is corrupt.
-                        // Remove and retry.
                         warn!(
                             path = %lock_path.display(),
                             "removing corrupt lock file"
@@ -306,8 +283,6 @@ pub fn acquire(
     })
 }
 
-// ── Stale detection ─────────────────────────────────────────────────
-
 /// Determine whether a lock is stale based on TTL.
 ///
 /// A lock is stale when its `created_at` timestamp plus `ttl` is in the
@@ -316,8 +291,6 @@ fn is_stale(meta: &LockMetadata, ttl: Duration) -> bool {
     let ttl_jiff = SignedDuration::try_from(ttl).unwrap_or(SignedDuration::from_hours(4));
     Timestamp::now().duration_since(meta.created_at) > ttl_jiff
 }
-
-// ── I/O helpers ─────────────────────────────────────────────────────
 
 /// Create a lock file atomically by writing to a temp file in the same
 /// directory and publishing via `link(2)` (`persist_noclobber`).
@@ -331,8 +304,6 @@ fn create_lock_exclusive(path: &Path, metadata: &LockMetadata) -> Result<(), std
     use std::io::Write;
     let json = serde_json::to_string_pretty(metadata)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    // Same-directory tempfile so persist_noclobber can use link(2)
-    // (cross-FS link would fail with EXDEV).
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -342,9 +313,6 @@ fn create_lock_exclusive(path: &Path, metadata: &LockMetadata) -> Result<(), std
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     tmp.write_all(json.as_bytes())?;
     tmp.as_file().sync_all()?;
-    // link(2) is a single atomic step that refuses to clobber. EEXIST is
-    // surfaced as io::ErrorKind::AlreadyExists, preserving the caller
-    // contract in acquire().
     tmp.persist_noclobber(path)
         .map_err(|persist_err| persist_err.error)?;
     Ok(())
@@ -387,16 +355,10 @@ fn read_lock(path: &Path) -> Result<LockMetadata, PersistenceError> {
     })
 }
 
-// ── Lock file path ──────────────────────────────────────────────────
-
 #[must_use]
 pub fn lock_path(lock_dir: &Path, lock_filename: &str) -> PathBuf {
     lock_dir.join(lock_filename)
 }
-
-// ===========================================================================
-// Tests
-// ===========================================================================
 
 #[cfg(test)]
 mod tests {
@@ -425,7 +387,6 @@ mod tests {
         assert!(lock.path().exists());
         assert_eq!(lock.metadata().run_id, "run-1");
 
-        // Read back the lock file and verify contents.
         let meta = read_lock(lock.path()).unwrap();
         assert_eq!(meta.run_id, "run-1");
         assert_eq!(meta.pid, std::process::id());
@@ -443,7 +404,6 @@ mod tests {
         )
         .unwrap();
 
-        // A second acquire should fail.
         let result = acquire(
             dir.path(),
             "run-2",
@@ -473,7 +433,6 @@ mod tests {
             lock_file_path = lock.path().to_path_buf();
             assert!(lock_file_path.exists());
         }
-        // After drop, lock file should be removed.
         assert!(!lock_file_path.exists());
     }
 
@@ -499,7 +458,6 @@ mod tests {
     fn stale_lock_is_reclaimed() {
         let dir = TempDir::new().unwrap();
 
-        // Write a lock with a creation time far in the past (exceeds TTL).
         let stale_meta = LockMetadata {
             run_id: "old-run".to_string(),
             pid: 999_999_999,
@@ -508,7 +466,6 @@ mod tests {
         let lock_file = dir.path().join(DEFAULT_LOCK_FILENAME);
         write_lock(&lock_file, &stale_meta).unwrap();
 
-        // Should succeed by reclaiming the stale lock.
         let lock = acquire(
             dir.path(),
             "new-run",
@@ -524,7 +481,6 @@ mod tests {
     fn fresh_lock_is_not_reclaimed() {
         let dir = TempDir::new().unwrap();
 
-        // Write a lock with a recent creation time (within TTL).
         let meta = LockMetadata {
             run_id: "active-run".to_string(),
             pid: std::process::id(),
@@ -533,7 +489,6 @@ mod tests {
         let lock_file = dir.path().join(DEFAULT_LOCK_FILENAME);
         write_lock(&lock_file, &meta).unwrap();
 
-        // Should fail — the lock is within TTL.
         let result = acquire(
             dir.path(),
             "new-run",
@@ -550,7 +505,6 @@ mod tests {
         let lock_file = dir.path().join(DEFAULT_LOCK_FILENAME);
         std::fs::write(&lock_file, "not-json").unwrap();
 
-        // Should succeed by removing the corrupt lock.
         let lock = acquire(
             dir.path(),
             "new-run",
@@ -575,7 +529,6 @@ mod tests {
         .unwrap();
         lock.release().unwrap();
 
-        // Second acquire should succeed.
         let lock2 = acquire(
             dir.path(),
             "run-2",
@@ -606,8 +559,6 @@ mod tests {
         assert!(lock.path().ends_with("custom.lock"));
     }
 
-    // ── is_stale tests ────────────────────────────────────────
-
     #[test]
     fn is_stale_fresh_lock_is_not_stale() {
         let meta = LockMetadata {
@@ -630,7 +581,6 @@ mod tests {
 
     #[test]
     fn is_stale_lock_at_ttl_boundary_is_not_stale() {
-        // Lock created exactly 3h59m ago with 4h TTL — not yet stale.
         let meta = LockMetadata {
             run_id: "run".to_string(),
             pid: 1,
@@ -648,8 +598,6 @@ mod tests {
         };
         assert!(is_stale(&meta, Duration::from_mins(1)));
     }
-
-    // ── TOCTOU race test ──────────────────────────────────────
 
     #[test]
     fn concurrent_acquire_exactly_one_wins() {
@@ -688,13 +636,10 @@ mod tests {
         );
     }
 
-    // ── force-unlock tests ────────────────────────────────────
-
     #[test]
     fn acquire_with_force_reclaims_fresh_lock() {
         let dir = TempDir::new().unwrap();
 
-        // Create a lock with a fresh timestamp (within TTL).
         let meta = LockMetadata {
             run_id: "active-run".to_string(),
             pid: std::process::id(),
@@ -703,7 +648,6 @@ mod tests {
         let lock_file = dir.path().join(DEFAULT_LOCK_FILENAME);
         write_lock(&lock_file, &meta).unwrap();
 
-        // Without force, this would fail. With force, it should succeed.
         let lock = acquire(
             dir.path(),
             "forced-run",
@@ -721,7 +665,6 @@ mod tests {
         let lock_file = dir.path().join(DEFAULT_LOCK_FILENAME);
         std::fs::write(&lock_file, "not-json-garbage").unwrap();
 
-        // Force should still succeed even with a corrupt lock file.
         let lock = acquire(
             dir.path(),
             "forced-run",
@@ -735,7 +678,6 @@ mod tests {
 
     #[test]
     fn acquire_with_force_no_existing_lock() {
-        // Force on an empty directory should behave normally.
         let dir = TempDir::new().unwrap();
         let lock = acquire(
             dir.path(),
@@ -748,14 +690,10 @@ mod tests {
         assert_eq!(lock.metadata().run_id, "run-1");
     }
 
-    // ── Signal handler data-flow test ─────────────────────────
-
     #[tokio::test]
     async fn lock_released_via_arc_mutex_take() {
         use std::sync::Arc;
 
-        // Simulates the signal handler path: the lock is wrapped in
-        // Arc<Mutex<Option<RunLock>>> and released by calling .take().
         let dir = TempDir::new().unwrap();
         let lock = acquire(
             dir.path(),
@@ -771,7 +709,6 @@ mod tests {
         let handle: Arc<tokio::sync::Mutex<Option<RunLock>>> =
             Arc::new(tokio::sync::Mutex::new(Some(lock)));
 
-        // Simulate signal handler taking the lock.
         {
             let mut guard = handle.lock().await;
             let taken = guard.take().unwrap();
@@ -784,13 +721,10 @@ mod tests {
         );
     }
 
-    // ── read_lock edge cases ──────────────────────────────────
-
     #[test]
     fn read_lock_rejects_oversized_file() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("oversized.lock");
-        // Create a sparse file just over the limit.
         let f = std::fs::File::create(&path).unwrap();
         f.set_len(MAX_LOCK_FILE_BYTES + 1).unwrap();
         drop(f);
@@ -833,19 +767,14 @@ mod tests {
         .unwrap();
         let path = lock.path().to_path_buf();
 
-        // Externally delete the lock file before release
         std::fs::remove_file(&path).unwrap();
         assert!(!path.exists());
 
-        // release() should succeed (NotFound is ignored)
         lock.release().unwrap();
     }
 
     #[test]
     fn old_format_lock_with_hostname_is_readable() {
-        // Backward compatibility: lock files from before the simplification
-        // included a "hostname" field. serde ignores unknown fields by default,
-        // so old-format locks should still parse correctly.
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("old.lock");
         let json = r#"{
@@ -861,14 +790,8 @@ mod tests {
         assert_eq!(meta.pid, 12345);
     }
 
-    // ── Empty lock file (treated as corrupt under link(2) primitive) ──
-
     #[test]
     fn externally_created_empty_lock_file_is_replaced() {
-        // Under the link(2)-based create_lock_exclusive, a zero-byte
-        // file at the lock path cannot have been produced by us — it
-        // must be external garbage. The acquire loop falls through to
-        // the corrupt-replacement arm, removes it, and retries.
         let dir = TempDir::new().unwrap();
         let lock_file = dir.path().join(DEFAULT_LOCK_FILENAME);
 
@@ -885,8 +808,6 @@ mod tests {
         assert_eq!(lock.metadata.run_id, "new-run");
     }
 
-    // ── force_remove_lock on missing file ─────────────────────
-
     #[test]
     fn force_remove_lock_on_missing_file_does_not_panic() {
         let dir = TempDir::new().unwrap();
@@ -894,8 +815,6 @@ mod tests {
 
         force_remove_lock(&missing);
     }
-
-    // ── renew ─────────────────────────────────────────────────
 
     #[test]
     fn renew_updates_created_at_and_keeps_run_id_and_pid() {

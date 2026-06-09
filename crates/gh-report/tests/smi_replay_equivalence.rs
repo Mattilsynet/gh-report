@@ -92,9 +92,6 @@ fn smi_replay_payload_sequence_byte_equivalent() {
         )
     });
 
-    // Replay every aggregate stream named in the manifest, in manifest
-    // order (capture sorted by filename, which is `<id>.msgpack` —
-    // numerically stable for u64-counter-assigned ids 1..=9).
     let mut replayed: Vec<DomainEvent> = Vec::new();
     for line in manifest.lines() {
         let line = line.trim();
@@ -113,10 +110,6 @@ fn smi_replay_payload_sequence_byte_equivalent() {
     let expected: Vec<DomainEvent> =
         serde_json::from_str(&expected_json).expect("decode payload_sequence.json");
 
-    // Compare via JSON re-serialisation: avoids relying on a `PartialEq`
-    // impl for DomainEvent (RepositoryEvidence contains Arc<Repository>
-    // and other deep fields; structural equality via the serde view is
-    // what the projection contract actually cares about).
     let replayed_json =
         serde_json::to_string_pretty(&replayed).expect("serialise replayed sequence");
     let expected_normalised =
@@ -142,8 +135,6 @@ fn smi_replay_projection_snapshot_byte_equivalent() {
         )
     });
 
-    // Fold every aggregate stream into a fresh projection, in manifest
-    // order — same order as the capture used so the snapshot lines up.
     let mut projection = EvidenceProjection::default();
     for line in manifest.lines() {
         let line = line.trim();
@@ -161,9 +152,6 @@ fn smi_replay_projection_snapshot_byte_equivalent() {
         serde_json::to_string_pretty(&projection).expect("serialise replayed projection");
     let expected_json = fs::read_to_string(dir.join("projection_snapshot.json"))
         .expect("read projection_snapshot.json");
-    // Round-trip the expected through serde so trailing-newline /
-    // whitespace differences between the two files don't cause spurious
-    // drift.
     let expected_value: EvidenceProjection =
         serde_json::from_str(&expected_json).expect("decode projection_snapshot.json");
     let expected_normalised =

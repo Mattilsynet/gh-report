@@ -26,7 +26,6 @@ pub fn check(record: &AdrRecord, domain_prefixes: &[&str], diags: &mut Vec<Diagn
         return;
     };
 
-    // N001: Overall pattern
     if !N001_PATTERN.is_match(file_name) {
         diags.push(Diagnostic::warning(
             "N001",
@@ -37,12 +36,10 @@ pub fn check(record: &AdrRecord, domain_prefixes: &[&str], diags: &mut Vec<Diagn
                  `PREFIX-NNNN-kebab-slug.md`"
             ),
         ));
-        return; // N002, N003, N004 depend on valid filename structure
+        return;
     }
 
-    // N002: Number in filename matches H1 ID
     if let Some(file_id) = parse_adr_id_from_filename_stem(&file_name[..file_name.len() - 3]) {
-        // We need the first segment PREFIX-NNNN
         if file_id.prefix != record.id.prefix || file_id.number != record.id.number {
             diags.push(Diagnostic::warning(
                 "N002",
@@ -56,9 +53,6 @@ pub fn check(record: &AdrRecord, domain_prefixes: &[&str], diags: &mut Vec<Diagn
         }
     }
 
-    // N003: Slug is kebab-case
-    // Extract slug portion after "PREFIX-NNNN-"
-    // "CHE-0001-" → prefix.len() (3) + 1 (-) + 4 (digits) + 1 (-) = len+6
     let prefix_len = record.id.prefix.len() + 6;
     let slug_with_ext = &file_name[prefix_len..];
     let slug = slug_with_ext.strip_suffix(".md").unwrap_or(slug_with_ext);
@@ -72,7 +66,6 @@ pub fn check(record: &AdrRecord, domain_prefixes: &[&str], diags: &mut Vec<Diagn
         ));
     }
 
-    // N004: Prefix matches a configured domain
     if !domain_prefixes.contains(&record.id.prefix.as_str()) {
         diags.push(Diagnostic::warning(
             "N004",

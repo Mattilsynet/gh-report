@@ -22,11 +22,6 @@ use cherry_pit_core::{Aggregate, CommandGateway, EventStore};
 use cherry_pit_web::{AppState, CommandRouter, build_router};
 use serde::Serialize;
 
-// `assert_send` / `assert_sync` / `assert_clone` / `assert_static` carry
-// no suppression: they are called from `appstate_is_axum_state_compatible`
-// below, so even though the caller itself is dead, clippy treats the
-// callees as reachable. Only the top-level helpers (those not called
-// from any other item in this file) need #[expect(dead_code)].
 fn assert_send<T: Send>() {}
 fn assert_sync<T: Sync>() {}
 fn assert_clone<T: Clone>() {}
@@ -63,8 +58,4 @@ where
 }
 
 #[test]
-fn type_level_bounds_compile() {
-    // The real verification is that this file compiles; the bounds in
-    // the helpers above are checked then. This `#[test]` exists so
-    // `cargo test -p cherry-pit-web` reports a non-empty pass.
-}
+fn type_level_bounds_compile() {}

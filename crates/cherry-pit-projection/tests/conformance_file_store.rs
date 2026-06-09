@@ -77,9 +77,6 @@ impl Projection for Tally {
 
 #[tokio::test]
 async fn tally_projection_conforms_over_file_store() {
-    // TempDir retention: keep dirs alive for the duration of the
-    // harness call so MsgpackFileStore's .lock handle stays valid
-    // across all scenarios (same pattern as the gateway registrant).
     let dirs: Arc<Mutex<Vec<TempDir>>> = Arc::new(Mutex::new(Vec::new()));
 
     let factory = {

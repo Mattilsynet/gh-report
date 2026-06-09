@@ -310,19 +310,14 @@ impl<P> FileProjectionStore<P> {
             let companion = path.with_extension("msgpack");
             match tokio::fs::metadata(&companion).await {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    // Companion absent → orphan, safe to remove.
                     if let Err(e) = tokio::fs::remove_file(&path).await {
-                        // Tolerate races (e.g. another sweep already
-                        // removed it) but surface other errors.
                         if e.kind() != std::io::ErrorKind::NotFound {
                             return Err(ProjectionError::Infrastructure(Box::new(e)));
                         }
                     }
                 }
                 Err(e) => return Err(ProjectionError::Infrastructure(Box::new(e))),
-                Ok(_) => {
-                    // Companion present → leave the .tmp alone.
-                }
+                Ok(_) => {}
             }
         }
         Ok(())
@@ -938,19 +933,6 @@ async fn sync_dir(path: &Path) -> ProjectionResult<()> {
     .map_err(|e| ProjectionError::Infrastructure(Box::new(e)))?
 }
 
-// ===== Projection driver extension trait + tuple types =====
-//
-// Co-located with `ProjectionDriver` per CHE-0057:R2's extension-trait-
-// with-concrete-type rationale extended by analogy to projection drivers.
-// CHE-0051:R5 originally placed these inside cherry-pit-agent; that letter
-// is superseded by SM-2 of the phase2-v2-track-1 mission package (bead
-// `adr-fmt-ugia`). The agent-side surface is preserved via a `pub use`
-// re-export in `cherry_pit_agent::lib` for CHE-0054:R8 backward-compat.
-//
-// C14 (do not edit CHE-0048 source) remains honoured: the underlying
-// `ProjectionDriver` shape is untouched; this is an additive extension
-// trait + tuple-impl layer.
-
 /// Extension trait adding per-event projection application on top of
 /// [`ProjectionDriver`]'s replay-only surface.
 ///
@@ -1048,11 +1030,6 @@ where
 {
     const ARITY: usize = 2;
 }
-
-// FOLLOW-UP S7: extend `ProjectionDriverTuple` impls to arity 8 via a
-// declarative macro once the ergonomic benchmark validates the 2-arity
-// shape. The brief ("fixed-arity (works to ~8)") sets 8 as the ceiling;
-// v0.1 only needs 2 for the wiring-vs-domain-LOC gate.
 
 /// Marker for "no projections wired" — used when `App::new` is called
 /// without projection parameters. The unit type implements
@@ -1215,13 +1192,11 @@ mod tests {
         let first = FileProjectionStore::<CounterView>::new(dir.path(), "counter");
         let second = FileProjectionStore::<CounterView>::new(dir.path(), "counter");
 
-        // First persist acquires the .lock lazily and succeeds.
         first
             .persist(id, &CounterView { total: 1 }, 1)
             .await
             .expect("first persist");
 
-        // Second instance attempts to acquire the same .lock — must fail.
         let err = second
             .persist(id, &CounterView { total: 2 }, 2)
             .await
@@ -1242,8 +1217,6 @@ mod tests {
             .await
             .expect("first persist");
 
-        // Constructing a second instance must not error — R2 forbids
-        // eager acquisition on construction.
         let _second = FileProjectionStore::<CounterView>::new(dir.path(), "counter");
     }
 
@@ -1257,8 +1230,6 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let backend = FileProjectionStore::<CounterView>::new(dir.path(), "counter");
 
-        // Plant a stale .tmp matching the deterministic tmp scheme used
-        // by write_atomic: snapshot_path.with_extension("tmp").
         let stale_tmp = backend.snapshot_path(id).with_extension("tmp");
         tokio::fs::create_dir_all(dir.path())
             .await
@@ -1268,14 +1239,11 @@ mod tests {
             .expect("plant stale tmp");
         assert!(stale_tmp.exists(), "stale tmp planted");
 
-        // Plant a second orphan tmp for an unrelated aggregate to
-        // ensure the sweep is dir-wide, not single-path.
         let other = backend.snapshot_path(aggregate_id(2)).with_extension("tmp");
         tokio::fs::write(&other, b"other stale")
             .await
             .expect("plant other stale");
 
-        // Persist should sweep both stale .tmp files before writing.
         backend
             .persist(id, &CounterView { total: 9 }, 9)
             .await
@@ -1307,15 +1275,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let backend = FileProjectionStore::<CounterView>::new(dir.path(), "counter");
 
-        // Land an initial snapshot so the dir exists and is locked.
         backend
             .persist(id, &CounterView { total: 1 }, 1)
             .await
             .expect("initial persist");
 
-        // Plant an *unrelated* companion pair: foo.msgpack + foo.tmp.
-        // The next persist will not touch these paths, so survival of
-        // foo.tmp depends only on the sweep's conservative rule.
         let live_companion = dir.path().join("foo.msgpack");
         let live_tmp = dir.path().join("foo.tmp");
         tokio::fs::write(&live_companion, b"companion lives")
@@ -1325,7 +1289,6 @@ mod tests {
             .await
             .expect("plant live tmp");
 
-        // Trigger sweep via another persist; companion-bearing tmp must survive.
         backend
             .persist(id, &CounterView { total: 2 }, 2)
             .await
@@ -1513,11 +1476,6 @@ mod tests {
             });
         }
     }
-
-    // ===== ProjectionDriverExt + ProjectionDriverTuple tests =====
-    // Relocated from cherry-pit-agent/src/projection.rs per SM-2 of the
-    // phase2-v2-track-1 mission package. Behaviour unchanged; the tests
-    // now live alongside the production trait definitions per CHE-0057:R2.
 
     #[test]
     fn apply_one_delegates_to_projection_apply() {

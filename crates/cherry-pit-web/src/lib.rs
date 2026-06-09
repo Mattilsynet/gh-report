@@ -58,11 +58,6 @@ pub mod errors;
 pub mod path;
 
 pub use command_router::{CommandRouter, DispatchOutcome};
-// CHE-0049:R14 — only the five R8 utilities are flat-re-exported from
-// `lib.rs`. Everything else from `middleware` reaches consumers via
-// the dedicated public submodules above (`errors`, `correlation`,
-// `path`), keeping the `middleware` module itself implementation
-// detail per CHE-0030:R2.
 pub use middleware::{
     HttpTraceLayer, LayerLimits, NormalizedPath, SVG_CSP, compress_zstd, compute_etag,
     http_trace_layer, normalize_request_path, sanitize_path_segment, security_headers,

@@ -25,6 +25,5 @@ impl Aggregate for MyAggregate {
 
 fn main() {
     let agg = MyAggregate;
-    // This must fail: Aggregate exposes no `id()` method.
     let _ = agg.id();
 }

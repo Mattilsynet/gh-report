@@ -52,10 +52,6 @@ impl DomainEvent for TestEvent {
 
 #[tokio::test]
 async fn msgpack_file_store_conforms() {
-    // TempDirs are retained here so they outlive every store the
-    // harness builds. Without this, `make_store()`'s local TempDir
-    // would drop at the end of each scenario closure invocation and
-    // any later access via stored paths would race.
     let dirs: Arc<Mutex<Vec<TempDir>>> = Arc::new(Mutex::new(Vec::new()));
 
     let factory = {

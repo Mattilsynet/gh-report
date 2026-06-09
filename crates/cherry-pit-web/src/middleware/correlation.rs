@@ -40,12 +40,6 @@ use axum::http::HeaderMap;
 use cherry_pit_core::CorrelationContext;
 use uuid::Uuid;
 
-// Pass-through re-export so `middleware::mod.rs` can keep its single
-// canonical `pub use correlation::{IdempotencyKey, ...}` line. The
-// type itself lives in `cherry-pit-core` (per CHE-0046 R3 + CHE-0049 R6
-// the never-synthesise invariant is now structurally enforced — the
-// public constructor `IdempotencyKey::from_header_value` is the only
-// path that yields `Some` from outside core).
 pub use cherry_pit_core::IdempotencyKey;
 
 /// Canonical request/response header names, hard-coded ASCII.
@@ -129,8 +123,6 @@ pub fn extract_idempotency_key(headers: &HeaderMap) -> Option<IdempotencyKey> {
 /// `parent-span-id` per the W3C spec ("MUST treat as invalid"). The
 /// caller's job is to fall through to fallback or `none()`.
 fn parse_traceparent(value: &str) -> Option<CorrelationContext> {
-    // Total length is fixed for version 00. Future versions are
-    // explicitly out of scope (we only know how to interpret 00).
     if value.len() != 55 {
         return None;
     }
@@ -152,7 +144,6 @@ fn parse_traceparent(value: &str) -> Option<CorrelationContext> {
 
     let trace_id = u128::from_str_radix(trace_id_hex, 16).ok()?;
     let parent_span = u64::from_str_radix(parent_span_hex, 16).ok()?;
-    // flags must be valid hex but are otherwise unused at this layer.
     u8::from_str_radix(flags, 16).ok()?;
 
     if trace_id == 0 || parent_span == 0 {
@@ -160,9 +151,6 @@ fn parse_traceparent(value: &str) -> Option<CorrelationContext> {
     }
 
     let correlation = Uuid::from_u128(trace_id);
-    // Lossless up-cast: 64-bit span id occupies the low 64 bits of a
-    // 128-bit Uuid; the high 64 bits are zero by construction. The
-    // mapping is total and reversible (`uuid.as_u128() as u64`).
     let causation = Uuid::from_u128(u128::from(parent_span));
     Some(CorrelationContext::new(correlation, causation))
 }
@@ -182,8 +170,6 @@ mod tests {
         h
     }
 
-    // ── extract_correlation ────────────────────────────────────────────
-
     #[test]
     fn absent_headers_yield_none() {
         let ctx = extract_correlation(&hm());
@@ -192,8 +178,6 @@ mod tests {
 
     #[test]
     fn valid_traceparent_populates_both_ids() {
-        // trace-id = 0x0af7651916cd43dd8448eb211c80319c
-        // parent-span = 0x00f067aa0ba902b7
         let tp = "00-0af7651916cd43dd8448eb211c80319c-00f067aa0ba902b7-01";
         let ctx = extract_correlation(&with(TRACEPARENT, tp));
         let expected_corr = Uuid::from_u128(0x0af7_6519_16cd_43dd_8448_eb21_1c80_319c);
@@ -212,7 +196,6 @@ mod tests {
 
     #[test]
     fn malformed_traceparent_falls_through_to_fallback() {
-        // Garbage traceparent + valid X-Correlation-ID → fallback wins.
         let mut h = HeaderMap::new();
         h.insert(TRACEPARENT, HeaderValue::from_static("not-a-traceparent"));
         let id = Uuid::now_v7();
@@ -233,7 +216,6 @@ mod tests {
 
     #[test]
     fn unsupported_traceparent_version_is_treated_as_absent() {
-        // Version "01" — we only speak "00". Fall through to none().
         let tp = "01-0af7651916cd43dd8448eb211c80319c-00f067aa0ba902b7-01";
         let ctx = extract_correlation(&with(TRACEPARENT, tp));
         assert_eq!(ctx, CorrelationContext::none());
@@ -269,7 +251,6 @@ mod tests {
             HeaderValue::from_str(&Uuid::now_v7().to_string()).unwrap(),
         );
         let ctx = extract_correlation(&h);
-        // causation_id is populated only by traceparent path.
         assert!(ctx.causation_id().is_some());
     }
 
@@ -278,8 +259,6 @@ mod tests {
         let ctx = extract_correlation(&with(TRACEPARENT, "00-abc-def-01"));
         assert_eq!(ctx, CorrelationContext::none());
     }
-
-    // ── extract_idempotency_key ────────────────────────────────────────
 
     #[test]
     fn idempotency_key_present_returns_some() {
@@ -292,7 +271,6 @@ mod tests {
 
     #[test]
     fn idempotency_key_absent_returns_none() {
-        // The whole point of R6: never auto-generated.
         assert_eq!(extract_idempotency_key(&hm()), None);
     }
 

@@ -20,8 +20,6 @@ struct TreeContext<'a> {
     domain_prefix: &'a str,
 }
 
-// ── Output block types ─────────────────────────────────────────────
-
 /// A group of rules emitted under a single root ADR in `--context` mode.
 #[derive(Debug)]
 pub struct RootGroup {
@@ -39,8 +37,6 @@ pub struct EmittedRule {
     pub layer: u8,
     pub depth: u16,
 }
-
-// ── Refs rendering (--refs mode) ───────────────────────────────────
 
 /// Render a `--refs` report as a compact markdown bullet list.
 ///
@@ -98,8 +94,6 @@ fn render_status(status: Option<&Status>) -> String {
     status.map_or_else(|| "?".into(), Status::short_display)
 }
 
-// ── Diagnostic rendering ───────────────────────────────────────────
-
 /// Render diagnostics as Alternative 4 markdown blocks to stdout.
 #[must_use]
 pub fn render_diagnostics(diagnostics: &[Diagnostic], record_count: usize) -> String {
@@ -144,8 +138,6 @@ pub fn render_diagnostics(diagnostics: &[Diagnostic], record_count: usize) -> St
     out
 }
 
-// ── Tree rendering (--tree mode) ───────────────────────────────────
-
 /// Render root-grouped context output with preamble.
 ///
 /// Rules are grouped by root ADR subtree. Each root with rules gets a
@@ -158,7 +150,6 @@ pub fn render_diagnostics(diagnostics: &[Diagnostic], record_count: usize) -> St
 pub fn render_root_groups(crate_name: &str, groups: &[RootGroup]) -> String {
     let mut out = String::new();
 
-    // Preamble
     writeln!(out, "# Architecture Rules").unwrap();
     writeln!(out).unwrap();
     writeln!(
@@ -189,8 +180,6 @@ pub fn render_root_groups(crate_name: &str, groups: &[RootGroup]) -> String {
     out
 }
 
-// ── Tree rendering (--tree mode, domain overview) ──────────────────
-
 /// Render the domain tree with box-drawing to stdout.
 ///
 /// For each domain (filtered by `domain_filter` if set), renders the
@@ -219,13 +208,9 @@ pub fn render_tree(
 ) -> String {
     let mut out = String::new();
 
-    // Build parent-edge projection across full corpus
     let parent_edges = compute_parent_edges(records);
     let parent_children = compute_parent_children(records);
 
-    // Filter domains. GND is rendered last (foundational stack
-    // underneath all other domain blocks); other domains keep their
-    // TOML-declared order.
     let mut dirs: Vec<&DomainDir> = if let Some(filter) = domain_filter {
         domain_dirs.iter().filter(|d| d.prefix == filter).collect()
     } else {
@@ -240,7 +225,6 @@ pub fn render_tree(
         return out;
     }
 
-    // Group non-stale records by domain
     let mut by_prefix: HashMap<&str, Vec<&AdrRecord>> = HashMap::new();
     for record in records {
         if !record.is_stale {
@@ -248,7 +232,6 @@ pub fn render_tree(
         }
     }
 
-    // Lookup table by ID for title/tier/status access during walk
     let record_by_id: HashMap<&AdrId, &AdrRecord> = records.iter().map(|r| (&r.id, r)).collect();
 
     for dir in &dirs {
@@ -272,7 +255,6 @@ pub fn render_tree(
             .cloned()
             .unwrap_or_default();
 
-        // Find roots in this domain (sorted by ADR number)
         let mut roots: Vec<&AdrRecord> = domain_records
             .iter()
             .copied()
@@ -280,7 +262,6 @@ pub fn render_tree(
             .collect();
         roots.sort_by_key(|r| r.id.number);
 
-        // Track which domain ADRs are reached via tree traversal
         let mut reached: std::collections::HashSet<AdrId> = std::collections::HashSet::new();
         let ctx = TreeContext {
             parent_children: &parent_children,
@@ -299,13 +280,6 @@ pub fn render_tree(
             );
         }
 
-        // Cross-domain forest roots: any non-root domain ADR whose
-        // `Parent-cross-domain:` field validates against its first
-        // `References:` target. These are rendered at top level of
-        // their own domain, annotated with `↑ <PARENT-ID>` so the
-        // cross-domain edge is visible without breaking the
-        // domain-grouped layout. They also seed sub-trees: any
-        // same-domain ADRs that parent through them descend below.
         let mut cross_domain_roots: Vec<&&AdrRecord> = domain_records
             .iter()
             .filter(|r| !r.is_root() && !reached.contains(&r.id))
@@ -314,21 +288,12 @@ pub fn render_tree(
         cross_domain_roots.sort_by_key(|r| r.id.number);
 
         for record in &cross_domain_roots {
-            // Invariant established by the `validated_cross_domain_parent(r).is_some()`
-            // filter at line 299. Match locally rather than `.expect` so a future
-            // refactor that moves or weakens the filter cannot panic at runtime —
-            // the worst case becomes a silently-skipped record, surfaced by
-            // existing orphan diagnostics below.
             let Some(cross_parent) = validated_cross_domain_parent(record) else {
                 continue;
             };
             render_cross_domain_tree_node(&mut out, &record.id, &cross_parent, &ctx, &mut reached);
         }
 
-        // Orphan section: domain ADRs not reached from any root. We
-        // distinguish three subcategories so readers know whether the
-        // root cause is a missing References, a cycle, or a chain that
-        // terminates at a non-root mid-tier ADR.
         let orphans: Vec<&&AdrRecord> = domain_records
             .iter()
             .filter(|r| !reached.contains(&r.id))
@@ -347,9 +312,6 @@ pub fn render_tree(
                     .map_or_else(|| "?".into(), super::model::Status::short_display);
                 let also = format_also_references(record, &parent_edges);
 
-                // Categorize:
-                //   - parent edge present → walk it (cycle vs non-root)
-                //   - no parent edge → missing first References
                 let reason = if parent_edges.contains_key(&record.id) {
                     match crate::nav::walk_parent_chain(&record.id, &parent_edges) {
                         Ok(_) => " (chain ends at non-root)",
@@ -368,7 +330,6 @@ pub fn render_tree(
             }
         }
 
-        // Stale count for this domain
         let stale_count = records
             .iter()
             .filter(|r| r.is_stale && r.id.prefix == dir.prefix)
@@ -397,7 +358,6 @@ fn render_tree_node(
     prefix_stack: &mut Vec<bool>,
     is_last: bool,
 ) {
-    // Cycle guard: do not re-emit
     if !reached.insert(id.clone()) {
         return;
     }
@@ -407,7 +367,6 @@ fn render_tree_node(
         None => return,
     };
 
-    // Build indent string from prefix_stack
     let mut indent = String::from("  ");
     for &more in prefix_stack.iter() {
         indent.push_str(if more { "│  " } else { "   " });
@@ -436,8 +395,6 @@ fn render_tree_node(
     )
     .unwrap();
 
-    // Walk same-domain children only (cross-domain children render in
-    // their own domain's tree section)
     let children: Vec<AdrId> = ctx
         .parent_children
         .get(id)
@@ -482,8 +439,6 @@ fn render_cross_domain_tree_node(
         .as_ref()
         .map_or_else(|| "?".into(), super::model::Status::short_display);
 
-    // The first References target IS the cross-domain parent, so omit
-    // it from `also` (it's surfaced by the ↑ annotation instead).
     let also = format_also_references_skipping_first_ref(record);
 
     writeln!(
@@ -493,7 +448,6 @@ fn render_cross_domain_tree_node(
     )
     .unwrap();
 
-    // Descend into same-domain children.
     let children: Vec<AdrId> = ctx
         .parent_children
         .get(id)
@@ -504,7 +458,7 @@ fn render_cross_domain_tree_node(
         .collect();
 
     let n = children.len();
-    let mut prefix_stack = vec![false]; // not at top level any more
+    let mut prefix_stack = vec![false];
     for (i, child) in children.iter().enumerate() {
         let last = i + 1 == n;
         render_tree_node(out, child, ctx, reached, &mut prefix_stack, last);
@@ -587,8 +541,6 @@ fn format_also_references_full(record: &AdrRecord) -> String {
         format!(" [also: {}]", others.join(", "))
     }
 }
-
-// ── Helpers ────────────────────────────────────────────────────────
 
 /// Return the validated cross-domain parent ID for a record, or `None`.
 ///
@@ -741,8 +693,6 @@ mod tests {
         assert!(output.contains("T020"));
     }
 
-    // ── render_root_groups tests ────────────────────────────────────
-
     #[test]
     fn render_root_groups_basic() {
         let groups = vec![RootGroup {
@@ -757,19 +707,16 @@ mod tests {
             }],
         }];
         let output = render_root_groups("example-core", &groups);
-        // Preamble
         assert!(output.contains("# Architecture Rules"), "output:\n{output}");
         assert!(output.contains("crate `example-core`"), "output:\n{output}");
         assert!(
             output.contains("Follow every rule without exception"),
             "output:\n{output}"
         );
-        // Root header
         assert!(
             output.contains("### COM-0001. Foundation Principle"),
             "output:\n{output}"
         );
-        // Rule line with ID and layer
         assert!(
             output.contains("- All modules must log errors. [COM-0001:R1:L5]"),
             "output:\n{output}"
@@ -891,12 +838,10 @@ mod tests {
             ],
         }];
         let output = render_root_groups("example-core", &groups);
-        // Single root header
         assert!(
             output.contains("### CHE-0001. Design Priority"),
             "root header missing:\n{output}"
         );
-        // All three rules present under that header
         assert!(
             output.contains("[CHE-0001:R1:L2]"),
             "root's own rule missing:\n{output}"
@@ -909,7 +854,6 @@ mod tests {
             output.contains("[CHE-0010:R1:L7]"),
             "grandchild rule missing:\n{output}"
         );
-        // Verify ordering: L2 before L5 before L7
         let pos_l2 = output.find("[CHE-0001:R1:L2]").unwrap();
         let pos_l5 = output.find("[CHE-0005:R1:L5]").unwrap();
         let pos_l7 = output.find("[CHE-0010:R1:L7]").unwrap();
