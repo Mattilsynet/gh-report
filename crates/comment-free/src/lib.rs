@@ -180,11 +180,24 @@ pub fn line_comment_is_preserved(line_comment_body: &str) -> bool {
 /// becomes `drop(rx);` with no trailing space. Lines that did not lose
 /// a comment token are untouched; pre-existing trailing whitespace on
 /// such lines is preserved verbatim.
+///
+/// When a contiguous run of solo-line non-doc comments (a "comment
+/// block") sits between two code regions and the source has at least
+/// one blank line BOTH above and below the block, the rewrite emits
+/// `max(blanks_above, blanks_below)` blank lines between the two code
+/// regions instead of `blanks_above + blanks_below`. The intuition is
+/// that the blank immediately below the comment block was padding for
+/// the comment; removing the comment removes one unit of redundant
+/// padding without removing any blank that was not already in the
+/// source. If only one side has a blank, both blanks are preserved
+/// verbatim (no collapse). Inline (mid-line) comment drops never
+/// trigger this collapse.
 #[must_use]
 pub fn strip_line_comments(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut cursor = 0usize;
     let mut pending_blank_collapse = false;
+    let mut drop_run: Option<DropRun> = None;
     for token in tokenize(src, FrontmatterAllowed::Yes) {
         let end = cursor + token.len as usize;
         let text = &src[cursor..end];
@@ -203,22 +216,89 @@ pub fn strip_line_comments(src: &str) -> String {
             let was_line_alone = line_was_blank_before(before_comment);
             trim_trailing_whitespace_to_last_newline(&mut out);
             if was_line_alone {
+                if drop_run.is_none() {
+                    drop_run = Some(DropRun {
+                        blanks_above: trailing_blank_lines(&out),
+                        blanks_below_emitted: 0,
+                    });
+                }
                 pending_blank_collapse = true;
             }
             continue;
         }
         if pending_blank_collapse && matches!(token.kind, TokenKind::Whitespace) {
             let trimmed = text.strip_prefix('\n').unwrap_or(text);
+            if let Some(run) = drop_run.as_mut() {
+                run.blanks_below_emitted += count_newlines(trimmed);
+            }
             out.push_str(trimmed);
             pending_blank_collapse = false;
         } else {
+            if !matches!(token.kind, TokenKind::Whitespace)
+                && let Some(run) = drop_run.take()
+                && run.blanks_above >= 1
+                && run.blanks_below_emitted >= 1
+            {
+                pop_one_trailing_newline(&mut out);
+            }
             out.push_str(text);
             if !matches!(token.kind, TokenKind::Whitespace) || !is_comment {
                 pending_blank_collapse = false;
             }
         }
     }
+    if let Some(run) = drop_run
+        && run.blanks_above >= 1
+        && run.blanks_below_emitted >= 1
+    {
+        pop_one_trailing_newline(&mut out);
+    }
     out
+}
+/// State captured while inside a contiguous run of solo-line non-doc
+/// comment drops. `blanks_above` is the count of blank lines that
+/// preceded the first dropped comment in this run, derived from the
+/// `\n` run at the tail of `out` at the moment the run started.
+/// `blanks_below_emitted` accumulates the `\n` count contributed by
+/// whitespace tokens that follow each dropped comment after their
+/// leading `\n` has already been stripped by `pending_blank_collapse`.
+struct DropRun {
+    blanks_above: usize,
+    blanks_below_emitted: usize,
+}
+/// Count blank lines at the tail of `s`. A blank line at the tail is
+/// represented by an extra trailing `\n` beyond the one that ends the
+/// last non-empty content line. Specifically: returns
+/// `(trailing_newlines).saturating_sub(1)` so that `\n` alone yields 0,
+/// `\n\n` yields 1, `\n\n\n` yields 2, and an empty string yields 0.
+fn trailing_blank_lines(s: &str) -> usize {
+    let trailing = s.bytes().rev().take_while(|b| *b == b'\n').count();
+    trailing.saturating_sub(1)
+}
+/// Count the `\n` bytes in `s`.
+fn count_newlines(s: &str) -> usize {
+    s.bytes().filter(|b| *b == b'\n').count()
+}
+/// Pop exactly one `\n` from the trailing-blank region of `s` — the
+/// run of `\n` bytes that ends `s` after any trailing horizontal
+/// whitespace (the indent of the next code line). Leaves any
+/// horizontal whitespace and prior bytes intact. Used to collapse one
+/// unit of redundant blank-line padding when both sides of a removed
+/// comment block had at least one blank line in the source.
+fn pop_one_trailing_newline(s: &mut String) {
+    let bytes = s.as_bytes();
+    let mut indent_start = bytes.len();
+    while indent_start > 0 {
+        match bytes[indent_start - 1] {
+            b' ' | b'\t' => indent_start -= 1,
+            _ => break,
+        }
+    }
+    if indent_start == 0 || bytes[indent_start - 1] != b'\n' {
+        return;
+    }
+    let newline_pos = indent_start - 1;
+    s.remove(newline_pos);
 }
 /// True iff `prefix` ends with a sequence that includes no characters
 /// other than horizontal whitespace since the most recent `\n` (or the
@@ -1380,6 +1460,83 @@ mod process_file_tests {
     fn strip_line_comments_inline_trim_already_clean_is_noop() {
         let src = "let x = 1;\nlet y = 2;\n";
         assert_eq!(strip_line_comments(src), src);
+    }
+    #[test]
+    fn strip_line_comments_solo_comment_between_code_leaves_no_blank() {
+        let src = "fn a() {}\n// removed\nfn b() {}\n";
+        let expected = "fn a() {}\nfn b() {}\n";
+        assert_eq!(strip_line_comments(src), expected);
+    }
+    #[test]
+    fn strip_line_comments_contiguous_solo_block_between_code_leaves_no_blank() {
+        let src = "fn a() {}\n// r1\n// r2\n// r3\nfn b() {}\n";
+        let expected = "fn a() {}\nfn b() {}\n";
+        assert_eq!(strip_line_comments(src), expected);
+    }
+    #[test]
+    fn strip_line_comments_preserves_pre_existing_blank_above_removed_block() {
+        let src = "fn a() {}\n\n// removed\nfn b() {}\n";
+        let expected = "fn a() {}\n\nfn b() {}\n";
+        assert_eq!(strip_line_comments(src), expected);
+    }
+    #[test]
+    fn strip_line_comments_preserves_pre_existing_blank_below_removed_block() {
+        let src = "fn a() {}\n// removed\n\nfn b() {}\n";
+        let expected = "fn a() {}\n\nfn b() {}\n";
+        assert_eq!(strip_line_comments(src), expected);
+    }
+    #[test]
+    fn strip_line_comments_collapses_symmetric_blanks_around_removed_block() {
+        let src = "fn a() {}\n\n// removed\n\nfn b() {}\n";
+        let expected = "fn a() {}\n\nfn b() {}\n";
+        assert_eq!(strip_line_comments(src), expected);
+    }
+    #[test]
+    fn strip_line_comments_collapses_symmetric_blanks_around_section_header_pattern() {
+        let src = "    let x = 1;\n\n    // ── Step 2: do thing ──\n\n    let y = 2;\n";
+        let expected = "    let x = 1;\n\n    let y = 2;\n";
+        assert_eq!(strip_line_comments(src), expected);
+    }
+    #[test]
+    fn strip_line_comments_collapses_symmetric_blanks_around_block_with_internal_lines() {
+        let src = "fn a() {}\n\n// header\n//\n// body line\n\nfn b() {}\n";
+        let expected = "fn a() {}\n\nfn b() {}\n";
+        assert_eq!(strip_line_comments(src), expected);
+    }
+    #[test]
+    fn strip_line_comments_preserves_double_blank_above_only() {
+        let src = "fn a() {}\n\n\n// removed\nfn b() {}\n";
+        let expected = "fn a() {}\n\n\nfn b() {}\n";
+        assert_eq!(strip_line_comments(src), expected);
+    }
+    #[test]
+    fn strip_line_comments_symmetric_collapse_takes_max_of_above_and_below() {
+        let src = "fn a() {}\n\n\n// removed\n\nfn b() {}\n";
+        let expected = "fn a() {}\n\n\nfn b() {}\n";
+        assert_eq!(strip_line_comments(src), expected);
+    }
+    #[test]
+    fn strip_line_comments_blank_below_only_at_block_start_is_preserved() {
+        let src = "fn f() {\n    // removed\n\n    let x = 1;\n}\n";
+        let expected = "fn f() {\n\n    let x = 1;\n}\n";
+        assert_eq!(strip_line_comments(src), expected);
+    }
+    #[test]
+    fn strip_line_comments_comment_only_file_is_empty() {
+        let src = "// only a comment\n";
+        let expected = "";
+        assert_eq!(strip_line_comments(src), expected);
+    }
+    #[test]
+    fn strip_line_comments_whitespace_only_file_unchanged() {
+        let src = "   \n\t\n  \n";
+        assert_eq!(strip_line_comments(src), src);
+    }
+    #[test]
+    fn strip_line_comments_inline_drop_preserves_blank_line_below() {
+        let src = "let x = 1; // tail\n\nlet y = 2;\n";
+        let expected = "let x = 1;\n\nlet y = 2;\n";
+        assert_eq!(strip_line_comments(src), expected);
     }
 }
 #[cfg(test)]
