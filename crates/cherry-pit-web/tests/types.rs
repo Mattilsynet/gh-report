@@ -19,7 +19,7 @@
 
 use axum::Router;
 use cherry_pit_core::{Aggregate, CommandGateway, EventStore};
-use cherry_pit_web::{AppState, CommandRouter, build_router};
+use cherry_pit_web::{AppState, CommandRouter, LayerLimits, build_router};
 use serde::Serialize;
 
 fn assert_send<T: Send>() {}
@@ -54,7 +54,7 @@ where
     <G::Aggregate as Aggregate>::Event: Serialize,
     R: CommandRouter<Gateway = G> + Clone + Send + Sync + 'static,
 {
-    build_router(state, Router::new())
+    build_router(state, LayerLimits::permissive_for_tests(), Router::new())
 }
 
 #[test]

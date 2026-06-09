@@ -40,7 +40,7 @@ use cherry_pit_core::{
     StoreError,
 };
 use cherry_pit_web::errors::{ErrorEnvelope, map_dispatch_error, map_store_error};
-use cherry_pit_web::{AppState, CommandRouter, DispatchOutcome, build_router};
+use cherry_pit_web::{AppState, CommandRouter, DispatchOutcome, LayerLimits, build_router};
 use http_body_util::BodyExt;
 use serde::{Deserialize, Serialize};
 use tower::ServiceExt;
@@ -389,7 +389,7 @@ fn harness() -> Harness {
         std::sync::Arc::clone(&store),
         router.clone(),
     );
-    let app = build_router(state, Router::new());
+    let app = build_router(state, LayerLimits::permissive_for_tests(), Router::new());
     Harness { app, store, router }
 }
 

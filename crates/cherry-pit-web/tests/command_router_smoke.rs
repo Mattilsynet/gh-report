@@ -28,7 +28,7 @@ use cherry_pit_core::{
     StoreError,
 };
 use cherry_pit_web::errors::{ErrorEnvelope, map_dispatch_error};
-use cherry_pit_web::{AppState, CommandRouter, DispatchOutcome, build_router};
+use cherry_pit_web::{AppState, CommandRouter, DispatchOutcome, LayerLimits, build_router};
 use http_body_util::BodyExt;
 use serde::{Deserialize, Serialize};
 use tower::ServiceExt;
@@ -171,7 +171,7 @@ impl std::error::Error for RejectErr {}
 fn app() -> Router {
     let state: AppState<StubGateway, StubStore, StubRouter> =
         AppState::new(StubGateway, StubStore, StubRouter);
-    build_router(state, Router::new())
+    build_router(state, LayerLimits::permissive_for_tests(), Router::new())
 }
 
 async fn body_string(response: axum::response::Response) -> String {

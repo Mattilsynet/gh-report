@@ -7,27 +7,31 @@
 //! library boundary (CHE-0062:R3).
 //!
 //! - **`max_body_bytes`** — bounds inbound request body size. Realised
-//!   by `tower_http::limit::RequestBodyLimitLayer` attached inside
-//!   [`super::super::projection::build_projection_router`]. SEC-0003:R1
-//!   ("every allocation sized by external input has a configurable
-//!   maximum enforced before allocation").
+//!   by `tower_http::limit::RequestBodyLimitLayer` attached inside both
+//!   [`super::super::build_router`] (cqrs surface) and
+//!   [`super::super::projection::build_projection_router`] (read
+//!   surface). SEC-0003:R1 ("every allocation sized by external input
+//!   has a configurable maximum enforced before allocation").
 //! - **`max_inflight_requests`** — bounds in-flight HTTP requests with
 //!   **503-shedding semantics** (not queueing). Realised by
 //!   [`http_concurrency_limit`], a semaphore-`try_acquire` middleware
 //!   that returns `503 Service Unavailable` when the permit budget is
-//!   exhausted. SEC-0003:R3 ("backpressure mechanisms exist at every
-//!   ingestion point to shed load when capacity is exceeded"). Matches
-//!   the donor crate `gh-report`'s `infra::server::http_concurrency_limit`
-//!   shape byte-for-byte so the SEC-0003 falsifier tests at
+//!   exhausted. Attached on both routers. SEC-0003:R3 ("backpressure
+//!   mechanisms exist at every ingestion point to shed load when
+//!   capacity is exceeded"). Matches the donor crate `gh-report`'s
+//!   `infra::server::http_concurrency_limit` shape byte-for-byte so the
+//!   SEC-0003 falsifier tests at
 //!   `crates/gh-report/src/infra/server/server.rs:2164,:2209` continue
 //!   to observe the same accept/shed topology once Track 4.3 migrates
 //!   them onto this router.
 //! - **`max_ws_connections`** — bounds concurrent WebSocket upgrades.
 //!   Realised inside the WS upgrade handler via
 //!   `Arc<Semaphore>::try_acquire_owned` returning `503` on exhaustion;
-//!   the owned permit is held for the connection lifetime. SEC-0003:R3
-//!   route-scoped per CHE-0049:R3 + R11. Matches the donor's permit
-//!   discipline at `server.rs:3144,:3559`.
+//!   the owned permit is held for the connection lifetime. Attached on
+//!   the projection router only — the cqrs surface is HTTP-only per
+//!   CHE-0049:R3 and ignores this field. SEC-0003:R3 route-scoped per
+//!   CHE-0049:R3 + R11. Matches the donor's permit discipline at
+//!   `server.rs:3144,:3559`.
 //!
 //! ## No `Default`
 //!
@@ -142,16 +146,12 @@ impl LayerLimits {
 /// layer queues, which violates the "shed, don't queue" obligation in
 /// CHE-0062:R1.
 ///
-/// Wired via [`axum::middleware::from_fn`] in the router builder; the
-/// per-instance `Arc<Semaphore>` is captured by the closure so the
-/// permit pool lives for the router's lifetime.
-#[cfg_attr(
-    not(feature = "projection"),
-    expect(
-        dead_code,
-        reason = "CHE-0062 availability layer; consumed only by `projection::build_projection_router` (gated on the `projection` feature) per CHE-0062:R1. No in-file test exercises it. cfg_attr scopes #[expect]'s fail-closed semantic to the projection-off build where `dead_code` fires."
-    )
-)]
+/// Wired via [`axum::middleware::from_fn`] in
+/// [`super::super::build_router`] (cqrs surface) and
+/// [`super::super::projection::build_projection_router`] (read surface,
+/// gated on the `projection` feature). The per-instance
+/// `Arc<Semaphore>` is captured by the closure so the permit pool
+/// lives for the router's lifetime.
 pub(crate) async fn http_concurrency_limit(
     semaphore: Arc<Semaphore>,
     request: Request,
