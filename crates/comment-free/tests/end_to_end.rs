@@ -564,6 +564,10 @@ fn default_mode_is_lint() {
                /// w61 w62 w63 w64 w65 w66 w67 w68 w69 w70\n\
                /// w71 w72 w73 w74 w75 w76 w77 w78 w79 w80\n\
                /// w81 w82 w83 w84 w85 w86 w87 w88 w89 w90\n\
+               /// w91 w92 w93 w94 w95 w96 w97 w98 w99 w100\n\
+               /// w101 w102 w103 w104 w105 w106 w107 w108 w109 w110\n\
+               /// w111 w112 w113 w114 w115 w116 w117 w118 w119 w120\n\
+               /// w121 w122 w123 w124 w125 w126 w127 w128 w129 w130\n\
                pub fn f() {}\n";
     write(td.path(), "a.rs", doc);
     let out = Command::new(bin())
@@ -616,6 +620,10 @@ fn lint_over_budget_exits_four() {
                /// w61 w62 w63 w64 w65 w66 w67 w68 w69 w70\n\
                /// w71 w72 w73 w74 w75 w76 w77 w78 w79 w80\n\
                /// w81 w82 w83 w84 w85 w86 w87 w88 w89 w90\n\
+               /// w91 w92 w93 w94 w95 w96 w97 w98 w99 w100\n\
+               /// w101 w102 w103 w104 w105 w106 w107 w108 w109 w110\n\
+               /// w111 w112 w113 w114 w115 w116 w117 w118 w119 w120\n\
+               /// w121 w122 w123 w124 w125 w126 w127 w128 w129 w130\n\
                pub fn f() {}\n";
     write(td.path(), "a.rs", doc);
     let out = run_lint(td.path());
@@ -628,9 +636,9 @@ fn lint_over_budget_exits_four() {
         out.status.code()
     );
     assert!(stdout.contains("DOC_LINT\t"), "missing record:\n{stdout}");
-    assert!(stdout.contains("words=90"), "wrong words field:\n{stdout}");
+    assert!(stdout.contains("words=130"), "wrong words field:\n{stdout}");
     assert!(
-        stdout.contains("budget=80"),
+        stdout.contains("budget=120"),
         "wrong budget field:\n{stdout}"
     );
 }
@@ -646,6 +654,10 @@ fn lint_over_budget_emits_doctrine_message() {
                /// w61 w62 w63 w64 w65 w66 w67 w68 w69 w70\n\
                /// w71 w72 w73 w74 w75 w76 w77 w78 w79 w80\n\
                /// w81 w82 w83 w84 w85 w86 w87 w88 w89 w90\n\
+               /// w91 w92 w93 w94 w95 w96 w97 w98 w99 w100\n\
+               /// w101 w102 w103 w104 w105 w106 w107 w108 w109 w110\n\
+               /// w111 w112 w113 w114 w115 w116 w117 w118 w119 w120\n\
+               /// w121 w122 w123 w124 w125 w126 w127 w128 w129 w130\n\
                pub fn f() {}\n";
     write(td.path(), "a.rs", doc);
     let out = run_lint(td.path());
@@ -942,5 +954,106 @@ fn root_inside_crates_subtree_is_processed_directly() {
     assert!(
         stdout.contains("src/lib.rs"),
         "expected src/lib.rs WOULD_REWRITE when ROOT is inside crates/:\n{stdout}"
+    );
+}
+#[test]
+fn default_budget_is_120() {
+    let td = tempfile::tempdir().unwrap();
+    let exactly_120 = "/// w01 w02 w03 w04 w05 w06 w07 w08 w09 w10\n\
+                       /// w11 w12 w13 w14 w15 w16 w17 w18 w19 w20\n\
+                       /// w21 w22 w23 w24 w25 w26 w27 w28 w29 w30\n\
+                       /// w31 w32 w33 w34 w35 w36 w37 w38 w39 w40\n\
+                       /// w41 w42 w43 w44 w45 w46 w47 w48 w49 w50\n\
+                       /// w51 w52 w53 w54 w55 w56 w57 w58 w59 w60\n\
+                       /// w61 w62 w63 w64 w65 w66 w67 w68 w69 w70\n\
+                       /// w71 w72 w73 w74 w75 w76 w77 w78 w79 w80\n\
+                       /// w81 w82 w83 w84 w85 w86 w87 w88 w89 w90\n\
+                       /// w91 w92 w93 w94 w95 w96 w97 w98 w99 w100\n\
+                       /// w101 w102 w103 w104 w105 w106 w107 w108 w109 w110\n\
+                       /// w111 w112 w113 w114 w115 w116 w117 w118 w119 w120\n\
+                       pub fn f() {}\n";
+    write(td.path(), "boundary.rs", exactly_120);
+    let out = run_lint(td.path());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "120 words must equal the new default budget; expected exit 0, got {:?}\nstdout: {stdout}\nstderr: {stderr}",
+        out.status.code()
+    );
+    let over_by_one = "/// w01 w02 w03 w04 w05 w06 w07 w08 w09 w10\n\
+                       /// w11 w12 w13 w14 w15 w16 w17 w18 w19 w20\n\
+                       /// w21 w22 w23 w24 w25 w26 w27 w28 w29 w30\n\
+                       /// w31 w32 w33 w34 w35 w36 w37 w38 w39 w40\n\
+                       /// w41 w42 w43 w44 w45 w46 w47 w48 w49 w50\n\
+                       /// w51 w52 w53 w54 w55 w56 w57 w58 w59 w60\n\
+                       /// w61 w62 w63 w64 w65 w66 w67 w68 w69 w70\n\
+                       /// w71 w72 w73 w74 w75 w76 w77 w78 w79 w80\n\
+                       /// w81 w82 w83 w84 w85 w86 w87 w88 w89 w90\n\
+                       /// w91 w92 w93 w94 w95 w96 w97 w98 w99 w100\n\
+                       /// w101 w102 w103 w104 w105 w106 w107 w108 w109 w110\n\
+                       /// w111 w112 w113 w114 w115 w116 w117 w118 w119 w120\n\
+                       /// w121\n\
+                       pub fn g() {}\n";
+    let td2 = tempfile::tempdir().unwrap();
+    write(td2.path(), "over.rs", over_by_one);
+    let out2 = run_lint(td2.path());
+    let stdout2 = String::from_utf8_lossy(&out2.stdout);
+    let stderr2 = String::from_utf8_lossy(&out2.stderr);
+    assert_eq!(
+        out2.status.code(),
+        Some(4),
+        "121 words must exceed the default 120; expected exit 4, got {:?}\nstdout: {stdout2}\nstderr: {stderr2}",
+        out2.status.code()
+    );
+    assert!(
+        stdout2.contains("budget=120"),
+        "DOC_LINT line must surface budget=120 as the active default:\n{stdout2}"
+    );
+}
+#[test]
+fn lint_link_reference_definitions_excluded() {
+    let td = tempfile::tempdir().unwrap();
+    let mut doc = String::new();
+    doc.push_str("/// summary one two three four five\n");
+    doc.push_str("///\n");
+    for i in 1..=40 {
+        doc.push_str(&format!(
+            "/// [TAG-{i:04}]: https://example.test/spec/{i:04}\n"
+        ));
+    }
+    doc.push_str("pub fn f() {}\n");
+    write(td.path(), "a.rs", &doc);
+    let out = run_lint_budget(td.path(), 10);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "link-reference definition lines must not count toward prose budget; expected exit 0, got {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        out.status.code()
+    );
+    assert!(
+        !stdout.contains("DOC_LINT"),
+        "no DOC_LINT expected when only link-refs push total over budget:\n{stdout}"
+    );
+}
+#[test]
+fn lint_ordinary_inline_links_still_counted() {
+    let td = tempfile::tempdir().unwrap();
+    let doc = "/// see [docs](https://example.com) for one two three four five six seven\n\
+               pub fn f() {}\n";
+    write(td.path(), "a.rs", doc);
+    let out = run_lint_budget(td.path(), 5);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(4),
+        "inline-link prose must still be counted; expected exit 4:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("DOC_LINT\t") && stdout.contains("budget=5"),
+        "expected DOC_LINT with budget=5 against the inline-link prose:\n{stdout}"
     );
 }

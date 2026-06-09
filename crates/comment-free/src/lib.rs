@@ -713,11 +713,20 @@ fn cfg_attr_doc_payloads(attr: &Attribute) -> Vec<String> {
     }
     out
 }
-/// Count words in `doc_text`, excluding fenced code.
+/// Count words in `doc_text`, excluding fenced code and CommonMark
+/// reference-style link definitions (`[label]: target`).
 ///
-/// Recognises ` ``` ` and `~~~` fences. Fail-closed: if a fence opens but
-/// never closes, returns [`WordCount::FailClosed`] with a whole-text
-/// recount so a malformed doc cannot silently suppress budget checking.
+/// Recognises ` ``` ` and `~~~` fences. CommonMark/Markdown
+/// reference-style link definition lines — `[label]: <url>`, possibly
+/// indented — are skipped because they are URL bookkeeping, not prose.
+/// Ordinary inline links (`[label](target)`) and shortcut references
+/// (`[label]`) are still counted as one whitespace token each, because
+/// they are part of the prose body.
+///
+/// Fail-closed: if a fence opens but never closes, returns
+/// [`WordCount::FailClosed`] with a whole-text recount (link-ref lines
+/// included) so a malformed doc cannot silently suppress budget
+/// checking.
 fn prose_word_count(doc_text: &str) -> WordCount {
     let mut in_fence = false;
     let mut words = 0usize;
@@ -728,6 +737,9 @@ fn prose_word_count(doc_text: &str) -> WordCount {
             continue;
         }
         if in_fence {
+            continue;
+        }
+        if is_reference_definition(line) {
             continue;
         }
         words += line.split_whitespace().count();
@@ -1063,6 +1075,73 @@ mod doc_lint_tests {
         let findings = lint(&f, 40);
         assert_eq!(findings.len(), 1, "{findings:?}");
         assert_eq!(findings[0].item_label, "extern crate alloc");
+    }
+    #[test]
+    fn reference_style_link_definitions_excluded_from_word_count() {
+        let f: syn::File = parse_quote! {
+            #[doc = " summary one two three four five six seven eight"] #[doc = ""]
+            #[doc = " [CHE-0006:R1]: ../../docs/adr/cherry/CHE-0006-single-writer-assumption.md"]
+            #[doc = " [CHE-0024:R1]: ../../docs/adr/cherry/CHE-0024-event-delivery-model.md"]
+            #[doc = " [CHE-0032]: ../../docs/adr/cherry/CHE-0032-atomic-file-writes.md"]
+            pub fn foo() {}
+        };
+        let findings = lint(&f, 10);
+        assert!(
+            findings.is_empty(),
+            "link-reference definitions must not consume prose budget: {findings:?}"
+        );
+    }
+    #[test]
+    fn ordinary_inline_link_still_counted() {
+        let f: syn::File = parse_quote! {
+            #[doc = " see [docs](https://example.com) for one two three four five six"]
+            pub fn foo() {}
+        };
+        let findings = lint(&f, 5);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(
+            findings[0].word_count, 9,
+            "inline link counts as one whitespace token; total should be 9"
+        );
+    }
+    #[test]
+    fn ordinary_shortcut_link_still_counted() {
+        let f: syn::File = parse_quote! {
+            #[doc = " the [Type] applies to one two three four five six"]
+            pub fn foo() {}
+        };
+        let findings = lint(&f, 5);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(
+            findings[0].word_count, 10,
+            "shortcut link counts as one whitespace token; total should be 10"
+        );
+    }
+    #[test]
+    fn reference_definition_with_leading_whitespace_excluded() {
+        let f: syn::File = parse_quote! {
+            #[doc = " summary one two three four five six seven eight nine"]
+            #[doc = "   [tag]: https://example.com"]
+            pub fn foo() {}
+        };
+        let findings = lint(&f, 10);
+        assert!(
+            findings.is_empty(),
+            "indented link-reference definition must not consume budget: {findings:?}"
+        );
+    }
+    #[test]
+    fn reference_definition_inside_fenced_block_remains_excluded_by_fence() {
+        let f: syn::File = parse_quote! {
+            #[doc = " p01 p02 p03 p04 p05"] #[doc = " ```"]
+            #[doc = " [tag]: https://example.com"] #[doc = " arbitrary code body words here"]
+            #[doc = " ```"] pub fn foo() {}
+        };
+        let findings = lint(&f, 5);
+        assert!(
+            findings.is_empty(),
+            "fenced code (including its bracketed lines) must not consume budget: {findings:?}"
+        );
     }
 }
 /// Rewrite mechanically-safe Rust item links in `doc_text`.

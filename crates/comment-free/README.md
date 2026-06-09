@@ -48,10 +48,16 @@ example detection, and no rewriting of example content. Rendering, links, and
 formatting of example bodies remain the responsibility of `rustdoc`,
 `clippy`, and `rustfmt`.
 
+CommonMark/Markdown reference-style link definition lines (`[label]: url`,
+optionally indented) are also excluded from the prose word count — they are
+URL bookkeeping, not prose. Ordinary inline links (`[label](target)`) and
+shortcut references (`[label]`) are still counted as one whitespace token
+each, because they are part of the prose body.
+
 ```sh
 comment-free
 comment-free crates/foo
-comment-free --doc-max-words 120
+comment-free --doc-max-words 200
 comment-free --doc-max-words 60 crates/foo
 ```
 
@@ -111,7 +117,7 @@ comment-free --rewrite -n crates/foo
 | Flag                      | Mode      | Default | Notes                                              |
 |---------------------------|-----------|---------|----------------------------------------------------|
 | `ROOT` (positional)       | both      | `.`     | Must be a directory                                |
-| `--doc-max-words N`       | lint      | `80`    | Prose word budget; fenced code (``` or ~~~) excluded, 0-3 fenced examples allowed |
+| `--doc-max-words N`       | lint      | `120`   | Prose word budget; fenced code (``` or ~~~) and reference-style link definitions (`[label]: url`) excluded; 0-3 fenced examples allowed |
 | `--rewrite`               | rewrite   | off     | Switches to rewrite mode                           |
 | `--dry-run` / `-n`        | rewrite   | off     | Requires `--rewrite`; prints diffs, writes nothing |
 | `--context N`             | rewrite   | `3`     | Requires `--rewrite`; unified-diff context lines   |

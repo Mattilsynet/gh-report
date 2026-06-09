@@ -19,9 +19,13 @@ use walkdir::WalkDir;
                   Fenced code blocks (` ``` ` or `~~~`) are excluded from the count; the \
                   doctrine allows 0-3 such fenced examples per doc comment and they do not \
                   consume the word budget. Examples are detected mechanically by fence \
-                  delimiters only — there is no semantic example detection. Each finding is \
-                  followed by a DOC_LINT_MSG line carrying the project doctrine. Doc comments \
-                  are NEVER deleted by this tool.\n\
+                  delimiters only — there is no semantic example detection. \
+                  CommonMark/Markdown reference-style link definition lines (`[label]: url`, \
+                  optionally indented) are also excluded from the count; ordinary inline \
+                  links (`[label](target)`) and shortcut references (`[label]`) are still \
+                  counted as one whitespace token each. Each finding is followed by a \
+                  DOC_LINT_MSG line carrying the project doctrine. Doc comments are NEVER \
+                  deleted by this tool.\n\
                   \n\
                   `--rewrite` is a byte-preserving doc-only pass: mutates ONLY `///`, `//!`, \
                   `#[doc = \"...\"]`, `#![doc = \"...\"]`, and `#[cfg_attr(_, doc = \"...\")]` \
@@ -74,10 +78,11 @@ struct Options {
     #[arg(long, default_value_t = 3, value_name = "N", requires = "rewrite")]
     context: usize,
     /// Word budget for doc-comment prose. Fenced code blocks (` ``` `
-    /// or `~~~`) are excluded from the count; the doctrine allows 0-3
-    /// such fenced examples per doc comment and they do not consume
+    /// or `~~~`) and CommonMark reference-style link definition lines
+    /// (`[label]: url`) are excluded from the count; the doctrine allows
+    /// 0-3 such fenced examples per doc comment and they do not consume
     /// the budget.
-    #[arg(long, default_value_t = 80, value_name = "N")]
+    #[arg(long, default_value_t = 120, value_name = "N")]
     doc_max_words: usize,
 }
 fn main() -> ExitCode {
