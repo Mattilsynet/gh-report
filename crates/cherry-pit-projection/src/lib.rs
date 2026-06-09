@@ -3,13 +3,14 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::fs::File;
 use std::marker::PhantomData;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use cherry_pit_core::{
     AggregateId, CorrelationContext, ErrorCategory, EventEnvelope, EventStore, Projection,
@@ -176,6 +177,34 @@ pub struct FileProjectionStore<P> {
     /// `Arc` so cloned instances share lock state — clones represent the
     /// same backend identity and must not self-contend.
     lock: Arc<OnceLock<File>>,
+    /// Serialises concurrent first-time acquirers of [`Self::lock`]
+    /// (two clones calling a mutating method simultaneously before the
+    /// `OnceLock` is set would otherwise race on `try_lock`, with the
+    /// loser falsely surfacing [`ProjectionError::StoreLocked`]). After
+    /// the `OnceLock` is set the gate is no longer taken — the fast
+    /// path returns from [`Self::acquire_lock`] without entering the
+    /// blocking section. Wrapped in `Arc` so clones share state.
+    acquire_gate: Arc<StdMutex<()>>,
+    /// Per-aggregate in-process write locks per CHE-0048:R7. Maps each
+    /// active `aggregate_id` to a `tokio::sync::Mutex` held across the
+    /// whole `persist` / `delete` / `rebuild_file` critical section so
+    /// two concurrent in-process tasks targeting the **same** aggregate
+    /// serialise their writes (the deterministic temp-file name would
+    /// otherwise race on the rename). Distinct `aggregate_id`s receive
+    /// distinct locks and proceed in parallel; cross-aggregate
+    /// non-interference is additionally enforced by the aggregate-
+    /// scoped orphan-tmp sweep (see [`Self::sweep_orphan_tmp`]).
+    ///
+    /// Registry is a `std::sync::Mutex<HashMap<_, Arc<tokio::sync::Mutex<_>>>>`:
+    /// the outer std-mutex is held only for the lookup-or-insert
+    /// (microseconds, never across an `await`); the inner tokio-mutex
+    /// is the per-aggregate critical section held across the I/O
+    /// `await`s. The registry is never pruned — per-aggregate locks
+    /// outlive any individual call and are reused on the next write
+    /// for the same aggregate, mirroring `Arc<OnceLock<File>>`'s share-
+    /// across-clones pattern (clones of a `FileProjectionStore` are
+    /// the same backend identity per CHE-0048:R6).
+    aggregate_locks: Arc<StdMutex<HashMap<AggregateId, Arc<tokio::sync::Mutex<()>>>>>,
     _projection: PhantomData<fn() -> P>,
 }
 
@@ -200,6 +229,8 @@ impl<P> FileProjectionStore<P> {
             dir: dir.into(),
             projection_name: projection_name.into(),
             lock: Arc::new(OnceLock::new()),
+            acquire_gate: Arc::new(StdMutex::new(())),
+            aggregate_locks: Arc::new(StdMutex::new(HashMap::new())),
             _projection: PhantomData,
         }
     }
@@ -247,6 +278,15 @@ impl<P> FileProjectionStore<P> {
     /// on the same instance (or any clone, since the `OnceLock` is shared
     /// via `Arc`) are no-ops. Returns [`ProjectionError::StoreLocked`]
     /// (CHE-0043:R3) when contended.
+    ///
+    /// Concurrent first-time acquirers (two clones of the same
+    /// `FileProjectionStore` calling `persist` simultaneously before
+    /// the `OnceLock` is set) are serialised by the
+    /// `aggregate_locks` registry mutex used as a coarse gate: only
+    /// one acquirer at a time enters the `try_lock` path, so the
+    /// second's `try_lock` does not falsely race against the first's
+    /// in-flight file-handle. After the `OnceLock` is set the fast
+    /// path returns without taking any mutex.
     async fn acquire_lock(&self) -> ProjectionResult<()> {
         if self.lock.get().is_some() {
             return Ok(());
@@ -254,9 +294,14 @@ impl<P> FileProjectionStore<P> {
         let dir = self.dir.clone();
         let path = self.lock_path();
         let lock = Arc::clone(&self.lock);
+        let gate = Arc::clone(&self.acquire_gate);
         tokio::task::spawn_blocking(move || -> ProjectionResult<()> {
             std::fs::create_dir_all(&dir)
                 .map_err(|e| ProjectionError::Infrastructure(Box::new(e)))?;
+            let _gate = gate.lock().expect("acquire_gate poisoned");
+            if lock.get().is_some() {
+                return Ok(());
+            }
             let file = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -279,21 +324,64 @@ impl<P> FileProjectionStore<P> {
         .map_err(|e| ProjectionError::Infrastructure(Box::new(e)))?
     }
 
-    /// CHE-0047:R1 — remove orphaned `*.tmp` files from the store
-    /// directory before the next mutation. Conservative semantics: a
-    /// `.tmp` file is removed only when its corresponding non-tmp
-    /// companion (`.tmp` → `.msgpack`) is absent — i.e. the
-    /// previous `temp-file-then-rename` cycle crashed between write
-    /// and rename. A `.tmp` whose companion exists is left in place
-    /// because it may belong to a concurrent writer (defensive even
-    /// though CHE-0043 fencing should already exclude that case).
+    /// Look up the per-aggregate write lock for `aggregate_id`,
+    /// inserting a fresh `tokio::sync::Mutex` if this is the first
+    /// write for the aggregate. Per CHE-0048:R7 the returned mutex is
+    /// held across the entire `persist` / `delete` / `rebuild_file`
+    /// critical section so two concurrent in-process callers targeting
+    /// the **same** aggregate serialise their writes.
     ///
-    /// Called from `persist` and `rebuild_file` (via `project_to_file`)
-    /// at scoped call sites — not from the constructor — so the sweep
-    /// runs only when a mutation is imminent. The store directory is
-    /// created lazily on lock acquisition; absence of the directory at
-    /// sweep time is a no-op.
-    async fn sweep_orphan_tmp(&self) -> ProjectionResult<()> {
+    /// The outer `std::sync::Mutex` on the registry is held only for
+    /// the lookup-or-insert (microseconds, never across an `await`).
+    /// The inner `tokio::sync::Mutex` is the actual per-aggregate lock.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the registry mutex is poisoned — only possible if a
+    /// previous registry access panicked, which would indicate an
+    /// unrecoverable backend-wide failure.
+    fn aggregate_lock(&self, aggregate_id: AggregateId) -> Arc<tokio::sync::Mutex<()>> {
+        let mut registry = self
+            .aggregate_locks
+            .lock()
+            .expect("aggregate-lock registry mutex poisoned");
+        Arc::clone(
+            registry
+                .entry(aggregate_id)
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
+    }
+
+    /// CHE-0047:R1 + CHE-0048:R7 — remove orphaned `*.tmp` files
+    /// belonging to **this aggregate** before the next mutation for
+    /// the same aggregate. Conservative semantics: a `.tmp` file is
+    /// removed only when its corresponding non-tmp companion
+    /// (`.tmp` → `.msgpack`) is absent — i.e. the previous
+    /// `temp-file-then-rename` cycle crashed between write and rename.
+    /// A `.tmp` whose companion exists is left in place because it
+    /// may belong to an in-flight retry by the same aggregate's
+    /// previous call (defensive — the per-aggregate lock should
+    /// already exclude that case).
+    ///
+    /// **Aggregate-scoped sweep (CHE-0048:R7):** only `.tmp` files
+    /// whose filename begins with `{aggregate_id}-` are eligible.
+    /// The on-disk naming convention is
+    /// `{aggregate_id}-{projection_name}.{snapshot|checkpoint}.tmp`,
+    /// so every tmp belonging to this aggregate starts with the
+    /// integer aggregate id followed by `-`. Tmp files for other
+    /// aggregates (different prefix) are left untouched — without
+    /// this scope a `persist` call for aggregate A would reap a
+    /// concurrent in-flight tmp belonging to aggregate B (the
+    /// directory-wide sweep race that motivated CHE-0048:R7 in the
+    /// first place).
+    ///
+    /// Called from `persist`, `delete`, and `rebuild_file` at scoped
+    /// call sites — not from the constructor — so the sweep runs
+    /// only when a mutation for this aggregate is imminent. The
+    /// store directory is created lazily on lock acquisition;
+    /// absence of the directory at sweep time is a no-op.
+    async fn sweep_orphan_tmp(&self, aggregate_id: AggregateId) -> ProjectionResult<()> {
+        let prefix = format!("{}-", aggregate_id.get());
         let mut entries = match tokio::fs::read_dir(&self.dir).await {
             Ok(entries) => entries,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -307,6 +395,13 @@ impl<P> FileProjectionStore<P> {
             let Some(entry) = next else { break };
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("tmp") {
+                continue;
+            }
+            let belongs_to_target = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(&prefix));
+            if !belongs_to_target {
                 continue;
             }
             let companion = path.with_extension("msgpack");
@@ -393,7 +488,9 @@ where
         last_sequence: NonZeroU64,
     ) -> ProjectionResult<()> {
         self.acquire_lock().await?;
-        self.sweep_orphan_tmp().await?;
+        let agg_lock = self.aggregate_lock(aggregate_id);
+        let _guard = agg_lock.lock().await;
+        self.sweep_orphan_tmp(aggregate_id).await?;
         let snapshot = rmp_serde::encode::to_vec_named(projection)
             .map_err(|e| ProjectionError::Infrastructure(Box::new(e)))?;
         write_atomic(&self.snapshot_path(aggregate_id), snapshot).await?;
@@ -533,6 +630,8 @@ where
     )]
     async fn delete_inner(&self, aggregate_id: AggregateId) -> ProjectionResult<()> {
         self.acquire_lock().await?;
+        let agg_lock = self.aggregate_lock(aggregate_id);
+        let _guard = agg_lock.lock().await;
         remove_if_exists(self.checkpoint_path(aggregate_id)).await?;
         sync_dir(&self.dir).await?;
         tracing::info!(
@@ -854,7 +953,6 @@ where
         P: Serialize + DeserializeOwned + Clone,
     {
         backend.acquire_lock().await?;
-        backend.sweep_orphan_tmp().await?;
         backend.delete(aggregate_id).await?;
         self.project_to_file(aggregate_id, correlation, backend)
             .await
@@ -1230,9 +1328,12 @@ mod tests {
     }
 
     /// CHE-0047:R1 — orphan `.tmp` files from a previous crashed
-    /// rename cycle are swept before the next mutation. Stale
-    /// `*.tmp` whose `*.msgpack` companion is absent must be removed
-    /// at the top of `persist`.
+    /// rename cycle belonging to **this aggregate** are swept before
+    /// the next mutation. Stale `*.tmp` whose `*.msgpack` companion is
+    /// absent must be removed at the top of `persist` *if and only if*
+    /// the tmp belongs to the target aggregate (CHE-0048:R7 aggregate-
+    /// scoped sweep). A different aggregate's orphan tmp is left
+    /// untouched — that aggregate's own next `persist` will reap it.
     #[tokio::test]
     async fn che_0047_r1_orphan_tmp_swept_on_next_persist() {
         let id = aggregate_id(1);
@@ -1258,8 +1359,14 @@ mod tests {
             .await
             .expect("persist after sweep");
 
-        assert!(!stale_tmp.exists(), "stale tmp removed by sweep");
-        assert!(!other.exists(), "sibling stale tmp also removed");
+        assert!(
+            !stale_tmp.exists(),
+            "stale tmp removed by aggregate-scoped sweep"
+        );
+        assert!(
+            other.exists(),
+            "aggregate-scoped sweep (CHE-0048:R7) must leave other aggregates' tmps untouched"
+        );
         assert!(backend.snapshot_path(id).exists(), "new snapshot written");
         assert!(
             backend.checkpoint_path(id).exists(),
@@ -1530,6 +1637,134 @@ mod tests {
 
                 assert_eq!(first, second);
                 assert_eq!(first.total, count);
+            });
+        }
+
+        /// CHE-0048:R7 — two concurrent in-process `persist` calls
+        /// targeting **distinct** aggregates on the same store
+        /// directory must not race on each other's tmps. The pre-fix
+        /// directory-wide `sweep_orphan_tmp` would reap any orphan
+        /// tmp regardless of which aggregate it belonged to;
+        /// aggregate A's persist could therefore wipe aggregate B's
+        /// in-flight tmp out from under aggregate B's atomic rename.
+        /// Post-fix the sweep is scoped to the target aggregate's
+        /// filename prefix and the per-aggregate lock serialises
+        /// same-aggregate writes — distinct-aggregate writes
+        /// proceed in parallel without interference.
+        ///
+        /// Deterministic shape: rather than racing real tasks (flaky),
+        /// each iteration plants an orphan tmp for aggregate B,
+        /// runs `persist(A)`, then asserts B's orphan survives and
+        /// A's snapshot+checkpoint exist. Then runs `persist(B)` and
+        /// asserts B reaps its **own** orphan.
+        #[test]
+        fn che_0048_r7_aggregate_scoped_sweep_does_not_reap_other_aggregates_tmps(
+            a in 1_u64..1_000,
+            b in 1_u64..1_000,
+        ) {
+            proptest::prop_assume!(a != b);
+            let rt = tokio::runtime::Runtime::new().expect("runtime");
+            rt.block_on(async move {
+                let id_a = aggregate_id(a);
+                let id_b = aggregate_id(b);
+                let dir = tempfile::tempdir().expect("tempdir");
+                let backend = FileProjectionStore::<CounterView>::new(dir.path(), "counter");
+
+                tokio::fs::create_dir_all(dir.path())
+                    .await
+                    .expect("ensure dir");
+                let b_orphan = backend.snapshot_path(id_b).with_extension("tmp");
+                tokio::fs::write(&b_orphan, b"b in-flight tmp")
+                    .await
+                    .expect("plant b orphan");
+
+                backend
+                    .persist(id_a, &CounterView { total: 1 }, seq(1))
+                    .await
+                    .expect("persist a");
+
+                assert!(
+                    b_orphan.exists(),
+                    "aggregate B's tmp must survive aggregate A's sweep \
+                     (aggregate-scoped sweep per CHE-0048:R7)"
+                );
+                assert!(backend.snapshot_path(id_a).exists(), "a snapshot written");
+                assert!(backend.checkpoint_path(id_a).exists(), "a checkpoint written");
+
+                backend
+                    .persist(id_b, &CounterView { total: 2 }, seq(2))
+                    .await
+                    .expect("persist b");
+
+                assert!(
+                    !b_orphan.exists(),
+                    "aggregate B's own next persist reaps its own orphan"
+                );
+                assert!(backend.snapshot_path(id_b).exists(), "b snapshot written");
+                assert!(backend.checkpoint_path(id_b).exists(), "b checkpoint written");
+            });
+        }
+
+        /// CHE-0048:R7 — concurrent `persist` for distinct aggregates
+        /// on the same store directory completes without interleaving
+        /// errors. Spawns two tasks, joins, asserts both observations
+        /// (snapshot + checkpoint files) hold.
+        #[test]
+        fn che_0048_r7_concurrent_persists_distinct_aggregates_both_succeed(
+            a in 1_u64..1_000,
+            b in 1_u64..1_000,
+        ) {
+            proptest::prop_assume!(a != b);
+            let rt = tokio::runtime::Runtime::new()
+                .expect("runtime");
+            rt.block_on(async move {
+                let id_a = aggregate_id(a);
+                let id_b = aggregate_id(b);
+                let dir = tempfile::tempdir().expect("tempdir");
+                let backend = FileProjectionStore::<CounterView>::new(dir.path(), "counter");
+
+                let backend_a = backend.clone();
+                let backend_b = backend.clone();
+                let task_a = tokio::spawn(async move {
+                    backend_a
+                        .persist(id_a, &CounterView { total: 11 }, seq(11))
+                        .await
+                });
+                let task_b = tokio::spawn(async move {
+                    backend_b
+                        .persist(id_b, &CounterView { total: 22 }, seq(22))
+                        .await
+                });
+                let (ra, rb) = tokio::join!(task_a, task_b);
+                ra.expect("task a join").expect("persist a");
+                rb.expect("task b join").expect("persist b");
+
+                assert_eq!(
+                    backend.load_snapshot(id_a).await.expect("load a"),
+                    Some(CounterView { total: 11 })
+                );
+                assert_eq!(
+                    backend.load_snapshot(id_b).await.expect("load b"),
+                    Some(CounterView { total: 22 })
+                );
+                assert_eq!(
+                    backend
+                        .load_checkpoint(id_a)
+                        .await
+                        .expect("load checkpoint a")
+                        .expect("checkpoint a exists")
+                        .last_sequence(),
+                    seq(11)
+                );
+                assert_eq!(
+                    backend
+                        .load_checkpoint(id_b)
+                        .await
+                        .expect("load checkpoint b")
+                        .expect("checkpoint b exists")
+                        .last_sequence(),
+                    seq(22)
+                );
             });
         }
     }
