@@ -327,8 +327,10 @@ struct ProjectionState<P> {
     /// `FileProjectionStore`).
     snapshots: HashMap<AggregateId, P>,
     /// Last applied sequence per aggregate, paired with the snapshot.
-    /// Mirrors `ProjectionCheckpoint::last_sequence`.
-    checkpoints: HashMap<AggregateId, u64>,
+    /// Mirrors `ProjectionCheckpoint::last_sequence` — `NonZeroU64`
+    /// because sequence numbers start at 1 and a checkpoint exists
+    /// only when at least one event has been folded.
+    checkpoints: HashMap<AggregateId, NonZeroU64>,
 }
 
 impl<P> InMemoryProjectionStore<P>
@@ -370,7 +372,7 @@ where
     ///
     /// # Panics
     /// Panics if the internal mutex is poisoned. Test-only code path.
-    pub fn load_checkpoint(&self, aggregate_id: AggregateId) -> Option<u64> {
+    pub fn load_checkpoint(&self, aggregate_id: AggregateId) -> Option<NonZeroU64> {
         self.state
             .lock()
             .expect("InMemoryProjectionStore mutex poisoned")
@@ -390,7 +392,7 @@ where
     ///
     /// # Panics
     /// Panics if the internal mutex is poisoned. Test-only code path.
-    pub fn persist(&self, aggregate_id: AggregateId, projection: P, last_sequence: u64) {
+    pub fn persist(&self, aggregate_id: AggregateId, projection: P, last_sequence: NonZeroU64) {
         let mut state = self
             .state
             .lock()
@@ -1124,9 +1126,10 @@ mod tests {
     fn projection_store_persist_then_load_roundtrips() {
         let s: InMemoryProjectionStore<CounterView> = InMemoryProjectionStore::new("counter");
         let id = AggregateId::new(NonZeroU64::new(1).unwrap());
-        s.persist(id, CounterView { total: 5 }, 5);
+        let five = NonZeroU64::new(5).unwrap();
+        s.persist(id, CounterView { total: 5 }, five);
         assert_eq!(s.load_snapshot(id), Some(CounterView { total: 5 }));
-        assert_eq!(s.load_checkpoint(id), Some(5));
+        assert_eq!(s.load_checkpoint(id), Some(five));
         assert_eq!(s.projection_name(), "counter");
     }
 
@@ -1134,7 +1137,7 @@ mod tests {
     fn projection_store_delete_removes_snapshot_and_checkpoint() {
         let s: InMemoryProjectionStore<CounterView> = InMemoryProjectionStore::new("counter");
         let id = AggregateId::new(NonZeroU64::new(1).unwrap());
-        s.persist(id, CounterView { total: 3 }, 3);
+        s.persist(id, CounterView { total: 3 }, NonZeroU64::new(3).unwrap());
         s.delete(id);
         assert!(s.load_snapshot(id).is_none());
         assert!(s.load_checkpoint(id).is_none());

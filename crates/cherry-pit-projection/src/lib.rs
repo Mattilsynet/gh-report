@@ -7,6 +7,7 @@ use std::error::Error;
 use std::fmt;
 use std::fs::File;
 use std::marker::PhantomData;
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -155,14 +156,15 @@ pub use cherry_pit_core::ProjectionCheckpoint;
 /// let dir = tempfile::tempdir().unwrap();
 /// let store = FileProjectionStore::<CounterView>::new(dir.path(), "counter_view");
 /// let id = AggregateId::new(NonZeroU64::new(1).unwrap());
+/// let four = NonZeroU64::new(4).unwrap();
 ///
-/// store.persist(id, &CounterView { total: 4 }, 4).await.unwrap();
+/// store.persist(id, &CounterView { total: 4 }, four).await.unwrap();
 ///
 /// let snapshot = store.load_snapshot(id).await.unwrap();
 /// assert_eq!(snapshot, Some(CounterView { total: 4 }));
 ///
 /// let checkpoint = store.load_checkpoint(id).await.unwrap().unwrap();
-/// assert_eq!(checkpoint.last_sequence(), 4);
+/// assert_eq!(checkpoint.last_sequence(), four);
 /// # });
 /// ```
 #[derive(Debug, Clone)]
@@ -369,7 +371,7 @@ where
         &self,
         aggregate_id: AggregateId,
         projection: &P,
-        last_sequence: u64,
+        last_sequence: NonZeroU64,
     ) -> ProjectionResult<()> {
         self.persist_inner(aggregate_id, projection, last_sequence)
             .await
@@ -381,14 +383,14 @@ where
         fields(
             aggregate_id = %aggregate_id.get(),
             projection_name = %self.projection_name,
-            last_sequence,
+            last_sequence = last_sequence.get(),
         ),
     )]
     async fn persist_inner(
         &self,
         aggregate_id: AggregateId,
         projection: &P,
-        last_sequence: u64,
+        last_sequence: NonZeroU64,
     ) -> ProjectionResult<()> {
         self.acquire_lock().await?;
         self.sweep_orphan_tmp().await?;
@@ -748,7 +750,7 @@ where
         &self,
         aggregate_id: AggregateId,
         correlation: &cherry_pit_core::CorrelationContext,
-    ) -> ProjectionResult<(P, u64)> {
+    ) -> ProjectionResult<(P, Option<NonZeroU64>)> {
         let stream = self
             .store
             .load(aggregate_id)
@@ -766,7 +768,7 @@ where
             );
             projection.apply(event);
         }
-        let last_sequence = stream.last().map_or(0, |e| e.sequence().get());
+        let last_sequence = stream.last().map(EventEnvelope::sequence);
         Ok((projection, last_sequence))
     }
 
@@ -808,9 +810,9 @@ where
         P: Serialize + DeserializeOwned + Clone,
     {
         let (projection, last_sequence) = self.replay_inner(aggregate_id, correlation).await?;
-        backend
-            .persist(aggregate_id, &projection, last_sequence)
-            .await?;
+        if let Some(seq) = last_sequence {
+            backend.persist(aggregate_id, &projection, seq).await?;
+        }
         Ok(projection)
     }
 
@@ -1118,6 +1120,10 @@ mod tests {
         AggregateId::new(NonZeroU64::new(value).expect("non-zero id"))
     }
 
+    fn seq(value: u64) -> NonZeroU64 {
+        NonZeroU64::new(value).expect("non-zero sequence")
+    }
+
     fn envelope(id: AggregateId, sequence: u64) -> EventEnvelope<CounterEvent> {
         EventEnvelope::new(
             uuid::Uuid::now_v7(),
@@ -1165,7 +1171,10 @@ mod tests {
         let backend = FileProjectionStore::<CounterView>::new(dir.path(), "counter");
         let projection = CounterView { total: 7 };
 
-        backend.persist(id, &projection, 3).await.expect("persist");
+        backend
+            .persist(id, &projection, seq(3))
+            .await
+            .expect("persist");
 
         assert!(backend.snapshot_path(id).exists());
         assert!(backend.checkpoint_path(id).exists());
@@ -1178,7 +1187,7 @@ mod tests {
             .await
             .expect("checkpoint")
             .expect("checkpoint exists");
-        assert_eq!(checkpoint.last_sequence(), 3);
+        assert_eq!(checkpoint.last_sequence(), seq(3));
         assert_eq!(checkpoint.projection_name(), "counter");
     }
 
@@ -1193,12 +1202,12 @@ mod tests {
         let second = FileProjectionStore::<CounterView>::new(dir.path(), "counter");
 
         first
-            .persist(id, &CounterView { total: 1 }, 1)
+            .persist(id, &CounterView { total: 1 }, seq(1))
             .await
             .expect("first persist");
 
         let err = second
-            .persist(id, &CounterView { total: 2 }, 2)
+            .persist(id, &CounterView { total: 2 }, seq(2))
             .await
             .expect_err("second persist must contend");
         assert!(matches!(err, ProjectionError::StoreLocked));
@@ -1213,7 +1222,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let first = FileProjectionStore::<CounterView>::new(dir.path(), "counter");
         first
-            .persist(aggregate_id(1), &CounterView { total: 1 }, 1)
+            .persist(aggregate_id(1), &CounterView { total: 1 }, seq(1))
             .await
             .expect("first persist");
 
@@ -1245,7 +1254,7 @@ mod tests {
             .expect("plant other stale");
 
         backend
-            .persist(id, &CounterView { total: 9 }, 9)
+            .persist(id, &CounterView { total: 9 }, seq(9))
             .await
             .expect("persist after sweep");
 
@@ -1276,7 +1285,7 @@ mod tests {
         let backend = FileProjectionStore::<CounterView>::new(dir.path(), "counter");
 
         backend
-            .persist(id, &CounterView { total: 1 }, 1)
+            .persist(id, &CounterView { total: 1 }, seq(1))
             .await
             .expect("initial persist");
 
@@ -1290,7 +1299,7 @@ mod tests {
             .expect("plant live tmp");
 
         backend
-            .persist(id, &CounterView { total: 2 }, 2)
+            .persist(id, &CounterView { total: 2 }, seq(2))
             .await
             .expect("second persist");
 
@@ -1329,7 +1338,7 @@ mod tests {
             .await
             .expect("initial projection");
         backend
-            .persist(id, &CounterView { total: 999 }, 999)
+            .persist(id, &CounterView { total: 999 }, seq(999))
             .await
             .expect("overwrite stale state");
         let rebuilt = driver
@@ -1349,7 +1358,7 @@ mod tests {
                 .expect("checkpoint")
                 .expect("checkpoint exists")
                 .last_sequence(),
-            2
+            seq(2)
         );
     }
 
@@ -1388,7 +1397,7 @@ mod tests {
                         .expect("checkpoint")
                         .expect("checkpoint exists")
                         .last_sequence(),
-                    count
+                    seq(count)
                 );
             });
         }
@@ -1423,11 +1432,11 @@ mod tests {
                 let backend = FileProjectionStore::<CounterView>::new(dir.path(), "counter");
 
                 backend
-                    .persist(id, &CounterView { total: first }, first)
+                    .persist(id, &CounterView { total: first }, seq(first))
                     .await
                     .expect("first persist");
                 backend
-                    .persist(id, &CounterView { total: second }, second)
+                    .persist(id, &CounterView { total: second }, seq(second))
                     .await
                     .expect("second persist");
 
@@ -1436,7 +1445,7 @@ mod tests {
                     .await
                     .expect("load checkpoint")
                     .expect("checkpoint exists");
-                assert_eq!(checkpoint.last_sequence(), second);
+                assert_eq!(checkpoint.last_sequence(), seq(second));
                 assert_eq!(
                     backend.load_snapshot(id).await.expect("load snapshot"),
                     Some(CounterView { total: second })
