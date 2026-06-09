@@ -1,7 +1,8 @@
-//! Pure logic for the `comment-free` tool: byte-preserving doc-payload rewrite, and doc-comment budget linter.
+//! Pure logic for the `comment-free` tool: parse, re-emit, lint doc-comment budget.
 #![forbid(unsafe_code)]
 #![warn(clippy::pedantic)]
 #![warn(clippy::missing_const_for_fn)]
+use ra_ap_rustc_lexer::{FrontmatterAllowed, TokenKind, tokenize};
 use similar::{ChangeTag, TextDiff};
 use std::fmt::Write as _;
 use std::fs;
@@ -12,15 +13,44 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{Attribute, File, Meta, Token};
 use walkdir::WalkDir;
-/// Doctrine warning emitted alongside every doc-budget finding.
+/// Doctrine warning emitted on the `DOC_LINT_HEADER` for every kind.
 pub const DOC_LINT_DOCTRINE_MSG: &str = "Rust docs must contain a concise summary, optionally 0-3 clear code examples (fenced ``` or ~~~ blocks), and sections explaining edge cases like panics, errors, and safety. Fenced code examples are excluded from the prose word length. If applicable references to ADRs must be given.";
+/// Stable record-format version emitted on every `DOC_LINT_HEADER`,
+/// `DOC_LINT_HINT`, and `DOC_LINT_TRUNCATED` line as `v=<N>`. Consumers
+/// reject records whose `v=` is greater than the version they understand;
+/// bumped on any incompatible field-shape change.
+pub const DOC_LINT_RECORD_VERSION: u32 = 1;
+/// Grammar of the structured lint records emitted in default lint mode,
+/// in BNF-ish form. Stable across patch versions for a fixed
+/// [`DOC_LINT_RECORD_VERSION`]; intended for external agent parsers and
+/// for the binary's `--help` output.
+///
+/// Tab characters (`\t`) separate fields; every record terminates with
+/// `\n`. Field order is fixed.
+///
+/// ```text
+/// DOC_LINT_HEADER\tkind=<KIND>\tv=<N>\tdoctrine=<STRING>\n
+/// DOC_LINT_HINT\t<PATH>:<LINE>\titem=<LABEL>\twords=<U32>\tbudget=<U32>\tkind=<KIND>\tv=<N>\n
+/// DOC_LINT_TRUNCATED\tkind=<KIND>\tremaining=<U32>\tv=<N>\n
+/// ```
+///
+/// Today `<KIND>` is always `overlong_doc`; new finding kinds emit
+/// their own `DOC_LINT_HEADER` and a separate run of `DOC_LINT_HINT`
+/// records. `<PATH>` is the path as walked by the tool and may contain
+/// path separators; `<LABEL>` is human-readable and may contain spaces
+/// but never a tab. Hints are sorted by `(words - budget)` descending
+/// before the cap of 50 records per kind is applied.
+pub const DOC_LINT_RECORD_GRAMMAR: &str = "\
+DOC_LINT_HEADER\\tkind=<KIND>\\tv=<N>\\tdoctrine=<STRING>\\n
+DOC_LINT_HINT\\t<PATH>:<LINE>\\titem=<LABEL>\\twords=<U32>\\tbudget=<U32>\\tkind=<KIND>\\tv=<N>\\n
+DOC_LINT_TRUNCATED\\tkind=<KIND>\\tremaining=<U32>\\tv=<N>\\n";
 /// All terminal-error variants raised by the `comment-free` binary.
 #[derive(Debug, thiserror::Error)]
 pub enum CommentFreeError {
     /// ROOT path passed on the CLI is not a directory.
     #[error("ROOT is not a directory")]
     NotADirectory,
-    /// Generic IO error surfaced from `std::io`.
+    /// Generic IO error surfaced from [`std::io`].
     #[error("io error: {0}")]
     Io(#[from] io::Error),
     /// Doc-lint violation: at least one `DOC_LINT` finding emitted under default lint mode.
@@ -44,25 +74,30 @@ pub enum FileOutcome {
     ParseError(String),
     IoError(String),
 }
-/// Knobs `process_file` reads. `main.rs`'s clap `Options` is intentionally a
+/// Knobs [`process_file`] reads. `main.rs`'s clap `Options` is intentionally a
 /// superset; this trims the surface to what the pure logic actually needs.
 pub struct ProcessOptions {
     pub dry_run: bool,
     pub context: usize,
 }
-/// Byte-preserving rewrite pass for doc-comment and doc-attribute
-/// payloads.
+/// Process `path`: doc-comment link-idiom canonicalisation + lexer-based
+/// non-doc comment strip. Both passes are byte-preserving outside their
+/// targets; code formatting and whitespace outside comments are untouched.
 ///
-/// Mutates ONLY `///`, `//!`, `#[doc = "..."]`, `#![doc = "..."]`, and
-/// `#[cfg_attr(_, doc = "...")]` payload text via
-/// [`rewrite_rustdoc_link_idioms`]. Every byte outside a doc surface
-/// (non-doc `//`, `/* */`, block doc comments `/** */`, whitespace,
-/// attribute placement) is preserved verbatim. `rustfmt` is not invoked.
+/// Returns:
 ///
-/// Per item, contiguous runs of line docs and unconditional
-/// `#[doc = "..."]` attributes join with `\n`, transform once via
-/// [`rewrite_rustdoc_link_idioms`], then split back; `cfg_attr`
-/// payloads transform in isolation.
+/// - [`FileOutcome::Rewritten`] when the file content changed (with a
+///   unified diff in `dry_run` mode, `None` otherwise).
+/// - [`FileOutcome::Unchanged`] when neither pass produced bytes that
+///   differ from the input.
+/// - [`FileOutcome::ParseError`] when the syn parse required for the
+///   doc-link pass fails. The file is left untouched on disk.
+/// - [`FileOutcome::IoError`] for any I/O failure.
+///
+/// Stripped: ordinary `//` line comments and `/* */` block comments.
+/// Preserved: doc comments (`///`, `//!`, `/** */`, `/*! */`),
+/// `// SAFETY:` / `// SAFETY` lines, and lines containing
+/// `AUTO-TRAIT-POLICY-BEGIN` / `AUTO-TRAIT-POLICY-END` markers.
 #[must_use]
 pub fn process_file(path: &Path, opts: &ProcessOptions) -> FileOutcome {
     let original = match fs::read_to_string(path) {
@@ -74,10 +109,12 @@ pub fn process_file(path: &Path, opts: &ProcessOptions) -> FileOutcome {
         Err(e) => return FileOutcome::ParseError(e.to_string()),
     };
     let splices = collect_doc_splices(&ast, &original);
-    if splices.is_empty() {
-        return FileOutcome::Unchanged;
-    }
-    let rewritten = apply_splices(&original, splices);
+    let after_links = if splices.is_empty() {
+        original.clone()
+    } else {
+        apply_splices(&original, splices)
+    };
+    let rewritten = strip_line_comments(&after_links);
     if rewritten == original {
         return FileOutcome::Unchanged;
     }
@@ -89,6 +126,110 @@ pub fn process_file(path: &Path, opts: &ProcessOptions) -> FileOutcome {
             Ok(()) => FileOutcome::Rewritten { diff: None },
             Err(e) => FileOutcome::IoError(e.to_string()),
         }
+    }
+}
+/// Substring tokens identifying line comments that must be preserved
+/// when stripping non-doc comments. Block comments are NEVER on the
+/// preserved list — these idioms are line-comment-shaped by convention
+/// (`// SAFETY:`, the `assert_auto_traits!` sentinel markers).
+///
+/// Conservatively matched as substrings (not full-line) so leading
+/// whitespace and trailing prose around the token still preserve the
+/// line. `// SAFETY:` is included for forward-compatibility with
+/// `unsafe` code (ADR-0014 forbids workspace-authored `unsafe` today;
+/// the idiom is preserved doctrinally for the future).
+const PRESERVED_LINE_COMMENT_TOKENS: &[&str] = &[
+    "AUTO-TRAIT-POLICY-BEGIN",
+    "AUTO-TRAIT-POLICY-END",
+    "SAFETY:",
+    "SAFETY ",
+];
+/// True iff `line_comment_body` (including its `//` prefix) matches one of
+/// the preserved line-comment substrings. Block-comment bodies are never
+/// preserved — see [`PRESERVED_LINE_COMMENT_TOKENS`].
+#[must_use]
+pub fn line_comment_is_preserved(line_comment_body: &str) -> bool {
+    PRESERVED_LINE_COMMENT_TOKENS
+        .iter()
+        .any(|tok| line_comment_body.contains(tok))
+}
+/// Strip non-doc line and block comments from `src` using
+/// [`ra_ap_rustc_lexer`], preserving every other byte verbatim.
+///
+/// Each token's text is dropped iff:
+/// - it is a `LineComment` with `doc_style: None`, OR
+/// - it is a `BlockComment` with `doc_style: None`,
+///
+/// AND the comment body does not match [`comment_text_is_preserved`].
+/// Doc comments (`doc_style: Some(_)`) and every non-comment token are
+/// preserved unchanged. String literals (whose interiors the lexer
+/// classifies as `Literal { kind: Str | ByteStr | CStr | RawStr | … }`)
+/// are structurally unreachable by this pass: their bytes cannot be
+/// reclassified as comment tokens, so marker-looking text inside a
+/// string literal round-trips byte-identical.
+///
+/// When a stripped comment sat on a line of its own (only whitespace
+/// before it on that line), the trailing newline that would otherwise
+/// remain as a blank line is collapsed away by trimming the next
+/// whitespace token's leading `\n`. This avoids leaving a blank line
+/// scar in place of a removed comment.
+#[must_use]
+pub fn strip_line_comments(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut cursor = 0usize;
+    let mut pending_blank_collapse = false;
+    for token in tokenize(src, FrontmatterAllowed::Yes) {
+        let end = cursor + token.len as usize;
+        let text = &src[cursor..end];
+        cursor = end;
+        let is_comment = matches!(
+            token.kind,
+            TokenKind::LineComment { .. } | TokenKind::BlockComment { .. }
+        );
+        let drop = match token.kind {
+            TokenKind::LineComment { doc_style: None } => !line_comment_is_preserved(text),
+            TokenKind::BlockComment { doc_style: None, .. } => true,
+            _ => false,
+        };
+        if drop {
+            let before_comment = &src[..end - text.len()];
+            let was_line_alone = line_was_blank_before(before_comment);
+            if was_line_alone {
+                trim_trailing_whitespace_to_last_newline(&mut out);
+                pending_blank_collapse = true;
+            }
+            continue;
+        }
+        if pending_blank_collapse && matches!(token.kind, TokenKind::Whitespace) {
+            let trimmed = text.strip_prefix('\n').unwrap_or(text);
+            out.push_str(trimmed);
+            pending_blank_collapse = false;
+        } else {
+            out.push_str(text);
+            if !matches!(token.kind, TokenKind::Whitespace) || !is_comment {
+                pending_blank_collapse = false;
+            }
+        }
+    }
+    out
+}
+/// True iff `prefix` ends with a sequence that includes no characters
+/// other than horizontal whitespace since the most recent `\n` (or the
+/// start of input). Caller passes the source bytes up to but excluding
+/// the comment whose blankness is being judged.
+fn line_was_blank_before(prefix: &str) -> bool {
+    let line_start = prefix.rfind('\n').map_or(0, |p| p + 1);
+    prefix[line_start..]
+        .chars()
+        .all(|c| c == ' ' || c == '\t')
+}
+/// In-place: drop any trailing run of horizontal whitespace from `s`,
+/// leaving prior `\n` and earlier content intact. Used to clean up the
+/// indentation that preceded a stripped solo-line comment so the
+/// collapse leaves no trailing-whitespace residue.
+fn trim_trailing_whitespace_to_last_newline(s: &mut String) {
+    while matches!(s.chars().last(), Some(' ' | '\t')) {
+        s.pop();
     }
 }
 /// One byte-range replacement against the original source.
@@ -240,16 +381,22 @@ const fn impl_item_attrs(item: &syn::ImplItem) -> Option<&Vec<Attribute>> {
 fn collect_attr_run_splices(attrs: &[Attribute], original: &str, out: &mut Vec<DocSplice>) {
     let mut i = 0;
     while i < attrs.len() {
-        let Some(_) = doc_attr_literal_span(&attrs[i], original) else {
+        let Some(_) = doc_attr_literal_span(&attrs[i], original, DocShape::SafeLineOrAttr) else {
             i += 1;
             continue;
         };
         let start = i;
-        while i < attrs.len() && doc_attr_literal_span(&attrs[i], original).is_some() {
+        while i < attrs.len()
+            && doc_attr_literal_span(&attrs[i], original, DocShape::SafeLineOrAttr).is_some()
+        {
             i += 1;
         }
         emit_run_splices(&attrs[start..i], original, out);
     }
+}
+#[derive(Debug, Clone, Copy)]
+enum DocShape {
+    SafeLineOrAttr,
 }
 /// Return the byte-range and shape of a doc literal's storage in
 /// `original` if `attr` is one of:
@@ -259,7 +406,11 @@ fn collect_attr_run_splices(attrs: &[Attribute], original: &str, out: &mut Vec<D
 ///
 /// Returns `None` for non-`doc` attributes, `cfg_attr`, and block
 /// doc comments (`/** … */`).
-fn doc_attr_literal_span(attr: &Attribute, original: &str) -> Option<DocLiteralSite> {
+fn doc_attr_literal_span(
+    attr: &Attribute,
+    original: &str,
+    _shape: DocShape,
+) -> Option<DocLiteralSite> {
     let Meta::NameValue(nv) = &attr.meta else {
         return None;
     };
@@ -321,7 +472,7 @@ fn classify_doc_literal(body: &str) -> Option<DocLiteralKind> {
 fn emit_run_splices(run: &[Attribute], original: &str, out: &mut Vec<DocSplice>) {
     let sites: Vec<DocLiteralSite> = run
         .iter()
-        .filter_map(|a| doc_attr_literal_span(a, original))
+        .filter_map(|a| doc_attr_literal_span(a, original, DocShape::SafeLineOrAttr))
         .collect();
     if sites.is_empty() {
         return;
@@ -509,7 +660,7 @@ pub const SKIP_DIRS: &[&str] = &["target", "node_modules", "vendor", "dist", "bu
 ///
 /// The `docs/`/`doc/` rule is **scoped to the first relative component
 /// under `root`**, so `src/docs/mod.rs` or `crates/foo/doc/inner.rs` do
-/// NOT match. This narrows the rewrite-mode `DOC_WARN` noise to genuine
+/// NOT match. This narrows the strip-mode `DOC_WARN` noise to genuine
 /// top-level documentation directories.
 #[must_use]
 pub fn is_doc_path(path: &Path, root: &Path) -> bool {
@@ -713,20 +864,219 @@ fn cfg_attr_doc_payloads(attr: &Attribute) -> Vec<String> {
     }
     out
 }
-/// Count words in `doc_text`, excluding fenced code and CommonMark
-/// reference-style link definitions (`[label]: target`).
+/// Walk `file`, mutating every doc-comment payload through
+/// [`rewrite_rustdoc_link_idioms`]. Reaches every surface
+/// [`doc_lint_file`] inspects (top-level attrs, items, trait/impl
+/// items, fields, variants).
 ///
-/// Recognises ` ``` ` and `~~~` fences. CommonMark/Markdown
-/// reference-style link definition lines — `[label]: <url>`, possibly
-/// indented — are skipped because they are URL bookkeeping, not prose.
-/// Ordinary inline links (`[label](target)`) and shortcut references
-/// (`[label]`) are still counted as one whitespace token each, because
-/// they are part of the prose body.
+/// Per item, contiguous runs of unconditional `#[doc = "..."]`
+/// attributes are joined with `\n`, transformed once (so a fenced
+/// block spanning multiple `///` lines tracks fence state correctly),
+/// then split back per attribute — the transform is line-count
+/// invariant. `cfg_attr(_, doc = "...")` payloads transform
+/// independently (different gating predicates).
+pub fn apply_rustdoc_link_idioms_to_ast(file: &mut syn::File) {
+    use syn::visit_mut::VisitMut;
+    struct Visitor;
+    impl VisitMut for Visitor {
+        fn visit_file_mut(&mut self, node: &mut syn::File) {
+            rewrite_attrs_doc_links(&mut node.attrs);
+            syn::visit_mut::visit_file_mut(self, node);
+        }
+        fn visit_item_mut(&mut self, node: &mut syn::Item) {
+            if let Some(attrs) = item_attrs_mut(node) {
+                rewrite_attrs_doc_links(attrs);
+            }
+            syn::visit_mut::visit_item_mut(self, node);
+        }
+        fn visit_trait_item_mut(&mut self, node: &mut syn::TraitItem) {
+            if let Some(attrs) = trait_item_attrs_mut(node) {
+                rewrite_attrs_doc_links(attrs);
+            }
+            syn::visit_mut::visit_trait_item_mut(self, node);
+        }
+        fn visit_impl_item_mut(&mut self, node: &mut syn::ImplItem) {
+            if let Some(attrs) = impl_item_attrs_mut(node) {
+                rewrite_attrs_doc_links(attrs);
+            }
+            syn::visit_mut::visit_impl_item_mut(self, node);
+        }
+        fn visit_field_mut(&mut self, node: &mut syn::Field) {
+            rewrite_attrs_doc_links(&mut node.attrs);
+            syn::visit_mut::visit_field_mut(self, node);
+        }
+        fn visit_variant_mut(&mut self, node: &mut syn::Variant) {
+            rewrite_attrs_doc_links(&mut node.attrs);
+            syn::visit_mut::visit_variant_mut(self, node);
+        }
+    }
+    Visitor.visit_file_mut(file);
+}
+/// Borrow the `attrs` slot of any `syn::Item` variant that carries one.
+const fn item_attrs_mut(item: &mut syn::Item) -> Option<&mut Vec<Attribute>> {
+    use syn::Item::{
+        Const, Enum, ExternCrate, Fn, Impl, Macro, Mod, Static, Struct, Trait, TraitAlias, Type,
+        Union, Use,
+    };
+    Some(match item {
+        Const(i) => &mut i.attrs,
+        Enum(i) => &mut i.attrs,
+        ExternCrate(i) => &mut i.attrs,
+        Fn(i) => &mut i.attrs,
+        Impl(i) => &mut i.attrs,
+        Macro(i) => &mut i.attrs,
+        Mod(i) => &mut i.attrs,
+        Static(i) => &mut i.attrs,
+        Struct(i) => &mut i.attrs,
+        Trait(i) => &mut i.attrs,
+        TraitAlias(i) => &mut i.attrs,
+        Type(i) => &mut i.attrs,
+        Union(i) => &mut i.attrs,
+        Use(i) => &mut i.attrs,
+        _ => return None,
+    })
+}
+const fn trait_item_attrs_mut(item: &mut syn::TraitItem) -> Option<&mut Vec<Attribute>> {
+    use syn::TraitItem::{Const, Fn, Macro, Type};
+    Some(match item {
+        Const(i) => &mut i.attrs,
+        Fn(i) => &mut i.attrs,
+        Macro(i) => &mut i.attrs,
+        Type(i) => &mut i.attrs,
+        _ => return None,
+    })
+}
+const fn impl_item_attrs_mut(item: &mut syn::ImplItem) -> Option<&mut Vec<Attribute>> {
+    use syn::ImplItem::{Const, Fn, Macro, Type};
+    Some(match item {
+        Const(i) => &mut i.attrs,
+        Fn(i) => &mut i.attrs,
+        Macro(i) => &mut i.attrs,
+        Type(i) => &mut i.attrs,
+        _ => return None,
+    })
+}
+/// Apply the link-idiom transform to one item's `attrs` slice.
 ///
-/// Fail-closed: if a fence opens but never closes, returns
-/// [`WordCount::FailClosed`] with a whole-text recount (link-ref lines
-/// included) so a malformed doc cannot silently suppress budget
-/// checking.
+/// Contiguous runs of unconditional `#[doc = "..."]` are joined and
+/// transformed together; `cfg_attr(_, doc = "...")` payloads are each
+/// transformed in isolation (they may be gated independently).
+fn rewrite_attrs_doc_links(attrs: &mut [Attribute]) {
+    let mut i = 0;
+    while i < attrs.len() {
+        if doc_string_payload(&attrs[i]).is_some() {
+            let start = i;
+            while i < attrs.len() && doc_string_payload(&attrs[i]).is_some() {
+                i += 1;
+            }
+            rewrite_doc_run(&mut attrs[start..i]);
+            continue;
+        }
+        if is_cfg_attr(&attrs[i]) {
+            rewrite_cfg_attr_doc_payloads(&mut attrs[i]);
+        }
+        i += 1;
+    }
+}
+/// Join, transform, and split-back a contiguous run of `#[doc = "..."]`
+/// attributes. The transform is line-count-preserving, so the split has
+/// the same length as the input — assigned 1:1 back into each attribute.
+fn rewrite_doc_run(run: &mut [Attribute]) {
+    if run.is_empty() {
+        return;
+    }
+    let originals: Vec<String> = run
+        .iter()
+        .map(|a| doc_string_payload(a).unwrap_or_default())
+        .collect();
+    let joined = originals.join("\n");
+    let rewritten = rewrite_rustdoc_link_idioms(&joined);
+    if rewritten == joined {
+        return;
+    }
+    let parts: Vec<&str> = rewritten.split('\n').collect();
+    if parts.len() != originals.len() {
+        return;
+    }
+    for (attr, new) in run.iter_mut().zip(parts) {
+        set_doc_string_payload(attr, new);
+    }
+}
+/// Rewrite every `doc = "..."` payload inside a `#[cfg_attr(_, ...)]`
+/// list independently. Predicate position is left untouched.
+fn rewrite_cfg_attr_doc_payloads(attr: &mut Attribute) {
+    let Meta::List(list) = &mut attr.meta else {
+        return;
+    };
+    if !list.path.is_ident("cfg_attr") {
+        return;
+    }
+    let parsed: Result<Punctuated<Meta, Token![,]>, _> =
+        list.parse_args_with(Punctuated::parse_terminated);
+    let Ok(mut metas) = parsed else {
+        return;
+    };
+    let mut changed = false;
+    for meta in metas.iter_mut().skip(1) {
+        if let Meta::NameValue(nv) = meta
+            && nv.path.is_ident("doc")
+            && let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(s),
+                ..
+            }) = &mut nv.value
+        {
+            let original = s.value();
+            let rewritten = rewrite_rustdoc_link_idioms(&original);
+            if rewritten != original {
+                *s = syn::LitStr::new(&rewritten, s.span());
+                changed = true;
+            }
+        }
+    }
+    if !changed {
+        return;
+    }
+    list.tokens = quote::quote!(#metas);
+}
+/// Return the string payload of `#[doc = "..."]`, if it's literal.
+fn doc_string_payload(attr: &Attribute) -> Option<String> {
+    let Meta::NameValue(nv) = &attr.meta else {
+        return None;
+    };
+    if !nv.path.is_ident("doc") {
+        return None;
+    }
+    let syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Str(s),
+        ..
+    }) = &nv.value
+    else {
+        return None;
+    };
+    Some(s.value())
+}
+/// Replace the string payload of a `#[doc = "..."]` attribute in place.
+fn set_doc_string_payload(attr: &mut Attribute, new: &str) {
+    let Meta::NameValue(nv) = &mut attr.meta else {
+        return;
+    };
+    if !nv.path.is_ident("doc") {
+        return;
+    }
+    let syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Str(s),
+        ..
+    }) = &mut nv.value
+    else {
+        return;
+    };
+    *s = syn::LitStr::new(new, s.span());
+}
+/// Count words in `doc_text`, excluding fenced code.
+///
+/// Recognises ` ``` ` and `~~~` fences. Fail-closed: if a fence opens but
+/// never closes, returns [`WordCount::FailClosed`] with a whole-text
+/// recount so a malformed doc cannot silently suppress budget checking.
 fn prose_word_count(doc_text: &str) -> WordCount {
     let mut in_fence = false;
     let mut words = 0usize;
@@ -737,9 +1087,6 @@ fn prose_word_count(doc_text: &str) -> WordCount {
             continue;
         }
         if in_fence {
-            continue;
-        }
-        if is_reference_definition(line) {
             continue;
         }
         words += line.split_whitespace().count();
@@ -896,6 +1243,93 @@ fn impl_item_label_and_attrs(item: &syn::ImplItem) -> Option<(String, &[Attribut
         _ => return None,
     };
     Some((label, attrs, line))
+}
+#[cfg(test)]
+mod process_file_tests {
+    use super::{FileOutcome, ProcessOptions, process_file, strip_line_comments};
+    use std::fs;
+    fn opts() -> ProcessOptions {
+        ProcessOptions {
+            dry_run: true,
+            context: 3,
+        }
+    }
+    #[test]
+    fn whitespace_only_file_is_unchanged() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("a.rs");
+        fs::write(&path, "   \n\t\n  \n").unwrap();
+        match process_file(&path, &opts()) {
+            FileOutcome::Unchanged => {}
+            other => panic!("expected Unchanged for whitespace-only file, got {other:?}"),
+        }
+    }
+    #[test]
+    fn empty_file_is_unchanged() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("a.rs");
+        fs::write(&path, "").unwrap();
+        match process_file(&path, &opts()) {
+            FileOutcome::Unchanged => {}
+            other => panic!("expected Unchanged for empty file, got {other:?}"),
+        }
+    }
+    #[test]
+    fn strip_line_comments_drops_ordinary_line_comments() {
+        let src = "// kill me\nfn f() {}\n";
+        assert_eq!(strip_line_comments(src), "fn f() {}\n");
+    }
+    #[test]
+    fn strip_line_comments_drops_ordinary_block_comments() {
+        let src = "/* kill me */\nfn f() {}\n";
+        assert_eq!(strip_line_comments(src), "fn f() {}\n");
+    }
+    #[test]
+    fn strip_line_comments_keeps_doc_comments() {
+        let src = "/// keep me\nfn f() {}\n";
+        assert_eq!(strip_line_comments(src), src);
+        let src = "//! keep me\nfn f() {}\n";
+        assert_eq!(strip_line_comments(src), src);
+        let src = "/** keep me */\nfn f() {}\n";
+        assert_eq!(strip_line_comments(src), src);
+    }
+    #[test]
+    fn strip_line_comments_keeps_safety_idiom() {
+        let src = "// SAFETY: hand-written invariant\nfn f() {}\n";
+        assert_eq!(strip_line_comments(src), src);
+    }
+    #[test]
+    fn strip_line_comments_keeps_auto_trait_policy_markers() {
+        let src = "// AUTO-TRAIT-POLICY-BEGIN\nfn f() {}\n// AUTO-TRAIT-POLICY-END\n";
+        assert_eq!(strip_line_comments(src), src);
+    }
+    #[test]
+    fn strip_line_comments_preserves_string_literals_with_marker_text() {
+        let src = "const X: &str = \"// not actually a comment\";\nfn f() {}\n";
+        assert_eq!(strip_line_comments(src), src);
+        let src = "const X: &str = \"// SAFETY: still inside a string\";\nfn f() {}\n";
+        assert_eq!(strip_line_comments(src), src);
+    }
+    #[test]
+    fn strip_line_comments_is_a_fixed_point_on_clean_source() {
+        let src = "pub fn f(x: u32) -> u32 { x + 1 }\n";
+        let once = strip_line_comments(src);
+        let twice = strip_line_comments(&once);
+        assert_eq!(once, twice);
+        assert_eq!(once, src);
+    }
+    #[test]
+    fn strip_line_comments_does_not_reflow_code() {
+        let src = "fn f(  x  :  u32  )  ->  u32  {\n    // kill me\n    x  +  1\n}\n";
+        let expected = "fn f(  x  :  u32  )  ->  u32  {\n    x  +  1\n}\n";
+        assert_eq!(strip_line_comments(src), expected);
+    }
+    #[test]
+    fn strip_line_comments_keeps_inline_comment_when_dropping_does_not_blank_line() {
+        let src = "let x = 1; // trailing\nlet y = 2;\n";
+        let expected = "let x = 1; \nlet y = 2;\n";
+        assert_eq!(strip_line_comments(src), expected);
+    }
 }
 #[cfg(test)]
 mod doc_lint_tests {
@@ -1075,73 +1509,6 @@ mod doc_lint_tests {
         let findings = lint(&f, 40);
         assert_eq!(findings.len(), 1, "{findings:?}");
         assert_eq!(findings[0].item_label, "extern crate alloc");
-    }
-    #[test]
-    fn reference_style_link_definitions_excluded_from_word_count() {
-        let f: syn::File = parse_quote! {
-            #[doc = " summary one two three four five six seven eight"] #[doc = ""]
-            #[doc = " [CHE-0006:R1]: ../../docs/adr/cherry/CHE-0006-single-writer-assumption.md"]
-            #[doc = " [CHE-0024:R1]: ../../docs/adr/cherry/CHE-0024-event-delivery-model.md"]
-            #[doc = " [CHE-0032]: ../../docs/adr/cherry/CHE-0032-atomic-file-writes.md"]
-            pub fn foo() {}
-        };
-        let findings = lint(&f, 10);
-        assert!(
-            findings.is_empty(),
-            "link-reference definitions must not consume prose budget: {findings:?}"
-        );
-    }
-    #[test]
-    fn ordinary_inline_link_still_counted() {
-        let f: syn::File = parse_quote! {
-            #[doc = " see [docs](https://example.com) for one two three four five six"]
-            pub fn foo() {}
-        };
-        let findings = lint(&f, 5);
-        assert_eq!(findings.len(), 1, "{findings:?}");
-        assert_eq!(
-            findings[0].word_count, 9,
-            "inline link counts as one whitespace token; total should be 9"
-        );
-    }
-    #[test]
-    fn ordinary_shortcut_link_still_counted() {
-        let f: syn::File = parse_quote! {
-            #[doc = " the [Type] applies to one two three four five six"]
-            pub fn foo() {}
-        };
-        let findings = lint(&f, 5);
-        assert_eq!(findings.len(), 1, "{findings:?}");
-        assert_eq!(
-            findings[0].word_count, 10,
-            "shortcut link counts as one whitespace token; total should be 10"
-        );
-    }
-    #[test]
-    fn reference_definition_with_leading_whitespace_excluded() {
-        let f: syn::File = parse_quote! {
-            #[doc = " summary one two three four five six seven eight nine"]
-            #[doc = "   [tag]: https://example.com"]
-            pub fn foo() {}
-        };
-        let findings = lint(&f, 10);
-        assert!(
-            findings.is_empty(),
-            "indented link-reference definition must not consume budget: {findings:?}"
-        );
-    }
-    #[test]
-    fn reference_definition_inside_fenced_block_remains_excluded_by_fence() {
-        let f: syn::File = parse_quote! {
-            #[doc = " p01 p02 p03 p04 p05"] #[doc = " ```"]
-            #[doc = " [tag]: https://example.com"] #[doc = " arbitrary code body words here"]
-            #[doc = " ```"] pub fn foo() {}
-        };
-        let findings = lint(&f, 5);
-        assert!(
-            findings.is_empty(),
-            "fenced code (including its bracketed lines) must not consume budget: {findings:?}"
-        );
     }
 }
 /// Rewrite mechanically-safe Rust item links in `doc_text`.
@@ -1470,6 +1837,18 @@ mod rustdoc_link_idiom_tests {
         let input = "see [Type] — also русский and 🦀";
         let out = super::rewrite_rustdoc_link_idioms(input);
         assert_eq!(out, "see [`Type`] — also русский and 🦀");
+    }
+    #[test]
+    fn em_dash_survives_litstr_new_via_set_payload() {
+        use syn::Attribute;
+        use syn::parse_quote;
+        let mut a: Attribute = parse_quote!(#[doc = " starting payload"]);
+        super::set_doc_string_payload(&mut a, " hello — world");
+        let payload = super::doc_string_payload(&a).unwrap();
+        assert!(
+            payload.contains('—'),
+            "em-dash lost via set_doc_string_payload: payload={payload:?}"
+        );
     }
     fn rw(s: &str) -> String {
         rewrite_rustdoc_link_idioms(s)

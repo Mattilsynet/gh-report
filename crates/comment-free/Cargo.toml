@@ -13,8 +13,10 @@ workspace = true
 [dependencies]
 clap.workspace = true
 thiserror.workspace = true
-syn = { workspace = true, features = ["parsing", "visit"] }
+syn = { workspace = true, features = ["parsing", "visit", "visit-mut"] }
+quote.workspace = true
 proc-macro2 = { workspace = true, features = ["span-locations"] }
+ra-ap-rustc_lexer = "=0.170.0"
 walkdir = "2"
 similar = "3"
 
