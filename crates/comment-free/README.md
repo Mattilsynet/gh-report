@@ -3,6 +3,14 @@
 `comment-free` is a Rust-only hygiene tool for keeping source comments small,
 structured, and intentional.
 
+Its goal is to make coding with LLM agents more efficient by reducing stale or
+misleading repository context. It removes ordinary line and block comments while
+preserving the two comment-shaped signals that remain load-bearing here:
+`AUTO-TRAIT-POLICY-*` markers and `// SAFETY:` lines. Doc comments are kept,
+normalised to idiomatic rustdoc links, and linted when they grow too long.
+Repository documentation files are reported but never rewritten. Output stays
+terse, structured, and informative for automated agents.
+
 Default mode is read-only: it walks Rust source files under `crates/` and `src/`
 and reports doc comments whose prose exceeds the configured word budget. Fenced
 code blocks are excluded from the count, and output is tab-separated so agents
