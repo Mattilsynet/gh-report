@@ -1362,6 +1362,54 @@ mod tests {
         );
     }
 
+    /// findings F7 / CHE-0048 sub-problem 2 — `project_to_file` on a
+    /// never-created aggregate (empty event stream) must produce neither
+    /// a snapshot file nor a checkpoint file. The pre-fix code path
+    /// called `backend.persist(_, &P::default(), 0)` unconditionally,
+    /// writing a phantom `P::default()` snapshot + a `last_sequence=0`
+    /// checkpoint for an aggregate the write side had never created.
+    /// Post-fix (sub-task 3.1's type cascade) `replay_inner` returns
+    /// `None` for an empty stream and `project_to_file_inner` skips the
+    /// persist call. The returned projection is still `P::default()`
+    /// (correct value semantics) but no disk evidence is fabricated.
+    #[tokio::test]
+    async fn empty_stream_aggregate_writes_no_snapshot_or_checkpoint_files() {
+        let id = aggregate_id(7);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = FileProjectionStore::<CounterView>::new(dir.path(), "counter");
+        let store = StaticStore::new(vec![]);
+        let driver = ProjectionDriver::<CounterView, _>::new(store);
+
+        let projection = driver
+            .project_to_file(id, &CorrelationContext::none(), &backend)
+            .await
+            .expect("empty-stream projection succeeds (caller sees P::default())");
+
+        assert_eq!(
+            projection,
+            CounterView::default(),
+            "caller still receives the default projection value"
+        );
+        assert!(
+            !backend.snapshot_path(id).exists(),
+            "phantom snapshot must not be written for never-created aggregate"
+        );
+        assert!(
+            !backend.checkpoint_path(id).exists(),
+            "phantom checkpoint must not be written for never-created aggregate"
+        );
+
+        let entries = std::fs::read_dir(dir.path()).expect("read store dir");
+        let payload_files: Vec<_> = entries
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("msgpack"))
+            .collect();
+        assert!(
+            payload_files.is_empty(),
+            "store directory must contain no .msgpack files; found {payload_files:?}"
+        );
+    }
+
     proptest::proptest! {
         #![proptest_config(proptest::test_runner::Config::with_cases(256))]
 
