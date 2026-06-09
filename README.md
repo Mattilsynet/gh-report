@@ -70,8 +70,6 @@ Operational recovery procedures live at
 - [`docs/STORY.md`](docs/STORY.md) — strategic intent; *where to play*
   and *how to win*. Apex over the ADR corpus on questions of *why*.
   Start here.
-- [`docs/CLOSURE.md`](docs/CLOSURE.md) — v0.1 exit gate; what "fully
-  functional" means and what remains to ship it.
 - [`FOCUS.md`](FOCUS.md) — current construction / refinement recipe.
 - [`AGENTS.md`](AGENTS.md) — agent doctrine for this repo.
 - Per-crate `README.md` files under [`crates/`](crates/).

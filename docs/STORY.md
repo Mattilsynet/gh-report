@@ -221,8 +221,7 @@ agent) do not have to rediscover them:
   version, the wire format does not change. Cross-major migration is
   a deliberate, ratified operation, not a runtime convenience.
 - **Public-facing API stability commitments before v0.3.** We freeze
-  invariants; we do not yet freeze surface. See `CLOSURE.md` for the
-  versioning ladder.
+  invariants; we do not yet freeze surface.
 
 Each non-goal has a corresponding "yes, but in scope" answer: smaller
 scale, smaller blast radius, smaller substrate. That is the trade.
@@ -235,8 +234,7 @@ Solon is mid-construction. The cherry-pit family compiles and tests
 green; gh-report runs and produces evidence. The ADR corpus is
 internally consistent under `adr-fmt --lint`.
 
-What remains for **v0.1** is enumerated in `docs/CLOSURE.md`. The
-short form: stand up `adr-srv` as a second non-trivial consumer of
+What remains: stand up `adr-srv` as a second non-trivial consumer of
 the cherry-pit substrate, complete the DDD tactical-pattern alignment
 of `gh-report`, and run an idiomatic-architecture audit across every
 workspace crate.
@@ -265,8 +263,7 @@ The override is **never silent**. The procedure:
    superseding / amended ADR(s) in the same commit-set, or (b) file
    one bd bead per defected ADR with label `story-override`, blocker
    on whatever work would have relied on the defected ADR.
-2. Open `story-override` beads are a release blocker. `CLOSURE.md`'s
-   v0.1 exit gate fails while any exist.
+2. Open `story-override` beads are a release blocker.
 3. STORY edits and the consequent ADR edits land as **one
    user-ratified commit-set**. There is no "STORY changed, we'll fix
    the ADR later".

@@ -1,9 +1,5 @@
 //! M1.4 end-to-end: GraphQL Query read-side over `AdrCorpus`.
 //!
-//! Mission contract `phase2-v2-m1.4-adrsrv-graphql-1779400000`
-//! `success_criteria` #3-4 (≥5 new tests, full suite green) +
-//! CLOSURE.md § 4 C1 #2 (canonical query returns the projected ADR).
-//!
 //! Tests exercise the `Query` resolver path via `schema.execute()`
 //! — no HTTP layer. The `/graphql` HTTP wiring is a separate smoke
 //! check (manual `curl` per brief verify_commands). Per the brief's
@@ -132,9 +128,6 @@ struct AdrsByDomainData {
     adrs_by_domain: Vec<AdrIdOnly>,
 }
 
-/// CLOSURE.md C1 #2 canonical query: `{ adrByID(id: "AFM-0001") {
-/// id title references { id } } }`. Asserts shape on a freshly
-/// scraped corpus.
 #[tokio::test]
 async fn adr_by_id_returns_scraped_adr_with_references_in_source_order() {
     let (corpus, _g1, _g2) = scrape_and_corpus().await;

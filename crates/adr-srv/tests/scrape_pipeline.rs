@@ -1,9 +1,5 @@
 //! M1.3 scrape pipeline — integration test.
 //!
-//! Mission contract `phase2-v2-m1.3-adrsrv-scrape-1779400000`
-//! `success_criteria` + CLOSURE.md § 4 C1 (#3 idempotent ingest,
-//! #4 ≥1 event per ADR file).
-//!
 //! Properties pinned:
 //!   1. First scrape against the live workspace corpus emits
 //!      `events_emitted >= 1` per ADR file actually parsed.
