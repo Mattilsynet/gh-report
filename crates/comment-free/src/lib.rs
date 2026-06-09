@@ -173,6 +173,13 @@ pub fn line_comment_is_preserved(line_comment_body: &str) -> bool {
 /// remain as a blank line is collapsed away by trimming the next
 /// whitespace token's leading `\n`. This avoids leaving a blank line
 /// scar in place of a removed comment.
+///
+/// When a stripped comment sat inline after code on the same line, the
+/// run of horizontal whitespace separating the code from the removed
+/// comment token is also trimmed, so `drop(rx); // close receiver`
+/// becomes `drop(rx);` with no trailing space. Lines that did not lose
+/// a comment token are untouched; pre-existing trailing whitespace on
+/// such lines is preserved verbatim.
 #[must_use]
 pub fn strip_line_comments(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
@@ -194,8 +201,8 @@ pub fn strip_line_comments(src: &str) -> String {
         if drop {
             let before_comment = &src[..end - text.len()];
             let was_line_alone = line_was_blank_before(before_comment);
+            trim_trailing_whitespace_to_last_newline(&mut out);
             if was_line_alone {
-                trim_trailing_whitespace_to_last_newline(&mut out);
                 pending_blank_collapse = true;
             }
             continue;
@@ -1325,10 +1332,54 @@ mod process_file_tests {
         assert_eq!(strip_line_comments(src), expected);
     }
     #[test]
-    fn strip_line_comments_keeps_inline_comment_when_dropping_does_not_blank_line() {
+    fn strip_line_comments_inline_line_comment_trims_preceding_whitespace() {
         let src = "let x = 1; // trailing\nlet y = 2;\n";
-        let expected = "let x = 1; \nlet y = 2;\n";
+        let expected = "let x = 1;\nlet y = 2;\n";
         assert_eq!(strip_line_comments(src), expected);
+    }
+    #[test]
+    fn strip_line_comments_inline_block_comment_trims_preceding_whitespace() {
+        let src = "let x = 1; /* inline */\nlet y = 2;\n";
+        let expected = "let x = 1;\nlet y = 2;\n";
+        assert_eq!(strip_line_comments(src), expected);
+    }
+    #[test]
+    fn strip_line_comments_inline_trim_handles_multiple_consecutive_trailing_comments() {
+        let src = "let x = 1; /* a */ /* b */ // tail\nlet y = 2;\n";
+        let expected = "let x = 1;\nlet y = 2;\n";
+        assert_eq!(strip_line_comments(src), expected);
+    }
+    #[test]
+    fn strip_line_comments_inline_trim_handles_mixed_tabs_and_spaces() {
+        let src = "let x = 1;\t \t// tabs\nlet y = 2;\n";
+        let expected = "let x = 1;\nlet y = 2;\n";
+        assert_eq!(strip_line_comments(src), expected);
+    }
+    #[test]
+    fn strip_line_comments_inline_trim_drop_receiver_pattern() {
+        let src = "drop(rx); // close receiver\n";
+        let expected = "drop(rx);\n";
+        assert_eq!(strip_line_comments(src), expected);
+    }
+    #[test]
+    fn strip_line_comments_inline_trim_does_not_touch_line_with_no_removed_comment() {
+        let src = "let x = 1;   \nlet y = 2;\n";
+        assert_eq!(strip_line_comments(src), src);
+    }
+    #[test]
+    fn strip_line_comments_inline_trim_does_not_touch_safety_line() {
+        let src = "let x = 1; // SAFETY: invariant\nlet y = 2;\n";
+        assert_eq!(strip_line_comments(src), src);
+    }
+    #[test]
+    fn strip_line_comments_inline_trim_does_not_touch_doc_comment() {
+        let src = "let x = 1; /// doc-shaped (illegal but lexer keeps it)\n";
+        assert_eq!(strip_line_comments(src), src);
+    }
+    #[test]
+    fn strip_line_comments_inline_trim_already_clean_is_noop() {
+        let src = "let x = 1;\nlet y = 2;\n";
+        assert_eq!(strip_line_comments(src), src);
     }
 }
 #[cfg(test)]
