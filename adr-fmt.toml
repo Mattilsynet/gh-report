@@ -62,6 +62,7 @@ crates = [
     "cherry-pit-web",
     "cherry-pit-projection",
     "cherry-pit-app",
+    "cherry-pit-merger",
     "cherry-pit-wq",
     "cherry-pit-storage",
     "gh-report",

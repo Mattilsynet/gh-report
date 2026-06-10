@@ -6,6 +6,7 @@ members = [
     "crates/cherry-pit-app",
     "crates/cherry-pit-core",
     "crates/cherry-pit-gateway",
+    "crates/cherry-pit-merger",
     "crates/cherry-pit-projection",
     "crates/cherry-pit-wq",
     "crates/cherry-pit-storage",
@@ -119,6 +120,7 @@ cherry-pit-gateway = { path = "crates/cherry-pit-gateway", version = "0.1.0" }
 cherry-pit-projection = { path = "crates/cherry-pit-projection", version = "0.1.0" }
 cherry-pit-web = { path = "crates/cherry-pit-web", version = "0.1.0" }
 cherry-pit-app = { path = "crates/cherry-pit-app", version = "0.1.0" }
+cherry-pit-merger = { path = "crates/cherry-pit-merger", version = "0.1.0" }
 
 # === Pardosa workspace tier (mission pardosa-migration-1748376000) ===
 # Added when the active Pardosa crates were imported from rescue-pardosa.

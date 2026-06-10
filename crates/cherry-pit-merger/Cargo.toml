@@ -1,0 +1,30 @@
+[package]
+name = "cherry-pit-merger"
+version = "0.1.0"
+description = "Canonical command-side EDA primitive: a single-task command merger holding the sole EventStore write handle per aggregate substrate (per CHE-0069)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage = "https://github.com/acje/solon/tree/main/crates/cherry-pit-merger"
+documentation = "https://docs.rs/cherry-pit-merger"
+keywords = ["eda", "event-sourcing", "merger", "toctou"]
+categories = ["asynchronous"]
+
+[lints]
+workspace = true
+
+[dependencies]
+cherry-pit-core = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+cherry-pit-core = { workspace = true, features = ["testing"] }
+serde = { workspace = true }
+tokio = { workspace = true }
+jiff = { workspace = true }
+uuid = { workspace = true }
+proptest = { workspace = true }
+fastrand = { workspace = true }

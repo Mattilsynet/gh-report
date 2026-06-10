@@ -688,6 +688,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cherry-pit-merger"
+version = "0.1.0"
+dependencies = [
+ "cherry-pit-core",
+ "fastrand",
+ "jiff",
+ "proptest",
+ "serde",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "cherry-pit-projection"
 version = "0.1.0"
 dependencies = [
