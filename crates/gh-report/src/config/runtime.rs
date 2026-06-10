@@ -19,10 +19,20 @@ pub struct RuntimeConfig {
     pub max_workers: usize,
     /// Persistent store directory for baseline, checkpoints, and lock files.
     pub store_dir: PathBuf,
+    /// Pardosa authoritative backend selected at startup.
+    pub pardosa_backend: PardosaBackend,
     /// Forcibly remove an existing lock before acquiring.
     pub force_unlock: bool,
     /// Dashboard rendering configuration.
     pub dashboard_config: DashboardConfig,
+}
+
+/// Pardosa authoritative backend selected once at startup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PardosaBackend {
+    #[default]
+    Pgno,
+    Nats,
 }
 
 impl RuntimeConfig {
@@ -59,6 +69,7 @@ impl RuntimeConfig {
             no_resume,
             max_workers: clamped,
             store_dir,
+            pardosa_backend: PardosaBackend::Pgno,
             force_unlock: false,
             dashboard_config: DashboardConfig::default(),
         })
@@ -97,6 +108,7 @@ mod tests {
         let cfg = cfg.unwrap();
         assert_eq!(cfg.org_name, "my-org");
         assert_eq!(cfg.max_workers, 8);
+        assert_eq!(cfg.pardosa_backend, PardosaBackend::Pgno);
     }
 
     #[test]
@@ -124,5 +136,12 @@ mod tests {
     fn runtime_config_trims_org_name() {
         let cfg = RuntimeConfig::new("  my-org  ", false, 8, PathBuf::from("s")).unwrap();
         assert_eq!(cfg.org_name, "my-org");
+    }
+
+    #[test]
+    fn runtime_config_selects_nats_backend() {
+        let mut cfg = RuntimeConfig::new("org", false, 8, PathBuf::from("s")).unwrap();
+        cfg.pardosa_backend = PardosaBackend::Nats;
+        assert_eq!(cfg.pardosa_backend, PardosaBackend::Nats);
     }
 }

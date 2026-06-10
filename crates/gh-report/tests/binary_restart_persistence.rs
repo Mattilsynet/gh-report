@@ -26,7 +26,7 @@
 use std::sync::Arc;
 
 use cherry_pit_core::{CorrelationContext, EventStore};
-use cherry_pit_gateway::MsgpackFileStore;
+use gh_report::app::state::EventStoreImpl;
 use gh_report::domain::events::DomainEvent;
 
 use assert_cmd::Command;
@@ -101,7 +101,7 @@ async fn dump_baseline_against_seeded_store_exits_zero() {
     std::fs::create_dir_all(&events_dir).expect("mk events dir");
 
     {
-        let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(&events_dir));
+        let store = Arc::new(EventStoreImpl::create_pgno(&events_dir.join("events.pgno")).unwrap());
         let ctx = CorrelationContext::none();
         let event = DomainEvent::SweepStarted {
             org: ORG.into(),

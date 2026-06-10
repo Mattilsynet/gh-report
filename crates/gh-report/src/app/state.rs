@@ -34,7 +34,7 @@ use cherry_pit_app::InProcessEventBus;
 #[cfg(test)]
 use cherry_pit_core::testing::InMemoryEventStore;
 use cherry_pit_core::{AggregateId, ListableEventStore};
-use cherry_pit_gateway::MsgpackFileStore;
+use cherry_pit_pardosa::PardosaEventStore;
 use cherry_pit_projection::FileProjectionStore;
 use jiff::Timestamp;
 
@@ -44,14 +44,14 @@ pub use crate::domain::events::DomainEvent;
 
 /// Concrete event-store type wired into gh-report.
 ///
-/// The persistent file-per-aggregate backend
-/// [`cherry_pit_gateway::MsgpackFileStore`] writes one `<id>.msgpack`
-/// file per aggregate under `<events_dir>` and holds a `.lock` flock
-/// per CHE-0043:R1 (acquired lazily on first write). All production
-/// paths construct the store via [`AppState::with_stores`]; test paths
-/// that don't need durable persistence construct an `AppState` without
-/// an `event_store` (see [`AppState::new`] under `#[cfg(test)]`).
-pub type EventStoreImpl = MsgpackFileStore<DomainEvent>;
+/// The persistent adapter writes a single `events.pgno` pardosa log
+/// under `<events_dir>`. Domain events are stored as logical
+/// `AggregateId` streams over physical fiber-per-append records; replay
+/// reconstructs each stream from the adapter index. All production paths
+/// construct the store via [`AppState::with_stores`]; test paths that
+/// don't need durable persistence construct an `AppState` without an
+/// `event_store` (see [`AppState::new`] under `#[cfg(test)]`).
+pub type EventStoreImpl = PardosaEventStore<DomainEvent>;
 
 pub use crate::app::evidence_service::EvidenceState;
 pub use crate::app::github_infra::GithubState;
@@ -431,22 +431,41 @@ fn build_services(
     (run, repo, webhook)
 }
 
-/// Per-construction unique tempdir + [`MsgpackFileStore`].
+fn open_event_store(
+    events_dir: &Path,
+    backend: crate::config::runtime::PardosaBackend,
+) -> Result<EventStoreImpl, std::io::Error> {
+    match backend {
+        crate::config::runtime::PardosaBackend::Pgno => {
+            std::fs::create_dir_all(events_dir)?;
+            let path = events_dir.join("events.pgno");
+            if path.exists() {
+                EventStoreImpl::open_pgno(&path).map_err(std::io::Error::other)
+            } else {
+                EventStoreImpl::create_pgno(&path).map_err(std::io::Error::other)
+            }
+        }
+        crate::config::runtime::PardosaBackend::Nats => Err(std::io::Error::other(
+            "pardosa nats backend requires runtime handle wiring in a follow-up",
+        )),
+    }
+}
+
+/// Per-construction unique tempdir plus pardosa `.pgno` event store.
 /// Used by test-only constructors ([`AppState::new`],
 /// [`AppStateBuilder::build`]) which don't model a real persistence
 /// scope but need a live `EventStore` handle for the Merger task.
 ///
-/// The directory is leaked (`TempDir::keep`) so the CHE-0043:R1 flock
-/// held by [`MsgpackFileStore`] (acquired lazily on first write)
-/// survives for the lifetime of the test; same pollution profile as
-/// the previous `noop_events_dir` helper. `/tmp` cleanup is the OS's
+/// The directory is leaked (`TempDir::keep`) so the `.pgno` file remains
+/// addressable for the lifetime of the test. Same pollution profile as
+/// the previous `noop_events_dir` helper; `/tmp` cleanup is the OS's
 /// problem.
 #[cfg(test)]
 #[expect(clippy::unused_async, reason = "preserves .await callers")]
-async fn noop_event_store() -> Arc<MsgpackFileStore<DomainEvent>> {
+async fn noop_event_store() -> Arc<EventStoreImpl> {
     let dir = tempfile::tempdir().expect("test tempdir");
-    let path = dir.keep();
-    Arc::new(MsgpackFileStore::<DomainEvent>::new(path))
+    let path = dir.keep().join("events.pgno");
+    Arc::new(EventStoreImpl::create_pgno(&path).expect("create test pardosa store"))
 }
 
 /// Register the projection handler on the bus using a transient
@@ -511,10 +530,10 @@ impl AppState {
     ///
     /// # Panics
     ///
-    /// Panics if the unique tempdir-based noop event-store directory
-    /// cannot acquire the CHE-0043:R1 advisory flock at `open` time.
-    /// This is an infrastructure-level failure (disk full, permissions,
-    /// no `/tmp`) at startup of a test path; halting is appropriate.
+    /// Panics if the unique tempdir-based noop pardosa store cannot be
+    /// created. This is an infrastructure-level failure (disk full,
+    /// permissions, no `/tmp`) at startup of a test path; halting is
+    /// appropriate.
     pub async fn new() -> Arc<Self> {
         let bus = Arc::new(InProcessEventBus::new());
         let runs_by_key = Arc::new(Mutex::new(HashMap::new()));
@@ -568,10 +587,8 @@ impl AppState {
 impl AppState {
     /// Create a new `AppState` wired with both stores.
     ///
-    /// Constructs a [`MsgpackFileStore`] over `<events_dir>` (the
-    /// CHE-0043:R1 flock on `<events_dir>/.lock` is acquired lazily on
-    /// first write; per-aggregate `<id>.msgpack` files materialise on
-    /// first append) and constructs the durable
+    /// Constructs a [`PardosaEventStore`] over `<events_dir>/events.pgno`
+    /// and constructs the durable
     /// [`FileProjectionStore`] over `<projections_dir>`. This is the
     /// only constructor that wires both durable stores; the daemon
     /// (`crate::app::daemon`) and the `--dump-baseline` branch of the
@@ -580,25 +597,24 @@ impl AppState {
     ///
     /// File-layout note:
     ///
-    /// - `<store_dir>/events/<org>/<aggregate-id>.msgpack` —
-    ///   per-aggregate event log owned by [`MsgpackFileStore`]. The
-    ///   singleton [`crate::projection::ORG_GOVERNANCE_AGGREGATE_ID`]
-    ///   applies per Tension-2; an additional per-repo aggregate file
-    ///   is created on first `RepoEvaluated` for each repo.
+    /// - `<store_dir>/events/<org>/events.pgno` — pardosa event log
+    ///   owned by [`PardosaEventStore`]. Logical aggregate streams are
+    ///   reconstructed from embedded `AggregateId` and envelope sequence;
+    ///   physical pardosa fibers are opened per append.
     /// - `<store_dir>/projections/<org>/1-evidence.snapshot.msgpack`
     ///   and `…1-evidence.checkpoint.msgpack` — paired snapshot +
     ///   checkpoint per CHE-0048:R1/R2.
     ///
-    /// `<store_dir>/events/<org>/.lock` is held for the lifetime of the
-    /// returned `AppState` (acquired lazily on first write); a second
-    /// daemon process attempting to write to the same directory will
-    /// fail at write time per CHE-0043:R1.
+    /// The returned `AppState` holds the single process-local adapter
+    /// handle used by services, replay, and projection wiring.
     ///
     /// # Errors
     ///
-    /// Currently infallible — [`MsgpackFileStore::new`] is synchronous
-    /// and infallible; the `Result` shape is retained so callers don't
-    /// churn and future fallible-init variants remain a no-API-break.
+    /// Returns [`std::io::Error`] when the selected pardosa backend
+    /// cannot be opened or created. For `Pgno`, this includes creating
+    /// `<events_dir>` or opening/creating `events.pgno`; for `Nats`, M1
+    /// returns an explicit startup error until the runtime handle wiring
+    /// is supplied by a follow-up.
     ///
     /// # Panics
     ///
@@ -607,8 +623,9 @@ impl AppState {
     pub async fn with_stores(
         events_dir: &Path,
         projections_dir: PathBuf,
+        backend: crate::config::runtime::PardosaBackend,
     ) -> Result<Arc<Self>, std::io::Error> {
-        let event_store = Arc::new(MsgpackFileStore::<DomainEvent>::new(events_dir));
+        let event_store = Arc::new(open_event_store(events_dir, backend)?);
         let projection_store = Arc::new(
             FileProjectionStore::<crate::projection::EvidenceProjection>::new(
                 projections_dir,

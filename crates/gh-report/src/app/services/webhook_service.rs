@@ -97,7 +97,6 @@ mod tests {
     use crate::app::services::merger::MergerHandles;
     use crate::app::state::EventStoreImpl;
     use crate::domain::events::DomainEvent;
-    use cherry_pit_gateway::MsgpackFileStore;
 
     /// Build a Mission-H-shaped [`WebhookService`] backed by three
     /// [`cherry_pit_merger::Merger`] tasks spawned via
@@ -113,7 +112,7 @@ mod tests {
         WebhookService,
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(dir.path()));
+        let store = Arc::new(EventStoreImpl::create_pgno(&dir.path().join("events.pgno")).unwrap());
         let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
         let runs_by_key = Arc::new(Mutex::new(HashMap::new()));
         let repos_by_key = Arc::new(Mutex::new(HashMap::new()));
@@ -208,12 +207,13 @@ mod tests {
         };
         assert_eq!(tracked_seq.get(), 1);
 
-        let expected = dir.path().join(format!("{}.msgpack", assigned_id.get()));
+        let expected = dir.path().join("events.pgno");
         assert!(
             expected.exists(),
             "expected `{}` to exist after first append",
             expected.display(),
         );
+        assert!(!dir.path().join("1.msgpack").exists());
     }
 
     /// Mission H — fresh-per-delivery semantics: two ingests with

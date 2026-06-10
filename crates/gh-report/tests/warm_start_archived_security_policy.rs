@@ -30,8 +30,8 @@
 use std::sync::Arc;
 
 use cherry_pit_core::{CorrelationContext, EventStore};
-use cherry_pit_gateway::MsgpackFileStore;
 use gh_report::aggregate::metrics::{aggregate_metrics, build_collection_statistics};
+use gh_report::app::state::EventStoreImpl;
 use gh_report::app::state::AppState;
 use gh_report::domain::checks::{
     BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersResult,
@@ -52,7 +52,11 @@ async fn warm_start_replay_preserves_archived_public_security_policy_in_aggregat
 
     seed_repo_evaluated_envelopes(&events_dir).await;
 
-    let app_state = AppState::with_stores(&events_dir, projections_dir)
+    let app_state = AppState::with_stores(
+        &events_dir,
+        projections_dir,
+        gh_report::config::runtime::PardosaBackend::Pgno,
+    )
         .await
         .expect("with_stores");
     app_state
@@ -148,7 +152,7 @@ async fn warm_start_replay_preserves_archived_public_security_policy_in_aggregat
 }
 
 async fn seed_repo_evaluated_envelopes(events_dir: &std::path::Path) {
-    let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(events_dir));
+    let store = Arc::new(EventStoreImpl::create_pgno(&events_dir.join("events.pgno")).unwrap());
     let ctx = CorrelationContext::none();
 
     for (slug, visibility, archived, policy_status, source_ts) in [

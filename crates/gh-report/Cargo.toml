@@ -51,6 +51,9 @@ cherry-pit-core = { workspace = true, features = ["testing"] }
 # `cherry-pit-core` (CHE-0064:R2 supertrait) — gh-report does not
 # name the underlying encoding crate directly.
 cherry-pit-gateway = { workspace = true }
+cherry-pit-pardosa = { workspace = true }
+pardosa = { path = "../pardosa", version = "=0.4.0" }
+pardosa-nats = { path = "../pardosa-nats", version = "=0.1.0" }
 
 # cherry-pit-app — root composition crate. WU-6 v2 B5' uses
 # `InProcessEventBus<DomainEvent>` (CHE-0051:R2) and the

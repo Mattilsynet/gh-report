@@ -1824,6 +1824,7 @@ mod tests {
             no_resume: true,
             max_workers: 4,
             store_dir: std::path::PathBuf::from("/tmp/test-store"),
+            pardosa_backend: crate::config::runtime::PardosaBackend::Pgno,
             force_unlock: false,
             dashboard_config: DashboardConfig::default(),
         }

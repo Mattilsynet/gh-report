@@ -126,7 +126,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
 
     let events_dir = config.store_dir.join("events").join(&config.org_name);
     let projections_dir = config.store_dir.join("projections").join(&config.org_name);
-    let app_state = AppState::with_stores(&events_dir, projections_dir)
+    let app_state = AppState::with_stores(&events_dir, projections_dir, config.pardosa_backend)
         .await
         .map_err(|source| {
             AppError::Persistence(PersistenceError::LoadFailed {

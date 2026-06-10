@@ -46,7 +46,6 @@
 use std::sync::Arc;
 
 use cherry_pit_core::{CorrelationContext, EventStore};
-use cherry_pit_gateway::MsgpackFileStore;
 use gh_report::app::state::{AppState, EventStoreImpl};
 use gh_report::domain::checks::{
     BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersResult,
@@ -66,7 +65,7 @@ async fn bootstrap_replay_populates_routing_indices() {
     std::fs::create_dir_all(&projections_dir).expect("mk projections dir");
 
     {
-        let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(&events_dir));
+        let store = Arc::new(EventStoreImpl::create_pgno(&events_dir.join("events.pgno")).unwrap());
         let ctx = CorrelationContext::none();
 
         let run_event = DomainEvent::SweepStarted {
@@ -96,7 +95,11 @@ async fn bootstrap_replay_populates_routing_indices() {
             .expect("create Repo aggregate");
     }
 
-    let app_state = AppState::with_stores(&events_dir, projections_dir)
+    let app_state = AppState::with_stores(
+        &events_dir,
+        projections_dir,
+        gh_report::config::runtime::PardosaBackend::Pgno,
+    )
         .await
         .expect("with_stores");
     app_state
@@ -175,7 +178,11 @@ async fn restart_rehydrates_projection_state() {
     std::fs::create_dir_all(&events_dir).expect("mk events dir");
     std::fs::create_dir_all(&projections_dir).expect("mk projections dir");
 
-    let app_state = AppState::with_stores(&events_dir, projections_dir)
+    let app_state = AppState::with_stores(
+        &events_dir,
+        projections_dir,
+        gh_report::config::runtime::PardosaBackend::Pgno,
+    )
         .await
         .expect("with_stores");
     let event_store: &Arc<EventStoreImpl> = app_state

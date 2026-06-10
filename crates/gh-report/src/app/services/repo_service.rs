@@ -121,7 +121,6 @@ mod tests {
     use crate::app::services::merger::MergerHandles;
     use crate::app::state::EventStoreImpl;
     use crate::domain::events::DomainEvent;
-    use cherry_pit_gateway::MsgpackFileStore;
 
     /// Build a Mission-H-shaped [`RepoService`] backed by three
     /// [`cherry_pit_merger::Merger`] tasks spawned via
@@ -138,7 +137,7 @@ mod tests {
         RepoService,
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(dir.path()));
+        let store = Arc::new(EventStoreImpl::create_pgno(&dir.path().join("events.pgno")).unwrap());
         let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
         let runs_by_key = Arc::new(Mutex::new(HashMap::new()));
         let repos_by_key = Arc::new(Mutex::new(HashMap::new()));
@@ -237,7 +236,7 @@ mod tests {
 
         assert_tracker_seq(&tracker, assigned_id, 3);
 
-        assert_single_msgpack_file(&dir, assigned_id);
+        assert_pardosa_pgno_file(&dir);
 
         let err = svc
             .record_evaluation(
@@ -307,14 +306,15 @@ mod tests {
         assert_eq!(seq.get(), expected);
     }
 
-    fn assert_single_msgpack_file(dir: &TempDir, id: AggregateId) {
-        let expected = dir.path().join(format!("{}.msgpack", id.get()));
+    fn assert_pardosa_pgno_file(dir: &TempDir) {
+        let expected = dir.path().join("events.pgno");
         assert!(
             expected.exists(),
             "expected `{}` to exist under {}",
             expected.display(),
             dir.path().display(),
         );
+        assert!(!dir.path().join("1.msgpack").exists());
     }
 
     /// Mission H — covers the lazy-create branch on `record_removal`:
@@ -431,20 +431,20 @@ mod tests {
             *guard.get(domain_key).expect("index should map domain_key")
         };
 
-        let msgpack_files: Vec<std::path::PathBuf> = std::fs::read_dir(dir.path())
+        let pgno_files: Vec<std::path::PathBuf> = std::fs::read_dir(dir.path())
             .expect("read tempdir")
             .filter_map(std::result::Result::ok)
             .map(|e| e.path())
             .filter(|p| {
                 p.extension()
                     .and_then(std::ffi::OsStr::to_str)
-                    .is_some_and(|ext| ext == "msgpack")
+                    .is_some_and(|ext| ext == "pgno")
             })
             .collect();
         assert_eq!(
-            msgpack_files.len(),
+            pgno_files.len(),
             1,
-            "expected exactly one per-aggregate file (no orphan streams), found {msgpack_files:?}"
+            "expected exactly one pardosa event-log file, found {pgno_files:?}"
         );
 
         let loaded = store.load(assigned_id).await.expect("load");

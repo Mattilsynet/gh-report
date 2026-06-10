@@ -29,7 +29,7 @@ use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
 
 use cherry_pit_core::{AggregateId, BusError, CorrelationContext, EventBus, EventEnvelope};
-use cherry_pit_gateway::MsgpackFileStore;
+use gh_report::app::state::EventStoreImpl;
 use tempfile::TempDir;
 use tracing::Subscriber;
 use tracing::field::{Field, Visit};
@@ -107,7 +107,7 @@ impl<S: Subscriber> Layer<S> for CaptureLayer {
 #[tokio::test]
 async fn publish_failure_emits_structured_error_per_envelope() {
     let dir = TempDir::new().expect("tempdir");
-    let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(dir.path()));
+    let store = Arc::new(EventStoreImpl::create_pgno(&dir.path().join("events.pgno")).unwrap());
     let bus: Arc<FailingBus> = Arc::new(FailingBus);
     let runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>> =
         Arc::new(Mutex::new(HashMap::new()));

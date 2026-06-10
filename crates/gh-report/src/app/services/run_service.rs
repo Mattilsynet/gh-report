@@ -213,7 +213,6 @@ mod tests {
     use crate::app::services::merger::MergerHandles;
     use crate::app::state::EventStoreImpl;
     use crate::domain::events::DomainEvent;
-    use cherry_pit_gateway::MsgpackFileStore;
 
     /// Build a Mission-H-shaped [`RunService`] backed by:
     ///
@@ -241,7 +240,7 @@ mod tests {
         RunService,
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(dir.path()));
+        let store = Arc::new(EventStoreImpl::create_pgno(&dir.path().join("events.pgno")).unwrap());
         let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
         let runs_by_key = Arc::new(Mutex::new(HashMap::new()));
         let repos_by_key = Arc::new(Mutex::new(HashMap::new()));
@@ -372,7 +371,7 @@ mod tests {
 
         assert_tracker_seq(&tracker, assigned_id, 5);
 
-        assert_single_msgpack_file(&dir, assigned_id);
+        assert_pardosa_pgno_file(&dir);
     }
 
     fn assert_lifecycle_stream(loaded: &[EventEnvelope<DomainEvent>]) {
@@ -452,14 +451,15 @@ mod tests {
         );
     }
 
-    fn assert_single_msgpack_file(dir: &TempDir, id: AggregateId) {
-        let expected = dir.path().join(format!("{}.msgpack", id.get()));
+    fn assert_pardosa_pgno_file(dir: &TempDir) {
+        let expected = dir.path().join("events.pgno");
         assert!(
             expected.exists(),
             "expected `{}` to exist under {}",
             expected.display(),
             dir.path().display(),
         );
+        assert!(!dir.path().join("1.msgpack").exists());
     }
 
     /// CHE-0024:R1 — append-path called for an unknown `batch_id`
@@ -533,12 +533,13 @@ mod tests {
         };
         assert_eq!(tracked_seq.get(), 1, "first event has sequence 1");
 
-        let expected = dir.path().join(format!("{}.msgpack", assigned_id.get()));
+        let expected = dir.path().join("events.pgno");
         assert!(
             expected.exists(),
             "expected `{}` to exist after first append",
             expected.display(),
         );
+        assert!(!dir.path().join("1.msgpack").exists());
         let loaded = store.load(assigned_id).await.expect("load should succeed");
         assert_eq!(loaded.len(), 1, "exactly one envelope persisted");
         assert_eq!(loaded[0].sequence().get(), 1, "first event has sequence 1");

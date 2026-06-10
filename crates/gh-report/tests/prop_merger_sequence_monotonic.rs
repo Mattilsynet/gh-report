@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use cherry_pit_core::{
     AggregateId, BusError, CorrelationContext, EventBus, EventEnvelope, EventStore,
 };
-use cherry_pit_gateway::MsgpackFileStore;
+use gh_report::app::state::EventStoreImpl;
 use proptest::collection::vec;
 use proptest::prelude::*;
 use tempfile::TempDir;
@@ -69,7 +69,7 @@ fn build_record_eval(name: &'static str) -> RecordEvaluation {
 
 async fn drive_and_verify(evals: Vec<Eval>) -> Result<(), TestCaseError> {
     let dir = TempDir::new().expect("tempdir");
-    let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(dir.path()));
+    let store = Arc::new(EventStoreImpl::create_pgno(&dir.path().join("events.pgno")).unwrap());
     let bus: Arc<NoopBus> = Arc::new(NoopBus);
     let runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>> =
         Arc::new(Mutex::new(HashMap::new()));

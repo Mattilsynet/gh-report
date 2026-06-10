@@ -78,7 +78,6 @@ use std::sync::{Arc, Mutex};
 
 use cherry_pit_app::InProcessEventBus;
 use cherry_pit_core::{AggregateId, CorrelationContext, EventStore};
-use cherry_pit_gateway::MsgpackFileStore;
 use gh_report::app::state::EventStoreImpl;
 
 use gh_report::app::services::MergerHandles;
@@ -127,7 +126,7 @@ async fn capture_pre_smi_corpus() {
     let target = prepare_fixture_dir();
 
     let store_dir = tempfile::tempdir().expect("tempdir");
-    let store = Arc::new(MsgpackFileStore::<DomainEvent>::new(store_dir.path()));
+    let store = Arc::new(EventStoreImpl::create_pgno(&store_dir.path().join("events.pgno")).unwrap());
     let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
     let runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>> =
         Arc::new(Mutex::new(HashMap::new()));

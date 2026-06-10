@@ -21,6 +21,21 @@ enum LogFormat {
     Json,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum PardosaBackendArg {
+    Pgno,
+    Nats,
+}
+
+impl From<PardosaBackendArg> for runtime::PardosaBackend {
+    fn from(value: PardosaBackendArg) -> Self {
+        match value {
+            PardosaBackendArg::Pgno => Self::Pgno,
+            PardosaBackendArg::Nats => Self::Nats,
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "gh-report",
@@ -60,6 +75,10 @@ struct Cli {
     #[arg(long, default_value = "store")]
     store_dir: PathBuf,
 
+    /// Pardosa backend for the event log.
+    #[arg(long, default_value = "pgno", env = "GH_REPORT_PARDOSA_BACKEND")]
+    pardosa_backend: PardosaBackendArg,
+
     /// Dump the baseline file as JSON to stdout and exit.
     #[arg(long)]
     dump_baseline: bool,
@@ -87,8 +106,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
         let events_dir = cli.store_dir.join("events").join(org);
         let projections_dir = cli.store_dir.join("projections").join(org);
-        let app_state =
-            gh_report::app::state::AppState::with_stores(&events_dir, projections_dir).await?;
+        let app_state = gh_report::app::state::AppState::with_stores(
+            &events_dir,
+            projections_dir,
+            runtime::PardosaBackend::from(cli.pardosa_backend),
+        )
+        .await?;
         if let Err(e) = app_state.snapshot_fast_path_init().await {
             eprintln!("error: projection init failed: {e}");
             std::process::exit(1);
@@ -130,7 +153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let dashboard_config = dashboard::DashboardConfig::new(cli.pass_threshold, cli.warn_threshold)?;
-    let config = runtime::RuntimeConfig::with_force_unlock(
+    let mut config = runtime::RuntimeConfig::with_force_unlock(
         org,
         cli.no_resume,
         cli.max_workers,
@@ -138,6 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli.force_unlock,
         dashboard_config,
     )?;
+    config.pardosa_backend = runtime::PardosaBackend::from(cli.pardosa_backend);
     gh_report::app::daemon::run(config).await?;
 
     Ok(())
@@ -219,6 +243,22 @@ mod tests {
             Cli::try_parse_from(["gh-report", "--org", "test-org", "--store-dir", "/data/gh"])
                 .unwrap();
         assert_eq!(cli.store_dir, std::path::PathBuf::from("/data/gh"));
+    }
+
+    #[test]
+    fn cli_parses_pardosa_backend() {
+        let cli = Cli::try_parse_from([
+            "gh-report",
+            "--org",
+            "test-org",
+            "--pardosa-backend",
+            "nats",
+        ])
+        .unwrap();
+        assert!(matches!(
+            runtime::PardosaBackend::from(cli.pardosa_backend),
+            runtime::PardosaBackend::Nats
+        ));
     }
 
     #[test]

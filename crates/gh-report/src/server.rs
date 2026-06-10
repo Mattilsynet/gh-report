@@ -239,6 +239,7 @@ mod tests {
             no_resume: true,
             max_workers: 4,
             store_dir: std::path::PathBuf::from("/tmp/ws-e2e-test"),
+            pardosa_backend: crate::config::runtime::PardosaBackend::Pgno,
             force_unlock: false,
             dashboard_config: crate::config::dashboard::DashboardConfig::default(),
         };
