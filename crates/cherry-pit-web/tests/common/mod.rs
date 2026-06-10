@@ -38,8 +38,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use axum::http::HeaderValue;
 use cherry_pit_web::{
-    LayerLimits, PageEntry, PageUpdate, ProjectionSource, ProjectionState, build_projection_router,
-    security_headers,
+    LayerLimits, PageEntry, PageUpdate, ProjectionSource, ProjectionState, WsAuthLimits,
+    build_projection_router, security_headers,
 };
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
@@ -140,6 +140,7 @@ where
     let app = build_projection_router(
         state,
         LayerLimits::permissive_for_tests(),
+        WsAuthLimits::permissive_for_tests(),
         axum::Router::new(),
     );
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -196,6 +197,7 @@ where
     let app = build_projection_router(
         state,
         LayerLimits::permissive_for_tests(),
+        WsAuthLimits::permissive_for_tests(),
         axum::Router::new(),
     )
     .layer(axum::middleware::from_fn(move |req, next| {

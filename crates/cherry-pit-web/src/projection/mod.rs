@@ -37,6 +37,7 @@ use tokio::sync::Semaphore;
 use tower_http::limit::RequestBodyLimitLayer;
 
 use crate::middleware::LayerLimits;
+use crate::middleware::WsAuthLimits;
 use crate::middleware::limits::http_concurrency_limit;
 
 /// Construct an axum router for the projection adapter.
@@ -68,6 +69,15 @@ use crate::middleware::limits::http_concurrency_limit;
 ///       `Extension<Arc<Semaphore>>` by [`handlers::ws_handler`], which
 ///       calls `try_acquire_owned` on upgrade and returns 503 on
 ///       exhaustion (SEC-0003:R3 route-scoped per CHE-0049:R3 + R11).
+/// - `ws_auth` — typed [`WsAuthLimits`] carrying the WS authentication
+///   policy attached at the upgrade boundary (SEC-0012:R1). The default
+///   `WsAuthLimits::default()` elects
+///   `WebSocketOriginPolicy::Strict` — absent or mismatched `Origin`
+///   is rejected with `403 FORBIDDEN` before the handshake completes
+///   (SEC-0012:R2). Consumers serving non-browser clients elect
+///   `WsAuthLimits::permissive_for_tests()` or construct with
+///   `origin_policy = WebSocketOriginPolicy::AllowAbsent`,
+///   accepting CWE-346 / CWE-1385 risk per SEC-0012:R3.
 /// - `extra_routes` — stateless [`Router`] merged onto the projection
 ///   surface after `.with_state(state)`. Auth probes, status pages,
 ///   anything outside the projection contract. The projection state
@@ -83,6 +93,7 @@ use crate::middleware::limits::http_concurrency_limit;
 pub fn build_projection_router<P>(
     state: ProjectionState<P>,
     limits: LayerLimits,
+    ws_auth: WsAuthLimits,
     extra_routes: Router,
 ) -> Router
 where
@@ -100,4 +111,5 @@ where
             http_concurrency_limit(sem, request, next)
         }))
         .layer(Extension(ws_semaphore))
+        .layer(Extension(ws_auth))
 }

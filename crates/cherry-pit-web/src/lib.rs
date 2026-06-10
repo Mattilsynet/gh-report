@@ -59,8 +59,9 @@ pub mod path;
 
 pub use command_router::{CommandRouter, DispatchOutcome};
 pub use middleware::{
-    HttpTraceLayer, LayerLimits, NormalizedPath, SVG_CSP, compress_zstd, compute_etag,
-    http_trace_layer, normalize_request_path, sanitize_path_segment, security_headers,
+    HttpTraceLayer, LayerLimits, NormalizedPath, SVG_CSP, WebSocketOriginPolicy, WsAuthLimits,
+    compress_zstd, compute_etag, http_trace_layer, normalize_request_path, sanitize_path_segment,
+    security_headers,
 };
 #[cfg(feature = "projection")]
 pub use projection::{

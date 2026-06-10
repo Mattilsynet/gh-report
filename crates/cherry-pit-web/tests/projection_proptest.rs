@@ -39,8 +39,8 @@ use std::sync::Arc;
 
 use axum::Router;
 use cherry_pit_web::{
-    LayerLimits, PageEntry, PageUpdate, ProjectionSource, ProjectionState, build_projection_router,
-    normalize_request_path, sanitize_path_segment,
+    LayerLimits, PageEntry, PageUpdate, ProjectionSource, ProjectionState, WsAuthLimits,
+    build_projection_router, normalize_request_path, sanitize_path_segment,
 };
 use proptest::prelude::*;
 use tokio::net::TcpListener;
@@ -78,8 +78,12 @@ impl ProjectionSource for StubSource {
 async fn spawn_stub() -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let source = StubSource::new();
     let state = ProjectionState::from_arc(source);
-    let app: Router =
-        build_projection_router(state, LayerLimits::permissive_for_tests(), Router::new());
+    let app: Router = build_projection_router(
+        state,
+        LayerLimits::permissive_for_tests(),
+        WsAuthLimits::permissive_for_tests(),
+        Router::new(),
+    );
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {

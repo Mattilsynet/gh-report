@@ -36,6 +36,7 @@ pub(crate) mod limits;
 pub(crate) mod path;
 pub(crate) mod security;
 pub(crate) mod trace;
+pub(crate) mod ws_auth;
 
 use axum::{
     extract::Request,
@@ -55,6 +56,7 @@ pub use limits::LayerLimits;
 pub use path::{NormalizedPath, PathSegmentError, normalize_request_path, sanitize_path_segment};
 pub use security::{SVG_CSP, security_headers};
 pub use trace::{HttpTraceLayer, http_trace_layer};
+pub use ws_auth::{WebSocketOriginPolicy, WsAuthLimits};
 
 /// Response header used to echo the active correlation id, per
 /// CHE-0049 R5.

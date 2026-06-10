@@ -73,6 +73,7 @@ use tokio::sync::{Semaphore, broadcast};
 use super::port::ProjectionSource;
 use super::state::{PageEntry, ProjectionState};
 use crate::middleware::compression::{Encoding, negotiate_encoding};
+use crate::middleware::ws_auth::{WebSocketOriginPolicy, WsAuthLimits};
 
 /// Default Content-Security-Policy header value applied to every response
 /// emitted by the projection adapter. Matches the donor crate's default.
@@ -278,30 +279,36 @@ fn etag_weak_match(client_val: &HeaderValue, server_val: &HeaderValue) -> bool {
 
 /// WebSocket upgrade handler.
 ///
-/// Validates `Origin == Host` (CSWSH defence per donor), then attempts
-/// to acquire a permit from the WS semaphore extension (CHE-0062:R1
-/// SEC-0003:R3 route-scoped) — `503 Service Unavailable` on exhaustion,
-/// short-circuiting before the upgrade completes. On success the owned
-/// permit moves into [`ws_session`] for the connection lifetime; drop
-/// on session exit frees the slot. Mirrors the donor's
-/// `server::ws_handler` byte-for-byte so CHE-0062's falsifier tests at
+/// Validates `Origin` against the consumer-elected
+/// [`WebSocketOriginPolicy`] carried on the `Extension<WsAuthLimits>`
+/// attached by [`super::build_projection_router`] (SEC-0012:R1). On
+/// rejection (absent `Origin` under `Strict`, malformed `Origin`, or
+/// mismatched host) the handler returns `403 FORBIDDEN` before the
+/// upgrade completes. On acceptance, attempts to acquire a permit
+/// from the WS semaphore extension (CHE-0062:R1 SEC-0003:R3
+/// route-scoped) — `503 Service Unavailable` on exhaustion. On
+/// success the owned permit moves into [`ws_session`] for the
+/// connection lifetime; drop on session exit frees the slot. Mirrors
+/// the donor's `server::ws_handler` byte-for-byte for the availability
+/// branch so CHE-0062's falsifier tests at
 /// `crates/gh-report/src/infra/server/server.rs:2164,:2209` observe an
 /// identical accept/shed topology after Track 4.3 migration.
 ///
-/// The `Extension<Arc<Semaphore>>` is attached by
-/// [`super::build_projection_router`]; the WS handler is the **only**
-/// consumer of that extension. `state` is the typed projection state;
-/// cloning is an `Arc` bump.
+/// Both `Extension<Arc<Semaphore>>` and `Extension<WsAuthLimits>` are
+/// attached by [`super::build_projection_router`]; the WS handler is
+/// the **only** consumer of those extensions. `state` is the typed
+/// projection state; cloning is an `Arc` bump.
 pub(crate) async fn ws_handler<P>(
     ws: WebSocketUpgrade,
     State(state): State<ProjectionState<P>>,
     Extension(ws_sem): Extension<Arc<Semaphore>>,
+    Extension(ws_auth): Extension<WsAuthLimits>,
     headers: HeaderMap,
 ) -> Response
 where
     P: ProjectionSource,
 {
-    if !validate_ws_origin(&headers) {
+    if !validate_ws_origin(&headers, &ws_auth.origin_policy) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let Ok(permit) = ws_sem.clone().try_acquire_owned() else {
@@ -382,13 +389,27 @@ pub(crate) async fn ws_session<P>(
     let _ = sender.send(Message::Close(None)).await;
 }
 
-/// Validate `Origin == Host` for CSWSH defence. Mirrors the donor
-/// crate's `server::validate_ws_origin` semantics: absent
-/// `Origin` is permitted (non-browser client); non-HTTP(S) schemes are
-/// rejected; default ports are normalised before comparison.
-pub(crate) fn validate_ws_origin(headers: &HeaderMap) -> bool {
+/// Validate the inbound `Origin` against `Host` for CSWSH defence,
+/// gated by the consumer-elected [`WebSocketOriginPolicy`] per
+/// SEC-0012.
+///
+/// Behaviour split by `policy`:
+///
+/// - **Absent `Origin`**: depends on `policy`.
+///   [`WebSocketOriginPolicy::Strict`] → reject (SEC-0012:R2);
+///   [`WebSocketOriginPolicy::AllowAbsent`] → permit (SEC-0012:R3,
+///   non-browser-client escape hatch).
+/// - **Present `Origin`**: parsed and compared to `Host` with
+///   donor-derived authority normalisation (default-port stripping,
+///   IPv6 bracket handling). Mismatched, malformed, or non-HTTP(S)
+///   `Origin` is rejected regardless of `policy`.
+///
+/// Mirrors the donor crate's `server::validate_ws_origin` semantics
+/// for the present-`Origin` branch; the absent-branch policy gate is
+/// the SEC-0012 increment.
+pub(crate) fn validate_ws_origin(headers: &HeaderMap, policy: &WebSocketOriginPolicy) -> bool {
     let Some(origin) = headers.get(header::ORIGIN) else {
-        return true;
+        return matches!(policy, WebSocketOriginPolicy::AllowAbsent);
     };
     let Ok(origin_str) = origin.to_str() else {
         return false;
@@ -492,14 +513,37 @@ mod tests {
     }
 
     #[test]
-    fn validate_ws_origin_allows_absent_origin() {
-        assert!(validate_ws_origin(&HeaderMap::new()));
+    fn validate_ws_origin_allow_absent_policy_allows_absent() {
+        assert!(validate_ws_origin(
+            &HeaderMap::new(),
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
+    }
+
+    #[test]
+    fn validate_ws_origin_strict_rejects_absent() {
+        assert!(!validate_ws_origin(
+            &HeaderMap::new(),
+            &WebSocketOriginPolicy::Strict
+        ));
+    }
+
+    #[test]
+    fn default_websocket_origin_policy_is_strict() {
+        assert_eq!(
+            WebSocketOriginPolicy::default(),
+            WebSocketOriginPolicy::Strict
+        );
+        assert!(matches!(
+            WsAuthLimits::default().origin_policy,
+            WebSocketOriginPolicy::Strict
+        ));
     }
 
     #[test]
     fn validate_ws_origin_allows_exact_match() {
         let h = make_headers(&[("origin", "https://example.com"), ("host", "example.com")]);
-        assert!(validate_ws_origin(&h));
+        assert!(validate_ws_origin(&h, &WebSocketOriginPolicy::Strict));
     }
 
     #[test]
@@ -508,19 +552,19 @@ mod tests {
             ("origin", "https://example.com:443"),
             ("host", "example.com"),
         ]);
-        assert!(validate_ws_origin(&h));
+        assert!(validate_ws_origin(&h, &WebSocketOriginPolicy::Strict));
     }
 
     #[test]
     fn validate_ws_origin_rejects_mismatched_host() {
         let h = make_headers(&[("origin", "https://evil.com"), ("host", "example.com")]);
-        assert!(!validate_ws_origin(&h));
+        assert!(!validate_ws_origin(&h, &WebSocketOriginPolicy::Strict));
     }
 
     #[test]
     fn validate_ws_origin_rejects_non_http_scheme() {
         let h = make_headers(&[("origin", "file://local"), ("host", "example.com")]);
-        assert!(!validate_ws_origin(&h));
+        assert!(!validate_ws_origin(&h, &WebSocketOriginPolicy::Strict));
     }
 
     #[test]
@@ -631,7 +675,7 @@ mod tests {
             HeaderValue::from_static("https://example.com:8080"),
         );
         headers.insert(header::HOST, HeaderValue::from_static("example.com:8080"));
-        assert!(validate_ws_origin(&headers));
+        assert!(validate_ws_origin(&headers, &WebSocketOriginPolicy::Strict));
     }
 
     #[test]
@@ -642,7 +686,7 @@ mod tests {
             HeaderValue::from_static("https://example.com:443"),
         );
         headers.insert(header::HOST, HeaderValue::from_static("example.com"));
-        assert!(validate_ws_origin(&headers));
+        assert!(validate_ws_origin(&headers, &WebSocketOriginPolicy::Strict));
     }
 
     #[test]
@@ -652,7 +696,10 @@ mod tests {
             header::ORIGIN,
             HeaderValue::from_static("https://example.com"),
         );
-        assert!(!validate_ws_origin(&headers));
+        assert!(!validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::Strict
+        ));
     }
 
     #[test]
@@ -663,7 +710,7 @@ mod tests {
             HeaderValue::from_static("http://localhost:8080"),
         );
         headers.insert(header::HOST, HeaderValue::from_static("localhost:8080"));
-        assert!(validate_ws_origin(&headers));
+        assert!(validate_ws_origin(&headers, &WebSocketOriginPolicy::Strict));
     }
 
     #[test]
@@ -674,7 +721,10 @@ mod tests {
             HeaderValue::from_static("https://sub.example.com"),
         );
         headers.insert(header::HOST, HeaderValue::from_static("example.com"));
-        assert!(!validate_ws_origin(&headers));
+        assert!(!validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::Strict
+        ));
     }
 
     #[test]
@@ -685,7 +735,10 @@ mod tests {
             HeaderValue::from_static("https://example.com:9999"),
         );
         headers.insert(header::HOST, HeaderValue::from_static("example.com:8080"));
-        assert!(!validate_ws_origin(&headers));
+        assert!(!validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::Strict
+        ));
     }
 
     #[test]
@@ -696,7 +749,10 @@ mod tests {
             HeaderValue::from_static("ftp://example.com"),
         );
         headers.insert(header::HOST, HeaderValue::from_static("example.com"));
-        assert!(!validate_ws_origin(&headers));
+        assert!(!validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::Strict
+        ));
     }
 
     #[test]
@@ -704,7 +760,10 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(header::ORIGIN, HeaderValue::from_static("example.com"));
         headers.insert(header::HOST, HeaderValue::from_static("example.com"));
-        assert!(!validate_ws_origin(&headers));
+        assert!(!validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::Strict
+        ));
     }
 
     #[test]
@@ -715,7 +774,7 @@ mod tests {
             HeaderValue::from_static("https://example.com/path"),
         );
         headers.insert(header::HOST, HeaderValue::from_static("example.com"));
-        assert!(validate_ws_origin(&headers));
+        assert!(validate_ws_origin(&headers, &WebSocketOriginPolicy::Strict));
     }
 
     #[test]

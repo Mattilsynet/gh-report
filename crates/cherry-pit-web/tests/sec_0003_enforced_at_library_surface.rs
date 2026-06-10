@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use cherry_pit_web::{LayerLimits, ProjectionState, build_projection_router};
+use cherry_pit_web::{LayerLimits, ProjectionState, WsAuthLimits, build_projection_router};
 use common::MockProjectionSource;
 use tower::ServiceExt;
 
@@ -48,7 +48,12 @@ async fn body_over_max_returns_413() {
         max_inflight_requests: 1024,
         max_ws_connections: 1024,
     };
-    let app = build_projection_router(state, limits, axum::Router::new());
+    let app = build_projection_router(
+        state,
+        limits,
+        WsAuthLimits::permissive_for_tests(),
+        axum::Router::new(),
+    );
 
     let big_body = vec![0u8; 2048];
     let req = Request::builder()
@@ -78,7 +83,12 @@ async fn body_under_max_passes_layer() {
         max_inflight_requests: 1024,
         max_ws_connections: 1024,
     };
-    let app = build_projection_router(state, limits, axum::Router::new());
+    let app = build_projection_router(
+        state,
+        limits,
+        WsAuthLimits::permissive_for_tests(),
+        axum::Router::new(),
+    );
 
     let small_body = vec![0u8; 16];
     let req = Request::builder()
@@ -113,7 +123,12 @@ async fn inflight_zero_permits_returns_503() {
         max_inflight_requests: 0,
         max_ws_connections: 1024,
     };
-    let app = build_projection_router(state, limits, axum::Router::new());
+    let app = build_projection_router(
+        state,
+        limits,
+        WsAuthLimits::permissive_for_tests(),
+        axum::Router::new(),
+    );
 
     let req = Request::builder()
         .uri("/v1/healthz")
@@ -154,7 +169,12 @@ async fn ws_zero_permits_returns_503() {
         max_inflight_requests: 1024,
         max_ws_connections: 0,
     };
-    let app = build_projection_router(state, limits, axum::Router::new());
+    let app = build_projection_router(
+        state,
+        limits,
+        WsAuthLimits::permissive_for_tests(),
+        axum::Router::new(),
+    );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local_addr");
@@ -195,7 +215,12 @@ async fn ws_permit_released_on_disconnect() {
         max_inflight_requests: 1024,
         max_ws_connections: 1,
     };
-    let app = build_projection_router(state, limits, axum::Router::new());
+    let app = build_projection_router(
+        state,
+        limits,
+        WsAuthLimits::permissive_for_tests(),
+        axum::Router::new(),
+    );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local_addr");
@@ -246,7 +271,12 @@ async fn permissive_limits_allow_healthz() {
     let source: Arc<MockProjectionSource> = MockProjectionSource::new();
     let state = ProjectionState::from_arc(source);
     let limits = LayerLimits::permissive_for_tests();
-    let app = build_projection_router(state, limits, axum::Router::new());
+    let app = build_projection_router(
+        state,
+        limits,
+        WsAuthLimits::permissive_for_tests(),
+        axum::Router::new(),
+    );
 
     let req = Request::builder()
         .uri("/v1/healthz")

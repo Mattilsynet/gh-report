@@ -19,7 +19,9 @@
 use std::time::Duration;
 
 use cherry_pit_core::CorrelationContext;
-use cherry_pit_web::{LayerLimits, PageUpdate, ProjectionState, build_projection_router};
+use cherry_pit_web::{
+    LayerLimits, PageUpdate, ProjectionState, WsAuthLimits, build_projection_router,
+};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::time::timeout;
@@ -52,6 +54,7 @@ async fn ws_envelope_carries_v1_and_refuses_event_envelope_shape() {
     let app = build_projection_router(
         state,
         LayerLimits::permissive_for_tests(),
+        WsAuthLimits::permissive_for_tests(),
         axum::Router::new(),
     );
 
