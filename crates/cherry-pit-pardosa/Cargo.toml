@@ -1,0 +1,31 @@
+[package]
+name = "cherry-pit-pardosa"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Cherry-pit EventStore adapter backed by pardosa"
+
+[lints]
+workspace = true
+
+[lib]
+name = "cherry_pit_pardosa"
+path = "src/lib.rs"
+
+[dependencies]
+cherry-pit-core = { workspace = true }
+pardosa = { path = "../pardosa", version = "=0.4.0" }
+pardosa-schema = { path = "../pardosa-schema", version = "=0.1.0" }
+rmp-serde = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+uuid = { workspace = true }
+jiff = { workspace = true }
