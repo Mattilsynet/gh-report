@@ -7,12 +7,17 @@
 //! - [`repo_service::RepoService`] — Repo aggregate use cases.
 //! - [`webhook_service::WebhookService`] — `WebhookDelivery` use case.
 //!
-//! ## Method body status (Inc B7'a-5)
+//! ## Post-Mission-H shape (`adr-fmt-cq7vb.11`)
 //!
-//! Method bodies are `unimplemented!()` skeletons. The
-//! load→handle→append→publish wiring lands in **B7'b**; the existing
-//! 14 production publish sites (`collect.rs`/`daemon.rs`/
-//! `webhook/mod.rs`) migrate to these service calls in **B7'c**.
+//! The pre-mission single 8-variant `MergerCommand` + 700-LoC
+//! in-crate `Merger` is replaced by three per-aggregate
+//! [`MergerArm`](cherry_pit_merger::MergerArm) impls (see [`arms`])
+//! plus three [`MergerHandle`](cherry_pit_merger::MergerHandle) clones
+//! bundled into [`merger::MergerHandles`]. The lifted
+//! [`cherry_pit_merger::Merger`] primitive (CHE-0069) owns the
+//! `load → handle → create-or-append → publish` triad and the I1
+//! TOCTOU resolution per aggregate. Service-method signatures are
+//! byte-identical at the call-site boundary per CHE-0054:R10.
 //!
 //! ## Signature convention (resolves brief Inc-5 requirement)
 //!
@@ -22,35 +27,14 @@
 //!   per-call clone.
 //! - The Inc 2/3/4 threading sites
 //!   (`collect.rs`/`daemon.rs`/`webhook/mod.rs`) all take `&CorrelationContext`.
-//!   B7'c call sites can pass through their already-threaded
-//!   `&corr_ctx` with zero churn — no `.clone()` required.
-//! - Diverges from the moltke mid-checkpoint suggestion of by-value
-//!   (chosen here for Q7-corpus alignment); flagged in the Inc B7'a-5
-//!   commit.
-//!
-//! ## Open γ — `EventStore` stack shape
-//!
-//! Per moltke instruction: hopper picks at Inc B7'a-5/6 wiring.
-//! Resolution: **per-aggregate concrete `EventStore` instances** (three
-//! `Arc<EventStoreImpl>`, one per service, where `EventStoreImpl` is the
-//! durable `cherry_pit_gateway::MsgpackFileStore<DomainEvent>`).
-//! CHE-0054:R8
-//! permits either; per-aggregate keeps each service self-contained
-//! and matches the per-aggregate write-coordination granularity
-//! justified by R4. `AppState` wiring (Inc B7'a-6) materialises the
-//! three instances.
-//!
-//! ## Open ε — `Option<Arc<...Service>>` smell
-//!
-//! Resolved at Inc B7'a-6 wiring time, not here. `AppState::new()`
-//! constructs services eagerly against the durable
-//! [`cherry_pit_gateway::MsgpackFileStore`] substrate; no
-//! `Option`-around-service wiring remains.
+//!   Call sites pass through their already-threaded `&corr_ctx` with
+//!   zero churn.
 
+pub mod arms;
 pub mod merger;
 pub mod repo_service;
 pub mod run_service;
-mod shared;
 pub mod webhook_service;
 
-pub use merger::{Merger, MergerCommand};
+pub use arms::{RepoArm, RepoCmd, RunArm, RunCmd, WebhookArm, WebhookCmd};
+pub use merger::{MergerHandles, MergerJoinHandles};

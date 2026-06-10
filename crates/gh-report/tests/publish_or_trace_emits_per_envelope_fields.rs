@@ -1,32 +1,28 @@
-//! M2.a' — Proves the bus-publish failure absorb point emits a
-//! structured `tracing::error!` per envelope with the five required
-//! fields (`event_id`, `correlation_id`, `causation_id`,
-//! `aggregate_id`, `error`) plus the existing `event` label.
+//! M2.a' — Proves the bus-publish failure absorb point inside the
+//! lifted [`cherry_pit_merger::Merger`] emits a structured
+//! `tracing::error!` per envelope with the five required fields
+//! (`event_id`, `correlation_id`, `causation_id`, `aggregate_id`,
+//! `error`) plus the existing `event` label.
 //!
 //! Cites: CHE-0024:R1 (publish failure non-fatal — events persisted),
 //!        CHE-0024:R3 (consumers reconcile via replay from `EventStore::load`),
 //!        COM-0019:R1 (structured emission at absorb point),
 //!        COM-0019:R4 (`correlation_id` flows through observability boundary),
-//!        COM-0019:R7 (`EventBus` retry-absorb telemetry — `error!` severity).
+//!        COM-0019:R7 (`EventBus` retry-absorb telemetry — `error!` severity),
+//!        CHE-0069:R7 (cherry-pit-merger's `publish_or_trace` shape).
 //!
-//! Test design (Track 4.0/3b, mission `adr-fmt-nnn3`):
-//! - The `publish_or_trace` absorb point now lives inside the
-//!   [`Merger`] task — the bus moved off `RunService` (which became a
-//!   thin `merger_tx.send(...).await` wrapper) and into the Merger
-//!   per Track 4.0/3b. The matching failure-injection seam is
-//!   `Merger::with_bus_for_test`, the canonical test-only ctor added
-//!   for this class of test (shared by step-4 / step-5 reroute tests;
-//!   not re-litigated per-step).
-//! - Wire a real `PardosaFileEventStore` (persistence still succeeds —
-//!   CHE-0024:R1) and a `FailingBus` that returns `Err(BusError)`
-//!   from `publish`. Spawn the Merger over both via
-//!   `with_bus_for_test`; drive a single `MergerCommand::StartSweep`
-//!   through the channel and await the reply.
-//! - Capture emissions via a `tracing_subscriber::Layer` that records
-//!   each event's field values into a shared `Vec`.
-//! - Assert exactly one captured ERROR event with all five required
-//!   fields on the `gh_report.eda` target (one envelope ⇒ one
-//!   per-envelope emission).
+//! Post-Mission-H — the `publish_or_trace` absorb point lives inside
+//! cherry-pit-merger's private `shared` module
+//! (`crates/cherry-pit-merger/src/shared.rs`) and emits on the
+//! `cherry_pit_merger` target. Pre-mission this lived in gh-report's
+//! own `app::services::shared` and emitted on `gh_report.eda`. The
+//! target string is the only observable change from the call-site
+//! perspective; the field set is identical.
+//!
+//! Failure injection uses [`MergerHandles::with_bus_for_test`], the
+//! gh-report-side test-only ctor that spawns three
+//! per-aggregate [`cherry_pit_merger::Merger`] tasks against a
+//! `FailingBus` test double.
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -35,18 +31,19 @@ use std::sync::{Arc, Mutex};
 use cherry_pit_core::{AggregateId, BusError, CorrelationContext, EventBus, EventEnvelope};
 use cherry_pit_gateway::MsgpackFileStore;
 use tempfile::TempDir;
-use tokio::sync::oneshot;
 use tracing::Subscriber;
 use tracing::field::{Field, Visit};
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::{Context, SubscriberExt};
 
-use gh_report::app::services::{Merger, MergerCommand};
+use gh_report::app::services::MergerHandles;
+use gh_report::app::services::run_service::RunService;
 use gh_report::domain::aggregates::run::StartSweep;
 use gh_report::domain::events::DomainEvent;
 
 /// Fake `EventBus` that always returns `Err(BusError)` from `publish`.
-/// Drives the `publish_or_trace` helper down its error arm.
+/// Drives the lifted merger's `publish_or_trace` helper down its
+/// error arm.
 #[derive(Default)]
 struct FailingBus;
 
@@ -116,19 +113,17 @@ async fn publish_failure_emits_structured_error_per_envelope() {
         Arc::new(Mutex::new(HashMap::new()));
     let repos_by_key: Arc<Mutex<HashMap<String, AggregateId>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    let deliveries_by_id: Arc<Mutex<HashMap<String, AggregateId>>> =
-        Arc::new(Mutex::new(HashMap::new()));
     let tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
-    let (merger_tx, _merger_handle) = Merger::<FailingBus>::with_bus_for_test(
+    let (handles, _joins) = MergerHandles::<FailingBus>::with_bus_for_test(
         Arc::clone(&store),
         Arc::clone(&bus),
         Arc::clone(&runs_by_key),
         Arc::clone(&repos_by_key),
-        Arc::clone(&deliveries_by_id),
         Arc::clone(&tracker),
     );
+    let svc = RunService::with_handle(handles.run);
 
     let capture = CaptureLayer::default();
     let events_handle = Arc::clone(&capture.events);
@@ -144,42 +139,32 @@ async fn publish_failure_emits_structured_error_per_envelope() {
     };
     let ctx = CorrelationContext::none();
 
-    let (reply_tx, reply_rx) = oneshot::channel();
-    merger_tx
-        .send(MergerCommand::StartSweep {
-            cmd,
-            ctx,
-            reply: reply_tx,
-        })
+    svc.start_sweep(cmd, &ctx)
         .await
-        .expect("merger channel open");
-    reply_rx
-        .await
-        .expect("merger reply delivered")
         .expect("start_sweep succeeds despite bus failure (CHE-0024:R1)");
 
     let captured = events_handle
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-    let eda_errors: Vec<&CapturedEvent> = captured
+    let merger_errors: Vec<&CapturedEvent> = captured
         .iter()
-        .filter(|e| e.target == "gh_report.eda" && e.level == "ERROR")
+        .filter(|e| e.target == "cherry_pit_merger" && e.level == "ERROR")
         .collect();
 
     assert!(
-        !eda_errors.is_empty(),
-        "expected ≥1 ERROR-level event on gh_report.eda target; \
+        !merger_errors.is_empty(),
+        "expected ≥1 ERROR-level event on cherry_pit_merger target; \
          got captured={captured:#?}",
     );
 
     assert_eq!(
-        eda_errors.len(),
+        merger_errors.len(),
         1,
-        "one envelope ⇒ one error emission; per-envelope iteration. captured={eda_errors:#?}",
+        "one envelope ⇒ one error emission; per-envelope iteration. captured={merger_errors:#?}",
     );
 
-    let evt = eda_errors[0];
+    let evt = merger_errors[0];
     for required in [
         "event_id",
         "correlation_id",

@@ -1463,6 +1463,7 @@ dependencies = [
  "cherry-pit-app",
  "cherry-pit-core",
  "cherry-pit-gateway",
+ "cherry-pit-merger",
  "cherry-pit-projection",
  "cherry-pit-storage",
  "cherry-pit-web",

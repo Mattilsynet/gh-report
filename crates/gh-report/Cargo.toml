@@ -61,6 +61,13 @@ cherry-pit-gateway = { workspace = true }
 # only for the bus impl + the `ProjectionDriverExt` trait.
 cherry-pit-app = { workspace = true }
 
+# cherry-pit-merger — canonical command-side EDA primitive per CHE-0069.
+# Mission H (`adr-fmt-cq7vb.11`): three per-aggregate `MergerArm` impls
+# (Run, Repo, Webhook) consume the lifted `Merger<A, S, B, Arm>` primitive
+# in place of gh-report's in-crate Merger. The I1 TOCTOU window is closed
+# structurally by the merger's single-task front door per CHE-0069:R4.
+cherry-pit-merger = { workspace = true }
+
 # cherry-pit-projection — durable projection snapshot+checkpoint store
 # (FileProjectionStore) per CHE-0048:R1/R2. Wired at WU-6 v2 B4'
 # (charter wu6v2-charter-1778415390); single

@@ -58,7 +58,7 @@ pub use crate::app::github_infra::GithubState;
 pub use crate::app::services::repo_service::RepoService;
 pub use crate::app::services::run_service::RunService;
 pub use crate::app::services::webhook_service::WebhookService;
-pub use crate::app::services::{Merger, MergerCommand};
+pub use crate::app::services::{MergerHandles, MergerJoinHandles};
 pub use crate::app::webhook_context::WebhookState;
 
 use crate::app::collect::JobContext;
@@ -231,16 +231,19 @@ pub struct AppState {
     /// aggregate.
     pub webhook_service: Arc<WebhookService>,
 
-    /// Lifetime guard for the Merger task spawned by
-    /// [`Merger::spawn`]. Dropping [`AppState`] drops this
-    /// [`tokio::task::JoinHandle`] which signals shutdown via the
-    /// channel-closed branch in [`Merger`]'s loop. Never joined
-    /// explicitly — process exit reclaims the task.
+    /// Lifetime guard for the three per-aggregate
+    /// [`cherry_pit_merger::Merger`] tasks spawned by
+    /// [`MergerHandles::spawn`]. Dropping [`AppState`] drops these
+    /// [`tokio::task::JoinHandle`]s which signal shutdown via the
+    /// channel-closed branch in each merger's `run` loop (once every
+    /// [`cherry_pit_merger::MergerHandle`] clone held by the services
+    /// is also dropped). Never joined explicitly — process exit
+    /// reclaims the tasks.
     #[expect(
         dead_code,
-        reason = "lifetime guard; the task is kept alive by holding this handle"
+        reason = "lifetime guard; the tasks are kept alive by holding these handles"
     )]
-    pub(crate) merger_handle: tokio::task::JoinHandle<()>,
+    pub(crate) merger_joins: MergerJoinHandles,
 
     /// Shared per-aggregate last-applied-sequence tracker
     /// (CHE-0054:R6 / CHE-0042:R3). Populated by
@@ -361,8 +364,10 @@ impl AppState {
     /// Returns the shared `Arc<Mutex<_>>` handle so integration tests
     /// (`crates/gh-report/tests/bootstrap_replay.rs`) can assert
     /// post-bootstrap population. Not intended for production callers:
-    /// production code routes through the Merger task which holds its
-    /// own `Arc<Mutex<_>>` clone (see `merger.rs:230-232`).
+    /// production code routes through the per-aggregate
+    /// [`cherry_pit_merger::Merger`] task which holds its own
+    /// `Arc<Mutex<_>>` clone (see
+    /// [`MergerHandles::spawn`](crate::app::services::merger::MergerHandles::spawn)).
     #[doc(hidden)]
     pub fn runs_by_key_for_test(&self) -> Arc<Mutex<HashMap<String, AggregateId>>> {
         Arc::clone(&self.runs_by_key)
@@ -403,23 +408,26 @@ impl AppState {
     }
 }
 
-/// Build the three `ApplicationService` surfaces over a shared
-/// [`Merger`] command channel.
+/// Build the three `ApplicationService` surfaces from a
+/// [`MergerHandles`] bundle.
 ///
-/// Post-Track-4.0/5 every service is a thin channel-send wrapper
-/// over `merger_tx`; the Merger task is the sole holder of the
-/// [`EventStore`] write handles and routing indices. The function
-/// returns `(run_service, repo_service, webhook_service)` already
-/// wrapped in `Arc` for direct assignment to `AppState` fields.
+/// Post-Mission-H (CHE-0069) every service is a thin
+/// [`cherry_pit_merger::MergerHandle::dispatch`] wrapper; the three
+/// per-aggregate [`cherry_pit_merger::Merger`] tasks (spawned via
+/// [`MergerHandles::spawn`]) are the sole holders of the
+/// [`EventStore`] write handles and per-aggregate routing indices.
+/// The function returns `(run_service, repo_service, webhook_service)`
+/// already wrapped in `Arc` for direct assignment to `AppState`
+/// fields. Per-aggregate handles are moved out of the bundle (each is
+/// only needed once); the bundle struct is consumed.
 ///
-/// [`Merger`]: super::services::merger::Merger
 /// [`EventStore`]: cherry_pit_core::EventStore
 fn build_services(
-    merger_tx: tokio::sync::mpsc::Sender<MergerCommand>,
+    handles: MergerHandles,
 ) -> (Arc<RunService>, Arc<RepoService>, Arc<WebhookService>) {
-    let run = Arc::new(RunService::with_merger_tx(merger_tx.clone()));
-    let repo = Arc::new(RepoService::with_merger_tx(merger_tx.clone()));
-    let webhook = Arc::new(WebhookService::with_merger_tx(merger_tx));
+    let run = Arc::new(RunService::with_handle(handles.run));
+    let repo = Arc::new(RepoService::with_handle(handles.repo));
+    let webhook = Arc::new(WebhookService::with_handle(handles.webhook));
     (run, repo, webhook)
 }
 
@@ -514,15 +522,14 @@ impl AppState {
         let deliveries_by_id = Arc::new(Mutex::new(HashMap::new()));
         let next_seq = Arc::new(Mutex::new(HashMap::new()));
         let rs = noop_event_store().await;
-        let (merger_tx, merger_handle) = Merger::spawn(
+        let (merger_handles, merger_joins) = MergerHandles::spawn(
             rs,
             Arc::clone(&bus),
             Arc::clone(&runs_by_key),
             Arc::clone(&repos_by_key),
-            Arc::clone(&deliveries_by_id),
             Arc::clone(&next_seq),
         );
-        let (run_service, repo_service, webhook_service) = build_services(merger_tx);
+        let (run_service, repo_service, webhook_service) = build_services(merger_handles);
         let projection_state =
             Arc::new(Mutex::new(crate::projection::EvidenceProjection::default()));
         let projection_checkpoint_seq = Arc::new(AtomicU64::new(0));
@@ -548,7 +555,7 @@ impl AppState {
             run_service,
             repo_service,
             webhook_service,
-            merger_handle,
+            merger_joins,
             next_seq,
             runs_by_key,
             repos_by_key,
@@ -613,15 +620,14 @@ impl AppState {
         let repos_by_key = Arc::new(Mutex::new(HashMap::new()));
         let deliveries_by_id = Arc::new(Mutex::new(HashMap::new()));
         let next_seq = Arc::new(Mutex::new(HashMap::new()));
-        let (merger_tx, merger_handle) = Merger::spawn(
+        let (merger_handles, merger_joins) = MergerHandles::spawn(
             Arc::clone(&event_store),
             Arc::clone(&bus),
             Arc::clone(&runs_by_key),
             Arc::clone(&repos_by_key),
-            Arc::clone(&deliveries_by_id),
             Arc::clone(&next_seq),
         );
-        let (run_service, repo_service, webhook_service) = build_services(merger_tx);
+        let (run_service, repo_service, webhook_service) = build_services(merger_handles);
         Ok(Arc::new(Self {
             started_at: Timestamp::now(),
             current_run: ArcSwap::from_pointee(None),
@@ -641,7 +647,7 @@ impl AppState {
             run_service,
             repo_service,
             webhook_service,
-            merger_handle,
+            merger_joins,
             next_seq,
             runs_by_key,
             repos_by_key,
@@ -744,13 +750,20 @@ impl AppState {
     ///   not carry the `delivery_id` (it lives only on the originating
     ///   `RecordDelivery` command). The routing key is not on the
     ///   wire, so eager replay cannot rebuild this index. Per the
-    ///   amended CHE-0054:R5, this index remains lazy-populated —
-    ///   each restart starts with an empty `deliveries_by_id` and
-    ///   subsequent `RecordDelivery` commands accumulate entries via
-    ///   the merger's `handle_ingest_webhook`. The `WebhookDelivery`
+    ///   amended CHE-0054:R5, this index remains
+    ///   lazy-populated; pre-Mission-H the in-crate Merger's
+    ///   webhook arm populated it after `EventStore::create` via
+    ///   `or_insert`. Post-Mission-H (CHE-0069) the lifted
+    ///   [`cherry_pit_merger::Merger`] consumes
+    ///   [`PersistMode::Create`](cherry_pit_merger::PersistMode::Create)
+    ///   for the webhook arm and never touches the routing index;
+    ///   the `deliveries_by_id` handle on [`AppState`] therefore stays
+    ///   empty in steady state (and has no production readers — see
+    ///   `crate::app::services::arms` module docs). The
+    ///   [`WebhookDelivery`](crate::domain::aggregates::webhook::WebhookDelivery)
     ///   aggregate is a one-shot (degenerate) aggregate per
-    ///   `webhook_service.rs:35-40`; duplicate-`delivery_id`
-    ///   detection is a call-site concern, not an index invariant.
+    ///   CHE-0054:R3; duplicate-`delivery_id` detection is a
+    ///   call-site concern, not an index invariant.
     ///
     /// - The `OrgGovernance` singleton aggregate at
     ///   [`crate::projection::ORG_GOVERNANCE_AGGREGATE_ID`]
@@ -975,15 +988,14 @@ impl AppStateBuilder {
         let deliveries_by_id = Arc::new(Mutex::new(HashMap::new()));
         let next_seq = Arc::new(Mutex::new(HashMap::new()));
         let rs = noop_event_store().await;
-        let (merger_tx, merger_handle) = Merger::spawn(
+        let (merger_handles, merger_joins) = MergerHandles::spawn(
             rs,
             Arc::clone(&bus),
             Arc::clone(&runs_by_key),
             Arc::clone(&repos_by_key),
-            Arc::clone(&deliveries_by_id),
             Arc::clone(&next_seq),
         );
-        let (run_service, repo_service, webhook_service) = build_services(merger_tx);
+        let (run_service, repo_service, webhook_service) = build_services(merger_handles);
         let projection_state =
             Arc::new(Mutex::new(crate::projection::EvidenceProjection::default()));
         let projection_checkpoint_seq = Arc::new(AtomicU64::new(0));
@@ -1010,7 +1022,7 @@ impl AppStateBuilder {
             run_service,
             repo_service,
             webhook_service,
-            merger_handle,
+            merger_joins,
             next_seq,
             runs_by_key,
             repos_by_key,

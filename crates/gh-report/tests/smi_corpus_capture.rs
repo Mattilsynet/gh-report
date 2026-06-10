@@ -67,7 +67,8 @@
 //! (sweep audit trail preserved) and exercises the only two variants
 //! that mutate `EvidenceProjection`.
 //!
-//! [`Merger`]: gh_report::app::services::Merger
+//! [`MergerHandles`]: gh_report::app::services::MergerHandles
+//! [`cherry_pit_merger::Merger`]: cherry_pit_merger::Merger
 
 use std::collections::HashMap;
 use std::fs;
@@ -80,7 +81,7 @@ use cherry_pit_core::{AggregateId, CorrelationContext, EventStore};
 use cherry_pit_gateway::MsgpackFileStore;
 use gh_report::app::state::EventStoreImpl;
 
-use gh_report::app::services::Merger;
+use gh_report::app::services::MergerHandles;
 use gh_report::app::services::repo_service::RepoService;
 use gh_report::app::services::run_service::RunService;
 use gh_report::app::services::webhook_service::WebhookService;
@@ -137,18 +138,17 @@ async fn capture_pre_smi_corpus() {
     let tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
-    let (merger_tx, _merger_handle) = Merger::spawn(
+    let (handles, _joins) = MergerHandles::spawn(
         Arc::clone(&store),
         Arc::clone(&bus),
         Arc::clone(&runs_by_key),
         Arc::clone(&repos_by_key),
-        Arc::clone(&deliveries_by_id),
         Arc::clone(&tracker),
     );
 
-    let run = RunService::with_merger_tx(merger_tx.clone());
-    let repo = RepoService::with_merger_tx(merger_tx.clone());
-    let webhook = WebhookService::with_merger_tx(merger_tx);
+    let run = RunService::with_handle(handles.run);
+    let repo = RepoService::with_handle(handles.repo);
+    let webhook = WebhookService::with_handle(handles.webhook);
 
     let ctx = CorrelationContext::none();
 

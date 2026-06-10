@@ -1,3 +1,18 @@
+//! Proptest pinning that the lifted [`cherry_pit_merger::Merger`]
+//! assigns strictly +1-monotonic sequences across sequential
+//! [`MergerHandle::dispatch`](cherry_pit_merger::MergerHandle::dispatch)
+//! calls for the [`Repo`] aggregate.
+//!
+//! The test exercises a small set of routing keys (`alpha`/`beta`/`gamma`)
+//! and asserts that per-aggregate streams have contiguous sequences
+//! starting at 1 plus a count matching the per-key dispatch count.
+//! Post-Mission-H (CHE-0069) the merger is consumed via
+//! [`super::arms::RepoArm`] through
+//! [`crate::app::services::merger::MergerHandles`].
+//!
+//! [`Repo`]: gh_report::domain::aggregates::repo::Repo
+//! [`super::arms::RepoArm`]: gh_report::app::services::RepoArm
+
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
@@ -9,9 +24,9 @@ use cherry_pit_gateway::MsgpackFileStore;
 use proptest::collection::vec;
 use proptest::prelude::*;
 use tempfile::TempDir;
-use tokio::sync::oneshot;
 
-use gh_report::app::services::{Merger, MergerCommand};
+use gh_report::app::services::MergerHandles;
+use gh_report::app::services::repo_service::RepoService;
 use gh_report::domain::aggregates::repo::RecordEvaluation;
 use gh_report::domain::events::DomainEvent;
 
@@ -60,36 +75,25 @@ async fn drive_and_verify(evals: Vec<Eval>) -> Result<(), TestCaseError> {
         Arc::new(Mutex::new(HashMap::new()));
     let repos_by_key: Arc<Mutex<HashMap<String, AggregateId>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    let deliveries_by_id: Arc<Mutex<HashMap<String, AggregateId>>> =
-        Arc::new(Mutex::new(HashMap::new()));
     let next_seq: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
-    let (tx, _handle) = Merger::<NoopBus>::with_bus_for_test(
+    let (handles, _joins) = MergerHandles::<NoopBus>::with_bus_for_test(
         Arc::clone(&store),
         Arc::clone(&bus),
         Arc::clone(&runs_by_key),
         Arc::clone(&repos_by_key),
-        Arc::clone(&deliveries_by_id),
         Arc::clone(&next_seq),
     );
+    let svc = RepoService::with_handle(handles.repo);
+    let ctx = CorrelationContext::none();
 
     let mut per_key_count: HashMap<&'static str, u64> = HashMap::new();
     for ev in &evals {
         let cmd = build_record_eval(ev.name);
         let dk = cmd.domain_key.clone();
-        let (reply_tx, reply_rx) = oneshot::channel();
-        tx.send(MergerCommand::RecordEvaluation {
-            domain_key: dk,
-            cmd: Box::new(cmd),
-            ctx: CorrelationContext::none(),
-            reply: reply_tx,
-        })
-        .await
-        .expect("merger channel open");
-        reply_rx
+        svc.record_evaluation(&dk, cmd, &ctx)
             .await
-            .expect("merger reply delivered")
             .expect("RecordEvaluation succeeds");
         *per_key_count.entry(ev.name).or_insert(0) += 1;
     }

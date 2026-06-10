@@ -46,6 +46,16 @@ where
     }
 }
 
+impl<A, Arm> std::fmt::Debug for MergerHandle<A, Arm>
+where
+    A: Aggregate,
+    Arm: MergerArm<A>,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MergerHandle").finish_non_exhaustive()
+    }
+}
+
 impl<A, Arm> MergerHandle<A, Arm>
 where
     A: Aggregate,
