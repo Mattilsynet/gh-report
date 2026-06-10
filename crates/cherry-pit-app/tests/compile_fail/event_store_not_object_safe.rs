@@ -7,7 +7,7 @@
 //! over exactly one `DomainEvent` impl, never erased through a
 //! `Box<dyn EventStore>` indirection.
 //!
-//! `cherry-pit-agent` carries its own backstop (in addition to the
+//! `cherry-pit-app` carries its own backstop (in addition to the
 //! `cherry-pit-projection` mirror at `eae00d3`) because `App` holds
 //! the store as a `S: EventStore` generic parameter (`app.rs`); a
 //! future refactor that accidentally erased the store would silently

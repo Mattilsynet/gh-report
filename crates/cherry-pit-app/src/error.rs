@@ -48,7 +48,7 @@ impl AgentError {
     /// # Example
     ///
     /// ```
-    /// use cherry_pit_agent::AgentError;
+    /// use cherry_pit_app::AgentError;
     /// use cherry_pit_core::{BusError, ErrorCategory};
     ///
     /// let policy_err = AgentError::Policy("user closure failed".into());

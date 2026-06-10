@@ -3,7 +3,7 @@ resolver = "3"
 members = [
     "crates/adr-fmt",
     "crates/adr-srv",
-    "crates/cherry-pit-agent",
+    "crates/cherry-pit-app",
     "crates/cherry-pit-core",
     "crates/cherry-pit-gateway",
     "crates/cherry-pit-projection",
@@ -118,7 +118,7 @@ cherry-pit-core = { path = "crates/cherry-pit-core", version = "0.1.0" }
 cherry-pit-gateway = { path = "crates/cherry-pit-gateway", version = "0.1.0" }
 cherry-pit-projection = { path = "crates/cherry-pit-projection", version = "0.1.0" }
 cherry-pit-web = { path = "crates/cherry-pit-web", version = "0.1.0" }
-cherry-pit-agent = { path = "crates/cherry-pit-agent", version = "0.1.0" }
+cherry-pit-app = { path = "crates/cherry-pit-app", version = "0.1.0" }
 
 # === Pardosa workspace tier (mission pardosa-migration-1748376000) ===
 # Added when the active Pardosa crates were imported from rescue-pardosa.

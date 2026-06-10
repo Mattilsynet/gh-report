@@ -182,7 +182,7 @@ distinct addressable unit of state or behaviour:
 | `cherry-pit-core` | Type-level invariant carrier. `Aggregate`, `EventStore`, `EventEnvelope`, identity primitives. The substrate ring. |
 | `cherry-pit-gateway` | Command ingress; routes commands to single-writer aggregate instances. |
 | `cherry-pit-projection` | Read-side: folds events into projections; `ProjectionDriver` orchestrates per-aggregate projections. |
-| `cherry-pit-agent` | Long-running aggregate hosts; the `App<...>` composition root. |
+| `cherry-pit-app` | Composition root + reactive policy pipeline. `App<G,S,B,P,D>`, `InProcessEventBus`, `ErasedPolicyDispatcher`, `DeadLetterSink`. |
 | `cherry-pit-web` | Axum-based HTTP surface; binds SEC-0003 resource layers at the library boundary. |
 | `cherry-pit-wq` | Work-queue primitives. |
 | `cherry-pit-storage` | File-system storage primitives; baseline snapshots subordinate to the event log. |

@@ -91,7 +91,7 @@ const DEFAULT_DISPATCH_BUFFER_CAPACITY: usize = 1024;
 /// inside `#[tokio::main(flavor = "multi_thread")]`.
 ///
 /// ```no_run
-/// use cherry_pit_agent::{App, InProcessEventBus, TracingDeadLetterSink};
+/// use cherry_pit_app::{App, InProcessEventBus, TracingDeadLetterSink};
 /// # async fn wire<G, S>(gateway: G, store: S) -> Result<(), Box<dyn std::error::Error>>
 /// # where
 /// #     G: cherry_pit_core::CommandGateway + Send + Sync + 'static,
@@ -249,14 +249,14 @@ where
     /// demonstrates.
     ///
     /// ```no_run
-    /// use cherry_pit_agent::{App, AgentError, CorrelationContext};
+    /// use cherry_pit_app::{App, AgentError, CorrelationContext};
     /// # async fn wire<G, S, B, P, D, Pol>(mut app: App<G, S, B, P, D>, policy: Pol)
     /// # where
     /// #     G: cherry_pit_core::CommandGateway,
     /// #     S: cherry_pit_core::EventStore<Event = <G::Aggregate as cherry_pit_core::Aggregate>::Event>,
     /// #     B: cherry_pit_core::EventBus<Event = <G::Aggregate as cherry_pit_core::Aggregate>::Event>,
-    /// #     P: cherry_pit_agent::ProjectionDriverTuple,
-    /// #     D: cherry_pit_agent::DeadLetterSink,
+    /// #     P: cherry_pit_app::ProjectionDriverTuple,
+    /// #     D: cherry_pit_app::DeadLetterSink,
     /// #     Pol: cherry_pit_core::Policy<Event = <G::Aggregate as cherry_pit_core::Aggregate>::Event, Output = ()>,
     /// # {
     /// app.register_policy(

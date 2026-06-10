@@ -6,7 +6,7 @@
 use std::convert::Infallible;
 use std::num::NonZeroU64;
 
-use cherry_pit_agent::{App, InProcessEventBus, TracingDeadLetterSink};
+use cherry_pit_app::{App, InProcessEventBus, TracingDeadLetterSink};
 use cherry_pit_core::{
     Aggregate, AggregateId, BusError, Command, CommandGateway, CorrelationContext, CreateResult,
     DispatchResult, DomainEvent, EventBus, EventEnvelope, EventStore, HandleCommand,

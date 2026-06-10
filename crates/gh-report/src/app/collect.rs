@@ -2956,7 +2956,7 @@ mod tests {
     /// `Arc<Mutex<...>>` the test inspects after the production calls
     /// settle.
     fn capture_bus(
-        bus: &cherry_pit_agent::InProcessEventBus<crate::domain::events::DomainEvent>,
+        bus: &cherry_pit_app::InProcessEventBus<crate::domain::events::DomainEvent>,
     ) -> Arc<std::sync::Mutex<Vec<crate::domain::events::DomainEvent>>> {
         let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
         let captured_handle = Arc::clone(&captured);

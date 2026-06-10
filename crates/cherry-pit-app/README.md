@@ -1,4 +1,4 @@
-# cherry-pit-agent
+# cherry-pit-app
 
 Root composition crate wiring `Aggregate` / `Policy` / `Projection` against
 `EventStore` / `EventBus` / `CommandGateway`.
@@ -40,7 +40,7 @@ module structure is implementation detail.
 ## Minimal composition example
 
 ```rust,no_run
-use cherry_pit_agent::{
+use cherry_pit_app::{
     AgentError, App, CorrelationContext, InProcessEventBus, TracingDeadLetterSink,
 };
 

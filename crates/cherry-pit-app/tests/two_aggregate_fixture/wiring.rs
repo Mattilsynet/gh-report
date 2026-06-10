@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use cherry_pit_agent::{App, InProcessEventBus, TracingDeadLetterSink};
+use cherry_pit_app::{App, InProcessEventBus, TracingDeadLetterSink};
 use cherry_pit_core::CommandGateway;
 use cherry_pit_gateway::MsgpackFileStore;
 use tempfile::TempDir;
@@ -50,7 +50,7 @@ pub fn assemble() -> Assembled {
                 bar.create(cmd, ctx)
                     .await
                     .map(|_| ())
-                    .map_err(|e| cherry_pit_agent::AgentError::Policy(format!("bar: {e}").into()))
+                    .map_err(|e| cherry_pit_app::AgentError::Policy(format!("bar: {e}").into()))
             }
         },
         "FooToBarPolicy",

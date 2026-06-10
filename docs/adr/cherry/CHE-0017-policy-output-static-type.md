@@ -61,5 +61,5 @@ R2 [5]: Define policy output as an enum so the compiler verifies
 - No runtime type errors. The output enum is exhaustively matched at compile time — new variants cause compilation failures until handled.
 - No heap allocation per output.
 - **`Output` is not bounded by `Command`.** Policy outputs may carry routing context (target `AggregateId`, cross-context metadata) beyond the command itself. Requiring `Command` on `Output` would conflate routing with intent.
-- The infrastructure dispatch layer must know the output enum type, creating coupling resolved by `cherry-pit-agent`.
+- The infrastructure dispatch layer must know the output enum type, creating coupling resolved by `cherry-pit-app`.
 - Policies receive `EventEnvelope`, not raw events — they need metadata to construct correctly targeted outputs.

@@ -9,12 +9,12 @@ warning: unused imports: `BusError` and `EventBus`
    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
 
 error[E0271]: type mismatch resolving `<InProcessEventBus<EvB> as EventBus>::Event == EvA`
-  --> tests/compile_fail/mismatched_event_types.rs:99:9
+  --> tests/compile_fail/mismatched_event_types.rs:98:9
    |
-96 |     let _app = App::new(
+95 |     let _app = App::new(
    |                -------- required by a bound introduced by this call
 ...
-99 |         InProcessEventBus::<EvB>::new(),
+98 |         InProcessEventBus::<EvB>::new(),
    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `EvA`, found `EvB`
    |
 note: required by a bound in `App::<G, S, B, P, D>::new`
@@ -27,16 +27,16 @@ note: required by a bound in `App::<G, S, B, P, D>::new`
    |            --- required by a bound in this associated function
 
 error[E0271]: type mismatch resolving `<InProcessEventBus<EvB> as EventBus>::Event == EvA`
-   --> tests/compile_fail/mismatched_event_types.rs:96:16
+   --> tests/compile_fail/mismatched_event_types.rs:95:16
     |
- 96 |       let _app = App::new(
+ 95 |       let _app = App::new(
     |  ________________^
- 97 | |         GwA,
- 98 | |         StoreA,
- 99 | |         InProcessEventBus::<EvB>::new(),
-100 | |         (),
-101 | |         TracingDeadLetterSink::new(),
-102 | |     );
+ 96 | |         GwA,
+ 97 | |         StoreA,
+ 98 | |         InProcessEventBus::<EvB>::new(),
+ 99 | |         (),
+100 | |         TracingDeadLetterSink::new(),
+101 | |     );
     | |_____^ expected `EvA`, found `EvB`
     |
 note: required by a bound in `App`

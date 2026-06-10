@@ -30,13 +30,13 @@
 //! [`MsgpackFileStore`]: cherry_pit_gateway::MsgpackFileStore
 //! ## What this module does NOT wire (locked-out)
 //!
-//! - **No [`cherry_pit_agent::App`]**: the agent's `App` requires a
+//! - **No [`cherry_pit_app::App`]**: the agent's `App` requires a
 //!   `CommandGateway` (CHE-0051:R3) and the **S5.b bus-only lock**
 //!   (charter §0 locked posture #3) forbids `CommandGateway` /
 //!   `Aggregate` impl / `HandleCommand`. We therefore wire the bus +
 //!   driver + projection state directly without going through `App`.
 //!   Only [`InProcessEventBus`] and the [`ProjectionDriverExt`] trait
-//!   from cherry-pit-agent are used; no `register_policy`, no policy
+//!   from cherry-pit-app are used; no `register_policy`, no policy
 //!   registry, no `App::run`.
 //!
 //! - **No multi-aggregate composition**: per the **Tension-2 single
@@ -68,7 +68,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cherry_pit_agent::{InProcessEventBus, ProjectionDriverExt};
+use cherry_pit_app::{InProcessEventBus, ProjectionDriverExt};
 use cherry_pit_core::{
     AggregateId, CorrelationContext, EventEnvelope, EventStore, StoreCreateResult, StoreError,
 };

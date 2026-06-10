@@ -33,7 +33,7 @@ R3 [2]: Use event subscriptions for cross-context communication, not
 ## Consequences
 
 - The compiler prevents cross-aggregate type confusion at every layer. No runtime downcasting, no `Any`, no type-erased envelopes.
-- Wiring complexity scales linearly with aggregate count. `cherry-pit-agent` must solve this ergonomically.
+- Wiring complexity scales linearly with aggregate count. `cherry-pit-app` must solve this ergonomically.
 - Object safety is sacrificed — no `Box<dyn EventStore>`. No heterogeneous store collections, no runtime implementation selection. Every aggregate requires its own concrete store instance wired at compile time.
 - Cross-aggregate coordination (sagas) uses `Policy` traits reacting to events and emitting commands to another aggregate.
 - `Policy::Output` is typed as `Send + Sync + 'static` without a `Command` bound, allowing flexible output enums.

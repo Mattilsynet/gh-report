@@ -10,7 +10,7 @@ binds a curated subset of the cherry-pit public surface per
 **CHE-0054:R8**: `Aggregate`, `DomainEvent`, `EventStore`, `EventBus`,
 `AggregateId`, `EventEnvelope` from `cherry-pit-core`;
 `ProjectionDriver` + `FileProjectionStore` from `cherry-pit-projection`;
-`InProcessEventBus` + `ProjectionDriverExt` from `cherry-pit-agent`;
+`InProcessEventBus` + `ProjectionDriverExt` from `cherry-pit-app`;
 and `MsgpackFileStore` from `cherry-pit-gateway`. No `App<…>` or
 `CommandGateway` consumption at v0.1 (see CHE-0054:R10).
 

@@ -146,7 +146,7 @@ dead-letter recording.
 **v0.1 implementation pointer**: dead-letter sink lives in the consumer
 crate per [CHE-0051:R7](../../docs/adr/cherry/CHE-0051-cherry-pit-agent-design.md).
 The agent ships `DeadLetterSink`, `DeadLetterRecord`, and
-`TracingDeadLetterSink` at `crates/cherry-pit-agent/src/dead_letter.rs`
+`TracingDeadLetterSink` at `crates/cherry-pit-app/src/dead_letter.rs`
 (as of commit `dd7c3b1`). Gateway does not implement R4; the schema
 above documents the minimum fields any consumer's persistence path
 must preserve.

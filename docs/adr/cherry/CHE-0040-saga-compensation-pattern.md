@@ -11,7 +11,7 @@ References: CHE-0039, CHE-0017, CHE-0024, COM-0025
 
 ## Context
 
-`Policy` (CHE-0017) reacts to a single event — the choreography pattern. Orchestration-style sagas use a coordinator tracking step completion and issuing compensation on failure. Cherry-pit's `Policy` has no saga coordinator, step tracking, or automatic compensation. Three considerations argue for deferral: `CommandBus` is unbuilt, `cherry-pit-agent` is unbuilt (saga design without composition layer is speculative), and `CorrelationContext` (CHE-0039) must be validated first.
+`Policy` (CHE-0017) reacts to a single event — the choreography pattern. Orchestration-style sagas use a coordinator tracking step completion and issuing compensation on failure. Cherry-pit's `Policy` has no saga coordinator, step tracking, or automatic compensation. Three considerations argue for deferral: `CommandBus` is unbuilt, `cherry-pit-app` is unbuilt (saga design without composition layer is speculative), and `CorrelationContext` (CHE-0039) must be validated first.
 
 ## Decision
 
@@ -50,4 +50,4 @@ R5 [5]: Timeout-driven compensation is represented by explicit
 
 ## Consequences
 
-Framework orchestration stays minimal while failed policy outputs become visible and repairable. Compensation remains domain-owned and idempotent. Revisit when `cherry-pit-agent` exists or multi-step processes cannot decompose into independent policy reactions.
+Framework orchestration stays minimal while failed policy outputs become visible and repairable. Compensation remains domain-owned and idempotent. Revisit when `cherry-pit-app` exists or multi-step processes cannot decompose into independent policy reactions.

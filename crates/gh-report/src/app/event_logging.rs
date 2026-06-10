@@ -6,7 +6,7 @@
 //! must not depend on either; orchestration of cross-cutting concerns is
 //! an app-layer responsibility (COM-0012:R3).
 
-use cherry_pit_agent::InProcessEventBus;
+use cherry_pit_app::InProcessEventBus;
 use cherry_pit_core::EventEnvelope;
 use tracing::info;
 

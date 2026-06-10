@@ -1,5 +1,5 @@
 [package]
-name = "cherry-pit-agent"
+name = "cherry-pit-app"
 version = "0.1.0"
 description = "Root composition crate wiring Aggregate/Policy/Projection against EventStore/EventBus/CommandGateway (per CHE-0051)"
 edition.workspace = true
@@ -7,8 +7,8 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-homepage = "https://github.com/acje/solon/tree/main/crates/cherry-pit-agent"
-documentation = "https://docs.rs/cherry-pit-agent"
+homepage = "https://github.com/acje/solon/tree/main/crates/cherry-pit-app"
+documentation = "https://docs.rs/cherry-pit-app"
 keywords = ["composition", "cqrs", "event-sourcing"]
 categories = ["asynchronous"]
 

@@ -29,7 +29,7 @@
 use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
 
-use cherry_pit_agent::{InProcessEventBus, enqueue_or_log};
+use cherry_pit_app::{InProcessEventBus, enqueue_or_log};
 use cherry_pit_core::{AggregateId, DomainEvent, EventBus, EventEnvelope};
 use proptest::prelude::*;
 use serde::{Deserialize, Serialize};

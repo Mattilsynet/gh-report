@@ -309,7 +309,7 @@ mod tests {
     use std::num::NonZeroU64;
     use std::sync::{Arc, Mutex};
 
-    use cherry_pit_agent::InProcessEventBus;
+    use cherry_pit_app::InProcessEventBus;
     use cherry_pit_core::{AggregateId, EventEnvelope, EventStore};
     use tempfile::TempDir;
 

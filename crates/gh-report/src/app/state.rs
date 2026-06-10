@@ -30,7 +30,7 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 
 use arc_swap::ArcSwap;
-use cherry_pit_agent::InProcessEventBus;
+use cherry_pit_app::InProcessEventBus;
 #[cfg(test)]
 use cherry_pit_core::testing::InMemoryEventStore;
 use cherry_pit_core::{AggregateId, ListableEventStore};

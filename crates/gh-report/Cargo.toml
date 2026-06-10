@@ -52,14 +52,14 @@ cherry-pit-core = { workspace = true, features = ["testing"] }
 # name the underlying encoding crate directly.
 cherry-pit-gateway = { workspace = true }
 
-# cherry-pit-agent — root composition crate. WU-6 v2 B5' uses
+# cherry-pit-app — root composition crate. WU-6 v2 B5' uses
 # `InProcessEventBus<DomainEvent>` (CHE-0051:R2) and the
 # `ProjectionDriverExt::apply_one` extension trait (CHE-0051:R5) to
 # wire snapshot-fast-path startup + bus-driven incremental projection
 # updates. The full `App` composition (CommandGateway/Aggregate) is
-# **not** used per S5.b bus-only lock; we depend on cherry-pit-agent
+# **not** used per S5.b bus-only lock; we depend on cherry-pit-app
 # only for the bus impl + the `ProjectionDriverExt` trait.
-cherry-pit-agent = { workspace = true }
+cherry-pit-app = { workspace = true }
 
 # cherry-pit-projection — durable projection snapshot+checkpoint store
 # (FileProjectionStore) per CHE-0048:R1/R2. Wired at WU-6 v2 B4'

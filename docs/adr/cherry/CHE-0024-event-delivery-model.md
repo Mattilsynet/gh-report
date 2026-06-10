@@ -42,9 +42,9 @@ R5 [8]: Failed policy outputs are routed to a dead-letter workflow
 5. **Dead-letter policy outputs** — a policy-triggered command that
    cannot be dispatched after bounded retry is written to an operational
    dead-letter workflow, not retried forever or silently dropped.
-6. **`cherry-pit-agent` wires the graph** — the planned composition layer
+6. **`cherry-pit-app` wires the graph** — the planned composition layer
     registers policies and projections with concrete `EventBus`
-    implementations. Manual wiring until `cherry-pit-agent` exists.
+    implementations. Manual wiring until `cherry-pit-app` exists.
 7. **In-process delivery is synchronous within `publish`** — the bus
     calls each registered handler before returning.
 

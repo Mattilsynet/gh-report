@@ -1,4 +1,4 @@
-//! Golden-file schema test for [`cherry_pit_agent::TracingDeadLetterSink`]
+//! Golden-file schema test for [`cherry_pit_app::TracingDeadLetterSink`]
 //! per CHE-0024:R5 + CHE-0040:R3 + CHE-0051:R7.
 //!
 //! Locks the field set + ordering + level of the structured
@@ -18,7 +18,7 @@
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use cherry_pit_agent::{DeadLetterRecord, DeadLetterSink, TracingDeadLetterSink};
+use cherry_pit_app::{DeadLetterRecord, DeadLetterSink, TracingDeadLetterSink};
 use cherry_pit_core::ErrorCategory;
 use tracing_subscriber::fmt::MakeWriter;
 

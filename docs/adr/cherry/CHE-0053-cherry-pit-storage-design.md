@@ -36,7 +36,7 @@ R6 [4]: cherry-pit-storage preserves the donor's documented crash-safety contrac
 
 R7 [4]: consumers requiring async I/O over storage primitives use `tokio::task::spawn_blocking(|| atomic_write_bytes(&path, &data))` or equivalent — cherry-pit-storage provides no async wrapper, no `AsyncStorage` trait, and no tokio integration in v0.1; a future v0.2 ADR may add a thin async-wrapping crate (e.g. `cherry-pit-storage-tokio`) above this one if the cost of `spawn_blocking` ceremony at consumer sites becomes load-bearing
 
-R8 [4]: cherry-pit-storage MUST NOT be cited by `cherry-pit-core` (closure inflation via `tempfile` + `sha2` violates CHE-0029:R6); MAY be cited by `cherry-pit-gateway` subject to R12; `cherry-pit-projection`, `cherry-pit-web`, `cherry-pit-agent`, and `cherry-pit-runtime` MUST NOT cite this crate in v0.1 (their dep sets are fixed by CHE-0051:R1 and CHE-0052:R1)
+R8 [4]: cherry-pit-storage MUST NOT be cited by `cherry-pit-core` (closure inflation via `tempfile` + `sha2` violates CHE-0029:R6); MAY be cited by `cherry-pit-gateway` subject to R12; `cherry-pit-projection`, `cherry-pit-web`, `cherry-pit-app`, and `cherry-pit-runtime` MUST NOT cite this crate in v0.1 (their dep sets are fixed by CHE-0051:R1 and CHE-0052:R1)
 
 R9 [4]: tests in cherry-pit-storage follow the CHE-0038 testing taxonomy — the donor's existing unit tests for atomic write semantics, lock acquisition / stale-detection / RAII release, and signature determinism are absorbed verbatim alongside the modules they exercise, and `tempfile::TempDir` is used as the standard test fixture for all filesystem interactions (no mocking of `std::fs`)
 

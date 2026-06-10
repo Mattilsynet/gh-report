@@ -12,7 +12,7 @@ mod fixture;
 use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
 
-use cherry_pit_agent::{
+use cherry_pit_app::{
     App, DeadLetterRecord, DeadLetterSink, InProcessEventBus, TracingDeadLetterSink,
 };
 use cherry_pit_core::{

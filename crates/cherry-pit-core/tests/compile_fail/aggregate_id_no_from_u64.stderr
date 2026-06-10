@@ -1,7 +1,7 @@
 error[E0277]: the trait bound `AggregateId: From<u64>` is not satisfied
- --> tests/compile_fail/aggregate_id_no_from_u64.rs:7:28
+ --> tests/compile_fail/aggregate_id_no_from_u64.rs:6:28
   |
-7 |     let _id: AggregateId = AggregateId::from(5_u64);
+6 |     let _id: AggregateId = AggregateId::from(5_u64);
   |                            ^^^^^^^^^^^ the trait `From<u64>` is not implemented for `AggregateId`
   |
 help: the trait `From<u64>` is not implemented for `AggregateId`

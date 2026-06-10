@@ -1,15 +1,15 @@
 error[E0271]: type mismatch resolving `<R as CommandRouter>::Gateway == G1`
-   --> tests/compile_fail/build_router_mismatched_gateway.rs:181:40
+   --> tests/compile_fail/build_router_mismatched_gateway.rs:172:40
     |
-181 |     let _state = AppState::new(G1, S1, R);
+172 |     let _state = AppState::new(G1, S1, R);
     |                  -------------         ^ type mismatch resolving `<R as CommandRouter>::Gateway == G1`
     |                  |
     |                  required by a bound introduced by this call
     |
 note: expected this to be `G1`
-   --> tests/compile_fail/build_router_mismatched_gateway.rs:165:20
+   --> tests/compile_fail/build_router_mismatched_gateway.rs:158:20
     |
-165 |     type Gateway = G2;
+158 |     type Gateway = G2;
     |                    ^^
 note: required by a bound in `AppState::<G, S, R>::new`
    --> src/state.rs
@@ -21,15 +21,15 @@ note: required by a bound in `AppState::<G, S, R>::new`
     |            --- required by a bound in this associated function
 
 error[E0271]: type mismatch resolving `<R as CommandRouter>::Gateway == G1`
-   --> tests/compile_fail/build_router_mismatched_gateway.rs:181:18
+   --> tests/compile_fail/build_router_mismatched_gateway.rs:172:18
     |
-181 |     let _state = AppState::new(G1, S1, R);
+172 |     let _state = AppState::new(G1, S1, R);
     |                  ^^^^^^^^^^^^^^^^^^^^^^^^ type mismatch resolving `<R as CommandRouter>::Gateway == G1`
     |
 note: expected this to be `G1`
-   --> tests/compile_fail/build_router_mismatched_gateway.rs:165:20
+   --> tests/compile_fail/build_router_mismatched_gateway.rs:158:20
     |
-165 |     type Gateway = G2;
+158 |     type Gateway = G2;
     |                    ^^
 note: required by a bound in `AppState`
    --> src/state.rs

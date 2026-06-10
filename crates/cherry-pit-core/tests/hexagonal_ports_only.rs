@@ -38,7 +38,7 @@ use serde::Deserialize;
 const ADAPTER_CRATES: &[&str] = &[
     "cherry-pit-storage",
     "cherry-pit-web",
-    "cherry-pit-agent",
+    "cherry-pit-app",
     "cherry-pit-wq",
     "cherry-pit-projection",
     "cherry-pit-gateway",

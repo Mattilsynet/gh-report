@@ -37,7 +37,7 @@ async fn foo_command_drives_bar_via_policy() {
     assert_eq!(foo_envs[0].correlation_id(), Some(correlation_id));
 
     let derived_ctx =
-        cherry_pit_agent::correlation_for(foo_envs[0].correlation_id(), foo_envs[0].event_id());
+        cherry_pit_app::correlation_for(foo_envs[0].correlation_id(), foo_envs[0].event_id());
     let (bar_id, bar_envs) = bar_gw
         .create(fixture::domain::BarPing { from: 42 }, derived_ctx.clone())
         .await

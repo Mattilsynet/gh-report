@@ -22,7 +22,7 @@ for the cherry-pit crates.
 
 Every cherry-pit crate uses `#![forbid(unsafe_code)]` at the crate
 root, instantiating RST-0005 R1 for the cherry domain. Active
-cherry-pit workspace members: `adr-fmt`, `cherry-pit-agent`,
+cherry-pit workspace members: `adr-fmt`, `cherry-pit-app`,
 `cherry-pit-core`, `cherry-pit-gateway`, `cherry-pit-projection`,
 `cherry-pit-storage`, `cherry-pit-web`, `cherry-pit-wq`,
 `gh-report`.

@@ -33,7 +33,7 @@ R4 [5]: The adapter exposes a rebuild method that deletes the existing snapshot 
 
 R5 [5]: The in-memory backend uses a concurrent hash map keyed by (aggregate_id, projection_name), holds no durable state, and rebuilds from the EventStore on every process start, providing the zero-dependency test and ephemeral-view backend sanctioned by CHE-0044:R3
 
-R6 [5]: v0.1 scope is single-aggregate, single-projection-per-driver-instance — the adapter binds to one aggregate type per Projection impl via associated types (CHE-0005:R1), and multi-projection composition is deferred to the WU-5 cherry-pit-agent design phase where a builder with type-state for compile-time wiring completeness will be evaluated
+R6 [5]: v0.1 scope is single-aggregate, single-projection-per-driver-instance — the adapter binds to one aggregate type per Projection impl via associated types (CHE-0005:R1), and multi-projection composition is deferred to the WU-5 cherry-pit-app design phase where a builder with type-state for compile-time wiring completeness will be evaluated
 
 R7 [5]: Per-aggregate write coordination follows the single-process model inherited from CHE-0006:R1 and CHE-0043, using in-process per-aggregate locks consistent with CHE-0035:R1–R3
 
@@ -45,7 +45,7 @@ R9 [5]: The `ProjectionCheckpoint` data type lives in cherry-pit-core as a peer 
 
 The file-based posture inherits the single-process locking assumption from CHE-0006:R1 and CHE-0043. Multi-process projection writers would require a new ADR establishing cross-process coordination semantics — this is explicitly deferred.
 
-Single-aggregate, single-projection-per-driver scope means cross-aggregate read models (spanning bounded contexts per CHE-0005:R3) are out of scope for v0.1. Multi-projection composition deferred to WU-5 cherry-pit-agent design.
+Single-aggregate, single-projection-per-driver scope means cross-aggregate read models (spanning bounded contexts per CHE-0005:R3) are out of scope for v0.1. Multi-projection composition deferred to WU-5 cherry-pit-app design.
 
 Rebuild cost is O(total events per aggregate) with no snapshot shortcut (CHE-0037:R1). This bounds practical projection sizing but satisfies the schema-evolution mandate from CHE-0009:R1 + CHE-0022:R1 jointly.
 
@@ -63,4 +63,4 @@ Rebuild cost is O(total events per aggregate) with no snapshot shortcut (CHE-003
 
 **object_store backend** — Forbidden until EVAL-GATE per mission boundaries and CHE-0044.
 
-**Early multi-projection registry** — The composition decision (builder + type-state) belongs to WU-5 cherry-pit-agent. Choosing a registry shape now would pre-commit an unresolved decision and risk violating CHE-0005:R1's prohibition on dynamic dispatch by requiring some form of heterogeneous projection collection.
+**Early multi-projection registry** — The composition decision (builder + type-state) belongs to WU-5 cherry-pit-app. Choosing a registry shape now would pre-commit an unresolved decision and risk violating CHE-0005:R1's prohibition on dynamic dispatch by requiring some form of heterogeneous projection collection.

@@ -638,7 +638,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cherry-pit-agent"
+name = "cherry-pit-app"
 version = "0.1.0"
 dependencies = [
  "cherry-pit-core",
@@ -1446,7 +1446,7 @@ dependencies = [
  "axum",
  "base64",
  "bytes",
- "cherry-pit-agent",
+ "cherry-pit-app",
  "cherry-pit-core",
  "cherry-pit-gateway",
  "cherry-pit-projection",

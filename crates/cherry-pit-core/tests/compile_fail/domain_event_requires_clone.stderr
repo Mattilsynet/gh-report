@@ -1,7 +1,7 @@
 error[E0277]: the trait bound `NotCloneable: Clone` is not satisfied
-  --> tests/compile_fail/domain_event_requires_clone.rs:15:22
+  --> tests/compile_fail/domain_event_requires_clone.rs:14:22
    |
-15 | impl DomainEvent for NotCloneable {
+14 | impl DomainEvent for NotCloneable {
    |                      ^^^^^^^^^^^^ the trait `Clone` is not implemented for `NotCloneable`
    |
 note: required by a bound in `DomainEvent`
@@ -11,6 +11,6 @@ note: required by a bound in `DomainEvent`
    |                        ^^^^^ required by this bound in `DomainEvent`
 help: consider annotating `NotCloneable` with `#[derive(Clone)]`
    |
-11 + #[derive(Clone)]
-12 | struct NotCloneable {
+10 + #[derive(Clone)]
+11 | struct NotCloneable {
    |

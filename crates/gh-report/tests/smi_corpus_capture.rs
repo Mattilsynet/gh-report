@@ -75,7 +75,7 @@ use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use cherry_pit_agent::InProcessEventBus;
+use cherry_pit_app::InProcessEventBus;
 use cherry_pit_core::{AggregateId, CorrelationContext, EventStore};
 use cherry_pit_gateway::MsgpackFileStore;
 use gh_report::app::state::EventStoreImpl;

@@ -1,7 +1,7 @@
 error[E0277]: the trait bound `Foo: Default` is not satisfied
-  --> tests/compile_fail/aggregate_requires_default.rs:23:20
+  --> tests/compile_fail/aggregate_requires_default.rs:21:20
    |
-23 | impl Aggregate for Foo {
+21 | impl Aggregate for Foo {
    |                    ^^^ the trait `Default` is not implemented for `Foo`
    |
 note: required by a bound in `Aggregate`
@@ -11,6 +11,6 @@ note: required by a bound in `Aggregate`
    |                      ^^^^^^^ required by this bound in `Aggregate`
 help: consider annotating `Foo` with `#[derive(Default)]`
    |
-21 + #[derive(Default)]
-22 | struct Foo;
+19 + #[derive(Default)]
+20 | struct Foo;
    |

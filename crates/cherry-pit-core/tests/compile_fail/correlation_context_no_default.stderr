@@ -1,7 +1,7 @@
 error[E0599]: no associated function or constant named `default` found for struct `CorrelationContext` in the current scope
- --> tests/compile_fail/correlation_context_no_default.rs:8:36
+ --> tests/compile_fail/correlation_context_no_default.rs:7:36
   |
-8 |     let _ctx = CorrelationContext::default();
+7 |     let _ctx = CorrelationContext::default();
   |                                    ^^^^^^^ associated function or constant not found in `CorrelationContext`
   |
 note: if you're trying to build a new `CorrelationContext` consider using one of the following associated functions:

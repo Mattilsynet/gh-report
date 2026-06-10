@@ -1,10 +1,9 @@
 error[E0599]: no method named `clone` found for type parameter `C` in the current scope
-  --> tests/compile_fail/command_no_clone_supertrait.rs:11:15
+  --> tests/compile_fail/command_no_clone_supertrait.rs:10:15
    |
  9 | fn needs_clone<C: Command>(c: C) {
    |                - method `clone` not found for this type parameter
-10 |     // This must fail: Command does not imply Clone.
-11 |     let _ = c.clone();
+10 |     let _ = c.clone();
    |               ^^^^^ method not found in `C`
    |
    = help: items from traits can only be used if the type parameter is bounded by the trait

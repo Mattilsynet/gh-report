@@ -11,7 +11,7 @@ References: CHE-0004
 
 ## Context
 
-`EventEnvelope` carries `correlation_id` and `causation_id` fields (CHE-0016), but the current API cannot populate them — all port signatures lack a correlation parameter, and `build_envelopes` hardcodes both to `None`. Three propagation styles were considered: explicit parameter (transparent, consistent with CHE-0003), task-local context (ergonomic but invisible, violating "no magic"), and middleware (deferred to `cherry-pit-agent`).
+`EventEnvelope` carries `correlation_id` and `causation_id` fields (CHE-0016), but the current API cannot populate them — all port signatures lack a correlation parameter, and `build_envelopes` hardcodes both to `None`. Three propagation styles were considered: explicit parameter (transparent, consistent with CHE-0003), task-local context (ergonomic but invisible, violating "no magic"), and middleware (deferred to `cherry-pit-app`).
 
 ## Decision
 

@@ -56,7 +56,7 @@ cherry-pit-core (leaf — no cherry-pit dependencies)
 ├── pardosa-genome → pardosa-derive → pardosa
 ├── cherry-pit-projection
 └── cherry-pit-web
-    └── cherry-pit-agent (root — depends on everything)
+    └── cherry-pit-app (root — depends on everything)
 ```
 
 Workspace-level configuration:
@@ -72,7 +72,7 @@ Workspace-level configuration:
   in infrastructure.
 - Workspace-level versions prevent drift; independent crates compile
   concurrently.
-- 6 planned crates are unvalidated until built; `cherry-pit-agent`
+- 6 planned crates are unvalidated until built; `cherry-pit-app`
   will surface cross-crate mismatches.
 - `Cargo.lock` commits ensure reproducible CI and the eventual binary.
 - **De-scalability invariant.** Restricting `cherry-pit-core` to

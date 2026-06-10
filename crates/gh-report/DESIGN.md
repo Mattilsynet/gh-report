@@ -91,7 +91,7 @@ the production read-model post-M2 cutover.
   load → handle → append → publish triad against
   `cherry-pit-core::EventStore` + `cherry-pit-core::EventBus`. Wired
   on `AppState` (`src/app/state.rs:239-246`). No `CommandGateway`,
-  no `cherry-pit-agent::App<…>` consumption (CHE-0054:R8 + R10).
+  no `cherry-pit-app::App<…>` consumption (CHE-0054:R8 + R10).
 - **Projection (CHE-0048:R2 + CHE-0054:R10 read path).**
   `EvidenceProjection` (`src/projection.rs`) is the **sole writer and
   sole reader** of the gh-report read-model. `Projection::apply` is
@@ -177,7 +177,7 @@ per S2.H2.b at B8').
 
 ## 4. Runtime topology
 
-gh-report v2 conforms to `cherry-pit-agent::App::run` (BC-9; CHE-0051
+gh-report v2 conforms to `cherry-pit-app::App::run` (BC-9; CHE-0051
 rolled forward from v1).
 
 - `gh-report::app::daemon::run(config)` becomes a thin wrapper that
@@ -190,11 +190,11 @@ rolled forward from v1).
     locked posture).
   - `cherry_pit_projection::FileProjectionStore<EvidenceProjection>` as
     the durable projection-snapshot store.
-  - `cherry_pit_agent::InProcessEventBus<DomainEvent>` as the in-process
+  - `cherry_pit_app::InProcessEventBus<DomainEvent>` as the in-process
     bus (CHE-0051:R2).
   - `cherry_pit_projection::ProjectionDriver<EvidenceProjection,
     FileProjectionStore<…>>` composed with
-    `cherry_pit_agent::ProjectionDriverExt` for the snapshot-fast-path
+    `cherry_pit_app::ProjectionDriverExt` for the snapshot-fast-path
     startup pattern (S4.H4.b per CHE-0051:R5): on process start, load
     snapshot + checkpoint, then replay only events whose
     `sequence > checkpoint.last_applied_sequence`.
@@ -428,7 +428,7 @@ strict prescriptive non-goals**. When CHE-0018 (sync domain / async
 infra), CHE-0024 (event delivery), CHE-0029 (workspace graph),
 CHE-0032 / CHE-0036 / CHE-0043 (atomic writes / file-per-stream /
 process fencing), CHE-0048 (cherry-pit-projection), CHE-0050
-(MsgpackFileStore), CHE-0051 (cherry-pit-agent), CHE-0052
+(MsgpackFileStore), CHE-0051 (cherry-pit-app), CHE-0052
 (cherry-pit-runtime), or CHE-0053 (cherry-pit-storage)
 prescribe a shape, follow the ADR even where it deviates from the
 default surgical-extraction posture (FOCUS.md §8). Implementation
@@ -454,7 +454,7 @@ Defaults that hold absent ADR override:
   load → handle → append → publish triad directly against
   `cherry-pit-core::EventStore` + `EventBus`. gh-report does **not**
   implement `cherry-pit-core::CommandGateway` and does **not**
-  consume `cherry-pit-agent::App<…>` at v0.1 (CHE-0054:R8 + R10).
+  consume `cherry-pit-app::App<…>` at v0.1 (CHE-0054:R8 + R10).
   Cross-aggregate reactions (e.g. `Run` → `Repo`) are dispatched at
   the call-site by ApplicationService methods invoking the downstream
   service directly, deferring `Policy::react`-driven choreography to
@@ -476,7 +476,7 @@ Captured here so moltke can absorb them without re-running the interview:
    ported per WU-6 v2 charter". The v1 §3a corrigendum routing it
    through cherry-pit-projection is **withdrawn**.
 2. **App::run conformance is a B-phase requirement.** Wired at B10'
-   (cherry-pit-agent `App` composition: bus + EventStore + driver +
+   (cherry-pit-app `App` composition: bus + EventStore + driver +
    projection store registered before `App::run` is called).
 3. **DoD-4 expansion.** `OPERATIONS.md` gets a storage-layout section
    in C-phase (C2'), reflecting the v2 `events/` + `projections/`
@@ -544,11 +544,11 @@ fixes their contract with gh-report code post-M2 cutover.
   `1-evidence.checkpoint.msgpack` per CHE-0048:R1/R2 + BC-v2-4/BC-v2-5.
 - **Driver.** `cherry_pit_projection::ProjectionDriver<EvidenceProjection,
   FileProjectionStore<…>>` composed with
-  `cherry_pit_agent::ProjectionDriverExt` per CHE-0051:R5 for the
+  `cherry_pit_app::ProjectionDriverExt` per CHE-0051:R5 for the
   snapshot-fast-path startup pattern: on process start, load
   snapshot + checkpoint, replay only events with
   `sequence > checkpoint.last_applied_sequence`.
-- **Bus.** `cherry_pit_agent::InProcessEventBus<DomainEvent>` per
+- **Bus.** `cherry_pit_app::InProcessEventBus<DomainEvent>` per
   CHE-0051:R2. ApplicationServices publish through this bus via
   `publish_or_trace`; `ProjectionDriverExt::apply_one` is registered
   as a handler so `EvidenceProjection::apply` runs synchronously
@@ -581,7 +581,7 @@ fixes their contract with gh-report code post-M2 cutover.
   the system's source of truth — `publish` is notification, not
   commit (CHE-0024).
 - **Dead-letter sink (reserved for future use).**
-  `cherry_pit_agent::DeadLetterSink` (CHE-0051:R7) is **not wired**
+  `cherry_pit_app::DeadLetterSink` (CHE-0051:R7) is **not wired**
   in gh-report at v0.1; CHE-0054:R10 reserves the surface for future
   use. The publish-or-trace pattern above is the v0.1 contract:
   bus-publish failures emit structured tracing and rely on

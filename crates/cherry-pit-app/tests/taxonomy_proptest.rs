@@ -15,7 +15,7 @@
 //! invariants under proptest closes the "G1 is too narrow" risk
 //! linus called out at S5 R1.5.
 
-use cherry_pit_agent::correlation_for;
+use cherry_pit_app::correlation_for;
 use proptest::prelude::*;
 
 fn uuid_strategy() -> impl Strategy<Value = uuid::Uuid> {

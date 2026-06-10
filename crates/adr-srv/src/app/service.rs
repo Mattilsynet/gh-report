@@ -4,7 +4,7 @@
 //! ## CHE-0054:R8/R10 carve-out
 //!
 //! adr-srv depends on `cherry-pit-gateway` for `MsgpackFileStore` only;
-//! no `cherry-pit-agent` / no `App<...>`. The `ApplicationService`
+//! no `cherry-pit-app` / no `App<...>`. The `ApplicationService`
 //! consumes `cherry_pit_core::EventStore` directly via
 //! `MsgpackFileStore<AdrIngested>`. Indices (`adrs_by_id`) and
 //! per-aggregate sequence tracker (`next_seq`) are owned here rather
