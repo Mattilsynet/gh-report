@@ -206,7 +206,11 @@ impl<E: DomainEvent> EventStore for PardosaEventStore<E> {
         let existing = inner.index.get(&id).ok_or_else(|| {
             infrastructure_error(format!("cannot append to aggregate {id}: not created"))
         })?;
-        let actual_sequence = existing.last().map_or(0, |envelope| envelope.sequence().get());
+        let actual_sequence = existing
+            .iter()
+            .map(|envelope| envelope.sequence().get())
+            .max()
+            .unwrap_or(0);
         if actual_sequence != expected_sequence.get() {
             return Err(StoreError::ConcurrencyConflict {
                 aggregate_id: id,
