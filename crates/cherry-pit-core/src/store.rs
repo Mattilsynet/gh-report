@@ -293,7 +293,7 @@ pub trait EventStore: Send + Sync + 'static {
 
 /// Optional [`EventStore`] capability: the substrate supports physical
 /// purge of an aggregate's event history followed by re-creation under
-/// the same id with a fresh stream (e.g. pardosa's PAR-0001 fiber
+/// the same id with a fresh stream (e.g. pardosa's PGN-0002 fiber
 /// state machine `Purged → Defined` transition, which severs logical
 /// continuity by setting `precursor = Index::NONE`).
 ///
@@ -305,7 +305,7 @@ pub trait EventStore: Send + Sync + 'static {
 /// Governing ADR: CHE-0059. Citations: CHE-0019:R1 (`load_history`
 /// returns `Ok(Vec::new())` for unknown aggregates), CHE-0039:R1
 /// (recreate threads `CorrelationContext` — no `Default` fabrication),
-/// PAR-0001 (substrate origin).
+/// PGN-0002 (substrate origin).
 pub trait PurgeableEventStore: EventStore {
     /// Load the full event history of an aggregate, including
     /// aggregates whose current state is purged. Returns
@@ -348,24 +348,24 @@ pub trait PurgeableEventStore: EventStore {
 }
 
 /// Optional [`EventStore`] capability: the substrate maintains a
-/// per-stream BLAKE3 hash chain (PAR-0021 `precursor_hash` plus
+/// per-stream BLAKE3 hash chain (PGN-0005 `precursor_hash` plus
 /// `Dragline::frontier`) for cryptographic tamper evidence beyond
 /// CHE-0016's structural envelope.
 ///
 /// `PardosaEventStore` MAY implement this trait as an always-failing
 /// rollout stub returning [`StoreError::Infrastructure`] from both
-/// methods until PAR-0021 lands in pardosa source — this is the named
+/// methods until PGN-0005 lands in pardosa source — this is the named
 /// CHE-0057:R3 / CHE-0060:R3 carve-out. The stub MUST be documented
 /// in the `impl` block and MUST be removed when PAR-0021 lands.
 /// **No trait-level default impl** is permitted: a default would hide
 /// the stub from review and silently survive PAR-0021's arrival.
 ///
 /// Governing ADR: CHE-0060. Citations: CHE-0016 (structural envelope
-/// baseline), PAR-0021 (substrate origin), SEC-0011 (deferred non-
+/// baseline), PGN-0005 (substrate origin), SEC-0011 (deferred non-
 /// repudiation consumer).
 pub trait HashChainedEventStore: EventStore {
     /// 32-byte BLAKE3 frontier hash over all committed events in
-    /// append order (PAR-0021:R3 + CHE-0060:R2).
+/// append order (PGN-0005:R3 + CHE-0060:R2).
     ///
     /// Returns the hash unconditionally (no `Result`): the substrate
     /// MUST be able to surface its current frontier. Rollout-stub
@@ -374,7 +374,7 @@ pub trait HashChainedEventStore: EventStore {
     fn frontier_hash(&self) -> [u8; 32];
 
     /// Verify the precursor-hash chain over the entire stream. Per
-    /// PAR-0021:R5, rejects any event whose `precursor_hash` does not
+/// PGN-0005:R5, rejects any event whose `precursor_hash` does not
     /// match the BLAKE3 hash of the referenced predecessor's canonical
     /// bytes.
     ///
@@ -389,8 +389,7 @@ pub trait HashChainedEventStore: EventStore {
 
 /// Optional [`EventStore`] marker capability: the substrate guarantees
 /// single-writer-per-aggregate-stream semantics at the substrate layer
-/// (e.g. pardosa's PAR-0004 `Nats-Expected-Last-Subject-Sequence`
-/// fencing).
+/// (e.g. pardosa's PGN-0010:R6 backend stance).
 ///
 /// Zero methods (CHE-0061:R2) — purely a type-system signal for
 /// downstream code that requires single-writer guarantees. Adding
@@ -399,7 +398,7 @@ pub trait HashChainedEventStore: EventStore {
 /// ADR.
 ///
 /// Governing ADR: CHE-0061. Citations: CHE-0006 (single-writer
-/// architectural assumption it makes observable), PAR-0004
+/// architectural assumption it makes observable), PGN-0010
 /// (substrate-level enforcement origin).
 pub trait SingleWriterEventStore: EventStore {}
 
