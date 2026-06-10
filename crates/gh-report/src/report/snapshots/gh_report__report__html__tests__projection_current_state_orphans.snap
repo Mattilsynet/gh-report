@@ -1,0 +1,71 @@
+---
+source: crates/gh-report/src/report/html.rs
+expression: "&pages[\"orphans.html\"]"
+---
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Orphan Repositories — TestOrg</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="ws.js" defer></script>
+    
+</head>
+
+<body>
+
+    <nav class="top-nav">
+        <a href="index.html">Dashboard</a>
+        <a href="report.html">Report</a>
+        <a href="owners.html">Owners</a>
+        <a href="orphans.html">Orphans (1)</a>
+    </nav>
+
+    <h1>Orphan Repositories</h1>
+
+    <ul class="breadcrumb">
+        <li><a href="index.html">Dashboard</a></li>
+        <li>Orphans</li>
+    </ul>
+
+    <p class="meta">Repositories with no identifiable code owners (CODEOWNERS absent or empty).
+        1 orphans out of the assessed repositories in <code>TestOrg</code>.</p>
+
+    
+    <div class="table-wrapper">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Repository</th>
+                    <th>Visibility</th>
+                    <th>Last Committer</th>
+                    <th>Last Commit</th>
+                    <th>Language</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                
+                <tr>
+                    <td><a href="https://github.com/TestOrg/active-repo"
+                            target="_blank" rel="noopener noreferrer">active-repo</a></td>
+                    <td>Public</td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td class="cell-truncate" title="—">—</td>
+                </tr>
+                
+            </tbody>
+        </table>
+    </div>
+    
+
+    
+
+
+</body>
+
+</html>

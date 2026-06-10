@@ -860,12 +860,30 @@ fn build_status_dots(checks: &crate::domain::checks::RepositoryChecks) -> Vec<St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::num::NonZeroU64;
+
+    use cherry_pit_core::{AggregateId, EventEnvelope, Projection};
+    use crate::domain::events::{DomainEvent, RepoPresence};
     use crate::domain::metrics::{
         AggregatedMetrics, BranchProtectionCounts, CodeownersCounts, DependabotCounts,
         PolicyCounts, RateMetric, SecretAlertCounts, SecretScanningCounts,
     };
+    use crate::projection::EvidenceProjection;
     use crate::domain::repository::Visibility;
     use crate::test_fixtures;
+
+    fn projection_envelope(payload: DomainEvent, sequence: u64) -> EventEnvelope<DomainEvent> {
+        EventEnvelope::new(
+            uuid::Uuid::now_v7(),
+            AggregateId::new(NonZeroU64::new(1).expect("non-zero")),
+            NonZeroU64::new(sequence).expect("non-zero"),
+            jiff::Timestamp::now(),
+            None,
+            None,
+            payload,
+        )
+        .expect("valid envelope")
+    }
 
     fn sample_metrics() -> AggregatedMetrics {
         AggregatedMetrics {
@@ -1002,6 +1020,67 @@ mod tests {
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
 
         insta::assert_snapshot!("dashboard_index", &pages["index.html"]);
+    }
+
+    #[test]
+    fn projection_current_state_renders_stable_html() {
+        let mut projection = EvidenceProjection::default();
+        let mut active = test_fixtures::all_passing_evidence("active-repo");
+        active.checks.codeowners = test_fixtures::codeowners_absent();
+        let removed = test_fixtures::all_passing_evidence("removed-repo");
+
+        projection.apply(&projection_envelope(
+            DomainEvent::RepositoryStateCaptured {
+                domain_key: active.repository.inventory_key.clone(),
+                repo_name: active.repository.name.clone(),
+                timestamp: test_fixtures::make_timestamp(),
+                evidence: Some(Box::new(active.clone())),
+                presence: RepoPresence::Active,
+            },
+            1,
+        ));
+        projection.apply(&projection_envelope(
+            DomainEvent::RepositoryStateCaptured {
+                domain_key: removed.repository.inventory_key.clone(),
+                repo_name: removed.repository.name.clone(),
+                timestamp: test_fixtures::make_timestamp(),
+                evidence: Some(Box::new(removed.clone())),
+                presence: RepoPresence::Active,
+            },
+            2,
+        ));
+        projection.apply(&projection_envelope(
+            DomainEvent::RepositoryStateCaptured {
+                domain_key: removed.repository.inventory_key.clone(),
+                repo_name: removed.repository.name.clone(),
+                timestamp: test_fixtures::make_timestamp(),
+                evidence: None,
+                presence: RepoPresence::Removed,
+            },
+            3,
+        ));
+
+        let evidence = test_fixtures::make_full_evidence(
+            test_fixtures::make_metadata(),
+            test_fixtures::make_collection_statistics(1, 1, 0, 0),
+            sample_metrics(),
+            test_fixtures::make_observability(),
+            projection.sorted_snapshot(),
+        );
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let orphaned_html = &pages["orphans.html"];
+        assert!(
+            orphaned_html.contains("active-repo"),
+            "orphans.html should render the surviving projection repository"
+        );
+        assert!(
+            !orphaned_html.contains("removed-repo"),
+            "orphans.html must not render the tombstoned repository"
+        );
+
+        insta::assert_snapshot!("projection_current_state_index", &pages["index.html"]);
+        insta::assert_snapshot!("projection_current_state_orphans", &pages["orphans.html"]);
+        insta::assert_snapshot!("projection_current_state_report", &pages["report.html"]);
     }
 
     #[test]
