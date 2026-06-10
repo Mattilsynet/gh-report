@@ -38,7 +38,7 @@ use gh_report::domain::checks::{
     CodeownersStatus, DependabotResult, DependabotStatus, RepositoryChecks, SecretScanningResult,
     SecretScanningStatus, SecurityPolicyEvidence, SecurityPolicyResult, SecurityPolicyStatus,
 };
-use gh_report::domain::events::DomainEvent;
+use gh_report::domain::events::{DomainEvent, RepoPresence};
 use gh_report::domain::evidence::RepositoryEvidence;
 use gh_report::domain::repository::{Repository, Visibility};
 
@@ -178,12 +178,9 @@ async fn seed_repo_evaluated_envelopes(events_dir: &std::path::Path) {
             "2026-05-20T00:00:02Z",
         ),
     ] {
-        let event = DomainEvent::RepoEvaluated {
+        let event = DomainEvent::RepositoryStateCaptured {
             domain_key: format!("owner/{slug}"),
             repo_name: slug.to_string(),
-            success: true,
-            source: "scheduled_batch".into(),
-            duration_ms: 10,
             timestamp: source_ts.into(),
             evidence: Some(Box::new(evidence_for(
                 slug,
@@ -192,6 +189,7 @@ async fn seed_repo_evaluated_envelopes(events_dir: &std::path::Path) {
                 policy_status,
                 SecurityPolicyEvidence::Setting,
             ))),
+            presence: RepoPresence::Active,
         };
         store
             .create(vec![event], ctx.clone())

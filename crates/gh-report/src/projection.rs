@@ -50,7 +50,7 @@ use std::num::NonZeroU64;
 use cherry_pit_core::{AggregateId, DomainEvent as CoreDomainEvent, EventEnvelope, Projection};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::events::DomainEvent;
+use crate::domain::events::{DomainEvent, RepoPresence};
 use crate::domain::evidence::{AssessmentMetadata, RepositoryEvidence};
 
 /// Singleton [`AggregateId`] for the [`OrgGovernance`] aggregate.
@@ -239,16 +239,10 @@ impl Projection for EvidenceProjection {
 
     fn apply(&mut self, envelope: &EventEnvelope<Self::Event>) {
         match envelope.payload() {
-            DomainEvent::SweepStarted { .. }
-            | DomainEvent::SweepCompleted { .. }
-            | DomainEvent::SweepFailed { .. }
-            | DomainEvent::SweepProgress { .. }
-            | DomainEvent::WebhookReceived { .. }
-            | DomainEvent::EvidencePublished { .. }
-            | DomainEvent::PartialEvidenceRendered { .. } => {}
-            DomainEvent::RepoEvaluated {
+            DomainEvent::RepositoryStateCaptured {
                 domain_key,
                 evidence,
+                presence: RepoPresence::Active,
                 ..
             } => {
                 if let Some(ev) = evidence {
@@ -256,7 +250,11 @@ impl Projection for EvidenceProjection {
                         .insert(domain_key.clone(), ev.as_ref().clone());
                 }
             }
-            DomainEvent::RepoRemoved { domain_key, .. } => {
+            DomainEvent::RepositoryStateCaptured {
+                domain_key,
+                presence: RepoPresence::Removed,
+                ..
+            } => {
                 self.repositories.remove(domain_key);
             }
         }
@@ -305,59 +303,19 @@ mod tests {
     }
 
     #[test]
-    fn apply_skeleton_is_no_op_for_unimplemented_variants() {
+    fn active_snapshot_without_evidence_is_no_op() {
         let mut p = EvidenceProjection::default();
-        let ts = "2026-04-20T12:00:00Z".to_string();
-        let cases = [
-            DomainEvent::SweepStarted {
-                org: "org".into(),
-                repo_count: 1,
-                batch_id: "b".into(),
-                timestamp: ts.clone(),
-                snapshot_signature: None,
-            },
-            DomainEvent::RepoEvaluated {
+        let env = envelope(
+            DomainEvent::RepositoryStateCaptured {
                 domain_key: "id-r".into(),
                 repo_name: "r".into(),
-                success: true,
-                source: "s".into(),
-                duration_ms: 0,
-                timestamp: ts.clone(),
+                timestamp: "2026-04-20T12:00:00Z".into(),
                 evidence: None,
+                presence: RepoPresence::Active,
             },
-            DomainEvent::SweepCompleted {
-                batch_id: "b".into(),
-                duration_ms: 0,
-                repo_count: 1,
-                timestamp: ts.clone(),
-            },
-            DomainEvent::WebhookReceived {
-                action: "enqueue".into(),
-                repo: None,
-                timestamp: ts.clone(),
-            },
-            DomainEvent::EvidencePublished {
-                page_count: 0,
-                warm_start: false,
-                timestamp: ts.clone(),
-            },
-            DomainEvent::SweepFailed {
-                batch_id: "b".into(),
-                error: "e".into(),
-                duration_ms: 0,
-                timestamp: ts.clone(),
-            },
-            DomainEvent::SweepProgress {
-                batch_id: "b".into(),
-                completed: 0,
-                total: 1,
-                timestamp: ts,
-            },
-        ];
-        for (i, ev) in cases.into_iter().enumerate() {
-            let seq = (i as u64) + 1;
-            p.apply(&envelope(ev, seq));
-        }
+            1,
+        );
+        p.apply(&env);
         assert!(p.repositories.is_empty());
         assert!(p.assessment_metadata.is_none());
     }
@@ -369,14 +327,12 @@ mod tests {
         let mut p = EvidenceProjection::default();
         let evidence = test_fixtures::all_passing_evidence("repo-1");
         let env = envelope(
-            DomainEvent::RepoEvaluated {
+            DomainEvent::RepositoryStateCaptured {
                 domain_key: "id-repo-1".into(),
                 repo_name: "repo-1".into(),
-                success: true,
-                source: "scheduled_batch".into(),
-                duration_ms: 0,
                 timestamp: "2026-04-20T12:00:00Z".into(),
                 evidence: Some(Box::new(evidence.clone())),
+                presence: RepoPresence::Active,
             },
             1,
         );
@@ -393,14 +349,12 @@ mod tests {
     fn apply_repo_evaluated_without_evidence_is_no_op() {
         let mut p = EvidenceProjection::default();
         let env = envelope(
-            DomainEvent::RepoEvaluated {
+            DomainEvent::RepositoryStateCaptured {
                 domain_key: "id-repo-1".into(),
                 repo_name: "repo-1".into(),
-                success: false,
-                source: "scheduled_batch".into(),
-                duration_ms: 0,
                 timestamp: "2026-04-20T12:00:00Z".into(),
                 evidence: None,
+                presence: RepoPresence::Active,
             },
             1,
         );
@@ -410,28 +364,28 @@ mod tests {
 
     #[test]
     fn core_domain_event_impl_returns_pascalcase_discriminator() {
-        let ev = DomainEvent::RepoRemoved {
+        let ev = DomainEvent::RepositoryStateCaptured {
             domain_key: "k".into(),
             repo_name: "r".into(),
             timestamp: "t".into(),
+            evidence: None,
+            presence: RepoPresence::Removed,
         };
         assert_eq!(
             <DomainEvent as CoreDomainEvent>::event_type(&ev),
-            "RepoRemoved"
+            "RepositoryStateCaptured"
         );
     }
 
     fn ev_envelope(domain_key: &str, name: &str, seq: u64) -> EventEnvelope<DomainEvent> {
         use crate::test_fixtures;
         envelope(
-            DomainEvent::RepoEvaluated {
+            DomainEvent::RepositoryStateCaptured {
                 domain_key: domain_key.into(),
                 repo_name: name.into(),
-                success: true,
-                source: "scheduled_batch".into(),
-                duration_ms: 0,
                 timestamp: "2026-04-20T12:00:00Z".into(),
                 evidence: Some(Box::new(test_fixtures::all_passing_evidence(name))),
+                presence: RepoPresence::Active,
             },
             seq,
         )

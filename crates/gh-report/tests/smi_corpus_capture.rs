@@ -82,13 +82,7 @@ use gh_report::app::state::EventStoreImpl;
 
 use gh_report::app::services::MergerHandles;
 use gh_report::app::services::repo_service::RepoService;
-use gh_report::app::services::run_service::RunService;
-use gh_report::app::services::webhook_service::WebhookService;
 use gh_report::domain::aggregates::repo::{RecordEvaluation, RecordRemoval};
-use gh_report::domain::aggregates::run::{
-    CompleteSweep, FailSweep, PublishEvidence, RecordProgress, StartSweep,
-};
-use gh_report::domain::aggregates::webhook::RecordDelivery;
 use gh_report::domain::events::DomainEvent;
 use gh_report::projection::EvidenceProjection;
 
@@ -105,20 +99,8 @@ fn fixtures_dir() -> PathBuf {
 /// (envelope metadata varies — see module docs).
 const TS_T0: &str = "2026-05-16T10:00:00Z";
 const TS_T1: &str = "2026-05-16T10:00:01Z";
-const TS_T2: &str = "2026-05-16T10:00:02Z";
-const TS_T3: &str = "2026-05-16T10:00:03Z";
-const TS_T4: &str = "2026-05-16T10:00:04Z";
-const TS_T5: &str = "2026-05-16T10:00:05Z";
-const TS_T6: &str = "2026-05-16T10:00:06Z";
-const TS_T7: &str = "2026-05-16T10:00:07Z";
-const TS_T8: &str = "2026-05-16T10:00:08Z";
-const TS_T9: &str = "2026-05-16T10:00:09Z";
-
-const BATCH_OK: &str = "batch-smi-ok-001";
-const BATCH_FAIL: &str = "batch-smi-fail-001";
 const REPO_KEY: &str = "id-smi-repo-alpha";
 const REPO_KEY_REMOVED: &str = "id-smi-repo-removed";
-const DELIVERY_ID: &str = "delivery-smi-001";
 
 #[tokio::test]
 #[ignore = "regenerates committed fixture under tests/fixtures/smi_pre_corpus/ — run only when intentionally bumping corpus shape"]
@@ -128,11 +110,7 @@ async fn capture_pre_smi_corpus() {
     let store_dir = tempfile::tempdir().expect("tempdir");
     let store = Arc::new(EventStoreImpl::create_pgno(&store_dir.path().join("events.pgno")).unwrap());
     let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
-    let runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>> =
-        Arc::new(Mutex::new(HashMap::new()));
     let repos_by_key: Arc<Mutex<HashMap<String, AggregateId>>> =
-        Arc::new(Mutex::new(HashMap::new()));
-    let deliveries_by_id: Arc<Mutex<HashMap<String, AggregateId>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -140,24 +118,18 @@ async fn capture_pre_smi_corpus() {
     let (handles, _joins) = MergerHandles::spawn(
         Arc::clone(&store),
         Arc::clone(&bus),
-        Arc::clone(&runs_by_key),
         Arc::clone(&repos_by_key),
         Arc::clone(&tracker),
     );
 
-    let run = RunService::with_handle(handles.run);
     let repo = RepoService::with_handle(handles.repo);
-    let webhook = WebhookService::with_handle(handles.webhook);
 
     let ctx = CorrelationContext::none();
 
-    run_aggregate_happy_path(&run, &ctx).await;
-    run_aggregate_failure_path(&run, &ctx).await;
     repo_aggregate_evaluate_and_remove(&repo, &ctx).await;
-    webhook_aggregate_ingest(&webhook, &ctx).await;
 
     let copied = copy_msgpack_files(store_dir.path(), &target);
-    let aggregate_ids = collect_aggregate_ids(&runs_by_key, &repos_by_key, &deliveries_by_id);
+    let aggregate_ids = collect_aggregate_ids(&repos_by_key);
     let payload_sequence = load_payload_sequence(&store, &aggregate_ids).await;
     let projection = fold_projection(&store, &aggregate_ids).await;
 
@@ -173,98 +145,7 @@ fn prepare_fixture_dir() -> PathBuf {
     target
 }
 
-type RunSvc = RunService;
 type RepoSvc = RepoService;
-type WebhookSvc = WebhookService;
-
-async fn run_aggregate_happy_path(run: &RunSvc, ctx: &CorrelationContext) {
-    run.start_sweep(
-        StartSweep {
-            org: "octocat".into(),
-            repo_count: 2,
-            batch_id: BATCH_OK.into(),
-            timestamp: TS_T0.into(),
-            snapshot_signature: "test-sig-t0".into(),
-        },
-        ctx,
-    )
-    .await
-    .expect("start_sweep ok");
-    run.record_progress(
-        BATCH_OK,
-        RecordProgress {
-            batch_id: BATCH_OK.into(),
-            completed: 1,
-            total: 2,
-            timestamp: TS_T1.into(),
-        },
-        ctx,
-    )
-    .await
-    .expect("record_progress 1/2");
-    run.record_progress(
-        BATCH_OK,
-        RecordProgress {
-            batch_id: BATCH_OK.into(),
-            completed: 2,
-            total: 2,
-            timestamp: TS_T2.into(),
-        },
-        ctx,
-    )
-    .await
-    .expect("record_progress 2/2");
-    run.complete(
-        BATCH_OK,
-        CompleteSweep {
-            batch_id: BATCH_OK.into(),
-            duration_ms: 5_000,
-            repo_count: 2,
-            timestamp: TS_T3.into(),
-        },
-        ctx,
-    )
-    .await
-    .expect("complete");
-    run.publish_evidence(
-        BATCH_OK,
-        PublishEvidence {
-            page_count: 1,
-            warm_start: false,
-            timestamp: TS_T4.into(),
-        },
-        ctx,
-    )
-    .await
-    .expect("publish_evidence");
-}
-
-async fn run_aggregate_failure_path(run: &RunSvc, ctx: &CorrelationContext) {
-    run.start_sweep(
-        StartSweep {
-            org: "octocat".into(),
-            repo_count: 1,
-            batch_id: BATCH_FAIL.into(),
-            timestamp: TS_T5.into(),
-            snapshot_signature: "test-sig-t5".into(),
-        },
-        ctx,
-    )
-    .await
-    .expect("start_sweep fail-path");
-    run.fail(
-        BATCH_FAIL,
-        FailSweep {
-            batch_id: BATCH_FAIL.into(),
-            error: "synthetic-failure".into(),
-            duration_ms: 1_500,
-            timestamp: TS_T6.into(),
-        },
-        ctx,
-    )
-    .await
-    .expect("fail");
-}
 
 async fn repo_aggregate_evaluate_and_remove(repo: &RepoSvc, ctx: &CorrelationContext) {
     repo.record_evaluation(
@@ -275,7 +156,7 @@ async fn repo_aggregate_evaluate_and_remove(repo: &RepoSvc, ctx: &CorrelationCon
             success: true,
             source: "scheduled_batch".into(),
             duration_ms: 250,
-            timestamp: TS_T7.into(),
+            timestamp: TS_T0.into(),
             evidence: None,
         },
         ctx,
@@ -287,27 +168,12 @@ async fn repo_aggregate_evaluate_and_remove(repo: &RepoSvc, ctx: &CorrelationCon
         RecordRemoval {
             domain_key: REPO_KEY_REMOVED.into(),
             repo_name: "smi-repo-removed".into(),
-            timestamp: TS_T8.into(),
+            timestamp: TS_T1.into(),
         },
         ctx,
     )
     .await
     .expect("record_removal");
-}
-
-async fn webhook_aggregate_ingest(webhook: &WebhookSvc, ctx: &CorrelationContext) {
-    webhook
-        .ingest(
-            RecordDelivery {
-                delivery_id: DELIVERY_ID.into(),
-                action: "enqueue".into(),
-                repo: Some("smi-repo-alpha".into()),
-                timestamp: TS_T9.into(),
-            },
-            ctx,
-        )
-        .await
-        .expect("webhook ingest");
 }
 
 /// Copy `<id>.msgpack` files from the live store directory into the
@@ -349,16 +215,10 @@ fn copy_msgpack_files(store_dir: &Path, target: &Path) -> Vec<String> {
     copied.into_iter().map(|(_, name)| name).collect()
 }
 
-fn collect_aggregate_ids(
-    runs_by_key: &Arc<Mutex<HashMap<String, AggregateId>>>,
-    repos_by_key: &Arc<Mutex<HashMap<String, AggregateId>>>,
-    deliveries_by_id: &Arc<Mutex<HashMap<String, AggregateId>>>,
-) -> Vec<AggregateId> {
+fn collect_aggregate_ids(repos_by_key: &Arc<Mutex<HashMap<String, AggregateId>>>) -> Vec<AggregateId> {
     let mut all: Vec<AggregateId> = Vec::new();
-    for index in [runs_by_key, repos_by_key, deliveries_by_id] {
-        let guard = index.lock().expect("index lock");
-        all.extend(guard.values().copied());
-    }
+    let guard = repos_by_key.lock().expect("index lock");
+    all.extend(guard.values().copied());
     all.sort_by_key(|id| id.get());
     all.dedup();
     all

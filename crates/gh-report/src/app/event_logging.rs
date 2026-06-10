@@ -82,24 +82,22 @@ mod tests {
 
         bus.publish(&[
             envelope(
-                DomainEvent::SweepStarted {
-                    org: "test-org".into(),
-                    repo_count: 3,
-                    batch_id: "test-batch".into(),
+                DomainEvent::RepositoryStateCaptured {
+                    domain_key: "k0".into(),
+                    repo_name: "repo-0".into(),
                     timestamp: now_str(),
-                    snapshot_signature: None,
+                    evidence: None,
+                    presence: crate::domain::events::RepoPresence::Active,
                 },
                 1,
             ),
             envelope(
-                DomainEvent::RepoEvaluated {
+                DomainEvent::RepositoryStateCaptured {
                     domain_key: "k1".into(),
                     repo_name: "repo-1".into(),
-                    success: true,
-                    source: "test".into(),
-                    duration_ms: 50,
                     timestamp: now_str(),
                     evidence: None,
+                    presence: crate::domain::events::RepoPresence::Active,
                 },
                 2,
             ),
@@ -149,14 +147,12 @@ mod tests {
         let envelopes: Vec<EventEnvelope<DomainEvent>> = (0u64..3)
             .map(|i| {
                 envelope(
-                    DomainEvent::RepoEvaluated {
+                    DomainEvent::RepositoryStateCaptured {
                         domain_key: format!("k{i}"),
                         repo_name: format!("repo-{i}"),
-                        success: true,
-                        source: "test".into(),
-                        duration_ms: 10,
                         timestamp: now_str(),
                         evidence: None,
+                        presence: crate::domain::events::RepoPresence::Active,
                     },
                     i + 1,
                 )

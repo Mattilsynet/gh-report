@@ -139,13 +139,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(EventStoreImpl::create_pgno(&dir.path().join("events.pgno")).unwrap());
         let bus = Arc::new(InProcessEventBus::<DomainEvent>::new());
-        let runs_by_key = Arc::new(Mutex::new(HashMap::new()));
         let repos_by_key = Arc::new(Mutex::new(HashMap::new()));
         let tracker = Arc::new(Mutex::new(HashMap::new()));
         let (handles, _joins) = MergerHandles::spawn(
             Arc::clone(&store),
             Arc::clone(&bus),
-            runs_by_key,
             Arc::clone(&repos_by_key),
             Arc::clone(&tracker),
         );
@@ -269,15 +267,15 @@ mod tests {
         }
         assert!(matches!(
             loaded[0].payload(),
-            DomainEvent::RepoEvaluated { success: true, .. }
+            DomainEvent::RepositoryStateCaptured { .. }
         ));
         assert!(matches!(
             loaded[1].payload(),
-            DomainEvent::RepoEvaluated { success: false, .. }
+            DomainEvent::RepositoryStateCaptured { .. }
         ));
         assert!(matches!(
             loaded[2].payload(),
-            DomainEvent::RepoRemoved { .. }
+            DomainEvent::RepositoryStateCaptured { .. }
         ));
     }
 
@@ -351,7 +349,7 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         assert!(matches!(
             loaded[0].payload(),
-            DomainEvent::RepoRemoved { .. }
+            DomainEvent::RepositoryStateCaptured { .. }
         ));
         let tracked_seq = {
             let guard = tracker

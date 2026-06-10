@@ -422,12 +422,10 @@ impl AppState {
 /// only needed once); the bundle struct is consumed.
 ///
 /// [`EventStore`]: cherry_pit_core::EventStore
-fn build_services(
-    handles: MergerHandles,
-) -> (Arc<RunService>, Arc<RepoService>, Arc<WebhookService>) {
-    let run = Arc::new(RunService::with_handle(handles.run));
+fn build_services(handles: MergerHandles) -> (Arc<RunService>, Arc<RepoService>, Arc<WebhookService>) {
+    let run = Arc::new(RunService::new());
     let repo = Arc::new(RepoService::with_handle(handles.repo));
-    let webhook = Arc::new(WebhookService::with_handle(handles.webhook));
+    let webhook = Arc::new(WebhookService::new());
     (run, repo, webhook)
 }
 
@@ -541,13 +539,8 @@ impl AppState {
         let deliveries_by_id = Arc::new(Mutex::new(HashMap::new()));
         let next_seq = Arc::new(Mutex::new(HashMap::new()));
         let rs = noop_event_store().await;
-        let (merger_handles, merger_joins) = MergerHandles::spawn(
-            rs,
-            Arc::clone(&bus),
-            Arc::clone(&runs_by_key),
-            Arc::clone(&repos_by_key),
-            Arc::clone(&next_seq),
-        );
+        let (merger_handles, merger_joins) =
+            MergerHandles::spawn(rs, Arc::clone(&bus), Arc::clone(&repos_by_key), Arc::clone(&next_seq));
         let (run_service, repo_service, webhook_service) = build_services(merger_handles);
         let projection_state =
             Arc::new(Mutex::new(crate::projection::EvidenceProjection::default()));
@@ -640,7 +633,6 @@ impl AppState {
         let (merger_handles, merger_joins) = MergerHandles::spawn(
             Arc::clone(&event_store),
             Arc::clone(&bus),
-            Arc::clone(&runs_by_key),
             Arc::clone(&repos_by_key),
             Arc::clone(&next_seq),
         );
@@ -832,10 +824,6 @@ impl AppState {
                 }
             }
 
-            let mut runs = self
-                .runs_by_key
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut repos = self
                 .repos_by_key
                 .lock()
@@ -850,24 +838,10 @@ impl AppState {
                 let seq = env.sequence();
                 max_seq = Some(max_seq.map_or(seq, |m| m.max(seq)));
 
-                #[allow(
-                    clippy::match_same_arms,
-                    reason = "per-variant rationale comments justify split arms"
-                )]
                 match env.payload() {
-                    DomainEvent::SweepStarted { batch_id, .. } => {
-                        runs.entry(batch_id.clone()).or_insert(aggregate_id);
-                    }
-                    DomainEvent::RepoEvaluated { domain_key, .. }
-                    | DomainEvent::RepoRemoved { domain_key, .. } => {
+                    DomainEvent::RepositoryStateCaptured { domain_key, .. } => {
                         repos.entry(domain_key.clone()).or_insert(aggregate_id);
                     }
-                    DomainEvent::SweepCompleted { .. }
-                    | DomainEvent::SweepFailed { .. }
-                    | DomainEvent::SweepProgress { .. }
-                    | DomainEvent::PartialEvidenceRendered { .. } => {}
-                    DomainEvent::WebhookReceived { .. } => {}
-                    DomainEvent::EvidencePublished { .. } => {}
                 }
             }
 
@@ -1005,13 +979,8 @@ impl AppStateBuilder {
         let deliveries_by_id = Arc::new(Mutex::new(HashMap::new()));
         let next_seq = Arc::new(Mutex::new(HashMap::new()));
         let rs = noop_event_store().await;
-        let (merger_handles, merger_joins) = MergerHandles::spawn(
-            rs,
-            Arc::clone(&bus),
-            Arc::clone(&runs_by_key),
-            Arc::clone(&repos_by_key),
-            Arc::clone(&next_seq),
-        );
+        let (merger_handles, merger_joins) =
+            MergerHandles::spawn(rs, Arc::clone(&bus), Arc::clone(&repos_by_key), Arc::clone(&next_seq));
         let (run_service, repo_service, webhook_service) = build_services(merger_handles);
         let projection_state =
             Arc::new(Mutex::new(crate::projection::EvidenceProjection::default()));

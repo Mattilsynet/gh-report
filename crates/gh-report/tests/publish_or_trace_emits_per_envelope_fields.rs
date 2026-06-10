@@ -37,8 +37,8 @@ use tracing_subscriber::Layer;
 use tracing_subscriber::layer::{Context, SubscriberExt};
 
 use gh_report::app::services::MergerHandles;
-use gh_report::app::services::run_service::RunService;
-use gh_report::domain::aggregates::run::StartSweep;
+use gh_report::app::services::repo_service::RepoService;
+use gh_report::domain::aggregates::repo::RecordEvaluation;
 use gh_report::domain::events::DomainEvent;
 
 /// Fake `EventBus` that always returns `Err(BusError)` from `publish`.
@@ -109,8 +109,6 @@ async fn publish_failure_emits_structured_error_per_envelope() {
     let dir = TempDir::new().expect("tempdir");
     let store = Arc::new(EventStoreImpl::create_pgno(&dir.path().join("events.pgno")).unwrap());
     let bus: Arc<FailingBus> = Arc::new(FailingBus);
-    let runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>> =
-        Arc::new(Mutex::new(HashMap::new()));
     let repos_by_key: Arc<Mutex<HashMap<String, AggregateId>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let tracker: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>> =
@@ -119,29 +117,30 @@ async fn publish_failure_emits_structured_error_per_envelope() {
     let (handles, _joins) = MergerHandles::<FailingBus>::with_bus_for_test(
         Arc::clone(&store),
         Arc::clone(&bus),
-        Arc::clone(&runs_by_key),
         Arc::clone(&repos_by_key),
         Arc::clone(&tracker),
     );
-    let svc = RunService::with_handle(handles.run);
+    let svc = RepoService::with_handle(handles.repo);
 
     let capture = CaptureLayer::default();
     let events_handle = Arc::clone(&capture.events);
     let subscriber = tracing_subscriber::registry().with(capture);
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    let cmd = StartSweep {
-        org: "octocat".into(),
-        repo_count: 1,
-        batch_id: "m2a-prime-test".into(),
+    let cmd = RecordEvaluation {
+        domain_key: "id-m2a-prime-test".into(),
+        repo_name: "m2a-prime-test".into(),
+        success: true,
+        source: "test".into(),
+        duration_ms: 1,
         timestamp: "2026-05-11T00:00:00Z".into(),
-        snapshot_signature: "test-sig-m2a".into(),
+        evidence: None,
     };
     let ctx = CorrelationContext::none();
 
-    svc.start_sweep(cmd, &ctx)
+    svc.record_evaluation("id-m2a-prime-test", cmd, &ctx)
         .await
-        .expect("start_sweep succeeds despite bus failure (CHE-0024:R1)");
+        .expect("repo snapshot succeeds despite bus failure (CHE-0024:R1)");
 
     let captured = events_handle
         .lock()

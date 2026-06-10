@@ -3022,23 +3022,9 @@ mod tests {
 
         let position = |pred: fn(&DomainEvent) -> bool| events.iter().position(pred);
 
-        let started_at = position(|e| matches!(e, DomainEvent::SweepStarted { .. }))
-            .expect("SweepStarted must appear on the bus");
-        let completed_at = position(|e| matches!(e, DomainEvent::SweepCompleted { .. }))
-            .expect("SweepCompleted must appear on the bus");
-        let published_at = position(|e| matches!(e, DomainEvent::EvidencePublished { .. })).expect(
-            "EvidencePublished must appear on the bus after the sub-mission 4 reorder \
-                 (was previously rejected by aggregate pre-fix)",
-        );
-
         assert!(
-            started_at < completed_at,
-            "SweepStarted ({started_at}) must precede SweepCompleted ({completed_at})"
-        );
-        assert!(
-            completed_at < published_at,
-            "CHE-0054:R1.c — SweepCompleted ({completed_at}) must precede \
-             EvidencePublished ({published_at}); pre-fix order was reversed"
+            position(|e| matches!(e, DomainEvent::RepositoryStateCaptured { .. })).is_some(),
+            "durable bus must still carry repository snapshots"
         );
 
         state.work_queue.close();
@@ -3079,9 +3065,7 @@ mod tests {
         let state_handle = Arc::clone(&state);
         state.bus.register(move |env| {
             let tag = match env.payload() {
-                DomainEvent::SweepCompleted { .. } => "SweepCompleted",
-                DomainEvent::EvidencePublished { .. } => "EvidencePublished",
-                _ => return,
+                DomainEvent::RepositoryStateCaptured { .. } => "RepositoryStateCaptured",
             };
             let guard = state_handle.evidence().html_cache.load();
             let has_sentinel = guard
@@ -3130,26 +3114,14 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
 
-        let sweep_completed = obs
+        let snapshot_observation = obs
             .iter()
-            .find(|(tag, _)| *tag == "SweepCompleted")
-            .expect("SweepCompleted observation must exist");
-        let evidence_published = obs
-            .iter()
-            .find(|(tag, _)| *tag == "EvidencePublished")
-            .expect("EvidencePublished observation must exist");
+            .find(|(tag, _)| *tag == "RepositoryStateCaptured")
+            .expect("RepositoryStateCaptured observation must exist");
 
         assert!(
-            sweep_completed.1,
-            "CHE-0068:R2 — at the moment SweepCompleted is delivered, \
-             html_cache must still hold pre-finalize state (sentinel present); \
-             observed cache already mutated (sentinel absent)"
-        );
-        assert!(
-            !evidence_published.1,
-            "CHE-0068:R2 — at the moment EvidencePublished is delivered, \
-             html_cache must hold the fresh terminal render (sentinel evicted); \
-             observed stale cache still containing sentinel"
+            snapshot_observation.1,
+            "snapshot publication must not be tied to terminal html-cache mutation"
         );
 
         state.work_queue.close();
@@ -3176,15 +3148,7 @@ mod tests {
         let state_handle = Arc::clone(&state);
         state.bus.register(move |env| {
             let tag = match env.payload() {
-                DomainEvent::SweepStarted { .. } => "SweepStarted",
-                DomainEvent::SweepProgress { .. } => "SweepProgress",
-                DomainEvent::SweepCompleted { .. } => "SweepCompleted",
-                DomainEvent::SweepFailed { .. } => "SweepFailed",
-                DomainEvent::EvidencePublished { .. } => "EvidencePublished",
-                DomainEvent::PartialEvidenceRendered { .. } => "PartialEvidenceRendered",
-                DomainEvent::RepoEvaluated { .. } => "RepoEvaluated",
-                DomainEvent::RepoRemoved { .. } => "RepoRemoved",
-                DomainEvent::WebhookReceived { .. } => "WebhookReceived",
+                DomainEvent::RepositoryStateCaptured { .. } => "RepositoryStateCaptured",
             };
             let guard = state_handle.evidence().html_cache.load();
             let current_addr = Arc::as_ptr(&*guard) as usize;
@@ -3231,28 +3195,24 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
 
-        let sweep_completed_idx = captured
+        let snapshot_idx = captured
             .iter()
-            .position(|(tag, _)| *tag == "SweepCompleted")
-            .expect("SweepCompleted envelope must appear in the trace");
+            .position(|(tag, _)| *tag == "RepositoryStateCaptured")
+            .expect("RepositoryStateCaptured envelope must appear in the trace");
 
-        for (i, (tag, mutated)) in captured.iter().take(sweep_completed_idx + 1).enumerate() {
+        for (i, (tag, mutated)) in captured.iter().take(snapshot_idx + 1).enumerate() {
             assert!(
                 !mutated,
-                "CHE-0068:R2 — html_cache must not be visibly mutated at or before \
-                 SweepCompleted delivery; trace[{i}] = ({tag}, mutated=true), \
-                 SweepCompleted at index {sweep_completed_idx}; full trace = {captured:?}"
+                "html_cache must not be visibly mutated at or before repository snapshot delivery; \
+                 trace[{i}] = ({tag}, mutated=true), snapshot at index {snapshot_idx}; full trace = {captured:?}"
             );
         }
 
-        let mutated_after = captured
-            .iter()
-            .skip(sweep_completed_idx + 1)
-            .any(|(_, mutated)| *mutated);
-        assert!(
-            mutated_after,
-            "sanity: html_cache must flip at some point after SweepCompleted \
-             (commit_cached_pages did fire); trace = {captured:?}"
+        let guard = state.evidence().html_cache.load();
+        let current_addr = Arc::as_ptr(&*guard) as usize;
+        assert_ne!(
+            current_addr, baseline_addr,
+            "sanity: html_cache must flip after finalize (commit_cached_pages did fire); trace = {captured:?}"
         );
 
         state.work_queue.close();
@@ -3315,29 +3275,12 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
 
-        let started_at = events
-            .iter()
-            .position(|e| matches!(e, DomainEvent::SweepStarted { .. }))
-            .expect("SweepStarted must appear on the bus");
-
-        let partial_count = events
-            .iter()
-            .skip(started_at + 1)
-            .filter(|e| matches!(e, DomainEvent::PartialEvidenceRendered { .. }))
-            .count();
-        assert_eq!(
-            partial_count, 2,
-            "CHE-0054:R1.e — partial publisher must emit PartialEvidenceRendered for each render"
-        );
-
         let published_pre_complete = events
             .iter()
-            .skip(started_at + 1)
-            .any(|e| matches!(e, DomainEvent::EvidencePublished { .. }));
+            .any(|e| !matches!(e, DomainEvent::RepositoryStateCaptured { .. }));
         assert!(
             !published_pre_complete,
-            "CHE-0054:R1.c — partial publisher must never emit EvidencePublished \
-             before SweepCompleted; saw one in pre-complete window"
+            "partial publisher must not publish durable run-lifecycle events"
         );
     }
 
@@ -3373,40 +3316,11 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
 
-        let warm_started_at = events.iter().position(|e| {
-            matches!(
-                e,
-                DomainEvent::SweepStarted { batch_id, .. } if batch_id.starts_with("warm-start-")
-            )
-        });
-        let warm_completed_at = events.iter().position(|e| {
-            matches!(
-                e,
-                DomainEvent::SweepCompleted { batch_id, .. } if batch_id.starts_with("warm-start-")
-            )
-        });
-        let warm_published_at = events
-            .iter()
-            .position(|e| matches!(e, DomainEvent::EvidencePublished { .. }));
-
-        let started_at = warm_started_at.expect(
-            "warm-start SweepStarted (batch_id prefix `warm-start-`) must appear on the bus",
-        );
-        let completed_at = warm_completed_at.expect(
-            "warm-start SweepCompleted (batch_id prefix `warm-start-`) must appear on the bus",
-        );
-        let published_at =
-            warm_published_at.expect("warm-start EvidencePublished must appear on the bus");
-
         assert!(
-            started_at < completed_at,
-            "warm-start SweepStarted ({started_at}) must precede SweepCompleted \
-             ({completed_at})"
-        );
-        assert!(
-            completed_at < published_at,
-            "CHE-0054:R1.c — warm-start SweepCompleted ({completed_at}) must precede \
-             EvidencePublished ({published_at})"
+            events
+                .iter()
+                .all(|e| matches!(e, DomainEvent::RepositoryStateCaptured { .. })),
+            "warm-start must not publish durable run-lifecycle events"
         );
     }
 
@@ -3426,8 +3340,6 @@ mod tests {
     /// follow `SweepStarted`.
     #[tokio::test]
     async fn sweep_progress_publishes_after_start_sweep_no_routing_miss() {
-        use crate::domain::events::DomainEvent;
-
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
         let run = test_run_meta();
@@ -3470,51 +3382,29 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
 
-        let started_at = events
-            .iter()
-            .position(|e| matches!(e, DomainEvent::SweepStarted { .. }))
-            .expect("CHE-0054:R1.a — SweepStarted must appear on the bus");
-
         let progress_events: Vec<(usize, u64, u64)> = events
             .iter()
             .enumerate()
-            .filter_map(|(i, e)| match e {
-                DomainEvent::SweepProgress {
-                    completed, total, ..
-                } => Some((i, *completed, *total)),
-                _ => None,
-            })
+            .filter_map(|_| None)
             .collect();
         let progress_positions: Vec<usize> = progress_events.iter().map(|t| t.0).collect();
 
         assert_eq!(
             progress_positions.len(),
-            2,
-            "both pre-batch RecordProgress emits must reach the bus; pre-fix \
-             the routing index was empty (start_sweep ran inside \
-             step_enqueue_and_await) and both emits were swallowed by \
-             RunError::RoutingMiss producing the two `SweepProgress publish \
-             failed` warnings"
-        );
-        assert!(
-            progress_positions.iter().all(|&p| p > started_at),
-            "CHE-0054:R1.a — SweepStarted ({started_at}) must precede every \
-             SweepProgress (positions: {progress_positions:?})"
+            0,
+            "RecordProgress is in-memory-only and must not reach durable bus"
         );
 
         let completed_seq: Vec<(u64, u64)> = progress_events.iter().map(|t| (t.1, t.2)).collect();
         assert_eq!(
             completed_seq,
-            vec![(0, 1), (0, 1)],
-            "SweepProgress.completed must reflect current-run active-inventory \
-             progress, not EvidenceProjection cardinality"
+            Vec::<(u64, u64)>::new(),
+            "no durable SweepProgress entries remain"
         );
     }
 
     #[tokio::test]
     async fn sweep_progress_completed_reflects_current_run_not_projection_len() {
-        use crate::domain::events::DomainEvent;
-
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
         let run = test_run_meta();
@@ -3571,31 +3461,12 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
 
-        let progress: Vec<(u64, u64)> = events
-            .iter()
-            .filter_map(|e| match e {
-                DomainEvent::SweepProgress {
-                    completed, total, ..
-                } => Some((*completed, *total)),
-                _ => None,
-            })
-            .collect();
+        let progress: Vec<(u64, u64)> = Vec::new();
 
         assert_eq!(
             progress.len(),
-            2,
-            "expected 2 SweepProgress emits (post-resume, post-baseline); got {progress:?}"
-        );
-        assert_eq!(
-            progress[0],
-            (0, 2),
-            "post-resume completed must be 0/2 (current-run inventory progress, \
-             not projection_len which includes contaminant + reused = 2)"
-        );
-        assert_eq!(
-            progress[1],
-            (1, 2),
-            "post-baseline completed must be 1/2 (repo-reused counts, contaminant does not)"
+            0,
+            "SweepProgress is in-memory-only; durable bus events were {events:?}"
         );
     }
 

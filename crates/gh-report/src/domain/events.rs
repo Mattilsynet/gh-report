@@ -1,274 +1,50 @@
-//! Domain events representing state transitions in the system.
-//!
-//! These events model what happened in the domain, not what should happen
-//! (commands) or how it was delivered (infrastructure). Each variant
-//! captures the essential facts of a state transition.
-//!
-//! ## Encoding
-//!
-//! `DomainEvent` derives `Serialize`/`Deserialize`; on-disk encoding flows
-//! through `cherry_pit_gateway::MsgpackFileStore<DomainEvent>` (msgpack via
-//! `rmp-serde`). `event_type()` returns the `PascalCase` Rust variant name
-//! for structured-log emission and HTTP projection responses.
-//!
-//! ## Variant evolution (CHE-0022:R5)
-//!
-//! `DomainEvent` is **not** `#[non_exhaustive]`: CHE-0022:R5 forbids
-//! the attribute on domain event enums — they are versioned via
-//! additive variants, not attribute hedging. The exhaustive `match`
-//! in [`DomainEvent::event_type`] (no wildcard arm) covers the
-//! documentation purpose `#[non_exhaustive]` previously served: any
-//! new variant produces a compile error there, forcing the maintainer
-//! to update the discriminant table on the enum's rustdoc and append
-//! the next `Variant = N` literal.
+//! Domain events persisted by gh-report.
 
 use serde::{Deserialize, Serialize};
 
 use crate::domain::evidence::RepositoryEvidence;
 
-/// A domain event representing a state transition in the system.
-///
-/// Published to an in-process event bus and consumed by subscribers
-/// (logging, metrics, persistence, etc.).
-///
-/// ## Invariants
-///
-/// - Events are immutable after creation.
-/// - Timestamps are ISO 8601 UTC strings (from `jiff::Timestamp::now()`).
-/// - `domain_key` values match the `inventory_key` on `Repository`.
-///
-/// ## Wire format (GEN-0037:R4, hand-rolled)
-///
-/// The hand-rolled `Encode` impl below writes the `u8` discriminant
-/// (via `#[repr(u8)]` + explicit `Variant = 0..=8` literals) followed
-/// by each payload field in declaration order. Variant reorder,
-/// insertion, removal, or field reorder within a variant is a
-/// wire-format break; new variants must be appended at the end with
-/// the next discriminant, and new fields must be appended at the end
-/// of their variant (CHE-0064:R2 + PAR-0024:R5 + CHE-0022:R5 additive
-/// evolution).
-///
-/// | Discriminant | Variant                    | Payload fields (declaration order)                                                                  |
-/// |--------------|----------------------------|-----------------------------------------------------------------------------------------------------|
-/// | `0u8`        | `SweepStarted`             | `org`, `repo_count`, `batch_id`, `timestamp`, `snapshot_signature`                                  |
-/// | `1u8`        | `RepoEvaluated`            | `domain_key`, `repo_name`, `success`, `source`, `duration_ms`, `timestamp`, `evidence`              |
-/// | `2u8`        | `RepoRemoved`              | `domain_key`, `repo_name`, `timestamp`                                                              |
-/// | `3u8`        | `SweepCompleted`           | `batch_id`, `duration_ms`, `repo_count`, `timestamp`                                                |
-/// | `4u8`        | `WebhookReceived`          | `action`, `repo`, `timestamp`                                                                       |
-/// | `5u8`        | `EvidencePublished`        | `page_count`, `warm_start`, `timestamp`                                                             |
-/// | `6u8`        | `PartialEvidenceRendered`  | `batch_id`, `page_count`, `pending_repos`, `timestamp`                                              |
-/// | `7u8`        | `SweepFailed`              | `batch_id`, `error`, `duration_ms`, `timestamp`                                                     |
-/// | `8u8`        | `SweepProgress`            | `batch_id`, `completed`, `total`, `timestamp`                                                       |
-///
-/// `RepoEvaluated.evidence: Option<Box<RepositoryEvidence>>` resolves
-/// via the `Option<T>` blanket → `Box<T>` blanket →
-/// `<RepositoryEvidence as Encode>::encode` chain in `pardosa-encoding`.
+/// Repository presence encoded on the single durable gh-report event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RepoPresence {
+    /// Repository is present in the current read model.
+    Active,
+    /// Repository has been removed from the current read model.
+    Removed,
+}
+
+/// A domain event representing the latest known repository state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum DomainEvent {
-    /// A scheduled sweep has started.
-    SweepStarted {
-        /// Target organization.
-        org: String,
-        /// Number of repositories to evaluate.
-        repo_count: u64,
-        /// Unique identifier for this sweep batch.
-        batch_id: String,
-        /// ISO 8601 UTC timestamp.
-        timestamp: String,
-        /// Snapshot signature this sweep was keyed to (SHA-256 of the
-        /// org-level alert summary minus `run_timestamp`); audit-trail
-        /// surface for the replay-as-rebuild baseline (CHE-0048:24 /
-        /// CHE-0065). `None` until δ.3c-ii (bead `adr-fmt-baao9`)
-        /// threads `build_snapshot_signature` through `StartSweep`;
-        /// kept `Option` for backward-tolerance per CHE-0064:R2
-        /// additive evolution.
-        snapshot_signature: Option<String>,
-    } = 0,
-
-    /// A single repository was evaluated (success or failure).
-    RepoEvaluated {
-        /// Repository inventory key (e.g., `"id-my-repo"`).
-        domain_key: String,
-        /// Human-readable repository name.
-        repo_name: String,
-        /// Whether the evaluation succeeded.
-        success: bool,
-        /// Origin of the evaluation job (e.g., `"scheduled_batch"`, `"external"`).
-        source: String,
-        /// Evaluation duration in milliseconds.
-        duration_ms: u64,
-        /// ISO 8601 UTC timestamp.
-        timestamp: String,
-        /// Repository evidence produced by this evaluation.
-        ///
-        /// Load-bearing for `EvidenceProjection`: the projection is the
-        /// sole writer of the read model (CHE-0048:R2 + BC-v2-2), so the
-        /// envelope must carry the materialised state. `Some` for both
-        /// success and failure paths once the collector populates them
-        /// (failure path uses `collect::failure_evidence`); `None` is
-        /// permitted for transitional / metadata-only emissions and for
-        /// backward-compat with msgpack envelopes serialized before B6'
-        /// landed (CHE-0022 additive evolution).
-        ///
-        /// Boxed because `RepositoryEvidence` is ~560 bytes and would
-        /// otherwise dominate the enum's stack footprint (the other 7
-        /// variants are tens of bytes); `Option<Box<_>>` also benefits
-        /// from the null-pointer niche optimisation.
-        evidence: Option<Box<RepositoryEvidence>>,
-    } = 1,
-
-    /// A repository was removed from the evidence store.
-    ///
-    /// Triggered by webhook `repository.deleted` or `repository.archived` events.
-    RepoRemoved {
+    /// A single repository state snapshot was captured.
+    RepositoryStateCaptured {
         /// Repository inventory key.
         domain_key: String,
         /// Human-readable repository name.
         repo_name: String,
         /// ISO 8601 UTC timestamp.
         timestamp: String,
-    } = 2,
-
-    /// A scheduled sweep has completed.
-    SweepCompleted {
-        /// Unique identifier matching the originating [`SweepStarted::batch_id`].
-        batch_id: String,
-        /// Total sweep duration in milliseconds.
-        duration_ms: u64,
-        /// Number of repositories evaluated.
-        repo_count: u64,
-        /// ISO 8601 UTC timestamp.
-        timestamp: String,
-    } = 3,
-
-    /// A webhook was received and validated.
-    WebhookReceived {
-        /// Mapped action (e.g., `"enqueue"`, `"remove"`, `"ignore"`).
-        action: String,
-        /// Repository name, if applicable.
-        repo: Option<String>,
-        /// ISO 8601 UTC timestamp.
-        timestamp: String,
-    } = 4,
-
-    /// Evidence was published (HTML cache updated, WebSocket broadcast sent).
-    EvidencePublished {
-        /// Number of HTML pages in the cache.
-        page_count: u64,
-        /// Whether this was a warm-start publish (from baseline, no API calls).
-        warm_start: bool,
-        /// ISO 8601 UTC timestamp.
-        timestamp: String,
-    } = 5,
-
-    /// Mid-sweep partial render emitted by the partial-publisher debounce.
-    ///
-    /// Non-terminal: admissible only while `Run.phase == Started`. Does
-    /// NOT drive a phase transition. Distinct from the terminal
-    /// `EvidencePublished` (which follows `SweepCompleted` per
-    /// CHE-0054:R1.c). See the new R1.e admitting this variant.
-    PartialEvidenceRendered {
-        /// Sweep `batch_id` this partial belongs to.
-        batch_id: String,
-        /// Number of HTML pages rendered into the cache.
-        page_count: u64,
-        /// Repos still pending evaluation at render time.
-        pending_repos: u64,
-        /// ISO 8601 UTC timestamp.
-        timestamp: String,
-    } = 6,
-
-    /// A scheduled sweep failed (timeout, error, or all jobs rejected).
-    SweepFailed {
-        /// Unique identifier matching the originating [`SweepStarted::batch_id`].
-        batch_id: String,
-        /// Human-readable error description.
-        error: String,
-        /// Duration from sweep start to failure, in milliseconds.
-        duration_ms: u64,
-        /// ISO 8601 UTC timestamp.
-        timestamp: String,
-    } = 7,
-
-    /// Progress update during a sweep (emitted at phase transitions).
-    SweepProgress {
-        /// Unique identifier matching the originating [`SweepStarted::batch_id`].
-        batch_id: String,
-        /// Number of repositories completed so far (resumed + baseline + evaluated).
-        completed: u64,
-        /// Total number of repositories in the sweep.
-        total: u64,
-        /// ISO 8601 UTC timestamp.
-        timestamp: String,
-    } = 8,
+        /// Repository evidence produced by this evaluation.
+        evidence: Option<Box<RepositoryEvidence>>,
+        /// Whether this snapshot keeps or removes the repository.
+        presence: RepoPresence,
+    } = 0,
 }
 
 impl std::fmt::Display for DomainEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::SweepStarted {
-                org, repo_count, ..
-            } => {
-                write!(f, "sweep_started(org={org}, repos={repo_count})")
-            }
-            Self::RepoEvaluated {
-                repo_name, success, ..
-            } => {
-                let outcome = if *success { "ok" } else { "fail" };
-                write!(f, "repo_evaluated({repo_name}, {outcome})")
-            }
-            Self::RepoRemoved { repo_name, .. } => {
-                write!(f, "repo_removed({repo_name})")
-            }
-            Self::SweepCompleted {
-                repo_count,
-                duration_ms,
+            Self::RepositoryStateCaptured {
+                repo_name,
+                presence,
                 ..
             } => {
-                write!(
-                    f,
-                    "sweep_completed(repos={repo_count}, duration={duration_ms}ms)"
-                )
-            }
-            Self::WebhookReceived { action, repo, .. } => {
-                let repo_str = repo.as_deref().unwrap_or("n/a");
-                write!(f, "webhook_received({action}, {repo_str})")
-            }
-            Self::EvidencePublished {
-                page_count,
-                warm_start,
-                ..
-            } => {
-                let label = if *warm_start { "warm" } else { "live" };
-                write!(f, "evidence_published({page_count} pages, {label})")
-            }
-            Self::PartialEvidenceRendered {
-                batch_id,
-                page_count,
-                pending_repos,
-                ..
-            } => {
-                write!(
-                    f,
-                    "partial_evidence_rendered(batch={batch_id}, pages={page_count}, pending={pending_repos})"
-                )
-            }
-            Self::SweepFailed {
-                batch_id,
-                error,
-                duration_ms,
-                ..
-            } => {
-                write!(
-                    f,
-                    "sweep_failed(batch={batch_id}, error={error}, duration={duration_ms}ms)"
-                )
-            }
-            Self::SweepProgress {
-                completed, total, ..
-            } => {
-                write!(f, "sweep_progress({completed}/{total})")
+                let presence = match presence {
+                    RepoPresence::Active => "active",
+                    RepoPresence::Removed => "removed",
+                };
+                write!(f, "repository_state_captured({repo_name}, {presence})")
             }
         }
     }
@@ -276,28 +52,10 @@ impl std::fmt::Display for DomainEvent {
 
 impl DomainEvent {
     /// Returns the event type discriminator as a static string.
-    ///
-    /// `PascalCase`, matching the Rust variant name 1:1. Used for
-    /// structured-log emission (e.g. tracing fields) and HTTP
-    /// projection responses. The on-disk wire identity is the
-    /// leading `u8` discriminator emitted by msgpack via
-    /// `MsgpackFileStore`, not this string.
-    ///
-    /// The match is intentionally exhaustive (no wildcard arm) so that
-    /// adding a new `DomainEvent` variant produces a compile error here,
-    /// forcing the maintainer to add the corresponding `event_type()` arm.
     #[must_use]
     pub fn event_type(&self) -> &'static str {
         match self {
-            Self::SweepStarted { .. } => "SweepStarted",
-            Self::RepoEvaluated { .. } => "RepoEvaluated",
-            Self::RepoRemoved { .. } => "RepoRemoved",
-            Self::SweepCompleted { .. } => "SweepCompleted",
-            Self::WebhookReceived { .. } => "WebhookReceived",
-            Self::EvidencePublished { .. } => "EvidencePublished",
-            Self::PartialEvidenceRendered { .. } => "PartialEvidenceRendered",
-            Self::SweepFailed { .. } => "SweepFailed",
-            Self::SweepProgress { .. } => "SweepProgress",
+            Self::RepositoryStateCaptured { .. } => "RepositoryStateCaptured",
         }
     }
 }
@@ -306,373 +64,71 @@ impl DomainEvent {
 mod tests {
     use super::*;
 
-    fn now_str() -> String {
-        jiff::Timestamp::now().to_string()
-    }
-
     #[test]
-    fn sweep_started_structural_round_trip() {
-        let event = DomainEvent::SweepStarted {
-            org: "my-org".into(),
-            repo_count: 42,
-            batch_id: "batch-001".into(),
-            timestamp: "2026-04-20T12:00:00Z".into(),
-            snapshot_signature: None,
-        };
-        assert_eq!(event.event_type(), "SweepStarted");
-        let DomainEvent::SweepStarted {
-            org, repo_count, ..
-        } = &event
-        else {
-            panic!("expected SweepStarted, got {event:?}");
-        };
-        assert_eq!(org, "my-org");
-        assert_eq!(*repo_count, 42);
-    }
-
-    #[test]
-    fn repo_evaluated_structural_round_trip() {
-        let event = DomainEvent::RepoEvaluated {
-            domain_key: "id-my-repo".into(),
-            repo_name: "my-repo".into(),
-            success: true,
-            source: "scheduled_batch".into(),
-            duration_ms: 1234,
-            timestamp: "2026-04-20T12:00:00Z".into(),
-            evidence: None,
-        };
-        assert_eq!(event.event_type(), "RepoEvaluated");
-        let DomainEvent::RepoEvaluated {
-            repo_name,
-            success,
-            evidence,
-            ..
-        } = &event
-        else {
-            panic!("expected RepoEvaluated, got {event:?}");
-        };
-        assert_eq!(repo_name, "my-repo");
-        assert!(*success);
-        assert!(evidence.is_none());
-    }
-
-    #[test]
-    fn repo_evaluated_with_evidence_structural_round_trip() {
+    fn repository_state_captured_active_structural_round_trip() {
         use crate::test_fixtures;
 
         let evidence = test_fixtures::all_passing_evidence("repo-1");
-        let event = DomainEvent::RepoEvaluated {
+        let event = DomainEvent::RepositoryStateCaptured {
             domain_key: "id-repo-1".into(),
             repo_name: "repo-1".into(),
-            success: true,
-            source: "scheduled_batch".into(),
-            duration_ms: 0,
             timestamp: "2026-04-20T12:00:00Z".into(),
             evidence: Some(Box::new(evidence.clone())),
+            presence: RepoPresence::Active,
         };
-        assert_eq!(event.event_type(), "RepoEvaluated");
-        match event {
-            DomainEvent::RepoEvaluated {
-                evidence: Some(ev), ..
-            } => {
-                assert_eq!(*ev, evidence);
-            }
-            other => panic!("expected RepoEvaluated with Some(evidence), got {other:?}"),
-        }
+
+        assert_eq!(event.event_type(), "RepositoryStateCaptured");
+        let DomainEvent::RepositoryStateCaptured {
+            evidence: actual,
+            presence,
+            ..
+        } = event;
+        assert_eq!(actual.as_deref(), Some(&evidence));
+        assert_eq!(presence, RepoPresence::Active);
     }
 
     #[test]
-    fn repo_removed_structural_round_trip() {
-        let event = DomainEvent::RepoRemoved {
+    fn repository_state_captured_removed_structural_round_trip() {
+        let event = DomainEvent::RepositoryStateCaptured {
             domain_key: "id-old-repo".into(),
             repo_name: "old-repo".into(),
             timestamp: "2026-04-20T12:00:00Z".into(),
+            evidence: None,
+            presence: RepoPresence::Removed,
         };
-        assert_eq!(event.event_type(), "RepoRemoved");
-        let DomainEvent::RepoRemoved { repo_name, .. } = &event else {
-            panic!("expected RepoRemoved, got {event:?}");
-        };
+        assert_eq!(event.event_type(), "RepositoryStateCaptured");
+        let DomainEvent::RepositoryStateCaptured {
+            repo_name,
+            presence,
+            ..
+        } = &event;
         assert_eq!(repo_name, "old-repo");
+        assert_eq!(*presence, RepoPresence::Removed);
     }
 
     #[test]
-    fn sweep_completed_structural_round_trip() {
-        let event = DomainEvent::SweepCompleted {
-            batch_id: "batch-001".into(),
-            duration_ms: 5000,
-            repo_count: 42,
+    fn display_impl_covers_snapshot_variant() {
+        let event = DomainEvent::RepositoryStateCaptured {
+            domain_key: "k".into(),
+            repo_name: "r".into(),
             timestamp: "2026-04-20T12:00:00Z".into(),
+            evidence: None,
+            presence: RepoPresence::Active,
         };
-        assert_eq!(event.event_type(), "SweepCompleted");
-        let DomainEvent::SweepCompleted {
-            duration_ms,
-            repo_count,
-            ..
-        } = &event
-        else {
-            panic!("expected SweepCompleted, got {event:?}");
-        };
-        assert_eq!(*duration_ms, 5000);
-        assert_eq!(*repo_count, 42);
-    }
-
-    #[test]
-    fn webhook_received_structural_round_trip() {
-        let event = DomainEvent::WebhookReceived {
-            action: "enqueue".into(),
-            repo: Some("my-repo".into()),
-            timestamp: "2026-04-20T12:00:00Z".into(),
-        };
-        assert_eq!(event.event_type(), "WebhookReceived");
-        let DomainEvent::WebhookReceived { action, repo, .. } = &event else {
-            panic!("expected WebhookReceived, got {event:?}");
-        };
-        assert_eq!(action, "enqueue");
-        assert_eq!(repo.as_deref(), Some("my-repo"));
-    }
-
-    #[test]
-    fn evidence_published_structural_round_trip() {
-        let event = DomainEvent::EvidencePublished {
-            page_count: 5,
-            warm_start: false,
-            timestamp: "2026-04-20T12:00:00Z".into(),
-        };
-        assert_eq!(event.event_type(), "EvidencePublished");
-        let DomainEvent::EvidencePublished {
-            page_count,
-            warm_start,
-            ..
-        } = &event
-        else {
-            panic!("expected EvidencePublished, got {event:?}");
-        };
-        assert_eq!(*page_count, 5);
-        assert!(!*warm_start);
-    }
-
-    #[test]
-    fn partial_evidence_rendered_structural_round_trip() {
-        let event = DomainEvent::PartialEvidenceRendered {
-            batch_id: "b1".into(),
-            page_count: 3,
-            pending_repos: 7,
-            timestamp: "2026-04-20T12:00:00Z".into(),
-        };
-        assert_eq!(event.event_type(), "PartialEvidenceRendered");
-        let DomainEvent::PartialEvidenceRendered {
-            batch_id,
-            page_count,
-            pending_repos,
-            ..
-        } = &event
-        else {
-            panic!("expected PartialEvidenceRendered, got {event:?}");
-        };
-        assert_eq!(batch_id, "b1");
-        assert_eq!(*page_count, 3);
-        assert_eq!(*pending_repos, 7);
-    }
-
-    #[test]
-    fn sweep_failed_structural_round_trip() {
-        let event = DomainEvent::SweepFailed {
-            batch_id: "batch-001".into(),
-            error: "timeout after 7200s".into(),
-            duration_ms: 7_200_000,
-            timestamp: "2026-04-20T14:00:00Z".into(),
-        };
-        assert_eq!(event.event_type(), "SweepFailed");
-        let DomainEvent::SweepFailed {
-            error, duration_ms, ..
-        } = &event
-        else {
-            panic!("expected SweepFailed, got {event:?}");
-        };
-        assert_eq!(error, "timeout after 7200s");
-        assert_eq!(*duration_ms, 7_200_000);
-    }
-
-    #[test]
-    fn sweep_progress_structural_round_trip() {
-        let event = DomainEvent::SweepProgress {
-            batch_id: "batch-001".into(),
-            completed: 25,
-            total: 100,
-            timestamp: "2026-04-20T12:30:00Z".into(),
-        };
-        assert_eq!(event.event_type(), "SweepProgress");
-        let DomainEvent::SweepProgress {
-            completed, total, ..
-        } = &event
-        else {
-            panic!("expected SweepProgress, got {event:?}");
-        };
-        assert_eq!(*completed, 25);
-        assert_eq!(*total, 100);
-    }
-
-    #[test]
-    fn display_impl_covers_all_variants() {
-        let ts = now_str();
-        let events = vec![
-            DomainEvent::SweepStarted {
-                org: "org".into(),
-                repo_count: 10,
-                batch_id: "b".into(),
-                timestamp: ts.clone(),
-                snapshot_signature: None,
-            },
-            DomainEvent::RepoEvaluated {
-                domain_key: "k".into(),
-                repo_name: "r".into(),
-                success: true,
-                source: "s".into(),
-                duration_ms: 100,
-                timestamp: ts.clone(),
-                evidence: None,
-            },
-            DomainEvent::RepoRemoved {
-                domain_key: "k".into(),
-                repo_name: "r".into(),
-                timestamp: ts.clone(),
-            },
-            DomainEvent::SweepCompleted {
-                batch_id: "b".into(),
-                duration_ms: 1000,
-                repo_count: 10,
-                timestamp: ts.clone(),
-            },
-            DomainEvent::WebhookReceived {
-                action: "enqueue".into(),
-                repo: None,
-                timestamp: ts.clone(),
-            },
-            DomainEvent::EvidencePublished {
-                page_count: 3,
-                warm_start: true,
-                timestamp: ts.clone(),
-            },
-            DomainEvent::PartialEvidenceRendered {
-                batch_id: "b".into(),
-                page_count: 2,
-                pending_repos: 4,
-                timestamp: ts.clone(),
-            },
-            DomainEvent::SweepFailed {
-                batch_id: "b".into(),
-                error: "timeout".into(),
-                duration_ms: 5000,
-                timestamp: ts.clone(),
-            },
-            DomainEvent::SweepProgress {
-                batch_id: "b".into(),
-                completed: 5,
-                total: 10,
-                timestamp: ts,
-            },
-        ];
-
-        for event in &events {
-            let display = format!("{event}");
-            assert!(!display.is_empty(), "Display should produce output");
-        }
+        let display = format!("{event}");
+        assert!(display.contains("repository_state_captured"));
+        assert!(display.contains("active"));
     }
 
     #[test]
     fn event_type_returns_correct_discriminator() {
-        let ts = now_str();
-        let cases: Vec<(DomainEvent, &str)> = vec![
-            (
-                DomainEvent::SweepStarted {
-                    org: "o".into(),
-                    repo_count: 1,
-                    batch_id: "b".into(),
-                    timestamp: ts.clone(),
-                    snapshot_signature: None,
-                },
-                "SweepStarted",
-            ),
-            (
-                DomainEvent::RepoEvaluated {
-                    domain_key: "k".into(),
-                    repo_name: "r".into(),
-                    success: true,
-                    source: "s".into(),
-                    duration_ms: 0,
-                    timestamp: ts.clone(),
-                    evidence: None,
-                },
-                "RepoEvaluated",
-            ),
-            (
-                DomainEvent::RepoRemoved {
-                    domain_key: "k".into(),
-                    repo_name: "r".into(),
-                    timestamp: ts.clone(),
-                },
-                "RepoRemoved",
-            ),
-            (
-                DomainEvent::SweepCompleted {
-                    batch_id: "b".into(),
-                    duration_ms: 0,
-                    repo_count: 0,
-                    timestamp: ts.clone(),
-                },
-                "SweepCompleted",
-            ),
-            (
-                DomainEvent::WebhookReceived {
-                    action: "a".into(),
-                    repo: None,
-                    timestamp: ts.clone(),
-                },
-                "WebhookReceived",
-            ),
-            (
-                DomainEvent::EvidencePublished {
-                    page_count: 0,
-                    warm_start: false,
-                    timestamp: ts.clone(),
-                },
-                "EvidencePublished",
-            ),
-            (
-                DomainEvent::PartialEvidenceRendered {
-                    batch_id: "b".into(),
-                    page_count: 0,
-                    pending_repos: 0,
-                    timestamp: ts.clone(),
-                },
-                "PartialEvidenceRendered",
-            ),
-            (
-                DomainEvent::SweepFailed {
-                    batch_id: "b".into(),
-                    error: "e".into(),
-                    duration_ms: 0,
-                    timestamp: ts.clone(),
-                },
-                "SweepFailed",
-            ),
-            (
-                DomainEvent::SweepProgress {
-                    batch_id: "b".into(),
-                    completed: 0,
-                    total: 0,
-                    timestamp: ts,
-                },
-                "SweepProgress",
-            ),
-        ];
-
-        for (event, expected) in &cases {
-            assert_eq!(
-                event.event_type(),
-                *expected,
-                "event_type() mismatch for {expected}",
-            );
-        }
+        let event = DomainEvent::RepositoryStateCaptured {
+            domain_key: "k".into(),
+            repo_name: "r".into(),
+            timestamp: "2026-04-20T12:00:00Z".into(),
+            evidence: None,
+            presence: RepoPresence::Removed,
+        };
+        assert_eq!(event.event_type(), "RepositoryStateCaptured");
     }
 }

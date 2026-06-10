@@ -6,7 +6,7 @@ use gh_report::domain::checks::{
     CodeownersStatus, DependabotResult, DependabotStatus, RepositoryChecks, SecretScanningResult,
     SecretScanningStatus, SecurityPolicyEvidence, SecurityPolicyResult, SecurityPolicyStatus,
 };
-use gh_report::domain::events::DomainEvent;
+use gh_report::domain::events::{DomainEvent, RepoPresence};
 use gh_report::domain::evidence::RepositoryEvidence;
 use gh_report::domain::repository::{Repository, Visibility};
 use gh_report::projection::EvidenceProjection;
@@ -89,14 +89,12 @@ fn ev_envelope(name: &str, seq: u64) -> EventEnvelope<DomainEvent> {
         jiff::Timestamp::now(),
         None,
         None,
-        DomainEvent::RepoEvaluated {
+        DomainEvent::RepositoryStateCaptured {
             domain_key: format!("id-{name}"),
             repo_name: name.into(),
-            success: true,
-            source: "scheduled_batch".into(),
-            duration_ms: 0,
             timestamp: TS.into(),
             evidence: Some(Box::new(ev(name))),
+            presence: RepoPresence::Active,
         },
     )
     .expect("valid envelope")
@@ -110,10 +108,12 @@ fn rm_envelope(name: &str, seq: u64) -> EventEnvelope<DomainEvent> {
         jiff::Timestamp::now(),
         None,
         None,
-        DomainEvent::RepoRemoved {
+        DomainEvent::RepositoryStateCaptured {
             domain_key: format!("id-{name}"),
             repo_name: name.into(),
             timestamp: TS.into(),
+            evidence: None,
+            presence: RepoPresence::Removed,
         },
     )
     .expect("valid envelope")

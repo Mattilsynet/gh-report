@@ -220,20 +220,22 @@ mod tests {
     }
 
     fn repo_removed(key: &str) -> DomainEvent {
-        DomainEvent::RepoRemoved {
+        DomainEvent::RepositoryStateCaptured {
             domain_key: key.into(),
             repo_name: key.into(),
             timestamp: "2026-04-20T12:00:00Z".into(),
+            evidence: None,
+            presence: crate::domain::events::RepoPresence::Removed,
         }
     }
 
     fn sweep_started() -> DomainEvent {
-        DomainEvent::SweepStarted {
-            org: "org".into(),
-            repo_count: 1,
-            batch_id: "b".into(),
+        DomainEvent::RepositoryStateCaptured {
+            domain_key: "k".into(),
+            repo_name: "k".into(),
             timestamp: "2026-04-20T12:00:00Z".into(),
-            snapshot_signature: None,
+            evidence: None,
+            presence: crate::domain::events::RepoPresence::Active,
         }
     }
 

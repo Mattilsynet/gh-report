@@ -71,8 +71,6 @@ async fn drive_and_verify(evals: Vec<Eval>) -> Result<(), TestCaseError> {
     let dir = TempDir::new().expect("tempdir");
     let store = Arc::new(EventStoreImpl::create_pgno(&dir.path().join("events.pgno")).unwrap());
     let bus: Arc<NoopBus> = Arc::new(NoopBus);
-    let runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>> =
-        Arc::new(Mutex::new(HashMap::new()));
     let repos_by_key: Arc<Mutex<HashMap<String, AggregateId>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let next_seq: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>> =
@@ -81,7 +79,6 @@ async fn drive_and_verify(evals: Vec<Eval>) -> Result<(), TestCaseError> {
     let (handles, _joins) = MergerHandles::<NoopBus>::with_bus_for_test(
         Arc::clone(&store),
         Arc::clone(&bus),
-        Arc::clone(&runs_by_key),
         Arc::clone(&repos_by_key),
         Arc::clone(&next_seq),
     );

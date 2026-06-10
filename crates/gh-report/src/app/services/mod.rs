@@ -36,5 +36,5 @@ pub mod repo_service;
 pub mod run_service;
 pub mod webhook_service;
 
-pub use arms::{RepoArm, RepoCmd, RunArm, RunCmd, WebhookArm, WebhookCmd};
+pub use arms::{RepoArm, RepoCmd};
 pub use merger::{MergerHandles, MergerJoinHandles};

@@ -48,38 +48,8 @@ use std::path::PathBuf;
 /// in the same form and cite CHE-0022 in the commit message.
 const CURRENT_VARIANTS: &[(&str, &[&str])] = &[
     (
-        "SweepStarted",
-        &["batch_id", "org", "repo_count", "timestamp"],
-    ),
-    (
-        "RepoEvaluated",
-        &[
-            "domain_key",
-            "duration_ms",
-            "evidence",
-            "repo_name",
-            "source",
-            "success",
-            "timestamp",
-        ],
-    ),
-    ("RepoRemoved", &["domain_key", "repo_name", "timestamp"]),
-    (
-        "SweepCompleted",
-        &["batch_id", "duration_ms", "repo_count", "timestamp"],
-    ),
-    ("WebhookReceived", &["action", "repo", "timestamp"]),
-    (
-        "EvidencePublished",
-        &["page_count", "timestamp", "warm_start"],
-    ),
-    (
-        "SweepFailed",
-        &["batch_id", "duration_ms", "error", "timestamp"],
-    ),
-    (
-        "SweepProgress",
-        &["batch_id", "completed", "timestamp", "total"],
+        "RepositoryStateCaptured",
+        &["domain_key", "evidence", "presence", "repo_name", "timestamp"],
     ),
 ];
 
@@ -153,12 +123,10 @@ fn event_schema_is_append_only() {
             }
         }
         panic!(
-            "CHE-0022 violation (R2: removing or renaming persisted event variants is forbidden).\n\
+            "M2 hard-cut schema violation: DomainEvent must remain the one durable snapshot variant.\n\
              The following snapshot record(s) are missing from the current enum:\n\
              {details}\n\
-             If this is intentional, you are making a breaking schema change — bump the\n\
-             schema version and migrate persisted events. Do NOT silently update the\n\
-             snapshot at {} to make this pass.",
+             Do NOT silently update the snapshot at {} to make this pass.",
             snapshot_path.display()
         );
     }

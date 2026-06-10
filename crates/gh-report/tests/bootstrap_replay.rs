@@ -52,7 +52,7 @@ use gh_report::domain::checks::{
     CodeownersStatus, DependabotResult, DependabotStatus, RepositoryChecks, SecretScanningResult,
     SecretScanningStatus, SecurityPolicyEvidence, SecurityPolicyResult, SecurityPolicyStatus,
 };
-use gh_report::domain::events::DomainEvent;
+use gh_report::domain::events::{DomainEvent, RepoPresence};
 use gh_report::domain::evidence::RepositoryEvidence;
 use gh_report::domain::repository::{Repository, Visibility};
 
@@ -68,26 +68,12 @@ async fn bootstrap_replay_populates_routing_indices() {
         let store = Arc::new(EventStoreImpl::create_pgno(&events_dir.join("events.pgno")).unwrap());
         let ctx = CorrelationContext::none();
 
-        let run_event = DomainEvent::SweepStarted {
-            org: "test-org".into(),
-            repo_count: 3,
-            batch_id: "batch-replay-001".into(),
-            timestamp: "2026-05-19T00:00:00Z".into(),
-            snapshot_signature: None,
-        };
-        let (_run_id, _) = store
-            .create(vec![run_event], ctx.clone())
-            .await
-            .expect("create Run aggregate");
-
-        let repo_event = DomainEvent::RepoEvaluated {
+        let repo_event = DomainEvent::RepositoryStateCaptured {
             domain_key: "id-repo-alpha".into(),
             repo_name: "repo-alpha".into(),
-            success: true,
-            source: "scheduled_batch".into(),
-            duration_ms: 42,
             timestamp: "2026-05-19T00:00:01Z".into(),
             evidence: None,
+            presence: RepoPresence::Active,
         };
         let (_repo_id, _) = store
             .create(vec![repo_event], ctx)
@@ -107,15 +93,6 @@ async fn bootstrap_replay_populates_routing_indices() {
         .await
         .expect("snapshot_fast_path_init");
 
-    let runs_arc = app_state.runs_by_key_for_test();
-    let runs = runs_arc.lock().expect("runs_by_key lock");
-    assert!(
-        runs.contains_key("batch-replay-001"),
-        "runs_by_key must contain 'batch-replay-001' after replay; got keys: {:?}",
-        runs.keys().collect::<Vec<_>>()
-    );
-    drop(runs);
-
     let repos_arc = app_state.repos_by_key_for_test();
     let repos = repos_arc.lock().expect("repos_by_key lock");
     assert!(
@@ -129,8 +106,8 @@ async fn bootstrap_replay_populates_routing_indices() {
     let next_seq = next_seq_arc.lock().expect("next_seq lock");
     assert_eq!(
         next_seq.len(),
-        2,
-        "next_seq must track both aggregates (Run + Repo); got {} entries",
+        1,
+        "next_seq must track the durable Repo aggregate; got {} entries",
         next_seq.len()
     );
     for (agg_id, seq) in next_seq.iter() {
@@ -191,26 +168,12 @@ async fn restart_rehydrates_projection_state() {
         .expect("event_store wired by with_stores");
     let ctx = CorrelationContext::none();
 
-    let run_event = DomainEvent::SweepStarted {
-        org: "test-org".into(),
-        repo_count: 1,
-        batch_id: "batch-rehydrate-001".into(),
-        timestamp: "2026-05-19T00:00:00Z".into(),
-        snapshot_signature: None,
-    };
-    event_store
-        .create(vec![run_event], ctx.clone())
-        .await
-        .expect("create Run aggregate");
-
-    let repo_event = DomainEvent::RepoEvaluated {
+    let repo_event = DomainEvent::RepositoryStateCaptured {
         domain_key: "owner/repo-rehydrate".into(),
         repo_name: "repo-rehydrate".into(),
-        success: true,
-        source: "scheduled_batch".into(),
-        duration_ms: 42,
         timestamp: "2026-05-19T00:00:01Z".into(),
         evidence: Some(Box::new(minimal_evidence("repo-rehydrate"))),
+        presence: RepoPresence::Active,
     };
     event_store
         .create(vec![repo_event], ctx)

@@ -17,7 +17,7 @@
 
 use cherry_pit_core::{Aggregate, Command, HandleCommand};
 
-use crate::domain::events::DomainEvent;
+use crate::domain::events::{DomainEvent, RepoPresence};
 
 /// Repo lifecycle phase derived from applied events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -47,7 +47,11 @@ impl Aggregate for Repo {
 
     fn apply(&mut self, event: &Self::Event) {
         match event {
-            DomainEvent::RepoEvaluated { domain_key, .. } => {
+            DomainEvent::RepositoryStateCaptured {
+                domain_key,
+                presence: RepoPresence::Active,
+                ..
+            } => {
                 if self.phase == RepoPhase::Empty {
                     self.domain_key = Some(domain_key.clone());
                 }
@@ -56,23 +60,15 @@ impl Aggregate for Repo {
                     self.evaluation_count = self.evaluation_count.saturating_add(1);
                 }
             }
-            DomainEvent::RepoRemoved { domain_key, .. } => {
+            DomainEvent::RepositoryStateCaptured {
+                domain_key,
+                presence: RepoPresence::Removed,
+                ..
+            } => {
                 if self.phase == RepoPhase::Empty {
                     self.domain_key = Some(domain_key.clone());
                 }
                 self.phase = RepoPhase::Removed;
-            }
-            DomainEvent::SweepStarted { .. }
-            | DomainEvent::SweepProgress { .. }
-            | DomainEvent::SweepCompleted { .. }
-            | DomainEvent::SweepFailed { .. }
-            | DomainEvent::EvidencePublished { .. }
-            | DomainEvent::PartialEvidenceRendered { .. }
-            | DomainEvent::WebhookReceived { .. } => {
-                debug_assert!(
-                    false,
-                    "Repo::apply received non-Repo variant: {event:?} (CHE-0054:R5 routing bug)"
-                );
             }
         }
     }
@@ -131,14 +127,12 @@ impl HandleCommand<RecordEvaluation> for Repo {
         if self.phase == RepoPhase::Removed {
             return Err(RepoError::AlreadyRemoved);
         }
-        Ok(vec![DomainEvent::RepoEvaluated {
+        Ok(vec![DomainEvent::RepositoryStateCaptured {
             domain_key: cmd.domain_key,
             repo_name: cmd.repo_name,
-            success: cmd.success,
-            source: cmd.source,
-            duration_ms: cmd.duration_ms,
             timestamp: cmd.timestamp,
             evidence: cmd.evidence,
+            presence: RepoPresence::Active,
         }])
     }
 }
@@ -150,10 +144,12 @@ impl HandleCommand<RecordRemoval> for Repo {
         if self.phase == RepoPhase::Removed {
             return Err(RepoError::AlreadyRemoved);
         }
-        Ok(vec![DomainEvent::RepoRemoved {
+        Ok(vec![DomainEvent::RepositoryStateCaptured {
             domain_key: cmd.domain_key,
             repo_name: cmd.repo_name,
             timestamp: cmd.timestamp,
+            evidence: None,
+            presence: RepoPresence::Removed,
         }])
     }
 }
@@ -167,14 +163,12 @@ mod tests {
     }
 
     fn evaluated(r: &mut Repo) {
-        r.apply(&DomainEvent::RepoEvaluated {
+        r.apply(&DomainEvent::RepositoryStateCaptured {
             domain_key: "id-r".into(),
             repo_name: "r".into(),
-            success: true,
-            source: "scheduled_batch".into(),
-            duration_ms: 100,
             timestamp: ts(),
             evidence: None,
+            presence: RepoPresence::Active,
         });
     }
 
@@ -209,10 +203,12 @@ mod tests {
     fn apply_repo_removed_sets_removed_phase() {
         let mut r = Repo::default();
         evaluated(&mut r);
-        r.apply(&DomainEvent::RepoRemoved {
+        r.apply(&DomainEvent::RepositoryStateCaptured {
             domain_key: "id-r".into(),
             repo_name: "r".into(),
             timestamp: ts(),
+            evidence: None,
+            presence: RepoPresence::Removed,
         });
         assert_eq!(r.phase, RepoPhase::Removed);
     }
@@ -220,10 +216,12 @@ mod tests {
     #[test]
     fn apply_repo_removed_from_empty_records_domain_key() {
         let mut r = Repo::default();
-        r.apply(&DomainEvent::RepoRemoved {
+        r.apply(&DomainEvent::RepositoryStateCaptured {
             domain_key: "id-r".into(),
             repo_name: "r".into(),
             timestamp: ts(),
+            evidence: None,
+            presence: RepoPresence::Removed,
         });
         assert_eq!(r.phase, RepoPhase::Removed);
         assert_eq!(r.domain_key.as_deref(), Some("id-r"));
@@ -233,26 +231,15 @@ mod tests {
     fn apply_evaluated_after_removed_does_not_revive() {
         let mut r = Repo::default();
         evaluated(&mut r);
-        r.apply(&DomainEvent::RepoRemoved {
+        r.apply(&DomainEvent::RepositoryStateCaptured {
             domain_key: "id-r".into(),
             repo_name: "r".into(),
             timestamp: ts(),
+            evidence: None,
+            presence: RepoPresence::Removed,
         });
         evaluated(&mut r);
         assert_eq!(r.phase, RepoPhase::Removed);
-    }
-
-    #[test]
-    #[should_panic(expected = "CHE-0054:R5 routing bug")]
-    fn apply_panics_in_debug_on_non_repo_variant() {
-        let mut r = Repo::default();
-        r.apply(&DomainEvent::SweepStarted {
-            org: "o".into(),
-            repo_count: 1,
-            batch_id: "b".into(),
-            timestamp: ts(),
-            snapshot_signature: None,
-        });
     }
 
     #[test]
@@ -269,7 +256,7 @@ mod tests {
                 evidence: None,
             })
             .unwrap();
-        assert!(matches!(events[0], DomainEvent::RepoEvaluated { .. }));
+        assert!(matches!(events[0], DomainEvent::RepositoryStateCaptured { presence: RepoPresence::Active, .. }));
     }
 
     #[test]
@@ -287,17 +274,19 @@ mod tests {
                 evidence: None,
             })
             .unwrap();
-        assert!(matches!(events[0], DomainEvent::RepoEvaluated { .. }));
+        assert!(matches!(events[0], DomainEvent::RepositoryStateCaptured { presence: RepoPresence::Active, .. }));
     }
 
     #[test]
     fn record_evaluation_after_removed_rejects_invariant_c() {
         let mut r = Repo::default();
         evaluated(&mut r);
-        r.apply(&DomainEvent::RepoRemoved {
+        r.apply(&DomainEvent::RepositoryStateCaptured {
             domain_key: "id-r".into(),
             repo_name: "r".into(),
             timestamp: ts(),
+            evidence: None,
+            presence: RepoPresence::Removed,
         });
         let err = r
             .handle(RecordEvaluation {
@@ -324,7 +313,7 @@ mod tests {
                 timestamp: ts(),
             })
             .unwrap();
-        assert!(matches!(events[0], DomainEvent::RepoRemoved { .. }));
+        assert!(matches!(events[0], DomainEvent::RepositoryStateCaptured { presence: RepoPresence::Removed, .. }));
     }
 
     #[test]
@@ -337,16 +326,18 @@ mod tests {
                 timestamp: ts(),
             })
             .unwrap();
-        assert!(matches!(events[0], DomainEvent::RepoRemoved { .. }));
+        assert!(matches!(events[0], DomainEvent::RepositoryStateCaptured { presence: RepoPresence::Removed, .. }));
     }
 
     #[test]
     fn record_removal_after_removed_rejects_invariant_c() {
         let mut r = Repo::default();
-        r.apply(&DomainEvent::RepoRemoved {
+        r.apply(&DomainEvent::RepositoryStateCaptured {
             domain_key: "id-r".into(),
             repo_name: "r".into(),
             timestamp: ts(),
+            evidence: None,
+            presence: RepoPresence::Removed,
         });
         let err = r
             .handle(RecordRemoval {

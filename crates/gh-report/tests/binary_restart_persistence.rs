@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use cherry_pit_core::{CorrelationContext, EventStore};
 use gh_report::app::state::EventStoreImpl;
-use gh_report::domain::events::DomainEvent;
+use gh_report::domain::events::{DomainEvent, RepoPresence};
 
 use assert_cmd::Command;
 
@@ -103,12 +103,12 @@ async fn dump_baseline_against_seeded_store_exits_zero() {
     {
         let store = Arc::new(EventStoreImpl::create_pgno(&events_dir.join("events.pgno")).unwrap());
         let ctx = CorrelationContext::none();
-        let event = DomainEvent::SweepStarted {
-            org: ORG.into(),
-            repo_count: 0,
-            batch_id: "batch-q4-smoke".into(),
+        let event = DomainEvent::RepositoryStateCaptured {
+            domain_key: "id-q4-smoke".into(),
+            repo_name: "q4-smoke".into(),
             timestamp: "2026-05-20T00:00:00Z".into(),
-            snapshot_signature: None,
+            evidence: None,
+            presence: RepoPresence::Active,
         };
         store
             .create(vec![event], ctx)
