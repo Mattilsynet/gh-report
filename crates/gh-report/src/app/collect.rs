@@ -3144,6 +3144,109 @@ mod tests {
         state.work_queue.close();
     }
 
+    #[tokio::test]
+    async fn html_cache_must_not_be_visible_before_sweep_completed_delivered() {
+        use crate::domain::events::DomainEvent;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let mut run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10).await;
+        let ctx = make_test_collection_context();
+
+        let baseline_map: HashMap<String, crate::app::state::CachedPage> = HashMap::new();
+        let baseline_arc = Arc::new(Some(baseline_map));
+        state.evidence().html_cache.store(Arc::clone(&baseline_arc));
+        let baseline_addr = Arc::as_ptr(&baseline_arc) as usize;
+
+        let trace: Arc<std::sync::Mutex<Vec<(&'static str, bool)>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let trace_handle = Arc::clone(&trace);
+        let state_handle = Arc::clone(&state);
+        state.bus.register(move |env| {
+            let tag = match env.payload() {
+                DomainEvent::SweepStarted { .. } => "SweepStarted",
+                DomainEvent::SweepProgress { .. } => "SweepProgress",
+                DomainEvent::SweepCompleted { .. } => "SweepCompleted",
+                DomainEvent::SweepFailed { .. } => "SweepFailed",
+                DomainEvent::EvidencePublished { .. } => "EvidencePublished",
+                DomainEvent::PartialEvidenceRendered { .. } => "PartialEvidenceRendered",
+                DomainEvent::RepoEvaluated { .. } => "RepoEvaluated",
+                DomainEvent::RepoRemoved { .. } => "RepoRemoved",
+                DomainEvent::WebhookReceived { .. } => "WebhookReceived",
+            };
+            let guard = state_handle.evidence().html_cache.load();
+            let current_addr = Arc::as_ptr(&*guard) as usize;
+            let mutated_since_baseline = current_addr != baseline_addr;
+            trace_handle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((tag, mutated_since_baseline));
+        });
+
+        let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
+            |repo: &Repository, ts: &str| Ok(sample_repo_from_domain(repo, ts)),
+        )));
+        let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 2);
+
+        let mut saga = make_test_saga(&config, &run);
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo("repo-1")],
+            archived_repos: 0,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
+        saga.step_enqueue_and_await(
+            &config,
+            &run,
+            &run.correlation_context(),
+            &ctx,
+            &inventory,
+            &state,
+        )
+        .await
+        .unwrap();
+
+        let corr_ctx = run.correlation_context();
+        saga.step_finalize(&config, &mut run, &corr_ctx, &ctx, &inventory, &state)
+            .await
+            .unwrap();
+
+        tokio::task::yield_now().await;
+
+        let captured = trace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+
+        let sweep_completed_idx = captured
+            .iter()
+            .position(|(tag, _)| *tag == "SweepCompleted")
+            .expect("SweepCompleted envelope must appear in the trace");
+
+        for (i, (tag, mutated)) in captured.iter().take(sweep_completed_idx + 1).enumerate() {
+            assert!(
+                !mutated,
+                "CHE-0068:R2 — html_cache must not be visibly mutated at or before \
+                 SweepCompleted delivery; trace[{i}] = ({tag}, mutated=true), \
+                 SweepCompleted at index {sweep_completed_idx}; full trace = {captured:?}"
+            );
+        }
+
+        let mutated_after = captured
+            .iter()
+            .skip(sweep_completed_idx + 1)
+            .any(|(_, mutated)| *mutated);
+        assert!(
+            mutated_after,
+            "sanity: html_cache must flip at some point after SweepCompleted \
+             (commit_cached_pages did fire); trace = {captured:?}"
+        );
+
+        state.work_queue.close();
+    }
+
     /// Partial publisher must emit `PartialEvidenceRendered` and must
     /// never emit `EvidencePublished` between `SweepStarted` and
     /// `SweepCompleted` (CHE-0054:R1.c forbids terminal publish pre-complete;
