@@ -2249,6 +2249,72 @@ mod tests {
         assert_eq!(ids, vec![id1, id2], "list returns exactly the created ids");
     }
 
+    /// CHE-0070:R6 regression: `list_aggregates` must not block the
+    /// tokio reactor on a `current_thread` runtime.
+    ///
+    /// Setup: populate the store with 2000 fake `.msgpack` files so the
+    /// blocking `std::fs::read_dir` scan does enough work to be
+    /// observable.
+    ///
+    /// Probe: under `flavor = "current_thread"`, spawn a background
+    /// task that increments a counter on every `yield_now` cycle. If
+    /// `list_aggregates` runs inline on the reactor thread, the
+    /// counter cannot advance while the scan is in flight — no other
+    /// task can be polled. With the CHE-0070:R6 `spawn_blocking` wrap
+    /// the scan runs on the blocking pool and the reactor is free to
+    /// poll the counter task, so the counter advances during the scan
+    /// window. The assertion below requires that the counter advanced
+    /// during `list_aggregates().await`, which only holds when the
+    /// wrap is in place.
+    ///
+    /// Falsifier: remove the `spawn_blocking` wrap in
+    /// `impl<E> ListableEventStore for MsgpackFileStore<E>` and re-run.
+    /// The counter delta will be 0 (or near 0) because the inline scan
+    /// starves every other task on the single reactor thread.
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_aggregates_does_not_stall_reactor() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        for i in 1u64..=2000 {
+            tokio::fs::write(dir.path().join(format!("{i}.msgpack")), b"x")
+                .await
+                .unwrap();
+        }
+        let store = MsgpackFileStore::<TestEvent>::new(dir.path());
+
+        let counter = Arc::new(AtomicU64::new(0));
+        let counter_task = {
+            let counter = Arc::clone(&counter);
+            tokio::spawn(async move {
+                loop {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+
+        tokio::task::yield_now().await;
+        let before = counter.load(Ordering::Relaxed);
+
+        let ids = store.list_aggregates().await.expect("list is Ok");
+
+        let after = counter.load(Ordering::Relaxed);
+        counter_task.abort();
+
+        assert_eq!(ids.len(), 2000, "all 2000 fake aggregates enumerated");
+        let delta = after - before;
+        assert!(
+            delta > 0,
+            "CHE-0070:R6: a yield-loop task must advance while \
+             list_aggregates is in flight; counter delta = {delta} \
+             (before={before}, after={after}). A delta of 0 means the \
+             blocking scan starved the reactor — the spawn_blocking \
+             wrap is missing."
+        );
+    }
+
     mod proptests_eda {
         use super::*;
         use proptest::prelude::*;

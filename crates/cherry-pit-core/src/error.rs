@@ -437,6 +437,10 @@ mod tests {
             StoreError::CorruptData("bad".into()).category(),
             ErrorCategory::Terminal
         );
+        assert_eq!(
+            StoreError::JoinFailure("join".into()).category(),
+            ErrorCategory::Terminal
+        );
     }
 
     #[test]
@@ -490,6 +494,14 @@ mod tests {
 
         let err2 = StoreError::CorruptData("bad checksum".into());
         assert!(err2.to_string().contains("bad checksum"));
+
+        let err3 = StoreError::JoinFailure("task panicked".into());
+        assert!(err3.to_string().contains("spawn_blocking"));
+        assert!(err3.to_string().contains("task panicked"));
+        assert!(
+            err3.source().is_some(),
+            "JoinFailure must expose its inner cause via Error::source",
+        );
     }
 
     #[test]
