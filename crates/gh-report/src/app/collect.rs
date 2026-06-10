@@ -1,22 +1,27 @@
 //! Collection pipeline: run a single security data collection pass.
 //!
 //! Pipeline:
-//! 1. Acquire run lock (prevent concurrent runs)
+//! 1. Acquire in-process sweep lock on [`AppState::sweep_lock`]
+//!    (mission `adr-fmt-cq7vb.8.2`): serialises concurrent
+//!    [`run`] invocations against the same `AppState`, eliminating
+//!    the singleton-state clobber windows in [`SweepSaga::new`] and
+//!    [`enqueue_and_await_batch`].
+//! 2. Acquire on-disk run lock (cross-process second line of defence)
 //!    - A signal handler (SIGINT/SIGTERM) releases the lock and triggers
 //!      cooperative shutdown via `CancellationToken`, preventing orphaned
 //!      lock files on graceful termination.
-//! 2. Resolve credentials and build `GitHubClient`
-//! 3. Load or build repository inventory
-//! 4. Collect org-level secret scanning alert summary
-//! 5. Evaluate each repository against all five security checks
+//! 3. Resolve credentials and build `GitHubClient`
+//! 4. Load or build repository inventory
+//! 5. Collect org-level secret scanning alert summary
+//! 6. Evaluate each repository against all five security checks
 //!    - Resume from checkpoint if available
 //!    - Reuse from baseline (kept separate from checkpoint)
 //!    - Isolate per-repository failures
 //!    - Persist checkpoint periodically (excludes baseline-reused entries)
 //!    - Save baseline, then remove checkpoint
-//! 6. Build evidence (assessment metadata + metrics + repositories)
-//! 7. Render HTML report and update in-memory cache
-//! 8. Release run lock
+//! 7. Build evidence (assessment metadata + metrics + repositories)
+//! 8. Render HTML report and update in-memory cache
+//! 9. Release on-disk run lock; in-process sweep guard drops at function exit
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -211,10 +216,13 @@ struct OrgAlertContext {
 
 /// Execute a single collection run.
 ///
-/// Acquires a run lock, resolves credentials, builds the repository
-/// inventory from the GitHub API, evaluates each repository with per-repo
-/// failure isolation, renders the HTML report, and stores pages in the
-/// in-memory cache for immediate serving.
+/// Acquires the in-process [`AppState::sweep_lock`] as its first
+/// action (mission `adr-fmt-cq7vb.8.2`), then the on-disk run lock
+/// (cross-process second line of defence), resolves credentials,
+/// builds the repository inventory from the GitHub API, evaluates
+/// each repository with per-repo failure isolation, renders the HTML
+/// report, and stores pages in the in-memory cache for immediate
+/// serving.
 ///
 /// # Errors
 ///
@@ -222,6 +230,8 @@ struct OrgAlertContext {
 /// loading, report rendering, or cache population fails. Individual
 /// repository evaluation failures are isolated and do not abort the run.
 pub async fn run(config: RuntimeConfig, state: Arc<AppState>) -> Result<(), AppError> {
+    let _sweep_guard = Arc::clone(&state.sweep_lock).lock_owned().await;
+
     let mut run = RunMetadata::new(
         config.org_name.clone(),
         config::EVIDENCE_SCHEMA_VERSION.to_string(),

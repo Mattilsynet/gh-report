@@ -251,6 +251,28 @@ pub struct AppState {
     pub(crate) runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>>,
     pub(crate) repos_by_key: Arc<Mutex<HashMap<String, AggregateId>>>,
     pub(crate) deliveries_by_id: Arc<Mutex<HashMap<String, AggregateId>>>,
+
+    /// In-process gate serialising concurrent
+    /// [`crate::app::collect::run`] invocations against this
+    /// `AppState` (mission `adr-fmt-cq7vb.8.2`).
+    ///
+    /// `run` acquires this `Arc<tokio::sync::Mutex<()>>` as its first
+    /// action and holds an `OwnedMutexGuard` for the lifetime of the
+    /// sweep — releasing only when the run completes (Ok or Err) or
+    /// when the future is cancelled. Two concurrent in-process calls
+    /// against the same `AppState` therefore execute strictly one
+    /// after the other, eliminating the
+    /// `state.evidence().org_summary` and
+    /// `state.evidence().batch_tracker` clobber windows in
+    /// [`crate::app::collect::SweepSaga::new`] and
+    /// [`crate::app::collect::enqueue_and_await_batch`].
+    ///
+    /// The on-disk `lock::acquire` in
+    /// [`crate::app::collect::prepare_collection`] is retained as the
+    /// cross-process second line of defence (one daemon process can
+    /// still race another against the same `store_dir`); this
+    /// in-process lock guards the singleton `AppState` itself.
+    pub sweep_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AppState {
@@ -531,6 +553,7 @@ impl AppState {
             runs_by_key,
             repos_by_key,
             deliveries_by_id,
+            sweep_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 }
@@ -623,6 +646,7 @@ impl AppState {
             runs_by_key,
             repos_by_key,
             deliveries_by_id,
+            sweep_lock: Arc::new(tokio::sync::Mutex::new(())),
         }))
     }
 }
@@ -991,6 +1015,7 @@ impl AppStateBuilder {
             runs_by_key,
             repos_by_key,
             deliveries_by_id,
+            sweep_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 }
@@ -1343,5 +1368,90 @@ mod tests {
         );
         state.evidence().html_cache.store(Arc::new(Some(pages)));
         assert!(state.is_ready(), "should be ready when html_cache is Some");
+    }
+
+    #[tokio::test]
+    async fn sweep_lock_serialises_concurrent_acquirers() {
+        use std::time::{Duration, Instant};
+
+        fn empty_org_summary() -> crate::domain::metrics::OrgAlertSummary {
+            crate::domain::metrics::OrgAlertSummary {
+                collection_status: crate::domain::status::CollectionStatus::Success,
+                collection_reason: None,
+                per_repo: HashMap::new(),
+                open_secret_alert_age_buckets: crate::config::empty_age_buckets(),
+                total_open_secret_alerts: 0,
+                oldest_open_secret_alert_created_at: None,
+                newest_open_secret_alert_created_at: None,
+            }
+        }
+
+        let state = AppStateBuilder::new().build().await;
+        let sentinel_a = Arc::new(empty_org_summary());
+        let sentinel_b = Arc::new(empty_org_summary());
+
+        let hold_for = Duration::from_millis(120);
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+
+        let state_a = Arc::clone(&state);
+        let barrier_a = Arc::clone(&barrier);
+        let summary_for_task_a = Arc::clone(&sentinel_a);
+        let task_a = tokio::spawn(async move {
+            let lock = Arc::clone(&state_a.sweep_lock);
+            barrier_a.wait().await;
+            let _guard = lock.lock_owned().await;
+            let acquired_at = Instant::now();
+            state_a
+                .evidence()
+                .org_summary
+                .store(Arc::new(Some(Arc::clone(&summary_for_task_a))));
+            tokio::time::sleep(hold_for).await;
+            let guard_after_hold = state_a.evidence().org_summary.load_full();
+            let observed_after_hold = (*guard_after_hold)
+                .as_ref()
+                .map(Arc::clone)
+                .expect("set above");
+            let released_at = Instant::now();
+            (acquired_at, released_at, observed_after_hold)
+        });
+
+        let state_b = Arc::clone(&state);
+        let barrier_b = Arc::clone(&barrier);
+        let summary_for_task_b = Arc::clone(&sentinel_b);
+        let task_b = tokio::spawn(async move {
+            let lock = Arc::clone(&state_b.sweep_lock);
+            barrier_b.wait().await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let _guard = lock.lock_owned().await;
+            let acquired_at = Instant::now();
+            let guard_at_acquire = state_b.evidence().org_summary.load_full();
+            let observed_at_acquire = (*guard_at_acquire)
+                .as_ref()
+                .map(Arc::clone)
+                .expect("A set first");
+            state_b
+                .evidence()
+                .org_summary
+                .store(Arc::new(Some(Arc::clone(&summary_for_task_b))));
+            (acquired_at, observed_at_acquire)
+        });
+
+        let (a_acquired, a_released, a_observed) = task_a.await.unwrap();
+        let (b_acquired, b_observed_at_acquire) = task_b.await.unwrap();
+
+        assert!(
+            b_acquired >= a_released,
+            "B must acquire only after A released; a_released={a_released:?}, b_acquired={b_acquired:?}"
+        );
+        assert!(
+            Arc::ptr_eq(&a_observed, &sentinel_a),
+            "A's own write must be visible to A across its hold (no concurrent overwrite)"
+        );
+        assert!(
+            Arc::ptr_eq(&b_observed_at_acquire, &sentinel_a),
+            "B must observe A's final state at acquire (B did not race A); \
+             this proves the lock serialised the critical sections"
+        );
+        let _ = (a_acquired, sentinel_b);
     }
 }
