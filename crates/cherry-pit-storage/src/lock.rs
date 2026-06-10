@@ -29,8 +29,12 @@ pub const DEFAULT_LOCK_TTL: Duration = Duration::from_hours(4);
 pub const DEFAULT_LOCK_FILENAME: &str = "collector.lock";
 
 /// Metadata stored inside the lock file.
+///
+/// Serde DTO; forward/backward schema evolution is handled by serde's
+/// field-presence semantics + `#[serde(default)]` rather than
+/// `#[non_exhaustive]`. CHE-0021's `#[non_exhaustive]` rule is scoped
+/// to public error types in cherry-pit-core, not infrastructure DTOs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct LockMetadata {
     /// Run ID that holds the lock.
     pub run_id: String,
@@ -57,8 +61,12 @@ impl LockMetadata {
 /// The lock is released by deleting the lock file. If deletion fails,
 /// a warning is logged but the error is swallowed to avoid masking
 /// the original operation's result.
+///
+/// Fields are private; construction is via [`acquire`] only.
+/// `#[non_exhaustive]` is not needed (CHE-0021 scope is error types
+/// in cherry-pit-core, and the private fields already prevent
+/// external literal construction).
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct RunLock {
     path: PathBuf,
     metadata: LockMetadata,

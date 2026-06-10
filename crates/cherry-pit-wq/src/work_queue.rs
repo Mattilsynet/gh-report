@@ -30,6 +30,9 @@ use tokio::sync::mpsc;
 ///    (benign duplicate possible under high contention — see dedup note)
 /// 2. Jobs are processed in FIFO order
 /// 3. The `source` field has zero effect on processing order (observability only)
+///
+/// Construct via [`JobSpec::new`]; read the queue-stamped enqueue time via
+/// [`JobSpec::enqueued_at`].
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct JobSpec<C: Send + Sync + 'static> {
@@ -39,8 +42,12 @@ pub struct JobSpec<C: Send + Sync + 'static> {
     pub context: C,
     /// Where this job originated (observability only).
     pub source: JobSource,
-    /// When this job was enqueued (set by the queue, not the producer).
-    pub enqueued_at: Option<tokio::time::Instant>,
+    /// When this job was enqueued. `None` before the queue accepts the job;
+    /// `Some(instant)` after. Set by the queue, not the producer; the field
+    /// is `pub(crate)` to make this a type-level invariant (was `pub`
+    /// pre-findings-F9; producer-set values were silently overwritten at
+    /// enqueue time, see CHANGELOG).
+    pub(crate) enqueued_at: Option<tokio::time::Instant>,
     /// Correlation chain carried end-to-end through worker-pool emission
     /// into [`crate::JobOutcome`]. Set by the producer (CHE-0055 G5,
     /// reinstating CHE-0052:R4 in v0.1).
@@ -69,6 +76,14 @@ impl<C: Send + Sync + 'static> JobSpec<C> {
             enqueued_at: None,
             correlation,
         }
+    }
+
+    /// When the queue accepted this job, or `None` if not yet enqueued.
+    ///
+    /// Set by [`WorkQueue::enqueue`]; observability only.
+    #[must_use]
+    pub fn enqueued_at(&self) -> Option<tokio::time::Instant> {
+        self.enqueued_at
     }
 }
 
