@@ -1,6 +1,6 @@
 use crate::payload::EnvelopePayload;
 use cherry_pit_core::{AggregateId, DomainEvent, EventEnvelope, StoreError};
-use pardosa::store::{Event, EventStore as PardosaStore, PgnoBackend};
+use pardosa::store::{Event, EventStore as PardosaStore, JetStreamBackend, PgnoBackend};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
@@ -29,6 +29,20 @@ impl<E: DomainEvent> PardosaEventStore<E> {
     /// stream validation.
     pub fn open_pgno(path: &Path) -> Result<Self, StoreError> {
         let store = PardosaStore::<EnvelopePayload>::open_with_backend(PgnoBackend::open(path))
+            .map_err(infrastructure_error)?;
+        Self::from_pardosa_store(store)
+    }
+
+    /// Open a JetStream-backed adapter and capture its logical stream index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Infrastructure`] if pardosa cannot fetch or
+    /// rehydrate the JetStream-authoritative blob. Returns
+    /// [`StoreError::CorruptData`] if any captured payload cannot be
+    /// decoded into `EventEnvelope<E>` or fails stream validation.
+    pub fn open_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
+        let store = PardosaStore::<EnvelopePayload>::open_with_backend(backend)
             .map_err(infrastructure_error)?;
         Self::from_pardosa_store(store)
     }
