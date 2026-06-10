@@ -8,11 +8,11 @@ Crates: cherry-pit-merger
 
 ## Related
 
-References: CHE-0005, CHE-0017, CHE-0029, CHE-0030, CHE-0024, CHE-0042, CHE-0054
+References: CHE-0005, CHE-0017, CHE-0029, CHE-0030, CHE-0024, CHE-0042, CHE-0073
 
 ## Context
 
-CHE-0054 decomposed gh-report into three aggregates (Run, Repo, WebhookDelivery), each behind a dedicated ApplicationService running the load → handle → create-or-append → publish triad against `cherry-pit-core::EventStore` and `cherry-pit-core::EventBus`. The triad has a load-bearing concurrency invariant — the "I1 TOCTOU" window: two concurrent same-`domain_key` callers could both observe `lookup → None`, both call `EventStore::create`, and produce an orphan stream the routing index never points back to. gh-report closes the window structurally with a single-task `Merger` consuming `mpsc<MergerCommand>` (700 LoC, 8-variant command enum hard-coded to its three aggregates). Lifting this primitive into a shared crate is the canonical answer — every future cherry-pit consumer needs the same loop with the same TOCTOU guarantee against its own aggregates.
+CHE-0073 collapses gh-report's durable surface to the Repo aggregate, while preserving the command-side need that CHE-0054 first exposed: two concurrent same-`domain_key` callers could both observe `lookup → None`, both call `EventStore::create`, and produce an orphan stream the routing index never points back to. gh-report closes the window structurally with a single-task `Merger` consuming `mpsc<MergerCommand>`. Lifting this primitive into a shared crate is the canonical answer — every future cherry-pit consumer needs the same loop with the same TOCTOU guarantee against its own aggregates.
 
 ## Decision
 
