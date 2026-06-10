@@ -419,11 +419,16 @@ pub trait SingleWriterEventStore: EventStore {}
 pub trait ListableEventStore: EventStore {
     /// Return every `AggregateId` known to the store, in unspecified
     /// order. Empty `Vec` for an empty store; never `Err` for an empty
-    /// store. Errors reflect substrate I/O failure only.
+    /// store. Errors reflect substrate I/O failure or task-join failure
+    /// only.
     ///
     /// # Errors
     ///
     /// Returns [`StoreError::Infrastructure`] if the substrate fails to
     /// enumerate (e.g. filesystem I/O error on a file-backed store).
-    fn list_aggregates(&self) -> Result<Vec<AggregateId>, StoreError>;
+    /// Returns [`StoreError::JoinFailure`] if a `spawn_blocking` task
+    /// invoked by the implementation fails to join (runtime shutdown or
+    /// blocking-body panic). Per CHE-0070:R6 file-backed impls MUST wrap
+    /// blocking syscalls in `tokio::task::spawn_blocking`.
+    fn list_aggregates(&self) -> impl Future<Output = Result<Vec<AggregateId>, StoreError>> + Send;
 }

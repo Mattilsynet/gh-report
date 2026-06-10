@@ -284,7 +284,7 @@ impl<E: DomainEvent> EventStore for InMemoryEventStore<E> {
 }
 
 impl<E: DomainEvent> ListableEventStore for InMemoryEventStore<E> {
-    fn list_aggregates(&self) -> Result<Vec<AggregateId>, StoreError> {
+    async fn list_aggregates(&self) -> Result<Vec<AggregateId>, StoreError> {
         let state = self
             .state
             .lock()

@@ -121,7 +121,7 @@ impl AdrService {
     ) -> Result<Self, StoreError> {
         let service = Self::new(Arc::clone(&store));
 
-        let ids = store.list_aggregates().map_err(|e| {
+        let ids = store.list_aggregates().await.map_err(|e| {
             StoreError::Infrastructure(format!("list_aggregates failed during replay: {e}").into())
         })?;
 

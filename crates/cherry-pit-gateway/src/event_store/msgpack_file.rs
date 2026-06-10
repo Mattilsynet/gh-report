@@ -522,34 +522,44 @@ impl<E: DomainEvent + Serialize + DeserializeOwned> ListableEventStore for Msgpa
     ///
     /// Non-existent directory is treated as an empty store
     /// (`Ok(vec![])`), matching the `scan_max_id` `NotFound` branch
-    /// and [CHE-0067]: a never-written store enumerates as empty,
+    /// and [CHE-0070]: a never-written store enumerates as empty,
     /// not as an error.
-    fn list_aggregates(&self) -> Result<Vec<AggregateId>, StoreError> {
-        let entries = match std::fs::read_dir(&self.dir) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(infrastructure_error(e)),
-        };
+    ///
+    /// Per CHE-0070:R6 the blocking `std::fs::read_dir` scan runs on
+    /// `tokio::task::spawn_blocking` so the reactor stays free for
+    /// other tasks; a `tokio::task::JoinError` (runtime shutdown or
+    /// blocking-body panic) maps to [`StoreError::JoinFailure`].
+    async fn list_aggregates(&self) -> Result<Vec<AggregateId>, StoreError> {
+        let dir = self.dir.clone();
+        tokio::task::spawn_blocking(move || -> Result<Vec<AggregateId>, StoreError> {
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+                Err(e) => return Err(infrastructure_error(e)),
+            };
 
-        let mut ids = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(infrastructure_error)?;
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("msgpack") {
-                continue;
+            let mut ids = Vec::new();
+            for entry in entries {
+                let entry = entry.map_err(infrastructure_error)?;
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) != Some("msgpack") {
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                let Ok(raw) = stem.parse::<u64>() else {
+                    continue;
+                };
+                let Some(nz) = NonZeroU64::new(raw) else {
+                    continue;
+                };
+                ids.push(AggregateId::new(nz));
             }
-            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            let Ok(raw) = stem.parse::<u64>() else {
-                continue;
-            };
-            let Some(nz) = NonZeroU64::new(raw) else {
-                continue;
-            };
-            ids.push(AggregateId::new(nz));
-        }
-        Ok(ids)
+            Ok(ids)
+        })
+        .await
+        .map_err(|e| StoreError::JoinFailure(Box::new(e)))?
     }
 }
 
@@ -2202,11 +2212,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = MsgpackFileStore::<TestEvent>::new(dir.path().join("never-created"));
 
-        let ids = store.list_aggregates().expect("list on missing dir is Ok");
+        let ids = store
+            .list_aggregates()
+            .await
+            .expect("list on missing dir is Ok");
         assert!(ids.is_empty(), "missing dir enumerates as empty");
 
         let store2 = MsgpackFileStore::<TestEvent>::new(dir.path());
-        let ids2 = store2.list_aggregates().expect("list on empty dir is Ok");
+        let ids2 = store2
+            .list_aggregates()
+            .await
+            .expect("list on empty dir is Ok");
         assert!(ids2.is_empty(), "empty dir enumerates as empty");
     }
 
@@ -2228,7 +2244,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut ids = store.list_aggregates().expect("list is Ok");
+        let mut ids = store.list_aggregates().await.expect("list is Ok");
         ids.sort_by_key(|id| id.get());
         assert_eq!(ids, vec![id1, id2], "list returns exactly the created ids");
     }

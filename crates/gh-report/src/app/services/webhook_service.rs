@@ -177,7 +177,7 @@ mod tests {
         .await
         .expect("ingest");
 
-        let aggregates = store.list_aggregates().expect("list_aggregates");
+        let aggregates = store.list_aggregates().await.expect("list_aggregates");
         assert_eq!(aggregates.len(), 1, "single ingest mints one aggregate");
         let assigned_id = aggregates[0];
 
@@ -256,7 +256,7 @@ mod tests {
         .await
         .expect("second ingest with same delivery_id");
 
-        let aggregates = store.list_aggregates().expect("list_aggregates");
+        let aggregates = store.list_aggregates().await.expect("list_aggregates");
         assert_eq!(
             aggregates.len(),
             2,

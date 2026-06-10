@@ -789,7 +789,7 @@ impl AppState {
     ) -> Result<u64, cherry_pit_projection::ProjectionError> {
         use cherry_pit_core::EventStore as _;
 
-        let aggregate_ids = event_store.list_aggregates().map_err(|e| {
+        let aggregate_ids = event_store.list_aggregates().await.map_err(|e| {
             cherry_pit_projection::ProjectionError::Infrastructure(
                 format!("list_aggregates failed during bootstrap replay: {e}").into(),
             )

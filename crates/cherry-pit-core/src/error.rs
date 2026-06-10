@@ -170,6 +170,17 @@ pub enum StoreError {
 
     /// Infrastructure failure (disk I/O, network, serialization).
     Infrastructure(Box<dyn Error + Send + Sync>),
+
+    /// A `tokio::task::spawn_blocking` task failed to join.
+    ///
+    /// Surfaces when an implementation of an async port (e.g.
+    /// [`ListableEventStore::list_aggregates`](crate::ListableEventStore::list_aggregates))
+    /// wraps blocking substrate work in `tokio::task::spawn_blocking`
+    /// per CHE-0070:R6 and the spawned task panics or the runtime is
+    /// shutting down. Both conditions are unrecoverable: a panic is a
+    /// programming error in the blocking body, and a shutting-down
+    /// runtime will not accept further work. Classified as terminal.
+    JoinFailure(Box<dyn Error + Send + Sync>),
 }
 
 impl StoreError {
@@ -180,7 +191,7 @@ impl StoreError {
             Self::ConcurrencyConflict { .. }
             | Self::StoreLocked { .. }
             | Self::Infrastructure(_) => ErrorCategory::Retryable,
-            Self::CorruptData(_) => ErrorCategory::Terminal,
+            Self::CorruptData(_) | Self::JoinFailure(_) => ErrorCategory::Terminal,
         }
     }
 }
@@ -203,6 +214,7 @@ impl fmt::Display for StoreError {
             ),
             Self::CorruptData(e) => write!(f, "store corrupt data: {e}"),
             Self::Infrastructure(e) => write!(f, "store infrastructure error: {e}"),
+            Self::JoinFailure(e) => write!(f, "store spawn_blocking join failure: {e}"),
         }
     }
 }
@@ -210,7 +222,9 @@ impl fmt::Display for StoreError {
 impl Error for StoreError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::CorruptData(e) | Self::Infrastructure(e) => Some(e.as_ref()),
+            Self::CorruptData(e) | Self::Infrastructure(e) | Self::JoinFailure(e) => {
+                Some(e.as_ref())
+            }
             Self::ConcurrencyConflict { .. } | Self::StoreLocked { .. } => None,
         }
     }
