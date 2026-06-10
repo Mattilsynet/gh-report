@@ -42,8 +42,10 @@ use std::future::Future;
 use std::sync::Arc;
 
 use cherry_pit_core::{
-    Aggregate, CommandGateway, CorrelationContext, EventBus, EventStore, Policy,
+    Aggregate, CommandGateway, CorrelationContext, DomainEvent, EventBus, EventEnvelope,
+    EventStore, Policy,
 };
+use tokio::sync::mpsc;
 
 use crate::dead_letter::DeadLetterSink;
 use crate::dispatch::{self, ErasedPolicyDispatcher, make_adapter};
@@ -57,6 +59,19 @@ type EventOf<G> = <<G as CommandGateway>::Aggregate as Aggregate>::Event;
 /// Heterogeneous policy registry shape per CHE-0051:R4. See `dispatch.rs`
 /// C1 boundary note for why the erasure is sound.
 type PolicyRegistry<G> = Arc<Vec<Box<dyn ErasedPolicyDispatcher<EventOf<G>, G>>>>;
+
+/// Default capacity for the bounded dispatch channel between the bus
+/// callback and the single sequential consumer task (F2 / mission
+/// adr-fmt-cq7vb.2, Approach A2).
+///
+/// 1024 is a generous default for in-process EDA workloads: it
+/// absorbs typical bursts (publisher fan-out from a single command
+/// dispatch) while remaining small enough that overflow under
+/// sustained pressure surfaces quickly as `try_send` failures (logged
+/// at warn) rather than as silent unbounded growth. Callers with
+/// known burst shapes can override via
+/// [`App::with_dispatch_buffer_capacity`].
+const DEFAULT_DISPATCH_BUFFER_CAPACITY: usize = 1024;
 
 /// Root composition struct per CHE-0051:R3.
 ///
@@ -132,6 +147,14 @@ where
     /// publish loop (which will hand a clone to the bus subscription
     /// task) without forcing the registry through `&'static`.
     policies: PolicyRegistry<G>,
+
+    /// Capacity of the bounded dispatch channel between the bus
+    /// callback and the single sequential consumer task (F2 /
+    /// adr-fmt-cq7vb.2, Approach A2). Configured via
+    /// [`Self::with_dispatch_buffer_capacity`]; defaults to
+    /// [`DEFAULT_DISPATCH_BUFFER_CAPACITY`]. Read by
+    /// [`Self::run`] when standing up the consumer.
+    dispatch_buffer_capacity: usize,
 }
 
 impl<G, S, B, P, D> App<G, S, B, P, D>
@@ -167,7 +190,36 @@ where
             projections,
             dead_letter,
             policies: Arc::new(Vec::new()),
+            dispatch_buffer_capacity: DEFAULT_DISPATCH_BUFFER_CAPACITY,
         }
+    }
+
+    /// Override the bounded-channel capacity for the dispatch loop.
+    ///
+    /// Per F2 (mission adr-fmt-cq7vb.2 / Approach A2), [`Self::run`]
+    /// drives a single sequential consumer task fed by a bounded
+    /// `tokio::sync::mpsc` channel. This builder sets that channel's
+    /// capacity. Saturation surfaces as `try_send` failures inside the
+    /// bus callback, logged at `tracing::warn`; the publisher itself
+    /// never blocks on a full channel — overflow envelopes are
+    /// observably dropped, which is the intended back-pressure surface.
+    ///
+    /// Pick capacity based on expected per-aggregate burst size; the
+    /// default ([`DEFAULT_DISPATCH_BUFFER_CAPACITY`] = `1024`) covers
+    /// typical EDA workloads where one command fans out a handful of
+    /// envelopes synchronously inside `publish`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity == 0`. `tokio::sync::mpsc::channel` itself
+    /// panics on zero capacity, but this builder fails closed earlier
+    /// with a clearer message so misconfiguration surfaces at
+    /// construction time rather than inside [`Self::run`].
+    #[must_use]
+    pub fn with_dispatch_buffer_capacity(mut self, capacity: usize) -> Self {
+        assert!(capacity > 0, "dispatch_buffer_capacity must be > 0; got 0");
+        self.dispatch_buffer_capacity = capacity;
+        self
     }
 
     /// Register a policy + its dispatch closure per CHE-0051:R4.
@@ -261,6 +313,85 @@ where
     }
 }
 
+/// Forward a published envelope into the dispatch channel without
+/// blocking the publisher.
+///
+/// Called from the bus callback installed by [`App::run`]. Per F2
+/// (mission adr-fmt-cq7vb.2 / Approach A2), the publisher-side
+/// contract is **non-blocking**: a full channel surfaces as a
+/// `tracing::warn!` and a dropped envelope, never as a blocked
+/// publisher.
+///
+/// Three outcomes:
+///
+/// - `Ok` — envelope is now in the consumer's queue.
+/// - `Err(Full)` — bounded channel saturated; envelope dropped with
+///   `tracing::warn!`. The intended back-pressure surface.
+/// - `Err(Closed)` — the consumer is gone (post-shutdown drain).
+///   Logged at `tracing::debug!` since this is expected during
+///   teardown when the bus has not yet been dropped.
+#[doc(hidden)]
+pub fn enqueue_or_log<E>(tx: &mpsc::Sender<EventEnvelope<E>>, envelope: &EventEnvelope<E>)
+where
+    E: DomainEvent,
+{
+    let event_id = envelope.event_id();
+    match tx.try_send(envelope.clone()) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            tracing::warn!(
+                %event_id,
+                capacity = tx.max_capacity(),
+                "dispatch channel full; dropping envelope (F2 back-pressure surface, mission adr-fmt-cq7vb.2). \
+                 Increase App::with_dispatch_buffer_capacity or reduce publish rate.",
+            );
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            tracing::debug!(
+                %event_id,
+                "dispatch channel closed; envelope dropped (post-shutdown drain in progress)",
+            );
+        }
+    }
+}
+
+/// Sequential consumer task body for [`App::run`].
+///
+/// Pulls envelopes from `rx` one at a time and runs the per-policy
+/// dispatcher serially in receive order, preserving per-aggregate
+/// event ordering through dispatch (F2 / Approach A2). Exits when
+/// `rx.recv()` returns `None` — i.e. when the sender held inside the
+/// bus callback has been dropped, which [`App::run`] arranges by
+/// dropping `self.bus` after `shutdown` resolves.
+///
+/// On dispatch error, behaviour matches the pre-F2 shape: `Terminal`
+/// failures are dead-lettered inside `dispatch_one`; `Retryable`
+/// failures surface as `tracing::error!` and do NOT abort the
+/// consumer (CHE-0051:R7 + CHE-0046:R2). One bad envelope must not
+/// stop the bus.
+async fn run_dispatch_consumer<E, G, D>(
+    mut rx: mpsc::Receiver<EventEnvelope<E>>,
+    policies: Arc<Vec<Box<dyn ErasedPolicyDispatcher<E, G>>>>,
+    gateway: Arc<G>,
+    dead_letter: Arc<D>,
+) where
+    E: DomainEvent,
+    G: Send + Sync + 'static,
+    D: DeadLetterSink + Send + Sync + 'static,
+{
+    while let Some(envelope) = rx.recv().await {
+        if let Err(err) =
+            dispatch::dispatch_one(&policies, &envelope, &*gateway, &*dead_letter).await
+        {
+            tracing::error!(
+                error = %err,
+                event_id = %envelope.event_id(),
+                "policy dispatch failed (Retryable); surfaced for caller-side retry but consumer continues",
+            );
+        }
+    }
+}
+
 impl<G, S, P, D> App<G, S, InProcessEventBus<EventOf<G>>, P, D>
 where
     G: CommandGateway + Send + Sync + 'static,
@@ -269,57 +400,94 @@ where
     D: DeadLetterSink,
     EventOf<G>: Send + Sync + 'static,
 {
-    /// Drive the publish loop until `shutdown` resolves.
+    /// Drive the publish loop until `shutdown` resolves, then drain
+    /// any in-flight dispatch before returning.
     ///
-    /// Subscribes a synchronous fan-out handler against
-    /// [`InProcessEventBus::register`] (CHE-0024:R2 + CHE-0051:R2). Each
-    /// published envelope is routed through the agent's internal
-    /// per-policy dispatcher across the policy registry; per
-    /// CHE-0051:R7 + CHE-0024:R5 + CHE-0046:R2 `Terminal` failures are
-    /// routed to the dead-letter sink internally and do NOT abort the
-    /// loop. `Retryable` failures surface as a `tracing::error!` but
-    /// are likewise non-aborting (the sync callback has no `Result`
-    /// channel; one bad envelope must not stop the bus).
+    /// Wires the bounded dispatch channel (F2 / mission
+    /// adr-fmt-cq7vb.2, Approach A2):
+    ///
+    /// 1. Allocates a `tokio::sync::mpsc::channel` of capacity
+    ///    [`Self::with_dispatch_buffer_capacity`] (default
+    ///    [`DEFAULT_DISPATCH_BUFFER_CAPACITY`]).
+    /// 2. Spawns a single sequential consumer task that pulls
+    ///    envelopes from the receiver and drives the per-policy
+    ///    dispatcher across the registry per CHE-0051:R7 +
+    ///    CHE-0024:R5 + CHE-0046:R2. `Terminal` failures are
+    ///    dead-lettered internally and do NOT abort the consumer.
+    ///    `Retryable` failures surface as `tracing::error!` and are
+    ///    likewise non-aborting.
+    /// 3. Installs a synchronous fan-out callback against
+    ///    [`InProcessEventBus::register`] (CHE-0024:R2 + CHE-0051:R2)
+    ///    that forwards each published envelope into the channel via
+    ///    `try_send` — the call is synchronous, never blocks the
+    ///    publisher, and returns immediately whether the send
+    ///    succeeded or the channel was full.
+    /// 4. Awaits `shutdown`; once resolved, drops the sender so the
+    ///    consumer observes `recv() → None` after draining the
+    ///    queue; awaits the consumer task's completion before
+    ///    returning.
     ///
     /// One run impl per concrete bus type per CHE-0024:R2 —
     /// `InProcessEventBus` uses synchronous fan-out via `register`;
     /// remote bus runtimes ship their own `run` impl in their own
     /// `impl` block.
     ///
-    /// # Panics
+    /// ## Dispatch semantics (revised under F2 / Approach A2)
     ///
-    /// Panics if called outside an active tokio runtime. The synchronous
-    /// `register` callback bridges into async dispatch via
-    /// [`tokio::runtime::Handle::try_current`] + `Handle::spawn`; both
-    /// require a running tokio runtime.
+    /// **Per-aggregate event ordering is preserved through dispatch.**
+    /// The bus delivers envelopes to the callback in publication order
+    /// per CHE-0024:§7 (synchronous fan-out inside `publish`); the
+    /// single-consumer task then runs `dispatch_one` serially in
+    /// receive order. There is no parallelism across envelopes at
+    /// dispatch — the previous `handle.spawn`-per-envelope shape
+    /// (which produced arbitrary interleaving for envelopes sharing an
+    /// aggregate) is gone.
+    ///
+    /// **Back-pressure surface.** When the bounded channel saturates,
+    /// the bus callback's `try_send` returns
+    /// `mpsc::error::TrySendError::Full` and the envelope is dropped
+    /// with a `tracing::warn!`. The publisher's `publish().await`
+    /// returns immediately regardless — no blocking, no unbounded task
+    /// growth. Callers needing higher throughput tune capacity via
+    /// [`Self::with_dispatch_buffer_capacity`]; the strategic upgrade
+    /// to per-aggregate FIFO + bounded global parallelism (A1) is
+    /// deferred per the F2 mission contract.
+    ///
+    /// **Graceful drain on shutdown.** The consumer drains the entire
+    /// in-flight queue before this future resolves, so envelopes
+    /// published just before `shutdown` resolved are still dispatched
+    /// (including pending dead-letter writes). This restores the
+    /// liveness guarantee the previous orphan-`spawn` shape did not
+    /// provide.
     ///
     /// # Hazards
     ///
-    /// **Reentrant `block_on` removed (CHE-0051:R8 advisory residual).**
-    /// The `bus.register(...)` callback installed below is invoked
-    /// *synchronously* by the bus inside its `publish()` call (see
-    /// [`InProcessEventBus::publish`] and CHE-0024:§7), but the
-    /// callback now hands the per-envelope dispatch future to
-    /// [`tokio::runtime::Handle::spawn`] rather than blocking on it via
-    /// `block_on`. The synchronous-fanout contract is preserved at the
-    /// bus boundary (the callback runs synchronously inside `publish`
-    /// and returns immediately) while the worker thread is no longer
-    /// parked across policy dispatch — the previous deadlock surface
-    /// where a publisher-held mutex could not be acquired by a
-    /// `block_on`-ed dispatch future is gone.
+    /// **Bus-boundary semantics unchanged (CHE-0024:§7 holds).** The
+    /// `bus.register(...)` callback is still invoked synchronously by
+    /// the bus inside its `publish()` call — what changed is that the
+    /// callback now performs a non-blocking `try_send` into the
+    /// dispatch channel rather than executing dispatch directly. From
+    /// the bus's perspective the "handler runs synchronously inside
+    /// `publish`" contract holds; from the agent's perspective
+    /// dispatch is now off the publisher's call stack on a single
+    /// background consumer task.
     ///
-    /// Per-envelope dispatch ordering relative to `publish().await` is
-    /// **not** guaranteed: dispatch runs on a tokio task scheduled by
-    /// the spawn, so `publish().await` may return before policy
-    /// dispatch completes. This matches CHE-0024:R1's persist-then-
-    /// publish semantics (persistence is durable before `publish`;
-    /// post-publish dispatch is non-fatal at the system level) and
-    /// CHE-0046:R2 (terminal failures dead-lettered, non-aborting).
+    /// **Per-envelope dispatch ordering relative to `publish().await`
+    /// is still not guaranteed** — dispatch runs on the consumer task,
+    /// so `publish().await` may return before policy dispatch
+    /// completes. This matches CHE-0024:R1's persist-then-publish
+    /// semantics (persistence is durable before `publish`; post-publish
+    /// dispatch is non-fatal at the system level).
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside an active tokio runtime; `tokio::spawn`
+    /// requires a running runtime. Wrap your main in `#[tokio::main]`.
     ///
     /// # Errors
     ///
     /// Currently never returns `Err` — per-envelope failures are
-    /// dead-lettered or logged inside the spawned dispatch task, not
+    /// dead-lettered or logged inside the consumer task, not
     /// propagated. The signature preserves the option for future
     /// bus-level errors per CHE-0051:R8.
     ///
@@ -338,31 +506,32 @@ where
         let gateway = Arc::new(self.gateway);
         let dead_letter = Arc::new(self.dead_letter);
 
+        let (tx, rx) = mpsc::channel::<EventEnvelope<EventOf<G>>>(self.dispatch_buffer_capacity);
+
+        let consumer = tokio::spawn(run_dispatch_consumer(
+            rx,
+            policies,
+            Arc::clone(&gateway),
+            Arc::clone(&dead_letter),
+        ));
+
         self.bus.register(move |envelope| {
-            let envelope = envelope.clone();
-            let policies = Arc::clone(&policies);
-            let gateway = Arc::clone(&gateway);
-            let dead_letter = Arc::clone(&dead_letter);
-            let handle = tokio::runtime::Handle::try_current().expect(
-                "App::run requires an active tokio runtime; \
-                 Handle::try_current() returned no active runtime. \
-                 Wrap your main in #[tokio::main].",
-            );
-            handle.spawn(async move {
-                if let Err(err) =
-                    dispatch::dispatch_one(&policies, &envelope, &*gateway, &*dead_letter).await
-                {
-                    tracing::error!(
-                        error = %err,
-                        event_id = %envelope.event_id(),
-                        "policy dispatch failed (Retryable); surfaced for caller-side retry but bus loop continues",
-                    );
-                }
-            });
+            enqueue_or_log(&tx, envelope);
         });
 
         shutdown.await;
-        Ok(())
+        drop(self.bus);
+        match consumer.await {
+            Ok(()) => Ok(()),
+            Err(join_err) => {
+                tracing::error!(
+                    error = %join_err,
+                    "dispatch consumer task panicked or was cancelled; \
+                     App::run returning Ok per CHE-0051:R8 (bus-loop liveness)",
+                );
+                Ok(())
+            }
+        }
     }
 
     /// Drive the publish loop until `Ctrl-C` is received.
@@ -511,6 +680,15 @@ mod tests {
         }
     }
 
+    struct BackPressurePolicy;
+    impl Policy for BackPressurePolicy {
+        type Event = E;
+        type Output = ();
+        fn react(&self, _env: &EventEnvelope<E>) -> Vec<()> {
+            vec![()]
+        }
+    }
+
     fn fresh_app() -> App<GatewayStub, StoreStub, BusStub, (), SinkStub> {
         App::new(GatewayStub, StoreStub, BusStub, (), SinkStub)
     }
@@ -571,5 +749,203 @@ mod tests {
         let s = format!("{app:?}");
         assert!(s.contains("policy_count: 1"));
         assert!(s.contains("projection_arity: 0"));
+    }
+
+    #[test]
+    fn with_dispatch_buffer_capacity_overrides_default() {
+        let app = fresh_app().with_dispatch_buffer_capacity(64);
+        assert_eq!(app.dispatch_buffer_capacity, 64);
+    }
+
+    #[test]
+    fn new_uses_default_dispatch_buffer_capacity() {
+        let app = fresh_app();
+        assert_eq!(
+            app.dispatch_buffer_capacity,
+            DEFAULT_DISPATCH_BUFFER_CAPACITY
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "dispatch_buffer_capacity must be > 0")]
+    fn with_dispatch_buffer_capacity_zero_panics() {
+        let _app = fresh_app().with_dispatch_buffer_capacity(0);
+    }
+
+    /// F2 / mission adr-fmt-cq7vb.2 back-pressure invariant.
+    ///
+    /// Wires a bounded channel of capacity 4 between a fast publisher
+    /// (calling `enqueue_or_log` directly, the same path the bus
+    /// callback installed by `App::run` takes) and a single sequential
+    /// consumer running `run_dispatch_consumer` with a blocking
+    /// dispatch policy.
+    ///
+    /// Two invariants from the mission contract are pinned:
+    ///
+    /// 1. **Publisher never blocks.** The `for seq in 1..=N` loop
+    ///    runs to completion synchronously and well within the
+    ///    deadline budget even though the consumer is stalled — this
+    ///    is the `enqueue_or_log` contract (`try_send` returns
+    ///    immediately whether the channel is full or not).
+    ///
+    /// 2. **The bound is enforced.** With capacity 4 and a blocked
+    ///    consumer, the total number of dispatches must be strictly
+    ///    less than the number published — at most `capacity + 1`
+    ///    (the channel-resident envelopes plus the one that may have
+    ///    been pulled into the in-flight dispatch slot before
+    ///    saturation). The exact value depends on the race between
+    ///    the publisher's push rate and the consumer's `recv()`
+    ///    wake-up; both `capacity` (consumer never pre-empted the
+    ///    publisher) and `capacity + 1` (consumer pulled one before
+    ///    saturation) are valid outcomes. Crucially: orders of
+    ///    magnitude smaller than `total_published`, confirming no
+    ///    unbounded spawn growth.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn full_dispatch_channel_drops_overflow_without_blocking_publisher() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::{Duration, Instant};
+        use tokio::sync::{Semaphore, mpsc};
+
+        let capacity = 4_usize;
+        let total_published = 32_u64;
+        let max_dispatchable = capacity + 1;
+
+        let dispatched = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Semaphore::new(0));
+
+        let dispatched_for_policy = Arc::clone(&dispatched);
+        let gate_for_policy = Arc::clone(&gate);
+
+        let adapter = crate::dispatch::make_adapter::<BackPressurePolicy, _, _, GatewayStub>(
+            BackPressurePolicy,
+            move |_out, _gw, _ctx| {
+                let dispatched = Arc::clone(&dispatched_for_policy);
+                let gate = Arc::clone(&gate_for_policy);
+                async move {
+                    let permit = gate.acquire().await.expect("gate never closes");
+                    permit.forget();
+                    dispatched.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            },
+            "BackPressurePolicy",
+            "Out",
+        );
+
+        let policies: Arc<Vec<Box<dyn ErasedPolicyDispatcher<E, GatewayStub>>>> =
+            Arc::new(vec![adapter]);
+        let gateway = Arc::new(GatewayStub);
+        let sink = Arc::new(SinkStub);
+
+        let (tx, rx) = mpsc::channel::<EventEnvelope<E>>(capacity);
+        let consumer = tokio::spawn(run_dispatch_consumer(
+            rx,
+            Arc::clone(&policies),
+            Arc::clone(&gateway),
+            Arc::clone(&sink),
+        ));
+
+        let publish_start = Instant::now();
+        for seq in 1..=total_published {
+            enqueue_or_log(&tx, &back_pressure_envelope(seq));
+        }
+        let publish_elapsed = publish_start.elapsed();
+        assert!(
+            publish_elapsed < Duration::from_millis(500),
+            "publisher must not block on a full channel; loop took {publish_elapsed:?} \
+             which exceeds the 500ms non-blocking budget",
+        );
+
+        gate.add_permits(usize::try_from(total_published).unwrap());
+
+        drop(tx);
+        let join = tokio::time::timeout(Duration::from_secs(5), consumer)
+            .await
+            .expect("dispatch consumer must terminate within timeout");
+        join.expect("consumer task must not panic");
+
+        let final_count = dispatched.load(Ordering::SeqCst);
+        assert!(
+            final_count >= capacity && final_count <= max_dispatchable,
+            "expected dispatched count in [{capacity}..={max_dispatchable}] under capacity={capacity}; \
+             got {final_count} from {total_published} published — bound is broken",
+        );
+        assert!(
+            final_count < usize::try_from(total_published).unwrap(),
+            "expected strictly fewer dispatches ({final_count}) than published ({total_published}); \
+             equal counts would indicate the bound is not enforced",
+        );
+    }
+
+    /// F2 / mission adr-fmt-cq7vb.2 graceful-drain invariant.
+    ///
+    /// Wires a bounded channel of generous capacity (16) and a
+    /// non-blocking dispatch closure. Publishes a small batch then
+    /// immediately drops the sender (simulating `App::run`'s
+    /// shutdown-drop step). The consumer must drain every queued
+    /// envelope before exiting.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consumer_drains_remaining_queue_after_sender_drop() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+        use tokio::sync::mpsc;
+
+        let dispatched = Arc::new(AtomicUsize::new(0));
+        let dispatched_for_policy = Arc::clone(&dispatched);
+
+        let adapter = crate::dispatch::make_adapter::<BackPressurePolicy, _, _, GatewayStub>(
+            BackPressurePolicy,
+            move |_out, _gw, _ctx| {
+                let dispatched = Arc::clone(&dispatched_for_policy);
+                async move {
+                    dispatched.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            },
+            "BackPressurePolicy",
+            "Out",
+        );
+        let policies: Arc<Vec<Box<dyn ErasedPolicyDispatcher<E, GatewayStub>>>> =
+            Arc::new(vec![adapter]);
+        let gateway = Arc::new(GatewayStub);
+        let sink = Arc::new(SinkStub);
+
+        let (tx, rx) = mpsc::channel::<EventEnvelope<E>>(16);
+        let consumer = tokio::spawn(run_dispatch_consumer(
+            rx,
+            Arc::clone(&policies),
+            Arc::clone(&gateway),
+            Arc::clone(&sink),
+        ));
+
+        let batch = 7_u64;
+        for seq in 1..=batch {
+            enqueue_or_log(&tx, &back_pressure_envelope(seq));
+        }
+        drop(tx);
+
+        let join = tokio::time::timeout(Duration::from_secs(5), consumer)
+            .await
+            .expect("dispatch consumer must terminate after sender drop");
+        join.expect("consumer task must not panic");
+
+        assert_eq!(
+            dispatched.load(Ordering::SeqCst),
+            usize::try_from(batch).unwrap(),
+            "consumer must dispatch every queued envelope before exiting on rx.recv() → None",
+        );
+    }
+
+    fn back_pressure_envelope(seq: u64) -> EventEnvelope<E> {
+        EventEnvelope::new(
+            uuid::Uuid::now_v7(),
+            cherry_pit_core::AggregateId::new(NonZeroU64::new(1).unwrap()),
+            NonZeroU64::new(seq).unwrap(),
+            jiff::Timestamp::now(),
+            None,
+            None,
+            E::Happened,
+        )
+        .unwrap()
     }
 }
