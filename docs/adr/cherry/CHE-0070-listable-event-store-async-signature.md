@@ -7,7 +7,7 @@ Status: Accepted
 
 ## Related
 
-References: CHE-0057, CHE-0018, CHE-0048, CHE-0065 | Supersedes: CHE-0067
+References: CHE-0057, CHE-0018, CHE-0048, CHE-0071 | Supersedes: CHE-0067
 
 ## Context
 
@@ -48,7 +48,7 @@ R2 [5]: The trait surface is the single method `list_aggregates(&self)
   failure (`StoreError::JoinFailure`) only.
 
 R3 [5]: File-backed `EventStore` implementations that enumerate
-  cheaply by directory listing (e.g. `MsgpackFileStore` per CHE-0065)
+  cheaply from local indexes (e.g. `PardosaEventStore` per CHE-0071)
   MUST implement `ListableEventStore`. In-process stores whose stream
   map is enumerable in `O(stream-count)` MUST implement it. Remote or
   otherwise non-enumerable substrates MUST NOT implement it per

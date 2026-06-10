@@ -7,28 +7,23 @@ Status: Accepted
 
 ## Related
 
-References: CHE-0064, GEN-0035, GEN-0037, PAR-0024
+References: CHE-0071, GEN-0035, GEN-0037, PAR-0024
 
 ## Context
 
 GEN-0035:R7 mandates that `Encode` and `Decode` are sealed via a
 private supertrait pattern, preventing downstream impls outside the
-workspace derive macros. An earlier draft of CHE-0064 carved an
-exception: `EventEnvelope<E>` and `AggregateId` were permitted
-hand-rolled `Encode` impls because they did not derive `GenomeSafe`
-at the time. The exception is incompatible with closing the
-GEN-0035:R7 seal without enumerated workspace-internal escapes.
+workspace derive macros. CHE-0071 supersedes the native event-store
+encoding path; structural carriers still need a seal-compliant derive
+story so adapter payloads and future native schemas cannot reopen the
+hand-rolled encoding escape.
 
 Closing the seal cleanly is preferred over admitting per-crate
 exceptions: enumerated exceptions inflate the trait-coherence story,
 require ADR amendments for each new structural carrier, and erode
 the type-system guarantee that wire emission goes through the
-blessed path. This ADR retires that carve-out; CHE-0064 is amended
-in place per AFM-0029:R2 to delete the obsolete rules and renumber
-its surviving content. The two ADRs together describe the current
-state: CHE-0064 governs `cherry-pit-core`'s permitted dependency on
-`pardosa-encoding` and the Dragline writer-side bound; CHE-0066
-governs the seal-compliant derive path for the structural carriers.
+blessed path. This ADR governs the seal-compliant derive path for
+structural carriers while CHE-0071 governs the active adapter.
 
 ## Decision
 

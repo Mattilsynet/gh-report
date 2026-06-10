@@ -7,7 +7,7 @@ Status: Accepted
 
 ## Related
 
-References: CHE-0005:R1, CHE-0008, CHE-0009:R1, CHE-0024:R1, CHE-0024:R3, CHE-0024:R4, CHE-0029:R4, CHE-0036, CHE-0037:R1, CHE-0038, CHE-0043, CHE-0047, CHE-0044:R3, CHE-0065
+References: CHE-0005:R1, CHE-0008, CHE-0009:R1, CHE-0024:R1, CHE-0024:R3, CHE-0024:R4, CHE-0029:R4, CHE-0036, CHE-0037:R1, CHE-0038, CHE-0043, CHE-0047, CHE-0044:R3, CHE-0071
 
 ## Context
 
@@ -21,7 +21,7 @@ This ADR resolves five gaps as one posture bundle: storage shape, rebuild primit
 
 The projection storage adapter uses file-based MessagePack snapshots as the production backend, with an in-memory backend for tests and ephemeral views. Both implement a single internal port trait parameterised on `P: Projection`.
 
-**Scope (R1–R2).** The on-disk snapshot + checkpoint persistence mandate in R1 and R2 binds the `cherry-pit-projection` crate — the canonical projection runtime. Consumers that elect replay-as-rebuild per CHE-0065 (in-memory projections rebuilt by full event replay per CHE-0037:R1) are exempt; `gh-report` is the v0.1 instance of this election, retiring `baseline.msgpack` and `checkpoint` files in favour of event-log replay. The exemption is a scope reduction, not a content reversal: R1–R2 remain binding for cherry-pit-projection.
+**Scope (R1–R2).** The on-disk snapshot + checkpoint persistence mandate in R1 and R2 binds the `cherry-pit-projection` crate — the canonical projection runtime. Consumers that elect replay-as-rebuild through the pardosa adapter (CHE-0071) are exempt; `gh-report` is the v0.1 instance of this election, retiring `baseline.msgpack` and `checkpoint` files in favour of event-log replay. The exemption is a scope reduction, not a content reversal: R1–R2 remain binding for cherry-pit-projection.
 
 R1 [5]: Within `cherry-pit-projection`, the production adapter writes one MessagePack file per (aggregate_id, projection_name) tuple using rmp-serde with named encoding, following the temp-file-then-rename atomicity pattern established by CHE-0032:R1–R4 and the advisory `.lock` fencing model from CHE-0043:R1–R3
 

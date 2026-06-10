@@ -9,7 +9,7 @@ Parent-cross-domain: PGN-0008 — adapter implements the pardosa facade for cher
 
 ## Related
 
-References: PGN-0008, PGN-0002, PGN-0005, PGN-0011, CHE-0029, CHE-0061, CHE-0070
+References: PGN-0008, PGN-0002, PGN-0005, PGN-0011, CHE-0029, CHE-0061, CHE-0070 | Supersedes: CHE-0064, CHE-0065
 
 ## Context
 

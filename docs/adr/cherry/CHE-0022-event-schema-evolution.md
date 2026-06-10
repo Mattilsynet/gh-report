@@ -7,12 +7,12 @@ Status: Accepted
 
 ## Related
 
-References: CHE-0010, CHE-0009, CHE-0021, CHE-0065, CHE-0038, GEN-0015, CHE-0048, CHE-0051
+References: CHE-0010, CHE-0009, CHE-0021, CHE-0071, CHE-0038, GEN-0015, CHE-0048, CHE-0051
 
 ## Context
 
 Events are immutable facts persisted forever. Event enums grow as
-domain models evolve. Under pardosa-genome (CHE-0065), the wire
+domain models evolve. Under the pardosa adapter (CHE-0071), the wire
 format is fixed-layout (GEN-0035) and `#[serde(default)]` is
 rejected at compile time by `#[derive(GenomeSafe)]` (GEN-0029).
 Envelope-level forward compatibility is therefore realised via
@@ -29,7 +29,7 @@ R1 [5]: New enum variants are allowed and intentionally compile-breaking
   to force all apply implementations to handle them
 R2 [5]: Removing or renaming persisted event variants is forbidden
 R3 [5]: Adding, removing, or reshaping fields on existing variants
-  is a schema-version bump per CHE-0065:R3 — the GEN-0015 file-header
+  is a schema-version bump at the adapter boundary — the GEN-0015 file-header
   `format_version` is incremented and existing on-disk batches are
   discarded on read via `StoreError::SchemaVersionMismatch`
 R4 [5]: event_type() strings are immutable once events exist in a log
@@ -48,7 +48,7 @@ R6 [5]: Event payloads MUST NOT carry computed aggregates —
    total event handling.
 2. **Removing variants**: forbidden. Persisted events are immutable.
 3. **Field shape changes on existing variants**: schema-version bump
-   per CHE-0065:R3. The fixed-layout pardosa-genome format has no
+   per adapter governance. The fixed-layout pardosa path has no
    in-version additive evolution (GEN-0029, GEN-0035); evolution is
    realised by bumping GEN-0015's `format_version` and discarding
    pre-bump on-disk batches. gh-report's re-scrape policy
