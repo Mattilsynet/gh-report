@@ -8,7 +8,7 @@ Crates: gh-report
 
 ## Related
 
-References: CHE-0071, CHE-0072, CHE-0048, CHE-0022, CHE-0024, CHE-0009, CHE-0005 | Supersedes: CHE-0054
+References: CHE-0074, CHE-0072, CHE-0048, CHE-0022, CHE-0024, CHE-0009, CHE-0005 | Supersedes: CHE-0054
 
 ## Context
 
