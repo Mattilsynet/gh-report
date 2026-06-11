@@ -4,8 +4,6 @@ use crate::authoritative::jetstream::JetStreamBackendAdapter;
 use crate::durability::AckPosition;
 use crate::error::{BackendError, BackendOp, RuntimeFailureKind};
 use pardosa_nats::{JetStreamAckPosition, JetStreamRuntimeError};
-use std::time::Duration;
-const V0_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 fn map_position(pos: JetStreamAckPosition) -> AckPosition {
     AckPosition::from_u64(pos.as_u64())
 }
@@ -14,10 +12,13 @@ fn map_runtime_error(err: JetStreamRuntimeError, op: BackendOp) -> BackendError 
         JetStreamRuntimeError::Detached => BackendError::RuntimeFailure {
             kind: RuntimeFailureKind::RuntimeShutdown,
         },
-        JetStreamRuntimeError::Timeout { elapsed } => BackendError::Timeout {
+        JetStreamRuntimeError::Timeout {
+            elapsed,
+            configured,
+        } => BackendError::Timeout {
             op,
             elapsed,
-            configured: V0_OPERATION_TIMEOUT,
+            configured,
         },
         JetStreamRuntimeError::Publish { source }
         | JetStreamRuntimeError::Connect { source }
@@ -42,6 +43,18 @@ impl BackendSink for JetStreamBackendAdapter {
             .map_err(|e| map_runtime_error(e, BackendOp::Sync))
     }
 }
+impl JetStreamBackendAdapter {
+    pub(crate) fn fetch_durable_frames(&mut self) -> Result<Vec<Vec<u8>>, BackendError> {
+        let records = self
+            .handle
+            .replay_all()
+            .map_err(|e| map_runtime_error(e, BackendOp::Sync))?;
+        Ok(records
+            .into_iter()
+            .map(|r| r.payload.as_ref().to_vec())
+            .collect())
+    }
+}
 fn latest_payload<I>(payloads: I) -> Vec<u8>
 where
     I: IntoIterator,
@@ -55,21 +68,20 @@ where
 }
 impl super::journal::RehydrateableBackend for JetStreamBackendAdapter {
     fn fetch_durable_bytes(&mut self) -> Result<Vec<u8>, BackendError> {
-        let records = self
-            .handle
-            .replay_all()
-            .map_err(|e| map_runtime_error(e, BackendOp::Sync))?;
-        Ok(latest_payload(records.into_iter().map(|r| r.payload)))
+        let frames = self.fetch_durable_frames()?;
+        Ok(latest_payload(frames))
     }
 }
 #[cfg(test)]
 mod tests {
     use super::BackendSink;
     use super::JetStreamBackendAdapter;
-    use super::V0_OPERATION_TIMEOUT;
     use super::map_runtime_error;
     use crate::error::{BackendError, BackendOp, RuntimeFailureKind};
-    use pardosa_nats::{JetStreamBackend, JetStreamConfig, JetStreamRuntimeError, RuntimeHandle};
+    use pardosa_nats::{
+        DEFAULT_OPERATION_TIMEOUT, JetStreamBackend, JetStreamConfig, JetStreamRuntimeError,
+        RuntimeHandle,
+    };
     use std::time::Duration;
     fn detached_config(tag: &str) -> JetStreamConfig {
         JetStreamConfig::builder()
@@ -99,7 +111,14 @@ mod tests {
     #[test]
     fn timeout_maps_to_backend_timeout_with_v0_configured() {
         let elapsed = Duration::from_secs(31);
-        let mapped = map_runtime_error(JetStreamRuntimeError::Timeout { elapsed }, BackendOp::Sync);
+        let configured = Duration::from_secs(45);
+        let mapped = map_runtime_error(
+            JetStreamRuntimeError::Timeout {
+                elapsed,
+                configured,
+            },
+            BackendOp::Sync,
+        );
         match mapped {
             BackendError::Timeout {
                 op,
@@ -108,10 +127,7 @@ mod tests {
             } => {
                 assert!(matches!(op, BackendOp::Sync), "op preserved");
                 assert_eq!(e, elapsed, "elapsed preserved");
-                assert_eq!(
-                    configured, V0_OPERATION_TIMEOUT,
-                    "configured pins to v0 default 30s",
-                );
+                assert_eq!(configured, Duration::from_secs(45), "configured preserved");
             }
             other => panic!("expected BackendError::Timeout, got {other:?}"),
         }
@@ -178,9 +194,9 @@ mod tests {
     #[test]
     fn v0_operation_timeout_matches_substrate_default() {
         assert_eq!(
-            V0_OPERATION_TIMEOUT,
+            DEFAULT_OPERATION_TIMEOUT,
             Duration::from_secs(30),
-            "v0 substrate timeout doc commitment (handle.rs V0_OPERATION_TIMEOUT)",
+            "v0 substrate timeout default remains 30s",
         );
     }
     #[test]

@@ -21,7 +21,7 @@ use crate::frontier::{Frontier, FrontierPublisher};
 use crate::persist;
 use pardosa_file::Syncable;
 use pardosa_schema::GenomeSafe;
-use pardosa_wire::Encode;
+use pardosa_wire::{Encode, to_vec};
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -142,6 +142,7 @@ pub(crate) struct Dragline<T, W: Syncable + Seek> {
     /// `Sync`).
     mode: PublishMode,
     strategy: WriteStrategy,
+    jetstream_synced_events: usize,
 }
 enum WriteStrategy {
     Direct,
@@ -184,6 +185,7 @@ where
             acked_lsn: None,
             mode: PublishMode::NoPublisher,
             strategy: WriteStrategy::Direct,
+            jetstream_synced_events: 0,
         }
     }
     /// Construct a Dragline with an attached [`FrontierPublisher`]
@@ -222,6 +224,7 @@ where
                 watermark,
             },
             strategy: WriteStrategy::Direct,
+            jetstream_synced_events: 0,
         })
     }
     /// Restart-without-publisher variant used by the
@@ -237,6 +240,7 @@ where
             acked_lsn: None,
             mode: PublishMode::NoPublisher,
             strategy: WriteStrategy::Direct,
+            jetstream_synced_events: 0,
         }
     }
     pub(crate) fn from_backend_for_open(line: Line<T>, sink: W) -> Self {
@@ -246,6 +250,7 @@ where
             acked_lsn: None,
             mode: PublishMode::NoPublisher,
             strategy: WriteStrategy::BackendBacked,
+            jetstream_synced_events: 0,
         }
     }
     /// Open variant routing sync writes through the supplied
@@ -264,6 +269,7 @@ where
         line: Line<T>,
         sink: W,
         adapter: crate::authoritative::jetstream::JetStreamBackendAdapter,
+        synced_events: usize,
     ) -> Self {
         Self {
             line,
@@ -271,6 +277,7 @@ where
             acked_lsn: None,
             mode: PublishMode::NoPublisher,
             strategy: WriteStrategy::JetStreamBacked(Box::new(adapter)),
+            jetstream_synced_events: synced_events,
         }
     }
     /// The most recently acked `Lsn`, or `None` if `sync_data` has not
@@ -430,14 +437,25 @@ where
                 blob_len
             }
             WriteStrategy::JetStreamBacked(adapter) => {
-                let mut buf: std::io::Cursor<Vec<u8>> = std::io::Cursor::new(Vec::new());
-                persist::persist_with_source_append(&self.line, &mut buf, schema_source)?;
-                let bytes = buf.into_inner();
-                let _ack = crate::backend::BackendSink::append(adapter.as_mut(), &bytes)
-                    .map_err(backend_error_to_persist_error)?;
+                self.line.check_persistable().map_err(|kind| {
+                    persist::Error::UnpersistableState { kind }
+                })?;
+                let events = self.line.read_line();
+                let start = self.jetstream_synced_events.min(events.len());
+                let mut ack_value = self.acked_lsn.map_or(0, Lsn::value);
+                for event in &events[start..] {
+                    let bytes = to_vec(event);
+                    let ack = crate::backend::BackendSink::append(adapter.as_mut(), &bytes)
+                        .map_err(backend_error_to_persist_error)?;
+                    ack_value = ack.as_u64();
+                    self.jetstream_synced_events = self.jetstream_synced_events.saturating_add(1);
+                }
                 let ack = crate::backend::BackendSink::sync(adapter.as_mut())
                     .map_err(backend_error_to_persist_error)?;
-                ack.as_u64()
+                if ack.as_u64() > ack_value {
+                    ack_value = ack.as_u64();
+                }
+                ack_value
             }
         };
         let lsn = Lsn::new(lsn_value);
@@ -530,9 +548,33 @@ where
 mod tests {
     use super::*;
     use crate::event::Event;
+    use crate::typed::HasEventSchemaSource;
     use crate::typed::TypedReader;
+    use pardosa_schema::{GenomeSafe, schema_hash_bytes};
+    use pardosa_wire::{Decode, DecodeError, Decoder, EventSafe};
     use pardosa_wire::from_bytes;
     use std::io::Cursor;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct P3aZeroSeedPayload(u64);
+    impl pardosa_wire::sealed::Sealed for P3aZeroSeedPayload {}
+    impl EventSafe for P3aZeroSeedPayload {}
+    impl GenomeSafe for P3aZeroSeedPayload {
+        const SCHEMA_HASH: u128 = schema_hash_bytes(b"P3aZeroSeedPayload");
+        const SCHEMA_SOURCE: &'static str = "P3aZeroSeedPayload";
+    }
+    impl Encode for P3aZeroSeedPayload {
+        fn encode(&self, out: &mut Vec<u8>) {
+            self.0.encode(out);
+        }
+    }
+    impl Decode for P3aZeroSeedPayload {
+        fn decode(d: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+            u64::decode(d).map(Self)
+        }
+    }
+    impl HasEventSchemaSource for P3aZeroSeedPayload {
+        const EVENT_SCHEMA_SOURCE: Option<&'static str> = None;
+    }
     /// W2 truncation invariant (ADR-0010): a shorter rewrite of a
     /// sink that previously held a longer payload must `set_len` the
     /// sink to the post-sync `Lsn`. Relocated from the retired
@@ -642,5 +684,215 @@ mod tests {
              BackendDragline::sync hands its substrate via BackendSink::append for the \
              same in-memory line (sealed append/sync abstraction, ADR-0022 §D2)"
         );
+    }
+    #[test]
+    fn jetstream_backed_sync_publishes_one_message_per_new_event() {
+        use crate::authoritative::jetstream::JetStreamBackendAdapter;
+        use pardosa_nats::test_support::LiveNatsServer;
+        use pardosa_nats::{JetStreamBackend, JetStreamConfig, RuntimeHandle};
+        use pardosa_wire::to_vec;
+        use std::sync::Arc;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tokio::runtime::Runtime;
+        fn tag() -> String {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos();
+            format!("{}_{}", std::process::id(), nanos)
+        }
+        fn config(tag: &str, rt: &Runtime, server: &LiveNatsServer) -> JetStreamConfig {
+            JetStreamConfig::builder()
+                .stream_name(format!("P3A_PER_EVENT_{tag}"))
+                .subject(format!("p3a.per_event.{tag}"))
+                .durable_consumer(format!("p3a-per-event-{tag}"))
+                .runtime_handle(RuntimeHandle::from_tokio(rt.handle().clone()))
+                .nats_url(server.url().to_owned())
+                .build()
+                .expect("config valid")
+        }
+        async fn delete_stream(server: &LiveNatsServer, stream_name: &str) {
+            let Ok(client) = async_nats::connect(server.url()).await else {
+                return;
+            };
+            let js = async_nats::jetstream::new(client);
+            let _ = js.delete_stream(stream_name).await;
+        }
+        let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+        let rt = Runtime::new().expect("tokio runtime");
+        let tag = tag();
+        let stream_name = format!("P3A_PER_EVENT_{tag}");
+        let handle = JetStreamBackend::open(config(&tag, &rt, &server));
+        let adapter = JetStreamBackendAdapter::new(handle);
+        let mut runtime: Dragline<u64, _> =
+            Dragline::from_backend_for_open_jetstream(
+                Line::new(),
+                Cursor::new(Vec::new()),
+                adapter,
+                0,
+            );
+        for event in 0..4u64 {
+            let _ = runtime.commit_event(event).expect("commit event");
+        }
+        let expected_frames: Vec<Vec<u8>> = runtime
+            .reader_view()
+            .read_line()
+            .iter()
+            .map(to_vec)
+            .collect();
+        let _ = runtime.sync_data_with_source(None).expect("sync events");
+        let replay = JetStreamBackend::open(config(&tag, &rt, &server));
+        let records = replay.replay_all().expect("replay records");
+        assert_eq!(
+            records.len(),
+            expected_frames.len(),
+            "JetStream-backed sync must publish one NATS message per new event; \
+             full-blob sync publishes one growing snapshot instead"
+        );
+        for (i, (record, expected)) in records.iter().zip(expected_frames.iter()).enumerate() {
+            assert_eq!(
+                record.payload.as_ref(),
+                expected.as_slice(),
+                "record {i} body must equal that event's canonical bytes"
+            );
+        }
+        rt.block_on(delete_stream(&server, &stream_name));
+    }
+    #[test]
+    fn event_frame_rehydrate_frontier_matches_pgno_blob_path() {
+        use crate::store::{EventStore, JetStreamBackend as StoreJetStreamBackend, PgnoBackend};
+        use pardosa_nats::test_support::LiveNatsServer;
+        use pardosa_nats::{JetStreamBackend, JetStreamConfig, RuntimeHandle};
+        use std::sync::Arc;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tokio::runtime::Runtime;
+        fn tag() -> String {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos();
+            format!("{}_{}", std::process::id(), nanos)
+        }
+        fn config(tag: &str, rt: &Runtime, server: &LiveNatsServer) -> JetStreamConfig {
+            JetStreamConfig::builder()
+                .stream_name(format!("P3A_FRONTIER_{tag}"))
+                .subject(format!("p3a.frontier.{tag}"))
+                .durable_consumer(format!("p3a-frontier-{tag}"))
+                .runtime_handle(RuntimeHandle::from_tokio(rt.handle().clone()))
+                .nats_url(server.url().to_owned())
+                .build()
+                .expect("config valid")
+        }
+        async fn delete_stream(server: &LiveNatsServer, stream_name: &str) {
+            let Ok(client) = async_nats::connect(server.url()).await else {
+                return;
+            };
+            let js = async_nats::jetstream::new(client);
+            let _ = js.delete_stream(stream_name).await;
+        }
+        let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+        let rt = Runtime::new().expect("tokio runtime");
+        let tag = tag();
+        let stream_name = format!("P3A_FRONTIER_{tag}");
+        let backend = StoreJetStreamBackend::open(JetStreamBackend::open(config(&tag, &rt, &server)));
+        let mut jetstream_store = EventStore::<P3aZeroSeedPayload>::create_with_backend(backend)
+            .expect("create jetstream store");
+        let mut pgno_path = std::env::temp_dir();
+        pgno_path.push(format!("p3a-frontier-{tag}.pgno"));
+        let mut pgno_store = EventStore::<P3aZeroSeedPayload>::create(&pgno_path)
+            .expect("create pgno store");
+        for event in 0..7u64 {
+            let _ = jetstream_store
+                .writer()
+                .begin(P3aZeroSeedPayload(event))
+                .expect("begin jetstream event");
+            let _ = pgno_store
+                .writer()
+                .begin(P3aZeroSeedPayload(event))
+                .expect("begin pgno event");
+        }
+        let _ = jetstream_store.writer().sync().expect("sync jetstream");
+        let _ = pgno_store.writer().sync().expect("sync pgno");
+        drop(jetstream_store);
+        drop(pgno_store);
+        let reopened_jetstream = EventStore::<P3aZeroSeedPayload>::open_with_backend(
+            StoreJetStreamBackend::open(JetStreamBackend::open(config(&tag, &rt, &server))),
+        )
+        .expect("reopen jetstream");
+        let reopened_pgno = EventStore::<P3aZeroSeedPayload>::open_with_backend(PgnoBackend::open(
+            &pgno_path,
+        ))
+        .expect("reopen pgno");
+        assert_eq!(
+            reopened_jetstream.reader().frontier().as_bytes(),
+            reopened_pgno.reader().frontier().as_bytes(),
+            "per-event frame replay frontier must be byte-identical to .pgno full-blob replay"
+        );
+        let _ = std::fs::remove_file(&pgno_path);
+        rt.block_on(delete_stream(&server, &stream_name));
+    }
+    #[test]
+    fn create_with_backend_fresh_jetstream_emits_zero_seed_messages() {
+        use crate::store::{EventStore, JetStreamBackend as StoreJetStreamBackend};
+        use pardosa_nats::test_support::LiveNatsServer;
+        use pardosa_nats::{JetStreamBackend, JetStreamConfig, RuntimeHandle};
+        use std::sync::Arc;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tokio::runtime::Runtime;
+        fn tag() -> String {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos();
+            format!("{}_{}", std::process::id(), nanos)
+        }
+        fn config(tag: &str, rt: &Runtime, server: &LiveNatsServer) -> JetStreamConfig {
+            JetStreamConfig::builder()
+                .stream_name(format!("P3A_ZERO_SEED_{tag}"))
+                .subject(format!("p3a.zero_seed.{tag}"))
+                .durable_consumer(format!("p3a-zero-seed-{tag}"))
+                .runtime_handle(RuntimeHandle::from_tokio(rt.handle().clone()))
+                .nats_url(server.url().to_owned())
+                .build()
+                .expect("config valid")
+        }
+        async fn delete_stream(server: &LiveNatsServer, stream_name: &str) {
+            let Ok(client) = async_nats::connect(server.url()).await else {
+                return;
+            };
+            let js = async_nats::jetstream::new(client);
+            let _ = js.delete_stream(stream_name).await;
+        }
+        let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+        let rt = Runtime::new().expect("tokio runtime");
+        let tag = tag();
+        let stream_name = format!("P3A_ZERO_SEED_{tag}");
+        let backend = StoreJetStreamBackend::open(JetStreamBackend::open(config(&tag, &rt, &server)));
+        let mut store = EventStore::<P3aZeroSeedPayload>::create_with_backend(backend)
+            .expect("fresh create_with_backend succeeds without seed blob");
+        let after_create = JetStreamBackend::open(config(&tag, &rt, &server))
+            .replay_all()
+            .expect("replay after create");
+        assert_eq!(
+            after_create.len(),
+            0,
+            "fresh create_with_backend must not publish an empty .pgno seed record"
+        );
+        for event in 0..3u64 {
+            let _ = store
+                .writer()
+                .begin(P3aZeroSeedPayload(event))
+                .expect("begin event");
+        }
+        let _ = store.writer().sync().expect("sync events");
+        let after_sync = JetStreamBackend::open(config(&tag, &rt, &server))
+            .replay_all()
+            .expect("replay after sync");
+        assert_eq!(
+            after_sync.len(),
+            3,
+            "stored messages must equal folded event count after zero-message seed create"
+        );
+        rt.block_on(delete_stream(&server, &stream_name));
     }
 }

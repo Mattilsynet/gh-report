@@ -1,12 +1,15 @@
 use super::{
-    Decode, Encode, EventStore, FrontierPublisher, GenomeSafe, PardosaError, Path, PathBuf,
-    Validate, ValidatedReplayError,
+    Decode, EventStore, FrontierPublisher, GenomeSafe, PardosaError, Path, PathBuf, Validate,
+    ValidatedReplayError,
 };
 use crate::authoritative::{AuthoritativeBackend, BackendDispatch, admit_into_dispatch};
 use crate::backend::rehydrate::from_pgno_bytes_unchecked;
-use crate::backend::{BackendSink, journal::RehydrateableBackend};
 use crate::dragline::Dragline;
-use std::io::{Read, Seek, SeekFrom};
+use crate::event::Event;
+use crate::frontier::Frontier;
+use pardosa_file::Reader;
+use pardosa_wire::from_bytes;
+use std::io::Seek;
 fn open_rw_seek_and_rehydrate_unchecked<T>(
     path: &Path,
 ) -> Result<(std::fs::File, crate::dragline::Line<T>), PardosaError>
@@ -69,50 +72,143 @@ fn backend_error_to_cursor_read(
 ) -> PardosaError {
     io_error_to_cursor_read(std::io::Error::other(format!("{context}: {e}")))
 }
-fn fetch_jetstream_bytes(
+fn fetch_jetstream_frames(
     adapter: &mut crate::authoritative::jetstream::JetStreamBackendAdapter,
-) -> Result<Vec<u8>, PardosaError> {
+) -> Result<Vec<Vec<u8>>, PardosaError> {
     adapter
-        .fetch_durable_bytes()
+        .fetch_durable_frames()
         .map_err(|e| backend_error_to_cursor_read("JetStream rehydrate fetch failed", &e))
 }
-fn seed_jetstream_backend<T>(
-    adapter: &mut crate::authoritative::jetstream::JetStreamBackendAdapter,
-) -> Result<crate::dragline::Line<T>, PardosaError>
+fn rehydrate_jetstream_frames<T>(
+    frames: &[Vec<u8>],
+) -> Result<(crate::dragline::Line<T>, usize), PardosaError>
 where
-    T: Encode + Decode + GenomeSafe + crate::typed::HasEventSchemaSource,
+    T: Decode + GenomeSafe,
 {
-    let seed_bytes = canonical_empty_pgno_bytes::<T>()?;
-    let _ = adapter
-        .append(&seed_bytes)
-        .map_err(|e| backend_error_to_cursor_read("JetStream create seed append failed", &e))?;
-    let _ = adapter
-        .sync()
-        .map_err(|e| backend_error_to_cursor_read("JetStream create seed sync failed", &e))?;
-    from_pgno_bytes_unchecked::<T>(&seed_bytes).map_err(persist_error_to_cursor_read)
+    if frames.is_empty() {
+        return Ok((crate::dragline::Line::new(), 0));
+    }
+    if let Some((pgno_idx, mut event_frames)) = frames
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(idx, frame)| event_frames_from_pgno::<T>(frame).ok().map(|frames| (idx, frames)))
+    {
+        if pgno_idx + 1 == frames.len() {
+            let line = from_pgno_bytes_unchecked::<T>(&frames[pgno_idx])
+                .map_err(persist_error_to_cursor_read)?;
+            let synced_events = line.read_line().len();
+            return Ok((line, synced_events));
+        }
+        event_frames.extend(frames[pgno_idx + 1..].iter().cloned());
+        let line = rehydrate_event_frames::<T, _>(event_frames.iter())?;
+        let synced_events = line.read_line().len();
+        return Ok((line, synced_events));
+    }
+    let line = rehydrate_event_frames::<T, _>(frames.iter())?;
+    let synced_events = line.read_line().len();
+    Ok((line, synced_events))
 }
-fn canonical_empty_pgno_bytes<T>() -> Result<Vec<u8>, PardosaError>
+fn event_frames_from_pgno<T>(bytes: &[u8]) -> Result<Vec<Vec<u8>>, PardosaError>
 where
-    T: Encode + GenomeSafe + crate::typed::HasEventSchemaSource,
+    T: Decode + GenomeSafe,
 {
-    let scratch = tempfile::tempfile().map_err(|e| PardosaError::CursorJournalOpen {
-        source: Box::new(e),
-    })?;
-    let mut seed = EventStore::<T> {
-        inner: Dragline::new(scratch),
-        journal: PathBuf::new(),
-        schema_source: <T as crate::typed::HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,
+    let mut reader = Reader::open(std::io::Cursor::new(bytes))
+        .map_err(crate::persist::Error::File)
+        .map_err(persist_error_to_cursor_read)?;
+    let found = reader.schema_hash();
+    let expected = Event::<T>::ENVELOPE_HASH;
+    if found != expected {
+        return Err(persist_error_to_cursor_read(
+            crate::persist::Error::SchemaHashMismatch { expected, found },
+        ));
+    }
+    let n = reader.index().len();
+    let mut frames: Vec<Vec<u8>> = Vec::with_capacity(n);
+    for i in 0..n {
+        frames.push(
+            reader
+                .read_message(i)
+                .map_err(crate::persist::Error::File)
+                .map_err(persist_error_to_cursor_read)?,
+        );
+    }
+    Ok(frames)
+}
+fn rehydrate_event_frames<T, I>(frames: I) -> Result<crate::dragline::Line<T>, PardosaError>
+where
+    T: Decode + GenomeSafe,
+    I: IntoIterator,
+    I::Item: AsRef<[u8]>,
+{
+    use std::collections::{HashMap, HashSet};
+    let mut events: Vec<Event<T>> = Vec::new();
+    let mut frontier = Frontier::GENESIS;
+    for frame in frames {
+        let bytes = frame.as_ref();
+        frontier = frontier.roll(bytes);
+        let event: Event<T> = from_bytes(bytes)
+            .map_err(crate::persist::Error::Decode)
+            .map_err(persist_error_to_cursor_read)?;
+        events.push(event);
+    }
+    let mut lookup: HashMap<crate::FiberId, (crate::Fiber, crate::FiberState)> = HashMap::new();
+    let purged_ids: HashSet<crate::FiberId> = HashSet::new();
+    let mut max_fiber_id: Option<crate::FiberId> = None;
+    let mut next_event_id: u64 = 0;
+    for (i, event) in events.iter().enumerate() {
+        let position_u64 = u64::try_from(i).expect("line position fits u64");
+        if event.event_id().value() != position_u64 {
+            return Err(PardosaError::FiberInvariant(
+                crate::error::FiberInvariantKind::Integrity(
+                    crate::error::IntegrityKind::EventIdPositionMismatch {
+                        event_id: event.event_id().value(),
+                        position: position_u64,
+                    },
+                ),
+            ));
+        }
+        let idx = crate::Index::from_decoded(position_u64);
+        let fiber_id = event.fiber_id();
+        max_fiber_id = Some(match max_fiber_id {
+            None => fiber_id,
+            Some(prev) if fiber_id.value() > prev.value() => fiber_id,
+            Some(prev) => prev,
+        });
+        match lookup.get_mut(&fiber_id) {
+            None => {
+                let fiber = crate::Fiber::new(idx, 1, idx)?;
+                let state = if event.detached() {
+                    crate::FiberState::Detached
+                } else {
+                    crate::FiberState::Defined
+                };
+                lookup.insert(fiber_id, (fiber, state));
+            }
+            Some((fiber, state)) => {
+                fiber.advance(idx)?;
+                if event.detached() {
+                    *state = crate::FiberState::Detached;
+                } else {
+                    *state = crate::FiberState::Defined;
+                }
+            }
+        }
+        next_event_id = event.event_id().value().checked_add(1).ok_or(PardosaError::IndexOverflow)?;
+    }
+    let next_id = match max_fiber_id {
+        None => crate::FiberId::from_decoded(0),
+        Some(m) => m.checked_next()?,
     };
-    let _ = seed.writer().sync().map_err(persist_error_to_cursor_read)?;
-    let mut scratch = seed.inner.into_inner();
-    scratch
-        .seek(SeekFrom::Start(0))
-        .map_err(io_error_to_cursor_read)?;
-    let mut bytes = Vec::new();
-    scratch
-        .read_to_end(&mut bytes)
-        .map_err(io_error_to_cursor_read)?;
-    Ok(bytes)
+    Ok(crate::dragline::Line::from_parts_no_verify(
+        events,
+        lookup,
+        purged_ids,
+        next_id,
+        crate::EventId::from_decoded(next_event_id),
+        false,
+        frontier,
+    ))
 }
 impl<T> EventStore<T, std::fs::File>
 where
@@ -180,17 +276,18 @@ where
             BackendDispatch::Pgno(p) => Self::create(p.path()),
             BackendDispatch::JetStream(boxed_adapter) => {
                 let mut adapter = *boxed_adapter;
-                let bytes = fetch_jetstream_bytes(&mut adapter)?;
-                let dragline = if bytes.is_empty() {
-                    seed_jetstream_backend::<T>(&mut adapter)?
-                } else {
-                    from_pgno_bytes_unchecked::<T>(&bytes).map_err(persist_error_to_cursor_read)?
-                };
+                let frames = fetch_jetstream_frames(&mut adapter)?;
+                let (dragline, synced_events) = rehydrate_jetstream_frames::<T>(&frames)?;
                 let scratch =
                     tempfile::tempfile().map_err(|e| PardosaError::CursorJournalOpen {
                         source: Box::new(e),
                     })?;
-                let inner = Dragline::from_backend_for_open_jetstream(dragline, scratch, adapter);
+                let inner = Dragline::from_backend_for_open_jetstream(
+                    dragline,
+                    scratch,
+                    adapter,
+                    synced_events,
+                );
                 Ok(Self {
                     inner,
                     journal: PathBuf::new(),
@@ -294,14 +391,18 @@ where
             }
             BackendDispatch::JetStream(boxed_adapter) => {
                 let mut adapter = *boxed_adapter;
-                let bytes = fetch_jetstream_bytes(&mut adapter)?;
-                let dragline =
-                    from_pgno_bytes_unchecked::<T>(&bytes).map_err(persist_error_to_cursor_read)?;
+                let frames = fetch_jetstream_frames(&mut adapter)?;
+                let (dragline, synced_events) = rehydrate_jetstream_frames::<T>(&frames)?;
                 let scratch =
                     tempfile::tempfile().map_err(|e| PardosaError::CursorJournalOpen {
                         source: Box::new(e),
                     })?;
-                let inner = Dragline::from_backend_for_open_jetstream(dragline, scratch, adapter);
+                let inner = Dragline::from_backend_for_open_jetstream(
+                    dragline,
+                    scratch,
+                    adapter,
+                    synced_events,
+                );
                 Ok(Self {
                     inner,
                     journal: PathBuf::new(),

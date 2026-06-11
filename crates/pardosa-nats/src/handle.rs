@@ -52,13 +52,6 @@ pub struct JetStreamReplayRecord {
     /// returned verbatim).
     pub payload: Bytes,
 }
-/// Hard-coded v0 per-operation timeout (ADR-0022 §D7 — backend
-/// owns its blocking-bridge runtime; per-op timeout surface). A
-/// configurable knob lands in a later sub-mission; this default
-/// is long enough for healthy local + cross-AZ publishes and
-/// short enough to surface a typed `Timeout` before partition
-/// hangs become indistinguishable from poison-pill state.
-const V0_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 /// Lazy-init state for the `JetStream` client, the provisioned
 /// stream, and the most-recent ack-position. Lives behind a
 /// mutex ([`std::sync::Mutex`]) so the substrate's sync surface
@@ -127,7 +120,8 @@ impl JetStreamHandle {
     ///   provisioning failed.
     /// * [`JetStreamRuntimeError::Publish`] — server rejected publish
     ///   or ack-stream errored.
-    /// * [`JetStreamRuntimeError::Timeout`] — publish-ack not within 30s.
+    /// * [`JetStreamRuntimeError::Timeout`] — publish-ack not within
+    ///   the configured operation timeout.
     ///
     /// # Panics
     ///
@@ -141,7 +135,8 @@ impl JetStreamHandle {
             .clone();
         let cfg = &self.config;
         let nats_msg_id = blake3_hex(bytes);
-        let seq = run_op(&runtime, async {
+        let timeout = cfg.operation_timeout();
+        let seq = run_op(&runtime, timeout, async {
             let js = ensure_state(&self.state, cfg).await?;
             publish_once(&js, cfg.subject(), bytes, &nats_msg_id).await
         })?;
@@ -188,7 +183,8 @@ impl JetStreamHandle {
     ///   info fetch failed.
     /// * [`JetStreamRuntimeError::Replay`] — per-message fetch errored
     ///   or stream terminated abnormally.
-    /// * [`JetStreamRuntimeError::Timeout`] — replay not within 30s.
+    /// * [`JetStreamRuntimeError::Timeout`] — replay not within the
+    ///   configured operation timeout.
     pub fn replay_all(&self) -> Result<Vec<JetStreamReplayRecord>, JetStreamRuntimeError> {
         let runtime = self
             .config
@@ -197,7 +193,7 @@ impl JetStreamHandle {
             .ok_or(JetStreamRuntimeError::Detached)?
             .clone();
         let cfg = &self.config;
-        run_op(&runtime, async {
+        run_op(&runtime, cfg.operation_timeout(), async {
             let js = ensure_state(&self.state, cfg).await?;
             replay_once(&js, cfg.stream_name(), cfg.subject()).await
         })
@@ -238,16 +234,17 @@ fn blake3_hex(bytes: &[u8]) -> String {
     let hash = blake3::hash(bytes);
     hash.to_hex().to_string()
 }
-fn run_op<F, T>(rt: &Handle, fut: F) -> Result<T, JetStreamRuntimeError>
+fn run_op<F, T>(rt: &Handle, timeout: Duration, fut: F) -> Result<T, JetStreamRuntimeError>
 where
     F: std::future::Future<Output = Result<T, JetStreamRuntimeError>> + Send,
     T: Send,
 {
     let start = std::time::Instant::now();
-    match rt.block_on(async move { tokio::time::timeout(V0_OPERATION_TIMEOUT, fut).await }) {
+    match rt.block_on(async move { tokio::time::timeout(timeout, fut).await }) {
         Ok(inner) => inner,
         Err(_elapsed) => Err(JetStreamRuntimeError::Timeout {
             elapsed: start.elapsed(),
+            configured: timeout,
         }),
     }
 }

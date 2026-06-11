@@ -1,8 +1,11 @@
 use crate::error::JetStreamConfigError;
 use crate::runtime::RuntimeHandle;
 use std::num::NonZeroU16;
+use std::time::Duration;
 
 pub(crate) const DEFAULT_NATS_URL: &str = "nats://localhost:4222";
+pub const DEFAULT_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+pub const OPERATION_TIMEOUT_ENV: &str = "PARDOSA_NATS_OPERATION_TIMEOUT_SECS";
 /// `JetStream` stream durability backend — `Storage: File` is the
 /// only v0-admissible setting per Phase 1.5 §7.3.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,6 +46,7 @@ pub struct JetStreamConfig {
     replicas: NonZeroU16,
     runtime_handle: RuntimeHandle,
     nats_url: String,
+    operation_timeout: Duration,
 }
 impl JetStreamConfig {
     /// Begin assembling a [`JetStreamConfig`] via the builder.
@@ -103,6 +107,14 @@ impl JetStreamConfig {
     pub fn nats_url(&self) -> &str {
         &self.nats_url
     }
+    /// Per-operation timeout applied to `JetStream` connect, publish,
+    /// replay, and publish-ack operations. Defaults to
+    /// [`DEFAULT_OPERATION_TIMEOUT`] unless overridden by the builder
+    /// or [`OPERATION_TIMEOUT_ENV`].
+    #[must_use]
+    pub fn operation_timeout(&self) -> Duration {
+        self.operation_timeout
+    }
 }
 /// Incremental builder for [`JetStreamConfig`]. Validation runs
 /// exactly once, in [`Self::build`].
@@ -116,6 +128,7 @@ pub struct JetStreamConfigBuilder {
     replicas: Option<u16>,
     runtime_handle: Option<RuntimeHandle>,
     nats_url: Option<String>,
+    operation_timeout: Option<Duration>,
 }
 impl JetStreamConfigBuilder {
     /// Set the `JetStream` stream name (rejected if empty at
@@ -176,6 +189,14 @@ impl JetStreamConfigBuilder {
         self.nats_url = Some(url.into());
         self
     }
+    /// Override the `JetStream` per-operation timeout. Defaults to
+    /// [`DEFAULT_OPERATION_TIMEOUT`] unless [`OPERATION_TIMEOUT_ENV`]
+    /// is present.
+    #[must_use]
+    pub fn operation_timeout(mut self, timeout: Duration) -> Self {
+        self.operation_timeout = Some(timeout);
+        self
+    }
     /// Run validation and assemble the immutable [`JetStreamConfig`].
     ///
     /// # Errors
@@ -222,6 +243,10 @@ impl JetStreamConfigBuilder {
             .nats_url
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| DEFAULT_NATS_URL.to_owned());
+        let operation_timeout = match self.operation_timeout {
+            Some(timeout) => validate_operation_timeout(timeout)?,
+            None => operation_timeout_from_env()?,
+        };
         Ok(JetStreamConfig {
             stream_name,
             subject,
@@ -231,6 +256,30 @@ impl JetStreamConfigBuilder {
             replicas,
             runtime_handle,
             nats_url,
+            operation_timeout,
         })
+    }
+}
+fn validate_operation_timeout(timeout: Duration) -> Result<Duration, JetStreamConfigError> {
+    if timeout.is_zero() {
+        Err(JetStreamConfigError::OperationTimeoutMustBePositive)
+    } else {
+        Ok(timeout)
+    }
+}
+fn operation_timeout_from_env() -> Result<Duration, JetStreamConfigError> {
+    match std::env::var(OPERATION_TIMEOUT_ENV) {
+        Ok(raw) => {
+            let secs = raw.parse::<u64>().map_err(|_| {
+                JetStreamConfigError::InvalidOperationTimeout { value: raw.clone() }
+            })?;
+            validate_operation_timeout(Duration::from_secs(secs))
+        }
+        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_OPERATION_TIMEOUT),
+        Err(std::env::VarError::NotUnicode(value)) => {
+            Err(JetStreamConfigError::InvalidOperationTimeout {
+                value: value.to_string_lossy().into_owned(),
+            })
+        }
     }
 }

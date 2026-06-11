@@ -20,7 +20,10 @@ mod handle;
 mod runtime;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
-pub use config::{Discard, JetStreamConfig, JetStreamConfigBuilder, Storage};
+pub use config::{
+    DEFAULT_OPERATION_TIMEOUT, Discard, JetStreamConfig, JetStreamConfigBuilder,
+    OPERATION_TIMEOUT_ENV, Storage,
+};
 pub use error::{JetStreamConfigError, JetStreamRuntimeError};
 pub use handle::{JetStreamAckPosition, JetStreamBackend, JetStreamHandle, JetStreamReplayRecord};
 pub use runtime::RuntimeHandle;

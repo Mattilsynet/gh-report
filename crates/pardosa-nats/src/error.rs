@@ -31,6 +31,14 @@ pub enum JetStreamConfigError {
     /// No runtime handle was supplied; ADR-0022 §D7 forbids a
     /// global / implicit default.
     MissingRuntimeHandle,
+    /// Operation timeout must be greater than zero seconds.
+    OperationTimeoutMustBePositive,
+    /// Operation timeout environment override could not be parsed as
+    /// a positive integer second count.
+    InvalidOperationTimeout {
+        /// Raw value supplied by the environment.
+        value: String,
+    },
 }
 impl fmt::Display for JetStreamConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -52,6 +60,12 @@ impl fmt::Display for JetStreamConfigError {
             }
             Self::MissingRuntimeHandle => {
                 f.write_str("runtime_handle must be supplied (ADR-0022 §D7 — no implicit default)")
+            }
+            Self::OperationTimeoutMustBePositive => {
+                f.write_str("operation_timeout must be greater than zero")
+            }
+            Self::InvalidOperationTimeout { value } => {
+                write!(f, "operation timeout override must be a positive integer second count: {value:?}")
             }
         }
     }
@@ -94,6 +108,8 @@ pub enum JetStreamRuntimeError {
     Timeout {
         /// Wall-clock elapsed before the timeout fired.
         elapsed: std::time::Duration,
+        /// Configured per-operation timeout that fired.
+        configured: std::time::Duration,
     },
     /// Reading the stream contents back through
     /// [`crate::JetStreamHandle::replay_all`] failed — the
@@ -114,8 +130,11 @@ impl fmt::Display for JetStreamRuntimeError {
             }
             Self::Connect { source } => write!(f, "connect / provision failed: {source}"),
             Self::Publish { source } => write!(f, "publish failed: {source}"),
-            Self::Timeout { elapsed } => {
-                write!(f, "operation timed out after {elapsed:?} (v0 substrate default)")
+            Self::Timeout {
+                elapsed,
+                configured,
+            } => {
+                write!(f, "operation timed out after {elapsed:?} (configured {configured:?})")
             }
             Self::Replay { source } => write!(f, "replay failed: {source}"),
         }
@@ -182,6 +201,7 @@ mod tests {
         );
         let timeout = JetStreamRuntimeError::Timeout {
             elapsed: std::time::Duration::from_secs(1),
+            configured: std::time::Duration::from_secs(30),
         };
         assert!(
             timeout.source().is_none(),
