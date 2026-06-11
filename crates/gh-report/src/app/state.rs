@@ -816,6 +816,35 @@ mod tests {
     use super::*;
     use crate::config::runtime::{NatsStoreConfig, PardosaBackend};
     use crate::domain::cache::CachedRepoDetail;
+    use crate::domain::evidence::Evidence;
+
+    fn fold_public_event_stream(
+        events: Vec<(bool, NativeDomainEvent)>,
+    ) -> crate::projection::EvidenceProjection {
+        let mut projection = crate::projection::EvidenceProjection::default();
+        for (detached, event) in events {
+            fold_native_event(&mut projection, detached, event);
+        }
+        projection
+    }
+
+    fn rendered_evidence_from_projection(
+        repositories: Vec<crate::domain::evidence::RepositoryEvidence>,
+    ) -> Evidence {
+        let repository_count = u32::try_from(repositories.len()).expect("test repo count fits u32");
+        Evidence {
+            assessment_metadata: crate::test_fixtures::make_metadata(),
+            collection_statistics: crate::test_fixtures::make_collection_statistics(
+                repository_count,
+                repository_count,
+                0,
+                0,
+            ),
+            metrics: crate::test_fixtures::make_minimal_metrics(),
+            secret_scanning_observability: crate::test_fixtures::make_observability(),
+            repositories,
+        }
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn nats_open_dead_port_returns_error_without_nested_runtime_panic() {
@@ -1009,6 +1038,130 @@ mod tests {
 
         let latest = state.event_store.latest_per_repo().expect("latest after remove");
         assert!(latest.is_empty());
+    }
+
+    #[tokio::test]
+    async fn line_order_replay_matches_live_projection_after_detach() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let projections_dir = dir.path().join("projections");
+        let state = AppState::with_stores(
+            &events_dir,
+            projections_dir,
+            PardosaBackend::Pgno,
+            NatsStoreConfig::for_org("org", crate::config::runtime::DEFAULT_NATS_URL).unwrap(),
+        )
+        .await
+        .expect("with_stores");
+        let timestamp = "2026-06-11T00:00:00Z";
+        let removed = crate::test_fixtures::all_passing_evidence("removed-repo");
+        let kept_a = crate::test_fixtures::all_passing_evidence("kept-a");
+        let kept_b = crate::test_fixtures::all_passing_evidence("kept-b");
+
+        for evidence in [removed.clone(), kept_a.clone(), kept_b.clone()] {
+            let domain_key = evidence.repository.inventory_key.clone();
+            let repo_name = evidence.repository.name.clone();
+            state
+                .record_repo(&domain_key, evidence, &repo_name, timestamp)
+                .expect("record repo");
+        }
+        state
+            .remove_repo(
+                &removed.repository.inventory_key,
+                &removed.repository.name,
+                timestamp,
+            )
+            .expect("remove repo");
+
+        let events = state.event_store.events().expect("line-order events");
+        assert!(events.iter().any(|(detached, _)| *detached));
+        let replayed = fold_public_event_stream(events).sorted_snapshot();
+        let live = state.projection_snapshot();
+
+        assert_eq!(replayed, live);
+        assert!(!live
+            .iter()
+            .any(|e| e.repository.inventory_key == removed.repository.inventory_key));
+        assert!(live
+            .iter()
+            .any(|e| e.repository.inventory_key == kept_a.repository.inventory_key));
+        assert!(live
+            .iter()
+            .any(|e| e.repository.inventory_key == kept_b.repository.inventory_key));
+    }
+
+    #[tokio::test]
+    async fn detached_repository_drops_from_rendered_report_after_refold() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let projections_dir = dir.path().join("projections");
+        let state = AppState::with_stores(
+            &events_dir,
+            projections_dir,
+            PardosaBackend::Pgno,
+            NatsStoreConfig::for_org("org", crate::config::runtime::DEFAULT_NATS_URL).unwrap(),
+        )
+        .await
+        .expect("with_stores");
+        let timestamp = "2026-06-11T00:00:00Z";
+        let removed = crate::test_fixtures::make_repository_evidence(
+            "removed-render-repo",
+            crate::domain::repository::Visibility::Public,
+            false,
+            crate::test_fixtures::make_checks(
+                crate::test_fixtures::policy_pass_setting(),
+                crate::test_fixtures::secret_enabled_observable(false),
+                crate::test_fixtures::dependabot_enabled(),
+                crate::test_fixtures::branch_pass(),
+                crate::test_fixtures::codeowners_absent(),
+            ),
+        );
+        let kept = crate::test_fixtures::make_repository_evidence(
+            "kept-render-repo",
+            crate::domain::repository::Visibility::Public,
+            false,
+            crate::test_fixtures::make_checks(
+                crate::test_fixtures::policy_pass_setting(),
+                crate::test_fixtures::secret_enabled_observable(false),
+                crate::test_fixtures::dependabot_enabled(),
+                crate::test_fixtures::branch_pass(),
+                crate::test_fixtures::codeowners_absent(),
+            ),
+        );
+
+        for evidence in [removed.clone(), kept.clone()] {
+            let domain_key = evidence.repository.inventory_key.clone();
+            let repo_name = evidence.repository.name.clone();
+            state
+                .record_repo(&domain_key, evidence, &repo_name, timestamp)
+                .expect("record repo");
+        }
+        let before = rendered_evidence_from_projection(state.projection_snapshot());
+        let before_pages = crate::report::html::render_dashboard(
+            &before,
+            &crate::config::dashboard::DashboardConfig::default(),
+        )
+        .expect("render before detach");
+        assert!(before_pages["orphans.html"].contains("removed-render-repo"));
+        assert!(before_pages["orphans.html"].contains("kept-render-repo"));
+
+        state
+            .remove_repo(
+                &removed.repository.inventory_key,
+                &removed.repository.name,
+                timestamp,
+            )
+            .expect("remove repo");
+        state.refresh_projection().expect("refold after detach");
+        let after = rendered_evidence_from_projection(state.projection_snapshot());
+        let after_pages = crate::report::html::render_dashboard(
+            &after,
+            &crate::config::dashboard::DashboardConfig::default(),
+        )
+        .expect("render after detach");
+
+        assert!(!after_pages["orphans.html"].contains("removed-render-repo"));
+        assert!(after_pages["orphans.html"].contains("kept-render-repo"));
     }
 
     #[tokio::test]
