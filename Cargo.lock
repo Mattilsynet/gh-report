@@ -1499,6 +1499,7 @@ dependencies = [
  "moka",
  "pardosa",
  "pardosa-nats",
+ "pardosa-schema",
  "pem",
  "percent-encoding",
  "predicates",

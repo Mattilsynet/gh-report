@@ -16,6 +16,7 @@ pub mod app;
 pub mod collector;
 pub mod config;
 pub mod domain;
+pub mod event;
 pub mod error;
 pub mod github;
 pub mod infra;
