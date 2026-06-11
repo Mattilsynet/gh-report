@@ -1,111 +1,18 @@
-//! Read-side projection for the `OrgGovernance` aggregate.
-//!
-//! WU-6 v2 sub-mission B2' (charter `wu6v2-charter-1778415390`): scaffolding
-//! only. This module lands the type + `Projection` impl skeleton so later
-//! sub-missions can wire it:
-//!
-//! - **B3'** wires [`cherry_pit_gateway::MsgpackFileStore`] as the
-//!   durable `EventStore`.
-//! - **B4'** wires `FileProjectionStore<EvidenceProjection>` snapshot persistence.
-//! - **B5'** wires `ProjectionDriver` + `InProcessEventBus` (snapshot-fast-path).
-//! - **B6'** extends `RepoEvaluated` with a `RepositoryEvidence` payload (CHE-0022
-//!   additive). Until then the [`apply`](Projection::apply) body is intentionally
-//!   minimal — every [`DomainEvent`] variant is matched exhaustively (a no-op for
-//!   most variants), and full payload-driven materialisation arrives at B6' + B7'
-//!   (collector rewrite).
-//!
-//! ## Architectural posture (locked)
-//!
-//! - **Tension-2** — single aggregate (`OrgGovernance`), single projection
-//!   (`EvidenceProjection`). `aggregate_id == org name`. All eight
-//!   [`DomainEvent`] variants belong to `OrgGovernance`.
-//! - **S5.b bus-only** — no `CommandGateway` / `Aggregate` impl /
-//!   `HandleCommand`. [`OrgGovernance`] is a **marker type only**: a
-//!   zero-sized struct documenting the consistency boundary. Collectors
-//!   write events directly via `event_store.append(...)` + `bus.publish(...)`
-//!   (B7'). The cherry-pit-core [`Projection`] trait does **not** carry an
-//!   `Aggregate` associated type — the aggregate binding is documentary.
-//! - **CHE-0048:R3** — projection consumes events; one projection per
-//!   aggregate.
-//! - **CHE-0018:R1** — [`apply`](Projection::apply) is synchronous.
-//! - **CHE-0009** — [`apply`](Projection::apply) is infallible (no `Result`).
-//! - **CHE-0048:R3 + BC-v2-6** — [`apply`](Projection::apply) is idempotent
-//!   over the same envelope sequence: replaying the same envelope must
-//!   produce the same projection state. The current skeleton trivially
-//!   satisfies this (most arms are no-ops; the [`AssessmentMetadata`]
-//!   updates are last-writer-wins by `run_id`, deterministic given a
-//!   stable event stream).
-//!
-//! ## `AssessmentMetadata` placement (U3)
-//!
-//! [`AssessmentMetadata`] lives on the projection as
-//! `Option<AssessmentMetadata>` — it is materialised from `SweepStarted` /
-//! `SweepCompleted` envelopes (B6' + B7' will populate it from extended
-//! event payloads). This is the default home per charter §8 row U3; no
-//! DESIGN.md §12 update is required.
+//! Read-side projection for repository evidence.
 
 use std::collections::BTreeMap;
-use std::num::NonZeroU64;
 
-use cherry_pit_core::{AggregateId, DomainEvent as CoreDomainEvent, EventEnvelope, Projection};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::events::{DomainEvent, RepoPresence};
 use crate::domain::evidence::{AssessmentMetadata, RepositoryEvidence};
 
-/// Singleton [`AggregateId`] for the [`OrgGovernance`] aggregate.
-///
-/// Per the **Tension-2 lock** (charter §0 locked posture #2) gh-report runs
-/// exactly one aggregate per process — the org-scoped `OrgGovernance`. The
-/// cherry-pit-core [`AggregateId`] type is a [`NonZeroU64`], not a string.
-/// We therefore pin a singleton numeric id of `1` here; org scoping comes
-/// from the parent directory of the event store
-/// (`<store_dir>/events/<org>/`), not from the id itself.
-///
-/// Wired at WU-6 v2 B3' (charter `wu6v2-charter-1778415390`,
-/// `AdjustIntent` option 2). Reused at B5' driver wiring and B7' collectors
-/// — every `event_store.create` / `event_store.append` / `event_store.load`
-/// call in gh-report uses this constant.
-///
-/// On-disk artefact path under [`cherry_pit_gateway::MsgpackFileStore`]:
-/// `<store_dir>/events/<org>/1.msgpack` (file-per-aggregate, owned
-/// exclusively while the CHE-0043:R1 flock on `<store_dir>/events/<org>/.lock`
-/// is held).
-pub const ORG_GOVERNANCE_AGGREGATE_ID: AggregateId = AggregateId::new(NonZeroU64::MIN);
-
-/// Marker type for the gh-report consistency boundary.
-///
-/// A zero-sized type documenting that all eight [`DomainEvent`] variants and
-/// the [`EvidenceProjection`] read model belong to a single aggregate per
-/// the **Tension-2 lock** (charter §0 locked posture #2).
-///
-/// `OrgGovernance` is **not** an [`cherry_pit_core::Aggregate`] impl — the
-/// **S5.b bus-only lock** (charter §0 locked posture #3) forbids
-/// `Aggregate` / `HandleCommand` / `CommandGateway` introduction. This type
-/// exists to give the aggregate boundary a name in code and docs; the
-/// `aggregate_id` for envelopes is the GitHub organization name.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OrgGovernance;
-
 /// Read-side projection materialising governance evidence from
-/// [`DomainEvent`] envelopes.
+/// native pardosa events.
 ///
 /// Replaces the v1 bespoke `EvidenceStore`. Stores per-repository evidence
 /// keyed by `domain_key` (the `Repository::inventory_key` of the form
 /// `"id-<repo-name>"`) plus run-level [`AssessmentMetadata`].
 ///
-/// **B2' state**: skeleton. Fields are populated by later sub-missions:
-///
-/// - B6' extends [`DomainEvent::RepoEvaluated`] with a
-///   `RepositoryEvidence` payload; `apply` will then insert into
-///   [`Self::repositories`].
-/// - B6' / B7' extend `SweepStarted` / `SweepCompleted` with metadata
-///   payload; `apply` will then populate [`Self::assessment_metadata`].
-///
-/// Until B6' lands, [`apply`](Projection::apply) is a no-op for all
-/// payload-bearing variants. The exhaustive match guards against new
-/// [`DomainEvent`] variants landing without a corresponding projection
-/// arm.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct EvidenceProjection {
     /// Per-repository evidence keyed by `domain_key`.
@@ -119,8 +26,7 @@ pub struct EvidenceProjection {
     /// Last-known assessment metadata for the current/most-recent
     /// collection run.
     ///
-    /// `None` until the first `SweepStarted` envelope is applied (B6').
-    /// Updated last-writer-wins by `run_id`.
+    /// `None` when projection was built from durable per-repo snapshots only.
     pub assessment_metadata: Option<AssessmentMetadata>,
 }
 
@@ -178,24 +84,16 @@ impl EvidenceProjection {
         entries
     }
 
-    /// Bulk-load baseline evidence at startup, before any bus dispatch.
+    /// Bulk-load baseline evidence.
     ///
     /// Merges into existing entries; entries with the same
     /// `inventory_key` overwrite the earlier value (last-writer-wins).
-    /// Per CHE-0048:R2 the projection is the sole writer of its
-    /// read-model; this direct mutation is authorised only at
-    /// startup, before `build_services` returns and before the bus
-    /// is observable (M2 parent brief D2 + pre-mortem #7).
-    /// Documentation contract — not runtime-enforced.
-    ///
     /// May be called sequentially with [`Self::load_resumed_checkpoint`]
     /// (saga warm-load is W4-then-W3 per `app/collect.rs:537,543`);
     /// the second call adds to rather than replaces the first call's
     /// entries.
     ///
-    /// Keyed by `repository.inventory_key` per the baseline-file
-    /// loading contract (CHE-0048:R2 — projection owns this key
-    /// discipline).
+    /// Keyed by `repository.inventory_key`.
     pub fn load_baseline(&mut self, entries: Vec<RepositoryEvidence>) {
         self.bulk_load(entries);
     }
@@ -234,66 +132,9 @@ impl EvidenceProjection {
     }
 }
 
-impl Projection for EvidenceProjection {
-    type Event = DomainEvent;
-
-    fn apply(&mut self, envelope: &EventEnvelope<Self::Event>) {
-        match envelope.payload() {
-            DomainEvent::RepositoryStateCaptured {
-                domain_key,
-                evidence,
-                presence: RepoPresence::Active,
-                ..
-            } => {
-                if let Some(ev) = evidence {
-                    self.repositories
-                        .insert(domain_key.clone(), ev.as_ref().clone());
-                }
-            }
-            DomainEvent::RepositoryStateCaptured {
-                domain_key,
-                presence: RepoPresence::Removed,
-                ..
-            } => {
-                self.repositories.remove(domain_key);
-            }
-        }
-    }
-}
-
-/// Wire gh-report's [`DomainEvent`] into the cherry-pit-core
-/// [`CoreDomainEvent`] trait so it satisfies the [`Projection::Event`]
-/// bound.
-///
-/// `event_type()` delegates to the existing inherent
-/// [`DomainEvent::event_type`] method, which returns the `PascalCase`
-/// variant name as the wire discriminator (post CHE-0065 pivot).
-impl CoreDomainEvent for DomainEvent {
-    fn event_type(&self) -> &'static str {
-        DomainEvent::event_type(self)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU64;
-
-    use cherry_pit_core::{AggregateId, EventEnvelope};
-
     use super::*;
-
-    fn envelope(payload: DomainEvent, sequence: u64) -> EventEnvelope<DomainEvent> {
-        EventEnvelope::new(
-            uuid::Uuid::now_v7(),
-            AggregateId::new(NonZeroU64::new(1).expect("non-zero")),
-            NonZeroU64::new(sequence).expect("non-zero"),
-            jiff::Timestamp::now(),
-            None,
-            None,
-            payload,
-        )
-        .expect("valid envelope")
-    }
 
     #[test]
     fn default_projection_is_empty() {
@@ -302,100 +143,18 @@ mod tests {
         assert!(p.assessment_metadata.is_none());
     }
 
-    #[test]
-    fn active_snapshot_without_evidence_is_no_op() {
-        let mut p = EvidenceProjection::default();
-        let env = envelope(
-            DomainEvent::RepositoryStateCaptured {
-                domain_key: "id-r".into(),
-                repo_name: "r".into(),
-                timestamp: "2026-04-20T12:00:00Z".into(),
-                evidence: None,
-                presence: RepoPresence::Active,
-            },
-            1,
-        );
-        p.apply(&env);
-        assert!(p.repositories.is_empty());
-        assert!(p.assessment_metadata.is_none());
-    }
-
-    #[test]
-    fn apply_repo_evaluated_with_evidence_inserts_into_repositories() {
+    fn ev(domain_key: &str, name: &str) -> RepositoryEvidence {
         use crate::test_fixtures;
-
-        let mut p = EvidenceProjection::default();
-        let evidence = test_fixtures::all_passing_evidence("repo-1");
-        let env = envelope(
-            DomainEvent::RepositoryStateCaptured {
-                domain_key: "id-repo-1".into(),
-                repo_name: "repo-1".into(),
-                timestamp: "2026-04-20T12:00:00Z".into(),
-                evidence: Some(Box::new(evidence.clone())),
-                presence: RepoPresence::Active,
-            },
-            1,
-        );
-        p.apply(&env);
-        assert_eq!(p.repositories.len(), 1);
-        assert_eq!(p.repositories.get("id-repo-1"), Some(&evidence));
-
-        p.apply(&env);
-        assert_eq!(p.repositories.len(), 1);
-        assert_eq!(p.repositories.get("id-repo-1"), Some(&evidence));
-    }
-
-    #[test]
-    fn apply_repo_evaluated_without_evidence_is_no_op() {
-        let mut p = EvidenceProjection::default();
-        let env = envelope(
-            DomainEvent::RepositoryStateCaptured {
-                domain_key: "id-repo-1".into(),
-                repo_name: "repo-1".into(),
-                timestamp: "2026-04-20T12:00:00Z".into(),
-                evidence: None,
-                presence: RepoPresence::Active,
-            },
-            1,
-        );
-        p.apply(&env);
-        assert!(p.repositories.is_empty());
-    }
-
-    #[test]
-    fn core_domain_event_impl_returns_pascalcase_discriminator() {
-        let ev = DomainEvent::RepositoryStateCaptured {
-            domain_key: "k".into(),
-            repo_name: "r".into(),
-            timestamp: "t".into(),
-            evidence: None,
-            presence: RepoPresence::Removed,
-        };
-        assert_eq!(
-            <DomainEvent as CoreDomainEvent>::event_type(&ev),
-            "RepositoryStateCaptured"
-        );
-    }
-
-    fn ev_envelope(domain_key: &str, name: &str, seq: u64) -> EventEnvelope<DomainEvent> {
-        use crate::test_fixtures;
-        envelope(
-            DomainEvent::RepositoryStateCaptured {
-                domain_key: domain_key.into(),
-                repo_name: name.into(),
-                timestamp: "2026-04-20T12:00:00Z".into(),
-                evidence: Some(Box::new(test_fixtures::all_passing_evidence(name))),
-                presence: RepoPresence::Active,
-            },
-            seq,
-        )
+        let mut evidence = test_fixtures::all_passing_evidence(name);
+        evidence.repository.inventory_key = domain_key.to_string();
+        evidence
     }
 
     #[test]
     fn get_returns_some_after_apply_and_none_otherwise() {
         let mut p = EvidenceProjection::default();
         assert!(p.get("id-repo-1").is_none());
-        p.apply(&ev_envelope("id-repo-1", "repo-1", 1));
+        p.load_baseline(vec![ev("id-repo-1", "repo-1")]);
         let got = p.get("id-repo-1").expect("present after apply");
         assert_eq!(got.repository.name, "repo-1");
         assert!(p.get("id-missing").is_none());
@@ -405,17 +164,14 @@ mod tests {
     fn len_matches_inserted_count() {
         let mut p = EvidenceProjection::default();
         assert_eq!(p.len(), 0);
-        p.apply(&ev_envelope("id-a", "a", 1));
-        p.apply(&ev_envelope("id-b", "b", 2));
+        p.load_baseline(vec![ev("id-a", "a"), ev("id-b", "b")]);
         assert_eq!(p.len(), 2);
     }
 
     #[test]
     fn sorted_snapshot_orders_by_id_then_name() {
         let mut p = EvidenceProjection::default();
-        p.apply(&ev_envelope("id-b", "b", 1));
-        p.apply(&ev_envelope("id-a", "a", 2));
-        p.apply(&ev_envelope("id-c", "c", 3));
+        p.load_baseline(vec![ev("id-b", "b"), ev("id-a", "a"), ev("id-c", "c")]);
         let snap = p.sorted_snapshot();
         let ids: Vec<&str> = snap.iter().map(|e| e.repository.id.as_str()).collect();
         assert_eq!(ids, vec!["id-a", "id-b", "id-c"]);
@@ -431,7 +187,7 @@ mod tests {
     fn load_baseline_merges_into_existing_entries() {
         use crate::test_fixtures;
         let mut p = EvidenceProjection::default();
-        p.apply(&ev_envelope("id-prior", "prior", 1));
+        p.load_baseline(vec![ev("id-prior", "prior")]);
         let entries = vec![
             test_fixtures::all_passing_evidence("a"),
             test_fixtures::all_passing_evidence("b"),

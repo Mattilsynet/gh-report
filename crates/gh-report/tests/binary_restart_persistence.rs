@@ -23,11 +23,9 @@
 //! against a previously-written store" — not to reverify projection
 //! semantics, which `bootstrap_replay` already covers in-process.
 
-use std::sync::Arc;
-
-use cherry_pit_core::{CorrelationContext, EventStore};
 use gh_report::app::state::EventStoreImpl;
-use gh_report::domain::events::{DomainEvent, RepoPresence};
+use gh_report::event::{DomainEvent, RepoPresence};
+use pardosa_schema::{NonEmptyEventString, Timestamp as EventTimestamp};
 
 use assert_cmd::Command;
 
@@ -101,19 +99,10 @@ async fn dump_baseline_against_seeded_store_exits_zero() {
     std::fs::create_dir_all(&events_dir).expect("mk events dir");
 
     {
-        let store = Arc::new(EventStoreImpl::create_pgno(&events_dir.join("events.pgno")).unwrap());
-        let ctx = CorrelationContext::none();
-        let event = DomainEvent::RepositoryStateCaptured {
-            domain_key: "id-q4-smoke".into(),
-            repo_name: "q4-smoke".into(),
-            timestamp: "2026-05-20T00:00:00Z".into(),
-            evidence: None,
-            presence: RepoPresence::Active,
-        };
+        let store = EventStoreImpl::create_pgno(&events_dir.join("events.pgno")).unwrap();
         store
-            .create(vec![event], ctx)
-            .await
-            .expect("create Run aggregate");
+            .record("id-q4-smoke", native_event("id-q4-smoke", "q4-smoke"))
+            .expect("record repo");
     }
 
     let output = Command::cargo_bin("gh-report")
@@ -147,4 +136,14 @@ async fn dump_baseline_against_seeded_store_exits_zero() {
         baseline.get("entries").is_some(),
         "Baseline missing entries object; raw stdout:\n{stdout}"
     );
+}
+
+fn native_event(domain_key: &str, repo_name: &str) -> DomainEvent {
+    DomainEvent::RepositoryStateCaptured {
+        domain_key: NonEmptyEventString::try_new(domain_key).expect("domain key"),
+        repo_name: NonEmptyEventString::try_new(repo_name).expect("repo name"),
+        timestamp: EventTimestamp::from_nanos(1_779_491_200_000_000_000).expect("timestamp"),
+        evidence: None,
+        presence: RepoPresence::Active,
+    }
 }

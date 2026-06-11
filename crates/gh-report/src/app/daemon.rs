@@ -37,21 +37,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use cherry_pit_core::CorrelationContext;
-use uuid::Uuid;
-
 use crate::app::collect;
-use crate::app::event_logging::register_logging_subscriber;
 use crate::app::state::AppState;
 use crate::app::work_queue::JobSource;
 use crate::app::worker_pool::JobOutcome;
 use crate::config;
 use crate::config::runtime::RuntimeConfig;
-use crate::domain::aggregates::repo::RecordEvaluation;
 use crate::domain::evidence::RepositoryEvidence;
-use crate::domain::run::RunMetadata;
 use crate::error::{AppError, ConfigError, PersistenceError};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 /// Bounded per-handle timeout for the worker-pool and delivery-task
 /// drain at daemon shutdown. The total drain budget at shutdown is
@@ -136,7 +130,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
                 })
             })?;
 
-    if let Err(e) = app_state.snapshot_fast_path_init().await {
+    if let Err(e) = app_state.snapshot_fast_path_init() {
         error!(error = %e, "projection runtime init failed");
         return Err(AppError::Persistence(PersistenceError::LoadFailed {
             reason: format!("projection runtime init failed: {e}"),
@@ -144,8 +138,6 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     }
 
     collect::warm_start_from_baseline(&config, &app_state).await;
-
-    register_logging_subscriber(&app_state.bus);
 
     let shutdown = async {
         crate::infra::signal::wait_for_shutdown_signal().await;
@@ -300,12 +292,11 @@ async fn drain_collection_loop(
 /// Delivery task: consumes job outcomes from the worker pool channel.
 ///
 /// Responsibilities:
-/// 1. Publish `RepoEvaluated` success envelopes (drives `EvidenceProjection`
-///    via `apply` per CHE-0048:R2 — projection is the sole writer of the
-///    read-model post-M2.cd).
-/// 2. Publish `RepoEvaluated` failure envelopes carrying synthesised
-///    `Unknown`-status evidence (so the dashboard shows error state rather
-///    than stale passing data).
+/// 1. Record `RepositoryStateCaptured` success events on each repo's fiber
+///    via `AppState::record_repo`, then refold `EvidenceProjection` from the
+///    written event stream (projection is a pure fold over `NativeStore`).
+/// 2. Record failure events carrying synthesised `Unknown`-status evidence
+///    (so the dashboard shows error state rather than stale passing data).
 /// 3. `batch_tracker.complete_one()` for `ScheduledBatch` outcomes
 ///    (countdown so the sweep knows when all jobs are done)
 ///
@@ -331,26 +322,16 @@ pub(crate) async fn delivery_loop(
             }
         };
 
-        let corr_ctx = state.current_run.load().as_ref().as_ref().map_or_else(
-            || {
-                debug!("delivery_loop: outcome arrived with no in-flight run; using nil ctx");
-                CorrelationContext::correlated(Uuid::nil())
-            },
-            RunMetadata::correlation_context,
-        );
-
         match outcome {
             JobOutcome::Success {
                 domain_key, result, ..
             } => {
-                handle_success_outcome(&state, &corr_ctx, domain_key, result, &source, duration)
-                    .await;
+                handle_success_outcome(&state, &domain_key, result, &source, duration);
             }
             JobOutcome::Failure {
                 domain_key, error, ..
             } => {
-                handle_failure_outcome(&state, &corr_ctx, domain_key, error, &source, duration)
-                    .await;
+                handle_failure_outcome(&state, &domain_key, &error, &source, duration);
             }
             _ => {
                 warn!("delivery_loop: unhandled JobOutcome variant, skipping");
@@ -371,34 +352,17 @@ pub(crate) async fn delivery_loop(
 /// Publish a successful repo evaluation and log completion.
 ///
 /// Extracted from [`delivery_loop`] for cohesion; no behavioural change.
-async fn handle_success_outcome(
+fn handle_success_outcome(
     state: &Arc<AppState>,
-    corr_ctx: &CorrelationContext,
-    domain_key: String,
+    domain_key: &str,
     result: RepositoryEvidence,
     source: &JobSource,
     duration: Duration,
 ) {
     let repo_name = result.repository.name.clone();
-    let evidence_for_event = Box::new(result);
-    if let Err(e) = state
-        .repo_service
-        .record_evaluation(
-            &domain_key,
-            RecordEvaluation {
-                domain_key: domain_key.clone(),
-                repo_name: repo_name.clone(),
-                success: true,
-                source: format!("{source:?}"),
-                duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
-                timestamp: jiff::Timestamp::now().to_string(),
-                evidence: Some(evidence_for_event),
-            },
-            corr_ctx,
-        )
-        .await
-    {
-        tracing::warn!(?e, "RepoEvaluated publish failed, non-fatal");
+    let timestamp = jiff::Timestamp::now().to_string();
+    if let Err(e) = state.record_repo(domain_key, result, &repo_name, &timestamp) {
+        tracing::warn!(?e, "repository state record failed, non-fatal");
     }
     info!(
         key = %domain_key,
@@ -412,45 +376,28 @@ async fn handle_success_outcome(
 /// Publish a failed repo evaluation and log the failure.
 ///
 /// Extracted from [`delivery_loop`] for cohesion; no behavioural change.
-async fn handle_failure_outcome(
+fn handle_failure_outcome(
     state: &Arc<AppState>,
-    corr_ctx: &CorrelationContext,
-    domain_key: String,
-    error: String,
+    domain_key: &str,
+    error: &str,
     source: &JobSource,
     duration: Duration,
 ) {
-    let existing = state.projection_get(&domain_key);
-    let (repo_name, evidence_for_event) = if let Some(existing) = existing {
+    let existing = state.projection_get(domain_key);
+    let repo_name = if let Some(existing) = existing {
         let name = existing.repository.name.clone();
         let failure = collect::failure_evidence(
             &std::sync::Arc::new(existing.repository.clone()),
             &jiff::Timestamp::now().to_string(),
         );
-        let failure_for_event = Box::new(failure);
-        (name, Some(failure_for_event))
+        let timestamp = jiff::Timestamp::now().to_string();
+        if let Err(e) = state.record_repo(domain_key, failure, &name, &timestamp) {
+            tracing::warn!(?e, "repository failure state record failed, non-fatal");
+        }
+        name
     } else {
-        (domain_key.clone(), None)
+        domain_key.to_string()
     };
-    if let Err(e) = state
-        .repo_service
-        .record_evaluation(
-            &domain_key,
-            RecordEvaluation {
-                domain_key: domain_key.clone(),
-                repo_name: repo_name.clone(),
-                success: false,
-                source: format!("{source:?}"),
-                duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
-                timestamp: jiff::Timestamp::now().to_string(),
-                evidence: evidence_for_event,
-            },
-            corr_ctx,
-        )
-        .await
-    {
-        tracing::warn!(?e, "RepoEvaluated publish failed, non-fatal");
-    }
     error!(
         key = %domain_key,
         repo = %repo_name,

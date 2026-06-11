@@ -50,6 +50,8 @@ store/
 # introduce a src/store/ source module.
 !crates/pardosa/src/store/
 !crates/pardosa/src/store/**
+!crates/gh-report/src/store/
+!crates/gh-report/src/store/**
 
 # Bespoke scripts. The Track-4 experiment (prod-loc, track4-verify, awk
 # loc/adr counters, citation-diff) was retracted 2026-05-16 — drift +

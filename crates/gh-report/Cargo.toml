@@ -27,61 +27,11 @@ cherry-pit-wq = { version = "0.1.0", path = "../cherry-pit-wq" }
 # cherry-pit-storage — M5 B3 swap target for PersistenceError / atomic_write_bytes / RunLock / build_snapshot_signature re-exports (CHE-0053:R3 flat surface)
 cherry-pit-storage = { version = "0.1.0", path = "../cherry-pit-storage" }
 
-# cherry-pit-core — CHE-0048 EDA foundational traits (Projection, DomainEvent,
-# EventEnvelope). Single-aggregate posture per Tension-2 lock; no
-# CommandGateway/Aggregate/HandleCommand wiring (S5.b lock).
-#
-# `testing` feature: needed for `InMemoryEventStore<DomainEvent>` as a
-# **test double** inside `#[cfg(test)]` modules in `src/app/state.rs` and
-# `src/app/projection_runtime.rs`. Production paths use
-# `cherry_pit_gateway::MsgpackFileStore<DomainEvent>` exclusively. The
-# feature cannot be relegated to `[dev-dependencies]` because the same
-# crate alias is used in both production (`EventStore` trait imports)
-# and test code, and Cargo would treat the two activations as
-# conflicting unification states.
-cherry-pit-core = { workspace = true, features = ["testing"] }
-
-# cherry-pit-gateway — durable persistence substrate
-# (`MsgpackFileStore<DomainEvent>`, file-per-aggregate `.msgpack` files
-# under `<events_dir>` with CHE-0043:R1 flock held on `.lock`) plus
-# `InProcessEventBus<DomainEvent>` for in-process fan-out. Aggregate
-# id remains the singleton `ORG_GOVERNANCE_AGGREGATE_ID =
-# NonZeroU64::new(1)` per Tension-2. The `Encode` trait used by
-# hand-rolled impls on gh-report domain types is re-exported from
-# `cherry-pit-core` (CHE-0064:R2 supertrait) — gh-report does not
-# name the underlying encoding crate directly.
-cherry-pit-gateway = { workspace = true }
-cherry-pit-pardosa = { workspace = true }
+# cherry-pit-core — correlation context threaded through cherry-pit-wq jobs.
+cherry-pit-core = { workspace = true }
 pardosa = { path = "../pardosa", version = "=0.4.0" }
 pardosa-schema = { path = "../pardosa-schema", version = "=0.1.0" }
 pardosa-nats = { path = "../pardosa-nats", version = "=0.1.0" }
-
-# cherry-pit-app — root composition crate. WU-6 v2 B5' uses
-# `InProcessEventBus<DomainEvent>` (CHE-0051:R2) and the
-# `ProjectionDriverExt::apply_one` extension trait (CHE-0051:R5) to
-# wire snapshot-fast-path startup + bus-driven incremental projection
-# updates. The full `App` composition (CommandGateway/Aggregate) is
-# **not** used per S5.b bus-only lock; we depend on cherry-pit-app
-# only for the bus impl + the `ProjectionDriverExt` trait.
-cherry-pit-app = { workspace = true }
-
-# cherry-pit-merger — canonical command-side EDA primitive per CHE-0069.
-# Mission H (`adr-fmt-cq7vb.11`): three per-aggregate `MergerArm` impls
-# (Run, Repo, Webhook) consume the lifted `Merger<A, S, B, Arm>` primitive
-# in place of gh-report's in-crate Merger. The I1 TOCTOU window is closed
-# structurally by the merger's single-task front door per CHE-0069:R4.
-cherry-pit-merger = { workspace = true }
-
-# cherry-pit-projection — durable projection snapshot+checkpoint store
-# (FileProjectionStore) per CHE-0048:R1/R2. Wired at WU-6 v2 B4'
-# (charter wu6v2-charter-1778415390); single
-# FileProjectionStore<EvidenceProjection> instance per process at
-# <store_dir>/projections/<org>/, projection_name = "evidence". cpp
-# composes filenames as `{aggregate_id}-{projection_name}.snapshot.msgpack`
-# and `…checkpoint.msgpack` — the snapshot is written strictly before
-# the checkpoint (CHE-0048:R2). The store is held by AppState but not
-# yet driven; B5' wires ProjectionDriverExt to consume it.
-cherry-pit-projection = { workspace = true }
 
 # cherry-pit-web — MC-2.4b direct dep for Phase-2 `ProjectionSource` stub on
 # `EvidenceState` per CHE-0055 §G1. MC-2.7 removes both the stub and this

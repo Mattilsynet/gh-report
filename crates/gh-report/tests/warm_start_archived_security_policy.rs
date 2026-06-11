@@ -27,18 +27,13 @@
 //! (the same chain the `gh-report` binary runs on boot per
 //! `bin/gh-report.rs`).
 
-use std::sync::Arc;
-
-use cherry_pit_core::{CorrelationContext, EventStore};
 use gh_report::aggregate::metrics::{aggregate_metrics, build_collection_statistics};
 use gh_report::app::state::AppState;
-use gh_report::app::state::EventStoreImpl;
 use gh_report::domain::checks::{
     BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersResult,
     CodeownersStatus, DependabotResult, DependabotStatus, RepositoryChecks, SecretScanningResult,
     SecretScanningStatus, SecurityPolicyEvidence, SecurityPolicyResult, SecurityPolicyStatus,
 };
-use gh_report::domain::events::{DomainEvent, RepoPresence};
 use gh_report::domain::evidence::RepositoryEvidence;
 use gh_report::domain::repository::{Repository, Visibility};
 
@@ -70,7 +65,6 @@ async fn warm_start_replay_preserves_archived_public_security_policy_in_aggregat
     .expect("with_stores");
     app_state
         .snapshot_fast_path_init()
-        .await
         .expect("snapshot_fast_path_init");
 
     let repositories: Vec<RepositoryEvidence> = {
@@ -161,8 +155,14 @@ async fn warm_start_replay_preserves_archived_public_security_policy_in_aggregat
 }
 
 async fn seed_repo_evaluated_envelopes(events_dir: &std::path::Path) {
-    let store = Arc::new(EventStoreImpl::create_pgno(&events_dir.join("events.pgno")).unwrap());
-    let ctx = CorrelationContext::none();
+    let state = AppState::with_stores(
+        events_dir,
+        events_dir.join("projections"),
+        gh_report::config::runtime::PardosaBackend::Pgno,
+        default_nats_store_config(),
+    )
+    .await
+    .expect("with_stores");
 
     for (slug, visibility, archived, policy_status, source_ts) in [
         (
@@ -187,23 +187,20 @@ async fn seed_repo_evaluated_envelopes(events_dir: &std::path::Path) {
             "2026-05-20T00:00:02Z",
         ),
     ] {
-        let event = DomainEvent::RepositoryStateCaptured {
-            domain_key: format!("owner/{slug}"),
-            repo_name: slug.to_string(),
-            timestamp: source_ts.into(),
-            evidence: Some(Box::new(evidence_for(
+        state
+            .record_repo(
+                &format!("owner/{slug}"),
+                evidence_for(
+                    slug,
+                    visibility,
+                    archived,
+                    policy_status,
+                    SecurityPolicyEvidence::Setting,
+                ),
                 slug,
-                visibility,
-                archived,
-                policy_status,
-                SecurityPolicyEvidence::Setting,
-            ))),
-            presence: RepoPresence::Active,
-        };
-        store
-            .create(vec![event], ctx.clone())
-            .await
-            .unwrap_or_else(|e| panic!("seed RepoEvaluated for {slug}: {e:?}"));
+                source_ts,
+            )
+            .unwrap_or_else(|e| panic!("seed RepositoryStateCaptured for {slug}: {e:?}"));
     }
 }
 

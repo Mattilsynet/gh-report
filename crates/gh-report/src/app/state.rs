@@ -22,50 +22,31 @@
 //! [`REPO_CACHE_TTL_HOURS`]: crate::config::REPO_CACHE_TTL_HOURS
 
 use std::collections::HashMap;
-use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::Mutex;
-use std::sync::atomic::AtomicU64;
 
 use arc_swap::ArcSwap;
-use cherry_pit_app::InProcessEventBus;
-#[cfg(test)]
-use cherry_pit_core::testing::InMemoryEventStore;
-use cherry_pit_core::{AggregateId, ListableEventStore};
-use cherry_pit_pardosa::PardosaEventStore;
-use cherry_pit_projection::FileProjectionStore;
 use jiff::Timestamp;
 use pardosa::store::JetStreamBackend as PardosaJetStreamBackend;
 use pardosa_nats::{JetStreamBackend as SubstrateJetStreamBackend, JetStreamConfig, RuntimeHandle};
+use pardosa_schema::{NonEmptyEventString, Timestamp as EventTimestamp};
 
 pub use crate::infra::server::state::{CachedPage, PageUpdateEvent};
 
-pub use crate::domain::events::DomainEvent;
-
-/// Concrete event-store type wired into gh-report.
-///
-/// The persistent adapter writes a single `events.pgno` pardosa log
-/// under `<events_dir>`. Domain events are stored as logical
-/// `AggregateId` streams over physical fiber-per-append records; replay
-/// reconstructs each stream from the adapter index. All production paths
-/// construct the store via [`AppState::with_stores`]; test paths that
-/// don't need durable persistence construct an `AppState` without an
-/// `event_store` (see [`AppState::new`] under `#[cfg(test)]`).
-pub type EventStoreImpl = PardosaEventStore<DomainEvent>;
+pub type EventStoreImpl = crate::store::NativeStore;
 
 pub use crate::app::evidence_service::EvidenceState;
 pub use crate::app::github_infra::GithubState;
-pub use crate::app::services::repo_service::RepoService;
-pub use crate::app::services::run_service::RunService;
-pub use crate::app::services::webhook_service::WebhookService;
-pub use crate::app::services::{MergerHandles, MergerJoinHandles};
 pub use crate::app::webhook_context::WebhookState;
 
 use crate::app::collect::JobContext;
 use crate::app::work_queue::WorkQueue;
 use crate::domain::run::RunMetadata;
+use crate::event::convert::EventConversionError;
+use crate::event::{DomainEvent as NativeDomainEvent, RepoPresence as NativeRepoPresence};
+use crate::error::PersistenceError;
 
 /// Embedded CSS stylesheet, compiled into the binary at build time.
 const STYLESHEET: &str = include_str!("../../templates/style.css");
@@ -112,7 +93,7 @@ pub struct AppState {
     pub last_completed_run: ArcSwap<Option<RunMetadata>>,
     /// Work queue for the reactor. Webhook-triggered jobs are enqueued
     /// here and processed by the long-lived worker pool. Scheduled batch
-    /// collection still uses the existing pipeline (adapter approach).
+    /// collection uses the same worker pool.
     pub(crate) work_queue: Arc<WorkQueue<JobContext>>,
     /// Guard ensuring the worker pool + delivery task are started exactly once.
     /// Initialized by `ensure_worker_pool()` after the first successful
@@ -123,94 +104,11 @@ pub struct AppState {
     /// `delivery_task_handle`).
     pub(crate) worker_pool_started: tokio::sync::OnceCell<WorkerPoolHandles>,
 
-    /// Durable per-aggregate event store.
-    ///
-    /// Wired at WU-6 v2 B3' (charter `wu6v2-charter-1778415390`,
-    /// `AdjustIntent` option 2). Constructed at
-    /// `<store_dir>/events/<org>/`; the singleton aggregate id is
-    /// [`crate::projection::ORG_GOVERNANCE_AGGREGATE_ID`] (Tension-2
-    /// single-aggregate lock).
-    ///
-    /// `None` only in test-builder paths that don't supply a
-    /// `store_dir`. Daemon construction always supplies it.
-    pub event_store: Option<Arc<EventStoreImpl>>,
+    /// Durable native pardosa event store.
+    pub event_store: Arc<EventStoreImpl>,
 
-    /// Durable projection snapshot + checkpoint store.
-    ///
-    /// Wired at WU-6 v2 B4' (charter `wu6v2-charter-1778415390`).
-    /// Constructed at `<store_dir>/projections/<org>/` with
-    /// `projection_name = "evidence"`. cherry-pit-projection composes
-    /// on-disk filenames as
-    /// `<aggregate_id>-evidence.snapshot.msgpack` and
-    /// `<aggregate_id>-evidence.checkpoint.msgpack` per CHE-0048:R1
-    /// (file per `(aggregate, projection)`); the snapshot is written
-    /// strictly before the sibling checkpoint per CHE-0048:R2. With
-    /// the singleton [`crate::projection::ORG_GOVERNANCE_AGGREGATE_ID`]
-    /// (`= 1`) the artefacts are
-    /// `<store_dir>/projections/<org>/1-evidence.snapshot.msgpack` and
-    /// `<store_dir>/projections/<org>/1-evidence.checkpoint.msgpack`.
-    /// The events/ and projections/ subtrees are disjoint per BC-v2-13.
-    ///
-    /// **B4' is additive wiring only**: this handle is constructed and
-    /// held but **not yet driven**. B5' wires the
-    /// `ProjectionDriverExt` (CHE-0051:R5) that replays from the
-    /// `event_store` and persists snapshots through this handle. Until
-    /// then the field exists to surface a non-zero `cargo tree` dep on
-    /// cherry-pit-projection and to lock the composition shape.
-    ///
-    /// `None` only in test-builder paths that don't supply a
-    /// `store_dir`. Daemon construction always supplies it.
-    pub projection_store: Option<Arc<FileProjectionStore<crate::projection::EvidenceProjection>>>,
-
-    /// In-process domain-event bus driving the snapshot-fast-path
-    /// projection runtime (B5', charter `wu6v2-charter-1778415390`).
-    ///
-    /// Per CHE-0024:§7 + CHE-0051:R2/R5: handler registered via
-    /// [`crate::app::projection_runtime::register_projection_handler`]
-    /// fans out each published [`DomainEvent`] envelope to the
-    /// projection state. Synchronous within `publish` (no spawn).
-    ///
-    /// As of M5.B2.5 (`adr-fmt-587i`) this is the sole in-process
-    /// domain event bus on `AppState`: the legacy tokio-broadcast
-    /// `EventBus` field (formerly held by `AppState`) was removed and
-    /// the logging subscriber rewritten onto this bus via
-    /// [`crate::app::event_logging::register_logging_subscriber`]. A
-    /// `CommandGateway` / `Aggregate` impl / `HandleCommand` remain
-    /// locked-out for v2.
-    ///
-    /// Always present (even in test-builder paths); cheap to
-    /// construct.
-    pub bus: Arc<InProcessEventBus<DomainEvent>>,
-
-    /// Materialised projection state shared with the bus handler.
-    ///
-    /// `Mutex` (not `RwLock`) because every bus delivery is a write —
-    /// the read pattern (rendering / queries) is bursty and
-    /// orthogonal in time. Poison recovery handled inside the
-    /// registered handler via `PoisonError::into_inner`.
-    ///
-    /// Initialised to `EvidenceProjection::default()` by both
-    /// constructors. Populated by [`Self::bootstrap_replay_state`]
-    /// (called from [`Self::snapshot_fast_path_init`]) during
-    /// daemon boot: a single unified replay folds every aggregate's
-    /// events into both routing indices and projection state. The
-    /// CHE-0048 line-24 replay-as-rebuild exemption applies — there
-    /// is no on-disk snapshot/checkpoint surface; the durable event
-    /// log under [`MsgpackFileStore`] is the SSOT (bd `adr-fmt-5rwbu`).
+    /// Materialised projection state rebuilt from [`Self::event_store`].
     pub(crate) projection_state: Arc<Mutex<crate::projection::EvidenceProjection>>,
-
-    /// Last-applied envelope sequence for the projection state.
-    ///
-    /// Updated by the bus handler via `fetch_max(AcqRel)` so a future
-    /// publisher that delivers out-of-order envelopes still leaves
-    /// the atomic at the highest applied sequence (monotonic
-    /// non-decreasing — see B5' tests). Future schedulers (snapshot
-    /// persistence, lag metrics) read this without locking
-    /// `projection_state`.
-    ///
-    /// `0` ⇒ no envelope applied yet
-    /// (see [`crate::app::projection_runtime::NO_SEQUENCE_APPLIED`]).
-    pub(crate) projection_checkpoint_seq: Arc<AtomicU64>,
 
     /// Webhook ingestion concerns (secret, replay, debounce).
     webhook: WebhookState,
@@ -218,44 +116,6 @@ pub struct AppState {
     github: GithubState,
     /// Evidence data store and publication infrastructure.
     evidence: EvidenceState,
-
-    /// `RunService` — load → handle → append → publish for the
-    /// [`Run`](crate::domain::aggregates::run::Run) aggregate.
-    /// Skeleton in B7'a; constructor + types wired in B7'b-1;
-    /// method bodies wired in B7'b-2..3; production sites
-    /// migrate in B7'c (CHE-0054:R4).
-    pub run_service: Arc<RunService>,
-    /// `RepoService` — same triad for the
-    /// [`Repo`](crate::domain::aggregates::repo::Repo) aggregate.
-    pub repo_service: Arc<RepoService>,
-    /// `WebhookService` — same triad for the
-    /// [`WebhookDelivery`](crate::domain::aggregates::webhook::WebhookDelivery)
-    /// aggregate.
-    pub webhook_service: Arc<WebhookService>,
-
-    /// Lifetime guard for the three per-aggregate
-    /// [`cherry_pit_merger::Merger`] tasks spawned by
-    /// [`MergerHandles::spawn`]. Dropping [`AppState`] drops these
-    /// [`tokio::task::JoinHandle`]s which signal shutdown via the
-    /// channel-closed branch in each merger's `run` loop (once every
-    /// [`cherry_pit_merger::MergerHandle`] clone held by the services
-    /// is also dropped). Never joined explicitly — process exit
-    /// reclaims the tasks.
-    #[expect(
-        dead_code,
-        reason = "lifetime guard; the tasks are kept alive by holding these handles"
-    )]
-    pub(crate) merger_joins: MergerJoinHandles,
-
-    /// Shared per-aggregate last-applied-sequence tracker
-    /// (CHE-0054:R6 / CHE-0042:R3). Populated by
-    /// [`Self::bootstrap_replay_state`] at boot (Track 7.5, M3)
-    /// and by service `append` paths during live operation.
-    pub(crate) next_seq: Arc<Mutex<HashMap<AggregateId, NonZeroU64>>>,
-
-    pub(crate) runs_by_key: Arc<Mutex<HashMap<String, AggregateId>>>,
-    pub(crate) repos_by_key: Arc<Mutex<HashMap<String, AggregateId>>>,
-    pub(crate) deliveries_by_id: Arc<Mutex<HashMap<String, AggregateId>>>,
 
     /// In-process gate serialising concurrent
     /// [`crate::app::collect::run`] invocations against this
@@ -306,8 +166,8 @@ impl AppState {
     /// `state.projection_state.lock().expect("projection_state mutex poisoned")`
     /// inline. Panic semantics match every replaced site verbatim.
     ///
-    /// Sole writer to `projection_state` is the bus-driven `Projection::apply`
-    /// path (CHE-0048:R2). Callers must follow D-CD-3: never hold the returned
+    /// Sole writer to `projection_state` is the event-fold rebuild driven
+    /// from `NativeStore`. Callers must follow D-CD-3: never hold the returned
     /// `MutexGuard` across an `.await`.
     pub(crate) fn lock_projection(
         &self,
@@ -361,76 +221,11 @@ impl AppState {
         self.lock_projection().sorted_snapshot()
     }
 
-    /// Test-only accessor for the `runs_by_key` routing index.
-    ///
-    /// Returns the shared `Arc<Mutex<_>>` handle so integration tests
-    /// (`crates/gh-report/tests/bootstrap_replay.rs`) can assert
-    /// post-bootstrap population. Not intended for production callers:
-    /// production code routes through the per-aggregate
-    /// [`cherry_pit_merger::Merger`] task which holds its own
-    /// `Arc<Mutex<_>>` clone (see
-    /// [`MergerHandles::spawn`](crate::app::services::merger::MergerHandles::spawn)).
-    #[doc(hidden)]
-    pub fn runs_by_key_for_test(&self) -> Arc<Mutex<HashMap<String, AggregateId>>> {
-        Arc::clone(&self.runs_by_key)
-    }
-
-    /// Test-only accessor for the `repos_by_key` routing index.
-    /// See [`Self::runs_by_key_for_test`] for the doctrinal rationale.
-    #[doc(hidden)]
-    pub fn repos_by_key_for_test(&self) -> Arc<Mutex<HashMap<String, AggregateId>>> {
-        Arc::clone(&self.repos_by_key)
-    }
-
-    /// Test-only accessor for the `deliveries_by_id` routing index.
-    /// See [`Self::runs_by_key_for_test`] for the doctrinal rationale.
-    #[doc(hidden)]
-    pub fn deliveries_by_id_for_test(&self) -> Arc<Mutex<HashMap<String, AggregateId>>> {
-        Arc::clone(&self.deliveries_by_id)
-    }
-
-    /// Test-only accessor for the `next_seq` per-aggregate tracker.
-    /// See [`Self::runs_by_key_for_test`] for the doctrinal rationale.
-    #[doc(hidden)]
-    pub fn next_seq_for_test(&self) -> Arc<Mutex<HashMap<AggregateId, NonZeroU64>>> {
-        Arc::clone(&self.next_seq)
-    }
-
     /// Test-only accessor for the materialised `projection_state`.
-    /// See [`Self::runs_by_key_for_test`] for the doctrinal rationale.
-    ///
-    /// Integration test `tests/bootstrap_replay.rs::
-    /// restart_rehydrates_projection_state` asserts that the
-    /// cross-aggregate boot replay (bd `adr-fmt-5rwbu`) populates
-    /// this state from every aggregate, not just the
-    /// `ORG_GOVERNANCE_AGGREGATE_ID` singleton.
     #[doc(hidden)]
     pub fn projection_state_for_test(&self) -> Arc<Mutex<crate::projection::EvidenceProjection>> {
         Arc::clone(&self.projection_state)
     }
-}
-
-/// Build the three `ApplicationService` surfaces from a
-/// [`MergerHandles`] bundle.
-///
-/// Post-Mission-H (CHE-0069) every service is a thin
-/// [`cherry_pit_merger::MergerHandle::dispatch`] wrapper; the three
-/// per-aggregate [`cherry_pit_merger::Merger`] tasks (spawned via
-/// [`MergerHandles::spawn`]) are the sole holders of the
-/// [`EventStore`] write handles and per-aggregate routing indices.
-/// The function returns `(run_service, repo_service, webhook_service)`
-/// already wrapped in `Arc` for direct assignment to `AppState`
-/// fields. Per-aggregate handles are moved out of the bundle (each is
-/// only needed once); the bundle struct is consumed.
-///
-/// [`EventStore`]: cherry_pit_core::EventStore
-fn build_services(
-    handles: MergerHandles,
-) -> (Arc<RunService>, Arc<RepoService>, Arc<WebhookService>) {
-    let run = Arc::new(RunService::new());
-    let repo = Arc::new(RepoService::with_handle(handles.repo));
-    let webhook = Arc::new(WebhookService::new());
-    (run, repo, webhook)
 }
 
 fn open_event_store(
@@ -450,19 +245,33 @@ fn open_event_store(
             }
         }
         crate::config::runtime::PardosaBackend::Nats => {
-            let cfg = JetStreamConfig::builder()
-                .stream_name(nats.stream_name)
-                .subject(nats.subject)
-                .durable_consumer(nats.durable_consumer)
-                .nats_url(nats.nats_url)
-                .runtime_handle(RuntimeHandle::from_tokio(handle))
-                .build()
-                .map_err(std::io::Error::other)?;
-            let substrate = SubstrateJetStreamBackend::open(cfg);
-            let backend = PardosaJetStreamBackend::open(substrate);
-            EventStoreImpl::create_jetstream(backend).map_err(std::io::Error::other)
+            let opened = EventStoreImpl::open_jetstream(jetstream_backend(
+                nats.clone(),
+                handle.clone(),
+            ));
+            match opened {
+                Ok(store) => Ok(store),
+                Err(_) => EventStoreImpl::create_jetstream(jetstream_backend(nats, handle))
+                    .map_err(std::io::Error::other),
+            }
         }
     }
+}
+
+fn jetstream_backend(
+    nats: crate::config::runtime::NatsStoreConfig,
+    handle: tokio::runtime::Handle,
+) -> PardosaJetStreamBackend {
+    let cfg = JetStreamConfig::builder()
+        .stream_name(nats.stream_name)
+        .subject(nats.subject)
+        .durable_consumer(nats.durable_consumer)
+        .nats_url(nats.nats_url)
+        .runtime_handle(RuntimeHandle::from_tokio(handle))
+        .build()
+        .expect("validated NATS store config");
+    let substrate = SubstrateJetStreamBackend::open(cfg);
+    PardosaJetStreamBackend::open(substrate)
 }
 
 /// Open the selected event store on Tokio's blocking pool.
@@ -481,69 +290,121 @@ async fn open_event_store_blocking(
         .map_err(std::io::Error::other)?
 }
 
-/// Per-construction unique tempdir plus pardosa `.pgno` event store.
-/// Used by test-only constructors ([`AppState::new`],
-/// [`AppStateBuilder::build`]) which don't model a real persistence
-/// scope but need a live `EventStore` handle for the Merger task.
-///
-/// The directory is leaked (`TempDir::keep`) so the `.pgno` file remains
-/// addressable for the lifetime of the test. Same pollution profile as
-/// the previous `noop_events_dir` helper; `/tmp` cleanup is the OS's
-/// problem.
+fn projection_from_store(
+    store: &EventStoreImpl,
+) -> Result<crate::projection::EvidenceProjection, std::io::Error> {
+    let mut projection = crate::projection::EvidenceProjection::default();
+    for event in store.events().map_err(std::io::Error::other)? {
+        fold_native_event(&mut projection, event);
+    }
+    Ok(projection)
+}
+
+fn fold_native_event(
+    projection: &mut crate::projection::EvidenceProjection,
+    event: NativeDomainEvent,
+) {
+    match event {
+        NativeDomainEvent::RepositoryStateCaptured {
+            domain_key,
+            evidence: Some(evidence),
+            presence: NativeRepoPresence::Active,
+            ..
+        } => {
+            projection
+                .repositories
+                .insert(domain_key.as_str().to_string(), (*evidence).into());
+        }
+        NativeDomainEvent::RepositoryStateCaptured {
+            domain_key,
+            presence: NativeRepoPresence::Removed,
+            ..
+        } => {
+            projection.repositories.remove(domain_key.as_str());
+        }
+        NativeDomainEvent::RepositoryStateCaptured {
+            presence: NativeRepoPresence::Active,
+            evidence: None,
+            ..
+        } => {}
+    }
+}
+
+fn native_store_persistence(error: &crate::store::StoreError) -> PersistenceError {
+    PersistenceError::LoadFailed {
+        reason: error.to_string(),
+    }
+}
+
+fn conversion_persistence(error: &EventConversionError) -> PersistenceError {
+    PersistenceError::LoadFailed {
+        reason: error.to_string(),
+    }
+}
+
+fn io_persistence(error: &std::io::Error) -> PersistenceError {
+    PersistenceError::LoadFailed {
+        reason: error.to_string(),
+    }
+}
+
+fn non_empty<const MAX: usize>(
+    field: &'static str,
+    value: &str,
+) -> Result<NonEmptyEventString<MAX>, PersistenceError> {
+    NonEmptyEventString::try_new(value).map_err(|_| {
+        conversion_persistence(&if value.is_empty() {
+            EventConversionError::Empty { field }
+        } else {
+            EventConversionError::TooLong { field }
+        })
+    })
+}
+
+fn event_timestamp(field: &'static str, value: &str) -> Result<EventTimestamp, PersistenceError> {
+    let parsed = crate::domain::time::parse_iso8601(value).ok_or_else(|| {
+        conversion_persistence(&EventConversionError::BadTimestamp {
+            field,
+            value: value.to_string(),
+        })
+    })?;
+    let nanos = u64::try_from(parsed.as_nanosecond()).map_err(|_| {
+        conversion_persistence(&EventConversionError::BadTimestamp {
+            field,
+            value: value.to_string(),
+        })
+    })?;
+    EventTimestamp::from_nanos(nanos).ok_or_else(|| {
+        conversion_persistence(&EventConversionError::BadTimestamp {
+            field,
+            value: value.to_string(),
+        })
+    })
+}
+
+fn repo_event(
+    domain_key: &str,
+    repo_name: &str,
+    timestamp: &str,
+    evidence: Option<Box<crate::event::RepositoryEvidence>>,
+    presence: NativeRepoPresence,
+) -> Result<NativeDomainEvent, PersistenceError> {
+    Ok(NativeDomainEvent::RepositoryStateCaptured {
+        domain_key: non_empty("domain_key", domain_key)?,
+        repo_name: non_empty("repo_name", repo_name)?,
+        timestamp: event_timestamp("timestamp", timestamp)?,
+        evidence,
+        presence,
+    })
+}
+
+/// Per-construction unique tempdir plus native pardosa `.pgno` event store.
 #[cfg(test)]
 #[expect(clippy::unused_async, reason = "preserves .await callers")]
 async fn noop_event_store() -> Arc<EventStoreImpl> {
     let dir = tempfile::tempdir().expect("test tempdir");
     let path = dir.keep().join("events.pgno");
     Arc::new(EventStoreImpl::create_pgno(&path).expect("create test pardosa store"))
-}
-
-/// Register the projection handler on the bus using a transient
-/// [`InMemoryEventStore`] as the driver substrate.
-///
-/// Test paths only ([`AppState::new`], [`AppStateBuilder::build`]) —
-/// production wires the durable store via
-/// [`AppState::snapshot_fast_path_init`] which constructs its own
-/// `SharedStore` over the `AppState::event_store` Arc.
-///
-/// M2.cd — post-cutover the projection is the sole read-model
-/// authority (CHE-0048:R2). Every `AppState` constructor must wire
-/// the bus → projection handler so that published `RepoEvaluated` /
-/// `RepoRemoved` envelopes materialise into `projection_state`.
-/// Without this wiring the read-model would stay empty in any path
-/// that does not subsequently call
-/// [`AppState::snapshot_fast_path_init`] (every test path, plus
-/// `webhook-listen`-style entry points).
-///
-/// The transient store is allocated over a unique tempdir path
-/// (`noop_events_dir`) and never written to —
-/// `ProjectionDriverExt::apply_one`'s default impl delegates to
-/// `Projection::apply` and never invokes `EventStore::append`. The
-/// driver lifetime is therefore decoupled from durable persistence;
-/// callers that need durable rebuild (`with_stores` →
-/// `snapshot_fast_path_init`) replace the projection state and
-/// re-register a handler over the durable store at startup.
-#[cfg(test)]
-fn register_default_projection_handler(
-    bus: &InProcessEventBus<DomainEvent>,
-    projection_state: &Arc<Mutex<crate::projection::EvidenceProjection>>,
-    checkpoint_seq: &Arc<AtomicU64>,
-) {
-    use crate::app::projection_runtime::{SharedStore, register_projection_handler};
-    use cherry_pit_projection::ProjectionDriver;
-
-    let transient_store = Arc::new(InMemoryEventStore::<DomainEvent>::new());
-    let driver = Arc::new(
-        ProjectionDriver::<crate::projection::EvidenceProjection, _>::new(SharedStore::new(
-            transient_store,
-        )),
-    );
-    register_projection_handler(
-        bus,
-        driver,
-        Arc::clone(projection_state),
-        Arc::clone(checkpoint_seq),
-    );
 }
 
 #[cfg(test)]
@@ -565,49 +426,20 @@ impl AppState {
     /// permissions, no `/tmp`) at startup of a test path; halting is
     /// appropriate.
     pub async fn new() -> Arc<Self> {
-        let bus = Arc::new(InProcessEventBus::new());
-        let runs_by_key = Arc::new(Mutex::new(HashMap::new()));
-        let repos_by_key = Arc::new(Mutex::new(HashMap::new()));
-        let deliveries_by_id = Arc::new(Mutex::new(HashMap::new()));
-        let next_seq = Arc::new(Mutex::new(HashMap::new()));
-        let rs = noop_event_store().await;
-        let (merger_handles, merger_joins) = MergerHandles::spawn(
-            rs,
-            Arc::clone(&bus),
-            Arc::clone(&repos_by_key),
-            Arc::clone(&next_seq),
-        );
-        let (run_service, repo_service, webhook_service) = build_services(merger_handles);
+        let event_store = noop_event_store().await;
         let projection_state =
             Arc::new(Mutex::new(crate::projection::EvidenceProjection::default()));
-        let projection_checkpoint_seq = Arc::new(AtomicU64::new(0));
-        register_default_projection_handler(
-            bus.as_ref(),
-            &projection_state,
-            &projection_checkpoint_seq,
-        );
         Arc::new(Self {
             started_at: Timestamp::now(),
             current_run: ArcSwap::from_pointee(None),
             last_completed_run: ArcSwap::from_pointee(None),
             work_queue: Arc::new(WorkQueue::new(crate::config::WORK_QUEUE_CAPACITY)),
             worker_pool_started: tokio::sync::OnceCell::new(),
-            event_store: None,
-            projection_store: None,
-            bus,
+            event_store,
             projection_state,
-            projection_checkpoint_seq,
             webhook: WebhookState::from_environment(),
             github: GithubState::new(),
             evidence: EvidenceState::new(),
-            run_service,
-            repo_service,
-            webhook_service,
-            merger_joins,
-            next_seq,
-            runs_by_key,
-            repos_by_key,
-            deliveries_by_id,
             sweep_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
@@ -616,26 +448,9 @@ impl AppState {
 impl AppState {
     /// Create a new `AppState` wired with both stores.
     ///
-    /// Constructs a [`PardosaEventStore`] over `<events_dir>/events.pgno`
-    /// and constructs the durable
-    /// [`FileProjectionStore`] over `<projections_dir>`. This is the
-    /// only constructor that wires both durable stores; the daemon
-    /// (`crate::app::daemon`) and the `--dump-baseline` branch of the
-    /// CLI (`crate::bin::gh-report::main`) are the two production
-    /// callers.
-    ///
-    /// File-layout note:
-    ///
-    /// - `<store_dir>/events/<org>/events.pgno` — pardosa event log
-    ///   owned by [`PardosaEventStore`]. Logical aggregate streams are
-    ///   reconstructed from embedded `AggregateId` and envelope sequence;
-    ///   physical pardosa fibers are opened per append.
-    /// - `<store_dir>/projections/<org>/1-evidence.snapshot.msgpack`
-    ///   and `…1-evidence.checkpoint.msgpack` — paired snapshot +
-    ///   checkpoint per CHE-0048:R1/R2.
-    ///
-    /// The returned `AppState` holds the single process-local adapter
-    /// handle used by services, replay, and projection wiring.
+    /// Constructs a native [`NativeStore`](crate::store::NativeStore) over
+    /// `<events_dir>/events.pgno` and rebuilds projection state from the
+    /// event journal.
     ///
     /// # Errors
     ///
@@ -650,7 +465,7 @@ impl AppState {
     /// Panics if [`FileProjectionStore::new`] fails on `projections_dir`.
     pub async fn with_stores(
         events_dir: &Path,
-        projections_dir: PathBuf,
+        _projections_dir: PathBuf,
         backend: crate::config::runtime::PardosaBackend,
         nats: crate::config::runtime::NatsStoreConfig,
     ) -> Result<Arc<Self>, std::io::Error> {
@@ -658,262 +473,95 @@ impl AppState {
         let events_dir = events_dir.to_path_buf();
         let event_store = open_event_store_blocking(events_dir, backend, nats, handle).await?;
         let event_store = Arc::new(event_store);
-        let projection_store = Arc::new(
-            FileProjectionStore::<crate::projection::EvidenceProjection>::new(
-                projections_dir,
-                "evidence",
-            ),
-        );
-        let bus = Arc::new(InProcessEventBus::new());
-        let runs_by_key = Arc::new(Mutex::new(HashMap::new()));
-        let repos_by_key = Arc::new(Mutex::new(HashMap::new()));
-        let deliveries_by_id = Arc::new(Mutex::new(HashMap::new()));
-        let next_seq = Arc::new(Mutex::new(HashMap::new()));
-        let (merger_handles, merger_joins) = MergerHandles::spawn(
-            Arc::clone(&event_store),
-            Arc::clone(&bus),
-            Arc::clone(&repos_by_key),
-            Arc::clone(&next_seq),
-        );
-        let (run_service, repo_service, webhook_service) = build_services(merger_handles);
+        let projection_state = Arc::new(Mutex::new(projection_from_store(event_store.as_ref())?));
         Ok(Arc::new(Self {
             started_at: Timestamp::now(),
             current_run: ArcSwap::from_pointee(None),
             last_completed_run: ArcSwap::from_pointee(None),
             work_queue: Arc::new(WorkQueue::new(crate::config::WORK_QUEUE_CAPACITY)),
             worker_pool_started: tokio::sync::OnceCell::new(),
-            event_store: Some(event_store),
-            projection_store: Some(projection_store),
-            bus,
-            projection_state: Arc::new(
-                Mutex::new(crate::projection::EvidenceProjection::default()),
-            ),
-            projection_checkpoint_seq: Arc::new(AtomicU64::new(0)),
+            event_store,
+            projection_state,
             webhook: WebhookState::from_environment(),
             github: GithubState::new(),
             evidence: EvidenceState::new(),
-            run_service,
-            repo_service,
-            webhook_service,
-            merger_joins,
-            next_seq,
-            runs_by_key,
-            repos_by_key,
-            deliveries_by_id,
             sweep_lock: Arc::new(tokio::sync::Mutex::new(())),
         }))
     }
 }
 
 impl AppState {
-    /// Boot the projection runtime: replay events past the persisted
-    /// checkpoint into [`Self::projection_state`] and register the bus
-    /// handler that drives `apply_one` for every published envelope.
-    ///
-    /// **Call exactly once per process**, after [`Self::with_stores`]
-    /// and **before** [`crate::app::collect::warm_start_from_baseline`]
-    /// — the snapshot is the source of truth for evidence-projection
-    /// state at boot (CHE-0048:R2 + CHE-0051:R5).
-    ///
-    /// No-op when either `event_store` or `projection_store` is
-    /// `None` (test-builder paths) — the projection state remains
-    /// `EvidenceProjection::default()` and no handler is registered.
-    /// This preserves the existing test surface without forcing every
-    /// builder caller through the durable-store path.
-    ///
-    /// The shared `Arc<EventStoreImpl>` held on `self.event_store` is
-    /// the single canonical handle to the event log. The driver wraps
-    /// that Arc via
-    /// [`crate::app::projection_runtime::SharedStore`]; no separate
-    /// directory path is threaded through, and the CHE-0043:R1 advisory
-    /// lock acquired by [`MsgpackFileStore`] on first write in `with_stores`
-    /// remains held for the lifetime of the `AppState` handle.
+    /// Rebuild the in-memory projection from the native event journal.
     ///
     /// # Errors
     ///
-    /// Surfaces [`cherry_pit_projection::ProjectionError`] from
-    /// snapshot/checkpoint load, infrastructure errors from event-store
-    /// load, or `CorruptData` from envelope-stream validation. On
-    /// error, the projection state is left unchanged
-    /// (`EvidenceProjection::default()`); the caller decides whether
-    /// to abort startup.
-    pub async fn snapshot_fast_path_init(
-        &self,
-    ) -> Result<bool, cherry_pit_projection::ProjectionError> {
-        use crate::app::projection_runtime::{SharedStore, register_projection_handler};
-        use cherry_pit_projection::ProjectionDriver;
-
-        let (Some(event_store), Some(_projection_store)) =
-            (self.event_store.as_ref(), self.projection_store.as_ref())
-        else {
-            tracing::debug!(
-                "snapshot_fast_path_init: no durable stores wired; skipping (test path)"
-            );
-            return Ok(false);
-        };
-
-        let last_applied_sequence = self.bootstrap_replay_state(Arc::clone(event_store)).await?;
-
-        self.projection_checkpoint_seq
-            .store(last_applied_sequence, std::sync::atomic::Ordering::Release);
-
-        let driver = Arc::new(
-            ProjectionDriver::<crate::projection::EvidenceProjection, _>::new(SharedStore::new(
-                Arc::clone(event_store),
-            )),
-        );
-        register_projection_handler(
-            self.bus.as_ref(),
-            driver,
-            Arc::clone(&self.projection_state),
-            Arc::clone(&self.projection_checkpoint_seq),
-        );
-
-        tracing::info!(
-            last_applied_sequence,
-            "projection runtime initialised via bootstrap_replay_state (B5'; \
-             cpp-r-b-r-c / bd adr-fmt-5rwbu)"
-        );
+    /// Returns an infrastructure error when the native store cannot replay.
+    pub fn snapshot_fast_path_init(&self) -> Result<bool, std::io::Error> {
+        self.refresh_projection()?;
         Ok(true)
     }
 
-    /// Memory-Image bootstrap: rebuild routing indices AND projection
-    /// state from the durable event log (Track 7.5; CHE-0054:R5
-    /// amended in M3 of `phase2-v2-completion-1779400000`;
-    /// projection-fold added in mission `cpp-r-b-r-c` per bd
-    /// `adr-fmt-5rwbu`).
+    fn refresh_projection(&self) -> Result<(), std::io::Error> {
+        let projection = projection_from_store(self.event_store.as_ref())?;
+        let mut guard = self
+            .projection_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard = projection;
+        Ok(())
+    }
+
+    /// Record a live repository snapshot in the native store.
     ///
-    /// ## What this populates
+    /// # Errors
     ///
-    /// | `DomainEvent` variant     | Index populated     | Routing key            |
-    /// |---------------------------|---------------------|------------------------|
-    /// | `SweepStarted`            | `runs_by_key`       | `batch_id`             |
-    /// | `RepoEvaluated`           | `repos_by_key`      | `domain_key`           |
-    /// | (all variants)            | `next_seq`          | aggregate's max seq    |
-    /// | (all variants)            | `projection_state`  | via `Projection::apply` per envelope |
-    ///
-    /// ## What this does NOT populate
-    ///
-    /// - `deliveries_by_id`: the `WebhookReceived` event payload does
-    ///   not carry the `delivery_id` (it lives only on the originating
-    ///   `RecordDelivery` command). The routing key is not on the
-    ///   wire, so eager replay cannot rebuild this index. Per the
-    ///   amended CHE-0054:R5, this index remains
-    ///   lazy-populated; pre-Mission-H the in-crate Merger's
-    ///   webhook arm populated it after `EventStore::create` via
-    ///   `or_insert`. Post-Mission-H (CHE-0069) the lifted
-    ///   [`cherry_pit_merger::Merger`] consumes
-    ///   [`PersistMode::Create`](cherry_pit_merger::PersistMode::Create)
-    ///   for the webhook arm and never touches the routing index;
-    ///   the `deliveries_by_id` handle on [`AppState`] therefore stays
-    ///   empty in steady state (and has no production readers — see
-    ///   `crate::app::services::arms` module docs). The
-    ///   [`WebhookDelivery`](crate::domain::aggregates::webhook::WebhookDelivery)
-    ///   aggregate is a one-shot (degenerate) aggregate per
-    ///   CHE-0054:R3; duplicate-`delivery_id` detection is a
-    ///   call-site concern, not an index invariant.
-    ///
-    /// - The `OrgGovernance` singleton aggregate at
-    ///   [`crate::projection::ORG_GOVERNANCE_AGGREGATE_ID`]
-    ///   (= `AggregateId(1)`, reserved per CHE-0054:R11 added in M3):
-    ///   its state is materialised into `projection_state` by
-    ///   `snapshot_fast_path_startup` above; no routing index entry
-    ///   needed (it is keyed by the singleton id, not a domain key).
-    ///
-    /// ## Why this is safe to run on every boot
-    ///
-    /// `Projection::apply` is idempotent over the same
-    /// `EventEnvelope` sequence per CHE-0048:R3, and the routing-key
-    /// extraction here is a pure function of the envelope payload —
-    /// no derived state is fabricated (CHE-0022:R6).
-    ///
-    /// ## Errors
-    ///
-    /// Surfaces `cherry_pit_projection::ProjectionError::Infrastructure`
-    /// on `list_aggregates` or `load` failures from the event store.
-    async fn bootstrap_replay_state(
+    /// Returns a persistence error when native conversion or store append
+    /// fails.
+    pub fn record_repo(
         &self,
-        event_store: Arc<EventStoreImpl>,
-    ) -> Result<u64, cherry_pit_projection::ProjectionError> {
-        use cherry_pit_core::EventStore as _;
+        domain_key: &str,
+        evidence: crate::domain::evidence::RepositoryEvidence,
+        repo_name: &str,
+        timestamp: &str,
+    ) -> Result<(), PersistenceError> {
+        let native_evidence = crate::event::RepositoryEvidence::try_from(evidence)
+            .map_err(|e| conversion_persistence(&e))?;
+        let event = repo_event(
+            domain_key,
+            repo_name,
+            timestamp,
+            Some(Box::new(native_evidence)),
+            NativeRepoPresence::Active,
+        )?;
+        self.event_store
+            .record(domain_key, event)
+            .map_err(|e| native_store_persistence(&e))?;
+        self.refresh_projection().map_err(|e| io_persistence(&e))
+    }
 
-        let aggregate_ids = event_store.list_aggregates().await.map_err(|e| {
-            cherry_pit_projection::ProjectionError::Infrastructure(
-                format!("list_aggregates failed during bootstrap replay: {e}").into(),
-            )
-        })?;
-
-        let mut global_max_seq: u64 = 0;
-
-        for aggregate_id in aggregate_ids {
-            let envelopes = event_store.load(aggregate_id).await.map_err(|e| {
-                cherry_pit_projection::ProjectionError::Infrastructure(
-                    format!("load({aggregate_id:?}) failed during bootstrap replay: {e}").into(),
-                )
-            })?;
-
-            {
-                use cherry_pit_core::Projection as _;
-                let mut projection_guard = self
-                    .projection_state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                for env in &envelopes {
-                    projection_guard.apply(env);
-                }
-            }
-
-            let mut repos = self
-                .repos_by_key
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut next_seq = self
-                .next_seq
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-            let mut max_seq: Option<NonZeroU64> = None;
-            for env in &envelopes {
-                let seq = env.sequence();
-                max_seq = Some(max_seq.map_or(seq, |m| m.max(seq)));
-
-                match env.payload() {
-                    DomainEvent::RepositoryStateCaptured { domain_key, .. } => {
-                        repos.entry(domain_key.clone()).or_insert(aggregate_id);
-                    }
-                }
-            }
-
-            if let Some(seq) = max_seq {
-                next_seq.insert(aggregate_id, seq);
-                global_max_seq = global_max_seq.max(seq.get());
-            }
-        }
-
-        let runs_len = self
-            .runs_by_key
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len();
-        let repos_len = self
-            .repos_by_key
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len();
-        let agg_len = self
-            .next_seq
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len();
-        tracing::info!(
-            runs_indexed = runs_len,
-            repos_indexed = repos_len,
-            aggregates_tracked = agg_len,
-            last_applied_sequence = global_max_seq,
-            "bootstrap replay populated routing indices and projection_state \
-             (CHE-0054:R5, cpp-r-b-r-c / bd adr-fmt-5rwbu)"
-        );
-        Ok(global_max_seq)
+    /// Soft-delete a repository fiber in the native store.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence error when event construction or store detach
+    /// fails.
+    pub fn remove_repo(
+        &self,
+        domain_key: &str,
+        repo_name: &str,
+        timestamp: &str,
+    ) -> Result<(), PersistenceError> {
+        let event = repo_event(
+            domain_key,
+            repo_name,
+            timestamp,
+            None,
+            NativeRepoPresence::Removed,
+        )?;
+        self.event_store
+            .detach(domain_key, event)
+            .map_err(|e| native_store_persistence(&e))?;
+        self.refresh_projection().map_err(|e| io_persistence(&e))
     }
 
     /// Render the current in-memory projection as a JSON-encoded
@@ -1012,27 +660,9 @@ impl AppStateBuilder {
             None => GithubState::new(),
         };
         let webhook = WebhookState::with_secret(self.webhook_secret);
-        let bus = Arc::new(InProcessEventBus::new());
-        let runs_by_key = Arc::new(Mutex::new(HashMap::new()));
-        let repos_by_key = Arc::new(Mutex::new(HashMap::new()));
-        let deliveries_by_id = Arc::new(Mutex::new(HashMap::new()));
-        let next_seq = Arc::new(Mutex::new(HashMap::new()));
-        let rs = noop_event_store().await;
-        let (merger_handles, merger_joins) = MergerHandles::spawn(
-            rs,
-            Arc::clone(&bus),
-            Arc::clone(&repos_by_key),
-            Arc::clone(&next_seq),
-        );
-        let (run_service, repo_service, webhook_service) = build_services(merger_handles);
+        let event_store = noop_event_store().await;
         let projection_state =
             Arc::new(Mutex::new(crate::projection::EvidenceProjection::default()));
-        let projection_checkpoint_seq = Arc::new(AtomicU64::new(0));
-        register_default_projection_handler(
-            bus.as_ref(),
-            &projection_state,
-            &projection_checkpoint_seq,
-        );
 
         Arc::new(AppState {
             started_at: Timestamp::now(),
@@ -1040,22 +670,11 @@ impl AppStateBuilder {
             last_completed_run: ArcSwap::from_pointee(None),
             work_queue: Arc::new(WorkQueue::new(crate::config::WORK_QUEUE_CAPACITY)),
             worker_pool_started: tokio::sync::OnceCell::new(),
-            event_store: None,
-            projection_store: None,
-            bus,
+            event_store,
             projection_state,
-            projection_checkpoint_seq,
             webhook,
             github,
             evidence: EvidenceState::new(),
-            run_service,
-            repo_service,
-            webhook_service,
-            merger_joins,
-            next_seq,
-            runs_by_key,
-            repos_by_key,
-            deliveries_by_id,
             sweep_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
@@ -1375,6 +994,40 @@ mod tests {
         }
         cache.run_pending_tasks().await;
         assert!(cache.entry_count() <= 5);
+    }
+
+    #[tokio::test]
+    async fn record_repo_writes_native_store_and_remove_detaches_latest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let projections_dir = dir.path().join("projections");
+        let state = AppState::with_stores(
+            &events_dir,
+            projections_dir,
+            PardosaBackend::Pgno,
+            NatsStoreConfig::for_org("org", crate::config::runtime::DEFAULT_NATS_URL).unwrap(),
+        )
+        .await
+        .expect("with_stores");
+        let evidence = crate::test_fixtures::all_passing_evidence("native-repo");
+        let domain_key = evidence.repository.inventory_key.clone();
+        let repo_name = evidence.repository.name.clone();
+        let timestamp = "2026-06-11T00:00:00Z";
+
+        state
+            .record_repo(&domain_key, evidence, &repo_name, timestamp)
+            .expect("record repo");
+
+        let latest = state.event_store.latest_per_repo().expect("latest per repo");
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].0, domain_key);
+
+        state
+            .remove_repo(&domain_key, &repo_name, timestamp)
+            .expect("remove repo");
+
+        let latest = state.event_store.latest_per_repo().expect("latest after remove");
+        assert!(latest.is_empty());
     }
 
     #[tokio::test]

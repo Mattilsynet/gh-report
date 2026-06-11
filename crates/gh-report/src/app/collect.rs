@@ -37,9 +37,6 @@ use crate::collector::ghas_scanning;
 use crate::collector::{branch_protection, codeowners, dependabot, inventory, security_policy};
 use crate::config;
 use crate::config::runtime::RuntimeConfig;
-use crate::domain::aggregates::run::{
-    CompleteSweep, FailSweep, PublishEvidence, RecordProgress, RenderPartial, StartSweep,
-};
 use crate::domain::checks::{
     BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersResult,
     CodeownersStatus, DependabotResult, DependabotStatus, RepositoryChecks, SecretScanningResult,
@@ -498,8 +495,7 @@ impl SweepSaga {
         inventory: &InventoryLoad,
         state: &Arc<AppState>,
     ) -> Result<(), AppError> {
-        self.step_start_sweep(config, run, corr_ctx, inventory, state)
-            .await;
+        self.step_start_sweep(config, run, corr_ctx, inventory, state);
 
         self.step_resume(inventory, config, state);
 
@@ -509,8 +505,7 @@ impl SweepSaga {
             self.completed.len() as u64,
             inventory.active_repos.len() as u64,
             state,
-        )
-        .await;
+        );
 
         self.step_baseline(inventory, config, state);
 
@@ -520,8 +515,7 @@ impl SweepSaga {
             (self.completed.len() + self.baseline_cache.len()) as u64,
             inventory.active_repos.len() as u64,
             state,
-        )
-        .await;
+        );
 
         self.step_enqueue_and_await(config, run, corr_ctx, ctx, inventory, state)
             .await?;
@@ -595,30 +589,23 @@ impl SweepSaga {
     /// routing index (which previously surfaced as `RunError::RoutingMiss`
     /// swallowed by the non-fatal `SweepProgress publish failed` warn arm).
     /// Publish failure here remains non-fatal per CHE-0024:R1.
-    async fn step_start_sweep(
+    fn step_start_sweep(
         &self,
         config: &RuntimeConfig,
         run: &RunMetadata,
-        corr_ctx: &CorrelationContext,
+        _corr_ctx: &CorrelationContext,
         inventory: &InventoryLoad,
         state: &Arc<AppState>,
     ) {
-        if let Err(e) = state
-            .run_service
-            .start_sweep(
-                StartSweep {
-                    org: config.org_name.clone(),
-                    repo_count: inventory.active_repos.len() as u64,
-                    batch_id: run.run_id.clone(),
-                    timestamp: jiff::Timestamp::now().to_string(),
-                    snapshot_signature: self.snapshot_signature.clone(),
-                },
-                corr_ctx,
-            )
-            .await
-        {
-            warn!(error = %e, "SweepStarted publish failed, non-fatal");
-        }
+        let _ = state;
+        info!(
+            org = %config.org_name,
+            repo_count = inventory.active_repos.len(),
+            batch_id = %run.run_id,
+            timestamp = %jiff::Timestamp::now(),
+            snapshot_signature = %self.snapshot_signature,
+            "sweep started"
+        );
     }
 
     /// Phase 3: Enqueue pending repos and await batch completion with timeout.
@@ -682,23 +669,21 @@ impl SweepSaga {
                 self.phase = SweepPhase::BatchDrained;
 
                 let total = inventory.active_repos.len() as u64;
-                Self::emit_progress(run, corr_ctx, total, total, state).await;
+                Self::emit_progress(run, corr_ctx, total, total, state);
             }
             Ok(Ok(false)) => {
                 let error_msg = "all jobs rejected by work queue".to_string();
                 self.phase = SweepPhase::Failed {
                     error: error_msg.clone(),
                 };
-                Self::publish_sweep_failed(state, run, corr_ctx, error_msg, self.elapsed_ms())
-                    .await;
+                Self::publish_sweep_failed(state, run, corr_ctx, &error_msg, self.elapsed_ms());
             }
             Ok(Err(e)) => {
                 let error_msg = e.to_string();
                 self.phase = SweepPhase::Failed {
                     error: error_msg.clone(),
                 };
-                Self::publish_sweep_failed(state, run, corr_ctx, error_msg, self.elapsed_ms())
-                    .await;
+                Self::publish_sweep_failed(state, run, corr_ctx, &error_msg, self.elapsed_ms());
                 return Err(e);
             }
             Err(_elapsed) => {
@@ -711,8 +696,7 @@ impl SweepSaga {
                 self.phase = SweepPhase::Failed {
                     error: error_msg.clone(),
                 };
-                Self::publish_sweep_failed(state, run, corr_ctx, error_msg, self.elapsed_ms())
-                    .await;
+                Self::publish_sweep_failed(state, run, corr_ctx, &error_msg, self.elapsed_ms());
             }
         }
 
@@ -723,29 +707,21 @@ impl SweepSaga {
     ///
     /// Associated function: callers already hold the values needed and pass
     /// them explicitly, mirroring [`Self::emit_progress`].
-    async fn publish_sweep_failed(
+    fn publish_sweep_failed(
         state: &Arc<AppState>,
         run: &RunMetadata,
-        corr_ctx: &CorrelationContext,
-        error_msg: String,
+        _corr_ctx: &CorrelationContext,
+        error_msg: &str,
         duration_ms: u64,
     ) {
-        if let Err(e) = state
-            .run_service
-            .fail(
-                &run.run_id,
-                FailSweep {
-                    batch_id: run.run_id.clone(),
-                    error: error_msg,
-                    duration_ms,
-                    timestamp: jiff::Timestamp::now().to_string(),
-                },
-                corr_ctx,
-            )
-            .await
-        {
-            warn!(error = %e, "SweepFailed publish failed, non-fatal");
-        }
+        let _ = state;
+        warn!(
+            batch_id = %run.run_id,
+            error = %error_msg,
+            duration_ms,
+            timestamp = %jiff::Timestamp::now(),
+            "sweep failed"
+        );
     }
 
     /// Phase 4: Finalize — snapshot evidence, build report, publish.
@@ -783,40 +759,23 @@ impl SweepSaga {
         match result {
             Ok((pages, warm_start)) => {
                 self.phase = SweepPhase::Completed;
-                if let Err(e) = state
-                    .run_service
-                    .complete(
-                        &run.run_id,
-                        CompleteSweep {
-                            batch_id: run.run_id.clone(),
-                            duration_ms: self.elapsed_ms(),
-                            repo_count: inventory.active_repos.len() as u64,
-                            timestamp: jiff::Timestamp::now().to_string(),
-                        },
-                        corr_ctx,
-                    )
-                    .await
-                {
-                    warn!(error = %e, "SweepCompleted publish failed, non-fatal");
-                }
+                let _ = corr_ctx;
+                info!(
+                    batch_id = %run.run_id,
+                    duration_ms = self.elapsed_ms(),
+                    repo_count = inventory.active_repos.len(),
+                    timestamp = %jiff::Timestamp::now(),
+                    "sweep completed"
+                );
 
                 let page_count = commit_cached_pages(state, run, pages);
 
-                if let Err(e) = state
-                    .run_service
-                    .publish_evidence(
-                        &run.run_id,
-                        PublishEvidence {
-                            page_count: page_count as u64,
-                            warm_start,
-                            timestamp: jiff::Timestamp::now().to_string(),
-                        },
-                        corr_ctx,
-                    )
-                    .await
-                {
-                    warn!(error = %e, "post-complete publish unexpectedly rejected");
-                }
+                info!(
+                    page_count = page_count,
+                    warm_start,
+                    timestamp = %jiff::Timestamp::now(),
+                    "evidence published"
+                );
                 Ok(())
             }
             Err(e) => {
@@ -824,22 +783,7 @@ impl SweepSaga {
                 self.phase = SweepPhase::Failed {
                     error: error_msg.clone(),
                 };
-                if let Err(pub_err) = state
-                    .run_service
-                    .fail(
-                        &run.run_id,
-                        FailSweep {
-                            batch_id: run.run_id.clone(),
-                            error: error_msg,
-                            duration_ms: self.elapsed_ms(),
-                            timestamp: jiff::Timestamp::now().to_string(),
-                        },
-                        corr_ctx,
-                    )
-                    .await
-                {
-                    warn!(error = %pub_err, "SweepFailed publish failed, non-fatal");
-                }
+                Self::publish_sweep_failed(state, run, corr_ctx, &error_msg, self.elapsed_ms());
                 Err(e)
             }
         }
@@ -850,29 +794,21 @@ impl SweepSaga {
         u64::try_from(self.sweep_start.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
-    async fn emit_progress(
+    fn emit_progress(
         run: &RunMetadata,
-        corr_ctx: &CorrelationContext,
+        _corr_ctx: &CorrelationContext,
         completed: u64,
         total: u64,
         state: &Arc<AppState>,
     ) {
-        if let Err(e) = state
-            .run_service
-            .record_progress(
-                &run.run_id,
-                RecordProgress {
-                    batch_id: run.run_id.clone(),
-                    completed,
-                    total,
-                    timestamp: jiff::Timestamp::now().to_string(),
-                },
-                corr_ctx,
-            )
-            .await
-        {
-            warn!(error = %e, "SweepProgress publish failed, non-fatal");
-        }
+        let _ = state;
+        info!(
+            batch_id = %run.run_id,
+            completed,
+            total,
+            timestamp = %jiff::Timestamp::now(),
+            "sweep progress"
+        );
     }
 }
 
@@ -1252,47 +1188,18 @@ pub(crate) async fn warm_start_from_baseline(
         repositories: repos,
     };
 
-    let warm_batch_id = format!("warm-start-{}", run.timestamp());
-    let warm_corr = run.correlation_context();
     let warm_repo_count: u64 = u64::from(evidence.collection_statistics.total_repos);
 
-    if let Err(e) = state
-        .run_service
-        .start_sweep(
-            StartSweep {
-                org: config.org_name.clone(),
-                repo_count: warm_repo_count,
-                batch_id: warm_batch_id.clone(),
-                timestamp: run.timestamp(),
-                snapshot_signature: cherry_pit_storage::build_snapshot_signature(None),
-            },
-            &warm_corr,
-        )
-        .await
-    {
-        warn!(error = %e, "warm-start StartSweep non-fatal");
-    }
-    if let Err(e) = state
-        .run_service
-        .complete(
-            &warm_batch_id,
-            CompleteSweep {
-                batch_id: warm_batch_id.clone(),
-                duration_ms: 0,
-                repo_count: warm_repo_count,
-                timestamp: run.timestamp(),
-            },
-            &warm_corr,
-        )
-        .await
-    {
-        warn!(error = %e, "warm-start CompleteSweep non-fatal");
-    }
+    info!(
+        org = %config.org_name,
+        repo_count = warm_repo_count,
+        timestamp = %run.timestamp(),
+        "warm-start evidence render"
+    );
 
-    let mut warm_run = run.clone();
-    warm_run.run_id = warm_batch_id.clone();
+    let warm_run = run.clone();
 
-    match publish_evidence(config, &warm_run, &warm_corr, &evidence, state).await {
+    match publish_evidence(config, &warm_run, &evidence, state).await {
         Ok(()) => {
             info!("warm-start cache populated — server can start serving");
             true
@@ -1304,15 +1211,7 @@ pub(crate) async fn warm_start_from_baseline(
     }
 }
 
-/// Build the HTML+zstd cache and broadcast WS update. Returns
-/// `page_count`. No domain-command call — caller decides which run
-/// command to issue (terminal [`PublishEvidence`] post-`CompleteSweep`,
-/// or non-terminal [`RenderPartial`] mid-sweep) per CHE-0054:R1.c/e.
-///
-/// Thin wrapper around [`build_cached_pages`] +
-/// [`commit_cached_pages`]; callers that need the CHE-0068:R2 two-phase
-/// "render before barrier, commit after barrier" ordering call the
-/// pair directly (see [`step_finalize`]).
+/// Build the HTML+zstd cache and broadcast WS update. Returns `page_count`.
 pub(crate) async fn render_and_cache_evidence(
     config: &RuntimeConfig,
     run: &RunMetadata,
@@ -1363,13 +1262,7 @@ pub(crate) async fn build_cached_pages(
 }
 
 /// Commit pre-built cached pages: atomically replace the html cache
-/// pointer and notify WebSocket subscribers. CHE-0068:R2 — this is the
-/// observable "render visible" moment, separated from the upstream
-/// compute step so callers can serialise it strictly after a barrier
-/// event (terminal commit fires only after `SweepCompleted` has been
-/// published). Infallible — `ws_broadcast::Sender::send` returning
-/// `Err` means "no current subscribers" and is intentionally ignored
-/// per the pre-existing wire-protocol contract.
+/// pointer and notify WebSocket subscribers.
 pub(crate) fn commit_cached_pages(
     state: &Arc<AppState>,
     run: &RunMetadata,
@@ -1393,38 +1286,21 @@ pub(crate) fn commit_cached_pages(
     page_count
 }
 
-/// Legacy combined helper — renders + caches + fires the terminal
-/// [`PublishEvidence`] command. Internal callers should prefer
-/// [`render_and_cache_evidence`] paired with an explicit run-service
-/// command for clarity, since the terminal publish is only valid
-/// after `CompleteSweep` (CHE-0054:R1.c).
-///
-/// Kept as a thin wrapper for the warm-start path, which synthesises
-/// its own `StartSweep → CompleteSweep` pair before calling here.
+/// Render, cache, and trace evidence publication.
 pub(crate) async fn publish_evidence(
     config: &RuntimeConfig,
     run: &RunMetadata,
-    corr_ctx: &CorrelationContext,
     evidence: &Evidence,
     state: &Arc<AppState>,
 ) -> Result<(), AppError> {
     let page_count = render_and_cache_evidence(config, run, evidence, state).await?;
 
-    if let Err(e) = state
-        .run_service
-        .publish_evidence(
-            &run.run_id,
-            PublishEvidence {
-                page_count: page_count as u64,
-                warm_start: evidence.assessment_metadata.warm_start,
-                timestamp: jiff::Timestamp::now().to_string(),
-            },
-            corr_ctx,
-        )
-        .await
-    {
-        warn!(error = %e, "post-complete publish unexpectedly rejected");
-    }
+    info!(
+        page_count = page_count,
+        warm_start = evidence.assessment_metadata.warm_start,
+        timestamp = %jiff::Timestamp::now(),
+        "evidence published"
+    );
 
     Ok(())
 }
@@ -1568,25 +1444,13 @@ fn spawn_partial_publisher_from_store(
                     .await
                     {
                         Ok(page_count) => {
-                            if let Err(e) = pp
-                                .state
-                                .run_service
-                                .render_partial(
-                                    &pp.run.run_id,
-                                    RenderPartial {
-                                        batch_id: pp.run.run_id.clone(),
-                                        page_count: page_count as u64,
-                                        pending_repos,
-                                        timestamp: jiff::Timestamp::now().to_string(),
-                                    },
-                                    &pp.run.correlation_context(),
-                                )
-                                .await
-                            {
-                                warn!(error = %e, "partial render record failed");
-                            } else {
-                                info!("partial report published");
-                            }
+                            info!(
+                                batch_id = %pp.run.run_id,
+                                page_count = page_count,
+                                pending_repos,
+                                timestamp = %jiff::Timestamp::now(),
+                                "partial report published"
+                            );
                         }
                         Err(e) => warn!(error = %e, "partial report publish failed"),
                     }
@@ -2413,15 +2277,7 @@ mod tests {
         state.lock_projection().load_baseline(projected);
     }
 
-    /// Run saga through `step_start_sweep`, `step_resume`, and `step_baseline`.
-    ///
-    /// Mirrors the pre-batch portion of `run_to_completion`. Includes
-    /// `step_start_sweep` so the `runs_by_key` routing index is populated
-    /// before downstream test sequences invoke `step_enqueue_and_await` /
-    /// `step_finalize` (which issue `RecordProgress` / `CompleteSweep` /
-    /// `FailSweep` / `PublishEvidence` and would otherwise route through
-    /// an empty index — see CHE-0054:R1.a and R5).
-    async fn saga_run_resume_and_baseline(
+    fn saga_run_resume_and_baseline(
         saga: &mut SweepSaga,
         inventory: &InventoryLoad,
         config: &RuntimeConfig,
@@ -2429,8 +2285,7 @@ mod tests {
         state: &Arc<AppState>,
     ) {
         let corr_ctx = run.correlation_context();
-        saga.step_start_sweep(config, run, &corr_ctx, inventory, state)
-            .await;
+        saga.step_start_sweep(config, run, &corr_ctx, inventory, state);
         saga.step_resume(inventory, config, state);
         saga.step_baseline(inventory, config, state);
     }
@@ -2469,7 +2324,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         assert_eq!(saga.baseline_reused, 2);
 
         saga.step_enqueue_and_await(
@@ -2514,7 +2369,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         assert_eq!(saga.baseline_reused, 1);
         assert!(state.projection_contains("id-repo-1"));
         assert!(!state.projection_contains("id-repo-2"));
@@ -2538,7 +2393,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         assert_eq!(saga.baseline_reused, 0);
         assert!(!state.projection_contains("id-repo-1"));
         assert!(!state.projection_contains("id-repo-2"));
@@ -2571,7 +2426,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
 
         assert_eq!(*saga.phase(), SweepPhase::BaselineReused);
         assert_eq!(saga.baseline_reused, 1);
@@ -2605,7 +2460,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
 
         assert_eq!(
             saga.baseline_reused, 0,
@@ -2637,7 +2492,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
 
         assert_eq!(saga.baseline_reused, 0);
     }
@@ -2664,7 +2519,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga.step_enqueue_and_await(
             &config,
             &run,
@@ -2713,7 +2568,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga.step_enqueue_and_await(
             &config,
             &run,
@@ -2759,7 +2614,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga.step_enqueue_and_await(
             &config,
             &run,
@@ -2803,7 +2658,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga.step_enqueue_and_await(
             &config,
             &run,
@@ -2849,7 +2704,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga.step_enqueue_and_await(
             &config,
             &run,
@@ -2891,7 +2746,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga.step_enqueue_and_await(
             &config,
             &run,
@@ -2931,7 +2786,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga.step_enqueue_and_await(
             &config,
             &run,
@@ -2953,37 +2808,13 @@ mod tests {
         assert!(delivery_result.is_ok(), "delivery loop should exit cleanly");
     }
 
-    /// Subscribe to the bus and collect every published envelope's event
-    /// into a `Vec<DomainEvent>` in publish order. Returns a shared
-    /// `Arc<Mutex<...>>` the test inspects after the production calls
-    /// settle.
-    fn capture_bus(
-        bus: &cherry_pit_app::InProcessEventBus<crate::domain::events::DomainEvent>,
-    ) -> Arc<std::sync::Mutex<Vec<crate::domain::events::DomainEvent>>> {
-        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let captured_handle = Arc::clone(&captured);
-        bus.register(move |env| {
-            captured_handle
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(env.payload().clone());
-        });
-        captured
-    }
-
-    /// `step_finalize` must emit `SweepCompleted` strictly before
-    /// `EvidencePublished` on the Run stream (CHE-0054:R1.c).
     #[tokio::test]
-    async fn step_finalize_emits_sweep_completed_before_evidence_published() {
-        use crate::domain::events::DomainEvent;
-
+    async fn step_finalize_renders_from_native_projection() {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
         let mut run = test_run_meta();
         let state = AppState::new_with_cache_capacity(10).await;
         let ctx = make_test_collection_context();
-
-        let captured = capture_bus(&state.bus);
 
         let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
             |repo: &Repository, ts: &str| Ok(sample_repo_from_domain(repo, ts)),
@@ -2997,7 +2828,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga.step_enqueue_and_await(
             &config,
             &run,
@@ -3014,19 +2845,11 @@ mod tests {
             .await
             .unwrap();
 
-        tokio::task::yield_now().await;
-
-        let events = captured
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-
-        let position = |pred: fn(&DomainEvent) -> bool| events.iter().position(pred);
-
         assert!(
-            position(|e| matches!(e, DomainEvent::RepositoryStateCaptured { .. })).is_some(),
-            "durable bus must still carry repository snapshots"
+            state.projection_contains("id-repo-1"),
+            "terminal render must source the repository written through NativeStore"
         );
+        assert!(state.evidence().html_cache.load().is_some());
 
         state.work_queue.close();
     }
@@ -3039,8 +2862,7 @@ mod tests {
     /// pre-finalize state; at `EvidencePublished` it must hold the
     /// fresh terminal render.
     #[tokio::test]
-    async fn step_finalize_commits_html_cache_after_sweep_completed() {
-        use crate::domain::events::DomainEvent;
+    async fn step_finalize_commits_html_cache_after_native_write() {
         use std::collections::HashMap as StdHashMap;
 
         let dir = tempfile::tempdir().unwrap();
@@ -3060,25 +2882,6 @@ mod tests {
             .html_cache
             .store(Arc::new(Some(sentinel_map)));
 
-        let observations: Arc<std::sync::Mutex<Vec<(&'static str, bool)>>> =
-            Arc::new(std::sync::Mutex::new(Vec::new()));
-        let observations_handle = Arc::clone(&observations);
-        let state_handle = Arc::clone(&state);
-        state.bus.register(move |env| {
-            let tag = match env.payload() {
-                DomainEvent::RepositoryStateCaptured { .. } => "RepositoryStateCaptured",
-            };
-            let guard = state_handle.evidence().html_cache.load();
-            let has_sentinel = guard
-                .as_ref()
-                .as_ref()
-                .is_some_and(|m| m.contains_key("__sentinel_pre_finalize__"));
-            observations_handle
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push((tag, has_sentinel));
-        });
-
         let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
             |repo: &Repository, ts: &str| Ok(sample_repo_from_domain(repo, ts)),
         )));
@@ -3091,7 +2894,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga.step_enqueue_and_await(
             &config,
             &run,
@@ -3103,35 +2906,35 @@ mod tests {
         .await
         .unwrap();
 
+        assert!(state
+            .evidence()
+            .html_cache
+            .load()
+            .as_ref()
+            .as_ref()
+            .is_some_and(|m| m.contains_key("__sentinel_pre_finalize__")));
+
         let corr_ctx = run.correlation_context();
         saga.step_finalize(&config, &mut run, &corr_ctx, &ctx, &inventory, &state)
             .await
             .unwrap();
 
-        tokio::task::yield_now().await;
-
-        let obs = observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-
-        let snapshot_observation = obs
-            .iter()
-            .find(|(tag, _)| *tag == "RepositoryStateCaptured")
-            .expect("RepositoryStateCaptured observation must exist");
-
         assert!(
-            snapshot_observation.1,
-            "snapshot publication must not be tied to terminal html-cache mutation"
+            !state
+                .evidence()
+                .html_cache
+                .load()
+                .as_ref()
+                .as_ref()
+                .is_some_and(|m| m.contains_key("__sentinel_pre_finalize__")),
+            "finalize must replace sentinel html cache after native write"
         );
 
         state.work_queue.close();
     }
 
     #[tokio::test]
-    async fn html_cache_must_not_be_visible_before_sweep_completed_delivered() {
-        use crate::domain::events::DomainEvent;
-
+    async fn html_cache_must_not_be_visible_before_finalize_commits() {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
         let mut run = test_run_meta();
@@ -3143,23 +2946,6 @@ mod tests {
         state.evidence().html_cache.store(Arc::clone(&baseline_arc));
         let baseline_addr = Arc::as_ptr(&baseline_arc) as usize;
 
-        let trace: Arc<std::sync::Mutex<Vec<(&'static str, bool)>>> =
-            Arc::new(std::sync::Mutex::new(Vec::new()));
-        let trace_handle = Arc::clone(&trace);
-        let state_handle = Arc::clone(&state);
-        state.bus.register(move |env| {
-            let tag = match env.payload() {
-                DomainEvent::RepositoryStateCaptured { .. } => "RepositoryStateCaptured",
-            };
-            let guard = state_handle.evidence().html_cache.load();
-            let current_addr = Arc::as_ptr(&*guard) as usize;
-            let mutated_since_baseline = current_addr != baseline_addr;
-            trace_handle
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push((tag, mutated_since_baseline));
-        });
-
         let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
             |repo: &Repository, ts: &str| Ok(sample_repo_from_domain(repo, ts)),
         )));
@@ -3172,7 +2958,7 @@ mod tests {
             inventory_fetched_at: None,
         };
 
-        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state).await;
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         saga.step_enqueue_and_await(
             &config,
             &run,
@@ -3184,115 +2970,30 @@ mod tests {
         .await
         .unwrap();
 
+        let guard = state.evidence().html_cache.load();
+        let current_addr = Arc::as_ptr(&*guard) as usize;
+        assert_eq!(
+            current_addr, baseline_addr,
+            "html_cache must not flip during native repository writes before finalize"
+        );
+
         let corr_ctx = run.correlation_context();
         saga.step_finalize(&config, &mut run, &corr_ctx, &ctx, &inventory, &state)
             .await
             .unwrap();
 
-        tokio::task::yield_now().await;
-
-        let captured = trace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-
-        let snapshot_idx = captured
-            .iter()
-            .position(|(tag, _)| *tag == "RepositoryStateCaptured")
-            .expect("RepositoryStateCaptured envelope must appear in the trace");
-
-        for (i, (tag, mutated)) in captured.iter().take(snapshot_idx + 1).enumerate() {
-            assert!(
-                !mutated,
-                "html_cache must not be visibly mutated at or before repository snapshot delivery; \
-                 trace[{i}] = ({tag}, mutated=true), snapshot at index {snapshot_idx}; full trace = {captured:?}"
-            );
-        }
-
         let guard = state.evidence().html_cache.load();
         let current_addr = Arc::as_ptr(&*guard) as usize;
         assert_ne!(
             current_addr, baseline_addr,
-            "sanity: html_cache must flip after finalize (commit_cached_pages did fire); trace = {captured:?}"
+            "html_cache must flip after finalize commits cached pages"
         );
 
         state.work_queue.close();
     }
 
-    /// Partial publisher must emit `PartialEvidenceRendered` and must
-    /// never emit `EvidencePublished` between `SweepStarted` and
-    /// `SweepCompleted` (CHE-0054:R1.c forbids terminal publish pre-complete;
-    /// R1.e admits non-terminal partial render).
-    ///
-    /// Driven via `RunService` directly (rather than spawning the debounce
-    /// loop) — the partial publisher's contract surface IS the
-    /// `render_partial` call; the debounce / `pause_notify` wiring is plumbing.
     #[tokio::test]
-    async fn partial_publisher_emits_partial_evidence_rendered_never_evidence_published() {
-        use crate::domain::events::DomainEvent;
-
-        let state = AppState::new_with_cache_capacity(10).await;
-        let captured = capture_bus(&state.bus);
-
-        let run = test_run_meta();
-        let corr_ctx = run.correlation_context();
-
-        state
-            .run_service
-            .start_sweep(
-                StartSweep {
-                    org: "TestOrg".to_string(),
-                    repo_count: 1,
-                    batch_id: run.run_id.clone(),
-                    timestamp: jiff::Timestamp::now().to_string(),
-                    snapshot_signature: "test-sig".to_string(),
-                },
-                &corr_ctx,
-            )
-            .await
-            .unwrap();
-
-        for _ in 0..2 {
-            state
-                .run_service
-                .render_partial(
-                    &run.run_id,
-                    RenderPartial {
-                        batch_id: run.run_id.clone(),
-                        page_count: 1,
-                        pending_repos: 0,
-                        timestamp: jiff::Timestamp::now().to_string(),
-                    },
-                    &corr_ctx,
-                )
-                .await
-                .unwrap();
-        }
-
-        tokio::task::yield_now().await;
-
-        let events = captured
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-
-        let published_pre_complete = events
-            .iter()
-            .any(|e| !matches!(e, DomainEvent::RepositoryStateCaptured { .. }));
-        assert!(
-            !published_pre_complete,
-            "partial publisher must not publish durable run-lifecycle events"
-        );
-    }
-
-    /// Warm-start must synthesise `SweepStarted → SweepCompleted →
-    /// EvidencePublished` in order on the synthetic `warm-start-*` stream
-    /// (the only way `EvidencePublished` is admissible at cold boot per
-    /// CHE-0054:R1.c).
-    #[tokio::test]
-    async fn warm_start_synthesises_started_completed_published_in_order() {
-        use crate::domain::events::DomainEvent;
-
+    async fn warm_start_renders_seeded_projection_without_durable_lifecycle_events() {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
         let state = AppState::new_with_cache_capacity(10).await;
@@ -3305,99 +3006,11 @@ mod tests {
             vec![("repo-1", "2026-04-10T00:00:00Z", evidence)],
         );
 
-        let captured = capture_bus(&state.bus);
-
         let ok = warm_start_from_baseline(&config, &state).await;
         assert!(ok, "warm-start should succeed with a seeded baseline");
-
-        tokio::task::yield_now().await;
-
-        let events = captured
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-
         assert!(
-            events
-                .iter()
-                .all(|e| matches!(e, DomainEvent::RepositoryStateCaptured { .. })),
-            "warm-start must not publish durable run-lifecycle events"
-        );
-    }
-
-    /// Regression: CHE-0054:R1.a — `SweepStarted` is the first event of
-    /// any `Run` instance. Pre-fix, `run_to_completion` issued two
-    /// `RecordProgress` calls (after `step_resume` and `step_baseline`)
-    /// **before** `start_sweep` ran inside `step_enqueue_and_await`,
-    /// leaving the `runs_by_key` routing index empty for those calls.
-    /// Both emits returned `RunError::RoutingMiss` and were swallowed
-    /// by the non-fatal `warn!("SweepProgress publish failed, …")` arm
-    /// (collect.rs:932), producing the two warnings observed on every
-    /// scheduled/warm-start run. The fix hoists `start_sweep` to a
-    /// dedicated `step_start_sweep` invoked before `step_resume`.
-    ///
-    /// This test mirrors `run_to_completion`'s pre-batch sequence and
-    /// asserts the two `SweepProgress` emits reach the bus and strictly
-    /// follow `SweepStarted`.
-    #[tokio::test]
-    async fn sweep_progress_publishes_after_start_sweep_no_routing_miss() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = config_with_dir(dir.path());
-        let run = test_run_meta();
-        let corr_ctx = run.correlation_context();
-        let state = AppState::new_with_cache_capacity(10).await;
-        let captured = capture_bus(&state.bus);
-
-        let mut saga = make_test_saga(&config, &run);
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("repo-1")],
-            archived_repos: 0,
-            inventory_fetched_at: None,
-        };
-
-        saga.step_start_sweep(&config, &run, &corr_ctx, &inventory, &state)
-            .await;
-        saga.step_resume(&inventory, &config, &state);
-        SweepSaga::emit_progress(
-            &run,
-            &corr_ctx,
-            saga.current_run_completed(),
-            inventory.active_repos.len() as u64,
-            &state,
-        )
-        .await;
-        saga.step_baseline(&inventory, &config, &state);
-        SweepSaga::emit_progress(
-            &run,
-            &corr_ctx,
-            saga.current_run_completed(),
-            inventory.active_repos.len() as u64,
-            &state,
-        )
-        .await;
-
-        tokio::task::yield_now().await;
-
-        let events = captured
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-
-        let progress_events: Vec<(usize, u64, u64)> =
-            events.iter().enumerate().filter_map(|_| None).collect();
-        let progress_positions: Vec<usize> = progress_events.iter().map(|t| t.0).collect();
-
-        assert_eq!(
-            progress_positions.len(),
-            0,
-            "RecordProgress is in-memory-only and must not reach durable bus"
-        );
-
-        let completed_seq: Vec<(u64, u64)> = progress_events.iter().map(|t| (t.1, t.2)).collect();
-        assert_eq!(
-            completed_seq,
-            Vec::<(u64, u64)>::new(),
-            "no durable SweepProgress entries remain"
+            state.evidence().html_cache.load().is_some(),
+            "warm-start must populate html cache from projection"
         );
     }
 
@@ -3436,36 +3049,19 @@ mod tests {
         let total = inventory.active_repos.len() as u64;
         assert_eq!(total, 2);
 
-        let captured = capture_bus(&state.bus);
         let mut saga = make_test_saga(&config, &run);
 
-        saga.step_start_sweep(&config, &run, &corr_ctx, &inventory, &state)
-            .await;
+        saga.step_start_sweep(&config, &run, &corr_ctx, &inventory, &state);
         saga.step_resume(&inventory, &config, &state);
 
-        SweepSaga::emit_progress(&run, &corr_ctx, saga.current_run_completed(), total, &state)
-            .await;
+        SweepSaga::emit_progress(&run, &corr_ctx, saga.current_run_completed(), total, &state);
 
         saga.step_baseline(&inventory, &config, &state);
         assert_eq!(saga.baseline_reused, 1, "repo-reused must reuse baseline");
 
-        SweepSaga::emit_progress(&run, &corr_ctx, saga.current_run_completed(), total, &state)
-            .await;
+        SweepSaga::emit_progress(&run, &corr_ctx, saga.current_run_completed(), total, &state);
 
-        tokio::task::yield_now().await;
-
-        let events = captured
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-
-        let progress: Vec<(u64, u64)> = Vec::new();
-
-        assert_eq!(
-            progress.len(),
-            0,
-            "SweepProgress is in-memory-only; durable bus events were {events:?}"
-        );
+        assert_eq!(saga.current_run_completed(), 1);
     }
 
     impl SweepSaga {

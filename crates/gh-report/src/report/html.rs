@@ -860,10 +860,7 @@ fn build_status_dots(checks: &crate::domain::checks::RepositoryChecks) -> Vec<St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::num::NonZeroU64;
 
-    use cherry_pit_core::{AggregateId, EventEnvelope, Projection};
-    use crate::domain::events::{DomainEvent, RepoPresence};
     use crate::domain::metrics::{
         AggregatedMetrics, BranchProtectionCounts, CodeownersCounts, DependabotCounts,
         PolicyCounts, RateMetric, SecretAlertCounts, SecretScanningCounts,
@@ -871,19 +868,6 @@ mod tests {
     use crate::projection::EvidenceProjection;
     use crate::domain::repository::Visibility;
     use crate::test_fixtures;
-
-    fn projection_envelope(payload: DomainEvent, sequence: u64) -> EventEnvelope<DomainEvent> {
-        EventEnvelope::new(
-            uuid::Uuid::now_v7(),
-            AggregateId::new(NonZeroU64::new(1).expect("non-zero")),
-            NonZeroU64::new(sequence).expect("non-zero"),
-            jiff::Timestamp::now(),
-            None,
-            None,
-            payload,
-        )
-        .expect("valid envelope")
-    }
 
     fn sample_metrics() -> AggregatedMetrics {
         AggregatedMetrics {
@@ -1029,36 +1013,8 @@ mod tests {
         active.checks.codeowners = test_fixtures::codeowners_absent();
         let removed = test_fixtures::all_passing_evidence("removed-repo");
 
-        projection.apply(&projection_envelope(
-            DomainEvent::RepositoryStateCaptured {
-                domain_key: active.repository.inventory_key.clone(),
-                repo_name: active.repository.name.clone(),
-                timestamp: test_fixtures::make_timestamp(),
-                evidence: Some(Box::new(active.clone())),
-                presence: RepoPresence::Active,
-            },
-            1,
-        ));
-        projection.apply(&projection_envelope(
-            DomainEvent::RepositoryStateCaptured {
-                domain_key: removed.repository.inventory_key.clone(),
-                repo_name: removed.repository.name.clone(),
-                timestamp: test_fixtures::make_timestamp(),
-                evidence: Some(Box::new(removed.clone())),
-                presence: RepoPresence::Active,
-            },
-            2,
-        ));
-        projection.apply(&projection_envelope(
-            DomainEvent::RepositoryStateCaptured {
-                domain_key: removed.repository.inventory_key.clone(),
-                repo_name: removed.repository.name.clone(),
-                timestamp: test_fixtures::make_timestamp(),
-                evidence: None,
-                presence: RepoPresence::Removed,
-            },
-            3,
-        ));
+        projection.load_baseline(vec![active.clone(), removed.clone()]);
+        projection.repositories.remove(&removed.repository.inventory_key);
 
         let evidence = test_fixtures::make_full_evidence(
             test_fixtures::make_metadata(),

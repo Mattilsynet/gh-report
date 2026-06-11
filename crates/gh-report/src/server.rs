@@ -256,39 +256,7 @@ mod tests {
             crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
         );
 
-        let corr = run.correlation_context();
-        state
-            .run_service
-            .start_sweep(
-                crate::domain::aggregates::run::StartSweep {
-                    org: "TestOrg".to_string(),
-                    repo_count: 1,
-                    batch_id: run.run_id.clone(),
-                    timestamp: jiff::Timestamp::now().to_string(),
-                    snapshot_signature: "test-sig".to_string(),
-                },
-                &corr,
-            )
-            .await
-            .unwrap();
-        state
-            .run_service
-            .complete(
-                &run.run_id,
-                crate::domain::aggregates::run::CompleteSweep {
-                    batch_id: run.run_id.clone(),
-                    duration_ms: 0,
-                    repo_count: 1,
-                    timestamp: jiff::Timestamp::now().to_string(),
-                },
-                &corr,
-            )
-            .await
-            .unwrap();
-
-        publish_evidence(&config, &run, &run.correlation_context(), &evidence, &state)
-            .await
-            .unwrap();
+        publish_evidence(&config, &run, &evidence, &state).await.unwrap();
 
         let timeout_result =
             tokio::time::timeout(std::time::Duration::from_secs(3), ws.next()).await;

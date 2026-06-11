@@ -23,6 +23,7 @@ pub mod infra;
 pub mod projection;
 pub mod report;
 pub mod server;
+pub mod store;
 pub mod webhook;
 
 #[cfg(test)]

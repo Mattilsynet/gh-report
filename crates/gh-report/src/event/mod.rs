@@ -3,6 +3,8 @@
 use pardosa::store::HasEventSchemaSource;
 use pardosa_schema::{EventString, EventVec, GenomeSafe, NonEmptyEventString, Timestamp, Validate};
 
+pub mod convert;
+
 pub mod limits {
     pub const MAX_DOMAIN_KEY: usize = 128;
     pub const MAX_REPO_NAME: usize = 256;

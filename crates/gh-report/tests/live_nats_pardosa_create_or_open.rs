@@ -1,10 +1,9 @@
-use cherry_pit_core::{AggregateId, CorrelationContext, EventStore, ListableEventStore};
-use futures_util::FutureExt;
 use gh_report::app::state::{AppState, EventStoreImpl};
 use gh_report::config::runtime::{DEFAULT_NATS_URL, NatsStoreConfig, PardosaBackend};
-use gh_report::domain::events::{DomainEvent, RepoPresence};
+use gh_report::event::{DomainEvent, RepoPresence};
 use pardosa::store::JetStreamBackend as PardosaJetStreamBackend;
 use pardosa_nats::{JetStreamBackend as SubstrateJetStreamBackend, JetStreamConfig, RuntimeHandle};
+use pardosa_schema::{NonEmptyEventString, Timestamp as EventTimestamp};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -76,44 +75,26 @@ async fn open_state(
     .expect("AppState::with_stores with Nats backend")
 }
 
-async fn create_domain_event_blocking(
-    store: Arc<EventStoreImpl>,
-    event: DomainEvent,
-) -> AggregateId {
-    tokio::task::spawn_blocking(move || {
-        let future = store.create(vec![event], CorrelationContext::none());
-        futures_util::pin_mut!(future);
-        future
-            .now_or_never()
-            .expect("PardosaEventStore::create future must not yield")
-            .map(|(id, _)| id)
-    })
-    .await
-    .expect("create spawn_blocking join")
-    .expect("create domain event")
-}
-
 fn test_event() -> DomainEvent {
     DomainEvent::RepositoryStateCaptured {
-        domain_key: "m5/repo".to_string(),
-        repo_name: "repo".to_string(),
-        timestamp: "2026-06-11T00:00:00Z".to_string(),
+        domain_key: NonEmptyEventString::try_new("m5/repo").expect("key"),
+        repo_name: NonEmptyEventString::try_new("repo").expect("repo"),
+        timestamp: EventTimestamp::from_nanos(1_781_136_000_000_000_000).expect("timestamp"),
         evidence: None,
         presence: RepoPresence::Active,
     }
 }
 
-fn assert_loaded_event(loaded: &[cherry_pit_core::EventEnvelope<DomainEvent>]) {
-    assert_eq!(loaded.len(), 1, "one event must rehydrate");
-    match loaded[0].payload() {
+fn assert_loaded_event(event: &DomainEvent) {
+    match event {
         DomainEvent::RepositoryStateCaptured {
             domain_key,
             repo_name,
             presence,
             ..
         } => {
-            assert_eq!(domain_key, "m5/repo");
-            assert_eq!(repo_name, "repo");
+            assert_eq!(domain_key.as_str(), "m5/repo");
+            assert_eq!(repo_name.as_str(), "repo");
             assert_eq!(*presence, RepoPresence::Active);
         }
     }
@@ -136,17 +117,12 @@ fn nats_backend_fresh_create_reopen_and_populated_route_preserves_events() {
         let events_dir = tmp.path().join("events");
         let projections_dir = tmp.path().join("projections");
         let fresh_state = open_state(&events_dir, &projections_dir, nats.clone()).await;
-        let fresh_store = Arc::clone(fresh_state.event_store.as_ref().expect("event store wired"));
+        let fresh_store = Arc::clone(&fresh_state.event_store);
         assert!(
-            fresh_store
-                .list_aggregates()
-                .await
-                .expect("list aggregates")
-                .is_empty(),
+            fresh_store.latest_per_repo().expect("latest").is_empty(),
             "fresh Nats route must create an empty store"
         );
-        let aggregate_id =
-            create_domain_event_blocking(Arc::clone(&fresh_store), test_event()).await;
+        fresh_store.record("m5/repo", test_event()).expect("record");
         drop(fresh_store);
         drop(fresh_state);
 
@@ -158,22 +134,14 @@ fn nats_backend_fresh_create_reopen_and_populated_route_preserves_events() {
         .await
         .expect("open_jetstream join")
         .expect("open_jetstream after write");
-        assert_loaded_event(
-            &opened_via_adapter
-                .load_indexed(aggregate_id)
-                .expect("load indexed"),
-        );
+        let opened_latest = opened_via_adapter.latest_per_repo().expect("latest indexed");
+        assert_eq!(opened_latest.len(), 1);
+        assert_loaded_event(&opened_latest[0].1);
         drop(opened_via_adapter);
 
         let populated_state = open_state(&events_dir, &projections_dir, nats.clone()).await;
-        let populated_store = populated_state
-            .event_store
-            .as_ref()
-            .expect("event store wired");
-        let loaded = populated_store
-            .load(aggregate_id)
-            .await
-            .expect("load after populated reopen");
-        assert_loaded_event(&loaded);
+        let loaded = populated_state.event_store.latest_per_repo().expect("load after populated reopen");
+        assert_eq!(loaded.len(), 1);
+        assert_loaded_event(&loaded[0].1);
     });
 }

@@ -59,7 +59,6 @@ description = """\
 crates = [
     "cherry-pit-core",
     "cherry-pit-gateway",
-    "cherry-pit-pardosa",
     "cherry-pit-web",
     "cherry-pit-projection",
     "cherry-pit-app",

@@ -13,9 +13,8 @@
 //! `restamp_evidence`, `result_has_expected_checks`,
 //! `rotate_corrupt_checkpoint`, `MAX_CHECKPOINT_FILE_BYTES`) have
 //! been removed. The single survivor is the
-//! [`build_snapshot_signature`] re-export, which threads through
-//! `StartSweep` (see [`crate::domain::aggregates::run::StartSweep`])
-//! and is still authored against the SHA-256 alert-summary scheme
-//! documented in `cherry_pit_storage`.
+//! [`build_snapshot_signature`] re-export, which threads through the
+//! sweep snapshot signature and is still authored against the SHA-256
+//! alert-summary scheme documented in `cherry_pit_storage`.
 
 pub use cherry_pit_storage::build_snapshot_signature;

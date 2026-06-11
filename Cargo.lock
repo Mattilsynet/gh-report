@@ -702,24 +702,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cherry-pit-pardosa"
-version = "0.1.0"
-dependencies = [
- "async-nats",
- "cherry-pit-core",
- "jiff",
- "pardosa",
- "pardosa-nats",
- "pardosa-schema",
- "rmp-serde",
- "serde",
- "tempfile",
- "thiserror",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "cherry-pit-projection"
 version = "0.1.0"
 dependencies = [
@@ -1479,12 +1461,7 @@ dependencies = [
  "axum",
  "base64",
  "bytes",
- "cherry-pit-app",
  "cherry-pit-core",
- "cherry-pit-gateway",
- "cherry-pit-merger",
- "cherry-pit-pardosa",
- "cherry-pit-projection",
  "cherry-pit-storage",
  "cherry-pit-web",
  "cherry-pit-wq",

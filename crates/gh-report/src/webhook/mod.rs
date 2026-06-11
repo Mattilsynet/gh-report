@@ -30,14 +30,11 @@ use axum::routing::post;
 use cherry_pit_core::CorrelationContext;
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing::{debug, info, warn};
-use uuid::Uuid;
 
 use crate::app::collect::JobContext;
 use crate::app::state::AppState;
 use crate::app::work_queue::{EnqueueResult, JobSource, JobSpec};
 use crate::config;
-use crate::domain::aggregates::repo::RecordRemoval;
-use crate::domain::aggregates::webhook::RecordDelivery;
 use crate::domain::repository::Repository;
 
 use self::events::{WebhookAction, map_event_to_action};
@@ -64,7 +61,7 @@ async fn webhook_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
-    let (event_type, delivery_id, corr_ctx) = match validate_request(&state, &headers, &body) {
+    let (event_type, delivery_id) = match validate_request(&state, &headers, &body) {
         Ok(parts) => parts,
         Err(status) => return status,
     };
@@ -95,30 +92,16 @@ async fn webhook_handler(
 
     match action {
         WebhookAction::Remove { inventory_key } => {
-            execute_remove(&state, &event_type, &delivery_id, inventory_key, &corr_ctx).await
+            execute_remove(&state, &event_type, &delivery_id, &inventory_key)
         }
         WebhookAction::Enqueue {
             inventory_key,
             repo,
         } => {
-            if let Err(e) = state
-                .webhook_service
-                .ingest(
-                    RecordDelivery {
-                        delivery_id: delivery_id.clone(),
-                        action: "enqueue".into(),
-                        repo: Some(repo.name.clone()),
-                        timestamp: jiff::Timestamp::now().to_string(),
-                    },
-                    &corr_ctx,
-                )
-                .await
-            {
-                tracing::warn!(?e, "WebhookReceived publish failed, non-fatal");
-            }
+            info!(delivery = %delivery_id, repo = %repo.name, "webhook enqueue");
             execute_enqueue(&state, &event_type, &delivery_id, inventory_key, repo).await
         }
-        WebhookAction::Ignore => execute_ignore(&state, &event_type, &delivery_id, &corr_ctx).await,
+        WebhookAction::Ignore => execute_ignore(&event_type, &delivery_id),
     }
 }
 
@@ -132,7 +115,7 @@ fn validate_request(
     state: &Arc<AppState>,
     headers: &HeaderMap,
     body: &Bytes,
-) -> Result<(String, String, CorrelationContext), StatusCode> {
+) -> Result<(String, String), StatusCode> {
     let Some(ref secret) = state.webhook().secret else {
         return Err(StatusCode::NOT_FOUND);
     };
@@ -160,54 +143,24 @@ fn validate_request(
         return Err(StatusCode::BAD_REQUEST);
     };
 
-    let corr_ctx = CorrelationContext::correlated(
-        Uuid::parse_str(delivery_id).unwrap_or_else(|_| Uuid::nil()),
-    );
-
-    Ok((event_type.to_string(), delivery_id.to_string(), corr_ctx))
+    Ok((event_type.to_string(), delivery_id.to_string()))
 }
 
 /// Execute the remove action: publish `WebhookReceived` + (conditionally) `RepoRemoved`.
 ///
 /// Extracted from [`webhook_handler`] for cohesion; no behavioural change.
-async fn execute_remove(
+fn execute_remove(
     state: &Arc<AppState>,
     event_type: &str,
     delivery_id: &str,
-    inventory_key: String,
-    corr_ctx: &CorrelationContext,
+    inventory_key: &str,
 ) -> StatusCode {
-    let had_evidence = state.projection_contains(&inventory_key);
-    if let Err(e) = state
-        .webhook_service
-        .ingest(
-            RecordDelivery {
-                delivery_id: delivery_id.to_string(),
-                action: "remove".into(),
-                repo: Some(inventory_key.clone()),
-                timestamp: jiff::Timestamp::now().to_string(),
-            },
-            corr_ctx,
-        )
-        .await
-    {
-        tracing::warn!(?e, "WebhookReceived publish failed, non-fatal");
-    }
+    let had_evidence = state.projection_contains(inventory_key);
+    info!(delivery = %delivery_id, repo = %inventory_key, "webhook remove");
     if had_evidence
-        && let Err(e) = state
-            .repo_service
-            .record_removal(
-                &inventory_key,
-                RecordRemoval {
-                    domain_key: inventory_key.clone(),
-                    repo_name: inventory_key.clone(),
-                    timestamp: jiff::Timestamp::now().to_string(),
-                },
-                corr_ctx,
-            )
-            .await
+        && let Err(e) = state.remove_repo(inventory_key, inventory_key, &jiff::Timestamp::now().to_string())
     {
-        tracing::warn!(?e, "RepoRemoved publish failed, non-fatal");
+        tracing::warn!(?e, "repository removal failed, non-fatal");
     }
     info!(
         event = event_type,
@@ -222,27 +175,10 @@ async fn execute_remove(
 /// Execute the ignore action: publish `WebhookReceived` with `action=ignore`.
 ///
 /// Extracted from [`webhook_handler`] for cohesion; no behavioural change.
-async fn execute_ignore(
-    state: &Arc<AppState>,
+fn execute_ignore(
     event_type: &str,
     delivery_id: &str,
-    corr_ctx: &CorrelationContext,
 ) -> StatusCode {
-    if let Err(e) = state
-        .webhook_service
-        .ingest(
-            RecordDelivery {
-                delivery_id: delivery_id.to_string(),
-                action: "ignore".into(),
-                repo: None,
-                timestamp: jiff::Timestamp::now().to_string(),
-            },
-            corr_ctx,
-        )
-        .await
-    {
-        tracing::warn!(?e, "WebhookReceived publish failed, non-fatal");
-    }
     debug!(
         event = event_type,
         delivery = delivery_id,

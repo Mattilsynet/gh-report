@@ -117,7 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             runtime::NatsStoreConfig::for_org(org, cli.nats_url.clone())?,
         )
         .await?;
-        if let Err(e) = app_state.snapshot_fast_path_init().await {
+        if let Err(e) = app_state.snapshot_fast_path_init() {
             eprintln!("error: projection init failed: {e}");
             std::process::exit(1);
         }
