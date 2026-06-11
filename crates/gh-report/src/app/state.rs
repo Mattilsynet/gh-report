@@ -460,7 +460,7 @@ fn open_event_store(
                 .map_err(std::io::Error::other)?;
             let substrate = SubstrateJetStreamBackend::open(cfg);
             let backend = PardosaJetStreamBackend::open(substrate);
-            EventStoreImpl::open_jetstream(backend).map_err(std::io::Error::other)
+            EventStoreImpl::create_jetstream(backend).map_err(std::io::Error::other)
         }
     }
 }

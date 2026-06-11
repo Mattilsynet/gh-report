@@ -1,12 +1,12 @@
 use super::{
-    Decode, EventStore, FrontierPublisher, GenomeSafe, PardosaError, Path, PathBuf, Validate,
-    ValidatedReplayError,
+    Decode, Encode, EventStore, FrontierPublisher, GenomeSafe, PardosaError, Path, PathBuf,
+    Validate, ValidatedReplayError,
 };
 use crate::authoritative::{AuthoritativeBackend, BackendDispatch, admit_into_dispatch};
-use crate::backend::journal::RehydrateableBackend;
 use crate::backend::rehydrate::from_pgno_bytes_unchecked;
+use crate::backend::{BackendSink, journal::RehydrateableBackend};
 use crate::dragline::Dragline;
-use std::io::Seek;
+use std::io::{Read, Seek, SeekFrom};
 fn open_rw_seek_and_rehydrate_unchecked<T>(
     path: &Path,
 ) -> Result<(std::fs::File, crate::dragline::Line<T>), PardosaError>
@@ -55,6 +55,65 @@ where
         .map_err(|e| ValidatedReplayError::Replay(crate::persist::Error::Io(e)))?;
     Ok((file, dragline))
 }
+fn persist_error_to_cursor_read(e: crate::persist::Error) -> PardosaError {
+    PardosaError::CursorRead {
+        source: Box::new(e),
+    }
+}
+fn io_error_to_cursor_read(e: std::io::Error) -> PardosaError {
+    persist_error_to_cursor_read(crate::persist::Error::Io(e))
+}
+fn backend_error_to_cursor_read(
+    context: &'static str,
+    e: &crate::error::BackendError,
+) -> PardosaError {
+    io_error_to_cursor_read(std::io::Error::other(format!("{context}: {e}")))
+}
+fn fetch_jetstream_bytes(
+    adapter: &mut crate::authoritative::jetstream::JetStreamBackendAdapter,
+) -> Result<Vec<u8>, PardosaError> {
+    adapter
+        .fetch_durable_bytes()
+        .map_err(|e| backend_error_to_cursor_read("JetStream rehydrate fetch failed", &e))
+}
+fn seed_jetstream_backend<T>(
+    adapter: &mut crate::authoritative::jetstream::JetStreamBackendAdapter,
+) -> Result<crate::dragline::Line<T>, PardosaError>
+where
+    T: Encode + Decode + GenomeSafe + crate::typed::HasEventSchemaSource,
+{
+    let seed_bytes = canonical_empty_pgno_bytes::<T>()?;
+    let _ = adapter
+        .append(&seed_bytes)
+        .map_err(|e| backend_error_to_cursor_read("JetStream create seed append failed", &e))?;
+    let _ = adapter
+        .sync()
+        .map_err(|e| backend_error_to_cursor_read("JetStream create seed sync failed", &e))?;
+    from_pgno_bytes_unchecked::<T>(&seed_bytes).map_err(persist_error_to_cursor_read)
+}
+fn canonical_empty_pgno_bytes<T>() -> Result<Vec<u8>, PardosaError>
+where
+    T: Encode + GenomeSafe + crate::typed::HasEventSchemaSource,
+{
+    let scratch = tempfile::tempfile().map_err(|e| PardosaError::CursorJournalOpen {
+        source: Box::new(e),
+    })?;
+    let mut seed = EventStore::<T> {
+        inner: Dragline::new(scratch),
+        journal: PathBuf::new(),
+        schema_source: <T as crate::typed::HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,
+    };
+    let _ = seed.writer().sync().map_err(persist_error_to_cursor_read)?;
+    let mut scratch = seed.inner.into_inner();
+    scratch
+        .seek(SeekFrom::Start(0))
+        .map_err(io_error_to_cursor_read)?;
+    let mut bytes = Vec::new();
+    scratch
+        .read_to_end(&mut bytes)
+        .map_err(io_error_to_cursor_read)?;
+    Ok(bytes)
+}
 impl<T> EventStore<T, std::fs::File>
 where
     T: super::Encode + Decode + GenomeSafe + crate::typed::HasEventSchemaSource,
@@ -98,6 +157,55 @@ where
             journal: path.to_path_buf(),
             schema_source,
         })
+    }
+    /// Construct a fresh typed-backend `EventStore<T>` from an
+    /// admitted authoritative backend.
+    ///
+    /// Mirrors [`EventStore::create`] at the typed-backend seam:
+    /// path-backed backends delegate to the `.pgno` create path;
+    /// `JetStream` backends author the canonical empty `.pgno`
+    /// container inside pardosa and seed it only when replay shows the
+    /// stream is empty. Populated `JetStream` streams are rehydrated
+    /// without writing, so repeated create attempts cannot clobber
+    /// existing data.
+    ///
+    /// # Errors
+    ///
+    /// [`PardosaError::CursorJournalOpen`] when scratch or path-backed
+    /// file creation fails. [`PardosaError::CursorRead`] when backend
+    /// replay, canonical empty-container serialisation, seed append,
+    /// seed sync, or `.pgno` rehydrate fails.
+    pub fn create_with_backend<B: AuthoritativeBackend>(backend: B) -> Result<Self, PardosaError> {
+        match admit_into_dispatch(backend) {
+            BackendDispatch::Pgno(p) => Self::create(p.path()),
+            BackendDispatch::JetStream(boxed_adapter) => {
+                let mut adapter = *boxed_adapter;
+                let bytes = fetch_jetstream_bytes(&mut adapter)?;
+                let dragline = if bytes.is_empty() {
+                    seed_jetstream_backend::<T>(&mut adapter)?
+                } else {
+                    from_pgno_bytes_unchecked::<T>(&bytes).map_err(persist_error_to_cursor_read)?
+                };
+                let scratch =
+                    tempfile::tempfile().map_err(|e| PardosaError::CursorJournalOpen {
+                        source: Box::new(e),
+                    })?;
+                let inner = Dragline::from_backend_for_open_jetstream(dragline, scratch, adapter);
+                Ok(Self {
+                    inner,
+                    journal: PathBuf::new(),
+                    schema_source: <T as crate::typed::HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,
+                })
+            }
+            #[cfg(any(test, feature = "test-support"))]
+            BackendDispatch::InMem(_) => Err(PardosaError::CursorJournalOpen {
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "InMemoryBackend is reserved for in-crate test fixtures \
+                     and is not admissible via EventStore::create_with_backend",
+                )),
+            }),
+        }
     }
 }
 impl<T> EventStore<T, std::fs::File>
@@ -186,19 +294,9 @@ where
             }
             BackendDispatch::JetStream(boxed_adapter) => {
                 let mut adapter = *boxed_adapter;
-                let bytes =
-                    adapter
-                        .fetch_durable_bytes()
-                        .map_err(|e| PardosaError::CursorRead {
-                            source: Box::new(crate::persist::Error::Io(std::io::Error::other(
-                                format!("JetStream rehydrate fetch failed: {e}"),
-                            ))),
-                        })?;
-                let dragline = from_pgno_bytes_unchecked::<T>(&bytes).map_err(|e| {
-                    PardosaError::CursorRead {
-                        source: Box::new(e),
-                    }
-                })?;
+                let bytes = fetch_jetstream_bytes(&mut adapter)?;
+                let dragline =
+                    from_pgno_bytes_unchecked::<T>(&bytes).map_err(persist_error_to_cursor_read)?;
                 let scratch =
                     tempfile::tempfile().map_err(|e| PardosaError::CursorJournalOpen {
                         source: Box::new(e),

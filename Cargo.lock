@@ -1475,6 +1475,7 @@ dependencies = [
  "arc-swap",
  "askama",
  "assert_cmd",
+ "async-nats",
  "axum",
  "base64",
  "bytes",

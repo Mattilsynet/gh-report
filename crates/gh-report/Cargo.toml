@@ -184,6 +184,7 @@ moka = { workspace = true }
 # Structured JSON logging is handled by infra::cloud_logging (custom layer)
 
 [dev-dependencies]
+async-nats = { workspace = true }
 # HTTP mocking
 wiremock = { workspace = true }
 

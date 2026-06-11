@@ -40,6 +40,21 @@ impl<E: DomainEvent> PardosaEventStore<E> {
         Self::from_pardosa_store(store)
     }
 
+    /// Create a JetStream-backed adapter through pardosa's typed-backend
+    /// create verb and capture its logical stream index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Infrastructure`] if pardosa cannot create,
+    /// seed, open, or fold the backing store. Returns
+    /// [`StoreError::CorruptData`] if any captured payload cannot be
+    /// decoded into `EventEnvelope<E>` or fails stream validation.
+    pub fn create_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
+        let store = PardosaStore::<EnvelopePayload>::create_with_backend(backend)
+            .map_err(infrastructure_error)?;
+        Self::from_pardosa_store(store)
+    }
+
     /// Open a `.pgno`-backed adapter and capture its logical stream index.
     ///
     /// # Errors
@@ -151,8 +166,7 @@ where
     let mut envelopes = captures
         .into_iter()
         .map(|capture| {
-            rmp_serde::from_slice::<EventEnvelope<E>>(&capture.envelope_bytes)
-                .map_err(corrupt_data)
+            rmp_serde::from_slice::<EventEnvelope<E>>(&capture.envelope_bytes).map_err(corrupt_data)
         })
         .collect::<Result<Vec<_>, _>>()?;
     envelopes.sort_by_key(EventEnvelope::sequence);
@@ -173,11 +187,7 @@ impl<E: DomainEvent> EventStore for PardosaEventStore<E> {
         self.load_indexed(id)
     }
 
-    async fn create(
-        &self,
-        events: Vec<E>,
-        context: CorrelationContext,
-    ) -> StoreCreateResult<E> {
+    async fn create(&self, events: Vec<E>, context: CorrelationContext) -> StoreCreateResult<E> {
         if events.is_empty() {
             return Err(infrastructure_error(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -288,7 +298,10 @@ fn persist_envelopes<E: DomainEvent>(
         let encoded = rmp_serde::to_vec_named(envelope).map_err(infrastructure_error)?;
         let domain_key = id.to_string();
         let payload = EnvelopePayload::new(encoded, id.get(), domain_key).map_err(corrupt_data)?;
-        let _ = store.writer().begin(payload).map_err(infrastructure_error)?;
+        let _ = store
+            .writer()
+            .begin(payload)
+            .map_err(infrastructure_error)?;
     }
     let _ = store.writer().sync().map_err(infrastructure_error)?;
     Ok(())
