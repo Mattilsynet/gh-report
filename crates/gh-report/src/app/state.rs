@@ -294,14 +294,15 @@ fn projection_from_store(
     store: &EventStoreImpl,
 ) -> Result<crate::projection::EvidenceProjection, std::io::Error> {
     let mut projection = crate::projection::EvidenceProjection::default();
-    for event in store.events().map_err(std::io::Error::other)? {
-        fold_native_event(&mut projection, event);
+    for (detached, event) in store.events().map_err(std::io::Error::other)? {
+        fold_native_event(&mut projection, detached, event);
     }
     Ok(projection)
 }
 
 fn fold_native_event(
     projection: &mut crate::projection::EvidenceProjection,
+    _detached: bool,
     event: NativeDomainEvent,
 ) {
     match event {

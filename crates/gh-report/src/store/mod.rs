@@ -185,6 +185,9 @@ impl NativeStore {
     /// Every event in the store, in committed line order — the same
     /// stream an external consumer replaying the journal would observe.
     ///
+    /// Each item pairs the pardosa envelope `detached` flag with the
+    /// domain event payload.
+    ///
     /// A projection folding this sequence behaves identically in-process
     /// or in a separate service (EDA boundary: the log is the sole input).
     ///
@@ -192,7 +195,7 @@ impl NativeStore {
     ///
     /// Returns [`StoreError::Infrastructure`] on pardosa read failure or
     /// [`StoreError::Poisoned`].
-    pub fn events(&self) -> Result<Vec<DomainEvent>, StoreError> {
+    pub fn events(&self) -> Result<Vec<(bool, DomainEvent)>, StoreError> {
         let guard = self.inner.lock().map_err(|_| StoreError::Poisoned)?;
         bridge(guard.bridge_runtime, || Ok(all_events(&guard.store)))
     }
@@ -260,10 +263,12 @@ fn latest_defined(
     Ok(latest.into_iter().collect())
 }
 
-fn all_events(store: &PardosaStore<DomainEvent>) -> Vec<DomainEvent> {
-    let collected = RefCell::new(Vec::<DomainEvent>::new());
+fn all_events(store: &PardosaStore<DomainEvent>) -> Vec<(bool, DomainEvent)> {
+    let collected = RefCell::new(Vec::<(bool, DomainEvent)>::new());
     let _index = store.reader().fiber_index::<u8, _, _>(|event| {
-        collected.borrow_mut().push(event.domain_event().clone());
+        collected
+            .borrow_mut()
+            .push((event.detached(), event.domain_event().clone()));
         std::iter::empty::<u8>()
     });
     collected.into_inner()
