@@ -1,14 +1,14 @@
 # PGN-0008. EventStore Facade and Operation-Specific Bounds
 
 Date: 2026-06-08
-Last-reviewed: 2026-06-08
+Last-reviewed: 2026-06-11
 Tier: A
 Status: Accepted
 Crates: pardosa
 
 ## Related
 
-References: PGN-0001, PGN-0003, PGN-0007
+References: PGN-0001, PGN-0003, PGN-0007, PGN-0010, CHE-0019
 
 ## Context
 
@@ -53,6 +53,13 @@ R7 [5]: `EventStore::open_with_migration` and the associated
   `pardosa::store::migrate::migrate_keep` is an authorised
   migration entry under this façade per PGN-0009's allowed-direction
   set.
+R8 [5]: `create_with_backend(handle, options)` is the typed-backend
+  analogue of `create(path)`, authoring the canonical-empty container
+  in pardosa core before PGN-0010 R4's verbatim-carry boundary;
+  `open_with_backend(handle, options)` mirrors unchecked `open(path)`:
+  rehydrate-only and errors on never-created streams. The create/open
+  distinction holds at both seams (CHE-0019 R3). Enforcement is a
+  gated live test.
 
 ## Consequences
 

@@ -1,7 +1,7 @@
 # PGN-0010. Backend Abstraction and NATS/JetStream Constraints
 
 Date: 2026-06-08
-Last-reviewed: 2026-06-08
+Last-reviewed: 2026-06-11
 Tier: A
 Status: Accepted
 Crates: pardosa, pardosa-nats
@@ -16,14 +16,16 @@ Sources rescue ADR-0022 (app-configurable authoritative storage backends) and co
 
 ## Decision
 
-`AuthoritativeBackend` and `BackendSink` are strong-sealed substrate traits owned by `pardosa` and implemented via in-`pardosa` adapter shims wrapping an opaque per-backend handle (`PgnoBackend`, `JetStreamBackend`). `EventStore::open_with_backend(handle, options)` is the typed admission seam. Backends own their async runtime internally; the façade stays synchronous; per-operation timeouts are typed via `BackendError::Timeout`. Single-writer per stream is the v0 stance; distributed writers are scoped to a future ADR. Canonical wire bytes cross the backend boundary verbatim — no transformation, no re-framing, no envelope-stripping.
+`AuthoritativeBackend` and `BackendSink` are strong-sealed substrate traits owned by `pardosa` and implemented via in-`pardosa` adapter shims wrapping an opaque per-backend handle (`PgnoBackend`, `JetStreamBackend`). `EventStore::create_with_backend(handle, options)` and `EventStore::open_with_backend(handle, options)` are the typed admission seam: create authors the canonical-empty container in pardosa core, while open rehydrates existing authoritative bytes. Backends own their async runtime internally; the façade stays synchronous; per-operation timeouts are typed via `BackendError::Timeout`. Single-writer per stream is the v0 stance; distributed writers are scoped to a future ADR. Canonical wire bytes cross the backend boundary verbatim — no transformation, no re-framing, no envelope-stripping.
 
 R1 [4]: `AuthoritativeBackend` is strong-sealed via a private supertrait
   owned by `pardosa`; the only public impls are in-`pardosa` adapter shims
   wrapping per-backend opaque handles.
 R2 [5]: `EventStore::open(path)` and friends remain on the public surface
   as convenience constructors that internally build `PgnoBackend`; the
-  typed seam is `EventStore::open_with_backend(handle, options)`. No
+  typed seam has `create_with_backend(handle, options)` for
+  pardosa-authored canonical-empty creation and
+  `open_with_backend(handle, options)` for rehydrate-only admission. No
   generic backend parameter (`EventStore<T, B>`) is exposed.
 R3 [5]: `AckPosition` is backend-opaque, monotonic within one backend
   instance, and carries no cross-backend meaning; `EventId` is
