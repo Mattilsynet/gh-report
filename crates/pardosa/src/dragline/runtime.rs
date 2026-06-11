@@ -280,6 +280,10 @@ where
     pub fn acked_lsn(&self) -> Option<Lsn> {
         self.acked_lsn
     }
+    #[must_use]
+    pub(crate) fn fiber_state(&self, fiber_id: crate::event::FiberId) -> crate::FiberState {
+        self.line.fiber_state(fiber_id)
+    }
     /// Borrow the runtime's in-memory line as a read-only
     /// [`DraglineView<'_, T>`](crate::dragline::DraglineView).
     ///

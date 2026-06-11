@@ -86,8 +86,10 @@ where
 ///
 /// Fiber-lifecycle verbs: [`begin`](Self::begin),
 /// [`append`](Self::append), [`detach`](Self::detach),
-/// [`resume`](Self::resume). Illegal transitions are
-/// unrepresentable at the type layer (ADR-0017 §D1).
+/// [`resume`](Self::resume), [`resume_defined`](Self::resume_defined),
+/// [`rescue_detached`](Self::rescue_detached). Illegal token transitions
+/// remain unrepresentable at the type layer (ADR-0017 §D1); identity-resume
+/// verbs admit `FiberId` only after dragline-state validation (PGN-0014).
 pub struct StoreWriter<'a, T, W: Syncable + Seek = std::fs::File> {
     log: &'a mut Dragline<T, W>,
     journal: &'a Path,
@@ -174,6 +176,73 @@ where
             event_id: ar.event_id,
             fiber: LiveFiber(ar.fiber_id),
         })
+    }
+    /// Append to a rehydrated `Defined` fiber by validated identity.
+    ///
+    /// Admits the supplied [`FiberId`] only after checking the current dragline
+    /// state. This is the write-side mirror of the `Defined`-filtered read
+    /// predicate ratified by PGN-0014; the method mints a fresh [`LiveFiber`]
+    /// only after validation succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PardosaError::FiberNotFound`] when the id is absent.
+    /// Returns [`PardosaError::InvalidTransition`] when the id is present but
+    /// not `Defined`. Otherwise forwards commit-pipeline errors.
+    pub fn resume_defined(
+        &mut self,
+        fiber_id: FiberId,
+        event: T,
+    ) -> Result<AppendReceipt, PardosaError> {
+        match self.log.fiber_state(fiber_id) {
+            FiberState::Undefined | FiberState::Purged => {
+                Err(PardosaError::FiberNotFound(fiber_id))
+            }
+            FiberState::Defined => {
+                let ar = self.log.commit_update(fiber_id, event)?;
+                Ok(AppendReceipt {
+                    event_id: ar.event_id,
+                    fiber: LiveFiber(ar.fiber_id),
+                })
+            }
+            state => Err(PardosaError::InvalidTransition {
+                state,
+                action: crate::fiber_state::FiberAction::Update,
+            }),
+        }
+    }
+    /// Rescue a rehydrated `Detached` fiber by validated identity.
+    ///
+    /// Admits the supplied [`FiberId`] only after checking the current dragline
+    /// state is `Detached`, then drives the existing rescue commit path to mint
+    /// a fresh [`LiveFiber`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PardosaError::FiberNotFound`] when the id is absent.
+    /// Returns [`PardosaError::InvalidTransition`] when the id is present but
+    /// not `Detached`. Otherwise forwards commit-pipeline errors.
+    pub fn rescue_detached(
+        &mut self,
+        fiber_id: FiberId,
+        event: T,
+    ) -> Result<AppendReceipt, PardosaError> {
+        match self.log.fiber_state(fiber_id) {
+            FiberState::Undefined | FiberState::Purged => {
+                Err(PardosaError::FiberNotFound(fiber_id))
+            }
+            FiberState::Detached => {
+                let ar = self.log.commit_rescue(fiber_id, event)?;
+                Ok(AppendReceipt {
+                    event_id: ar.event_id,
+                    fiber: LiveFiber(ar.fiber_id),
+                })
+            }
+            state => Err(PardosaError::InvalidTransition {
+                state,
+                action: crate::fiber_state::FiberAction::Rescue,
+            }),
+        }
     }
     /// Persist all in-memory events to the sink and fence on
     /// durability.

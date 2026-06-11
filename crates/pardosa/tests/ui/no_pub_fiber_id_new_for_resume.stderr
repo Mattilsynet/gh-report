@@ -1,0 +1,11 @@
+error[E0599]: no associated function or constant named `new` found for struct `FiberId` in the current scope
+ --> tests/ui/no_pub_fiber_id_new_for_resume.rs:4:27
+  |
+4 |     let forged = FiberId::new(0);
+  |                           ^^^ associated function or constant not found in `FiberId`
+  |
+help: there is a method `ne` with a similar name
+  |
+4 -     let forged = FiberId::new(0);
+4 +     let forged = FiberId::ne(0);
+  |
