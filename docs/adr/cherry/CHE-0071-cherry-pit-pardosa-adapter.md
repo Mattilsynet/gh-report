@@ -1,7 +1,7 @@
 # CHE-0071. cherry-pit-pardosa Adapter
 
 Date: 2026-06-10
-Last-reviewed: 2026-06-10
+Last-reviewed: 2026-06-11
 Tier: B
 Status: Accepted
 Crates: cherry-pit-pardosa
@@ -27,6 +27,7 @@ R5 [5]: `load(id)` MUST gather captured events for `id`, decode envelopes, sort 
 R6 [5]: `list_aggregates()` MUST return the captured index keys and stay async through `ListableEventStore` per CHE-0070.
 R7 [5]: `create` and `append` MUST write a fresh pardosa fiber per envelope, and `append` MUST enforce cherry-pit optimistic concurrency from the reconstructed maximum sequence.
 R8 [5]: `PardosaEventStore<E>` MUST implement `SingleWriterEventStore` on the adopter-side single logical writer constraint and PGN-0011:R4's typed `Diverged` non-error semantics.
+R9 [5]: For JetStream-backed stores, `PardosaEventStore<E>` owns the sync↔async bridge for open-time index capture, `create`, `append`, and `load`: pardosa calls that may drive JetStream MUST use `tokio::task::block_in_place` inside an ambient multi-thread Tokio runtime. `Mutex<InnerStore>` and `RefCell` spans stay await-free; CHE-0070:R6's `spawn_blocking` is only for movable `Send + 'static` work.
 
 ## Consequences
 
