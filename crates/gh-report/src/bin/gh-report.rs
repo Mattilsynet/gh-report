@@ -79,6 +79,10 @@ struct Cli {
     #[arg(long, default_value = "pgno", env = "GH_REPORT_PARDOSA_BACKEND")]
     pardosa_backend: PardosaBackendArg,
 
+    /// NATS server URL for the pardosa Nats backend.
+    #[arg(long, default_value = runtime::DEFAULT_NATS_URL, env = "GH_REPORT_NATS_URL")]
+    nats_url: String,
+
     /// Dump the baseline file as JSON to stdout and exit.
     #[arg(long)]
     dump_baseline: bool,
@@ -110,6 +114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &events_dir,
             projections_dir,
             runtime::PardosaBackend::from(cli.pardosa_backend),
+            runtime::NatsStoreConfig::for_org(org, cli.nats_url.clone())?,
         )
         .await?;
         if let Err(e) = app_state.snapshot_fast_path_init().await {
@@ -162,6 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         dashboard_config,
     )?;
     config.pardosa_backend = runtime::PardosaBackend::from(cli.pardosa_backend);
+    config.nats_url = cli.nats_url;
     gh_report::app::daemon::run(config).await?;
 
     Ok(())
@@ -259,6 +265,22 @@ mod tests {
             runtime::PardosaBackend::from(cli.pardosa_backend),
             runtime::PardosaBackend::Nats
         ));
+    }
+
+    #[test]
+    fn cli_parses_nats_url() {
+        let cli = Cli::try_parse_from([
+            "gh-report",
+            "--org",
+            "test-org",
+            "--pardosa-backend",
+            "nats",
+            "--nats-url",
+            "nats://127.0.0.1:4223",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.nats_url, "nats://127.0.0.1:4223");
     }
 
     #[test]

@@ -1825,6 +1825,7 @@ mod tests {
             max_workers: 4,
             store_dir: std::path::PathBuf::from("/tmp/test-store"),
             pardosa_backend: crate::config::runtime::PardosaBackend::Pgno,
+            nats_url: crate::config::runtime::DEFAULT_NATS_URL.to_string(),
             force_unlock: false,
             dashboard_config: DashboardConfig::default(),
         }
@@ -3382,11 +3383,8 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
 
-        let progress_events: Vec<(usize, u64, u64)> = events
-            .iter()
-            .enumerate()
-            .filter_map(|_| None)
-            .collect();
+        let progress_events: Vec<(usize, u64, u64)> =
+            events.iter().enumerate().filter_map(|_| None).collect();
         let progress_positions: Vec<usize> = progress_events.iter().map(|t| t.0).collect();
 
         assert_eq!(

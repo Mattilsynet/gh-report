@@ -240,6 +240,7 @@ mod tests {
             max_workers: 4,
             store_dir: std::path::PathBuf::from("/tmp/ws-e2e-test"),
             pardosa_backend: crate::config::runtime::PardosaBackend::Pgno,
+            nats_url: crate::config::runtime::DEFAULT_NATS_URL.to_string(),
             force_unlock: false,
             dashboard_config: crate::config::dashboard::DashboardConfig::default(),
         };

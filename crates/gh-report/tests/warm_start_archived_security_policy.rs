@@ -31,8 +31,8 @@ use std::sync::Arc;
 
 use cherry_pit_core::{CorrelationContext, EventStore};
 use gh_report::aggregate::metrics::{aggregate_metrics, build_collection_statistics};
-use gh_report::app::state::EventStoreImpl;
 use gh_report::app::state::AppState;
+use gh_report::app::state::EventStoreImpl;
 use gh_report::domain::checks::{
     BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersResult,
     CodeownersStatus, DependabotResult, DependabotStatus, RepositoryChecks, SecretScanningResult,
@@ -41,6 +41,14 @@ use gh_report::domain::checks::{
 use gh_report::domain::events::{DomainEvent, RepoPresence};
 use gh_report::domain::evidence::RepositoryEvidence;
 use gh_report::domain::repository::{Repository, Visibility};
+
+fn default_nats_store_config() -> gh_report::config::runtime::NatsStoreConfig {
+    gh_report::config::runtime::NatsStoreConfig::for_org(
+        "org",
+        gh_report::config::runtime::DEFAULT_NATS_URL,
+    )
+    .unwrap()
+}
 
 #[tokio::test]
 async fn warm_start_replay_preserves_archived_public_security_policy_in_aggregate_metrics() {
@@ -56,9 +64,10 @@ async fn warm_start_replay_preserves_archived_public_security_policy_in_aggregat
         &events_dir,
         projections_dir,
         gh_report::config::runtime::PardosaBackend::Pgno,
+        default_nats_store_config(),
     )
-        .await
-        .expect("with_stores");
+    .await
+    .expect("with_stores");
     app_state
         .snapshot_fast_path_init()
         .await

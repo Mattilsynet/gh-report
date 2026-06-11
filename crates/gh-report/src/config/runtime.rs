@@ -8,6 +8,9 @@ use crate::config;
 use crate::config::dashboard::DashboardConfig;
 use crate::error::ConfigError;
 
+/// Default NATS server URL for the pardosa `Nats` backend.
+pub const DEFAULT_NATS_URL: &str = "nats://localhost:4222";
+
 /// Runtime configuration for a collection run.
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
@@ -21,6 +24,8 @@ pub struct RuntimeConfig {
     pub store_dir: PathBuf,
     /// Pardosa authoritative backend selected at startup.
     pub pardosa_backend: PardosaBackend,
+    /// NATS server URL used when `pardosa_backend` is `Nats`.
+    pub nats_url: String,
     /// Forcibly remove an existing lock before acquiring.
     pub force_unlock: bool,
     /// Dashboard rendering configuration.
@@ -33,6 +38,52 @@ pub enum PardosaBackend {
     #[default]
     Pgno,
     Nats,
+}
+
+/// Derived `JetStream` addressing for one gh-report organization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NatsStoreConfig {
+    /// NATS server URL used by the `JetStream` client.
+    pub nats_url: String,
+    /// Per-org `JetStream` stream name.
+    pub stream_name: String,
+    /// Per-org single subject bound to the stream.
+    pub subject: String,
+    /// Per-org durable consumer name used during replay.
+    pub durable_consumer: String,
+}
+
+impl NatsStoreConfig {
+    /// Derive per-org `JetStream` names from the exact UTF-8 org bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::MissingField`] if `org_name` is empty.
+    pub fn for_org(org_name: &str, nats_url: impl Into<String>) -> Result<Self, ConfigError> {
+        if org_name.is_empty() {
+            return Err(ConfigError::MissingField {
+                field: "org_name".to_string(),
+            });
+        }
+        let token = org_token(org_name.as_bytes());
+        Ok(Self {
+            nats_url: nats_url.into(),
+            stream_name: format!("gh-report-{token}"),
+            subject: format!("gh-report.{token}.events"),
+            durable_consumer: format!("gh-report-{token}"),
+        })
+    }
+}
+
+fn org_token(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut token = String::with_capacity(4 + bytes.len() * 2);
+    token.push_str("org_");
+    for byte in bytes {
+        token.push(char::from(HEX[usize::from(byte >> 4)]));
+        token.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    token
 }
 
 impl RuntimeConfig {
@@ -70,6 +121,7 @@ impl RuntimeConfig {
             max_workers: clamped,
             store_dir,
             pardosa_backend: PardosaBackend::Pgno,
+            nats_url: DEFAULT_NATS_URL.to_string(),
             force_unlock: false,
             dashboard_config: DashboardConfig::default(),
         })
@@ -94,6 +146,15 @@ impl RuntimeConfig {
         config.force_unlock = force_unlock;
         config.dashboard_config = dashboard_config;
         Ok(config)
+    }
+
+    /// Derive the NATS store configuration for this runtime config.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::MissingField`] if `org_name` is empty.
+    pub fn nats_store_config(&self) -> Result<NatsStoreConfig, ConfigError> {
+        NatsStoreConfig::for_org(&self.org_name, self.nats_url.clone())
     }
 }
 
@@ -143,5 +204,42 @@ mod tests {
         let mut cfg = RuntimeConfig::new("org", false, 8, PathBuf::from("s")).unwrap();
         cfg.pardosa_backend = PardosaBackend::Nats;
         assert_eq!(cfg.pardosa_backend, PardosaBackend::Nats);
+    }
+
+    #[test]
+    fn nats_store_config_uses_injective_hex_org_token() {
+        let my_org = NatsStoreConfig::for_org("my org", DEFAULT_NATS_URL).unwrap();
+        let my_dash_org = NatsStoreConfig::for_org("my-org", DEFAULT_NATS_URL).unwrap();
+        let dotted = NatsStoreConfig::for_org("a.b", DEFAULT_NATS_URL).unwrap();
+        let dashed = NatsStoreConfig::for_org("a-b", DEFAULT_NATS_URL).unwrap();
+
+        assert_eq!(my_org.stream_name, "gh-report-org_6d79206f7267");
+        assert_eq!(my_org.subject, "gh-report.org_6d79206f7267.events");
+        assert_eq!(my_org.durable_consumer, "gh-report-org_6d79206f7267");
+        assert_ne!(my_org.stream_name, my_dash_org.stream_name);
+        assert_ne!(my_org.subject, my_dash_org.subject);
+        assert_ne!(dotted.stream_name, dashed.stream_name);
+        assert_ne!(dotted.subject, dashed.subject);
+        assert!(!my_org.subject.contains(' '));
+        assert!(!my_org.subject.contains('*'));
+        assert!(!my_org.subject.contains('>'));
+    }
+
+    #[test]
+    fn nats_store_config_rejects_empty_org() {
+        let result = NatsStoreConfig::for_org("", DEFAULT_NATS_URL);
+
+        assert!(matches!(result, Err(ConfigError::MissingField { .. })));
+    }
+
+    #[test]
+    fn runtime_config_derives_default_nats_store_config() {
+        let cfg = RuntimeConfig::new("org", false, 8, PathBuf::from("store")).unwrap();
+
+        assert_eq!(cfg.nats_url, DEFAULT_NATS_URL);
+        assert_eq!(
+            cfg.nats_store_config().unwrap().stream_name,
+            "gh-report-org_6f7267"
+        );
     }
 }

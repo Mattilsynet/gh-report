@@ -37,6 +37,8 @@ use cherry_pit_core::{AggregateId, ListableEventStore};
 use cherry_pit_pardosa::PardosaEventStore;
 use cherry_pit_projection::FileProjectionStore;
 use jiff::Timestamp;
+use pardosa::store::JetStreamBackend as PardosaJetStreamBackend;
+use pardosa_nats::{JetStreamBackend as SubstrateJetStreamBackend, JetStreamConfig, RuntimeHandle};
 
 pub use crate::infra::server::state::{CachedPage, PageUpdateEvent};
 
@@ -422,7 +424,9 @@ impl AppState {
 /// only needed once); the bundle struct is consumed.
 ///
 /// [`EventStore`]: cherry_pit_core::EventStore
-fn build_services(handles: MergerHandles) -> (Arc<RunService>, Arc<RepoService>, Arc<WebhookService>) {
+fn build_services(
+    handles: MergerHandles,
+) -> (Arc<RunService>, Arc<RepoService>, Arc<WebhookService>) {
     let run = Arc::new(RunService::new());
     let repo = Arc::new(RepoService::with_handle(handles.repo));
     let webhook = Arc::new(WebhookService::new());
@@ -432,6 +436,8 @@ fn build_services(handles: MergerHandles) -> (Arc<RunService>, Arc<RepoService>,
 fn open_event_store(
     events_dir: &Path,
     backend: crate::config::runtime::PardosaBackend,
+    nats: crate::config::runtime::NatsStoreConfig,
+    handle: tokio::runtime::Handle,
 ) -> Result<EventStoreImpl, std::io::Error> {
     match backend {
         crate::config::runtime::PardosaBackend::Pgno => {
@@ -443,10 +449,36 @@ fn open_event_store(
                 EventStoreImpl::create_pgno(&path).map_err(std::io::Error::other)
             }
         }
-        crate::config::runtime::PardosaBackend::Nats => Err(std::io::Error::other(
-            "pardosa nats backend requires runtime handle wiring in a follow-up",
-        )),
+        crate::config::runtime::PardosaBackend::Nats => {
+            let cfg = JetStreamConfig::builder()
+                .stream_name(nats.stream_name)
+                .subject(nats.subject)
+                .durable_consumer(nats.durable_consumer)
+                .nats_url(nats.nats_url)
+                .runtime_handle(RuntimeHandle::from_tokio(handle))
+                .build()
+                .map_err(std::io::Error::other)?;
+            let substrate = SubstrateJetStreamBackend::open(cfg);
+            let backend = PardosaJetStreamBackend::open(substrate);
+            EventStoreImpl::open_jetstream(backend).map_err(std::io::Error::other)
+        }
     }
+}
+
+/// Open the selected event store on Tokio's blocking pool.
+///
+/// `JetStream` open performs a blocking broker replay via
+/// `spawn_blocking` and requires the daemon's multi-thread Tokio
+/// runtime; do not switch the daemon to `current_thread`.
+async fn open_event_store_blocking(
+    events_dir: PathBuf,
+    backend: crate::config::runtime::PardosaBackend,
+    nats: crate::config::runtime::NatsStoreConfig,
+    handle: tokio::runtime::Handle,
+) -> Result<EventStoreImpl, std::io::Error> {
+    tokio::task::spawn_blocking(move || open_event_store(&events_dir, backend, nats, handle))
+        .await
+        .map_err(std::io::Error::other)?
 }
 
 /// Per-construction unique tempdir plus pardosa `.pgno` event store.
@@ -539,8 +571,12 @@ impl AppState {
         let deliveries_by_id = Arc::new(Mutex::new(HashMap::new()));
         let next_seq = Arc::new(Mutex::new(HashMap::new()));
         let rs = noop_event_store().await;
-        let (merger_handles, merger_joins) =
-            MergerHandles::spawn(rs, Arc::clone(&bus), Arc::clone(&repos_by_key), Arc::clone(&next_seq));
+        let (merger_handles, merger_joins) = MergerHandles::spawn(
+            rs,
+            Arc::clone(&bus),
+            Arc::clone(&repos_by_key),
+            Arc::clone(&next_seq),
+        );
         let (run_service, repo_service, webhook_service) = build_services(merger_handles);
         let projection_state =
             Arc::new(Mutex::new(crate::projection::EvidenceProjection::default()));
@@ -612,13 +648,16 @@ impl AppState {
     /// # Panics
     ///
     /// Panics if [`FileProjectionStore::new`] fails on `projections_dir`.
-    #[expect(clippy::unused_async, reason = "preserves .await callers; brief S2")]
     pub async fn with_stores(
         events_dir: &Path,
         projections_dir: PathBuf,
         backend: crate::config::runtime::PardosaBackend,
+        nats: crate::config::runtime::NatsStoreConfig,
     ) -> Result<Arc<Self>, std::io::Error> {
-        let event_store = Arc::new(open_event_store(events_dir, backend)?);
+        let handle = tokio::runtime::Handle::current();
+        let events_dir = events_dir.to_path_buf();
+        let event_store = open_event_store_blocking(events_dir, backend, nats, handle).await?;
+        let event_store = Arc::new(event_store);
         let projection_store = Arc::new(
             FileProjectionStore::<crate::projection::EvidenceProjection>::new(
                 projections_dir,
@@ -979,8 +1018,12 @@ impl AppStateBuilder {
         let deliveries_by_id = Arc::new(Mutex::new(HashMap::new()));
         let next_seq = Arc::new(Mutex::new(HashMap::new()));
         let rs = noop_event_store().await;
-        let (merger_handles, merger_joins) =
-            MergerHandles::spawn(rs, Arc::clone(&bus), Arc::clone(&repos_by_key), Arc::clone(&next_seq));
+        let (merger_handles, merger_joins) = MergerHandles::spawn(
+            rs,
+            Arc::clone(&bus),
+            Arc::clone(&repos_by_key),
+            Arc::clone(&next_seq),
+        );
         let (run_service, repo_service, webhook_service) = build_services(merger_handles);
         let projection_state =
             Arc::new(Mutex::new(crate::projection::EvidenceProjection::default()));
@@ -1171,7 +1214,32 @@ impl crate::infra::server::state::ServerState for AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::runtime::{NatsStoreConfig, PardosaBackend};
     use crate::domain::cache::CachedRepoDetail;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn nats_open_dead_port_returns_error_without_nested_runtime_panic() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let events_dir = tmp.path().join("events");
+        let projections_dir = tmp.path().join("projections");
+        let nats = NatsStoreConfig::for_org("org", "nats://127.0.0.1:1").unwrap();
+
+        let result =
+            AppState::with_stores(&events_dir, projections_dir, PardosaBackend::Nats, nats).await;
+
+        let error = match result {
+            Ok(_) => panic!("dead-port Nats open must fail"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            !error.contains("Cannot start a runtime from within a runtime"),
+            "Nats open must return a typed connect error, not panic with nested-runtime failure: {error}"
+        );
+        assert!(
+            error.contains("connect") || error.contains("Connection") || error.contains("refused"),
+            "dead-port Nats open should reach connect and surface it as io::Error, got: {error}"
+        );
+    }
 
     #[tokio::test]
     async fn cache_respects_max_capacity() {

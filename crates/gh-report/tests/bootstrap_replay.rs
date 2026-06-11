@@ -85,9 +85,14 @@ async fn bootstrap_replay_populates_routing_indices() {
         &events_dir,
         projections_dir,
         gh_report::config::runtime::PardosaBackend::Pgno,
+        gh_report::config::runtime::NatsStoreConfig::for_org(
+            "org",
+            gh_report::config::runtime::DEFAULT_NATS_URL,
+        )
+        .unwrap(),
     )
-        .await
-        .expect("with_stores");
+    .await
+    .expect("with_stores");
     app_state
         .snapshot_fast_path_init()
         .await
@@ -159,9 +164,14 @@ async fn restart_rehydrates_projection_state() {
         &events_dir,
         projections_dir,
         gh_report::config::runtime::PardosaBackend::Pgno,
+        gh_report::config::runtime::NatsStoreConfig::for_org(
+            "org",
+            gh_report::config::runtime::DEFAULT_NATS_URL,
+        )
+        .unwrap(),
     )
-        .await
-        .expect("with_stores");
+    .await
+    .expect("with_stores");
     let event_store: &Arc<EventStoreImpl> = app_state
         .event_store
         .as_ref()
