@@ -14,15 +14,15 @@ References: CHE-0074, CHE-0072, CHE-0048, CHE-0022, CHE-0024, CHE-0009, CHE-0005
 
 M2 collapses gh-report's durable event surface after the M1 pardosa adapter proved that cherry-pit logical streams can be reconstructed from pardosa fiber-per-append storage. The earlier three-aggregate model persisted sweep lifecycle, repository lifecycle, and webhook delivery events; the ratified end state persists only repository current-state facts and reserves historical sweep/webhook analytics for a future service.
 
-The P3 native-store port (CHE-0074) later removed the cherry-pit byte adapter entirely: gh-report now persists native `gh_report::event::DomainEvent` values directly through a gh-report-owned pardosa store port, one fiber per repository domain key, and the `Removed` tombstone projection-delete is replaced by a pardosa `Detach` soft-delete. R1, R2, R6, and R7 are amended below to that as-shipped model; R3, R4, R5 stand.
+The P3 native-store port (CHE-0074) later removed the cherry-pit byte adapter entirely: gh-report now persists native `gh_report::event::DomainEvent` values directly through a gh-report-owned pardosa store port, one fiber per repository domain key, and projection deletion is signalled by the pardosa envelope `detached` flag. R1, R2, R6, and R7 are amended below to that as-shipped model; R3, R4, R5 stand.
 
 ## Decision
 
-gh-report persists one durable `RepositoryStateCaptured` event variant per repository, carrying repository evidence and a `RepoPresence` marker, onto one pardosa fiber per repository domain key. Sweep/run lifecycle and webhook delivery signals remain in memory and tracing, not in the store. `EvidenceProjection` keeps the latest event per live (non-detached) repository fiber as the current-state read model.
+gh-report persists one durable `RepositoryStateCaptured` event variant per repository, carrying repository evidence and active-state marker, onto one pardosa fiber per repository domain key. Sweep/run lifecycle and webhook delivery signals remain in memory and tracing, not in the store. `EvidenceProjection` keeps the latest event per live (non-detached) repository fiber as the current-state read model.
 
 R1 [5]: gh-report has exactly one durable event kind, `RepositoryStateCaptured`; each repository domain key maps to one pardosa fiber, realised physically as fiber-per-append and recovered across restarts by `FiberIndex<domain_key>` lookup plus `resume_defined` (CHE-0074:R4/R5). The earlier `(org, repo) -> AggregateId` logical-stream reconstruction through the byte adapter is superseded by CHE-0074.
 
-R2 [5]: `RepositoryStateCaptured` carries the full `RepositoryEvidence`, timestamp, repository identity fields, and `RepoPresence::{Active, Removed}`. Removal appends a `Removed`-marked event and then detaches the repository's fiber (`pardosa::StoreWriter::detach`); a returning repository is appended via `rescue_detached`. Removal is neither a second durable variant nor a substrate purge.
+R2 [5]: `RepositoryStateCaptured` carries the full `RepositoryEvidence`, timestamp, repository identity fields, and active-state marker. Removal detaches the repository's fiber (`pardosa::StoreWriter::detach`), and the pardosa envelope `detached` flag is the durable soft-delete signal; a returning repository is appended via `rescue_detached`. Removal is neither a second durable variant nor a substrate purge.
 
 R3 [5]: Sweep/run lifecycle and webhook delivery are non-persisted in-memory concerns; this reverses CHE-0054:R1 and CHE-0054:R3 and reverses CHE-0024:R1 persist-then-publish for those event classes only.
 
@@ -32,7 +32,7 @@ R5 [5]: Repository identity is `(org, repo) -> domain_key -> pardosa fiber`; thi
 
 R6 [5]: The storage substrate is `pardosa::store::EventStore<gh_report::event::DomainEvent>` through gh-report's native store port (CHE-0074), not the removed `PardosaEventStore` byte adapter; backend selection is constrained by CHE-0072.
 
-R7 [5]: `EvidenceProjection` keeps latest-per-repo current state by folding only written events (`NativeStore::events()`): `Active` snapshots upsert the repository row. Detached fibers are excluded from the fold, so a removed repository drops from the read model without a projection-side tombstone delete. The fold is the same an external journal consumer would perform (EDA boundary).
+R7 [5]: `EvidenceProjection` folds only `NativeStore::events()` in line order: non-detached `Active` snapshots upsert; envelope `detached == true` removes. The fold reads the envelope flag, not a domain tombstone marker, and matches an external journal consumer (EDA boundary).
 
 ## Consequences
 

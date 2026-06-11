@@ -302,32 +302,20 @@ fn projection_from_store(
 
 fn fold_native_event(
     projection: &mut crate::projection::EvidenceProjection,
-    _detached: bool,
+    detached: bool,
     event: NativeDomainEvent,
 ) {
-    match event {
-        NativeDomainEvent::RepositoryStateCaptured {
-            domain_key,
-            evidence: Some(evidence),
-            presence: NativeRepoPresence::Active,
-            ..
-        } => {
-            projection
-                .repositories
-                .insert(domain_key.as_str().to_string(), (*evidence).into());
-        }
-        NativeDomainEvent::RepositoryStateCaptured {
-            domain_key,
-            presence: NativeRepoPresence::Removed,
-            ..
-        } => {
-            projection.repositories.remove(domain_key.as_str());
-        }
-        NativeDomainEvent::RepositoryStateCaptured {
-            presence: NativeRepoPresence::Active,
-            evidence: None,
-            ..
-        } => {}
+    let NativeDomainEvent::RepositoryStateCaptured {
+        domain_key,
+        evidence,
+        ..
+    } = event;
+    if detached {
+        projection.repositories.remove(domain_key.as_str());
+    } else if let Some(evidence) = evidence {
+        projection
+            .repositories
+            .insert(domain_key.as_str().to_string(), (*evidence).into());
     }
 }
 
@@ -388,14 +376,13 @@ fn repo_event(
     repo_name: &str,
     timestamp: &str,
     evidence: Option<Box<crate::event::RepositoryEvidence>>,
-    presence: NativeRepoPresence,
 ) -> Result<NativeDomainEvent, PersistenceError> {
     Ok(NativeDomainEvent::RepositoryStateCaptured {
         domain_key: non_empty("domain_key", domain_key)?,
         repo_name: non_empty("repo_name", repo_name)?,
         timestamp: event_timestamp("timestamp", timestamp)?,
         evidence,
-        presence,
+        presence: NativeRepoPresence::Active,
     })
 }
 
@@ -532,7 +519,6 @@ impl AppState {
             repo_name,
             timestamp,
             Some(Box::new(native_evidence)),
-            NativeRepoPresence::Active,
         )?;
         self.event_store
             .record(domain_key, event)
@@ -552,13 +538,7 @@ impl AppState {
         repo_name: &str,
         timestamp: &str,
     ) -> Result<(), PersistenceError> {
-        let event = repo_event(
-            domain_key,
-            repo_name,
-            timestamp,
-            None,
-            NativeRepoPresence::Removed,
-        )?;
+        let event = repo_event(domain_key, repo_name, timestamp, None)?;
         self.event_store
             .detach(domain_key, event)
             .map_err(|e| native_store_persistence(&e))?;

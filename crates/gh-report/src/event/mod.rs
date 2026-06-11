@@ -221,7 +221,6 @@ pub struct CodeownersEntry {
 #[repr(u8)]
 pub enum RepoPresence {
     Active = 0,
-    Removed = 1,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
@@ -379,13 +378,13 @@ mod tests {
     }
 
     #[test]
-    fn native_repository_state_round_trips_with_removed_presence() {
+    fn native_repository_state_round_trips_with_active_presence() {
         let event = DomainEvent::RepositoryStateCaptured {
             domain_key: nes("id-repo-1"),
             repo_name: nes("repo-1"),
             timestamp: ts(40),
             evidence: Some(Box::new(full_evidence())),
-            presence: RepoPresence::Removed,
+            presence: RepoPresence::Active,
         };
         let wire = to_vec(&event);
         let decoded: DomainEvent = from_bytes(&wire).expect("decode native event");
@@ -398,12 +397,15 @@ mod tests {
         let first = <DomainEvent as GenomeSafe>::SCHEMA_HASH;
         let second = <DomainEvent as GenomeSafe>::SCHEMA_HASH;
         assert_eq!(first, second);
+        assert_ne!(
+            first, 19_710_905_809_486_475_925_592_730_934_028_496_282_u128,
+            "P4b must change the schema hash by dropping RepoPresence::Removed"
+        );
     }
 
     #[test]
-    fn repo_presence_retains_active_and_removed_discriminants() {
+    fn repo_presence_retains_active_discriminant() {
         assert_eq!(RepoPresence::Active as u8, 0);
-        assert_eq!(RepoPresence::Removed as u8, 1);
     }
 
     #[test]

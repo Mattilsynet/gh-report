@@ -29,9 +29,10 @@ R1 [5]: New enum variants are allowed and intentionally compile-breaking
   to force all apply implementations to handle them
 R2 [5]: Removing or renaming persisted event variants is forbidden
 R3 [5]: Adding, removing, or reshaping fields on existing variants
-  is a schema-version bump at the adapter boundary — the GEN-0015 file-header
-  `format_version` is incremented and existing on-disk batches are
-  discarded on read via `StoreError::SchemaVersionMismatch`
+  is a schema-version bump at the adapter boundary: legacy adapters bump
+  GEN-0015 `format_version`, while gh-report's native pardosa port changes
+  PGN-0003 `SCHEMA_HASH`; old-schema data is refused and re-scraped under
+  PGN-0009.
 R4 [5]: event_type() strings are immutable once events exist in a log
 R5 [5]: Do not use #[non_exhaustive] on domain event enums; exhaustive
   matching in apply is required
@@ -50,9 +51,11 @@ R6 [5]: Event payloads MUST NOT carry computed aggregates —
 3. **Field shape changes on existing variants**: schema-version bump
    per adapter governance. The fixed-layout pardosa path has no
    in-version additive evolution (GEN-0029, GEN-0035); evolution is
-   realised by bumping GEN-0015's `format_version` and discarding
-   pre-bump on-disk batches. gh-report's re-scrape policy
-   (2026-05-17 user constraint) covers operational recovery.
+   realised by bumping GEN-0015's `format_version`, or by changing the
+   PGN-0003 `SCHEMA_HASH` for gh-report's native pardosa port, and
+   discarding pre-bump on-disk batches. gh-report's re-scrape policy
+   (2026-05-17 user constraint) covers operational recovery; PGN-0009
+   governs the native-port refuse-then-rescrape posture.
 4. **`event_type()` strings**: immutable once events exist in a log
    (per CHE-0010). Renaming breaks deserialization.
 5. **`#[non_exhaustive]`**: NOT recommended on domain event enums.
