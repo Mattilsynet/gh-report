@@ -25,6 +25,7 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 jiff = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [dev-dependencies]
 cherry-pit-core = { workspace = true, features = ["testing"] }

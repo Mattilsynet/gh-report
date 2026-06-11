@@ -11,6 +11,7 @@ use std::marker::PhantomData;
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::Mutex;
+use tokio::runtime::{Handle, RuntimeFlavor};
 
 pub struct PardosaEventStore<E: DomainEvent> {
     inner: Mutex<InnerStore<E>>,
@@ -19,6 +20,7 @@ pub struct PardosaEventStore<E: DomainEvent> {
 struct InnerStore<E: DomainEvent> {
     store: PardosaStore<EnvelopePayload>,
     index: BTreeMap<AggregateId, Vec<EventEnvelope<E>>>,
+    bridge_runtime: bool,
     _event: PhantomData<fn() -> E>,
 }
 
@@ -37,7 +39,7 @@ impl<E: DomainEvent> PardosaEventStore<E> {
     /// re-reading the newly-created store yields invalid payloads.
     pub fn create_pgno(path: &Path) -> Result<Self, StoreError> {
         let store = PardosaStore::<EnvelopePayload>::create(path).map_err(infrastructure_error)?;
-        Self::from_pardosa_store(store)
+        Self::from_pardosa_store(store, false)
     }
 
     /// Create a JetStream-backed adapter through pardosa's typed-backend
@@ -49,10 +51,17 @@ impl<E: DomainEvent> PardosaEventStore<E> {
     /// seed, open, or fold the backing store. Returns
     /// [`StoreError::CorruptData`] if any captured payload cannot be
     /// decoded into `EventEnvelope<E>` or fails stream validation.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called from inside a Tokio `current_thread` runtime.
+    /// JetStream-backed pardosa calls are bridged with
+    /// `tokio::task::block_in_place`, which requires a multi-thread
+    /// runtime when an ambient runtime exists.
     pub fn create_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
         let store = PardosaStore::<EnvelopePayload>::create_with_backend(backend)
             .map_err(infrastructure_error)?;
-        Self::from_pardosa_store(store)
+        Self::from_pardosa_store(store, true)
     }
 
     /// Open a `.pgno`-backed adapter and capture its logical stream index.
@@ -66,7 +75,7 @@ impl<E: DomainEvent> PardosaEventStore<E> {
     pub fn open_pgno(path: &Path) -> Result<Self, StoreError> {
         let store = PardosaStore::<EnvelopePayload>::open_with_backend(PgnoBackend::open(path))
             .map_err(infrastructure_error)?;
-        Self::from_pardosa_store(store)
+        Self::from_pardosa_store(store, false)
     }
 
     /// Open a JetStream-backed adapter and capture its logical stream index.
@@ -77,18 +86,29 @@ impl<E: DomainEvent> PardosaEventStore<E> {
     /// rehydrate the JetStream-authoritative blob. Returns
     /// [`StoreError::CorruptData`] if any captured payload cannot be
     /// decoded into `EventEnvelope<E>` or fails stream validation.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called from inside a Tokio `current_thread` runtime.
+    /// JetStream-backed pardosa calls are bridged with
+    /// `tokio::task::block_in_place`, which requires a multi-thread
+    /// runtime when an ambient runtime exists.
     pub fn open_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
         let store = PardosaStore::<EnvelopePayload>::open_with_backend(backend)
             .map_err(infrastructure_error)?;
-        Self::from_pardosa_store(store)
+        Self::from_pardosa_store(store, true)
     }
 
-    fn from_pardosa_store(store: PardosaStore<EnvelopePayload>) -> Result<Self, StoreError> {
-        let index = capture_index::<E>(&store)?;
+    fn from_pardosa_store(
+        store: PardosaStore<EnvelopePayload>,
+        bridge_runtime: bool,
+    ) -> Result<Self, StoreError> {
+        let index = bridge_pardosa_call(bridge_runtime, || capture_index::<E>(&store))?;
         Ok(Self {
             inner: Mutex::new(InnerStore {
                 store,
                 index,
+                bridge_runtime,
                 _event: PhantomData,
             }),
         })
@@ -124,6 +144,19 @@ impl<E: DomainEvent> PardosaEventStore<E> {
     }
 }
 
+fn bridge_pardosa_call<T>(bridge_runtime: bool, f: impl FnOnce() -> T) -> T {
+    if bridge_runtime && let Ok(handle) = Handle::try_current() {
+        debug_assert_eq!(
+            handle.runtime_flavor(),
+            RuntimeFlavor::MultiThread,
+            "PardosaEventStore JetStream bridge requires a multi-thread Tokio runtime"
+        );
+        tokio::task::block_in_place(f)
+    } else {
+        f()
+    }
+}
+
 fn capture_index<E: DomainEvent>(
     store: &PardosaStore<EnvelopePayload>,
 ) -> Result<BTreeMap<AggregateId, Vec<EventEnvelope<E>>>, StoreError> {
@@ -155,6 +188,27 @@ fn capture_index<E: DomainEvent>(
     Ok(index)
 }
 
+fn decode_captured_stream<E: DomainEvent>(
+    id: AggregateId,
+    store: &PardosaStore<EnvelopePayload>,
+) -> Result<Vec<EventEnvelope<E>>, StoreError> {
+    let captured = RefCell::new(Vec::<CapturedEnvelope>::new());
+    let target = id.get();
+    let extractor = |event: &Event<EnvelopePayload>| -> Option<u64> {
+        let payload = event.domain_event();
+        if payload.aggregate_id == target {
+            captured.borrow_mut().push(CapturedEnvelope {
+                envelope_bytes: payload.envelope_bytes().to_vec(),
+            });
+            Some(payload.aggregate_id)
+        } else {
+            None
+        }
+    };
+    let _ = store.reader().fiber_index::<u64, _, _>(extractor);
+    decode_stream::<E, _>(id, captured.borrow().iter())
+}
+
 fn decode_stream<'a, E, I>(
     id: AggregateId,
     captures: I,
@@ -184,7 +238,8 @@ impl<E: DomainEvent> EventStore for PardosaEventStore<E> {
     type Event = E;
 
     async fn load(&self, id: AggregateId) -> Result<Vec<EventEnvelope<E>>, StoreError> {
-        self.load_indexed(id)
+        let inner = self.lock_inner()?;
+        bridge_pardosa_call(inner.bridge_runtime, || decode_captured_stream(id, &inner.store))
     }
 
     async fn create(&self, events: Vec<E>, context: CorrelationContext) -> StoreCreateResult<E> {
@@ -197,7 +252,9 @@ impl<E: DomainEvent> EventStore for PardosaEventStore<E> {
         let mut inner = self.lock_inner()?;
         let id = next_aggregate_id(&inner.index)?;
         let envelopes = build_envelopes(id, 0, events, &context)?;
-        persist_envelopes(&mut inner.store, id, &envelopes)?;
+        bridge_pardosa_call(inner.bridge_runtime, || {
+            persist_envelopes(&mut inner.store, id, &envelopes)
+        })?;
         inner.index.insert(id, envelopes.clone());
         Ok((id, envelopes))
     }
@@ -229,7 +286,9 @@ impl<E: DomainEvent> EventStore for PardosaEventStore<E> {
             });
         }
         let envelopes = build_envelopes(id, expected_sequence.get(), events, &context)?;
-        persist_envelopes(&mut inner.store, id, &envelopes)?;
+        bridge_pardosa_call(inner.bridge_runtime, || {
+            persist_envelopes(&mut inner.store, id, &envelopes)
+        })?;
         inner.index.entry(id).or_default().extend(envelopes.clone());
         Ok(envelopes)
     }
