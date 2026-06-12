@@ -4,6 +4,349 @@ use crate::authoritative::jetstream::JetStreamBackendAdapter;
 use crate::durability::AckPosition;
 use crate::error::{BackendError, BackendOp, RuntimeFailureKind};
 use pardosa_nats::{JetStreamAckPosition, JetStreamRuntimeError};
+use std::time::{Duration, Instant};
+use tracing::{info, info_span};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TelemetryOp {
+    Append,
+    Sync,
+    Replay,
+    Connect,
+}
+
+impl TelemetryOp {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Append => "append",
+            Self::Sync => "sync",
+            Self::Replay => "replay",
+            Self::Connect => "connect",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalCategory {
+    Ok,
+    Timeout,
+    Connect,
+    Replay,
+    Publish,
+    RuntimeFailure,
+}
+
+impl TerminalCategory {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Timeout => "timeout",
+            Self::Connect => "connect",
+            Self::Replay => "replay",
+            Self::Publish => "publish",
+            Self::RuntimeFailure => "runtime_failure",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MetricKind {
+    Counter,
+    Histogram,
+}
+
+impl MetricKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Counter => "counter",
+            Self::Histogram => "histogram",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MetricLabelSpec {
+    name: &'static str,
+    values: &'static [&'static str],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MetricSpec {
+    name: &'static str,
+    kind: MetricKind,
+    labels: &'static [MetricLabelSpec],
+}
+
+const OP_LABEL_VALUES: &[&str] = &["append", "sync", "replay", "connect"];
+const TERMINAL_CATEGORY_LABEL_VALUES: &[&str] = &[
+    "ok",
+    "timeout",
+    "connect",
+    "replay",
+    "publish",
+    "runtime_failure",
+];
+const METRIC_LABELS: &[MetricLabelSpec] = &[
+    MetricLabelSpec {
+        name: "op",
+        values: OP_LABEL_VALUES,
+    },
+    MetricLabelSpec {
+        name: "terminal_category",
+        values: TERMINAL_CATEGORY_LABEL_VALUES,
+    },
+];
+const OPERATION_TERMINAL_COUNTER: MetricSpec = MetricSpec {
+    name: "pardosa_jetstream_operation_terminal_total",
+    kind: MetricKind::Counter,
+    labels: METRIC_LABELS,
+};
+const APPEND_LATENCY_HISTOGRAM: MetricSpec = MetricSpec {
+    name: "pardosa_jetstream_append_latency_seconds",
+    kind: MetricKind::Histogram,
+    labels: METRIC_LABELS,
+};
+const REGISTERED_METRICS: &[MetricSpec] = &[OPERATION_TERMINAL_COUNTER, APPEND_LATENCY_HISTOGRAM];
+
+#[derive(Clone, Copy, Debug)]
+struct OperationTelemetry {
+    op: TelemetryOp,
+    payload_size_bytes: Option<usize>,
+}
+
+impl OperationTelemetry {
+    const fn append(payload_size_bytes: usize) -> Self {
+        Self {
+            op: TelemetryOp::Append,
+            payload_size_bytes: Some(payload_size_bytes),
+        }
+    }
+
+    const fn sync() -> Self {
+        Self {
+            op: TelemetryOp::Sync,
+            payload_size_bytes: None,
+        }
+    }
+}
+
+fn registered_metrics() -> &'static [MetricSpec] {
+    REGISTERED_METRICS
+}
+
+fn terminal_category_from_backend(err: &BackendError) -> TerminalCategory {
+    match err {
+        BackendError::Timeout { .. } => TerminalCategory::Timeout,
+        BackendError::RuntimeFailure { .. } => TerminalCategory::RuntimeFailure,
+        BackendError::Publish { .. } | BackendError::PublisherBacklog { .. } => {
+            TerminalCategory::Publish
+        }
+        BackendError::Connect { .. } => TerminalCategory::Connect,
+        BackendError::Replay { .. } => TerminalCategory::Replay,
+    }
+}
+
+fn terminal_category_from_runtime(err: &JetStreamRuntimeError) -> TerminalCategory {
+    if matches!(err, JetStreamRuntimeError::Timeout { .. }) {
+        TerminalCategory::Timeout
+    } else if matches!(err, JetStreamRuntimeError::Detached) {
+        TerminalCategory::RuntimeFailure
+    } else if matches!(err, JetStreamRuntimeError::Connect { .. }) {
+        TerminalCategory::Connect
+    } else if matches!(err, JetStreamRuntimeError::Replay { .. }) {
+        TerminalCategory::Replay
+    } else {
+        TerminalCategory::Publish
+    }
+}
+
+fn duration_seconds(d: Duration) -> f64 {
+    d.as_secs_f64()
+}
+
+fn record_metric(
+    spec: MetricSpec,
+    op: TelemetryOp,
+    terminal_category: TerminalCategory,
+    value: f64,
+) {
+    assert!(
+        registered_metrics()
+            .iter()
+            .any(|registered| registered == &spec),
+        "metric must be registered before emission"
+    );
+    info!(
+        target: "pardosa::jetstream::metrics",
+        metric_name = spec.name,
+        metric_kind = spec.kind.as_str(),
+        metric_value = value,
+        op = op.as_str(),
+        terminal_category = terminal_category.as_str(),
+        "pardosa jetstream metric"
+    );
+}
+
+fn record_operation_metrics(
+    op: TelemetryOp,
+    terminal_category: TerminalCategory,
+    elapsed: Duration,
+) {
+    record_metric(OPERATION_TERMINAL_COUNTER, op, terminal_category, 1.0);
+    if matches!(op, TelemetryOp::Append) {
+        record_metric(
+            APPEND_LATENCY_HISTOGRAM,
+            op,
+            terminal_category,
+            duration_seconds(elapsed),
+        );
+    }
+}
+
+fn observe_operation(
+    fields: OperationTelemetry,
+    run: impl FnOnce() -> Result<AckPosition, BackendError>,
+) -> Result<AckPosition, BackendError> {
+    let start = Instant::now();
+    let payload_size = fields.payload_size_bytes.unwrap_or(0);
+    let span = info_span!(
+        "pardosa.jetstream.operation",
+        op = fields.op.as_str(),
+        payload_size_bytes = payload_size,
+        replay_record_count = tracing::field::Empty,
+        latency_seconds = tracing::field::Empty,
+        terminal_category = tracing::field::Empty,
+    );
+    span.in_scope(|| {
+        info!(
+            phase = "entry",
+            op = fields.op.as_str(),
+            "pardosa jetstream backend entry"
+        );
+    });
+    let result = run();
+    let terminal_category = result
+        .as_ref()
+        .map_or_else(terminal_category_from_backend, |_| TerminalCategory::Ok);
+    let elapsed = start.elapsed();
+    span.record("latency_seconds", duration_seconds(elapsed));
+    span.record("terminal_category", terminal_category.as_str());
+    if let Ok(ack) = result.as_ref() {
+        span.record("ack_position", ack.as_u64());
+    }
+    span.in_scope(|| {
+        if let Ok(ack) = result.as_ref() {
+            info!(
+                phase = "completion",
+                op = fields.op.as_str(),
+                terminal_category = terminal_category.as_str(),
+                latency_seconds = duration_seconds(elapsed),
+                ack_position = ack.as_u64(),
+                "pardosa jetstream backend completion"
+            );
+        } else {
+            info!(
+                phase = "completion",
+                op = fields.op.as_str(),
+                terminal_category = terminal_category.as_str(),
+                latency_seconds = duration_seconds(elapsed),
+                "pardosa jetstream backend completion"
+            );
+        }
+    });
+    record_operation_metrics(fields.op, terminal_category, elapsed);
+    result
+}
+
+fn observe_connect<T>(
+    run: impl FnOnce() -> Result<T, JetStreamRuntimeError>,
+) -> Result<T, JetStreamRuntimeError> {
+    let start = Instant::now();
+    let span = info_span!(
+        "pardosa.jetstream.connect",
+        op = TelemetryOp::Connect.as_str(),
+        latency_seconds = tracing::field::Empty,
+        terminal_category = tracing::field::Empty,
+    );
+    span.in_scope(|| {
+        info!(
+            phase = "entry",
+            op = TelemetryOp::Connect.as_str(),
+            "pardosa jetstream connect entry"
+        );
+    });
+    let result = run();
+    let terminal_category = result
+        .as_ref()
+        .map_or_else(terminal_category_from_runtime, |_| TerminalCategory::Ok);
+    let elapsed = start.elapsed();
+    span.record("latency_seconds", duration_seconds(elapsed));
+    span.record("terminal_category", terminal_category.as_str());
+    span.in_scope(|| {
+        info!(
+            phase = "completion",
+            op = TelemetryOp::Connect.as_str(),
+            terminal_category = terminal_category.as_str(),
+            latency_seconds = duration_seconds(elapsed),
+            "pardosa jetstream connect completion"
+        );
+    });
+    record_operation_metrics(TelemetryOp::Connect, terminal_category, elapsed);
+    result
+}
+
+fn observe_replay_operation(
+    run: impl FnOnce() -> Result<Vec<pardosa_nats::JetStreamReplayRecord>, BackendError>,
+) -> Result<Vec<pardosa_nats::JetStreamReplayRecord>, BackendError> {
+    let start = Instant::now();
+    let span = info_span!(
+        "pardosa.jetstream.operation",
+        op = TelemetryOp::Replay.as_str(),
+        payload_size_bytes = 0,
+        replay_record_count = tracing::field::Empty,
+        latency_seconds = tracing::field::Empty,
+        terminal_category = tracing::field::Empty,
+    );
+    span.in_scope(|| {
+        info!(
+            phase = "entry",
+            op = TelemetryOp::Replay.as_str(),
+            "pardosa jetstream backend entry"
+        );
+    });
+    let result = run();
+    let terminal_category = result
+        .as_ref()
+        .map_or_else(terminal_category_from_backend, |_| TerminalCategory::Ok);
+    let elapsed = start.elapsed();
+    span.record("latency_seconds", duration_seconds(elapsed));
+    span.record("terminal_category", terminal_category.as_str());
+    if let Ok(records) = result.as_ref() {
+        span.record("replay_record_count", records.len());
+    }
+    span.in_scope(|| {
+        if let Ok(records) = result.as_ref() {
+            info!(
+                phase = "completion",
+                op = TelemetryOp::Replay.as_str(),
+                terminal_category = terminal_category.as_str(),
+                latency_seconds = duration_seconds(elapsed),
+                replay_record_count = records.len(),
+                "pardosa jetstream backend completion"
+            );
+        } else {
+            info!(
+                phase = "completion",
+                op = TelemetryOp::Replay.as_str(),
+                terminal_category = terminal_category.as_str(),
+                latency_seconds = duration_seconds(elapsed),
+                "pardosa jetstream backend completion"
+            );
+        }
+    });
+    record_operation_metrics(TelemetryOp::Replay, terminal_category, elapsed);
+    result
+}
 fn map_position(pos: JetStreamAckPosition) -> AckPosition {
     AckPosition::from_u64(pos.as_u64())
 }
@@ -31,24 +374,27 @@ fn map_runtime_error(err: JetStreamRuntimeError, op: BackendOp) -> BackendError 
 impl sealed::Sealed for JetStreamBackendAdapter {}
 impl BackendSink for JetStreamBackendAdapter {
     fn append(&mut self, bytes: &[u8]) -> Result<AckPosition, BackendError> {
-        self.handle
-            .append(bytes)
-            .map(map_position)
-            .map_err(|e| map_runtime_error(e, BackendOp::Append))
+        observe_operation(OperationTelemetry::append(bytes.len()), || {
+            observe_connect(|| self.handle.append(bytes))
+                .map(map_position)
+                .map_err(|e| map_runtime_error(e, BackendOp::Append))
+        })
     }
     fn sync(&mut self) -> Result<AckPosition, BackendError> {
-        self.handle
-            .sync()
-            .map(map_position)
-            .map_err(|e| map_runtime_error(e, BackendOp::Sync))
+        observe_operation(OperationTelemetry::sync(), || {
+            self.handle
+                .sync()
+                .map(map_position)
+                .map_err(|e| map_runtime_error(e, BackendOp::Sync))
+        })
     }
 }
 impl JetStreamBackendAdapter {
     pub(crate) fn fetch_durable_frames(&mut self) -> Result<Vec<Vec<u8>>, BackendError> {
-        let records = self
-            .handle
-            .replay_all()
-            .map_err(|e| map_runtime_error(e, BackendOp::Sync))?;
+        let records = observe_replay_operation(|| {
+            observe_connect(|| self.handle.replay_all())
+                .map_err(|e| map_runtime_error(e, BackendOp::Sync))
+        })?;
         Ok(records
             .into_iter()
             .map(|r| r.payload.as_ref().to_vec())
@@ -82,7 +428,52 @@ mod tests {
         DEFAULT_OPERATION_TIMEOUT, JetStreamBackend, JetStreamConfig, JetStreamRuntimeError,
         RuntimeHandle,
     };
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
+    use tracing_subscriber::fmt::MakeWriter;
+
+    #[derive(Clone, Default)]
+    struct VecWriter {
+        buf: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl VecWriter {
+        fn snapshot(&self) -> String {
+            String::from_utf8(self.buf.lock().unwrap().clone()).expect("utf-8")
+        }
+    }
+
+    impl Write for VecWriter {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.buf.lock().unwrap().extend_from_slice(data);
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for VecWriter {
+        type Writer = VecWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture_tracing(f: impl FnOnce()) -> String {
+        let writer = VecWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(writer.clone())
+            .with_ansi(false)
+            .with_target(false)
+            .with_level(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        writer.snapshot()
+    }
     fn detached_config(tag: &str) -> JetStreamConfig {
         JetStreamConfig::builder()
             .stream_name(format!("backend-{tag}"))
@@ -245,6 +636,190 @@ mod tests {
                 }
             ),
             "detached fetch surface must be RuntimeFailure{{RuntimeShutdown}}, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn jetstream_adapter_observability_emits_spans_metrics_and_bounded_labels() {
+        use crate::backend::journal::RehydrateableBackend;
+        let metrics = super::registered_metrics();
+        assert!(
+            metrics
+                .iter()
+                .any(|metric| matches!(metric.kind, super::MetricKind::Counter)),
+            "at least one counter must be registered",
+        );
+        assert!(
+            metrics
+                .iter()
+                .any(|metric| matches!(metric.kind, super::MetricKind::Histogram)),
+            "at least one histogram must be registered",
+        );
+        for metric in metrics {
+            let label_names: Vec<&str> = metric.labels.iter().map(|label| label.name).collect();
+            assert_eq!(
+                label_names,
+                vec!["op", "terminal_category"],
+                "metric `{}` label names must stay bounded",
+                metric.name,
+            );
+            for label in metric.labels {
+                assert!(
+                    label.values.len() <= 6,
+                    "metric `{}` label `{}` value set must stay bounded",
+                    metric.name,
+                    label.name,
+                );
+            }
+        }
+        let captured = capture_tracing(|| {
+            let handle = JetStreamBackend::open(detached_config("observability"));
+            let mut adapter = JetStreamBackendAdapter::new(handle);
+            let _ = adapter.append(b"event-bytes");
+            let _ = adapter.sync();
+            let _ = adapter.fetch_durable_bytes();
+        });
+        for needle in [
+            "op=\"append\"",
+            "op=\"sync\"",
+            "op=\"replay\"",
+            "op=\"connect\"",
+            "phase=\"entry\"",
+            "phase=\"completion\"",
+            "terminal_category=\"runtime_failure\"",
+            "metric_kind=\"counter\"",
+            "metric_kind=\"histogram\"",
+            "payload_size_bytes=11",
+        ] {
+            assert!(
+                captured.contains(needle),
+                "JetStream observability output missing `{needle}`; captured={captured:?}",
+            );
+        }
+        for forbidden in [
+            "event_id=",
+            "AckPosition=",
+            "ack=",
+            "stream=backend-observability",
+            "subject=backend.observability",
+            "correlation_id=",
+            "fiber_id=",
+        ] {
+            assert!(
+                !captured.contains(forbidden),
+                "metric labels must stay bounded and span-only ids must not appear as labels: `{forbidden}` in {captured:?}",
+            );
+        }
+        for metric_line in captured
+            .lines()
+            .filter(|line| line.contains("pardosa jetstream metric"))
+        {
+            for forbidden in [
+                "payload_size_bytes=",
+                "replay_record_count=",
+                "ack_position=",
+                "event_id=",
+                "correlation_id=",
+                "fiber_id=",
+                "stream=",
+                "subject=",
+            ] {
+                assert!(
+                    !metric_line.contains(forbidden),
+                    "metric event must carry only bounded labels; `{forbidden}` in {metric_line:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn jetstream_adapter_observability_success_paths_emit_ok_completion() {
+        let captured = capture_tracing(|| {
+            let _ = super::observe_operation(super::OperationTelemetry::append(7), || {
+                Ok(crate::durability::AckPosition::from_u64(13))
+            });
+            let _ = super::observe_operation(super::OperationTelemetry::sync(), || {
+                Ok(crate::durability::AckPosition::from_u64(21))
+            });
+            let _ = super::observe_replay_operation(|| Ok(Vec::new()));
+            let _ = super::observe_connect(|| Ok(()));
+        });
+        for needle in [
+            "op=\"append\"",
+            "op=\"sync\"",
+            "op=\"replay\"",
+            "op=\"connect\"",
+            "phase=\"entry\"",
+            "phase=\"completion\"",
+            "terminal_category=\"ok\"",
+            "ack_position=13",
+            "ack_position=21",
+            "replay_record_count=0",
+        ] {
+            assert!(
+                captured.contains(needle),
+                "JetStream success observability output missing `{needle}`; captured={captured:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn jetstream_observability_terminal_category_vocabulary_matches_backend_taxonomy() {
+        use crate::error::PublisherBacklogKind;
+        let timeout = BackendError::Timeout {
+            op: BackendOp::Append,
+            elapsed: Duration::from_secs(2),
+            configured: Duration::from_secs(1),
+        };
+        let runtime_failure = BackendError::RuntimeFailure {
+            kind: RuntimeFailureKind::RuntimeShutdown,
+        };
+        let publish = BackendError::Publish {
+            source: boxed_source("publish"),
+        };
+        let backlog = BackendError::PublisherBacklog {
+            kind: PublisherBacklogKind::CapExceeded,
+        };
+        let connect = BackendError::Connect {
+            op: BackendOp::Append,
+            source: boxed_source("connect"),
+        };
+        let replay = BackendError::Replay {
+            op: BackendOp::Sync,
+            source: boxed_source("replay"),
+        };
+        let observed = [
+            super::terminal_category_from_backend(&timeout).as_str(),
+            super::terminal_category_from_backend(&runtime_failure).as_str(),
+            super::terminal_category_from_backend(&publish).as_str(),
+            super::terminal_category_from_backend(&backlog).as_str(),
+            super::terminal_category_from_backend(&connect).as_str(),
+            super::terminal_category_from_backend(&replay).as_str(),
+        ];
+        assert_eq!(
+            observed,
+            [
+                "timeout",
+                "runtime_failure",
+                "publish",
+                "publish",
+                "connect",
+                "replay",
+            ],
+            "terminal telemetry categories must match BackendError taxonomy",
+        );
+        let terminal_values = super::REGISTERED_METRICS[0].labels[1].values;
+        assert_eq!(
+            terminal_values,
+            [
+                "ok",
+                "timeout",
+                "connect",
+                "replay",
+                "publish",
+                "runtime_failure",
+            ],
+            "metric terminal_category label values must stay bounded to T2 categories plus ok",
         );
     }
     #[test]
