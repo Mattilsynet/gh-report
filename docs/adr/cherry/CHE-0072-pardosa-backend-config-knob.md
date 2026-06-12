@@ -9,7 +9,7 @@ Parent-cross-domain: PGN-0010 — backend selection uses pardosa sealed handles
 
 ## Related
 
-References: PGN-0010, CHE-0044, CHE-0071, CHE-0048, CHE-0073
+References: PGN-0010, CHE-0044, CHE-0074, CHE-0048, CHE-0073
 
 ## Context
 
@@ -17,10 +17,10 @@ gh-report needs an operator-visible way to choose the pardosa authoritative back
 
 ## Decision
 
-gh-report carries a `PardosaBackend` enum in `RuntimeConfig`, surfaced through `--pardosa-backend pgno|nats` and `GH_REPORT_PARDOSA_BACKEND`. Startup resolves the enum into a sealed pardosa handle constructor feeding the concrete `PardosaEventStore<DomainEvent>` adapter; projection rebuild stays backend-agnostic through `load()` and `list_aggregates()`.
+gh-report carries a `PardosaBackend` enum in `RuntimeConfig`, surfaced through `--pardosa-backend pgno|nats` and `GH_REPORT_PARDOSA_BACKEND`. Startup resolves the enum into a sealed pardosa handle constructor feeding gh-report's native pardosa store port; projection rebuild stays backend-agnostic through `load()` and `list_aggregates()`.
 
 R1 [5]: `RuntimeConfig::pardosa_backend` is the sole gh-report storage-backend selector, defaulting to `Pgno` and set by the CLI flag or environment variable.
-R2 [5]: The selector MUST resolve at startup to the concrete `PardosaEventStore<DomainEvent>` type; `Box<dyn EventStore>` and generic backend parameters in gh-report composition are forbidden.
+R2 [5]: The selector MUST resolve at startup to the concrete native store port over `pardosa::store::EventStore<gh_report::event::DomainEvent>`; `Box<dyn EventStore>` and generic backend parameters in gh-report composition are forbidden.
 R3 [5]: The `Pgno` backend writes `<store_dir>/events/<org>/events.pgno` while preserving the existing projection snapshot and checkpoint paths.
 R4 [5]: The `Nats` backend MAY be parsed before runtime-handle wiring exists, but M1 MUST return an explicit startup error rather than silently falling back to `.pgno`.
 R5 [5]: Projection bootstrap MUST remain backend-agnostic by calling the adapter's `list_aggregates()` and `load()` methods, not by reading `.pgno` files or JetStream cursor state directly.
@@ -33,4 +33,4 @@ R9 [5]: gh-report surfaces the JetStream per-operation timeout as a transition-s
 
 + becomes easier: operators get one visible storage selector and tests can assert `.pgno` artifacts without reworking the application topology.
 − becomes harder: live NATS startup requires a follow-up to supply a runtime handle and a provisioned-NATS conformance run.
-risks/migration: `MsgpackFileStore` remains in-tree per CHE-0044 coexistence, but gh-report production wiring moves to the pardosa adapter. The live-NATS follow-up is tracked in bd `adr-fmt-2v35g`.
+risks/migration: `MsgpackFileStore` remains in-tree per CHE-0044 coexistence, but gh-report production wiring moves to the native pardosa store port. The live-NATS follow-up is tracked in bd `adr-fmt-2v35g`.
