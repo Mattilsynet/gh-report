@@ -1,7 +1,7 @@
 # CHE-0073. gh-report Storage Remodel
 
 Date: 2026-06-10
-Last-reviewed: 2026-06-11
+Last-reviewed: 2026-06-12
 Tier: B
 Status: Accepted
 Crates: gh-report
@@ -18,11 +18,11 @@ The P3 native-store port (CHE-0074) later removed the cherry-pit byte adapter en
 
 ## Decision
 
-gh-report persists one durable `RepositoryStateCaptured` event variant per repository, carrying repository evidence and active-state marker, onto one pardosa fiber per repository domain key. Sweep/run lifecycle and webhook delivery signals remain in memory and tracing, not in the store. `EvidenceProjection` keeps the latest event per live (non-detached) repository fiber as the current-state read model.
+gh-report persists one durable `RepositoryStateCaptured` event variant per repository, carrying repository evidence and identity fields, onto one pardosa fiber per repository domain key. Sweep/run lifecycle and webhook delivery signals remain in memory and tracing, not in the store. `EvidenceProjection` keeps the latest event per live (non-detached) repository fiber as the current-state read model.
 
 R1 [5]: gh-report has exactly one durable event kind, `RepositoryStateCaptured`; each repository domain key maps to one pardosa fiber, realised physically as fiber-per-append and recovered across restarts by `FiberIndex<domain_key>` lookup plus `resume_defined` (CHE-0074:R4/R5). The earlier `(org, repo) -> AggregateId` logical-stream reconstruction through the byte adapter is superseded by CHE-0074.
 
-R2 [5]: `RepositoryStateCaptured` carries the full `RepositoryEvidence`, timestamp, repository identity fields, and active-state marker. Removal detaches the repository's fiber (`pardosa::StoreWriter::detach`), and the pardosa envelope `detached` flag is the durable soft-delete signal; a returning repository is appended via `rescue_detached`. Removal is neither a second durable variant nor a substrate purge.
+R2 [5]: `RepositoryStateCaptured` carries full `RepositoryEvidence`, timestamp, and repository identity fields; it has no payload presence marker. A-WS3 removed the write-only native presence field and moved SCHEMA_HASH. Removal detaches the repository fiber (`pardosa::StoreWriter::detach`); envelope `detached` is the durable soft-delete signal, and returning repositories use `rescue_detached`. Removal is neither a second durable variant nor a substrate purge.
 
 R3 [5]: Sweep/run lifecycle and webhook delivery are non-persisted in-memory concerns; this reverses CHE-0054:R1 and CHE-0054:R3 and reverses CHE-0024:R1 persist-then-publish for those event classes only.
 
@@ -32,7 +32,7 @@ R5 [5]: Repository identity is `(org, repo) -> domain_key -> pardosa fiber`; thi
 
 R6 [5]: The storage substrate is `pardosa::store::EventStore<gh_report::event::DomainEvent>` through gh-report's native store port (CHE-0074), not the removed `PardosaEventStore` byte adapter; backend selection is constrained by CHE-0072.
 
-R7 [5]: `EvidenceProjection` folds only `NativeStore::events()` in line order: non-detached `Active` snapshots upsert; envelope `detached == true` removes. The fold reads the envelope flag, not a domain tombstone marker, and matches an external journal consumer (EDA boundary).
+R7 [5]: `EvidenceProjection` folds only `NativeStore::events()` in line order: non-detached snapshots upsert; envelope `detached == true` removes. The fold reads the envelope flag, not a domain tombstone or payload presence marker, and matches an external journal consumer (EDA boundary).
 
 ## Consequences
 
@@ -40,4 +40,4 @@ R7 [5]: `EvidenceProjection` folds only `NativeStore::events()` in line order: n
 
 − becomes harder: durable run/webhook failure analytics no longer exist inside gh-report's EventStore; operators rely on tracing until a future analytics service exists.
 
-risks/migration: the remodel is a hard cut over the gh-report store; old CHE-0054 logs are not migrated. Re-scrape repopulates `RepositoryStateCaptured` streams, and rollback is by reverting the M2 commit range to the M1 state.
+risks/migration: the remodel is a hard cut over the gh-report store; old CHE-0054 logs are not migrated. A-WS3 is a second hard cut that drops the write-only presence field. Re-scrape repopulates `RepositoryStateCaptured` streams, and rollback is by reverting the relevant native-store commit range.
