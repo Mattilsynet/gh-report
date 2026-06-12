@@ -18,7 +18,10 @@ use pardosa_schema::Timestamp;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
-#[allow(clippy::struct_field_names)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "`order_id` is the domain-natural primary key name for an Order; the struct-name echo is idiomatic for an example payload"
+)]
 struct Order {
     order_id: u64,
     cents: u64,

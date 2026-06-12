@@ -1,3 +1,12 @@
+//! Domain-safe payload types and the [`GenomeSafe`] event-payload contract.
+//!
+//! Supplies the bounded, byte-canonical newtypes pardosa event payloads
+//! are built from — [`EventString`], [`EventBytes`], [`EventVec`],
+//! [`NonEmptyEventString`], and the ordered/real float wrappers — together
+//! with [`GenomeSafe`], the sealed marker that blesses a type for use in an
+//! event, and the schema-hash helpers that bind a payload's shape into the
+//! `.pgno` container. Re-exports the [`Decode`]/[`Encode`] wire surface from
+//! `pardosa-wire`.
 #![forbid(unsafe_code)]
 /// Workspace auto-trait policy macro (mission rescue-pardosa-59y0).
 ///

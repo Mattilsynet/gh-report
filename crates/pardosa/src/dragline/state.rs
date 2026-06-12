@@ -29,7 +29,10 @@ pub(crate) struct AppendResult {
     pub event_id: EventId,
 }
 #[derive(Debug)]
-#[allow(clippy::struct_field_names)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the `line` field names the committed event vector that IS the dragline; renaming it to avoid the struct-name echo would obscure the domain term (a Line's line)"
+)]
 pub(crate) struct Line<T> {
     pub(super) line: Linevec<T>,
     pub(super) lookup: HashMap<FiberId, (Fiber, FiberState)>,

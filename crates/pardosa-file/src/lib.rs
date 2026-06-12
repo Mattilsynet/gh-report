@@ -1,3 +1,10 @@
+//! `.pgno` on-disk event-file format for pardosa fibers.
+//!
+//! Defines the binary container — header, message region, index, and
+//! footer — that persists a fiber's committed event line to a single
+//! file, plus the reader/writer that round-trip it. The wire layout and
+//! its fixed offsets live in [`format`]; readers enforce the framing,
+//! schema-hash, and contiguity checks that match the live append path.
 #![forbid(unsafe_code)]
 /// Workspace auto-trait policy macro (mission rescue-pardosa-59y0).
 ///

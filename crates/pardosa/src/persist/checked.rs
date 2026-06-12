@@ -93,7 +93,10 @@ impl<R: Read + Seek, T> CheckedEventStream<R, T>
 where
     T: Decode + GenomeSafe,
 {
-    #[allow(clippy::unnecessary_wraps)]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "`fail` always yields `Some(Err(..))` so that `Iterator::next` call sites can `return self.fail(e)` directly; the `Option` wrap matches `next`'s return type and is structural, not removable"
+    )]
     fn fail(&mut self, error: Error) -> Option<Result<Event<T>, Error>> {
         self.poisoned = true;
         Some(Err(error))

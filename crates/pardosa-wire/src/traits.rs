@@ -20,6 +20,12 @@ use alloc::vec::Vec;
 )]
 pub trait EventSafe: sealed::Sealed {}
 pub trait Encode {
+    /// Append the canonical wire encoding of `self` to `out`.
+    ///
+    /// Encoding is infallible and byte-deterministic: the same value
+    /// always produces the same bytes, appended without disturbing any
+    /// existing contents of `out`. This is the inverse of
+    /// [`Decode::decode`].
     fn encode(&self, out: &mut Vec<u8>);
 }
 pub trait Decode: Sized {

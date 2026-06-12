@@ -129,7 +129,10 @@ where
     /// # Errors
     ///
     /// Forwards any [`PardosaError`] from the commit pipeline.
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "fiber-lifecycle verb consumes the LiveFiber token by value to enforce single-use move semantics at the type level"
+    )]
     pub fn append(&mut self, fiber: LiveFiber, event: T) -> Result<AppendReceipt, PardosaError> {
         let ar = self.log.commit_update(fiber.0, event)?;
         Ok(AppendReceipt {
@@ -147,7 +150,10 @@ where
     /// # Errors
     ///
     /// Forwards any [`PardosaError`] from the commit pipeline.
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "fiber-lifecycle verb consumes the LiveFiber token by value to enforce single-use move semantics at the type level"
+    )]
     pub fn detach(&mut self, fiber: LiveFiber, event: T) -> Result<DetachReceipt, PardosaError> {
         let ar = self.log.commit_detach(fiber.0, event)?;
         Ok(DetachReceipt {
@@ -165,7 +171,10 @@ where
     /// # Errors
     ///
     /// Forwards any [`PardosaError`] from the commit pipeline.
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "fiber-lifecycle verb consumes the DetachedFiber token by value to enforce single-use move semantics at the type level"
+    )]
     pub fn resume(
         &mut self,
         fiber: DetachedFiber,

@@ -92,7 +92,10 @@ impl<T> Event<T> {
     /// [`EnvelopeError::GenesisHasNonZeroPrecursorHash`] when
     /// `precursor == Genesis` but `precursor_hash != [0; 32]`.
     #[cfg(any(test, feature = "test-support"))]
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "test-support constructor: exercised by the in-crate test module and exposed under the `test-support` feature for downstream test code, so it reads as dead under a non-test --all-features build but is live under --test"
+    )]
     pub(crate) fn try_new(
         event_id: impl Into<EventId>,
         fiber_id: FiberId,

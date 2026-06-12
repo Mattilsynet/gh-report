@@ -1,7 +1,11 @@
 use crate::dragline::Line;
-use crate::persist::{Error, ValidatedReplayError, rehydrate_unchecked, rehydrate_validated};
+use crate::persist::{Error, rehydrate_unchecked};
+#[cfg(test)]
+use crate::persist::{ValidatedReplayError, rehydrate_validated};
 use pardosa_schema::GenomeSafe;
-use pardosa_wire::{Decode, Validate};
+use pardosa_wire::Decode;
+#[cfg(test)]
+use pardosa_wire::Validate;
 use std::io::Cursor;
 /// Rebuild a [`Line<T>`] from a `.pgno`-encoded byte slice
 /// (ADR-0022 §D2; ADR-0020 reader bound).
@@ -34,7 +38,7 @@ where
 ///
 /// Returns [`ValidatedReplayError`] for any per-event failure
 /// or container-header error.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn from_pgno_bytes_validated<T>(
     bytes: &[u8],
 ) -> Result<Line<T>, ValidatedReplayError<<T as Validate>::Error>>

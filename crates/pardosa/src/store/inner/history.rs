@@ -31,7 +31,10 @@ where
     ///
     /// Returns [`PardosaError::FiberNotFound`] if the fiber id is
     /// unknown to the dragline.
-    #[allow(clippy::should_implement_trait, clippy::iter_not_returning_iterator)]
+    #[expect(
+        clippy::iter_not_returning_iterator,
+        reason = "fallible `iter` returns `Result<FiberHistoryIter, _>` because resolving the fiber view can fail; the std `Iterator` shape cannot express that fallibility"
+    )]
     pub fn iter(&self) -> Result<FiberHistoryIter<'a, T>, PardosaError> {
         let events = self.log.reader_view().history(self.id)?;
         Ok(FiberHistoryIter { events, next: 0 })
@@ -78,7 +81,10 @@ where
     ///
     /// Returns [`PardosaError::FiberNotFound`] if the fiber id is
     /// unknown to the dragline.
-    #[allow(clippy::wrong_self_convention)]
+    #[expect(
+        clippy::wrong_self_convention,
+        reason = "`from_event_id` reads from `&self` to seek a starting point within this history view; it is not a constructor despite the `from_` prefix"
+    )]
     pub fn from_event_id(&self, from: EventId) -> Result<FiberHistoryIter<'a, T>, PardosaError> {
         let events = self
             .log

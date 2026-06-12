@@ -1,3 +1,12 @@
+//! `no_std` byte-canonical encode/decode substrate for pardosa payloads.
+//!
+//! The lowest ring of the payload stack: the [`Encode`]/[`Decode`] traits
+//! and their [`to_vec`]/[`from_bytes`] helpers define a deterministic,
+//! one-value-one-byte-string wire form, with [`Decoder`] enforcing a
+//! decode cap against hostile input. [`EventSafe`] is sealed here so only
+//! workspace-blessed types reach an event payload; [`laws`] exports the
+//! round-trip/canonicity property checks adopters run over their own
+//! types. `no_std` + `alloc` only — no runtime, no I/O.
 #![forbid(unsafe_code)]
 #![no_std]
 extern crate alloc;
