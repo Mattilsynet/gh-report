@@ -90,187 +90,84 @@ fn ts_to_string_opt(ts: Option<Timestamp>) -> Option<String> {
     ts.map(ts_to_string)
 }
 
-impl From<sr::Visibility> for Visibility {
-    fn from(v: sr::Visibility) -> Self {
-        match v {
-            sr::Visibility::Public => Self::Public,
-            sr::Visibility::Internal => Self::Internal,
-            sr::Visibility::Private => Self::Private,
+macro_rules! bijective_enum {
+    ($domain_mod:ident::$domain_enum:ident <=> $event:ident { $($variant:ident),+ $(,)? }) => {
+        impl From<$domain_mod::$domain_enum> for $event {
+            fn from(v: $domain_mod::$domain_enum) -> Self {
+                match v {
+                    $(
+                        $domain_mod::$domain_enum::$variant => Self::$variant,
+                    )+
+                }
+            }
         }
-    }
+
+        impl From<$event> for $domain_mod::$domain_enum {
+            fn from(v: $event) -> Self {
+                match v {
+                    $(
+                        $event::$variant => Self::$variant,
+                    )+
+                }
+            }
+        }
+    };
 }
 
-impl From<Visibility> for sr::Visibility {
-    fn from(v: Visibility) -> Self {
-        match v {
-            Visibility::Public => Self::Public,
-            Visibility::Internal => Self::Internal,
-            Visibility::Private => Self::Private,
-        }
-    }
-}
+bijective_enum!(sr::Visibility <=> Visibility { Public, Internal, Private });
 
-impl From<s::SecurityPolicyStatus> for SecurityPolicyStatus {
-    fn from(v: s::SecurityPolicyStatus) -> Self {
-        match v {
-            s::SecurityPolicyStatus::Pass => Self::Pass,
-            s::SecurityPolicyStatus::Fail => Self::Fail,
-            s::SecurityPolicyStatus::Unknown => Self::Unknown,
-            s::SecurityPolicyStatus::NotApplicable => Self::NotApplicable,
-        }
-    }
-}
+bijective_enum!(s::SecurityPolicyStatus <=> SecurityPolicyStatus {
+    Pass,
+    Fail,
+    Unknown,
+    NotApplicable,
+});
 
-impl From<SecurityPolicyStatus> for s::SecurityPolicyStatus {
-    fn from(v: SecurityPolicyStatus) -> Self {
-        match v {
-            SecurityPolicyStatus::Pass => Self::Pass,
-            SecurityPolicyStatus::Fail => Self::Fail,
-            SecurityPolicyStatus::Unknown => Self::Unknown,
-            SecurityPolicyStatus::NotApplicable => Self::NotApplicable,
-        }
-    }
-}
+bijective_enum!(s::SecurityPolicyEvidence <=> SecurityPolicyEvidence {
+    Setting,
+    File,
+    Absent,
+    PermissionDenied,
+    TransientError,
+    CollectionError,
+    NotApplicable,
+});
 
-impl From<s::SecurityPolicyEvidence> for SecurityPolicyEvidence {
-    fn from(v: s::SecurityPolicyEvidence) -> Self {
-        match v {
-            s::SecurityPolicyEvidence::Setting => Self::Setting,
-            s::SecurityPolicyEvidence::File => Self::File,
-            s::SecurityPolicyEvidence::Absent => Self::Absent,
-            s::SecurityPolicyEvidence::PermissionDenied => Self::PermissionDenied,
-            s::SecurityPolicyEvidence::TransientError => Self::TransientError,
-            s::SecurityPolicyEvidence::CollectionError => Self::CollectionError,
-            s::SecurityPolicyEvidence::NotApplicable => Self::NotApplicable,
-        }
-    }
-}
+bijective_enum!(s::SecretScanningStatus <=> SecretScanningStatus {
+    Enabled,
+    Disabled,
+    PermissionDenied,
+    Unknown,
+});
 
-impl From<SecurityPolicyEvidence> for s::SecurityPolicyEvidence {
-    fn from(v: SecurityPolicyEvidence) -> Self {
-        match v {
-            SecurityPolicyEvidence::Setting => Self::Setting,
-            SecurityPolicyEvidence::File => Self::File,
-            SecurityPolicyEvidence::Absent => Self::Absent,
-            SecurityPolicyEvidence::PermissionDenied => Self::PermissionDenied,
-            SecurityPolicyEvidence::TransientError => Self::TransientError,
-            SecurityPolicyEvidence::CollectionError => Self::CollectionError,
-            SecurityPolicyEvidence::NotApplicable => Self::NotApplicable,
-        }
-    }
-}
+bijective_enum!(s::DependabotStatus <=> DependabotStatus {
+    Enabled,
+    Paused,
+    Disabled,
+    Unknown,
+});
 
-impl From<s::SecretScanningStatus> for SecretScanningStatus {
-    fn from(v: s::SecretScanningStatus) -> Self {
-        match v {
-            s::SecretScanningStatus::Enabled => Self::Enabled,
-            s::SecretScanningStatus::Disabled => Self::Disabled,
-            s::SecretScanningStatus::PermissionDenied => Self::PermissionDenied,
-            s::SecretScanningStatus::Unknown => Self::Unknown,
-        }
-    }
-}
+bijective_enum!(s::BranchProtectionStatus <=> BranchProtectionStatus {
+    Pass,
+    Partial,
+    Fail,
+    Unknown,
+});
 
-impl From<SecretScanningStatus> for s::SecretScanningStatus {
-    fn from(v: SecretScanningStatus) -> Self {
-        match v {
-            SecretScanningStatus::Enabled => Self::Enabled,
-            SecretScanningStatus::Disabled => Self::Disabled,
-            SecretScanningStatus::PermissionDenied => Self::PermissionDenied,
-            SecretScanningStatus::Unknown => Self::Unknown,
-        }
-    }
-}
+bijective_enum!(s::CodeownersStatus <=> CodeownersStatus {
+    Conforming,
+    NonConforming,
+    Absent,
+    Unknown,
+});
 
-impl From<s::DependabotStatus> for DependabotStatus {
-    fn from(v: s::DependabotStatus) -> Self {
-        match v {
-            s::DependabotStatus::Enabled => Self::Enabled,
-            s::DependabotStatus::Paused => Self::Paused,
-            s::DependabotStatus::Disabled => Self::Disabled,
-            s::DependabotStatus::Unknown => Self::Unknown,
-        }
-    }
-}
-
-impl From<DependabotStatus> for s::DependabotStatus {
-    fn from(v: DependabotStatus) -> Self {
-        match v {
-            DependabotStatus::Enabled => Self::Enabled,
-            DependabotStatus::Paused => Self::Paused,
-            DependabotStatus::Disabled => Self::Disabled,
-            DependabotStatus::Unknown => Self::Unknown,
-        }
-    }
-}
-
-impl From<s::BranchProtectionStatus> for BranchProtectionStatus {
-    fn from(v: s::BranchProtectionStatus) -> Self {
-        match v {
-            s::BranchProtectionStatus::Pass => Self::Pass,
-            s::BranchProtectionStatus::Partial => Self::Partial,
-            s::BranchProtectionStatus::Fail => Self::Fail,
-            s::BranchProtectionStatus::Unknown => Self::Unknown,
-        }
-    }
-}
-
-impl From<BranchProtectionStatus> for s::BranchProtectionStatus {
-    fn from(v: BranchProtectionStatus) -> Self {
-        match v {
-            BranchProtectionStatus::Pass => Self::Pass,
-            BranchProtectionStatus::Partial => Self::Partial,
-            BranchProtectionStatus::Fail => Self::Fail,
-            BranchProtectionStatus::Unknown => Self::Unknown,
-        }
-    }
-}
-
-impl From<s::CodeownersStatus> for CodeownersStatus {
-    fn from(v: s::CodeownersStatus) -> Self {
-        match v {
-            s::CodeownersStatus::Conforming => Self::Conforming,
-            s::CodeownersStatus::NonConforming => Self::NonConforming,
-            s::CodeownersStatus::Absent => Self::Absent,
-            s::CodeownersStatus::Unknown => Self::Unknown,
-        }
-    }
-}
-
-impl From<CodeownersStatus> for s::CodeownersStatus {
-    fn from(v: CodeownersStatus) -> Self {
-        match v {
-            CodeownersStatus::Conforming => Self::Conforming,
-            CodeownersStatus::NonConforming => Self::NonConforming,
-            CodeownersStatus::Absent => Self::Absent,
-            CodeownersStatus::Unknown => Self::Unknown,
-        }
-    }
-}
-
-impl From<sc::CodeownersTruncationReason> for CodeownersTruncationReason {
-    fn from(v: sc::CodeownersTruncationReason) -> Self {
-        match v {
-            sc::CodeownersTruncationReason::NotBase64Encoded => Self::NotBase64Encoded,
-            sc::CodeownersTruncationReason::OversizedBase64 => Self::OversizedBase64,
-            sc::CodeownersTruncationReason::ContentMissing => Self::ContentMissing,
-            sc::CodeownersTruncationReason::DecodeFailed => Self::DecodeFailed,
-            sc::CodeownersTruncationReason::InvalidUtf8 => Self::InvalidUtf8,
-        }
-    }
-}
-
-impl From<CodeownersTruncationReason> for sc::CodeownersTruncationReason {
-    fn from(v: CodeownersTruncationReason) -> Self {
-        match v {
-            CodeownersTruncationReason::NotBase64Encoded => Self::NotBase64Encoded,
-            CodeownersTruncationReason::OversizedBase64 => Self::OversizedBase64,
-            CodeownersTruncationReason::ContentMissing => Self::ContentMissing,
-            CodeownersTruncationReason::DecodeFailed => Self::DecodeFailed,
-            CodeownersTruncationReason::InvalidUtf8 => Self::InvalidUtf8,
-        }
-    }
-}
+bijective_enum!(sc::CodeownersTruncationReason <=> CodeownersTruncationReason {
+    NotBase64Encoded,
+    OversizedBase64,
+    ContentMissing,
+    DecodeFailed,
+    InvalidUtf8,
+});
 
 impl TryFrom<sr::Repository> for Repository {
     type Error = EventConversionError;
