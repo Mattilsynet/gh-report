@@ -185,7 +185,7 @@ impl<T: Decode + Encode + Ord> Decode for BTreeSet<T> {
         Ok(set)
     }
 }
-impl<T: Encode + ?Sized> Encode for Box<T> {
+impl<T: Encode> Encode for Box<T> {
     fn encode(&self, out: &mut Vec<u8>) {
         (**self).encode(out);
     }
