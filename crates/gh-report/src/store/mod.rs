@@ -199,6 +199,23 @@ impl NativeStore {
         let guard = self.inner.lock().map_err(|_| StoreError::Poisoned)?;
         bridge(guard.bridge_runtime, || Ok(all_events(&guard.store)))
     }
+
+    /// Fold every event in committed line order without materialising an
+    /// owned event vector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Poisoned`] when the store mutex is poisoned.
+    pub fn fold_events<R>(
+        &self,
+        init: R,
+        fold: impl FnMut(&mut R, bool, &DomainEvent),
+    ) -> Result<R, StoreError> {
+        let guard = self.inner.lock().map_err(|_| StoreError::Poisoned)?;
+        bridge(guard.bridge_runtime, || {
+            Ok(fold_all_events(&guard.store, init, fold))
+        })
+    }
 }
 
 enum Resolved {
@@ -272,6 +289,24 @@ fn all_events(store: &PardosaStore<DomainEvent>) -> Vec<(bool, DomainEvent)> {
         std::iter::empty::<u8>()
     });
     collected.into_inner()
+}
+
+fn fold_all_events<R>(
+    store: &PardosaStore<DomainEvent>,
+    init: R,
+    fold: impl FnMut(&mut R, bool, &DomainEvent),
+) -> R {
+    let accumulated = RefCell::new(init);
+    let fold = RefCell::new(fold);
+    let _index = store.reader().fiber_index::<u8, _, _>(|event| {
+        fold.borrow_mut()(
+            &mut accumulated.borrow_mut(),
+            event.detached(),
+            event.domain_event(),
+        );
+        std::iter::empty::<u8>()
+    });
+    accumulated.into_inner()
 }
 
 fn bridge<T>(bridge_runtime: bool, f: impl FnOnce() -> T) -> T {

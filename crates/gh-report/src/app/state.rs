@@ -43,10 +43,11 @@ pub use crate::app::webhook_context::WebhookState;
 
 use crate::app::collect::JobContext;
 use crate::app::work_queue::WorkQueue;
+use crate::domain::evidence::RepositoryEvidence;
 use crate::domain::run::RunMetadata;
+use crate::error::PersistenceError;
 use crate::event::convert::EventConversionError;
 use crate::event::{DomainEvent as NativeDomainEvent, RepoPresence as NativeRepoPresence};
-use crate::error::PersistenceError;
 
 /// Embedded CSS stylesheet, compiled into the binary at build time.
 const STYLESHEET: &str = include_str!("../../templates/style.css");
@@ -293,17 +294,20 @@ async fn open_event_store_blocking(
 fn projection_from_store(
     store: &EventStoreImpl,
 ) -> Result<crate::projection::EvidenceProjection, std::io::Error> {
-    let mut projection = crate::projection::EvidenceProjection::default();
-    for (detached, event) in store.events().map_err(std::io::Error::other)? {
-        fold_native_event(&mut projection, detached, event);
-    }
-    Ok(projection)
+    store
+        .fold_events(
+            crate::projection::EvidenceProjection::default(),
+            |projection, detached, event| {
+                fold_native_event(projection, detached, event);
+            },
+        )
+        .map_err(std::io::Error::other)
 }
 
 fn fold_native_event(
     projection: &mut crate::projection::EvidenceProjection,
     detached: bool,
-    event: NativeDomainEvent,
+    event: &NativeDomainEvent,
 ) {
     let NativeDomainEvent::RepositoryStateCaptured {
         domain_key,
@@ -312,10 +316,10 @@ fn fold_native_event(
     } = event;
     if detached {
         projection.repositories.remove(domain_key.as_str());
-    } else if let Some(evidence) = evidence {
+    } else if let Some(evidence) = evidence.as_ref() {
         projection
             .repositories
-            .insert(domain_key.as_str().to_string(), (*evidence).into());
+            .insert(domain_key.as_str().to_string(), (**evidence).clone().into());
     }
 }
 
@@ -326,12 +330,6 @@ fn native_store_persistence(error: &crate::store::StoreError) -> PersistenceErro
 }
 
 fn conversion_persistence(error: &EventConversionError) -> PersistenceError {
-    PersistenceError::LoadFailed {
-        reason: error.to_string(),
-    }
-}
-
-fn io_persistence(error: &std::io::Error) -> PersistenceError {
     PersistenceError::LoadFailed {
         reason: error.to_string(),
     }
@@ -499,6 +497,22 @@ impl AppState {
         Ok(())
     }
 
+    fn record_projection_repo(&self, domain_key: &str, evidence: RepositoryEvidence) {
+        let mut guard = self
+            .projection_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.repositories.insert(domain_key.to_string(), evidence);
+    }
+
+    fn remove_projection_repo(&self, domain_key: &str) {
+        let mut guard = self
+            .projection_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.repositories.remove(domain_key);
+    }
+
     /// Record a live repository snapshot in the native store.
     ///
     /// # Errors
@@ -508,12 +522,13 @@ impl AppState {
     pub fn record_repo(
         &self,
         domain_key: &str,
-        evidence: crate::domain::evidence::RepositoryEvidence,
+        evidence: RepositoryEvidence,
         repo_name: &str,
         timestamp: &str,
     ) -> Result<(), PersistenceError> {
         let native_evidence = crate::event::RepositoryEvidence::try_from(evidence)
             .map_err(|e| conversion_persistence(&e))?;
+        let projection_evidence: RepositoryEvidence = native_evidence.clone().into();
         let event = repo_event(
             domain_key,
             repo_name,
@@ -523,7 +538,8 @@ impl AppState {
         self.event_store
             .record(domain_key, event)
             .map_err(|e| native_store_persistence(&e))?;
-        self.refresh_projection().map_err(|e| io_persistence(&e))
+        self.record_projection_repo(domain_key, projection_evidence);
+        Ok(())
     }
 
     /// Soft-delete a repository fiber in the native store.
@@ -542,7 +558,8 @@ impl AppState {
         self.event_store
             .detach(domain_key, event)
             .map_err(|e| native_store_persistence(&e))?;
-        self.refresh_projection().map_err(|e| io_persistence(&e))
+        self.remove_projection_repo(domain_key);
+        Ok(())
     }
 
     /// Render the current in-memory projection as a JSON-encoded
@@ -823,7 +840,7 @@ mod tests {
     ) -> crate::projection::EvidenceProjection {
         let mut projection = crate::projection::EvidenceProjection::default();
         for (detached, event) in events {
-            fold_native_event(&mut projection, detached, event);
+            fold_native_event(&mut projection, detached, &event);
         }
         projection
     }
@@ -1038,6 +1055,45 @@ mod tests {
 
         let latest = state.event_store.latest_per_repo().expect("latest after remove");
         assert!(latest.is_empty());
+    }
+
+    #[tokio::test]
+    async fn record_and_remove_apply_projection_without_full_refold() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let projections_dir = dir.path().join("projections");
+        let state = AppState::with_stores(
+            &events_dir,
+            projections_dir,
+            PardosaBackend::Pgno,
+            NatsStoreConfig::for_org("org", crate::config::runtime::DEFAULT_NATS_URL).unwrap(),
+        )
+        .await
+        .expect("with_stores");
+        let mut metadata = crate::test_fixtures::make_metadata();
+        metadata.run_id = "debounce-sentinel".to_string();
+        state.lock_projection().assessment_metadata = Some(metadata.clone());
+
+        let evidence = crate::test_fixtures::all_passing_evidence("debounced-repo");
+        let domain_key = evidence.repository.inventory_key.clone();
+        let repo_name = evidence.repository.name.clone();
+        let timestamp = "2026-06-11T00:00:00Z";
+
+        state
+            .record_repo(&domain_key, evidence, &repo_name, timestamp)
+            .expect("record repo");
+        {
+            let projection = state.lock_projection();
+            assert_eq!(projection.assessment_metadata.as_ref(), Some(&metadata));
+            assert!(projection.repositories.contains_key(&domain_key));
+        }
+
+        state
+            .remove_repo(&domain_key, &repo_name, timestamp)
+            .expect("remove repo");
+        let projection = state.lock_projection();
+        assert_eq!(projection.assessment_metadata.as_ref(), Some(&metadata));
+        assert!(!projection.repositories.contains_key(&domain_key));
     }
 
     #[tokio::test]
