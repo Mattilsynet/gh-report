@@ -62,12 +62,11 @@ fn ts_required(field: &'static str, value: &str) -> Conv<Timestamp> {
         field,
         value: value.to_string(),
     })?;
-    let nanos = u64::try_from(parsed.as_nanosecond()).map_err(|_| {
-        EventConversionError::BadTimestamp {
+    let nanos =
+        u64::try_from(parsed.as_nanosecond()).map_err(|_| EventConversionError::BadTimestamp {
             field,
             value: value.to_string(),
-        }
-    })?;
+        })?;
     Timestamp::from_nanos(nanos).ok_or_else(|| EventConversionError::BadTimestamp {
         field,
         value: value.to_string(),
@@ -177,15 +176,21 @@ impl TryFrom<sr::Repository> for Repository {
         for topic in r.topics {
             topics.push(to_es::<MAX_TOPIC>("repository.topics", topic)?);
         }
-        let topics = EventVec::<_, MAX_TOPICS>::try_from(topics)
-            .map_err(|_| EventConversionError::TooMany { field: "repository.topics" })?;
+        let topics = EventVec::<_, MAX_TOPICS>::try_from(topics).map_err(|_| {
+            EventConversionError::TooMany {
+                field: "repository.topics",
+            }
+        })?;
         Ok(Self {
             id: to_nes::<MAX_GITHUB_ID>("repository.id", &r.id)?,
             node_id: to_es_opt::<MAX_NODE_ID>("repository.node_id", r.node_id)?,
             name: to_nes::<MAX_REPO_NAME>("repository.name", &r.name)?,
             visibility: r.visibility.into(),
             language: to_es_opt::<MAX_LANGUAGE>("repository.language", r.language)?,
-            default_branch: to_nes::<MAX_BRANCH_NAME>("repository.default_branch", &r.default_branch)?,
+            default_branch: to_nes::<MAX_BRANCH_NAME>(
+                "repository.default_branch",
+                &r.default_branch,
+            )?,
             archived: r.archived,
             inventory_key: to_nes::<MAX_DOMAIN_KEY>("repository.inventory_key", &r.inventory_key)?,
             updated_at: ts_opt("repository.updated_at", r.updated_at.as_deref())?,
@@ -302,7 +307,10 @@ impl TryFrom<s::BranchProtectionDetails> for BranchProtectionDetails {
 
     fn try_from(v: s::BranchProtectionDetails) -> Conv<Self> {
         Ok(Self {
-            default_branch: to_nes::<MAX_BRANCH_NAME>("branch_protection.default_branch", &v.default_branch)?,
+            default_branch: to_nes::<MAX_BRANCH_NAME>(
+                "branch_protection.default_branch",
+                &v.default_branch,
+            )?,
             has_pr: v.has_pr,
             required_reviewers: v.required_reviewers,
             has_status_checks: v.has_status_checks,
@@ -355,10 +363,16 @@ impl TryFrom<sc::CodeownersEntry> for CodeownersEntry {
     fn try_from(v: sc::CodeownersEntry) -> Conv<Self> {
         let mut owners = Vec::with_capacity(v.owners.len());
         for owner in v.owners {
-            owners.push(to_es::<MAX_CODEOWNERS_OWNER>("codeowners.entry.owners", owner)?);
+            owners.push(to_es::<MAX_CODEOWNERS_OWNER>(
+                "codeowners.entry.owners",
+                owner,
+            )?);
         }
-        let owners = EventVec::<_, MAX_CODEOWNERS_OWNERS>::try_from(owners)
-            .map_err(|_| EventConversionError::TooMany { field: "codeowners.entry.owners" })?;
+        let owners = EventVec::<_, MAX_CODEOWNERS_OWNERS>::try_from(owners).map_err(|_| {
+            EventConversionError::TooMany {
+                field: "codeowners.entry.owners",
+            }
+        })?;
         Ok(Self {
             pattern: to_es::<MAX_CODEOWNERS_PATTERN>("codeowners.entry.pattern", v.pattern)?,
             owners,
@@ -383,14 +397,24 @@ impl TryFrom<sc::ParsedCodeowners> for ParsedCodeowners {
         for entry in v.entries {
             entries.push(CodeownersEntry::try_from(entry)?);
         }
-        let entries = EventVec::<_, MAX_CODEOWNERS_ENTRIES>::try_from(entries)
-            .map_err(|_| EventConversionError::TooMany { field: "codeowners.entries" })?;
+        let entries = EventVec::<_, MAX_CODEOWNERS_ENTRIES>::try_from(entries).map_err(|_| {
+            EventConversionError::TooMany {
+                field: "codeowners.entries",
+            }
+        })?;
         let mut unique_owners = Vec::with_capacity(v.unique_owners.len());
         for owner in v.unique_owners {
-            unique_owners.push(to_es::<MAX_CODEOWNERS_OWNER>("codeowners.unique_owners", owner)?);
+            unique_owners.push(to_es::<MAX_CODEOWNERS_OWNER>(
+                "codeowners.unique_owners",
+                owner,
+            )?);
         }
-        let unique_owners = EventVec::<_, MAX_CODEOWNERS_OWNERS>::try_from(unique_owners)
-            .map_err(|_| EventConversionError::TooMany { field: "codeowners.unique_owners" })?;
+        let unique_owners =
+            EventVec::<_, MAX_CODEOWNERS_OWNERS>::try_from(unique_owners).map_err(|_| {
+                EventConversionError::TooMany {
+                    field: "codeowners.unique_owners",
+                }
+            })?;
         Ok(Self {
             entries,
             unique_owners,
@@ -403,7 +427,11 @@ impl From<ParsedCodeowners> for sc::ParsedCodeowners {
     fn from(v: ParsedCodeowners) -> Self {
         Self {
             entries: v.entries.iter().cloned().map(Into::into).collect(),
-            unique_owners: v.unique_owners.iter().map(|o| o.as_str().to_string()).collect(),
+            unique_owners: v
+                .unique_owners
+                .iter()
+                .map(|o| o.as_str().to_string())
+                .collect(),
             skipped_lines: v.skipped_lines,
         }
     }
@@ -466,8 +494,14 @@ impl TryFrom<se::LastCommitInfo> for LastCommitInfo {
 
     fn try_from(v: se::LastCommitInfo) -> Conv<Self> {
         Ok(Self {
-            committer_login: to_es_opt::<MAX_LOGIN>("last_commit.committer_login", v.committer_login)?,
-            committer_name: to_es_opt::<MAX_PERSON_NAME>("last_commit.committer_name", v.committer_name)?,
+            committer_login: to_es_opt::<MAX_LOGIN>(
+                "last_commit.committer_login",
+                v.committer_login,
+            )?,
+            committer_name: to_es_opt::<MAX_PERSON_NAME>(
+                "last_commit.committer_name",
+                v.committer_name,
+            )?,
             commit_date: ts_opt("last_commit.commit_date", v.commit_date.as_deref())?,
         })
     }

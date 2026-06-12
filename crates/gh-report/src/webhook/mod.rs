@@ -158,7 +158,11 @@ fn execute_remove(
     let had_evidence = state.projection_contains(inventory_key);
     info!(delivery = %delivery_id, repo = %inventory_key, "webhook remove");
     if had_evidence
-        && let Err(e) = state.remove_repo(inventory_key, inventory_key, &jiff::Timestamp::now().to_string())
+        && let Err(e) = state.remove_repo(
+            inventory_key,
+            inventory_key,
+            &jiff::Timestamp::now().to_string(),
+        )
     {
         tracing::warn!(?e, "repository removal failed, non-fatal");
     }
@@ -175,10 +179,7 @@ fn execute_remove(
 /// Execute the ignore action: publish `WebhookReceived` with `action=ignore`.
 ///
 /// Extracted from [`webhook_handler`] for cohesion; no behavioural change.
-fn execute_ignore(
-    event_type: &str,
-    delivery_id: &str,
-) -> StatusCode {
+fn execute_ignore(event_type: &str, delivery_id: &str) -> StatusCode {
     debug!(
         event = event_type,
         delivery = delivery_id,

@@ -131,13 +131,18 @@ fn nats_backend_fresh_create_reopen_and_populated_route_preserves_events() {
         .await
         .expect("open_jetstream join")
         .expect("open_jetstream after write");
-        let opened_latest = opened_via_adapter.latest_per_repo().expect("latest indexed");
+        let opened_latest = opened_via_adapter
+            .latest_per_repo()
+            .expect("latest indexed");
         assert_eq!(opened_latest.len(), 1);
         assert_loaded_event(&opened_latest[0].1);
         drop(opened_via_adapter);
 
         let populated_state = open_state(&events_dir, &projections_dir, nats.clone()).await;
-        let loaded = populated_state.event_store.latest_per_repo().expect("load after populated reopen");
+        let loaded = populated_state
+            .event_store
+            .latest_per_repo()
+            .expect("load after populated reopen");
         assert_eq!(loaded.len(), 1);
         assert_loaded_event(&loaded[0].1);
     });

@@ -365,7 +365,7 @@ pub trait PurgeableEventStore: EventStore {
 /// repudiation consumer).
 pub trait HashChainedEventStore: EventStore {
     /// 32-byte BLAKE3 frontier hash over all committed events in
-/// append order (PGN-0005:R3 + CHE-0060:R2).
+    /// append order (PGN-0005:R3 + CHE-0060:R2).
     ///
     /// Returns the hash unconditionally (no `Result`): the substrate
     /// MUST be able to surface its current frontier. Rollout-stub
@@ -374,7 +374,7 @@ pub trait HashChainedEventStore: EventStore {
     fn frontier_hash(&self) -> [u8; 32];
 
     /// Verify the precursor-hash chain over the entire stream. Per
-/// PGN-0005:R5, rejects any event whose `precursor_hash` does not
+    /// PGN-0005:R5, rejects any event whose `precursor_hash` does not
     /// match the BLAKE3 hash of the referenced predecessor's canonical
     /// bytes.
     ///

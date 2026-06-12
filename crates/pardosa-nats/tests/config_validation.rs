@@ -145,7 +145,10 @@ fn builder_rejects_zero_operation_timeout() {
         .operation_timeout(Duration::ZERO)
         .build()
         .expect_err("zero timeout must be rejected");
-    assert!(matches!(err, JetStreamConfigError::OperationTimeoutMustBePositive));
+    assert!(matches!(
+        err,
+        JetStreamConfigError::OperationTimeoutMustBePositive
+    ));
 }
 #[test]
 fn operation_timeout_env_name_is_stable() {

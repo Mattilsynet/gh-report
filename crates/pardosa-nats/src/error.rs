@@ -65,7 +65,10 @@ impl fmt::Display for JetStreamConfigError {
                 f.write_str("operation_timeout must be greater than zero")
             }
             Self::InvalidOperationTimeout { value } => {
-                write!(f, "operation timeout override must be a positive integer second count: {value:?}")
+                write!(
+                    f,
+                    "operation timeout override must be a positive integer second count: {value:?}"
+                )
             }
         }
     }

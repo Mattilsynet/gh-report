@@ -46,8 +46,8 @@ use crate::app::work_queue::WorkQueue;
 use crate::domain::evidence::RepositoryEvidence;
 use crate::domain::run::RunMetadata;
 use crate::error::PersistenceError;
-use crate::event::convert::EventConversionError;
 use crate::event::DomainEvent as NativeDomainEvent;
+use crate::event::convert::EventConversionError;
 
 /// Embedded CSS stylesheet, compiled into the binary at build time.
 const STYLESHEET: &str = include_str!("../../templates/style.css");
@@ -246,10 +246,8 @@ fn open_event_store(
             }
         }
         crate::config::runtime::PardosaBackend::Nats => {
-            let opened = EventStoreImpl::open_jetstream(jetstream_backend(
-                nats.clone(),
-                handle.clone(),
-            ));
+            let opened =
+                EventStoreImpl::open_jetstream(jetstream_backend(nats.clone(), handle.clone()));
             match opened {
                 Ok(store) => Ok(store),
                 Err(_) => EventStoreImpl::create_jetstream(jetstream_backend(nats, handle))
@@ -1044,7 +1042,10 @@ mod tests {
             .record_repo(&domain_key, evidence, &repo_name, timestamp)
             .expect("record repo");
 
-        let latest = state.event_store.latest_per_repo().expect("latest per repo");
+        let latest = state
+            .event_store
+            .latest_per_repo()
+            .expect("latest per repo");
         assert_eq!(latest.len(), 1);
         assert_eq!(latest[0].0, domain_key);
 
@@ -1052,7 +1053,10 @@ mod tests {
             .remove_repo(&domain_key, &repo_name, timestamp)
             .expect("remove repo");
 
-        let latest = state.event_store.latest_per_repo().expect("latest after remove");
+        let latest = state
+            .event_store
+            .latest_per_repo()
+            .expect("latest after remove");
         assert!(latest.is_empty());
     }
 
@@ -1134,15 +1138,19 @@ mod tests {
         let live = state.projection_snapshot();
 
         assert_eq!(replayed, live);
-        assert!(!live
-            .iter()
-            .any(|e| e.repository.inventory_key == removed.repository.inventory_key));
-        assert!(live
-            .iter()
-            .any(|e| e.repository.inventory_key == kept_a.repository.inventory_key));
-        assert!(live
-            .iter()
-            .any(|e| e.repository.inventory_key == kept_b.repository.inventory_key));
+        assert!(
+            !live
+                .iter()
+                .any(|e| e.repository.inventory_key == removed.repository.inventory_key)
+        );
+        assert!(
+            live.iter()
+                .any(|e| e.repository.inventory_key == kept_a.repository.inventory_key)
+        );
+        assert!(
+            live.iter()
+                .any(|e| e.repository.inventory_key == kept_b.repository.inventory_key)
+        );
     }
 
     #[tokio::test]

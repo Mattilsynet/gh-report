@@ -389,7 +389,10 @@ mod tests {
         let first = <DomainEvent as GenomeSafe>::SCHEMA_HASH;
         let second = <DomainEvent as GenomeSafe>::SCHEMA_HASH;
         assert_eq!(first, second);
-        assert_eq!(first, 130_161_851_149_130_176_976_202_983_483_756_427_020_u128);
+        assert_eq!(
+            first,
+            130_161_851_149_130_176_976_202_983_483_756_427_020_u128
+        );
         assert_ne!(
             first, 19_710_905_809_486_475_925_592_730_934_028_496_282_u128,
             "current schema hash must differ from the prior P4b value"

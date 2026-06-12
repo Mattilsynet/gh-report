@@ -88,11 +88,12 @@ where
     if frames.is_empty() {
         return Ok((crate::dragline::Line::new(), 0));
     }
-    if let Some((pgno_idx, mut event_frames)) = frames
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(idx, frame)| event_frames_from_pgno::<T>(frame).ok().map(|frames| (idx, frames)))
+    if let Some((pgno_idx, mut event_frames)) =
+        frames.iter().enumerate().rev().find_map(|(idx, frame)| {
+            event_frames_from_pgno::<T>(frame)
+                .ok()
+                .map(|frames| (idx, frames))
+        })
     {
         if pgno_idx + 1 == frames.len() {
             let line = from_pgno_bytes_unchecked::<T>(&frames[pgno_idx])
@@ -194,7 +195,11 @@ where
                 }
             }
         }
-        next_event_id = event.event_id().value().checked_add(1).ok_or(PardosaError::IndexOverflow)?;
+        next_event_id = event
+            .event_id()
+            .value()
+            .checked_add(1)
+            .ok_or(PardosaError::IndexOverflow)?;
     }
     let next_id = match max_fiber_id {
         None => crate::FiberId::from_decoded(0),

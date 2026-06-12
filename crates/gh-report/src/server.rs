@@ -256,7 +256,9 @@ mod tests {
             crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
         );
 
-        publish_evidence(&config, &run, &evidence, &state).await.unwrap();
+        publish_evidence(&config, &run, &evidence, &state)
+            .await
+            .unwrap();
 
         let timeout_result =
             tokio::time::timeout(std::time::Duration::from_secs(3), ws.next()).await;

@@ -64,8 +64,8 @@ impl NativeStore {
     /// Returns [`StoreError::Infrastructure`] when pardosa cannot open or
     /// fold the backing container.
     pub fn open_pgno(path: &Path) -> Result<Self, StoreError> {
-        let store =
-            PardosaStore::<DomainEvent>::open_with_backend(PgnoBackend::open(path)).map_err(infra)?;
+        let store = PardosaStore::<DomainEvent>::open_with_backend(PgnoBackend::open(path))
+            .map_err(infra)?;
         Ok(Self::from_store(store, false))
     }
 

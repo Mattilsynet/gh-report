@@ -2906,13 +2906,15 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(state
-            .evidence()
-            .html_cache
-            .load()
-            .as_ref()
-            .as_ref()
-            .is_some_and(|m| m.contains_key("__sentinel_pre_finalize__")));
+        assert!(
+            state
+                .evidence()
+                .html_cache
+                .load()
+                .as_ref()
+                .as_ref()
+                .is_some_and(|m| m.contains_key("__sentinel_pre_finalize__"))
+        );
 
         let corr_ctx = run.correlation_context();
         saga.step_finalize(&config, &mut run, &corr_ctx, &ctx, &inventory, &state)

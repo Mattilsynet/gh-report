@@ -270,9 +270,11 @@ fn validate_operation_timeout(timeout: Duration) -> Result<Duration, JetStreamCo
 fn operation_timeout_from_env() -> Result<Duration, JetStreamConfigError> {
     match std::env::var(OPERATION_TIMEOUT_ENV) {
         Ok(raw) => {
-            let secs = raw.parse::<u64>().map_err(|_| {
-                JetStreamConfigError::InvalidOperationTimeout { value: raw.clone() }
-            })?;
+            let secs =
+                raw.parse::<u64>()
+                    .map_err(|_| JetStreamConfigError::InvalidOperationTimeout {
+                        value: raw.clone(),
+                    })?;
             validate_operation_timeout(Duration::from_secs(secs))
         }
         Err(std::env::VarError::NotPresent) => Ok(DEFAULT_OPERATION_TIMEOUT),

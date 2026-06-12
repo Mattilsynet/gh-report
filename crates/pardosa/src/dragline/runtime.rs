@@ -437,9 +437,9 @@ where
                 blob_len
             }
             WriteStrategy::JetStreamBacked(adapter) => {
-                self.line.check_persistable().map_err(|kind| {
-                    persist::Error::UnpersistableState { kind }
-                })?;
+                self.line
+                    .check_persistable()
+                    .map_err(|kind| persist::Error::UnpersistableState { kind })?;
                 let events = self.line.read_line();
                 let start = self.jetstream_synced_events.min(events.len());
                 let mut ack_value = self.acked_lsn.map_or(0, Lsn::value);
@@ -551,8 +551,8 @@ mod tests {
     use crate::typed::HasEventSchemaSource;
     use crate::typed::TypedReader;
     use pardosa_schema::{GenomeSafe, schema_hash_bytes};
-    use pardosa_wire::{Decode, DecodeError, Decoder, EventSafe};
     use pardosa_wire::from_bytes;
+    use pardosa_wire::{Decode, DecodeError, Decoder, EventSafe};
     use std::io::Cursor;
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct P3aZeroSeedPayload(u64);
@@ -724,13 +724,12 @@ mod tests {
         let stream_name = format!("P3A_PER_EVENT_{tag}");
         let handle = JetStreamBackend::open(config(&tag, &rt, &server));
         let adapter = JetStreamBackendAdapter::new(handle);
-        let mut runtime: Dragline<u64, _> =
-            Dragline::from_backend_for_open_jetstream(
-                Line::new(),
-                Cursor::new(Vec::new()),
-                adapter,
-                0,
-            );
+        let mut runtime: Dragline<u64, _> = Dragline::from_backend_for_open_jetstream(
+            Line::new(),
+            Cursor::new(Vec::new()),
+            adapter,
+            0,
+        );
         for event in 0..4u64 {
             let _ = runtime.commit_event(event).expect("commit event");
         }
@@ -794,13 +793,14 @@ mod tests {
         let rt = Runtime::new().expect("tokio runtime");
         let tag = tag();
         let stream_name = format!("P3A_FRONTIER_{tag}");
-        let backend = StoreJetStreamBackend::open(JetStreamBackend::open(config(&tag, &rt, &server)));
+        let backend =
+            StoreJetStreamBackend::open(JetStreamBackend::open(config(&tag, &rt, &server)));
         let mut jetstream_store = EventStore::<P3aZeroSeedPayload>::create_with_backend(backend)
             .expect("create jetstream store");
         let mut pgno_path = std::env::temp_dir();
         pgno_path.push(format!("p3a-frontier-{tag}.pgno"));
-        let mut pgno_store = EventStore::<P3aZeroSeedPayload>::create(&pgno_path)
-            .expect("create pgno store");
+        let mut pgno_store =
+            EventStore::<P3aZeroSeedPayload>::create(&pgno_path).expect("create pgno store");
         for event in 0..7u64 {
             let _ = jetstream_store
                 .writer()
@@ -819,10 +819,9 @@ mod tests {
             StoreJetStreamBackend::open(JetStreamBackend::open(config(&tag, &rt, &server))),
         )
         .expect("reopen jetstream");
-        let reopened_pgno = EventStore::<P3aZeroSeedPayload>::open_with_backend(PgnoBackend::open(
-            &pgno_path,
-        ))
-        .expect("reopen pgno");
+        let reopened_pgno =
+            EventStore::<P3aZeroSeedPayload>::open_with_backend(PgnoBackend::open(&pgno_path))
+                .expect("reopen pgno");
         assert_eq!(
             reopened_jetstream.reader().frontier().as_bytes(),
             reopened_pgno.reader().frontier().as_bytes(),
@@ -867,7 +866,8 @@ mod tests {
         let rt = Runtime::new().expect("tokio runtime");
         let tag = tag();
         let stream_name = format!("P3A_ZERO_SEED_{tag}");
-        let backend = StoreJetStreamBackend::open(JetStreamBackend::open(config(&tag, &rt, &server)));
+        let backend =
+            StoreJetStreamBackend::open(JetStreamBackend::open(config(&tag, &rt, &server)));
         let mut store = EventStore::<P3aZeroSeedPayload>::create_with_backend(backend)
             .expect("fresh create_with_backend succeeds without seed blob");
         let after_create = JetStreamBackend::open(config(&tag, &rt, &server))

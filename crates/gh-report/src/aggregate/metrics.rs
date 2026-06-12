@@ -257,18 +257,17 @@ fn count_statuses<T: Default>(
 
 /// Count secret scanning statuses across public repos.
 fn count_secret_scanning_statuses(public_repos: &[&RepositoryEvidence]) -> SecretScanningCounts {
-    count_statuses(public_repos, |repo, counts: &mut SecretScanningCounts| match repo
-        .checks
-        .secret_scanning
-        .status
-    {
-        SecretScanningStatus::Enabled => counts.enabled = counts.enabled.saturating_add(1),
-        SecretScanningStatus::Disabled => counts.disabled = counts.disabled.saturating_add(1),
-        SecretScanningStatus::PermissionDenied => {
-            counts.permission_denied = counts.permission_denied.saturating_add(1);
-        }
-        SecretScanningStatus::Unknown => counts.unknown = counts.unknown.saturating_add(1),
-    })
+    count_statuses(
+        public_repos,
+        |repo, counts: &mut SecretScanningCounts| match repo.checks.secret_scanning.status {
+            SecretScanningStatus::Enabled => counts.enabled = counts.enabled.saturating_add(1),
+            SecretScanningStatus::Disabled => counts.disabled = counts.disabled.saturating_add(1),
+            SecretScanningStatus::PermissionDenied => {
+                counts.permission_denied = counts.permission_denied.saturating_add(1);
+            }
+            SecretScanningStatus::Unknown => counts.unknown = counts.unknown.saturating_add(1),
+        },
+    )
 }
 
 /// Count Dependabot security updates statuses across active repos.
@@ -807,25 +806,30 @@ mod tests {
         let repos = sample_repos();
         let metrics = aggregate_metrics(&repos);
         let public_repo_count = count_as_u32(
-            repos.iter()
+            repos
+                .iter()
                 .filter(|r| r.repository.visibility == Visibility::Public)
                 .count(),
         );
-        let active_repo_count = count_as_u32(
-            repos.iter()
-                .filter(|r| !r.repository.archived)
-                .count(),
-        );
+        let active_repo_count =
+            count_as_u32(repos.iter().filter(|r| !r.repository.archived).count());
         let archived_public_count = count_as_u32(
-            repos.iter()
+            repos
+                .iter()
                 .filter(|r| r.repository.visibility == Visibility::Public && r.repository.archived)
                 .count(),
         );
 
         assert!(archived_public_count > 0);
         assert_ne!(public_repo_count, active_repo_count);
-        assert_eq!(metrics.security_policy_coverage.denominator, public_repo_count);
-        assert_eq!(metrics.secret_scanning_coverage.denominator, public_repo_count);
+        assert_eq!(
+            metrics.security_policy_coverage.denominator,
+            public_repo_count
+        );
+        assert_eq!(
+            metrics.secret_scanning_coverage.denominator,
+            public_repo_count
+        );
     }
 
     #[test]

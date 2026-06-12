@@ -865,8 +865,8 @@ mod tests {
         AggregatedMetrics, BranchProtectionCounts, CodeownersCounts, DependabotCounts,
         PolicyCounts, RateMetric, SecretAlertCounts, SecretScanningCounts,
     };
-    use crate::projection::EvidenceProjection;
     use crate::domain::repository::Visibility;
+    use crate::projection::EvidenceProjection;
     use crate::test_fixtures;
 
     fn sample_metrics() -> AggregatedMetrics {
@@ -1014,7 +1014,9 @@ mod tests {
         let removed = test_fixtures::all_passing_evidence("removed-repo");
 
         projection.load_baseline(vec![active.clone(), removed.clone()]);
-        projection.repositories.remove(&removed.repository.inventory_key);
+        projection
+            .repositories
+            .remove(&removed.repository.inventory_key);
 
         let evidence = test_fixtures::make_full_evidence(
             test_fixtures::make_metadata(),
