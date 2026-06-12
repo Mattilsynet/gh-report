@@ -685,7 +685,7 @@ fn build_orphaned_view_model(
 
     let mut rows: Vec<OrphanedRepoRow> = repositories
         .iter()
-        .filter(|r| is_orphaned(r))
+        .filter(|r| !r.repository.archived && is_orphaned(r))
         .map(|repo| {
             let name_encoded = utf8_percent_encode(&repo.repository.name, PATH_SEGMENT);
             let commit = extract_last_commit_display(repo);
@@ -2355,6 +2355,44 @@ mod tests {
             ),
         );
         assert_eq!(vm.rows[0].visibility, "Private");
+    }
+
+    #[test]
+    fn build_orphaned_vm_excludes_archived_repos() {
+        let active = test_fixtures::make_repository_evidence(
+            "active-orphan",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_absent(),
+            ),
+        );
+        let archived = test_fixtures::make_repository_evidence(
+            "archived-orphan",
+            Visibility::Public,
+            true,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_absent(),
+            ),
+        );
+
+        let vm = super::build_orphaned_view_model(
+            &[active, archived],
+            "TestOrg",
+            "2026-04-09T12:00:00+00:00",
+        );
+
+        assert_eq!(vm.orphaned_count, 1);
+        assert_eq!(vm.rows.len(), 1);
+        assert_eq!(vm.rows[0].repo_name, "active-orphan");
     }
 
     #[test]
