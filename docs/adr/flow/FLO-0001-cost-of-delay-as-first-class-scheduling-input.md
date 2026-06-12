@@ -8,7 +8,7 @@ Parent-cross-domain: GND-0008 — cost-of-delay-as-scheduling-input is the FLO-t
 
 ## Related
 
-References: GND-0008, PAR-0023
+References: GND-0008, PGN-0015
 
 ## Context
 
@@ -36,7 +36,7 @@ R2 [5]: When job durations are heterogeneous, schedulers order by WSJF —
   cost-of-delay divided by duration estimate — and FIFO is permitted only as the
   explicit fallback when cost-of-delay is uniform across the queue.
 R3 [6]: Cost-of-delay values are observable at runtime through the same telemetry
-  surface as queue depth and arrival rate (PAR-0023), so operators can audit the
+  surface as queue depth and arrival rate (PGN-0015), so operators can audit the
   scheduling decision.
 R4 [5]: Local schedulers MAY override global WSJF when local information shows a
   higher economic option, per Reinertsen F18 — local priorities are inherently
