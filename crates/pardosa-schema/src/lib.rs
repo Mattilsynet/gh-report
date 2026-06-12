@@ -27,6 +27,7 @@ pub mod char_scalar;
 pub mod error;
 pub mod floats;
 pub mod genome_safe;
+pub mod guide;
 pub use bounded::{EventBytes, EventString, EventVec, NonEmptyEventString};
 pub use char_scalar::CharScalar;
 pub use error::DomainError;
