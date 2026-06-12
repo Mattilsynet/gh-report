@@ -8,12 +8,13 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::error::Error;
 use std::path::Path;
 use std::sync::Mutex;
 
 use pardosa::store::{
-    Event, EventStore as PardosaStore, FiberId, FiberLookup, FiberState, JetStreamBackend,
-    LiveFiber, PgnoBackend,
+    BackendError, BackendOp, Event, EventStore as PardosaStore, FiberId, FiberLookup, FiberState,
+    JetStreamBackend, LiveFiber, PardosaError, PgnoBackend,
 };
 use tokio::runtime::{Handle, RuntimeFlavor};
 
@@ -24,14 +25,69 @@ use crate::event::DomainEvent;
 pub enum StoreError {
     #[error("pardosa store infrastructure error: {0}")]
     Infrastructure(String),
+    #[error("pardosa store backend `{op}` infrastructure error: {source}")]
+    BackendInfrastructure {
+        op: BackendOp,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
     #[error("domain key {key:?} maps to multiple fibers; one-fiber-per-repo invariant violated")]
     DivergedFiber { key: String },
     #[error("store mutex poisoned")]
     Poisoned,
 }
 
-fn infra<E: std::fmt::Display>(e: E) -> StoreError {
-    StoreError::Infrastructure(e.to_string())
+fn backend_op_from_backend_error(error: &BackendError) -> Option<BackendOp> {
+    match error {
+        BackendError::Timeout { op, .. }
+        | BackendError::Connect { op, .. }
+        | BackendError::Replay { op, .. } => Some(*op),
+        _ => None,
+    }
+}
+
+fn backend_op_from_error_chain(error: &(dyn Error + 'static)) -> Option<BackendOp> {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if let Some(backend) = error.downcast_ref::<BackendError>() {
+            return backend_op_from_backend_error(backend);
+        }
+        if let Some(io) = error.downcast_ref::<std::io::Error>()
+            && let Some(inner) = io.get_ref()
+            && let Some(backend) = inner.downcast_ref::<BackendError>()
+        {
+            return backend_op_from_backend_error(backend);
+        }
+        current = error.source();
+    }
+    None
+}
+
+trait StoreInfrastructureError: std::error::Error + Send + Sync + 'static {
+    fn backend_op(&self) -> Option<BackendOp>;
+}
+
+impl StoreInfrastructureError for PardosaError {
+    fn backend_op(&self) -> Option<BackendOp> {
+        backend_op_from_error_chain(self)
+    }
+}
+
+impl StoreInfrastructureError for pardosa::store::replay::Error {
+    fn backend_op(&self) -> Option<BackendOp> {
+        backend_op_from_error_chain(self)
+    }
+}
+
+fn infra<E: StoreInfrastructureError>(e: E) -> StoreError {
+    if let Some(op) = e.backend_op() {
+        StoreError::BackendInfrastructure {
+            op,
+            source: Box::new(e),
+        }
+    } else {
+        StoreError::Infrastructure(e.to_string())
+    }
 }
 
 struct Inner {
@@ -319,5 +375,47 @@ fn bridge<T>(bridge_runtime: bool, f: impl FnOnce() -> T) -> T {
         tokio::task::block_in_place(f)
     } else {
         f()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn backend_timeout(op: BackendOp) -> pardosa::store::replay::Error {
+        pardosa::store::replay::Error::Io(std::io::Error::other(BackendError::Timeout {
+            op,
+            elapsed: Duration::from_millis(750),
+            configured: Duration::from_millis(500),
+        }))
+    }
+
+    #[test]
+    fn timeout_on_sync_renders_distinctly_from_timeout_on_append_at_store_boundary() {
+        let append = infra(backend_timeout(BackendOp::Append));
+        let sync = infra(backend_timeout(BackendOp::Sync));
+
+        match &append {
+            StoreError::BackendInfrastructure { op, .. } => {
+                assert!(matches!(*op, BackendOp::Append), "append op carried");
+            }
+            other => panic!("expected BackendInfrastructure for append timeout, got {other:?}"),
+        }
+        match &sync {
+            StoreError::BackendInfrastructure { op, .. } => {
+                assert!(matches!(*op, BackendOp::Sync), "sync op carried");
+            }
+            other => panic!("expected BackendInfrastructure for sync timeout, got {other:?}"),
+        }
+
+        let append_rendered = append.to_string();
+        let sync_rendered = sync.to_string();
+        assert!(
+            append_rendered.contains("append"),
+            "render: {append_rendered}"
+        );
+        assert!(sync_rendered.contains("sync"), "render: {sync_rendered}");
+        assert_ne!(append_rendered, sync_rendered);
     }
 }

@@ -490,6 +490,8 @@ impl core::fmt::Display for PublisherBacklogKind {
 /// - [`BackendError::RuntimeFailure`] (§D7) — non-recoverable.
 /// - [`BackendError::Publish`] (§D7) — transient downstream
 ///   failure; recovery via ADR-0015 rebuffer.
+/// - [`BackendError::Connect`] — backend connection failure.
+/// - [`BackendError::Replay`] — backend replay failure.
 /// - [`BackendError::PublisherBacklog`] (§D8) — bounded buffer
 ///   cap exceeded.
 ///
@@ -515,6 +517,20 @@ pub enum BackendError {
     /// adopter does not retry directly.
     #[error("backend publish failure: {source}")]
     Publish {
+        #[source]
+        source: Box<dyn core::error::Error + Send + Sync + 'static>,
+    },
+    /// A downstream backend connection failure.
+    #[error("backend connect failure during `{op}`: {source}")]
+    Connect {
+        op: BackendOp,
+        #[source]
+        source: Box<dyn core::error::Error + Send + Sync + 'static>,
+    },
+    /// A downstream backend replay failure.
+    #[error("backend replay failure during `{op}`: {source}")]
+    Replay {
+        op: BackendOp,
         #[source]
         source: Box<dyn core::error::Error + Send + Sync + 'static>,
     },

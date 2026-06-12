@@ -20,9 +20,9 @@ fn map_runtime_error(err: JetStreamRuntimeError, op: BackendOp) -> BackendError 
             elapsed,
             configured,
         },
-        JetStreamRuntimeError::Publish { source }
-        | JetStreamRuntimeError::Connect { source }
-        | JetStreamRuntimeError::Replay { source } => BackendError::Publish { source },
+        JetStreamRuntimeError::Publish { source } => BackendError::Publish { source },
+        JetStreamRuntimeError::Connect { source } => BackendError::Connect { op, source },
+        JetStreamRuntimeError::Replay { source } => BackendError::Replay { op, source },
         other => BackendError::Publish {
             source: Box::new(other),
         },
@@ -151,7 +151,7 @@ mod tests {
         }
     }
     #[test]
-    fn connect_maps_to_backend_publish_preserving_source() {
+    fn connect_maps_to_backend_connect_preserving_source() {
         let mapped = map_runtime_error(
             JetStreamRuntimeError::Connect {
                 source: boxed_source("connect-failed"),
@@ -159,17 +159,18 @@ mod tests {
             BackendOp::Append,
         );
         match mapped {
-            BackendError::Publish { source } => {
+            BackendError::Connect { op, source } => {
+                assert!(matches!(op, BackendOp::Append), "op preserved");
                 assert!(
                     source.to_string().contains("connect-failed"),
                     "source preserved: {source}",
                 );
             }
-            other => panic!("expected BackendError::Publish, got {other:?}"),
+            other => panic!("expected BackendError::Connect, got {other:?}"),
         }
     }
     #[test]
-    fn replay_maps_to_backend_publish_preserving_inner_source_directly() {
+    fn replay_maps_to_backend_replay_preserving_inner_source_directly() {
         let mapped = map_runtime_error(
             JetStreamRuntimeError::Replay {
                 source: boxed_source("replay-failed"),
@@ -177,18 +178,15 @@ mod tests {
             BackendOp::Sync,
         );
         match mapped {
-            BackendError::Publish { source } => {
+            BackendError::Replay { op, source } => {
+                assert!(matches!(op, BackendOp::Sync), "op preserved");
                 assert_eq!(
                     source.to_string(),
                     "replay-failed",
-                    "Replay must unwrap its inner source into BackendError::Publish.source \
-                     the same way Publish/Connect do — recovery code calling Error::source() \
-                     should reach the underlying transport error directly, not via an extra \
-                     JetStreamRuntimeError::Replay wrapper layer (substrate-recovery read-path \
-                     taxonomy parity with the write-path; mission rescue-pardosa-k67j)",
+                    "source preserved without wrapping",
                 );
             }
-            other => panic!("expected BackendError::Publish, got {other:?}"),
+            other => panic!("expected BackendError::Replay, got {other:?}"),
         }
     }
     #[test]

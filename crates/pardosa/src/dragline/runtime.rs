@@ -110,7 +110,7 @@ fn backend_error_to_persist_error(e: crate::error::BackendError) -> persist::Err
             Ok(io) => persist::Error::Io(*io),
             Err(boxed) => persist::Error::Io(std::io::Error::other(boxed)),
         },
-        other => persist::Error::Io(std::io::Error::other(format!("{other}"))),
+        other => persist::Error::Io(std::io::Error::other(other)),
     }
 }
 /// Runtime composition of an in-memory [`Line<T>`] with a

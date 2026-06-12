@@ -98,9 +98,10 @@ pub use crate::error::PardosaError;
 /// Re-exported so backend-author crates can name the failure
 /// taxonomy returned from the substrate's append / sync / watermark
 /// path (ADR-0022 §D11). The enum is `#[non_exhaustive]` per
-/// ADR-0007; the four variants pinned at acceptance are
+/// ADR-0007; the initial variants pinned at acceptance were
 /// `Timeout`, `RuntimeFailure`, `Publish`, and `PublisherBacklog`
-/// (ADR-0022 §D7, §D8).
+/// (ADR-0022 §D7, §D8), with later additive backend-projection
+/// variants permitted by that non-exhaustive contract.
 ///
 /// Adopters who only consume an `EventStore<T>` do not see
 /// `BackendError`: the runtime ring translates substrate failures
