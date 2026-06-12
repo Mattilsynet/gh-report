@@ -1,7 +1,7 @@
 # PGN-0013. Payload-Type Vocabulary
 
 Date: 2026-06-08
-Last-reviewed: 2026-06-08
+Last-reviewed: 2026-06-12
 Tier: B
 Status: Accepted
 Crates: pardosa-wire, pardosa-schema
@@ -45,6 +45,12 @@ R7 [5]: No bounded wrapper introduces a new `EventError` /
   `PardosaError` variant; capacity violations surface through
   `EventError::InvalidInput` (the taxonomy frozen by PGN-0006 is the
   sole failure surface).
+R8 [5]: Event fields must contribute wire bytes or schema-distinguishing
+  shape; zero-width types (`()`, `PhantomData<T>`) are not `GenomeSafe`
+  and are not field-eligible. The derive rejects them (`unit_field.rs`,
+  `phantomdata_field.rs`) because `()` carries no data and
+  `PhantomData<T>` erases `T` from `SCHEMA_HASH`. `Box<T>` remains a
+  layout-only, wire-transparent combinator per `guide.rs`.
 
 ## Consequences
 
