@@ -44,10 +44,6 @@ impl GenomeSafe for char {
     const SCHEMA_HASH: u128 = schema_hash_bytes(b"char");
     const SCHEMA_SOURCE: &'static str = "char";
 }
-impl GenomeSafe for () {
-    const SCHEMA_HASH: u128 = schema_hash_bytes(b"()");
-    const SCHEMA_SOURCE: &'static str = "()";
-}
 impl GenomeSafe for pardosa_wire::Timestamp {
     const SCHEMA_HASH: u128 = schema_hash_bytes(b"Timestamp");
     const SCHEMA_SOURCE: &'static str = "Timestamp";
@@ -66,10 +62,6 @@ impl<T: GenomeSafe> GenomeSafe for Option<T> {
 impl<T: GenomeSafe> GenomeSafe for Box<T> {
     const SCHEMA_HASH: u128 = T::SCHEMA_HASH;
     const SCHEMA_SOURCE: &'static str = T::SCHEMA_SOURCE;
-}
-impl<T: GenomeSafe + ?Sized> GenomeSafe for core::marker::PhantomData<T> {
-    const SCHEMA_HASH: u128 = schema_hash_bytes(b"PhantomData");
-    const SCHEMA_SOURCE: &'static str = "PhantomData";
 }
 impl<T: GenomeSafe, const N: usize> GenomeSafe for [T; N] {
     const SCHEMA_HASH: u128 = schema_hash_combine(
@@ -116,7 +108,6 @@ macro_rules! impl_genome_ord_primitive {
     };
 }
 impl_genome_ord_primitive!(bool, u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, char,);
-impl GenomeOrd for () {}
 impl GenomeOrd for pardosa_wire::Timestamp {}
 impl<T: GenomeOrd> GenomeOrd for Option<T> {}
 impl<T: GenomeOrd, const N: usize> GenomeOrd for [T; N] {}

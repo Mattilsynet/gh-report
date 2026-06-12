@@ -6,7 +6,6 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::marker::PhantomData;
 use core::num::NonZeroU64;
 impl<T: Encode> Encode for Option<T> {
     fn encode(&self, out: &mut Vec<u8>) {
@@ -210,9 +209,6 @@ impl<T: Decode> Decode for Arc<T> {
     fn decode(d: &mut Decoder<'_>) -> Result<Self, DecodeError> {
         Ok(Arc::new(T::decode(d)?))
     }
-}
-impl<T: ?Sized> Encode for PhantomData<T> {
-    fn encode(&self, _out: &mut Vec<u8>) {}
 }
 impl Encode for char {
     fn encode(&self, out: &mut Vec<u8>) {

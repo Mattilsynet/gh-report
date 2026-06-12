@@ -150,7 +150,6 @@ fn distinct_newtypes_different_hashes() {
 fn primitive_schema_sources() {
     assert_eq!(<u32 as GenomeSafe>::SCHEMA_SOURCE, "u32");
     assert_eq!(<bool as GenomeSafe>::SCHEMA_SOURCE, "bool");
-    assert_eq!(<() as GenomeSafe>::SCHEMA_SOURCE, "()");
 }
 #[test]
 fn primitive_hashes_are_distinct() {
@@ -221,12 +220,6 @@ fn trait_and_derive_coexist() {
     assert!(src.contains("TraitAndDeriveTest"));
 }
 #[test]
-fn phantom_data_type_erasure() {
-    let h1 = <core::marker::PhantomData<u32> as GenomeSafe>::SCHEMA_HASH;
-    let h2 = <core::marker::PhantomData<u64> as GenomeSafe>::SCHEMA_HASH;
-    assert_eq!(h1, h2, "PhantomData ignores type parameter");
-}
-#[test]
 fn array_length_changes_hash() {
     let h4 = <[u8; 4] as GenomeSafe>::SCHEMA_HASH;
     let h8 = <[u8; 8] as GenomeSafe>::SCHEMA_HASH;
@@ -286,7 +279,6 @@ fn genome_ord_primitive_impls() {
     assert_genome_ord::<i64>();
     assert_genome_ord::<i128>();
     assert_genome_ord::<char>();
-    assert_genome_ord::<()>();
 }
 #[test]
 fn genome_ord_composite_impls() {

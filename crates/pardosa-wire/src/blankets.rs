@@ -1,17 +1,12 @@
 use crate::{EventSafe, sealed};
-use core::marker::PhantomData;
 macro_rules! seal_primitive {
     ($($ty:ty),+ $(,)?) => {
         $(impl sealed::Sealed for $ty {} impl EventSafe for $ty {})+
     };
 }
 seal_primitive!(bool, u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, char);
-impl sealed::Sealed for () {}
-impl EventSafe for () {}
 impl<T: EventSafe> sealed::Sealed for Option<T> {}
 impl<T: EventSafe> EventSafe for Option<T> {}
-impl<T: EventSafe + ?Sized> sealed::Sealed for PhantomData<T> {}
-impl<T: EventSafe + ?Sized> EventSafe for PhantomData<T> {}
 impl<T: EventSafe, const N: usize> sealed::Sealed for [T; N] {}
 impl<T: EventSafe, const N: usize> EventSafe for [T; N] {}
 macro_rules! seal_tuple {
