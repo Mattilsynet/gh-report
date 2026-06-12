@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::Path;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use pardosa::store::{
     BackendError, BackendOp, Event, EventStore as PardosaStore, FiberId, FiberLookup, FiberState,
@@ -99,6 +100,7 @@ struct Inner {
 /// Pardosa-native event store: one fiber per repository domain key.
 pub struct NativeStore {
     inner: Mutex<Inner>,
+    backend_reachable: AtomicBool,
 }
 
 impl NativeStore {
@@ -165,7 +167,33 @@ impl NativeStore {
                 live: HashMap::new(),
                 bridge_runtime,
             }),
+            backend_reachable: AtomicBool::new(true),
         }
+    }
+
+    #[must_use]
+    pub(crate) fn backend_reachable(&self) -> bool {
+        self.backend_reachable.load(Ordering::Acquire)
+    }
+
+    fn observe_result<T>(&self, result: &Result<T, StoreError>) {
+        if matches!(result, Err(StoreError::BackendInfrastructure { .. })) {
+            self.backend_reachable.store(false, Ordering::Release);
+        } else if result.is_ok() {
+            self.backend_reachable.store(true, Ordering::Release);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_backend_connect_failure_for_test(&self) {
+        let result: Result<(), StoreError> = Err(StoreError::BackendInfrastructure {
+            op: BackendOp::Sync,
+            source: Box::new(BackendError::Connect {
+                op: BackendOp::Sync,
+                source: Box::new(std::io::Error::other("nats down")),
+            }),
+        });
+        self.observe_result(&result);
     }
 
     /// Capture a repository state event onto the repo's fiber, growing it
@@ -179,7 +207,7 @@ impl NativeStore {
     pub fn record(&self, domain_key: &str, event: DomainEvent) -> Result<(), StoreError> {
         let mut guard = self.inner.lock().map_err(|_| StoreError::Poisoned)?;
         let inner = &mut *guard;
-        bridge(inner.bridge_runtime, || {
+        let result = bridge(inner.bridge_runtime, || {
             let receipt = if let Some(fiber) = inner.live.remove(domain_key) {
                 inner.store.writer().append(fiber, event)
             } else {
@@ -193,7 +221,9 @@ impl NativeStore {
             inner.live.insert(domain_key.to_string(), receipt.fiber());
             let _ = inner.store.writer().sync().map_err(infra)?;
             Ok(())
-        })
+        });
+        self.observe_result(&result);
+        result
     }
 
     /// Soft-delete a repository's fiber (detach), then fence. A later
@@ -207,7 +237,7 @@ impl NativeStore {
     pub fn detach(&self, domain_key: &str, event: DomainEvent) -> Result<(), StoreError> {
         let mut guard = self.inner.lock().map_err(|_| StoreError::Poisoned)?;
         let inner = &mut *guard;
-        bridge(inner.bridge_runtime, || {
+        let result = bridge(inner.bridge_runtime, || {
             let fiber = match inner.live.remove(domain_key) {
                 Some(fiber) => fiber,
                 None => match resolve_fiber(&inner.store, domain_key)? {
@@ -223,7 +253,9 @@ impl NativeStore {
             let _ = inner.store.writer().detach(fiber, event).map_err(infra)?;
             let _ = inner.store.writer().sync().map_err(infra)?;
             Ok(())
-        })
+        });
+        self.observe_result(&result);
+        result
     }
 
     /// The latest event of every live (`Defined`) fiber, paired with its
@@ -253,7 +285,9 @@ impl NativeStore {
     /// [`StoreError::Poisoned`].
     pub fn events(&self) -> Result<Vec<(bool, DomainEvent)>, StoreError> {
         let guard = self.inner.lock().map_err(|_| StoreError::Poisoned)?;
-        bridge(guard.bridge_runtime, || Ok(all_events(&guard.store)))
+        let result = bridge(guard.bridge_runtime, || Ok(all_events(&guard.store)));
+        self.observe_result(&result);
+        result
     }
 
     /// Fold every event in committed line order without materialising an
@@ -268,9 +302,11 @@ impl NativeStore {
         fold: impl FnMut(&mut R, bool, &DomainEvent),
     ) -> Result<R, StoreError> {
         let guard = self.inner.lock().map_err(|_| StoreError::Poisoned)?;
-        bridge(guard.bridge_runtime, || {
+        let result = bridge(guard.bridge_runtime, || {
             Ok(fold_all_events(&guard.store, init, fold))
-        })
+        });
+        self.observe_result(&result);
+        result
     }
 }
 

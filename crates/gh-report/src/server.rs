@@ -212,6 +212,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn readyz_returns_503_when_cache_warm_but_backend_connect_failed() {
+        use crate::infra::server::state::CachedPage;
+        use std::collections::HashMap;
+
+        let state = state_no_cache().await;
+        let mut pages = HashMap::new();
+        pages.insert(
+            "index.html".to_string(),
+            CachedPage::new("index.html", b"<html>cached</html>".to_vec()),
+        );
+        state.evidence().html_cache.store(Arc::new(Some(pages)));
+        state.event_store.mark_backend_connect_failure_for_test();
+
+        let app = build_router(Arc::clone(&state));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        wait_for_server(addr).await;
+
+        let resp = reqwest::get(format!("http://{addr}/readyz")).await.unwrap();
+        assert_eq!(resp.status(), 503);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["status"], "not_ready");
+
+        handle.abort();
+    }
+
+    #[tokio::test]
     async fn ws_e2e_publish_evidence_broadcasts_to_client() {
         use crate::app::collect::publish_evidence;
         use crate::config::runtime::RuntimeConfig;

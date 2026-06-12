@@ -246,14 +246,31 @@ fn open_event_store(
             }
         }
         crate::config::runtime::PardosaBackend::Nats => {
-            let opened =
-                EventStoreImpl::open_jetstream(jetstream_backend(nats.clone(), handle.clone()));
-            match opened {
-                Ok(store) => Ok(store),
-                Err(_) => EventStoreImpl::create_jetstream(jetstream_backend(nats, handle))
-                    .map_err(std::io::Error::other),
-            }
+            open_or_create_jetstream(nats, handle).map_err(std::io::Error::other)
         }
+    }
+}
+
+fn open_or_create_jetstream(
+    nats: crate::config::runtime::NatsStoreConfig,
+    handle: tokio::runtime::Handle,
+) -> Result<EventStoreImpl, crate::store::StoreError> {
+    let open_nats = nats.clone();
+    let open_handle = handle.clone();
+    open_or_create_jetstream_with(
+        move || EventStoreImpl::open_jetstream(jetstream_backend(open_nats, open_handle)),
+        move || EventStoreImpl::create_jetstream(jetstream_backend(nats, handle)),
+    )
+}
+
+fn open_or_create_jetstream_with(
+    open: impl FnOnce() -> Result<EventStoreImpl, crate::store::StoreError>,
+    create: impl FnOnce() -> Result<EventStoreImpl, crate::store::StoreError>,
+) -> Result<EventStoreImpl, crate::store::StoreError> {
+    match open() {
+        Ok(store) => Ok(store),
+        Err(e @ crate::store::StoreError::BackendInfrastructure { .. }) => Err(e),
+        Err(_) => create(),
     }
 }
 
@@ -821,7 +838,8 @@ impl crate::infra::server::state::ServerState for AppState {
     }
 
     fn is_ready(&self) -> bool {
-        self.last_completed_run.load().is_some() || self.evidence().html_cache.load().is_some()
+        self.event_store.backend_reachable()
+            && (self.last_completed_run.load().is_some() || self.evidence().html_cache.load().is_some())
     }
 }
 
@@ -881,6 +899,39 @@ mod tests {
         assert!(
             error.contains("connect") || error.contains("Connection") || error.contains("refused"),
             "dead-port Nats open should reach connect and surface it as io::Error, got: {error}"
+        );
+    }
+
+    #[test]
+    fn jetstream_connect_open_error_surfaces_without_create_attempt() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let create_called = AtomicBool::new(false);
+        let connect = crate::store::StoreError::BackendInfrastructure {
+            op: pardosa::store::BackendOp::Sync,
+            source: Box::new(pardosa::store::BackendError::Connect {
+                op: pardosa::store::BackendOp::Sync,
+                source: Box::new(std::io::Error::other("nats down")),
+            }),
+        };
+
+        let result = open_or_create_jetstream_with(
+            || Err(connect),
+            || {
+                create_called.store(true, Ordering::Release);
+                Err(crate::store::StoreError::Infrastructure(
+                    "create should not be attempted after connect failure".to_string(),
+                ))
+            },
+        );
+
+        assert!(
+            matches!(result, Err(crate::store::StoreError::BackendInfrastructure { .. })),
+            "connect failure must surface through BackendInfrastructure"
+        );
+        assert!(
+            !create_called.load(Ordering::Acquire),
+            "connect failure on open must not fall through to create_jetstream"
         );
     }
 
@@ -1284,6 +1335,24 @@ mod tests {
         );
         state.evidence().html_cache.store(Arc::new(Some(pages)));
         assert!(state.is_ready(), "should be ready when html_cache is Some");
+    }
+
+    #[tokio::test]
+    async fn is_ready_false_when_cache_populated_but_jetstream_connect_failed() {
+        use crate::infra::server::state::ServerState;
+        let state = AppStateBuilder::new().build().await;
+        let mut pages = HashMap::new();
+        pages.insert(
+            "index.html".to_string(),
+            CachedPage::new("index.html", b"<html>cached</html>".to_vec()),
+        );
+        state.evidence().html_cache.store(Arc::new(Some(pages)));
+        state.event_store.mark_backend_connect_failure_for_test();
+
+        assert!(
+            !state.is_ready(),
+            "warm cache must not mask last-known JetStream connect failure"
+        );
     }
 
     #[tokio::test]
