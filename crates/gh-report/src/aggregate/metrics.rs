@@ -1,6 +1,6 @@
 //! Metrics aggregation and collection statistics.
 //!
-//! Computes aggregated security metrics across all non-archived repositories.
+//! Computes aggregated security metrics across repository evidence.
 //!
 //! All `u32` counts use saturating arithmetic to avoid panics or silent
 //! wrapping when counts are near `u32::MAX` (e.g., from defensive
@@ -75,7 +75,7 @@ fn count_by_visibility(active: &[&RepositoryEvidence], visibility: Visibility) -
     )
 }
 
-/// Aggregate security metrics across all non-archived repositories.
+/// Aggregate security metrics across repository evidence.
 ///
 /// Aggregation semantics:
 ///
@@ -84,8 +84,10 @@ fn count_by_visibility(active: &[&RepositoryEvidence], visibility: Visibility) -
 ///   (archived + active). Archived public repos with a security policy
 ///   on file are intentionally included so the count reflects the
 ///   organisation's published policy surface, not just its active one.
-/// - **Secret scanning, Dependabot, branch protection, CODEOWNERS**: counted
-///   over **all** non-archived repos. Denominator is total active repos.
+/// - **Secret scanning**: counted over **all public** repositories, including
+///   archived ones, mirroring the security-policy denominator.
+/// - **Dependabot, branch protection, CODEOWNERS**: counted over **all**
+///   non-archived repos. Denominator is total active repos.
 /// - **Open secret alert prevalence**: denominator is the number of repos
 ///   where secret scanning is enabled AND alerts are observable.
 #[must_use]
@@ -100,7 +102,7 @@ pub fn aggregate_metrics(repositories: &[RepositoryEvidence]) -> AggregatedMetri
         .collect();
 
     let policy_counts = count_policy_statuses(&public_policy);
-    let secret_counts = count_secret_scanning_statuses(&active);
+    let secret_counts = count_secret_scanning_statuses(&public_policy);
     let dependabot_counts = count_dependabot_statuses(&active);
     let branch_counts = count_branch_protection_statuses(&active);
     let codeowners_counts = count_codeowners_statuses(&active);
@@ -119,7 +121,7 @@ pub fn aggregate_metrics(repositories: &[RepositoryEvidence]) -> AggregatedMetri
         )
         .with_extra("unknown", policy_counts.unknown);
 
-    let secret_scanning_coverage = RateMetric::new(secret_counts.enabled, total_active)
+    let secret_scanning_coverage = RateMetric::new(secret_counts.enabled, total_public)
         .with_extra("disabled", secret_counts.disabled)
         .with_extra("permission_denied", secret_counts.permission_denied)
         .with_extra("unknown", secret_counts.unknown)
@@ -253,9 +255,9 @@ fn count_statuses<T: Default>(
     counts
 }
 
-/// Count secret scanning statuses across active repos.
-fn count_secret_scanning_statuses(active: &[&RepositoryEvidence]) -> SecretScanningCounts {
-    count_statuses(active, |repo, counts: &mut SecretScanningCounts| match repo
+/// Count secret scanning statuses across public repos.
+fn count_secret_scanning_statuses(public_repos: &[&RepositoryEvidence]) -> SecretScanningCounts {
+    count_statuses(public_repos, |repo, counts: &mut SecretScanningCounts| match repo
         .checks
         .secret_scanning
         .status
@@ -801,6 +803,32 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_metrics_secret_scanning_denominator_counts_public_including_archived() {
+        let repos = sample_repos();
+        let metrics = aggregate_metrics(&repos);
+        let public_repo_count = count_as_u32(
+            repos.iter()
+                .filter(|r| r.repository.visibility == Visibility::Public)
+                .count(),
+        );
+        let active_repo_count = count_as_u32(
+            repos.iter()
+                .filter(|r| !r.repository.archived)
+                .count(),
+        );
+        let archived_public_count = count_as_u32(
+            repos.iter()
+                .filter(|r| r.repository.visibility == Visibility::Public && r.repository.archived)
+                .count(),
+        );
+
+        assert!(archived_public_count > 0);
+        assert_ne!(public_repo_count, active_repo_count);
+        assert_eq!(metrics.security_policy_coverage.denominator, public_repo_count);
+        assert_eq!(metrics.secret_scanning_coverage.denominator, public_repo_count);
+    }
+
+    #[test]
     fn aggregate_metrics_secret_scanning_counts() {
         let repos = sample_repos();
         let metrics = aggregate_metrics(&repos);
@@ -808,11 +836,11 @@ mod tests {
         assert_eq!(metrics.secret_scanning_counts.enabled, 2);
         assert_eq!(metrics.secret_scanning_counts.disabled, 1);
         assert_eq!(metrics.secret_scanning_counts.permission_denied, 1);
-        assert_eq!(metrics.secret_scanning_counts.unknown, 1);
+        assert_eq!(metrics.secret_scanning_counts.unknown, 0);
 
         assert_eq!(metrics.secret_scanning_coverage.numerator, 2);
-        assert_eq!(metrics.secret_scanning_coverage.denominator, 5);
-        assert_eq!(metrics.secret_scanning_coverage.rate, Some(40.0));
+        assert_eq!(metrics.secret_scanning_coverage.denominator, 4);
+        assert_eq!(metrics.secret_scanning_coverage.rate, Some(50.0));
     }
 
     #[test]
