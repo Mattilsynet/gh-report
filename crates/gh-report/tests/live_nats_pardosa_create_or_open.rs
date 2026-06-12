@@ -1,6 +1,6 @@
 use gh_report::app::state::{AppState, EventStoreImpl};
 use gh_report::config::runtime::{DEFAULT_NATS_URL, NatsStoreConfig, PardosaBackend};
-use gh_report::event::{DomainEvent, RepoPresence};
+use gh_report::event::DomainEvent;
 use pardosa::store::JetStreamBackend as PardosaJetStreamBackend;
 use pardosa_nats::{JetStreamBackend as SubstrateJetStreamBackend, JetStreamConfig, RuntimeHandle};
 use pardosa_schema::{NonEmptyEventString, Timestamp as EventTimestamp};
@@ -81,7 +81,6 @@ fn test_event() -> DomainEvent {
         repo_name: NonEmptyEventString::try_new("repo").expect("repo"),
         timestamp: EventTimestamp::from_nanos(1_781_136_000_000_000_000).expect("timestamp"),
         evidence: None,
-        presence: RepoPresence::Active,
     }
 }
 
@@ -90,12 +89,10 @@ fn assert_loaded_event(event: &DomainEvent) {
         DomainEvent::RepositoryStateCaptured {
             domain_key,
             repo_name,
-            presence,
             ..
         } => {
             assert_eq!(domain_key.as_str(), "m5/repo");
             assert_eq!(repo_name.as_str(), "repo");
-            assert_eq!(*presence, RepoPresence::Active);
         }
     }
 }

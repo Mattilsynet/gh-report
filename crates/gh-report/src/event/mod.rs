@@ -217,12 +217,6 @@ pub struct CodeownersEntry {
     pub owners: EventVec<EventString<MAX_CODEOWNERS_OWNER>, MAX_CODEOWNERS_OWNERS>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
-#[repr(u8)]
-pub enum RepoPresence {
-    Active = 0,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
 #[repr(u8)]
 pub enum DomainEvent {
@@ -231,7 +225,6 @@ pub enum DomainEvent {
         repo_name: NonEmptyEventString<MAX_REPO_NAME>,
         timestamp: Timestamp,
         evidence: Option<Box<RepositoryEvidence>>,
-        presence: RepoPresence,
     } = 0,
 }
 
@@ -378,13 +371,12 @@ mod tests {
     }
 
     #[test]
-    fn native_repository_state_round_trips_with_active_presence() {
+    fn native_repository_state_round_trips() {
         let event = DomainEvent::RepositoryStateCaptured {
             domain_key: nes("id-repo-1"),
             repo_name: nes("repo-1"),
             timestamp: ts(40),
             evidence: Some(Box::new(full_evidence())),
-            presence: RepoPresence::Active,
         };
         let wire = to_vec(&event);
         let decoded: DomainEvent = from_bytes(&wire).expect("decode native event");
@@ -397,15 +389,11 @@ mod tests {
         let first = <DomainEvent as GenomeSafe>::SCHEMA_HASH;
         let second = <DomainEvent as GenomeSafe>::SCHEMA_HASH;
         assert_eq!(first, second);
+        assert_eq!(first, 130_161_851_149_130_176_976_202_983_483_756_427_020_u128);
         assert_ne!(
             first, 19_710_905_809_486_475_925_592_730_934_028_496_282_u128,
-            "P4b must change the schema hash by dropping RepoPresence::Removed"
+            "current schema hash must differ from the prior P4b value"
         );
-    }
-
-    #[test]
-    fn repo_presence_retains_active_discriminant() {
-        assert_eq!(RepoPresence::Active as u8, 0);
     }
 
     #[test]

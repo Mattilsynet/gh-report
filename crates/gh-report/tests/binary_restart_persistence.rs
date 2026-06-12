@@ -24,7 +24,7 @@
 //! semantics, which `bootstrap_replay` already covers in-process.
 
 use gh_report::app::state::EventStoreImpl;
-use gh_report::event::{DomainEvent, RepoPresence};
+use gh_report::event::DomainEvent;
 use pardosa_schema::{NonEmptyEventString, Timestamp as EventTimestamp};
 
 use assert_cmd::Command;
@@ -144,6 +144,5 @@ fn native_event(domain_key: &str, repo_name: &str) -> DomainEvent {
         repo_name: NonEmptyEventString::try_new(repo_name).expect("repo name"),
         timestamp: EventTimestamp::from_nanos(1_779_491_200_000_000_000).expect("timestamp"),
         evidence: None,
-        presence: RepoPresence::Active,
     }
 }

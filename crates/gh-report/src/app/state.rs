@@ -47,7 +47,7 @@ use crate::domain::evidence::RepositoryEvidence;
 use crate::domain::run::RunMetadata;
 use crate::error::PersistenceError;
 use crate::event::convert::EventConversionError;
-use crate::event::{DomainEvent as NativeDomainEvent, RepoPresence as NativeRepoPresence};
+use crate::event::DomainEvent as NativeDomainEvent;
 
 /// Embedded CSS stylesheet, compiled into the binary at build time.
 const STYLESHEET: &str = include_str!("../../templates/style.css");
@@ -380,7 +380,6 @@ fn repo_event(
         repo_name: non_empty("repo_name", repo_name)?,
         timestamp: event_timestamp("timestamp", timestamp)?,
         evidence,
-        presence: NativeRepoPresence::Active,
     })
 }
 

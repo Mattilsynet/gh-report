@@ -13,4 +13,4 @@
 # Update procedure: when the falsifier reports "additive change detected",
 # copy the suggested new line(s) into this file in the same sorted order
 # and re-run. Cite CHE-0022 in the commit message.
-RepositoryStateCaptured: domain_key, evidence, presence, repo_name, timestamp
+RepositoryStateCaptured: domain_key, evidence, repo_name, timestamp
