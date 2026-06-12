@@ -839,7 +839,8 @@ impl crate::infra::server::state::ServerState for AppState {
 
     fn is_ready(&self) -> bool {
         self.event_store.backend_reachable()
-            && (self.last_completed_run.load().is_some() || self.evidence().html_cache.load().is_some())
+            && (self.last_completed_run.load().is_some()
+                || self.evidence().html_cache.load().is_some())
     }
 }
 
@@ -926,7 +927,10 @@ mod tests {
         );
 
         assert!(
-            matches!(result, Err(crate::store::StoreError::BackendInfrastructure { .. })),
+            matches!(
+                result,
+                Err(crate::store::StoreError::BackendInfrastructure { .. })
+            ),
             "connect failure must surface through BackendInfrastructure"
         );
         assert!(
