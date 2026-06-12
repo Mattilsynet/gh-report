@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -27,6 +28,55 @@ fn write(dir: &Path, name: &str, content: &str) {
 fn read(dir: &Path, name: &str) -> String {
     fs::read_to_string(dir.join("src").join(name)).expect("read fixture")
 }
+
+#[derive(Debug)]
+struct ParsedHint<'a> {
+    path: &'a str,
+    line: u32,
+    item: String,
+    words: u32,
+    budget: u32,
+    kind: String,
+    v: u32,
+}
+
+fn parse_hint(line: &str) -> Option<ParsedHint<'_>> {
+    let mut fields = line.split('\t');
+    if fields.next()? != "DOC_LINT_HINT" {
+        return None;
+    }
+    let locator = fields.next()?;
+    let (path, lineno_s) = locator.rsplit_once(':')?;
+    let lineno: u32 = lineno_s.parse().ok()?;
+    let mut item = None;
+    let mut words = None;
+    let mut budget = None;
+    let mut kind = None;
+    let mut v = None;
+    for f in fields {
+        if let Some(rest) = f.strip_prefix("item=") {
+            item = Some(rest.to_string());
+        } else if let Some(rest) = f.strip_prefix("words=") {
+            words = rest.parse().ok();
+        } else if let Some(rest) = f.strip_prefix("budget=") {
+            budget = rest.parse().ok();
+        } else if let Some(rest) = f.strip_prefix("kind=") {
+            kind = Some(rest.to_string());
+        } else if let Some(rest) = f.strip_prefix("v=") {
+            v = rest.parse().ok();
+        }
+    }
+    Some(ParsedHint {
+        path,
+        line: lineno,
+        item: item?,
+        words: words?,
+        budget: budget?,
+        kind: kind?,
+        v: v?,
+    })
+}
+
 #[test]
 fn preserves_auto_trait_policy_markers() {
     let td = tempfile::tempdir().unwrap();
@@ -635,13 +685,13 @@ fn lint_header_emitted_once_for_many_findings() {
                 if w == 0 {
                     src.push_str("/// ");
                 }
-                src.push_str(&format!("w{n:02} "));
+                write!(src, "w{n:02} ").unwrap();
                 if w == 9 {
                     src.push('\n');
                 }
             }
         }
-        src.push_str(&format!("pub fn f{i}() {{}}\n"));
+        writeln!(src, "pub fn f{i}() {{}}").unwrap();
     }
     write(td.path(), "a.rs", &src);
     let out = run_lint(td.path());
@@ -668,11 +718,11 @@ fn lint_truncates_hints_beyond_fifty_with_residual() {
             src.push_str("/// ");
             for w in 0..10 {
                 let nw = line * 10 + w + 1;
-                src.push_str(&format!("w{nw:02} "));
+                write!(src, "w{nw:02} ").unwrap();
             }
             src.push('\n');
         }
-        src.push_str(&format!("pub fn f{i}() {{}}\n"));
+        writeln!(src, "pub fn f{i}() {{}}").unwrap();
     }
     write(td.path(), "a.rs", &src);
     let out = run_lint(td.path());
@@ -758,16 +808,16 @@ fn lint_hints_sorted_by_overshoot_descending_before_truncation() {
             src.push_str("/// ");
             for w in 0..10 {
                 let nw = line * 10 + w + 1;
-                src.push_str(&format!("w{nw:02} "));
+                write!(src, "w{nw:02} ").unwrap();
             }
             src.push('\n');
         }
         src.push_str("/// ");
         for w in 0..extra {
-            src.push_str(&format!("x{w:02} "));
+            write!(src, "x{w:02} ").unwrap();
         }
         src.push('\n');
-        src.push_str(&format!("pub fn f{i}() {{}}\n"));
+        writeln!(src, "pub fn f{i}() {{}}").unwrap();
     }
     write(td.path(), "a.rs", &src);
     let out = run_lint(td.path());
@@ -1684,61 +1734,15 @@ fn doc_lint_hint_round_trip_parses_to_struct() {
             src.push_str("/// ");
             for w in 0..10 {
                 let nw = line * 10 + w + 1;
-                src.push_str(&format!("w{nw:02} "));
+                write!(src, "w{nw:02} ").unwrap();
             }
             src.push('\n');
         }
-        src.push_str(&format!("pub fn f{i}() {{}}\n"));
+        writeln!(src, "pub fn f{i}() {{}}").unwrap();
     }
     write(td.path(), "a.rs", &src);
     let out = run_lint(td.path());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    #[derive(Debug)]
-    struct ParsedHint<'a> {
-        path: &'a str,
-        line: u32,
-        item: String,
-        words: u32,
-        budget: u32,
-        kind: String,
-        v: u32,
-    }
-    fn parse_hint(line: &str) -> Option<ParsedHint<'_>> {
-        let mut fields = line.split('\t');
-        if fields.next()? != "DOC_LINT_HINT" {
-            return None;
-        }
-        let locator = fields.next()?;
-        let (path, lineno_s) = locator.rsplit_once(':')?;
-        let lineno: u32 = lineno_s.parse().ok()?;
-        let mut item = None;
-        let mut words = None;
-        let mut budget = None;
-        let mut kind = None;
-        let mut v = None;
-        for f in fields {
-            if let Some(rest) = f.strip_prefix("item=") {
-                item = Some(rest.to_string());
-            } else if let Some(rest) = f.strip_prefix("words=") {
-                words = rest.parse().ok();
-            } else if let Some(rest) = f.strip_prefix("budget=") {
-                budget = rest.parse().ok();
-            } else if let Some(rest) = f.strip_prefix("kind=") {
-                kind = Some(rest.to_string());
-            } else if let Some(rest) = f.strip_prefix("v=") {
-                v = rest.parse().ok();
-            }
-        }
-        Some(ParsedHint {
-            path,
-            line: lineno,
-            item: item?,
-            words: words?,
-            budget: budget?,
-            kind: kind?,
-            v: v?,
-        })
-    }
     let hints: Vec<ParsedHint<'_>> = stdout
         .lines()
         .filter(|l| l.starts_with("DOC_LINT_HINT\t"))
@@ -1804,11 +1808,11 @@ fn doc_lint_truncated_record_round_trip_parses() {
             src.push_str("/// ");
             for w in 0..10 {
                 let nw = line * 10 + w + 1;
-                src.push_str(&format!("w{nw:02} "));
+                write!(src, "w{nw:02} ").unwrap();
             }
             src.push('\n');
         }
-        src.push_str(&format!("pub fn f{i}() {{}}\n"));
+        writeln!(src, "pub fn f{i}() {{}}").unwrap();
     }
     write(td.path(), "a.rs", &src);
     let out = run_lint(td.path());
