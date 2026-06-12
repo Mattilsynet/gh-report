@@ -389,6 +389,8 @@ pub struct ReportViewModel {
     pub date_time: String,
     /// Total non-archived repositories assessed.
     pub total_repos: u32,
+    /// Total repositories, including archived repositories.
+    pub total_all_repos: u32,
 
     pub policy_coverage_formatted: String,
     pub dependabot_coverage_formatted: String,
@@ -529,6 +531,7 @@ impl ReportViewModel {
             date: metadata.date.clone(),
             date_time: format_run_timestamp(&metadata.run_timestamp),
             total_repos: stats.total_repos,
+            total_all_repos: stats.total_repos.saturating_add(archived),
             policy_coverage_formatted: m.security_policy_coverage.to_string(),
             dependabot_coverage_formatted: m.dependabot_security_updates_coverage.to_string(),
             secret_scanning_coverage_formatted: m.secret_scanning_coverage.to_string(),
@@ -825,6 +828,17 @@ mod tests {
         assert_eq!(vm.date, "2026-04-09");
         assert_eq!(vm.date_time, "2026-04-09 12:00 UTC");
         assert_eq!(vm.total_repos, 10);
+    }
+
+    #[test]
+    fn view_model_total_all_repos_includes_archived_repos() {
+        let mut evidence = sample_evidence();
+        evidence.collection_statistics.archived_repos = 7;
+        let vm = ReportViewModel::from_evidence(&evidence, &CoverageTiers::default());
+
+        assert_eq!(vm.total_repos, 10);
+        assert_eq!(vm.archived_repos, 7);
+        assert_eq!(vm.total_all_repos, vm.total_repos + vm.archived_repos);
     }
 
     #[test]

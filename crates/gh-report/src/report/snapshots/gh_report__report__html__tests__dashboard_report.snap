@@ -26,7 +26,7 @@ expression: "&pages[\"report.html\"]"
     <h1>TestOrg GitHub Security Posture Overview</h1>
 
     <div class="meta">
-        <p><strong>Date:</strong> 2026-04-09 12:00 UTC · <strong>Scope:</strong> 5 non-archived · 0 archived repositories in
+        <p><strong>Date:</strong> 2026-04-09 12:00 UTC · <strong>Scope:</strong> 5 total · 5 non-archived · 0 archived repositories in
             <code>TestOrg</code></p>
     </div>
 
