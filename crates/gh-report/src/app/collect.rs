@@ -88,6 +88,12 @@ pub(crate) struct JobContext {
     pub run_timestamp: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CollectionOutcome {
+    Completed,
+    Cancelled,
+}
+
 /// Production evaluator that calls all five security check collectors
 /// via the GitHub API.
 ///
@@ -227,6 +233,13 @@ struct OrgAlertContext {
 /// loading, report rendering, or cache population fails. Individual
 /// repository evaluation failures are isolated and do not abort the run.
 pub async fn run(config: RuntimeConfig, state: Arc<AppState>) -> Result<(), AppError> {
+    run_with_outcome(config, state).await.map(|_| ())
+}
+
+pub(crate) async fn run_with_outcome(
+    config: RuntimeConfig,
+    state: Arc<AppState>,
+) -> Result<CollectionOutcome, AppError> {
     let _sweep_guard = Arc::clone(&state.sweep_lock).lock_owned().await;
 
     let mut run = RunMetadata::new(
@@ -246,7 +259,7 @@ pub async fn run(config: RuntimeConfig, state: Arc<AppState>) -> Result<(), AppE
 
     state.current_run.store(Arc::new(None));
 
-    if result.is_ok() {
+    if matches!(result, Ok(CollectionOutcome::Completed)) {
         state.last_completed_run.store(Arc::new(Some(run.clone())));
     }
 
@@ -259,7 +272,7 @@ async fn run_collection_inner(
     run: &mut RunMetadata,
     corr_ctx: &CorrelationContext,
     state: &Arc<AppState>,
-) -> Result<(), AppError> {
+) -> Result<CollectionOutcome, AppError> {
     let setup = prepare_collection(config, run, state).await?;
 
     state.ensure_worker_pool().await;
@@ -313,17 +326,11 @@ async fn run_collection_inner(
         signal_cancel.cancel();
     });
 
-    let result = tokio::select! {
-        res = run_collection_pipeline(
-            config, run, corr_ctx, ctx, &inventory, org_alert, state,
-        ) => res,
-        () = cancel.cancelled() => {
-            info!(
-                "collection cancelled by signal — lock released, no report published"
-            );
-            return Ok(());
-        }
-    };
+    let result = run_collection_inner_with_pipeline(
+        &cancel,
+        run_collection_pipeline(config, run, corr_ctx, ctx, &inventory, org_alert, state),
+    )
+    .await;
 
     if let Some(lock) = lock_handle.lock().await.take() {
         drop(lock);
@@ -336,6 +343,27 @@ async fn run_collection_inner(
     }
 
     result
+}
+
+async fn run_collection_inner_with_pipeline<P>(
+    cancel: &tokio_util::sync::CancellationToken,
+    pipeline: P,
+) -> Result<CollectionOutcome, AppError>
+where
+    P: Future<Output = Result<(), AppError>>,
+{
+    tokio::select! {
+        result = pipeline => {
+            result?;
+            Ok(CollectionOutcome::Completed)
+        }
+        () = cancel.cancelled() => {
+            info!(
+                "collection cancelled by signal — lock released, no report published"
+            );
+            Ok(CollectionOutcome::Cancelled)
+        }
+    }
 }
 
 /// Inner collection pipeline, extracted so it can be wrapped in `tokio::select!`
@@ -2246,6 +2274,31 @@ mod tests {
             "TestOrg".to_string(),
             crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
         )
+    }
+
+    #[tokio::test]
+    async fn collection_outcome_is_cancelled_when_cancel_fires() {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+
+        let outcome = run_collection_inner_with_pipeline(&cancel, async {
+            std::future::pending::<Result<(), AppError>>().await
+        })
+        .await
+        .expect("cancelled collection outcome");
+
+        assert_eq!(outcome, CollectionOutcome::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn collection_outcome_is_completed_when_pipeline_finishes() {
+        let cancel = tokio_util::sync::CancellationToken::new();
+
+        let outcome = run_collection_inner_with_pipeline(&cancel, async { Ok(()) })
+            .await
+            .expect("completed collection outcome");
+
+        assert_eq!(outcome, CollectionOutcome::Completed);
     }
 
     /// Seed projection state to simulate a populated baseline.

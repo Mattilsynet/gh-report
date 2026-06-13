@@ -244,8 +244,11 @@ fn spawn_collection_loop(
         {
             let mut cfg = config.clone();
             cfg.force_unlock = force_flag.fetch_and(false, Ordering::AcqRel);
-            match collect::run(cfg, Arc::clone(&state)).await {
-                Ok(()) => info!("initial collection complete"),
+            match collect::run_with_outcome(cfg, Arc::clone(&state)).await {
+                Ok(collect::CollectionOutcome::Completed) => info!("initial collection complete"),
+                Ok(collect::CollectionOutcome::Cancelled) => {
+                    info!("initial collection aborted on shutdown — no report published");
+                }
                 Err(AppError::Persistence(PersistenceError::LockFailed { ref reason })) => {
                     warn!(reason = %reason, "initial collection skipped: lock held");
                 }
@@ -268,8 +271,11 @@ fn spawn_collection_loop(
             }
             let mut cfg = config.clone();
             cfg.force_unlock = force_flag.load(Ordering::Acquire);
-            match collect::run(cfg, Arc::clone(&state)).await {
-                Ok(()) => info!("scheduled collection complete"),
+            match collect::run_with_outcome(cfg, Arc::clone(&state)).await {
+                Ok(collect::CollectionOutcome::Completed) => info!("scheduled collection complete"),
+                Ok(collect::CollectionOutcome::Cancelled) => {
+                    info!("scheduled collection aborted on shutdown — no report published");
+                }
                 Err(AppError::Persistence(PersistenceError::LockFailed { ref reason })) => {
                     warn!(reason = %reason, "collection skipped: lock held");
                 }
