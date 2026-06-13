@@ -89,6 +89,12 @@ impl std::error::Error for ContainmentError {}
 /// be absent at runtime, use [`contained_join_optional`] instead
 /// of pre-checking with `Path::exists` (which would race the
 /// canonicalize call).
+///
+/// # Errors
+///
+/// Returns [`ContainmentError`] when `segment` is empty, absolute,
+/// contains parent traversal, cannot be canonicalized, or resolves
+/// outside `root`.
 pub fn contained_join(root: &Path, segment: &str) -> Result<PathBuf, ContainmentError> {
     lexical_check(segment)?;
 
@@ -121,6 +127,12 @@ pub fn contained_join(root: &Path, segment: &str) -> Result<PathBuf, Containment
 ///
 /// Used for paths that are optional at runtime (e.g., the stale
 /// directory may not exist in a fresh repo).
+///
+/// # Errors
+///
+/// Returns [`ContainmentError`] when `segment` is empty, absolute,
+/// contains parent traversal, cannot be canonicalized, or resolves
+/// outside `root`.
 pub fn contained_join_optional(
     root: &Path,
     segment: &str,

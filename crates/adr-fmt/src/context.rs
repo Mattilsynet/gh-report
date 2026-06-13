@@ -10,6 +10,12 @@ use crate::model::{AdrId, AdrRecord, Status};
 use crate::nav::{compute_parent_children, compute_parent_edges, walk_parent_chain};
 use crate::output::{EmittedRule, RootGroup};
 
+struct EligibleContext<'a> {
+    eligible: HashSet<AdrId>,
+    records: HashMap<&'a AdrId, &'a AdrRecord>,
+    foundation_prefixes: Vec<&'a str>,
+}
+
 /// Resolve decision rules applicable to a crate, grouped by root ADR subtree.
 ///
 /// Resolution chain:
@@ -37,10 +43,6 @@ use crate::output::{EmittedRule, RootGroup};
 /// # Errors
 ///
 /// Returns an error if `crate_name` is not found in any domain's crate list.
-#[expect(
-    clippy::too_many_lines,
-    reason = "context resolution is a linear stage pipeline (candidate/foundation identification → grouping → ordering) whose intermediate state would require multi-parameter helper signatures with no simplification gain"
-)]
 pub fn context_grouped(
     crate_name: &str,
     records: &[AdrRecord],
@@ -59,6 +61,18 @@ pub fn context_grouped(
         ));
     }
 
+    let eligible_context =
+        collect_eligible_context(crate_name, records, config, &candidate_domains);
+
+    Ok(build_context_groups(records, &eligible_context))
+}
+
+fn collect_eligible_context<'a>(
+    crate_name: &str,
+    records: &'a [AdrRecord],
+    config: &'a Config,
+    candidate_domains: &[&str],
+) -> EligibleContext<'a> {
     let foundation_prefixes: Vec<&str> = config
         .domains
         .iter()
@@ -82,7 +96,7 @@ pub fn context_grouped(
         }
     }
 
-    for prefix in &candidate_domains {
+    for prefix in candidate_domains {
         let domain_records: Vec<&AdrRecord> = records
             .iter()
             .filter(|r| {
@@ -109,6 +123,17 @@ pub fn context_grouped(
         }
     }
 
+    EligibleContext {
+        eligible,
+        records: eligible_records,
+        foundation_prefixes,
+    }
+}
+
+fn build_context_groups(
+    records: &[AdrRecord],
+    eligible_context: &EligibleContext<'_>,
+) -> Vec<RootGroup> {
     let parent_edges = compute_parent_edges(records);
     let parent_children = compute_parent_children(records);
 
@@ -120,95 +145,27 @@ pub fn context_grouped(
 
     let record_by_id: HashMap<&AdrId, &AdrRecord> = records.iter().map(|r| (&r.id, r)).collect();
 
-    let mut assignment: HashMap<AdrId, AdrId> = HashMap::new();
+    let assignment = assign_roots(&eligible_context.eligible, &root_index, &parent_edges);
 
-    for id in &eligible {
-        if root_index.contains(id) {
-            assignment.insert(id.clone(), id.clone());
-            continue;
-        }
-        if let Ok(terminal) = walk_parent_chain(id, &parent_edges)
-            && root_index.contains(&terminal)
-        {
-            assignment.insert(id.clone(), terminal);
-        }
-    }
-
-    let foundation_set: HashSet<&str> = foundation_prefixes.iter().copied().collect();
-
-    let mut context_roots: Vec<AdrId> = assignment
-        .values()
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .cloned()
+    let foundation_set: HashSet<&str> = eligible_context
+        .foundation_prefixes
+        .iter()
+        .copied()
         .collect();
 
-    context_roots.sort_by(|a, b| {
-        let a_foundation = foundation_set.contains(a.prefix.as_str());
-        let b_foundation = foundation_set.contains(b.prefix.as_str());
-
-        b_foundation
-            .cmp(&a_foundation)
-            .then_with(|| {
-                let a_min_layer = record_by_id.get(a).map_or(u8::MAX, |r| {
-                    r.decision_rules
-                        .iter()
-                        .map(|rule| rule.layer)
-                        .min()
-                        .unwrap_or(u8::MAX)
-                });
-                let b_min_layer = record_by_id.get(b).map_or(u8::MAX, |r| {
-                    r.decision_rules
-                        .iter()
-                        .map(|rule| rule.layer)
-                        .min()
-                        .unwrap_or(u8::MAX)
-                });
-                a_min_layer.cmp(&b_min_layer)
-            })
-            .then_with(|| a.prefix.cmp(&b.prefix))
-            .then_with(|| a.number.cmp(&b.number))
-    });
+    let context_roots = sorted_context_roots(&assignment, &foundation_set, &record_by_id);
 
     let mut claimed: HashSet<AdrId> = HashSet::new();
     let mut groups: Vec<RootGroup> = Vec::new();
 
     for root_id in &context_roots {
-        let mut rules: Vec<EmittedRule> = Vec::new();
-
-        let mut visited: HashSet<AdrId> = HashSet::new();
-        let mut queue: VecDeque<(AdrId, u16)> = VecDeque::new();
-        queue.push_back((root_id.clone(), 0));
-        visited.insert(root_id.clone());
-
-        while let Some((current_id, depth)) = queue.pop_front() {
-            if eligible.contains(&current_id)
-                && assignment.get(&current_id) == Some(root_id)
-                && !claimed.contains(&current_id)
-            {
-                if let Some(record) = eligible_records.get(&current_id) {
-                    for rule in &record.decision_rules {
-                        rules.push(EmittedRule {
-                            adr_id: current_id.clone(),
-                            rule_id: rule.id.clone(),
-                            text: rule.text.clone(),
-                            layer: rule.layer,
-                            depth,
-                        });
-                    }
-                }
-                claimed.insert(current_id.clone());
-            }
-
-            if let Some(children) = parent_children.get(&current_id) {
-                for child in children {
-                    if !visited.contains(child) {
-                        visited.insert(child.clone());
-                        queue.push_back((child.clone(), depth + 1));
-                    }
-                }
-            }
-        }
+        let mut rules = collect_root_rules(
+            root_id,
+            &parent_children,
+            &assignment,
+            eligible_context,
+            &mut claimed,
+        );
 
         rules.sort_by(|a, b| {
             a.layer
@@ -232,7 +189,129 @@ pub fn context_grouped(
         });
     }
 
-    let unclaimed: Vec<&AdrId> = eligible
+    append_unclaimed_group(&mut groups, eligible_context, &claimed);
+
+    groups
+}
+
+fn assign_roots(
+    eligible: &HashSet<AdrId>,
+    root_index: &HashSet<AdrId>,
+    parent_edges: &HashMap<AdrId, AdrId>,
+) -> HashMap<AdrId, AdrId> {
+    let mut assignment: HashMap<AdrId, AdrId> = HashMap::new();
+    for id in eligible {
+        if root_index.contains(id) {
+            assignment.insert(id.clone(), id.clone());
+            continue;
+        }
+        if let Ok(terminal) = walk_parent_chain(id, parent_edges)
+            && root_index.contains(&terminal)
+        {
+            assignment.insert(id.clone(), terminal);
+        }
+    }
+    assignment
+}
+
+fn sorted_context_roots(
+    assignment: &HashMap<AdrId, AdrId>,
+    foundation_set: &HashSet<&str>,
+    record_by_id: &HashMap<&AdrId, &AdrRecord>,
+) -> Vec<AdrId> {
+    let mut context_roots: Vec<AdrId> = assignment
+        .values()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .cloned()
+        .collect();
+
+    context_roots.sort_by(|a, b| {
+        let a_foundation = foundation_set.contains(a.prefix.as_str());
+        let b_foundation = foundation_set.contains(b.prefix.as_str());
+
+        b_foundation
+            .cmp(&a_foundation)
+            .then_with(|| min_rule_layer(a, record_by_id).cmp(&min_rule_layer(b, record_by_id)))
+            .then_with(|| a.prefix.cmp(&b.prefix))
+            .then_with(|| a.number.cmp(&b.number))
+    });
+
+    context_roots
+}
+
+fn min_rule_layer(id: &AdrId, record_by_id: &HashMap<&AdrId, &AdrRecord>) -> u8 {
+    record_by_id.get(id).map_or(u8::MAX, |r| {
+        r.decision_rules
+            .iter()
+            .map(|rule| rule.layer)
+            .min()
+            .unwrap_or(u8::MAX)
+    })
+}
+
+fn collect_root_rules(
+    root_id: &AdrId,
+    parent_children: &HashMap<AdrId, Vec<AdrId>>,
+    assignment: &HashMap<AdrId, AdrId>,
+    eligible_context: &EligibleContext<'_>,
+    claimed: &mut HashSet<AdrId>,
+) -> Vec<EmittedRule> {
+    let mut rules: Vec<EmittedRule> = Vec::new();
+
+    let mut visited: HashSet<AdrId> = HashSet::new();
+    let mut queue: VecDeque<(AdrId, u16)> = VecDeque::new();
+    queue.push_back((root_id.clone(), 0));
+    visited.insert(root_id.clone());
+
+    while let Some((current_id, depth)) = queue.pop_front() {
+        if eligible_context.eligible.contains(&current_id)
+            && assignment.get(&current_id) == Some(root_id)
+            && !claimed.contains(&current_id)
+        {
+            push_record_rules(&mut rules, &current_id, depth, eligible_context);
+            claimed.insert(current_id.clone());
+        }
+
+        if let Some(children) = parent_children.get(&current_id) {
+            for child in children {
+                if !visited.contains(child) {
+                    visited.insert(child.clone());
+                    queue.push_back((child.clone(), depth + 1));
+                }
+            }
+        }
+    }
+
+    rules
+}
+
+fn push_record_rules(
+    rules: &mut Vec<EmittedRule>,
+    id: &AdrId,
+    depth: u16,
+    eligible_context: &EligibleContext<'_>,
+) {
+    if let Some(record) = eligible_context.records.get(id) {
+        for rule in &record.decision_rules {
+            rules.push(EmittedRule {
+                adr_id: id.clone(),
+                rule_id: rule.id.clone(),
+                text: rule.text.clone(),
+                layer: rule.layer,
+                depth,
+            });
+        }
+    }
+}
+
+fn append_unclaimed_group(
+    groups: &mut Vec<RootGroup>,
+    eligible_context: &EligibleContext<'_>,
+    claimed: &HashSet<AdrId>,
+) {
+    let unclaimed: Vec<&AdrId> = eligible_context
+        .eligible
         .iter()
         .filter(|id| !claimed.contains(*id))
         .collect();
@@ -240,17 +319,7 @@ pub fn context_grouped(
     if !unclaimed.is_empty() {
         let mut rules: Vec<EmittedRule> = Vec::new();
         for id in &unclaimed {
-            if let Some(record) = eligible_records.get(id) {
-                for rule in &record.decision_rules {
-                    rules.push(EmittedRule {
-                        adr_id: (*id).clone(),
-                        rule_id: rule.id.clone(),
-                        text: rule.text.clone(),
-                        layer: rule.layer,
-                        depth: u16::MAX,
-                    });
-                }
-            }
+            push_record_rules(&mut rules, id, u16::MAX, eligible_context);
         }
         rules.sort_by(|a, b| {
             a.layer
@@ -268,8 +337,6 @@ pub fn context_grouped(
             rules,
         });
     }
-
-    Ok(groups)
 }
 
 #[cfg(test)]

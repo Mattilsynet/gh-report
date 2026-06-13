@@ -93,7 +93,7 @@ pub fn check(record: &AdrRecord, config: &Config, diags: &mut Vec<Diagnostic>) {
         clippy::cast_possible_truncation,
         clippy::cast_precision_loss,
         clippy::cast_sign_loss,
-        reason = "tier factor ∈ [0.6,1.5] × low-hundreds; f64.round() → u64 has no idiomatic non-cast alternative"
+        reason = "rounding a non-negative bounded tier-scaled budget to u64; value is small and non-negative by construction, truncation/sign-loss cannot occur"
     )]
     let effective_max = (base_max_words as f64 * tier.factor()).round() as u64;
     check_section_word_counts(record, effective_min, effective_max, tier, diags);
@@ -105,7 +105,7 @@ pub fn check(record: &AdrRecord, config: &Config, diags: &mut Vec<Diagnostic>) {
         clippy::cast_possible_truncation,
         clippy::cast_precision_loss,
         clippy::cast_sign_loss,
-        reason = "tier factor ∈ [0.6,1.5] × low-hundreds; f64.round() → u64 has no idiomatic non-cast alternative"
+        reason = "rounding a non-negative bounded tier-scaled budget to u64; value is small and non-negative by construction, truncation/sign-loss cannot occur"
     )]
     let effective_max_rules = (base_max_rules as f64 * tier.factor()).round() as u64;
     let min_rule_words = config

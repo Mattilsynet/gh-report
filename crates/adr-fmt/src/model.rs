@@ -75,7 +75,7 @@ impl fmt::Display for AdrId {
 #[derive(Debug, Clone)]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "each bool is an independent section-presence/position flag with its own rustdoc surface; collapsing into a flags enum loses per-field access patterns used in rules and obscures the parser's individual probes"
+    reason = "AdrRecord is frozen v0.1 public API (AFM-0026:R1); the bools are independent parser section-presence facts read individually in rules — collapsing reshapes the public contract (AFM-0026:R5) and forces an adr-srv re-scrape (AFM-0027:R5)"
 )]
 pub struct AdrRecord {
     pub id: AdrId,
@@ -298,17 +298,12 @@ impl Tier {
     ///
     /// Higher-tier ADRs need more substance; lower-tier can be brief.
     #[must_use]
-    #[expect(
-        clippy::match_same_arms,
-        reason = "each tier is an independently-tunable calibration knob; coincident values are accidental, not semantic equivalence — collapsing arms would erase the calibration intent"
-    )]
     pub fn min_words(self) -> u64 {
         match self {
             Self::S => 15,
             Self::A => 12,
             Self::B => 10,
-            Self::C => 7,
-            Self::D => 7,
+            Self::C | Self::D => 7,
         }
     }
 
@@ -322,17 +317,12 @@ impl Tier {
     /// (parameter decisions should have narrow scope). S-tier is
     /// tightest at 3 — paradigm decisions reference few peers.
     #[must_use]
-    #[expect(
-        clippy::match_same_arms,
-        reason = "each tier is an independently-tunable calibration knob; coincident values are accidental, not semantic equivalence — collapsing arms would erase the calibration intent"
-    )]
     pub fn max_refs(self) -> usize {
         match self {
             Self::S => 3,
-            Self::A => 5,
+            Self::A | Self::D => 5,
             Self::B => 7,
             Self::C => 8,
-            Self::D => 5,
         }
     }
 }

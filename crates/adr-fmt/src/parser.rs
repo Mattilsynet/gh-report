@@ -44,6 +44,14 @@ pub struct ParseOutcome {
 /// Returns `Err` only when the domain directory itself cannot be
 /// read; per-file failures are reported as `P###` diagnostics on
 /// the returned `ParseOutcome`.
+///
+/// # Errors
+///
+/// Returns an error when `dir.path` cannot be read.
+///
+/// # Panics
+///
+/// Panics only if the internally-constructed filename regex is invalid.
 pub fn parse_domain(dir: &DomainDir) -> Result<ParseOutcome, String> {
     let mut outcome = ParseOutcome::default();
 
@@ -96,6 +104,14 @@ pub fn parse_domain(dir: &DomainDir) -> Result<ParseOutcome, String> {
 /// Stale files may belong to any domain, so we try all configured
 /// domain prefixes. Returns `Err` only when the stale directory
 /// cannot be read.
+///
+/// # Errors
+///
+/// Returns an error when `stale_dir` cannot be read.
+///
+/// # Panics
+///
+/// Panics only if an internally-constructed domain filename regex is invalid.
 pub fn parse_stale(stale_dir: &Path, config: &Config) -> Result<ParseOutcome, String> {
     let mut outcome = ParseOutcome::default();
 

@@ -95,6 +95,12 @@ impl Config {
 /// `marker_dir` is the directory containing `adr-fmt.toml` (typically
 /// the workspace root). Used by walk-up discovery so warnings from
 /// skipped (non-selected) markers do not pollute stderr.
+///
+/// # Errors
+///
+/// Returns [`LoadError::Io`] when `adr-fmt.toml` cannot be read.
+/// Returns [`LoadError::Parse`] when TOML parsing fails or the required
+/// `[corpus]` table is absent.
 pub fn load_quiet(marker_dir: &Path) -> Result<Config, LoadError> {
     load_inner_typed(marker_dir)
 }
@@ -157,6 +163,11 @@ fn load_inner_typed(marker_dir: &Path) -> Result<Config, LoadError> {
 /// the configured `corpus.root` must be a relative path with no parent-
 /// traversal components, and the canonical target must be a descendant
 /// of the canonical marker directory. The corpus directory must exist.
+///
+/// # Errors
+///
+/// Returns an error when `corpus.root` fails containment validation,
+/// canonicalization, or descendant checks.
 pub fn resolve_corpus_root(marker_dir: &Path, corpus: &CorpusConfig) -> Result<PathBuf, String> {
     crate::containment::contained_join(marker_dir, &corpus.root)
         .map_err(|e| format!("[corpus] root: {e}"))

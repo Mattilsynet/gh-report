@@ -31,11 +31,6 @@
 //! bd adr-fmt-d7ao.
 
 #![forbid(unsafe_code)]
-#![allow(
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
-    reason = "AGENTS.md forbids parser.rs refactor during v0.1 per AFM-0006; pedantic doc lints fire on parser's pub fns"
-)]
 
 mod config;
 mod containment;
@@ -59,6 +54,11 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
+
+struct CorpusScan {
+    records: Vec<model::AdrRecord>,
+    diagnostics: Vec<report::Diagnostic>,
+}
 
 /// ADR template and link-integrity validator.
 #[derive(Parser)]
@@ -93,10 +93,10 @@ struct Cli {
 /// `--help` and `--version` are handled inside `Cli::parse_from`, which
 /// calls `process::exit` itself per clap's contract.
 ///
-#[expect(
-    clippy::too_many_lines,
-    reason = "CLI mode dispatch; each arm is a small linear sequence and splitting would scatter the mode-selection logic without simplifying any branch"
-)]
+/// # Panics
+///
+/// Panics only through clap's built-in `--help`/`--version` termination
+/// path, which exits the process before returning to the caller.
 pub fn run<I, T>(args: I) -> i32
 where
     I: IntoIterator<Item = T>,
@@ -116,15 +116,7 @@ where
         cli.lint || cli.refs.is_some() || cli.context.is_some() || cli.tree.is_some();
 
     if !is_non_default_mode {
-        if let Some((marker_dir, config)) = marker {
-            match config::resolve_corpus_root(&marker_dir, &config.corpus) {
-                Ok(_) => guidelines::print_governance(&config),
-                Err(_) => guidelines::print_setup_guide(),
-            }
-        } else {
-            guidelines::print_setup_guide();
-        }
-        return 0;
+        return run_default_mode(marker);
     }
 
     let Some((marker_dir, config)) = marker else {
@@ -161,42 +153,16 @@ where
         return 1;
     }
 
-    let mut all_records = Vec::new();
-    let mut parse_diagnostics = Vec::new();
-    for dir in &domain_dirs {
-        match parser::parse_domain(dir) {
-            Ok(outcome) => {
-                all_records.extend(outcome.records);
-                parse_diagnostics.extend(outcome.diagnostics);
-            }
-            Err(e) => {
-                eprintln!("error: {e}");
-                return 1;
-            }
-        }
-    }
-
-    let stale_dir = match containment::contained_join_optional(&adr_root, &config.stale.directory) {
-        Ok(opt) => opt,
+    let CorpusScan {
+        records: all_records,
+        diagnostics: parse_diagnostics,
+    } = match scan_corpus(&adr_root, &config, &domain_dirs) {
+        Ok(scan) => scan,
         Err(e) => {
-            eprintln!("error: stale directory in adr-fmt.toml: {e}");
+            eprintln!("error: {e}");
             return 1;
         }
     };
-    if let Some(stale_dir) = stale_dir
-        && stale_dir.is_dir()
-    {
-        match parser::parse_stale(&stale_dir, &config) {
-            Ok(outcome) => {
-                all_records.extend(outcome.records);
-                parse_diagnostics.extend(outcome.diagnostics);
-            }
-            Err(e) => {
-                eprintln!("error: {e}");
-                return 1;
-            }
-        }
-    }
 
     if let Some(ref adr_id_str) = cli.refs {
         let Some(target_id) = parse_adr_id(adr_id_str) else {
@@ -243,6 +209,48 @@ where
     }
 
     0
+}
+
+fn run_default_mode(marker: Option<(PathBuf, Config)>) -> i32 {
+    if let Some((marker_dir, config)) = marker {
+        match config::resolve_corpus_root(&marker_dir, &config.corpus) {
+            Ok(_) => guidelines::print_governance(&config),
+            Err(_) => guidelines::print_setup_guide(),
+        }
+    } else {
+        guidelines::print_setup_guide();
+    }
+    0
+}
+
+fn scan_corpus(
+    adr_root: &Path,
+    config: &Config,
+    domain_dirs: &[DomainDir],
+) -> Result<CorpusScan, String> {
+    let mut records = Vec::new();
+    let mut diagnostics = Vec::new();
+
+    for dir in domain_dirs {
+        let outcome = parser::parse_domain(dir)?;
+        records.extend(outcome.records);
+        diagnostics.extend(outcome.diagnostics);
+    }
+
+    let stale_dir = containment::contained_join_optional(adr_root, &config.stale.directory)
+        .map_err(|e| format!("stale directory in adr-fmt.toml: {e}"))?;
+    if let Some(stale_dir) = stale_dir
+        && stale_dir.is_dir()
+    {
+        let outcome = parser::parse_stale(&stale_dir, config)?;
+        records.extend(outcome.records);
+        diagnostics.extend(outcome.diagnostics);
+    }
+
+    Ok(CorpusScan {
+        records,
+        diagnostics,
+    })
 }
 
 /// Walk up from CWD looking for `adr-fmt.toml` with a structurally

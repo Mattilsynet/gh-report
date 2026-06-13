@@ -322,10 +322,6 @@ fn check_root_references_coexistence(source: &AdrRecord, diags: &mut Vec<Diagnos
 /// Operates on the parent-edge projection (see `nav::compute_parent_edges`)
 /// rather than the full citation graph. Stale source ADRs are excluded
 /// from these checks — orphaned ancestry is expected for retired ADRs.
-#[expect(
-    clippy::too_many_lines,
-    reason = "single-pass tree-structure rule; cycle/duplicate/parent-edge checks share parent-edge map and a split would require threading the map through multiple helpers without simplifying any check"
-)]
 fn check_tree_structure(
     records: &[AdrRecord],
     by_id: &HashMap<&AdrId, &AdrRecord>,
@@ -337,26 +333,10 @@ fn check_tree_structure(
     emit_cycle_diagnostics(records, &cycle_members, diags);
 
     for record in records {
-        if record.is_stale {
+        if should_skip_tree_record(record) {
             continue;
         }
-        let is_root = record.is_root();
-
-        if !is_root && !parent_edges.contains_key(&record.id) {
-            let line = record
-                .relationships
-                .first()
-                .map_or(record.status_line, |r| r.line);
-            diags.push(Diagnostic::warning(
-                "L010",
-                &record.file_path,
-                line,
-                format!(
-                    "{}: non-root ADR has no `References:` target — \
-                     every non-root ADR needs a structural parent",
-                    record.id,
-                ),
-            ));
+        if emit_missing_parent(record, &parent_edges, diags) {
             continue;
         }
 
@@ -366,153 +346,255 @@ fn check_tree_structure(
 
         let in_cycle = cycle_members.contains(&record.id);
 
-        let parent_rel_line = record
-            .relationships
-            .iter()
-            .find(|r| r.verb == RelVerb::References && r.target == *parent_id)
-            .map_or(0, |r| r.line);
-
-        if !in_cycle && parent_id.prefix != record.id.prefix && by_id.contains_key(parent_id) {
-            let suppressed = record
-                .parent_cross_domain
-                .as_ref()
-                .is_some_and(|allowed| allowed == parent_id);
-            if !suppressed {
-                diags.push(Diagnostic::warning(
-                    "L011",
-                    &record.file_path,
-                    parent_rel_line,
-                    format!(
-                        "{} → {parent_id}: cross-domain parent edge — \
-                         add `Parent-cross-domain: {parent_id} — <reason>` \
-                         to the preamble to suppress, or pick a same-domain parent",
-                        record.id,
-                    ),
-                ));
-            }
-        }
-
-        if !in_cycle && let Some(parent_record) = by_id.get(parent_id) {
-            match &parent_record.status {
-                Some(Status::Accepted) => {}
-                Some(Status::SupersededBy(succ)) => {
-                    diags.push(Diagnostic::warning(
-                        "L017",
-                        &record.file_path,
-                        parent_rel_line,
-                        format!(
-                            "{} → {parent_id}: parent edge points at a superseded ADR \
-                             (succeeded by {succ}) — redirect to the successor",
-                            record.id,
-                        ),
-                    ));
-                }
-                Some(other) => {
-                    diags.push(Diagnostic::warning(
-                        "L012",
-                        &record.file_path,
-                        parent_rel_line,
-                        format!(
-                            "{} → {parent_id}: parent edge target is `{}`, not `Accepted` — \
-                             advisory only; chain still flows through",
-                            record.id,
-                            other.short_display(),
-                        ),
-                    ));
-                }
-                None => {
-                    diags.push(Diagnostic::warning(
-                        "L012",
-                        &record.file_path,
-                        parent_rel_line,
-                        format!(
-                            "{} → {parent_id}: parent edge target has no status — \
-                             advisory only; chain still flows through",
-                            record.id,
-                        ),
-                    ));
-                }
-            }
-
-            if let (Some(parent_tier), Some(child_tier)) = (parent_record.tier, record.tier)
-                && parent_tier.rank() > child_tier.rank()
-            {
-                diags.push(Diagnostic::warning(
-                    "L016",
-                    &record.file_path,
-                    parent_rel_line,
-                    format!(
-                        "{} ({}) → {parent_id} ({}): parent tier is weaker leverage \
-                         than child — heuristic, may be intentional",
-                        record.id, child_tier, parent_tier,
-                    ),
-                ));
-            }
-        }
-
-        if let Some(parent_record) = by_id.get(parent_id)
-            && parent_record.is_root()
-        {
-            let has_better_candidate = record
-                .relationships
-                .iter()
-                .filter(|r| r.verb == RelVerb::References && r.target != *parent_id)
-                .any(|r| {
-                    by_id.get(&r.target).is_some_and(|cand| {
-                        cand.id.prefix == record.id.prefix
-                            && !cand.is_root()
-                            && cand.status.as_ref() == Some(&Status::Accepted)
-                    })
-                });
-            if has_better_candidate {
-                diags.push(Diagnostic::warning(
-                    "L015",
-                    &record.file_path,
-                    parent_rel_line,
-                    format!(
-                        "{} → {parent_id}: first reference is a root while later \
-                         References include same-domain non-root candidates — \
-                         consider promoting one to first position",
-                        record.id,
-                    ),
-                ));
-            }
-        }
+        emit_cross_domain_parent(record, parent_id, by_id, in_cycle, diags);
+        emit_parent_status_and_tier(record, parent_id, by_id, in_cycle, diags);
+        emit_root_parent_candidate(record, parent_id, by_id, diags);
     }
 
+    emit_unreachable_chain_diagnostics(records, by_id, &parent_edges, &cycle_members, diags);
+}
+
+fn should_skip_tree_record(record: &AdrRecord) -> bool {
+    record.is_stale
+}
+
+fn emit_missing_parent(
+    record: &AdrRecord,
+    parent_edges: &HashMap<AdrId, AdrId>,
+    diags: &mut Vec<Diagnostic>,
+) -> bool {
+    if record.is_root() || parent_edges.contains_key(&record.id) {
+        return false;
+    }
+
+    let line = record
+        .relationships
+        .first()
+        .map_or(record.status_line, |r| r.line);
+    diags.push(Diagnostic::warning(
+        "L010",
+        &record.file_path,
+        line,
+        format!(
+            "{}: non-root ADR has no `References:` target — \
+             every non-root ADR needs a structural parent",
+            record.id,
+        ),
+    ));
+    true
+}
+
+fn parent_rel_line(record: &AdrRecord, parent_id: &AdrId) -> usize {
+    record
+        .relationships
+        .iter()
+        .find(|r| r.verb == RelVerb::References && r.target == *parent_id)
+        .map_or(0, |r| r.line)
+}
+
+fn emit_cross_domain_parent(
+    record: &AdrRecord,
+    parent_id: &AdrId,
+    by_id: &HashMap<&AdrId, &AdrRecord>,
+    in_cycle: bool,
+    diags: &mut Vec<Diagnostic>,
+) {
+    if in_cycle || parent_id.prefix == record.id.prefix || !by_id.contains_key(parent_id) {
+        return;
+    }
+    let suppressed = record
+        .parent_cross_domain
+        .as_ref()
+        .is_some_and(|allowed| allowed == parent_id);
+    if suppressed {
+        return;
+    }
+    diags.push(Diagnostic::warning(
+        "L011",
+        &record.file_path,
+        parent_rel_line(record, parent_id),
+        format!(
+            "{} → {parent_id}: cross-domain parent edge — \
+             add `Parent-cross-domain: {parent_id} — <reason>` \
+             to the preamble to suppress, or pick a same-domain parent",
+            record.id,
+        ),
+    ));
+}
+
+fn emit_parent_status_and_tier(
+    record: &AdrRecord,
+    parent_id: &AdrId,
+    by_id: &HashMap<&AdrId, &AdrRecord>,
+    in_cycle: bool,
+    diags: &mut Vec<Diagnostic>,
+) {
+    if in_cycle {
+        return;
+    }
+    if let Some(parent_record) = by_id.get(parent_id) {
+        emit_parent_status(record, parent_id, parent_record, diags);
+        emit_parent_tier(record, parent_id, parent_record, diags);
+    }
+}
+
+fn emit_parent_status(
+    record: &AdrRecord,
+    parent_id: &AdrId,
+    parent_record: &AdrRecord,
+    diags: &mut Vec<Diagnostic>,
+) {
+    match &parent_record.status {
+        Some(Status::Accepted) => {}
+        Some(Status::SupersededBy(succ)) => {
+            diags.push(Diagnostic::warning(
+                "L017",
+                &record.file_path,
+                parent_rel_line(record, parent_id),
+                format!(
+                    "{} → {parent_id}: parent edge points at a superseded ADR \
+                     (succeeded by {succ}) — redirect to the successor",
+                    record.id,
+                ),
+            ));
+        }
+        Some(other) => {
+            diags.push(Diagnostic::warning(
+                "L012",
+                &record.file_path,
+                parent_rel_line(record, parent_id),
+                format!(
+                    "{} → {parent_id}: parent edge target is `{}`, not `Accepted` — \
+                     advisory only; chain still flows through",
+                    record.id,
+                    other.short_display(),
+                ),
+            ));
+        }
+        None => {
+            diags.push(Diagnostic::warning(
+                "L012",
+                &record.file_path,
+                parent_rel_line(record, parent_id),
+                format!(
+                    "{} → {parent_id}: parent edge target has no status — \
+                     advisory only; chain still flows through",
+                    record.id,
+                ),
+            ));
+        }
+    }
+}
+
+fn emit_parent_tier(
+    record: &AdrRecord,
+    parent_id: &AdrId,
+    parent_record: &AdrRecord,
+    diags: &mut Vec<Diagnostic>,
+) {
+    if let (Some(parent_tier), Some(child_tier)) = (parent_record.tier, record.tier)
+        && parent_tier.rank() > child_tier.rank()
+    {
+        diags.push(Diagnostic::warning(
+            "L016",
+            &record.file_path,
+            parent_rel_line(record, parent_id),
+            format!(
+                "{} ({}) → {parent_id} ({}): parent tier is weaker leverage \
+                 than child — heuristic, may be intentional",
+                record.id, child_tier, parent_tier,
+            ),
+        ));
+    }
+}
+
+fn emit_root_parent_candidate(
+    record: &AdrRecord,
+    parent_id: &AdrId,
+    by_id: &HashMap<&AdrId, &AdrRecord>,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let Some(parent_record) = by_id.get(parent_id) else {
+        return;
+    };
+    if !parent_record.is_root() || !has_better_parent_candidate(record, parent_id, by_id) {
+        return;
+    }
+    diags.push(Diagnostic::warning(
+        "L015",
+        &record.file_path,
+        parent_rel_line(record, parent_id),
+        format!(
+            "{} → {parent_id}: first reference is a root while later \
+             References include same-domain non-root candidates — \
+             consider promoting one to first position",
+            record.id,
+        ),
+    ));
+}
+
+fn has_better_parent_candidate(
+    record: &AdrRecord,
+    parent_id: &AdrId,
+    by_id: &HashMap<&AdrId, &AdrRecord>,
+) -> bool {
+    record
+        .relationships
+        .iter()
+        .filter(|r| r.verb == RelVerb::References && r.target != *parent_id)
+        .any(|r| {
+            by_id.get(&r.target).is_some_and(|cand| {
+                cand.id.prefix == record.id.prefix
+                    && !cand.is_root()
+                    && cand.status.as_ref() == Some(&Status::Accepted)
+            })
+        })
+}
+
+fn emit_unreachable_chain_diagnostics(
+    records: &[AdrRecord],
+    by_id: &HashMap<&AdrId, &AdrRecord>,
+    parent_edges: &HashMap<AdrId, AdrId>,
+    cycle_members: &std::collections::HashSet<AdrId>,
+    diags: &mut Vec<Diagnostic>,
+) {
     for record in records {
-        if record.is_stale || record.is_root() {
+        if record.is_stale
+            || record.is_root()
+            || !parent_edges.contains_key(&record.id)
+            || cycle_members.contains(&record.id)
+        {
             continue;
         }
-        if !parent_edges.contains_key(&record.id) {
-            continue;
-        }
-        if cycle_members.contains(&record.id) {
-            continue;
-        }
-        if let Ok(terminal) = walk_parent_chain(&record.id, &parent_edges) {
-            if !by_id.contains_key(&terminal) {
-                continue;
-            }
-            let reaches_root = by_id.get(&terminal).is_some_and(|t| t.is_root());
-            if !reaches_root {
-                let line = record
-                    .relationships
-                    .first()
-                    .map_or(record.status_line, |r| r.line);
-                diags.push(Diagnostic::warning(
-                    "L014",
-                    &record.file_path,
-                    line,
-                    format!(
-                        "{}: parent chain ends at {terminal}, which is not a root — \
-                             non-root ADR unreachable from any root",
-                        record.id,
-                    ),
-                ));
-            }
+        if let Ok(terminal) = walk_parent_chain(&record.id, parent_edges) {
+            emit_unreachable_chain(record, &terminal, by_id, diags);
         }
     }
+}
+
+fn emit_unreachable_chain(
+    record: &AdrRecord,
+    terminal: &AdrId,
+    by_id: &HashMap<&AdrId, &AdrRecord>,
+    diags: &mut Vec<Diagnostic>,
+) {
+    if !by_id.contains_key(terminal) || by_id.get(terminal).is_some_and(|t| t.is_root()) {
+        return;
+    }
+    let line = record
+        .relationships
+        .first()
+        .map_or(record.status_line, |r| r.line);
+    diags.push(Diagnostic::warning(
+        "L014",
+        &record.file_path,
+        line,
+        format!(
+            "{}: parent chain ends at {terminal}, which is not a root — \
+             non-root ADR unreachable from any root",
+            record.id,
+        ),
+    ));
 }
 
 /// Identify all ADR IDs participating in a parent-edge cycle.

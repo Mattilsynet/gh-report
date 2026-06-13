@@ -20,6 +20,15 @@ struct TreeContext<'a> {
     domain_prefix: &'a str,
 }
 
+struct TreeRenderState<'a> {
+    records: &'a [AdrRecord],
+    config: &'a Config,
+    by_prefix: HashMap<&'a str, Vec<&'a AdrRecord>>,
+    parent_edges: HashMap<AdrId, AdrId>,
+    parent_children: HashMap<AdrId, Vec<AdrId>>,
+    record_by_id: HashMap<&'a AdrId, &'a AdrRecord>,
+}
+
 /// A group of rules emitted under a single root ADR in `--context` mode.
 #[derive(Debug)]
 pub struct RootGroup {
@@ -196,10 +205,6 @@ pub fn render_root_groups(crate_name: &str, groups: &[RootGroup]) -> String {
 /// reachable from any root via parent-edge traversal (cycles or
 /// missing parent). These are rendered flat after the tree(s).
 #[must_use]
-#[expect(
-    clippy::too_many_lines,
-    reason = "single-pass tree renderer; function is sequential branch-rendering whose split would scatter the indent/connector state across helpers without simplifying any branch"
-)]
 pub fn render_tree(
     records: &[AdrRecord],
     domain_dirs: &[DomainDir],
@@ -208,15 +213,7 @@ pub fn render_tree(
 ) -> String {
     let mut out = String::new();
 
-    let parent_edges = compute_parent_edges(records);
-    let parent_children = compute_parent_children(records);
-
-    let mut dirs: Vec<&DomainDir> = if let Some(filter) = domain_filter {
-        domain_dirs.iter().filter(|d| d.prefix == filter).collect()
-    } else {
-        domain_dirs.iter().collect()
-    };
-    dirs.sort_by_key(|d| u32::from(d.prefix == "GND"));
+    let dirs = sorted_domain_dirs(domain_dirs, domain_filter);
 
     if dirs.is_empty() {
         if let Some(f) = domain_filter {
@@ -225,123 +222,175 @@ pub fn render_tree(
         return out;
     }
 
+    let state = TreeRenderState {
+        records,
+        config,
+        by_prefix: active_records_by_prefix(records),
+        parent_edges: compute_parent_edges(records),
+        parent_children: compute_parent_children(records),
+        record_by_id: records.iter().map(|r| (&r.id, r)).collect(),
+    };
+
+    for dir in &dirs {
+        render_domain_tree(&mut out, dir, &state);
+    }
+
+    out
+}
+
+fn sorted_domain_dirs<'a>(
+    domain_dirs: &'a [DomainDir],
+    domain_filter: Option<&str>,
+) -> Vec<&'a DomainDir> {
+    let mut dirs: Vec<&DomainDir> = if let Some(filter) = domain_filter {
+        domain_dirs.iter().filter(|d| d.prefix == filter).collect()
+    } else {
+        domain_dirs.iter().collect()
+    };
+    dirs.sort_by_key(|d| u32::from(d.prefix == "GND"));
+    dirs
+}
+
+fn active_records_by_prefix(records: &[AdrRecord]) -> HashMap<&str, Vec<&AdrRecord>> {
     let mut by_prefix: HashMap<&str, Vec<&AdrRecord>> = HashMap::new();
     for record in records {
         if !record.is_stale {
             by_prefix.entry(&record.id.prefix).or_default().push(record);
         }
     }
+    by_prefix
+}
 
-    let record_by_id: HashMap<&AdrId, &AdrRecord> = records.iter().map(|r| (&r.id, r)).collect();
+fn render_domain_tree(out: &mut String, dir: &DomainDir, state: &TreeRenderState<'_>) {
+    let foundation = state
+        .config
+        .domains
+        .iter()
+        .find(|d| d.prefix == dir.prefix)
+        .is_some_and(|d| d.foundation);
+    let foundation_marker = if foundation { " [foundation]" } else { "" };
 
-    for dir in &dirs {
-        let domain_name = &dir.name;
-        let foundation = config
-            .domains
-            .iter()
-            .find(|d| d.prefix == dir.prefix)
-            .is_some_and(|d| d.foundation);
-        let foundation_marker = if foundation { " [foundation]" } else { "" };
+    writeln!(out, "## {} ({}){foundation_marker}", dir.name, dir.prefix).unwrap();
 
-        writeln!(
-            out,
-            "## {} ({}){foundation_marker}",
-            domain_name, dir.prefix
-        )
-        .unwrap();
+    let domain_records = state
+        .by_prefix
+        .get(dir.prefix.as_str())
+        .cloned()
+        .unwrap_or_default();
+    let ctx = TreeContext {
+        parent_children: &state.parent_children,
+        record_by_id: &state.record_by_id,
+        domain_prefix: &dir.prefix,
+    };
+    let mut reached = render_rooted_records(out, &domain_records, &ctx);
 
-        let domain_records = by_prefix
-            .get(dir.prefix.as_str())
-            .cloned()
-            .unwrap_or_default();
+    render_cross_domain_roots(out, &domain_records, &ctx, &mut reached);
+    render_orphans(out, &domain_records, &reached, &state.parent_edges);
+    render_stale_count(out, dir, state.records);
+    out.push('\n');
+}
 
-        let mut roots: Vec<&AdrRecord> = domain_records
-            .iter()
-            .copied()
-            .filter(|r| r.is_root())
-            .collect();
-        roots.sort_by_key(|r| r.id.number);
+fn render_rooted_records(
+    out: &mut String,
+    domain_records: &[&AdrRecord],
+    ctx: &TreeContext<'_>,
+) -> std::collections::HashSet<AdrId> {
+    let mut roots: Vec<&AdrRecord> = domain_records
+        .iter()
+        .copied()
+        .filter(|r| r.is_root())
+        .collect();
+    roots.sort_by_key(|r| r.id.number);
 
-        let mut reached: std::collections::HashSet<AdrId> = std::collections::HashSet::new();
-        let ctx = TreeContext {
-            parent_children: &parent_children,
-            record_by_id: &record_by_id,
-            domain_prefix: &dir.prefix,
+    let mut reached: std::collections::HashSet<AdrId> = std::collections::HashSet::new();
+    for root in &roots {
+        render_tree_node(out, &root.id, ctx, &mut reached, &mut Vec::new(), true);
+    }
+    reached
+}
+
+fn render_cross_domain_roots(
+    out: &mut String,
+    domain_records: &[&AdrRecord],
+    ctx: &TreeContext<'_>,
+    reached: &mut std::collections::HashSet<AdrId>,
+) {
+    let mut cross_domain_roots: Vec<&AdrRecord> = domain_records
+        .iter()
+        .copied()
+        .filter(|r| !r.is_root() && !reached.contains(&r.id))
+        .filter(|r| validated_cross_domain_parent(r).is_some())
+        .collect();
+    cross_domain_roots.sort_by_key(|r| r.id.number);
+
+    for record in &cross_domain_roots {
+        let Some(cross_parent) = validated_cross_domain_parent(record) else {
+            continue;
         };
+        render_cross_domain_tree_node(out, &record.id, &cross_parent, ctx, reached);
+    }
+}
 
-        for root in &roots {
-            render_tree_node(
-                &mut out,
-                &root.id,
-                &ctx,
-                &mut reached,
-                &mut Vec::new(),
-                true,
-            );
-        }
+fn render_orphans(
+    out: &mut String,
+    domain_records: &[&AdrRecord],
+    reached: &std::collections::HashSet<AdrId>,
+    parent_edges: &HashMap<AdrId, AdrId>,
+) {
+    let mut sorted_orphans: Vec<&AdrRecord> = domain_records
+        .iter()
+        .copied()
+        .filter(|r| !reached.contains(&r.id))
+        .collect();
 
-        let mut cross_domain_roots: Vec<&&AdrRecord> = domain_records
-            .iter()
-            .filter(|r| !r.is_root() && !reached.contains(&r.id))
-            .filter(|r| validated_cross_domain_parent(r).is_some())
-            .collect();
-        cross_domain_roots.sort_by_key(|r| r.id.number);
-
-        for record in &cross_domain_roots {
-            let Some(cross_parent) = validated_cross_domain_parent(record) else {
-                continue;
-            };
-            render_cross_domain_tree_node(&mut out, &record.id, &cross_parent, &ctx, &mut reached);
-        }
-
-        let orphans: Vec<&&AdrRecord> = domain_records
-            .iter()
-            .filter(|r| !reached.contains(&r.id))
-            .collect();
-
-        if !orphans.is_empty() {
-            let mut sorted_orphans: Vec<&&AdrRecord> = orphans.into_iter().collect();
-            sorted_orphans.sort_by_key(|r| r.id.number);
-            writeln!(out, "  (orphans — not reachable from any root)").unwrap();
-            for record in &sorted_orphans {
-                let title = record.title.as_deref().unwrap_or("(untitled)");
-                let tier = record.tier.map_or_else(|| "?".into(), |t| format!("{t}"));
-                let status = record
-                    .status
-                    .as_ref()
-                    .map_or_else(|| "?".into(), super::model::Status::short_display);
-                let also = format_also_references(record, &parent_edges);
-
-                let reason = if parent_edges.contains_key(&record.id) {
-                    match crate::nav::walk_parent_chain(&record.id, &parent_edges) {
-                        Ok(_) => " (chain ends at non-root)",
-                        Err(_) => " (cycle)",
-                    }
-                } else {
-                    " (no References — parent missing)"
-                };
-
-                writeln!(
-                    out,
-                    "  {} {title} [{tier}] {status}{reason}{also}",
-                    record.id
-                )
-                .unwrap();
-            }
-        }
-
-        let stale_count = records
-            .iter()
-            .filter(|r| r.is_stale && r.id.prefix == dir.prefix)
-            .count();
-        if stale_count > 0 {
-            writeln!(out, "  ({stale_count} stale)").unwrap();
-        }
-
-        out.push('\n');
+    if sorted_orphans.is_empty() {
+        return;
     }
 
-    out
+    sorted_orphans.sort_by_key(|r| r.id.number);
+    writeln!(out, "  (orphans — not reachable from any root)").unwrap();
+    for record in &sorted_orphans {
+        render_orphan(out, record, parent_edges);
+    }
+}
+
+fn render_orphan(out: &mut String, record: &AdrRecord, parent_edges: &HashMap<AdrId, AdrId>) {
+    let title = record.title.as_deref().unwrap_or("(untitled)");
+    let tier = record.tier.map_or_else(|| "?".into(), |t| format!("{t}"));
+    let status = record
+        .status
+        .as_ref()
+        .map_or_else(|| "?".into(), super::model::Status::short_display);
+    let also = format_also_references(record, parent_edges);
+    let reason = orphan_reason(record, parent_edges);
+
+    writeln!(
+        out,
+        "  {} {title} [{tier}] {status}{reason}{also}",
+        record.id
+    )
+    .unwrap();
+}
+
+fn orphan_reason(record: &AdrRecord, parent_edges: &HashMap<AdrId, AdrId>) -> &'static str {
+    if parent_edges.contains_key(&record.id) {
+        match crate::nav::walk_parent_chain(&record.id, parent_edges) {
+            Ok(_) => " (chain ends at non-root)",
+            Err(_) => " (cycle)",
+        }
+    } else {
+        " (no References — parent missing)"
+    }
+}
+
+fn render_stale_count(out: &mut String, dir: &DomainDir, records: &[AdrRecord]) {
+    let stale_count = records
+        .iter()
+        .filter(|r| r.is_stale && r.id.prefix == dir.prefix)
+        .count();
+    if stale_count > 0 {
+        writeln!(out, "  ({stale_count} stale)").unwrap();
+    }
 }
 
 /// Recursively render a tree node and its same-domain children.
