@@ -33,8 +33,8 @@
 //! to the initial collection run. Subsequent scheduled runs do not
 //! force-unlock.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::app::collect;
@@ -133,9 +133,14 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
 
     collect::warm_start_from_baseline(&config, &app_state).await;
 
-    let shutdown = async {
-        crate::infra::signal::wait_for_shutdown_signal().await;
-        info!("shutdown signal received");
+    let shutdown_signal = Arc::new(Mutex::new(None));
+    let shutdown_signal_slot = Arc::clone(&shutdown_signal);
+    let shutdown = async move {
+        let signal = crate::infra::signal::wait_for_shutdown_signal().await;
+        *shutdown_signal_slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(signal);
+        info!(signal = signal.as_str(), "shutdown signal received");
     };
 
     let force_flag = Arc::new(AtomicBool::new(config.force_unlock));
@@ -167,6 +172,11 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
         Some(extra_routes),
     )
     .await;
+
+    let _observed_shutdown_signal = shutdown_signal
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
 
     drain_shutdown(&app_state, &collect_cancel_tx, &mut collection_loop).await;
 
