@@ -274,13 +274,6 @@ fn reject_pointer_type(ty: &syn::Type) -> syn::Result<()> {
 /// Look up rejection guidance for a syntactic ident, returning `None` for idents that are
 /// not on the EVT-014 forbidden list. Split out of `reject_forbidden_without_wrapper`
 /// to keep the per-type-shape dispatch short.
-#[expect(
-    clippy::match_same_arms,
-    reason = "the `Timestamp` arm collides with the wildcard by intent — its named presence \
-              + adjacent comment document why `Timestamp` is exempt from EVT-014. Folding it \
-              into the wildcard would orphan the rationale and invite a future rule to add a \
-              forbidden-Timestamp entry by mistake."
-)]
 fn forbidden_ident_guidance(
     ident: &str,
     last: &syn::PathSegment,
@@ -308,7 +301,6 @@ fn forbidden_ident_guidance(
              wrapper (`EventString<MAX>` for text, `EventBytes<MAX>` for \
              bytes, owned `T` otherwise).",
         ),
-        "Timestamp" => None,
         "Vec" => {
             if let syn::PathArguments::AngleBracketed(args) = &last.arguments
                 && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
