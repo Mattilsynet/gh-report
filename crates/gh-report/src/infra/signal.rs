@@ -11,8 +11,11 @@ use tracing::warn;
 
 /// Shutdown signal identity observed by the process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ShutdownSignal {
+    /// SIGTERM — orchestrator-initiated termination.
     Terminate,
+    /// SIGINT / Ctrl-C — interactive interrupt.
     Interrupt,
 }
 
