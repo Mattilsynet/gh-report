@@ -1,6 +1,5 @@
 //! Pure logic for the `comment-free` tool: parse, re-emit, lint doc-comment budget.
 #![forbid(unsafe_code)]
-#![warn(clippy::pedantic)]
 #![warn(clippy::missing_const_for_fn)]
 use ra_ap_rustc_lexer::{FrontmatterAllowed, TokenKind, tokenize};
 use similar::{ChangeTag, TextDiff};

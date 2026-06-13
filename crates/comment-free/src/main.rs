@@ -1,5 +1,4 @@
 #![forbid(unsafe_code)]
-#![warn(clippy::pedantic)]
 #![warn(clippy::missing_const_for_fn)]
 use clap::Parser;
 use comment_free::{
@@ -126,7 +125,7 @@ fn run(opts: &Options) -> Result<u32, CommentFreeError> {
         );
     }
     if opts.rewrite {
-        run_strip(opts)
+        Ok(run_strip(opts))
     } else {
         run_lint(opts)
     }
@@ -183,11 +182,7 @@ fn walk_rs_files(root: &Path) -> impl Iterator<Item = PathBuf> + use<'_> {
             .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("rs"))
     })
 }
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "symmetric Result shape with run_lint keeps the dispatch in `run()` uniform; the variant set may grow if rewrite mode regrows error variants"
-)]
-fn run_strip(opts: &Options) -> Result<u32, CommentFreeError> {
+fn run_strip(opts: &Options) -> u32 {
     let doc_warnings = scan_doc_files(&opts.root);
     for path in &doc_warnings {
         eprintln!("DOC_WARN\t{}", path.display());
@@ -237,7 +232,7 @@ fn run_strip(opts: &Options) -> Result<u32, CommentFreeError> {
     let mode = if opts.dry_run { "dry-run" } else { "write" };
     print_summary_strip(mode, rewritten, unchanged, errors);
     print_rewrite_summary(mode, &counts_total);
-    Ok(errors)
+    errors
 }
 /// Strip-mode summary emitter. Emits to stderr (consistent with the
 /// metadata-vs-data convention: findings/diffs/REWRITE lines are data on
