@@ -161,7 +161,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
         info!("webhooks disabled (WEBHOOK_SECRET not set)");
     }
 
-    let server_result = crate::infra::server::server::start(
+    let server_result = crate::infra::server::runtime::start(
         port,
         &bind_address,
         shutdown,

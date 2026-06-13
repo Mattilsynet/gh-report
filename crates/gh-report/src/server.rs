@@ -24,8 +24,8 @@ use crate::app::state::AppState;
 ///
 /// Returns a router with a 1 KB body limit (defence-in-depth for a
 /// GET-only endpoint). Meant to be merged as `extra_routes` into
-/// [`crate::infra::server::server::build_router`] or
-/// [`crate::infra::server::server::start`].
+/// [`crate::infra::server::runtime::build_router`] or
+/// [`crate::infra::server::runtime::start`].
 pub(crate) fn status_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/v1/status", get(status))
@@ -52,7 +52,7 @@ async fn status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
 /// Panics if the default `ServerConfig` cannot be built (indicates a
 /// programming error in the hardcoded defaults).
 pub fn build_router(state: Arc<AppState>) -> Router {
-    crate::infra::server::server::build_router(
+    crate::infra::server::runtime::build_router(
         state,
         &crate::infra::server::config::ServerConfig::builder()
             .build()

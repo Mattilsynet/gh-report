@@ -307,7 +307,7 @@ mod tests {
 
     fn build_test_app(state: Arc<AppState>) -> Router {
         let extra = webhook_router();
-        crate::infra::server::server::build_router(
+        crate::infra::server::runtime::build_router(
             state,
             &crate::infra::server::config::ServerConfig::builder()
                 .build()

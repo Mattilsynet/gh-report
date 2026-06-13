@@ -654,12 +654,13 @@ pub(crate) fn rate_to_width_class(rate: Option<f64>) -> &'static str {
         Some(r) => {
             let clamped = r.clamp(0.0, 100.0);
             let bucket = (clamped / 5.0).round();
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "bucket ∈ [0.0, 20.0] post-clamp; no stable safe f64→usize conversion exists"
-            )]
-            let index = (bucket as usize).min(WIDTH_CLASSES.len() - 1);
+            let index = WIDTH_CLASSES
+                .iter()
+                .enumerate()
+                .rfind(|(candidate, _)| {
+                    f64::from(u32::try_from(*candidate).unwrap_or(u32::MAX)) <= bucket
+                })
+                .map_or(0, |(candidate, _)| candidate);
             WIDTH_CLASSES[index]
         }
     }

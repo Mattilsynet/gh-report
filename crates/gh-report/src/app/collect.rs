@@ -315,7 +315,7 @@ async fn run_collection_inner(
 
     let result = tokio::select! {
         res = run_collection_pipeline(
-            config, run, corr_ctx, ctx, &inventory, org_alert, &lock_handle, state,
+            config, run, corr_ctx, ctx, &inventory, org_alert, state,
         ) => res,
         () = cancel.cancelled() => {
             info!(
@@ -351,10 +351,6 @@ async fn run_collection_inner(
 /// Orchestration is driven by [`SweepSaga`], a state machine that models
 /// each pipeline phase as an explicit state transition with domain event
 /// emission, progress tracking, and saga-level timeout.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "8/7 after WU-6 v2 Inc 2 added corr_ctx; Params-struct tidying is a separate Tidy-First commit (R3) deferred until Inc 5/B8' when call shape settles"
-)]
 async fn run_collection_pipeline(
     config: &RuntimeConfig,
     run: &mut RunMetadata,
@@ -362,7 +358,6 @@ async fn run_collection_pipeline(
     ctx: CollectionContext,
     inventory: &InventoryLoad,
     org_alert: OrgAlertContext,
-    _lock_handle: &Arc<tokio::sync::Mutex<Option<lock::RunLock>>>,
     state: &Arc<AppState>,
 ) -> Result<(), AppError> {
     let mut saga = SweepSaga::new(config, run, &ctx, org_alert, state);
