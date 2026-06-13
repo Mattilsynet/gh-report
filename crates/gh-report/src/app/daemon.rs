@@ -47,17 +47,11 @@ use crate::domain::evidence::RepositoryEvidence;
 use crate::error::{AppError, ConfigError, PersistenceError};
 use tracing::{error, info, warn};
 
-/// Bounded per-handle timeout for the worker-pool and delivery-task
-/// drain at daemon shutdown. The total drain budget at shutdown is
-/// `2 ×` this value (pool then delivery, sequentially).
-const WORKER_POOL_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Bounded budget for cooperative drain of the scheduled collection
-/// task on daemon shutdown. After this elapses, the task is forcibly
-/// aborted and a warning is emitted; any in-flight persist→publish is
-/// recovered by `EventStore` boot replay (CHE-0024:R3 persist-before-
-/// publish ordering keeps this consistent).
-const COLLECTION_DRAIN_TIMEOUT: Duration = Duration::from_mins(1);
+/// Shared cooperative drain budget for worker-pool, delivery-task, and
+/// scheduled collection task shutdown. All drain phases start together
+/// after cancellation is signalled; the total daemon-side drain budget is
+/// this value rather than the sum of per-phase budgets.
+const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Outcome of waiting for the next scheduled collection tick.
 #[derive(Debug)]
@@ -174,8 +168,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     )
     .await;
 
-    shutdown_workers(&app_state).await;
-    drain_collection_loop(&collect_cancel_tx, &mut collection_loop).await;
+    drain_shutdown(&app_state, &collect_cancel_tx, &mut collection_loop).await;
 
     server_result.map_err(|e| crate::error::ServerError::Runtime(e.to_string()))?;
 
@@ -183,19 +176,34 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Drain the worker pool + delivery task on daemon shutdown.
+/// Drain all daemon-side background tasks on shutdown.
 ///
-/// Cancels the worker-pool shutdown token, closes the work queue so the pool
-/// stops accepting new jobs, then awaits both handles with an individual
-/// timeout. Total drain budget upper-bounded at `2 × WORKER_POOL_DRAIN_TIMEOUT`.
-async fn shutdown_workers(app_state: &Arc<AppState>) {
-    shutdown_workers_with_timeout(app_state, WORKER_POOL_DRAIN_TIMEOUT).await;
+/// Cancels the worker-pool token, closes the work queue, and signals the
+/// collection loop before starting the shared drain budget. Worker-pool,
+/// delivery-task, and collection-loop handles are then awaited concurrently;
+/// handles still pending at the budget boundary are aborted.
+async fn drain_shutdown(
+    app_state: &Arc<AppState>,
+    cancel: &tokio::sync::watch::Sender<bool>,
+    collection_loop: &mut tokio::task::JoinHandle<()>,
+) {
+    drain_shutdown_with_timeout(app_state, cancel, collection_loop, SHUTDOWN_DRAIN_TIMEOUT).await;
 }
 
-async fn shutdown_workers_with_timeout(app_state: &Arc<AppState>, timeout: Duration) {
+async fn drain_shutdown_with_timeout(
+    app_state: &Arc<AppState>,
+    cancel: &tokio::sync::watch::Sender<bool>,
+    collection_loop: &mut tokio::task::JoinHandle<()>,
+    timeout: Duration,
+) {
     app_state.cancel_worker_pool();
     app_state.work_queue.close();
-    let (pool_drained, delivery_drained) = app_state.drain_worker_pool(timeout).await;
+    let _ = cancel.send(true);
+    let worker_drain = app_state.drain_worker_pool(timeout);
+    let collection_drain =
+        drain_collection_loop_after_cancel_with_timeout(collection_loop, timeout);
+    let ((pool_drained, delivery_drained), collection_drained) =
+        tokio::join!(worker_drain, collection_drain);
     if !pool_drained {
         warn!(
             timeout_secs = timeout.as_secs(),
@@ -207,6 +215,17 @@ async fn shutdown_workers_with_timeout(app_state: &Arc<AppState>, timeout: Durat
             timeout_secs = timeout.as_secs(),
             "delivery task did not drain within timeout"
         );
+    }
+    match collection_drained {
+        Ok(()) => info!("collection task drained cleanly"),
+        Err(CollectionDrainError::Join(join_err)) => warn!(
+            error = %join_err,
+            "collection task ended abnormally during drain",
+        ),
+        Err(CollectionDrainError::Timeout) => warn!(
+            timeout_secs = timeout.as_secs(),
+            "collection task forced abort: outcome of any in-flight persist→publish is unknown to this process; EventStore boot replay will reconcile on next startup",
+        ),
     }
 }
 
@@ -260,34 +279,22 @@ fn spawn_collection_loop(
     })
 }
 
-/// Cooperative shutdown of the scheduled collection task.
-///
-/// Sends the cancel signal so the loop exits between scheduled
-/// iterations rather than mid-`collect::run`, then awaits the
-/// `JoinHandle` with a bounded budget. On timeout the task is forcibly
-/// aborted and a structured warning is emitted: the outcome of any
-/// in-flight persist→publish is unknown to this process, but
-/// `EventStore` boot replay reconciles state on next startup
-/// (CHE-0024:R3 persist-before-publish ensures the durable record is
-/// the source of truth).
-async fn drain_collection_loop(
-    cancel: &tokio::sync::watch::Sender<bool>,
+enum CollectionDrainError {
+    Join(tokio::task::JoinError),
+    Timeout,
+}
+
+async fn drain_collection_loop_after_cancel_with_timeout(
     handle: &mut tokio::task::JoinHandle<()>,
-) {
-    let _ = cancel.send(true);
-    match tokio::time::timeout(COLLECTION_DRAIN_TIMEOUT, &mut *handle).await {
-        Ok(Ok(())) => info!("collection task drained cleanly"),
-        Ok(Err(join_err)) => warn!(
-            error = %join_err,
-            "collection task ended abnormally during drain",
-        ),
+    timeout: Duration,
+) -> Result<(), CollectionDrainError> {
+    match tokio::time::timeout(timeout, &mut *handle).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(join_err)) => Err(CollectionDrainError::Join(join_err)),
         Err(_) => {
-            warn!(
-                timeout_secs = COLLECTION_DRAIN_TIMEOUT.as_secs(),
-                "collection task forced abort: outcome of any in-flight persist→publish is unknown to this process; EventStore boot replay will reconcile on next startup",
-            );
             handle.abort();
-            let _ = handle.await;
+            let _ = (&mut *handle).await;
+            Err(CollectionDrainError::Timeout)
         }
     }
 }
@@ -563,8 +570,45 @@ mod tests {
                 .is_ok()
         );
 
-        shutdown_workers_with_timeout(&state, Duration::from_millis(100)).await;
+        let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
+        let mut collection_loop = tokio::spawn(async {});
+
+        drain_shutdown_with_timeout(
+            &state,
+            &cancel_tx,
+            &mut collection_loop,
+            Duration::from_millis(100),
+        )
+        .await;
 
         assert!(token.is_cancelled());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_drains_worker_delivery_and_collection_under_one_budget() {
+        let state = AppState::new().await;
+        let token = state.worker_shutdown_token();
+        let pool_handle = tokio::spawn(std::future::pending::<()>());
+        let delivery_handle = tokio::spawn(std::future::pending::<()>());
+        assert!(
+            state
+                .worker_pool_started
+                .set(std::sync::Mutex::new(Some((pool_handle, delivery_handle))))
+                .is_ok()
+        );
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let mut collection_loop = tokio::spawn(std::future::pending::<()>());
+        let timeout = Duration::from_secs(3);
+        let started = tokio::time::Instant::now();
+
+        drain_shutdown_with_timeout(&state, &cancel_tx, &mut collection_loop, timeout).await;
+
+        let elapsed = started.elapsed();
+        assert!(token.is_cancelled());
+        assert!(*cancel_rx.borrow());
+        assert!(
+            elapsed <= timeout + Duration::from_millis(1),
+            "shutdown drain must use one shared timeout budget; elapsed={elapsed:?}, budget={timeout:?}"
+        );
     }
 }

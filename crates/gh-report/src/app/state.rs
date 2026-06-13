@@ -786,8 +786,8 @@ impl AppState {
     }
 
     /// Drain the worker pool: `take()` both `JoinHandle`s from the
-    /// `OnceCell` (if any were ever started) and `await` each with an
-    /// individual timeout, aborting either handle whose timeout elapses.
+    /// `OnceCell` (if any were ever started) and `await` them concurrently
+    /// with one timeout budget, aborting either handle whose timeout elapses.
     /// Returns the pair of `(pool_drained, delivery_drained)` booleans
     /// where `true` means the task exited cleanly within the timeout.
     /// Caller logs the outcome.
@@ -810,8 +810,10 @@ impl AppState {
         let Some((pool_handle, delivery_handle)) = taken else {
             return (false, false);
         };
-        let pool_ok = drain_join_handle_or_abort(pool_handle, per_handle_timeout).await;
-        let delivery_ok = drain_join_handle_or_abort(delivery_handle, per_handle_timeout).await;
+        let (pool_ok, delivery_ok) = tokio::join!(
+            drain_join_handle_or_abort(pool_handle, per_handle_timeout),
+            drain_join_handle_or_abort(delivery_handle, per_handle_timeout),
+        );
         (pool_ok, delivery_ok)
     }
 
@@ -1502,5 +1504,96 @@ mod tests {
         })
         .await
         .expect("timed-out pool task should be aborted, not detached");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn drain_worker_pool_uses_one_budget_for_pool_and_delivery() {
+        let state = AppState::new().await;
+        let pool_handle = tokio::spawn(std::future::pending::<()>());
+        let delivery_handle = tokio::spawn(std::future::pending::<()>());
+        assert!(
+            state
+                .worker_pool_started
+                .set(std::sync::Mutex::new(Some((pool_handle, delivery_handle))))
+                .is_ok()
+        );
+        let timeout = std::time::Duration::from_secs(3);
+        let started = tokio::time::Instant::now();
+
+        let drained = state.drain_worker_pool(timeout).await;
+
+        let elapsed = started.elapsed();
+        assert_eq!(drained, (false, false));
+        assert!(
+            elapsed <= timeout + std::time::Duration::from_millis(1),
+            "worker and delivery drains must share one timeout budget; elapsed={elapsed:?}, budget={timeout:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn drain_worker_pool_returns_when_handles_finish_before_budget() {
+        let state = AppState::new().await;
+        let pool_handle = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        });
+        let delivery_handle = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        });
+        assert!(
+            state
+                .worker_pool_started
+                .set(std::sync::Mutex::new(Some((pool_handle, delivery_handle))))
+                .is_ok()
+        );
+        let timeout = std::time::Duration::from_secs(3);
+        let started = tokio::time::Instant::now();
+
+        let drained = state.drain_worker_pool(timeout).await;
+
+        let elapsed = started.elapsed();
+        assert_eq!(drained, (true, true));
+        assert!(
+            elapsed < std::time::Duration::from_millis(20),
+            "cooperative handles should finish before the drain budget; elapsed={elapsed:?}, budget={timeout:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn drain_worker_pool_flushes_queued_delivery_outcome() {
+        let state = AppState::new().await;
+        let (outcome_tx, outcome_rx) = tokio::sync::mpsc::channel(1);
+        outcome_tx
+            .send(crate::app::worker_pool::JobOutcome::Success {
+                domain_key: "queued-repo".to_string(),
+                result: crate::test_fixtures::all_passing_evidence("queued-repo"),
+                source: crate::app::work_queue::JobSource::ScheduledBatch,
+                duration: std::time::Duration::from_millis(1),
+                correlation: cherry_pit_core::CorrelationContext::none(),
+            })
+            .await
+            .expect("queue outcome");
+        drop(outcome_tx);
+        let pool_handle = tokio::spawn(std::future::pending::<()>());
+        let delivery_state = Arc::clone(&state);
+        let delivery_handle = tokio::spawn(crate::app::daemon::delivery_loop(
+            outcome_rx,
+            delivery_state,
+        ));
+        assert!(
+            state
+                .worker_pool_started
+                .set(std::sync::Mutex::new(Some((pool_handle, delivery_handle))))
+                .is_ok()
+        );
+
+        let drained = state
+            .drain_worker_pool(std::time::Duration::from_secs(3))
+            .await;
+
+        assert_eq!(drained, (false, true));
+        assert!(
+            state.projection_contains("queued-repo"),
+            "concurrent drain must not drop an already queued delivery outcome"
+        );
     }
 }
