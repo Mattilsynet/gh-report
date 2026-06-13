@@ -16,6 +16,7 @@
 
 #![cfg(feature = "projection")]
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use cherry_pit_core::CorrelationContext;
@@ -23,7 +24,9 @@ use cherry_pit_web::{
     LayerLimits, PageUpdate, ProjectionState, WsAuthLimits, build_projection_router,
 };
 use futures_util::{SinkExt, StreamExt};
+use serde_json::Value;
 use tokio::net::TcpListener;
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -43,13 +46,45 @@ use common::MockProjectionSource;
 ///    `EventEnvelope` shape.
 /// 4. Close the WS cleanly.
 #[tokio::test(flavor = "current_thread")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "linear end-to-end WS smoke; splitting would obscure the flow"
-)]
 async fn ws_envelope_carries_v1_and_refuses_event_envelope_shape() {
     let source = MockProjectionSource::new();
     let tx = source.tx();
+    let (addr, server) = spawn_projection_server(source).await;
+
+    let url = format!("ws://{addr}/ws");
+    let (mut ws, _resp) = timeout(
+        Duration::from_secs(5),
+        tokio_tungstenite::connect_async(&url),
+    )
+    .await
+    .expect("connect timeout")
+    .expect("ws connect failed");
+
+    let parsed = next_text_json(&mut ws, "connected").await;
+    assert_v1_envelope(&parsed, "connected", "connected");
+    assert_no_event_envelope_fields(&parsed, "WS envelope");
+
+    let update = PageUpdate::new(
+        vec!["index.html".into()],
+        "test-repo".into(),
+        "2026-05-11T00:00:00Z".into(),
+        CorrelationContext::none(),
+    );
+    tx.send(update).expect("broadcast send");
+
+    let parsed = next_text_json(&mut ws, "delta").await;
+    assert_delta_envelope(&parsed);
+    assert_no_event_envelope_fields(&parsed, "delta envelope");
+
+    let _ = ws.send(Message::Close(None)).await;
+    let _ = timeout(Duration::from_secs(2), ws.next()).await;
+    server.abort();
+    let _ = server.await;
+}
+
+async fn spawn_projection_server(
+    source: Arc<MockProjectionSource>,
+) -> (std::net::SocketAddr, JoinHandle<()>) {
     let state = ProjectionState::from_arc(source);
     let app = build_projection_router(
         state,
@@ -62,20 +97,16 @@ async fn ws_envelope_carries_v1_and_refuses_event_envelope_shape() {
         .await
         .expect("bind ephemeral");
     let addr = listener.local_addr().expect("bound");
-
     let server = tokio::spawn(async move {
         axum::serve(listener, app).await.expect("serve");
     });
+    (addr, server)
+}
 
-    let url = format!("ws://{addr}/ws");
-    let (mut ws, _resp) = timeout(
-        Duration::from_secs(5),
-        tokio_tungstenite::connect_async(&url),
-    )
-    .await
-    .expect("connect timeout")
-    .expect("ws connect failed");
-
+async fn next_text_json<S>(ws: &mut S, label: &str) -> Value
+where
+    S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
     let frame = timeout(Duration::from_secs(5), ws.next())
         .await
         .expect("recv timeout")
@@ -85,65 +116,31 @@ async fn ws_envelope_carries_v1_and_refuses_event_envelope_shape() {
         Message::Text(t) => t.to_string(),
         other => panic!("expected Text frame, got {other:?}"),
     };
-    let parsed: serde_json::Value = serde_json::from_str(&text).expect("connected: not JSON");
+    serde_json::from_str(&text).unwrap_or_else(|_| panic!("{label}: not JSON"))
+}
+
+fn assert_v1_envelope(parsed: &Value, expected_type: &str, label: &str) {
     assert_eq!(
         parsed["v"], 1,
-        "connected envelope must carry CHE-0049 R13 version field `\"v\": 1`; got {parsed}"
+        "{label} envelope must carry CHE-0049 R13 version field `\"v\": 1`; got {parsed}"
     );
     assert_eq!(
-        parsed["type"], "connected",
-        "first frame must be type=connected"
+        parsed["type"], expected_type,
+        "{label} envelope type mismatch"
     );
+}
 
-    for forbidden in [
-        "event_id",
-        "aggregate_id",
-        "caused_by",
-        "payload",
-        "sequence",
-        "events",
-        "envelope",
-    ] {
-        assert!(
-            parsed.get(forbidden).is_none(),
-            "WS envelope must NOT carry raw EventEnvelope field `{forbidden}`; got {parsed}"
-        );
-    }
-
-    let update = PageUpdate::new(
-        vec!["index.html".into()],
-        "test-repo".into(),
-        "2026-05-11T00:00:00Z".into(),
-        CorrelationContext::none(),
-    );
-    tx.send(update).expect("broadcast send");
-
-    let frame = timeout(Duration::from_secs(5), ws.next())
-        .await
-        .expect("recv timeout")
-        .expect("ws closed early")
-        .expect("ws read error");
-    let text = match frame {
-        Message::Text(t) => t.to_string(),
-        other => panic!("expected Text frame, got {other:?}"),
-    };
-    let parsed: serde_json::Value = serde_json::from_str(&text).expect("delta: not JSON");
-
-    assert_eq!(
-        parsed["v"], 1,
-        "delta envelope must carry CHE-0049 R13 version field `\"v\": 1`; got {parsed}"
-    );
-    assert_eq!(
-        parsed["type"], "update",
-        "delta envelope must be type=update"
-    );
+fn assert_delta_envelope(parsed: &Value) {
+    assert_v1_envelope(parsed, "update", "delta");
     assert_eq!(
         parsed["pages"][0], "index.html",
         "delta envelope must echo PageUpdate.pages"
     );
     assert_eq!(parsed["repo"], "test-repo");
     assert_eq!(parsed["timestamp"], "2026-05-11T00:00:00Z");
+}
 
+fn assert_no_event_envelope_fields(parsed: &Value, label: &str) {
     for forbidden in [
         "event_id",
         "aggregate_id",
@@ -155,12 +152,7 @@ async fn ws_envelope_carries_v1_and_refuses_event_envelope_shape() {
     ] {
         assert!(
             parsed.get(forbidden).is_none(),
-            "delta envelope must NOT carry raw EventEnvelope field `{forbidden}`; got {parsed}"
+            "{label} must NOT carry raw EventEnvelope field `{forbidden}`; got {parsed}"
         );
     }
-
-    let _ = ws.send(Message::Close(None)).await;
-    let _ = timeout(Duration::from_secs(2), ws.next()).await;
-    server.abort();
-    let _ = server.await;
 }

@@ -202,10 +202,6 @@ fn no_headers() -> HeaderMap {
 /// assert_eq!(status, StatusCode::NOT_FOUND);
 /// assert_eq!(body.code, "aggregate_not_found");
 /// ```
-#[expect(
-    clippy::match_same_arms,
-    reason = "explicit Infrastructure arm documents the spec'd CHE-0049 R10 mapping; the trailing wildcard exists solely to satisfy #[non_exhaustive] (CHE-0021 R1) and shares the body by design — collapsing the arms would erase the spec citation"
-)]
 #[must_use]
 pub fn map_dispatch_error<E>(err: &DispatchError<E>) -> ErrorResponse
 where
@@ -226,11 +222,6 @@ where
             StatusCode::NOT_FOUND,
             no_headers(),
             ErrorBody::new(code::AGGREGATE_NOT_FOUND, err),
-        ),
-        DispatchError::Infrastructure(_) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            retry_after_headers(),
-            ErrorBody::new(code::INFRASTRUCTURE, err),
         ),
         _ => (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -259,10 +250,6 @@ where
 /// assert!(headers.contains_key(RETRY_AFTER));
 /// assert_eq!(body.code, "store_locked");
 /// ```
-#[expect(
-    clippy::match_same_arms,
-    reason = "explicit Infrastructure arm documents the spec'd CHE-0049 R10 mapping; the trailing wildcard exists solely to satisfy #[non_exhaustive] (CHE-0021 R1)"
-)]
 #[must_use]
 pub fn map_store_error(err: &StoreError) -> ErrorResponse {
     match err {
@@ -280,11 +267,6 @@ pub fn map_store_error(err: &StoreError) -> ErrorResponse {
             StatusCode::INTERNAL_SERVER_ERROR,
             no_headers(),
             ErrorBody::new(code::CORRUPT_DATA, err),
-        ),
-        StoreError::Infrastructure(_) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            retry_after_headers(),
-            ErrorBody::new(code::INFRASTRUCTURE, err),
         ),
         _ => (
             StatusCode::SERVICE_UNAVAILABLE,
