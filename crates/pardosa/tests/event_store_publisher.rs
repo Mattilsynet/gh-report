@@ -650,157 +650,235 @@ mod jetstream_soak {
             }
         }
     }
+    struct IterCtx<'a> {
+        iter: usize,
+        rt: &'a Runtime,
+        server: &'a LiveNatsServer,
+        stream_name: String,
+        subject: String,
+        paths: IterPaths,
+    }
+    impl IterCtx<'_> {
+        fn delete_stream(&self) {
+            delete_stream(self.rt, self.server, &self.stream_name);
+        }
+    }
     /// Drive one iteration of the soak. Returns `Ok` only if
     /// every contract assertion held; otherwise returns a string
     /// naming the first violation and the iteration index for
     /// triage.
-    #[allow(clippy::too_many_lines)]
     fn run_iteration(iter: usize, rt: &Runtime, server: &LiveNatsServer) -> Result<(), String> {
         let tag = iter_tag(iter);
-        let stream_name = format!("PARDOSA_SOAK02_{tag}");
-        let subject = format!("pardosa.PARDOSA_SOAK02_{tag}.frontier");
-        let paths = IterPaths::new();
-        {
-            let mut seed = EventStore::<Order>::create(&paths.journal)
-                .map_err(|e| format!("iter {iter}: EventStore::create: {e:?}"))?;
-            for n in 0..SEED_EVENTS_PER_ITER {
-                let id = u64::try_from(n).expect("seed index fits u64");
-                let _ = seed
-                    .writer()
-                    .begin(Order { id })
-                    .map_err(|e| format!("iter {iter}: seed begin id={id}: {e:?}"))?;
-            }
-            let _ = seed
-                .writer()
-                .sync()
-                .map_err(|e| format!("iter {iter}: seed sync: {e:?}"))?;
-        }
+        let ctx = IterCtx {
+            iter,
+            rt,
+            server,
+            stream_name: format!("PARDOSA_SOAK02_{tag}"),
+            subject: format!("pardosa.PARDOSA_SOAK02_{tag}.frontier"),
+            paths: IterPaths::new(),
+        };
+        seed_iteration_journal(iter, &ctx.paths)?;
         let fail_flag = Arc::new(std::sync::Mutex::new(true));
-        let cfg = live_config(&tag, rt, server);
-        let handle = JetStreamBackend::open(cfg);
-        let inner = JetStreamFrontierPublisher::open(handle);
-        let publisher = FailThenForwardPublisher::new(inner, Arc::clone(&fail_flag));
-        let mut store = EventStore::<Order>::open_with_publisher(
-            &paths.journal,
-            paths.sidecar.clone(),
-            stream_name.clone(),
-            1,
-            Box::new(publisher),
-        )
-        .map_err(|e| format!("iter {iter}: open_with_publisher: {e:?}"))?;
+        let mut store = open_iteration_store(&ctx, &tag, &fail_flag)?;
         let lsn_fail = store
             .writer()
             .sync()
             .map_err(|e| format!("iter {iter}: failure-phase sync returned Err: {e:?}"))?;
+        assert_failure_phase(&ctx, &mut store, lsn_fail)?;
+        let drained = recover_and_validate(&ctx, &fail_flag, &mut store)?;
+        drop(store);
+        reopen_and_validate(&ctx, &tag, &drained)?;
+        ctx.delete_stream();
+        Ok(())
+    }
+
+    fn seed_iteration_journal(iter: usize, paths: &IterPaths) -> Result<(), String> {
+        let mut seed = EventStore::<Order>::create(&paths.journal)
+            .map_err(|e| format!("iter {iter}: EventStore::create: {e:?}"))?;
+        for n in 0..SEED_EVENTS_PER_ITER {
+            let id = u64::try_from(n).expect("seed index fits u64");
+            let _ = seed
+                .writer()
+                .begin(Order { id })
+                .map_err(|e| format!("iter {iter}: seed begin id={id}: {e:?}"))?;
+        }
+        let _ = seed
+            .writer()
+            .sync()
+            .map_err(|e| format!("iter {iter}: seed sync: {e:?}"))?;
+        Ok(())
+    }
+
+    fn open_iteration_store(
+        ctx: &IterCtx<'_>,
+        tag: &str,
+        fail_flag: &Arc<std::sync::Mutex<bool>>,
+    ) -> Result<EventStore<Order>, String> {
+        let cfg = live_config(tag, ctx.rt, ctx.server);
+        let handle = JetStreamBackend::open(cfg);
+        let inner = JetStreamFrontierPublisher::open(handle);
+        let publisher = FailThenForwardPublisher::new(inner, Arc::clone(fail_flag));
+        EventStore::<Order>::open_with_publisher(
+            &ctx.paths.journal,
+            ctx.paths.sidecar.clone(),
+            ctx.stream_name.clone(),
+            1,
+            Box::new(publisher),
+        )
+        .map_err(|e| format!("iter {}: open_with_publisher: {e:?}", ctx.iter))
+    }
+
+    fn assert_failure_phase(
+        ctx: &IterCtx<'_>,
+        store: &mut EventStore<Order>,
+        lsn_fail: pardosa::store::Lsn,
+    ) -> Result<(), String> {
         if store.writer().acked_lsn() != Some(lsn_fail) {
             return Err(format!(
-                "iter {iter}: failure-phase acked_lsn {:?} != returned lsn {lsn_fail:?}",
+                "iter {}: failure-phase acked_lsn {:?} != returned lsn {lsn_fail:?}",
+                ctx.iter,
                 store.writer().acked_lsn(),
             ));
         }
-        if paths.sidecar.exists() {
-            delete_stream(rt, server, &stream_name);
+        if ctx.paths.sidecar.exists() {
+            ctx.delete_stream();
             return Err(format!(
-                "iter {iter}: watermark sidecar advanced while every publish failed \
-                 (ADR-0016 §D5 violated)"
+                "iter {}: watermark sidecar advanced while every publish failed \
+                 (ADR-0016 §D5 violated)",
+                ctx.iter,
             ));
         }
-        match read_stream_payloads(rt, server, &stream_name, &subject) {
-            Err(ReadError::StreamNotFound) => {}
-            Ok(payloads) if payloads.is_empty() => {}
+        match read_stream_payloads(ctx.rt, ctx.server, &ctx.stream_name, &ctx.subject) {
+            Err(ReadError::StreamNotFound) => Ok(()),
+            Ok(payloads) if payloads.is_empty() => Ok(()),
             Ok(payloads) => {
-                delete_stream(rt, server, &stream_name);
-                return Err(format!(
-                    "iter {iter}: JetStream stream holds {} payload(s) after failure-phase sync, \
+                ctx.delete_stream();
+                Err(format!(
+                    "iter {}: JetStream stream holds {} payload(s) after failure-phase sync, \
                      expected 0 (ADR-0015 §D2 fence violated)",
+                    ctx.iter,
                     payloads.len(),
-                ));
+                ))
             }
             Err(ReadError::Other(e)) => {
-                delete_stream(rt, server, &stream_name);
-                return Err(format!(
-                    "iter {iter}: failure-phase read_stream_payloads returned unexpected error: {e}"
-                ));
+                ctx.delete_stream();
+                Err(format!(
+                    "iter {}: failure-phase read_stream_payloads returned unexpected error: {e}",
+                    ctx.iter,
+                ))
             }
         }
+    }
+
+    fn recover_and_validate(
+        ctx: &IterCtx<'_>,
+        fail_flag: &Arc<std::sync::Mutex<bool>>,
+        store: &mut EventStore<Order>,
+    ) -> Result<Vec<Vec<u8>>, String> {
         *fail_flag.lock().expect("fail flag mutex") = false;
         let _ = store
             .writer()
             .sync()
-            .map_err(|e| format!("iter {iter}: recovery-phase sync returned Err: {e:?}"))?;
-        if !paths.sidecar.exists() {
-            delete_stream(rt, server, &stream_name);
+            .map_err(|e| format!("iter {}: recovery-phase sync returned Err: {e:?}", ctx.iter))?;
+        if !ctx.paths.sidecar.exists() {
+            ctx.delete_stream();
             return Err(format!(
-                "iter {iter}: watermark sidecar must exist after successful drain \
-                 (ADR-0016 §D5)"
+                "iter {}: watermark sidecar must exist after successful drain \
+                 (ADR-0016 §D5)",
+                ctx.iter,
             ));
         }
-        let drained = read_stream_payloads(rt, server, &stream_name, &subject)
-            .map_err(|e| format!("iter {iter}: read_stream_payloads (recovery): {e:?}"))?;
+        let drained = read_stream_payloads(ctx.rt, ctx.server, &ctx.stream_name, &ctx.subject)
+            .map_err(|e| format!("iter {}: read_stream_payloads (recovery): {e:?}", ctx.iter))?;
+        validate_drained_payloads(ctx, &drained)?;
+        Ok(drained)
+    }
+
+    fn validate_drained_payloads(ctx: &IterCtx<'_>, drained: &[Vec<u8>]) -> Result<(), String> {
         if drained.len() != SEED_EVENTS_PER_ITER {
-            delete_stream(rt, server, &stream_name);
+            ctx.delete_stream();
             return Err(format!(
-                "iter {iter}: recovered {} payload(s) from JetStream, expected {} \
+                "iter {}: recovered {} payload(s) from JetStream, expected {} \
                  (ADR-0015 §D3 ordering or loss)",
+                ctx.iter,
                 drained.len(),
                 SEED_EVENTS_PER_ITER,
             ));
         }
         for (n, payload) in drained.iter().enumerate() {
             if payload.len() != 32 {
-                delete_stream(rt, server, &stream_name);
+                ctx.delete_stream();
                 return Err(format!(
-                    "iter {iter}: payload[{n}] has {} bytes, expected 32 (BLAKE3 frontier)",
+                    "iter {}: payload[{n}] has {} bytes, expected 32 (BLAKE3 frontier)",
+                    ctx.iter,
                     payload.len(),
                 ));
             }
         }
         let unique: HashSet<Vec<u8>> = drained.iter().cloned().collect();
         if unique.len() != drained.len() {
-            delete_stream(rt, server, &stream_name);
+            ctx.delete_stream();
             return Err(format!(
-                "iter {iter}: duplicate frontier payloads in JetStream stream \
+                "iter {}: duplicate frontier payloads in JetStream stream \
                  (unique={}, total={}); rolling BLAKE3 invariant violated (ADR-0004)",
+                ctx.iter,
                 unique.len(),
                 drained.len(),
             ));
         }
-        drop(store);
-        let republisher_cfg = live_config(&tag, rt, server);
+        Ok(())
+    }
+
+    fn reopen_and_validate(
+        ctx: &IterCtx<'_>,
+        tag: &str,
+        drained: &[Vec<u8>],
+    ) -> Result<(), String> {
+        let republisher_cfg = live_config(tag, ctx.rt, ctx.server);
         let republisher_handle = JetStreamBackend::open(republisher_cfg);
         let republisher = JetStreamFrontierPublisher::open(republisher_handle);
         let mut reopened = EventStore::<Order>::open_with_publisher(
-            &paths.journal,
-            paths.sidecar.clone(),
-            stream_name.clone(),
+            &ctx.paths.journal,
+            ctx.paths.sidecar.clone(),
+            ctx.stream_name.clone(),
             1,
             Box::new(republisher),
         )
-        .map_err(|e| format!("iter {iter}: reopen_with_publisher: {e:?}"))?;
+        .map_err(|e| format!("iter {}: reopen_with_publisher: {e:?}", ctx.iter))?;
         let _ = reopened
             .writer()
             .sync()
-            .map_err(|e| format!("iter {iter}: reopen sync returned Err: {e:?}"))?;
-        let after_reopen = read_stream_payloads(rt, server, &stream_name, &subject)
-            .map_err(|e| format!("iter {iter}: read_stream_payloads (reopen): {e:?}"))?;
+            .map_err(|e| format!("iter {}: reopen sync returned Err: {e:?}", ctx.iter))?;
+        let after_reopen = read_stream_payloads(ctx.rt, ctx.server, &ctx.stream_name, &ctx.subject)
+            .map_err(|e| format!("iter {}: read_stream_payloads (reopen): {e:?}", ctx.iter))?;
+        validate_reopen_payloads(ctx, drained, &after_reopen)?;
+        drop(reopened);
+        Ok(())
+    }
+
+    fn validate_reopen_payloads(
+        ctx: &IterCtx<'_>,
+        drained: &[Vec<u8>],
+        after_reopen: &[Vec<u8>],
+    ) -> Result<(), String> {
         if after_reopen.len() != SEED_EVENTS_PER_ITER {
-            delete_stream(rt, server, &stream_name);
+            ctx.delete_stream();
             return Err(format!(
-                "iter {iter}: reopen produced {} payload(s), expected {} unchanged \
+                "iter {}: reopen produced {} payload(s), expected {} unchanged \
                  (ADR-0016 §D7 watermark must suppress duplicate republish)",
+                ctx.iter,
                 after_reopen.len(),
                 SEED_EVENTS_PER_ITER,
             ));
         }
         if after_reopen != drained {
-            delete_stream(rt, server, &stream_name);
+            ctx.delete_stream();
             return Err(format!(
-                "iter {iter}: reopen mutated stream contents \
-                 (ADR-0016 §D7 violated; bytes-by-position mismatch)"
+                "iter {}: reopen mutated stream contents \
+                 (ADR-0016 §D7 violated; bytes-by-position mismatch)",
+                ctx.iter,
             ));
         }
-        drop(reopened);
-        delete_stream(rt, server, &stream_name);
         Ok(())
     }
     #[test]

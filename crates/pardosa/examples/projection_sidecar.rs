@@ -18,12 +18,8 @@ use pardosa_schema::Timestamp;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
-#[expect(
-    clippy::struct_field_names,
-    reason = "`order_id` is the domain-natural primary key name for an Order; the struct-name echo is idiomatic for an example payload"
-)]
 struct Order {
-    order_id: u64,
+    id: u64,
     cents: u64,
     when: Timestamp,
 }
@@ -38,7 +34,7 @@ impl Validate for Order {
 }
 fn order(order_id: u64, cents: u64) -> Order {
     Order {
-        order_id,
+        id: order_id,
         cents,
         when: Timestamp::from_nanos(order_id.max(1)).expect("nonzero"),
     }
@@ -47,7 +43,7 @@ fn order(order_id: u64, cents: u64) -> Order {
 struct OrderTotals(BTreeMap<u64, u64>);
 impl OrderTotals {
     fn fold(&mut self, o: &Order) {
-        *self.0.entry(o.order_id).or_insert(0) += o.cents;
+        *self.0.entry(o.id).or_insert(0) += o.cents;
     }
 }
 fn fresh_paths() -> (PathBuf, PathBuf) {
