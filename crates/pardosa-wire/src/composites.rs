@@ -361,14 +361,10 @@ mod tests {
     use alloc::sync::Arc;
     use alloc::vec;
     use alloc::vec::Vec;
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "test helper takes T by value to keep call sites ergonomic; `assert_eq!` then borrows internally"
-    )]
-    fn rt<T: Encode + Decode + PartialEq + core::fmt::Debug>(v: T) {
-        let bytes = to_vec(&v);
+    fn rt<T: Encode + Decode + PartialEq + core::fmt::Debug>(v: &T) {
+        let bytes = to_vec(v);
         let back: T = from_bytes(&bytes).expect("decode");
-        assert_eq!(v, back);
+        assert_eq!(v, &back);
     }
     #[test]
     fn option_layout() {
@@ -376,8 +372,8 @@ mod tests {
         assert_eq!(some, vec![1, 0x04, 0x03, 0x02, 0x01]);
         let none: Vec<u8> = to_vec(&Option::<u32>::None);
         assert_eq!(none, vec![0]);
-        rt(Some(42u64));
-        rt(Option::<String>::None);
+        rt(&Some(42u64));
+        rt(&Option::<String>::None);
     }
     #[test]
     fn invalid_option_tag_rejected() {
@@ -391,9 +387,9 @@ mod tests {
     }
     #[test]
     fn string_roundtrip() {
-        rt(String::new());
-        rt(String::from("hello, world"));
-        rt(String::from("⛵🦀"));
+        rt(&String::new());
+        rt(&String::from("hello, world"));
+        rt(&String::from("⛵🦀"));
     }
     #[test]
     fn invalid_utf8_rejected() {
@@ -402,9 +398,9 @@ mod tests {
     }
     #[test]
     fn vec_roundtrip() {
-        rt(Vec::<u32>::new());
-        rt(vec![1u32, 2, 3, 4, 5]);
-        rt(vec![Some(1u8), None, Some(2)]);
+        rt(&Vec::<u32>::new());
+        rt(&vec![1u32, 2, 3, 4, 5]);
+        rt(&vec![Some(1u8), None, Some(2)]);
     }
     #[test]
     fn array_back_to_back_no_prefix() {
@@ -417,8 +413,8 @@ mod tests {
     fn tuple_back_to_back_no_prefix() {
         let bytes = to_vec(&(1u8, 0x0203u16));
         assert_eq!(bytes, vec![1, 0x03, 0x02]);
-        rt((1u32, 2u64, 3u8));
-        rt((true, false, 0u8, u32::MAX));
+        rt(&(1u32, 2u64, 3u8));
+        rt(&(true, false, 0u8, u32::MAX));
     }
     #[test]
     fn btreemap_roundtrip_and_canonical_order() {
@@ -426,7 +422,7 @@ mod tests {
         m.insert(1, 10);
         m.insert(2, 20);
         m.insert(3, 30);
-        rt(m.clone());
+        rt(&m);
         let mut bad = Vec::new();
         3u32.encode(&mut bad);
         3u32.encode(&mut bad);
@@ -444,7 +440,7 @@ mod tests {
         m.insert(String::from("alpha"), 1);
         m.insert(String::from("beta"), 2);
         m.insert(String::from("gamma"), 3);
-        rt(m);
+        rt(&m);
     }
     #[test]
     fn canonical_bytes_btreemap_string_u32_mixed_length() {
@@ -480,7 +476,7 @@ mod tests {
         m.insert(vec![1], 10);
         m.insert(vec![1, 1], 20);
         m.insert(vec![2], 30);
-        rt(m);
+        rt(&m);
     }
     #[test]
     fn decode_btreemap_rejects_misordered() {
@@ -495,7 +491,7 @@ mod tests {
     }
     #[test]
     fn roundtrip_tuple_u8_u16_u32() {
-        rt((7u8, 0x1234u16, 0xdead_beefu32));
+        rt(&(7u8, 0x1234u16, 0xdead_beefu32));
     }
     #[test]
     fn non_zero_u64_layout_and_roundtrip() {
@@ -518,8 +514,8 @@ mod tests {
         s.insert(1);
         s.insert(2);
         s.insert(3);
-        rt(s);
-        rt(BTreeSet::<u64>::new());
+        rt(&s);
+        rt(&BTreeSet::<u64>::new());
     }
     #[test]
     fn btreeset_decode_rejects_misordered() {
@@ -549,7 +545,7 @@ mod tests {
         s.insert(String::from("alpha"));
         s.insert(String::from("beta"));
         s.insert(String::from("gamma"));
-        rt(s);
+        rt(&s);
     }
     #[test]
     fn canonical_bytes_btreeset_string_mixed_length() {
@@ -584,15 +580,15 @@ mod tests {
         s.insert(vec![1]);
         s.insert(vec![1, 1]);
         s.insert(vec![2]);
-        rt(s);
+        rt(&s);
     }
     #[test]
     fn roundtrip_box_u64() {
-        rt(Box::new(0xDEAD_BEEF_CAFE_F00D_u64));
+        rt(&Box::new(0xDEAD_BEEF_CAFE_F00D_u64));
     }
     #[test]
     fn roundtrip_arc_u32() {
-        rt(Arc::new(0xCAFE_BABE_u32));
+        rt(&Arc::new(0xCAFE_BABE_u32));
     }
     /// W1 regression: `encode_len_prefix` panics on lengths that do
     /// not fit in a `u32` LE prefix. Pre-W1, release builds silently
