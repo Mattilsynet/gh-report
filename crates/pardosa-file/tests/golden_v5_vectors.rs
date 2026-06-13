@@ -8,13 +8,6 @@
 //!
 //! See [ADR-0006](../../../docs/adr/0006-pgno-file-format.md) for the
 //! canonical v5 file-format contract.
-#![allow(
-    clippy::similar_names,
-    clippy::too_many_lines,
-    reason = "golden vectors compose many near-twin byte buffers (header/footer/\
-              schema/messages) inside a single linear assertion sequence; \
-              splitting would obscure the byte-for-byte spec mirror."
-)]
 use pardosa_file::format::{
     FILE_FOOTER_SIZE, FILE_HEADER_SIZE, FOOTER_CHECKSUM_OFFSET, FOOTER_INDEX_OFFSET,
     FOOTER_MAGIC_OFFSET, FOOTER_MESSAGE_COUNT_OFFSET, FORMAT_VERSION, HEADER_DICT_ID_OFFSET,
@@ -197,12 +190,18 @@ fn golden_v5_schema_plus_two_messages() {
     let schema_end = schema_start + schema.len();
     assert_eq!(&bytes[schema_start..schema_end], schema.as_bytes());
     assert_eq!(bytes[schema_end], 0, "schema-source pad byte must be zero");
-    let msgs_start = messages_offset(u32::try_from(schema.len()).unwrap());
-    assert_eq!(msgs_start, 48);
-    assert_eq!(&bytes[msgs_start..msgs_start + msg0.len()], msg0);
-    let msg1_start = msgs_start + msg0.len();
-    assert_eq!(&bytes[msg1_start..msg1_start + msg1.len()], msg1);
-    let index_offset_expected = msg1_start + msg1.len();
+    let message_region_start = messages_offset(u32::try_from(schema.len()).unwrap());
+    assert_eq!(message_region_start, 48);
+    assert_eq!(
+        &bytes[message_region_start..message_region_start + msg0.len()],
+        msg0,
+    );
+    let second_message_start = message_region_start + msg0.len();
+    assert_eq!(
+        &bytes[second_message_start..second_message_start + msg1.len()],
+        msg1,
+    );
+    let index_offset_expected = second_message_start + msg1.len();
     assert_eq!(index_offset_expected, 55);
     let e0 = &bytes[index_offset_expected..index_offset_expected + INDEX_ENTRY_SIZE];
     assert_eq!(u64::from_le_bytes(e0[0..8].try_into().unwrap()), 48);
@@ -225,34 +224,7 @@ fn golden_v5_schema_plus_two_messages() {
         u64::from_le_bytes(e1[16..24].try_into().unwrap()),
         xxh64(msg1, 0)
     );
-    let footer_start = bytes.len() - FILE_FOOTER_SIZE;
-    let footer = &bytes[footer_start..];
-    assert_eq!(
-        u64::from_le_bytes(
-            footer[FOOTER_INDEX_OFFSET..FOOTER_INDEX_OFFSET + 8]
-                .try_into()
-                .unwrap()
-        ),
-        u64::try_from(index_offset_expected).unwrap()
-    );
-    assert_eq!(
-        u64::from_le_bytes(
-            footer[FOOTER_MESSAGE_COUNT_OFFSET..FOOTER_MESSAGE_COUNT_OFFSET + 8]
-                .try_into()
-                .unwrap()
-        ),
-        2
-    );
-    assert_eq!(
-        &footer[FOOTER_MAGIC_OFFSET..FOOTER_MAGIC_OFFSET + 4],
-        &MAGIC
-    );
-    let claimed = u64::from_le_bytes(
-        footer[FOOTER_CHECKSUM_OFFSET..FOOTER_CHECKSUM_OFFSET + 8]
-            .try_into()
-            .unwrap(),
-    );
-    assert_eq!(claimed, xxh64(&footer[..FOOTER_CHECKSUM_OFFSET], 0));
+    assert_schema_messages_footer(&bytes, index_offset_expected);
     let mut r = Reader::open(Cursor::new(bytes)).expect("reader opens golden file B");
     assert_eq!(r.message_count(), 2);
     assert_eq!(r.schema_hash(), schema_hash);
@@ -261,6 +233,37 @@ fn golden_v5_schema_plus_two_messages() {
     assert_eq!(r.schema_source(), Some(schema));
     assert_eq!(r.read_message(0).unwrap(), msg0);
     assert_eq!(r.read_message(1).unwrap(), msg1);
+}
+
+fn assert_schema_messages_footer(bytes: &[u8], index_offset_expected: usize) {
+    let footer_start = bytes.len() - FILE_FOOTER_SIZE;
+    let footer = &bytes[footer_start..];
+    assert_eq!(
+        u64::from_le_bytes(
+            footer[FOOTER_INDEX_OFFSET..FOOTER_INDEX_OFFSET + 8]
+                .try_into()
+                .unwrap(),
+        ),
+        u64::try_from(index_offset_expected).unwrap(),
+    );
+    assert_eq!(
+        u64::from_le_bytes(
+            footer[FOOTER_MESSAGE_COUNT_OFFSET..FOOTER_MESSAGE_COUNT_OFFSET + 8]
+                .try_into()
+                .unwrap(),
+        ),
+        2,
+    );
+    assert_eq!(
+        &footer[FOOTER_MAGIC_OFFSET..FOOTER_MAGIC_OFFSET + 4],
+        &MAGIC,
+    );
+    let claimed = u64::from_le_bytes(
+        footer[FOOTER_CHECKSUM_OFFSET..FOOTER_CHECKSUM_OFFSET + 8]
+            .try_into()
+            .unwrap(),
+    );
+    assert_eq!(claimed, xxh64(&footer[..FOOTER_CHECKSUM_OFFSET], 0));
 }
 /// Pins the documented `messages_offset` formula against concrete v5 schema sizes.
 #[test]

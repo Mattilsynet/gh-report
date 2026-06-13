@@ -12,11 +12,6 @@
 //!
 //! Level 9 is representative; level-19 + differentials live
 //! in `z1_writer_zstd_levels.rs`. See ADR-0006.
-#![allow(
-    clippy::cast_possible_truncation,
-    reason = "test code reads small fixed-size u64 header fields known to fit \
-              in usize on the target platforms exercised in CI."
-)]
 #![cfg(feature = "zstd")]
 use pardosa_file::format::{
     ALGO_ZSTD, FILE_FOOTER_SIZE, FILE_HEADER_SIZE, HEADER_FLAGS_OFFSET, HEADER_PAGE_CLASS_OFFSET,
@@ -55,8 +50,10 @@ fn writer_zstd_stored_body_differs_from_input_for_non_trivial_payload() {
     let bytes = build_zstd(0xCD, None, &[&payload]);
     let msgs_start = messages_offset(0);
     let footer_start = bytes.len() - FILE_FOOTER_SIZE;
-    let index_offset =
-        u64::from_le_bytes(bytes[footer_start..footer_start + 8].try_into().unwrap()) as usize;
+    let index_offset = usize::try_from(u64::from_le_bytes(
+        bytes[footer_start..footer_start + 8].try_into().unwrap(),
+    ))
+    .expect("zstd test index offset fits usize");
     let stored = &bytes[msgs_start..index_offset];
     assert_ne!(stored, payload.as_slice(), "zstd-stored body must differ");
     assert!(
@@ -72,12 +69,16 @@ fn writer_zstd_index_size_and_checksum_refer_to_stored_bytes() {
     let bytes = build_zstd(0xEE, None, &[&payload]);
     let msgs_start = messages_offset(0);
     let footer_start = bytes.len() - FILE_FOOTER_SIZE;
-    let index_offset =
-        u64::from_le_bytes(bytes[footer_start..footer_start + 8].try_into().unwrap()) as usize;
+    let index_offset = usize::try_from(u64::from_le_bytes(
+        bytes[footer_start..footer_start + 8].try_into().unwrap(),
+    ))
+    .expect("zstd test index offset fits usize");
     let stored = &bytes[msgs_start..index_offset];
     let e0 = &bytes[index_offset..index_offset + INDEX_ENTRY_SIZE];
-    let entry_offset = u64::from_le_bytes(e0[0..8].try_into().unwrap()) as usize;
-    let entry_size = u32::from_le_bytes(e0[8..12].try_into().unwrap()) as usize;
+    let entry_offset = usize::try_from(u64::from_le_bytes(e0[0..8].try_into().unwrap()))
+        .expect("zstd test entry offset fits usize");
+    let entry_size = usize::try_from(u32::from_le_bytes(e0[8..12].try_into().unwrap()))
+        .expect("zstd test entry size fits usize");
     let entry_cksum = u64::from_le_bytes(e0[16..24].try_into().unwrap());
     assert_eq!(entry_offset, msgs_start);
     assert_eq!(entry_size, stored.len(), "size is stored-bytes length");

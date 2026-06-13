@@ -12,13 +12,6 @@
 //!
 //! See [ADR-0006](../../../docs/adr/0006-pgno-file-format.md).
 #![cfg(feature = "zstd")]
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::similar_names,
-    reason = "test reads fixed-size u64 header fields known to fit in usize; \
-              level-9 vs level-19 paired bindings are deliberately near-twin \
-              names mirroring the variants under test."
-)]
 use pardosa_file::format::{ALGO_ZSTD, FILE_FOOTER_SIZE, HEADER_FLAGS_OFFSET, messages_offset};
 use pardosa_file::{Compression, Reader, Writer, WriterOptions};
 use std::io::Cursor;
@@ -35,8 +28,10 @@ fn build(compression: Compression, schema_hash: u128, messages: &[&[u8]]) -> Vec
 fn stored_body_region(bytes: &[u8]) -> &[u8] {
     let msgs_start = messages_offset(0);
     let footer_start = bytes.len() - FILE_FOOTER_SIZE;
-    let index_offset =
-        u64::from_le_bytes(bytes[footer_start..footer_start + 8].try_into().unwrap()) as usize;
+    let index_offset = usize::try_from(u64::from_le_bytes(
+        bytes[footer_start..footer_start + 8].try_into().unwrap(),
+    ))
+    .expect("zstd level test index offset fits usize");
     &bytes[msgs_start..index_offset]
 }
 fn assert_header_algo_zstd(bytes: &[u8]) {
@@ -73,16 +68,16 @@ fn zstd19_round_trips_and_sets_algo_zstd() {
 #[test]
 fn zstd9_and_zstd19_differ_on_compressible_payload() {
     let payload: Vec<u8> = b"abcdefgh".repeat(1024);
-    let bytes9 = build(Compression::Zstd9, 0, &[&payload]);
-    let bytes19 = build(Compression::Zstd19, 0, &[&payload]);
-    let stored9 = stored_body_region(&bytes9);
-    let stored19 = stored_body_region(&bytes19);
+    let fast_level_bytes = build(Compression::Zstd9, 0, &[&payload]);
+    let max_level_bytes = build(Compression::Zstd19, 0, &[&payload]);
+    let fast_level_stored = stored_body_region(&fast_level_bytes);
+    let max_level_stored = stored_body_region(&max_level_bytes);
     assert_ne!(
-        stored9, stored19,
+        fast_level_stored, max_level_stored,
         "level 9 and level 19 must produce distinct stored bytes on a compressible payload"
     );
-    assert!(stored9.len() < payload.len());
-    assert!(stored19.len() < payload.len());
+    assert!(fast_level_stored.len() < payload.len());
+    assert!(max_level_stored.len() < payload.len());
 }
 #[test]
 fn default_writer_options_remain_uncompressed() {

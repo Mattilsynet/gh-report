@@ -8,10 +8,6 @@
 //! Per-feature decompression and writer behaviour live in
 //! `z1_reader_zstd.rs` / `z1_writer_zstd.rs`. The no-feature negative is
 //! in `z1_no_feature_zstd.rs`.
-#![allow(
-    clippy::cast_possible_truncation,
-    reason = "test reads fixed-size u64 header fields known to fit in usize."
-)]
 use pardosa_file::format::{
     FILE_FOOTER_SIZE, FILE_HEADER_SIZE, FOOTER_CHECKSUM_OFFSET, FOOTER_INDEX_OFFSET,
     FOOTER_MAGIC_OFFSET, FOOTER_MESSAGE_COUNT_OFFSET, FORMAT_VERSION, HEADER_FLAGS_OFFSET,
@@ -29,7 +25,7 @@ fn unknown_compression_algo_returns_unsupported_compression() {
     hdr[HEADER_FLAGS_OFFSET..HEADER_FLAGS_OFFSET + 2].copy_from_slice(&2u16.to_le_bytes());
     hdr[HEADER_SCHEMA_SIZE_OFFSET..HEADER_SCHEMA_SIZE_OFFSET + 4].copy_from_slice(&[0u8; 4]);
     let mut foot = [0u8; FILE_FOOTER_SIZE];
-    let idx_off = messages_offset(0) as u64;
+    let idx_off = u64::try_from(messages_offset(0)).expect("messages_offset(0) fits u64");
     foot[FOOTER_INDEX_OFFSET..FOOTER_INDEX_OFFSET + 8].copy_from_slice(&idx_off.to_le_bytes());
     foot[FOOTER_MESSAGE_COUNT_OFFSET..FOOTER_MESSAGE_COUNT_OFFSET + 8].copy_from_slice(&[0u8; 8]);
     foot[FOOTER_MAGIC_OFFSET..FOOTER_MAGIC_OFFSET + 4].copy_from_slice(&MAGIC);
@@ -53,7 +49,7 @@ fn high_flag_bits_are_reserved_zero() {
     hdr[HEADER_FLAGS_OFFSET..HEADER_FLAGS_OFFSET + 2].copy_from_slice(&8u16.to_le_bytes());
     hdr[HEADER_SCHEMA_SIZE_OFFSET..HEADER_SCHEMA_SIZE_OFFSET + 4].copy_from_slice(&[0u8; 4]);
     let mut foot = [0u8; FILE_FOOTER_SIZE];
-    let idx_off = messages_offset(0) as u64;
+    let idx_off = u64::try_from(messages_offset(0)).expect("messages_offset(0) fits u64");
     foot[FOOTER_INDEX_OFFSET..FOOTER_INDEX_OFFSET + 8].copy_from_slice(&idx_off.to_le_bytes());
     foot[FOOTER_MESSAGE_COUNT_OFFSET..FOOTER_MESSAGE_COUNT_OFFSET + 8].copy_from_slice(&[0u8; 8]);
     foot[FOOTER_MAGIC_OFFSET..FOOTER_MAGIC_OFFSET + 4].copy_from_slice(&MAGIC);
@@ -112,11 +108,12 @@ fn native_regions_stay_uncompressed_under_algo_zstd() {
     );
     let computed = xxh64(&footer[..FOOTER_CHECKSUM_OFFSET], 0);
     assert_eq!(claimed, computed);
-    let index_offset = u64::from_le_bytes(
+    let index_offset = usize::try_from(u64::from_le_bytes(
         footer[FOOTER_INDEX_OFFSET..FOOTER_INDEX_OFFSET + 8]
             .try_into()
             .unwrap(),
-    ) as usize;
+    ))
+    .expect("golden zstd index offset fits usize");
     let entry = &buf[index_offset..index_offset + INDEX_ENTRY_SIZE];
     assert_eq!(
         u32::from_le_bytes(entry[12..16].try_into().unwrap()),
