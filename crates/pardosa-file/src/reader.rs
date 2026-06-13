@@ -120,9 +120,7 @@ impl<R: Read + Seek> Reader<R> {
     /// document that contract.
     #[expect(
         clippy::too_many_lines,
-        reason = "header → schema → footer → index is a single top-to-bottom decode \
-                  sequence; arbitrary mid-sequence extraction would obscure the file-format \
-                  layout that the function mirrors line-for-line."
+        reason = "linear decode owns the PGN-0004:R2 fixed six-step decompression-bomb order in one place (COM-0007:R3); splitting risks reordering security-critical steps"
     )]
     pub fn open_with_options(mut source: R, options: ReaderOptions) -> Result<Self, FileError> {
         source.seek(SeekFrom::Start(0)).map_err(FileError::Io)?;

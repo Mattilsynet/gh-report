@@ -70,10 +70,9 @@ const DEFAULT_MAX_MESSAGE_COUNT: u64 =
 /// payload size is 1 GiB; raise or lower with
 /// [`ReaderOptions::with_max_decompressed_message_bytes`].
 #[derive(Debug, Clone, Copy)]
-#[allow(
+#[expect(
     clippy::struct_field_names,
-    reason = "the `max_` prefix names each field as an upper-bound cap, which is the \
-              defining shape of ReaderOptions; renaming would obscure intent."
+    reason = "pub ReaderOptions fields include the PGN-0004:R2-named decompression-bomb cap; renaming is a PGN-0012 breaking change, CHANGELOG-gated and out of scope for a lint sweep"
 )]
 pub struct ReaderOptions {
     pub(crate) max_decompressed_message_bytes: usize,
