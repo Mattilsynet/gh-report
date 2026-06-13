@@ -11,7 +11,7 @@
 mod support;
 use pardosa_nats::{JetStreamBackend, JetStreamConfig, RuntimeHandle};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use support::LiveNatsServer;
 use tokio::runtime::Runtime;
 fn unique_stream_tag() -> String {
@@ -207,6 +207,52 @@ fn live_replay_all_on_empty_stream_returns_empty_vec() {
     });
     let records = handle.replay_all().expect("replay_all on empty stream");
     assert!(records.is_empty(), "empty stream replays as an empty Vec");
+    rt.block_on(teardown_stream(&server, &stream_name));
+}
+#[test]
+#[ignore = "requires nats-server matching tools/.nats-server-version on PATH (mission nats-purge-guard-1749816000)"]
+fn live_replay_all_on_purged_stream_returns_empty_vec_promptly() {
+    let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+    let rt = Runtime::new().expect("tokio runtime");
+    let tag = unique_stream_tag();
+    let stream_name = format!("PARDOSA_LIVE_{tag}");
+    let cfg = build_live_config(&tag, &rt, &server);
+    let handle = JetStreamBackend::open(cfg);
+    let ack = handle
+        .append(b"purge-before-replay")
+        .expect("append before purge");
+    assert!(
+        ack.as_u64() > 0,
+        "seed append establishes a non-zero JetStream last_sequence before purge"
+    );
+    rt.block_on(async {
+        let client = async_nats::connect(server.url()).await.expect("connect");
+        let js = async_nats::jetstream::new(client);
+        let stream = js
+            .get_stream(stream_name.as_str())
+            .await
+            .expect("get stream");
+        stream.purge().await.expect("purge stream");
+        let info = stream.get_info().await.expect("read purged stream state");
+        assert_eq!(
+            info.state.messages, 0,
+            "purge leaves the stream logically empty for replay"
+        );
+        assert!(
+            info.state.last_sequence >= ack.as_u64(),
+            "purge retains the prior sequence frontier that used to defeat the empty-stream guard"
+        );
+    });
+    let started = Instant::now();
+    let records = handle
+        .replay_all()
+        .expect("replay_all on purged stream returns promptly");
+    let elapsed = started.elapsed();
+    assert!(records.is_empty(), "purged stream replays as an empty Vec");
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "purged stream replay returns before the 30s backend operation timeout; elapsed {elapsed:?}"
+    );
     rt.block_on(teardown_stream(&server, &stream_name));
 }
 #[test]

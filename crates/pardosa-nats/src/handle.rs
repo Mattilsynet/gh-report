@@ -350,7 +350,7 @@ async fn replay_once(
             source: Box::new(e),
         })?;
     let last_seq = info.state.last_sequence;
-    if last_seq == 0 {
+    if info.state.messages == 0 {
         return Ok(Vec::new());
     }
     let consumer = stream
