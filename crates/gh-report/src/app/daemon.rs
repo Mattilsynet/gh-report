@@ -35,7 +35,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::app::collect;
 use crate::app::state::AppState;
@@ -52,6 +52,19 @@ use tracing::{error, info, warn};
 /// after cancellation is signalled; the total daemon-side drain budget is
 /// this value rather than the sum of per-phase budgets.
 const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
+const PHASE_READY: &str = "ready";
+const PHASE_SHUTDOWN_BEGIN: &str = "shutdown_begin";
+const PHASE_DRAIN_POOL: &str = "drain_pool";
+const PHASE_DRAIN_DELIVERY: &str = "drain_delivery";
+const PHASE_DRAIN_COLLECTION: &str = "drain_collection";
+const PHASE_STOPPED: &str = "stopped";
+const MESSAGE_READY: &str = "daemon ready — serving";
+const MESSAGE_SHUTDOWN_BEGIN: &str = "beginning graceful shutdown";
+const MESSAGE_STOPPED: &str = "daemon stopped";
+
+fn duration_millis(duration: Duration) -> u128 {
+    duration.as_millis()
+}
 
 /// Outcome of waiting for the next scheduled collection tick.
 #[derive(Debug)]
@@ -101,6 +114,7 @@ async fn next_collection_tick(
 /// Panics if the default `ServerConfig` cannot be built (indicates a
 /// programming error in the hardcoded defaults).
 pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
+    let startup_started = Instant::now();
     let port = resolve_port()?;
     let bind_address = resolve_bind_address()?;
 
@@ -132,6 +146,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     }
 
     collect::warm_start_from_baseline(&config, &app_state).await;
+    let rehydrated_records = app_state.projection_len();
 
     let shutdown_signal = Arc::new(Mutex::new(None));
     let shutdown_signal_slot = Arc::clone(&shutdown_signal);
@@ -159,6 +174,15 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     } else {
         info!("webhooks disabled (WEBHOOK_SECRET not set)");
     }
+    info!(
+        phase = PHASE_READY,
+        bind = %bind_address,
+        port,
+        backend = ?config.pardosa_backend,
+        rehydrated_records,
+        startup_ms = duration_millis(startup_started.elapsed()),
+        MESSAGE_READY,
+    );
 
     let server_result = crate::infra::server::runtime::start(
         port,
@@ -173,16 +197,30 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     )
     .await;
 
-    let _observed_shutdown_signal = shutdown_signal
+    let shutdown_started = Instant::now();
+    let observed_shutdown_signal = shutdown_signal
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take();
+    let signal = observed_shutdown_signal
+        .unwrap_or(crate::infra::signal::ShutdownSignal::Interrupt)
+        .as_str();
+    info!(
+        phase = PHASE_SHUTDOWN_BEGIN,
+        signal,
+        budget_ms = duration_millis(SHUTDOWN_DRAIN_TIMEOUT),
+        MESSAGE_SHUTDOWN_BEGIN,
+    );
 
     drain_shutdown(&app_state, &collect_cancel_tx, &mut collection_loop).await;
 
     server_result.map_err(|e| crate::error::ServerError::Runtime(e.to_string()))?;
 
-    info!("daemon stopped");
+    info!(
+        phase = PHASE_STOPPED,
+        elapsed_ms = duration_millis(shutdown_started.elapsed()),
+        MESSAGE_STOPPED,
+    );
     Ok(())
 }
 
@@ -214,27 +252,51 @@ async fn drain_shutdown_with_timeout(
         drain_collection_loop_after_cancel_with_timeout(collection_loop, timeout);
     let ((pool_drained, delivery_drained), collection_drained) =
         tokio::join!(worker_drain, collection_drain);
-    if !pool_drained {
+    if pool_drained {
+        info!(
+            phase = PHASE_DRAIN_POOL,
+            reason = "drained",
+            "worker pool drained cooperatively"
+        );
+    } else {
         warn!(
-            timeout_secs = timeout.as_secs(),
-            "worker pool did not drain within timeout"
+            phase = PHASE_DRAIN_POOL,
+            reason = "timeout",
+            budget_ms = duration_millis(timeout),
+            "aborting in-flight worker jobs — drain budget exceeded"
         );
     }
-    if !delivery_drained {
+    if delivery_drained {
+        info!(
+            phase = PHASE_DRAIN_DELIVERY,
+            reason = "drained",
+            "delivery task drained cooperatively"
+        );
+    } else {
         warn!(
-            timeout_secs = timeout.as_secs(),
-            "delivery task did not drain within timeout"
+            phase = PHASE_DRAIN_DELIVERY,
+            reason = "timeout",
+            budget_ms = duration_millis(timeout),
+            "aborting in-flight delivery work — drain budget exceeded"
         );
     }
     match collection_drained {
-        Ok(()) => info!("collection task drained cleanly"),
+        Ok(()) => info!(
+            phase = PHASE_DRAIN_COLLECTION,
+            reason = "drained",
+            "collection task drained cooperatively"
+        ),
         Err(CollectionDrainError::Join(join_err)) => warn!(
+            phase = PHASE_DRAIN_COLLECTION,
+            reason = "join_error",
             error = %join_err,
             "collection task ended abnormally during drain",
         ),
         Err(CollectionDrainError::Timeout) => warn!(
-            timeout_secs = timeout.as_secs(),
-            "collection task forced abort: outcome of any in-flight persist→publish is unknown to this process; EventStore boot replay will reconcile on next startup",
+            phase = PHASE_DRAIN_COLLECTION,
+            reason = "timeout",
+            budget_ms = duration_millis(timeout),
+            "aborting in-flight collection work — persist or publish outcome is unknown; EventStore boot replay will reconcile on next startup",
         ),
     }
 }
@@ -542,6 +604,28 @@ mod tests {
     fn resolve_bind_address_rejects_whitespace_only() {
         let result = resolve_bind_address_with(|_| Some("   ".to_string()));
         assert!(matches!(result, Err(ConfigError::InvalidValue { .. })));
+    }
+
+    #[test]
+    fn lifecycle_log_contract_uses_expected_phase_values() {
+        assert_eq!(PHASE_READY, "ready");
+        assert_eq!(PHASE_SHUTDOWN_BEGIN, "shutdown_begin");
+        assert_eq!(PHASE_DRAIN_POOL, "drain_pool");
+        assert_eq!(PHASE_DRAIN_DELIVERY, "drain_delivery");
+        assert_eq!(PHASE_DRAIN_COLLECTION, "drain_collection");
+        assert_eq!(PHASE_STOPPED, "stopped");
+    }
+
+    #[test]
+    fn lifecycle_log_contract_uses_static_messages() {
+        assert_eq!(MESSAGE_READY, "daemon ready — serving");
+        assert_eq!(MESSAGE_SHUTDOWN_BEGIN, "beginning graceful shutdown");
+        assert_eq!(MESSAGE_STOPPED, "daemon stopped");
+    }
+
+    #[test]
+    fn duration_millis_reports_whole_milliseconds() {
+        assert_eq!(duration_millis(Duration::from_millis(1_234)), 1_234);
     }
 
     #[tokio::test(start_paused = true)]

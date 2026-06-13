@@ -186,7 +186,6 @@ impl AppState {
     /// reads `len`, releases. Safe to call from async contexts —
     /// no `MutexGuard` escapes (D-CD-3). Panics on poisoned mutex
     /// to match [`Self::lock_projection`].
-    #[cfg(test)]
     pub(crate) fn projection_len(&self) -> usize {
         self.lock_projection().len()
     }
