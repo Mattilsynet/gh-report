@@ -402,7 +402,10 @@ fn repo_event(
 
 /// Per-construction unique tempdir plus native pardosa `.pgno` event store.
 #[cfg(test)]
-#[expect(clippy::unused_async, reason = "preserves .await callers")]
+#[expect(
+    clippy::unused_async,
+    reason = "pardosa store facade is synchronous by PGN-0010:R5 / PGN-0015:R6; async fn preserves a uniform .await consumer seam across the sync-over-async backend boundary"
+)]
 async fn noop_event_store() -> Arc<EventStoreImpl> {
     let dir = tempfile::tempdir().expect("test tempdir");
     let path = dir.keep().join("events.pgno");

@@ -44,8 +44,7 @@ impl From<PardosaBackendArg> for runtime::PardosaBackend {
 )]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "CLI surface mirrors operator-facing flags one-for-one; \
-              grouping into nested structs would obscure the clap derive"
+    reason = "CLI struct mirrors operator --flags 1:1; each bool is an independent switch, and collapsing them would obscure the flag surface"
 )]
 struct Cli {
     /// Log output format.
