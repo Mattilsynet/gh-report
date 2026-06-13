@@ -784,9 +784,10 @@ impl AppState {
 
     /// Drain the worker pool: `take()` both `JoinHandle`s from the
     /// `OnceCell` (if any were ever started) and `await` each with an
-    /// individual timeout. Returns the pair of `(pool_drained,
-    /// delivery_drained)` booleans where `true` means the task exited
-    /// cleanly within the timeout. Caller logs the outcome.
+    /// individual timeout, aborting either handle whose timeout elapses.
+    /// Returns the pair of `(pool_drained, delivery_drained)` booleans
+    /// where `true` means the task exited cleanly within the timeout.
+    /// Caller logs the outcome.
     ///
     /// Idempotent: calling twice returns `(false, false)` the second
     /// time because the handles were already taken.
@@ -806,12 +807,8 @@ impl AppState {
         let Some((pool_handle, delivery_handle)) = taken else {
             return (false, false);
         };
-        let pool_ok = tokio::time::timeout(per_handle_timeout, pool_handle)
-            .await
-            .is_ok();
-        let delivery_ok = tokio::time::timeout(per_handle_timeout, delivery_handle)
-            .await
-            .is_ok();
+        let pool_ok = drain_join_handle_or_abort(pool_handle, per_handle_timeout).await;
+        let delivery_ok = drain_join_handle_or_abort(delivery_handle, per_handle_timeout).await;
         (pool_ok, delivery_ok)
     }
 
@@ -822,6 +819,18 @@ impl AppState {
     pub(crate) fn cancel_worker_pool(&self) {
         self.worker_pool_cancel.cancel();
     }
+}
+
+async fn drain_join_handle_or_abort(
+    handle: tokio::task::JoinHandle<()>,
+    timeout: std::time::Duration,
+) -> bool {
+    let abort_handle = handle.abort_handle();
+    let drained = tokio::time::timeout(timeout, handle).await.is_ok();
+    if !drained {
+        abort_handle.abort();
+    }
+    drained
 }
 
 impl AppState {
@@ -1457,5 +1466,38 @@ mod tests {
              this proves the lock serialised the critical sections"
         );
         let _ = (a_acquired, sentinel_b);
+    }
+
+    #[tokio::test]
+    async fn drain_worker_pool_aborts_pool_handle_after_timeout() {
+        use std::time::Duration;
+
+        let state = AppState::new().await;
+        let pool_handle = tokio::spawn(std::future::pending::<()>());
+        let pool_abort_probe = pool_handle.abort_handle();
+        let delivery_handle = tokio::spawn(async {});
+        assert!(
+            state
+                .worker_pool_started
+                .set(std::sync::Mutex::new(Some((pool_handle, delivery_handle))))
+                .is_ok()
+        );
+
+        let drained = tokio::time::timeout(
+            Duration::from_millis(250),
+            state.drain_worker_pool(Duration::from_millis(50)),
+        )
+        .await
+        .expect("drain should return within outer bound");
+
+        assert!(!drained.0, "stuck pool handle should report timed out");
+        assert!(drained.1, "trivial delivery handle should drain");
+        tokio::time::timeout(Duration::from_millis(50), async {
+            while !pool_abort_probe.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("timed-out pool task should be aborted, not detached");
     }
 }
