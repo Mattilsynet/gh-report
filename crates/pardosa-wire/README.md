@@ -1,11 +1,11 @@
 # pardosa-wire
 
-In-house canonical encoding format for pardosa events (GEN-0035). `pardosa-wire`
+In-house canonical encoding format for pardosa events (PGN-0003). `pardosa-wire`
 is the substrate-purity layer: a `#![no_std] + extern crate alloc;` codec that
 turns event types into stable byte sequences and back, with no payload-typed
 vocabulary baked in.
 
-Part of the [pardosa](https://github.com/acje/rescue-pardosa) workspace.
+Part of the [pardosa](https://github.com/acje/solon) workspace.
 
 ## Overview
 
@@ -14,7 +14,7 @@ free-function helpers `to_vec`, `from_bytes`, and `from_bytes_with_cap`. Every
 decode path is bounded: `from_bytes` applies the `DEFAULT_DECODE_CAP` cap so
 adversarial inputs cannot force unbounded allocation, and
 `from_bytes_with_cap` lets callers set a tighter cap for high-trust paths.
-This is GEN-0035 cap discipline — the substrate refuses to grow without a
+This is PGN-0003 cap discipline — the substrate refuses to grow without a
 cap chosen at the call site.
 
 `Validate` and `Timestamp` are domain-shape contracts that travel with the
@@ -25,9 +25,9 @@ participate in pardosa events at all; downstream crates (`pardosa-schema`,
 `pardosa-derive`) extend this sealed graph rather than opening it.
 
 The crate is dependency-free in its default surface. Foreign-payload support
-(`uuid`, `bytes`, `arrayvec`, `jiff`) lives behind off-by-default Cargo features
-per GEN-0041 so the no-features build stays minimal. The `blake3` feature
-enables `precursor_hash_of` for the PAR-0021 precursor-hash helper.
+(`uuid`) lives behind off-by-default Cargo features
+per PGN-0003 so the no-features build stays minimal. The `blake3` feature
+enables `precursor_hash_of` for the PGN-0002 / PGN-0005 precursor-hash helper.
 
 ## Example
 

@@ -7,27 +7,28 @@ of the workspace — it composes the substrate crates (`pardosa-wire`,
 appends typed events, walks per-fiber history, tails the global event line
 with consumer ACK/resume, and follows same-fiber causal precursors.
 
-Part of the [pardosa](https://github.com/acje/rescue-pardosa) workspace.
+Part of the [pardosa](https://github.com/acje/solon) workspace.
 
 ## Overview
 
 A `Fiber` is the unit of identity in pardosa: a strand of related events
-through which causality flows (ADR-0003 "Fiber Semantics"). Each `Event<T>`
+through which causality flows (PGN-0002 "Fibers, Events, Timestamps, and
+Inspectable State"). Each `Event<T>`
 carries both a `FiberId` (which fiber it touched) and an `EventId` (its
 position in the global event line). Both are monotonic within their own
 scope, and `Dragline<T>` owns the dragline-local `next_fiber_id` allocator
 at commit time.
 
-The public surface is a *sole-interface seal* (ADR-0018 "Public Event-Store
-API (`EventStore<T>` façade)"): adopters reach the journal exclusively
+The public surface is a *sole-interface seal* (PGN-0008 "EventStore Facade
+and Operation-Specific Bounds"): adopters reach the journal exclusively
 through `pardosa::store::EventStore` and the items re-exported from
-`pardosa::prelude`. Internal substrate types — the in-tree `Journal<T, W>`,
-the `Writer` / `Syncable` traits, the `DraglineView<'_, T>`, the publisher
+`pardosa::prelude`. Internal substrate types — the in-tree `inner::EventStore<T, W>`,
+the `Syncable` trait, the `DraglineView<'_, T>`, the publisher
 surface, the durability sidecar lifecycle — are never named in adopter
 code. Drift is pinned by `tests/ui_pass/prelude_usable.rs`.
 
-`StoreReader` is `!Send` and `StoreWriter` is `Send` (see ADR-0016
-"Least-Capability Reader/Writer Split and Durable Publish Recovery"); the
+`StoreReader` is `!Send` and `StoreWriter` is `Send` (see PGN-0007
+"Cursor, Publish, Ack, and Capability Boundaries"); the
 `!Send` reader can hold per-thread sidecar state without paying the cost
 of cross-thread synchronisation, while the writer can be moved into a
 publishing task.
@@ -68,14 +69,17 @@ API docs: <https://docs.rs/pardosa>
 
 ## Architecture decisions
 
-- ADR-0003 "Fiber Semantics" — dragline-local `FiberId`, `FiberState` as
+- PGN-0002 "Fibers, Events, Timestamps, and Inspectable State" —
+  dragline-local `FiberId`, `FiberState` as
   `#[non_exhaustive]`, detached / precursor invariants.
-- ADR-0018 "Public Event-Store API (`EventStore<T>` façade)" — the
+- PGN-0008 "EventStore Facade and Operation-Specific Bounds" — the
   sole-interface seal this crate enforces.
-- ADR-0010 "Durability Levels" — `Lsn` / `AckPosition` semantics and the
-  durable-publish recovery story.
-- ADR-0014 "Sealed-Trait Policy" — which traits adopters may implement
-  (`Validate`, `Encode`, `Decode`, `Cursor`) and which are closed
+- PGN-0004 "pgno File Format and Durability Substrate" — `Lsn` /
+  `AckPosition` semantics; PGN-0007 covers the durable-publish recovery
+  story.
+- PGN-0003 "Canonical Encoding, Schema Hash, and EventSafe Bounds" —
+  which traits adopters may implement
+  (`Validate`, `Encode`, `Decode`) and which are closed
   (`EventSafe`, `GenomeSafe`, `GenomeOrd`).
 
 The full ADR set lives under [`docs/adr/`](../../docs/adr/).

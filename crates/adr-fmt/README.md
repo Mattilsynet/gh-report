@@ -114,7 +114,6 @@ used to validate the tool against non-trivial real-world ADR sets.
 Cross-domain governance documents:
 
 - `docs/adr/TEMPLATE.md` — ADR template
-- `FOCUS.md` — current schwerpunkt
 - `adr-fmt.toml` — workspace-root configuration consumed by this tool
 
 ## License

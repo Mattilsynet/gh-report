@@ -3,7 +3,7 @@
 Substrate-agnostic event-invariant carrier: sealed traits and derive macros
 for pardosa events. Currently exposes one derive: `#[derive(GenomeSafe)]`.
 
-Part of the [pardosa](https://github.com/acje/rescue-pardosa) workspace.
+Part of the [pardosa](https://github.com/acje/solon) workspace.
 
 ## Overview
 
@@ -12,16 +12,18 @@ the structural shape of a user type (`struct` or `#[repr(u8)] enum`),
 rejects any shape that would silently break a downstream invariant, and
 emits three coordinated impls in one pass:
 
-- `pardosa_wire::sealed::Sealed` — the sealed-trait gate from ADR-0014
-  "Sealed-Trait Policy"; ensures only types that travel through this derive
+- `pardosa_wire::sealed::Sealed` — the sealed-trait gate from PGN-0003
+  "Canonical Encoding, Schema Hash, and EventSafe Bounds"; ensures only
+  types that travel through this derive
   (or in-crate hand impls) can participate in pardosa events.
 - `pardosa_schema::EventSafe` — the payload-typed event-participation
-  marker decoupled from codec capability per ADR-0020 "`EventSafe`
-  Decoupled from Codec Traits".
+  marker decoupled from codec capability per PGN-0003 "Canonical Encoding,
+  Schema Hash, and EventSafe Bounds".
 - `pardosa_schema::GenomeSafe` — the schema-hash-bearing trait whose
   `SCHEMA_HASH: u128` constant is derived from the structural shape so
-  the `.pgno` schema-hash gate (ADR-0005 "Encoding Contract" + ADR-0006
-  "`.pgno` File Format") stays sound.
+  the `.pgno` schema-hash gate (PGN-0003 "Canonical Encoding, Schema Hash,
+  and EventSafe Bounds" + PGN-0004 "pgno File Format and Durability
+  Substrate") stays sound.
 
 Plus canonical `Encode` / `Decode` impls so the derived type round-trips
 through `pardosa_wire::to_vec` / `from_bytes`.
@@ -61,12 +63,13 @@ API docs: <https://docs.rs/pardosa-derive>
 
 ## Architecture decisions
 
-- ADR-0014 "Sealed-Trait Policy" — which traits are closed
+- PGN-0003 "Canonical Encoding, Schema Hash, and EventSafe Bounds" —
+  which traits are closed
   (`EventSafe`, `GenomeSafe`, `GenomeOrd`) and which stay open
   (`Encode`, `Decode`, `Validate`); the derive enforces the closure.
-- ADR-0005 "Encoding Contract" — `SCHEMA_HASH: u128` is derived from
+  `SCHEMA_HASH: u128` is derived from
   structural shape; the canonical encoder is deterministic across runs.
-- ADR-0020 "`EventSafe` Decoupled from Codec Traits" — the derive emits
+  The derive emits
   participation and codec impls separately so the trait graph stays
   orthogonal.
 

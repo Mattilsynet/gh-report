@@ -125,7 +125,7 @@ against their preferred backend.
 [CHE-0005]: ../../docs/adr/cherry/CHE-0005-single-aggregate-design.md
 [CHE-0017]: ../../docs/adr/cherry/CHE-0017-policy-output-static-type.md
 [CHE-0024]: ../../docs/adr/cherry/CHE-0024-event-delivery-model.md
-[CHE-0029]: ../../docs/adr/cherry/CHE-0029-crate-decomposition.md
+[CHE-0029]: ../../docs/adr/cherry/CHE-0029-cargo-workspace-crate-dag.md
 [CHE-0030]: ../../docs/adr/cherry/CHE-0030-flat-public-api.md
 [CHE-0038]: ../../docs/adr/cherry/CHE-0038-testing-strategy.md
 [CHE-0039]: ../../docs/adr/cherry/CHE-0039-correlation-context-propagation.md

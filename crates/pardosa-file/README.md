@@ -3,7 +3,7 @@
 Payload-opaque `.pgno` file container: writer, reader, format constants, and
 the `Syncable` durability seam.
 
-Part of the [pardosa](https://github.com/acje/rescue-pardosa) workspace.
+Part of the [pardosa](https://github.com/acje/solon) workspace.
 
 ## Overview
 
@@ -12,12 +12,13 @@ Part of the [pardosa](https://github.com/acje/rescue-pardosa) workspace.
 read / write surface that runtime crates (notably `pardosa`) compose into
 journals. The format is fixed at the byte level and verified on
 `Reader::open` — magic, `FORMAT_VERSION`, footer checksum, ascending
-offsets, and per-message `xxh64` payload checksums (ADR-0006 "`.pgno` File
-Format").
+offsets, and per-message `xxh64` payload checksums (PGN-0004 "pgno File
+Format and Durability Substrate").
 
 The substrate is payload-opaque: it carries `schema_hash: u128` in the
-header so reads fail fast on schema mismatch (ADR-0005 "Encoding Contract"
-+ ADR-0007 "Error Taxonomy"), but it never names the payload type. That
+header so reads fail fast on schema mismatch (PGN-0003 "Canonical Encoding,
+Schema Hash, and EventSafe Bounds" + PGN-0006 "Error Taxonomy and Typed
+Failure Surfaces"), but it never names the payload type. That
 typing lives one ring up in `pardosa-schema` and `pardosa::store`.
 
 Three writer flavours are exposed: `Writer<'_, W>` for single-pass
@@ -27,7 +28,8 @@ write-then-finish, `AppendWriter<'_, W>` for append-after-recovery, and
 `MessageIter<'_, R>` for sequential reads.
 
 `Syncable` is the durability seam: `Drop` is not a durability boundary
-(ADR-0010 "Durability Levels"). The contract is explicit — callers fence
+(PGN-0004 "pgno File Format and Durability Substrate"). The contract is
+explicit — callers fence
 durability via `sync_data` before declaring bytes committed; `finish`
 writes the footer (the only openable shape) but does not itself fsync.
 
@@ -36,7 +38,7 @@ structures (header, schema source, index, footer, checksums) stay
 uncompressed regardless. The `test-support` feature exposes
 fault-injection sinks under `test_support` for downstream test harnesses;
 the surface is `#[doc(hidden)]` and excluded from semver guarantees
-(ADR-0009 "Semver Policy" §judgement-primary).
+(PGN-0012 "Semver and Release Governance" §judgement-primary).
 
 ## Quick start
 
@@ -66,11 +68,11 @@ API docs: <https://docs.rs/pardosa-file>
 
 ## Architecture decisions
 
-- ADR-0006 "`.pgno` File Format" — the byte-level container layout and
-  the open-time validation contract.
-- ADR-0010 "Durability Levels" — `Drop` is not a durability boundary;
-  `sync_data` is the only fence.
-- ADR-0005 "Encoding Contract" — `schema_hash: u128` carried in the header
+- PGN-0004 "pgno File Format and Durability Substrate" — the byte-level
+  container layout and the open-time validation contract; `Drop` is not a
+  durability boundary, `sync_data` is the only fence.
+- PGN-0003 "Canonical Encoding, Schema Hash, and EventSafe Bounds" —
+  `schema_hash: u128` carried in the header
   is derived from the payload type's structural shape; mismatch is fail-fast.
 
 The full ADR set lives under [`docs/adr/`](../../docs/adr/).

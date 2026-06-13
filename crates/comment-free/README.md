@@ -38,6 +38,7 @@ cargo run -p comment-free -- --rewrite crates/comment-free
 Exit codes:
 
 - `0`: clean
+- `1`: catastrophic / unmapped IO error
 - `2`: invalid CLI arguments
 - `4`: doc-lint findings in default mode
 - `5`: per-file parse or I/O errors during processing

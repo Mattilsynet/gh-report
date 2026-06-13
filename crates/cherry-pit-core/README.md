@@ -23,6 +23,7 @@ event persistence and publication.
 - **`CommandGateway`** — primary entry point with retry/middleware
 - **`CommandBus`** — load → handle → persist → publish lifecycle
 - **`EventStore`** — persistence of aggregate event streams
+- **`HashChainedEventStore`**, **`ListableEventStore`**, **`PurgeableEventStore`**, **`SingleWriterEventStore`** — capability-extension store ports
 - **`EventBus`** — fan-out of persisted events
 
 ### Types
@@ -32,6 +33,8 @@ event persistence and publication.
 - **`CorrelationContext`** — explicit correlation/causation propagation
 - **`ErrorCategory`** — `Retryable` | `Terminal` retry guidance
 - **`DispatchError<E>`**, **`StoreError`**, **`BusError`**, **`EnvelopeError`** — typed errors
+- **`CreateResult`**, **`StoreCreateResult`** — create-or-open outcomes
+- **`DomainKey`**, **`JobSource`**, **`JobOutcome<R>`** — work-queue domain value types
 
 ## Minimal usage
 

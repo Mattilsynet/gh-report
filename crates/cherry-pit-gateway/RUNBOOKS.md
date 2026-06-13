@@ -12,7 +12,7 @@ store directory from interrupted atomic writes.
 
 **Automated behaviour**: `MsgpackFileStore` removes orphaned `.msgpack.tmp`
 files automatically on first `create` or `append` after construction
-(`recover_temp_files` at `msgpack_file.rs:269`). No operator intervention
+(`recover_temp_files` in `src/event_store/msgpack_file.rs`). No operator intervention
 is required under normal operation.
 
 **Manual procedure** (if automated recovery is unavailable):
@@ -33,11 +33,11 @@ is required under normal operation.
 
 **Verification**: after restart, `ls <store_dir>/*.msgpack.tmp` returns no
 results. Tested by `orphaned_temp_file_removed_on_next_write` in
-`msgpack_file.rs`.
+`src/event_store/msgpack_file.rs`.
 
 > **Verified by walk-through at `dd979886d5ca7f9faaf230bbf9f59a2d6fd76440`** (R1: orphan `.msgpack.tmp` removal).
 > Walk: unit-test invocation `cargo test -p cherry-pit-gateway orphaned_temp_file_removed_on_next_write` (gh-report binary lacks a `--store-dir` override on the main daemon path at this SHA, and `gh auth` credentials are unavailable in this environment, so the documented test-based fallback was used).
-> Reference test: `orphaned_temp_file_removed_on_next_write` at `msgpack_file.rs:1778`.
+> Reference test: `orphaned_temp_file_removed_on_next_write` in `src/event_store/msgpack_file.rs`.
 
 ---
 
@@ -66,7 +66,7 @@ envelopes.
 
 **Verification**: `load_rejects_sequence_gap`, `load_rejects_aggregate_id_mismatch`,
 `corrupt_file_returns_error`, `old_format_with_zero_sequence_rejected_on_load`
-in `msgpack_file.rs`.
+in `src/event_store/msgpack_file.rs`.
 
 ---
 
@@ -94,7 +94,7 @@ in `msgpack_file.rs`.
 **Note**: v0.1 has no in-process quarantine tooling. This is a manual operator
 procedure. Future versions may automate quarantine-on-error.
 
-**Doctrine pointer**: per [CHE-0051:R7](../../docs/adr/cherry/CHE-0051-cherry-pit-agent-design.md) line 73,
+**Doctrine pointer**: per [CHE-0051:R7](../../docs/adr/cherry/CHE-0051-cherry-pit-agent-design.md) line 69,
 "the durability decision belongs to the consumer's operational story
 (CHE-0047 runbook scope)". v0.1 gateway does not own this surface.
 
@@ -189,7 +189,7 @@ release locks (e.g. NFS without proper lock management).
    and acquire it.
 
 **Verification**: `second_store_same_dir_fails_with_store_locked` and
-`lock_released_on_drop_allows_reacquisition` in `msgpack_file.rs`.
+`lock_released_on_drop_allows_reacquisition` in `src/event_store/msgpack_file.rs`.
 
 ---
 

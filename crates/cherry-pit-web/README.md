@@ -196,9 +196,9 @@ All re-exported flat from the crate root under the feature gate:
     by re-fetching the snapshot then re-attaching a fresh WS — the
     snapshot is the durable checkpoint per CHE-0048:R2.
 - `ServerConfig`, `ServerConfigBuilder`, `ValidatedConfig`,
-  `ConfigError` — projection-side server configuration (bind address,
-  feature toggles). `ValidatedConfig` is the parse-don't-validate
-  output of `ServerConfigBuilder::build`.
+  `ConfigError`, `ServerError` — projection-side server configuration
+  (bind address, feature toggles). `ValidatedConfig` is the
+  parse-don't-validate output of `ServerConfigBuilder::build`.
 
 ### Wiring sketch
 

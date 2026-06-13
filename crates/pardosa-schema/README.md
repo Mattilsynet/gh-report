@@ -3,7 +3,7 @@
 Typed-payload vocabulary for pardosa events: `GenomeSafe` marker, bounded
 string / byte / vec wrappers, total-order float wrappers, and `CharScalar`.
 
-Part of the [pardosa](https://github.com/acje/rescue-pardosa) workspace.
+Part of the [pardosa](https://github.com/acje/solon) workspace.
 
 ## Overview
 
@@ -11,13 +11,15 @@ Part of the [pardosa](https://github.com/acje/rescue-pardosa) workspace.
 vocabulary on top of the substrate's payload-opaque codec traits. Every
 type here is `Send + Sync` (asserted by `tests/auto_trait_policy.rs`), every
 codec round-trip is bounded, and every public type is sealed under the
-ADR-0014 "Sealed-Trait Policy" closure table so the schema-hash gate stays
+PGN-0003 "Canonical Encoding, Schema Hash, and EventSafe Bounds" closure
+table so the schema-hash gate stays
 sound.
 
 `EventString<MAX>`, `NonEmptyEventString<MAX>`, `EventBytes<MAX>`, and
 `EventVec<T, MAX>` are bounded wrappers — the `MAX` const is part of the
-schema identity (changing `MAX` is a schema migration; ADR-0005 "Encoding
-Contract" + ADR-0019 "Migration Policy for Open-Time Schema Migration").
+schema identity (changing `MAX` is a schema migration; PGN-0003 "Canonical
+Encoding, Schema Hash, and EventSafe Bounds" + PGN-0009 "Migration Policy
+and Clean-Break Posture").
 `EventF32` / `EventF64` carry a payable-NaN policy at construction;
 `OrderedF32` / `OrderedF64` carry a total order suitable for use in
 `GenomeOrd` keys; `RealF32` / `RealF64` reject NaN at construction.
@@ -54,15 +56,15 @@ API docs: <https://docs.rs/pardosa-schema>
 
 ## Architecture decisions
 
-- ADR-0005 "Encoding Contract" — canonical, deterministic byte
-  representation for every type that crosses a persistence or wire boundary.
-- ADR-0014 "Sealed-Trait Policy" — `EventSafe`, `GenomeSafe`, `GenomeOrd`
+- PGN-0003 "Canonical Encoding, Schema Hash, and EventSafe Bounds" —
+  canonical, deterministic byte
+  representation for every type that crosses a persistence or wire boundary;
+  `EventSafe`, `GenomeSafe`, `GenomeOrd`
   are sealed; `Encode`, `Decode`, `Validate` are open extension points for
-  adopter applications.
-- ADR-0020 "`EventSafe` Decoupled from Codec Traits" — `EventSafe` is a
-  pure participation marker; codec capability (`Encode` + `Decode`) is
+  adopter applications; `EventSafe` is a
+  pure participation marker with codec capability (`Encode` + `Decode`)
   carried separately so the trait graph stays orthogonal.
-- ADR-0019 "Migration Policy for Open-Time Schema Migration" — bounded
+- PGN-0009 "Migration Policy and Clean-Break Posture" — bounded
   wrappers' `MAX` is part of the schema identity.
 
 The full ADR set lives under [`docs/adr/`](../../docs/adr/).
