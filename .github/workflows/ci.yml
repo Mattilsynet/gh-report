@@ -37,6 +37,22 @@ jobs:
         with:
           toolchain: 1.96.0
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # The pardosa-nats live-test harness (crates/pardosa-nats/src/test_support.rs)
+      # spawns a real `nats-server` and asserts its --version matches the pin in
+      # tools/.nats-server-version. Install exactly that version, checksum-verified
+      # against the upstream SHA256SUMS, onto PATH before the test run.
+      - name: install pinned nats-server
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < tools/.nats-server-version)"
+          asset="nats-server-v${version}-linux-amd64"
+          base="https://github.com/nats-io/nats-server/releases/download/v${version}"
+          curl -fsSL -o "${asset}.tar.gz" "${base}/${asset}.tar.gz"
+          curl -fsSL -o SHA256SUMS "${base}/SHA256SUMS"
+          grep "${asset}.tar.gz" SHA256SUMS | sha256sum -c -
+          tar -xzf "${asset}.tar.gz"
+          install -m 0755 "${asset}/nats-server" /usr/local/bin/nats-server
+          nats-server --version | grep -F "v${version}"
       - run: cargo test --workspace --all-features
 
   # Tripwire: deny `async-trait` (direct or transitive) in every cherry-pit-*
