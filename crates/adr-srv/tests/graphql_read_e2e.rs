@@ -2,12 +2,10 @@
 //!
 //! Tests exercise the `Query` resolver path via `schema.execute()`
 //! — no HTTP layer. The `/graphql` HTTP wiring is a separate smoke
-//! check (manual `curl` per brief verify_commands). Per the brief's
+//! check (manual `curl` per brief `verify_commands`). Per the brief's
 //! TDD-discipline ask, each test was first observed failing on a
 //! known-bad resolver mutation before being committed; mutations
 //! and observations are recorded in the M1.4 mission journal.
-
-#![allow(clippy::doc_markdown, clippy::needless_raw_string_hashes)]
 
 use std::fs;
 use std::path::PathBuf;
@@ -66,8 +64,8 @@ foundation = false
 }
 
 /// Spin up service + corpus, scrape once. Returns the corpus mutex
-/// and the temp guards so the caller can build a schema and
-/// .execute() against it.
+/// and the temp guards so the caller can build a schema and call
+/// `execute()` against it.
 async fn scrape_and_corpus() -> (Arc<Mutex<AdrCorpus>>, TempDir, TempDir) {
     let (marker_dir, tmp_corpus) = build_corpus();
     let store_tmp = TempDir::new().expect("store tempdir");
@@ -107,7 +105,10 @@ struct AdrByIdData {
 #[derive(Deserialize, Debug)]
 struct AdrIdTitle {
     id: String,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "title is deserialized to validate the GraphQL field shape while assertions only need ids"
+    )]
     title: String,
 }
 
@@ -133,7 +134,7 @@ async fn adr_by_id_returns_scraped_adr_with_references_in_source_order() {
     let (corpus, _g1, _g2) = scrape_and_corpus().await;
     let schema = build_schema(Arc::clone(&corpus));
 
-    let q = r#"{ adrById(id: "AFM-0001") { id title date lastReviewed tier status bodyHash references { id } } }"#;
+    let q = "{ adrById(id: \"AFM-0001\") { id title date lastReviewed tier status bodyHash references { id } } }";
     let resp = schema.execute(Request::new(q)).await;
     assert!(resp.errors.is_empty(), "errors: {:?}", resp.errors);
 
@@ -169,7 +170,7 @@ async fn adr_by_id_returns_null_for_unknown_adr() {
     let schema = build_schema(Arc::clone(&corpus));
 
     let resp = schema
-        .execute(Request::new(r#"{ adrById(id: "AFM-9999") { id } }"#))
+        .execute(Request::new("{ adrById(id: \"AFM-9999\") { id } }"))
         .await;
     assert!(resp.errors.is_empty(), "errors: {:?}", resp.errors);
 
@@ -186,7 +187,7 @@ async fn adr_by_id_returns_null_for_unparseable_id() {
     let schema = build_schema(Arc::clone(&corpus));
 
     let resp = schema
-        .execute(Request::new(r#"{ adrById(id: "not an adr id") { id } }"#))
+        .execute(Request::new("{ adrById(id: \"not an adr id\") { id } }"))
         .await;
     assert!(resp.errors.is_empty(), "errors: {:?}", resp.errors);
     let data: AdrByIdData =
@@ -194,7 +195,7 @@ async fn adr_by_id_returns_null_for_unparseable_id() {
     assert!(data.adr_by_id.is_none());
 }
 
-/// `allAdrs` returns every ADR in BTreeMap key order (domain then
+/// `allAdrs` returns every ADR in `BTreeMap` key order (domain then
 /// numeric) regardless of scrape order.
 #[tokio::test]
 async fn all_adrs_lists_every_adr_in_btreemap_order() {
@@ -202,7 +203,7 @@ async fn all_adrs_lists_every_adr_in_btreemap_order() {
     let schema = build_schema(Arc::clone(&corpus));
 
     let resp = schema
-        .execute(Request::new(r#"{ allAdrs { id title } }"#))
+        .execute(Request::new("{ allAdrs { id title } }"))
         .await;
     assert!(resp.errors.is_empty(), "errors: {:?}", resp.errors);
     let data: AllAdrsData =
@@ -224,7 +225,7 @@ async fn adrs_by_domain_filters_by_prefix() {
     let schema = build_schema(Arc::clone(&corpus));
 
     let resp_afm = schema
-        .execute(Request::new(r#"{ adrsByDomain(domain: "AFM") { id } }"#))
+        .execute(Request::new("{ adrsByDomain(domain: \"AFM\") { id } }"))
         .await;
     assert!(resp_afm.errors.is_empty(), "errors: {:?}", resp_afm.errors);
     let data_afm: AdrsByDomainData =
@@ -238,7 +239,7 @@ async fn adrs_by_domain_filters_by_prefix() {
     assert_eq!(ids, vec!["AFM-0001", "AFM-0002", "AFM-0003"]);
 
     let resp_che = schema
-        .execute(Request::new(r#"{ adrsByDomain(domain: "CHE") { id } }"#))
+        .execute(Request::new("{ adrsByDomain(domain: \"CHE\") { id } }"))
         .await;
     assert!(resp_che.errors.is_empty(), "errors: {:?}", resp_che.errors);
     let data_che: AdrsByDomainData =
@@ -251,8 +252,8 @@ async fn adrs_by_domain_filters_by_prefix() {
 }
 
 /// Mutating an ADR file and re-scraping flows through the projection:
-/// the second `adrById` returns a different body_hash than the first.
-/// Proves AdrCorpus tracks the latest event, not a stale boot snapshot.
+/// the second `adrById` returns a different `body_hash` than the first.
+/// Proves `AdrCorpus` tracks the latest event, not a stale boot snapshot.
 #[tokio::test]
 async fn projection_reflects_body_mutation_on_rescrape() {
     let (marker_dir, _tmp_corpus) = build_corpus();
@@ -266,7 +267,7 @@ async fn projection_reflects_body_mutation_on_rescrape() {
 
     let schema = build_schema(Arc::clone(&corpus));
     let resp1 = schema
-        .execute(Request::new(r#"{ adrById(id: "AFM-0001") { bodyHash } }"#))
+        .execute(Request::new("{ adrById(id: \"AFM-0001\") { bodyHash } }"))
         .await;
     assert!(resp1.errors.is_empty());
     let h1: serde_json::Value = resp1.data.into_json().unwrap();
@@ -282,7 +283,7 @@ async fn projection_reflects_body_mutation_on_rescrape() {
         .expect("scrape 2");
 
     let resp2 = schema
-        .execute(Request::new(r#"{ adrById(id: "AFM-0001") { bodyHash } }"#))
+        .execute(Request::new("{ adrById(id: \"AFM-0001\") { bodyHash } }"))
         .await;
     assert!(resp2.errors.is_empty());
     let h2: serde_json::Value = resp2.data.into_json().unwrap();
