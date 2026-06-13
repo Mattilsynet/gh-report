@@ -31,7 +31,7 @@ pub(crate) struct AppendResult {
 #[derive(Debug)]
 #[expect(
     clippy::struct_field_names,
-    reason = "the `line` field names the committed event vector that IS the dragline; renaming it to avoid the struct-name echo would obscure the domain term (a Line's line)"
+    reason = "Line<T> is ring-internal, but this field names the committed event line; renaming fans across dragline internals and obscures the domain term without changing a public contract"
 )]
 pub(crate) struct Line<T> {
     pub(super) line: Linevec<T>,

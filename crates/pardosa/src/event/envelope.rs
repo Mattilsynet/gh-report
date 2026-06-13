@@ -4,9 +4,9 @@ use pardosa_wire::{Decode, DecodeError, Decoder, Encode, Validate};
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
-#[allow(
+#[expect(
     clippy::struct_field_names,
-    reason = "non-idiomatic Rust required: field names (`event_id`, `fiber_id`) are part of the GENOME wire layout per PAR-0003:R1; renaming for clippy taste would alter the serialized field tags and break replay across generations"
+    reason = "pub field names on prelude-reachable Event<T> are PGN-0012 breaking surface; renaming for clippy taste is CHANGELOG-gated and out of scope for a lint sweep"
 )]
 pub struct Event<T> {
     event_id: EventId,

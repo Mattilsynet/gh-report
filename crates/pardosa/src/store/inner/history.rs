@@ -33,7 +33,7 @@ where
     /// unknown to the dragline.
     #[expect(
         clippy::iter_not_returning_iterator,
-        reason = "fallible `iter` returns `Result<FiberHistoryIter, _>` because resolving the fiber view can fail; the std `Iterator` shape cannot express that fallibility"
+        reason = "iter() deliberately returns Result<FiberHistoryIter>: fiber-history read is fallible substrate access, and the fallible accessor shape is the contract"
     )]
     pub fn iter(&self) -> Result<FiberHistoryIter<'a, T>, PardosaError> {
         let events = self.log.reader_view().history(self.id)?;
@@ -83,7 +83,7 @@ where
     /// unknown to the dragline.
     #[expect(
         clippy::wrong_self_convention,
-        reason = "`from_event_id` reads from `&self` to seek a starting point within this history view; it is not a constructor despite the `from_` prefix"
+        reason = "from_event_id is a positional 'history from this EventId onward' cursor accessor, not a From-conversion constructor; &self is correct"
     )]
     pub fn from_event_id(&self, from: EventId) -> Result<FiberHistoryIter<'a, T>, PardosaError> {
         let events = self

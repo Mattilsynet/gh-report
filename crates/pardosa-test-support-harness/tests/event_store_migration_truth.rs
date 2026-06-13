@@ -30,10 +30,10 @@ impl HasEventSchemaSource for NewV2 {
 }
 #[derive(Debug, PartialEq, Eq)]
 struct UpcastFailed(&'static str);
-#[allow(
+#[expect(
     clippy::needless_pass_by_value,
     clippy::unnecessary_wraps,
-    reason = "signature is dictated by migrate_keep's FnMut(Event<Old>) -> Result<New, E> contract; passing by reference or returning a bare New would not satisfy the trait bound"
+    reason = "migration-callback signature is fixed by migrate_keep's FnMut(Event<Old>) -> Result<New, E> API: it requires an owned event and Result return"
 )]
 fn upcast_double(e: Event<OldV1>) -> Result<NewV2, UpcastFailed> {
     Ok(NewV2 {
