@@ -1,7 +1,7 @@
 # CHE-0040. Saga and Compensation Patterns (Deliberate Deferral)
 
 Date: 2026-04-25
-Last-reviewed: 2026-04-29
+Last-reviewed: 2026-06-13
 Tier: B
 Status: Accepted
 
@@ -11,7 +11,9 @@ References: CHE-0039, CHE-0017, CHE-0024, COM-0025
 
 ## Context
 
-`Policy` (CHE-0017) reacts to a single event — the choreography pattern. Orchestration-style sagas use a coordinator tracking step completion and issuing compensation on failure. Cherry-pit's `Policy` has no saga coordinator, step tracking, or automatic compensation. Three considerations argue for deferral: `CommandBus` is unbuilt, `cherry-pit-app` is unbuilt (saga design without composition layer is speculative), and `CorrelationContext` (CHE-0039) must be validated first.
+`Policy` (CHE-0017) reacts to a single event — the choreography pattern. Orchestration-style sagas use a coordinator tracking step completion and issuing compensation on failure. Cherry-pit's `Policy` has no saga coordinator, step tracking, or automatic compensation.
+
+The original revisit trigger fired when `cherry-pit-app` shipped. Re-evaluation re-affirms the deferral: `gh-report` decomposes its sweep into explicit phases and domain events (`crates/gh-report/src/app/collect.rs:379-489`) without a substrate coordinator. No observed pre-1.0 process requires more than policy reactions plus explicit timeout events.
 
 ## Decision
 
@@ -43,11 +45,8 @@ R5 [5]: Timeout-driven compensation is represented by explicit
 - No saga coordinator / process manager type.
 - No step tracking or completion state machine.
 - No automatic compensation on downstream command failure.
-- No saga coordinator / process manager type.
-- No step tracking or completion state machine.
-- No automatic compensation on downstream command failure.
 - No hidden timeout mechanism for steps that never complete.
 
 ## Consequences
 
-Framework orchestration stays minimal while failed policy outputs become visible and repairable. Compensation remains domain-owned and idempotent. Revisit when `cherry-pit-app` exists or multi-step processes cannot decompose into independent policy reactions.
+Framework orchestration stays minimal while failed policy outputs become visible and repairable. Compensation remains domain-owned and idempotent. The `cherry-pit-app` revisit condition has been discharged; the remaining trigger is a concrete multi-step process that cannot decompose into independent policy reactions.
