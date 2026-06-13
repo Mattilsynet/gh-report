@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use cherry_pit_core::{DomainKey, JobOutcome};
 
@@ -76,6 +77,10 @@ impl Default for WorkerPoolConfig {
 /// Outcomes are sent to `outcome_tx`. When all workers exit, the sender is
 /// dropped, causing the receiver to return `None` — signalling the delivery
 /// task to drain and exit.
+///
+/// `cancel` is supplied by the consumer that owns shutdown signalling. The
+/// worker pool observes it only while parked in budget or rate-limit sleeps;
+/// in-flight executor calls are not interrupted by this token.
 /// # Panics
 ///
 /// Panics if `config.worker_count` is 0.
@@ -85,6 +90,7 @@ pub async fn run_worker_pool<C, R, E>(
     budget_gate: Arc<BudgetGate>,
     rate_limit_state: Arc<RateLimitState>,
     config: WorkerPoolConfig,
+    cancel: CancellationToken,
     outcome_tx: mpsc::Sender<JobOutcome<R>>,
 ) where
     C: Send + Sync + Clone + 'static,
@@ -99,10 +105,11 @@ pub async fn run_worker_pool<C, R, E>(
         let executor = Arc::clone(&executor);
         let budget = Arc::clone(&budget_gate);
         let rate_limit = Arc::clone(&rate_limit_state);
+        let cancel = cancel.clone();
         let tx = outcome_tx.clone();
 
         handles.push(tokio::spawn(async move {
-            worker_loop(worker_id, queue, executor, budget, rate_limit, tx).await;
+            worker_loop(worker_id, queue, executor, budget, rate_limit, cancel, tx).await;
         }));
     }
 
@@ -121,6 +128,7 @@ async fn worker_loop<C, R, E>(
     executor: Arc<E>,
     budget_gate: Arc<BudgetGate>,
     rate_limit_state: Arc<RateLimitState>,
+    cancel: CancellationToken,
     outcome_tx: mpsc::Sender<JobOutcome<R>>,
 ) where
     C: Send + Sync + Clone + 'static,
@@ -138,7 +146,13 @@ async fn worker_loop<C, R, E>(
         let correlation = job.correlation.clone();
         let start = std::time::Instant::now();
 
-        budget_gate.acquire().await;
+        if !budget_gate.acquire(&cancel).await {
+            tracing::debug!(
+                worker = worker_id,
+                "worker cancellation requested during budget wait"
+            );
+            break;
+        }
 
         if rate_limit_state.should_halt() {
             tracing::warn!(
@@ -146,7 +160,13 @@ async fn worker_loop<C, R, E>(
                 key = %domain_key,
                 "rate limit halt — waiting for reset"
             );
-            wait_for_rate_limit_reset(&rate_limit_state).await;
+            if !wait_for_rate_limit_reset(&rate_limit_state, &cancel).await {
+                tracing::debug!(
+                    worker = worker_id,
+                    "worker cancellation requested during rate-limit wait"
+                );
+                break;
+            }
         }
 
         let exec_key = domain_key.clone();
@@ -194,7 +214,7 @@ async fn worker_loop<C, R, E>(
 /// capped exponential backoff (1s → 60s). Both sleeps are capped at
 /// 60s per iteration so a stale `reset` value cannot park the worker
 /// indefinitely.
-async fn wait_for_rate_limit_reset(state: &RateLimitState) {
+async fn wait_for_rate_limit_reset(state: &RateLimitState, cancel: &CancellationToken) -> bool {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let max_sleep = Duration::from_mins(1);
@@ -220,8 +240,12 @@ async fn wait_for_rate_limit_reset(state: &RateLimitState) {
             }
         };
 
-        tokio::time::sleep(sleep).await;
+        tokio::select! {
+            () = tokio::time::sleep(sleep) => {}
+            () = cancel.cancelled() => return false,
+        }
     }
+    true
 }
 
 /// Shut down the worker pool gracefully.
@@ -254,6 +278,10 @@ mod tests {
     use crate::work_queue::{JobSpec, WorkQueue};
     use cherry_pit_core::{CorrelationContext, JobSource};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn cancellation_token() -> CancellationToken {
+        CancellationToken::new()
+    }
 
     /// Mock executor that returns the domain key as the result.
     struct EchoExecutor;
@@ -311,6 +339,7 @@ mod tests {
             Arc::new(BudgetGate::new(1000, Duration::from_secs(1))),
             Arc::new(RateLimitState::default()),
             WorkerPoolConfig { worker_count: 1 },
+            cancellation_token(),
             tx,
         )
         .await;
@@ -349,6 +378,7 @@ mod tests {
             Arc::new(BudgetGate::new(1000, Duration::from_secs(1))),
             Arc::new(RateLimitState::default()),
             WorkerPoolConfig { worker_count: 4 },
+            cancellation_token(),
             tx,
         )
         .await;
@@ -373,6 +403,7 @@ mod tests {
             Arc::new(BudgetGate::new(1000, Duration::from_secs(1))),
             Arc::new(RateLimitState::default()),
             WorkerPoolConfig { worker_count: 1 },
+            cancellation_token(),
             tx,
         )
         .await;
@@ -407,6 +438,7 @@ mod tests {
                 Arc::new(BudgetGate::new(1000, Duration::from_secs(1))),
                 Arc::new(RateLimitState::default()),
                 WorkerPoolConfig { worker_count: 2 },
+                cancellation_token(),
                 tx,
             )
             .await;
@@ -435,6 +467,7 @@ mod tests {
                 Arc::new(BudgetGate::new(1000, Duration::from_secs(1))),
                 Arc::new(RateLimitState::default()),
                 WorkerPoolConfig { worker_count: 1 },
+                cancellation_token(),
                 tx,
             )
             .await;
@@ -468,6 +501,7 @@ mod tests {
             Arc::new(BudgetGate::new(1000, Duration::from_secs(1))),
             Arc::new(RateLimitState::default()),
             WorkerPoolConfig { worker_count: 1 },
+            cancellation_token(),
             tx,
         )
         .await;
@@ -505,6 +539,7 @@ mod tests {
             Arc::new(BudgetGate::new(1000, Duration::from_secs(1))),
             Arc::new(RateLimitState::default()),
             WorkerPoolConfig { worker_count: 1 },
+            cancellation_token(),
             tx,
         )
         .await;
@@ -528,7 +563,8 @@ mod tests {
 
         let waiter = {
             let state = Arc::clone(&state);
-            tokio::spawn(async move { wait_for_rate_limit_reset(&state).await })
+            let cancel = cancellation_token();
+            tokio::spawn(async move { wait_for_rate_limit_reset(&state, &cancel).await })
         };
 
         tokio::time::advance(Duration::from_millis(100)).await;
@@ -556,7 +592,8 @@ mod tests {
 
         let waiter = {
             let state = Arc::clone(&state);
-            tokio::spawn(async move { wait_for_rate_limit_reset(&state).await })
+            let cancel = cancellation_token();
+            tokio::spawn(async move { wait_for_rate_limit_reset(&state, &cancel).await })
         };
 
         tokio::time::advance(Duration::from_secs(5)).await;
@@ -580,7 +617,8 @@ mod tests {
 
         let waiter = {
             let state = Arc::clone(&state);
-            tokio::spawn(async move { wait_for_rate_limit_reset(&state).await })
+            let cancel = cancellation_token();
+            tokio::spawn(async move { wait_for_rate_limit_reset(&state, &cancel).await })
         };
 
         tokio::time::advance(Duration::from_secs(1)).await;
@@ -591,5 +629,32 @@ mod tests {
         waiter
             .await
             .expect("waiter did not complete via fallback path");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_rate_limit_reset_returns_when_cancelled() {
+        let state = Arc::new(RateLimitState::with_thresholds(50, 100));
+        state.observe(RateLimitObservation::new().with_remaining(0));
+        assert!(state.should_halt());
+        let cancel = cancellation_token();
+
+        let waiter = {
+            let state = Arc::clone(&state);
+            let waiter_cancel = cancel.clone();
+            tokio::spawn(async move { wait_for_rate_limit_reset(&state, &waiter_cancel).await })
+        };
+
+        tokio::time::advance(Duration::from_millis(100)).await;
+        assert!(
+            !waiter.is_finished(),
+            "fallback backoff should still be pending"
+        );
+        cancel.cancel();
+
+        let completed = tokio::time::timeout(Duration::from_millis(100), waiter)
+            .await
+            .expect("cancelled rate-limit wait should return promptly")
+            .expect("waiter did not complete");
+        assert!(!completed);
     }
 }

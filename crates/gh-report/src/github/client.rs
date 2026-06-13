@@ -266,6 +266,7 @@ pub struct GitHubClient {
     /// Shared via `Arc` to allow the daemon to own budget state across
     /// collection runs.
     budget: Arc<BudgetGate>,
+    budget_cancel: tokio_util::sync::CancellationToken,
     /// Side-channel for `ETag` extraction: maps API path → last-seen `ETag`.
     /// Populated by `request_single_inner`, read by `repo_details`.
     last_response_etags: SccHashMap<String, String>,
@@ -406,6 +407,7 @@ impl GitHubClient {
             app_config,
             auth_metadata: StdMutex::new(None),
             budget,
+            budget_cancel: tokio_util::sync::CancellationToken::new(),
             last_response_etags: SccHashMap::new(),
         })
     }
@@ -638,7 +640,7 @@ impl GitHubClient {
             return ApiOutcome::failure(None, format!("credential refresh failed: {e}"), false);
         }
 
-        self.budget.acquire().await;
+        let _ = self.budget.acquire(&self.budget_cancel).await;
 
         let mut stale_token_retried = false;
         let attempts = retries + 1;
@@ -847,7 +849,7 @@ impl GitHubClient {
             }
 
             if page_count > 1 {
-                self.budget.acquire().await;
+                let _ = self.budget.acquire(&self.budget_cancel).await;
             }
 
             let response = match self.send_paginated_request(&url, timeout_secs).await {
@@ -1095,7 +1097,7 @@ impl GitHubClient {
             return None;
         }
 
-        self.budget.acquire().await;
+        let _ = self.budget.acquire(&self.budget_cancel).await;
 
         let url = format!("{}{}", self.base_url, path);
         let auth = self.auth_header.load();

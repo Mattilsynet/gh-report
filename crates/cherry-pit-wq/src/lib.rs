@@ -68,6 +68,7 @@
 //!     budget,
 //!     rate_limit,
 //!     WorkerPoolConfig::default(),
+//!     tokio_util::sync::CancellationToken::new(),
 //!     tx,
 //! )
 //! .await;

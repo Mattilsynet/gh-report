@@ -215,6 +215,7 @@ proptest! {
                 Arc::new(BudgetGate::new(10_000, Duration::from_mins(1))),
                 Arc::new(RateLimitState::default()),
                 cfg,
+                tokio_util::sync::CancellationToken::new(),
                 tx,
             )
             .await;

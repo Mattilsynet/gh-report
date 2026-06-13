@@ -2214,6 +2214,7 @@ mod tests {
         let queue = Arc::clone(&state.work_queue);
         let budget = Arc::clone(&state.github().budget_gate);
         let rate_limit = Arc::clone(&state.github().rate_limit_state);
+        let cancel = tokio_util::sync::CancellationToken::new();
 
         let pool_handle = tokio::spawn(async move {
             crate::app::worker_pool::run_worker_pool(
@@ -2226,6 +2227,7 @@ mod tests {
                     cfg.worker_count = worker_count;
                     cfg
                 },
+                cancel,
                 outcome_tx,
             )
             .await;

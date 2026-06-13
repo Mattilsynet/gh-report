@@ -764,7 +764,7 @@ dependencies = [
 
 [[package]]
 name = "cherry-pit-wq"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cherry-pit-core",
  "futures-util",
@@ -772,6 +772,7 @@ dependencies = [
  "scc",
  "tokio",
  "tokio-test",
+ "tokio-util",
  "tracing",
  "uuid",
 ]

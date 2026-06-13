@@ -1,6 +1,6 @@
 [package]
 name = "cherry-pit-wq"
-version = "0.1.0"
+version = "0.2.0"
 description = "Domain-agnostic concurrency and resource-pacing primitives for cherry-pit consumers"
 edition.workspace = true
 rust-version.workspace = true
@@ -22,6 +22,7 @@ tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 tracing = { workspace = true }
 scc = { workspace = true }
 futures-util = { workspace = true }
+tokio-util = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

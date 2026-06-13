@@ -185,23 +185,26 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
 
 /// Drain the worker pool + delivery task on daemon shutdown.
 ///
-/// Closes the work queue first so the pool stops accepting new jobs and
-/// finishes those in flight, then awaits both handles with an individual
-/// timeout. Total drain budget upper-bounded at `2 ×
-/// WORKER_POOL_DRAIN_TIMEOUT`.
+/// Cancels the worker-pool shutdown token, closes the work queue so the pool
+/// stops accepting new jobs, then awaits both handles with an individual
+/// timeout. Total drain budget upper-bounded at `2 × WORKER_POOL_DRAIN_TIMEOUT`.
 async fn shutdown_workers(app_state: &Arc<AppState>) {
+    shutdown_workers_with_timeout(app_state, WORKER_POOL_DRAIN_TIMEOUT).await;
+}
+
+async fn shutdown_workers_with_timeout(app_state: &Arc<AppState>, timeout: Duration) {
+    app_state.cancel_worker_pool();
     app_state.work_queue.close();
-    let (pool_drained, delivery_drained) =
-        app_state.drain_worker_pool(WORKER_POOL_DRAIN_TIMEOUT).await;
+    let (pool_drained, delivery_drained) = app_state.drain_worker_pool(timeout).await;
     if !pool_drained {
         warn!(
-            timeout_secs = WORKER_POOL_DRAIN_TIMEOUT.as_secs(),
+            timeout_secs = timeout.as_secs(),
             "worker pool did not drain within timeout"
         );
     }
     if !delivery_drained {
         warn!(
-            timeout_secs = WORKER_POOL_DRAIN_TIMEOUT.as_secs(),
+            timeout_secs = timeout.as_secs(),
             "delivery task did not drain within timeout"
         );
     }
@@ -542,5 +545,26 @@ mod tests {
         let _ = tx.send(true);
         let outcome = next_collection_tick(&mut rx, Duration::from_hours(1)).await;
         assert!(matches!(outcome, NextTick::Cancel));
+    }
+
+    #[tokio::test]
+    async fn shutdown_workers_cancels_worker_pool_token_before_drain() {
+        let state = AppState::new().await;
+        let token = state.worker_shutdown_token();
+        let observed = token.clone();
+        let pool_handle = tokio::spawn(async move {
+            observed.cancelled().await;
+        });
+        let delivery_handle = tokio::spawn(async {});
+        assert!(
+            state
+                .worker_pool_started
+                .set(std::sync::Mutex::new(Some((pool_handle, delivery_handle))))
+                .is_ok()
+        );
+
+        shutdown_workers_with_timeout(&state, Duration::from_millis(100)).await;
+
+        assert!(token.is_cancelled());
     }
 }

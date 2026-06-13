@@ -84,6 +84,7 @@ pub static CACHED_WS_JS: LazyLock<CachedPage> =
 /// - [`evidence()`](Self::evidence) — evidence store, HTML cache, WS broadcast, org summary, batch tracker
 pub(crate) type WorkerPoolHandles =
     std::sync::Mutex<Option<(tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>)>>;
+pub(crate) type WorkerShutdownToken = tokio_util::sync::CancellationToken;
 
 pub struct AppState {
     /// When this service instance started.
@@ -104,6 +105,7 @@ pub struct AppState {
     /// they can be awaited to drain. Tuple: (`worker_pool_handle`,
     /// `delivery_task_handle`).
     pub(crate) worker_pool_started: tokio::sync::OnceCell<WorkerPoolHandles>,
+    pub(crate) worker_pool_cancel: WorkerShutdownToken,
 
     /// Durable native pardosa event store.
     pub event_store: Arc<EventStoreImpl>,
@@ -435,6 +437,7 @@ impl AppState {
             last_completed_run: ArcSwap::from_pointee(None),
             work_queue: Arc::new(WorkQueue::new(crate::config::WORK_QUEUE_CAPACITY)),
             worker_pool_started: tokio::sync::OnceCell::new(),
+            worker_pool_cancel: WorkerShutdownToken::new(),
             event_store,
             projection_state,
             webhook: WebhookState::from_environment(),
@@ -480,6 +483,7 @@ impl AppState {
             last_completed_run: ArcSwap::from_pointee(None),
             work_queue: Arc::new(WorkQueue::new(crate::config::WORK_QUEUE_CAPACITY)),
             worker_pool_started: tokio::sync::OnceCell::new(),
+            worker_pool_cancel: WorkerShutdownToken::new(),
             event_store,
             projection_state,
             webhook: WebhookState::from_environment(),
@@ -682,6 +686,7 @@ impl AppStateBuilder {
             last_completed_run: ArcSwap::from_pointee(None),
             work_queue: Arc::new(WorkQueue::new(crate::config::WORK_QUEUE_CAPACITY)),
             worker_pool_started: tokio::sync::OnceCell::new(),
+            worker_pool_cancel: WorkerShutdownToken::new(),
             event_store,
             projection_state,
             webhook,
@@ -742,6 +747,7 @@ impl AppState {
                 let queue = Arc::clone(&state.work_queue);
                 let budget = Arc::clone(&state.github().budget_gate);
                 let rate_limit = Arc::clone(&state.github().rate_limit_state);
+                let cancel = state.worker_shutdown_token();
 
                 let (outcome_tx, outcome_rx) = tokio::sync::mpsc::channel::<
                     crate::app::worker_pool::JobOutcome<
@@ -762,6 +768,7 @@ impl AppState {
                         budget,
                         rate_limit,
                         crate::app::worker_pool::WorkerPoolConfig::default(),
+                        cancel,
                         outcome_tx,
                     )
                     .await;
@@ -806,6 +813,14 @@ impl AppState {
             .await
             .is_ok();
         (pool_ok, delivery_ok)
+    }
+
+    pub(crate) fn worker_shutdown_token(&self) -> WorkerShutdownToken {
+        self.worker_pool_cancel.clone()
+    }
+
+    pub(crate) fn cancel_worker_pool(&self) {
+        self.worker_pool_cancel.cancel();
     }
 }
 

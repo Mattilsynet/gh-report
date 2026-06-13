@@ -23,7 +23,7 @@ workspace = true
 
 [dependencies]
 # cherry-pit-wq — M5 B2 swap target for worker_pool / work_queue / rate_limit / pagination / budget re-exports
-cherry-pit-wq = { version = "0.1.0", path = "../cherry-pit-wq" }
+cherry-pit-wq = { version = "0.2.0", path = "../cherry-pit-wq" }
 # cherry-pit-storage — M5 B3 swap target for PersistenceError / atomic_write_bytes / RunLock / build_snapshot_signature re-exports (CHE-0053:R3 flat surface)
 cherry-pit-storage = { version = "0.1.0", path = "../cherry-pit-storage" }
 

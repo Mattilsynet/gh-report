@@ -19,6 +19,7 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 /// A budget gate that limits the number of API calls per epoch.
@@ -114,7 +115,11 @@ impl BudgetGate {
     /// reached, exactly one caller is elected to sleep `wait_duration`
     /// and reset the counter; the rest wait on `epoch_advanced` without
     /// holding any async mutex across the sleep.
-    pub async fn acquire(&self) {
+    ///
+    /// Returns `false` when `cancel` is cancelled while this caller is
+    /// parked in the elected cooldown sleep; in that case the epoch is not
+    /// reset and callers should exit rather than resume work.
+    pub async fn acquire(&self, cancel: &CancellationToken) -> bool {
         loop {
             let current = self.calls.load(Ordering::Acquire);
             if current < self.limit {
@@ -126,7 +131,7 @@ impl BudgetGate {
                 ) {
                     Ok(_) => {
                         self.total_calls.fetch_add(1, Ordering::Relaxed);
-                        return;
+                        return true;
                     }
                     Err(_) => continue,
                 }
@@ -154,7 +159,10 @@ impl BudgetGate {
                 if let Some(n) = notify {
                     n.notify_one();
                 }
-                tokio::time::sleep(self.wait_duration).await;
+                tokio::select! {
+                    () = tokio::time::sleep(self.wait_duration) => {}
+                    () = cancel.cancelled() => return false,
+                }
                 self.calls.store(0, Ordering::Release);
                 drop(guard);
                 info!("API budget replenished, resuming collection");
@@ -201,8 +209,9 @@ mod tests {
     #[tokio::test]
     async fn acquire_within_limit_succeeds() {
         let gate = BudgetGate::new(5, Duration::from_secs(1));
+        let cancel = CancellationToken::new();
         for _ in 0..5 {
-            gate.acquire().await;
+            assert!(gate.acquire(&cancel).await);
         }
         assert_eq!(gate.calls_made(), 5);
         assert_eq!(gate.total_calls_made(), 5);
@@ -212,15 +221,17 @@ mod tests {
     async fn sixth_call_blocks_then_resets() {
         tokio::time::pause();
         let gate = Arc::new(BudgetGate::new(5, Duration::from_mins(1)));
+        let cancel = CancellationToken::new();
 
         for _ in 0..5 {
-            gate.acquire().await;
+            assert!(gate.acquire(&cancel).await);
         }
         assert_eq!(gate.calls_made(), 5);
 
         let gate2 = Arc::clone(&gate);
+        let waiter_cancel = cancel.clone();
         let handle = tokio::spawn(async move {
-            gate2.acquire().await;
+            gate2.acquire(&waiter_cancel).await;
         });
 
         tokio::time::advance(Duration::from_secs(61)).await;
@@ -234,12 +245,14 @@ mod tests {
     async fn concurrent_acquire_never_exceeds_limit() {
         tokio::time::pause();
         let gate = Arc::new(BudgetGate::new(10, Duration::from_mins(1)));
+        let cancel = CancellationToken::new();
 
         let mut handles = Vec::new();
         for _ in 0..16 {
             let g = Arc::clone(&gate);
+            let worker_cancel = cancel.clone();
             handles.push(tokio::spawn(async move {
-                g.acquire().await;
+                g.acquire(&worker_cancel).await;
             }));
         }
 
@@ -257,13 +270,15 @@ mod tests {
     async fn total_calls_cumulative_across_resets() {
         tokio::time::pause();
         let gate = Arc::new(BudgetGate::new(2, Duration::from_secs(10)));
+        let cancel = CancellationToken::new();
 
-        gate.acquire().await;
-        gate.acquire().await;
+        assert!(gate.acquire(&cancel).await);
+        assert!(gate.acquire(&cancel).await);
         assert_eq!(gate.total_calls_made(), 2);
 
         let g = Arc::clone(&gate);
-        let h = tokio::spawn(async move { g.acquire().await });
+        let waiter_cancel = cancel.clone();
+        let h = tokio::spawn(async move { g.acquire(&waiter_cancel).await });
         tokio::time::advance(Duration::from_secs(11)).await;
         h.await.unwrap();
 
@@ -288,12 +303,13 @@ mod tests {
     async fn pause_notify_fires_on_epoch_pause() {
         tokio::time::pause();
         let notify = Arc::new(tokio::sync::Notify::new());
+        let cancel = CancellationToken::new();
         let gate = Arc::new(
             BudgetGate::new(2, Duration::from_secs(10)).with_pause_notify(Arc::clone(&notify)),
         );
 
-        gate.acquire().await;
-        gate.acquire().await;
+        assert!(gate.acquire(&cancel).await);
+        assert!(gate.acquire(&cancel).await);
 
         let notify2 = Arc::clone(&notify);
         let notified = tokio::spawn(async move {
@@ -302,7 +318,8 @@ mod tests {
         });
 
         let g = Arc::clone(&gate);
-        tokio::spawn(async move { g.acquire().await });
+        let waiter_cancel = cancel.clone();
+        tokio::spawn(async move { g.acquire(&waiter_cancel).await });
 
         tokio::time::advance(Duration::from_millis(1)).await;
         tokio::task::yield_now().await;
@@ -317,11 +334,12 @@ mod tests {
         tokio::time::pause();
         let notify = Arc::new(tokio::sync::Notify::new());
         let gate = BudgetGate::new(2, Duration::from_secs(10));
+        let cancel = CancellationToken::new();
         gate.set_pause_notify(Arc::clone(&notify));
         let gate = Arc::new(gate);
 
-        gate.acquire().await;
-        gate.acquire().await;
+        assert!(gate.acquire(&cancel).await);
+        assert!(gate.acquire(&cancel).await);
 
         let notify2 = Arc::clone(&notify);
         let notified = tokio::spawn(async move {
@@ -330,7 +348,8 @@ mod tests {
         });
 
         let g = Arc::clone(&gate);
-        tokio::spawn(async move { g.acquire().await });
+        let waiter_cancel = cancel.clone();
+        tokio::spawn(async move { g.acquire(&waiter_cancel).await });
 
         tokio::time::advance(Duration::from_millis(1)).await;
         tokio::task::yield_now().await;
@@ -343,12 +362,13 @@ mod tests {
     async fn set_pause_notify_through_arc() {
         tokio::time::pause();
         let gate = Arc::new(BudgetGate::new(2, Duration::from_secs(10)));
+        let cancel = CancellationToken::new();
 
         let notify = Arc::new(tokio::sync::Notify::new());
         gate.set_pause_notify(Arc::clone(&notify));
 
-        gate.acquire().await;
-        gate.acquire().await;
+        assert!(gate.acquire(&cancel).await);
+        assert!(gate.acquire(&cancel).await);
 
         let notify2 = Arc::clone(&notify);
         let notified = tokio::spawn(async move {
@@ -357,7 +377,8 @@ mod tests {
         });
 
         let g = Arc::clone(&gate);
-        tokio::spawn(async move { g.acquire().await });
+        let waiter_cancel = cancel.clone();
+        tokio::spawn(async move { g.acquire(&waiter_cancel).await });
 
         tokio::time::advance(Duration::from_millis(1)).await;
         tokio::task::yield_now().await;
@@ -373,13 +394,15 @@ mod tests {
         let gate = Arc::new(
             BudgetGate::new(2, Duration::from_secs(10)).with_pause_notify(Arc::clone(&pause)),
         );
+        let cancel = CancellationToken::new();
 
-        gate.acquire().await;
-        gate.acquire().await;
+        assert!(gate.acquire(&cancel).await);
+        assert!(gate.acquire(&cancel).await);
         assert_eq!(gate.calls_made(), 2);
 
         let g_first = Arc::clone(&gate);
-        let first = tokio::spawn(async move { g_first.acquire().await });
+        let first_cancel = cancel.clone();
+        let first = tokio::spawn(async move { g_first.acquire(&first_cancel).await });
 
         pause.notified().await;
         assert_eq!(gate.calls_made(), 2);
@@ -387,7 +410,8 @@ mod tests {
         let mut late = Vec::new();
         for _ in 0..4 {
             let g = Arc::clone(&gate);
-            late.push(tokio::spawn(async move { g.acquire().await }));
+            let waiter_cancel = cancel.clone();
+            late.push(tokio::spawn(async move { g.acquire(&waiter_cancel).await }));
         }
 
         tokio::task::yield_now().await;
@@ -409,26 +433,56 @@ mod tests {
         let gate = Arc::new(
             BudgetGate::new(2, Duration::from_secs(10)).with_pause_notify(Arc::clone(&pause)),
         );
+        let cancel = CancellationToken::new();
 
-        gate.acquire().await;
-        gate.acquire().await;
+        assert!(gate.acquire(&cancel).await);
+        assert!(gate.acquire(&cancel).await);
         assert_eq!(gate.calls_made(), 2);
 
         let g_doomed = Arc::clone(&gate);
-        let doomed = tokio::spawn(async move { g_doomed.acquire().await });
+        let doomed_cancel = cancel.clone();
+        let doomed = tokio::spawn(async move { g_doomed.acquire(&doomed_cancel).await });
 
         pause.notified().await;
         doomed.abort();
         let _ = doomed.await;
 
         let g_next = Arc::clone(&gate);
-        let next = tokio::spawn(async move { g_next.acquire().await });
+        let next_cancel = cancel.clone();
+        let next = tokio::spawn(async move { g_next.acquire(&next_cancel).await });
 
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_secs(11)).await;
 
         next.await.unwrap();
         assert_eq!(gate.total_calls_made(), 3);
+        assert_eq!(gate.calls_made(), 1);
+    }
+
+    #[tokio::test]
+    async fn cancellation_token_preempts_budget_backoff_sleep() {
+        let pause = Arc::new(tokio::sync::Notify::new());
+        let gate = Arc::new(
+            BudgetGate::new(1, Duration::from_mins(1)).with_pause_notify(Arc::clone(&pause)),
+        );
+        let cancel = tokio_util::sync::CancellationToken::new();
+
+        assert!(gate.acquire(&cancel).await);
+        assert_eq!(gate.calls_made(), 1);
+
+        let waiter_gate = Arc::clone(&gate);
+        let waiter_cancel = cancel.clone();
+        let waiter = tokio::spawn(async move { waiter_gate.acquire(&waiter_cancel).await });
+
+        pause.notified().await;
+        cancel.cancel();
+
+        let acquired = tokio::time::timeout(Duration::from_millis(100), waiter)
+            .await
+            .expect("cancelled budget acquire should return promptly")
+            .expect("waiter task should not panic");
+        assert!(!acquired);
+        assert_eq!(gate.total_calls_made(), 1);
         assert_eq!(gate.calls_made(), 1);
     }
 }
