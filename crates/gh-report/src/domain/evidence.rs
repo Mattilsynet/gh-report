@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use super::auth::{AuthMode, Capability, TokenTier};
 use super::checks::RepositoryChecks;
-use super::metrics::{AggregatedMetrics, CollectionStatistics, SecretScanningObservability};
+use super::metrics::{
+    AggregatedMetrics, CollectionStatistics, OrgAlertSummary, SecretScanningObservability,
+};
 use super::repository::Repository;
 
 /// Information about the most recent commit on a repository's default branch.
@@ -72,6 +74,17 @@ pub struct AssessmentMetadata {
     /// rather than a fresh API collection.
     #[serde(default)]
     pub warm_start: bool,
+}
+
+/// Organization-scope durable snapshot payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrgStateSnapshot {
+    /// Number of archived repositories observed at org scope.
+    pub archived_repos: u32,
+    /// Metadata for the collection run that produced this snapshot.
+    pub assessment_metadata: AssessmentMetadata,
+    /// Organization-level secret-scanning alert summary.
+    pub alert_summary: OrgAlertSummary,
 }
 
 /// Complete evidence artifact for a collection run.

@@ -2,22 +2,29 @@ use jiff::Timestamp as JiffTimestamp;
 use pardosa_schema::{EventString, EventVec, NonEmptyEventString, Timestamp};
 
 use super::limits::{
-    MAX_BRANCH_NAME, MAX_CODEOWNERS_ENTRIES, MAX_CODEOWNERS_OWNER, MAX_CODEOWNERS_OWNERS,
-    MAX_CODEOWNERS_PATTERN, MAX_DESCRIPTION, MAX_DOMAIN_KEY, MAX_GITHUB_ID, MAX_LANGUAGE,
-    MAX_LICENSE, MAX_LOGIN, MAX_NODE_ID, MAX_PATH, MAX_PERSON_NAME, MAX_REASON, MAX_REPO_NAME,
-    MAX_TOPIC, MAX_TOPICS, MAX_URL,
+    MAX_ALERT_BUCKET, MAX_ALERT_BUCKETS, MAX_ASSESSMENT_DATE, MAX_BRANCH_NAME,
+    MAX_CODEOWNERS_ENTRIES, MAX_CODEOWNERS_OWNER, MAX_CODEOWNERS_OWNERS, MAX_CODEOWNERS_PATTERN,
+    MAX_DESCRIPTION, MAX_DOMAIN_KEY, MAX_GITHUB_ID, MAX_LANGUAGE, MAX_LICENSE, MAX_LOGIN,
+    MAX_NODE_ID, MAX_ORG_ALERT_REPOS, MAX_PATH, MAX_PERSON_NAME, MAX_REASON, MAX_REPO_NAME,
+    MAX_RUN_ID, MAX_SCHEMA_VERSION, MAX_TIMESTAMP_TEXT, MAX_TOKEN_SCOPES, MAX_TOPIC, MAX_TOPICS,
+    MAX_UNAVAILABLE_CAPABILITIES, MAX_URL,
 };
 use super::{
-    BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersEntry,
-    CodeownersResult, CodeownersStatus, CodeownersTruncationReason, DependabotResult,
-    DependabotStatus, LastCommitInfo, ParsedCodeowners, Repository, RepositoryChecks,
-    RepositoryEvidence, SecretScanningResult, SecretScanningStatus, SecurityPolicyEvidence,
-    SecurityPolicyResult, SecurityPolicyStatus, Visibility,
+    AssessmentMetadata, AuthMode, BranchProtectionDetails, BranchProtectionResult,
+    BranchProtectionStatus, Capability, CodeownersEntry, CodeownersResult, CodeownersStatus,
+    CodeownersTruncationReason, CollectionStatus, DependabotResult, DependabotStatus,
+    LastCommitInfo, OrgAlertSummary, OrgStateCaptured, ParsedCodeowners, RepoAlertSummary,
+    RepoAlertSummaryEntry, Repository, RepositoryChecks, RepositoryEvidence, SecretScanningResult,
+    SecretScanningStatus, SecurityPolicyEvidence, SecurityPolicyResult, SecurityPolicyStatus,
+    StringU64Entry, TokenTier, Visibility,
 };
+use crate::domain::auth as sa;
 use crate::domain::checks as s;
 use crate::domain::codeowners as sc;
 use crate::domain::evidence as se;
+use crate::domain::metrics as sm;
 use crate::domain::repository as sr;
+use crate::domain::status as ss;
 use crate::domain::time::parse_iso8601;
 
 /// Failure converting a serde domain value into its native pardosa
@@ -166,6 +173,25 @@ bijective_enum!(sc::CodeownersTruncationReason <=> CodeownersTruncationReason {
     ContentMissing,
     DecodeFailed,
     InvalidUtf8,
+});
+
+bijective_enum!(sa::TokenTier <=> TokenTier { Full, Limited, Unknown });
+
+bijective_enum!(sa::Capability <=> Capability { OrgSecretScanningAlerts });
+
+bijective_enum!(sa::AuthMode <=> AuthMode {
+    Pat,
+    GitHubApp,
+    GhCliFallback,
+    Unknown,
+});
+
+bijective_enum!(ss::CollectionStatus <=> CollectionStatus {
+    Success,
+    NotCollected,
+    PermissionDenied,
+    TransientError,
+    Unavailable,
 });
 
 impl TryFrom<sr::Repository> for Repository {
@@ -535,6 +561,221 @@ impl From<RepositoryEvidence> for se::RepositoryEvidence {
             repository: v.repository.into(),
             checks: v.checks.into(),
             last_commit: v.last_commit.map(Into::into),
+        }
+    }
+}
+
+impl TryFrom<se::AssessmentMetadata> for AssessmentMetadata {
+    type Error = EventConversionError;
+
+    fn try_from(v: se::AssessmentMetadata) -> Conv<Self> {
+        let mut unavailable_capabilities = Vec::with_capacity(v.unavailable_capabilities.len());
+        for capability in v.unavailable_capabilities {
+            unavailable_capabilities.push(capability.into());
+        }
+        let unavailable_capabilities =
+            EventVec::<_, MAX_UNAVAILABLE_CAPABILITIES>::try_from(unavailable_capabilities)
+                .map_err(|_| EventConversionError::TooMany {
+                    field: "assessment_metadata.unavailable_capabilities",
+                })?;
+
+        Ok(Self {
+            date: to_es::<MAX_ASSESSMENT_DATE>("assessment_metadata.date", v.date)?,
+            organization: to_es::<MAX_LOGIN>("assessment_metadata.organization", v.organization)?,
+            schema_version: to_es::<MAX_SCHEMA_VERSION>(
+                "assessment_metadata.schema_version",
+                v.schema_version,
+            )?,
+            run_timestamp: to_es::<MAX_TIMESTAMP_TEXT>(
+                "assessment_metadata.run_timestamp",
+                v.run_timestamp,
+            )?,
+            run_id: to_es::<MAX_RUN_ID>("assessment_metadata.run_id", v.run_id)?,
+            token_tier: v.token_tier.into(),
+            token_scopes: to_es::<MAX_TOKEN_SCOPES>(
+                "assessment_metadata.token_scopes",
+                v.token_scopes,
+            )?,
+            auth_mode: v.auth_mode.into(),
+            rate_limit_warnings: v.rate_limit_warnings,
+            unavailable_capabilities,
+            inventory_fetched_at: to_es_opt::<MAX_TIMESTAMP_TEXT>(
+                "assessment_metadata.inventory_fetched_at",
+                v.inventory_fetched_at,
+            )?,
+            warm_start: v.warm_start,
+        })
+    }
+}
+
+impl From<AssessmentMetadata> for se::AssessmentMetadata {
+    fn from(v: AssessmentMetadata) -> Self {
+        Self {
+            date: v.date.into_inner(),
+            organization: v.organization.into_inner(),
+            schema_version: v.schema_version.into_inner(),
+            run_timestamp: v.run_timestamp.into_inner(),
+            run_id: v.run_id.into_inner(),
+            token_tier: v.token_tier.into(),
+            token_scopes: v.token_scopes.into_inner(),
+            auth_mode: v.auth_mode.into(),
+            rate_limit_warnings: v.rate_limit_warnings,
+            unavailable_capabilities: v
+                .unavailable_capabilities
+                .into_inner()
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            inventory_fetched_at: v.inventory_fetched_at.map(EventString::into_inner),
+            warm_start: v.warm_start,
+        }
+    }
+}
+
+impl TryFrom<sm::RepoAlertSummary> for RepoAlertSummary {
+    type Error = EventConversionError;
+
+    fn try_from(v: sm::RepoAlertSummary) -> Conv<Self> {
+        Ok(Self {
+            open_alert_count: v.open_alert_count,
+            oldest_open_alert_created_at: to_es_opt::<MAX_TIMESTAMP_TEXT>(
+                "repo_alert_summary.oldest_open_alert_created_at",
+                v.oldest_open_alert_created_at,
+            )?,
+            newest_open_alert_created_at: to_es_opt::<MAX_TIMESTAMP_TEXT>(
+                "repo_alert_summary.newest_open_alert_created_at",
+                v.newest_open_alert_created_at,
+            )?,
+        })
+    }
+}
+
+impl From<RepoAlertSummary> for sm::RepoAlertSummary {
+    fn from(v: RepoAlertSummary) -> Self {
+        Self {
+            open_alert_count: v.open_alert_count,
+            oldest_open_alert_created_at: v
+                .oldest_open_alert_created_at
+                .map(EventString::into_inner),
+            newest_open_alert_created_at: v
+                .newest_open_alert_created_at
+                .map(EventString::into_inner),
+        }
+    }
+}
+
+impl TryFrom<sm::OrgAlertSummary> for OrgAlertSummary {
+    type Error = EventConversionError;
+
+    fn try_from(v: sm::OrgAlertSummary) -> Conv<Self> {
+        let mut per_repo = Vec::with_capacity(v.per_repo.len());
+        for (repository_id, summary) in v.per_repo {
+            per_repo.push(RepoAlertSummaryEntry {
+                repository_id: to_es::<MAX_GITHUB_ID>(
+                    "org_alert_summary.per_repo.key",
+                    repository_id,
+                )?,
+                summary: RepoAlertSummary::try_from(summary)?,
+            });
+        }
+        per_repo.sort_by(|left, right| {
+            left.repository_id
+                .as_str()
+                .cmp(right.repository_id.as_str())
+        });
+        let per_repo = EventVec::<_, MAX_ORG_ALERT_REPOS>::try_from(per_repo).map_err(|_| {
+            EventConversionError::TooMany {
+                field: "org_alert_summary.per_repo",
+            }
+        })?;
+
+        let mut open_secret_alert_age_buckets =
+            Vec::with_capacity(v.open_secret_alert_age_buckets.len());
+        for (key, value) in v.open_secret_alert_age_buckets {
+            open_secret_alert_age_buckets.push(StringU64Entry {
+                key: to_es::<MAX_ALERT_BUCKET>(
+                    "org_alert_summary.open_secret_alert_age_buckets.key",
+                    key,
+                )?,
+                value,
+            });
+        }
+        open_secret_alert_age_buckets
+            .sort_by(|left, right| left.key.as_str().cmp(right.key.as_str()));
+        let open_secret_alert_age_buckets = EventVec::<_, MAX_ALERT_BUCKETS>::try_from(
+            open_secret_alert_age_buckets,
+        )
+        .map_err(|_| EventConversionError::TooMany {
+            field: "org_alert_summary.open_secret_alert_age_buckets",
+        })?;
+
+        Ok(Self {
+            collection_status: v.collection_status.into(),
+            collection_reason: to_es_opt::<MAX_REASON>(
+                "org_alert_summary.collection_reason",
+                v.collection_reason,
+            )?,
+            per_repo,
+            open_secret_alert_age_buckets,
+            total_open_secret_alerts: v.total_open_secret_alerts,
+            oldest_open_secret_alert_created_at: to_es_opt::<MAX_TIMESTAMP_TEXT>(
+                "org_alert_summary.oldest_open_secret_alert_created_at",
+                v.oldest_open_secret_alert_created_at,
+            )?,
+            newest_open_secret_alert_created_at: to_es_opt::<MAX_TIMESTAMP_TEXT>(
+                "org_alert_summary.newest_open_secret_alert_created_at",
+                v.newest_open_secret_alert_created_at,
+            )?,
+        })
+    }
+}
+
+impl From<OrgAlertSummary> for sm::OrgAlertSummary {
+    fn from(v: OrgAlertSummary) -> Self {
+        Self {
+            collection_status: v.collection_status.into(),
+            collection_reason: v.collection_reason.map(EventString::into_inner),
+            per_repo: v
+                .per_repo
+                .into_inner()
+                .into_iter()
+                .map(|entry| (entry.repository_id.into_inner(), entry.summary.into()))
+                .collect(),
+            open_secret_alert_age_buckets: v
+                .open_secret_alert_age_buckets
+                .into_inner()
+                .into_iter()
+                .map(|entry| (entry.key.into_inner(), entry.value))
+                .collect(),
+            total_open_secret_alerts: v.total_open_secret_alerts,
+            oldest_open_secret_alert_created_at: v
+                .oldest_open_secret_alert_created_at
+                .map(EventString::into_inner),
+            newest_open_secret_alert_created_at: v
+                .newest_open_secret_alert_created_at
+                .map(EventString::into_inner),
+        }
+    }
+}
+
+impl TryFrom<se::OrgStateSnapshot> for OrgStateCaptured {
+    type Error = EventConversionError;
+
+    fn try_from(v: se::OrgStateSnapshot) -> Conv<Self> {
+        Ok(Self {
+            archived_repos: v.archived_repos,
+            assessment_metadata: AssessmentMetadata::try_from(v.assessment_metadata)?,
+            alert_summary: OrgAlertSummary::try_from(v.alert_summary)?,
+        })
+    }
+}
+
+impl From<OrgStateCaptured> for se::OrgStateSnapshot {
+    fn from(v: OrgStateCaptured) -> Self {
+        Self {
+            archived_repos: v.archived_repos,
+            assessment_metadata: v.assessment_metadata.into(),
+            alert_summary: v.alert_summary.into(),
         }
     }
 }

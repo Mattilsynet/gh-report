@@ -25,13 +25,24 @@ pub mod limits {
     pub const MAX_CODEOWNERS_OWNER: usize = 256;
     pub const MAX_CODEOWNERS_OWNERS: usize = 256;
     pub const MAX_CODEOWNERS_ENTRIES: usize = 4096;
+    pub const MAX_ASSESSMENT_DATE: usize = 64;
+    pub const MAX_SCHEMA_VERSION: usize = 64;
+    pub const MAX_RUN_ID: usize = 256;
+    pub const MAX_TOKEN_SCOPES: usize = 8192;
+    pub const MAX_TIMESTAMP_TEXT: usize = 128;
+    pub const MAX_UNAVAILABLE_CAPABILITIES: usize = 32;
+    pub const MAX_ORG_ALERT_REPOS: usize = 1_000_000;
+    pub const MAX_ALERT_BUCKET: usize = 128;
+    pub const MAX_ALERT_BUCKETS: usize = 128;
 }
 
 use limits::{
-    MAX_BRANCH_NAME, MAX_CODEOWNERS_ENTRIES, MAX_CODEOWNERS_OWNER, MAX_CODEOWNERS_OWNERS,
-    MAX_CODEOWNERS_PATTERN, MAX_DESCRIPTION, MAX_DOMAIN_KEY, MAX_GITHUB_ID, MAX_LANGUAGE,
-    MAX_LICENSE, MAX_LOGIN, MAX_NODE_ID, MAX_PATH, MAX_PERSON_NAME, MAX_REASON, MAX_REPO_NAME,
-    MAX_TOPIC, MAX_TOPICS, MAX_URL,
+    MAX_ALERT_BUCKET, MAX_ALERT_BUCKETS, MAX_ASSESSMENT_DATE, MAX_BRANCH_NAME,
+    MAX_CODEOWNERS_ENTRIES, MAX_CODEOWNERS_OWNER, MAX_CODEOWNERS_OWNERS, MAX_CODEOWNERS_PATTERN,
+    MAX_DESCRIPTION, MAX_DOMAIN_KEY, MAX_GITHUB_ID, MAX_LANGUAGE, MAX_LICENSE, MAX_LOGIN,
+    MAX_NODE_ID, MAX_ORG_ALERT_REPOS, MAX_PATH, MAX_PERSON_NAME, MAX_REASON, MAX_REPO_NAME,
+    MAX_RUN_ID, MAX_SCHEMA_VERSION, MAX_TIMESTAMP_TEXT, MAX_TOKEN_SCOPES, MAX_TOPIC, MAX_TOPICS,
+    MAX_UNAVAILABLE_CAPABILITIES, MAX_URL,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
@@ -218,6 +229,111 @@ pub struct CodeownersEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+pub struct OrgStateCaptured {
+    pub archived_repos: u32,
+    pub assessment_metadata: AssessmentMetadata,
+    pub alert_summary: OrgAlertSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+pub struct AssessmentMetadata {
+    pub date: EventString<MAX_ASSESSMENT_DATE>,
+    pub organization: EventString<MAX_LOGIN>,
+    pub schema_version: EventString<MAX_SCHEMA_VERSION>,
+    pub run_timestamp: EventString<MAX_TIMESTAMP_TEXT>,
+    pub run_id: EventString<MAX_RUN_ID>,
+    pub token_tier: TokenTier,
+    pub token_scopes: EventString<MAX_TOKEN_SCOPES>,
+    pub auth_mode: AuthMode,
+    pub rate_limit_warnings: u32,
+    pub unavailable_capabilities: EventVec<Capability, MAX_UNAVAILABLE_CAPABILITIES>,
+    pub inventory_fetched_at: Option<EventString<MAX_TIMESTAMP_TEXT>>,
+    pub warm_start: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[repr(u8)]
+pub enum TokenTier {
+    Full = 0,
+    Limited = 1,
+    Unknown = 2,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[repr(u8)]
+pub enum Capability {
+    OrgSecretScanningAlerts = 0,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[repr(u8)]
+pub enum AuthMode {
+    Pat = 0,
+    GitHubApp = 1,
+    GhCliFallback = 2,
+    Unknown = 3,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+pub struct OrgAlertSummary {
+    pub collection_status: CollectionStatus,
+    pub collection_reason: Option<EventString<MAX_REASON>>,
+    pub per_repo: EventVec<RepoAlertSummaryEntry, MAX_ORG_ALERT_REPOS>,
+    pub open_secret_alert_age_buckets: EventVec<StringU64Entry, MAX_ALERT_BUCKETS>,
+    pub total_open_secret_alerts: u64,
+    pub oldest_open_secret_alert_created_at: Option<EventString<MAX_TIMESTAMP_TEXT>>,
+    pub newest_open_secret_alert_created_at: Option<EventString<MAX_TIMESTAMP_TEXT>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[repr(u8)]
+pub enum CollectionStatus {
+    Success = 0,
+    NotCollected = 1,
+    PermissionDenied = 2,
+    TransientError = 3,
+    Unavailable = 4,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+pub struct RepoAlertSummaryEntry {
+    pub repository_id: EventString<MAX_GITHUB_ID>,
+    pub summary: RepoAlertSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+pub struct RepoAlertSummary {
+    pub open_alert_count: u64,
+    pub oldest_open_alert_created_at: Option<EventString<MAX_TIMESTAMP_TEXT>>,
+    pub newest_open_alert_created_at: Option<EventString<MAX_TIMESTAMP_TEXT>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+pub struct StringU64Entry {
+    pub key: EventString<MAX_ALERT_BUCKET>,
+    pub value: u64,
+}
+
+impl OrgStateCaptured {
+    #[must_use]
+    pub fn event_type(&self) -> &'static str {
+        "OrgStateCaptured"
+    }
+}
+
+impl Validate for OrgStateCaptured {
+    type Error = std::convert::Infallible;
+
+    fn validate(&self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+impl HasEventSchemaSource for OrgStateCaptured {
+    const EVENT_SCHEMA_SOURCE: Option<&'static str> = Some("gh-report/OrgEvent");
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
 #[repr(u8)]
 pub enum DomainEvent {
     RepositoryStateCaptured {
@@ -252,6 +368,8 @@ impl HasEventSchemaSource for DomainEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
     use pardosa_schema::{DomainError, from_bytes, to_vec};
 
     fn ts(nanos: u64) -> Timestamp {
@@ -370,6 +488,105 @@ mod tests {
         }
     }
 
+    fn domain_org_snapshot() -> crate::domain::evidence::OrgStateSnapshot {
+        let mut per_repo = HashMap::new();
+        per_repo.insert(
+            "repo-1".to_string(),
+            crate::domain::metrics::RepoAlertSummary {
+                open_alert_count: 7,
+                oldest_open_alert_created_at: Some("2026-06-13T08:00:00Z".to_string()),
+                newest_open_alert_created_at: Some("2026-06-14T08:00:00Z".to_string()),
+            },
+        );
+        let mut open_secret_alert_age_buckets = HashMap::new();
+        open_secret_alert_age_buckets.insert("0_7_days".to_string(), 3);
+        open_secret_alert_age_buckets.insert("8_30_days".to_string(), 4);
+
+        crate::domain::evidence::OrgStateSnapshot {
+            archived_repos: 2,
+            assessment_metadata: crate::domain::evidence::AssessmentMetadata {
+                date: "2026-06-14".to_string(),
+                organization: "acme".to_string(),
+                schema_version: "1.0".to_string(),
+                run_timestamp: "2026-06-14T12:00:00Z".to_string(),
+                run_id: "run-123".to_string(),
+                token_tier: crate::domain::auth::TokenTier::Full,
+                token_scopes: "repo,read:org,security_events".to_string(),
+                auth_mode: crate::domain::auth::AuthMode::Pat,
+                rate_limit_warnings: 1,
+                unavailable_capabilities: vec![
+                    crate::domain::auth::Capability::OrgSecretScanningAlerts,
+                ],
+                inventory_fetched_at: Some("2026-06-14T12:01:00Z".to_string()),
+                warm_start: true,
+            },
+            alert_summary: crate::domain::metrics::OrgAlertSummary {
+                collection_status: crate::domain::status::CollectionStatus::Success,
+                collection_reason: Some("collected".to_string()),
+                per_repo,
+                open_secret_alert_age_buckets,
+                total_open_secret_alerts: 7,
+                oldest_open_secret_alert_created_at: Some("2026-06-13T08:00:00Z".to_string()),
+                newest_open_secret_alert_created_at: Some("2026-06-14T08:00:00Z".to_string()),
+            },
+        }
+    }
+
+    fn assert_org_snapshot_eq(
+        actual: &crate::domain::evidence::OrgStateSnapshot,
+        expected: &crate::domain::evidence::OrgStateSnapshot,
+    ) {
+        assert_eq!(actual.archived_repos, expected.archived_repos);
+        assert_eq!(actual.assessment_metadata, expected.assessment_metadata);
+        assert_eq!(
+            actual.alert_summary.collection_status,
+            expected.alert_summary.collection_status
+        );
+        assert_eq!(
+            actual.alert_summary.collection_reason,
+            expected.alert_summary.collection_reason
+        );
+        assert_eq!(
+            actual.alert_summary.per_repo.len(),
+            expected.alert_summary.per_repo.len()
+        );
+        for (repo, expected_summary) in &expected.alert_summary.per_repo {
+            let actual_summary = actual
+                .alert_summary
+                .per_repo
+                .get(repo)
+                .expect("repo alert summary round-trips");
+            assert_eq!(
+                actual_summary.open_alert_count,
+                expected_summary.open_alert_count
+            );
+            assert_eq!(
+                actual_summary.oldest_open_alert_created_at,
+                expected_summary.oldest_open_alert_created_at
+            );
+            assert_eq!(
+                actual_summary.newest_open_alert_created_at,
+                expected_summary.newest_open_alert_created_at
+            );
+        }
+        assert_eq!(
+            actual.alert_summary.open_secret_alert_age_buckets,
+            expected.alert_summary.open_secret_alert_age_buckets
+        );
+        assert_eq!(
+            actual.alert_summary.total_open_secret_alerts,
+            expected.alert_summary.total_open_secret_alerts
+        );
+        assert_eq!(
+            actual.alert_summary.oldest_open_secret_alert_created_at,
+            expected.alert_summary.oldest_open_secret_alert_created_at
+        );
+        assert_eq!(
+            actual.alert_summary.newest_open_secret_alert_created_at,
+            expected.alert_summary.newest_open_secret_alert_created_at
+        );
+    }
+
     #[test]
     fn native_repository_state_round_trips() {
         let event = DomainEvent::RepositoryStateCaptured {
@@ -385,6 +602,54 @@ mod tests {
     }
 
     #[test]
+    fn org_state_captured_round_trips_domain_snapshot() {
+        let domain = domain_org_snapshot();
+        let event = OrgStateCaptured::try_from(domain.clone()).expect("org snapshot fits event");
+        let decoded_domain: crate::domain::evidence::OrgStateSnapshot = event.clone().into();
+
+        assert_org_snapshot_eq(&decoded_domain, &domain);
+        assert_eq!(event.event_type(), "OrgStateCaptured");
+        assert_eq!(
+            <OrgStateCaptured as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,
+            Some("gh-report/OrgEvent")
+        );
+        assert_ne!(
+            <OrgStateCaptured as GenomeSafe>::SCHEMA_HASH,
+            <DomainEvent as GenomeSafe>::SCHEMA_HASH
+        );
+    }
+
+    #[test]
+    fn native_org_state_round_trips() {
+        let event =
+            OrgStateCaptured::try_from(domain_org_snapshot()).expect("org snapshot fits event");
+        let wire = to_vec(&event);
+        let decoded: OrgStateCaptured = from_bytes(&wire).expect("decode native org event");
+        assert_eq!(decoded, event);
+        assert_eq!(decoded.event_type(), "OrgStateCaptured");
+    }
+
+    #[test]
+    fn org_state_schema_identity_is_stable() {
+        assert_eq!(
+            <OrgStateCaptured as GenomeSafe>::SCHEMA_HASH,
+            44_224_140_383_720_358_944_090_071_493_345_290_338_u128
+        );
+        assert_eq!(
+            pardosa::store::Event::<OrgStateCaptured>::ENVELOPE_HASH,
+            267_629_776_195_315_150_843_367_399_449_742_003_074_u128
+        );
+        assert_eq!(
+            <OrgStateCaptured as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,
+            Some("gh-report/OrgEvent")
+        );
+        assert_ne!(
+            <OrgStateCaptured as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,
+            <DomainEvent as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE
+        );
+    }
+
+    #[test]
     fn schema_hash_is_stable_across_reads() {
         let first = <DomainEvent as GenomeSafe>::SCHEMA_HASH;
         let second = <DomainEvent as GenomeSafe>::SCHEMA_HASH;
@@ -396,6 +661,18 @@ mod tests {
         assert_ne!(
             first, 19_710_905_809_486_475_925_592_730_934_028_496_282_u128,
             "current schema hash must differ from the prior P4b value"
+        );
+    }
+
+    #[test]
+    fn repository_event_envelope_identity_is_stable() {
+        assert_eq!(
+            pardosa::store::Event::<DomainEvent>::ENVELOPE_HASH,
+            285_502_219_235_890_583_211_732_736_039_501_609_618_u128
+        );
+        assert_eq!(
+            <DomainEvent as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,
+            Some("gh-report/DomainEvent")
         );
     }
 
