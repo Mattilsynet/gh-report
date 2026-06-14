@@ -347,3 +347,115 @@ fn live_handle_recovers_prior_appends_after_drop_and_reopen() {
     }
     rt.block_on(teardown_stream(&server, &stream_name));
 }
+
+#[test]
+#[ignore = "requires nats-server matching tools/.nats-server-version on PATH (mission g3-jetstream-schema-gate-exec)"]
+fn live_custom_header_survives_jetstream_store_and_replay() {
+    let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+    let rt = Runtime::new().expect("tokio runtime");
+    let tag = unique_stream_tag();
+    let stream_name = format!("PARDOSA_LIVE_{tag}");
+    let subject = format!("pardosa.live.{tag}");
+    rt.block_on(async {
+        use async_nats::jetstream::consumer::{
+            AckPolicy, DeliverPolicy, ReplayPolicy, pull::Config as PullConfig,
+        };
+        use async_nats::jetstream::stream::{
+            Config as StreamConfig, DiscardPolicy, RetentionPolicy, StorageType,
+        };
+        use futures_util::StreamExt;
+        let client = async_nats::connect(server.url()).await.expect("connect");
+        let js = async_nats::jetstream::new(client);
+        let stream = js
+            .get_or_create_stream(StreamConfig {
+                name: stream_name.clone(),
+                subjects: vec![subject.clone()],
+                storage: StorageType::File,
+                num_replicas: 1,
+                retention: RetentionPolicy::Limits,
+                discard: DiscardPolicy::New,
+                duplicate_window: Duration::from_mins(2),
+                ..Default::default()
+            })
+            .await
+            .expect("provision stream");
+        let header_name = "Pardosa-Envelope-Hash";
+        let header_value = "0123456789abcdef0123456789abcdef";
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert(header_name, header_value);
+        let publish_ack = js
+            .publish_with_headers(
+                subject.clone(),
+                headers,
+                bytes::Bytes::from_static(b"header-survival-probe"),
+            )
+            .await
+            .expect("publish accepted by JetStream")
+            .await
+            .expect("publish ack received");
+        assert!(
+            publish_ack.sequence > 0,
+            "publish ack sequence proves the header probe reached JetStream"
+        );
+        let consumer = stream
+            .create_consumer(PullConfig {
+                deliver_policy: DeliverPolicy::All,
+                ack_policy: AckPolicy::None,
+                filter_subject: subject.clone(),
+                replay_policy: ReplayPolicy::Instant,
+                inactive_threshold: Duration::from_secs(30),
+                ..Default::default()
+            })
+            .await
+            .expect("create replay consumer");
+        let mut messages = consumer.messages().await.expect("open replay messages");
+        let msg = messages
+            .next()
+            .await
+            .expect("one replayed message")
+            .expect("replayed message ok");
+        let replayed_headers = msg
+            .headers
+            .as_ref()
+            .expect("replayed message carries headers");
+        let replayed_value = replayed_headers
+            .get(header_name)
+            .expect("replayed message carries custom header")
+            .to_string();
+        assert_eq!(
+            replayed_value, header_value,
+            "custom header survives JetStream store-and-replay verbatim"
+        );
+    });
+    rt.block_on(teardown_stream(&server, &stream_name));
+}
+
+#[test]
+#[ignore = "requires nats-server matching tools/.nats-server-version on PATH (mission g3-jetstream-schema-gate-exec)"]
+fn live_append_with_replay_tag_surfaces_tag_on_replay() {
+    let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+    let rt = Runtime::new().expect("tokio runtime");
+    let tag = unique_stream_tag();
+    let stream_name = format!("PARDOSA_LIVE_{tag}");
+    let cfg = build_live_config(&tag, &rt, &server);
+    let handle = JetStreamBackend::open(cfg);
+    let payload = b"tagged-payload";
+    let replay_tag = "fedcba9876543210fedcba9876543210";
+    let ack = handle
+        .append_with_replay_tag(payload, replay_tag)
+        .expect("append tagged payload");
+    let records = handle.replay_all().expect("replay tagged payload");
+    assert_eq!(records.len(), 1, "single tagged append yields one record");
+    assert_eq!(records[0].ack, ack, "tagged record keeps ack position");
+    assert_eq!(
+        records[0].payload.as_ref(),
+        payload,
+        "tagged record keeps canonical payload bytes verbatim"
+    );
+    assert_eq!(
+        records[0].schema_tag.as_deref(),
+        Some(replay_tag),
+        "replay record surfaces the opaque per-message tag"
+    );
+    rt.block_on(teardown_stream(&server, &stream_name));
+}

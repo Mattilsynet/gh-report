@@ -686,6 +686,7 @@ mod tests {
         );
     }
     #[test]
+    #[ignore = "requires nats-server matching tools/.nats-server-version on PATH (mission g3-jetstream-schema-gate-exec)"]
     fn jetstream_backed_sync_publishes_one_message_per_new_event() {
         use crate::authoritative::jetstream::JetStreamBackendAdapter;
         use pardosa_nats::test_support::LiveNatsServer;
@@ -758,6 +759,7 @@ mod tests {
         rt.block_on(delete_stream(&server, &stream_name));
     }
     #[test]
+    #[ignore = "requires nats-server matching tools/.nats-server-version on PATH (mission g3-jetstream-schema-gate-exec)"]
     fn event_frame_rehydrate_frontier_matches_pgno_blob_path() {
         use crate::store::{EventStore, JetStreamBackend as StoreJetStreamBackend, PgnoBackend};
         use pardosa_nats::test_support::LiveNatsServer;
@@ -831,6 +833,76 @@ mod tests {
         rt.block_on(delete_stream(&server, &stream_name));
     }
     #[test]
+    #[ignore = "requires nats-server matching tools/.nats-server-version on PATH (mission g3-jetstream-schema-gate-exec)"]
+    fn event_frame_rehydrate_rejects_foreign_schema_tag() {
+        use crate::store::{EventStore, JetStreamBackend as StoreJetStreamBackend};
+        use pardosa_nats::test_support::LiveNatsServer;
+        use pardosa_nats::{JetStreamBackend, JetStreamConfig, RuntimeHandle};
+        use pardosa_wire::to_vec;
+        use std::sync::Arc;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tokio::runtime::Runtime;
+        fn tag() -> String {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos();
+            format!("{}_{}", std::process::id(), nanos)
+        }
+        fn config(tag: &str, rt: &Runtime, server: &LiveNatsServer) -> JetStreamConfig {
+            JetStreamConfig::builder()
+                .stream_name(format!("P3A_SCHEMA_TAG_{tag}"))
+                .subject(format!("p3a.schema_tag.{tag}"))
+                .durable_consumer(format!("p3a-schema-tag-{tag}"))
+                .runtime_handle(RuntimeHandle::from_tokio(rt.handle().clone()))
+                .nats_url(server.url().to_owned())
+                .build()
+                .expect("config valid")
+        }
+        async fn delete_stream(server: &LiveNatsServer, stream_name: &str) {
+            let Ok(client) = async_nats::connect(server.url()).await else {
+                return;
+            };
+            let js = async_nats::jetstream::new(client);
+            let _ = js.delete_stream(stream_name).await;
+        }
+        let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+        let rt = Runtime::new().expect("tokio runtime");
+        let tag = tag();
+        let stream_name = format!("P3A_SCHEMA_TAG_{tag}");
+        let handle = JetStreamBackend::open(config(&tag, &rt, &server));
+        let event = Event::new_unchecked(
+            crate::EventId::from_decoded(0),
+            crate::FiberId::from_decoded(0),
+            false,
+            crate::event::Precursor::Genesis,
+            [0u8; 32],
+            P3aZeroSeedPayload(7),
+        );
+        let bytes = to_vec(&event);
+        let foreign_tag = "fedcba9876543210fedcba9876543210";
+        let _ = handle
+            .append_with_replay_tag(&bytes, foreign_tag)
+            .expect("append foreign-tagged frame");
+        let Err(err) = EventStore::<P3aZeroSeedPayload>::open_with_backend(
+            StoreJetStreamBackend::open(JetStreamBackend::open(config(&tag, &rt, &server))),
+        ) else {
+            panic!("foreign schema tag must reject JetStream rehydrate")
+        };
+        match err {
+            PardosaError::CursorRead { source } => match *source {
+                persist::Error::SchemaHashMismatch { expected, found } => {
+                    assert_eq!(expected, Event::<P3aZeroSeedPayload>::ENVELOPE_HASH);
+                    assert_eq!(found, 0xfedc_ba98_7654_3210_fedc_ba98_7654_3210);
+                }
+                other => panic!("expected SchemaHashMismatch, got {other:?}"),
+            },
+            other => panic!("expected CursorRead, got {other:?}"),
+        }
+        rt.block_on(delete_stream(&server, &stream_name));
+    }
+    #[test]
+    #[ignore = "requires nats-server matching tools/.nats-server-version on PATH (mission g3-jetstream-schema-gate-exec)"]
     fn create_with_backend_fresh_jetstream_emits_zero_seed_messages() {
         use crate::store::{EventStore, JetStreamBackend as StoreJetStreamBackend};
         use pardosa_nats::test_support::LiveNatsServer;

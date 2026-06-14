@@ -251,6 +251,7 @@ pub(crate) mod jetstream {
     /// inspection; cross-crate code never names the wrapped type.
     pub(crate) struct JetStreamBackendAdapter {
         pub(crate) handle: JetStreamHandle,
+        pub(crate) schema_tag: Option<String>,
     }
     impl JetStreamBackendAdapter {
         /// Wrap the supplied [`JetStreamHandle`] as the in-crate
@@ -267,7 +268,13 @@ pub(crate) mod jetstream {
         /// detached-for-tests runtime handle traps any premature
         /// network call there).
         pub(crate) const fn new(handle: JetStreamHandle) -> Self {
-            Self { handle }
+            Self {
+                handle,
+                schema_tag: None,
+            }
+        }
+        pub(crate) fn set_schema_tag(&mut self, schema_tag: String) {
+            self.schema_tag = Some(schema_tag);
         }
         /// Borrow the wrapped [`JetStreamHandle`] for in-crate
         /// inspection (config probing in tests; the runtime's

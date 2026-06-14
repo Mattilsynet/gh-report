@@ -3,6 +3,7 @@ use super::{
     ValidatedReplayError,
 };
 use crate::authoritative::{AuthoritativeBackend, BackendDispatch, admit_into_dispatch};
+use crate::backend::jetstream::JetStreamDurableFrame;
 use crate::backend::rehydrate::from_pgno_bytes_unchecked;
 use crate::dragline::Dragline;
 use crate::event::Event;
@@ -74,13 +75,13 @@ fn backend_error_to_cursor_read(
 }
 fn fetch_jetstream_frames(
     adapter: &mut crate::authoritative::jetstream::JetStreamBackendAdapter,
-) -> Result<Vec<Vec<u8>>, PardosaError> {
+) -> Result<Vec<JetStreamDurableFrame>, PardosaError> {
     adapter
         .fetch_durable_frames()
         .map_err(|e| backend_error_to_cursor_read("JetStream rehydrate fetch failed", &e))
 }
 fn rehydrate_jetstream_frames<T>(
-    frames: &[Vec<u8>],
+    frames: &[JetStreamDurableFrame],
 ) -> Result<(crate::dragline::Line<T>, usize), PardosaError>
 where
     T: Decode + GenomeSafe,
@@ -88,27 +89,74 @@ where
     if frames.is_empty() {
         return Ok((crate::dragline::Line::new(), 0));
     }
-    if let Some((pgno_idx, mut event_frames)) =
+    if let Some((pgno_idx, event_frames)) =
         frames.iter().enumerate().rev().find_map(|(idx, frame)| {
-            event_frames_from_pgno::<T>(frame)
+            event_frames_from_pgno::<T>(&frame.payload)
                 .ok()
                 .map(|frames| (idx, frames))
         })
     {
         if pgno_idx + 1 == frames.len() {
-            let line = from_pgno_bytes_unchecked::<T>(&frames[pgno_idx])
+            let line = from_pgno_bytes_unchecked::<T>(&frames[pgno_idx].payload)
                 .map_err(persist_error_to_cursor_read)?;
             let synced_events = line.read_line().len();
             return Ok((line, synced_events));
         }
-        event_frames.extend(frames[pgno_idx + 1..].iter().cloned());
-        let line = rehydrate_event_frames::<T, _>(event_frames.iter())?;
+        let mut replay_frames: Vec<JetStreamDurableFrame> = event_frames
+            .into_iter()
+            .map(legacy_jetstream_frame)
+            .collect();
+        replay_frames.extend(frames[pgno_idx + 1..].iter().cloned());
+        let line = rehydrate_event_frames::<T>(&replay_frames)?;
         let synced_events = line.read_line().len();
         return Ok((line, synced_events));
     }
-    let line = rehydrate_event_frames::<T, _>(frames.iter())?;
+    let line = rehydrate_event_frames::<T>(frames)?;
     let synced_events = line.read_line().len();
     Ok((line, synced_events))
+}
+
+fn legacy_jetstream_frame(payload: Vec<u8>) -> JetStreamDurableFrame {
+    JetStreamDurableFrame {
+        payload,
+        schema_tag: None,
+    }
+}
+
+fn schema_tag<T>() -> String
+where
+    T: GenomeSafe,
+{
+    format!("{:032x}", Event::<T>::ENVELOPE_HASH)
+}
+
+fn mismatch_sentinel(expected: u128) -> u128 {
+    u128::from(expected == 0)
+}
+
+fn parse_schema_tag(tag: &str) -> Option<u128> {
+    let hex = tag
+        .strip_prefix("0x")
+        .or_else(|| tag.strip_prefix("0X"))
+        .unwrap_or(tag);
+    u128::from_str_radix(hex, 16).ok()
+}
+
+fn gate_replay_schema_tag<T>(tag: Option<&str>) -> Result<(), PardosaError>
+where
+    T: GenomeSafe,
+{
+    let Some(tag) = tag else {
+        return Ok(());
+    };
+    let expected = Event::<T>::ENVELOPE_HASH;
+    let found = parse_schema_tag(tag).unwrap_or_else(|| mismatch_sentinel(expected));
+    if found == expected {
+        return Ok(());
+    }
+    Err(persist_error_to_cursor_read(
+        crate::persist::Error::SchemaHashMismatch { expected, found },
+    ))
 }
 fn event_frames_from_pgno<T>(bytes: &[u8]) -> Result<Vec<Vec<u8>>, PardosaError>
 where
@@ -136,16 +184,17 @@ where
     }
     Ok(frames)
 }
-fn rehydrate_event_frames<T, I>(frames: I) -> Result<crate::dragline::Line<T>, PardosaError>
+fn rehydrate_event_frames<T>(
+    frames: &[JetStreamDurableFrame],
+) -> Result<crate::dragline::Line<T>, PardosaError>
 where
     T: Decode + GenomeSafe,
-    I: IntoIterator,
-    I::Item: AsRef<[u8]>,
 {
     use std::collections::{HashMap, HashSet};
     let mut events: Vec<Event<T>> = Vec::new();
     let mut frontier = Frontier::GENESIS;
     for frame in frames {
+        gate_replay_schema_tag::<T>(frame.schema_tag.as_deref())?;
         let bytes = frame.as_ref();
         frontier = frontier.roll(bytes);
         let event: Event<T> = from_bytes(bytes)
@@ -283,6 +332,7 @@ where
                 let mut adapter = *boxed_adapter;
                 let frames = fetch_jetstream_frames(&mut adapter)?;
                 let (dragline, synced_events) = rehydrate_jetstream_frames::<T>(&frames)?;
+                adapter.set_schema_tag(schema_tag::<T>());
                 let scratch =
                     tempfile::tempfile().map_err(|e| PardosaError::CursorJournalOpen {
                         source: Box::new(e),
@@ -398,6 +448,7 @@ where
                 let mut adapter = *boxed_adapter;
                 let frames = fetch_jetstream_frames(&mut adapter)?;
                 let (dragline, synced_events) = rehydrate_jetstream_frames::<T>(&frames)?;
+                adapter.set_schema_tag(schema_tag::<T>());
                 let scratch =
                     tempfile::tempfile().map_err(|e| PardosaError::CursorJournalOpen {
                         source: Box::new(e),
@@ -464,6 +515,86 @@ where
             journal: path.to_path_buf(),
             schema_source: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pardosa_schema::schema_hash_bytes;
+    use pardosa_wire::{Decode, DecodeError, Decoder, Encode, EventSafe};
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct TaggedPayload(u64);
+
+    impl pardosa_wire::sealed::Sealed for TaggedPayload {}
+    impl EventSafe for TaggedPayload {}
+    impl GenomeSafe for TaggedPayload {
+        const SCHEMA_HASH: u128 = schema_hash_bytes(b"LifecycleTaggedPayload");
+        const SCHEMA_SOURCE: &'static str = "LifecycleTaggedPayload";
+    }
+    impl Encode for TaggedPayload {
+        fn encode(&self, out: &mut Vec<u8>) {
+            self.0.encode(out);
+        }
+    }
+    impl Decode for TaggedPayload {
+        fn decode(d: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+            u64::decode(d).map(Self)
+        }
+    }
+
+    fn frame(value: u64) -> Vec<u8> {
+        pardosa_wire::to_vec(&Event::new_unchecked(
+            crate::EventId::from_decoded(0),
+            crate::FiberId::from_decoded(0),
+            false,
+            crate::event::Precursor::Genesis,
+            [0u8; 32],
+            TaggedPayload(value),
+        ))
+    }
+
+    #[test]
+    fn rehydrate_event_frames_rejects_foreign_replay_tag_with_schema_hash_mismatch() {
+        let frames = [JetStreamDurableFrame {
+            payload: frame(7),
+            schema_tag: Some("fedcba9876543210fedcba9876543210".to_string()),
+        }];
+        let err = rehydrate_event_frames::<TaggedPayload>(&frames)
+            .expect_err("foreign replay tag must reject before decode");
+        match err {
+            PardosaError::CursorRead { source } => match *source {
+                crate::persist::Error::SchemaHashMismatch { expected, found } => {
+                    assert_eq!(
+                        expected,
+                        Event::<TaggedPayload>::ENVELOPE_HASH,
+                        "typed mismatch reports this payload's envelope hash"
+                    );
+                    assert_eq!(
+                        found, 0xfedc_ba98_7654_3210_fedc_ba98_7654_3210,
+                        "typed mismatch reports the replay tag value"
+                    );
+                }
+                other => panic!("expected SchemaHashMismatch, got {other:?}"),
+            },
+            other => panic!("expected CursorRead, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rehydrate_event_frames_allows_absent_replay_tag() {
+        let frames = [JetStreamDurableFrame {
+            payload: frame(11),
+            schema_tag: None,
+        }];
+        let line = rehydrate_event_frames::<TaggedPayload>(&frames)
+            .expect("legacy frames without replay tags still decode");
+        assert_eq!(
+            line.read_line()[0].domain_event(),
+            &TaggedPayload(11),
+            "absent tag falls through to the current decode path"
+        );
     }
 }
 impl<T> EventStore<T, std::fs::File>

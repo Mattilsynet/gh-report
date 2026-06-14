@@ -88,14 +88,16 @@ fn assert_decode_rejection(err: &PardosaError) {
     let PardosaError::CursorRead { source } = err else {
         panic!(
             "foreign JetStream event must be rejected while opening the wrong typed store; \
-             expected CursorRead wrapping persist::Error::Decode from lifecycle.rs:139-155, got {err:?}"
+             expected CursorRead wrapping persist::Error::SchemaHashMismatch, got {err:?}"
         );
     };
     assert!(
-        matches!(source.as_ref(), pardosa::store::replay::Error::Decode(_)),
-        "G3 finding: JetStream per-event-frame foreign-event rejection fires through \
-         lifecycle.rs:139-155 decode failure, not the explicit ENVELOPE_HASH gate at \
-         typed.rs:54-74 / lifecycle.rs:113-138; got {source:?}"
+        matches!(
+            source.as_ref(),
+            pardosa::store::replay::Error::SchemaHashMismatch { .. }
+        ),
+        "G3 fix: JetStream per-event-frame foreign-event rejection must fire through \
+         the explicit ENVELOPE_HASH gate, not decode; got {source:?}"
     );
 }
 

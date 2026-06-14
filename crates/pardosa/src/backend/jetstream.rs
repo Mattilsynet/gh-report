@@ -7,6 +7,18 @@ use pardosa_nats::{JetStreamAckPosition, JetStreamRuntimeError};
 use std::time::{Duration, Instant};
 use tracing::{info, info_span};
 
+#[derive(Clone, Debug)]
+pub(crate) struct JetStreamDurableFrame {
+    pub(crate) payload: Vec<u8>,
+    pub(crate) schema_tag: Option<String>,
+}
+
+impl AsRef<[u8]> for JetStreamDurableFrame {
+    fn as_ref(&self) -> &[u8] {
+        &self.payload
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TelemetryOp {
     Append,
@@ -375,9 +387,12 @@ impl sealed::Sealed for JetStreamBackendAdapter {}
 impl BackendSink for JetStreamBackendAdapter {
     fn append(&mut self, bytes: &[u8]) -> Result<AckPosition, BackendError> {
         observe_operation(OperationTelemetry::append(bytes.len()), || {
-            observe_connect(|| self.handle.append(bytes))
-                .map(map_position)
-                .map_err(|e| map_runtime_error(e, BackendOp::Append))
+            observe_connect(|| match self.schema_tag.as_deref() {
+                Some(schema_tag) => self.handle.append_with_replay_tag(bytes, schema_tag),
+                None => self.handle.append(bytes),
+            })
+            .map(map_position)
+            .map_err(|e| map_runtime_error(e, BackendOp::Append))
         })
     }
     fn sync(&mut self) -> Result<AckPosition, BackendError> {
@@ -390,14 +405,19 @@ impl BackendSink for JetStreamBackendAdapter {
     }
 }
 impl JetStreamBackendAdapter {
-    pub(crate) fn fetch_durable_frames(&mut self) -> Result<Vec<Vec<u8>>, BackendError> {
+    pub(crate) fn fetch_durable_frames(
+        &mut self,
+    ) -> Result<Vec<JetStreamDurableFrame>, BackendError> {
         let records = observe_replay_operation(|| {
             observe_connect(|| self.handle.replay_all())
                 .map_err(|e| map_runtime_error(e, BackendOp::Sync))
         })?;
         Ok(records
             .into_iter()
-            .map(|r| r.payload.as_ref().to_vec())
+            .map(|r| JetStreamDurableFrame {
+                payload: r.payload.as_ref().to_vec(),
+                schema_tag: r.schema_tag,
+            })
             .collect())
     }
 }

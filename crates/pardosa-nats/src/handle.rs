@@ -5,6 +5,7 @@ use futures_util::StreamExt;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::runtime::Handle;
+const PARDOSA_ENVELOPE_HASH_HEADER: &str = "Pardosa-Envelope-Hash";
 /// Backend-opaque positional marker minted by the substrate on every
 /// [`JetStreamHandle::append`] / [`JetStreamHandle::sync`]
 /// (ADR-0022 §D2 — `AckPosition` is opaque per backend, monotonic
@@ -35,8 +36,8 @@ impl JetStreamAckPosition {
 }
 /// A single record observed by [`JetStreamHandle::replay_all`]: the
 /// substrate-opaque [`JetStreamAckPosition`] the record was
-/// published at, paired with the canonical payload bytes (ADR-0022
-/// §D5 — verbatim, no re-framing).
+/// published at, paired with the canonical payload bytes and opaque
+/// metadata surfaced from the backend.
 ///
 /// Recovery code consumes a `Vec` of these in stream-`seq` order.
 /// `payload` is a [`bytes::Bytes`] handle — no copy on the read path.
@@ -51,6 +52,9 @@ pub struct JetStreamReplayRecord {
     /// Canonical payload bytes for this record (ADR-0022 §D5 —
     /// returned verbatim).
     pub payload: Bytes,
+    /// Opaque backend metadata value copied from the replayed
+    /// `Pardosa-Envelope-Hash` header when present.
+    pub schema_tag: Option<String>,
 }
 /// Lazy-init state for the `JetStream` client, the provisioned
 /// stream, and the most-recent ack-position. Lives behind a
@@ -127,6 +131,41 @@ impl JetStreamHandle {
     ///
     /// Panics if the state mutex is poisoned.
     pub fn append(&self, bytes: &[u8]) -> Result<JetStreamAckPosition, JetStreamRuntimeError> {
+        self.append_inner(bytes, None)
+    }
+    /// Publish `bytes` with an opaque per-message replay tag supplied
+    /// by the caller.
+    ///
+    /// The tag is copied into a `JetStream` header and surfaced again
+    /// by [`Self::replay_all`] as [`JetStreamReplayRecord::schema_tag`].
+    /// The substrate treats the value as opaque text and does not parse
+    /// or compare it.
+    ///
+    /// # Errors
+    ///
+    /// * [`JetStreamRuntimeError::Detached`] — detached test handle.
+    /// * [`JetStreamRuntimeError::Connect`] — connection / stream
+    ///   provisioning failed.
+    /// * [`JetStreamRuntimeError::Publish`] — server rejected publish
+    ///   or ack-stream errored.
+    /// * [`JetStreamRuntimeError::Timeout`] — publish-ack not within
+    ///   the configured operation timeout.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the state mutex is poisoned.
+    pub fn append_with_replay_tag(
+        &self,
+        bytes: &[u8],
+        replay_tag: &str,
+    ) -> Result<JetStreamAckPosition, JetStreamRuntimeError> {
+        self.append_inner(bytes, Some(replay_tag))
+    }
+    fn append_inner(
+        &self,
+        bytes: &[u8],
+        replay_tag: Option<&str>,
+    ) -> Result<JetStreamAckPosition, JetStreamRuntimeError> {
         let runtime = self
             .config
             .runtime_handle()
@@ -138,7 +177,7 @@ impl JetStreamHandle {
         let timeout = cfg.operation_timeout();
         let seq = run_op(&runtime, timeout, async {
             let js = ensure_state(&self.state, cfg).await?;
-            publish_once(&js, cfg.subject(), bytes, &nats_msg_id).await
+            publish_once(&js, cfg.subject(), bytes, &nats_msg_id, replay_tag).await
         })?;
         let mut guard = self.state_locked();
         if let Some(state) = guard.as_mut()
@@ -314,9 +353,13 @@ async fn publish_once(
     subject: &str,
     bytes: &[u8],
     nats_msg_id: &str,
+    replay_tag: Option<&str>,
 ) -> Result<u64, JetStreamRuntimeError> {
     let mut headers = async_nats::HeaderMap::new();
     headers.insert("Nats-Msg-Id", nats_msg_id);
+    if let Some(tag) = replay_tag {
+        headers.insert(PARDOSA_ENVELOPE_HASH_HEADER, tag);
+    }
     let payload = bytes::Bytes::copy_from_slice(bytes);
     let publish_ack_future = js
         .publish_with_headers(subject.to_string(), headers, payload)
@@ -376,9 +419,16 @@ async fn replay_once(
             .map_err(|e| JetStreamRuntimeError::Replay { source: e })?;
         let seq = info.stream_sequence;
         let payload = msg.message.payload.clone();
+        let schema_tag = msg
+            .message
+            .headers
+            .as_ref()
+            .and_then(|headers| headers.get(PARDOSA_ENVELOPE_HASH_HEADER))
+            .map(ToString::to_string);
         out.push(JetStreamReplayRecord {
             ack: JetStreamAckPosition::from_u64(seq),
             payload,
+            schema_tag,
         });
         if seq >= last_seq {
             break;
@@ -466,6 +516,7 @@ mod tests {
         let record = JetStreamReplayRecord {
             ack: JetStreamAckPosition::from_u64(42),
             payload: Bytes::copy_from_slice(payload_in),
+            schema_tag: None,
         };
         assert_eq!(
             record.payload.as_ref(),
