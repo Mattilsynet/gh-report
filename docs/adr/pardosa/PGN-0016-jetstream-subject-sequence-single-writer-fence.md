@@ -1,14 +1,14 @@
 # PGN-0016. JetStream Subject-Sequence Single-Writer Fence
 
 Date: 2026-06-14
-Last-reviewed: 2026-06-14
+Last-reviewed: 2026-06-15
 Tier: B
 Status: Accepted
 Crates: pardosa, pardosa-nats
 
 ## Related
 
-References: PGN-0010, PGN-0001, PGN-0008, PGN-0015, CHE-0061, CHE-0006, CHE-0024
+References: PGN-0010, PGN-0001, PGN-0008, PGN-0006, CHE-0061, CHE-0006, CHE-0024
 
 ## Context
 
@@ -57,12 +57,20 @@ R7 [5]: Scope this fence to single-writer plus fast failover, not concurrent
 R8 [5]: Mint a UUID v7 owner id at process start for fencing audit; never
   derive owner identity from hostname, shared `K_REVISION`, or unconfirmed
   Cloud Run metadata instance ids.
+R9 [5]: Surface JetStream wrong-last-sequence (10071/10164) as neutral typed
+  conflict errors: `pardosa-nats` exposes no `async_nats` type or err_code,
+  `pardosa::BackendError` carries `ConcurrencyConflict`, and `PardosaError`
+  preserves a matchable conflict variant across the store boundary without
+  string-flattening.
 
 ## Consequences
 
 + becomes easier: CHE-0061's marker-trait claim can rely on a concrete
   JetStream fence; gh-report Cloud Run overlap fails at append instead of
   depending on deployment singleton folklore.
++ becomes easier: conflict recovery is neutral and matchable across the store
+  boundary; fast-failover writers abort/replay per R2/R7 without
+  string-parsing or multi-writer coordination.
 − becomes harder: append callers must carry expected stream state, classify
   NATS conflicts by err_code, abort losing runs, and preserve replay paths for
   interim per-event publishing.
