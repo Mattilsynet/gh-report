@@ -1043,7 +1043,7 @@ async fn prepare_collection(
     .map_err(|e| {
         if let AppError::Persistence(PersistenceError::LockFailed { ref reason }) = e {
             let lock_file = lock::lock_path(&config.store_dir);
-            warn!(
+            error!(
                 reason = %reason,
                 lock_file = %lock_file.display(),
                 "collection already in progress; remove lock manually or re-run with --force-unlock"

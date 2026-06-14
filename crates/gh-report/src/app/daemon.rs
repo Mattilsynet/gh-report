@@ -322,7 +322,7 @@ fn spawn_collection_loop(
                     info!("initial collection aborted on shutdown — no report published");
                 }
                 Err(AppError::Persistence(PersistenceError::LockFailed { ref reason })) => {
-                    warn!(reason = %reason, "initial collection skipped: lock held");
+                    error!(reason = %reason, "initial collection skipped: lock held");
                 }
                 Err(e) => error!(error = %e, "initial collection failed — will retry"),
             }

@@ -106,6 +106,8 @@ criterion = { version = "0.8", default-features = false }
 
 # === Misc ===
 fastrand = "2"
+gethostname = "1"
+rustix = { version = "1.1.4", default-features = false, features = ["process", "std"] }
 
 # === CLI ===
 # clap routed at workspace tier with `derive` only; gh-report adds `env` via

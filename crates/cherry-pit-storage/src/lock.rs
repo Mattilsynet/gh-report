@@ -1,11 +1,13 @@
 //! Run lock management to prevent concurrent collection runs.
 //!
 //! A lock file is written to the working directory before a collection run
-//! starts. The lock contains metadata (run ID, PID, creation time) so that
-//! stale locks left by crashed processes can be identified and reclaimed.
+//! starts. The lock contains metadata (run ID, PID, hostname, creation time)
+//! so that stale locks left by crashed processes can be identified and
+//! reclaimed.
 //!
-//! **Stale lock policy:** A lock is considered stale if its `created_at`
-//! timestamp exceeds the configured TTL. The default TTL is 4 hours.
+//! **Stale lock policy:** A lock is considered stale if its holder is dead on
+//! the current host, or if its `created_at` timestamp exceeds the configured
+//! TTL. The default TTL is 15 minutes.
 //! Manual recovery is available via `--force-unlock`.
 //!
 //! **Lock atomicity:** Lock creation uses `O_CREAT | O_EXCL` to prevent
@@ -22,8 +24,8 @@ use tracing::{info, warn};
 use crate::error::PersistenceError;
 use crate::fs::atomic_write_text;
 
-/// Default stale-lock TTL: 4 hours.
-pub const DEFAULT_LOCK_TTL: Duration = Duration::from_hours(4);
+/// Default stale-lock TTL: 15 minutes.
+pub const DEFAULT_LOCK_TTL: Duration = Duration::from_mins(15);
 
 /// Default lock file name.
 pub const DEFAULT_LOCK_FILENAME: &str = "collector.lock";
@@ -40,6 +42,9 @@ pub struct LockMetadata {
     pub run_id: String,
     /// Process ID of the lock holder (diagnostic only).
     pub pid: u32,
+    /// Hostname of the lock holder.
+    #[serde(default)]
+    pub hostname: String,
     /// When the lock was created (UTC).
     pub created_at: Timestamp,
 }
@@ -51,9 +56,14 @@ impl LockMetadata {
         Self {
             run_id: run_id.to_string(),
             pid: std::process::id(),
+            hostname: current_hostname(),
             created_at: Timestamp::now(),
         }
     }
+}
+
+fn current_hostname() -> String {
+    gethostname::gethostname().to_string_lossy().into_owned()
 }
 
 /// RAII guard that releases the lock file when dropped.
@@ -117,6 +127,7 @@ impl RunLock {
         let refreshed = LockMetadata {
             run_id: self.metadata.run_id.clone(),
             pid: self.metadata.pid,
+            hostname: self.metadata.hostname.clone(),
             created_at: Timestamp::now(),
         };
         let json =
@@ -237,11 +248,14 @@ pub fn acquire(
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 if let Ok(existing) = read_lock(&lock_path) {
-                    if is_stale(&existing, stale_ttl) {
+                    if let Some(reclaim_reason) = reclaim_reason(&existing, stale_ttl) {
+                        let reason = reclaim_reason.as_str();
                         warn!(
                             run_id = %existing.run_id,
                             pid = existing.pid,
+                            host = %existing.hostname,
                             created_at = %existing.created_at,
+                            reason = reason,
                             "reclaiming stale lock"
                         );
                         if let Err(e) = std::fs::remove_file(&lock_path) {
@@ -291,13 +305,64 @@ pub fn acquire(
     })
 }
 
-/// Determine whether a lock is stale based on TTL.
-///
-/// A lock is stale when its `created_at` timestamp plus `ttl` is in the
-/// past. This is a simple time-based check — no PID or host awareness.
+#[cfg(test)]
 fn is_stale(meta: &LockMetadata, ttl: Duration) -> bool {
-    let ttl_jiff = SignedDuration::try_from(ttl).unwrap_or(SignedDuration::from_hours(4));
+    reclaim_reason(meta, ttl).is_some()
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum ReclaimReason {
+    TtlExpired,
+    DeadHolderSameHost,
+}
+
+impl ReclaimReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::TtlExpired => "ttl-expired",
+            Self::DeadHolderSameHost => "dead-holder-same-host",
+        }
+    }
+}
+
+fn reclaim_reason(meta: &LockMetadata, ttl: Duration) -> Option<ReclaimReason> {
+    if same_host_dead_holder(meta) {
+        return Some(ReclaimReason::DeadHolderSameHost);
+    }
+    if ttl_expired(meta, ttl) {
+        return Some(ReclaimReason::TtlExpired);
+    }
+    None
+}
+
+fn same_host_dead_holder(meta: &LockMetadata) -> bool {
+    !meta.hostname.is_empty() && meta.hostname == current_hostname() && !pid_is_alive(meta.pid)
+}
+
+fn ttl_expired(meta: &LockMetadata, ttl: Duration) -> bool {
+    let ttl_jiff = SignedDuration::try_from(ttl).unwrap_or_else(|_| {
+        SignedDuration::try_from(DEFAULT_LOCK_TTL).unwrap_or(SignedDuration::from_mins(15))
+    });
     Timestamp::now().duration_since(meta.created_at) > ttl_jiff
+}
+
+#[cfg(unix)]
+fn pid_is_alive(pid: u32) -> bool {
+    let Ok(raw_pid) = i32::try_from(pid) else {
+        return true;
+    };
+    let Some(pid) = rustix::process::Pid::from_raw(raw_pid) else {
+        return true;
+    };
+    !matches!(
+        rustix::process::test_kill_process(pid),
+        Err(err) if err == rustix::io::Errno::SRCH
+    )
+}
+
+#[cfg(not(unix))]
+fn pid_is_alive(_pid: u32) -> bool {
+    true
 }
 
 /// Create a lock file atomically by writing to a temp file in the same
@@ -378,6 +443,7 @@ mod tests {
         let meta = LockMetadata::current("test-run-123");
         assert_eq!(meta.run_id, "test-run-123");
         assert_eq!(meta.pid, std::process::id());
+        assert!(!meta.hostname.is_empty());
     }
 
     #[test]
@@ -469,6 +535,7 @@ mod tests {
         let stale_meta = LockMetadata {
             run_id: "old-run".to_string(),
             pid: 999_999_999,
+            hostname: LockMetadata::current("host-probe").hostname,
             created_at: Timestamp::now() - SignedDuration::from_hours(5),
         };
         let lock_file = dir.path().join(DEFAULT_LOCK_FILENAME);
@@ -492,6 +559,7 @@ mod tests {
         let meta = LockMetadata {
             run_id: "active-run".to_string(),
             pid: std::process::id(),
+            hostname: LockMetadata::current("host-probe").hostname,
             created_at: Timestamp::now(),
         };
         let lock_file = dir.path().join(DEFAULT_LOCK_FILENAME);
@@ -572,6 +640,7 @@ mod tests {
         let meta = LockMetadata {
             run_id: "run".to_string(),
             pid: std::process::id(),
+            hostname: LockMetadata::current("host-probe").hostname,
             created_at: Timestamp::now(),
         };
         assert!(!is_stale(&meta, DEFAULT_LOCK_TTL));
@@ -582,19 +651,26 @@ mod tests {
         let meta = LockMetadata {
             run_id: "run".to_string(),
             pid: 999_999_999,
+            hostname: LockMetadata::current("host-probe").hostname,
             created_at: Timestamp::now() - SignedDuration::from_hours(5),
         };
         assert!(is_stale(&meta, DEFAULT_LOCK_TTL));
     }
 
     #[test]
-    fn is_stale_lock_at_ttl_boundary_is_not_stale() {
+    fn cross_host_lock_at_default_ttl_boundary_is_not_stale() {
         let meta = LockMetadata {
             run_id: "run".to_string(),
             pid: 1,
-            created_at: Timestamp::now() - SignedDuration::from_mins(239),
+            hostname: "foreign-host.example.com".to_string(),
+            created_at: Timestamp::now() - SignedDuration::from_mins(14),
         };
         assert!(!is_stale(&meta, DEFAULT_LOCK_TTL));
+    }
+
+    #[test]
+    fn default_ttl_is_fifteen_minutes() {
+        assert_eq!(DEFAULT_LOCK_TTL, Duration::from_mins(15));
     }
 
     #[test]
@@ -602,6 +678,7 @@ mod tests {
         let meta = LockMetadata {
             run_id: "run".to_string(),
             pid: 1,
+            hostname: LockMetadata::current("host-probe").hostname,
             created_at: Timestamp::now() - SignedDuration::from_secs(61),
         };
         assert!(is_stale(&meta, Duration::from_mins(1)));
@@ -651,6 +728,7 @@ mod tests {
         let meta = LockMetadata {
             run_id: "active-run".to_string(),
             pid: std::process::id(),
+            hostname: LockMetadata::current("host-probe").hostname,
             created_at: Timestamp::now(),
         };
         let lock_file = dir.path().join(DEFAULT_LOCK_FILENAME);
@@ -760,6 +838,7 @@ mod tests {
 
         assert_eq!(loaded.run_id, meta.run_id);
         assert_eq!(loaded.pid, meta.pid);
+        assert_eq!(loaded.hostname, meta.hostname);
     }
 
     #[test]
@@ -796,6 +875,156 @@ mod tests {
         let meta = read_lock(&path).unwrap();
         assert_eq!(meta.run_id, "old-run");
         assert_eq!(meta.pid, 12345);
+        assert_eq!(meta.hostname, "old-host.example.com");
+    }
+
+    #[test]
+    fn old_format_lock_without_hostname_is_ttl_only() {
+        let dir = TempDir::new().unwrap();
+        let lock_file = dir.path().join(DEFAULT_LOCK_FILENAME);
+        let json = format!(
+            r#"{{
+            "run_id": "old-run",
+            "pid": 999999999,
+            "created_at": "{}"
+        }}"#,
+            Timestamp::now()
+        );
+        std::fs::write(&lock_file, json).unwrap();
+
+        let meta = read_lock(&lock_file).unwrap();
+        assert!(meta.hostname.is_empty());
+
+        let result = acquire(
+            dir.path(),
+            "new-run",
+            DEFAULT_LOCK_TTL,
+            false,
+            DEFAULT_LOCK_FILENAME,
+        );
+        assert!(
+            result.is_err(),
+            "missing hostname must prevent same-host dead-pid auto-steal"
+        );
+    }
+
+    #[test]
+    fn same_host_dead_pid_lock_is_reclaimed_immediately() {
+        let dir = TempDir::new().unwrap();
+        let meta = LockMetadata {
+            run_id: "dead-run".to_string(),
+            pid: 999_999_999,
+            hostname: LockMetadata::current("host-probe").hostname,
+            created_at: Timestamp::now(),
+        };
+        let lock_file = dir.path().join(DEFAULT_LOCK_FILENAME);
+        write_lock(&lock_file, &meta).unwrap();
+
+        let lock = acquire(
+            dir.path(),
+            "new-run",
+            DEFAULT_LOCK_TTL,
+            false,
+            DEFAULT_LOCK_FILENAME,
+        )
+        .unwrap();
+
+        assert_eq!(lock.metadata().run_id, "new-run");
+    }
+
+    #[test]
+    fn same_host_alive_pid_lock_is_not_reclaimed() {
+        let dir = TempDir::new().unwrap();
+        let meta = LockMetadata {
+            run_id: "alive-run".to_string(),
+            pid: std::process::id(),
+            hostname: LockMetadata::current("host-probe").hostname,
+            created_at: Timestamp::now(),
+        };
+        let lock_file = dir.path().join(DEFAULT_LOCK_FILENAME);
+        write_lock(&lock_file, &meta).unwrap();
+
+        let result = acquire(
+            dir.path(),
+            "new-run",
+            DEFAULT_LOCK_TTL,
+            false,
+            DEFAULT_LOCK_FILENAME,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn different_host_dead_pid_lock_reclaims_only_after_ttl() {
+        let dir = TempDir::new().unwrap();
+        let lock_file = dir.path().join(DEFAULT_LOCK_FILENAME);
+        let fresh_meta = LockMetadata {
+            run_id: "foreign-run".to_string(),
+            pid: 999_999_999,
+            hostname: "foreign-host.example.com".to_string(),
+            created_at: Timestamp::now(),
+        };
+        write_lock(&lock_file, &fresh_meta).unwrap();
+
+        let fresh_result = acquire(
+            dir.path(),
+            "new-run",
+            DEFAULT_LOCK_TTL,
+            false,
+            DEFAULT_LOCK_FILENAME,
+        );
+        assert!(fresh_result.is_err());
+
+        let aged_meta = LockMetadata {
+            created_at: Timestamp::now() - SignedDuration::from_mins(16),
+            ..fresh_meta
+        };
+        write_lock(&lock_file, &aged_meta).unwrap();
+
+        let lock = acquire(
+            dir.path(),
+            "ttl-run",
+            DEFAULT_LOCK_TTL,
+            false,
+            DEFAULT_LOCK_FILENAME,
+        )
+        .unwrap();
+
+        assert_eq!(lock.metadata().run_id, "ttl-run");
+    }
+
+    #[test]
+    fn auto_steal_emits_warn_with_holder_evidence() {
+        let dir = TempDir::new().unwrap();
+        let meta = LockMetadata {
+            run_id: "dead-run".to_string(),
+            pid: 999_999_999,
+            hostname: LockMetadata::current("host-probe").hostname,
+            created_at: Timestamp::now(),
+        };
+        let lock_file = dir.path().join(DEFAULT_LOCK_FILENAME);
+        write_lock(&lock_file, &meta).unwrap();
+
+        let events = capture_lock_events(|| {
+            acquire(
+                dir.path(),
+                "new-run",
+                DEFAULT_LOCK_TTL,
+                false,
+                DEFAULT_LOCK_FILENAME,
+            )
+            .unwrap();
+        });
+
+        assert!(events.contains("level=WARN"), "got: {events}");
+        assert!(events.contains("run_id=dead-run"), "got: {events}");
+        assert!(events.contains("pid=999999999"), "got: {events}");
+        assert!(events.contains("host="), "got: {events}");
+        assert!(
+            events.contains("reason=\"dead-holder-same-host\""),
+            "got: {events}"
+        );
     }
 
     #[test]
@@ -837,12 +1066,14 @@ mod tests {
         .unwrap();
         let original_created_at = lock.metadata.created_at;
         let original_pid = lock.metadata.pid;
+        let original_hostname = lock.metadata.hostname.clone();
 
         std::thread::sleep(Duration::from_millis(20));
         lock.renew().unwrap();
 
         assert_eq!(lock.metadata.run_id, "long-running");
         assert_eq!(lock.metadata.pid, original_pid);
+        assert_eq!(lock.metadata.hostname, original_hostname);
         assert!(
             lock.metadata.created_at > original_created_at,
             "renew() must advance created_at"
@@ -851,6 +1082,7 @@ mod tests {
         let on_disk = read_lock(lock.path()).unwrap();
         assert_eq!(on_disk.run_id, "long-running");
         assert_eq!(on_disk.created_at, lock.metadata.created_at);
+        assert_eq!(on_disk.hostname, lock.metadata.hostname);
     }
 
     #[test]
@@ -880,5 +1112,81 @@ mod tests {
             result.is_err(),
             "renewed lock should still be live (post-renew elapsed < TTL)"
         );
+    }
+
+    fn capture_lock_events(f: impl FnOnce()) -> String {
+        use std::fmt::Write;
+        use std::sync::{Arc, Mutex};
+        use tracing::Event;
+        use tracing::Level;
+        use tracing::Metadata;
+        use tracing::Subscriber;
+        use tracing::field::{Field, Visit};
+        use tracing::span;
+        use tracing::subscriber::Interest;
+
+        #[derive(Clone, Default)]
+        struct CaptureSubscriber {
+            events: Arc<Mutex<String>>,
+        }
+
+        impl Subscriber for CaptureSubscriber {
+            fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+                metadata.level() <= &Level::WARN
+            }
+
+            fn new_span(&self, _span: &span::Attributes<'_>) -> span::Id {
+                span::Id::from_u64(1)
+            }
+
+            fn record(&self, _span: &span::Id, _values: &span::Record<'_>) {}
+
+            fn record_follows_from(&self, _span: &span::Id, _follows: &span::Id) {}
+
+            fn event(&self, event: &Event<'_>) {
+                let mut visitor = EventVisitor::default();
+                event.record(&mut visitor);
+                let mut events = self.events.lock().unwrap();
+                writeln!(
+                    events,
+                    "level={} {}",
+                    event.metadata().level(),
+                    visitor.fields
+                )
+                .unwrap();
+            }
+
+            fn enter(&self, _span: &span::Id) {}
+
+            fn exit(&self, _span: &span::Id) {}
+
+            fn register_callsite(&self, metadata: &'static Metadata<'static>) -> Interest {
+                if self.enabled(metadata) {
+                    Interest::always()
+                } else {
+                    Interest::never()
+                }
+            }
+
+            fn max_level_hint(&self) -> Option<tracing::metadata::LevelFilter> {
+                Some(tracing::metadata::LevelFilter::WARN)
+            }
+        }
+
+        #[derive(Default)]
+        struct EventVisitor {
+            fields: String,
+        }
+
+        impl Visit for EventVisitor {
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                write!(self.fields, "{}={value:?} ", field.name()).unwrap();
+            }
+        }
+
+        let subscriber = CaptureSubscriber::default();
+        let events = Arc::clone(&subscriber.events);
+        tracing::subscriber::with_default(subscriber, f);
+        events.lock().unwrap().clone()
     }
 }
