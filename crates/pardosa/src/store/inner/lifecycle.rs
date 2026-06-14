@@ -69,16 +69,21 @@ fn io_error_to_cursor_read(e: std::io::Error) -> PardosaError {
 }
 fn backend_error_to_cursor_read(
     context: &'static str,
-    e: &crate::error::BackendError,
+    e: crate::error::BackendError,
 ) -> PardosaError {
-    io_error_to_cursor_read(std::io::Error::other(format!("{context}: {e}")))
+    match e {
+        crate::error::BackendError::ConcurrencyConflict { source } => {
+            PardosaError::ConcurrencyConflict { source }
+        }
+        other => io_error_to_cursor_read(std::io::Error::other(format!("{context}: {other}"))),
+    }
 }
 fn fetch_jetstream_frames(
     adapter: &mut crate::authoritative::jetstream::JetStreamBackendAdapter,
 ) -> Result<Vec<JetStreamDurableFrame>, PardosaError> {
     adapter
         .fetch_durable_frames()
-        .map_err(|e| backend_error_to_cursor_read("JetStream rehydrate fetch failed", &e))
+        .map_err(|e| backend_error_to_cursor_read("JetStream rehydrate fetch failed", e))
 }
 fn rehydrate_jetstream_frames<T>(
     frames: &[JetStreamDurableFrame],
@@ -553,6 +558,48 @@ mod tests {
             [0u8; 32],
             TaggedPayload(value),
         ))
+    }
+
+    fn backend_source(msg: &str) -> Box<dyn core::error::Error + Send + Sync + 'static> {
+        Box::new(std::io::Error::other(msg))
+    }
+
+    #[test]
+    fn backend_concurrency_conflict_maps_to_typed_pardosa_error() {
+        let err = crate::error::BackendError::ConcurrencyConflict {
+            source: backend_source("wrong last sequence"),
+        };
+        match backend_error_to_cursor_read("context should not flatten", err) {
+            PardosaError::ConcurrencyConflict { source } => assert!(
+                source.to_string().contains("wrong last sequence"),
+                "typed conflict source preserved: {source}"
+            ),
+            other => panic!("expected PardosaError::ConcurrencyConflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn backend_publish_still_flattens_to_cursor_read() {
+        let err = crate::error::BackendError::Publish {
+            source: backend_source("ordinary publish failure"),
+        };
+        match backend_error_to_cursor_read("JetStream rehydrate fetch failed", err) {
+            PardosaError::CursorRead { source } => match *source {
+                crate::persist::Error::Io(io) => {
+                    let rendered = io.to_string();
+                    assert!(
+                        rendered.contains("JetStream rehydrate fetch failed"),
+                        "context preserved: {rendered}"
+                    );
+                    assert!(
+                        rendered.contains("ordinary publish failure"),
+                        "source display still flattened: {rendered}"
+                    );
+                }
+                other => panic!("expected Io flattening, got {other:?}"),
+            },
+            other => panic!("expected CursorRead, got {other:?}"),
+        }
     }
 
     #[test]

@@ -334,6 +334,12 @@ pub enum PardosaError {
         #[source]
         source: Box<crate::persist::Error>,
     },
+    /// Backend detected a stale single-writer append conflict.
+    #[error("concurrency conflict: {source}")]
+    ConcurrencyConflict {
+        #[source]
+        source: Box<dyn core::error::Error + Send + Sync + 'static>,
+    },
     /// `JournalCursor` sidecar I/O failed (read at `from_path`, or
     /// write/fsync during `commit_offset`).
     ///
@@ -401,6 +407,19 @@ pub enum PardosaError {
 impl From<IndexTooLargeForUsize> for PardosaError {
     fn from(e: IndexTooLargeForUsize) -> Self {
         PardosaError::IndexNotUsize(e.0)
+    }
+}
+#[cfg(test)]
+mod pardosa_error_tests {
+    use super::*;
+
+    #[test]
+    fn concurrency_conflict_carries_source_chain() {
+        let inner: Box<dyn core::error::Error + Send + Sync + 'static> =
+            Box::new(std::io::Error::other("backend conflict"));
+        let err = PardosaError::ConcurrencyConflict { source: inner };
+        let src = core::error::Error::source(&err).expect("source attached");
+        assert!(src.to_string().contains("backend conflict"));
     }
 }
 /// Operation tag carried by [`BackendError::Timeout`] (ADR-0022
@@ -520,6 +539,12 @@ pub enum BackendError {
         #[source]
         source: Box<dyn core::error::Error + Send + Sync + 'static>,
     },
+    /// Backend detected a stale single-writer append conflict.
+    #[error("backend concurrency conflict: {source}")]
+    ConcurrencyConflict {
+        #[source]
+        source: Box<dyn core::error::Error + Send + Sync + 'static>,
+    },
     /// A downstream backend connection failure.
     #[error("backend connect failure during `{op}`: {source}")]
     Connect {
@@ -571,6 +596,14 @@ mod backend_error_tests {
         let err = BackendError::Publish { source: inner };
         let src = core::error::Error::source(&err).expect("source attached");
         assert!(src.to_string().contains("downstream link reset"));
+    }
+    #[test]
+    fn concurrency_conflict_carries_source_chain() {
+        let inner: Box<dyn core::error::Error + Send + Sync + 'static> =
+            Box::new(std::io::Error::other("wrong last sequence"));
+        let err = BackendError::ConcurrencyConflict { source: inner };
+        let src = core::error::Error::source(&err).expect("source attached");
+        assert!(src.to_string().contains("wrong last sequence"));
     }
     #[test]
     fn publisher_backlog_display_names_kind() {

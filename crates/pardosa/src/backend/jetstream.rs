@@ -150,9 +150,9 @@ fn terminal_category_from_backend(err: &BackendError) -> TerminalCategory {
     match err {
         BackendError::Timeout { .. } => TerminalCategory::Timeout,
         BackendError::RuntimeFailure { .. } => TerminalCategory::RuntimeFailure,
-        BackendError::Publish { .. } | BackendError::PublisherBacklog { .. } => {
-            TerminalCategory::Publish
-        }
+        BackendError::Publish { .. }
+        | BackendError::ConcurrencyConflict { .. }
+        | BackendError::PublisherBacklog { .. } => TerminalCategory::Publish,
         BackendError::Connect { .. } => TerminalCategory::Connect,
         BackendError::Replay { .. } => TerminalCategory::Replay,
     }
@@ -375,6 +375,9 @@ fn map_runtime_error(err: JetStreamRuntimeError, op: BackendOp) -> BackendError 
             elapsed,
             configured,
         },
+        JetStreamRuntimeError::WrongLastSequence { source } => {
+            BackendError::ConcurrencyConflict { source }
+        }
         JetStreamRuntimeError::Publish { source } => BackendError::Publish { source },
         JetStreamRuntimeError::Connect { source } => BackendError::Connect { op, source },
         JetStreamRuntimeError::Replay { source } => BackendError::Replay { op, source },
@@ -559,6 +562,24 @@ mod tests {
                 );
             }
             other => panic!("expected BackendError::Publish, got {other:?}"),
+        }
+    }
+    #[test]
+    fn wrong_last_sequence_maps_to_backend_concurrency_conflict() {
+        let mapped = map_runtime_error(
+            JetStreamRuntimeError::WrongLastSequence {
+                source: boxed_source("stale writer"),
+            },
+            BackendOp::Append,
+        );
+        match mapped {
+            BackendError::ConcurrencyConflict { source } => {
+                assert!(
+                    source.to_string().contains("stale writer"),
+                    "conflict source preserved: {source}"
+                );
+            }
+            other => panic!("expected BackendError::ConcurrencyConflict, got {other:?}"),
         }
     }
     #[test]

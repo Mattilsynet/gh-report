@@ -369,10 +369,22 @@ async fn publish_once(
         })?;
     let pub_ack = publish_ack_future
         .await
-        .map_err(|e| JetStreamRuntimeError::Publish {
-            source: Box::new(e),
-        })?;
+        .map_err(runtime_error_from_publish_ack)?;
     Ok(pub_ack.sequence)
+}
+fn runtime_error_from_publish_ack(
+    err: async_nats::jetstream::context::PublishError,
+) -> JetStreamRuntimeError {
+    use async_nats::jetstream::context::PublishErrorKind;
+    if err.kind() == PublishErrorKind::WrongLastSequence {
+        JetStreamRuntimeError::WrongLastSequence {
+            source: Box::new(err),
+        }
+    } else {
+        JetStreamRuntimeError::Publish {
+            source: Box::new(err),
+        }
+    }
 }
 async fn replay_once(
     js: &async_nats::jetstream::Context,
@@ -463,6 +475,38 @@ mod tests {
              JetStream server reclaims the consumer if replay_all is interrupted \
              (linus review round 1 M1)"
         );
+    }
+    #[test]
+    fn wrong_last_sequence_ack_error_maps_to_neutral_variant() {
+        let err =
+            runtime_error_from_publish_ack(async_nats::jetstream::context::PublishError::new(
+                async_nats::jetstream::context::PublishErrorKind::WrongLastSequence,
+            ));
+        match err {
+            JetStreamRuntimeError::WrongLastSequence { source } => {
+                assert!(
+                    source.to_string().contains("wrong last sequence"),
+                    "source preserved for operator diagnosis: {source}"
+                );
+            }
+            other => panic!("expected WrongLastSequence, got {other:?}"),
+        }
+    }
+    #[test]
+    fn non_conflict_ack_error_stays_publish() {
+        let err =
+            runtime_error_from_publish_ack(async_nats::jetstream::context::PublishError::new(
+                async_nats::jetstream::context::PublishErrorKind::Other,
+            ));
+        match err {
+            JetStreamRuntimeError::Publish { source } => {
+                assert!(
+                    source.to_string().contains("publish failed"),
+                    "non-conflict source preserved: {source}"
+                );
+            }
+            other => panic!("expected Publish, got {other:?}"),
+        }
     }
     #[test]
     fn replay_pull_config_filters_to_caller_subject() {

@@ -104,6 +104,12 @@ pub enum JetStreamRuntimeError {
         /// Underlying client error.
         source: Box<dyn Error + Send + Sync + 'static>,
     },
+    /// `JetStream` rejected a publish because the caller's expected
+    /// last sequence was stale.
+    WrongLastSequence {
+        /// Underlying client error.
+        source: Box<dyn Error + Send + Sync + 'static>,
+    },
     /// The publish-ack did not arrive within the v0 per-operation
     /// timeout (ADR-0022 §D7 binds a typed timeout surface;
     /// the v0 substrate uses a hard-coded default until the
@@ -133,6 +139,7 @@ impl fmt::Display for JetStreamRuntimeError {
             }
             Self::Connect { source } => write!(f, "connect / provision failed: {source}"),
             Self::Publish { source } => write!(f, "publish failed: {source}"),
+            Self::WrongLastSequence { source } => write!(f, "wrong last sequence: {source}"),
             Self::Timeout {
                 elapsed,
                 configured,
@@ -147,9 +154,10 @@ impl Error for JetStreamRuntimeError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Detached | Self::Timeout { .. } => None,
-            Self::Connect { source } | Self::Publish { source } | Self::Replay { source } => {
-                Some(source.as_ref())
-            }
+            Self::Connect { source }
+            | Self::Publish { source }
+            | Self::WrongLastSequence { source }
+            | Self::Replay { source } => Some(source.as_ref()),
         }
     }
 }
@@ -194,6 +202,19 @@ mod tests {
              Publish.source without an extra wrapper layer — read-path / \
              write-path source-chain parity (mission rescue-pardosa-k67j)"
         );
+    }
+    #[test]
+    fn wrong_last_sequence_is_matchable_and_preserves_source() {
+        let err = JetStreamRuntimeError::WrongLastSequence {
+            source: boxed_io("stale expected sequence"),
+        };
+        match err {
+            JetStreamRuntimeError::WrongLastSequence { source } => assert!(
+                source.to_string().contains("stale expected sequence"),
+                "neutral conflict source should remain inspectable: {source}"
+            ),
+            other => panic!("expected WrongLastSequence, got {other:?}"),
+        }
     }
     #[test]
     fn detached_and_timeout_have_no_inner_source() {
