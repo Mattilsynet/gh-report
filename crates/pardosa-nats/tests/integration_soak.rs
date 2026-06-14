@@ -15,8 +15,7 @@
 //!
 //! Not covered: the 100× publisher-failure / recovery soak —
 //! needs a `FrontierPublisher` over `JetStream` and
-//! `open_with_backend(JetStreamBackendAdapter)`. Status in
-//! `docs/nats-jetstream-roadmap.md` §Phase 5.
+//! `open_with_backend(JetStreamBackendAdapter)`.
 mod support;
 use pardosa_nats::{JetStreamBackend, JetStreamConfig, JetStreamHandle, RuntimeHandle};
 use std::fs::OpenOptions;
@@ -27,8 +26,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use support::LiveNatsServer;
 use tokio::runtime::Runtime;
-/// Phase 5 window size (roadmap §Phase 5 line 692 — default
-/// `N = 50` unless a Phase 5 test-plan PR justifies another value).
+/// Phase 5 paired-flake-window size. Default `N = 50` unless a
+/// test-plan PR justifies another value.
 const PHASE5_WINDOW_N: usize = 50;
 /// One-shot per-iteration tag so streams, subjects, durable
 /// consumers, and `.pgno` files never collide across iterations

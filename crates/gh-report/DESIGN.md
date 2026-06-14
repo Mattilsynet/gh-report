@@ -404,7 +404,7 @@ first run beyond pointing `--store-dir` at a writable path.
   tokio-tungstenite, futures-util).
 - **Mid-WU linus reviews** per B12': B7'+B8' typed seam closure;
   B9' AggregateStore deletion; B10' `App::run` conformance.
-- Full verify suite (FOCUS.md §9 + `adr-fmt --lint`) gates each
+- Full verify suite plus `adr-fmt --lint` gates each
   sub-mission.
 
 ## 9. README (DoD-4)
@@ -431,12 +431,12 @@ process fencing), CHE-0048 (cherry-pit-projection), CHE-0050
 (MsgpackFileStore), CHE-0051 (cherry-pit-app), CHE-0052
 (cherry-pit-runtime), or CHE-0053 (cherry-pit-storage)
 prescribe a shape, follow the ADR even where it deviates from the
-default surgical-extraction posture (FOCUS.md §8). Implementation
+default surgical-extraction posture. Implementation
 discretion sits with hopper, bounded by:
 
 - The ADRs above (binding).
 - The 14 v1 BCs in oracle bead `adr-fmt-a6a` and the 19 v2 BCs in
-  oracle bead `adr-fmt-...` (`.ooda/oracle-summary-wu6v2-charter-1778413896.md`).
+  oracle bead `adr-fmt-...`.
 - The DAG and abort criteria in `.ooda/mission-wu6v2-charter-1778415390.md`.
 - This DESIGN.md (binding for §1–§12 shape calls).
 
@@ -446,7 +446,7 @@ Defaults that hold absent ADR override:
 - No removal of inline unit tests during rewrite beyond the 3
   AggregateStore-internal-state tests (per §8 bucketing).
 - No behavioural change to collectors — wire-rewrite only.
-- No `cargo publish` in WU-6 v2 (FOCUS.md §8).
+- No `cargo publish` in WU-6 v2.
 - No edits to `OPERATIONS.md` beyond the storage-layout section (C2').
 - **Aggregate impls present, `CommandGateway` absent** (CHE-0054:R4
   + R10). `Run`, `Repo`, `WebhookDelivery` are full DDD aggregates

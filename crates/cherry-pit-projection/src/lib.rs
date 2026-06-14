@@ -1097,8 +1097,8 @@ where
 /// every `(Pn, Sn)` pair is independent — the tuple shape preserves
 /// per-projection type discipline (no `Box<dyn Projection>`, CHE-0005:R1).
 ///
-/// v0.1 ships arities **0, 1 and 2** which suffice for the FOCUS.md §4
-/// step 5 ergonomic-benchmark gate (2-aggregate composition). Higher
+/// v0.1 ships arities **0, 1 and 2** which suffice for the
+/// ergonomic-benchmark gate (2-aggregate composition). Higher
 /// arities up to ~8 are tracked as a `// FOLLOW-UP S7` extension gated
 /// by the ergonomic benchmark — if the benchmark passes at arity 2 with
 /// comfortable headroom, macro-expansion to arity 8 is purely mechanical

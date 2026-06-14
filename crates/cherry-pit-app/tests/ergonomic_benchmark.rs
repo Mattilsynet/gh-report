@@ -1,5 +1,4 @@
-//! Ergonomic LOC benchmark per S7 §2 + WU-5 brief lines 85–94 +
-//! `FOCUS.md` §4 step 5.
+//! Ergonomic LOC benchmark per S7 §2 + WU-5 brief lines 85–94.
 //!
 //! Counts non-blank, non-comment lines in `domain.rs` and `wiring.rs`
 //! of the 2-aggregate fixture and asserts `wiring_loc <= domain_loc`.

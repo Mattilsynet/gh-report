@@ -244,9 +244,8 @@ invariants, Smithy for interface contracts — and **v0.3 (Publish)** —
 public-API freeze, semver commitments, docs.rs polish. Neither is
 governed by this document.
 
-For the *how we work* layer, see `FOCUS.md` (the standing refinement
-recipe) and `docs/c4/roadmap.md` (the live track-level dashboard).
-For agent collaboration doctrine, see `AGENTS.md`.
+For the *how we work* layer, see `AGENTS.md` and roadmap-index bead
+`adr-fmt-bwgw8`.
 
 ---
 
@@ -287,7 +286,7 @@ provided every edit is committed to git (the audit trail),
 `adr-fmt --lint` stays exit-0 after each commit, a per-ADR audit bead
 is filed under `adr-touched,mission:<id>`, and moltke's
 mission-complete report enumerates every touched ADR for user review.
-The full rules live in FOCUS.md § 6 ("long-autonomous-job exception").
+Those clauses are the complete long-autonomous-job exception.
 **STORY edits are *not* covered by this exception** — STORY is apex
 and its edits remain user-ratified per the override-never-silent rule
 above.

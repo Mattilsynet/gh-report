@@ -2,8 +2,7 @@
 //!
 //! v0.1 is read-only: `Query` only — `EmptyMutation` is the load-bearing
 //! enforcer of the Track 3 v0.1 "no mutations" scope (M1 sub-package
-//! A5 abort). Phase 3 lands `Mutation` for `ratifyAdr` / `supersede`
-//! per the retired Track 3.4 / 3.5 roadmap.
+//! A5 abort). Future mutation work adds `ratifyAdr` / `supersede`.
 //!
 //! ## Vernon Rule 4 — flat DTO, not the aggregate
 //!
