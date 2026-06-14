@@ -18,17 +18,25 @@ binaries plus an ADR-governed library family and a large ADR corpus.
   (`pardosa-nats`). `cherry-pit` does **not** depend on `pardosa` (severed per
   CHE-0010); don't reintroduce that edge.
 
-## Build / test / verify (run before claiming done; mirrors CI)
+## Build / test / verify (local cadence; boundary mirrors CI)
 
-```
-cargo build  --workspace --all-features --locked
-cargo test   --workspace --all-features --locked
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo fmt --all -- --check
-cargo deny check
-```
-
-- One crate: `cargo test -p <crate>`. One test: `cargo test -p <crate> <name>`.
+- **INNER-LOOP** (every TDD increment, changed crate only):
+  ```
+  CARGO_TERM_PROGRESS_WHEN=never cargo test -p <crate> --message-format=short
+  CARGO_TERM_PROGRESS_WHEN=never cargo clippy -p <crate> --message-format=short -- -D warnings
+  ```
+  One test: `cargo test -p <crate> <name> --message-format=short`.
+- **BOUNDARY** (mission/sub-mission completion, before claiming done):
+  ```
+  cargo build  --workspace --all-features --locked
+  cargo test   --workspace --all-features --locked
+  cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+  cargo fmt --all -- --check
+  ```
+  Exit codes from this tier back the done-claim; the cadence relocates controls
+  to where they earn their cost, not weakens verify-before-claim.
+- **CI-ONLY** (never in the local loop): CI owns deny, audit, and the two
+  tripwire jobs.
 - `clippy::pedantic` is the **standing bar**, not an elevation
   (`[workspace.lints.clippy] pedantic = warn` + CI `-D warnings`). New code must
   pass pedantic with zero warnings.
