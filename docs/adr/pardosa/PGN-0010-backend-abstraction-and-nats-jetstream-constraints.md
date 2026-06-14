@@ -1,14 +1,14 @@
 # PGN-0010. Backend Abstraction and NATS/JetStream Constraints
 
 Date: 2026-06-08
-Last-reviewed: 2026-06-11
+Last-reviewed: 2026-06-14
 Tier: A
 Status: Accepted
 Crates: pardosa, pardosa-nats
 
 ## Related
 
-References: PGN-0001, PGN-0003, PGN-0008
+References: PGN-0001, PGN-0003, PGN-0008, PGN-0016
 
 ## Context
 
@@ -55,8 +55,8 @@ R7 [4]: Backend traits MUST NOT fuse codec and sealing axes; per-operation
 − becomes harder: out-of-tree backend impls (the sealed trait + in-`pardosa`
   adapter shim is the only path); cross-backend live migration (PGN-0009
   per-backend stance binding); transports masquerading as substrates.
-risks/migration: PAR-0004's `Nats-Expected-Last-Subject-Sequence` fencing
-  is one valid implementation of R6's single-writer enforcement when the
-  backend is JetStream; PAR-0004 retirement is deferred to a follow-up
-  mission. The `crates/pardosa-nats/` slot now hosts the substrate; any
-  future outbound NATS transport adapter lands in a new crate.
+risks/migration: PGN-0016 supplies `Nats-Expected-Last-Subject-Sequence`
+  fencing as the JetStream implementation of R6's single-writer enforcement.
+  PAR-0004 remains retired; the enforcement gap is closed for JetStream. The
+  `crates/pardosa-nats/` slot now hosts the substrate; any future outbound
+  NATS transport adapter lands in a new crate.
