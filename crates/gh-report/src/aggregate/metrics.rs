@@ -34,11 +34,9 @@ fn count_as_u32(n: usize) -> u32 {
 /// `total_repos` and the per-visibility breakdowns count only non-archived
 /// repositories. `archived_repos` is derived from the input slice — any
 /// archived [`RepositoryEvidence`] entries surfaced by the projection (or
-/// by replay during warm-start) are reflected directly. In normal live
-/// collections the inventory loader counts archived repos before they
-/// are stripped from the active set and passes that count through
-/// `BuildEvidenceParams::archived_repos`, which still overrides the
-/// derived value via `build_evidence`.
+/// by replay during warm-start) are reflected directly. Live collections
+/// use the same event-derived repository slice, so the rendered count is
+/// always a projection fold rather than an inventory-side aggregate.
 #[must_use]
 pub fn build_collection_statistics(repositories: &[RepositoryEvidence]) -> CollectionStatistics {
     let active: Vec<_> = repositories

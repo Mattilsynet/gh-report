@@ -208,8 +208,6 @@ struct InventoryLoad {
     active_repos: Vec<Arc<Repository>>,
     /// ISO 8601 timestamp of when inventory was fetched from API.
     inventory_fetched_at: Option<String>,
-    /// Number of archived repositories present in the fetched inventory.
-    archived_repos: u32,
 }
 
 struct OrgAlertContext {
@@ -916,7 +914,6 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
         org_alert_summary: Some(Arc::clone(org_summary)),
         auth_metadata: auth_metadata.clone(),
         capabilities: capabilities.clone(),
-        archived_repos: inventory.archived_repos,
         state: Arc::clone(state),
     };
     let (pp_task, pp_shutdown) = spawn_partial_publisher_from_store(pp_config, Arc::clone(state));
@@ -991,7 +988,6 @@ async fn finalize_and_publish(
         auth_metadata,
         capabilities,
         rate_limit_warnings,
-        archived_repos: inventory.archived_repos,
     });
 
     let pages = build_cached_pages(config, &evidence).await?;
@@ -1113,18 +1109,12 @@ async fn load_active_repositories(client: &GitHubClient) -> Result<InventoryLoad
 
 fn inventory_load_from_payload(payload: inventory::InventoryPayload) -> InventoryLoad {
     let inventory_fetched_at = payload.inventory_fetched_at;
-    let archived_repos = count_archived(&payload.repositories);
     let active_repos: Vec<Arc<Repository>> =
         payload.repositories.into_iter().map(Arc::new).collect();
     InventoryLoad {
         active_repos,
         inventory_fetched_at,
-        archived_repos,
     }
-}
-
-fn count_archived(repos: &[Repository]) -> u32 {
-    u32::try_from(repos.iter().filter(|r| r.archived).count()).unwrap_or(u32::MAX)
 }
 
 async fn collect_org_alert_context(
@@ -1402,7 +1392,6 @@ pub(crate) struct PartialPublishConfig {
     pub org_alert_summary: Option<Arc<OrgAlertSummary>>,
     pub auth_metadata: AuthMetadata,
     pub capabilities: CapabilitySet,
-    pub archived_repos: u32,
     pub state: Arc<AppState>,
 }
 
@@ -1453,7 +1442,6 @@ fn spawn_partial_publisher_from_store(
                         auth_metadata: &pp.auth_metadata,
                         capabilities: &pp.capabilities,
                         rate_limit_warnings: 0,
-                        archived_repos: pp.archived_repos,
                     });
 
                     let pending_repos: u64 = 0;
@@ -1582,14 +1570,11 @@ struct BuildEvidenceParams<'a> {
     auth_metadata: &'a AuthMetadata,
     capabilities: &'a CapabilitySet,
     rate_limit_warnings: u32,
-    /// Number of archived repositories excluded from the active set.
-    archived_repos: u32,
 }
 
 /// Build the complete evidence artifact from collected data.
 fn build_evidence(params: BuildEvidenceParams<'_>) -> Evidence {
-    let mut stats = metrics::build_collection_statistics(&params.repositories);
-    stats.archived_repos = params.archived_repos;
+    let stats = metrics::build_collection_statistics(&params.repositories);
     let mut aggregated = metrics::aggregate_metrics(&params.repositories);
     metrics::enrich_owner_metrics_with_lifecycle(
         &mut aggregated.owner_metrics,
@@ -1689,7 +1674,7 @@ mod tests {
             "archived repos must flow through to active_repos so the evaluator pipeline emits RepoEvaluated events for them; got {names:?}",
         );
         assert_eq!(load.active_repos.len(), 3);
-        assert_eq!(load.archived_repos, 1);
+        assert_eq!(load.active_repos.iter().filter(|r| r.archived).count(), 1);
     }
 
     #[test]
@@ -1702,7 +1687,7 @@ mod tests {
 
         let load = inventory_load_from_payload(payload);
 
-        assert_eq!(load.archived_repos, 2);
+        assert_eq!(load.active_repos.iter().filter(|r| r.archived).count(), 2);
     }
 
     fn sample_config() -> RuntimeConfig {
@@ -1793,7 +1778,6 @@ mod tests {
             auth_metadata: &test_auth_metadata(),
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
-            archived_repos: 0,
         });
 
         assert_eq!(evidence.assessment_metadata.organization, "TestOrg");
@@ -1804,6 +1788,32 @@ mod tests {
         assert_eq!(evidence.collection_statistics.total_repos, 2);
         assert_eq!(evidence.collection_statistics.public_repos, 2);
         assert_eq!(evidence.repositories.len(), 2);
+    }
+
+    #[test]
+    fn build_evidence_archived_count_comes_from_projection() {
+        let mut archived = sample_repo("archived-repo");
+        archived.repository.archived = true;
+        let repos = vec![sample_repo("active-repo"), archived];
+        let config = sample_config();
+        let run_meta = RunMetadata::new(
+            "TestOrg".to_string(),
+            crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
+        );
+
+        let evidence = build_evidence(BuildEvidenceParams {
+            repositories: repos,
+            config: &config,
+            run: &run_meta,
+            inventory_fetched_at: None,
+            org_alert_summary: None,
+            auth_metadata: &test_auth_metadata(),
+            capabilities: &test_capabilities(),
+            rate_limit_warnings: 0,
+        });
+
+        assert_eq!(evidence.collection_statistics.total_repos, 1);
+        assert_eq!(evidence.collection_statistics.archived_repos, 1);
     }
 
     #[test]
@@ -1823,7 +1833,6 @@ mod tests {
             auth_metadata: &test_auth_metadata(),
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
-            archived_repos: 0,
         });
 
         assert_eq!(evidence.collection_statistics.total_repos, 0);
@@ -1848,7 +1857,6 @@ mod tests {
             auth_metadata: &test_auth_metadata(),
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
-            archived_repos: 0,
         });
 
         assert_eq!(evidence.metrics.security_policy_coverage.numerator, 1);
@@ -2066,7 +2074,6 @@ mod tests {
         let state = AppState::new_with_cache_capacity(10).await;
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1"), arc_repo("repo-2")],
-            archived_repos: 0,
             inventory_fetched_at: None,
         };
 
@@ -2092,7 +2099,6 @@ mod tests {
         let state = AppState::new_with_cache_capacity(10).await;
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1")],
-            archived_repos: 0,
             inventory_fetched_at: None,
         };
 
@@ -2370,7 +2376,6 @@ mod tests {
                 arc_repo_with_updated_at("repo-1", Some("2026-04-10T00:00:00Z")),
                 arc_repo_with_updated_at("repo-2", Some("2026-04-10T00:00:00Z")),
             ],
-            archived_repos: 0,
             inventory_fetched_at: None,
         };
 
@@ -2415,7 +2420,6 @@ mod tests {
                 arc_repo_with_updated_at("repo-1", Some("2026-04-10T00:00:00Z")),
                 arc_repo("repo-2"),
             ],
-            archived_repos: 0,
             inventory_fetched_at: None,
         };
 
@@ -2439,7 +2443,6 @@ mod tests {
 
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1"), arc_repo("repo-2")],
-            archived_repos: 0,
             inventory_fetched_at: None,
         };
 
@@ -2472,7 +2475,6 @@ mod tests {
                 "repo-1",
                 Some("2026-04-10T00:00:00Z"),
             )],
-            archived_repos: 0,
             inventory_fetched_at: None,
         };
 
@@ -2506,7 +2508,6 @@ mod tests {
                 "repo-1",
                 Some("2026-04-10T12:00:00Z"),
             )],
-            archived_repos: 0,
             inventory_fetched_at: None,
         };
 
@@ -2538,7 +2539,6 @@ mod tests {
 
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1")],
-            archived_repos: 0,
             inventory_fetched_at: None,
         };
 
@@ -2565,7 +2565,6 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1"), arc_repo("repo-2"), arc_repo("repo-3")],
-            archived_repos: 0,
             inventory_fetched_at: None,
         };
 
@@ -2614,7 +2613,6 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("pass-repo"), arc_repo("fail-repo")],
-            archived_repos: 0,
             inventory_fetched_at: None,
         };
 
@@ -2660,7 +2658,6 @@ mod tests {
         let names = ["zebra", "alpha", "middle"];
         let inventory = InventoryLoad {
             active_repos: names.iter().map(|n| arc_repo(n)).collect(),
-            archived_repos: 0,
             inventory_fetched_at: None,
         };
 
@@ -2704,7 +2701,6 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("panic-repo")],
-            archived_repos: 0,
             inventory_fetched_at: None,
         };
 
@@ -2750,7 +2746,6 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1")],
-            archived_repos: 0,
             inventory_fetched_at: None,
         };
 
@@ -2792,7 +2787,6 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1")],
-            archived_repos: 0,
             inventory_fetched_at: None,
         };
 
@@ -2832,7 +2826,6 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1"), arc_repo("repo-2")],
-            archived_repos: 0,
             inventory_fetched_at: None,
         };
 
@@ -2874,7 +2867,6 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1")],
-            archived_repos: 0,
             inventory_fetched_at: None,
         };
 
@@ -2940,7 +2932,6 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1")],
-            archived_repos: 0,
             inventory_fetched_at: None,
         };
 
@@ -3006,7 +2997,6 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1")],
-            archived_repos: 0,
             inventory_fetched_at: None,
         };
 
@@ -3095,7 +3085,6 @@ mod tests {
                 arc_repo_with_updated_at("repo-reused", Some("2026-04-10T00:00:00Z")),
                 arc_repo("repo-pending"),
             ],
-            archived_repos: 0,
             inventory_fetched_at: None,
         };
         let total = inventory.active_repos.len() as u64;

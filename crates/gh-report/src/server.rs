@@ -212,6 +212,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn coldstart_projection_serves_200_without_github_api() {
+        use crate::app::collect::warm_start_from_baseline;
+        use crate::config::dashboard::DashboardConfig;
+        use crate::config::runtime::{NatsStoreConfig, PardosaBackend, RuntimeConfig};
+        use crate::infra::server::state::ServerState;
+        use crate::test_fixtures;
+
+        let dir = tempfile::tempdir().unwrap();
+        let events_dir = dir.path().join("events");
+        let projections_dir = dir.path().join("projections");
+        let nats =
+            NatsStoreConfig::for_org("TestOrg", crate::config::runtime::DEFAULT_NATS_URL).unwrap();
+        let writer_state = AppState::with_stores(
+            &events_dir,
+            projections_dir.clone(),
+            PardosaBackend::Pgno,
+            nats.clone(),
+        )
+        .await
+        .unwrap();
+        let timestamp = "2026-06-14T00:00:00Z";
+        let active = test_fixtures::all_passing_evidence("active-repo");
+        let mut archived = test_fixtures::all_passing_evidence("archived-repo");
+        archived.repository.archived = true;
+
+        for evidence in [active, archived] {
+            writer_state
+                .record_repo(
+                    &evidence.repository.inventory_key,
+                    evidence.clone(),
+                    &evidence.repository.name,
+                    timestamp,
+                )
+                .unwrap();
+        }
+        drop(writer_state);
+
+        let state = AppState::with_stores(&events_dir, projections_dir, PardosaBackend::Pgno, nats)
+            .await
+            .unwrap();
+        assert_eq!(state.projection_len(), 2);
+        assert!(state.github().client.get().is_none());
+        assert!(
+            state.is_ready(),
+            "populated event-log projection should be ready without run/cache or GitHub API"
+        );
+
+        let config = RuntimeConfig {
+            org_name: "TestOrg".to_string(),
+            no_resume: true,
+            max_workers: 4,
+            store_dir: dir.path().to_path_buf(),
+            pardosa_backend: PardosaBackend::Pgno,
+            nats_url: crate::config::runtime::DEFAULT_NATS_URL.to_string(),
+            force_unlock: false,
+            dashboard_config: DashboardConfig::default(),
+        };
+
+        assert!(warm_start_from_baseline(&config, &state).await);
+        assert!(state.github().client.get().is_none());
+
+        let app = build_router(Arc::clone(&state));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        wait_for_server(addr).await;
+
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("1 non-archived"));
+        assert!(body.contains("1 archived repositories"));
+
+        handle.abort();
+    }
+
+    #[tokio::test]
     async fn readyz_returns_503_when_cache_warm_but_backend_connect_failed() {
         use crate::infra::server::state::CachedPage;
         use std::collections::HashMap;

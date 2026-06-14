@@ -517,20 +517,12 @@ impl AppState {
         Ok(())
     }
 
-    fn record_projection_repo(&self, domain_key: &str, evidence: RepositoryEvidence) {
+    fn fold_repository_event_into_projection(&self, detached: bool, event: &NativeDomainEvent) {
         let mut guard = self
             .projection_state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.repositories.insert(domain_key.to_string(), evidence);
-    }
-
-    fn remove_projection_repo(&self, domain_key: &str) {
-        let mut guard = self
-            .projection_state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.repositories.remove(domain_key);
+        fold_native_event(&mut guard, detached, event);
     }
 
     /// Record a live repository snapshot in the native store.
@@ -548,7 +540,6 @@ impl AppState {
     ) -> Result<(), PersistenceError> {
         let native_evidence = crate::event::RepositoryEvidence::try_from(evidence)
             .map_err(|e| conversion_persistence(&e))?;
-        let projection_evidence: RepositoryEvidence = native_evidence.clone().into();
         let event = repo_event(
             domain_key,
             repo_name,
@@ -556,9 +547,9 @@ impl AppState {
             Some(Box::new(native_evidence)),
         )?;
         self.event_store
-            .record(domain_key, event)
+            .record(domain_key, event.clone())
             .map_err(|e| native_store_persistence(&e))?;
-        self.record_projection_repo(domain_key, projection_evidence);
+        self.fold_repository_event_into_projection(false, &event);
         Ok(())
     }
 
@@ -576,9 +567,9 @@ impl AppState {
     ) -> Result<(), PersistenceError> {
         let event = repo_event(domain_key, repo_name, timestamp, None)?;
         self.event_store
-            .detach(domain_key, event)
+            .detach(domain_key, event.clone())
             .map_err(|e| native_store_persistence(&e))?;
-        self.remove_projection_repo(domain_key);
+        self.fold_repository_event_into_projection(true, &event);
         Ok(())
     }
 
@@ -868,7 +859,8 @@ impl crate::infra::server::state::ServerState for AppState {
     fn is_ready(&self) -> bool {
         self.event_store.backend_reachable()
             && (self.last_completed_run.load().is_some()
-                || self.evidence().html_cache.load().is_some())
+                || self.evidence().html_cache.load().is_some()
+                || self.projection_len() > 0)
     }
 }
 
