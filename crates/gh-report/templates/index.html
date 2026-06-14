@@ -20,7 +20,7 @@
     </nav>
 
     <div class="page-header">
-        <p class="meta"><strong>Date:</strong> {{ vm.date_time }} · <strong>Scope:</strong> {{ vm.total_all_repos }} total · {{ vm.total_repos }} non-archived · {{ vm.archived_repos }} archived repositories in <code>{{ vm.organization }}</code>{% if vm.warm_start %} <span class="warm-start-badge">Cached · next update in progress</span>{% endif %}</p>
+        <p class="meta"><strong>Date:</strong> {{ vm.date_time }} · <strong>Run:</strong> {{ vm.run_id }} · <strong>Scope:</strong> {{ vm.total_all_repos }} total · {{ vm.total_repos }} non-archived · {{ vm.archived_repos }} archived repositories in <code>{{ vm.organization }}</code>{% if vm.warm_start %} <span class="warm-start-badge">Cached · next update in progress</span>{% endif %}</p>
     </div>
 
     <div class="scorecard">
@@ -48,6 +48,7 @@
         <div class="card {{ vm.secret_scanning_tier.css_class() }}" title="Percentage of repos with GitHub secret scanning enabled to detect leaked credentials.">
             <p class="card-label">Secret Scanning</p>
             <p class="card-value">{{ vm.secret_scanning_coverage_formatted }}</p>
+            <p class="card-detail">{{ vm.org_alert_total_open_secret_alerts }} open org alerts · {{ vm.org_alert_collection_status }}</p>
             <div class="progress-bar">
                 <div
                     class="progress-fill {{ vm.secret_scanning_tier.css_class() }} {{ vm.secret_scanning_width_class }}">

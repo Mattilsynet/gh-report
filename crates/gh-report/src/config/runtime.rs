@@ -73,6 +73,20 @@ impl NatsStoreConfig {
             durable_consumer: format!("gh-report-{token}"),
         })
     }
+
+    /// Derive the distinct org-event `JetStream` names paired with this repo stream.
+    #[must_use]
+    pub fn org_events(&self) -> Self {
+        Self {
+            nats_url: self.nats_url.clone(),
+            stream_name: format!("{}-org", self.stream_name),
+            subject: self.subject.strip_suffix(".events").map_or_else(
+                || format!("{}.org.events", self.subject),
+                |base| format!("{base}.org.events"),
+            ),
+            durable_consumer: format!("{}-org", self.durable_consumer),
+        }
+    }
 }
 
 fn org_token(bytes: &[u8]) -> String {
@@ -223,6 +237,18 @@ mod tests {
         assert!(!my_org.subject.contains(' '));
         assert!(!my_org.subject.contains('*'));
         assert!(!my_org.subject.contains('>'));
+    }
+
+    #[test]
+    fn nats_store_config_derives_distinct_org_stream() {
+        let repo = NatsStoreConfig::for_org("my org", DEFAULT_NATS_URL).unwrap();
+        let org = repo.org_events();
+
+        assert_eq!(org.stream_name, "gh-report-org_6d79206f7267-org");
+        assert_eq!(org.subject, "gh-report.org_6d79206f7267.org.events");
+        assert_eq!(org.durable_consumer, "gh-report-org_6d79206f7267-org");
+        assert_ne!(repo.stream_name, org.stream_name);
+        assert_ne!(repo.subject, org.subject);
     }
 
     #[test]

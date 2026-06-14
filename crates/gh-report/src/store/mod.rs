@@ -14,12 +14,12 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use pardosa::store::{
-    BackendError, BackendOp, Event, EventStore as PardosaStore, FiberId, FiberLookup, FiberState,
-    JetStreamBackend, LiveFiber, PardosaError, PgnoBackend,
+    BackendError, BackendOp, Encode, Event, EventStore as PardosaStore, FiberId, FiberLookup,
+    FiberState, GenomeSafe, JetStreamBackend, LiveFiber, PardosaError, PgnoBackend,
 };
 use tokio::runtime::{Handle, RuntimeFlavor};
 
-use crate::event::DomainEvent;
+use crate::event::{DomainEvent, OrgStateCaptured};
 
 /// Failure surface of the native pardosa store.
 #[derive(Debug, thiserror::Error)]
@@ -91,15 +91,21 @@ fn infra<E: StoreInfrastructureError>(e: E) -> StoreError {
     }
 }
 
-struct Inner {
-    store: PardosaStore<DomainEvent>,
+struct Inner<E> {
+    store: PardosaStore<E>,
     live: HashMap<String, LiveFiber>,
     bridge_runtime: bool,
 }
 
 /// Pardosa-native event store: one fiber per repository domain key.
 pub struct NativeStore {
-    inner: Mutex<Inner>,
+    inner: Mutex<Inner<DomainEvent>>,
+    backend_reachable: AtomicBool,
+}
+
+/// Pardosa-native org event store: one fiber per org identity.
+pub struct NativeOrgStore {
+    inner: Mutex<Inner<OrgStateCaptured>>,
     backend_reachable: AtomicBool,
 }
 
@@ -162,11 +168,7 @@ impl NativeStore {
 
     fn from_store(store: PardosaStore<DomainEvent>, bridge_runtime: bool) -> Self {
         Self {
-            inner: Mutex::new(Inner {
-                store,
-                live: HashMap::new(),
-                bridge_runtime,
-            }),
+            inner: Mutex::new(inner(store, bridge_runtime)),
             backend_reachable: AtomicBool::new(true),
         }
     }
@@ -205,23 +207,7 @@ impl NativeStore {
     /// maps to more than one fiber, [`StoreError::Infrastructure`] on
     /// pardosa append/sync failure, or [`StoreError::Poisoned`].
     pub fn record(&self, domain_key: &str, event: DomainEvent) -> Result<(), StoreError> {
-        let mut guard = self.inner.lock().map_err(|_| StoreError::Poisoned)?;
-        let inner = &mut *guard;
-        let result = bridge(inner.bridge_runtime, || {
-            let receipt = if let Some(fiber) = inner.live.remove(domain_key) {
-                inner.store.writer().append(fiber, event)
-            } else {
-                match resolve_fiber(&inner.store, domain_key)? {
-                    Resolved::Defined(fid) => inner.store.writer().resume_defined(fid, event),
-                    Resolved::Detached(fid) => inner.store.writer().rescue_detached(fid, event),
-                    Resolved::Absent => inner.store.writer().begin(event),
-                }
-            }
-            .map_err(infra)?;
-            inner.live.insert(domain_key.to_string(), receipt.fiber());
-            let _ = inner.store.writer().sync().map_err(infra)?;
-            Ok(())
-        });
+        let result = record_defined(&self.inner, domain_key, event, key_of);
         self.observe_result(&result);
         result
     }
@@ -240,7 +226,7 @@ impl NativeStore {
         let result = bridge(inner.bridge_runtime, || {
             let fiber = match inner.live.remove(domain_key) {
                 Some(fiber) => fiber,
-                None => match resolve_fiber(&inner.store, domain_key)? {
+                None => match resolve_fiber(&inner.store, domain_key, key_of)? {
                     Resolved::Defined(fid) => {
                         match inner.store.writer().resume_defined(fid, event.clone()) {
                             Ok(receipt) => receipt.fiber(),
@@ -310,6 +296,148 @@ impl NativeStore {
     }
 }
 
+impl NativeOrgStore {
+    /// Create a fresh `.pgno`-backed org store, truncating any existing file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Infrastructure`] when pardosa cannot create
+    /// the backing container.
+    pub fn create_pgno(path: &Path) -> Result<Self, StoreError> {
+        let store = PardosaStore::<OrgStateCaptured>::create(path).map_err(infra)?;
+        Ok(Self::from_store(store, false))
+    }
+
+    /// Open an existing `.pgno`-backed org store, rehydrating its fibers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Infrastructure`] when pardosa cannot open or
+    /// fold the backing container.
+    pub fn open_pgno(path: &Path) -> Result<Self, StoreError> {
+        let store = PardosaStore::<OrgStateCaptured>::open_with_backend(PgnoBackend::open(path))
+            .map_err(infra)?;
+        Ok(Self::from_store(store, false))
+    }
+
+    /// Create a fresh JetStream-backed org store.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Infrastructure`] when pardosa cannot author
+    /// the canonical-empty container on the backend.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called from inside a Tokio `current_thread` runtime; see
+    /// [`NativeStore::create_jetstream`].
+    pub fn create_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
+        let store =
+            PardosaStore::<OrgStateCaptured>::create_with_backend(backend).map_err(infra)?;
+        Ok(Self::from_store(store, true))
+    }
+
+    /// Open an existing JetStream-backed org store, rehydrating its fibers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Infrastructure`] when pardosa cannot fetch or
+    /// rehydrate the JetStream-authoritative line.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called from inside a Tokio `current_thread` runtime; see
+    /// [`NativeStore::create_jetstream`].
+    pub fn open_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
+        let store = PardosaStore::<OrgStateCaptured>::open_with_backend(backend).map_err(infra)?;
+        Ok(Self::from_store(store, true))
+    }
+
+    fn from_store(store: PardosaStore<OrgStateCaptured>, bridge_runtime: bool) -> Self {
+        Self {
+            inner: Mutex::new(inner(store, bridge_runtime)),
+            backend_reachable: AtomicBool::new(true),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn backend_reachable(&self) -> bool {
+        self.backend_reachable.load(Ordering::Acquire)
+    }
+
+    fn observe_result<T>(&self, result: &Result<T, StoreError>) {
+        if matches!(result, Err(StoreError::BackendInfrastructure { .. })) {
+            self.backend_reachable.store(false, Ordering::Release);
+        } else if result.is_ok() {
+            self.backend_reachable.store(true, Ordering::Release);
+        }
+    }
+
+    /// Capture an org state event onto the org fiber, then fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::DivergedFiber`] when the org key already maps
+    /// to more than one fiber, [`StoreError::Infrastructure`] on pardosa
+    /// append/sync failure, or [`StoreError::Poisoned`].
+    pub fn record(&self, org_key: &str, event: OrgStateCaptured) -> Result<(), StoreError> {
+        let result = record_defined(&self.inner, org_key, event, org_key_of);
+        self.observe_result(&result);
+        result
+    }
+
+    /// Fold every org event in committed line order without materialising an owned vector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Poisoned`] when the store mutex is poisoned.
+    pub fn fold_events<R>(
+        &self,
+        init: R,
+        fold: impl FnMut(&mut R, &OrgStateCaptured),
+    ) -> Result<R, StoreError> {
+        let guard = self.inner.lock().map_err(|_| StoreError::Poisoned)?;
+        let result = bridge(guard.bridge_runtime, || {
+            Ok(fold_all_defined_events(&guard.store, init, fold))
+        });
+        self.observe_result(&result);
+        result
+    }
+}
+
+fn inner<E>(store: PardosaStore<E>, bridge_runtime: bool) -> Inner<E> {
+    Inner {
+        store,
+        live: HashMap::new(),
+        bridge_runtime,
+    }
+}
+
+fn record_defined<E: Clone + Encode + GenomeSafe>(
+    inner: &Mutex<Inner<E>>,
+    domain_key: &str,
+    event: E,
+    key: fn(&Event<E>) -> std::iter::Once<String>,
+) -> Result<(), StoreError> {
+    let mut guard = inner.lock().map_err(|_| StoreError::Poisoned)?;
+    let inner = &mut *guard;
+    bridge(inner.bridge_runtime, || {
+        let receipt = if let Some(fiber) = inner.live.remove(domain_key) {
+            inner.store.writer().append(fiber, event)
+        } else {
+            match resolve_fiber(&inner.store, domain_key, key)? {
+                Resolved::Defined(fid) => inner.store.writer().resume_defined(fid, event),
+                Resolved::Detached(fid) => inner.store.writer().rescue_detached(fid, event),
+                Resolved::Absent => inner.store.writer().begin(event),
+            }
+        }
+        .map_err(infra)?;
+        inner.live.insert(domain_key.to_string(), receipt.fiber());
+        let _ = inner.store.writer().sync().map_err(infra)?;
+        Ok(())
+    })
+}
+
 enum Resolved {
     Defined(FiberId),
     Detached(FiberId),
@@ -321,11 +449,23 @@ fn key_of(event: &Event<DomainEvent>) -> std::iter::Once<String> {
     std::iter::once(domain_key.as_str().to_string())
 }
 
-fn resolve_fiber(
-    store: &PardosaStore<DomainEvent>,
+fn org_key_of(event: &Event<OrgStateCaptured>) -> std::iter::Once<String> {
+    std::iter::once(
+        event
+            .domain_event()
+            .assessment_metadata
+            .organization
+            .as_str()
+            .to_string(),
+    )
+}
+
+fn resolve_fiber<E>(
+    store: &PardosaStore<E>,
     domain_key: &str,
+    key: fn(&Event<E>) -> std::iter::Once<String>,
 ) -> Result<Resolved, StoreError> {
-    let index = store.reader().fiber_index::<String, _, _>(key_of);
+    let index = store.reader().fiber_index::<String, _, _>(key);
     match index.lookup(&domain_key.to_string()) {
         FiberLookup::Unique(fid) => {
             let reader = store.reader();
@@ -396,6 +536,22 @@ fn fold_all_events<R>(
             event.detached(),
             event.domain_event(),
         );
+        std::iter::empty::<u8>()
+    });
+    accumulated.into_inner()
+}
+
+fn fold_all_defined_events<E, R>(
+    store: &PardosaStore<E>,
+    init: R,
+    fold: impl FnMut(&mut R, &E),
+) -> R {
+    let accumulated = RefCell::new(init);
+    let fold = RefCell::new(fold);
+    let _index = store.reader().fiber_index::<u8, _, _>(|event| {
+        if !event.detached() {
+            fold.borrow_mut()(&mut accumulated.borrow_mut(), event.domain_event());
+        }
         std::iter::empty::<u8>()
     });
     accumulated.into_inner()

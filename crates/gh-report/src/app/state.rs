@@ -36,6 +36,7 @@ use pardosa_schema::{NonEmptyEventString, Timestamp as EventTimestamp};
 pub use crate::infra::server::state::{CachedPage, PageUpdateEvent};
 
 pub type EventStoreImpl = crate::store::NativeStore;
+pub type OrgEventStoreImpl = crate::store::NativeOrgStore;
 
 pub use crate::app::evidence_service::EvidenceState;
 pub use crate::app::github_infra::GithubState;
@@ -46,8 +47,8 @@ use crate::app::work_queue::WorkQueue;
 use crate::domain::evidence::RepositoryEvidence;
 use crate::domain::run::RunMetadata;
 use crate::error::PersistenceError;
-use crate::event::DomainEvent as NativeDomainEvent;
 use crate::event::convert::EventConversionError;
+use crate::event::{DomainEvent as NativeDomainEvent, OrgStateCaptured};
 
 /// Embedded CSS stylesheet, compiled into the binary at build time.
 const STYLESHEET: &str = include_str!("../../templates/style.css");
@@ -109,6 +110,9 @@ pub struct AppState {
 
     /// Durable native pardosa event store.
     pub event_store: Arc<EventStoreImpl>,
+
+    /// Durable native pardosa org event store.
+    pub org_event_store: Arc<OrgEventStoreImpl>,
 
     /// Materialised projection state rebuilt from [`Self::event_store`].
     pub(crate) projection_state: Arc<Mutex<crate::projection::EvidenceProjection>>,
@@ -240,7 +244,7 @@ fn open_event_store(
         crate::config::runtime::PardosaBackend::Pgno => {
             std::fs::create_dir_all(events_dir)?;
             let path = events_dir.join("events.pgno");
-            if path.exists() {
+            if path.exists() && path.metadata()?.len() > 0 {
                 EventStoreImpl::open_pgno(&path).map_err(std::io::Error::other)
             } else {
                 EventStoreImpl::create_pgno(&path).map_err(std::io::Error::other)
@@ -248,6 +252,28 @@ fn open_event_store(
         }
         crate::config::runtime::PardosaBackend::Nats => {
             open_or_create_jetstream(nats, handle).map_err(std::io::Error::other)
+        }
+    }
+}
+
+fn open_org_event_store(
+    events_dir: &Path,
+    backend: crate::config::runtime::PardosaBackend,
+    nats: crate::config::runtime::NatsStoreConfig,
+    handle: tokio::runtime::Handle,
+) -> Result<OrgEventStoreImpl, std::io::Error> {
+    match backend {
+        crate::config::runtime::PardosaBackend::Pgno => {
+            std::fs::create_dir_all(events_dir)?;
+            let path = events_dir.join("org-events.pgno");
+            if path.exists() && path.metadata()?.len() > 0 {
+                OrgEventStoreImpl::open_pgno(&path).map_err(std::io::Error::other)
+            } else {
+                OrgEventStoreImpl::create_pgno(&path).map_err(std::io::Error::other)
+            }
+        }
+        crate::config::runtime::PardosaBackend::Nats => {
+            open_or_create_org_jetstream(nats, handle).map_err(std::io::Error::other)
         }
     }
 }
@@ -262,6 +288,29 @@ fn open_or_create_jetstream(
         move || EventStoreImpl::open_jetstream(jetstream_backend(open_nats, open_handle)),
         move || EventStoreImpl::create_jetstream(jetstream_backend(nats, handle)),
     )
+}
+
+fn open_or_create_org_jetstream(
+    nats: crate::config::runtime::NatsStoreConfig,
+    handle: tokio::runtime::Handle,
+) -> Result<OrgEventStoreImpl, crate::store::StoreError> {
+    let open_nats = nats.clone();
+    let open_handle = handle.clone();
+    open_or_create_org_jetstream_with(
+        move || OrgEventStoreImpl::open_jetstream(jetstream_backend(open_nats, open_handle)),
+        move || OrgEventStoreImpl::create_jetstream(jetstream_backend(nats, handle)),
+    )
+}
+
+fn open_or_create_org_jetstream_with(
+    open: impl FnOnce() -> Result<OrgEventStoreImpl, crate::store::StoreError>,
+    create: impl FnOnce() -> Result<OrgEventStoreImpl, crate::store::StoreError>,
+) -> Result<OrgEventStoreImpl, crate::store::StoreError> {
+    match open() {
+        Ok(store) => Ok(store),
+        Err(e @ crate::store::StoreError::BackendInfrastructure { .. }) => Err(e),
+        Err(_) => create(),
+    }
 }
 
 fn open_or_create_jetstream_with(
@@ -307,16 +356,33 @@ async fn open_event_store_blocking(
         .map_err(std::io::Error::other)?
 }
 
-fn projection_from_store(
+async fn open_org_event_store_blocking(
+    events_dir: PathBuf,
+    backend: crate::config::runtime::PardosaBackend,
+    nats: crate::config::runtime::NatsStoreConfig,
+    handle: tokio::runtime::Handle,
+) -> Result<OrgEventStoreImpl, std::io::Error> {
+    tokio::task::spawn_blocking(move || open_org_event_store(&events_dir, backend, nats, handle))
+        .await
+        .map_err(std::io::Error::other)?
+}
+
+fn projection_from_stores(
     store: &EventStoreImpl,
+    org_store: &OrgEventStoreImpl,
 ) -> Result<crate::projection::EvidenceProjection, std::io::Error> {
-    store
+    let projection = store
         .fold_events(
             crate::projection::EvidenceProjection::default(),
             |projection, detached, event| {
                 fold_native_event(projection, detached, event);
             },
         )
+        .map_err(std::io::Error::other)?;
+    org_store
+        .fold_events(projection, |projection, event| {
+            fold_org_event(projection, event.clone());
+        })
         .map_err(std::io::Error::other)
 }
 
@@ -337,6 +403,10 @@ fn fold_native_event(
             .repositories
             .insert(domain_key.as_str().to_string(), (**evidence).clone().into());
     }
+}
+
+fn fold_org_event(projection: &mut crate::projection::EvidenceProjection, event: OrgStateCaptured) {
+    projection.apply_org_state(event.into());
 }
 
 fn native_store_persistence(error: &crate::store::StoreError) -> PersistenceError {
@@ -412,6 +482,17 @@ async fn noop_event_store() -> Arc<EventStoreImpl> {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::unused_async,
+    reason = "pardosa store facade is synchronous by PGN-0010:R5 / PGN-0015:R6; async fn preserves a uniform .await consumer seam across the sync-over-async backend boundary"
+)]
+async fn noop_org_event_store() -> Arc<OrgEventStoreImpl> {
+    let dir = tempfile::tempdir().expect("test tempdir");
+    let path = dir.keep().join("org-events.pgno");
+    Arc::new(OrgEventStoreImpl::create_pgno(&path).expect("create test pardosa org store"))
+}
+
+#[cfg(test)]
 impl AppState {
     /// Create a new `AppState` (for daemon mode).
     ///
@@ -431,6 +512,7 @@ impl AppState {
     /// appropriate.
     pub async fn new() -> Arc<Self> {
         let event_store = noop_event_store().await;
+        let org_event_store = noop_org_event_store().await;
         let projection_state =
             Arc::new(Mutex::new(crate::projection::EvidenceProjection::default()));
         Arc::new(Self {
@@ -441,6 +523,7 @@ impl AppState {
             worker_pool_started: tokio::sync::OnceCell::new(),
             worker_pool_cancel: WorkerShutdownToken::new(),
             event_store,
+            org_event_store,
             projection_state,
             webhook: WebhookState::from_environment(),
             github: GithubState::new(),
@@ -476,9 +559,17 @@ impl AppState {
     ) -> Result<Arc<Self>, std::io::Error> {
         let handle = tokio::runtime::Handle::current();
         let events_dir = events_dir.to_path_buf();
-        let event_store = open_event_store_blocking(events_dir, backend, nats, handle).await?;
+        let event_store =
+            open_event_store_blocking(events_dir.clone(), backend, nats.clone(), handle.clone())
+                .await?;
+        let org_event_store =
+            open_org_event_store_blocking(events_dir, backend, nats.org_events(), handle).await?;
         let event_store = Arc::new(event_store);
-        let projection_state = Arc::new(Mutex::new(projection_from_store(event_store.as_ref())?));
+        let org_event_store = Arc::new(org_event_store);
+        let projection_state = Arc::new(Mutex::new(projection_from_stores(
+            event_store.as_ref(),
+            org_event_store.as_ref(),
+        )?));
         Ok(Arc::new(Self {
             started_at: Timestamp::now(),
             current_run: ArcSwap::from_pointee(None),
@@ -487,6 +578,7 @@ impl AppState {
             worker_pool_started: tokio::sync::OnceCell::new(),
             worker_pool_cancel: WorkerShutdownToken::new(),
             event_store,
+            org_event_store,
             projection_state,
             webhook: WebhookState::from_environment(),
             github: GithubState::new(),
@@ -508,7 +600,8 @@ impl AppState {
     }
 
     fn refresh_projection(&self) -> Result<(), std::io::Error> {
-        let projection = projection_from_store(self.event_store.as_ref())?;
+        let projection =
+            projection_from_stores(self.event_store.as_ref(), self.org_event_store.as_ref())?;
         let mut guard = self
             .projection_state
             .lock()
@@ -523,6 +616,14 @@ impl AppState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         fold_native_event(&mut guard, detached, event);
+    }
+
+    fn fold_org_event_into_projection(&self, event: OrgStateCaptured) {
+        let mut guard = self
+            .projection_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        fold_org_event(&mut guard, event);
     }
 
     /// Record a live repository snapshot in the native store.
@@ -570,6 +671,24 @@ impl AppState {
             .detach(domain_key, event.clone())
             .map_err(|e| native_store_persistence(&e))?;
         self.fold_repository_event_into_projection(true, &event);
+        Ok(())
+    }
+
+    /// Record a live org snapshot in the native org store.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence error when native conversion or store append fails.
+    pub fn record_org(
+        &self,
+        snapshot: crate::domain::evidence::OrgStateSnapshot,
+    ) -> Result<(), PersistenceError> {
+        let event = OrgStateCaptured::try_from(snapshot).map_err(|e| conversion_persistence(&e))?;
+        let org_key = event.assessment_metadata.organization.as_str().to_string();
+        self.org_event_store
+            .record(&org_key, event.clone())
+            .map_err(|e| native_store_persistence(&e))?;
+        self.fold_org_event_into_projection(event);
         Ok(())
     }
 
@@ -670,6 +789,7 @@ impl AppStateBuilder {
         };
         let webhook = WebhookState::with_secret(self.webhook_secret);
         let event_store = noop_event_store().await;
+        let org_event_store = noop_org_event_store().await;
         let projection_state =
             Arc::new(Mutex::new(crate::projection::EvidenceProjection::default()));
 
@@ -681,6 +801,7 @@ impl AppStateBuilder {
             worker_pool_started: tokio::sync::OnceCell::new(),
             worker_pool_cancel: WorkerShutdownToken::new(),
             event_store,
+            org_event_store,
             projection_state,
             webhook,
             github,
@@ -858,9 +979,10 @@ impl crate::infra::server::state::ServerState for AppState {
 
     fn is_ready(&self) -> bool {
         self.event_store.backend_reachable()
+            && self.org_event_store.backend_reachable()
             && (self.last_completed_run.load().is_some()
                 || self.evidence().html_cache.load().is_some()
-                || self.projection_len() > 0)
+                || !self.lock_projection().is_empty())
     }
 }
 
@@ -870,6 +992,19 @@ mod tests {
     use crate::config::runtime::{NatsStoreConfig, PardosaBackend};
     use crate::domain::cache::CachedRepoDetail;
     use crate::domain::evidence::Evidence;
+    use crate::infra::server::state::ServerState;
+
+    fn empty_org_summary() -> crate::domain::metrics::OrgAlertSummary {
+        crate::domain::metrics::OrgAlertSummary {
+            collection_status: crate::domain::status::CollectionStatus::Success,
+            collection_reason: None,
+            per_repo: HashMap::new(),
+            open_secret_alert_age_buckets: crate::config::empty_age_buckets(),
+            total_open_secret_alerts: 0,
+            oldest_open_secret_alert_created_at: None,
+            newest_open_secret_alert_created_at: None,
+        }
+    }
 
     fn fold_public_event_stream(
         events: Vec<(bool, NativeDomainEvent)>,
@@ -1148,10 +1283,6 @@ mod tests {
         )
         .await
         .expect("with_stores");
-        let mut metadata = crate::test_fixtures::make_metadata();
-        metadata.run_id = "debounce-sentinel".to_string();
-        state.lock_projection().assessment_metadata = Some(metadata.clone());
-
         let evidence = crate::test_fixtures::all_passing_evidence("debounced-repo");
         let domain_key = evidence.repository.inventory_key.clone();
         let repo_name = evidence.repository.name.clone();
@@ -1162,7 +1293,6 @@ mod tests {
             .expect("record repo");
         {
             let projection = state.lock_projection();
-            assert_eq!(projection.assessment_metadata.as_ref(), Some(&metadata));
             assert!(projection.repositories.contains_key(&domain_key));
         }
 
@@ -1170,8 +1300,140 @@ mod tests {
             .remove_repo(&domain_key, &repo_name, timestamp)
             .expect("remove repo");
         let projection = state.lock_projection();
-        assert_eq!(projection.assessment_metadata.as_ref(), Some(&metadata));
         assert!(!projection.repositories.contains_key(&domain_key));
+    }
+
+    #[tokio::test]
+    async fn reconstruct_org_state_from_dual_event_logs_without_live_run() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let projections_dir = dir.path().join("projections");
+        let nats = NatsStoreConfig::for_org("TestOrg", crate::config::runtime::DEFAULT_NATS_URL)
+            .expect("nats config");
+        let state = AppState::with_stores(
+            &events_dir,
+            projections_dir.clone(),
+            PardosaBackend::Pgno,
+            nats.clone(),
+        )
+        .await
+        .expect("with stores");
+        let mut repo = crate::test_fixtures::all_passing_evidence("event-repo");
+        repo.repository.archived = true;
+        let domain_key = repo.repository.inventory_key.clone();
+        let repo_name = repo.repository.name.clone();
+        state
+            .record_repo(&domain_key, repo, &repo_name, "2026-06-11T00:00:00Z")
+            .expect("record repo");
+
+        let mut metadata = crate::test_fixtures::make_metadata();
+        metadata.organization = "TestOrg".to_string();
+        metadata.run_id = "org-run-from-event".to_string();
+        let mut alert_summary = empty_org_summary();
+        alert_summary.total_open_secret_alerts = 9;
+        state
+            .record_org(crate::domain::evidence::OrgStateSnapshot {
+                archived_repos: 7,
+                assessment_metadata: metadata.clone(),
+                alert_summary: alert_summary.clone(),
+            })
+            .expect("record org state");
+        assert!(events_dir.join("events.pgno").exists());
+        assert!(events_dir.join("org-events.pgno").exists());
+        drop(state);
+
+        let restarted =
+            AppState::with_stores(&events_dir, projections_dir, PardosaBackend::Pgno, nats)
+                .await
+                .expect("restart from event logs");
+        let projection = restarted.lock_projection().clone();
+        let org = projection
+            .org_state
+            .clone()
+            .expect("org state must replay from org event log");
+
+        assert_eq!(projection.repositories.len(), 1);
+        assert_eq!(org.archived_repos, 7);
+        assert_eq!(org.assessment_metadata.run_id, metadata.run_id);
+        assert_eq!(org.alert_summary.total_open_secret_alerts, 9);
+        assert!(
+            restarted.is_ready(),
+            "a cold instance with repo or org events must be ready without a live GitHub run",
+        );
+        let evidence = crate::domain::evidence::Evidence {
+            assessment_metadata: org.assessment_metadata,
+            collection_statistics: crate::domain::metrics::CollectionStatistics {
+                total_repos: 0,
+                public_repos: 0,
+                internal_repos: 0,
+                private_repos: 0,
+                archived_repos: org.archived_repos,
+            },
+            metrics: crate::test_fixtures::make_minimal_metrics(),
+            secret_scanning_observability:
+                crate::aggregate::metrics::build_secret_scanning_observability_summary(
+                    &[],
+                    Some(&org.alert_summary),
+                ),
+            repositories: projection.sorted_snapshot(),
+        };
+        let pages = crate::report::html::render_dashboard(
+            &evidence,
+            &crate::config::dashboard::DashboardConfig::default(),
+        )
+        .expect("render replayed org state");
+        assert!(pages["index.html"].contains("org-run-from-event"));
+        assert!(pages["index.html"].contains("7 archived"));
+        assert!(pages["index.html"].contains("9 open org alerts"));
+    }
+
+    #[tokio::test]
+    async fn org_only_event_log_is_ready_after_coldstart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let projections_dir = dir.path().join("projections");
+        let nats = NatsStoreConfig::for_org("TestOrg", crate::config::runtime::DEFAULT_NATS_URL)
+            .expect("nats config");
+        let state = AppState::with_stores(
+            &events_dir,
+            projections_dir.clone(),
+            PardosaBackend::Pgno,
+            nats.clone(),
+        )
+        .await
+        .expect("with stores");
+        let mut metadata = crate::test_fixtures::make_metadata();
+        metadata.organization = "TestOrg".to_string();
+        metadata.run_id = "org-only-run".to_string();
+        state
+            .record_org(crate::domain::evidence::OrgStateSnapshot {
+                archived_repos: 3,
+                assessment_metadata: metadata,
+                alert_summary: empty_org_summary(),
+            })
+            .expect("record org state");
+        drop(state);
+
+        let restarted =
+            AppState::with_stores(&events_dir, projections_dir, PardosaBackend::Pgno, nats)
+                .await
+                .expect("restart from org event log");
+        {
+            let projection = restarted.lock_projection();
+            assert_eq!(projection.repositories.len(), 0);
+            assert_eq!(
+                projection
+                    .org_state
+                    .as_ref()
+                    .expect("org state")
+                    .archived_repos,
+                3
+            );
+        }
+        assert!(
+            restarted.is_ready(),
+            "org-only event-log projection should be ready without repo events or GitHub API",
+        );
     }
 
     #[tokio::test]
@@ -1382,18 +1644,6 @@ mod tests {
     #[tokio::test]
     async fn sweep_lock_serialises_concurrent_acquirers() {
         use std::time::{Duration, Instant};
-
-        fn empty_org_summary() -> crate::domain::metrics::OrgAlertSummary {
-            crate::domain::metrics::OrgAlertSummary {
-                collection_status: crate::domain::status::CollectionStatus::Success,
-                collection_reason: None,
-                per_repo: HashMap::new(),
-                open_secret_alert_age_buckets: crate::config::empty_age_buckets(),
-                total_open_secret_alerts: 0,
-                oldest_open_secret_alert_created_at: None,
-                newest_open_secret_alert_created_at: None,
-            }
-        }
 
         let state = AppStateBuilder::new().build().await;
         let sentinel_a = Arc::new(empty_org_summary());

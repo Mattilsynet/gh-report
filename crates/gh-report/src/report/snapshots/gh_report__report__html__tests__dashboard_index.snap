@@ -1,6 +1,5 @@
 ---
-source: src/report/html.rs
-assertion_line: 1099
+source: crates/gh-report/src/report/html.rs
 expression: "&pages[\"index.html\"]"
 ---
 <!DOCTYPE html>
@@ -25,7 +24,7 @@ expression: "&pages[\"index.html\"]"
     </nav>
 
     <div class="page-header">
-        <p class="meta"><strong>Date:</strong> 2026-04-09 12:00 UTC · <strong>Scope:</strong> 5 total · 5 non-archived · 0 archived repositories in <code>TestOrg</code></p>
+        <p class="meta"><strong>Date:</strong> 2026-04-09 12:00 UTC · <strong>Run:</strong> test-run-id · <strong>Scope:</strong> 5 total · 5 non-archived · 0 archived repositories in <code>TestOrg</code></p>
     </div>
 
     <div class="scorecard">
@@ -53,6 +52,7 @@ expression: "&pages[\"index.html\"]"
         <div class="card tier-pass" title="Percentage of repos with GitHub secret scanning enabled to detect leaked credentials.">
             <p class="card-label">Secret Scanning</p>
             <p class="card-value">80.0% (4/5)</p>
+            <p class="card-detail">1 open org alerts · success</p>
             <div class="progress-bar">
                 <div
                     class="progress-fill tier-pass w-80">

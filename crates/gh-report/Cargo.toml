@@ -136,6 +136,7 @@ moka = { workspace = true }
 
 [dev-dependencies]
 async-nats = { workspace = true }
+pardosa-nats = { path = "../pardosa-nats", version = "=0.1.0", features = ["test-support"] }
 # HTTP mocking
 wiremock = { workspace = true }
 

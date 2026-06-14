@@ -973,14 +973,26 @@ async fn finalize_and_publish(
         state,
     } = params;
 
-    let evidence_repos = state.projection_snapshot();
-
     let rate_limit_warnings = client
         .rate_limit_warnings
         .load(std::sync::atomic::Ordering::Relaxed);
 
+    let org_snapshot = build_org_state_snapshot(&OrgSnapshotParams {
+        config,
+        run,
+        inventory,
+        org_summary,
+        auth_metadata,
+        capabilities,
+        rate_limit_warnings,
+    });
+    state.record_org(org_snapshot)?;
+
+    let evidence_repos = state.projection_snapshot();
+
     let evidence = build_evidence(BuildEvidenceParams {
         repositories: evidence_repos,
+        org_state: state.lock_projection().org_state.clone(),
         config,
         run,
         inventory_fetched_at: inventory.inventory_fetched_at.clone(),
@@ -1154,15 +1166,17 @@ pub(crate) async fn warm_start_from_baseline(
     config: &RuntimeConfig,
     state: &Arc<AppState>,
 ) -> bool {
-    let repos: Vec<RepositoryEvidence> = {
+    let projection = {
         let projection = state.lock_projection();
-        projection.repositories.values().cloned().collect()
+        projection.clone()
     };
 
-    if repos.is_empty() {
+    if projection.is_empty() {
         info!("projection is empty — skipping warm start");
         return false;
     }
+
+    let repos = projection.sorted_snapshot();
 
     info!(repos = repos.len(), "warm-starting from baseline");
 
@@ -1171,35 +1185,21 @@ pub(crate) async fn warm_start_from_baseline(
         config::EVIDENCE_SCHEMA_VERSION.to_string(),
     );
 
-    let collection_stats = metrics::build_collection_statistics(&repos);
-    let mut aggregated = metrics::aggregate_metrics(&repos);
-    metrics::enrich_owner_metrics_with_lifecycle(
-        &mut aggregated.owner_metrics,
-        &repos,
-        &run.timestamp(),
-    );
-    let observability = metrics::build_secret_scanning_observability_summary(&repos, None);
-
-    let evidence = Evidence {
-        assessment_metadata: AssessmentMetadata {
-            date: run.date(),
-            organization: config.org_name.clone(),
-            schema_version: config::EVIDENCE_SCHEMA_VERSION.to_string(),
-            run_timestamp: run.timestamp(),
-            run_id: run.run_id.clone(),
+    let evidence = build_evidence(BuildEvidenceParams {
+        repositories: repos,
+        org_state: projection.org_state,
+        config,
+        run: &run,
+        inventory_fetched_at: None,
+        org_alert_summary: None,
+        auth_metadata: &AuthMetadata {
             token_tier: crate::domain::auth::TokenTier::Unknown,
             token_scopes: "cached".to_string(),
             auth_mode: crate::domain::auth::AuthMode::Unknown,
-            rate_limit_warnings: 0,
-            unavailable_capabilities: vec![],
-            inventory_fetched_at: None,
-            warm_start: true,
         },
-        collection_statistics: collection_stats,
-        metrics: aggregated,
-        secret_scanning_observability: observability,
-        repositories: repos,
-    };
+        capabilities: &CapabilitySet::default(),
+        rate_limit_warnings: 0,
+    });
 
     let warm_repo_count: u64 = u64::from(evidence.collection_statistics.total_repos);
 
@@ -1435,6 +1435,7 @@ fn spawn_partial_publisher_from_store(
 
                     let evidence = build_evidence(BuildEvidenceParams {
                         repositories: all_evidence,
+                        org_state: state.lock_projection().org_state.clone(),
                         config: &pp.config,
                         run: &pp.run,
                         inventory_fetched_at: pp.inventory_fetched_at.clone(),
@@ -1563,6 +1564,7 @@ fn failure_evidence_with_reason(
 /// parameter list.
 struct BuildEvidenceParams<'a> {
     repositories: Vec<RepositoryEvidence>,
+    org_state: Option<crate::projection::OrgReadModel>,
     config: &'a RuntimeConfig,
     run: &'a RunMetadata,
     inventory_fetched_at: Option<String>,
@@ -1572,29 +1574,78 @@ struct BuildEvidenceParams<'a> {
     rate_limit_warnings: u32,
 }
 
+struct OrgSnapshotParams<'a> {
+    config: &'a RuntimeConfig,
+    run: &'a RunMetadata,
+    inventory: &'a InventoryLoad,
+    org_summary: &'a Arc<OrgAlertSummary>,
+    auth_metadata: &'a AuthMetadata,
+    capabilities: &'a CapabilitySet,
+    rate_limit_warnings: u32,
+}
+
+fn build_org_state_snapshot(
+    params: &OrgSnapshotParams<'_>,
+) -> crate::domain::evidence::OrgStateSnapshot {
+    crate::domain::evidence::OrgStateSnapshot {
+        archived_repos: u32::try_from(
+            params
+                .inventory
+                .active_repos
+                .iter()
+                .filter(|repo| repo.archived)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+        assessment_metadata: build_assessment_metadata(
+            params.config,
+            params.run,
+            params.inventory.inventory_fetched_at.clone(),
+            params.auth_metadata,
+            params.capabilities,
+            params.rate_limit_warnings,
+        ),
+        alert_summary: params.org_summary.as_ref().clone(),
+    }
+}
+
 /// Build the complete evidence artifact from collected data.
 fn build_evidence(params: BuildEvidenceParams<'_>) -> Evidence {
-    let stats = metrics::build_collection_statistics(&params.repositories);
+    let mut stats = metrics::build_collection_statistics(&params.repositories);
+    if let Some(org_state) = params.org_state.as_ref() {
+        stats.archived_repos = org_state.archived_repos;
+    }
     let mut aggregated = metrics::aggregate_metrics(&params.repositories);
     metrics::enrich_owner_metrics_with_lifecycle(
         &mut aggregated.owner_metrics,
         &params.repositories,
         &params.run.timestamp(),
     );
-    let observability = metrics::build_secret_scanning_observability_summary(
-        &params.repositories,
-        params.org_alert_summary,
+    let alert_summary = params
+        .org_state
+        .as_ref()
+        .map_or(params.org_alert_summary, |org_state| {
+            Some(&org_state.alert_summary)
+        });
+    let observability =
+        metrics::build_secret_scanning_observability_summary(&params.repositories, alert_summary);
+
+    let assessment_metadata = params.org_state.as_ref().map_or_else(
+        || {
+            build_assessment_metadata(
+                params.config,
+                params.run,
+                params.inventory_fetched_at,
+                params.auth_metadata,
+                params.capabilities,
+                params.rate_limit_warnings,
+            )
+        },
+        |org_state| org_state.assessment_metadata.clone(),
     );
 
     Evidence {
-        assessment_metadata: build_assessment_metadata(
-            params.config,
-            params.run,
-            params.inventory_fetched_at,
-            params.auth_metadata,
-            params.capabilities,
-            params.rate_limit_warnings,
-        ),
+        assessment_metadata,
         collection_statistics: stats,
         metrics: aggregated,
         secret_scanning_observability: observability,
@@ -1771,6 +1822,7 @@ mod tests {
 
         let evidence = build_evidence(BuildEvidenceParams {
             repositories: repos,
+            org_state: None,
             config: &config,
             run: &run_meta,
             inventory_fetched_at: None,
@@ -1803,6 +1855,7 @@ mod tests {
 
         let evidence = build_evidence(BuildEvidenceParams {
             repositories: repos,
+            org_state: None,
             config: &config,
             run: &run_meta,
             inventory_fetched_at: None,
@@ -1817,6 +1870,41 @@ mod tests {
     }
 
     #[test]
+    fn rendered_archived_count_uses_org_event_as_single_authority() {
+        let mut archived = sample_repo("repo-stream-archived");
+        archived.repository.archived = true;
+        let repos = vec![sample_repo("repo-stream-active"), archived];
+        let config = sample_config();
+        let run_meta = RunMetadata::new(
+            "TestOrg".to_string(),
+            crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
+        );
+        let org_state = crate::projection::OrgReadModel {
+            archived_repos: 7,
+            assessment_metadata: test_fixtures::make_metadata(),
+            alert_summary: test_org_summary(),
+        };
+
+        let evidence = build_evidence(BuildEvidenceParams {
+            repositories: repos,
+            org_state: Some(org_state),
+            config: &config,
+            run: &run_meta,
+            inventory_fetched_at: None,
+            org_alert_summary: None,
+            auth_metadata: &test_auth_metadata(),
+            capabilities: &test_capabilities(),
+            rate_limit_warnings: 0,
+        });
+
+        assert_eq!(evidence.collection_statistics.total_repos, 1);
+        assert_eq!(
+            evidence.collection_statistics.archived_repos, 7,
+            "rendered org archived count must come from the org event, not the repo-stream-derived count",
+        );
+    }
+
+    #[test]
     fn build_evidence_empty_repos() {
         let config = sample_config();
         let run_meta = RunMetadata::new(
@@ -1826,6 +1914,7 @@ mod tests {
 
         let evidence = build_evidence(BuildEvidenceParams {
             repositories: Vec::new(),
+            org_state: None,
             config: &config,
             run: &run_meta,
             inventory_fetched_at: None,
@@ -1850,6 +1939,7 @@ mod tests {
 
         let evidence = build_evidence(BuildEvidenceParams {
             repositories: repos,
+            org_state: None,
             config: &config,
             run: &run_meta,
             inventory_fetched_at: None,

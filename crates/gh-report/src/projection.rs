@@ -4,7 +4,29 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::evidence::{AssessmentMetadata, RepositoryEvidence};
+use crate::domain::evidence::{AssessmentMetadata, OrgStateSnapshot, RepositoryEvidence};
+use crate::domain::metrics::OrgAlertSummary;
+
+/// Org-level read-model part folded from the latest org event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrgReadModel {
+    /// Number of archived repositories observed at org scope.
+    pub archived_repos: u32,
+    /// Metadata for the collection run that produced this org snapshot.
+    pub assessment_metadata: AssessmentMetadata,
+    /// Organization-level secret-scanning alert summary.
+    pub alert_summary: OrgAlertSummary,
+}
+
+impl From<OrgStateSnapshot> for OrgReadModel {
+    fn from(value: OrgStateSnapshot) -> Self {
+        Self {
+            archived_repos: value.archived_repos,
+            assessment_metadata: value.assessment_metadata,
+            alert_summary: value.alert_summary,
+        }
+    }
+}
 
 /// Read-side projection materialising governance evidence from
 /// native pardosa events.
@@ -23,11 +45,8 @@ pub struct EvidenceProjection {
     /// stability (B8').
     pub repositories: BTreeMap<String, RepositoryEvidence>,
 
-    /// Last-known assessment metadata for the current/most-recent
-    /// collection run.
-    ///
-    /// `None` when projection was built from durable per-repo snapshots only.
-    pub assessment_metadata: Option<AssessmentMetadata>,
+    /// Last-known org-level state folded from the org event stream.
+    pub org_state: Option<OrgReadModel>,
 }
 
 impl EvidenceProjection {
@@ -57,7 +76,13 @@ impl EvidenceProjection {
     /// True when no repositories are materialised. Pairs with [`Self::len`].
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.repositories.is_empty()
+        self.repositories.is_empty() && self.org_state.is_none()
+    }
+
+    /// Apply an org snapshot as latest-event-read state.
+    pub fn apply_org_state(&mut self, snapshot: OrgStateSnapshot) {
+        let org_state = OrgReadModel::from(snapshot);
+        self.org_state = Some(org_state);
     }
 
     /// Snapshot of all repositories, sorted by `(repository.id,
@@ -140,7 +165,7 @@ mod tests {
     fn default_projection_is_empty() {
         let p = EvidenceProjection::default();
         assert!(p.repositories.is_empty());
-        assert!(p.assessment_metadata.is_none());
+        assert!(p.org_state.is_none());
     }
 
     fn ev(domain_key: &str, name: &str) -> RepositoryEvidence {

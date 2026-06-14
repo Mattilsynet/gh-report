@@ -22,7 +22,7 @@
     <h1>{{ vm.organization }} GitHub Security Posture Overview</h1>
 
     <div class="meta">
-        <p><strong>Date:</strong> {{ vm.date_time }} · <strong>Scope:</strong> {{ vm.total_all_repos }} total · {{ vm.total_repos }} non-archived · {{ vm.archived_repos }} archived repositories in
+        <p><strong>Date:</strong> {{ vm.date_time }} · <strong>Run:</strong> {{ vm.run_id }} · <strong>Scope:</strong> {{ vm.total_all_repos }} total · {{ vm.total_repos }} non-archived · {{ vm.archived_repos }} archived repositories in
             <code>{{ vm.organization }}</code></p>
     </div>
 
@@ -259,6 +259,14 @@
             <tr>
                 <td>Rate limit warnings</td>
                 <td class="text-right">{{ vm.rate_limit_warnings }}</td>
+            </tr>
+            <tr>
+                <td>Org alert collection status</td>
+                <td class="text-right">{{ vm.org_alert_collection_status }}</td>
+            </tr>
+            <tr>
+                <td>Open org secret-scanning alerts</td>
+                <td class="text-right">{{ vm.org_alert_total_open_secret_alerts }}</td>
             </tr>
         </tbody>
     </table>

@@ -387,6 +387,8 @@ pub struct ReportViewModel {
     pub date: String,
     /// Report date and time (YYYY-MM-DD HH:MM UTC).
     pub date_time: String,
+    /// Unique identifier for the collection run.
+    pub run_id: String,
     /// Total non-archived repositories assessed.
     pub total_repos: u32,
     /// Total repositories, including archived repositories.
@@ -431,6 +433,8 @@ pub struct ReportViewModel {
     pub internal_repos: u32,
     pub private_repos: u32,
     pub rate_limit_warnings: u32,
+    pub org_alert_collection_status: String,
+    pub org_alert_total_open_secret_alerts: u64,
 
     pub conforming_codeowners_path: &'static str,
     pub non_conforming_codeowners_path: &'static str,
@@ -490,6 +494,25 @@ pub struct ReportViewModel {
     pub warm_start: bool,
 }
 
+struct OrgAlertDisplay {
+    status: String,
+    total_open_secret_alerts: u64,
+}
+
+fn org_alert_display(evidence: &Evidence) -> OrgAlertDisplay {
+    OrgAlertDisplay {
+        status: evidence
+            .secret_scanning_observability
+            .collection_status
+            .to_string(),
+        total_open_secret_alerts: u64::from(
+            evidence
+                .secret_scanning_observability
+                .total_open_secret_alerts,
+        ),
+    }
+}
+
 impl ReportViewModel {
     /// Build a report view model from collected evidence.
     ///
@@ -500,6 +523,7 @@ impl ReportViewModel {
         let metadata = &evidence.assessment_metadata;
         let stats = &evidence.collection_statistics;
         let m = &evidence.metrics;
+        let org_alert = org_alert_display(evidence);
 
         let dependabot_observable = extra_u32(
             &m.dependabot_security_updates_coverage.extra,
@@ -530,6 +554,7 @@ impl ReportViewModel {
             organization: metadata.organization.clone(),
             date: metadata.date.clone(),
             date_time: format_run_timestamp(&metadata.run_timestamp),
+            run_id: metadata.run_id.clone(),
             total_repos: stats.total_repos,
             total_all_repos: stats.total_repos.saturating_add(archived),
             policy_coverage_formatted: m.security_policy_coverage.to_string(),
@@ -561,6 +586,8 @@ impl ReportViewModel {
             internal_repos: stats.internal_repos,
             private_repos: stats.private_repos,
             rate_limit_warnings: metadata.rate_limit_warnings,
+            org_alert_collection_status: org_alert.status,
+            org_alert_total_open_secret_alerts: org_alert.total_open_secret_alerts,
             conforming_codeowners_path: config::CONFORMING_CODEOWNERS_PATH,
             non_conforming_codeowners_path: config::NON_CONFORMING_CODEOWNERS_PATH,
             policy_tier: CoverageTier::from_rate(m.security_policy_coverage.rate, tiers),
@@ -938,6 +965,7 @@ mod tests {
         assert_eq!(vm.internal_repos, 3);
         assert_eq!(vm.private_repos, 2);
         assert_eq!(vm.rate_limit_warnings, 2);
+        assert_eq!(vm.run_id, evidence.assessment_metadata.run_id);
     }
 
     #[test]
