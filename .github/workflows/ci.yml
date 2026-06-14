@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: "17 4 * * 1"
 
 # Third-party actions are pinned by full commit SHA, not floating tag,
 # to mitigate supply-chain compromise of the action publisher
@@ -163,3 +165,19 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo install --locked cargo-deny
       - run: cargo deny check
+
+  # Scheduled fresh-checkout supply-chain scan closes oracle gap G2.
+  scheduled-supply-chain:
+    name: scheduled supply-chain (deny + audit)
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.96.0
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - run: cargo install --locked cargo-deny
+      - run: cargo deny check
+      - run: cargo install --locked cargo-audit
+      - run: cargo audit
