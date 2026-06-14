@@ -1,7 +1,7 @@
 # GND-0008. Focus of Effort Is Named and Time-Boxed
 
 Date: 2026-04-30
-Last-reviewed: 2026-05-02
+Last-reviewed: 2026-06-14
 Tier: S
 Status: Accepted
 
@@ -42,18 +42,18 @@ The artefact is time-boxed, replaceable without amending the corpus,
 and consulted during backbriefing so executors confirm proposed action
 against current focus.
 
-R1 [3]: Maintain a single focus-of-effort artefact (e.g.
-  `FOCUS.md`) naming the outcome, the load-bearing
+R1 [3]: Maintain a single focus-of-effort artefact (e.g. bd
+  `phase:`/`roadmap` labels in this repo) naming the outcome, the load-bearing
   directives by `PREFIX-NNNN` with rationale, the out-of-focus
   domains, and the period covered, refreshed each cycle
 R2 [3]: Set the focus period in the artefact's `Period:` field as
   `YYYY-MM-DD..YYYY-MM-DD` and replace the artefact within seven
   days of the end date — expired focus is mis-focus
-R3 [3]: Cite the current `FOCUS.md` artefact in every GND-0006
+R3 [3]: Cite the current focus-of-effort artefact in every GND-0006
   backbriefing; the executor confirms the proposed action serves
   an in-focus directive by ID or names explicitly why an out-of-
   focus action is justified
-R4 [3]: Record every focus-of-effort change in the `FOCUS.md`
+R4 [3]: Record every focus-of-effort change in the focus-of-effort
   artefact rather than in any ADR — durable intent stays in
   the corpus, transient priority lives in the focus pointer
 
@@ -68,7 +68,7 @@ R4 [3]: Record every focus-of-effort change in the `FOCUS.md`
 - **Cost.** A new artefact to maintain. Mitigation: the artefact is
   short, time-boxed, and disposable by design.
 - **Implementation latitude.** GND mandates the mechanism, not its
-  form. A team may choose `FOCUS.md`, milestone labels, OKR
+  form. A team may choose bd `phase:`/`roadmap` labels, milestone labels, OKR
   pointers, or equivalent; the obligation is that *some* artefact
   exists and meets R1–R4.
 - **Observation mechanism (per GND-0005).** Lint enforcement: the

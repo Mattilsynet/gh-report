@@ -1,7 +1,7 @@
 # CHE-0051. Cherry Pit Agent Design
 
 Date: 2026-05-09
-Last-reviewed: 2026-05-09
+Last-reviewed: 2026-06-14
 
 Tier: B
 Status: Accepted
@@ -30,7 +30,7 @@ R3 [5]: composition uses explicit struct construction `App::new(gateway, store, 
 
 R4 [5]: `App::register_policy<P>(policy: P, dispatch: F)` takes a per-Policy closure `F: Fn(P::Output, &G, CorrelationContext) -> impl Future<Output = Result<(), AgentError>> + Send` — caller writes the exhaustive output matcher per CHE-0017:R2; the dispatcher constructs `CorrelationContext::new(envelope.correlation_id, envelope.event_id)` per envelope (R6) and passes it as the third argument so the closure threads it into `gateway.send(...)`; static dispatch end-to-end (no `Box<dyn Policy>`, no `Box<dyn Fn>`)
 
-R5 [5]: multi-projection composition is a heterogeneous tuple `(D1, D2, …, Dn)` of `ProjectionDriver` instances with fixed arity ~8, parameterised on the App's storage adapter, satisfying CHE-0048:R6's deferral by giving compile-time wiring completeness via type inference; the missing `apply_one` per-event primitive is added by `ProjectionDriverExt`, declared inside cherry-pit-app and importing `ProjectionDriver` from cherry-pit-projection without editing it (CHE-0048 stays untouched per FOCUS.md §8)
+R5 [5]: multi-projection composition is a heterogeneous tuple `(D1, D2, …, Dn)` of `ProjectionDriver` instances with fixed arity ~8, parameterised on the App's storage adapter, satisfying CHE-0048:R6's deferral by giving compile-time wiring completeness via type inference; the missing `apply_one` per-event primitive is added by `ProjectionDriverExt`, declared inside cherry-pit-app and importing `ProjectionDriver` from cherry-pit-projection without editing it
 
 R6 [5]: the policy-output dispatcher constructs a fresh `CorrelationContext::new(envelope.correlation_id, envelope.event_id)` for every dispatch invocation, threading it through the user-provided closure — there is no `Default` impl on `CorrelationContext` per CHE-0039:R2, no shared/cached context across dispatches, and no implicit task-local propagation; the contract is explicit per-dispatch construction per CHE-0039:R1 and R3
 
@@ -38,7 +38,7 @@ R7 [5]: failed policy outputs route to a `DeadLetterSink` trait whose `record` m
 
 R8 [5]: `App::run(shutdown: impl Future<Output = ()>) -> impl Future<Output = Result<(), AgentError>> + Send` is the lifecycle entrypoint — the consumer's binary owns `#[tokio::main]` and signal handling, calls `app.run(tokio::signal::ctrl_c()).await`, and the agent does not configure the runtime, mirroring CHE-0049's `build_router`-returns-`Router` shape where the consumer drives `axum::serve`
 
-R9 [5]: multi-aggregate composition is type-parameter expansion per CHE-0005:R2 — each aggregate adds its `(G_n, S_n, B_n, P_n)` quartet to `main`, producing one typed `App` per aggregate or a wrapping struct owning N `App` instances; aggregate identity is never erased into a heterogeneous registry; wiring-LOC is the price of static dispatch (FOCUS.md §4 step 5 verifies wiring does not dominate domain code)
+R9 [5]: multi-aggregate composition is type-parameter expansion per CHE-0005:R2 — each aggregate adds its `(G_n, S_n, B_n, P_n)` quartet to `main`, producing one typed `App` per aggregate or a wrapping struct owning N `App` instances; aggregate identity is never erased into a heterogeneous registry; wiring-LOC is the price of static dispatch, and the ergonomic benchmark verifies wiring does not dominate domain code
 
 R10 [5]: per-policy durable checkpoints are out of scope for v0.1 — in-process synchronous publish (CHE-0024:§7) plus `Policy::react` purity (CHE-0041:R2) plus aggregate-level idempotency (CHE-0041:R1) jointly mean restart-time replay-from-store with the projection's checkpoint as the watermark is sufficient for at-least-once policy execution; the gap is documented and a future ADR may introduce policy checkpoints when an at-least-once consumer crosses an out-of-process boundary
 
@@ -54,7 +54,7 @@ Given up, per COM-0011:R4:
 - **Saga orchestrator**: permanently deferred per CHE-0040.
 - **WebSocket subscription**: deferred per CHE-0049:R3.
 
-Each aggregate expands the consumer's type list; the projection tuple's ~8-arity ceiling requires macros or a builder revisit if crossed (FOCUS.md §4 step 5 measures wiring-LOC vs domain-LOC). Wiring completeness is local — the agent cannot guarantee the consumer registered every Policy. Cross-context subscription per CHE-0005:R3 uses upstream policies emitting commands to downstream gateways, not a shared bus.
+Each aggregate expands the consumer's type list; the projection tuple's ~8-arity ceiling requires macros or a builder revisit if crossed, with the ergonomic benchmark measuring wiring-LOC vs domain-LOC. Wiring completeness is local — the agent cannot guarantee the consumer registered every Policy. Cross-context subscription per CHE-0005:R3 uses upstream policies emitting commands to downstream gateways, not a shared bus.
 
 ## Rejected Alternatives
 
@@ -74,7 +74,7 @@ Each aggregate expands the consumer's type list; the projection tuple's ~8-arity
 Q-choice → R-rule mapping (plan-only commentary, not normative):
 Q1 (in-process synchronous handler vector)  → R2
 Q2 (explicit struct construction)            → R3
-Q3 (per-Policy dispatch closure)             → R4  [Q3 amended 2026-05-09 per FOCUS.md §7: closure shape now `Fn(P::Output, &G, CorrelationContext) -> Future` so the dispatcher mechanically threads the per-envelope context to the closure per R6]
+Q3 (per-Policy dispatch closure)             → R4  [Q3 amended 2026-05-09: closure shape now `Fn(P::Output, &G, CorrelationContext) -> Future` so the dispatcher mechanically threads the per-envelope context to the closure per R6]
 Q4 (heterogeneous tuple of ProjectionDriver) → R5
 Q5 (DeadLetterSink trait + tracing default)  → R7
 Q6 (no durable per-policy checkpoints v0.1)  → R10

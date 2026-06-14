@@ -1,7 +1,7 @@
 # AFM-0025. Lift v0.1 Domain Moratorium for `flow/` Calibration Probe
 
 Date: 2026-05-03
-Last-reviewed: 2026-05-03
+Last-reviewed: 2026-06-14
 Tier: B
 Status: Accepted
 
@@ -35,7 +35,7 @@ R2 [5]: The `flow/` domain hosts ADRs derived exclusively from Reinertsen's
   source scope for the v0.1 period.
 R3 [6]: Treat `flow/` as the v0.1 generalisation probe — lint-cleanliness
   across all nine domains is the evidence that the binary generalises
-  beyond the originating corpus, as stated in FOCUS.md.
+  beyond the originating corpus.
 R4 [5]: When v0.2 begins, this exception lapses; AFM-0025 does not
   pre-authorise further v0.1 additions, and any new domain in v0.2
   requires its own domain-policy ADR under the v0.2 governance period.
