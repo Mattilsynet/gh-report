@@ -41,7 +41,7 @@ use crate::bus::EventBus;
 use crate::correlation::CorrelationContext;
 use crate::error::{StoreCreateResult, StoreError};
 use crate::event::{DomainEvent, EventEnvelope};
-use crate::store::{EventStore, ListableEventStore};
+use crate::store::{EventHistoryEventStore, EventStore, ListableEventStore};
 
 /// In-memory [`EventBus`] that records every published envelope.
 ///
@@ -290,6 +290,54 @@ impl<E: DomainEvent> ListableEventStore for InMemoryEventStore<E> {
             .lock()
             .expect("InMemoryEventStore mutex poisoned");
         Ok(state.streams.keys().copied().collect())
+    }
+}
+
+impl<E: DomainEvent> EventHistoryEventStore for InMemoryEventStore<E> {
+    async fn history(
+        &self,
+        id: AggregateId,
+    ) -> Result<Vec<EventEnvelope<Self::Event>>, StoreError> {
+        self.load(id).await
+    }
+
+    async fn replay_until(
+        &self,
+        id: AggregateId,
+        upto: NonZeroU64,
+    ) -> Result<Vec<EventEnvelope<Self::Event>>, StoreError> {
+        let mut history = self.load(id).await?;
+        history.retain(|envelope| envelope.sequence() <= upto);
+        Ok(history)
+    }
+
+    async fn causal_chain(
+        &self,
+        id: AggregateId,
+        event_id: uuid::Uuid,
+    ) -> Result<Vec<EventEnvelope<Self::Event>>, StoreError> {
+        let history = self.load(id).await?;
+        let target_correlation = history
+            .iter()
+            .find(|envelope| envelope.event_id() == event_id)
+            .and_then(EventEnvelope::correlation_id);
+        let mut chain = Vec::new();
+        let mut next_id = Some(event_id);
+
+        while let Some(current_id) = next_id {
+            let Some(envelope) = history.iter().find(|envelope| {
+                envelope.event_id() == current_id
+                    && target_correlation
+                        .is_none_or(|correlation| envelope.correlation_id() == Some(correlation))
+            }) else {
+                break;
+            };
+            next_id = envelope.causation_id();
+            chain.push(envelope.clone());
+        }
+
+        chain.reverse();
+        Ok(chain)
     }
 }
 

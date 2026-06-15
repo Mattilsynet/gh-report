@@ -25,7 +25,6 @@ note: for a trait to be dyn compatible it needs to allow building a vtable
 ...
    |     ) -> impl Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send;
    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait is not dyn compatible because method `causal_chain` references an `impl Trait` type in its return type
-   = help: only type `CounterStore` implements `EventHistoryEventStore`; consider using it directly instead.
 
 error[E0038]: the trait `EventHistoryEventStore` is not dyn compatible
   --> tests/compile_fail/event_history_rejects_type_erasure.rs:76:42
@@ -54,4 +53,3 @@ note: for a trait to be dyn compatible it needs to allow building a vtable
 ...
    |     ) -> impl Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send;
    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait is not dyn compatible because method `causal_chain` references an `impl Trait` type in its return type
-   = help: only type `CounterStore` implements `EventHistoryEventStore`; consider using it directly instead.
