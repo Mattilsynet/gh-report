@@ -1,9 +1,9 @@
 # CHE-0079. No Bespoke Ops Console
 
 Date: 2026-06-13
-Last-reviewed: 2026-06-13
+Last-reviewed: 2026-06-15
 Tier: B
-Status: Proposed
+Status: Accepted
 Parent-cross-domain: COM-0019 — observability-boundary authority is the Common-domain telemetry doctrine this CHE absence ratifies
 
 ## Related

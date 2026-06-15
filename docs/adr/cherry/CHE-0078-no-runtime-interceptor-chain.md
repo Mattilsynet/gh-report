@@ -1,9 +1,9 @@
 # CHE-0078. No Runtime Interceptor Chain
 
 Date: 2026-06-13
-Last-reviewed: 2026-06-13
+Last-reviewed: 2026-06-15
 Tier: B
-Status: Proposed
+Status: Accepted
 
 ## Related
 
