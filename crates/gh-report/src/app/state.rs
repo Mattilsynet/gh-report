@@ -689,12 +689,7 @@ impl AppState {
     ) -> Result<(), PersistenceError> {
         let native_evidence = crate::event::RepositoryEvidence::try_from(evidence)
             .map_err(|e| conversion_persistence(&e))?;
-        let event = repo_event(
-            domain_key,
-            repo_name,
-            timestamp,
-            Some(native_evidence),
-        )?;
+        let event = repo_event(domain_key, repo_name, timestamp, Some(native_evidence))?;
         self.event_store
             .record(domain_key, event.clone())
             .map_err(native_store_persistence)?;

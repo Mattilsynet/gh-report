@@ -23,7 +23,7 @@ pub struct LastCommitInfo {
 /// A repository with its collected check results (evidence).
 ///
 /// `repository` is owned: PGN-0013:R8 excludes shared-ownership wrappers from
-/// event fields because GenomeSafe closes under bounded field types, not under
+/// event fields because `GenomeSafe` closes under bounded field types, not under
 /// runtime sharing. Consumers that need to fan out the same
 /// `Repository` across async tasks wrap with `Arc::new(evidence.repository)`
 /// at the call site; cross-snapshot sharing semantics (CHE-0048) are
