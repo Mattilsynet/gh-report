@@ -1,0 +1,57 @@
+error[E0038]: the trait `EventHistoryEventStore` is not dyn compatible
+  --> tests/compile_fail/event_history_rejects_type_erasure.rs:76:18
+   |
+76 |     let _erased: Option<ErasedHistory> = None;
+   |                  ^^^^^^^^^^^^^^^^^^^^^ `EventHistoryEventStore` is not dyn compatible
+   |
+note: for a trait to be dyn compatible it needs to allow building a vtable
+      for more information, visit <https://doc.rust-lang.org/reference/items/traits.html#dyn-compatibility>
+  --> src/store.rs
+   |
+   |     ) -> impl Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send;
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait is not dyn compatible because method `load` references an `impl Trait` type in its return type
+...
+   |     ) -> impl Future<Output = StoreCreateResult<Self::Event>> + Send;
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait is not dyn compatible because method `create` references an `impl Trait` type in its return type
+...
+   |     ) -> impl Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send;
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait is not dyn compatible because method `append` references an `impl Trait` type in its return type
+...
+   |     ) -> impl Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send;
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait is not dyn compatible because method `history` references an `impl Trait` type in its return type
+...
+   |     ) -> impl Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send;
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait is not dyn compatible because method `replay_until` references an `impl Trait` type in its return type
+...
+   |     ) -> impl Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send;
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait is not dyn compatible because method `causal_chain` references an `impl Trait` type in its return type
+   = help: only type `CounterStore` implements `EventHistoryEventStore`; consider using it directly instead.
+
+error[E0038]: the trait `EventHistoryEventStore` is not dyn compatible
+  --> tests/compile_fail/event_history_rejects_type_erasure.rs:76:42
+   |
+76 |     let _erased: Option<ErasedHistory> = None;
+   |                                          ^^^^ `EventHistoryEventStore` is not dyn compatible
+   |
+note: for a trait to be dyn compatible it needs to allow building a vtable
+      for more information, visit <https://doc.rust-lang.org/reference/items/traits.html#dyn-compatibility>
+  --> src/store.rs
+   |
+   |     ) -> impl Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send;
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait is not dyn compatible because method `load` references an `impl Trait` type in its return type
+...
+   |     ) -> impl Future<Output = StoreCreateResult<Self::Event>> + Send;
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait is not dyn compatible because method `create` references an `impl Trait` type in its return type
+...
+   |     ) -> impl Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send;
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait is not dyn compatible because method `append` references an `impl Trait` type in its return type
+...
+   |     ) -> impl Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send;
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait is not dyn compatible because method `history` references an `impl Trait` type in its return type
+...
+   |     ) -> impl Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send;
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait is not dyn compatible because method `replay_until` references an `impl Trait` type in its return type
+...
+   |     ) -> impl Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send;
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait is not dyn compatible because method `causal_chain` references an `impl Trait` type in its return type
+   = help: only type `CounterStore` implements `EventHistoryEventStore`; consider using it directly instead.

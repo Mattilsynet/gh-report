@@ -291,6 +291,62 @@ pub trait EventStore: Send + Sync + 'static {
     ) -> impl Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send;
 }
 
+/// Optional [`EventStore`] capability: read-only event-history replay and
+/// causal-chain reconstruction from stored envelope metadata.
+///
+/// `EventHistoryEventStore` is the CHE-0076 capability introduced under
+/// CHE-0057's extension-trait composition policy: it lives alongside
+/// [`EventStore`], extends it as a supertrait, and preserves the inherited
+/// single-aggregate [`EventStore::Event`] binding. Implementations return
+/// stored [`EventEnvelope`]s only; callers interpret the envelopes' existing
+/// `event_id`, `correlation_id`, and `causation_id` metadata themselves.
+pub trait EventHistoryEventStore: EventStore {
+    /// Load the ordered event history for one aggregate.
+    ///
+    /// This is a read-only wrapper over [`EventStore::load`] ordering.
+    /// Unknown aggregates return `Ok(Vec::new())`, preserving CHE-0019:R1
+    /// and CHE-0076:R6 boundary semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same [`StoreError`] values as [`EventStore::load`].
+    fn history(
+        &self,
+        id: AggregateId,
+    ) -> impl Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send;
+
+    /// Load the prefix of one aggregate's ordered history through `upto`.
+    ///
+    /// The prefix is selected from [`EventStore::load`] order by envelope
+    /// [`EventEnvelope::sequence`]; no parallel ordering or index is part
+    /// of this contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same [`StoreError`] values as [`EventStore::load`].
+    fn replay_until(
+        &self,
+        id: AggregateId,
+        upto: NonZeroU64,
+    ) -> impl Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send;
+
+    /// Reconstruct the causal chain ending at `event_id` within one stream.
+    ///
+    /// Implementations walk the load-ordered stream at read time using only
+    /// [`EventEnvelope::event_id`], [`EventEnvelope::correlation_id`], and
+    /// [`EventEnvelope::causation_id`]. The returned envelopes are stored
+    /// envelopes, ordered from the root cause through the requested event.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same [`StoreError`] values as [`EventStore::load`].
+    fn causal_chain(
+        &self,
+        id: AggregateId,
+        event_id: uuid::Uuid,
+    ) -> impl Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send;
+}
+
 /// Optional [`EventStore`] capability: the substrate supports physical
 /// purge of an aggregate's event history followed by re-creation under
 /// the same id with a fresh stream (e.g. pardosa's PGN-0002 fiber

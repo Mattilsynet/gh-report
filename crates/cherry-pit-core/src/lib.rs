@@ -87,7 +87,7 @@ pub use idempotency::IdempotencyKey;
 pub use policy::Policy;
 pub use projection::{Projection, ReadPort};
 pub use store::{
-    EventStore, HashChainedEventStore, ListableEventStore, PurgeableEventStore,
-    SingleWriterEventStore,
+    EventHistoryEventStore, EventStore, HashChainedEventStore, ListableEventStore,
+    PurgeableEventStore, SingleWriterEventStore,
 };
 pub use work::{DomainKey, JobOutcome, JobSource};
