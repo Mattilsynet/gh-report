@@ -1,9 +1,9 @@
 # CHE-0077. Explicit Domain Event Scheduler
 
 Date: 2026-06-13
-Last-reviewed: 2026-06-13
+Last-reviewed: 2026-06-15
 Tier: B
-Status: Proposed
+Status: Accepted
 
 ## Related
 
@@ -50,6 +50,6 @@ R8 [6]: Expose overdue and failed schedule outcomes as explicit domain events or
   reconciliation, so a simple sleep loop is insufficient for ratified timeout
   behaviour.
 
-risks/migration: this Proposed ADR does not add a scheduler port or runtime
+risks/migration: this Accepted ADR does not add a scheduler port or runtime
   implementation. A later implementation ADR must keep the shape Tier B and
   avoid a pluggable coordinator boundary.
