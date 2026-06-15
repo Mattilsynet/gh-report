@@ -92,6 +92,7 @@ pub(crate) struct JobContext {
 pub(crate) enum CollectionOutcome {
     Completed,
     Cancelled,
+    FencedConflict,
 }
 
 /// Production evaluator that calls all five security check collectors
@@ -352,8 +353,15 @@ where
 {
     tokio::select! {
         result = pipeline => {
-            result?;
-            Ok(CollectionOutcome::Completed)
+        match result {
+            Ok(()) => {}
+            Err(AppError::Persistence(PersistenceError::FencedConflict { source })) => {
+                warn!(error = %source, "collection fenced by active single-writer guard");
+                return Ok(CollectionOutcome::FencedConflict);
+            }
+            Err(e) => return Err(e),
+        }
+        Ok(CollectionOutcome::Completed)
         }
         () = cancel.cancelled() => {
             info!(
@@ -2395,6 +2403,21 @@ mod tests {
             .expect("completed collection outcome");
 
         assert_eq!(outcome, CollectionOutcome::Completed);
+    }
+
+    #[tokio::test]
+    async fn collection_outcome_is_fenced_conflict_without_retry_spin() {
+        let cancel = tokio_util::sync::CancellationToken::new();
+
+        let outcome = run_collection_inner_with_pipeline(&cancel, async {
+            Err(AppError::Persistence(PersistenceError::FencedConflict {
+                source: Box::new(std::io::Error::other("wrong last sequence")),
+            }))
+        })
+        .await
+        .expect("fenced conflict maps to outcome");
+
+        assert_eq!(outcome, CollectionOutcome::FencedConflict);
     }
 
     /// Seed projection state to simulate a populated baseline.

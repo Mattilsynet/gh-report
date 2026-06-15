@@ -32,6 +32,11 @@ pub enum StoreError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
+    #[error("pardosa store concurrency conflict: {source}")]
+    ConcurrencyConflict {
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
     #[error("domain key {key:?} maps to multiple fibers; one-fiber-per-repo invariant violated")]
     DivergedFiber { key: String },
     #[error("store mutex poisoned")]
@@ -64,6 +69,29 @@ fn backend_op_from_error_chain(error: &(dyn Error + 'static)) -> Option<BackendO
     None
 }
 
+fn has_pardosa_concurrency_conflict(error: &(dyn Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if matches!(
+            error.downcast_ref::<PardosaError>(),
+            Some(PardosaError::ConcurrencyConflict { .. })
+        ) || matches!(
+            error.downcast_ref::<BackendError>(),
+            Some(BackendError::ConcurrencyConflict { .. })
+        ) {
+            return true;
+        }
+        if let Some(io) = error.downcast_ref::<std::io::Error>()
+            && let Some(inner) = io.get_ref()
+            && has_pardosa_concurrency_conflict(inner)
+        {
+            return true;
+        }
+        current = error.source();
+    }
+    false
+}
+
 trait StoreInfrastructureError: std::error::Error + Send + Sync + 'static {
     fn backend_op(&self) -> Option<BackendOp>;
 }
@@ -81,6 +109,22 @@ impl StoreInfrastructureError for pardosa::store::replay::Error {
 }
 
 fn infra<E: StoreInfrastructureError>(e: E) -> StoreError {
+    let error = &e as &dyn std::error::Error;
+    if matches!(
+        error.downcast_ref::<PardosaError>(),
+        Some(PardosaError::ConcurrencyConflict { .. })
+    ) {
+        return StoreError::ConcurrencyConflict {
+            source: Box::new(e),
+        };
+    }
+    if has_pardosa_concurrency_conflict(error) {
+        return StoreError::ConcurrencyConflict {
+            source: Box::new(PardosaError::ConcurrencyConflict {
+                source: Box::new(e),
+            }),
+        };
+    }
     if let Some(op) = e.backend_op() {
         StoreError::BackendInfrastructure {
             op,
@@ -609,5 +653,34 @@ mod tests {
         );
         assert!(sync_rendered.contains("sync"), "render: {sync_rendered}");
         assert_ne!(append_rendered, sync_rendered);
+    }
+
+    #[test]
+    fn pardosa_concurrency_conflict_is_typed_at_store_boundary() {
+        let err = infra(PardosaError::ConcurrencyConflict {
+            source: Box::new(std::io::Error::other("wrong last sequence")),
+        });
+
+        assert!(
+            matches!(err, StoreError::ConcurrencyConflict { .. }),
+            "typed PardosaError::ConcurrencyConflict must not be flattened to Infrastructure"
+        );
+    }
+
+    #[test]
+    fn persisted_backend_concurrency_conflict_wraps_existing_pardosa_variant() {
+        let err = infra(pardosa::store::replay::Error::Io(std::io::Error::other(
+            BackendError::ConcurrencyConflict {
+                source: Box::new(std::io::Error::other("wrong last sequence")),
+            },
+        )));
+
+        let StoreError::ConcurrencyConflict { source } = err else {
+            panic!("expected StoreError::ConcurrencyConflict");
+        };
+        assert!(
+            has_pardosa_concurrency_conflict(source.as_ref()),
+            "wrapped persist error must expose PardosaError::ConcurrencyConflict in the source chain"
+        );
     }
 }

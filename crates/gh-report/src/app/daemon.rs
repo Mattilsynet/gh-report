@@ -321,6 +321,9 @@ fn spawn_collection_loop(
                 Ok(collect::CollectionOutcome::Cancelled) => {
                     info!("initial collection aborted on shutdown — no report published");
                 }
+                Ok(collect::CollectionOutcome::FencedConflict) => {
+                    warn!(owner_id = %state.owner_id, "initial collection fenced by another writer — schedule re-armed");
+                }
                 Err(AppError::Persistence(PersistenceError::LockFailed { ref reason })) => {
                     error!(reason = %reason, "initial collection skipped: lock held");
                 }
@@ -347,6 +350,9 @@ fn spawn_collection_loop(
                 Ok(collect::CollectionOutcome::Completed) => info!("scheduled collection complete"),
                 Ok(collect::CollectionOutcome::Cancelled) => {
                     info!("scheduled collection aborted on shutdown — no report published");
+                }
+                Ok(collect::CollectionOutcome::FencedConflict) => {
+                    warn!(owner_id = %state.owner_id, "scheduled collection fenced by another writer — schedule re-armed");
                 }
                 Err(AppError::Persistence(PersistenceError::LockFailed { ref reason })) => {
                     warn!(reason = %reason, "collection skipped: lock held");

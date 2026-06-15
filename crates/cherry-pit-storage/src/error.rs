@@ -19,6 +19,12 @@ pub enum PersistenceError {
     #[error("load failed: {reason}")]
     LoadFailed { reason: String },
 
+    #[error("single-writer fence conflict: {source}")]
+    FencedConflict {
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }

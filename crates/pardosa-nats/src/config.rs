@@ -47,6 +47,7 @@ pub struct JetStreamConfig {
     runtime_handle: RuntimeHandle,
     nats_url: String,
     operation_timeout: Duration,
+    single_writer_fence_enabled: bool,
 }
 impl JetStreamConfig {
     /// Begin assembling a [`JetStreamConfig`] via the builder.
@@ -115,6 +116,13 @@ impl JetStreamConfig {
     pub fn operation_timeout(&self) -> Duration {
         self.operation_timeout
     }
+    /// Whether publishes include the `Nats-Expected-Last-Subject-Sequence`
+    /// append fence. Defaults to `false`; runtime adopters opt in when the
+    /// subject is the authoritative single-writer surface.
+    #[must_use]
+    pub const fn single_writer_fence_enabled(&self) -> bool {
+        self.single_writer_fence_enabled
+    }
 }
 /// Incremental builder for [`JetStreamConfig`]. Validation runs
 /// exactly once, in [`Self::build`].
@@ -129,6 +137,7 @@ pub struct JetStreamConfigBuilder {
     runtime_handle: Option<RuntimeHandle>,
     nats_url: Option<String>,
     operation_timeout: Option<Duration>,
+    single_writer_fence_enabled: Option<bool>,
 }
 impl JetStreamConfigBuilder {
     /// Set the `JetStream` stream name (rejected if empty at
@@ -197,6 +206,12 @@ impl JetStreamConfigBuilder {
         self.operation_timeout = Some(timeout);
         self
     }
+    /// Enable or disable the append-path single-writer fence.
+    #[must_use]
+    pub const fn single_writer_fence_enabled(mut self, enabled: bool) -> Self {
+        self.single_writer_fence_enabled = Some(enabled);
+        self
+    }
     /// Run validation and assemble the immutable [`JetStreamConfig`].
     ///
     /// # Errors
@@ -247,6 +262,7 @@ impl JetStreamConfigBuilder {
             Some(timeout) => validate_operation_timeout(timeout)?,
             None => operation_timeout_from_env()?,
         };
+        let single_writer_fence_enabled = self.single_writer_fence_enabled.unwrap_or(false);
         Ok(JetStreamConfig {
             stream_name,
             subject,
@@ -257,6 +273,7 @@ impl JetStreamConfigBuilder {
             runtime_handle,
             nats_url,
             operation_timeout,
+            single_writer_fence_enabled,
         })
     }
 }

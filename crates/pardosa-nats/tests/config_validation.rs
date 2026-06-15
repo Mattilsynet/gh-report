@@ -27,6 +27,10 @@ fn builder_accepts_valid_config() {
     assert_eq!(cfg.discard(), Discard::New);
     assert_eq!(cfg.replicas().get(), 1);
     assert_eq!(cfg.operation_timeout(), DEFAULT_OPERATION_TIMEOUT);
+    assert!(
+        !cfg.single_writer_fence_enabled(),
+        "substrate default must preserve today's no-fence behavior"
+    );
 }
 #[test]
 fn builder_rejects_empty_stream_name() {
@@ -134,6 +138,21 @@ fn builder_accepts_operation_timeout_override() {
         .build()
         .expect("timeout override builds");
     assert_eq!(cfg.operation_timeout(), Duration::from_mins(2));
+}
+#[test]
+fn builder_accepts_single_writer_fence_enable() {
+    let cfg = JetStreamConfig::builder()
+        .stream_name("PARDOSA_TEST")
+        .subject("pardosa.events.test")
+        .durable_consumer("pardosa-cursor-test")
+        .runtime_handle(RuntimeHandle::detached_for_tests())
+        .single_writer_fence_enabled(true)
+        .build()
+        .expect("single-writer fence enable builds");
+    assert!(
+        cfg.single_writer_fence_enabled(),
+        "runtime ring must have an opt-in fence enable"
+    );
 }
 #[test]
 fn builder_rejects_zero_operation_timeout() {

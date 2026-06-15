@@ -177,13 +177,23 @@ impl JetStreamHandle {
         let timeout = cfg.operation_timeout();
         let seq = run_op(&runtime, timeout, async {
             let js = ensure_state(&self.state, cfg).await?;
-            publish_once(&js, cfg.subject(), bytes, &nats_msg_id, replay_tag).await
+            let expected_last_subject_sequence = expected_last_subject_sequence_for_publish(
+                cfg.single_writer_fence_enabled(),
+                current_last_ack_seq(&self.state),
+            );
+            publish_once(
+                &js,
+                cfg.subject(),
+                bytes,
+                &nats_msg_id,
+                replay_tag,
+                expected_last_subject_sequence,
+            )
+            .await
         })?;
         let mut guard = self.state_locked();
-        if let Some(state) = guard.as_mut()
-            && seq > state.last_ack_seq
-        {
-            state.last_ack_seq = seq;
+        if let Some(state) = guard.as_mut() {
+            update_last_ack_seq(&mut state.last_ack_seq, seq);
         }
         Ok(JetStreamAckPosition::from_u64(seq))
     }
@@ -232,10 +242,16 @@ impl JetStreamHandle {
             .ok_or(JetStreamRuntimeError::Detached)?
             .clone();
         let cfg = &self.config;
-        run_op(&runtime, cfg.operation_timeout(), async {
+        let records = run_op(&runtime, cfg.operation_timeout(), async {
             let js = ensure_state(&self.state, cfg).await?;
             replay_once(&js, cfg.stream_name(), cfg.subject()).await
-        })
+        })?;
+        let replay_seed = records.last().map_or(0, |r| r.ack.as_u64());
+        let mut guard = self.state_locked();
+        if let Some(state) = guard.as_mut() {
+            state.last_ack_seq = replay_seed;
+        }
+        Ok(records)
     }
     fn state_locked(&self) -> MutexGuard<'_, Option<LiveState>> {
         lock_state(&self.state)
@@ -268,6 +284,10 @@ impl JetStreamBackend {
 }
 fn lock_state(state: &Mutex<Option<LiveState>>) -> MutexGuard<'_, Option<LiveState>> {
     state.lock().expect("JetStreamHandle::state mutex poisoned")
+}
+fn current_last_ack_seq(state: &Mutex<Option<LiveState>>) -> u64 {
+    let guard = lock_state(state);
+    guard.as_ref().map_or(0, |s| s.last_ack_seq)
 }
 fn blake3_hex(bytes: &[u8]) -> String {
     let hash = blake3::hash(bytes);
@@ -354,12 +374,9 @@ async fn publish_once(
     bytes: &[u8],
     nats_msg_id: &str,
     replay_tag: Option<&str>,
+    expected_last_subject_sequence: Option<u64>,
 ) -> Result<u64, JetStreamRuntimeError> {
-    let mut headers = async_nats::HeaderMap::new();
-    headers.insert("Nats-Msg-Id", nats_msg_id);
-    if let Some(tag) = replay_tag {
-        headers.insert(PARDOSA_ENVELOPE_HASH_HEADER, tag);
-    }
+    let headers = build_publish_headers(nats_msg_id, replay_tag, expected_last_subject_sequence);
     let payload = bytes::Bytes::copy_from_slice(bytes);
     let publish_ack_future = js
         .publish_with_headers(subject.to_string(), headers, payload)
@@ -385,6 +402,38 @@ fn runtime_error_from_publish_ack(
             source: Box::new(err),
         }
     }
+}
+
+fn expected_last_subject_sequence_for_publish(
+    fence_enabled: bool,
+    last_ack_seq: u64,
+) -> Option<u64> {
+    fence_enabled.then_some(last_ack_seq)
+}
+
+fn update_last_ack_seq(last_ack_seq: &mut u64, seq: u64) {
+    if seq > *last_ack_seq {
+        *last_ack_seq = seq;
+    }
+}
+
+fn build_publish_headers(
+    nats_msg_id: &str,
+    replay_tag: Option<&str>,
+    expected_last_subject_sequence: Option<u64>,
+) -> async_nats::HeaderMap {
+    let mut headers = async_nats::HeaderMap::new();
+    headers.insert("Nats-Msg-Id", nats_msg_id);
+    if let Some(tag) = replay_tag {
+        headers.insert(PARDOSA_ENVELOPE_HASH_HEADER, tag);
+    }
+    if let Some(seq) = expected_last_subject_sequence {
+        headers.insert(
+            async_nats::header::NATS_EXPECTED_LAST_SUBJECT_SEQUENCE,
+            async_nats::HeaderValue::from(seq),
+        );
+    }
+    headers
 }
 async fn replay_once(
     js: &async_nats::jetstream::Context,
@@ -491,6 +540,53 @@ mod tests {
             }
             other => panic!("expected WrongLastSequence, got {other:?}"),
         }
+    }
+    #[test]
+    fn enabled_fence_uses_updated_last_ack_seq_on_next_publish() {
+        let mut last_ack_seq = 0;
+        let first = expected_last_subject_sequence_for_publish(true, last_ack_seq);
+        assert_eq!(first, Some(0), "fresh subject publish must expect 0");
+        update_last_ack_seq(&mut last_ack_seq, 7);
+
+        let second = expected_last_subject_sequence_for_publish(true, last_ack_seq);
+        let headers = build_publish_headers("msg-2", None, second);
+        let header = headers
+            .get(async_nats::header::NATS_EXPECTED_LAST_SUBJECT_SEQUENCE)
+            .expect("enabled fence must set expect-last-subject-sequence header");
+
+        assert_eq!(
+            header.to_string(),
+            "7",
+            "next append must expect acked seq N"
+        );
+    }
+    #[test]
+    fn disabled_fence_keeps_publish_headers_without_expect_sequence() {
+        let expected = expected_last_subject_sequence_for_publish(false, 7);
+        let headers = build_publish_headers("msg-id", Some("schema"), expected);
+
+        assert_eq!(
+            headers.len(),
+            2,
+            "disabled fence preserves existing header set"
+        );
+        assert_eq!(
+            headers.get("Nats-Msg-Id").expect("message id").to_string(),
+            "msg-id"
+        );
+        assert_eq!(
+            headers
+                .get(PARDOSA_ENVELOPE_HASH_HEADER)
+                .expect("replay tag")
+                .to_string(),
+            "schema"
+        );
+        assert!(
+            headers
+                .get(async_nats::header::NATS_EXPECTED_LAST_SUBJECT_SEQUENCE)
+                .is_none(),
+            "disabled fence must not emit expect-last-subject-sequence"
+        );
     }
     #[test]
     fn non_conflict_ack_error_stays_publish() {

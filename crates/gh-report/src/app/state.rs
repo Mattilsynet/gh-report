@@ -90,6 +90,8 @@ pub(crate) type WorkerShutdownToken = tokio_util::sync::CancellationToken;
 pub struct AppState {
     /// When this service instance started.
     pub started_at: Timestamp,
+    /// Per-process UUID-v7 identity used in fence-abort audit logs.
+    pub owner_id: uuid::Uuid,
     /// Currently running collection, if any.
     pub current_run: ArcSwap<Option<RunMetadata>>,
     /// Last successfully completed collection run.
@@ -334,6 +336,7 @@ fn jetstream_backend(
         .durable_consumer(nats.durable_consumer)
         .nats_url(nats.nats_url)
         .runtime_handle(RuntimeHandle::from_tokio(handle))
+        .single_writer_fence_enabled(true)
         .build()
         .expect("validated NATS store config");
     let substrate = SubstrateJetStreamBackend::open(cfg);
@@ -409,7 +412,10 @@ fn fold_org_event(projection: &mut crate::projection::EvidenceProjection, event:
     projection.apply_org_state(event.into());
 }
 
-fn native_store_persistence(error: &crate::store::StoreError) -> PersistenceError {
+fn native_store_persistence(error: crate::store::StoreError) -> PersistenceError {
+    if let crate::store::StoreError::ConcurrencyConflict { source } = error {
+        return PersistenceError::FencedConflict { source };
+    }
     PersistenceError::LoadFailed {
         reason: error.to_string(),
     }
@@ -517,6 +523,7 @@ impl AppState {
             Arc::new(Mutex::new(crate::projection::EvidenceProjection::default()));
         Arc::new(Self {
             started_at: Timestamp::now(),
+            owner_id: uuid::Uuid::now_v7(),
             current_run: ArcSwap::from_pointee(None),
             last_completed_run: ArcSwap::from_pointee(None),
             work_queue: Arc::new(WorkQueue::new(crate::config::WORK_QUEUE_CAPACITY)),
@@ -572,6 +579,7 @@ impl AppState {
         )?));
         Ok(Arc::new(Self {
             started_at: Timestamp::now(),
+            owner_id: uuid::Uuid::now_v7(),
             current_run: ArcSwap::from_pointee(None),
             last_completed_run: ArcSwap::from_pointee(None),
             work_queue: Arc::new(WorkQueue::new(crate::config::WORK_QUEUE_CAPACITY)),
@@ -649,7 +657,7 @@ impl AppState {
         )?;
         self.event_store
             .record(domain_key, event.clone())
-            .map_err(|e| native_store_persistence(&e))?;
+            .map_err(native_store_persistence)?;
         self.fold_repository_event_into_projection(false, &event);
         Ok(())
     }
@@ -669,7 +677,7 @@ impl AppState {
         let event = repo_event(domain_key, repo_name, timestamp, None)?;
         self.event_store
             .detach(domain_key, event.clone())
-            .map_err(|e| native_store_persistence(&e))?;
+            .map_err(native_store_persistence)?;
         self.fold_repository_event_into_projection(true, &event);
         Ok(())
     }
@@ -687,7 +695,7 @@ impl AppState {
         let org_key = event.assessment_metadata.organization.as_str().to_string();
         self.org_event_store
             .record(&org_key, event.clone())
-            .map_err(|e| native_store_persistence(&e))?;
+            .map_err(native_store_persistence)?;
         self.fold_org_event_into_projection(event);
         Ok(())
     }
@@ -795,6 +803,7 @@ impl AppStateBuilder {
 
         Arc::new(AppState {
             started_at: Timestamp::now(),
+            owner_id: uuid::Uuid::now_v7(),
             current_run: ArcSwap::from_pointee(None),
             last_completed_run: ArcSwap::from_pointee(None),
             work_queue: Arc::new(WorkQueue::new(crate::config::WORK_QUEUE_CAPACITY)),
@@ -1228,6 +1237,37 @@ mod tests {
         }
         cache.run_pending_tasks().await;
         assert!(cache.entry_count() <= 5);
+    }
+
+    #[tokio::test]
+    async fn app_state_owner_id_is_uuid_v7_and_stable_for_process_state() {
+        let state = AppState::new().await;
+        let first = state.owner_id;
+        let second = state.owner_id;
+
+        assert_eq!(first, second, "owner-id is minted once per AppState");
+        assert_eq!(
+            first.get_version_num(),
+            7,
+            "owner-id must be UUID v7 for fencing audit identity"
+        );
+    }
+
+    #[test]
+    fn native_store_persistence_preserves_fenced_conflict_variant() {
+        let err = crate::store::StoreError::ConcurrencyConflict {
+            source: Box::new(pardosa::store::PardosaError::ConcurrencyConflict {
+                source: Box::new(std::io::Error::other("wrong last sequence")),
+            }),
+        };
+
+        assert!(
+            matches!(
+                native_store_persistence(err),
+                PersistenceError::FencedConflict { .. }
+            ),
+            "fence conflicts must stay typed before Display flattening"
+        );
     }
 
     #[tokio::test]
