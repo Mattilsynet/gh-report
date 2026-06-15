@@ -65,6 +65,7 @@ mod gateway;
 mod idempotency;
 mod policy;
 mod projection;
+mod scheduler;
 mod store;
 mod work;
 
@@ -86,6 +87,10 @@ pub use gateway::CommandGateway;
 pub use idempotency::IdempotencyKey;
 pub use policy::Policy;
 pub use projection::{Projection, ReadPort};
+pub use scheduler::{
+    EventScheduler, ScheduleArmed, ScheduleCancelled, ScheduleFired, ScheduleId,
+    ScheduleRecoveryReport, ScheduledDomainEvent, SchedulerEvent, SchedulerState,
+};
 pub use store::{
     EventHistoryEventStore, EventStore, HashChainedEventStore, ListableEventStore,
     PurgeableEventStore, SingleWriterEventStore,

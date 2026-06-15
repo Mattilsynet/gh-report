@@ -33,6 +33,7 @@ mod dead_letter;
 mod dispatch;
 mod error;
 mod event_bus;
+mod scheduler;
 
 pub use app::*;
 pub use cherry_pit_projection::{ProjectionDriverExt, ProjectionDriverTuple};
@@ -40,6 +41,7 @@ pub use dead_letter::*;
 pub use dispatch::correlation_for;
 pub use error::*;
 pub use event_bus::*;
+pub use scheduler::*;
 
 /// Re-export of [`cherry_pit_core::CorrelationContext`] for ergonomic
 /// access at the agent surface.
