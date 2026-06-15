@@ -340,7 +340,7 @@ pub enum DomainEvent {
         domain_key: NonEmptyEventString<MAX_DOMAIN_KEY>,
         repo_name: NonEmptyEventString<MAX_REPO_NAME>,
         timestamp: Timestamp,
-        evidence: Option<Box<RepositoryEvidence>>,
+        evidence: Option<RepositoryEvidence>,
     } = 0,
 }
 
@@ -593,7 +593,7 @@ mod tests {
             domain_key: nes("id-repo-1"),
             repo_name: nes("repo-1"),
             timestamp: ts(40),
-            evidence: Some(Box::new(full_evidence())),
+            evidence: Some(full_evidence()),
         };
         let wire = to_vec(&event);
         let decoded: DomainEvent = from_bytes(&wire).expect("decode native event");

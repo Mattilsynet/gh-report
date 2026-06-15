@@ -444,7 +444,7 @@ fn fold_native_event(
     } else if let Some(evidence) = evidence.as_ref() {
         projection
             .repositories
-            .insert(domain_key.as_str().to_string(), (**evidence).clone().into());
+            .insert(domain_key.as_str().to_string(), (*evidence).clone().into());
     }
 }
 
@@ -505,7 +505,7 @@ fn repo_event(
     domain_key: &str,
     repo_name: &str,
     timestamp: &str,
-    evidence: Option<Box<crate::event::RepositoryEvidence>>,
+    evidence: Option<crate::event::RepositoryEvidence>,
 ) -> Result<NativeDomainEvent, PersistenceError> {
     Ok(NativeDomainEvent::RepositoryStateCaptured {
         domain_key: non_empty("domain_key", domain_key)?,
@@ -693,7 +693,7 @@ impl AppState {
             domain_key,
             repo_name,
             timestamp,
-            Some(Box::new(native_evidence)),
+            Some(native_evidence),
         )?;
         self.event_store
             .record(domain_key, event.clone())
