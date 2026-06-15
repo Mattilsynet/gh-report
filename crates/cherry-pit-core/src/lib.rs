@@ -27,6 +27,7 @@
 //! - [`HandleCommand`] — compile-time verified command→aggregate pairs
 //! - [`Policy`] — reacts to events by producing commands
 //! - [`Projection`] — folds events into read-optimized views
+//! - [`ReadPort`] — statically-wired reads over projection state
 //!
 //! ## Port traits (async, RPITIT)
 //!
@@ -84,7 +85,7 @@ pub use event::{DomainEvent, EventEnvelope};
 pub use gateway::CommandGateway;
 pub use idempotency::IdempotencyKey;
 pub use policy::Policy;
-pub use projection::Projection;
+pub use projection::{Projection, ReadPort};
 pub use store::{
     EventStore, HashChainedEventStore, ListableEventStore, PurgeableEventStore,
     SingleWriterEventStore,

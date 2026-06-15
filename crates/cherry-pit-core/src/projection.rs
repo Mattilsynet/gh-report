@@ -48,3 +48,29 @@ pub trait Projection: Default + Send + Sync + 'static {
     /// rebuilt from scratch by replaying all events.
     fn apply(&mut self, event: &EventEnvelope<Self::Event>);
 }
+
+/// A statically-wired read-side port over one projection type.
+///
+/// `ReadPort` resolves consumer-owned query DTOs from already-materialised
+/// projection state. Implementations must not load write-side history,
+/// dispatch commands, or mutate the projection through this contract.
+///
+/// # Static wiring
+///
+/// Associated types bind each implementation to one projection state type, one
+/// query type, and one response type. The resolver is an associated function
+/// rather than an object method, so type-erased registries such as
+/// `Box<dyn ReadPort>` are rejected by the compiler.
+pub trait ReadPort {
+    /// Projection state read by this port.
+    type Projection;
+
+    /// Consumer-owned query DTO.
+    type Query;
+
+    /// Consumer-owned response DTO.
+    type Response;
+
+    /// Resolve a query from projection state without side effects.
+    fn resolve(projection: &Self::Projection, query: Self::Query) -> Self::Response;
+}

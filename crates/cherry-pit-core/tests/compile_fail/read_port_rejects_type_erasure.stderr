@@ -1,0 +1,27 @@
+error[E0038]: the trait `ReadPort` is not dyn compatible
+  --> tests/compile_fail/read_port_rejects_type_erasure.rs:42:18
+   |
+42 |     let _erased: Option<ErasedRead> = None;
+   |                  ^^^^^^^^^^^^^^^^^^ `ReadPort` is not dyn compatible
+   |
+note: for a trait to be dyn compatible it needs to allow building a vtable
+      for more information, visit <https://doc.rust-lang.org/reference/items/traits.html#dyn-compatibility>
+  --> src/projection.rs
+   |
+   |     fn resolve(projection: &Self::Projection, query: Self::Query) -> Self::Response;
+   |        ^^^^^^^ the trait is not dyn compatible because associated function `resolve` has no `self` parameter
+   = help: only type `CounterRead` implements `ReadPort`; consider using it directly instead.
+
+error[E0038]: the trait `ReadPort` is not dyn compatible
+  --> tests/compile_fail/read_port_rejects_type_erasure.rs:42:39
+   |
+42 |     let _erased: Option<ErasedRead> = None;
+   |                                       ^^^^ `ReadPort` is not dyn compatible
+   |
+note: for a trait to be dyn compatible it needs to allow building a vtable
+      for more information, visit <https://doc.rust-lang.org/reference/items/traits.html#dyn-compatibility>
+  --> src/projection.rs
+   |
+   |     fn resolve(projection: &Self::Projection, query: Self::Query) -> Self::Response;
+   |        ^^^^^^^ the trait is not dyn compatible because associated function `resolve` has no `self` parameter
+   = help: only type `CounterRead` implements `ReadPort`; consider using it directly instead.
