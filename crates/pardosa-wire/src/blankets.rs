@@ -35,13 +35,3 @@ seal_tuple!(
 seal_tuple!(
     T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15
 );
-#[cfg(feature = "std")]
-mod std_blankets {
-    use crate::{EventSafe, sealed};
-    use alloc::boxed::Box;
-    use alloc::sync::Arc;
-    impl<T: EventSafe> sealed::Sealed for Box<T> {}
-    impl<T: EventSafe> EventSafe for Box<T> {}
-    impl<T: EventSafe> sealed::Sealed for Arc<T> {}
-    impl<T: EventSafe> EventSafe for Arc<T> {}
-}

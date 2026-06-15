@@ -177,12 +177,6 @@ fn hash_combine_order_dependent() {
     assert_ne!(schema_hash_combine(a, b), schema_hash_combine(b, a),);
 }
 #[test]
-fn box_hash_transparent() {
-    let inner = <u32 as GenomeSafe>::SCHEMA_HASH;
-    let boxed = <Box<u32> as GenomeSafe>::SCHEMA_HASH;
-    assert_eq!(inner, boxed, "Box<T> hash must equal T hash");
-}
-#[test]
 fn option_schema_source() {
     assert_eq!(<Option<u32> as GenomeSafe>::SCHEMA_SOURCE, "Option<_>");
 }

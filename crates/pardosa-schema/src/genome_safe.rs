@@ -59,10 +59,6 @@ impl<T: GenomeSafe> GenomeSafe for Option<T> {
     const SCHEMA_HASH: u128 = schema_hash_combine(schema_hash_bytes(b"Option"), T::SCHEMA_HASH);
     const SCHEMA_SOURCE: &'static str = "Option<_>";
 }
-impl<T: GenomeSafe> GenomeSafe for Box<T> {
-    const SCHEMA_HASH: u128 = T::SCHEMA_HASH;
-    const SCHEMA_SOURCE: &'static str = T::SCHEMA_SOURCE;
-}
 impl<T: GenomeSafe, const N: usize> GenomeSafe for [T; N] {
     const SCHEMA_HASH: u128 = schema_hash_combine(
         schema_hash_bytes(b"array"),
