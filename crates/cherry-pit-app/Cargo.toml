@@ -23,6 +23,7 @@ cherry-pit-web = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
+jiff = { workspace = true }
 
 [dev-dependencies]
 serde = { workspace = true }

@@ -39,7 +39,7 @@
 /// assert_eq!(ctx.correlation_id(), Some(corr));
 /// assert_eq!(ctx.causation_id(), Some(cause));
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CorrelationContext {
     /// Groups related events into a single logical operation.
     /// Propagated through policies and sagas.
