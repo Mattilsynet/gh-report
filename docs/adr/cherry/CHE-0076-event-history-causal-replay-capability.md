@@ -1,9 +1,9 @@
 # CHE-0076. Event-History Causal Replay Capability
 
 Date: 2026-06-13
-Last-reviewed: 2026-06-13
+Last-reviewed: 2026-06-15
 Tier: B
-Status: Proposed
+Status: Accepted
 
 ## Related
 
@@ -52,6 +52,8 @@ R9 [5]: Add no new envelope fields, runtime schema migration, query language, or
 − becomes harder: stores that cannot satisfy causal replay omit the extension
   trait entirely, so downstream code must carry explicit capability bounds.
 
-risks/migration: the Proposed capability is additive. Existing stores and
-  projections remain valid until an implementation ADR wires concrete method
-  signatures and adapters.
+risks/migration: the Accepted capability is additive. Existing stores and
+  projections remain valid; stores that do not implement the extension simply
+  lack the event-history capability. The shipped `cherry-pit-core` surface is
+  read-only over existing envelope metadata, so no persisted-format migration
+  is required.
