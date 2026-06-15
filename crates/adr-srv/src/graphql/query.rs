@@ -10,11 +10,12 @@
 use std::sync::{Arc, Mutex};
 
 use async_graphql::{Context, Object};
+use cherry_pit_core::ReadPort;
 
 use crate::domain::adr_id::AdrId;
 use crate::domain::aggregate::AdrDocument;
 use crate::graphql::types::{AdrGql, AdrRef};
-use crate::projection::AdrCorpus;
+use crate::projection::{AdrCorpus, AdrCorpusQuery, AdrCorpusReadPort, AdrCorpusResponse};
 
 /// GraphQL `Query` root.
 pub struct Query;
@@ -27,7 +28,10 @@ impl Query {
         let corpus = ctx.data_unchecked::<Arc<Mutex<AdrCorpus>>>();
         let parsed: AdrId = id.parse().ok()?;
         let guard = corpus.lock().ok()?;
-        guard.get(&parsed).map(to_gql)
+        match AdrCorpusReadPort::resolve(&guard, AdrCorpusQuery::ById(parsed)) {
+            AdrCorpusResponse::One(doc) => doc.as_ref().map(to_gql),
+            AdrCorpusResponse::Many(_) => None,
+        }
     }
 
     /// List every ADR whose id has the given domain prefix
@@ -37,11 +41,10 @@ impl Query {
         let Ok(guard) = corpus.lock() else {
             return Vec::new();
         };
-        guard
-            .iter()
-            .filter(|(id, _)| id.domain() == domain)
-            .map(|(_, doc)| to_gql(doc))
-            .collect()
+        match AdrCorpusReadPort::resolve(&guard, AdrCorpusQuery::ByDomain(domain)) {
+            AdrCorpusResponse::Many(docs) => docs.iter().map(to_gql).collect(),
+            AdrCorpusResponse::One(_) => Vec::new(),
+        }
     }
 
     /// List every known ADR in `BTreeMap` key order.
@@ -50,7 +53,10 @@ impl Query {
         let Ok(guard) = corpus.lock() else {
             return Vec::new();
         };
-        guard.iter().map(|(_, doc)| to_gql(doc)).collect()
+        match AdrCorpusReadPort::resolve(&guard, AdrCorpusQuery::All) {
+            AdrCorpusResponse::Many(docs) => docs.iter().map(to_gql).collect(),
+            AdrCorpusResponse::One(_) => Vec::new(),
+        }
     }
 }
 
