@@ -866,7 +866,12 @@ mod tests {
         PolicyCounts, RateMetric, SecretAlertCounts, SecretScanningCounts,
     };
     use crate::domain::repository::Visibility;
-    use crate::projection::EvidenceProjection;
+    use cherry_pit_core::ReadPort;
+
+    use crate::projection::{
+        EvidenceProjection, EvidenceProjectionQuery, EvidenceProjectionReadPort,
+        EvidenceProjectionResponse,
+    };
     use crate::test_fixtures;
 
     fn sample_metrics() -> AggregatedMetrics {
@@ -1018,12 +1023,20 @@ mod tests {
             .repositories
             .remove(&removed.repository.inventory_key);
 
+        let repositories = match EvidenceProjectionReadPort::resolve(
+            &projection,
+            EvidenceProjectionQuery::SortedSnapshot,
+        ) {
+            EvidenceProjectionResponse::Many(repositories) => repositories,
+            _ => Vec::new(),
+        };
+
         let evidence = test_fixtures::make_full_evidence(
             test_fixtures::make_metadata(),
             test_fixtures::make_collection_statistics(1, 1, 0, 0),
             sample_metrics(),
             test_fixtures::make_observability(),
-            projection.sorted_snapshot(),
+            repositories,
         );
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
         let orphaned_html = &pages["orphans.html"];

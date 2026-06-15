@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use cherry_pit_core::ReadPort;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::evidence::{AssessmentMetadata, OrgStateSnapshot, RepositoryEvidence};
@@ -48,6 +49,39 @@ pub struct EvidenceProjection {
     /// Last-known org-level state folded from the org event stream.
     pub org_state: Option<OrgReadModel>,
 }
+
+/// Typed read query for the governance evidence projection.
+#[derive(Debug, Clone)]
+pub enum EvidenceProjectionQuery {
+    /// Return repository evidence for one domain key.
+    ByKey(String),
+    /// Return the number of materialised repositories.
+    Len,
+    /// Return whether one domain key is materialised.
+    Contains(String),
+    /// Return all repository evidence in render-stable order.
+    SortedSnapshot,
+    /// Return the latest org read-model part.
+    OrgState,
+}
+
+/// Typed read response for the governance evidence projection.
+#[derive(Debug, Clone)]
+pub enum EvidenceProjectionResponse {
+    /// Optional repository evidence result.
+    One(Box<Option<RepositoryEvidence>>),
+    /// Repository count result.
+    Len(usize),
+    /// Boolean membership result.
+    Contains(bool),
+    /// Ordered repository evidence result.
+    Many(Vec<RepositoryEvidence>),
+    /// Optional org read-model result.
+    OrgState(Box<Option<OrgReadModel>>),
+}
+
+/// Static read port for [`EvidenceProjection`].
+pub struct EvidenceProjectionReadPort;
 
 impl EvidenceProjection {
     /// Look up evidence for a single repository by `domain_key`.
@@ -154,6 +188,30 @@ impl EvidenceProjection {
                 .into_iter()
                 .map(|ev| (ev.repository.inventory_key.clone(), ev)),
         );
+    }
+}
+
+impl ReadPort for EvidenceProjectionReadPort {
+    type Projection = EvidenceProjection;
+    type Query = EvidenceProjectionQuery;
+    type Response = EvidenceProjectionResponse;
+
+    fn resolve(projection: &Self::Projection, query: Self::Query) -> Self::Response {
+        match query {
+            EvidenceProjectionQuery::ByKey(key) => {
+                EvidenceProjectionResponse::One(Box::new(projection.get(&key)))
+            }
+            EvidenceProjectionQuery::Len => EvidenceProjectionResponse::Len(projection.len()),
+            EvidenceProjectionQuery::Contains(key) => {
+                EvidenceProjectionResponse::Contains(projection.repositories.contains_key(&key))
+            }
+            EvidenceProjectionQuery::SortedSnapshot => {
+                EvidenceProjectionResponse::Many(projection.sorted_snapshot())
+            }
+            EvidenceProjectionQuery::OrgState => {
+                EvidenceProjectionResponse::OrgState(Box::new(projection.org_state.clone()))
+            }
+        }
     }
 }
 

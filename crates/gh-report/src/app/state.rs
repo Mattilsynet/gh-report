@@ -28,6 +28,7 @@ use std::sync::LazyLock;
 use std::sync::Mutex;
 
 use arc_swap::ArcSwap;
+use cherry_pit_core::ReadPort;
 use jiff::Timestamp;
 use pardosa::store::JetStreamBackend as PardosaJetStreamBackend;
 use pardosa_nats::{JetStreamBackend as SubstrateJetStreamBackend, JetStreamConfig, RuntimeHandle};
@@ -193,7 +194,14 @@ impl AppState {
     /// no `MutexGuard` escapes (D-CD-3). Panics on poisoned mutex
     /// to match [`Self::lock_projection`].
     pub(crate) fn projection_len(&self) -> usize {
-        self.lock_projection().len()
+        let projection = self.lock_projection();
+        match crate::projection::EvidenceProjectionReadPort::resolve(
+            &projection,
+            crate::projection::EvidenceProjectionQuery::Len,
+        ) {
+            crate::projection::EvidenceProjectionResponse::Len(len) => len,
+            _ => 0,
+        }
     }
 
     /// Look up evidence for `key` in `projection_state`, returning an
@@ -206,7 +214,14 @@ impl AppState {
         &self,
         key: &str,
     ) -> Option<crate::domain::evidence::RepositoryEvidence> {
-        self.lock_projection().get(key)
+        let projection = self.lock_projection();
+        match crate::projection::EvidenceProjectionReadPort::resolve(
+            &projection,
+            crate::projection::EvidenceProjectionQuery::ByKey(key.to_string()),
+        ) {
+            crate::projection::EvidenceProjectionResponse::One(evidence) => *evidence,
+            _ => None,
+        }
     }
 
     /// True when `key` is materialised in `projection_state`.
@@ -215,7 +230,14 @@ impl AppState {
     /// `self.projection_get(key).is_some()` but avoids the clone.
     /// Guard does not escape (D-CD-3); panics on poisoned mutex.
     pub(crate) fn projection_contains(&self, key: &str) -> bool {
-        self.lock_projection().get(key).is_some()
+        let projection = self.lock_projection();
+        match crate::projection::EvidenceProjectionReadPort::resolve(
+            &projection,
+            crate::projection::EvidenceProjectionQuery::Contains(key.to_string()),
+        ) {
+            crate::projection::EvidenceProjectionResponse::Contains(contains) => contains,
+            _ => false,
+        }
     }
 
     /// Sorted snapshot of all evidence in `projection_state`.
@@ -226,7 +248,25 @@ impl AppState {
     /// is `O(n log n)` per call; see the underlying method for
     /// ordering rationale.
     pub(crate) fn projection_snapshot(&self) -> Vec<crate::domain::evidence::RepositoryEvidence> {
-        self.lock_projection().sorted_snapshot()
+        let projection = self.lock_projection();
+        match crate::projection::EvidenceProjectionReadPort::resolve(
+            &projection,
+            crate::projection::EvidenceProjectionQuery::SortedSnapshot,
+        ) {
+            crate::projection::EvidenceProjectionResponse::Many(evidence) => evidence,
+            _ => Vec::new(),
+        }
+    }
+
+    pub(crate) fn projection_org_state(&self) -> Option<crate::projection::OrgReadModel> {
+        let projection = self.lock_projection();
+        match crate::projection::EvidenceProjectionReadPort::resolve(
+            &projection,
+            crate::projection::EvidenceProjectionQuery::OrgState,
+        ) {
+            crate::projection::EvidenceProjectionResponse::OrgState(org_state) => *org_state,
+            _ => None,
+        }
     }
 
     /// Test-only accessor for the materialised `projection_state`.

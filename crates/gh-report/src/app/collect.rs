@@ -1000,7 +1000,7 @@ async fn finalize_and_publish(
 
     let evidence = build_evidence(BuildEvidenceParams {
         repositories: evidence_repos,
-        org_state: state.lock_projection().org_state.clone(),
+        org_state: state.projection_org_state(),
         config,
         run,
         inventory_fetched_at: inventory.inventory_fetched_at.clone(),
@@ -1174,17 +1174,13 @@ pub(crate) async fn warm_start_from_baseline(
     config: &RuntimeConfig,
     state: &Arc<AppState>,
 ) -> bool {
-    let projection = {
-        let projection = state.lock_projection();
-        projection.clone()
-    };
+    let repos = state.projection_snapshot();
+    let org_state = state.projection_org_state();
 
-    if projection.is_empty() {
+    if repos.is_empty() && org_state.is_none() {
         info!("projection is empty — skipping warm start");
         return false;
     }
-
-    let repos = projection.sorted_snapshot();
 
     info!(repos = repos.len(), "warm-starting from baseline");
 
@@ -1195,7 +1191,7 @@ pub(crate) async fn warm_start_from_baseline(
 
     let evidence = build_evidence(BuildEvidenceParams {
         repositories: repos,
-        org_state: projection.org_state,
+        org_state,
         config,
         run: &run,
         inventory_fetched_at: None,
@@ -1344,9 +1340,8 @@ fn reuse_from_baseline(
 
     let mut baseline_cache: HashMap<String, Arc<RepositoryEvidence>> = HashMap::new();
 
-    let projection = state.lock_projection();
     for repo in &pending_before_baseline {
-        let Some(evidence) = projection.repositories.get(&repo.inventory_key) else {
+        let Some(evidence) = state.projection_get(&repo.inventory_key) else {
             continue;
         };
         let baseline_updated_at = evidence
@@ -1372,9 +1367,8 @@ fn reuse_from_baseline(
             updated_at = %baseline_updated_at,
             "reusing baseline evidence"
         );
-        baseline_cache.insert(repo.inventory_key.clone(), Arc::new(evidence.clone()));
+        baseline_cache.insert(repo.inventory_key.clone(), Arc::new(evidence));
     }
-    drop(projection);
 
     if !baseline_cache.is_empty() {
         info!(
@@ -1405,8 +1399,8 @@ pub(crate) struct PartialPublishConfig {
 
 /// Spawn a partial publisher that reads from the evidence store (C9).
 ///
-/// Reads from `state.lock_projection().sorted_snapshot()` (M2.cd cutover —
-/// projection is sole reader per CHE-0048:R2). Used by the queue-based sweep.
+/// Reads through `state.projection_snapshot()` so the typed read-side port
+/// remains the report-render path. Used by the queue-based sweep.
 fn spawn_partial_publisher_from_store(
     pp: PartialPublishConfig,
     state: Arc<AppState>,
@@ -1443,7 +1437,7 @@ fn spawn_partial_publisher_from_store(
 
                     let evidence = build_evidence(BuildEvidenceParams {
                         repositories: all_evidence,
-                        org_state: state.lock_projection().org_state.clone(),
+                        org_state: state.projection_org_state(),
                         config: &pp.config,
                         run: &pp.run,
                         inventory_fetched_at: pp.inventory_fetched_at.clone(),
