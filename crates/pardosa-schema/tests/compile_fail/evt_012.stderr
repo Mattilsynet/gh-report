@@ -1,4 +1,4 @@
-error: EVT-012: GenomeSafe: raw pointers (*const T / *mut T) have no canonical wire representation. Use Box<T>, &T, or an explicit owned value instead.
+error: EVT-012: GenomeSafe: raw pointers (*const T / *mut T) have no canonical wire representation. Use &T or an explicit owned value instead.
  --> tests/compile_fail/evt_012.rs:5:8
   |
 5 |     p: *const u8,

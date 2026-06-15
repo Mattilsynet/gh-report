@@ -21,7 +21,7 @@ const REJECTED_PATH_ATTRS: &[(&str, &str, &str)] = &[
         "EVT-008",
         "#[serde(default)] is silently inert in genome format because \
          all fields are always present on the wire. Rejected to prevent \
-         misleading annotations (ADR-029).",
+         misleading annotations (PGN-0003).",
     ),
 ];
 /// Serde attributes rejected in name-value form (`#[serde(tag = "...")]`).
@@ -235,7 +235,7 @@ fn reject_pointer_type(ty: &syn::Type) -> syn::Result<()> {
             return Err(syn::Error::new_spanned(
                 ty,
                 "EVT-012: GenomeSafe: raw pointers (*const T / *mut T) have no \
-                 canonical wire representation. Use Box<T>, &T, or an explicit \
+                 canonical wire representation. Use &T or an explicit \
                  owned value instead.",
             ));
         }
@@ -297,9 +297,20 @@ fn forbidden_ident_guidance(
              `f64` lacks a canonical total order.",
         ),
         "Cow" => Some(
-            "Lifetimes are not persistable; use the owned bounded \
+            "Clone-on-write wrappers are outside the PGN-0013 bounded-field \
+             algebra; use the owned bounded \
              wrapper (`EventString<MAX>` for text, `EventBytes<MAX>` for \
              bytes, owned `T` otherwise).",
+        ),
+        "Box" => Some(
+            "Box<T> is outside the PGN-0013 bounded-field algebra. Use an \
+             owned bounded field type; if layout pressure comes from multiple \
+             large bounded variants, split the model into a second dragline.",
+        ),
+        "Arc" => Some(
+            "Arc<T> is outside the PGN-0013 bounded-field algebra. Store an \
+             owned bounded value in the event and wrap it in Arc at runtime \
+             when sharing is needed.",
         ),
         "Vec" => {
             if let syn::PathArguments::AngleBracketed(args) = &last.arguments
@@ -329,8 +340,9 @@ fn forbidden_ident_guidance(
 /// wrapper.
 ///
 /// Input: a `syn::Type`. Output: `Err` with EVT-014 if the type names a
-/// bare `String`, `f32`, `f64`, `Cow`, `Vec` (any element type), `str`,
-/// `&str`, `&[u8]`, or `[u8]` at any nesting depth; otherwise `Ok(())`.
+/// bare `String`, `f32`, `f64`, `Box`, `Arc`, `Cow`, `Vec` (any element
+/// type), `str`, `&str`, `&[u8]`, or `[u8]` at any nesting depth; otherwise
+/// `Ok(())`.
 /// Per-ident guidance comes from [`forbidden_ident_guidance`]; the
 /// rejection points the user at the corresponding bounded wrapper
 /// (`EventString<MAX>`, `EventBytes<MAX>`, `EventVec<T, MAX>`,
@@ -416,7 +428,7 @@ fn is_last_ident(ty: &syn::Type, name: &str) -> bool {
 /// Input: the `DeriveInput` (for the type-level `#[repr]`) plus the
 /// `DataEnum`. Output: `Ok(())` if the enum carries `#[repr(u8)]` and
 /// every variant has a discriminant of the form `= <integer literal>`;
-/// otherwise `Err(syn::Error)` keyed on GEN-0035:R4. Rationale: canonical
+/// otherwise `Err(syn::Error)` keyed on PGN-0003:R1/R4. Rationale: canonical
 /// enum encoding emits the discriminant as a single byte; without
 /// `#[repr(u8)]` + explicit literals, inserting a variant could
 /// silently renumber and break decoders of older bytes.
@@ -445,7 +457,7 @@ pub(crate) fn validate_enum_repr_u8(input: &DeriveInput, data: &DataEnum) -> syn
         return Err(syn::Error::new_spanned(
             &input.ident,
             "GenomeSafe: enum must be #[repr(u8)] for canonical encoding \
-             (GEN-0035:R4). Annotate the enum with `#[repr(u8)]` and give each \
+             (PGN-0003:R1/R4). Annotate the enum with `#[repr(u8)]` and give each \
              variant an explicit discriminant literal (e.g. `Variant = 0`).",
         ));
     }
@@ -462,7 +474,7 @@ pub(crate) fn validate_enum_repr_u8(input: &DeriveInput, data: &DataEnum) -> syn
                     return Err(syn::Error::new_spanned(
                         expr,
                         "GenomeSafe: variant discriminant must be a u8 integer \
-                         literal for canonical encoding (GEN-0035:R4). \
+                         literal for canonical encoding (PGN-0003:R1/R4). \
                          Replace with an explicit literal such as `= 7`.",
                     ));
                 }
@@ -471,7 +483,7 @@ pub(crate) fn validate_enum_repr_u8(input: &DeriveInput, data: &DataEnum) -> syn
                 return Err(syn::Error::new_spanned(
                     &variant.ident,
                     "GenomeSafe: every enum variant must carry an explicit \
-                     discriminant literal for canonical encoding (GEN-0035:R4). \
+                     discriminant literal for canonical encoding (PGN-0003:R1/R4). \
                      Add `= <u8>` to this variant (e.g. `Variant = 0`).",
                 ));
             }

@@ -1,0 +1,5 @@
+error: EVT-014: GenomeSafe: Box<T> is outside the PGN-0013 bounded-field algebra. Use an owned bounded field type; if layout pressure comes from multiple large bounded variants, split the model into a second dragline.
+ --> tests/compile_fail/box_field_rejected.rs:6:12
+  |
+6 |     field: Box<u32>,
+  |            ^^^^^^^^

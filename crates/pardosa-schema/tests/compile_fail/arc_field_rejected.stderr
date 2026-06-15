@@ -1,0 +1,5 @@
+error: EVT-014: GenomeSafe: Arc<T> is outside the PGN-0013 bounded-field algebra. Store an owned bounded value in the event and wrap it in Arc at runtime when sharing is needed.
+ --> tests/compile_fail/arc_field_rejected.rs:7:12
+  |
+7 |     field: Arc<u32>,
+  |            ^^^^^^^^

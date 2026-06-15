@@ -22,9 +22,9 @@ pub struct LastCommitInfo {
 
 /// A repository with its collected check results (evidence).
 ///
-/// `repository` is owned: GEN-0045:R4 forbids Arc-as-field in
-/// types whose wire format is locked because shared ownership does not
-/// survive serialisation. Consumers that need to fan out the same
+/// `repository` is owned: PGN-0013:R8 excludes shared-ownership wrappers from
+/// event fields because GenomeSafe closes under bounded field types, not under
+/// runtime sharing. Consumers that need to fan out the same
 /// `Repository` across async tasks wrap with `Arc::new(evidence.repository)`
 /// at the call site; cross-snapshot sharing semantics (CHE-0048) are
 /// preserved by those runtime Arcs, not by the field type.

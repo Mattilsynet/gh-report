@@ -1,4 +1,4 @@
-error: EVT-008: GenomeSafe: #[serde(default)] is not supported on type. #[serde(default)] is silently inert in genome format because all fields are always present on the wire. Rejected to prevent misleading annotations (ADR-029).
+error: EVT-008: GenomeSafe: #[serde(default)] is not supported on type. #[serde(default)] is silently inert in genome format because all fields are always present on the wire. Rejected to prevent misleading annotations (PGN-0003).
  --> tests/compile_fail/serde_default.rs:3:9
   |
 3 | #[serde(default)]

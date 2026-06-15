@@ -54,7 +54,20 @@
 //! using a large cap merely to avoid choosing; it weakens decode-time
 //! rejection and makes later tightening a schema change.
 //!
-//! # 4. S1, S2, and S3 vocabulary
+//! # 4. Closed algebra under bounded field types
+//!
+//! `GenomeSafe` is closed under bounded field types, not under field or variant
+//! counts. Structs and enums are transparent combinators: a struct is bounded
+//! by its fields, and an enum is bounded by its variants. Counting fields or
+//! variants measures neither property.
+//!
+//! A large `Art` or `DomainEvent`-style enum whose variants each carry bounded
+//! fields is the blessed idiom. It is the illegal-states-unrepresentable form,
+//! not a smell. If a genuine multi-large-variant layout concern remains, split
+//! the model into a second dragline with its own `ENVELOPE_HASH`; do not hide
+//! heap indirection inside one event schema.
+//!
+//! # 5. S1, S2, and S3 vocabulary
 //!
 //! S1 domain value types carry the domain shape directly:
 //! [`NonEmptyEventString`](crate::NonEmptyEventString),
@@ -67,37 +80,37 @@
 //!
 //! - [`Option<T>`](core::option::Option) is the only sanctioned absence marker.
 //!   Use it when the domain truly has an absent case.
-//! - [`Box<T>`](std::boxed::Box) is layout-only. It is wire- and
-//!   hash-transparent, so `Option<Box<T>>` has the same schema identity as
-//!   `Option<T>`. Choose it only to manage Rust layout, such as a large enum
-//!   variant; never use it as a modeling signal.
+//! - Structs and enums are transparent bounded combinators when their fields
+//!   are bounded field types. Prefer named fields and domain variants over
+//!   raw maps, strings, vectors, or ownership wrappers.
 //!
 //! S3 degenerate or marker fields were removed in WS-1: `()` and
 //! `core::marker::PhantomData<T>` are no longer representable as event fields.
 //! Do not reach for marker types in events; if the information matters, model
 //! it as an S1 value, and if it does not matter, leave it out.
 //!
-//! Current asymmetry to document, not fix here: [`Box<T>`](std::boxed::Box) is
-//! `Sealed` + `EventSafe` + [`GenomeSafe`](crate::GenomeSafe);
-//! [`Arc<T>`](std::sync::Arc) is `Sealed` + `EventSafe` but not
-//! [`GenomeSafe`](crate::GenomeSafe); [`Cow`](std::borrow::Cow) and
-//! [`Rc`](std::rc::Rc) are not event types. No current ADR explains this
-//! asymmetry.
+//! [`Box<T>`](std::boxed::Box), [`Arc<T>`](std::sync::Arc),
+//! [`Rc<T>`](std::rc::Rc), and [`Cow`](std::borrow::Cow) are outside the event
+//! vocabulary per PGN-0013:R1/R8. They express layout, sharing, or
+//! clone-on-write mechanics rather than bounded field invariants. Store the
+//! owned bounded value in the event; add runtime sharing outside the event tree
+//! if a consumer needs it.
 //!
-//! # 5. Zero-width fields are impossible post-WS-1
+//! # 6. Zero-width fields are impossible post-WS-1
 //!
 //! Every event field must be load-bearing on the wire and in the schema hash.
 //! A field that decodes from zero bytes or erases its type parameter can create
 //! schema collisions, so the event vocabulary no longer includes `()` or
 //! `core::marker::PhantomData<T>`.
 //!
-//! # 6. Schema-hash discipline
+//! # 7. Schema-hash discipline
 //!
 //! Any field-shape change rebrews [`GenomeSafe::SCHEMA_HASH`](crate::GenomeSafe::SCHEMA_HASH):
 //! changing `MAX`, switching `EventString` to `NonEmptyEventString`, replacing
 //! `Option<bool>` with an enum, reordering fields, or changing number widths.
-//! Adding or removing [`Box`] alone is layout-only and hash
-//! transparent; use it only for Rust layout pressure, not as a schema tool.
+//! Ownership-wrapper changes are not the schema-evolution mechanism: the
+//! `GenomeSafe` vocabulary admits bounded field types, and multi-schema evolution
+//! uses a separate dragline rather than an in-place native migration.
 //!
 //! There is no general migration path for a native pardosa event schema. When
 //! event shape changes, plan to re-scrape or otherwise rebuild the affected
