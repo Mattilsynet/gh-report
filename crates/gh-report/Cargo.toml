@@ -34,10 +34,10 @@ pardosa-file = { path = "../pardosa-file", version = "=0.1.0" }
 pardosa-schema = { path = "../pardosa-schema", version = "=0.1.0" }
 pardosa-nats = { path = "../pardosa-nats", version = "=0.1.0" }
 
-# cherry-pit-web — MC-2.4b direct dep for Phase-2 `ProjectionSource` stub on
-# `EvidenceState` per CHE-0055 §G1. MC-2.7 removes both the stub and this
-# dep edge when the gh-report shim is deleted.
-cherry-pit-web = { workspace = true, features = ["projection"] }
+# cherry-pit-web — security/transport helpers (sanitize_path_segment,
+# SVG_CSP, http_trace_layer, normalize_request_path, security_headers)
+# consumed by the collectors, github client, and server runtime.
+cherry-pit-web = { workspace = true }
 
 # CLI
 clap = { workspace = true, features = ["env"] }
@@ -144,9 +144,6 @@ wiremock = { workspace = true }
 # Snapshot testing
 insta = { workspace = true }
 
-# Async test helpers
-tokio-test = { workspace = true }
-
 # Property-based testing
 proptest = { workspace = true }
 
@@ -155,7 +152,6 @@ tempfile = { workspace = true }
 
 # Cross-process binary smoke (Q.4 persistence smoke).
 assert_cmd = { workspace = true }
-predicates = { workspace = true }
 
 # WebSocket test client
 tokio-tungstenite = { workspace = true }

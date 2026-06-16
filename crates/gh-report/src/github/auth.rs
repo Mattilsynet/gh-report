@@ -243,90 +243,6 @@ impl AuthMetadata {
             auth_mode: AuthMode::GitHubApp,
         }
     }
-
-    /// Serialize `token_tier` as a string (for backward-compatible evidence output).
-    #[must_use]
-    pub fn token_tier_str(&self) -> String {
-        self.token_tier.to_string()
-    }
-}
-
-/// Collect auth metadata using `gh auth status --json hosts`.
-///
-/// Falls back to `AuthMetadata::default()` on any failure.
-#[must_use]
-pub fn gh_cli_auth_metadata() -> AuthMetadata {
-    let Ok(output) = gh_command(&["auth", "status", "--json", "hosts"]).output() else {
-        return AuthMetadata::default();
-    };
-
-    if !output.status.success() {
-        return AuthMetadata::default();
-    }
-
-    let Ok(stdout) = String::from_utf8(output.stdout) else {
-        return AuthMetadata::default();
-    };
-
-    parse_gh_auth_status_json(&stdout)
-}
-
-/// Parse the JSON output from `gh auth status --json hosts`.
-///
-/// Expected shape:
-/// ```json
-/// {
-///   "hosts": {
-///     "github.com": [
-///       { "active": true, "scopes": "repo, read:org, ..." }
-///     ]
-///   }
-/// }
-/// ```
-fn parse_gh_auth_status_json(json_str: &str) -> AuthMetadata {
-    let payload: serde_json::Value = match serde_json::from_str(json_str) {
-        Ok(v) => v,
-        Err(_) => return AuthMetadata::default(),
-    };
-
-    let host_entries = match payload
-        .get("hosts")
-        .and_then(|h| h.get("github.com"))
-        .and_then(|e| e.as_array())
-    {
-        Some(entries) if !entries.is_empty() => entries,
-        _ => return AuthMetadata::default(),
-    };
-
-    let active_entry = host_entries
-        .iter()
-        .find(|e| {
-            e.get("active")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-        })
-        .or_else(|| host_entries.first());
-
-    let Some(active_entry) = active_entry else {
-        return AuthMetadata::default();
-    };
-
-    let scopes_str = active_entry
-        .get("scopes")
-        .and_then(|s| s.as_str())
-        .unwrap_or("unknown");
-
-    if scopes_str == "unknown" || scopes_str.is_empty() {
-        return AuthMetadata::default();
-    }
-
-    let scopes = parse_oauth_scopes(scopes_str);
-    let tier = classify_token_tier(&scopes);
-    AuthMetadata {
-        token_tier: tier,
-        token_scopes: scopes_str.to_string(),
-        auth_mode: AuthMode::GhCliFallback,
-    }
 }
 
 /// Parse and validate a positive `u64` from a string.
@@ -831,86 +747,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_gh_auth_status_full_scopes() {
-        let json = r#"{
-            "hosts": {
-                "github.com": [
-                    {
-                        "active": true,
-                        "scopes": "repo, read:org, security_events"
-                    }
-                ]
-            }
-        }"#;
-        let meta = parse_gh_auth_status_json(json);
-        assert_eq!(meta.token_tier, TokenTier::Full);
-        assert_eq!(meta.token_scopes, "repo, read:org, security_events");
-    }
-
-    #[test]
-    fn parse_gh_auth_status_limited_scopes() {
-        let json = r#"{
-            "hosts": {
-                "github.com": [
-                    {
-                        "active": true,
-                        "scopes": "repo"
-                    }
-                ]
-            }
-        }"#;
-        let meta = parse_gh_auth_status_json(json);
-        assert_eq!(meta.token_tier, TokenTier::Limited);
-    }
-
-    #[test]
-    fn parse_gh_auth_status_no_active_uses_first() {
-        let json = r#"{
-            "hosts": {
-                "github.com": [
-                    {
-                        "active": false,
-                        "scopes": "repo, read:org, security_events"
-                    }
-                ]
-            }
-        }"#;
-        let meta = parse_gh_auth_status_json(json);
-        assert_eq!(meta.token_tier, TokenTier::Full);
-    }
-
-    #[test]
-    fn parse_gh_auth_status_empty_hosts() {
-        let json = r#"{"hosts": {}}"#;
-        let meta = parse_gh_auth_status_json(json);
-        assert_eq!(meta.token_tier, TokenTier::Unknown);
-        assert_eq!(meta.token_scopes, "unknown");
-    }
-
-    #[test]
-    fn parse_gh_auth_status_invalid_json() {
-        let meta = parse_gh_auth_status_json("not json");
-        assert_eq!(meta.token_tier, TokenTier::Unknown);
-    }
-
-    #[test]
-    fn parse_gh_auth_status_unknown_scopes() {
-        let json = r#"{
-            "hosts": {
-                "github.com": [
-                    {
-                        "active": true,
-                        "scopes": "unknown"
-                    }
-                ]
-            }
-        }"#;
-        let meta = parse_gh_auth_status_json(json);
-        assert_eq!(meta.token_tier, TokenTier::Unknown);
-        assert_eq!(meta.token_scopes, "unknown");
-    }
-
-    #[test]
     fn pat_never_needs_refresh() {
         let cred = GitHubCredential {
             mode: AuthMode::Pat,
@@ -1078,26 +914,6 @@ mod tests {
             meta.auth_mode,
             AuthMode::GitHubApp,
             "auth_mode for GitHubApp changed unexpectedly"
-        );
-    }
-
-    #[test]
-    fn auth_mode_format_pinning_gh_cli_fallback() {
-        let json = r#"{
-            "hosts": {
-                "github.com": [
-                    {
-                        "active": true,
-                        "scopes": "repo, read:org, security_events"
-                    }
-                ]
-            }
-        }"#;
-        let meta = parse_gh_auth_status_json(json);
-        assert_eq!(
-            meta.auth_mode,
-            AuthMode::GhCliFallback,
-            "auth_mode for GhCliFallback changed unexpectedly"
         );
     }
 

@@ -194,17 +194,6 @@ pub fn policy_unknown() -> SecurityPolicyResult {
     }
 }
 
-/// Security policy result: not applicable (non-public repository).
-#[must_use]
-pub fn policy_not_applicable() -> SecurityPolicyResult {
-    SecurityPolicyResult {
-        status: SecurityPolicyStatus::NotApplicable,
-        evidence: SecurityPolicyEvidence::NotApplicable,
-        path: None,
-        timestamp: make_timestamp(),
-    }
-}
-
 /// Secret scanning result: enabled with observable alerts.
 #[must_use]
 pub fn secret_enabled_observable(has_open: bool) -> SecretScanningResult {

@@ -82,11 +82,6 @@ pub const MAX_RESPONSE_BODY_BYTES: usize = 50 * 1024 * 1024;
 /// from paginated API calls.
 pub const MAX_PAGINATED_ITEMS: usize = 500_000;
 
-/// Maximum checkpoint file size in bytes (100 MB).
-///
-/// Prevents OOM when loading a corrupt or unexpectedly large checkpoint file.
-pub const MAX_CHECKPOINT_FILE_BYTES: u64 = 100 * 1024 * 1024;
-
 /// Default web server bind address (loopback — safe for local development).
 ///
 /// Container and cloud deployments should set `BIND_ADDRESS=0.0.0.0` to
