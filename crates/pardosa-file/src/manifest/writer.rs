@@ -14,20 +14,23 @@ pub(crate) struct IndexManifestWriter<'w, M: crate::Syncable + std::io::Seek> {
     header_synced: bool,
 }
 impl<'w, M: crate::Syncable + std::io::Seek> IndexManifestWriter<'w, M> {
-    pub(crate) fn new(
+    pub(crate) fn new_with_records(
         sink: &'w mut M,
         schema_hash: u128,
         page_class: u8,
         schema_size: u32,
+        records: Vec<ManifestRecord>,
+        synced_records: usize,
+        header_synced: bool,
     ) -> Self {
         Self {
             sink,
             schema_hash,
             page_class,
             schema_size,
-            records: Vec::new(),
-            synced_records: 0,
-            header_synced: false,
+            synced_records: synced_records.min(records.len()),
+            records,
+            header_synced,
         }
     }
     pub(crate) fn record(&mut self, entry: ManifestRecord) {

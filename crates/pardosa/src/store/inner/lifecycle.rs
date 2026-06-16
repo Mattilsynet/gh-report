@@ -8,12 +8,90 @@ use crate::backend::rehydrate::from_pgno_bytes_unchecked;
 use crate::dragline::Dragline;
 use crate::event::Event;
 use crate::frontier::Frontier;
-use pardosa_file::Reader;
+use pardosa_file::manifest::{
+    ManifestRecord, RecoveredPrefix, finalize_recovered_prefix, recover_footerless_prefix,
+};
+use pardosa_file::{FileError, Reader, Syncable};
 use pardosa_wire::from_bytes;
 use std::io::Seek;
+fn pgno_manifest_path(path: &Path) -> PathBuf {
+    let mut os = path.as_os_str().to_os_string();
+    os.push(".pgix");
+    PathBuf::from(os)
+}
+fn clean_recovered_prefix(path: &Path) -> Result<(RecoveredPrefix, bool), crate::persist::Error> {
+    let manifest_path = pgno_manifest_path(path);
+    if manifest_path.exists()
+        && let Ok(pgno_bytes) = std::fs::read(path)
+        && let Ok(manifest_bytes) = std::fs::read(&manifest_path)
+        && let Ok(recovered) = recover_footerless_prefix(&pgno_bytes, &manifest_bytes)
+    {
+        return Ok((recovered, true));
+    }
+    let file = std::fs::File::open(path).map_err(crate::persist::Error::Io)?;
+    let reader = Reader::open(file).map_err(crate::persist::Error::File)?;
+    let records: Vec<ManifestRecord> = reader
+        .index()
+        .iter()
+        .map(|entry| ManifestRecord {
+            offset: entry.offset(),
+            size: entry.size(),
+            checksum: entry.checksum(),
+        })
+        .collect();
+    let data_end = records.iter().try_fold(
+        pardosa_file::format::messages_offset(reader.schema_size()) as u64,
+        |_, record| {
+            record
+                .offset
+                .checked_add(u64::from(record.size))
+                .ok_or(FileError::IndexOverflow)
+        },
+    )?;
+    Ok((
+        RecoveredPrefix {
+            schema_hash: reader.schema_hash(),
+            page_class: reader.page_class(),
+            schema_size: reader.schema_size(),
+            schema_source: reader.schema_source().map(str::to_owned),
+            records,
+            data_end,
+        },
+        false,
+    ))
+}
+fn recover_footerless_pgno_at_path(path: &Path) -> Result<RecoveredPrefix, crate::persist::Error> {
+    let manifest_path = pgno_manifest_path(path);
+    if !manifest_path.exists() {
+        return Err(crate::persist::Error::File(FileError::InvalidIndex));
+    }
+    let pgno_bytes = std::fs::read(path).map_err(crate::persist::Error::Io)?;
+    let manifest_bytes = std::fs::read(&manifest_path).map_err(crate::persist::Error::Io)?;
+    let recovered = recover_footerless_prefix(&pgno_bytes, &manifest_bytes).map_err(|source| {
+        crate::persist::Error::File(FileError::TornWriteRecovery {
+            source: Box::new(source),
+        })
+    })?;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(crate::persist::Error::Io)?;
+    finalize_recovered_prefix(&recovered, &mut file).map_err(crate::persist::Error::File)?;
+    <std::fs::File as Syncable>::sync_data(&mut file).map_err(crate::persist::Error::Io)?;
+    Ok(recovered)
+}
 fn open_rw_seek_and_rehydrate_unchecked<T>(
     path: &Path,
-) -> Result<(std::fs::File, crate::dragline::Line<T>), PardosaError>
+) -> Result<
+    (
+        std::fs::File,
+        crate::dragline::Line<T>,
+        RecoveredPrefix,
+        bool,
+    ),
+    PardosaError,
+>
 where
     T: Decode + GenomeSafe,
 {
@@ -29,16 +107,44 @@ where
         .map_err(|e| PardosaError::CursorRead {
             source: Box::new(crate::persist::Error::Io(e)),
         })?;
-    let dragline = crate::persist::rehydrate_unchecked::<T, _>(&mut file).map_err(|e| {
-        PardosaError::CursorRead {
-            source: Box::new(e),
-        }
-    })?;
+    let (dragline, recovered_prefix, manifest_already_synced) =
+        match crate::persist::rehydrate_unchecked::<T, _>(&mut file) {
+            Ok(dragline) => {
+                let (recovered_prefix, manifest_already_synced) = clean_recovered_prefix(path)
+                    .map_err(|e| PardosaError::CursorRead {
+                        source: Box::new(e),
+                    })?;
+                (dragline, recovered_prefix, manifest_already_synced)
+            }
+            Err(crate::persist::Error::File(FileError::InvalidMagic | FileError::InvalidIndex)) => {
+                let recovered_prefix = recover_footerless_pgno_at_path(path).map_err(|e| {
+                    PardosaError::CursorRead {
+                        source: Box::new(e),
+                    }
+                })?;
+                file.seek(SeekFrom::Start(0))
+                    .map_err(|e| PardosaError::CursorRead {
+                        source: Box::new(crate::persist::Error::Io(e)),
+                    })?;
+                let dragline =
+                    crate::persist::rehydrate_unchecked::<T, _>(&mut file).map_err(|e| {
+                        PardosaError::CursorRead {
+                            source: Box::new(e),
+                        }
+                    })?;
+                (dragline, recovered_prefix, true)
+            }
+            Err(e) => {
+                return Err(PardosaError::CursorRead {
+                    source: Box::new(e),
+                });
+            }
+        };
     file.seek(SeekFrom::Start(0))
         .map_err(|e| PardosaError::CursorRead {
             source: Box::new(crate::persist::Error::Io(e)),
         })?;
-    Ok((file, dragline))
+    Ok((file, dragline, recovered_prefix, manifest_already_synced))
 }
 fn open_rw_seek_and_rehydrate_validated<T>(
     path: &Path,
@@ -54,7 +160,18 @@ where
         .map_err(|e| ValidatedReplayError::Replay(crate::persist::Error::Io(e)))?;
     file.seek(SeekFrom::Start(0))
         .map_err(|e| ValidatedReplayError::Replay(crate::persist::Error::Io(e)))?;
-    let dragline = crate::persist::rehydrate_validated::<T, _>(&mut file)?;
+    let dragline = match crate::persist::rehydrate_validated::<T, _>(&mut file) {
+        Ok(dragline) => dragline,
+        Err(ValidatedReplayError::Replay(crate::persist::Error::File(
+            FileError::InvalidMagic | FileError::InvalidIndex,
+        ))) => {
+            recover_footerless_pgno_at_path(path).map_err(ValidatedReplayError::Replay)?;
+            file.seek(SeekFrom::Start(0))
+                .map_err(|e| ValidatedReplayError::Replay(crate::persist::Error::Io(e)))?;
+            crate::persist::rehydrate_validated::<T, _>(&mut file)?
+        }
+        Err(e) => return Err(e),
+    };
     file.seek(SeekFrom::Start(0))
         .map_err(|e| ValidatedReplayError::Replay(crate::persist::Error::Io(e)))?;
     Ok((file, dragline))
@@ -395,7 +512,7 @@ where
                   the rehydrate pipeline has a single in-crate entry shape"
     )]
     pub(crate) fn open(path: &Path) -> Result<Self, PardosaError> {
-        let (file, dragline) = open_rw_seek_and_rehydrate_unchecked::<T>(path)?;
+        let (file, dragline, _, _) = open_rw_seek_and_rehydrate_unchecked::<T>(path)?;
         let inner = Dragline::from_line_for_open(dragline, file);
         Ok(Self {
             inner,
@@ -412,7 +529,7 @@ where
     /// under the gate.
     #[cfg(any(test, feature = "test-support"))]
     pub fn open(path: &Path) -> Result<Self, PardosaError> {
-        let (file, dragline) = open_rw_seek_and_rehydrate_unchecked::<T>(path)?;
+        let (file, dragline, _, _) = open_rw_seek_and_rehydrate_unchecked::<T>(path)?;
         let inner = Dragline::from_line_for_open(dragline, file);
         Ok(Self {
             inner,
@@ -441,8 +558,15 @@ where
     pub fn open_with_backend<B: AuthoritativeBackend>(backend: B) -> Result<Self, PardosaError> {
         match admit_into_dispatch(backend) {
             BackendDispatch::Pgno(p) => {
-                let (file, dragline) = open_rw_seek_and_rehydrate_unchecked::<T>(p.path())?;
-                let inner = Dragline::from_backend_for_open(dragline, file);
+                let (file, dragline, recovered_prefix, manifest_already_synced) =
+                    open_rw_seek_and_rehydrate_unchecked::<T>(p.path())?;
+                let inner = Dragline::from_backend_for_open(
+                    dragline,
+                    file,
+                    p.path(),
+                    Some(recovered_prefix),
+                    manifest_already_synced,
+                );
                 Ok(Self {
                     inner,
                     journal: p.path().to_path_buf(),
@@ -506,7 +630,7 @@ where
         anchor_interval: u64,
         publisher: Box<dyn FrontierPublisher>,
     ) -> Result<Self, PardosaError> {
-        let (file, dragline) = open_rw_seek_and_rehydrate_unchecked::<T>(path)?;
+        let (file, dragline, _, _) = open_rw_seek_and_rehydrate_unchecked::<T>(path)?;
         let inner = Dragline::with_line_and_publisher_path(
             dragline,
             file,
@@ -597,6 +721,43 @@ mod tests {
                     );
                 }
                 other => panic!("expected Io flattening, got {other:?}"),
+            },
+            other => panic!("expected CursorRead, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn footerless_recovery_failure_surfaces_typed_file_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("broken.pgno");
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&path)
+                .expect("create footerless pgno");
+            let mut writer =
+                pardosa_file::AppendWriter::new(&mut file, Event::<TaggedPayload>::ENVELOPE_HASH);
+            writer.append_message(&frame(1)).expect("append frame");
+            writer.sync_data().expect("sync footerless pgno");
+        }
+        let mut manifest_os = path.as_os_str().to_os_string();
+        manifest_os.push(".pgix");
+        let manifest_path = std::path::PathBuf::from(manifest_os);
+        std::fs::write(&manifest_path, b"not a manifest").expect("write manifest bytes");
+        let err = open_rw_seek_and_rehydrate_unchecked::<TaggedPayload>(&path)
+            .expect_err("bad footerless recovery must fail typed");
+        match err {
+            PardosaError::CursorRead { source } => match *source {
+                crate::persist::Error::File(FileError::TornWriteRecovery { source }) => {
+                    match *source {
+                        pardosa_file::manifest::RecoveryError::Manifest(_) => {}
+                        other => panic!("expected manifest recovery source, got {other:?}"),
+                    }
+                }
+                other => panic!("expected typed FileError::TornWriteRecovery, got {other:?}"),
             },
             other => panic!("expected CursorRead, got {other:?}"),
         }

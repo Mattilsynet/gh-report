@@ -20,7 +20,7 @@ use crate::format::{
     HEADER_SCHEMA_HASH_OFFSET, HEADER_SCHEMA_SIZE_OFFSET, HEADER_VERSION_OFFSET, INDEX_ENTRY_SIZE,
     MAGIC, messages_offset, pad_to_8,
 };
-use crate::manifest::{IndexManifestWriter, ManifestRecord};
+use crate::manifest::{IndexManifestWriter, ManifestRecord, RecoveredPrefix};
 use crate::options::{Compression, WriterOptions};
 use crate::syncable::Syncable;
 use std::io::{self, Seek};
@@ -46,6 +46,7 @@ pub struct AppendWriter<'w, W: Syncable, M: Syncable + Seek = std::io::Cursor<Ve
     sink: &'w mut W,
     schema_hash: u128,
     page_class: u8,
+    schema_size: u32,
     schema_source: Option<&'w str>,
     cursor: u64,
     header_written: bool,
@@ -69,6 +70,7 @@ impl<'w, W: Syncable> AppendWriter<'w, W> {
             sink,
             schema_hash,
             page_class: 0,
+            schema_size: 0,
             schema_source: None,
             cursor: 0,
             header_written: false,
@@ -78,7 +80,7 @@ impl<'w, W: Syncable> AppendWriter<'w, W> {
         }
     }
 }
-impl<'w, W: Syncable, M: Syncable + Seek> AppendWriter<'w, W, M> {
+impl<'w, W: Syncable> AppendWriter<'w, W> {
     /// Set the on-disk `page_class` byte (raw `u8` ingress; see
     /// [`Writer::with_page_class`](crate::Writer::with_page_class)).
     #[must_use]
@@ -100,6 +102,35 @@ impl<'w, W: Syncable, M: Syncable + Seek> AppendWriter<'w, W, M> {
         self.schema_source = Some(schema_source);
         self
     }
+    /// Resume appending after a recovered or parsed footerless prefix.
+    ///
+    /// The caller must position the sink at `prefix.data_end` or allow
+    /// the next append to do so before writing. Existing message-index
+    /// records are retained so [`Self::finish`] and manifest recovery
+    /// include the prior durable prefix plus any newly appended suffix.
+    #[must_use]
+    pub fn resume_from_recovered_prefix(sink: &'w mut W, prefix: &RecoveredPrefix) -> Self {
+        Self {
+            sink,
+            schema_hash: prefix.schema_hash,
+            page_class: prefix.page_class,
+            schema_size: prefix.schema_size,
+            schema_source: None,
+            cursor: prefix.data_end,
+            header_written: true,
+            index: prefix
+                .records
+                .iter()
+                .map(|record| StoredEntry {
+                    offset: record.offset,
+                    size: record.size,
+                    checksum: record.checksum,
+                })
+                .collect(),
+            options: WriterOptions::default(),
+            manifest: None,
+        }
+    }
     /// Attach an index-manifest sink. On every [`Self::sync_data`]
     /// call, an [`IndexManifestWriter`](crate::manifest)-shaped
     /// update is written to `manifest_sink` before the call
@@ -116,26 +147,62 @@ impl<'w, W: Syncable, M: Syncable + Seek> AppendWriter<'w, W, M> {
         self,
         manifest_sink: &'w mut MNew,
     ) -> AppendWriter<'w, W, MNew> {
-        let schema_size = self
-            .schema_source
-            .map_or(0, |s| u32::try_from(s.len()).unwrap_or(u32::MAX));
+        self.with_manifest_synced_records(manifest_sink, 0, false)
+    }
+    /// Attach an index-manifest sink that already contains a synced
+    /// prefix of this writer's records.
+    ///
+    /// `synced_records` is the count already durable in the manifest.
+    /// When `header_synced` is `true`, the manifest header is also
+    /// assumed durable and the next [`Self::sync_data`] writes only
+    /// records after `synced_records` plus the footer. This is the
+    /// resume path used by file-mode append sessions that reopen after
+    /// a recovered prefix.
+    #[must_use]
+    pub fn with_manifest_synced_records<MNew: Syncable + Seek>(
+        self,
+        manifest_sink: &'w mut MNew,
+        synced_records: usize,
+        header_synced: bool,
+    ) -> AppendWriter<'w, W, MNew> {
+        let schema_size = if self.header_written {
+            self.schema_size
+        } else {
+            self.schema_source
+                .map_or(0, |s| u32::try_from(s.len()).unwrap_or(u32::MAX))
+        };
+        let records = self
+            .index
+            .iter()
+            .map(|entry| ManifestRecord {
+                offset: entry.offset,
+                size: entry.size,
+                checksum: entry.checksum,
+            })
+            .collect();
         AppendWriter {
             sink: self.sink,
             schema_hash: self.schema_hash,
             page_class: self.page_class,
+            schema_size,
             schema_source: self.schema_source,
             cursor: self.cursor,
             header_written: self.header_written,
             index: self.index,
             options: self.options,
-            manifest: Some(IndexManifestWriter::new(
+            manifest: Some(IndexManifestWriter::new_with_records(
                 manifest_sink,
                 self.schema_hash,
                 self.page_class,
                 schema_size,
+                records,
+                synced_records,
+                header_synced,
             )),
         }
     }
+}
+impl<W: Syncable, M: Syncable + Seek> AppendWriter<'_, W, M> {
     /// Append a single message body, updating the in-memory index.
     ///
     /// Writes the lazy header on the first call. Returns the
@@ -211,6 +278,26 @@ impl<'w, W: Syncable, M: Syncable + Seek> AppendWriter<'w, W, M> {
             .as_ref()
             .map(IndexManifestWriter::persisted_len)
     }
+    /// Snapshot the append session's current recoverable prefix.
+    #[must_use]
+    pub fn recovered_prefix(&self) -> RecoveredPrefix {
+        RecoveredPrefix {
+            schema_hash: self.schema_hash,
+            page_class: self.page_class,
+            schema_size: self.schema_size,
+            schema_source: self.schema_source.map(str::to_owned),
+            records: self
+                .index
+                .iter()
+                .map(|entry| ManifestRecord {
+                    offset: entry.offset,
+                    size: entry.size,
+                    checksum: entry.checksum,
+                })
+                .collect(),
+            data_end: self.cursor,
+        }
+    }
     /// Fence durability of bytes written so far. Writes the lazy
     /// header on the first call. Does NOT write a footer — the
     /// prefix is not [`Reader::open`](crate::Reader::open)-compatible.
@@ -279,6 +366,7 @@ impl<'w, W: Syncable, M: Syncable + Seek> AppendWriter<'w, W, M> {
     fn write_header(&mut self) -> Result<(), FileError> {
         let schema_bytes: &[u8] = self.schema_source.map_or(&[], str::as_bytes);
         let schema_size = u32::try_from(schema_bytes.len()).map_err(|_| FileError::InvalidIndex)?;
+        self.schema_size = schema_size;
         let mut buf = [0u8; FILE_HEADER_SIZE];
         buf[HEADER_MAGIC_OFFSET..HEADER_MAGIC_OFFSET + 4].copy_from_slice(&MAGIC);
         buf[HEADER_VERSION_OFFSET..HEADER_VERSION_OFFSET + 2]

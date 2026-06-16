@@ -1,3 +1,4 @@
+use crate::manifest::RecoveryError;
 use core::fmt;
 /// Public error type surfaced by `pardosa-file` operations.
 ///
@@ -51,6 +52,9 @@ pub enum FileError {
     IndexTooLarge {
         claimed: u64,
         limit: u64,
+    },
+    TornWriteRecovery {
+        source: Box<RecoveryError>,
     },
     Io(std::io::Error),
 }
@@ -127,6 +131,7 @@ impl fmt::Display for FileError {
                     "footer-declared message_count {claimed} exceeds cap of {limit}"
                 )
             }
+            Self::TornWriteRecovery { source } => write!(f, "torn-write recovery failed: {source}"),
             Self::Io(err) => write!(f, "i/o error: {err}"),
         }
     }
@@ -135,6 +140,7 @@ impl core::error::Error for FileError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Io(err) => Some(err),
+            Self::TornWriteRecovery { source } => Some(source),
             _ => None,
         }
     }

@@ -16,10 +16,11 @@
 use super::state::{AppendResult, Line};
 use crate::durability::Lsn;
 use crate::error::PardosaError;
-use crate::event::EventId;
+use crate::event::{Event, EventId};
 use crate::frontier::{Frontier, FrontierPublisher};
 use crate::persist;
 use pardosa_file::Syncable;
+use pardosa_file::manifest::RecoveredPrefix;
 use pardosa_schema::GenomeSafe;
 use pardosa_wire::{Encode, to_vec};
 use std::fs::OpenOptions;
@@ -146,8 +147,19 @@ pub(crate) struct Dragline<T, W: Syncable + Seek> {
 }
 enum WriteStrategy {
     Direct,
-    BackendBacked,
+    BackendBacked {
+        manifest_path: PathBuf,
+        synced_events: usize,
+        prefix: Option<RecoveredPrefix>,
+        manifest_synced_records: usize,
+        manifest_header_synced: bool,
+    },
     JetStreamBacked(Box<crate::authoritative::jetstream::JetStreamBackendAdapter>),
+}
+fn pgno_manifest_path(path: &Path) -> PathBuf {
+    let mut os = path.as_os_str().to_os_string();
+    os.push(".pgix");
+    PathBuf::from(os)
 }
 /// Capability state of a [`Dragline`]'s publish surface.
 ///
@@ -243,13 +255,31 @@ where
             jetstream_synced_events: 0,
         }
     }
-    pub(crate) fn from_backend_for_open(line: Line<T>, sink: W) -> Self {
+    pub(crate) fn from_backend_for_open(
+        line: Line<T>,
+        sink: W,
+        journal_path: &Path,
+        prefix: Option<RecoveredPrefix>,
+        manifest_already_synced: bool,
+    ) -> Self {
+        let synced_events = line.read_line().len();
+        let manifest_synced_records = prefix
+            .as_ref()
+            .map_or(0, |p| p.records.len())
+            .checked_mul(usize::from(manifest_already_synced))
+            .unwrap_or(0);
         Self {
             line,
             sink,
             acked_lsn: None,
             mode: PublishMode::NoPublisher,
-            strategy: WriteStrategy::BackendBacked,
+            strategy: WriteStrategy::BackendBacked {
+                manifest_path: pgno_manifest_path(journal_path),
+                synced_events,
+                prefix,
+                manifest_synced_records,
+                manifest_header_synced: manifest_already_synced,
+            },
             jetstream_synced_events: 0,
         }
     }
@@ -307,6 +337,13 @@ where
     /// sink for reading. `T`-independent (ADR-0020 reader bound).
     pub fn into_inner(self) -> W {
         self.sink
+    }
+    #[cfg(test)]
+    fn strategy_recovered_prefix_for_test(&self) -> Option<RecoveredPrefix> {
+        match &self.strategy {
+            WriteStrategy::BackendBacked { prefix, .. } => prefix.clone(),
+            WriteStrategy::Direct | WriteStrategy::JetStreamBacked(_) => None,
+        }
     }
 }
 impl<T, W> Dragline<T, W>
@@ -417,25 +454,7 @@ where
                 <W as Syncable>::sync_data(&mut self.sink)?;
                 pos
             }
-            WriteStrategy::BackendBacked => {
-                self.sink.seek(SeekFrom::Start(0))?;
-                let mut buf: std::io::Cursor<Vec<u8>> = std::io::Cursor::new(Vec::new());
-                persist::persist_with_source_append(&self.line, &mut buf, schema_source)?;
-                let bytes = buf.into_inner();
-                let blob_len = bytes.len() as u64;
-                {
-                    let mut substrate = crate::backend::PgnoFileSink::new(&mut self.sink);
-                    let _ack = crate::backend::BackendSink::append(&mut substrate, &bytes)
-                        .map_err(backend_error_to_persist_error)?;
-                }
-                <W as Syncable>::set_len(&mut self.sink, blob_len)?;
-                {
-                    let mut substrate = crate::backend::PgnoFileSink::new(&mut self.sink);
-                    let _ack = crate::backend::BackendSink::sync(&mut substrate)
-                        .map_err(backend_error_to_persist_error)?;
-                }
-                blob_len
-            }
+            WriteStrategy::BackendBacked { .. } => self.sync_backend_backed(schema_source)?,
             WriteStrategy::JetStreamBacked(adapter) => {
                 self.line
                     .check_persistable()
@@ -476,6 +495,61 @@ where
             }
         }
         Ok(lsn)
+    }
+    fn sync_backend_backed(
+        &mut self,
+        schema_source: Option<&'static str>,
+    ) -> Result<u64, persist::Error> {
+        self.line
+            .check_persistable()
+            .map_err(|kind| persist::Error::UnpersistableState { kind })?;
+        let WriteStrategy::BackendBacked {
+            manifest_path,
+            synced_events,
+            prefix,
+            manifest_synced_records,
+            manifest_header_synced,
+        } = &mut self.strategy
+        else {
+            unreachable!("sync_backend_backed called for non-backend strategy")
+        };
+        let events = self.line.read_line();
+        let start = (*synced_events).min(events.len());
+        let mut manifest = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(manifest_path)
+            .map_err(persist::Error::Io)?;
+        let mut writer = if let Some(recovered) = prefix.take() {
+            self.sink.seek(SeekFrom::Start(recovered.data_end))?;
+            pardosa_file::AppendWriter::resume_from_recovered_prefix(&mut self.sink, &recovered)
+                .with_manifest_synced_records(
+                    &mut manifest,
+                    *manifest_synced_records,
+                    *manifest_header_synced,
+                )
+        } else {
+            self.sink.seek(SeekFrom::End(0))?;
+            let mut append_writer =
+                pardosa_file::AppendWriter::new(&mut self.sink, Event::<T>::ENVELOPE_HASH);
+            if let Some(source) = schema_source {
+                append_writer = append_writer.with_schema_source(source);
+            }
+            append_writer.with_manifest(&mut manifest)
+        };
+        for event in &events[start..] {
+            let bytes = to_vec(event);
+            writer.append_message(&bytes)?;
+        }
+        writer.sync_data().map_err(persist::Error::Io)?;
+        let recovered = writer.recovered_prefix();
+        *synced_events = events.len();
+        *manifest_synced_records = recovered.records.len();
+        *manifest_header_synced = true;
+        *prefix = Some(recovered.clone());
+        Ok(recovered.data_end)
     }
     /// ADR-0016 §D6 drain: re-fold the persisted line via
     /// [`crate::dragline::recover::reconstruct_unpublished_anchors`],
@@ -630,23 +704,45 @@ mod tests {
             .sync_data_with_source(None)
             .expect("sync legacy");
         let legacy_sink = legacy_runtime.into_inner();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("runtime-test.pgno");
         let backend_sink: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         let mut backend_runtime: Dragline<u64, _> =
-            Dragline::from_backend_for_open(Line::new(), backend_sink);
+            Dragline::from_backend_for_open(Line::new(), backend_sink, &path, None, false);
         for i in 0..5u64 {
             let _ = backend_runtime.commit_event(i).expect("commit backend");
         }
         let _ = backend_runtime
             .sync_data_with_source(None)
             .expect("sync backend");
+        let mut legacy_reader = pardosa_file::Reader::open(legacy_sink).expect("open legacy");
+        let legacy_events: Vec<u64> = legacy_reader
+            .iter_messages()
+            .map(|bytes| {
+                let bytes = bytes.expect("read legacy message");
+                let event: Event<u64> = from_bytes(&bytes).expect("decode legacy event");
+                *event.domain_event()
+            })
+            .collect();
+        let recovered = backend_runtime
+            .strategy_recovered_prefix_for_test()
+            .expect("backend prefix");
         let backend_sink = backend_runtime.into_inner();
-        assert_eq!(
-            backend_sink.get_ref(),
-            legacy_sink.get_ref(),
-            "I1: Dragline::from_backend_for_open + sync_data_with_source must produce \
-             bytes byte-identical to Dragline::new + sync_data_with_source for the same \
-             in-memory line (sub-mission 03b production wiring; oracle bead rescue-pardosa-v0id)"
-        );
+        let mut backend_sink = backend_sink;
+        pardosa_file::manifest::finalize_recovered_prefix(&recovered, &mut backend_sink)
+            .expect("finalize backend");
+        backend_sink.set_position(0);
+        let mut backend_reader =
+            pardosa_file::Reader::open(backend_sink).expect("open finalized backend");
+        let backend_events: Vec<u64> = backend_reader
+            .iter_messages()
+            .map(|bytes| {
+                let bytes = bytes.expect("read backend message");
+                let event: Event<u64> = from_bytes(&bytes).expect("decode backend event");
+                *event.domain_event()
+            })
+            .collect();
+        assert_eq!(backend_events, legacy_events);
     }
     /// Sealed-substrate parity: the bytes the backend-keyed write
     /// path on [`Dragline`] hands its in-place sink must equal the
@@ -664,9 +760,11 @@ mod tests {
         }
         let _ = bj.sync().expect("sync backend dragline");
         let reference_bytes: Vec<u8> = bj.into_backend().bytes().to_vec();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("runtime-test.pgno");
         let prod_sink: Cursor<Vec<u8>> = Cursor::new(Vec::new());
         let mut prod_runtime: Dragline<u64, _> =
-            Dragline::from_backend_for_open(Line::new(), prod_sink);
+            Dragline::from_backend_for_open(Line::new(), prod_sink, &path, None, false);
         for i in 0..5u64 {
             let _ = prod_runtime
                 .commit_event(i)
@@ -675,15 +773,102 @@ mod tests {
         let _ = prod_runtime
             .sync_data_with_source(None)
             .expect("sync production runtime");
+        let mut reference_reader =
+            pardosa_file::Reader::open(Cursor::new(reference_bytes)).expect("open reference");
+        let reference_events: Vec<u64> = reference_reader
+            .iter_messages()
+            .map(|bytes| {
+                let bytes = bytes.expect("read reference message");
+                let event: Event<u64> = from_bytes(&bytes).expect("decode reference event");
+                *event.domain_event()
+            })
+            .collect();
+        let recovered = prod_runtime
+            .strategy_recovered_prefix_for_test()
+            .expect("backend prefix");
         let prod_sink = prod_runtime.into_inner();
-        assert_eq!(
-            prod_sink.get_ref(),
-            &reference_bytes,
-            "sub-mission 03b: bytes Dragline::from_backend_for_open writes via the \
-             BackendSink-shaped strategy MUST be byte-identical to the bytes \
-             BackendDragline::sync hands its substrate via BackendSink::append for the \
-             same in-memory line (sealed append/sync abstraction, ADR-0022 §D2)"
+        let mut prod_sink = prod_sink;
+        pardosa_file::manifest::finalize_recovered_prefix(&recovered, &mut prod_sink)
+            .expect("finalize production runtime");
+        prod_sink.set_position(0);
+        let mut prod_reader = pardosa_file::Reader::open(prod_sink).expect("open finalized prod");
+        let prod_events: Vec<u64> = prod_reader
+            .iter_messages()
+            .map(|bytes| {
+                let bytes = bytes.expect("read production message");
+                let event: Event<u64> = from_bytes(&bytes).expect("decode production event");
+                *event.domain_event()
+            })
+            .collect();
+        assert_eq!(prod_events, reference_events);
+    }
+    #[test]
+    fn from_backend_for_open_recovers_footerless_torn_tail_after_multiple_syncs() {
+        use crate::store::{EventStore, PgnoBackend};
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("incremental.pgno");
+        {
+            let mut seed = EventStore::<P3aZeroSeedPayload>::create(&path).expect("create seed");
+            let _ = seed.writer().sync().expect("sync empty seed");
+        }
+        {
+            let mut store =
+                EventStore::<P3aZeroSeedPayload>::open_with_backend(PgnoBackend::open(&path))
+                    .expect("open pgno backend");
+            for event in 0..3u64 {
+                let _ = store
+                    .writer()
+                    .begin(P3aZeroSeedPayload(event))
+                    .expect("commit first batch");
+            }
+            let _ = store.writer().sync().expect("sync first batch");
+            for event in 3..8u64 {
+                let _ = store
+                    .writer()
+                    .begin(P3aZeroSeedPayload(event))
+                    .expect("commit second batch");
+            }
+            let _ = store.writer().sync().expect("sync second batch");
+        }
+        let mut manifest_os = path.as_os_str().to_os_string();
+        manifest_os.push(".pgix");
+        let manifest_path = std::path::PathBuf::from(manifest_os);
+        assert!(
+            manifest_path.exists(),
+            "FILE-mode incremental sync must create the same-directory .pgix manifest sidecar",
         );
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .expect("open for torn tail");
+            file.write_all(&[0xDE, 0xAD, 0xBE, 0xEF])
+                .expect("append torn tail bytes");
+        }
+        let direct_open = pardosa_file::Reader::open(
+            std::fs::File::open(&path).expect("open torn pgno for direct reader"),
+        );
+        assert!(
+            direct_open.is_err(),
+            "simulated footerless/torn-tail file must not open directly before recovery",
+        );
+        let _recovered =
+            EventStore::<P3aZeroSeedPayload>::open_with_backend(PgnoBackend::open(&path))
+                .expect("open should recover and finalize footerless prefix");
+        let mut reader = pardosa_file::Reader::open(
+            std::fs::File::open(&path).expect("open recovered pgno for direct reader"),
+        )
+        .expect("Reader::open after runtime recovery");
+        let decoded: Vec<u64> = reader
+            .iter_messages()
+            .map(|bytes| {
+                let bytes = bytes.expect("read recovered message");
+                let event: Event<P3aZeroSeedPayload> = from_bytes(&bytes).expect("decode event");
+                event.domain_event().0
+            })
+            .collect();
+        assert_eq!(decoded, (0..8u64).collect::<Vec<_>>());
     }
     #[test]
     #[ignore = "requires nats-server matching tools/.nats-server-version on PATH (mission g3-jetstream-schema-gate-exec)"]
