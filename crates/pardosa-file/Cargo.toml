@@ -32,6 +32,7 @@ zstd = ["dep:zstd"]
 test-support = []
 
 [dependencies]
+blake3 = { workspace = true }
 xxhash-rust = { workspace = true }
 zstd = { version = "0.13", default-features = false, optional = true }
 

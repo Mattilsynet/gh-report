@@ -79,6 +79,16 @@ pub enum RecoveryError {
         record_end: u64,
         data_end: u64,
     },
+    /// Version-2 manifest frontier does not match the rolling BLAKE3
+    /// chain recomputed over the raw `.pgno` body bytes. The per-body
+    /// checksums may still validate, but the committed ordered prefix
+    /// does not match the manifest's global commitment.
+    FrontierMismatch {
+        /// Frontier bytes stamped in the manifest footer.
+        expected: [u8; 32],
+        /// Frontier bytes recomputed from the `.pgno` body region.
+        computed: [u8; 32],
+    },
 }
 impl core::fmt::Display for RecoveryError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -132,6 +142,14 @@ impl core::fmt::Display for RecoveryError {
                     "manifest record {message_index} ends at {record_end} but data_end is {data_end}",
                 )
             }
+            Self::FrontierMismatch { expected, computed } => {
+                write!(
+                    f,
+                    "manifest frontier {} does not match recomputed prefix frontier {}",
+                    Hex32(expected),
+                    Hex32(computed),
+                )
+            }
         }
     }
 }
@@ -147,5 +165,14 @@ impl core::error::Error for RecoveryError {
 impl From<io::Error> for RecoveryError {
     fn from(e: io::Error) -> Self {
         Self::Io(e)
+    }
+}
+struct Hex32<'a>(&'a [u8; 32]);
+impl core::fmt::Display for Hex32<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for byte in self.0 {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
     }
 }

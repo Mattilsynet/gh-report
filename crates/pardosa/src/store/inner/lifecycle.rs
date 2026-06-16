@@ -57,6 +57,7 @@ fn clean_recovered_prefix(path: &Path) -> Result<(RecoveredPrefix, bool), crate:
             schema_source: reader.schema_source().map(str::to_owned),
             records,
             data_end,
+            frontier: None,
         },
         false,
     ))
@@ -895,6 +896,11 @@ mod tests {
         store
     }
 
+    fn lifecycle_frontier(path: &Path) -> [u8; 32] {
+        let store = EventStore::<TaggedPayload>::open(path).expect("open for frontier");
+        *store.inner.frontier().as_bytes()
+    }
+
     fn reopen_payloads(path: &Path) -> Vec<u64> {
         EventStore::<TaggedPayload>::open(path)
             .expect("open")
@@ -945,6 +951,26 @@ mod tests {
         let body = pardosa_file::format::messages_offset(schema_size);
         bytes[body] ^= 0xFF;
         std::fs::write(path, bytes).expect("write pgno");
+    }
+
+    fn rewrite_manifest_frontier(path: &Path, frontier: [u8; 32]) {
+        let manifest_path = manifest_path(path);
+        let snapshot = pardosa_file::manifest::parse_manifest(
+            &std::fs::read(&manifest_path).expect("read manifest"),
+        )
+        .expect("parse manifest");
+        let mut manifest = Vec::new();
+        pardosa_file::manifest::write_complete_manifest(
+            &mut manifest,
+            snapshot.schema_hash,
+            snapshot.page_class,
+            snapshot.schema_size,
+            &snapshot.records,
+            snapshot.data_end,
+            frontier,
+        )
+        .expect("rewrite manifest");
+        std::fs::write(manifest_path, manifest).expect("write manifest");
     }
 
     #[test]
@@ -1059,6 +1085,46 @@ mod tests {
         assert!(output.contains("truncated_bytes"));
         assert!(output.contains("last_durable_offset"));
         assert!(output.contains("manifest_message_count"));
+    }
+
+    #[test]
+    fn sync_stamps_current_dragline_frontier_in_pgix_manifest() {
+        let path = lifecycle_temp_path("manifest-frontier");
+        let _store = backend_backed_synced_store(&path);
+        let manifest = pardosa_file::manifest::parse_manifest(
+            &std::fs::read(manifest_path(&path)).expect("manifest bytes"),
+        )
+        .expect("manifest parses");
+        assert_eq!(manifest.frontier, Some(lifecycle_frontier(&path)));
+    }
+
+    #[test]
+    fn open_declines_frontier_mismatch_as_torn_write_recovery() {
+        let path = lifecycle_temp_path("frontier-mismatch");
+        let _store = backend_backed_synced_store(&path);
+        let mut wrong = lifecycle_frontier(&path);
+        wrong[0] ^= 0xFF;
+        rewrite_manifest_frontier(&path, wrong);
+        corrupt_footer_magic(&path);
+        let output = capture_tracing(|| {
+            let Err(err) = EventStore::<TaggedPayload>::open(&path) else {
+                panic!("frontier mismatch must decline recovery")
+            };
+            match err {
+                PardosaError::CursorRead { source } => match *source {
+                    crate::persist::Error::File(FileError::TornWriteRecovery { source }) => {
+                        assert!(matches!(
+                            *source,
+                            pardosa_file::manifest::RecoveryError::FrontierMismatch { .. }
+                        ));
+                    }
+                    other => panic!("expected TornWriteRecovery, got {other:?}"),
+                },
+                other => panic!("expected CursorRead, got {other:?}"),
+            }
+        });
+        assert_eq!(output.matches("pgno_recovery_declined").count(), 1);
+        assert!(output.contains("frontier"));
     }
 
     #[test]

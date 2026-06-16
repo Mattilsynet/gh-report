@@ -1,4 +1,6 @@
-use pardosa_file::manifest::{finalize_recovered_prefix, recover_footerless_prefix};
+use pardosa_file::manifest::{
+    finalize_recovered_prefix, parse_manifest, recover_footerless_prefix,
+};
 use pardosa_file::{AppendWriter, FileError, Reader};
 use std::io::Cursor;
 const KNOWN_HASH: u128 = 0x0F0E_0D0C_0B0A_0908_0706_0504_0302_0100;
@@ -114,4 +116,40 @@ fn recovery_does_not_accept_pgno_without_manifest() {
         ),
         "Reader::open must reject footerless prefix; got {direct_err:?}",
     );
+}
+#[test]
+fn accepted_prefix_frontier_matches_manifest_across_crash_schedules() {
+    let payloads: Vec<Vec<u8>> = (0..10u8)
+        .map(|i| (0..(3 + i)).map(|j| i.wrapping_mul(17) ^ j).collect())
+        .collect();
+    for sync_every in 1..=4 {
+        let mut data_sink: Vec<u8> = Vec::new();
+        let mut manifest_sink: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+        let mut synced = 0usize;
+        {
+            let mut w =
+                AppendWriter::new(&mut data_sink, KNOWN_HASH).with_manifest(&mut manifest_sink);
+            for (i, p) in payloads.iter().enumerate() {
+                w.append_message(p).expect("append");
+                if (i + 1) % sync_every == 0 {
+                    w.sync_data().expect("sync");
+                    synced = i + 1;
+                }
+            }
+        }
+        let manifest = parse_manifest(manifest_sink.get_ref()).expect("manifest parses");
+        let recovered = recover_footerless_prefix(&data_sink, manifest_sink.get_ref())
+            .expect("recover_footerless_prefix");
+        assert_eq!(recovered.records.len(), synced);
+        assert_eq!(recovered.frontier, manifest.frontier);
+        let mut cur = Cursor::new(data_sink);
+        finalize_recovered_prefix(&recovered, &mut cur).expect("finalize");
+        let finalized = cur.into_inner();
+        let mut reader = Reader::open(Cursor::new(&finalized)).expect("Reader::open");
+        let collected: Vec<Vec<u8>> = reader
+            .iter_messages()
+            .collect::<Result<_, _>>()
+            .expect("iter");
+        assert_eq!(collected, payloads[..synced]);
+    }
 }

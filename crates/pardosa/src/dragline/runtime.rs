@@ -543,7 +543,9 @@ where
             let bytes = to_vec(event);
             writer.append_message(&bytes)?;
         }
-        writer.sync_data().map_err(persist::Error::Io)?;
+        writer
+            .sync_data_with_frontier(*self.line.frontier().as_bytes())
+            .map_err(persist::Error::Io)?;
         let recovered = writer.recovered_prefix();
         *synced_events = events.len();
         *manifest_synced_records = recovered.records.len();

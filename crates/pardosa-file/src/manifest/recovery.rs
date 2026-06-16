@@ -36,6 +36,8 @@ pub struct RecoveredPrefix {
     /// recovered body. `finalize_recovered_prefix` writes the
     /// index + footer starting at this offset.
     pub data_end: u64,
+    /// Rolling BLAKE3 frontier carried by version-2 manifests.
+    pub frontier: Option<[u8; 32]>,
 }
 
 /// Reader failure class that admitted torn-tail recovery.
@@ -135,6 +137,7 @@ pub fn recover_footerless_prefix(
     let snap = parse_manifest(manifest_bytes).map_err(RecoveryError::Manifest)?;
     let schema_source = validate_pgno_header_and_extract_schema(pgno_bytes, &snap)?;
     let body_start = messages_offset(snap.schema_size) as u64;
+    let mut computed_frontier = super::GENESIS_FRONTIER;
     for (i, rec) in snap.records.iter().enumerate() {
         let i_u64 = i as u64;
         if rec.offset < body_start {
@@ -163,6 +166,15 @@ pub fn recover_footerless_prefix(
                 offset: rec.offset,
             });
         }
+        computed_frontier = super::roll_frontier(computed_frontier, body);
+    }
+    if let Some(expected) = snap.frontier
+        && expected != computed_frontier
+    {
+        return Err(RecoveryError::FrontierMismatch {
+            expected,
+            computed: computed_frontier,
+        });
     }
     Ok(RecoveredPrefix {
         schema_hash: snap.schema_hash,
@@ -171,6 +183,7 @@ pub fn recover_footerless_prefix(
         schema_source,
         records: snap.records,
         data_end: snap.data_end,
+        frontier: snap.frontier,
     })
 }
 fn validate_pgno_header_and_extract_schema(

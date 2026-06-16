@@ -49,7 +49,7 @@ impl<'w, M: crate::Syncable + std::io::Seek> IndexManifestWriter<'w, M> {
             + (self.synced_records as u64) * (super::MANIFEST_RECORD_SIZE as u64)
             + (super::MANIFEST_FOOTER_SIZE as u64)
     }
-    pub(crate) fn sync_data(&mut self, data_end: u64) -> io::Result<()> {
+    pub(crate) fn sync_data(&mut self, data_end: u64, frontier: [u8; 32]) -> io::Result<()> {
         if !self.header_synced {
             self.sink.seek(SeekFrom::Start(0))?;
             let header = encode_header(self.schema_hash, self.page_class, self.schema_size);
@@ -89,8 +89,9 @@ impl<'w, M: crate::Syncable + std::io::Seek> IndexManifestWriter<'w, M> {
             encode_record(r, &mut record_buf);
             hasher.update(&record_buf);
         }
+        hasher.update(&frontier);
         let checksum = hasher.digest();
-        let footer = encode_footer(message_count, data_end, checksum);
+        let footer = encode_footer(message_count, data_end, frontier, checksum);
         self.sink.write_all(&footer)?;
         let total_len = (super::MANIFEST_HEADER_SIZE as u64)
             + (self.records.len() as u64) * (super::MANIFEST_RECORD_SIZE as u64)

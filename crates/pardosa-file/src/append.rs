@@ -52,6 +52,7 @@ pub struct AppendWriter<'w, W: Syncable, M: Syncable + Seek = std::io::Cursor<Ve
     header_written: bool,
     index: Vec<StoredEntry>,
     options: WriterOptions,
+    frontier: [u8; 32],
     manifest: Option<IndexManifestWriter<'w, M>>,
 }
 impl<'w, W: Syncable> AppendWriter<'w, W> {
@@ -76,6 +77,7 @@ impl<'w, W: Syncable> AppendWriter<'w, W> {
             header_written: false,
             index: Vec::new(),
             options,
+            frontier: crate::manifest::GENESIS_FRONTIER,
             manifest: None,
         }
     }
@@ -128,6 +130,7 @@ impl<'w, W: Syncable> AppendWriter<'w, W> {
                 })
                 .collect(),
             options: WriterOptions::default(),
+            frontier: prefix.frontier.unwrap_or(crate::manifest::GENESIS_FRONTIER),
             manifest: None,
         }
     }
@@ -190,6 +193,7 @@ impl<'w, W: Syncable> AppendWriter<'w, W> {
             header_written: self.header_written,
             index: self.index,
             options: self.options,
+            frontier: self.frontier,
             manifest: Some(IndexManifestWriter::new_with_records(
                 manifest_sink,
                 self.schema_hash,
@@ -233,6 +237,7 @@ impl<W: Syncable, M: Syncable + Seek> AppendWriter<'_, W, M> {
         let offset = self.cursor;
         let checksum = xxh64(&stored, 0);
         self.sink.write_all(&stored).map_err(io_to_file)?;
+        self.frontier = crate::manifest::roll_frontier(self.frontier, &stored);
         self.cursor = self
             .cursor
             .checked_add(u64::from(size))
@@ -296,6 +301,7 @@ impl<W: Syncable, M: Syncable + Seek> AppendWriter<'_, W, M> {
                 })
                 .collect(),
             data_end: self.cursor,
+            frontier: Some(self.frontier),
         }
     }
     /// Fence durability of bytes written so far. Writes the lazy
@@ -312,13 +318,22 @@ impl<W: Syncable, M: Syncable + Seek> AppendWriter<'_, W, M> {
     /// Forwards [`io::Error`] from
     /// [`Syncable::sync_data`](crate::Syncable::sync_data).
     pub fn sync_data(&mut self) -> io::Result<()> {
+        self.sync_data_with_frontier(self.frontier)
+    }
+    /// Fence durability and stamp an explicit rolling frontier in the manifest.
+    ///
+    /// # Errors
+    ///
+    /// Forwards [`io::Error`] from [`Syncable::sync_data`](crate::Syncable::sync_data).
+    pub fn sync_data_with_frontier(&mut self, frontier: [u8; 32]) -> io::Result<()> {
         if !self.header_written {
             self.write_header().map_err(file_to_io)?;
         }
         <W as Syncable>::sync_data(self.sink)?;
         if let Some(m) = self.manifest.as_mut() {
-            m.sync_data(self.cursor)?;
+            m.sync_data(self.cursor, frontier)?;
         }
+        self.frontier = frontier;
         Ok(())
     }
     /// Write the index, footer, and footer checksum. Consumes

@@ -40,6 +40,7 @@ pub(crate) fn encode_record(r: &ManifestRecord, buf: &mut [u8; super::MANIFEST_R
 pub(crate) fn encode_footer(
     message_count: u64,
     data_end: u64,
+    frontier: [u8; 32],
     checksum: u64,
 ) -> [u8; super::MANIFEST_FOOTER_SIZE] {
     let mut buf = [0u8; super::MANIFEST_FOOTER_SIZE];
@@ -48,6 +49,8 @@ pub(crate) fn encode_footer(
         .copy_from_slice(&message_count.to_le_bytes());
     buf[super::MANIFEST_FOOTER_DATA_END_OFFSET..super::MANIFEST_FOOTER_DATA_END_OFFSET + 8]
         .copy_from_slice(&data_end.to_le_bytes());
+    buf[super::MANIFEST_FOOTER_FRONTIER_OFFSET..super::MANIFEST_FOOTER_FRONTIER_OFFSET + 32]
+        .copy_from_slice(&frontier);
     buf[super::MANIFEST_FOOTER_CHECKSUM_OFFSET..super::MANIFEST_FOOTER_CHECKSUM_OFFSET + 8]
         .copy_from_slice(&checksum.to_le_bytes());
     buf[super::MANIFEST_FOOTER_MAGIC_OFFSET..super::MANIFEST_FOOTER_MAGIC_OFFSET + 4]
