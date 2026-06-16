@@ -81,6 +81,27 @@ fn recover_footerless_pgno_at_path(path: &Path) -> Result<RecoveredPrefix, crate
     <std::fs::File as Syncable>::sync_data(&mut file).map_err(crate::persist::Error::Io)?;
     Ok(recovered)
 }
+fn can_attempt_manifest_recovery(open_error: &FileError) -> bool {
+    matches!(
+        open_error,
+        FileError::InvalidMagic
+            | FileError::InvalidIndex
+            | FileError::InvalidChecksum
+            | FileError::InvalidReserved
+    )
+}
+fn attempt_manifest_recovery_after_open_error(
+    path: &Path,
+    open_error: FileError,
+) -> Result<RecoveredPrefix, crate::persist::Error> {
+    if !can_attempt_manifest_recovery(&open_error) {
+        return Err(crate::persist::Error::File(open_error));
+    }
+    match recover_footerless_pgno_at_path(path) {
+        Ok(recovered) => Ok(recovered),
+        Err(_) => Err(crate::persist::Error::File(open_error)),
+    }
+}
 fn open_rw_seek_and_rehydrate_unchecked<T>(
     path: &Path,
 ) -> Result<
@@ -116,12 +137,13 @@ where
                     })?;
                 (dragline, recovered_prefix, manifest_already_synced)
             }
-            Err(crate::persist::Error::File(FileError::InvalidMagic | FileError::InvalidIndex)) => {
-                let recovered_prefix = recover_footerless_pgno_at_path(path).map_err(|e| {
-                    PardosaError::CursorRead {
+            Err(crate::persist::Error::File(open_error))
+                if can_attempt_manifest_recovery(&open_error) =>
+            {
+                let recovered_prefix = attempt_manifest_recovery_after_open_error(path, open_error)
+                    .map_err(|e| PardosaError::CursorRead {
                         source: Box::new(e),
-                    }
-                })?;
+                    })?;
                 file.seek(SeekFrom::Start(0))
                     .map_err(|e| PardosaError::CursorRead {
                         source: Box::new(crate::persist::Error::Io(e)),
@@ -162,10 +184,11 @@ where
         .map_err(|e| ValidatedReplayError::Replay(crate::persist::Error::Io(e)))?;
     let dragline = match crate::persist::rehydrate_validated::<T, _>(&mut file) {
         Ok(dragline) => dragline,
-        Err(ValidatedReplayError::Replay(crate::persist::Error::File(
-            FileError::InvalidMagic | FileError::InvalidIndex,
-        ))) => {
-            recover_footerless_pgno_at_path(path).map_err(ValidatedReplayError::Replay)?;
+        Err(ValidatedReplayError::Replay(crate::persist::Error::File(open_error)))
+            if can_attempt_manifest_recovery(&open_error) =>
+        {
+            attempt_manifest_recovery_after_open_error(path, open_error)
+                .map_err(ValidatedReplayError::Replay)?;
             file.seek(SeekFrom::Start(0))
                 .map_err(|e| ValidatedReplayError::Replay(crate::persist::Error::Io(e)))?;
             crate::persist::rehydrate_validated::<T, _>(&mut file)?
@@ -651,6 +674,7 @@ where
 mod tests {
     use super::*;
     use pardosa_schema::schema_hash_bytes;
+    use pardosa_wire::Validate;
     use pardosa_wire::{Decode, DecodeError, Decoder, Encode, EventSafe};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -672,6 +696,16 @@ mod tests {
             u64::decode(d).map(Self)
         }
     }
+    impl Validate for TaggedPayload {
+        type Error = core::convert::Infallible;
+
+        fn validate(&self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+    impl crate::typed::HasEventSchemaSource for TaggedPayload {
+        const EVENT_SCHEMA_SOURCE: Option<&'static str> = Some(Self::SCHEMA_SOURCE);
+    }
 
     fn frame(value: u64) -> Vec<u8> {
         pardosa_wire::to_vec(&Event::new_unchecked(
@@ -686,6 +720,91 @@ mod tests {
 
     fn backend_source(msg: &str) -> Box<dyn core::error::Error + Send + Sync + 'static> {
         Box::new(std::io::Error::other(msg))
+    }
+
+    fn lifecycle_temp_path(name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        path.push(format!("pardosa-lifecycle-{name}-{nanos}.pgno"));
+        path
+    }
+
+    fn manifest_path(path: &Path) -> PathBuf {
+        let mut os = path.as_os_str().to_os_string();
+        os.push(".pgix");
+        PathBuf::from(os)
+    }
+
+    fn backend_backed_synced_store(path: &Path) -> EventStore<TaggedPayload> {
+        {
+            let mut store = EventStore::<TaggedPayload>::create(path).expect("create");
+            let first = store.writer().begin(TaggedPayload(1)).expect("begin first");
+            let _second = store
+                .writer()
+                .append(first.fiber(), TaggedPayload(2))
+                .expect("append second");
+            let _lsn = store.writer().sync().expect("sync full pgno");
+        }
+        let mut store =
+            EventStore::<TaggedPayload>::open_with_backend(crate::store::PgnoBackend::open(path))
+                .expect("open backend-backed store");
+        let _lsn = store.writer().sync().expect("sync manifest");
+        store
+    }
+
+    fn reopen_payloads(path: &Path) -> Vec<u64> {
+        EventStore::<TaggedPayload>::open(path)
+            .expect("open")
+            .reader()
+            .fiber(crate::FiberId::from_decoded(0))
+            .iter()
+            .expect("history")
+            .map(|event| event.domain_event().0)
+            .collect()
+    }
+
+    fn reopen_validated_payloads(path: &Path) -> Vec<u64> {
+        EventStore::<TaggedPayload>::open_validated(path)
+            .expect("open_validated")
+            .reader()
+            .fiber(crate::FiberId::from_decoded(0))
+            .iter()
+            .expect("history")
+            .map(|event| event.domain_event().0)
+            .collect()
+    }
+
+    fn corrupt_footer_checksum(path: &Path) {
+        let mut bytes = std::fs::read(path).expect("read pgno");
+        let checksum = bytes
+            .len()
+            .checked_sub(pardosa_file::format::FILE_FOOTER_SIZE)
+            .and_then(|start| start.checked_add(pardosa_file::format::FOOTER_CHECKSUM_OFFSET))
+            .expect("footer checksum offset");
+        bytes[checksum] ^= 0xFF;
+        std::fs::write(path, bytes).expect("write pgno");
+    }
+
+    fn corrupt_footer_magic(path: &Path) {
+        let mut bytes = std::fs::read(path).expect("read pgno");
+        let magic = bytes
+            .len()
+            .checked_sub(pardosa_file::format::FILE_FOOTER_SIZE)
+            .and_then(|start| start.checked_add(pardosa_file::format::FOOTER_MAGIC_OFFSET))
+            .expect("footer magic offset");
+        bytes[magic] ^= 0xFF;
+        std::fs::write(path, bytes).expect("write pgno");
+    }
+
+    fn corrupt_first_body_byte(path: &Path) {
+        let mut bytes = std::fs::read(path).expect("read pgno");
+        let schema_size = u32::try_from(TaggedPayload::SCHEMA_SOURCE.len()).expect("schema size");
+        let body = pardosa_file::format::messages_offset(schema_size);
+        bytes[body] ^= 0xFF;
+        std::fs::write(path, bytes).expect("write pgno");
     }
 
     #[test]
@@ -727,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn footerless_recovery_failure_surfaces_typed_file_error() {
+    fn footerless_recovery_failure_preserves_original_open_error() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("broken.pgno");
         {
@@ -748,19 +867,51 @@ mod tests {
         let manifest_path = std::path::PathBuf::from(manifest_os);
         std::fs::write(&manifest_path, b"not a manifest").expect("write manifest bytes");
         let err = open_rw_seek_and_rehydrate_unchecked::<TaggedPayload>(&path)
-            .expect_err("bad footerless recovery must fail typed");
+            .expect_err("bad footerless recovery must fail");
         match err {
             PardosaError::CursorRead { source } => match *source {
-                crate::persist::Error::File(FileError::TornWriteRecovery { source }) => {
-                    match *source {
-                        pardosa_file::manifest::RecoveryError::Manifest(_) => {}
-                        other => panic!("expected manifest recovery source, got {other:?}"),
-                    }
-                }
-                other => panic!("expected typed FileError::TornWriteRecovery, got {other:?}"),
+                crate::persist::Error::File(FileError::InvalidMagic) => {}
+                other => panic!("expected original InvalidMagic, got {other:?}"),
             },
             other => panic!("expected CursorRead, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn open_recovers_invalid_checksum_torn_footer_from_manifest() {
+        let path = lifecycle_temp_path("invalid-checksum-tail");
+        let _store = backend_backed_synced_store(&path);
+        assert!(manifest_path(&path).exists());
+        corrupt_footer_checksum(&path);
+        assert_eq!(reopen_payloads(&path), vec![1, 2]);
+    }
+
+    #[test]
+    fn open_declines_durable_body_corruption_with_original_open_error() {
+        let path = lifecycle_temp_path("durable-body-corrupt");
+        let _store = backend_backed_synced_store(&path);
+        assert!(manifest_path(&path).exists());
+        corrupt_first_body_byte(&path);
+        corrupt_footer_magic(&path);
+        let Err(err) = EventStore::<TaggedPayload>::open(&path) else {
+            panic!("durable-region corruption must not recover")
+        };
+        match err {
+            PardosaError::CursorRead { source } => match *source {
+                crate::persist::Error::File(FileError::InvalidMagic) => {}
+                other => panic!("expected original InvalidMagic, got {other:?}"),
+            },
+            other => panic!("expected CursorRead, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_validated_recovers_invalid_checksum_torn_footer_from_manifest() {
+        let path = lifecycle_temp_path("validated-invalid-checksum-tail");
+        let _store = backend_backed_synced_store(&path);
+        assert!(manifest_path(&path).exists());
+        corrupt_footer_checksum(&path);
+        assert_eq!(reopen_validated_payloads(&path), vec![1, 2]);
     }
 
     #[test]
