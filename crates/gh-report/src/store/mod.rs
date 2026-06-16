@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use pardosa::store::{
     BackendError, BackendOp, Encode, Event, EventStore as PardosaStore, FiberId, FiberLookup,
     FiberState, GenomeSafe, JetStreamBackend, LiveFiber, PardosaError, PgnoBackend,
+    RecoveryOutcome,
 };
 use tokio::runtime::{Handle, RuntimeFlavor};
 
@@ -180,12 +181,14 @@ struct Inner<E> {
 pub struct NativeStore {
     inner: Mutex<Inner<DomainEvent>>,
     backend_reachable: AtomicBool,
+    last_recovery: Option<RecoveryOutcome>,
 }
 
 /// Pardosa-native org event store: one fiber per org identity.
 pub struct NativeOrgStore {
     inner: Mutex<Inner<OrgStateCaptured>>,
     backend_reachable: AtomicBool,
+    last_recovery: Option<RecoveryOutcome>,
 }
 
 impl NativeStore {
@@ -197,7 +200,7 @@ impl NativeStore {
     /// the backing container.
     pub fn create_pgno(path: &Path) -> Result<Self, StoreError> {
         let store = PardosaStore::<DomainEvent>::create(path).map_err(infra)?;
-        Ok(Self::from_store(store, false))
+        Ok(Self::from_store(store, false, None))
     }
 
     /// Open an existing `.pgno`-backed store, rehydrating its fibers.
@@ -209,7 +212,9 @@ impl NativeStore {
     pub fn open_pgno(path: &Path) -> Result<Self, StoreError> {
         let store = PardosaStore::<DomainEvent>::open_with_backend(PgnoBackend::open(path))
             .map_err(infra)?;
-        Ok(Self::from_store(store, false))
+        let last_recovery = store.last_recovery().cloned();
+        warn_pgno_recovery("repositories", path, last_recovery.as_ref());
+        Ok(Self::from_store(store, false, last_recovery))
     }
 
     /// Create a fresh JetStream-backed store.
@@ -226,7 +231,7 @@ impl NativeStore {
     /// `tokio::task::block_in_place`, which requires a multi-thread runtime.
     pub fn create_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
         let store = PardosaStore::<DomainEvent>::create_with_backend(backend).map_err(infra)?;
-        Ok(Self::from_store(store, true))
+        Ok(Self::from_store(store, true, None))
     }
 
     /// Open an existing JetStream-backed store, rehydrating its fibers.
@@ -242,14 +247,24 @@ impl NativeStore {
     /// [`Self::create_jetstream`].
     pub fn open_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
         let store = PardosaStore::<DomainEvent>::open_with_backend(backend).map_err(infra)?;
-        Ok(Self::from_store(store, true))
+        Ok(Self::from_store(store, true, None))
     }
 
-    fn from_store(store: PardosaStore<DomainEvent>, bridge_runtime: bool) -> Self {
+    fn from_store(
+        store: PardosaStore<DomainEvent>,
+        bridge_runtime: bool,
+        last_recovery: Option<RecoveryOutcome>,
+    ) -> Self {
         Self {
             inner: Mutex::new(inner(store, bridge_runtime)),
             backend_reachable: AtomicBool::new(true),
+            last_recovery,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn last_recovery(&self) -> Option<&RecoveryOutcome> {
+        self.last_recovery.as_ref()
     }
 
     #[must_use]
@@ -384,7 +399,7 @@ impl NativeOrgStore {
     /// the backing container.
     pub fn create_pgno(path: &Path) -> Result<Self, StoreError> {
         let store = PardosaStore::<OrgStateCaptured>::create(path).map_err(infra)?;
-        Ok(Self::from_store(store, false))
+        Ok(Self::from_store(store, false, None))
     }
 
     /// Open an existing `.pgno`-backed org store, rehydrating its fibers.
@@ -396,7 +411,9 @@ impl NativeOrgStore {
     pub fn open_pgno(path: &Path) -> Result<Self, StoreError> {
         let store = PardosaStore::<OrgStateCaptured>::open_with_backend(PgnoBackend::open(path))
             .map_err(infra)?;
-        Ok(Self::from_store(store, false))
+        let last_recovery = store.last_recovery().cloned();
+        warn_pgno_recovery("orgs", path, last_recovery.as_ref());
+        Ok(Self::from_store(store, false, last_recovery))
     }
 
     /// Create a fresh JetStream-backed org store.
@@ -413,7 +430,7 @@ impl NativeOrgStore {
     pub fn create_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
         let store =
             PardosaStore::<OrgStateCaptured>::create_with_backend(backend).map_err(infra)?;
-        Ok(Self::from_store(store, true))
+        Ok(Self::from_store(store, true, None))
     }
 
     /// Open an existing JetStream-backed org store, rehydrating its fibers.
@@ -429,14 +446,24 @@ impl NativeOrgStore {
     /// [`NativeStore::create_jetstream`].
     pub fn open_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
         let store = PardosaStore::<OrgStateCaptured>::open_with_backend(backend).map_err(infra)?;
-        Ok(Self::from_store(store, true))
+        Ok(Self::from_store(store, true, None))
     }
 
-    fn from_store(store: PardosaStore<OrgStateCaptured>, bridge_runtime: bool) -> Self {
+    fn from_store(
+        store: PardosaStore<OrgStateCaptured>,
+        bridge_runtime: bool,
+        last_recovery: Option<RecoveryOutcome>,
+    ) -> Self {
         Self {
             inner: Mutex::new(inner(store, bridge_runtime)),
             backend_reachable: AtomicBool::new(true),
+            last_recovery,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn last_recovery(&self) -> Option<&RecoveryOutcome> {
+        self.last_recovery.as_ref()
     }
 
     #[must_use]
@@ -489,6 +516,22 @@ fn inner<E>(store: PardosaStore<E>, bridge_runtime: bool) -> Inner<E> {
         store,
         live: HashMap::new(),
         bridge_runtime,
+    }
+}
+
+fn warn_pgno_recovery(store: &str, path: &Path, recovery: Option<&RecoveryOutcome>) {
+    if let Some(recovery) = recovery {
+        tracing::warn!(
+            event = "gh_report_pgno_recovery",
+            store,
+            path = %path.display(),
+            reader_error = recovery.reader_error.as_str(),
+            recovered_records = recovery.recovered_records,
+            truncated_bytes = recovery.truncated_bytes,
+            last_durable_offset = recovery.last_durable_offset,
+            manifest_message_count = recovery.manifest_message_count,
+            "gh-report opened recovered pgno store"
+        );
     }
 }
 
@@ -652,7 +695,111 @@ fn bridge<T>(bridge_runtime: bool, f: impl FnOnce() -> T) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
+    use tracing_subscriber::fmt::MakeWriter;
+
+    const SYNTHETIC_RECOVERY_RECORDS: u64 = 7;
+
+    #[derive(Clone, Default)]
+    struct VecWriter {
+        buf: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl VecWriter {
+        fn snapshot(&self) -> String {
+            String::from_utf8(self.buf.lock().expect("buffer mutex").clone()).expect("utf-8")
+        }
+    }
+
+    impl Write for VecWriter {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.buf
+                .lock()
+                .expect("buffer mutex")
+                .extend_from_slice(data);
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for VecWriter {
+        type Writer = VecWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture_tracing(f: impl FnOnce()) -> String {
+        let writer = VecWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_writer(writer.clone())
+            .with_ansi(false)
+            .with_target(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        writer.snapshot()
+    }
+
+    fn synthetic_domain_event(i: u64) -> DomainEvent {
+        let domain_key = format!("domain-{i}");
+        let repo_name = format!("repo-{i}");
+        DomainEvent::RepositoryStateCaptured {
+            domain_key: pardosa_schema::NonEmptyEventString::try_new(&domain_key)
+                .expect("domain key fits"),
+            repo_name: pardosa_schema::NonEmptyEventString::try_new(&repo_name)
+                .expect("repo name fits"),
+            timestamp: pardosa_schema::Timestamp::from_nanos(i + 1).expect("timestamp fits"),
+            evidence: None,
+        }
+    }
+
+    fn manifest_path(path: &Path) -> std::path::PathBuf {
+        let mut os = path.as_os_str().to_os_string();
+        os.push(".pgix");
+        std::path::PathBuf::from(os)
+    }
+
+    fn synthesize_torn_footer_store(path: &Path, records: u64) -> (u64, u64) {
+        {
+            let store = NativeStore::create_pgno(path).expect("create synthetic store");
+            for i in 0..records {
+                store
+                    .record(&format!("domain-{i}"), synthetic_domain_event(i))
+                    .expect("record synthetic event");
+            }
+        }
+        {
+            let mut store = PardosaStore::<DomainEvent>::open_with_backend(PgnoBackend::open(path))
+                .expect("open backend-backed synthetic store");
+            let _ = store.writer().sync().expect("sync synthetic manifest");
+        }
+        let manifest_path = manifest_path(path);
+        let manifest = pardosa_file::manifest::parse_manifest(
+            &std::fs::read(&manifest_path).expect("synthetic manifest bytes"),
+        )
+        .expect("synthetic manifest parses");
+        assert_eq!(
+            u64::try_from(manifest.records.len()).expect("manifest records fit"),
+            records
+        );
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(path)
+                .expect("open synthetic pgno for torn tail");
+            file.write_all(b"stale-footer-tail")
+                .expect("append torn synthetic tail");
+        }
+        let original_len = std::fs::metadata(path).expect("pgno metadata").len();
+        (manifest.data_end, original_len)
+    }
 
     fn backend_timeout(op: BackendOp) -> pardosa::store::replay::Error {
         pardosa::store::replay::Error::Io(std::io::Error::other(BackendError::Timeout {
@@ -735,6 +882,33 @@ mod tests {
         assert!(
             matches!(err, StoreError::TornWriteRecovery { .. }),
             "typed FileError::TornWriteRecovery must not be flattened to Infrastructure"
+        );
+    }
+
+    #[test]
+    fn synthetic_torn_footer_store_reports_recovery_outcome_and_gh_report_warn() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("events.pgno");
+        let (data_end, original_len) =
+            synthesize_torn_footer_store(&path, SYNTHETIC_RECOVERY_RECORDS);
+
+        let mut opened = None;
+        let output = capture_tracing(|| {
+            opened = Some(NativeStore::open_pgno(&path).expect("open recovered gh-report store"));
+        });
+        let store = opened.expect("store captured");
+        let recovery = store.last_recovery().expect("last recovery");
+
+        assert_eq!(output.matches("pgno_torn_tail_recovered").count(), 1);
+        assert_eq!(output.matches("gh_report_pgno_recovery").count(), 1);
+        assert_eq!(recovery.truncated_bytes, original_len - data_end);
+        assert!(recovery.truncated_bytes > 0);
+        assert_eq!(recovery.last_durable_offset, data_end);
+        assert_eq!(recovery.recovered_records, SYNTHETIC_RECOVERY_RECORDS);
+        assert_eq!(recovery.manifest_message_count, SYNTHETIC_RECOVERY_RECORDS);
+        assert_eq!(
+            u64::try_from(store.events().expect("events").len()).expect("event count fits"),
+            SYNTHETIC_RECOVERY_RECORDS
         );
     }
 }

@@ -37,6 +37,82 @@ pub struct RecoveredPrefix {
     /// index + footer starting at this offset.
     pub data_end: u64,
 }
+
+/// Reader failure class that admitted torn-tail recovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RecoveryReaderErrorKind {
+    /// `.pgno` reader saw invalid magic outside the durable region.
+    InvalidMagic,
+    /// `.pgno` reader saw invalid index bytes outside the durable region.
+    InvalidIndex,
+    /// `.pgno` reader saw invalid checksum outside the durable region.
+    InvalidChecksum,
+    /// `.pgno` reader saw non-zero reserved bytes outside the durable region.
+    InvalidReserved,
+}
+
+impl RecoveryReaderErrorKind {
+    /// Convert a reader [`FileError`] into an admitted recovery class.
+    #[must_use]
+    pub fn from_file_error(error: &FileError) -> Option<Self> {
+        match error {
+            FileError::InvalidMagic => Some(Self::InvalidMagic),
+            FileError::InvalidIndex => Some(Self::InvalidIndex),
+            FileError::InvalidChecksum => Some(Self::InvalidChecksum),
+            FileError::InvalidReserved => Some(Self::InvalidReserved),
+            _ => None,
+        }
+    }
+
+    /// Stable field value for structured recovery telemetry.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidMagic => "InvalidMagic",
+            Self::InvalidIndex => "InvalidIndex",
+            Self::InvalidChecksum => "InvalidChecksum",
+            Self::InvalidReserved => "InvalidReserved",
+        }
+    }
+}
+
+/// Successful torn-tail recovery data returned by the synchronous store facade.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RecoveryOutcome {
+    /// Reader failure class that triggered recovery admission.
+    pub reader_error: RecoveryReaderErrorKind,
+    /// Number of manifest records recovered into the finalized `.pgno`.
+    pub recovered_records: u64,
+    /// Number of trailing bytes discarded from the original `.pgno`.
+    pub truncated_bytes: u64,
+    /// Byte offset immediately after the last durable message body.
+    pub last_durable_offset: u64,
+    /// Message count declared by the manifest that authorized recovery.
+    pub manifest_message_count: u64,
+}
+
+impl RecoveryOutcome {
+    /// Construct successful torn-tail recovery data.
+    #[must_use]
+    pub fn new(
+        reader_error: RecoveryReaderErrorKind,
+        recovered_records: u64,
+        truncated_bytes: u64,
+        last_durable_offset: u64,
+        manifest_message_count: u64,
+    ) -> Self {
+        Self {
+            reader_error,
+            recovered_records,
+            truncated_bytes,
+            last_durable_offset,
+            manifest_message_count,
+        }
+    }
+}
+
 /// Recover the index of a footerless `.pgno` synced prefix from a
 /// companion manifest. Validates cross-file binding (schema hash,
 /// page class, schema size) and per-record xxh64 against body bytes.

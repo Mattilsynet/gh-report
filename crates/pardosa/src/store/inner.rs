@@ -1,7 +1,7 @@
 use super::{
     AppendReceipt, Decode, DetachReceipt, DetachedFiber, Encode, Event, EventId, FiberId,
     FiberState, Frontier, FrontierPublisher, GenomeSafe, Index, LiveFiber, Lsn, PardosaError, Path,
-    PathBuf, Precursor, Syncable, Validate, ValidatedReplayError,
+    PathBuf, Precursor, RecoveryOutcome, Syncable, Validate, ValidatedReplayError,
 };
 use crate::cursor::{Cursor, JournalCursor};
 use crate::dragline::Dragline;
@@ -44,6 +44,7 @@ pub struct EventStore<T, W: Syncable + Seek = std::fs::File> {
     inner: Dragline<T, W>,
     journal: PathBuf,
     schema_source: Option<&'static str>,
+    last_recovery: Option<RecoveryOutcome>,
 }
 impl<T, W> EventStore<T, W>
 where
@@ -57,6 +58,11 @@ where
             log: &self.inner,
             journal: &self.journal,
         }
+    }
+
+    #[must_use]
+    pub fn last_recovery(&self) -> Option<&RecoveryOutcome> {
+        self.last_recovery.as_ref()
     }
 }
 impl<T, W> EventStore<T, W>
@@ -515,6 +521,7 @@ mod fiber_index_integration_tests {
             inner,
             journal: PathBuf::from("/tmp/fiber_index_integration"),
             schema_source: None,
+            last_recovery: None,
         }
     }
     fn extract_mod3(e: &Event<u64>) -> std::iter::Once<u64> {

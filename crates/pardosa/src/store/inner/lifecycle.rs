@@ -9,7 +9,8 @@ use crate::dragline::Dragline;
 use crate::event::Event;
 use crate::frontier::Frontier;
 use pardosa_file::manifest::{
-    ManifestRecord, RecoveredPrefix, finalize_recovered_prefix, recover_footerless_prefix,
+    ManifestRecord, RecoveredPrefix, RecoveryOutcome, RecoveryReaderErrorKind,
+    finalize_recovered_prefix, recover_footerless_prefix,
 };
 use pardosa_file::{FileError, Reader, Syncable};
 use pardosa_wire::from_bytes;
@@ -60,12 +61,15 @@ fn clean_recovered_prefix(path: &Path) -> Result<(RecoveredPrefix, bool), crate:
         false,
     ))
 }
-fn recover_footerless_pgno_at_path(path: &Path) -> Result<RecoveredPrefix, crate::persist::Error> {
+fn recover_footerless_pgno_at_path(
+    path: &Path,
+) -> Result<(RecoveredPrefix, u64), crate::persist::Error> {
     let manifest_path = pgno_manifest_path(path);
     if !manifest_path.exists() {
         return Err(crate::persist::Error::File(FileError::InvalidIndex));
     }
     let pgno_bytes = std::fs::read(path).map_err(crate::persist::Error::Io)?;
+    let original_file_len = pgno_bytes.len() as u64;
     let manifest_bytes = std::fs::read(&manifest_path).map_err(crate::persist::Error::Io)?;
     let recovered = recover_footerless_prefix(&pgno_bytes, &manifest_bytes).map_err(|source| {
         crate::persist::Error::File(FileError::TornWriteRecovery {
@@ -79,8 +83,53 @@ fn recover_footerless_pgno_at_path(path: &Path) -> Result<RecoveredPrefix, crate
         .map_err(crate::persist::Error::Io)?;
     finalize_recovered_prefix(&recovered, &mut file).map_err(crate::persist::Error::File)?;
     <std::fs::File as Syncable>::sync_data(&mut file).map_err(crate::persist::Error::Io)?;
-    Ok(recovered)
+    Ok((recovered, original_file_len))
 }
+
+fn recovery_outcome(
+    open_error: &FileError,
+    recovered: &RecoveredPrefix,
+    original_file_len: u64,
+) -> Result<RecoveryOutcome, crate::persist::Error> {
+    let reader_error = RecoveryReaderErrorKind::from_file_error(open_error)
+        .ok_or(crate::persist::Error::File(FileError::InvalidIndex))?;
+    let recovered_records = u64::try_from(recovered.records.len())
+        .map_err(|_| crate::persist::Error::File(FileError::InvalidIndex))?;
+    let truncated_bytes = original_file_len.saturating_sub(recovered.data_end);
+    Ok(RecoveryOutcome::new(
+        reader_error,
+        recovered_records,
+        truncated_bytes,
+        recovered.data_end,
+        recovered_records,
+    ))
+}
+
+fn warn_recovered(path: &Path, outcome: &RecoveryOutcome) {
+    tracing::warn!(
+        event = "pgno_torn_tail_recovered",
+        path = %path.display(),
+        reader_error = outcome.reader_error.as_str(),
+        recovered_records = outcome.recovered_records,
+        truncated_bytes = outcome.truncated_bytes,
+        last_durable_offset = outcome.last_durable_offset,
+        manifest_message_count = outcome.manifest_message_count,
+        "pgno torn-tail recovered"
+    );
+}
+
+fn warn_declined(path: &Path, open_error: &FileError, cause: &crate::persist::Error) {
+    let reader_error = RecoveryReaderErrorKind::from_file_error(open_error)
+        .map_or("other", RecoveryReaderErrorKind::as_str);
+    tracing::warn!(
+        event = "pgno_recovery_declined",
+        path = %path.display(),
+        reader_error,
+        cause = %cause,
+        "pgno recovery declined"
+    );
+}
+
 fn can_attempt_manifest_recovery(open_error: &FileError) -> bool {
     matches!(
         open_error,
@@ -93,26 +142,47 @@ fn can_attempt_manifest_recovery(open_error: &FileError) -> bool {
 fn attempt_manifest_recovery_after_open_error(
     path: &Path,
     open_error: FileError,
-) -> Result<RecoveredPrefix, crate::persist::Error> {
+) -> Result<(RecoveredPrefix, RecoveryOutcome), crate::persist::Error> {
     if !can_attempt_manifest_recovery(&open_error) {
         return Err(crate::persist::Error::File(open_error));
     }
     match recover_footerless_pgno_at_path(path) {
-        Ok(recovered) => Ok(recovered),
-        Err(_) => Err(crate::persist::Error::File(open_error)),
+        Ok((recovered, original_file_len)) => {
+            let outcome = recovery_outcome(&open_error, &recovered, original_file_len)?;
+            warn_recovered(path, &outcome);
+            Ok((recovered, outcome))
+        }
+        Err(cause) => {
+            warn_declined(path, &open_error, &cause);
+            Err(crate::persist::Error::File(FileError::TornWriteRecovery {
+                source: Box::new(match cause {
+                    crate::persist::Error::File(FileError::TornWriteRecovery { source }) => *source,
+                    crate::persist::Error::File(e) => {
+                        pardosa_file::manifest::RecoveryError::Manifest(e)
+                    }
+                    crate::persist::Error::Io(e) => pardosa_file::manifest::RecoveryError::Io(e),
+                    _ => pardosa_file::manifest::RecoveryError::Manifest(FileError::InvalidIndex),
+                }),
+            }))
+        }
     }
 }
-fn open_rw_seek_and_rehydrate_unchecked<T>(
-    path: &Path,
-) -> Result<
-    (
-        std::fs::File,
-        crate::dragline::Line<T>,
-        RecoveredPrefix,
-        bool,
-    ),
-    PardosaError,
->
+
+type OpenUnchecked<T> = (
+    std::fs::File,
+    crate::dragline::Line<T>,
+    RecoveredPrefix,
+    bool,
+    Option<RecoveryOutcome>,
+);
+
+type OpenValidated<T> = (
+    std::fs::File,
+    crate::dragline::Line<T>,
+    Option<RecoveryOutcome>,
+);
+
+fn open_rw_seek_and_rehydrate_unchecked<T>(path: &Path) -> Result<OpenUnchecked<T>, PardosaError>
 where
     T: Decode + GenomeSafe,
 {
@@ -128,21 +198,23 @@ where
         .map_err(|e| PardosaError::CursorRead {
             source: Box::new(crate::persist::Error::Io(e)),
         })?;
-    let (dragline, recovered_prefix, manifest_already_synced) =
+    let (dragline, recovered_prefix, manifest_already_synced, recovery_outcome) =
         match crate::persist::rehydrate_unchecked::<T, _>(&mut file) {
             Ok(dragline) => {
                 let (recovered_prefix, manifest_already_synced) = clean_recovered_prefix(path)
                     .map_err(|e| PardosaError::CursorRead {
                         source: Box::new(e),
                     })?;
-                (dragline, recovered_prefix, manifest_already_synced)
+                (dragline, recovered_prefix, manifest_already_synced, None)
             }
             Err(crate::persist::Error::File(open_error))
                 if can_attempt_manifest_recovery(&open_error) =>
             {
-                let recovered_prefix = attempt_manifest_recovery_after_open_error(path, open_error)
-                    .map_err(|e| PardosaError::CursorRead {
-                        source: Box::new(e),
+                let (recovered_prefix, recovery_outcome) =
+                    attempt_manifest_recovery_after_open_error(path, open_error).map_err(|e| {
+                        PardosaError::CursorRead {
+                            source: Box::new(e),
+                        }
                     })?;
                 file.seek(SeekFrom::Start(0))
                     .map_err(|e| PardosaError::CursorRead {
@@ -154,7 +226,7 @@ where
                             source: Box::new(e),
                         }
                     })?;
-                (dragline, recovered_prefix, true)
+                (dragline, recovered_prefix, true, Some(recovery_outcome))
             }
             Err(e) => {
                 return Err(PardosaError::CursorRead {
@@ -166,11 +238,17 @@ where
         .map_err(|e| PardosaError::CursorRead {
             source: Box::new(crate::persist::Error::Io(e)),
         })?;
-    Ok((file, dragline, recovered_prefix, manifest_already_synced))
+    Ok((
+        file,
+        dragline,
+        recovered_prefix,
+        manifest_already_synced,
+        recovery_outcome,
+    ))
 }
 fn open_rw_seek_and_rehydrate_validated<T>(
     path: &Path,
-) -> Result<(std::fs::File, crate::dragline::Line<T>), ValidatedReplayError<<T as Validate>::Error>>
+) -> Result<OpenValidated<T>, ValidatedReplayError<<T as Validate>::Error>>
 where
     T: Decode + GenomeSafe + Validate,
 {
@@ -182,22 +260,26 @@ where
         .map_err(|e| ValidatedReplayError::Replay(crate::persist::Error::Io(e)))?;
     file.seek(SeekFrom::Start(0))
         .map_err(|e| ValidatedReplayError::Replay(crate::persist::Error::Io(e)))?;
-    let dragline = match crate::persist::rehydrate_validated::<T, _>(&mut file) {
-        Ok(dragline) => dragline,
+    let (dragline, last_recovery) = match crate::persist::rehydrate_validated::<T, _>(&mut file) {
+        Ok(dragline) => (dragline, None),
         Err(ValidatedReplayError::Replay(crate::persist::Error::File(open_error)))
             if can_attempt_manifest_recovery(&open_error) =>
         {
-            attempt_manifest_recovery_after_open_error(path, open_error)
-                .map_err(ValidatedReplayError::Replay)?;
+            let (_, recovery_outcome) =
+                attempt_manifest_recovery_after_open_error(path, open_error)
+                    .map_err(ValidatedReplayError::Replay)?;
             file.seek(SeekFrom::Start(0))
                 .map_err(|e| ValidatedReplayError::Replay(crate::persist::Error::Io(e)))?;
-            crate::persist::rehydrate_validated::<T, _>(&mut file)?
+            (
+                crate::persist::rehydrate_validated::<T, _>(&mut file)?,
+                Some(recovery_outcome),
+            )
         }
         Err(e) => return Err(e),
     };
     file.seek(SeekFrom::Start(0))
         .map_err(|e| ValidatedReplayError::Replay(crate::persist::Error::Io(e)))?;
-    Ok((file, dragline))
+    Ok((file, dragline, last_recovery))
 }
 fn persist_error_to_cursor_read(e: crate::persist::Error) -> PardosaError {
     PardosaError::CursorRead {
@@ -451,6 +533,7 @@ where
             inner,
             journal: path.to_path_buf(),
             schema_source,
+            last_recovery: None,
         })
     }
     /// Construct a fresh typed-backend `EventStore<T>` from an
@@ -492,6 +575,7 @@ where
                     inner,
                     journal: PathBuf::new(),
                     schema_source: <T as crate::typed::HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,
+                    last_recovery: None,
                 })
             }
             #[cfg(any(test, feature = "test-support"))]
@@ -535,12 +619,14 @@ where
                   the rehydrate pipeline has a single in-crate entry shape"
     )]
     pub(crate) fn open(path: &Path) -> Result<Self, PardosaError> {
-        let (file, dragline, _, _) = open_rw_seek_and_rehydrate_unchecked::<T>(path)?;
+        let (file, dragline, _, _, last_recovery) =
+            open_rw_seek_and_rehydrate_unchecked::<T>(path)?;
         let inner = Dragline::from_line_for_open(dragline, file);
         Ok(Self {
             inner,
             journal: path.to_path_buf(),
             schema_source: None,
+            last_recovery,
         })
     }
     /// Test-support variant of [`EventStore::open`]: same
@@ -552,12 +638,14 @@ where
     /// under the gate.
     #[cfg(any(test, feature = "test-support"))]
     pub fn open(path: &Path) -> Result<Self, PardosaError> {
-        let (file, dragline, _, _) = open_rw_seek_and_rehydrate_unchecked::<T>(path)?;
+        let (file, dragline, _, _, last_recovery) =
+            open_rw_seek_and_rehydrate_unchecked::<T>(path)?;
         let inner = Dragline::from_line_for_open(dragline, file);
         Ok(Self {
             inner,
             journal: path.to_path_buf(),
             schema_source: None,
+            last_recovery,
         })
     }
     /// Open the substrate identified by `backend` (ADR-0022 §D1 /
@@ -581,7 +669,7 @@ where
     pub fn open_with_backend<B: AuthoritativeBackend>(backend: B) -> Result<Self, PardosaError> {
         match admit_into_dispatch(backend) {
             BackendDispatch::Pgno(p) => {
-                let (file, dragline, recovered_prefix, manifest_already_synced) =
+                let (file, dragline, recovered_prefix, manifest_already_synced, last_recovery) =
                     open_rw_seek_and_rehydrate_unchecked::<T>(p.path())?;
                 let inner = Dragline::from_backend_for_open(
                     dragline,
@@ -594,6 +682,7 @@ where
                     inner,
                     journal: p.path().to_path_buf(),
                     schema_source: None,
+                    last_recovery,
                 })
             }
             BackendDispatch::JetStream(boxed_adapter) => {
@@ -615,6 +704,7 @@ where
                     inner,
                     journal: PathBuf::new(),
                     schema_source: None,
+                    last_recovery: None,
                 })
             }
             #[cfg(any(test, feature = "test-support"))]
@@ -653,7 +743,8 @@ where
         anchor_interval: u64,
         publisher: Box<dyn FrontierPublisher>,
     ) -> Result<Self, PardosaError> {
-        let (file, dragline, _, _) = open_rw_seek_and_rehydrate_unchecked::<T>(path)?;
+        let (file, dragline, _, _, last_recovery) =
+            open_rw_seek_and_rehydrate_unchecked::<T>(path)?;
         let inner = Dragline::with_line_and_publisher_path(
             dragline,
             file,
@@ -666,6 +757,7 @@ where
             inner,
             journal: path.to_path_buf(),
             schema_source: None,
+            last_recovery,
         })
     }
 }
@@ -676,6 +768,9 @@ mod tests {
     use pardosa_schema::schema_hash_bytes;
     use pardosa_wire::Validate;
     use pardosa_wire::{Decode, DecodeError, Decoder, Encode, EventSafe};
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::fmt::MakeWriter;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct TaggedPayload(u64);
@@ -730,6 +825,51 @@ mod tests {
             .as_nanos();
         path.push(format!("pardosa-lifecycle-{name}-{nanos}.pgno"));
         path
+    }
+
+    #[derive(Clone, Default)]
+    struct VecWriter {
+        buf: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl VecWriter {
+        fn snapshot(&self) -> String {
+            String::from_utf8(self.buf.lock().expect("buffer mutex").clone()).expect("utf-8")
+        }
+    }
+
+    impl Write for VecWriter {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.buf
+                .lock()
+                .expect("buffer mutex")
+                .extend_from_slice(data);
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for VecWriter {
+        type Writer = VecWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture_tracing(f: impl FnOnce()) -> String {
+        let writer = VecWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_writer(writer.clone())
+            .with_ansi(false)
+            .with_target(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        writer.snapshot()
     }
 
     fn manifest_path(path: &Path) -> PathBuf {
@@ -846,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn footerless_recovery_failure_preserves_original_open_error() {
+    fn footerless_recovery_failure_surfaces_torn_write_recovery() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("broken.pgno");
         {
@@ -870,8 +1010,8 @@ mod tests {
             .expect_err("bad footerless recovery must fail");
         match err {
             PardosaError::CursorRead { source } => match *source {
-                crate::persist::Error::File(FileError::InvalidMagic) => {}
-                other => panic!("expected original InvalidMagic, got {other:?}"),
+                crate::persist::Error::File(FileError::TornWriteRecovery { .. }) => {}
+                other => panic!("expected TornWriteRecovery, got {other:?}"),
             },
             other => panic!("expected CursorRead, got {other:?}"),
         }
@@ -887,22 +1027,63 @@ mod tests {
     }
 
     #[test]
+    fn open_reports_recovery_outcome_and_warn_for_torn_tail() {
+        let path = lifecycle_temp_path("recovery-outcome");
+        let _store = backend_backed_synced_store(&path);
+        let pgno_len = std::fs::metadata(&path).expect("pgno metadata").len();
+        let manifest = pardosa_file::manifest::parse_manifest(
+            &std::fs::read(manifest_path(&path)).expect("manifest bytes"),
+        )
+        .expect("manifest parses");
+        corrupt_footer_checksum(&path);
+
+        let output = capture_tracing(|| {
+            let store = EventStore::<TaggedPayload>::open(&path).expect("open recovers");
+            let recovery = store.last_recovery().expect("recovery outcome");
+            assert_eq!(
+                recovery.reader_error,
+                crate::store::RecoveryReaderErrorKind::InvalidChecksum,
+            );
+            assert_eq!(recovery.last_durable_offset, manifest.data_end);
+            assert_eq!(
+                recovery.manifest_message_count,
+                u64::try_from(manifest.records.len()).expect("manifest count fits u64"),
+            );
+            assert_eq!(recovery.truncated_bytes, pgno_len - manifest.data_end);
+            assert!(recovery.truncated_bytes > 0);
+        });
+
+        assert_eq!(output.matches("pgno_torn_tail_recovered").count(), 1);
+        assert!(output.contains("reader_error"));
+        assert!(output.contains("InvalidChecksum"));
+        assert!(output.contains("truncated_bytes"));
+        assert!(output.contains("last_durable_offset"));
+        assert!(output.contains("manifest_message_count"));
+    }
+
+    #[test]
     fn open_declines_durable_body_corruption_with_original_open_error() {
         let path = lifecycle_temp_path("durable-body-corrupt");
         let _store = backend_backed_synced_store(&path);
         assert!(manifest_path(&path).exists());
         corrupt_first_body_byte(&path);
         corrupt_footer_magic(&path);
-        let Err(err) = EventStore::<TaggedPayload>::open(&path) else {
-            panic!("durable-region corruption must not recover")
-        };
-        match err {
-            PardosaError::CursorRead { source } => match *source {
-                crate::persist::Error::File(FileError::InvalidMagic) => {}
-                other => panic!("expected original InvalidMagic, got {other:?}"),
-            },
-            other => panic!("expected CursorRead, got {other:?}"),
-        }
+        let output = capture_tracing(|| {
+            let Err(err) = EventStore::<TaggedPayload>::open(&path) else {
+                panic!("durable-region corruption must not recover")
+            };
+            match err {
+                PardosaError::CursorRead { source } => match *source {
+                    crate::persist::Error::File(FileError::TornWriteRecovery { .. }) => {}
+                    other => panic!("expected TornWriteRecovery, got {other:?}"),
+                },
+                other => panic!("expected CursorRead, got {other:?}"),
+            }
+        });
+        assert_eq!(output.matches("pgno_recovery_declined").count(), 1);
+        assert!(output.contains("reader_error"));
+        assert!(output.contains("InvalidMagic"));
+        assert!(output.contains("cause"));
     }
 
     #[test]
@@ -978,12 +1159,13 @@ where
     pub fn open_validated(
         path: &Path,
     ) -> Result<Self, ValidatedReplayError<<T as Validate>::Error>> {
-        let (file, dragline) = open_rw_seek_and_rehydrate_validated::<T>(path)?;
+        let (file, dragline, last_recovery) = open_rw_seek_and_rehydrate_validated::<T>(path)?;
         let inner = Dragline::from_line_for_open(dragline, file);
         Ok(Self {
             inner,
             journal: path.to_path_buf(),
             schema_source: None,
+            last_recovery,
         })
     }
 }

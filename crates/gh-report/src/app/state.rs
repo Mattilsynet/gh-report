@@ -31,6 +31,7 @@ use arc_swap::ArcSwap;
 use cherry_pit_core::ReadPort;
 use jiff::Timestamp;
 use pardosa::store::JetStreamBackend as PardosaJetStreamBackend;
+use pardosa::store::RecoveryOutcome;
 use pardosa_nats::{JetStreamBackend as SubstrateJetStreamBackend, JetStreamConfig, RuntimeHandle};
 use pardosa_schema::{NonEmptyEventString, Timestamp as EventTimestamp};
 
@@ -97,6 +98,7 @@ pub struct AppState {
     pub current_run: ArcSwap<Option<RunMetadata>>,
     /// Last successfully completed collection run.
     pub last_completed_run: ArcSwap<Option<RunMetadata>>,
+    pub(crate) last_recovery: ArcSwap<Option<LastRecoveryStatus>>,
     /// Work queue for the reactor. Webhook-triggered jobs are enqueued
     /// here and processed by the long-lived worker pool. Scheduled batch
     /// collection uses the same worker pool.
@@ -148,6 +150,31 @@ pub struct AppState {
     /// still race another against the same `store_dir`); this
     /// in-process lock guards the singleton `AppState` itself.
     pub sweep_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub(crate) struct LastRecoveryStatus {
+    at: Timestamp,
+    store: &'static str,
+    reader_error: &'static str,
+    recovered_records: u64,
+    truncated_bytes: u64,
+    last_durable_offset: u64,
+    manifest_message_count: u64,
+}
+
+impl LastRecoveryStatus {
+    fn from_outcome(store: &'static str, recovery: &RecoveryOutcome) -> Self {
+        Self {
+            at: Timestamp::now(),
+            store,
+            reader_error: recovery.reader_error.as_str(),
+            recovered_records: recovery.recovered_records,
+            truncated_bytes: recovery.truncated_bytes,
+            last_durable_offset: recovery.last_durable_offset,
+            manifest_message_count: recovery.manifest_message_count,
+        }
+    }
 }
 
 impl AppState {
@@ -571,6 +598,7 @@ impl AppState {
             owner_id: uuid::Uuid::now_v7(),
             current_run: ArcSwap::from_pointee(None),
             last_completed_run: ArcSwap::from_pointee(None),
+            last_recovery: ArcSwap::from_pointee(None),
             work_queue: Arc::new(WorkQueue::new(crate::config::WORK_QUEUE_CAPACITY)),
             worker_pool_started: tokio::sync::OnceCell::new(),
             worker_pool_cancel: WorkerShutdownToken::new(),
@@ -618,6 +646,14 @@ impl AppState {
             open_org_event_store_blocking(events_dir, backend, nats.org_events(), handle).await?;
         let event_store = Arc::new(event_store);
         let org_event_store = Arc::new(org_event_store);
+        let last_recovery = org_event_store
+            .last_recovery()
+            .map(|recovery| LastRecoveryStatus::from_outcome("orgs", recovery))
+            .or_else(|| {
+                event_store
+                    .last_recovery()
+                    .map(|recovery| LastRecoveryStatus::from_outcome("repositories", recovery))
+            });
         let projection_state = Arc::new(Mutex::new(projection_from_stores(
             event_store.as_ref(),
             org_event_store.as_ref(),
@@ -627,6 +663,7 @@ impl AppState {
             owner_id: uuid::Uuid::now_v7(),
             current_run: ArcSwap::from_pointee(None),
             last_completed_run: ArcSwap::from_pointee(None),
+            last_recovery: ArcSwap::from_pointee(last_recovery),
             work_queue: Arc::new(WorkQueue::new(crate::config::WORK_QUEUE_CAPACITY)),
             worker_pool_started: tokio::sync::OnceCell::new(),
             worker_pool_cancel: WorkerShutdownToken::new(),
@@ -846,6 +883,7 @@ impl AppStateBuilder {
             owner_id: uuid::Uuid::now_v7(),
             current_run: ArcSwap::from_pointee(None),
             last_completed_run: ArcSwap::from_pointee(None),
+            last_recovery: ArcSwap::from_pointee(None),
             work_queue: Arc::new(WorkQueue::new(crate::config::WORK_QUEUE_CAPACITY)),
             worker_pool_started: tokio::sync::OnceCell::new(),
             worker_pool_cancel: WorkerShutdownToken::new(),
@@ -1007,11 +1045,13 @@ impl AppState {
     pub(crate) fn status_payload(&self) -> serde_json::Value {
         let current = self.current_run.load();
         let last = self.last_completed_run.load();
+        let last_recovery = self.last_recovery.load();
         let uptime_duration = Timestamp::now().duration_since(self.started_at);
         let uptime = u64::try_from(uptime_duration.as_secs().max(0)).unwrap_or(0);
         serde_json::json!({
             "current_run": current.as_ref(),
             "last_completed_run": last.as_ref(),
+            "last_recovery": last_recovery.as_ref(),
             "uptime_secs": uptime,
         })
     }
@@ -1042,6 +1082,9 @@ mod tests {
     use crate::domain::cache::CachedRepoDetail;
     use crate::domain::evidence::Evidence;
     use crate::infra::server::state::ServerState;
+    use std::io::Write;
+
+    const SYNTHETIC_RECOVERY_RECORDS: u64 = 7;
 
     fn empty_org_summary() -> crate::domain::metrics::OrgAlertSummary {
         crate::domain::metrics::OrgAlertSummary {
@@ -1104,6 +1147,103 @@ mod tests {
         assert!(
             error.contains("connect") || error.contains("Connection") || error.contains("refused"),
             "dead-port Nats open should reach connect and surface it as io::Error, got: {error}"
+        );
+    }
+
+    fn synthetic_domain_event(i: u64) -> NativeDomainEvent {
+        let domain_key = format!("domain-{i}");
+        let repo_name = format!("repo-{i}");
+        NativeDomainEvent::RepositoryStateCaptured {
+            domain_key: NonEmptyEventString::try_new(&domain_key).expect("domain key fits"),
+            repo_name: NonEmptyEventString::try_new(&repo_name).expect("repo name fits"),
+            timestamp: EventTimestamp::from_nanos(i + 1).expect("timestamp fits"),
+            evidence: None,
+        }
+    }
+
+    fn synthesize_torn_footer_store(path: &Path, records: u64) -> u64 {
+        {
+            let store = EventStoreImpl::create_pgno(path).expect("create synthetic store");
+            for i in 0..records {
+                store
+                    .record(&format!("domain-{i}"), synthetic_domain_event(i))
+                    .expect("record synthetic event");
+            }
+        }
+        {
+            let mut store = pardosa::store::EventStore::<NativeDomainEvent>::open_with_backend(
+                pardosa::store::PgnoBackend::open(path),
+            )
+            .expect("open backend-backed synthetic store");
+            let _ = store.writer().sync().expect("sync synthetic manifest");
+        }
+        let mut os = path.as_os_str().to_os_string();
+        os.push(".pgix");
+        let manifest_path = PathBuf::from(os);
+        let manifest = pardosa_file::manifest::parse_manifest(
+            &std::fs::read(&manifest_path).expect("synthetic manifest bytes"),
+        )
+        .expect("synthetic manifest parses");
+        assert_eq!(
+            u64::try_from(manifest.records.len()).expect("manifest records fit"),
+            records
+        );
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(path)
+                .expect("open synthetic pgno for torn tail");
+            file.write_all(b"stale-footer-tail")
+                .expect("append torn synthetic tail");
+        }
+        manifest.data_end
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn status_payload_contains_last_recovery_after_recovered_open() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let projections_dir = dir.path().join("projections");
+        std::fs::create_dir_all(&events_dir).expect("events dir");
+        let path = events_dir.join("events.pgno");
+        let data_end = synthesize_torn_footer_store(&path, SYNTHETIC_RECOVERY_RECORDS);
+
+        let state = AppState::with_stores(
+            &events_dir,
+            projections_dir,
+            PardosaBackend::Pgno,
+            NatsStoreConfig::for_org("org", crate::config::runtime::DEFAULT_NATS_URL).unwrap(),
+        )
+        .await
+        .expect("with stores");
+        let payload = state.status_payload();
+        let last_recovery = payload
+            .get("last_recovery")
+            .and_then(serde_json::Value::as_object)
+            .expect("last_recovery object");
+
+        assert_eq!(
+            last_recovery.get("store"),
+            Some(&serde_json::json!("repositories"))
+        );
+        assert_eq!(
+            last_recovery.get("manifest_message_count"),
+            Some(&serde_json::json!(SYNTHETIC_RECOVERY_RECORDS))
+        );
+        assert_eq!(
+            last_recovery.get("recovered_records"),
+            Some(&serde_json::json!(SYNTHETIC_RECOVERY_RECORDS))
+        );
+        assert!(
+            last_recovery
+                .get("truncated_bytes")
+                .and_then(serde_json::Value::as_u64)
+                .is_some_and(|n| n > 0),
+            "last_recovery must report discarded tail bytes: {last_recovery:?}"
+        );
+        assert_eq!(
+            last_recovery.get("last_durable_offset"),
+            Some(&serde_json::json!(data_end))
         );
     }
 

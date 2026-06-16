@@ -48,6 +48,7 @@ assert_auto_traits! {
     std::io::Cursor < std::vec::Vec < u8 >>>, Writer <'static, std::io::Cursor <
     std::vec::Vec < u8 >>>, AppendWriter <'static, std::io::Cursor < std::vec::Vec < u8
     >>>, manifest::ManifestRecord, manifest::ManifestSnapshot, manifest::RecoveredPrefix,
-    manifest::RecoveryError, } SendOnly {} NotSend {}
+    manifest::RecoveryError, manifest::RecoveryOutcome, manifest::RecoveryReaderErrorKind, }
+    SendOnly {} NotSend {}
 }
 // AUTO-TRAIT-POLICY-END

@@ -72,7 +72,10 @@ pub(crate) mod snapshot;
 pub(crate) mod writer;
 pub use error::RecoveryError;
 pub use record::ManifestRecord;
-pub use recovery::{RecoveredPrefix, finalize_recovered_prefix, recover_footerless_prefix};
+pub use recovery::{
+    RecoveredPrefix, RecoveryOutcome, RecoveryReaderErrorKind, finalize_recovered_prefix,
+    recover_footerless_prefix,
+};
 pub use snapshot::{ManifestSnapshot, parse_manifest, write_complete_manifest};
 pub(crate) use writer::IndexManifestWriter;
 #[cfg(test)]

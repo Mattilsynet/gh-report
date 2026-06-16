@@ -12,6 +12,7 @@ pub use crate::store::{
     DetachReceipt, DetachedFiber, Encode, EnvelopeError, Event, EventId, EventStore, ExtractError,
     FiberHistory, FiberHistoryIter, FiberId, FiberIndex, FiberLookup, FiberState, Frontier,
     FrontierPublisher, GenomeSafe, HasEventSchemaSource, HistoryStream, Index, LineCursor,
-    LiveFiber, Lsn, PardosaError, Precursor, PublishError, StoreMetadata, StoreReader, StoreWriter,
-    Validate, ValidatedReplayError, migrate, replay,
+    LiveFiber, Lsn, PardosaError, Precursor, PublishError, RecoveryOutcome,
+    RecoveryReaderErrorKind, StoreMetadata, StoreReader, StoreWriter, Validate,
+    ValidatedReplayError, migrate, replay,
 };

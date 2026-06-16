@@ -266,6 +266,7 @@ pub use crate::persist::ValidatedReplayError;
 /// `pardosa::store` (ADR-0018 § Naming, ADR-0018 Amendment 1).
 pub use crate::typed::HasEventSchemaSource;
 use pardosa_file::Syncable;
+pub use pardosa_file::manifest::{RecoveryOutcome, RecoveryReaderErrorKind};
 pub use pardosa_schema::{Decode, Encode, GenomeSafe, Validate};
 use std::path::{Path, PathBuf};
 /// Adopter-facing replay surface (ADR-0018 § Naming).
