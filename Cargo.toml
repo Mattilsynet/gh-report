@@ -15,7 +15,6 @@ members = [
     "crates/pardosa",
     "crates/pardosa-derive",
     "crates/pardosa-file",
-    "crates/pardosa-cli",
     "crates/pardosa-nats",
     "crates/pardosa-schema",
     "crates/pardosa-wire",

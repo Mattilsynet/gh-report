@@ -6,13 +6,13 @@ global `~/.config/opencode/AGENTS.md` (auto-loaded) — not repeated here.
 
 ## What this repo is
 
-Rust workspace (edition 2024, MSRV 1.96, resolver 3, 21 crates) shipping three
+Rust workspace (edition 2024, MSRV 1.96, resolver 3, 20 crates) shipping three
 binaries plus an ADR-governed library family and a large ADR corpus.
 
 - Binaries (real entrypoints): `adr-fmt` (ADR validator, read-only),
   `adr-srv` (axum GraphQL service over an ADR-corpus projection),
   `gh-report` (GitHub org evidence collector + HTML reporter daemon).
-  `pardosa-cli` is a fourth bin; `comment-free` is a doc-lint tool.
+  `comment-free` is a doc-lint tool.
 - `cherry-pit-*` — event-sourcing substrate consumed by `gh-report`.
 - `pardosa*` — `.pgno` event-store substrate + a NATS/JetStream backend
   (`pardosa-nats`). `cherry-pit` does **not** depend on `pardosa` (severed per

@@ -117,7 +117,6 @@ crates = [
     "pardosa-schema",
     "pardosa-file",
     "pardosa-derive",
-    "pardosa-cli",
     "pardosa-nats",
     "pardosa-mint-private-tests",
     "pardosa-test-support-harness",

@@ -2253,21 +2253,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pardosa-cli"
-version = "0.1.0"
-dependencies = [
- "assert_cmd",
- "clap",
- "gh-report",
- "pardosa",
- "pardosa-schema",
- "proptest",
- "tempfile",
- "trybuild",
- "xxhash-rust",
-]
-
-[[package]]
 name = "pardosa-derive"
 version = "0.1.0"
 dependencies = [
