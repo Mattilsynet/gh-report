@@ -65,8 +65,9 @@ assert_auto_traits! {
     store::LiveFiber, store::DetachedFiber, store::AppendReceipt, store::DetachReceipt,
     migrate::MigrationReport < std::io::Cursor < std::vec::Vec < u8 >>>,
     migrate::MigrationError < std::io::Error >, store::LineCursor < u64 >,
-    store::StoreMetadata, store::CausalChainError, fiber_index::FiberIndex < u64 >,
-    fiber_index::FiberLookup < FiberId >, fiber_index::ExtractError, } SendOnly {
+    store::StoreMetadata, store::OfflineRecoveryPlan, store::OfflineRecoveryStatus,
+    store::CausalChainError, fiber_index::FiberIndex < u64 >, fiber_index::FiberLookup <
+    FiberId >, fiber_index::ExtractError, } SendOnly {
     store::inner::EventStore < u64, std::io::Cursor < std::vec::Vec < u8 >>>,
     store::inner::EventStore < u64, std::fs::File >, store::inner::StoreWriter <'static,
     u64, std::io::Cursor < std::vec::Vec < u8 >>>, store::FiberHistoryIter <'static, u64

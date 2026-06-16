@@ -2258,11 +2258,13 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
+ "gh-report",
  "pardosa",
  "pardosa-schema",
  "proptest",
  "tempfile",
  "trybuild",
+ "xxhash-rust",
 ]
 
 [[package]]

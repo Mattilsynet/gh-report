@@ -17,7 +17,9 @@ use pardosa::store::replay::{
 use pardosa::store::{
     AppendReceipt, CausalChain, Decode, DetachReceipt, DetachedFiber, Encode, EnvelopeError, Event,
     EventId, EventStore, FiberHistory, FiberId, FiberState, GenomeSafe, HasEventSchemaSource,
-    Index, LineCursor, LiveFiber, Lsn, PardosaError, Precursor, StoreReader, StoreWriter, Validate,
+    Index, LineCursor, LiveFiber, Lsn, OfflineRecoveryPlan, OfflineRecoveryStatus, PardosaError,
+    Precursor, RecoveryError, StoreReader, StoreWriter, Validate, plan_offline_pgno_recovery,
+    recover_offline_pgno,
 };
 use pardosa_schema::Timestamp;
 #[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
@@ -136,4 +138,19 @@ fn open_validated_does_not_require_encode<T: Decode + GenomeSafe + Validate>() {
     type OpenValidatedFn<T> =
         fn(&std::path::Path) -> Result<EventStore<T>, ValidatedReplayError<<T as Validate>::Error>>;
     type_witness::<OpenValidatedFn<T>>(EventStore::<T>::open_validated);
+}
+
+fn offline_recovery_surface_is_reachable(
+    path: &std::path::Path,
+    _plan: &OfflineRecoveryPlan,
+    _status: OfflineRecoveryStatus,
+    _err: &RecoveryError,
+) {
+    type_witness::<fn(&std::path::Path) -> Result<OfflineRecoveryPlan, PardosaError>>(
+        plan_offline_pgno_recovery,
+    );
+    type_witness::<fn(&std::path::Path) -> Result<pardosa::store::RecoveryOutcome, PardosaError>>(
+        recover_offline_pgno,
+    );
+    let _ = path;
 }

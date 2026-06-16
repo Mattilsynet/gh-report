@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- breaking? N — pardosa adds offline `.pgno` recovery planning and destructive recovery entry points on the synchronous `pardosa::store` facade; `pardosa-cli recover` uses them for `--dry-run` triage and `--force` truncate/re-seal without adding a direct `pardosa-file` dependency. Mission bead: adr-fmt-0l2k2. Rules: PGN-0008:R1, PGN-0017:R6/R9.
 - breaking? Y — pardosa-file bumps the `.pgix` manifest wire format from version 1 to 2, adding a footer-stamped raw `[u8; 32]` rolling unkeyed BLAKE3 frontier covered by the manifest checksum; readers still open v1 frontier-absent manifests with the PGN-0017:R10 checksum-only fallback, and `.pgno` FORMAT_VERSION / footer / index bytes remain unchanged. Mission bead: adr-fmt-geqi5.
 - breaking? N — pardosa adds `RecoveryOutcome` / `RecoveryReaderErrorKind` as typed successful torn-tail recovery data on the synchronous store facade, keeps `EventStore::open` and `open_with_backend` signatures unchanged, and keeps failure as `FileError::TornWriteRecovery { source: Box<RecoveryError> }` per PGN-0017:R8/R9. Mission bead: adr-fmt-tmb6l.
 - breaking? Y — pardosa removes `Box<T>` / `Arc<T>` event-eligibility impls from the GenomeSafe/EventSafe vocabulary while keeping their codec Encode/Decode infrastructure; the public payload-type surface narrows under the PGN-0013:R8/R1 closed bounded-field-type amendment, but gh-report's golden SCHEMA_HASH stayed byte-identical. Mission bead: adr-fmt-u9laf.

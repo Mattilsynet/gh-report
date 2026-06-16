@@ -9,12 +9,12 @@ use crate::dragline::Dragline;
 use crate::event::Event;
 use crate::frontier::Frontier;
 use pardosa_file::manifest::{
-    ManifestRecord, RecoveredPrefix, RecoveryOutcome, RecoveryReaderErrorKind,
+    ManifestRecord, RecoveredPrefix, RecoveryError, RecoveryOutcome, RecoveryReaderErrorKind,
     finalize_recovered_prefix, recover_footerless_prefix,
 };
 use pardosa_file::{FileError, Reader, Syncable};
 use pardosa_wire::from_bytes;
-use std::io::Seek;
+use std::io::{Cursor, Seek};
 fn pgno_manifest_path(path: &Path) -> PathBuf {
     let mut os = path.as_os_str().to_os_string();
     os.push(".pgix");
@@ -85,6 +85,130 @@ fn recover_footerless_pgno_at_path(
     finalize_recovered_prefix(&recovered, &mut file).map_err(crate::persist::Error::File)?;
     <std::fs::File as Syncable>::sync_data(&mut file).map_err(crate::persist::Error::Io)?;
     Ok((recovered, original_file_len))
+}
+
+/// Read-only plan for an offline `.pgno` recovery attempt.
+///
+/// The plan is produced by the same manifest recovery core used by
+/// [`recover_offline_pgno`]. It does not open the `.pgno` for writing
+/// and does not finalize or truncate the file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct OfflineRecoveryPlan {
+    pub schema_hash: u128,
+    pub manifest_message_count: u64,
+    pub records_preserved: u64,
+    pub data_end: u64,
+    pub file_len: u64,
+    pub truncated_bytes: u64,
+    pub footer_valid: bool,
+    pub status: OfflineRecoveryStatus,
+}
+
+/// Footer/read status observed before offline recovery is attempted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OfflineRecoveryStatus {
+    Recoverable {
+        reader_error: RecoveryReaderErrorKind,
+    },
+    AlreadySealed,
+}
+
+fn recovery_declined(source: RecoveryError) -> PardosaError {
+    PardosaError::CursorRead {
+        source: Box::new(crate::persist::Error::File(FileError::TornWriteRecovery {
+            source: Box::new(source),
+        })),
+    }
+}
+
+fn reader_recovery_status(pgno_bytes: &[u8]) -> Result<OfflineRecoveryStatus, PardosaError> {
+    match Reader::open(Cursor::new(pgno_bytes)) {
+        Ok(_) => Ok(OfflineRecoveryStatus::AlreadySealed),
+        Err(err) => RecoveryReaderErrorKind::from_file_error(&err)
+            .map(|reader_error| OfflineRecoveryStatus::Recoverable { reader_error })
+            .ok_or_else(|| {
+                persist_error_to_cursor_read(crate::persist::Error::File(
+                    FileError::TornWriteRecovery {
+                        source: Box::new(RecoveryError::Manifest(err)),
+                    },
+                ))
+            }),
+    }
+}
+
+/// Compute the offline `.pgno` recovery plan without mutating `path`.
+///
+/// # Errors
+///
+/// Returns [`PardosaError::CursorRead`] when the companion `.pgix`
+/// manifest is absent or when the existing recovery core declines the
+/// prefix, including durable-region body checksum mismatches and
+/// manifest frontier mismatches.
+pub fn plan_offline_pgno_recovery(path: &Path) -> Result<OfflineRecoveryPlan, PardosaError> {
+    let manifest_path = pgno_manifest_path(path);
+    if !manifest_path.exists() {
+        return Err(persist_error_to_cursor_read(crate::persist::Error::File(
+            FileError::TornWriteRecovery {
+                source: Box::new(RecoveryError::Manifest(FileError::InvalidIndex)),
+            },
+        )));
+    }
+    let pgno_bytes = std::fs::read(path).map_err(|source| PardosaError::CursorJournalOpen {
+        source: Box::new(source),
+    })?;
+    let file_len = pgno_bytes.len() as u64;
+    let status = reader_recovery_status(&pgno_bytes)?;
+    let manifest_bytes = std::fs::read(manifest_path)
+        .map_err(|source| persist_error_to_cursor_read(crate::persist::Error::Io(source)))?;
+    let recovered =
+        recover_footerless_prefix(&pgno_bytes, &manifest_bytes).map_err(recovery_declined)?;
+    let records_preserved = u64::try_from(recovered.records.len()).map_err(|_| {
+        persist_error_to_cursor_read(crate::persist::Error::File(FileError::InvalidIndex))
+    })?;
+    Ok(OfflineRecoveryPlan {
+        schema_hash: recovered.schema_hash,
+        manifest_message_count: records_preserved,
+        records_preserved,
+        data_end: recovered.data_end,
+        file_len,
+        truncated_bytes: file_len.saturating_sub(recovered.data_end),
+        footer_valid: matches!(status, OfflineRecoveryStatus::AlreadySealed),
+        status,
+    })
+}
+
+/// Destructively truncate and re-seal an offline `.pgno` via the recovery core.
+///
+/// # Errors
+///
+/// Returns [`PardosaError::CursorRead`] when `path` is already sealed,
+/// when its companion manifest is absent, or when the manifest recovery
+/// core declines the prefix. Declines preserve the original `.pgno`
+/// bytes and include durable-region checksum failures and frontier
+/// mismatches.
+pub fn recover_offline_pgno(path: &Path) -> Result<RecoveryOutcome, PardosaError> {
+    let plan = plan_offline_pgno_recovery(path)?;
+    let OfflineRecoveryStatus::Recoverable { reader_error } = plan.status else {
+        return Err(persist_error_to_cursor_read(crate::persist::Error::File(
+            FileError::TornWriteRecovery {
+                source: Box::new(RecoveryError::Manifest(FileError::InvalidIndex)),
+            },
+        )));
+    };
+    let (recovered, original_file_len) =
+        recover_footerless_pgno_at_path(path).map_err(persist_error_to_cursor_read)?;
+    let recovered_records = u64::try_from(recovered.records.len()).map_err(|_| {
+        persist_error_to_cursor_read(crate::persist::Error::File(FileError::InvalidIndex))
+    })?;
+    Ok(RecoveryOutcome::new(
+        reader_error,
+        recovered_records,
+        original_file_len.saturating_sub(recovered.data_end),
+        recovered.data_end,
+        plan.manifest_message_count,
+    ))
 }
 
 fn recovery_outcome(

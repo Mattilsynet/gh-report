@@ -266,7 +266,7 @@ pub use crate::persist::ValidatedReplayError;
 /// `pardosa::store` (ADR-0018 § Naming, ADR-0018 Amendment 1).
 pub use crate::typed::HasEventSchemaSource;
 use pardosa_file::Syncable;
-pub use pardosa_file::manifest::{RecoveryOutcome, RecoveryReaderErrorKind};
+pub use pardosa_file::manifest::{RecoveryError, RecoveryOutcome, RecoveryReaderErrorKind};
 pub use pardosa_schema::{Decode, Encode, GenomeSafe, Validate};
 use std::path::{Path, PathBuf};
 /// Adopter-facing replay surface (ADR-0018 § Naming).
@@ -365,7 +365,8 @@ pub type CausalChain<'a, T> = inner::CausalChain<'a, T, std::fs::File>;
 /// single-path (ADR-0018 § Naming, Amendment 1).
 pub use inner::{
     CausalChainError, CausalChainIter, CausalChainStrictIter, FiberHistoryIter, HistoryStream,
-    LineCursor, StoreMetadata,
+    LineCursor, OfflineRecoveryPlan, OfflineRecoveryStatus, StoreMetadata,
+    plan_offline_pgno_recovery, recover_offline_pgno,
 };
 /// Generic-`W` shapes retained for the in-memory test substrate
 /// (ADR-0018 § Naming permits sealing the generic form). Adopters

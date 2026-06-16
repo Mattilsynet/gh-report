@@ -26,9 +26,11 @@ clap = { workspace = true }
 tempfile = { workspace = true }
 
 [dev-dependencies]
+gh-report = { path = "../gh-report", version = "=0.1.0" }
 pardosa = { path = "../pardosa", version = "=0.4.0", features = ["test-support"] }
 pardosa-schema = { path = "../pardosa-schema", version = "=0.1.0" }
 trybuild = { workspace = true }
 proptest = { workspace = true }
 assert_cmd = { workspace = true }
 tempfile = { workspace = true }
+xxhash-rust = { workspace = true }

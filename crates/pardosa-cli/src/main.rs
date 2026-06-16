@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 use clap::{Parser, Subcommand, ValueEnum};
-use pardosa::store::{EventStore, PgnoBackend};
+use pardosa::store::{
+    EventStore, OfflineRecoveryStatus, PgnoBackend, plan_offline_pgno_recovery,
+    recover_offline_pgno,
+};
 use pardosa_cli::DomainEvent;
 use pardosa_cli::event::limits::{
     MAX_BATCH_ID, MAX_DOMAIN_KEY, MAX_ERROR_MESSAGE, MAX_EVIDENCE, MAX_ORG, MAX_REPO_NAME,
@@ -85,6 +88,16 @@ enum Cmd {
     },
     Inspect {
         path: PathBuf,
+    },
+    /// Plan or execute offline `.pgno` truncate recovery.
+    Recover {
+        path: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 }
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -186,6 +199,12 @@ fn run(cli: Cli) -> Result<(), String> {
         }
         Cmd::Read { path, from, limit } => cmd_read(&path, from, limit),
         Cmd::Inspect { path } => cmd_inspect(&path),
+        Cmd::Recover {
+            path,
+            dry_run,
+            force,
+            out,
+        } => cmd_recover(&path, dry_run, force, out.as_deref()),
     }
 }
 fn append_event(store_path: &Path, event: DomainEvent) -> Result<(), String> {
@@ -242,6 +261,78 @@ fn cmd_inspect(path: &Path) -> Result<(), String> {
          StoreMetadata in a follow-up if required."
     );
     Ok(())
+}
+fn cmd_recover(path: &Path, dry_run: bool, force: bool, out: Option<&Path>) -> Result<(), String> {
+    if dry_run {
+        let plan =
+            plan_offline_pgno_recovery(path).map_err(|e| format!("recovery declined: {e:?}"))?;
+        print_recovery_plan(&plan, false);
+        return Ok(());
+    }
+    if !force {
+        return Err(
+            "recover is destructive; rerun with --dry-run to inspect or --force to mutate"
+                .to_string(),
+        );
+    }
+    let target = if let Some(out) = out {
+        copy_recovery_inputs(path, out)?;
+        out
+    } else {
+        path
+    };
+    let outcome = recover_offline_pgno(target).map_err(|e| format!("recovery declined: {e:?}"))?;
+    println!("mode = recover");
+    println!("would_write = true");
+    println!("target = {}", target.display());
+    println!("reader_error = {}", outcome.reader_error.as_str());
+    println!("recovered_records = {}", outcome.recovered_records);
+    println!("truncated_bytes = {}", outcome.truncated_bytes);
+    println!("last_durable_offset = {}", outcome.last_durable_offset);
+    println!(
+        "manifest_message_count = {}",
+        outcome.manifest_message_count
+    );
+    Ok(())
+}
+fn print_recovery_plan(plan: &pardosa::store::OfflineRecoveryPlan, would_write: bool) {
+    println!("mode = dry-run");
+    println!("would_write = {would_write}");
+    println!("schema_hash = 0x{:032X}", plan.schema_hash);
+    println!("manifest_message_count = {}", plan.manifest_message_count);
+    println!("records_preserved = {}", plan.records_preserved);
+    println!("data_end = {}", plan.data_end);
+    println!("file_len = {}", plan.file_len);
+    println!("truncated_bytes = {}", plan.truncated_bytes);
+    println!("footer_valid = {}", plan.footer_valid);
+    match plan.status {
+        OfflineRecoveryStatus::Recoverable { reader_error } => {
+            println!("reader_error = {}", reader_error.as_str());
+        }
+        OfflineRecoveryStatus::AlreadySealed => println!("reader_error = none"),
+        _ => println!("reader_error = unknown"),
+    }
+    println!("body_checksum_status = ok");
+    println!("frontier_status = ok");
+}
+fn copy_recovery_inputs(path: &Path, out: &Path) -> Result<(), String> {
+    std::fs::copy(path, out)
+        .map_err(|e| format!("copy {} -> {}: {e}", path.display(), out.display()))?;
+    let manifest = pgix_path(path);
+    let out_manifest = pgix_path(out);
+    std::fs::copy(&manifest, &out_manifest).map_err(|e| {
+        format!(
+            "copy {} -> {}: {e}",
+            manifest.display(),
+            out_manifest.display()
+        )
+    })?;
+    Ok(())
+}
+fn pgix_path(path: &Path) -> PathBuf {
+    let mut os = path.as_os_str().to_os_string();
+    os.push(".pgix");
+    PathBuf::from(os)
 }
 fn to_nes<const MAX: usize>(s: &str, field: &str) -> Result<NonEmptyEventString<MAX>, String> {
     NonEmptyEventString::<MAX>::try_new(s)

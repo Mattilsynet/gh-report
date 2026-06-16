@@ -11,7 +11,10 @@ mod history;
 mod lifecycle;
 pub use causal::{CausalChain, CausalChainError, CausalChainIter, CausalChainStrictIter};
 pub use history::{FiberHistory, FiberHistoryIter, HistoryStream};
-pub use lifecycle::StoreMetadata;
+pub use lifecycle::{
+    OfflineRecoveryPlan, OfflineRecoveryStatus, StoreMetadata, plan_offline_pgno_recovery,
+    recover_offline_pgno,
+};
 /// Adopter-facing typed event-log appliance (ADR-0018 §D1).
 ///
 /// Adopter form is path-backed `EventStore<T>` (`W = File`) via
