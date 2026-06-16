@@ -923,15 +923,35 @@ mod tests {
             .collect()
     }
 
-    fn corrupt_footer_checksum(path: &Path) {
-        let mut bytes = std::fs::read(path).expect("read pgno");
-        let checksum = bytes
-            .len()
-            .checked_sub(pardosa_file::format::FILE_FOOTER_SIZE)
-            .and_then(|start| start.checked_add(pardosa_file::format::FOOTER_CHECKSUM_OFFSET))
-            .expect("footer checksum offset");
-        bytes[checksum] ^= 0xFF;
-        std::fs::write(path, bytes).expect("write pgno");
+    fn reopen_seed_plus_resumed_payloads(path: &Path, direct_seed_count: u64) -> Vec<u64> {
+        let store = EventStore::<TaggedPayload>::open(path).expect("open");
+        let mut payloads: Vec<u64> = store
+            .reader()
+            .fiber(crate::FiberId::from_decoded(0))
+            .iter()
+            .expect("seed history")
+            .map(|event| event.domain_event().0)
+            .collect();
+        for fiber_id in 1.. {
+            let reader = store.reader();
+            let history = reader.fiber(crate::FiberId::from_decoded(fiber_id)).iter();
+            let next: Vec<u64> = match history {
+                Ok(iter) => iter,
+                Err(PardosaError::FiberNotFound(_)) => break,
+                Err(err) => panic!("resumed history: {err}"),
+            }
+            .map(|event| event.domain_event().0)
+            .collect();
+            if next.is_empty() {
+                break;
+            }
+            payloads.extend(next);
+        }
+        assert_eq!(
+            &payloads[..usize::try_from(direct_seed_count).expect("seed count")],
+            &(1..=direct_seed_count).collect::<Vec<_>>()
+        );
+        payloads
     }
 
     fn corrupt_footer_magic(path: &Path) {
@@ -943,6 +963,33 @@ mod tests {
             .expect("footer magic offset");
         bytes[magic] ^= 0xFF;
         std::fs::write(path, bytes).expect("write pgno");
+    }
+
+    fn append_reader_invalid_checksum_tail(path: &Path) {
+        let manifest = pardosa_file::manifest::parse_manifest(
+            &std::fs::read(manifest_path(path)).expect("manifest bytes"),
+        )
+        .expect("manifest parses");
+        let mut tail = [0u8; pardosa_file::format::FILE_FOOTER_SIZE];
+        tail[pardosa_file::format::FOOTER_INDEX_OFFSET
+            ..pardosa_file::format::FOOTER_INDEX_OFFSET + 8]
+            .copy_from_slice(&manifest.data_end.to_le_bytes());
+        tail[pardosa_file::format::FOOTER_MESSAGE_COUNT_OFFSET
+            ..pardosa_file::format::FOOTER_MESSAGE_COUNT_OFFSET + 8]
+            .copy_from_slice(
+                &u64::try_from(manifest.records.len())
+                    .expect("manifest count")
+                    .to_le_bytes(),
+            );
+        tail[pardosa_file::format::FOOTER_MAGIC_OFFSET
+            ..pardosa_file::format::FOOTER_MAGIC_OFFSET + 4]
+            .copy_from_slice(&pardosa_file::format::MAGIC);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .expect("open pgno append")
+            .write_all(&tail)
+            .expect("append checksum-invalid tail");
     }
 
     fn corrupt_first_body_byte(path: &Path) {
@@ -971,6 +1018,15 @@ mod tests {
         )
         .expect("rewrite manifest");
         std::fs::write(manifest_path, manifest).expect("write manifest");
+    }
+
+    fn assert_footerless_file_matches_manifest_data_end(path: &Path) {
+        let manifest = pardosa_file::manifest::parse_manifest(
+            &std::fs::read(manifest_path(path)).expect("manifest bytes"),
+        )
+        .expect("manifest parses");
+        let pgno_len = std::fs::metadata(path).expect("pgno metadata").len();
+        assert_eq!(pgno_len, manifest.data_end);
     }
 
     #[test]
@@ -1048,7 +1104,7 @@ mod tests {
         let path = lifecycle_temp_path("invalid-checksum-tail");
         let _store = backend_backed_synced_store(&path);
         assert!(manifest_path(&path).exists());
-        corrupt_footer_checksum(&path);
+        append_reader_invalid_checksum_tail(&path);
         assert_eq!(reopen_payloads(&path), vec![1, 2]);
     }
 
@@ -1056,12 +1112,12 @@ mod tests {
     fn open_reports_recovery_outcome_and_warn_for_torn_tail() {
         let path = lifecycle_temp_path("recovery-outcome");
         let _store = backend_backed_synced_store(&path);
-        let pgno_len = std::fs::metadata(&path).expect("pgno metadata").len();
         let manifest = pardosa_file::manifest::parse_manifest(
             &std::fs::read(manifest_path(&path)).expect("manifest bytes"),
         )
         .expect("manifest parses");
-        corrupt_footer_checksum(&path);
+        append_reader_invalid_checksum_tail(&path);
+        let pgno_len = std::fs::metadata(&path).expect("pgno metadata").len();
 
         let output = capture_tracing(|| {
             let store = EventStore::<TaggedPayload>::open(&path).expect("open recovers");
@@ -1085,6 +1141,87 @@ mod tests {
         assert!(output.contains("truncated_bytes"));
         assert!(output.contains("last_durable_offset"));
         assert!(output.contains("manifest_message_count"));
+    }
+
+    #[test]
+    fn backend_resume_strips_prior_direct_footer_before_footerless_append() {
+        let path = lifecycle_temp_path("strip-direct-footer-tail");
+        {
+            let mut store = EventStore::<TaggedPayload>::create(&path).expect("create");
+            let mut fiber = store
+                .writer()
+                .begin(TaggedPayload(1))
+                .expect("begin first")
+                .fiber();
+            for value in 2..=8u64 {
+                fiber = store
+                    .writer()
+                    .append(fiber, TaggedPayload(value))
+                    .expect("append direct seed")
+                    .fiber();
+            }
+            let _lsn = store.writer().sync().expect("direct sync writes footer");
+        }
+        {
+            let mut store = EventStore::<TaggedPayload>::open_with_backend(
+                crate::store::PgnoBackend::open(&path),
+            )
+            .expect("open backend-backed store");
+            let _event = store
+                .writer()
+                .begin(TaggedPayload(9))
+                .expect("append resumed");
+            let _lsn = store.writer().sync().expect("backend sync");
+        }
+        assert_footerless_file_matches_manifest_data_end(&path);
+        assert_eq!(
+            reopen_seed_plus_resumed_payloads(&path, 8),
+            (1..=9u64).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn backend_resume_sealed_file_property_across_sync_schedules() {
+        for direct_seed_count in 1..=4u64 {
+            for resumed_sync_count in 1..=4u64 {
+                let path = lifecycle_temp_path(&format!(
+                    "sealed-schedule-{direct_seed_count}-{resumed_sync_count}"
+                ));
+                {
+                    let mut store = EventStore::<TaggedPayload>::create(&path).expect("create");
+                    let mut fiber = store
+                        .writer()
+                        .begin(TaggedPayload(1))
+                        .expect("begin first")
+                        .fiber();
+                    for value in 2..=direct_seed_count {
+                        fiber = store
+                            .writer()
+                            .append(fiber, TaggedPayload(value))
+                            .expect("append direct seed")
+                            .fiber();
+                    }
+                    let _lsn = store.writer().sync().expect("direct sync writes footer");
+                }
+                {
+                    let mut store = EventStore::<TaggedPayload>::open_with_backend(
+                        crate::store::PgnoBackend::open(&path),
+                    )
+                    .expect("open backend-backed store");
+                    for step in 0..resumed_sync_count {
+                        let value = direct_seed_count + step + 1;
+                        let _event = store.writer().begin(TaggedPayload(value)).expect("append");
+                        let _lsn = store.writer().sync().expect("backend sync");
+                        assert_footerless_file_matches_manifest_data_end(&path);
+                    }
+                }
+                let expected: Vec<u64> = (1..=direct_seed_count + resumed_sync_count).collect();
+                assert_eq!(
+                    reopen_seed_plus_resumed_payloads(&path, direct_seed_count),
+                    expected
+                );
+            }
+        }
     }
 
     #[test]
@@ -1157,7 +1294,7 @@ mod tests {
         let path = lifecycle_temp_path("validated-invalid-checksum-tail");
         let _store = backend_backed_synced_store(&path);
         assert!(manifest_path(&path).exists());
-        corrupt_footer_checksum(&path);
+        append_reader_invalid_checksum_tail(&path);
         assert_eq!(reopen_validated_payloads(&path), vec![1, 2]);
     }
 

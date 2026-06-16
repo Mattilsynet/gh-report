@@ -523,6 +523,7 @@ where
             .open(manifest_path)
             .map_err(persist::Error::Io)?;
         let mut writer = if let Some(recovered) = prefix.take() {
+            <W as Syncable>::set_len(&mut self.sink, recovered.data_end)?;
             self.sink.seek(SeekFrom::Start(recovered.data_end))?;
             pardosa_file::AppendWriter::resume_from_recovered_prefix(&mut self.sink, &recovered)
                 .with_manifest_synced_records(
