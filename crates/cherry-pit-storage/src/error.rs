@@ -19,6 +19,14 @@ pub enum PersistenceError {
     #[error("load failed: {reason}")]
     LoadFailed { reason: String },
 
+    /// Returned when a torn `.pgno` append could not be recovered to
+    /// the last durable manifest checkpoint.
+    #[error("torn-write recovery failed: {source}")]
+    TornWriteRecovery {
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
+
     #[error("single-writer fence conflict: {source}")]
     FencedConflict {
         #[source]

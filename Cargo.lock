@@ -1488,6 +1488,7 @@ dependencies = [
  "jsonwebtoken",
  "moka",
  "pardosa",
+ "pardosa-file",
  "pardosa-nats",
  "pardosa-schema",
  "pem",

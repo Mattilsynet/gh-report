@@ -453,11 +453,16 @@ fn fold_org_event(projection: &mut crate::projection::EvidenceProjection, event:
 }
 
 fn native_store_persistence(error: crate::store::StoreError) -> PersistenceError {
-    if let crate::store::StoreError::ConcurrencyConflict { source } = error {
-        return PersistenceError::FencedConflict { source };
-    }
-    PersistenceError::LoadFailed {
-        reason: error.to_string(),
+    match error {
+        crate::store::StoreError::ConcurrencyConflict { source } => {
+            PersistenceError::FencedConflict { source }
+        }
+        crate::store::StoreError::TornWriteRecovery { source } => {
+            PersistenceError::TornWriteRecovery { source }
+        }
+        other => PersistenceError::LoadFailed {
+            reason: other.to_string(),
+        },
     }
 }
 
@@ -1302,6 +1307,32 @@ mod tests {
                 PersistenceError::FencedConflict { .. }
             ),
             "fence conflicts must stay typed before Display flattening"
+        );
+    }
+
+    #[test]
+    fn native_store_persistence_preserves_torn_write_recovery_variant() {
+        let err = crate::store::StoreError::TornWriteRecovery {
+            source: Box::new(pardosa::store::PardosaError::CursorRead {
+                source: Box::new(pardosa::store::replay::Error::File(
+                    pardosa_file::FileError::TornWriteRecovery {
+                        source: Box::new(
+                            pardosa_file::manifest::RecoveryError::DataEndExceedsFile {
+                                manifest_data_end: 12,
+                                pgno_len: 8,
+                            },
+                        ),
+                    },
+                )),
+            }),
+        };
+
+        assert!(
+            matches!(
+                native_store_persistence(err),
+                PersistenceError::TornWriteRecovery { .. }
+            ),
+            "torn-write recovery failures must stay typed before Display flattening"
         );
     }
 

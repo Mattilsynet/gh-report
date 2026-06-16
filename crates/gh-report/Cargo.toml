@@ -30,6 +30,7 @@ cherry-pit-storage = { version = "0.1.0", path = "../cherry-pit-storage" }
 # cherry-pit-core — correlation context threaded through cherry-pit-wq jobs.
 cherry-pit-core = { workspace = true }
 pardosa = { path = "../pardosa", version = "=0.4.0" }
+pardosa-file = { path = "../pardosa-file", version = "=0.1.0" }
 pardosa-schema = { path = "../pardosa-schema", version = "=0.1.0" }
 pardosa-nats = { path = "../pardosa-nats", version = "=0.1.0" }
 

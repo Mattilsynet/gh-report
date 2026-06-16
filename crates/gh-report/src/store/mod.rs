@@ -32,6 +32,11 @@ pub enum StoreError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
+    #[error("pardosa store torn-write recovery failed: {source}")]
+    TornWriteRecovery {
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
     #[error("pardosa store concurrency conflict: {source}")]
     ConcurrencyConflict {
         #[source]
@@ -92,6 +97,31 @@ fn has_pardosa_concurrency_conflict(error: &(dyn Error + 'static)) -> bool {
     false
 }
 
+fn has_torn_write_recovery(error: &(dyn Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if matches!(
+            error.downcast_ref::<pardosa_file::FileError>(),
+            Some(pardosa_file::FileError::TornWriteRecovery { .. })
+        ) || matches!(
+            error.downcast_ref::<pardosa::store::replay::Error>(),
+            Some(pardosa::store::replay::Error::File(
+                pardosa_file::FileError::TornWriteRecovery { .. }
+            ))
+        ) {
+            return true;
+        }
+        if let Some(io) = error.downcast_ref::<std::io::Error>()
+            && let Some(inner) = io.get_ref()
+            && has_torn_write_recovery(inner)
+        {
+            return true;
+        }
+        current = error.source();
+    }
+    false
+}
+
 trait StoreInfrastructureError: std::error::Error + Send + Sync + 'static {
     fn backend_op(&self) -> Option<BackendOp>;
 }
@@ -123,6 +153,11 @@ fn infra<E: StoreInfrastructureError>(e: E) -> StoreError {
             source: Box::new(PardosaError::ConcurrencyConflict {
                 source: Box::new(e),
             }),
+        };
+    }
+    if has_torn_write_recovery(error) {
+        return StoreError::TornWriteRecovery {
+            source: Box::new(e),
         };
     }
     if let Some(op) = e.backend_op() {
@@ -681,6 +716,25 @@ mod tests {
         assert!(
             has_pardosa_concurrency_conflict(source.as_ref()),
             "wrapped persist error must expose PardosaError::ConcurrencyConflict in the source chain"
+        );
+    }
+
+    #[test]
+    fn torn_write_recovery_is_typed_at_store_boundary() {
+        let err = infra(PardosaError::CursorRead {
+            source: Box::new(pardosa::store::replay::Error::File(
+                pardosa_file::FileError::TornWriteRecovery {
+                    source: Box::new(pardosa_file::manifest::RecoveryError::DataEndExceedsFile {
+                        manifest_data_end: 12,
+                        pgno_len: 8,
+                    }),
+                },
+            )),
+        });
+
+        assert!(
+            matches!(err, StoreError::TornWriteRecovery { .. }),
+            "typed FileError::TornWriteRecovery must not be flattened to Infrastructure"
         );
     }
 }
