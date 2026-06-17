@@ -1547,6 +1547,8 @@ fn failure_evidence_with_reason(
                     reason: Some(reason.to_string()),
                     reason_kind: Some(crate::domain::checks::CollectionFailureReason::Invalid),
                     http_status: None,
+                    force_push_blocked: None,
+                    deletion_blocked: None,
                 },
                 timestamp: run_timestamp.to_string(),
             },

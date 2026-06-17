@@ -187,6 +187,8 @@ pub struct BranchProtectionDetails {
     pub reason: Option<EventString<MAX_REASON>>,
     pub reason_kind: Option<CollectionFailureReason>,
     pub http_status: Option<u16>,
+    pub force_push_blocked: Option<bool>,
+    pub deletion_blocked: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
@@ -479,6 +481,8 @@ mod tests {
                     reason: None,
                     reason_kind: None,
                     http_status: None,
+                    force_push_blocked: Some(true),
+                    deletion_blocked: Some(true),
                 },
                 timestamp: ts(23),
             },
@@ -672,7 +676,7 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(
             first,
-            293_751_208_538_669_070_217_965_398_412_198_231_224_u128
+            75_550_468_962_126_600_101_883_407_802_917_765_349_u128
         );
         assert_ne!(
             first, 19_710_905_809_486_475_925_592_730_934_028_496_282_u128,
@@ -684,7 +688,7 @@ mod tests {
     fn repository_event_envelope_identity_is_stable() {
         assert_eq!(
             pardosa::store::Event::<DomainEvent>::ENVELOPE_HASH,
-            29_058_521_485_886_204_063_239_974_865_727_270_043_u128
+            61_904_540_321_486_313_945_795_997_551_207_330_525_u128
         );
         assert_eq!(
             <DomainEvent as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,

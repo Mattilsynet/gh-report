@@ -347,6 +347,8 @@ conversion_pair!(s::BranchProtectionDetails => BranchProtectionDetails {
         reason: to_es_opt::<MAX_REASON>("branch_protection.reason", v.reason)?,
         reason_kind: v.reason_kind.map(Into::into),
         http_status: v.http_status,
+        force_push_blocked: v.force_push_blocked,
+        deletion_blocked: v.deletion_blocked,
     }
     from(v) {
         default_branch: v.default_branch.as_str().to_string(),
@@ -358,6 +360,8 @@ conversion_pair!(s::BranchProtectionDetails => BranchProtectionDetails {
         reason: v.reason.map(|r| r.as_str().to_string()),
         reason_kind: v.reason_kind.map(Into::into),
         http_status: v.http_status,
+        force_push_blocked: v.force_push_blocked,
+        deletion_blocked: v.deletion_blocked,
     }
 });
 

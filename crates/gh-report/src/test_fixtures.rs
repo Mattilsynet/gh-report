@@ -119,6 +119,8 @@ pub fn evidence_from_repository(repo: &Repository, timestamp: &str) -> Repositor
                     reason: None,
                     reason_kind: None,
                     http_status: None,
+                    force_push_blocked: Some(true),
+                    deletion_blocked: Some(true),
                 },
                 timestamp: timestamp.to_string(),
             },
@@ -289,6 +291,8 @@ pub fn branch_pass() -> BranchProtectionResult {
             reason: None,
             reason_kind: None,
             http_status: None,
+            force_push_blocked: Some(true),
+            deletion_blocked: Some(true),
         },
         timestamp: make_timestamp(),
     }
@@ -309,6 +313,8 @@ pub fn branch_partial() -> BranchProtectionResult {
             reason: None,
             reason_kind: None,
             http_status: None,
+            force_push_blocked: Some(true),
+            deletion_blocked: Some(true),
         },
         timestamp: make_timestamp(),
     }
@@ -329,6 +335,8 @@ pub fn branch_fail() -> BranchProtectionResult {
             reason: None,
             reason_kind: None,
             http_status: None,
+            force_push_blocked: None,
+            deletion_blocked: None,
         },
         timestamp: make_timestamp(),
     }
@@ -349,6 +357,8 @@ pub fn branch_unknown() -> BranchProtectionResult {
             reason: Some("permission_denied".to_string()),
             reason_kind: Some(crate::domain::checks::CollectionFailureReason::PermissionDenied),
             http_status: Some(403),
+            force_push_blocked: None,
+            deletion_blocked: None,
         },
         timestamp: make_timestamp(),
     }

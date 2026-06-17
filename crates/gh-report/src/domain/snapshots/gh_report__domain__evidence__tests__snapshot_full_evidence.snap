@@ -152,7 +152,9 @@ expression: evidence
             "has_status_checks": true,
             "admin_equivalent": true,
             "has_broad_bypass": false,
-            "reason": null
+            "reason": null,
+            "force_push_blocked": true,
+            "deletion_blocked": true
           },
           "timestamp": "2026-04-09T12:00:00+00:00"
         },

@@ -153,6 +153,8 @@ pub async fn evaluate(
                     reason: Some("invalid_repo_name".to_string()),
                     reason_kind: Some(CollectionFailureReason::Invalid),
                     http_status: None,
+                    force_push_blocked: None,
+                    deletion_blocked: None,
                 },
                 timestamp: run_timestamp.to_string(),
             };
@@ -284,6 +286,8 @@ fn build_protection_result(
                     reason,
                     reason_kind,
                     http_status: status_code,
+                    force_push_blocked: None,
+                    deletion_blocked: None,
                 },
                 timestamp: run_timestamp.to_string(),
             }
@@ -302,6 +306,8 @@ fn build_protection_result(
                     reason: None,
                     reason_kind: None,
                     http_status: None,
+                    force_push_blocked: None,
+                    deletion_blocked: None,
                 },
                 timestamp: run_timestamp.to_string(),
             }

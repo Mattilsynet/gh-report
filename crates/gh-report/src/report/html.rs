@@ -1329,6 +1329,8 @@ mod tests {
                     reason: None,
                     reason_kind: None,
                     http_status: None,
+                    force_push_blocked: Some(true),
+                    deletion_blocked: Some(true),
                 },
                 timestamp: test_fixtures::make_timestamp(),
             },

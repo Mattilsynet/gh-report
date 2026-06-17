@@ -222,6 +222,8 @@ fn minimal_evidence(name: &str) -> RepositoryEvidence {
                     reason: None,
                     reason_kind: None,
                     http_status: None,
+                    force_push_blocked: Some(true),
+                    deletion_blocked: Some(true),
                 },
                 timestamp: ts.to_string(),
             },

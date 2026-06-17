@@ -298,9 +298,9 @@ impl std::fmt::Display for CollectionFailureReason {
 ///
 /// Fields encode in declaration order via `Encode::encode`: `default_branch`,
 /// `has_pr`, `required_reviewers`, `has_status_checks`, `admin_equivalent`,
-/// `has_broad_bypass`, `reason`, `reason_kind`, `http_status`. Field reorder
-/// is a wire-format break (CHE-0022:R3 + PGN-0003 + PGN-0013:R8); new fields
-/// must append.
+/// `has_broad_bypass`, `reason`, `reason_kind`, `http_status`,
+/// `force_push_blocked`, `deletion_blocked`. Field reorder is a wire-format
+/// break (CHE-0022:R3 + PGN-0003 + PGN-0013:R8); new fields must append.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BranchProtectionDetails {
     /// Name of the repository's default branch.
@@ -323,6 +323,12 @@ pub struct BranchProtectionDetails {
     /// HTTP status code that produced the collection-health reason, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http_status: Option<u16>,
+    /// Whether force pushes are blocked on the protected branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force_push_blocked: Option<bool>,
+    /// Whether branch deletion is blocked on the protected branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deletion_blocked: Option<bool>,
 }
 
 /// Intermediate representation of merged branch protection controls.
@@ -723,6 +729,29 @@ mod tests {
         assert_eq!(json, "\"non_conforming\"");
         let deserialized: CodeownersStatus = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, CodeownersStatus::NonConforming);
+    }
+
+    #[test]
+    fn branch_protection_details_round_trip_force_push_and_deletion_signals() {
+        let details = BranchProtectionDetails {
+            default_branch: "main".to_string(),
+            has_pr: Some(true),
+            required_reviewers: Some(1),
+            has_status_checks: Some(false),
+            admin_equivalent: Some(false),
+            has_broad_bypass: Some(false),
+            reason: None,
+            reason_kind: None,
+            http_status: None,
+            force_push_blocked: Some(true),
+            deletion_blocked: Some(false),
+        };
+
+        let json = serde_json::to_string(&details).unwrap();
+        let decoded: BranchProtectionDetails = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(decoded.force_push_blocked, Some(true));
+        assert_eq!(decoded.deletion_blocked, Some(false));
     }
 
     #[test]
