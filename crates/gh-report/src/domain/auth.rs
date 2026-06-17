@@ -81,17 +81,23 @@ impl std::fmt::Display for TokenTier {
 pub enum Capability {
     /// Organization-level secret scanning alerts.
     OrgSecretScanningAlerts = 0,
+    /// Private/internal repository branch-protection reads without ambiguous 404s.
+    PrivateBranchProtectionRead = 1,
 }
 
 impl Capability {
     /// All optional capabilities, for iteration.
-    pub const ALL: &[Capability] = &[Capability::OrgSecretScanningAlerts];
+    pub const ALL: &[Capability] = &[
+        Capability::OrgSecretScanningAlerts,
+        Capability::PrivateBranchProtectionRead,
+    ];
 }
 
 impl std::fmt::Display for Capability {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::OrgSecretScanningAlerts => write!(f, "org_secret_scanning_alerts"),
+            Self::PrivateBranchProtectionRead => write!(f, "private_branch_protection_read"),
         }
     }
 }
@@ -118,6 +124,10 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&Capability::OrgSecretScanningAlerts).unwrap(),
             "\"org_secret_scanning_alerts\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Capability::PrivateBranchProtectionRead).unwrap(),
+            "\"private_branch_protection_read\""
         );
     }
 
@@ -146,6 +156,10 @@ mod tests {
         assert_eq!(
             Capability::OrgSecretScanningAlerts.to_string(),
             "org_secret_scanning_alerts"
+        );
+        assert_eq!(
+            Capability::PrivateBranchProtectionRead.to_string(),
+            "private_branch_protection_read"
         );
     }
 

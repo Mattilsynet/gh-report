@@ -185,6 +185,19 @@ pub struct BranchProtectionDetails {
     pub admin_equivalent: Option<bool>,
     pub has_broad_bypass: Option<bool>,
     pub reason: Option<EventString<MAX_REASON>>,
+    pub reason_kind: Option<CollectionFailureReason>,
+    pub http_status: Option<u16>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[repr(u8)]
+pub enum CollectionFailureReason {
+    PermissionDenied = 0,
+    PermissionSuspected = 1,
+    NotFoundAbsent = 2,
+    Transient = 3,
+    RateLimited = 4,
+    Invalid = 5,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
@@ -263,6 +276,7 @@ pub enum TokenTier {
 #[repr(u8)]
 pub enum Capability {
     OrgSecretScanningAlerts = 0,
+    PrivateBranchProtectionRead = 1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
@@ -463,6 +477,8 @@ mod tests {
                     admin_equivalent: Some(true),
                     has_broad_bypass: Some(false),
                     reason: None,
+                    reason_kind: None,
+                    http_status: None,
                 },
                 timestamp: ts(23),
             },
@@ -633,11 +649,11 @@ mod tests {
     fn org_state_schema_identity_is_stable() {
         assert_eq!(
             <OrgStateCaptured as GenomeSafe>::SCHEMA_HASH,
-            44_224_140_383_720_358_944_090_071_493_345_290_338_u128
+            220_908_143_069_358_905_578_364_172_905_019_209_814_u128
         );
         assert_eq!(
             pardosa::store::Event::<OrgStateCaptured>::ENVELOPE_HASH,
-            267_629_776_195_315_150_843_367_399_449_742_003_074_u128
+            330_380_791_181_709_376_046_586_033_837_479_802_840_u128
         );
         assert_eq!(
             <OrgStateCaptured as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,
@@ -656,7 +672,7 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(
             first,
-            130_161_851_149_130_176_976_202_983_483_756_427_020_u128
+            293_751_208_538_669_070_217_965_398_412_198_231_224_u128
         );
         assert_ne!(
             first, 19_710_905_809_486_475_925_592_730_934_028_496_282_u128,
@@ -668,7 +684,7 @@ mod tests {
     fn repository_event_envelope_identity_is_stable() {
         assert_eq!(
             pardosa::store::Event::<DomainEvent>::ENVELOPE_HASH,
-            285_502_219_235_890_583_211_732_736_039_501_609_618_u128
+            29_058_521_485_886_204_063_239_974_865_727_270_043_u128
         );
         assert_eq!(
             <DomainEvent as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,

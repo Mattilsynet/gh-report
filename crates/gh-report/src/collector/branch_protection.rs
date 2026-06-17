@@ -9,9 +9,9 @@ use tracing::{debug, instrument, trace};
 use crate::config;
 use crate::domain::checks::{
     BranchControls, BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus,
-    BranchRequirements,
+    BranchRequirements, CollectionFailureReason,
 };
-use crate::domain::repository::Repository;
+use crate::domain::repository::{Repository, Visibility};
 use crate::github::client::GitHubClient;
 use cherry_pit_web::sanitize_path_segment;
 
@@ -151,6 +151,8 @@ pub async fn evaluate(
                     admin_equivalent: None,
                     has_broad_bypass: None,
                     reason: Some("invalid_repo_name".to_string()),
+                    reason_kind: Some(CollectionFailureReason::Invalid),
+                    http_status: None,
                 },
                 timestamp: run_timestamp.to_string(),
             };
@@ -187,6 +189,7 @@ pub async fn evaluate(
         &rulesets_result,
         &legacy_result,
         default_branch,
+        repo.visibility,
         run_timestamp,
     );
 
@@ -250,21 +253,20 @@ fn build_protection_result(
     rulesets_result: &crate::github::client::ApiOutcome,
     legacy_result: &crate::github::client::ApiOutcome,
     default_branch: &str,
+    visibility: Visibility,
     run_timestamp: &str,
 ) -> BranchProtectionResult {
     match combined {
         None => {
-            let reason = if rulesets_result.status_code() == Some(403)
-                || legacy_result.status_code() == Some(403)
-            {
-                Some("permission_denied".to_string())
-            } else if rulesets_result.is_retryable() || legacy_result.is_retryable() {
-                Some("transient_error".to_string())
-            } else {
-                None
-            };
+            let status_code = rulesets_result
+                .status_code()
+                .or_else(|| legacy_result.status_code());
+            let reason_kind = classify_failure_reason(rulesets_result, legacy_result, visibility);
+            let reason = reason_kind.map(|reason| reason.to_string());
 
-            let status = if reason.is_some() {
+            let status = if reason_kind
+                .is_some_and(|reason| !matches!(reason, CollectionFailureReason::NotFoundAbsent))
+            {
                 BranchProtectionStatus::Unknown
             } else {
                 BranchProtectionStatus::Fail
@@ -280,6 +282,8 @@ fn build_protection_result(
                     admin_equivalent: None,
                     has_broad_bypass: None,
                     reason,
+                    reason_kind,
+                    http_status: status_code,
                 },
                 timestamp: run_timestamp.to_string(),
             }
@@ -296,11 +300,37 @@ fn build_protection_result(
                     admin_equivalent: Some(controls.admin_equivalent()),
                     has_broad_bypass: Some(controls.has_broad_bypass()),
                     reason: None,
+                    reason_kind: None,
+                    http_status: None,
                 },
                 timestamp: run_timestamp.to_string(),
             }
         }
     }
+}
+
+fn classify_failure_reason(
+    rulesets_result: &crate::github::client::ApiOutcome,
+    legacy_result: &crate::github::client::ApiOutcome,
+    visibility: Visibility,
+) -> Option<CollectionFailureReason> {
+    if rulesets_result.status_code() == Some(403) || legacy_result.status_code() == Some(403) {
+        return Some(CollectionFailureReason::PermissionDenied);
+    }
+    if rulesets_result.status_code() == Some(429) || legacy_result.status_code() == Some(429) {
+        return Some(CollectionFailureReason::RateLimited);
+    }
+    if rulesets_result.status_code() == Some(404) || legacy_result.status_code() == Some(404) {
+        return Some(if visibility == Visibility::Public {
+            CollectionFailureReason::NotFoundAbsent
+        } else {
+            CollectionFailureReason::PermissionSuspected
+        });
+    }
+    if rulesets_result.is_retryable() || legacy_result.is_retryable() {
+        return Some(CollectionFailureReason::Transient);
+    }
+    None
 }
 
 /// Check if a ruleset applies to a given branch.
@@ -438,6 +468,55 @@ mod tests {
         });
         let controls = summarize_legacy_protection(&protection);
         assert!(controls.has_status_checks());
+    }
+
+    #[test]
+    fn private_404_without_controls_is_unknown_not_fail() {
+        let not_found =
+            crate::github::client::ApiOutcome::failure(Some(404), "not found".to_string(), false);
+
+        let result = build_protection_result(
+            None,
+            &not_found,
+            &not_found,
+            "main",
+            Visibility::Private,
+            "2026-06-17T11:31:04Z",
+        );
+
+        assert_eq!(result.status, BranchProtectionStatus::Unknown);
+        assert_eq!(
+            result.details.reason.as_deref(),
+            Some("permission_suspected")
+        );
+        assert_eq!(
+            result.details.reason_kind,
+            Some(CollectionFailureReason::PermissionSuspected)
+        );
+        assert_eq!(result.details.http_status, Some(404));
+    }
+
+    #[test]
+    fn public_404_without_controls_is_genuine_absence() {
+        let not_found =
+            crate::github::client::ApiOutcome::failure(Some(404), "not found".to_string(), false);
+
+        let result = build_protection_result(
+            None,
+            &not_found,
+            &not_found,
+            "main",
+            Visibility::Public,
+            "2026-06-17T11:31:04Z",
+        );
+
+        assert_eq!(result.status, BranchProtectionStatus::Fail);
+        assert_eq!(result.details.reason.as_deref(), Some("not_found_absent"));
+        assert_eq!(
+            result.details.reason_kind,
+            Some(CollectionFailureReason::NotFoundAbsent)
+        );
+        assert_eq!(result.details.http_status, Some(404));
     }
 
     #[test]

@@ -937,6 +937,7 @@ mod tests {
                 truncated: 0,
             },
             owner_metrics: vec![],
+            collection_health_counts: vec![],
         }
     }
 
@@ -1222,6 +1223,8 @@ mod tests {
                     admin_equivalent: None,
                     has_broad_bypass: None,
                     reason: None,
+                    reason_kind: None,
+                    http_status: None,
                 },
                 timestamp: test_fixtures::make_timestamp(),
             },

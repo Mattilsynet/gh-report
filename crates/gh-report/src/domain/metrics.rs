@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::domain::checks::CollectionFailureReason;
 use crate::domain::status::CollectionStatus;
 
 /// A rate metric with numerator, denominator, and optional rate percentage.
@@ -189,6 +190,31 @@ pub struct AggregatedMetrics {
     /// Per-owner metrics computed from CODEOWNERS parsed data.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub owner_metrics: Vec<OwnerMetrics>,
+    /// Report-side collection-health taxonomy keyed by check kind and reason.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub collection_health_counts: Vec<CollectionHealthCount>,
+}
+
+/// Collection-health check-kind axis for report-side aggregation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[repr(u8)]
+#[serde(rename_all = "snake_case")]
+pub enum CollectionHealthCheckKind {
+    BranchProtection = 0,
+    SecretScanning = 1,
+    Dependabot = 2,
+    Codeowners = 3,
+    SecurityPolicy = 4,
+    Inventory = 5,
+    Rulesets = 6,
+}
+
+/// Report-side collection-health count for a `(check_kind, reason)` pair.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CollectionHealthCount {
+    pub check_kind: CollectionHealthCheckKind,
+    pub reason: CollectionFailureReason,
+    pub count: u32,
 }
 
 /// Per-owner metrics computed from CODEOWNERS parsed data.

@@ -11,11 +11,11 @@ use super::limits::{
 use super::{
     AssessmentMetadata, AuthMode, BranchProtectionDetails, BranchProtectionResult,
     BranchProtectionStatus, Capability, CodeownersEntry, CodeownersResult, CodeownersStatus,
-    CodeownersTruncationReason, CollectionStatus, DependabotResult, DependabotStatus,
-    LastCommitInfo, OrgAlertSummary, OrgStateCaptured, ParsedCodeowners, RepoAlertSummary,
-    RepoAlertSummaryEntry, Repository, RepositoryChecks, RepositoryEvidence, SecretScanningResult,
-    SecretScanningStatus, SecurityPolicyEvidence, SecurityPolicyResult, SecurityPolicyStatus,
-    StringU64Entry, TokenTier, Visibility,
+    CodeownersTruncationReason, CollectionFailureReason, CollectionStatus, DependabotResult,
+    DependabotStatus, LastCommitInfo, OrgAlertSummary, OrgStateCaptured, ParsedCodeowners,
+    RepoAlertSummary, RepoAlertSummaryEntry, Repository, RepositoryChecks, RepositoryEvidence,
+    SecretScanningResult, SecretScanningStatus, SecurityPolicyEvidence, SecurityPolicyResult,
+    SecurityPolicyStatus, StringU64Entry, TokenTier, Visibility,
 };
 use crate::domain::auth as sa;
 use crate::domain::checks as s;
@@ -199,6 +199,15 @@ bijective_enum!(s::BranchProtectionStatus <=> BranchProtectionStatus {
     Unknown,
 });
 
+bijective_enum!(s::CollectionFailureReason <=> CollectionFailureReason {
+    PermissionDenied,
+    PermissionSuspected,
+    NotFoundAbsent,
+    Transient,
+    RateLimited,
+    Invalid,
+});
+
 bijective_enum!(s::CodeownersStatus <=> CodeownersStatus {
     Conforming,
     NonConforming,
@@ -216,7 +225,10 @@ bijective_enum!(sc::CodeownersTruncationReason <=> CodeownersTruncationReason {
 
 bijective_enum!(sa::TokenTier <=> TokenTier { Full, Limited, Unknown });
 
-bijective_enum!(sa::Capability <=> Capability { OrgSecretScanningAlerts });
+bijective_enum!(sa::Capability <=> Capability {
+    OrgSecretScanningAlerts,
+    PrivateBranchProtectionRead,
+});
 
 bijective_enum!(sa::AuthMode <=> AuthMode {
     Pat,
@@ -333,6 +345,8 @@ conversion_pair!(s::BranchProtectionDetails => BranchProtectionDetails {
         admin_equivalent: v.admin_equivalent,
         has_broad_bypass: v.has_broad_bypass,
         reason: to_es_opt::<MAX_REASON>("branch_protection.reason", v.reason)?,
+        reason_kind: v.reason_kind.map(Into::into),
+        http_status: v.http_status,
     }
     from(v) {
         default_branch: v.default_branch.as_str().to_string(),
@@ -342,6 +356,8 @@ conversion_pair!(s::BranchProtectionDetails => BranchProtectionDetails {
         admin_equivalent: v.admin_equivalent,
         has_broad_bypass: v.has_broad_bypass,
         reason: v.reason.map(|r| r.as_str().to_string()),
+        reason_kind: v.reason_kind.map(Into::into),
+        http_status: v.http_status,
     }
 });
 

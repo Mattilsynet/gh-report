@@ -1545,6 +1545,8 @@ fn failure_evidence_with_reason(
                     admin_equivalent: None,
                     has_broad_bypass: None,
                     reason: Some(reason.to_string()),
+                    reason_kind: Some(crate::domain::checks::CollectionFailureReason::Invalid),
+                    http_status: None,
                 },
                 timestamp: run_timestamp.to_string(),
             },
@@ -1674,7 +1676,8 @@ fn build_assessment_metadata(
         token_scopes: auth_metadata.token_scopes.clone(),
         auth_mode: auth_metadata.auth_mode,
         rate_limit_warnings,
-        unavailable_capabilities: capabilities.unavailable_capabilities(),
+        unavailable_capabilities: capabilities
+            .unavailable_capabilities_for_auth_mode(auth_metadata.auth_mode),
         inventory_fetched_at,
         warm_start: false,
     }
@@ -1978,11 +1981,16 @@ mod tests {
         assert_eq!(metadata.token_scopes, "repo, read:org");
         assert_eq!(metadata.auth_mode, AuthMode::Pat);
         assert_eq!(metadata.rate_limit_warnings, 3);
-        assert_eq!(metadata.unavailable_capabilities.len(), 1);
+        assert_eq!(metadata.unavailable_capabilities.len(), 2);
         assert!(
             metadata
                 .unavailable_capabilities
                 .contains(&Capability::OrgSecretScanningAlerts)
+        );
+        assert!(
+            metadata
+                .unavailable_capabilities
+                .contains(&Capability::PrivateBranchProtectionRead)
         );
     }
 

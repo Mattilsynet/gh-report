@@ -627,6 +627,7 @@ impl CapabilitySet {
             Capability::OrgSecretScanningAlerts => {
                 self.org_secret_scanning_alerts == CapabilityStatus::Available
             }
+            Capability::PrivateBranchProtectionRead => false,
         }
     }
 
@@ -636,6 +637,16 @@ impl CapabilitySet {
         let mut unavail = Vec::new();
         if self.org_secret_scanning_alerts != CapabilityStatus::Available {
             unavail.push(Capability::OrgSecretScanningAlerts);
+        }
+        unavail
+    }
+
+    /// Return unavailable capabilities including active-auth-mode limitations.
+    #[must_use]
+    pub fn unavailable_capabilities_for_auth_mode(&self, auth_mode: AuthMode) -> Vec<Capability> {
+        let mut unavail = self.unavailable_capabilities();
+        if auth_mode != AuthMode::GitHubApp {
+            unavail.push(Capability::PrivateBranchProtectionRead);
         }
         unavail
     }
@@ -799,6 +810,16 @@ mod tests {
         };
         let unavail = caps.unavailable_capabilities();
         assert_eq!(unavail, vec![Capability::OrgSecretScanningAlerts,]);
+    }
+
+    #[test]
+    fn pat_without_app_capability_reports_private_branch_protection_limitation() {
+        let caps = CapabilitySet {
+            repos_list: CapabilityStatus::Available,
+            org_secret_scanning_alerts: CapabilityStatus::Available,
+        };
+        let unavail = caps.unavailable_capabilities_for_auth_mode(AuthMode::Pat);
+        assert!(unavail.contains(&Capability::PrivateBranchProtectionRead));
     }
 
     #[test]

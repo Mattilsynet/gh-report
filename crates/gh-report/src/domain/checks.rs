@@ -61,7 +61,7 @@ pub struct SecurityPolicyResult {
 /// use gh_report::domain::checks::SecurityPolicyStatus;
 /// assert_eq!(SecurityPolicyStatus::Fail as u8, 1);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum SecurityPolicyStatus {
@@ -84,7 +84,7 @@ pub enum SecurityPolicyStatus {
 /// use gh_report::domain::checks::SecurityPolicyEvidence;
 /// assert_eq!(SecurityPolicyEvidence::File as u8, 1);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum SecurityPolicyEvidence {
@@ -260,14 +260,47 @@ impl std::fmt::Display for BranchProtectionStatus {
     }
 }
 
+/// Typed collection-health reason for per-check observability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[repr(u8)]
+#[serde(rename_all = "snake_case")]
+pub enum CollectionFailureReason {
+    /// API denied access with an explicit permission response.
+    PermissionDenied = 0,
+    /// GitHub returned a not-found response that is ambiguous for non-public repositories.
+    PermissionSuspected = 1,
+    /// The requested resource is absent independently of credentials.
+    NotFoundAbsent = 2,
+    /// The API response was retryable and may succeed later.
+    Transient = 3,
+    /// The API response was rate-limited.
+    RateLimited = 4,
+    /// Input or response shape was invalid for this check.
+    Invalid = 5,
+}
+
+impl std::fmt::Display for CollectionFailureReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PermissionDenied => write!(f, "permission_denied"),
+            Self::PermissionSuspected => write!(f, "permission_suspected"),
+            Self::NotFoundAbsent => write!(f, "not_found_absent"),
+            Self::Transient => write!(f, "transient"),
+            Self::RateLimited => write!(f, "rate_limited"),
+            Self::Invalid => write!(f, "invalid"),
+        }
+    }
+}
+
 /// Detailed branch protection controls state.
 ///
 /// # Wire format
 ///
 /// Fields encode in declaration order via `Encode::encode`: `default_branch`,
 /// `has_pr`, `required_reviewers`, `has_status_checks`, `admin_equivalent`,
-/// `has_broad_bypass`, `reason`. Field reorder is a wire-format break
-/// (CHE-0022:R3 + PGN-0003 + PGN-0013:R8); new fields must append.
+/// `has_broad_bypass`, `reason`, `reason_kind`, `http_status`. Field reorder
+/// is a wire-format break (CHE-0022:R3 + PGN-0003 + PGN-0013:R8); new fields
+/// must append.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BranchProtectionDetails {
     /// Name of the repository's default branch.
@@ -284,6 +317,12 @@ pub struct BranchProtectionDetails {
     pub has_broad_bypass: Option<bool>,
     /// Human-readable reason for the current status.
     pub reason: Option<String>,
+    /// Typed collection-health reason for aggregation and admin reporting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason_kind: Option<CollectionFailureReason>,
+    /// HTTP status code that produced the collection-health reason, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
 }
 
 /// Intermediate representation of merged branch protection controls.

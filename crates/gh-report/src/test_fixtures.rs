@@ -117,6 +117,8 @@ pub fn evidence_from_repository(repo: &Repository, timestamp: &str) -> Repositor
                     admin_equivalent: Some(true),
                     has_broad_bypass: Some(false),
                     reason: None,
+                    reason_kind: None,
+                    http_status: None,
                 },
                 timestamp: timestamp.to_string(),
             },
@@ -285,6 +287,8 @@ pub fn branch_pass() -> BranchProtectionResult {
             admin_equivalent: Some(true),
             has_broad_bypass: Some(false),
             reason: None,
+            reason_kind: None,
+            http_status: None,
         },
         timestamp: make_timestamp(),
     }
@@ -303,6 +307,8 @@ pub fn branch_partial() -> BranchProtectionResult {
             admin_equivalent: Some(false),
             has_broad_bypass: Some(false),
             reason: None,
+            reason_kind: None,
+            http_status: None,
         },
         timestamp: make_timestamp(),
     }
@@ -321,6 +327,8 @@ pub fn branch_fail() -> BranchProtectionResult {
             admin_equivalent: None,
             has_broad_bypass: None,
             reason: None,
+            reason_kind: None,
+            http_status: None,
         },
         timestamp: make_timestamp(),
     }
@@ -339,6 +347,8 @@ pub fn branch_unknown() -> BranchProtectionResult {
             admin_equivalent: None,
             has_broad_bypass: None,
             reason: Some("permission_denied".to_string()),
+            reason_kind: Some(crate::domain::checks::CollectionFailureReason::PermissionDenied),
+            http_status: Some(403),
         },
         timestamp: make_timestamp(),
     }
@@ -537,6 +547,7 @@ pub fn make_minimal_metrics() -> AggregatedMetrics {
             truncated: 0,
         },
         owner_metrics: vec![],
+        collection_health_counts: vec![],
     }
 }
 

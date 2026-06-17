@@ -12,14 +12,15 @@ use tracing::warn;
 
 use crate::config;
 use crate::domain::checks::{
-    BranchProtectionStatus, CodeownersStatus, DependabotStatus, SecretScanningStatus,
-    SecurityPolicyEvidence, SecurityPolicyStatus,
+    BranchProtectionStatus, CodeownersStatus, CollectionFailureReason, DependabotStatus,
+    SecretScanningStatus, SecurityPolicyEvidence, SecurityPolicyStatus,
 };
 use crate::domain::evidence::RepositoryEvidence;
 use crate::domain::metrics::{
-    AggregatedMetrics, BranchProtectionCounts, CodeownersCounts, CollectionStatistics,
-    DependabotCounts, OrgAlertSummary, OwnerMetrics, OwnerType, PolicyCounts, RateMetric,
-    RepoAlertSummary, SecretAlertCounts, SecretScanningCounts, SecretScanningObservability,
+    AggregatedMetrics, BranchProtectionCounts, CodeownersCounts, CollectionHealthCheckKind,
+    CollectionHealthCount, CollectionStatistics, DependabotCounts, OrgAlertSummary, OwnerMetrics,
+    OwnerType, PolicyCounts, RateMetric, RepoAlertSummary, SecretAlertCounts, SecretScanningCounts,
+    SecretScanningObservability,
 };
 use crate::domain::repository::Visibility;
 use crate::domain::status::CollectionStatus;
@@ -106,97 +107,173 @@ pub fn aggregate_metrics(repositories: &[RepositoryEvidence]) -> AggregatedMetri
     let codeowners_counts = count_codeowners_statuses(&active);
     let secret_alert_counts = count_secret_alert_observability(&active);
 
-    let total_active = count_as_u32(active.len());
-    let total_public = count_as_u32(public_policy.len());
+    let taxonomy = count_collection_health_reasons(&active);
+    let alert_observable_enabled = count_alert_observable_enabled(&active);
+    let coverage = build_coverage_metrics(CoverageInputs {
+        total_active: count_as_u32(active.len()),
+        total_public: count_as_u32(public_policy.len()),
+        policy_counts: &policy_counts,
+        secret_counts: &secret_counts,
+        dependabot_counts: &dependabot_counts,
+        branch_counts: &branch_counts,
+        codeowners_counts: &codeowners_counts,
+        secret_alert_counts: &secret_alert_counts,
+        taxonomy: &taxonomy,
+        alert_observable_enabled,
+    });
 
-    let policy_pass = policy_counts
+    AggregatedMetrics {
+        security_policy_coverage: coverage.security_policy,
+        policy_counts,
+        secret_scanning_coverage: coverage.secret_scanning,
+        secret_scanning_counts: secret_counts,
+        dependabot_security_updates_coverage: coverage.dependabot,
+        dependabot_security_updates_counts: dependabot_counts,
+        open_secret_alert_prevalence: coverage.open_secret_alerts,
+        secret_alert_counts,
+        branch_protection_coverage: coverage.branch_protection,
+        branch_protection_counts: branch_counts,
+        codeowners_coverage: coverage.codeowners,
+        codeowners_counts,
+        owner_metrics: build_owner_metrics(repositories),
+        collection_health_counts: taxonomy.into_counts(),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CoverageInputs<'a> {
+    total_active: u32,
+    total_public: u32,
+    policy_counts: &'a PolicyCounts,
+    secret_counts: &'a SecretScanningCounts,
+    dependabot_counts: &'a DependabotCounts,
+    branch_counts: &'a BranchProtectionCounts,
+    codeowners_counts: &'a CodeownersCounts,
+    secret_alert_counts: &'a SecretAlertCounts,
+    taxonomy: &'a CollectionHealthTaxonomyCounts,
+    alert_observable_enabled: u32,
+}
+
+struct CoverageMetrics {
+    security_policy: RateMetric,
+    secret_scanning: RateMetric,
+    dependabot: RateMetric,
+    open_secret_alerts: RateMetric,
+    branch_protection: RateMetric,
+    codeowners: RateMetric,
+}
+
+fn build_coverage_metrics(input: CoverageInputs<'_>) -> CoverageMetrics {
+    let policy_pass = input
+        .policy_counts
         .via_setting
-        .saturating_add(policy_counts.via_file);
-    let security_policy_coverage = RateMetric::new(policy_pass, total_public)
-        .with_extra(
-            "observable_repositories",
-            policy_pass.saturating_add(policy_counts.missing),
-        )
-        .with_extra("unknown", policy_counts.unknown);
-
-    let secret_scanning_coverage = RateMetric::new(secret_counts.enabled, total_public)
-        .with_extra("disabled", secret_counts.disabled)
-        .with_extra("permission_denied", secret_counts.permission_denied)
-        .with_extra("unknown", secret_counts.unknown)
-        .with_extra(
-            "observable_repositories",
-            secret_counts.enabled.saturating_add(secret_counts.disabled),
-        );
-
-    let dependabot_security_updates_coverage =
-        RateMetric::new(dependabot_counts.enabled, total_active)
-            .with_extra("paused", dependabot_counts.paused)
-            .with_extra("disabled", dependabot_counts.disabled)
-            .with_extra("unknown", dependabot_counts.unknown)
+        .saturating_add(input.policy_counts.via_file);
+    CoverageMetrics {
+        security_policy: RateMetric::new(policy_pass, input.total_public)
             .with_extra(
                 "observable_repositories",
-                dependabot_counts
-                    .enabled
-                    .saturating_add(dependabot_counts.paused)
-                    .saturating_add(dependabot_counts.disabled),
-            );
+                policy_pass.saturating_add(input.policy_counts.missing),
+            )
+            .with_extra("unknown", input.policy_counts.unknown),
+        secret_scanning: secret_scanning_coverage(input),
+        dependabot: dependabot_coverage(input),
+        open_secret_alerts: open_secret_alert_prevalence(input),
+        branch_protection: branch_protection_coverage(input),
+        codeowners: codeowners_coverage(input),
+    }
+}
 
-    let alert_observable_enabled = count_alert_observable_enabled(&active);
-    let open_secret_alert_prevalence = RateMetric::new(
-        secret_alert_counts.repos_with_open_alerts,
-        alert_observable_enabled,
+fn secret_scanning_coverage(input: CoverageInputs<'_>) -> RateMetric {
+    RateMetric::new(input.secret_counts.enabled, input.total_public)
+        .with_extra("disabled", input.secret_counts.disabled)
+        .with_extra("permission_denied", input.secret_counts.permission_denied)
+        .with_extra("unknown", input.secret_counts.unknown)
+        .with_extra(
+            "observable_repositories",
+            input
+                .secret_counts
+                .enabled
+                .saturating_add(input.secret_counts.disabled),
+        )
+        .with_extra(
+            "collection_health_secret_scanning_permission_denied",
+            input.taxonomy.secret_scanning_permission_denied,
+        )
+}
+
+fn dependabot_coverage(input: CoverageInputs<'_>) -> RateMetric {
+    RateMetric::new(input.dependabot_counts.enabled, input.total_active)
+        .with_extra("paused", input.dependabot_counts.paused)
+        .with_extra("disabled", input.dependabot_counts.disabled)
+        .with_extra("unknown", input.dependabot_counts.unknown)
+        .with_extra(
+            "observable_repositories",
+            input
+                .dependabot_counts
+                .enabled
+                .saturating_add(input.dependabot_counts.paused)
+                .saturating_add(input.dependabot_counts.disabled),
+        )
+}
+
+fn open_secret_alert_prevalence(input: CoverageInputs<'_>) -> RateMetric {
+    RateMetric::new(
+        input.secret_alert_counts.repos_with_open_alerts,
+        input.alert_observable_enabled,
     )
     .with_extra(
         "repos_without_open_alerts",
-        secret_alert_counts.repos_without_open_alerts,
+        input.secret_alert_counts.repos_without_open_alerts,
     )
-    .with_extra("unobservable", secret_alert_counts.unobservable);
+    .with_extra("unobservable", input.secret_alert_counts.unobservable)
+}
 
-    let branch_protection_coverage = RateMetric::new(branch_counts.pass, total_active)
+fn branch_protection_coverage(input: CoverageInputs<'_>) -> RateMetric {
+    RateMetric::new(input.branch_counts.pass, input.total_active)
         .with_extra(
             "insufficient",
-            branch_counts.partial.saturating_add(branch_counts.fail),
+            input
+                .branch_counts
+                .partial
+                .saturating_add(input.branch_counts.fail),
         )
-        .with_extra("unknown", branch_counts.unknown)
+        .with_extra("unknown", input.branch_counts.unknown)
         .with_extra(
             "observable_repositories",
-            branch_counts
+            input
+                .branch_counts
                 .pass
-                .saturating_add(branch_counts.partial)
-                .saturating_add(branch_counts.fail),
-        );
+                .saturating_add(input.branch_counts.partial)
+                .saturating_add(input.branch_counts.fail),
+        )
+        .with_extra(
+            "collection_health_branch_protection_permission_suspected",
+            input.taxonomy.branch_protection_permission_suspected,
+        )
+        .with_extra(
+            "collection_health_branch_protection_not_found_absent",
+            input.taxonomy.branch_protection_not_found_absent,
+        )
+}
 
-    let codeowners_present = codeowners_counts
+fn codeowners_coverage(input: CoverageInputs<'_>) -> RateMetric {
+    let codeowners_present = input
+        .codeowners_counts
         .conforming
-        .saturating_add(codeowners_counts.non_conforming);
-    let codeowners_coverage = RateMetric::new(codeowners_present, total_active)
-        .with_extra("non_conforming", codeowners_counts.non_conforming)
-        .with_extra("absent", codeowners_counts.absent)
-        .with_extra("unknown", codeowners_counts.unknown)
-        .with_extra("truncated", codeowners_counts.truncated)
+        .saturating_add(input.codeowners_counts.non_conforming);
+    RateMetric::new(codeowners_present, input.total_active)
+        .with_extra("non_conforming", input.codeowners_counts.non_conforming)
+        .with_extra("absent", input.codeowners_counts.absent)
+        .with_extra("unknown", input.codeowners_counts.unknown)
+        .with_extra("truncated", input.codeowners_counts.truncated)
         .with_extra(
             "observable_repositories",
-            codeowners_counts
+            input
+                .codeowners_counts
                 .conforming
-                .saturating_add(codeowners_counts.non_conforming)
-                .saturating_add(codeowners_counts.absent),
-        );
-
-    AggregatedMetrics {
-        security_policy_coverage,
-        policy_counts,
-        secret_scanning_coverage,
-        secret_scanning_counts: secret_counts,
-        dependabot_security_updates_coverage,
-        dependabot_security_updates_counts: dependabot_counts,
-        open_secret_alert_prevalence,
-        secret_alert_counts,
-        branch_protection_coverage,
-        branch_protection_counts: branch_counts,
-        codeowners_coverage,
-        codeowners_counts,
-        owner_metrics: build_owner_metrics(repositories),
-    }
+                .saturating_add(input.codeowners_counts.non_conforming)
+                .saturating_add(input.codeowners_counts.absent),
+        )
 }
 
 /// Count security policy statuses across public repos.
@@ -278,6 +355,85 @@ fn count_dependabot_statuses(active: &[&RepositoryEvidence]) -> DependabotCounts
             DependabotStatus::Unknown => counts.unknown = counts.unknown.saturating_add(1),
         }
     })
+}
+
+#[derive(Debug, Default)]
+struct CollectionHealthTaxonomyCounts {
+    secret_scanning_permission_denied: u32,
+    branch_protection_permission_suspected: u32,
+    branch_protection_not_found_absent: u32,
+}
+
+impl CollectionHealthTaxonomyCounts {
+    fn into_counts(self) -> Vec<CollectionHealthCount> {
+        let mut counts = Vec::new();
+        push_collection_health_count(
+            &mut counts,
+            CollectionHealthCheckKind::SecretScanning,
+            CollectionFailureReason::PermissionDenied,
+            self.secret_scanning_permission_denied,
+        );
+        push_collection_health_count(
+            &mut counts,
+            CollectionHealthCheckKind::BranchProtection,
+            CollectionFailureReason::PermissionSuspected,
+            self.branch_protection_permission_suspected,
+        );
+        push_collection_health_count(
+            &mut counts,
+            CollectionHealthCheckKind::BranchProtection,
+            CollectionFailureReason::NotFoundAbsent,
+            self.branch_protection_not_found_absent,
+        );
+        counts.sort_by_key(|entry| (entry.check_kind, entry.reason));
+        counts
+    }
+}
+
+fn push_collection_health_count(
+    counts: &mut Vec<CollectionHealthCount>,
+    check_kind: CollectionHealthCheckKind,
+    reason: CollectionFailureReason,
+    count: u32,
+) {
+    if count > 0 {
+        counts.push(CollectionHealthCount {
+            check_kind,
+            reason,
+            count,
+        });
+    }
+}
+
+fn count_collection_health_reasons(
+    active: &[&RepositoryEvidence],
+) -> CollectionHealthTaxonomyCounts {
+    let mut counts = CollectionHealthTaxonomyCounts::default();
+    for repo in active {
+        if repo.checks.secret_scanning.status == SecretScanningStatus::PermissionDenied {
+            counts.secret_scanning_permission_denied =
+                counts.secret_scanning_permission_denied.saturating_add(1);
+        }
+        match repo.checks.branch_protection.details.reason_kind {
+            Some(CollectionFailureReason::PermissionSuspected) => {
+                counts.branch_protection_permission_suspected = counts
+                    .branch_protection_permission_suspected
+                    .saturating_add(1);
+            }
+            Some(CollectionFailureReason::NotFoundAbsent) => {
+                counts.branch_protection_not_found_absent =
+                    counts.branch_protection_not_found_absent.saturating_add(1);
+            }
+            Some(
+                CollectionFailureReason::PermissionDenied
+                | CollectionFailureReason::Transient
+                | CollectionFailureReason::RateLimited
+                | CollectionFailureReason::Invalid,
+            )
+            | None => {}
+        }
+    }
+    counts
 }
 
 /// Count branch protection statuses across active repos.
@@ -657,6 +813,7 @@ fn merge_age_buckets(source: &HashMap<String, u64>) -> HashMap<String, u32> {
 mod tests {
     use super::*;
     use crate::domain::checks::{SecretScanningResult, SecretScanningStatus};
+    use crate::domain::metrics::{CollectionHealthCheckKind, CollectionHealthCount};
     use crate::domain::repository::Visibility;
     use crate::domain::status::CollectionStatus;
     use crate::test_fixtures::*;
@@ -875,6 +1032,61 @@ mod tests {
         assert_eq!(metrics.branch_protection_coverage.numerator, 2);
         assert_eq!(metrics.branch_protection_coverage.denominator, 5);
         assert_eq!(metrics.branch_protection_coverage.rate, Some(40.0));
+    }
+
+    #[test]
+    fn aggregate_metrics_collection_health_taxonomy_counts() {
+        let mut repos = sample_repos();
+        repos[0].checks.branch_protection.details.reason_kind =
+            Some(CollectionFailureReason::PermissionSuspected);
+
+        let metrics = aggregate_metrics(&repos);
+        assert_eq!(
+            metrics
+                .branch_protection_coverage
+                .extra
+                .get("collection_health_branch_protection_permission_suspected"),
+            Some(&serde_json::Value::from(1))
+        );
+        assert_eq!(
+            metrics
+                .secret_scanning_coverage
+                .extra
+                .get("collection_health_secret_scanning_permission_denied"),
+            Some(&serde_json::Value::from(1))
+        );
+    }
+
+    #[test]
+    fn aggregate_metrics_exposes_typed_collection_health_counts() {
+        let mut repos = sample_repos();
+        repos[0].checks.branch_protection.details.reason_kind =
+            Some(CollectionFailureReason::PermissionSuspected);
+
+        let metrics = aggregate_metrics(&repos);
+
+        assert!(
+            metrics
+                .collection_health_counts
+                .contains(&CollectionHealthCount {
+                    check_kind: CollectionHealthCheckKind::BranchProtection,
+                    reason: CollectionFailureReason::PermissionSuspected,
+                    count: 1,
+                })
+        );
+        assert!(
+            metrics
+                .collection_health_counts
+                .contains(&CollectionHealthCount {
+                    check_kind: CollectionHealthCheckKind::SecretScanning,
+                    reason: CollectionFailureReason::PermissionDenied,
+                    count: 1,
+                })
+        );
+        assert_eq!(
+            serde_json::to_string(&CollectionHealthCheckKind::Rulesets).unwrap(),
+            "\"rulesets\""
+        );
     }
 
     #[test]

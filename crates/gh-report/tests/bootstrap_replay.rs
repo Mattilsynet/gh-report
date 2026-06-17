@@ -220,6 +220,8 @@ fn minimal_evidence(name: &str) -> RepositoryEvidence {
                     admin_equivalent: Some(true),
                     has_broad_bypass: Some(false),
                     reason: None,
+                    reason_kind: None,
+                    http_status: None,
                 },
                 timestamp: ts.to_string(),
             },

@@ -826,6 +826,7 @@ mod tests {
                 truncated: 0,
             },
             owner_metrics: vec![],
+            collection_health_counts: vec![],
         }
     }
 
