@@ -16,7 +16,7 @@
         <a href="report.html">Report</a>
         {% if vm.owners.is_some() %}<a href="owners.html">Owners</a>{% endif %}
         <a href="orphans.html">Orphans ({{ vm.orphaned_count }})</a>
-        <a href="admin.html" class="settings-link">Settings{% if vm.admin_diagnostics.has_technical_issues() %} <span class="warning-badge">{{ vm.admin_diagnostics.technical_issues_total }}</span>{% endif %}</a>
+        <a href="admin.html" class="admin-link">Admin{% if vm.admin_diagnostics.has_technical_issues() %} <span class="warning-badge">{{ vm.admin_diagnostics.technical_issues_total }}</span>{% endif %}</a>
     </nav>
 
     <h1>Admin Diagnostics</h1>

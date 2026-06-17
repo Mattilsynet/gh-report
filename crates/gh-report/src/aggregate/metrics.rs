@@ -443,8 +443,9 @@ fn count_branch_protection_statuses(active: &[&RepositoryEvidence]) -> BranchPro
                 counts.pass = counts.pass.saturating_add(1);
             }
             BranchProtectionTier::Minimal => counts.partial = counts.partial.saturating_add(1),
-            BranchProtectionTier::BelowBaseline => counts.fail = counts.fail.saturating_add(1),
-            BranchProtectionTier::Excluded => counts.unknown = counts.unknown.saturating_add(1),
+            BranchProtectionTier::BelowBaseline | BranchProtectionTier::Excluded => {
+                counts.fail = counts.fail.saturating_add(1);
+            }
         },
     )
 }
@@ -1029,12 +1030,12 @@ mod tests {
 
         assert_eq!(metrics.branch_protection_counts.pass, 2);
         assert_eq!(metrics.branch_protection_counts.partial, 1);
-        assert_eq!(metrics.branch_protection_counts.fail, 1);
-        assert_eq!(metrics.branch_protection_counts.unknown, 1);
+        assert_eq!(metrics.branch_protection_counts.fail, 2);
+        assert_eq!(metrics.branch_protection_counts.unknown, 0);
 
         assert_eq!(metrics.branch_protection_coverage.numerator, 2);
-        assert_eq!(metrics.branch_protection_coverage.denominator, 4);
-        assert_eq!(metrics.branch_protection_coverage.rate, Some(50.0));
+        assert_eq!(metrics.branch_protection_coverage.denominator, 5);
+        assert_eq!(metrics.branch_protection_coverage.rate, Some(40.0));
     }
 
     #[test]
@@ -1473,14 +1474,14 @@ mod tests {
 
         assert_eq!(
             metrics.branch_protection_coverage.extra.get("insufficient"),
-            Some(&serde_json::json!(2))
+            Some(&serde_json::json!(3))
         );
         assert_eq!(
             metrics
                 .branch_protection_coverage
                 .extra
                 .get("observable_repositories"),
-            Some(&serde_json::json!(4))
+            Some(&serde_json::json!(5))
         );
 
         assert_eq!(

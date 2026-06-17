@@ -17,6 +17,7 @@
         <a href="report.html">Report</a>
         <a href="owners.html">Owners</a>
         <a href="orphans.html">Orphans ({{ vm.orphaned_count }})</a>
+        <a href="admin.html" class="admin-link">Admin{% if technical_issues_total > 0 %} <span class="warning-badge">{{ technical_issues_total }}</span>{% endif %}</a>
     </nav>
 
     <h1>Orphan Repositories</h1>

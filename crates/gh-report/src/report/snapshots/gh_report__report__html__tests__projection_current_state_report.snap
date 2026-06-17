@@ -21,6 +21,7 @@ expression: "&pages[\"report.html\"]"
         <a href="report.html">Report</a>
         
         <a href="orphans.html">Orphans (1)</a>
+        <a href="admin.html" class="admin-link">Admin</a>
     </nav>
 
     <h1>TestOrg GitHub Security Posture Overview</h1>

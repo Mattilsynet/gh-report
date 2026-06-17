@@ -63,6 +63,9 @@ struct OwnersTemplate<'a> {
     organization: String,
     total_repos: u32,
     orphaned_count: u32,
+    /// Count of collection-health technical issues, surfaced as the admin
+    /// nav badge.
+    technical_issues_total: u32,
     /// When `true`, emits a `<meta http-equiv="refresh">` tag so the
     /// browser auto-reloads until fresh collection data replaces the
     /// warm-start cache.
@@ -75,6 +78,9 @@ struct OwnersTemplate<'a> {
 struct OwnerDetailTemplate {
     vm: OwnerDetailViewModel,
     orphaned_count: u32,
+    /// Count of collection-health technical issues, surfaced as the admin
+    /// nav badge.
+    technical_issues_total: u32,
     /// When `true`, emits a `<meta http-equiv="refresh">` tag so the
     /// browser auto-reloads until fresh collection data replaces the
     /// warm-start cache.
@@ -86,6 +92,9 @@ struct OwnerDetailTemplate {
 #[template(path = "orphans.html")]
 struct OrphansTemplate {
     vm: OrphanedViewModel,
+    /// Count of collection-health technical issues, surfaced as the admin
+    /// nav badge.
+    technical_issues_total: u32,
     /// When `true`, emits a `<meta http-equiv="refresh">` tag so the
     /// browser auto-reloads until fresh collection data replaces the
     /// warm-start cache.
@@ -223,6 +232,7 @@ pub fn render_dashboard(
     let report = render_template(&ReportTemplate { vm: &vm })?;
     let index = render_template(&IndexTemplate { vm: &vm })?;
     let admin = render_template(&AdminTemplate { vm: &vm })?;
+    let technical_issues_total = vm.admin_diagnostics.technical_issues_total;
 
     let mut pages = HashMap::new();
     pages.insert("report.html".to_string(), report);
@@ -237,6 +247,7 @@ pub fn render_dashboard(
             organization: evidence.assessment_metadata.organization.clone(),
             total_repos: evidence.collection_statistics.total_repos,
             orphaned_count,
+            technical_issues_total,
             warm_start,
         })?;
         pages.insert("owners.html".to_string(), owners_html);
@@ -253,6 +264,7 @@ pub fn render_dashboard(
             let detail_html = render_template(&OwnerDetailTemplate {
                 vm: detail_vm.clone(),
                 orphaned_count,
+                technical_issues_total,
                 warm_start,
             })?;
             pages.insert(format!("owners/{slug}.html"), detail_html);
@@ -261,6 +273,7 @@ pub fn render_dashboard(
 
     let orphaned_html = render_template(&OrphansTemplate {
         vm: orphaned_vm,
+        technical_issues_total,
         warm_start,
     })?;
     pages.insert("orphans.html".to_string(), orphaned_html);
