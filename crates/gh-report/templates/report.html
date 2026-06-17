@@ -31,9 +31,7 @@
 
     <p>This report provides an executive snapshot of how consistently core repository security controls
         are applied across {{ vm.total_repos }} non-archived repositories in <code>{{ vm.organization }}</code>
-        GitHub organization.
-        It measures how consistently key security controls are enabled, owned, and monitored across all
-        non-archived repositories, using aggregated results only.</p>
+        GitHub organization.</p>
 
     <h3>Observability Metrics</h3>
 
@@ -246,6 +244,38 @@
         </thead>
         <tbody>
             <tr>
+                <td>Organisation</td>
+                <td class="text-right">{{ vm.organization }}</td>
+            </tr>
+            <tr>
+                <td>Run ID</td>
+                <td class="text-right">{{ vm.run_id }}</td>
+            </tr>
+            <tr>
+                <td>Generated</td>
+                <td class="text-right">{{ vm.date_time }}</td>
+            </tr>
+            <tr>
+                <td>Data source</td>
+                <td class="text-right">{% if vm.warm_start %}Cached baseline (collection in progress){% else %}Fresh collection{% endif %}</td>
+            </tr>
+            <tr>
+                <td>Organisation governance score</td>
+                <td class="text-right">{{ vm.health_score_formatted }}</td>
+            </tr>
+            <tr>
+                <td>Total repositories</td>
+                <td class="text-right">{{ vm.total_all_repos }}</td>
+            </tr>
+            <tr>
+                <td>Non-archived repos</td>
+                <td class="text-right">{{ vm.total_repos }}</td>
+            </tr>
+            <tr>
+                <td>Archived repos</td>
+                <td class="text-right">{{ vm.archived_repos }}</td>
+            </tr>
+            <tr>
                 <td>Public repos</td>
                 <td class="text-right">{{ vm.public_repos }}</td>
             </tr>
@@ -268,6 +298,10 @@
             <tr>
                 <td>Open org secret-scanning alerts</td>
                 <td class="text-right">{{ vm.org_alert_total_open_secret_alerts }}</td>
+            </tr>
+            <tr>
+                <td>Collection technical issues</td>
+                <td class="text-right"><a href="admin.html">{{ vm.admin_diagnostics.technical_issues_total }}</a></td>
             </tr>
         </tbody>
     </table>

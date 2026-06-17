@@ -90,7 +90,7 @@ pub const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1";
 
 /// Fixed interval between collection runs (seconds). Timer starts after
 /// the previous collection completes.
-pub const COLLECTION_INTERVAL_SECS: u64 = 10_800;
+pub const COLLECTION_INTERVAL_SECS: u64 = 2_700;
 
 /// Maximum API calls per budget epoch before pausing.
 pub const API_BUDGET_LIMIT: u64 = 4000;
