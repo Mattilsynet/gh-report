@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ vm.organization }} Admin Diagnostics</title>
+    <link rel="stylesheet" href="style.css">
+    {% if vm.warm_start %}<meta http-equiv="refresh" content="5">{% endif %}
+</head>
+
+<body>
+
+    <nav class="top-nav">
+        <a href="index.html">Dashboard</a>
+        <a href="report.html">Report</a>
+        {% if vm.owners.is_some() %}<a href="owners.html">Owners</a>{% endif %}
+        <a href="orphans.html">Orphans ({{ vm.orphaned_count }})</a>
+        <a href="admin.html" class="settings-link">Settings{% if vm.admin_diagnostics.has_technical_issues() %} <span class="warning-badge">{{ vm.admin_diagnostics.technical_issues_total }}</span>{% endif %}</a>
+    </nav>
+
+    <h1>Admin Diagnostics</h1>
+
+    <ul class="breadcrumb">
+        <li><a href="index.html">Dashboard</a></li>
+        <li>Admin Diagnostics</li>
+    </ul>
+
+    <p class="meta">Read-only technical diagnostics for <code>{{ vm.organization }}</code>. Technical issues total: <strong>{{ vm.admin_diagnostics.technical_issues_total }}</strong>.</p>
+
+    <h2>Collection Health</h2>
+
+    {% if vm.admin_diagnostics.collection_health_sections.is_empty() %}
+    <p class="meta">No collection-health technical issues reported.</p>
+    {% else %}
+    {% for section in vm.admin_diagnostics.collection_health_sections %}
+    <section class="diagnostics-section">
+        <h3>{{ section.label }}</h3>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Reason</th>
+                    <th class="text-right">Count</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in section.rows %}
+                <tr>
+                    <td>{{ row.label }}</td>
+                    <td class="text-right">{{ row.count }}</td>
+                </tr>
+                {% endfor %}
+                <tr>
+                    <td><strong>Subtotal</strong></td>
+                    <td class="text-right"><strong>{{ section.subtotal }}</strong></td>
+                </tr>
+            </tbody>
+        </table>
+    </section>
+    {% endfor %}
+    {% endif %}
+
+    <h2>Active Credential Limitations</h2>
+
+    <section class="diagnostics-section">
+        <p>running with {{ vm.admin_diagnostics.credentials.auth_mode_label }}/{{ vm.admin_diagnostics.credentials.token_tier_label }}</p>
+        {% if vm.admin_diagnostics.credentials.has_degraded_capabilities() %}
+        <p>degraded:</p>
+        <ul>
+            {% for capability in vm.admin_diagnostics.credentials.unavailable_capabilities %}
+            <li>{{ capability.label }}</li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="meta">No degraded capabilities reported.</p>
+        {% endif %}
+    </section>
+
+</body>
+
+</html>

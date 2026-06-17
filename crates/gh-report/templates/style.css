@@ -201,6 +201,16 @@ code {
    font-weight: 500;
 }
 
+.warning-badge {
+   display: inline-block;
+   min-width: 1.5em;
+   padding: .05em .45em;
+   border-radius: 999px;
+   color: #fff;
+   background: var(--status-warn);
+   text-align: center;
+}
+
 /* ── Breadcrumb ─────────────────────────────────────────────────── */
 
 .breadcrumb {

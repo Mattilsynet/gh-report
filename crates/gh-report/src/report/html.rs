@@ -48,6 +48,13 @@ struct IndexTemplate<'a> {
     vm: &'a ReportViewModel,
 }
 
+/// Askama template for the admin diagnostics page.
+#[derive(Template)]
+#[template(path = "admin.html")]
+struct AdminTemplate<'a> {
+    vm: &'a ReportViewModel,
+}
+
 /// Askama template for the owners overview page.
 #[derive(Template)]
 #[template(path = "owners.html")]
@@ -179,6 +186,7 @@ fn control_display_name(key: &str) -> &'static str {
 /// Returns a map of page path → rendered content:
 /// - `index.html` — Dashboard landing page with scorecard metrics.
 /// - `report.html` — Detailed security posture report.
+/// - `admin.html` — Read-only operator diagnostics.
 /// - `style.css` — Shared stylesheet (external, enabling strict CSP).
 /// - `orphans.html` — Repositories without identifiable code owners.
 /// - `owners.html` — Owner coverage overview (if owner metrics available).
@@ -214,10 +222,12 @@ pub fn render_dashboard(
 
     let report = render_template(&ReportTemplate { vm: &vm })?;
     let index = render_template(&IndexTemplate { vm: &vm })?;
+    let admin = render_template(&AdminTemplate { vm: &vm })?;
 
     let mut pages = HashMap::new();
     pages.insert("report.html".to_string(), report);
     pages.insert("index.html".to_string(), index);
+    pages.insert("admin.html".to_string(), admin);
     pages.insert("style.css".to_string(), STYLESHEET.to_string());
     pages.insert("ws.js".to_string(), WS_CLIENT_JS.to_string());
 
@@ -861,9 +871,12 @@ fn build_status_dots(checks: &crate::domain::checks::RepositoryChecks) -> Vec<St
 mod tests {
     use super::*;
 
+    use crate::domain::auth::{AuthMode, Capability, TokenTier};
+    use crate::domain::checks::CollectionFailureReason;
     use crate::domain::metrics::{
-        AggregatedMetrics, BranchProtectionCounts, CodeownersCounts, DependabotCounts,
-        PolicyCounts, RateMetric, SecretAlertCounts, SecretScanningCounts,
+        AggregatedMetrics, BranchProtectionCounts, CodeownersCounts, CollectionHealthCheckKind,
+        CollectionHealthCount, DependabotCounts, PolicyCounts, RateMetric, SecretAlertCounts,
+        SecretScanningCounts,
     };
     use crate::domain::repository::Visibility;
     use cherry_pit_core::ReadPort;
@@ -964,6 +977,35 @@ mod tests {
         )
     }
 
+    fn sample_evidence_with_admin_diagnostics() -> Evidence {
+        let mut evidence = sample_evidence();
+        evidence.assessment_metadata.auth_mode = AuthMode::GitHubApp;
+        evidence.assessment_metadata.token_tier = TokenTier::Limited;
+        evidence.assessment_metadata.unavailable_capabilities = vec![
+            Capability::PrivateBranchProtectionRead,
+            Capability::OrgSecretScanningAlerts,
+        ];
+        evidence.metrics.collection_health_counts = vec![
+            CollectionHealthCount {
+                check_kind: CollectionHealthCheckKind::Rulesets,
+                reason: CollectionFailureReason::RateLimited,
+                count: 4,
+            },
+            CollectionHealthCount {
+                check_kind: CollectionHealthCheckKind::BranchProtection,
+                reason: CollectionFailureReason::PermissionDenied,
+                count: 3,
+            },
+            CollectionHealthCount {
+                check_kind: CollectionHealthCheckKind::BranchProtection,
+                reason: CollectionFailureReason::PermissionSuspected,
+                count: 1,
+            },
+        ];
+
+        evidence
+    }
+
     #[test]
     fn dashboard_report_produces_valid_html() {
         let evidence = sample_evidence();
@@ -1010,6 +1052,47 @@ mod tests {
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
 
         insta::assert_snapshot!("dashboard_index", &pages["index.html"]);
+    }
+
+    #[test]
+    fn render_dashboard_admin_snapshot() {
+        let evidence = sample_evidence_with_admin_diagnostics();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+        insta::assert_snapshot!("dashboard_admin", &pages["admin.html"]);
+    }
+
+    #[test]
+    fn render_dashboard_index_badge_snapshot() {
+        let evidence = sample_evidence_with_admin_diagnostics();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+        insta::assert_snapshot!("dashboard_index_badge", &pages["index.html"]);
+    }
+
+    #[test]
+    fn render_dashboard_index_zero_badge_snapshot() {
+        let evidence = sample_evidence();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+        insta::assert_snapshot!("dashboard_index_zero_badge", &pages["index.html"]);
+    }
+
+    #[test]
+    fn render_dashboard_admin_page_contains_read_only_diagnostics() {
+        let evidence = sample_evidence_with_admin_diagnostics();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let admin = &pages["admin.html"];
+
+        assert!(admin.contains("Admin Diagnostics"));
+        assert!(admin.contains("Branch Protection"));
+        assert!(admin.contains("permission_denied"));
+        assert!(admin.contains("Subtotal"));
+        assert!(admin.contains("running with github_app/Limited"));
+        assert!(admin.contains("org_secret_scanning_alerts"));
+        assert!(!admin.contains("<form"));
+        assert!(!admin.contains("method=\"post\""));
+        assert!(!admin.contains("<script"));
     }
 
     #[test]
@@ -1080,10 +1163,31 @@ mod tests {
 
         assert!(pages.contains_key("index.html"));
         assert!(pages.contains_key("report.html"));
+        assert!(pages.contains_key("admin.html"));
         assert!(pages.contains_key("style.css"));
         assert!(pages.contains_key("ws.js"));
         assert!(pages.contains_key("orphans.html"));
-        assert_eq!(pages.len(), 5);
+        assert_eq!(pages.len(), 6);
+    }
+
+    #[test]
+    fn render_dashboard_index_badge_counts_admin_technical_issues() {
+        let evidence = sample_evidence_with_admin_diagnostics();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let index = &pages["index.html"];
+
+        assert!(index.contains("href=\"admin.html\""));
+        assert!(index.contains(r#"warning-badge">8</span>"#));
+    }
+
+    #[test]
+    fn render_dashboard_index_omits_warning_badge_when_zero_issues() {
+        let evidence = sample_evidence();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let index = &pages["index.html"];
+
+        assert!(index.contains("href=\"admin.html\""));
+        assert!(!index.contains("warning-badge"));
     }
 
     #[test]

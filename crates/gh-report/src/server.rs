@@ -212,6 +212,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn admin_html_serves_from_dashboard_cache_read_only() {
+        use crate::infra::server::state::CachedPage;
+        use std::collections::HashMap;
+
+        let state = state_no_cache().await;
+        let mut pages = HashMap::new();
+        pages.insert(
+            "admin.html".to_string(),
+            CachedPage::new("admin.html", b"<html>Admin Diagnostics</html>".to_vec()),
+        );
+        state.evidence().html_cache.store(Arc::new(Some(pages)));
+
+        let app = build_router(Arc::clone(&state));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        wait_for_server(addr).await;
+
+        let get_resp = reqwest::get(format!("http://{addr}/admin.html"))
+            .await
+            .unwrap();
+        assert_eq!(get_resp.status(), 200);
+        assert_eq!(
+            get_resp.text().await.unwrap(),
+            "<html>Admin Diagnostics</html>"
+        );
+
+        let post_resp = reqwest::Client::new()
+            .post(format!("http://{addr}/admin.html"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(post_resp.status(), 405);
+
+        handle.abort();
+    }
+
+    #[tokio::test]
     async fn coldstart_projection_serves_200_without_github_api() {
         use crate::app::collect::warm_start_from_baseline;
         use crate::config::dashboard::DashboardConfig;

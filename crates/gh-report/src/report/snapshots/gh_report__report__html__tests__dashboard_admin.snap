@@ -1,0 +1,112 @@
+---
+source: crates/gh-report/src/report/html.rs
+expression: "&pages[\"admin.html\"]"
+---
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TestOrg Admin Diagnostics</title>
+    <link rel="stylesheet" href="style.css">
+    
+</head>
+
+<body>
+
+    <nav class="top-nav">
+        <a href="index.html">Dashboard</a>
+        <a href="report.html">Report</a>
+        
+        <a href="orphans.html">Orphans (0)</a>
+        <a href="admin.html" class="settings-link">Settings <span class="warning-badge">8</span></a>
+    </nav>
+
+    <h1>Admin Diagnostics</h1>
+
+    <ul class="breadcrumb">
+        <li><a href="index.html">Dashboard</a></li>
+        <li>Admin Diagnostics</li>
+    </ul>
+
+    <p class="meta">Read-only technical diagnostics for <code>TestOrg</code>. Technical issues total: <strong>8</strong>.</p>
+
+    <h2>Collection Health</h2>
+
+    
+    
+    <section class="diagnostics-section">
+        <h3>Branch Protection</h3>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Reason</th>
+                    <th class="text-right">Count</th>
+                </tr>
+            </thead>
+            <tbody>
+                
+                <tr>
+                    <td>permission_denied</td>
+                    <td class="text-right">3</td>
+                </tr>
+                
+                <tr>
+                    <td>permission_suspected</td>
+                    <td class="text-right">1</td>
+                </tr>
+                
+                <tr>
+                    <td><strong>Subtotal</strong></td>
+                    <td class="text-right"><strong>4</strong></td>
+                </tr>
+            </tbody>
+        </table>
+    </section>
+    
+    <section class="diagnostics-section">
+        <h3>Rulesets</h3>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Reason</th>
+                    <th class="text-right">Count</th>
+                </tr>
+            </thead>
+            <tbody>
+                
+                <tr>
+                    <td>rate_limited</td>
+                    <td class="text-right">4</td>
+                </tr>
+                
+                <tr>
+                    <td><strong>Subtotal</strong></td>
+                    <td class="text-right"><strong>4</strong></td>
+                </tr>
+            </tbody>
+        </table>
+    </section>
+    
+    
+
+    <h2>Active Credential Limitations</h2>
+
+    <section class="diagnostics-section">
+        <p>running with github_app/Limited</p>
+        
+        <p>degraded:</p>
+        <ul>
+            
+            <li>org_secret_scanning_alerts</li>
+            
+            <li>private_branch_protection_read</li>
+            
+        </ul>
+        
+    </section>
+
+</body>
+
+</html>

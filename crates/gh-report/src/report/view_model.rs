@@ -5,12 +5,16 @@
 //! [`Evidence`] domain object — no nested traversal or formatting
 //! logic belongs in the template.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::config;
 use crate::config::dashboard::CoverageTiers;
+use crate::domain::auth::{AuthMode, Capability, TokenTier};
+use crate::domain::checks::CollectionFailureReason;
 use crate::domain::evidence::Evidence;
-use crate::domain::metrics::OwnerType;
+use crate::domain::metrics::{
+    AggregatedMetrics, CollectionHealthCheckKind, CollectionHealthCount, OwnerType,
+};
 use crate::domain::time::is_repo_stale;
 
 /// Coverage tier classification for dashboard display.
@@ -271,6 +275,81 @@ pub struct OrphanedViewModel {
     pub has_stale_repos: bool,
 }
 
+/// Operator-facing diagnostics for collection health and credentials.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdminDiagnosticsViewModel {
+    /// Deterministically ordered technical issue sections.
+    pub collection_health_sections: Vec<CollectionHealthSection>,
+    /// Total technical issues across every collection-health section.
+    pub technical_issues_total: u32,
+    /// Active credential mode, tier, and degraded capabilities.
+    pub credentials: CredentialLimitationsViewModel,
+}
+
+impl AdminDiagnosticsViewModel {
+    /// Whether any technical issue is present.
+    #[must_use]
+    pub fn has_technical_issues(&self) -> bool {
+        self.technical_issues_total > 0
+    }
+}
+
+/// One collection-health check-kind section.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionHealthSection {
+    /// Collection-health check kind.
+    pub check_kind: CollectionHealthCheckKind,
+    /// Human-readable check-kind label.
+    pub label: &'static str,
+    /// Ordered reason rows within the section.
+    pub rows: Vec<CollectionHealthReasonRow>,
+    /// Subtotal for every reason row in the section.
+    pub subtotal: u32,
+}
+
+/// One collection-health reason row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionHealthReasonRow {
+    /// Failure taxonomy reason.
+    pub reason: CollectionFailureReason,
+    /// Human-readable reason label.
+    pub label: String,
+    /// Number of repositories or checks counted for this reason.
+    pub count: u32,
+}
+
+/// Credential limitations shown on the admin diagnostics page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialLimitationsViewModel {
+    /// Authentication mode used by the active collection run.
+    pub auth_mode: AuthMode,
+    /// Human-readable authentication mode.
+    pub auth_mode_label: String,
+    /// Token capability tier used by the active collection run.
+    pub token_tier: TokenTier,
+    /// Human-readable token tier.
+    pub token_tier_label: String,
+    /// Ordered unavailable capabilities reported by assessment metadata.
+    pub unavailable_capabilities: Vec<CredentialCapabilityLimitation>,
+}
+
+impl CredentialLimitationsViewModel {
+    /// Whether the active credential set has degraded capabilities.
+    #[must_use]
+    pub fn has_degraded_capabilities(&self) -> bool {
+        !self.unavailable_capabilities.is_empty()
+    }
+}
+
+/// One unavailable credential capability.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialCapabilityLimitation {
+    /// Capability reported unavailable by the collector.
+    pub capability: Capability,
+    /// Human-readable capability label.
+    pub label: String,
+}
+
 /// Generate a URL-safe slug from an owner name.
 ///
 /// Rules:
@@ -492,11 +571,21 @@ pub struct ReportViewModel {
     /// Whether this report was rendered from a cached baseline (warm-start)
     /// rather than a fresh API collection.
     pub warm_start: bool,
+
+    /// Read-only operator diagnostics for collection-health and credential limits.
+    pub admin_diagnostics: AdminDiagnosticsViewModel,
 }
 
 struct OrgAlertDisplay {
     status: String,
     total_open_secret_alerts: u64,
+}
+
+struct HealthDisplay {
+    score: Option<f64>,
+    tier: CoverageTier,
+    score_formatted: String,
+    width_class: &'static str,
 }
 
 fn org_alert_display(evidence: &Evidence) -> OrgAlertDisplay {
@@ -524,6 +613,7 @@ impl ReportViewModel {
         let stats = &evidence.collection_statistics;
         let m = &evidence.metrics;
         let org_alert = org_alert_display(evidence);
+        let admin_diagnostics = build_admin_diagnostics(metadata, &m.collection_health_counts);
 
         let dependabot_observable = extra_u32(
             &m.dependabot_security_updates_coverage.extra,
@@ -541,14 +631,7 @@ impl ReportViewModel {
             stale_width_class,
         ) = compute_archival_coverage(evidence, tiers);
 
-        let health_score = compute_health_score(&[
-            m.security_policy_coverage.rate,
-            m.secret_scanning_coverage.rate,
-            m.dependabot_security_updates_coverage.rate,
-            m.branch_protection_coverage.rate,
-            m.codeowners_coverage.rate,
-            stale_rate,
-        ]);
+        let health = health_display(m, stale_rate, tiers);
 
         Self {
             organization: metadata.organization.clone(),
@@ -608,11 +691,10 @@ impl ReportViewModel {
             ),
             branch_protection_width_class: rate_to_width_class(m.branch_protection_coverage.rate),
             codeowners_width_class: rate_to_width_class(m.codeowners_coverage.rate),
-            health_score,
-            health_tier: CoverageTier::from_rate(health_score, tiers),
-            health_score_formatted: health_score
-                .map_or_else(|| "N/A".to_string(), |s| format!("{s:.1}%")),
-            health_width_class: rate_to_width_class(health_score),
+            health_score: health.score,
+            health_tier: health.tier,
+            health_score_formatted: health.score_formatted,
+            health_width_class: health.width_class,
             stale_rate,
             stale_rate_formatted,
             stale_tier,
@@ -623,7 +705,126 @@ impl ReportViewModel {
             top_security_teams: Vec::new(),
             orphaned_count: 0,
             warm_start: metadata.warm_start,
+            admin_diagnostics,
         }
+    }
+}
+
+fn health_display(
+    metrics: &AggregatedMetrics,
+    stale_rate: Option<f64>,
+    tiers: &CoverageTiers,
+) -> HealthDisplay {
+    let score = compute_health_score(&[
+        metrics.security_policy_coverage.rate,
+        metrics.secret_scanning_coverage.rate,
+        metrics.dependabot_security_updates_coverage.rate,
+        metrics.branch_protection_coverage.rate,
+        metrics.codeowners_coverage.rate,
+        stale_rate,
+    ]);
+
+    HealthDisplay {
+        score,
+        tier: CoverageTier::from_rate(score, tiers),
+        score_formatted: score.map_or_else(|| "N/A".to_string(), |s| format!("{s:.1}%")),
+        width_class: rate_to_width_class(score),
+    }
+}
+
+fn build_admin_diagnostics(
+    metadata: &crate::domain::evidence::AssessmentMetadata,
+    collection_health_counts: &[CollectionHealthCount],
+) -> AdminDiagnosticsViewModel {
+    let (collection_health_sections, technical_issues_total) =
+        build_collection_health_sections(collection_health_counts);
+
+    AdminDiagnosticsViewModel {
+        collection_health_sections,
+        technical_issues_total,
+        credentials: build_credential_limitations(metadata),
+    }
+}
+
+fn collection_health_label(kind: CollectionHealthCheckKind) -> &'static str {
+    match kind {
+        CollectionHealthCheckKind::BranchProtection => "Branch Protection",
+        CollectionHealthCheckKind::SecretScanning => "Secret Scanning",
+        CollectionHealthCheckKind::Dependabot => "Dependabot",
+        CollectionHealthCheckKind::Codeowners => "CODEOWNERS",
+        CollectionHealthCheckKind::SecurityPolicy => "Security Policy",
+        CollectionHealthCheckKind::Inventory => "Inventory",
+        CollectionHealthCheckKind::Rulesets => "Rulesets",
+    }
+}
+
+fn build_collection_health_sections(
+    counts: &[CollectionHealthCount],
+) -> (Vec<CollectionHealthSection>, u32) {
+    let mut grouped = BTreeMap::new();
+    for count in counts {
+        let key = (count.check_kind, count.reason);
+        let total = grouped.entry(key).or_insert(0_u32);
+        *total = total.saturating_add(count.count);
+    }
+
+    let mut sections = Vec::new();
+    let technical_issues_total = grouped
+        .values()
+        .fold(0_u32, |total, count| total.saturating_add(*count));
+
+    for ((check_kind, reason), count) in grouped {
+        let row = CollectionHealthReasonRow {
+            reason,
+            label: reason.to_string(),
+            count,
+        };
+
+        if let Some(section) = sections
+            .last_mut()
+            .filter(|section: &&mut CollectionHealthSection| section.check_kind == check_kind)
+        {
+            section.subtotal = section.subtotal.saturating_add(row.count);
+            section.rows.push(row);
+        } else {
+            let subtotal = row.count;
+            sections.push(CollectionHealthSection {
+                check_kind,
+                label: collection_health_label(check_kind),
+                rows: vec![row],
+                subtotal,
+            });
+        }
+    }
+
+    (sections, technical_issues_total)
+}
+
+fn capability_order(capability: Capability) -> u8 {
+    match capability {
+        Capability::OrgSecretScanningAlerts => 0,
+        Capability::PrivateBranchProtectionRead => 1,
+    }
+}
+
+fn build_credential_limitations(
+    metadata: &crate::domain::evidence::AssessmentMetadata,
+) -> CredentialLimitationsViewModel {
+    let mut unavailable = metadata.unavailable_capabilities.clone();
+    unavailable.sort_by_key(|capability| capability_order(*capability));
+
+    CredentialLimitationsViewModel {
+        auth_mode: metadata.auth_mode,
+        auth_mode_label: metadata.auth_mode.to_string(),
+        token_tier: metadata.token_tier,
+        token_tier_label: metadata.token_tier.to_string(),
+        unavailable_capabilities: unavailable
+            .into_iter()
+            .map(|capability| CredentialCapabilityLimitation {
+                capability,
+                label: capability.to_string(),
+            })
+            .collect(),
     }
 }
 
@@ -756,9 +957,12 @@ fn format_run_timestamp(ts: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::auth::{AuthMode, Capability, TokenTier};
+    use crate::domain::checks::CollectionFailureReason;
     use crate::domain::metrics::{
-        AggregatedMetrics, BranchProtectionCounts, CodeownersCounts, DependabotCounts,
-        PolicyCounts, RateMetric, SecretAlertCounts, SecretScanningCounts,
+        AggregatedMetrics, BranchProtectionCounts, CodeownersCounts, CollectionHealthCheckKind,
+        CollectionHealthCount, DependabotCounts, PolicyCounts, RateMetric, SecretAlertCounts,
+        SecretScanningCounts,
     };
     use crate::test_fixtures;
     use std::collections::HashMap;
@@ -967,6 +1171,97 @@ mod tests {
         assert_eq!(vm.private_repos, 2);
         assert_eq!(vm.rate_limit_warnings, 2);
         assert_eq!(vm.run_id, evidence.assessment_metadata.run_id);
+    }
+
+    #[test]
+    fn admin_diagnostics_groups_collection_health_counts_deterministically() {
+        let mut evidence = sample_evidence();
+        evidence.assessment_metadata.auth_mode = AuthMode::GitHubApp;
+        evidence.assessment_metadata.token_tier = TokenTier::Limited;
+        evidence.assessment_metadata.unavailable_capabilities = vec![
+            Capability::PrivateBranchProtectionRead,
+            Capability::OrgSecretScanningAlerts,
+        ];
+        evidence.metrics.collection_health_counts = vec![
+            CollectionHealthCount {
+                check_kind: CollectionHealthCheckKind::Rulesets,
+                reason: CollectionFailureReason::RateLimited,
+                count: 4,
+            },
+            CollectionHealthCount {
+                check_kind: CollectionHealthCheckKind::BranchProtection,
+                reason: CollectionFailureReason::Transient,
+                count: 2,
+            },
+            CollectionHealthCount {
+                check_kind: CollectionHealthCheckKind::BranchProtection,
+                reason: CollectionFailureReason::PermissionDenied,
+                count: 3,
+            },
+            CollectionHealthCount {
+                check_kind: CollectionHealthCheckKind::BranchProtection,
+                reason: CollectionFailureReason::PermissionSuspected,
+                count: 1,
+            },
+        ];
+
+        let vm = ReportViewModel::from_evidence(&evidence, &CoverageTiers::default());
+        let diagnostics = &vm.admin_diagnostics;
+
+        assert!(diagnostics.has_technical_issues());
+        assert_eq!(diagnostics.technical_issues_total, 10);
+        assert_eq!(diagnostics.collection_health_sections.len(), 2);
+        assert_eq!(
+            diagnostics.collection_health_sections[0].check_kind,
+            CollectionHealthCheckKind::BranchProtection
+        );
+        assert_eq!(diagnostics.collection_health_sections[0].subtotal, 6);
+        assert_eq!(
+            diagnostics.collection_health_sections[0]
+                .rows
+                .iter()
+                .map(|row| (row.reason, row.count))
+                .collect::<Vec<_>>(),
+            vec![
+                (CollectionFailureReason::PermissionDenied, 3),
+                (CollectionFailureReason::PermissionSuspected, 1),
+                (CollectionFailureReason::Transient, 2),
+            ]
+        );
+        assert_eq!(
+            diagnostics.collection_health_sections[1].check_kind,
+            CollectionHealthCheckKind::Rulesets
+        );
+        assert_eq!(diagnostics.collection_health_sections[1].subtotal, 4);
+        assert_eq!(diagnostics.credentials.auth_mode, AuthMode::GitHubApp);
+        assert_eq!(diagnostics.credentials.auth_mode_label, "github_app");
+        assert_eq!(diagnostics.credentials.token_tier, TokenTier::Limited);
+        assert_eq!(diagnostics.credentials.token_tier_label, "Limited");
+        assert!(diagnostics.credentials.has_degraded_capabilities());
+        assert_eq!(
+            diagnostics
+                .credentials
+                .unavailable_capabilities
+                .iter()
+                .map(|capability| capability.capability)
+                .collect::<Vec<_>>(),
+            vec![
+                Capability::OrgSecretScanningAlerts,
+                Capability::PrivateBranchProtectionRead,
+            ]
+        );
+    }
+
+    #[test]
+    fn admin_diagnostics_zero_issues_has_neutral_badge_state() {
+        let evidence = sample_evidence();
+        let vm = ReportViewModel::from_evidence(&evidence, &CoverageTiers::default());
+        let diagnostics = &vm.admin_diagnostics;
+
+        assert!(!diagnostics.has_technical_issues());
+        assert_eq!(diagnostics.technical_issues_total, 0);
+        assert!(diagnostics.collection_health_sections.is_empty());
+        assert!(!diagnostics.credentials.has_degraded_capabilities());
     }
 
     #[test]
