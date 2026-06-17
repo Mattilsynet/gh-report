@@ -13,8 +13,8 @@ use crate::domain::codeowners::ParsedCodeowners;
 ///
 /// Fields encode in declaration order via `Encode::encode`: `security_policy`,
 /// `secret_scanning`, `dependabot_security_updates`, `branch_protection`,
-/// `codeowners`. Field reorder is a wire-format break (CHE-0064:R2 +
-/// PAR-0024:R5); new fields must append.
+/// `codeowners`. Field reorder is a wire-format break (CHE-0022:R3 +
+/// PGN-0003 + PGN-0013:R8); new fields must append.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RepositoryChecks {
     /// Security policy check result.
@@ -35,7 +35,7 @@ pub struct RepositoryChecks {
 ///
 /// Fields encode in declaration order via `Encode::encode`: `status`,
 /// `evidence`, `path`, `timestamp`. Field reorder is a wire-format break
-/// (CHE-0064:R2 + PAR-0024:R5); new fields must append.
+/// (CHE-0022:R3 + PGN-0003 + PGN-0013:R8); new fields must append.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecurityPolicyResult {
     /// Whether a security policy was detected.
@@ -54,7 +54,7 @@ pub struct SecurityPolicyResult {
 ///
 /// Variant discriminant is `u8` of declaration position (`Pass=0`, `Fail=1`,
 /// `Unknown=2`, `NotApplicable=3`). Reordering or inserting a variant is a
-/// wire-format break (CHE-0064:R2 + PAR-0024:R5); new variants must be
+/// wire-format break (CHE-0022:R3 + PGN-0003 + PGN-0013:R8); new variants must be
 /// appended.
 ///
 /// ```
@@ -77,8 +77,8 @@ pub enum SecurityPolicyStatus {
 ///
 /// Variant discriminant is `u8` of declaration position (`Setting=0`, `File=1`,
 /// `Absent=2`, `PermissionDenied=3`, `TransientError=4`, `CollectionError=5`,
-/// `NotApplicable=6`). Reorder or insert is a wire-format break (CHE-0064:R2 +
-/// PAR-0024:R5); new variants must append.
+/// `NotApplicable=6`). Reorder or insert is a wire-format break (CHE-0022:R3 +
+/// PGN-0003 + PGN-0013:R8); new variants must append.
 ///
 /// ```
 /// use gh_report::domain::checks::SecurityPolicyEvidence;
@@ -111,7 +111,7 @@ pub enum SecurityPolicyEvidence {
 ///
 /// Fields encode in declaration order via `Encode::encode`: `status`,
 /// `has_open_alerts`, `alerts_observable`, `reason`, `timestamp`. Field
-/// reorder is a wire-format break (CHE-0064:R2 + PAR-0024:R5); new fields
+/// reorder is a wire-format break (CHE-0022:R3 + PGN-0003 + PGN-0013:R8); new fields
 /// must append.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecretScanningResult {
@@ -133,7 +133,7 @@ pub struct SecretScanningResult {
 ///
 /// Variant discriminant is `u8` of declaration position (`Enabled=0`,
 /// `Disabled=1`, `PermissionDenied=2`, `Unknown=3`). Reorder or insert is a
-/// wire-format break (CHE-0064:R2 + PAR-0024:R5); new variants must append.
+/// wire-format break (CHE-0022:R3 + PGN-0003 + PGN-0013:R8); new variants must append.
 ///
 /// ```
 /// use gh_report::domain::checks::SecretScanningStatus;
@@ -165,8 +165,8 @@ impl std::fmt::Display for SecretScanningStatus {
 /// # Wire format
 ///
 /// Fields encode in declaration order via `Encode::encode`: `status`, `reason`,
-/// `timestamp`. Field reorder is a wire-format break (CHE-0064:R2 +
-/// PAR-0024:R5); new fields must append.
+/// `timestamp`. Field reorder is a wire-format break (CHE-0022:R3 + PGN-0003 +
+/// PGN-0013:R8); new fields must append.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DependabotResult {
     /// Whether Dependabot security updates are enabled on the repository.
@@ -183,7 +183,7 @@ pub struct DependabotResult {
 ///
 /// Variant discriminant is `u8` of declaration position (`Enabled=0`,
 /// `Paused=1`, `Disabled=2`, `Unknown=3`). Reorder or insert is a wire-format
-/// break (CHE-0064:R2 + PAR-0024:R5); new variants must append.
+/// break (CHE-0022:R3 + PGN-0003 + PGN-0013:R8); new variants must append.
 ///
 /// ```
 /// use gh_report::domain::checks::DependabotStatus;
@@ -215,8 +215,8 @@ impl std::fmt::Display for DependabotStatus {
 /// # Wire format
 ///
 /// Fields encode in declaration order via `Encode::encode`: `status`, `details`,
-/// `timestamp`. Field reorder is a wire-format break (CHE-0064:R2 +
-/// PAR-0024:R5); new fields must append.
+/// `timestamp`. Field reorder is a wire-format break (CHE-0022:R3 + PGN-0003 +
+/// PGN-0013:R8); new fields must append.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BranchProtectionResult {
     /// Overall branch protection status.
@@ -233,7 +233,7 @@ pub struct BranchProtectionResult {
 ///
 /// Variant discriminant is `u8` of declaration position (`Pass=0`, `Partial=1`,
 /// `Fail=2`, `Unknown=3`). Reorder or insert is a wire-format break
-/// (CHE-0064:R2 + PAR-0024:R5); new variants must append.
+/// (CHE-0022:R3 + PGN-0003 + PGN-0013:R8); new variants must append.
 ///
 /// ```
 /// use gh_report::domain::checks::BranchProtectionStatus;
@@ -267,7 +267,7 @@ impl std::fmt::Display for BranchProtectionStatus {
 /// Fields encode in declaration order via `Encode::encode`: `default_branch`,
 /// `has_pr`, `required_reviewers`, `has_status_checks`, `admin_equivalent`,
 /// `has_broad_bypass`, `reason`. Field reorder is a wire-format break
-/// (CHE-0064:R2 + PAR-0024:R5); new fields must append.
+/// (CHE-0022:R3 + PGN-0003 + PGN-0013:R8); new fields must append.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BranchProtectionDetails {
     /// Name of the repository's default branch.
@@ -446,7 +446,7 @@ impl BranchControls {
 ///
 /// Fields encode in declaration order via `Encode::encode`: `status`, `path`,
 /// `timestamp`, `parsed`, `truncation`. Field reorder is a wire-format break
-/// (CHE-0064:R2 + PAR-0024:R5); new fields must append.
+/// (CHE-0022:R3 + PGN-0003 + PGN-0013:R8); new fields must append.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodeownersResult {
     /// Whether a CODEOWNERS file was found and in a conforming location.
@@ -470,7 +470,7 @@ pub struct CodeownersResult {
 ///
 /// Variant discriminant is `u8` of declaration position (`Conforming=0`,
 /// `NonConforming=1`, `Absent=2`, `Unknown=3`). Reorder or insert is a
-/// wire-format break (CHE-0064:R2 + PAR-0024:R5); new variants must append.
+/// wire-format break (CHE-0022:R3 + PGN-0003 + PGN-0013:R8); new variants must append.
 ///
 /// ```
 /// use gh_report::domain::checks::CodeownersStatus;
