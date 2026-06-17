@@ -1628,7 +1628,7 @@ mod tests {
             &crate::config::dashboard::DashboardConfig::default(),
         )
         .expect("render replayed org state");
-        assert!(pages["index.html"].contains("org-run-from-event"));
+        assert!(pages["report.html"].contains("org-run-from-event"));
         assert!(pages["index.html"].contains("7 archived"));
         assert!(pages["index.html"].contains("9 open org alerts"));
     }

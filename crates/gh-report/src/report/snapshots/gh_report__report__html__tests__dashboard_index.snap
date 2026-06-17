@@ -1,5 +1,6 @@
 ---
 source: crates/gh-report/src/report/html.rs
+assertion_line: 1011
 expression: "&pages[\"index.html\"]"
 ---
 <!DOCTYPE html>
@@ -24,7 +25,7 @@ expression: "&pages[\"index.html\"]"
     </nav>
 
     <div class="page-header">
-        <p class="meta"><strong>Date:</strong> 2026-04-09 12:00 UTC · <strong>Run:</strong> test-run-id · <strong>Scope:</strong> 5 total · 5 non-archived · 0 archived repositories in <code>TestOrg</code></p>
+        <p class="meta"><strong>Date:</strong> 2026-04-09 12:00 UTC · <strong>Scope:</strong> 5 total · 5 non-archived · 0 archived repositories in <code>TestOrg</code></p>
     </div>
 
     <div class="scorecard">
