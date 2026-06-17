@@ -20,6 +20,8 @@ fn summarize_ruleset(ruleset: &serde_json::Value) -> BranchControls {
     let mut has_pr = false;
     let mut reviewer_count: u32 = 0;
     let mut has_status_checks = false;
+    let mut force_push_blocked = Some(false);
+    let mut deletion_blocked = Some(false);
 
     if let Some(rules) = ruleset.get("rules").and_then(serde_json::Value::as_array) {
         for rule in rules {
@@ -46,13 +48,20 @@ fn summarize_ruleset(ruleset: &serde_json::Value) -> BranchControls {
                     has_status_checks = true;
                 }
             }
+            if rule_type == "non_fast_forward" {
+                force_push_blocked = Some(true);
+            }
+            if rule_type == "deletion" {
+                deletion_blocked = Some(true);
+            }
         }
     }
 
     let has_broad_bypass = ruleset_has_broad_bypass(ruleset);
 
     BranchControls::new(
-        BranchRequirements::new(has_pr, has_status_checks, !has_broad_bypass),
+        BranchRequirements::new(has_pr, has_status_checks, !has_broad_bypass)
+            .with_integrity_controls(force_push_blocked, deletion_blocked),
         reviewer_count,
         has_broad_bypass,
     )
@@ -115,8 +124,21 @@ fn summarize_legacy_protection(protection: &serde_json::Value) -> BranchControls
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
+    let force_push_blocked = protection
+        .get("allow_force_pushes")
+        .and_then(|value| value.get("enabled"))
+        .and_then(serde_json::Value::as_bool)
+        .map(|allowed| !allowed);
+
+    let deletion_blocked = protection
+        .get("allow_deletions")
+        .and_then(|value| value.get("enabled"))
+        .and_then(serde_json::Value::as_bool)
+        .map(|allowed| !allowed);
+
     BranchControls::new(
-        BranchRequirements::new(has_pr, has_status_checks, admin_equivalent),
+        BranchRequirements::new(has_pr, has_status_checks, admin_equivalent)
+            .with_integrity_controls(force_push_blocked, deletion_blocked),
         reviewer_count,
         false,
     )
@@ -306,8 +328,8 @@ fn build_protection_result(
                     reason: None,
                     reason_kind: None,
                     http_status: None,
-                    force_push_blocked: None,
-                    deletion_blocked: None,
+                    force_push_blocked: controls.force_push_blocked(),
+                    deletion_blocked: controls.deletion_blocked(),
                 },
                 timestamp: run_timestamp.to_string(),
             }
@@ -381,6 +403,7 @@ fn ruleset_applies(ruleset: &serde_json::Value, default_branch: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::checks::BranchProtectionTier;
 
     #[test]
     fn summarize_ruleset_pr_and_status_checks() {
@@ -407,6 +430,38 @@ mod tests {
         assert!(controls.has_status_checks());
         assert!(controls.admin_equivalent());
         assert!(!controls.has_broad_bypass());
+    }
+
+    #[test]
+    fn summarize_ruleset_force_push_and_deletion_rules_block_controls() {
+        let ruleset = serde_json::json!({
+            "rules": [
+                {"type": "non_fast_forward"},
+                {"type": "deletion"}
+            ],
+            "bypass_actors": []
+        });
+
+        let controls = summarize_ruleset(&ruleset);
+
+        assert_eq!(controls.force_push_blocked(), Some(true));
+        assert_eq!(controls.deletion_blocked(), Some(true));
+    }
+
+    #[test]
+    fn summarize_ruleset_missing_force_push_and_deletion_rules_reports_unblocked() {
+        let ruleset = serde_json::json!({
+            "rules": [
+                {"type": "pull_request", "parameters": {"required_approving_review_count": 1}}
+            ],
+            "bypass_actors": []
+        });
+
+        let controls = summarize_ruleset(&ruleset);
+
+        assert_eq!(controls.force_push_blocked(), Some(false));
+        assert_eq!(controls.deletion_blocked(), Some(false));
+        assert_eq!(controls.tier(), BranchProtectionTier::BelowBaseline);
     }
 
     #[test]
@@ -456,6 +511,19 @@ mod tests {
     }
 
     #[test]
+    fn summarize_legacy_inverts_allow_force_pushes_and_deletions() {
+        let protection = serde_json::json!({
+            "allow_force_pushes": {"enabled": false},
+            "allow_deletions": {"enabled": true}
+        });
+
+        let controls = summarize_legacy_protection(&protection);
+
+        assert_eq!(controls.force_push_blocked(), Some(true));
+        assert_eq!(controls.deletion_blocked(), Some(false));
+    }
+
+    #[test]
     fn summarize_legacy_no_protection() {
         let protection = serde_json::json!({});
         let controls = summarize_legacy_protection(&protection);
@@ -500,6 +568,8 @@ mod tests {
             Some(CollectionFailureReason::PermissionSuspected)
         );
         assert_eq!(result.details.http_status, Some(404));
+        assert_eq!(result.details.force_push_blocked, None);
+        assert_eq!(result.details.deletion_blocked, None);
     }
 
     #[test]

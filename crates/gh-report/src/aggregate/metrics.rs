@@ -12,7 +12,7 @@ use tracing::warn;
 
 use crate::config;
 use crate::domain::checks::{
-    BranchProtectionStatus, CodeownersStatus, CollectionFailureReason, DependabotStatus,
+    BranchProtectionTier, CodeownersStatus, CollectionFailureReason, DependabotStatus,
     SecretScanningStatus, SecurityPolicyEvidence, SecurityPolicyStatus,
 };
 use crate::domain::evidence::RepositoryEvidence;
@@ -229,7 +229,12 @@ fn open_secret_alert_prevalence(input: CoverageInputs<'_>) -> RateMetric {
 }
 
 fn branch_protection_coverage(input: CoverageInputs<'_>) -> RateMetric {
-    RateMetric::new(input.branch_counts.pass, input.total_active)
+    let observable = input
+        .branch_counts
+        .pass
+        .saturating_add(input.branch_counts.partial)
+        .saturating_add(input.branch_counts.fail);
+    RateMetric::new(input.branch_counts.pass, observable)
         .with_extra(
             "insufficient",
             input
@@ -238,14 +243,7 @@ fn branch_protection_coverage(input: CoverageInputs<'_>) -> RateMetric {
                 .saturating_add(input.branch_counts.fail),
         )
         .with_extra("unknown", input.branch_counts.unknown)
-        .with_extra(
-            "observable_repositories",
-            input
-                .branch_counts
-                .pass
-                .saturating_add(input.branch_counts.partial)
-                .saturating_add(input.branch_counts.fail),
-        )
+        .with_extra("observable_repositories", observable)
         .with_extra(
             "collection_health_branch_protection_permission_suspected",
             input.taxonomy.branch_protection_permission_suspected,
@@ -440,11 +438,13 @@ fn count_collection_health_reasons(
 fn count_branch_protection_statuses(active: &[&RepositoryEvidence]) -> BranchProtectionCounts {
     count_statuses(
         active,
-        |repo, counts: &mut BranchProtectionCounts| match repo.checks.branch_protection.status {
-            BranchProtectionStatus::Pass => counts.pass = counts.pass.saturating_add(1),
-            BranchProtectionStatus::Partial => counts.partial = counts.partial.saturating_add(1),
-            BranchProtectionStatus::Fail => counts.fail = counts.fail.saturating_add(1),
-            BranchProtectionStatus::Unknown => counts.unknown = counts.unknown.saturating_add(1),
+        |repo, counts: &mut BranchProtectionCounts| match repo.checks.branch_protection.tier() {
+            BranchProtectionTier::AcceptBar | BranchProtectionTier::Bonus => {
+                counts.pass = counts.pass.saturating_add(1);
+            }
+            BranchProtectionTier::Minimal => counts.partial = counts.partial.saturating_add(1),
+            BranchProtectionTier::BelowBaseline => counts.fail = counts.fail.saturating_add(1),
+            BranchProtectionTier::Excluded => counts.unknown = counts.unknown.saturating_add(1),
         },
     )
 }
@@ -682,7 +682,10 @@ fn build_per_control_coverage(repos: &[&RepositoryEvidence]) -> HashMap<String, 
             r.checks.dependabot_security_updates.status == DependabotStatus::Enabled
         }),
         ("branch_protection", |r| {
-            r.checks.branch_protection.status == BranchProtectionStatus::Pass
+            matches!(
+                r.checks.branch_protection.tier(),
+                BranchProtectionTier::AcceptBar | BranchProtectionTier::Bonus
+            )
         }),
         ("codeowners", |r| {
             matches!(
@@ -1030,8 +1033,8 @@ mod tests {
         assert_eq!(metrics.branch_protection_counts.unknown, 1);
 
         assert_eq!(metrics.branch_protection_coverage.numerator, 2);
-        assert_eq!(metrics.branch_protection_coverage.denominator, 5);
-        assert_eq!(metrics.branch_protection_coverage.rate, Some(40.0));
+        assert_eq!(metrics.branch_protection_coverage.denominator, 4);
+        assert_eq!(metrics.branch_protection_coverage.rate, Some(50.0));
     }
 
     #[test]

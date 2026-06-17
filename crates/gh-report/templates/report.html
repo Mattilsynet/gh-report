@@ -175,19 +175,19 @@
             </thead>
             <tbody>
                 <tr>
-                    <td title="Percentage of repos with full branch protection on the default branch.">Coverage</td>
+                    <td title="Percentage of observable repos at branch-protection T2 or higher.">T2+ coverage</td>
                     <td class="text-right">{{ vm.branch_protection_coverage_formatted }}</td>
                 </tr>
                 <tr>
-                    <td title="Repos with some but not all branch protection rules enabled.">Partial</td>
+                    <td title="Repos at T1 minimal: branch protected with force-push and deletion blocked, but missing PR-review accept bar.">T1 minimal</td>
                     <td class="text-right">{{ vm.branch_protection_partial }}</td>
                 </tr>
                 <tr>
-                    <td title="Repos with no branch protection rules on the default branch.">Fail</td>
+                    <td title="Repos at T0 below baseline: unprotected, unreadable genuine absence, or force-push/deletion not blocked.">T0 below baseline</td>
                     <td class="text-right">{{ vm.branch_protection_fail }}</td>
                 </tr>
                 <tr>
-                    <td title="Repos where the check could not be completed.">Unknown</td>
+                    <td title="Repos where branch protection could not be scored because collection was unreadable or permission-suspected.">Excluded / unreadable</td>
                     <td class="text-right">{{ vm.branch_protection_unknown }}</td>
                 </tr>
             </tbody>

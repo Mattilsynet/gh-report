@@ -249,6 +249,22 @@ pub enum BranchProtectionStatus {
     Unknown = 3,
 }
 
+/// Report-side tier for branch-protection scoring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+pub enum BranchProtectionTier {
+    /// Protection could not be read or scored.
+    Excluded = 0,
+    /// T0: no effective baseline protection detected.
+    BelowBaseline = 1,
+    /// T1: protected branch with baseline force-push/deletion integrity.
+    Minimal = 2,
+    /// T2: T1 plus pull request review enforcement.
+    AcceptBar = 3,
+    /// T3+: T2 plus additive hardening bonuses.
+    Bonus = 4,
+}
+
 impl std::fmt::Display for BranchProtectionStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -331,6 +347,95 @@ pub struct BranchProtectionDetails {
     pub deletion_blocked: Option<bool>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BranchTierSignals {
+    status: BranchProtectionStatus,
+    reason_kind: Option<CollectionFailureReason>,
+    has_pr: Option<bool>,
+    required_reviewers: Option<u32>,
+    has_status_checks: Option<bool>,
+    admin_equivalent: Option<bool>,
+    has_broad_bypass: Option<bool>,
+    force_push_blocked: Option<bool>,
+    deletion_blocked: Option<bool>,
+}
+
+fn classify_branch_tier(signals: BranchTierSignals) -> BranchProtectionTier {
+    if signals.status == BranchProtectionStatus::Unknown
+        || matches!(
+            signals.reason_kind,
+            Some(
+                CollectionFailureReason::PermissionDenied
+                    | CollectionFailureReason::PermissionSuspected
+                    | CollectionFailureReason::Transient
+                    | CollectionFailureReason::RateLimited
+                    | CollectionFailureReason::Invalid
+            )
+        )
+    {
+        return BranchProtectionTier::Excluded;
+    }
+
+    let protected = signals.has_pr == Some(true)
+        || signals.required_reviewers.is_some_and(|count| count > 0)
+        || signals.has_status_checks == Some(true)
+        || signals.admin_equivalent == Some(true)
+        || signals.force_push_blocked == Some(true)
+        || signals.deletion_blocked == Some(true);
+
+    if !protected
+        || signals.force_push_blocked == Some(false)
+        || signals.deletion_blocked == Some(false)
+    {
+        return BranchProtectionTier::BelowBaseline;
+    }
+
+    let integrity_blocked =
+        signals.force_push_blocked == Some(true) && signals.deletion_blocked == Some(true);
+
+    if !integrity_blocked {
+        return BranchProtectionTier::BelowBaseline;
+    }
+
+    if signals.has_pr != Some(true) || signals.required_reviewers.unwrap_or(0) == 0 {
+        return BranchProtectionTier::Minimal;
+    }
+
+    if signals.has_broad_bypass == Some(true) {
+        return BranchProtectionTier::AcceptBar;
+    }
+
+    if signals.has_status_checks == Some(true) {
+        BranchProtectionTier::Bonus
+    } else {
+        BranchProtectionTier::AcceptBar
+    }
+}
+
+impl BranchProtectionResult {
+    /// Compute the report-side branch-protection tier from raw details.
+    #[must_use]
+    pub fn tier(&self) -> BranchProtectionTier {
+        classify_branch_tier(BranchTierSignals {
+            status: self.status,
+            reason_kind: self.details.reason_kind,
+            has_pr: self.details.has_pr,
+            required_reviewers: self.details.required_reviewers,
+            has_status_checks: self.details.has_status_checks,
+            admin_equivalent: self.details.admin_equivalent,
+            has_broad_bypass: self.details.has_broad_bypass,
+            force_push_blocked: self.details.force_push_blocked,
+            deletion_blocked: self.details.deletion_blocked,
+        })
+    }
+
+    /// Map the report-side tier to score inclusion semantics.
+    #[must_use]
+    pub fn score_category(&self) -> ScoreCategory {
+        self.tier().into()
+    }
+}
+
 /// Intermediate representation of merged branch protection controls.
 ///
 /// Used during evaluation before mapping to a final status.
@@ -342,6 +447,10 @@ pub struct BranchRequirements {
     pub has_status_checks: bool,
     /// Whether administrators are subject to enforcement.
     pub admin_equivalent: bool,
+    /// Whether force pushes are blocked by branch protection controls.
+    pub force_push_blocked: Option<bool>,
+    /// Whether branch deletion is blocked by branch protection controls.
+    pub deletion_blocked: Option<bool>,
 }
 
 impl BranchRequirements {
@@ -352,7 +461,21 @@ impl BranchRequirements {
             has_pr,
             has_status_checks,
             admin_equivalent,
+            force_push_blocked: None,
+            deletion_blocked: None,
         }
+    }
+
+    /// Attach force-push and deletion blocking signals.
+    #[must_use]
+    pub fn with_integrity_controls(
+        mut self,
+        force_push_blocked: Option<bool>,
+        deletion_blocked: Option<bool>,
+    ) -> Self {
+        self.force_push_blocked = force_push_blocked;
+        self.deletion_blocked = deletion_blocked;
+        self
     }
 }
 
@@ -415,29 +538,45 @@ impl BranchControls {
         self.exceptions.has_broad_bypass
     }
 
+    /// Whether force pushes are blocked, or `None` when unreadable.
+    #[must_use]
+    pub fn force_push_blocked(&self) -> Option<bool> {
+        self.requirements.force_push_blocked
+    }
+
+    /// Whether branch deletion is blocked, or `None` when unreadable.
+    #[must_use]
+    pub fn deletion_blocked(&self) -> Option<bool> {
+        self.requirements.deletion_blocked
+    }
+
     /// Derive the branch protection status from the current controls.
     #[must_use]
     pub fn status(&self) -> BranchProtectionStatus {
-        let all_controls = self.has_pr()
-            && self.reviewer_count >= 1
-            && self.has_status_checks()
-            && self.admin_equivalent()
-            && !self.has_broad_bypass();
-
-        if all_controls {
-            return BranchProtectionStatus::Pass;
+        match self.tier() {
+            BranchProtectionTier::Excluded => BranchProtectionStatus::Unknown,
+            BranchProtectionTier::BelowBaseline => BranchProtectionStatus::Fail,
+            BranchProtectionTier::Minimal => BranchProtectionStatus::Partial,
+            BranchProtectionTier::AcceptBar | BranchProtectionTier::Bonus => {
+                BranchProtectionStatus::Pass
+            }
         }
+    }
 
-        let any_controls = self.has_pr()
-            || self.reviewer_count >= 1
-            || self.has_status_checks()
-            || self.admin_equivalent();
-
-        if any_controls {
-            BranchProtectionStatus::Partial
-        } else {
-            BranchProtectionStatus::Fail
-        }
+    /// Compute the report-side branch-protection tier from merged controls.
+    #[must_use]
+    pub fn tier(&self) -> BranchProtectionTier {
+        classify_branch_tier(BranchTierSignals {
+            status: BranchProtectionStatus::Partial,
+            reason_kind: None,
+            has_pr: Some(self.has_pr()),
+            required_reviewers: Some(self.reviewer_count),
+            has_status_checks: Some(self.has_status_checks()),
+            admin_equivalent: Some(self.admin_equivalent()),
+            has_broad_bypass: Some(self.has_broad_bypass()),
+            force_push_blocked: self.force_push_blocked(),
+            deletion_blocked: self.deletion_blocked(),
+        })
     }
 
     /// Merge multiple control sets, taking the strongest signal for each field.
@@ -474,6 +613,10 @@ impl BranchControls {
                 controls_list.iter().any(BranchControls::has_status_checks),
                 !controls_list.iter().any(BranchControls::has_broad_bypass)
                     && controls_list.iter().any(BranchControls::admin_equivalent),
+            )
+            .with_integrity_controls(
+                merge_optional_blocking_signal(controls_list, BranchControls::force_push_blocked),
+                merge_optional_blocking_signal(controls_list, BranchControls::deletion_blocked),
             ),
             controls_list
                 .iter()
@@ -483,6 +626,21 @@ impl BranchControls {
             controls_list.iter().any(BranchControls::has_broad_bypass),
         ))
     }
+}
+
+fn merge_optional_blocking_signal(
+    controls_list: &[BranchControls],
+    select: fn(&BranchControls) -> Option<bool>,
+) -> Option<bool> {
+    let mut saw_unblocked = false;
+    for controls in controls_list {
+        match select(controls) {
+            Some(true) => return Some(true),
+            Some(false) => saw_unblocked = true,
+            None => {}
+        }
+    }
+    if saw_unblocked { Some(false) } else { None }
 }
 
 /// CODEOWNERS evaluation outcome.
@@ -605,6 +763,16 @@ impl From<BranchProtectionStatus> for ScoreCategory {
     }
 }
 
+impl From<BranchProtectionTier> for ScoreCategory {
+    fn from(tier: BranchProtectionTier) -> Self {
+        match tier {
+            BranchProtectionTier::AcceptBar | BranchProtectionTier::Bonus => Self::Pass,
+            BranchProtectionTier::Minimal | BranchProtectionTier::BelowBaseline => Self::Fail,
+            BranchProtectionTier::Excluded => Self::Excluded,
+        }
+    }
+}
+
 impl From<CodeownersStatus> for ScoreCategory {
     fn from(s: CodeownersStatus) -> Self {
         match s {
@@ -656,13 +824,23 @@ mod tests {
 
     #[test]
     fn branch_controls_pass_when_all_present() {
-        let controls = BranchControls::new(BranchRequirements::new(true, true, true), 1, false);
+        let controls = BranchControls::new(
+            BranchRequirements::new(true, true, true)
+                .with_integrity_controls(Some(true), Some(true)),
+            1,
+            false,
+        );
         assert_eq!(controls.status(), BranchProtectionStatus::Pass);
     }
 
     #[test]
     fn branch_controls_partial_when_some_present() {
-        let controls = BranchControls::new(BranchRequirements::new(true, false, false), 0, false);
+        let controls = BranchControls::new(
+            BranchRequirements::new(false, false, true)
+                .with_integrity_controls(Some(true), Some(true)),
+            0,
+            false,
+        );
         assert_eq!(controls.status(), BranchProtectionStatus::Partial);
     }
 
@@ -674,8 +852,214 @@ mod tests {
 
     #[test]
     fn branch_controls_broad_bypass_prevents_pass() {
-        let controls = BranchControls::new(BranchRequirements::new(true, true, true), 2, true);
-        assert_eq!(controls.status(), BranchProtectionStatus::Partial);
+        let controls = BranchControls::new(
+            BranchRequirements::new(true, true, true)
+                .with_integrity_controls(Some(true), Some(true)),
+            2,
+            true,
+        );
+        assert_eq!(controls.tier(), BranchProtectionTier::AcceptBar);
+        assert_eq!(controls.status(), BranchProtectionStatus::Pass);
+    }
+
+    fn branch_details(
+        has_pr: Option<bool>,
+        required_reviewers: Option<u32>,
+        has_status_checks: Option<bool>,
+        admin_equivalent: Option<bool>,
+        has_broad_bypass: Option<bool>,
+        force_push_blocked: Option<bool>,
+        deletion_blocked: Option<bool>,
+    ) -> BranchProtectionDetails {
+        BranchProtectionDetails {
+            default_branch: "main".to_string(),
+            has_pr,
+            required_reviewers,
+            has_status_checks,
+            admin_equivalent,
+            has_broad_bypass,
+            reason: None,
+            reason_kind: None,
+            http_status: None,
+            force_push_blocked,
+            deletion_blocked,
+        }
+    }
+
+    #[test]
+    fn branch_tier_synthetic_force_push_deletion_boundaries() {
+        let minimal = BranchProtectionResult {
+            status: BranchProtectionStatus::Partial,
+            details: branch_details(
+                Some(false),
+                Some(0),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(true),
+                Some(true),
+            ),
+            timestamp: "2026-06-17T11:31:04Z".to_string(),
+        };
+        let accept = BranchProtectionResult {
+            details: branch_details(
+                Some(true),
+                Some(1),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(true),
+                Some(true),
+            ),
+            ..minimal.clone()
+        };
+        let bonus = BranchProtectionResult {
+            details: branch_details(
+                Some(true),
+                Some(1),
+                Some(true),
+                Some(true),
+                Some(false),
+                Some(true),
+                Some(true),
+            ),
+            ..minimal.clone()
+        };
+        let bypass_downgrade = BranchProtectionResult {
+            details: branch_details(
+                Some(true),
+                Some(1),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+            ),
+            ..minimal.clone()
+        };
+        let status_checks_without_pr = BranchProtectionResult {
+            details: branch_details(
+                Some(false),
+                Some(0),
+                Some(true),
+                Some(false),
+                Some(false),
+                Some(true),
+                Some(true),
+            ),
+            ..minimal.clone()
+        };
+
+        assert_eq!(minimal.tier(), BranchProtectionTier::Minimal);
+        assert_eq!(accept.tier(), BranchProtectionTier::AcceptBar);
+        assert_eq!(bonus.tier(), BranchProtectionTier::Bonus);
+        assert_eq!(bypass_downgrade.tier(), BranchProtectionTier::AcceptBar);
+        assert_eq!(
+            status_checks_without_pr.tier(),
+            BranchProtectionTier::Minimal
+        );
+    }
+
+    #[test]
+    fn branch_tier_permission_suspected_is_excluded() {
+        let mut details = branch_details(None, None, None, None, None, None, None);
+        details.reason_kind = Some(CollectionFailureReason::PermissionSuspected);
+        details.http_status = Some(404);
+
+        let result = BranchProtectionResult {
+            status: BranchProtectionStatus::Unknown,
+            details,
+            timestamp: "2026-06-17T11:31:04Z".to_string(),
+        };
+
+        assert_eq!(result.tier(), BranchProtectionTier::Excluded);
+    }
+
+    #[test]
+    fn branch_tier_missing_h5_inputs_are_always_below_baseline() {
+        let legacy_pr = BranchProtectionResult {
+            status: BranchProtectionStatus::Partial,
+            details: branch_details(
+                Some(true),
+                Some(1),
+                Some(false),
+                Some(false),
+                Some(false),
+                None,
+                None,
+            ),
+            timestamp: "2026-06-17T11:31:04Z".to_string(),
+        };
+        let legacy_weak_ruleset = BranchProtectionResult {
+            status: BranchProtectionStatus::Partial,
+            details: branch_details(
+                Some(false),
+                Some(0),
+                Some(false),
+                Some(true),
+                Some(false),
+                None,
+                None,
+            ),
+            timestamp: "2026-06-17T11:31:04Z".to_string(),
+        };
+
+        assert_eq!(legacy_pr.tier(), BranchProtectionTier::BelowBaseline);
+        assert_eq!(
+            legacy_weak_ruleset.tier(),
+            BranchProtectionTier::BelowBaseline
+        );
+    }
+
+    #[test]
+    fn branch_tier_soak_public_fingerprints_collapse_without_h5_and_synthetic_h5_orders() {
+        let absent = BranchProtectionResult {
+            status: BranchProtectionStatus::Fail,
+            details: branch_details(None, None, None, None, None, None, None),
+            timestamp: "2026-06-17T11:31:04Z".to_string(),
+        };
+        let weak_ruleset_without_h5 = BranchProtectionResult {
+            status: BranchProtectionStatus::Partial,
+            details: branch_details(
+                Some(false),
+                Some(0),
+                Some(false),
+                Some(true),
+                Some(false),
+                None,
+                None,
+            ),
+            timestamp: "2026-06-17T11:31:04Z".to_string(),
+        };
+        let weak_ruleset_with_h5 = BranchProtectionResult {
+            details: branch_details(
+                Some(false),
+                Some(0),
+                Some(false),
+                Some(true),
+                Some(false),
+                Some(true),
+                Some(true),
+            ),
+            ..weak_ruleset_without_h5.clone()
+        };
+
+        let absent_count = (0..28)
+            .filter(|_| absent.tier() == BranchProtectionTier::BelowBaseline)
+            .count();
+        let weak_without_h5_count = (0..14)
+            .filter(|_| weak_ruleset_without_h5.tier() == BranchProtectionTier::BelowBaseline)
+            .count();
+        let weak_with_h5_count = (0..14)
+            .filter(|_| weak_ruleset_with_h5.tier() == BranchProtectionTier::Minimal)
+            .count();
+
+        assert_eq!(absent_count, 28);
+        assert_eq!(weak_without_h5_count, 14);
+        assert_eq!(weak_with_h5_count, 14);
+        assert_eq!(absent.tier(), weak_ruleset_without_h5.tier());
+        assert!(absent.tier() < weak_ruleset_with_h5.tier());
+        assert!(weak_ruleset_with_h5.tier() < BranchProtectionTier::AcceptBar);
     }
 
     #[test]
@@ -685,20 +1069,42 @@ mod tests {
 
     #[test]
     fn merge_takes_strongest_signals() {
-        let a = BranchControls::new(BranchRequirements::new(true, false, true), 1, false);
-        let b = BranchControls::new(BranchRequirements::new(false, true, false), 2, false);
+        let a = BranchControls::new(
+            BranchRequirements::new(true, false, true)
+                .with_integrity_controls(Some(true), Some(false)),
+            1,
+            false,
+        );
+        let b = BranchControls::new(
+            BranchRequirements::new(false, true, false)
+                .with_integrity_controls(Some(false), Some(true)),
+            2,
+            false,
+        );
         let merged = BranchControls::merge(&[a, b]).unwrap();
         assert!(merged.has_pr());
         assert_eq!(merged.reviewer_count, 2);
         assert!(merged.has_status_checks());
         assert!(merged.admin_equivalent());
         assert!(!merged.has_broad_bypass());
+        assert_eq!(merged.force_push_blocked(), Some(true));
+        assert_eq!(merged.deletion_blocked(), Some(true));
     }
 
     #[test]
     fn merge_broad_bypass_disables_admin_equivalent() {
-        let a = BranchControls::new(BranchRequirements::new(true, true, true), 1, false);
-        let b = BranchControls::new(BranchRequirements::new(false, false, false), 0, true);
+        let a = BranchControls::new(
+            BranchRequirements::new(true, true, true)
+                .with_integrity_controls(Some(true), Some(true)),
+            1,
+            false,
+        );
+        let b = BranchControls::new(
+            BranchRequirements::new(false, false, false)
+                .with_integrity_controls(Some(false), Some(false)),
+            0,
+            true,
+        );
         let merged = BranchControls::merge(&[a, b]).unwrap();
         assert!(!merged.admin_equivalent());
         assert!(merged.has_broad_bypass());

@@ -111,13 +111,13 @@ pub struct DependabotCounts {
 /// Counts for branch protection status buckets.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BranchProtectionCounts {
-    /// Repos where all branch protection controls are satisfied.
+    /// Repos at branch-protection T2 or higher.
     pub pass: u32,
-    /// Repos where some but not all branch protection controls are satisfied.
+    /// Repos at T1 minimal baseline.
     pub partial: u32,
-    /// Repos with no branch protection controls detected.
+    /// Repos at T0 below baseline.
     pub fail: u32,
-    /// Repos where the branch protection status could not be determined.
+    /// Repos excluded because branch protection could not be scored.
     pub unknown: u32,
 }
 

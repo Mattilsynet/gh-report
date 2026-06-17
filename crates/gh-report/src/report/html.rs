@@ -628,7 +628,7 @@ fn compute_repo_score(
         ScoreCategory::from(checks.security_policy.status),
         ScoreCategory::from(checks.secret_scanning.status),
         ScoreCategory::from(checks.dependabot_security_updates.status),
-        ScoreCategory::from(checks.branch_protection.status),
+        checks.branch_protection.score_category(),
         ScoreCategory::from(checks.codeowners.status),
     ];
 
@@ -1298,6 +1298,61 @@ mod tests {
         dependabot: DependabotStatus,
         branch: BranchProtectionStatus,
     ) -> RepositoryChecks {
+        let branch_details = match branch {
+            BranchProtectionStatus::Pass => BranchProtectionDetails {
+                default_branch: "main".to_string(),
+                has_pr: Some(true),
+                required_reviewers: Some(1),
+                has_status_checks: Some(false),
+                admin_equivalent: Some(false),
+                has_broad_bypass: Some(false),
+                reason: None,
+                reason_kind: None,
+                http_status: None,
+                force_push_blocked: Some(true),
+                deletion_blocked: Some(true),
+            },
+            BranchProtectionStatus::Partial => BranchProtectionDetails {
+                default_branch: "main".to_string(),
+                has_pr: Some(false),
+                required_reviewers: Some(0),
+                has_status_checks: Some(false),
+                admin_equivalent: Some(true),
+                has_broad_bypass: Some(false),
+                reason: None,
+                reason_kind: None,
+                http_status: None,
+                force_push_blocked: Some(true),
+                deletion_blocked: Some(true),
+            },
+            BranchProtectionStatus::Fail => BranchProtectionDetails {
+                default_branch: "main".to_string(),
+                has_pr: None,
+                required_reviewers: None,
+                has_status_checks: None,
+                admin_equivalent: None,
+                has_broad_bypass: None,
+                reason: None,
+                reason_kind: None,
+                http_status: None,
+                force_push_blocked: None,
+                deletion_blocked: None,
+            },
+            BranchProtectionStatus::Unknown => BranchProtectionDetails {
+                default_branch: "main".to_string(),
+                has_pr: None,
+                required_reviewers: None,
+                has_status_checks: None,
+                admin_equivalent: None,
+                has_broad_bypass: None,
+                reason: Some("permission_denied".to_string()),
+                reason_kind: Some(CollectionFailureReason::PermissionDenied),
+                http_status: Some(403),
+                force_push_blocked: None,
+                deletion_blocked: None,
+            },
+        };
+
         RepositoryChecks {
             security_policy: SecurityPolicyResult {
                 status: policy,
@@ -1319,19 +1374,7 @@ mod tests {
             },
             branch_protection: BranchProtectionResult {
                 status: branch,
-                details: BranchProtectionDetails {
-                    default_branch: "main".to_string(),
-                    has_pr: None,
-                    required_reviewers: None,
-                    has_status_checks: None,
-                    admin_equivalent: None,
-                    has_broad_bypass: None,
-                    reason: None,
-                    reason_kind: None,
-                    http_status: None,
-                    force_push_blocked: Some(true),
-                    deletion_blocked: Some(true),
-                },
+                details: branch_details,
                 timestamp: test_fixtures::make_timestamp(),
             },
             codeowners: CodeownersResult {
