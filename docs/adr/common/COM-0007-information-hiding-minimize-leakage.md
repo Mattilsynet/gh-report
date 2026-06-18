@@ -1,7 +1,7 @@
 # COM-0007. Information Hiding — Minimize Leakage
 
 Date: 2026-04-26
-Last-reviewed: 2026-04-28
+Last-reviewed: 2026-06-18 — refined — added R5 linking general-purpose interfaces to information hiding per APOSD 2e Ch.6 (false-abstraction principle) (mission:adr-fmt-sc11s)
 Tier: B
 Status: Accepted
 
@@ -11,7 +11,7 @@ References: COM-0002
 
 ## Context
 
-Ousterhout (Ch. 5) refines COM-0002 from *how much* to hide to *what specifically* to hide. Information hiding means each module encapsulates its design decisions so other modules cannot depend on them. Leakage — when a decision is reflected in multiple modules — creates hidden coupling requiring coordinated changes. Leakage forms include interface leakage through signatures, temporal decomposition sharing intermediate state, and back-channel leakage through documentation.
+Ousterhout (Ch. 5) refines COM-0002 from *how much* to hide to *what specifically* to hide. Information hiding means each module encapsulates its design decisions so other modules cannot depend on them. Leakage — when a decision is reflected in multiple modules — creates hidden coupling requiring coordinated changes. Leakage forms include interface leakage through signatures, temporal decomposition sharing intermediate state, and back-channel leakage through documentation. A specialized method that leaks a caller's special case is itself interface leakage; the general operation hides more.
 
 Cherry-pit demonstrates this: `EventEnvelope` fields are `pub(crate)` with method-based access, MsgPack format is invisible to trait users, and file layout is hidden behind `EventStore`.
 
@@ -33,6 +33,10 @@ R3 [6]: When multiple modules must change together for a format or
 R4 [5]: Default to private visibility; promote to pub(crate) only
   when needed within the crate, and to pub only when needed by
   another crate
+R5 [5]: Prefer general-purpose interfaces to strengthen information
+  hiding — a specialized method that leaks caller concepts (a false
+  abstraction) is shallower than a general one the caller can reuse;
+  expose the general operation, not the special case
 
 ## Consequences
 
