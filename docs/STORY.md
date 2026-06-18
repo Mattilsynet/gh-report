@@ -1,8 +1,5 @@
 # Solon — Story
 
-**Status**: Draft v0.2
-**Genre**: Strategic intent. Where to play; how to win.
-
 ---
 
 ## 1. Solon — the name and the stance
