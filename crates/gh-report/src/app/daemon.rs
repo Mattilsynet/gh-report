@@ -175,7 +175,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     let (collect_cancel_tx, collect_cancel_rx) = tokio::sync::watch::channel(false);
 
     let mut extra_routes = crate::server::status_router();
-    if app_state.webhook().secret.is_some() {
+    if app_state.webhook_secret().is_some() {
         info!("webhooks enabled (WEBHOOK_SECRET set)");
         extra_routes = extra_routes.merge(crate::webhook::webhook_router());
     } else {
@@ -462,10 +462,7 @@ pub(crate) async fn delivery_loop(
         }
 
         if matches!(source, JobSource::ScheduledBatch) {
-            let tracker_guard = state.evidence().batch_tracker.load();
-            if let Some(tracker) = tracker_guard.as_ref() {
-                tracker.complete_one();
-            }
+            state.complete_active_batch();
         }
     }
     info!("delivery task exiting — outcome channel closed");

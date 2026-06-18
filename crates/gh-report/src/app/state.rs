@@ -22,6 +22,7 @@
 //! [`REPO_CACHE_TTL_HOURS`]: crate::config::REPO_CACHE_TTL_HOURS
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -81,10 +82,7 @@ pub static CACHED_WS_JS: LazyLock<CachedPage> =
 ///
 /// ## Sub-aggregates
 ///
-/// Access grouped fields via accessor methods:
-/// - [`webhook()`](Self::webhook) — webhook secret, replay, debounce
-/// - [`github()`](Self::github) — budget gate, rate limit, client, cache
-/// - [`evidence()`](Self::evidence) — evidence store, HTML cache, WS broadcast, org summary, batch tracker
+/// Access grouped fields via behavior methods that hide sub-aggregate storage.
 pub(crate) type WorkerPoolHandles =
     std::sync::Mutex<Option<(tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>)>>;
 pub(crate) type WorkerShutdownToken = tokio_util::sync::CancellationToken;
@@ -139,8 +137,7 @@ pub struct AppState {
     /// when the future is cancelled. Two concurrent in-process calls
     /// against the same `AppState` therefore execute strictly one
     /// after the other, eliminating the
-    /// `state.evidence().org_summary` and
-    /// `state.evidence().batch_tracker` clobber windows in
+    /// org-summary and batch-tracker clobber windows in
     /// [`crate::app::collect::SweepSaga::new`] and
     /// [`crate::app::collect::enqueue_and_await_batch`].
     ///
@@ -194,6 +191,136 @@ impl AppState {
     #[inline]
     pub fn evidence(&self) -> &EvidenceState {
         &self.evidence
+    }
+
+    #[must_use]
+    pub(crate) fn github_client(&self) -> Option<Arc<crate::github::client::GitHubClient>> {
+        self.github.client.get().cloned()
+    }
+
+    pub(crate) async fn github_client_or_try_init<F, Fut, E>(
+        &self,
+        init: F,
+    ) -> Result<&Arc<crate::github::client::GitHubClient>, E>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<Arc<crate::github::client::GitHubClient>, E>>,
+    {
+        self.github.client.get_or_try_init(init).await
+    }
+
+    #[must_use]
+    pub(crate) fn github_api_controls(
+        &self,
+    ) -> (
+        Arc<crate::github::budget::BudgetGate>,
+        Arc<crate::github::rate_limit::RateLimitState>,
+    ) {
+        (
+            Arc::clone(&self.github.budget_gate),
+            Arc::clone(&self.github.rate_limit_state),
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn github_budget_total_calls(&self) -> u64 {
+        self.github.budget_gate.total_calls_made()
+    }
+
+    pub(crate) fn seed_client_repo_detail_cache(
+        &self,
+        client: &crate::github::client::GitHubClient,
+    ) {
+        let entries: Vec<_> = self
+            .github
+            .repo_detail_cache
+            .iter()
+            .map(|(key, detail)| ((*key).clone(), detail.clone()))
+            .collect();
+        client.seed_cache(entries);
+    }
+
+    pub(crate) async fn store_client_repo_detail_cache(
+        &self,
+        entries: Vec<(String, crate::domain::cache::CachedRepoDetail)>,
+    ) {
+        for (key, detail) in entries {
+            self.github.repo_detail_cache.insert(key, detail).await;
+        }
+    }
+
+    pub(crate) fn set_html_cache(
+        &self,
+        pages: HashMap<String, CachedPage>,
+    ) -> Arc<Option<HashMap<String, CachedPage>>> {
+        let pages = Arc::new(Some(pages));
+        self.evidence.html_cache.store(Arc::clone(&pages));
+        pages
+    }
+
+    pub(crate) fn send_page_update(
+        &self,
+        event: PageUpdateEvent,
+    ) -> Result<usize, tokio::sync::broadcast::error::SendError<PageUpdateEvent>> {
+        self.evidence.ws_broadcast.send(event)
+    }
+
+    pub(crate) fn set_org_alert_summary(
+        &self,
+        summary: Arc<crate::domain::metrics::OrgAlertSummary>,
+    ) {
+        self.evidence.org_summary.store(Arc::new(Some(summary)));
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    pub(crate) fn ws_subscribe(&self) -> tokio::sync::broadcast::Receiver<PageUpdateEvent> {
+        self.evidence.ws_broadcast.subscribe()
+    }
+
+    pub(crate) fn set_active_batch_tracker(
+        &self,
+        tracker: Option<Arc<crate::app::work_queue::BatchTracker>>,
+    ) {
+        self.evidence.batch_tracker.store(Arc::new(tracker));
+    }
+
+    pub(crate) fn complete_active_batch(&self) {
+        let tracker_guard = self.evidence.batch_tracker.load();
+        if let Some(tracker) = tracker_guard.as_ref() {
+            tracker.complete_one();
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn webhook_secret(&self) -> Option<&secrecy::SecretString> {
+        self.webhook.secret.as_ref()
+    }
+
+    pub(crate) async fn accept_webhook_delivery(&self, delivery_id: &str) -> bool {
+        self.webhook
+            .replay_cache
+            .entry(delivery_id.to_string())
+            .or_insert(())
+            .await
+            .is_fresh()
+    }
+
+    pub(crate) async fn record_push_and_check_debounce(
+        &self,
+        inventory_key: &str,
+        now: tokio::time::Instant,
+    ) -> bool {
+        if let Some(last) = self.webhook.debounce_cache.get(inventory_key).await
+            && now.duration_since(last).as_secs() < crate::config::DEFAULT_WEBHOOK_DEBOUNCE_SECS
+        {
+            return true;
+        }
+        self.webhook
+            .debounce_cache
+            .insert(inventory_key.to_string(), now)
+            .await;
+        false
     }
 
     /// Acquire the projection-state lock, panicking on poison.
@@ -929,21 +1056,18 @@ impl AppState {
                 started_now = true;
 
                 let client = state
-                    .github()
-                    .client
-                    .get()
+                    .github_client()
                     .expect("ensure_worker_pool called before github_client initialized")
                     .clone();
 
                 let evaluator =
                     Arc::new(crate::app::collect::LiveEvaluator::with_shared_org_summary(
                         client,
-                        Arc::clone(&state.evidence().org_summary),
+                        Arc::clone(&state.evidence.org_summary),
                     ));
 
                 let queue = Arc::clone(&state.work_queue);
-                let budget = Arc::clone(&state.github().budget_gate);
-                let rate_limit = Arc::clone(&state.github().rate_limit_state);
+                let (budget, rate_limit) = state.github_api_controls();
                 let cancel = state.worker_shutdown_token();
 
                 let (outcome_tx, outcome_rx) = tokio::sync::mpsc::channel::<
@@ -1055,18 +1179,18 @@ impl AppState {
 
 impl crate::infra::server::state::ServerState for AppState {
     fn html_cache(&self) -> &ArcSwap<Option<HashMap<String, CachedPage>>> {
-        &self.evidence().html_cache
+        &self.evidence.html_cache
     }
 
     fn ws_broadcast(&self) -> &tokio::sync::broadcast::Sender<PageUpdateEvent> {
-        &self.evidence().ws_broadcast
+        &self.evidence.ws_broadcast
     }
 
     fn is_ready(&self) -> bool {
         self.event_store.backend_reachable()
             && self.org_event_store.backend_reachable()
             && (self.last_completed_run.load().is_some()
-                || self.evidence().html_cache.load().is_some()
+                || self.evidence.html_cache.load().is_some()
                 || !self.lock_projection().is_empty())
     }
 }
@@ -1278,7 +1402,7 @@ mod tests {
     #[tokio::test]
     async fn cache_respects_max_capacity() {
         let state = AppState::new_with_cache_capacity(3).await;
-        let cache = &state.github().repo_detail_cache;
+        let cache = &state.github.repo_detail_cache;
 
         for i in 0..4 {
             cache
@@ -1307,7 +1431,7 @@ mod tests {
     #[tokio::test]
     async fn cache_stores_and_retrieves_details() {
         let state = AppState::new().await;
-        let cache = &state.github().repo_detail_cache;
+        let cache = &state.github.repo_detail_cache;
 
         let detail = CachedRepoDetail {
             default_branch: "develop".into(),
@@ -1330,7 +1454,7 @@ mod tests {
     #[tokio::test]
     async fn cache_iter_round_trip() {
         let state = AppState::new_with_cache_capacity(100).await;
-        let cache = &state.github().repo_detail_cache;
+        let cache = &state.github.repo_detail_cache;
 
         for i in 0..3 {
             cache
@@ -1369,14 +1493,14 @@ mod tests {
     #[tokio::test]
     async fn html_cache_starts_empty() {
         let state = AppState::new().await;
-        assert!(state.evidence().html_cache.load().is_none());
+        assert!(state.evidence.html_cache.load().is_none());
     }
 
     #[tokio::test]
     async fn builder_default_produces_valid_state() {
         let state = AppStateBuilder::new().build().await;
-        assert!(state.webhook().secret.is_none());
-        assert!(state.evidence().html_cache.load().is_none());
+        assert!(state.webhook.secret.is_none());
+        assert!(state.evidence.html_cache.load().is_none());
     }
 
     #[tokio::test]
@@ -1385,13 +1509,13 @@ mod tests {
             .webhook_secret("test-secret")
             .build()
             .await;
-        assert!(state.webhook().secret.is_some());
+        assert!(state.webhook.secret.is_some());
     }
 
     #[tokio::test]
     async fn builder_with_cache_capacity() {
         let state = AppStateBuilder::new().cache_capacity(5).build().await;
-        let cache = &state.github().repo_detail_cache;
+        let cache = &state.github.repo_detail_cache;
         for i in 0..6 {
             cache
                 .insert(
@@ -1795,8 +1919,8 @@ mod tests {
             .webhook_secret("combo-secret")
             .build()
             .await;
-        assert!(state.webhook().secret.is_some());
-        let cache = &state.github().repo_detail_cache;
+        assert!(state.webhook.secret.is_some());
+        let cache = &state.github.repo_detail_cache;
         for i in 0..8 {
             cache
                 .insert(
@@ -1835,7 +1959,7 @@ mod tests {
             "index.html".to_string(),
             CachedPage::new("index.html", b"<html>test</html>".to_vec()),
         );
-        state.evidence().html_cache.store(Arc::new(Some(pages)));
+        state.evidence.html_cache.store(Arc::new(Some(pages)));
         assert!(state.is_ready(), "should be ready when html_cache is Some");
     }
 
@@ -1848,7 +1972,7 @@ mod tests {
             "index.html".to_string(),
             CachedPage::new("index.html", b"<html>cached</html>".to_vec()),
         );
-        state.evidence().html_cache.store(Arc::new(Some(pages)));
+        state.evidence.html_cache.store(Arc::new(Some(pages)));
         state.event_store.mark_backend_connect_failure_for_test();
 
         assert!(
@@ -1877,11 +2001,11 @@ mod tests {
             let _guard = lock.lock_owned().await;
             let acquired_at = Instant::now();
             state_a
-                .evidence()
+                .evidence
                 .org_summary
                 .store(Arc::new(Some(Arc::clone(&summary_for_task_a))));
             tokio::time::sleep(hold_for).await;
-            let guard_after_hold = state_a.evidence().org_summary.load_full();
+            let guard_after_hold = state_a.evidence.org_summary.load_full();
             let observed_after_hold = (*guard_after_hold)
                 .as_ref()
                 .map(Arc::clone)
@@ -1899,13 +2023,13 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
             let _guard = lock.lock_owned().await;
             let acquired_at = Instant::now();
-            let guard_at_acquire = state_b.evidence().org_summary.load_full();
+            let guard_at_acquire = state_b.evidence.org_summary.load_full();
             let observed_at_acquire = (*guard_at_acquire)
                 .as_ref()
                 .map(Arc::clone)
                 .expect("A set first");
             state_b
-                .evidence()
+                .evidence
                 .org_summary
                 .store(Arc::new(Some(Arc::clone(&summary_for_task_b))));
             (acquired_at, observed_at_acquire)

@@ -26,7 +26,7 @@ pub struct EvidenceState {
     /// `None` → no collection has completed yet (server returns 503).
     /// `Some(map)` → cache key is the relative path (e.g. `"index.html"`,
     /// `"report.html"`).
-    pub html_cache: ArcSwap<Option<HashMap<String, CachedPage>>>,
+    pub(crate) html_cache: ArcSwap<Option<HashMap<String, CachedPage>>>,
 
     /// Broadcast channel for notifying connected WebSocket clients of page
     /// updates. Each WebSocket handler subscribes via `.subscribe()`.
@@ -35,16 +35,16 @@ pub struct EvidenceState {
     /// updates, its receiver gets `RecvError::Lagged` and the handler sends
     /// a full-reload signal. The `_rx` is immediately dropped — new
     /// receivers are created per WebSocket connection.
-    pub ws_broadcast: tokio::sync::broadcast::Sender<PageUpdateEvent>,
+    pub(crate) ws_broadcast: tokio::sync::broadcast::Sender<PageUpdateEvent>,
 
     /// Org-level alert summary (secret scanning). Updated by the sweep,
     /// read by webhook-triggered evaluations via eventual consistency (AD6).
-    pub org_summary: Arc<ArcSwap<Option<Arc<OrgAlertSummary>>>>,
+    pub(crate) org_summary: Arc<ArcSwap<Option<Arc<OrgAlertSummary>>>>,
 
     /// Active batch tracker for the current sweep. The delivery task calls
     /// `complete_one()` for each `ScheduledBatch` outcome. Set by the sweep,
     /// cleared when the batch completes.
-    pub batch_tracker: ArcSwap<Option<Arc<BatchTracker>>>,
+    pub(crate) batch_tracker: ArcSwap<Option<Arc<BatchTracker>>>,
 }
 
 impl EvidenceState {

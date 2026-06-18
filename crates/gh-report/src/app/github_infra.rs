@@ -24,11 +24,11 @@ const DEFAULT_CACHE_CAPACITY: u64 = 50_000;
 pub struct GithubState {
     /// Shared API budget gate. Constructed once at daemon startup.
     /// Cumulative call counter persists across runs.
-    pub budget_gate: Arc<BudgetGate>,
+    pub(crate) budget_gate: Arc<BudgetGate>,
 
     /// Shared rate limit state tracking GitHub's `X-RateLimit-*` headers.
     /// Constructed once at daemon startup. Updated from every API response.
-    pub rate_limit_state: Arc<RateLimitState>,
+    pub(crate) rate_limit_state: Arc<RateLimitState>,
 
     /// Long-lived GitHub API client. Lazily constructed on the first
     /// collection run via `OnceCell::get_or_try_init()`. `None` before
@@ -37,10 +37,10 @@ pub struct GithubState {
     /// The client's HTTP connection pool, credential refresh mechanism,
     /// and per-run `scc::HashMap` cache persist across runs. Between runs,
     /// `clear_run_cache()` resets the `scc::HashMap` without dropping the client.
-    pub client: tokio::sync::OnceCell<Arc<GitHubClient>>,
+    pub(crate) client: tokio::sync::OnceCell<Arc<GitHubClient>>,
 
     /// Cross-run repository detail cache (TTL + capacity bounded via moka).
-    pub repo_detail_cache: moka::future::Cache<String, CachedRepoDetail>,
+    pub(crate) repo_detail_cache: moka::future::Cache<String, CachedRepoDetail>,
 }
 
 impl GithubState {

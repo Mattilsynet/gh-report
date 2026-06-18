@@ -79,13 +79,7 @@ async fn webhook_handler(
         }
     };
 
-    let entry = state
-        .webhook()
-        .replay_cache
-        .entry(delivery_id.clone())
-        .or_insert(())
-        .await;
-    if !entry.is_fresh() {
+    if !state.accept_webhook_delivery(&delivery_id).await {
         debug!(delivery = %delivery_id, "replay detected, idempotent skip");
         return StatusCode::OK;
     }
@@ -116,7 +110,7 @@ fn validate_request(
     headers: &HeaderMap,
     body: &Bytes,
 ) -> Result<(String, String), StatusCode> {
-    let Some(ref secret) = state.webhook().secret else {
+    let Some(secret) = state.webhook_secret() else {
         return Err(StatusCode::NOT_FOUND);
     };
 
@@ -198,8 +192,9 @@ async fn execute_enqueue(
 ) -> StatusCode {
     if event_type == "push" {
         let now = tokio::time::Instant::now();
-        if let Some(last) = state.webhook().debounce_cache.get(&inventory_key).await
-            && now.duration_since(last).as_secs() < config::DEFAULT_WEBHOOK_DEBOUNCE_SECS
+        if state
+            .record_push_and_check_debounce(&inventory_key, now)
+            .await
         {
             debug!(
                 event = event_type,
@@ -209,11 +204,6 @@ async fn execute_enqueue(
             );
             return StatusCode::OK;
         }
-        state
-            .webhook()
-            .debounce_cache
-            .insert(inventory_key.clone(), now)
-            .await;
     }
 
     let job = JobSpec::new(
@@ -305,6 +295,14 @@ mod tests {
         AppState::new_with_webhook_secret(secret).await
     }
 
+    fn secret_text(state: &AppState) -> String {
+        state
+            .webhook_secret()
+            .expect("test state has webhook secret")
+            .expose_secret()
+            .to_string()
+    }
+
     fn build_test_app(state: Arc<AppState>) -> Router {
         let extra = webhook_router();
         crate::infra::server::runtime::build_router(
@@ -355,13 +353,7 @@ mod tests {
     #[tokio::test]
     async fn webhook_missing_event_header() {
         let state = test_state_with_secret("test-secret").await;
-        let secret = state
-            .webhook()
-            .secret
-            .as_ref()
-            .unwrap()
-            .expose_secret()
-            .to_string();
+        let secret = secret_text(&state);
         let app = build_test_app(state);
 
         let body = b"{}";
@@ -382,13 +374,7 @@ mod tests {
     #[tokio::test]
     async fn webhook_missing_delivery_header() {
         let state = test_state_with_secret("test-secret").await;
-        let secret = state
-            .webhook()
-            .secret
-            .as_ref()
-            .unwrap()
-            .expose_secret()
-            .to_string();
+        let secret = secret_text(&state);
         let app = build_test_app(state);
 
         let body = b"{}";
@@ -409,13 +395,7 @@ mod tests {
     #[tokio::test]
     async fn webhook_valid_enqueue() {
         let state = test_state_with_secret("test-secret").await;
-        let secret = state
-            .webhook()
-            .secret
-            .as_ref()
-            .unwrap()
-            .expose_secret()
-            .to_string();
+        let secret = secret_text(&state);
         let app = build_test_app(Arc::clone(&state));
 
         let body = serde_json::json!({
@@ -441,13 +421,7 @@ mod tests {
     #[tokio::test]
     async fn webhook_replay_duplicate() {
         let state = test_state_with_secret("test-secret").await;
-        let secret = state
-            .webhook()
-            .secret
-            .as_ref()
-            .unwrap()
-            .expose_secret()
-            .to_string();
+        let secret = secret_text(&state);
 
         let body = serde_json::json!({
             "action": "disabled",
@@ -484,13 +458,7 @@ mod tests {
     #[tokio::test]
     async fn webhook_malformed_json() {
         let state = test_state_with_secret("test-secret").await;
-        let secret = state
-            .webhook()
-            .secret
-            .as_ref()
-            .unwrap()
-            .expose_secret()
-            .to_string();
+        let secret = secret_text(&state);
         let app = build_test_app(state);
 
         let body = b"not valid json {{{";
@@ -512,13 +480,7 @@ mod tests {
     #[tokio::test]
     async fn webhook_ignored_event_returns_200() {
         let state = test_state_with_secret("test-secret").await;
-        let secret = state
-            .webhook()
-            .secret
-            .as_ref()
-            .unwrap()
-            .expose_secret()
-            .to_string();
+        let secret = secret_text(&state);
         let app = build_test_app(state);
 
         let body = b"{}";
@@ -540,13 +502,7 @@ mod tests {
     #[tokio::test]
     async fn dedup_returns_200_not_503() {
         let state = test_state_with_secret("test-secret").await;
-        let secret = state
-            .webhook()
-            .secret
-            .as_ref()
-            .unwrap()
-            .expose_secret()
-            .to_string();
+        let secret = secret_text(&state);
 
         let body = serde_json::json!({
             "action": "created",
@@ -584,13 +540,7 @@ mod tests {
     #[tokio::test]
     async fn webhook_repository_deleted_returns_200() {
         let state = test_state_with_secret("test-secret").await;
-        let secret = state
-            .webhook()
-            .secret
-            .as_ref()
-            .unwrap()
-            .expose_secret()
-            .to_string();
+        let secret = secret_text(&state);
         let app = build_test_app(state);
 
         let body = serde_json::json!({
@@ -616,13 +566,7 @@ mod tests {
     #[tokio::test]
     async fn webhook_body_over_1mb_returns_413() {
         let state = test_state_with_secret("test-secret").await;
-        let secret = state
-            .webhook()
-            .secret
-            .as_ref()
-            .unwrap()
-            .expose_secret()
-            .to_string();
+        let secret = secret_text(&state);
         let app = build_test_app(state);
 
         let body = vec![b'{'; config::MAX_WEBHOOK_BODY_BYTES + 1];
@@ -644,13 +588,7 @@ mod tests {
     #[tokio::test]
     async fn webhook_push_debounce_within_window() {
         let state = test_state_with_secret("test-secret").await;
-        let secret = state
-            .webhook()
-            .secret
-            .as_ref()
-            .unwrap()
-            .expose_secret()
-            .to_string();
+        let secret = secret_text(&state);
 
         let body = serde_json::json!({
             "ref": "refs/heads/main",

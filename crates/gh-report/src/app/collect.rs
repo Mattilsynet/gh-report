@@ -513,10 +513,7 @@ impl SweepSaga {
             .set_budget_pause_notify(Arc::clone(&pause_notify));
 
         let org_summary = Arc::new(org_alert.summary);
-        state
-            .evidence()
-            .org_summary
-            .store(Arc::new(Some(Arc::clone(&org_summary))));
+        state.set_org_alert_summary(Arc::clone(&org_summary));
 
         Self {
             phase: SweepPhase::Init,
@@ -878,10 +875,7 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
     }
 
     let tracker = crate::app::work_queue::BatchTracker::new(batch_result.accepted);
-    state
-        .evidence()
-        .batch_tracker
-        .store(Arc::new(Some(Arc::clone(&tracker))));
+    state.set_active_batch_tracker(Some(Arc::clone(&tracker)));
 
     let pp_config = PartialPublishConfig {
         pause_notify: Arc::clone(pause_notify),
@@ -896,7 +890,7 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
     let (pp_task, pp_shutdown) = spawn_partial_publisher_from_store(pp_config, Arc::clone(state));
 
     tracker.wait().await;
-    state.evidence().batch_tracker.store(Arc::new(None));
+    state.set_active_batch_tracker(None);
 
     let _ = pp_shutdown.send(true);
     if let Err(e) = pp_task.await {
@@ -986,10 +980,7 @@ async fn finalize_and_publish(
 
     let entries = client.export_cache();
     if !entries.is_empty() {
-        let cache = &state.github().repo_detail_cache;
-        for (key, detail) in entries {
-            cache.insert(key, detail).await;
-        }
+        state.store_client_repo_detail_cache(entries).await;
     }
 
     info!(
@@ -1031,9 +1022,8 @@ async fn prepare_collection(
     info!("run lock acquired");
 
     let client = state
-        .github()
-        .client
-        .get_or_try_init(|| async {
+        .github_client_or_try_init(|| async {
+            let (budget, rate_limit) = state.github_api_controls();
             let app_config = GitHubAppConfig::from_environment()?;
             let credential = GitHubCredential::from_environment()?;
             let client = GitHubClient::new(
@@ -1041,8 +1031,8 @@ async fn prepare_collection(
                 crate::config::DEFAULT_GITHUB_API_BASE_URL,
                 &config.org_name,
                 app_config,
-                Arc::clone(&state.github().budget_gate),
-                Arc::clone(&state.github().rate_limit_state),
+                budget,
+                rate_limit,
             )?;
             Ok::<Arc<GitHubClient>, AppError>(Arc::new(client))
         })
@@ -1052,14 +1042,9 @@ async fn prepare_collection(
     client.clear_run_cache();
     client.reset_halt();
 
-    let cache = &state.github().repo_detail_cache;
-    let entries: Vec<_> = cache
-        .iter()
-        .map(|(k, v)| ((*k).clone(), v.clone()))
-        .collect();
-    client.seed_cache(entries);
+    state.seed_client_repo_detail_cache(&client);
 
-    let budget_baseline = state.github().budget_gate.total_calls_made();
+    let budget_baseline = state.github_budget_total_calls();
 
     let capabilities = client.probe_capabilities().await;
     if !capabilities.can_run() {
@@ -1257,17 +1242,14 @@ pub(crate) fn commit_cached_pages(
     let page_count = cache.len();
     let page_keys: Vec<String> = cache.keys().cloned().collect();
 
-    state.evidence().html_cache.store(Arc::new(Some(cache)));
+    state.set_html_cache(cache);
     info!(page_count, run_id = %run.run_id, "html cache updated");
 
-    let _ = state
-        .evidence()
-        .ws_broadcast
-        .send(crate::app::state::PageUpdateEvent::new(
-            page_keys,
-            String::new(),
-            jiff::Timestamp::now().to_string(),
-        ));
+    let _ = state.send_page_update(crate::app::state::PageUpdateEvent::new(
+        page_keys,
+        String::new(),
+        jiff::Timestamp::now().to_string(),
+    ));
 
     page_count
 }
@@ -1662,6 +1644,7 @@ mod tests {
     use crate::domain::auth::AuthMode;
     use crate::domain::auth::{Capability, TokenTier};
     use crate::domain::repository::Visibility;
+    use crate::infra::server::state::ServerState;
     use crate::test_fixtures;
 
     /// Compile-time assertion: `LiveEvaluator` satisfies `JobExecutor` bounds.
@@ -2289,8 +2272,7 @@ mod tests {
         ));
 
         let queue = Arc::clone(&state.work_queue);
-        let budget = Arc::clone(&state.github().budget_gate);
-        let rate_limit = Arc::clone(&state.github().rate_limit_state);
+        let (budget, rate_limit) = state.github_api_controls();
         let cancel = tokio_util::sync::CancellationToken::new();
 
         let pool_handle = tokio::spawn(async move {
@@ -2926,7 +2908,7 @@ mod tests {
             state.projection_contains("id-repo-1"),
             "terminal render must source the repository written through NativeStore"
         );
-        assert!(state.evidence().html_cache.load().is_some());
+        assert!(state.html_cache().load().is_some());
 
         state.work_queue.close();
     }
@@ -2954,10 +2936,7 @@ mod tests {
             sentinel_key.clone(),
             crate::app::state::CachedPage::new(&sentinel_key, b"sentinel".to_vec()),
         );
-        state
-            .evidence()
-            .html_cache
-            .store(Arc::new(Some(sentinel_map)));
+        state.html_cache().store(Arc::new(Some(sentinel_map)));
 
         let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
             |repo: &Repository, ts: &str| Ok(sample_repo_from_domain(repo, ts)),
@@ -2977,8 +2956,7 @@ mod tests {
 
         assert!(
             state
-                .evidence()
-                .html_cache
+                .html_cache()
                 .load()
                 .as_ref()
                 .as_ref()
@@ -2991,8 +2969,7 @@ mod tests {
 
         assert!(
             !state
-                .evidence()
-                .html_cache
+                .html_cache()
                 .load()
                 .as_ref()
                 .as_ref()
@@ -3013,7 +2990,7 @@ mod tests {
 
         let baseline_map: HashMap<String, crate::app::state::CachedPage> = HashMap::new();
         let baseline_arc = Arc::new(Some(baseline_map));
-        state.evidence().html_cache.store(Arc::clone(&baseline_arc));
+        state.html_cache().store(Arc::clone(&baseline_arc));
         let baseline_addr = Arc::as_ptr(&baseline_arc) as usize;
 
         let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
@@ -3032,7 +3009,7 @@ mod tests {
             .await
             .unwrap();
 
-        let guard = state.evidence().html_cache.load();
+        let guard = state.html_cache().load();
         let current_addr = Arc::as_ptr(&*guard) as usize;
         assert_eq!(
             current_addr, baseline_addr,
@@ -3043,7 +3020,7 @@ mod tests {
             .await
             .unwrap();
 
-        let guard = state.evidence().html_cache.load();
+        let guard = state.html_cache().load();
         let current_addr = Arc::as_ptr(&*guard) as usize;
         assert_ne!(
             current_addr, baseline_addr,
@@ -3070,7 +3047,7 @@ mod tests {
         let ok = warm_start_from_baseline(&config, &state).await;
         assert!(ok, "warm-start should succeed with a seeded baseline");
         assert!(
-            state.evidence().html_cache.load().is_some(),
+            state.html_cache().load().is_some(),
             "warm-start must populate html cache from projection"
         );
     }
@@ -3136,7 +3113,7 @@ mod tests {
         let state = AppState::new_with_cache_capacity(10).await;
         let run = test_run_meta();
 
-        let mut rx = state.evidence().ws_broadcast.subscribe();
+        let mut rx = state.ws_subscribe();
 
         let mut cache: HashMap<String, crate::app::state::CachedPage> = HashMap::new();
         cache.insert(
@@ -3151,7 +3128,7 @@ mod tests {
         let page_count = commit_cached_pages(&state, &run, cache);
         assert_eq!(page_count, 2);
 
-        let guard = state.evidence().html_cache.load();
+        let guard = state.html_cache().load();
         let pages = guard
             .as_ref()
             .as_ref()

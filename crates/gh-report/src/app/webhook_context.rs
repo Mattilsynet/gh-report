@@ -19,14 +19,14 @@ pub struct WebhookState {
     /// Webhook secret for HMAC-SHA256 signature validation.
     /// `None` when webhooks are disabled (env var `WEBHOOK_SECRET` unset).
     /// Changes require a daemon restart.
-    pub secret: Option<secrecy::SecretString>,
+    pub(crate) secret: Option<secrecy::SecretString>,
 
     /// Replay protection cache for webhook delivery IDs.
     /// `moka::future::Cache` with 100k capacity, 1h TTL.
-    pub replay_cache: moka::future::Cache<String, ()>,
+    pub(crate) replay_cache: moka::future::Cache<String, ()>,
 
     /// Debounce cache: per-repo last-enqueue time for push event debounce.
-    pub debounce_cache: moka::future::Cache<String, tokio::time::Instant>,
+    pub(crate) debounce_cache: moka::future::Cache<String, tokio::time::Instant>,
 }
 
 impl WebhookState {

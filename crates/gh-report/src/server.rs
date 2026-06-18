@@ -222,7 +222,7 @@ mod tests {
             "admin.html".to_string(),
             CachedPage::new("admin.html", b"<html>Admin Diagnostics</html>".to_vec()),
         );
-        state.evidence().html_cache.store(Arc::new(Some(pages)));
+        state.set_html_cache(pages);
 
         let app = build_router(Arc::clone(&state));
 
@@ -290,7 +290,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(state.projection_len(), 2);
-        assert!(state.github().client.get().is_none());
+        assert!(state.github_client().is_none());
         assert!(
             state.is_ready(),
             "populated event-log projection should be ready without run/cache or GitHub API"
@@ -308,7 +308,7 @@ mod tests {
         };
 
         assert!(warm_start_from_baseline(&config, &state).await);
-        assert!(state.github().client.get().is_none());
+        assert!(state.github_client().is_none());
 
         let app = build_router(Arc::clone(&state));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -339,7 +339,7 @@ mod tests {
             "index.html".to_string(),
             CachedPage::new("index.html", b"<html>cached</html>".to_vec()),
         );
-        state.evidence().html_cache.store(Arc::new(Some(pages)));
+        state.set_html_cache(pages);
         state.event_store.mark_backend_connect_failure_for_test();
 
         let app = build_router(Arc::clone(&state));
