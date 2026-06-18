@@ -1,7 +1,7 @@
 # CHE-0035. Two-Level Concurrency Architecture
 
 Date: 2026-04-25
-Last-reviewed: 2026-04-28
+Last-reviewed: 2026-06-19
 Tier: D
 Status: Accepted
 
@@ -17,17 +17,19 @@ References: CHE-0006
 
 `MsgpackFileStore` uses a two-level concurrency architecture:
 
-R1 [10]: Use a global mutex for aggregate ID assignment to guarantee
-  uniqueness
+R1 [10]: Seed aggregate ID assignment from a one-shot directory scan
+  held in a `tokio::sync::OnceCell`, with per-call allocation via an
+  inner `AtomicU64` that holds no guard across `.await`
 R2 [10]: Use per-aggregate write locks via scc::HashMap for
   fine-grained concurrency between different aggregates
 R3 [10]: Reads are lock-free because writes are atomic via temp file
   plus rename
 
-1. **Global ID mutex** (`tokio::sync::Mutex<Option<u64>>`) — held only
-   during aggregate ID assignment in `create`. Serializes ID
-   generation to guarantee uniqueness. Lazy initialization: `None`
-   on first access triggers `scan_max_id()` to read the directory.
+1. **Lock-free ID counter** (`tokio::sync::OnceCell<AtomicU64>`) — the
+   `OnceCell` ensures `scan_max_id()` runs at most once per store
+   instance to seed the counter from the directory; the inner
+   `AtomicU64` hands out unique IDs via atomic increment without
+   holding a lock across `.await` points.
 
 2. **Per-aggregate write locks** (`scc::HashMap<u64,
    Arc<tokio::sync::Mutex<()>>>`) — `scc::HashMap` is a lock-free
@@ -44,9 +46,9 @@ R3 [10]: Reads are lock-free because writes are atomic via temp file
    version, never a partial write.
 
 `create` does NOT acquire a per-aggregate write lock. This is safe
-because the global ID mutex guarantees the assigned ID is unique — no
+because the atomic ID counter guarantees the assigned ID is unique — no
 other operation can target a freshly assigned ID. The write to disk
-happens after the mutex is released but before any other operation can
+happens after the ID is allocated but before any other operation can
 know the new ID.
 
 ## Consequences
