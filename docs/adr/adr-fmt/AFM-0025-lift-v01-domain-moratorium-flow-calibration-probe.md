@@ -28,7 +28,7 @@ domain moratorium. No further domain additions are authorised in v0.1;
 this exception is narrow, time-boxed, and fully attributed.
 
 R1 [5]: Add the `flow/` (FLO) domain to `adr-fmt.toml` as the sole named
-  exception to the FOCUS-level v0.1 domain moratorium; no further domain
+  exception to the v0.1 domain moratorium; no further domain
   additions are permitted before v0.1 ships.
 R2 [5]: The `flow/` domain hosts ADRs derived exclusively from Reinertsen's
   *Principles of Product Development Flow* (2009) and is bounded to that

@@ -758,8 +758,8 @@ impl<P: Projection> Default for InMemoryProjection<P> {
 /// in no in-memory `EventStore` as a dev-dep at doctest scope (CHE-0048 R3 +
 /// CHE-0005 R1 keep both traits generic, never `Box<dyn _>`). Promoting
 /// this doctest to runnable would require either exporting a test-only
-/// store from this crate (public-API surface change, out of scope per
-/// FOCUS §8) or taking a new dev-dep solely for doctest coverage. The
+/// store from this crate (public-API surface change, out of scope) or
+/// taking a new dev-dep solely for doctest coverage. The
 /// signature-only check is the maximum coverage available without those.
 ///
 /// ```no_run

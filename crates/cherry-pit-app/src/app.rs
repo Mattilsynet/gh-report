@@ -180,8 +180,7 @@ where
     /// type-parameter list `App<G, S, B, P, D>`, and this rustdoc are
     /// consistent at five slots; the ADR text is the lone outlier.
     /// The proposed CHE-0051:R3 amendment delta is tracked at
-    /// bd `adr-fmt-ur04` (S8+, post-v0.1 per FOCUS §8 which forbids
-    /// agent-side ADR edits during closure).
+    /// bd `adr-fmt-ur04` (S8+, post-v0.1).
     pub fn new(gateway: G, store: S, bus: B, projections: P, dead_letter: D) -> Self {
         Self {
             gateway,
