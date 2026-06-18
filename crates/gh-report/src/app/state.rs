@@ -177,19 +177,19 @@ impl LastRecoveryStatus {
 impl AppState {
     /// Access webhook ingestion fields (secret, replay cache, debounce cache).
     #[inline]
-    pub fn webhook(&self) -> &WebhookState {
+    pub(crate) fn webhook(&self) -> &WebhookState {
         &self.webhook
     }
 
     /// Access GitHub API infrastructure (budget gate, rate limit, client, cache).
     #[inline]
-    pub fn github(&self) -> &GithubState {
+    pub(crate) fn github(&self) -> &GithubState {
         &self.github
     }
 
     /// Access evidence service (store, HTML cache, WS broadcast, org summary, batch tracker).
     #[inline]
-    pub fn evidence(&self) -> &EvidenceState {
+    pub(crate) fn evidence(&self) -> &EvidenceState {
         &self.evidence
     }
 
@@ -216,9 +216,10 @@ impl AppState {
         Arc<crate::github::budget::BudgetGate>,
         Arc<crate::github::rate_limit::RateLimitState>,
     ) {
+        let github = self.github();
         (
-            Arc::clone(&self.github.budget_gate),
-            Arc::clone(&self.github.rate_limit_state),
+            Arc::clone(&github.budget_gate),
+            Arc::clone(&github.rate_limit_state),
         )
     }
 
@@ -254,7 +255,7 @@ impl AppState {
         pages: HashMap<String, CachedPage>,
     ) -> Arc<Option<HashMap<String, CachedPage>>> {
         let pages = Arc::new(Some(pages));
-        self.evidence.html_cache.store(Arc::clone(&pages));
+        self.evidence().html_cache.store(Arc::clone(&pages));
         pages
     }
 
@@ -294,7 +295,7 @@ impl AppState {
 
     #[must_use]
     pub(crate) fn webhook_secret(&self) -> Option<&secrecy::SecretString> {
-        self.webhook.secret.as_ref()
+        self.webhook().secret.as_ref()
     }
 
     pub(crate) async fn accept_webhook_delivery(&self, delivery_id: &str) -> bool {
