@@ -6,23 +6,27 @@
 //!
 //! ## Startup order
 //!
-//! 1. **Projection runtime init** — `snapshot_fast_path_init` replays
+//! 1. **Serving port bind** — the TCP bind is the duplicate-instance guard
+//!    and runs before store handles, projection replay, warm-start rendering,
+//!    run-lock acquisition, or credential resolution.
+//! 2. **Projection runtime init** — `snapshot_fast_path_init` replays
 //!    the event log (or fast-paths from the latest projection snapshot
 //!    per CHE-0048:R1) so the in-memory `EvidenceProjection` is current
 //!    before any reader can observe it (CHE-0048:R2 — projection is
 //!    the source of truth at boot; δ.3c-ii retired the prior
 //!    `baseline.msgpack` snapshot file).
-//! 2. **Warm-start** — render the dashboard from the projection and
+//! 3. **Warm-start** — render the dashboard from the projection and
 //!    populate the HTML cache so the server can respond to page
 //!    requests within seconds. Falls through gracefully if the
 //!    projection is empty (fresh install) — the server returns 503
 //!    until the first sweep completes.
-//! 3. **Start the web server** — binds immediately (serves warm-start
-//!    data or returns 503 if the projection was empty).
-//! 4. **Background collection** — the initial API collection and subsequent
+//! 4. **Start the web server** — serves through the pre-bound listener
+//!    immediately (serves warm-start data or returns 503 if the projection
+//!    was empty).
+//! 5. **Background collection** — the initial API collection and subsequent
 //!    scheduled runs happen in a background task. Each successful run
 //!    atomically updates the HTML cache.
-//! 5. **Worker pool** — started lazily by `AppState::ensure_worker_pool()`
+//! 6. **Worker pool** — started lazily by `AppState::ensure_worker_pool()`
 //!    inside `collect::run_collection_inner()` after the first successful
 //!    credential resolution. The pool persists across collection runs
 //!    (shared between sweep and webhook jobs).
@@ -33,6 +37,7 @@
 //! to the initial collection run. Subsequent scheduled runs do not
 //! force-unlock.
 
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -45,6 +50,7 @@ use crate::config;
 use crate::config::runtime::RuntimeConfig;
 use crate::domain::evidence::RepositoryEvidence;
 use crate::error::{AppError, ConfigError, PersistenceError};
+use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
 /// Shared cooperative drain budget for worker-pool, delivery-task, and
@@ -113,10 +119,15 @@ async fn next_collection_tick(
 ///
 /// Panics if the default `ServerConfig` cannot be built (indicates a
 /// programming error in the hardcoded defaults).
+#[expect(
+    clippy::too_many_lines,
+    reason = "daemon startup order is the operator-visible contract"
+)]
 pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     let startup_started = Instant::now();
     let port = resolve_port()?;
     let bind_address = resolve_bind_address()?;
+    let addr = parse_serving_addr(&bind_address, port).map_err(|e| server_error_runtime(&e))?;
 
     info!(
         org = %config.org_name,
@@ -125,6 +136,10 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
         interval_secs = config::COLLECTION_INTERVAL_SECS,
         "daemon starting"
     );
+
+    let listener = bind_serving_port_before_next_step(addr, || ())
+        .await
+        .map_err(|e| server_error_runtime(&e))?;
 
     let events_dir = config.store_dir.join("events").join(&config.org_name);
     let projections_dir = config.store_dir.join("projections").join(&config.org_name);
@@ -160,12 +175,6 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
 
     let force_flag = Arc::new(AtomicBool::new(config.force_unlock));
     let (collect_cancel_tx, collect_cancel_rx) = tokio::sync::watch::channel(false);
-    let mut collection_loop = spawn_collection_loop(
-        config.clone(),
-        Arc::clone(&app_state),
-        Arc::clone(&force_flag),
-        collect_cancel_rx,
-    );
 
     let mut extra_routes = crate::server::status_router();
     if app_state.webhook().secret.is_some() {
@@ -184,14 +193,23 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
         MESSAGE_READY,
     );
 
+    let mut collection_loop = spawn_collection_loop(
+        config.clone(),
+        Arc::clone(&app_state),
+        Arc::clone(&force_flag),
+        collect_cancel_rx,
+    );
+    let server_config = crate::infra::server::config::ServerConfig::builder()
+        .build()
+        .expect("default config is valid");
+
     let server_result = crate::infra::server::runtime::start(
         port,
         &bind_address,
+        Some(listener),
         shutdown,
         Arc::clone(&app_state),
-        &crate::infra::server::config::ServerConfig::builder()
-            .build()
-            .expect("default config is valid"),
+        &server_config,
         None,
         Some(extra_routes),
     )
@@ -361,6 +379,18 @@ fn spawn_collection_loop(
             }
         }
     })
+}
+
+async fn bind_serving_port_before_next_step<F>(
+    addr: SocketAddr,
+    next_step: F,
+) -> Result<TcpListener, crate::infra::server::error::ServerError>
+where
+    F: FnOnce(),
+{
+    let listener = crate::infra::server::runtime::bind_serving_port(addr).await?;
+    next_step();
+    Ok(listener)
 }
 
 enum CollectionDrainError {
@@ -550,6 +580,22 @@ where
     }
 }
 
+fn parse_serving_addr(
+    bind_address: &str,
+    port: u16,
+) -> Result<SocketAddr, crate::infra::server::error::ServerError> {
+    let address = format!("{bind_address}:{port}");
+    address.parse().map_err(
+        |source| crate::infra::server::error::ServerError::InvalidAddress { address, source },
+    )
+}
+
+fn server_error_runtime(
+    error: &crate::infra::server::error::ServerError,
+) -> crate::error::ServerError {
+    crate::error::ServerError::Runtime(error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -632,6 +678,32 @@ mod tests {
     #[test]
     fn duration_millis_reports_whole_milliseconds() {
         assert_eq!(duration_millis(Duration::from_millis(1_234)), 1_234);
+    }
+
+    #[tokio::test]
+    async fn bind_first_guard_returns_bind_failed_before_store_construction() {
+        let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = first.local_addr().unwrap();
+        let store_constructed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = Arc::clone(&store_constructed);
+
+        let result = bind_serving_port_before_next_step(addr, || {
+            observed.store(true, Ordering::Release);
+        })
+        .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(crate::infra::server::error::ServerError::BindFailed { address, .. })
+                    if address == addr
+            ),
+            "duplicate instance must return BindFailed before store construction, got {result:?}"
+        );
+        assert!(
+            !store_constructed.load(Ordering::Acquire),
+            "store construction must not run after duplicate bind"
+        );
     }
 
     #[tokio::test(start_paused = true)]

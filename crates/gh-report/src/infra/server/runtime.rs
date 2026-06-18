@@ -575,6 +575,20 @@ fn etag_weak_match(client_val: &HeaderValue, server_val: &HeaderValue) -> bool {
     strip_weak(client_val.as_bytes()) == strip_weak(server_val.as_bytes())
 }
 
+/// Bind the serving TCP listener.
+///
+/// # Errors
+///
+/// Returns [`ServerError::BindFailed`] when the socket cannot be bound.
+pub(crate) async fn bind_serving_port(addr: SocketAddr) -> Result<TcpListener, ServerError> {
+    TcpListener::bind(addr)
+        .await
+        .map_err(|e| ServerError::BindFailed {
+            address: addr,
+            source: e,
+        })
+}
+
 /// Start the in-memory report web server and run until the provided shutdown
 /// signal completes.
 ///
@@ -586,11 +600,14 @@ fn etag_weak_match(client_val: &HeaderValue, server_val: &HeaderValue) -> bool {
 ///
 /// * `port` — TCP port number (use `0` for ephemeral port).
 /// * `bind_address` — IP address to bind to (e.g., `"127.0.0.1"`, `"0.0.0.0"`).
+/// * `listener` — Optional pre-bound TCP listener. Pass `None` to bind inside
+///   this function.
 /// * `shutdown` — A future that resolves when the server should shut down.
 /// * `state` — Shared application state implementing [`ServerState`].
 /// * `config` — Server configuration (concurrency limits, body size limits).
 /// * `addr_tx` — Optional oneshot channel to receive the bound `SocketAddr`.
-///   Useful for tests using ephemeral ports. Pass `None` if not needed.
+///   Used only when `listener` is `None`. Useful for tests using ephemeral
+///   ports. Pass `None` if not needed.
 /// * `extra_routes` — Optional additional routes (e.g., webhook handler) to
 ///   merge into the router. Extra routes bring their own body-limit layers;
 ///   built-in routes apply the `config.max_request_body_bytes` limit via
@@ -598,15 +615,21 @@ fn etag_weak_match(client_val: &HeaderValue, server_val: &HeaderValue) -> bool {
 ///
 /// # Errors
 ///
-/// Returns [`ServerError`] if the server cannot bind to the requested address.
+/// Returns [`ServerError`] if the server cannot parse the requested address,
+/// bind to the requested address, or serve requests.
 ///
 /// # Panics
 ///
 /// Panics if `listener.local_addr()` fails when `addr_tx` is `Some`
 /// (listener not bound).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "server startup wiring keeps call-site ownership explicit"
+)]
 pub(crate) async fn start<S: ServerState>(
     port: u16,
     bind_address: &str,
+    listener: Option<TcpListener>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     state: Arc<S>,
     config: &ValidatedConfig,
@@ -623,26 +646,27 @@ pub(crate) async fn start<S: ServerState>(
 
     let app = build_router(state, config, extra_routes);
 
-    let addr: SocketAddr =
-        format!("{bind_address}:{port}")
-            .parse()
-            .map_err(|e| ServerError::InvalidAddress {
-                address: format!("{bind_address}:{port}"),
-                source: e,
-            })?;
+    let listener = if let Some(listener) = listener {
+        listener
+    } else {
+        let addr: SocketAddr =
+            format!("{bind_address}:{port}")
+                .parse()
+                .map_err(|e| ServerError::InvalidAddress {
+                    address: format!("{bind_address}:{port}"),
+                    source: e,
+                })?;
 
-    info!(%addr, "content server listening (in-memory cache)");
+        info!(%addr, "content server listening (in-memory cache)");
 
-    let listener = TcpListener::bind(addr)
-        .await
-        .map_err(|e| ServerError::BindFailed {
-            address: addr,
-            source: e,
-        })?;
+        let listener = bind_serving_port(addr).await?;
 
-    if let Some(tx) = addr_tx {
-        let _ = tx.send(listener.local_addr().expect("listener bound successfully"));
-    }
+        if let Some(tx) = addr_tx {
+            let _ = tx.send(listener.local_addr().expect("listener bound successfully"));
+        }
+
+        listener
+    };
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown)
@@ -853,6 +877,21 @@ mod tests {
 
     fn default_config() -> ValidatedConfig {
         ServerConfig::builder().build().unwrap()
+    }
+
+    #[tokio::test]
+    async fn bind_serving_port_reports_bind_failed_on_duplicate_addr() {
+        let first = bind_serving_port("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let addr = first.local_addr().unwrap();
+
+        let result = bind_serving_port(addr).await;
+
+        assert!(
+            matches!(result, Err(ServerError::BindFailed { address, .. }) if address == addr),
+            "duplicate bind must return BindFailed for {addr}, got {result:?}"
+        );
     }
 
     #[test]
@@ -1248,6 +1287,7 @@ mod tests {
             start(
                 0,
                 "127.0.0.1",
+                None,
                 shutdown,
                 state,
                 &default_config(),
@@ -3201,6 +3241,7 @@ mod tests {
         let result = start(
             0,
             "999.999.999.999",
+            None,
             shutdown,
             state,
             &default_config(),
