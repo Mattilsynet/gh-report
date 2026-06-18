@@ -142,16 +142,14 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
         .map_err(|e| server_error_runtime(&e))?;
 
     let events_dir = config.store_dir.join("events").join(&config.org_name);
-    let projections_dir = config.store_dir.join("projections").join(&config.org_name);
     let nats = config.nats_store_config()?;
-    let app_state =
-        AppState::with_stores(&events_dir, projections_dir, config.pardosa_backend, nats)
-            .await
-            .map_err(|source| {
-                AppError::Persistence(PersistenceError::LoadFailed {
-                    reason: format!("open event store at {}: {source}", events_dir.display()),
-                })
-            })?;
+    let app_state = AppState::with_stores(&events_dir, config.pardosa_backend, nats)
+        .await
+        .map_err(|source| {
+            AppError::Persistence(PersistenceError::LoadFailed {
+                reason: format!("open event store at {}: {source}", events_dir.display()),
+            })
+        })?;
 
     if let Err(e) = app_state.snapshot_fast_path_init() {
         error!(error = %e, "projection runtime init failed");

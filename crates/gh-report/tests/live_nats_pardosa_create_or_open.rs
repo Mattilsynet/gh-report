@@ -66,19 +66,10 @@ fn jetstream_backend(
     PardosaJetStreamBackend::open(substrate)
 }
 
-async fn open_state(
-    events_dir: &Path,
-    projections_dir: &Path,
-    nats: NatsStoreConfig,
-) -> Arc<AppState> {
-    AppState::with_stores(
-        events_dir,
-        projections_dir.to_path_buf(),
-        PardosaBackend::Nats,
-        nats,
-    )
-    .await
-    .expect("AppState::with_stores with Nats backend")
+async fn open_state(events_dir: &Path, nats: NatsStoreConfig) -> Arc<AppState> {
+    AppState::with_stores(events_dir, PardosaBackend::Nats, nats)
+        .await
+        .expect("AppState::with_stores with Nats backend")
 }
 
 fn test_event() -> DomainEvent {
@@ -147,8 +138,7 @@ fn nats_backend_fresh_create_reopen_and_populated_route_preserves_events() {
     rt.block_on(async {
         let tmp = tempfile::tempdir().expect("tempdir");
         let events_dir = tmp.path().join("events");
-        let projections_dir = tmp.path().join("projections");
-        let fresh_state = open_state(&events_dir, &projections_dir, nats.clone()).await;
+        let fresh_state = open_state(&events_dir, nats.clone()).await;
         let fresh_store = Arc::clone(&fresh_state.event_store);
         assert!(
             fresh_store.latest_per_repo().expect("latest").is_empty(),
@@ -173,7 +163,7 @@ fn nats_backend_fresh_create_reopen_and_populated_route_preserves_events() {
         assert_loaded_event(&opened_latest[0].1);
         drop(opened_via_adapter);
 
-        let populated_state = open_state(&events_dir, &projections_dir, nats.clone()).await;
+        let populated_state = open_state(&events_dir, nats.clone()).await;
         let loaded = populated_state
             .event_store
             .latest_per_repo()
@@ -205,8 +195,7 @@ fn nats_backend_uses_distinct_repo_and_org_streams() {
     rt.block_on(async {
         let tmp = tempfile::tempdir().expect("tempdir");
         let events_dir = tmp.path().join("events");
-        let projections_dir = tmp.path().join("projections");
-        let state = open_state(&events_dir, &projections_dir, nats.clone()).await;
+        let state = open_state(&events_dir, nats.clone()).await;
         state
             .event_store
             .record("m5/repo", test_event())

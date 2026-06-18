@@ -264,17 +264,11 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let events_dir = dir.path().join("events");
-        let projections_dir = dir.path().join("projections");
         let nats =
             NatsStoreConfig::for_org("TestOrg", crate::config::runtime::DEFAULT_NATS_URL).unwrap();
-        let writer_state = AppState::with_stores(
-            &events_dir,
-            projections_dir.clone(),
-            PardosaBackend::Pgno,
-            nats.clone(),
-        )
-        .await
-        .unwrap();
+        let writer_state = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats.clone())
+            .await
+            .unwrap();
         let timestamp = "2026-06-14T00:00:00Z";
         let active = test_fixtures::all_passing_evidence("active-repo");
         let mut archived = test_fixtures::all_passing_evidence("archived-repo");
@@ -292,7 +286,7 @@ mod tests {
         }
         drop(writer_state);
 
-        let state = AppState::with_stores(&events_dir, projections_dir, PardosaBackend::Pgno, nats)
+        let state = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats)
             .await
             .unwrap();
         assert_eq!(state.projection_len(), 2);

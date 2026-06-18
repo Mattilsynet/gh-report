@@ -628,12 +628,8 @@ impl AppState {
     /// returns an explicit startup error until the runtime handle wiring
     /// is supplied by a follow-up.
     ///
-    /// # Panics
-    ///
-    /// Panics if [`FileProjectionStore::new`] fails on `projections_dir`.
     pub async fn with_stores(
         events_dir: &Path,
-        _projections_dir: PathBuf,
         backend: crate::config::runtime::PardosaBackend,
         nats: crate::config::runtime::NatsStoreConfig,
     ) -> Result<Arc<Self>, std::io::Error> {
@@ -1130,11 +1126,9 @@ mod tests {
     async fn nats_open_dead_port_returns_error_without_nested_runtime_panic() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let events_dir = tmp.path().join("events");
-        let projections_dir = tmp.path().join("projections");
         let nats = NatsStoreConfig::for_org("org", "nats://127.0.0.1:1").unwrap();
 
-        let result =
-            AppState::with_stores(&events_dir, projections_dir, PardosaBackend::Nats, nats).await;
+        let result = AppState::with_stores(&events_dir, PardosaBackend::Nats, nats).await;
 
         let error = match result {
             Ok(_) => panic!("dead-port Nats open must fail"),
@@ -1203,14 +1197,12 @@ mod tests {
     async fn status_payload_contains_last_recovery_after_recovered_open() {
         let dir = tempfile::tempdir().expect("tempdir");
         let events_dir = dir.path().join("events");
-        let projections_dir = dir.path().join("projections");
         std::fs::create_dir_all(&events_dir).expect("events dir");
         let path = events_dir.join("events.pgno");
         let data_end = synthesize_torn_footer_store(&path, SYNTHETIC_RECOVERY_RECORDS);
 
         let state = AppState::with_stores(
             &events_dir,
-            projections_dir,
             PardosaBackend::Pgno,
             NatsStoreConfig::for_org("org", crate::config::runtime::DEFAULT_NATS_URL).unwrap(),
         )
@@ -1480,10 +1472,8 @@ mod tests {
     async fn record_repo_writes_native_store_and_remove_detaches_latest() {
         let dir = tempfile::tempdir().expect("tempdir");
         let events_dir = dir.path().join("events");
-        let projections_dir = dir.path().join("projections");
         let state = AppState::with_stores(
             &events_dir,
-            projections_dir,
             PardosaBackend::Pgno,
             NatsStoreConfig::for_org("org", crate::config::runtime::DEFAULT_NATS_URL).unwrap(),
         )
@@ -1520,10 +1510,8 @@ mod tests {
     async fn record_and_remove_apply_projection_without_full_refold() {
         let dir = tempfile::tempdir().expect("tempdir");
         let events_dir = dir.path().join("events");
-        let projections_dir = dir.path().join("projections");
         let state = AppState::with_stores(
             &events_dir,
-            projections_dir,
             PardosaBackend::Pgno,
             NatsStoreConfig::for_org("org", crate::config::runtime::DEFAULT_NATS_URL).unwrap(),
         )
@@ -1553,17 +1541,11 @@ mod tests {
     async fn reconstruct_org_state_from_dual_event_logs_without_live_run() {
         let dir = tempfile::tempdir().expect("tempdir");
         let events_dir = dir.path().join("events");
-        let projections_dir = dir.path().join("projections");
         let nats = NatsStoreConfig::for_org("TestOrg", crate::config::runtime::DEFAULT_NATS_URL)
             .expect("nats config");
-        let state = AppState::with_stores(
-            &events_dir,
-            projections_dir.clone(),
-            PardosaBackend::Pgno,
-            nats.clone(),
-        )
-        .await
-        .expect("with stores");
+        let state = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats.clone())
+            .await
+            .expect("with stores");
         let mut repo = crate::test_fixtures::all_passing_evidence("event-repo");
         repo.repository.archived = true;
         let domain_key = repo.repository.inventory_key.clone();
@@ -1588,10 +1570,9 @@ mod tests {
         assert!(events_dir.join("org-events.pgno").exists());
         drop(state);
 
-        let restarted =
-            AppState::with_stores(&events_dir, projections_dir, PardosaBackend::Pgno, nats)
-                .await
-                .expect("restart from event logs");
+        let restarted = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats)
+            .await
+            .expect("restart from event logs");
         let projection = restarted.lock_projection().clone();
         let org = projection
             .org_state
@@ -1637,17 +1618,11 @@ mod tests {
     async fn org_only_event_log_is_ready_after_coldstart() {
         let dir = tempfile::tempdir().expect("tempdir");
         let events_dir = dir.path().join("events");
-        let projections_dir = dir.path().join("projections");
         let nats = NatsStoreConfig::for_org("TestOrg", crate::config::runtime::DEFAULT_NATS_URL)
             .expect("nats config");
-        let state = AppState::with_stores(
-            &events_dir,
-            projections_dir.clone(),
-            PardosaBackend::Pgno,
-            nats.clone(),
-        )
-        .await
-        .expect("with stores");
+        let state = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats.clone())
+            .await
+            .expect("with stores");
         let mut metadata = crate::test_fixtures::make_metadata();
         metadata.organization = "TestOrg".to_string();
         metadata.run_id = "org-only-run".to_string();
@@ -1660,10 +1635,9 @@ mod tests {
             .expect("record org state");
         drop(state);
 
-        let restarted =
-            AppState::with_stores(&events_dir, projections_dir, PardosaBackend::Pgno, nats)
-                .await
-                .expect("restart from org event log");
+        let restarted = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats)
+            .await
+            .expect("restart from org event log");
         {
             let projection = restarted.lock_projection();
             assert_eq!(projection.repositories.len(), 0);
@@ -1686,10 +1660,8 @@ mod tests {
     async fn line_order_replay_matches_live_projection_after_detach() {
         let dir = tempfile::tempdir().expect("tempdir");
         let events_dir = dir.path().join("events");
-        let projections_dir = dir.path().join("projections");
         let state = AppState::with_stores(
             &events_dir,
-            projections_dir,
             PardosaBackend::Pgno,
             NatsStoreConfig::for_org("org", crate::config::runtime::DEFAULT_NATS_URL).unwrap(),
         )
@@ -1740,10 +1712,8 @@ mod tests {
     async fn detached_repository_drops_from_rendered_report_after_refold() {
         let dir = tempfile::tempdir().expect("tempdir");
         let events_dir = dir.path().join("events");
-        let projections_dir = dir.path().join("projections");
         let state = AppState::with_stores(
             &events_dir,
-            projections_dir,
             PardosaBackend::Pgno,
             NatsStoreConfig::for_org("org", crate::config::runtime::DEFAULT_NATS_URL).unwrap(),
         )

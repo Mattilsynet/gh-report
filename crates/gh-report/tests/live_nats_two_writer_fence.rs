@@ -129,14 +129,9 @@ fn repository_evidence(name: &str) -> RepositoryEvidence {
 }
 
 async fn open_state(tmp: &Path, nats: NatsStoreConfig) -> Arc<AppState> {
-    AppState::with_stores(
-        &tmp.join("events"),
-        tmp.join("projections"),
-        PardosaBackend::Nats,
-        nats,
-    )
-    .await
-    .expect("AppState::with_stores over live NATS")
+    AppState::with_stores(&tmp.join("events"), PardosaBackend::Nats, nats)
+        .await
+        .expect("AppState::with_stores over live NATS")
 }
 
 fn is_pardosa_conflict(error: &(dyn Error + 'static)) -> bool {

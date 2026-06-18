@@ -49,15 +49,12 @@ fn default_nats_store_config() -> gh_report::config::runtime::NatsStoreConfig {
 async fn warm_start_replay_preserves_archived_public_security_policy_in_aggregate_metrics() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let events_dir = tmp.path().join("events");
-    let projections_dir = tmp.path().join("projections");
     std::fs::create_dir_all(&events_dir).expect("mk events dir");
-    std::fs::create_dir_all(&projections_dir).expect("mk projections dir");
 
     seed_repo_evaluated_envelopes(&events_dir).await;
 
     let app_state = AppState::with_stores(
         &events_dir,
-        projections_dir,
         gh_report::config::runtime::PardosaBackend::Pgno,
         default_nats_store_config(),
     )
@@ -157,7 +154,6 @@ async fn warm_start_replay_preserves_archived_public_security_policy_in_aggregat
 async fn seed_repo_evaluated_envelopes(events_dir: &std::path::Path) {
     let state = AppState::with_stores(
         events_dir,
-        events_dir.join("projections"),
         gh_report::config::runtime::PardosaBackend::Pgno,
         default_nats_store_config(),
     )

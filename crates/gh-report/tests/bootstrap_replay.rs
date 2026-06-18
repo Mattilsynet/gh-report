@@ -56,13 +56,10 @@ use gh_report::domain::repository::{Repository, Visibility};
 async fn bootstrap_replay_populates_routing_indices() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let events_dir = tmp.path().join("events");
-    let projections_dir = tmp.path().join("projections");
     std::fs::create_dir_all(&events_dir).expect("mk events dir");
-    std::fs::create_dir_all(&projections_dir).expect("mk projections dir");
 
     let app_state = AppState::with_stores(
         &events_dir,
-        projections_dir,
         gh_report::config::runtime::PardosaBackend::Pgno,
         gh_report::config::runtime::NatsStoreConfig::for_org(
             "org",
@@ -122,13 +119,10 @@ async fn bootstrap_replay_populates_routing_indices() {
 async fn restart_rehydrates_projection_state() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let events_dir = tmp.path().join("events");
-    let projections_dir = tmp.path().join("projections");
     std::fs::create_dir_all(&events_dir).expect("mk events dir");
-    std::fs::create_dir_all(&projections_dir).expect("mk projections dir");
 
     let app_state = AppState::with_stores(
         &events_dir,
-        projections_dir,
         gh_report::config::runtime::PardosaBackend::Pgno,
         gh_report::config::runtime::NatsStoreConfig::for_org(
             "org",

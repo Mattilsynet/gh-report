@@ -108,10 +108,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--org is required when using --dump-baseline (δ.3c-ii: event/projection stores are per-org)",
         )?;
         let events_dir = cli.store_dir.join("events").join(org);
-        let projections_dir = cli.store_dir.join("projections").join(org);
         let app_state = gh_report::app::state::AppState::with_stores(
             &events_dir,
-            projections_dir,
             runtime::PardosaBackend::from(cli.pardosa_backend),
             runtime::NatsStoreConfig::for_org(org, cli.nats_url.clone())?,
         )
