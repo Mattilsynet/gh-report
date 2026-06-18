@@ -1,7 +1,7 @@
 # CHE-0034. jiff::Timestamp as Temporal Foundation
 
 Date: 2026-04-25
-Last-reviewed: 2026-04-28
+Last-reviewed: 2026-06-19
 Tier: D
 Status: Accepted
 
@@ -32,12 +32,6 @@ pub timestamp: jiff::Timestamp,
 
 // Generated in MsgpackFileStore::build_envelopes
 let timestamp = jiff::Timestamp::now();
-```
-
-Workspace dependency:
-
-```toml
-jiff = { version = "0.2", features = ["serde"] }
 ```
 
 ## Consequences

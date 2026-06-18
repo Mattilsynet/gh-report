@@ -1,7 +1,7 @@
 # AFM-0013. Clap-Derived CLI Argument Parsing
 
 Date: 2026-04-28
-Last-reviewed: 2026-05-02
+Last-reviewed: 2026-06-19
 Tier: D
 Status: Accepted
 
@@ -17,14 +17,13 @@ AFM-0002 chose manual `std::env::args()` parsing when adr-fmt had three flags. T
 ## Decision
 
 Parse CLI arguments using clap's derive API. A single `Cli` struct
-with `#[derive(Parser)]` replaces manual `resolve_args()` logic.
+replaces manual `resolve_args()` logic.
 
 R1 [9]: Build all CLI argument definitions into a single `Cli`
-  struct with `#[derive(Parser)]`, eliminating manual `args()`
+  struct via clap's derive API, eliminating manual `args()`
   iteration outside that struct — exactly one struct owns all flags
-R2 [9]: Declare mutually exclusive mode flags using clap's `group`
-  attribute to enforce exclusivity at parse time rather than in
-  runtime match logic
+R2 [9]: Declare mutually exclusive mode flags so clap enforces
+  exclusivity at parse time rather than in runtime match logic
 R3 [9]: Map each mode flag to the internal `Mode` enum via a
   conversion step after clap parsing — at least one conversion per
   flag variant

@@ -1,7 +1,7 @@
 # CHE-0036. File-Per-Stream Full-Rewrite Storage Model
 
 Date: 2026-04-25
-Last-reviewed: 2026-04-28
+Last-reviewed: 2026-06-19
 Tier: D
 Status: Accepted
 

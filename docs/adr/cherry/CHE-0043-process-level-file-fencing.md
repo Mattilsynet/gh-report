@@ -1,7 +1,7 @@
 # CHE-0043. Process-Level File Fencing
 
 Date: 2026-04-25
-Last-reviewed: 2026-04-28
+Last-reviewed: 2026-06-19
 Tier: D
 Status: Accepted
 
@@ -15,14 +15,14 @@ CHE-0006 establishes the single-writer assumption: each aggregate instance is ow
 
 ## Decision
 
-`MsgpackFileStore` acquires an exclusive advisory file lock on
-`{store_dir}/.lock` before its first write operation (`create` or
+`MsgpackFileStore` acquires an exclusive advisory file lock on the
+store directory before its first write operation (`create` or
 `append`). The lock is:
 
-R1 [10]: Acquire an exclusive advisory file lock on {store_dir}/.lock
-  before the first write operation
-R2 [10]: Lock acquisition is lazy via OnceCell, triggered on first
-  write not on construction
+R1 [10]: Acquire an exclusive advisory file lock on the store
+  directory before the first write operation
+R2 [10]: Lock acquisition is lazy, triggered on first write not on
+  construction
 R3 [10]: A second process on the same directory gets
   StoreError::StoreLocked instead of silent data corruption
 

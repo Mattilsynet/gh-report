@@ -1,7 +1,7 @@
 # CHE-0033. UUID v7 for Event Identity
 
 Date: 2026-04-25
-Last-reviewed: 2026-05-14
+Last-reviewed: 2026-06-19
 Tier: D
 Status: Accepted
 
@@ -32,11 +32,6 @@ pub event_id: uuid::Uuid,
 
 // Generated in MsgpackFileStore::build_envelopes
 event_id: uuid::Uuid::now_v7(),
-```
-
-Workspace dependency:
-```toml
-uuid = { version = "1", features = ["v7", "serde"] }
 ```
 
 ## Consequences
