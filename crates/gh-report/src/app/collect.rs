@@ -394,9 +394,41 @@ async fn run_collection_pipeline(
     org_alert: OrgAlertContext,
     state: &Arc<AppState>,
 ) -> Result<(), AppError> {
-    let mut saga = SweepSaga::new(config, run, &ctx, org_alert, state);
-    saga.run_to_completion(config, run, corr_ctx, &ctx, inventory, state)
+    let mut saga = SweepSaga::new(run, &ctx, org_alert, state);
+    let mut sweep_ctx = SweepCtx::new(config, run, corr_ctx, state);
+    saga.run_to_completion(&mut sweep_ctx, &ctx, inventory)
         .await
+}
+
+struct SweepCtx<'a> {
+    config: &'a RuntimeConfig,
+    run: &'a mut RunMetadata,
+    corr_ctx: CorrelationContext,
+    state: &'a Arc<AppState>,
+}
+
+impl<'a> SweepCtx<'a> {
+    fn new(
+        config: &'a RuntimeConfig,
+        run: &'a mut RunMetadata,
+        corr_ctx: &CorrelationContext,
+        state: &'a Arc<AppState>,
+    ) -> Self {
+        Self {
+            config,
+            run,
+            corr_ctx: corr_ctx.clone(),
+            state,
+        }
+    }
+
+    fn run(&self) -> &RunMetadata {
+        &*self.run
+    }
+
+    fn run_mut(&mut self) -> &mut RunMetadata {
+        &mut *self.run
+    }
 }
 
 /// Current phase of the sweep saga state machine.
@@ -435,9 +467,8 @@ pub(crate) enum SweepPhase {
 ///                     (timeout/error) → Failed
 /// ```
 ///
-/// Each step method (`step_resume`, `step_baseline`, etc.) advances the
-/// phase and can be tested independently by constructing the saga in
-/// the appropriate starting phase.
+/// Each step method advances the phase and can be tested independently
+/// by constructing the saga in the appropriate starting phase.
 pub(crate) struct SweepSaga {
     /// Current phase.
     phase: SweepPhase,
@@ -472,14 +503,11 @@ impl SweepSaga {
     /// Performs one-time setup: wires budget pause notification and stores
     /// the org summary for eventual consistency (AD6).
     fn new(
-        config: &RuntimeConfig,
         run: &RunMetadata,
         ctx: &CollectionContext,
         org_alert: OrgAlertContext,
         state: &Arc<AppState>,
     ) -> Self {
-        let _ = config;
-
         let pause_notify = Arc::new(tokio::sync::Notify::new());
         ctx.client
             .set_budget_pause_notify(Arc::clone(&pause_notify));
@@ -517,37 +545,30 @@ impl SweepSaga {
     /// `SweepCompleted`/`SweepFailed`) at each transition.
     async fn run_to_completion(
         &mut self,
-        config: &RuntimeConfig,
-        run: &mut RunMetadata,
-        corr_ctx: &CorrelationContext,
+        sweep: &mut SweepCtx<'_>,
         ctx: &CollectionContext,
         inventory: &InventoryLoad,
-        state: &Arc<AppState>,
     ) -> Result<(), AppError> {
-        self.step_start_sweep(config, run, corr_ctx, inventory, state);
+        self.step_start_sweep(sweep, inventory);
 
-        self.step_resume(inventory, config, state);
+        debug_assert_eq!(self.phase, SweepPhase::Init);
+        self.phase = SweepPhase::Resumed;
 
         Self::emit_progress(
-            run,
-            corr_ctx,
+            sweep.run(),
             self.completed.len() as u64,
             inventory.active_repos.len() as u64,
-            state,
         );
 
-        self.step_baseline(inventory, config, state);
+        self.step_baseline(sweep, inventory);
 
         Self::emit_progress(
-            run,
-            corr_ctx,
+            sweep.run(),
             (self.completed.len() + self.baseline_cache.len()) as u64,
             inventory.active_repos.len() as u64,
-            state,
         );
 
-        self.step_enqueue_and_await(config, run, corr_ctx, ctx, inventory, state)
-            .await?;
+        self.step_enqueue_and_await(sweep, ctx, inventory).await?;
 
         if let SweepPhase::Failed { ref error } = self.phase {
             return Err(AppError::Inventory(
@@ -557,51 +578,23 @@ impl SweepSaga {
             ));
         }
 
-        self.step_finalize(config, run, corr_ctx, ctx, inventory, state)
-            .await?;
+        self.step_finalize(sweep, ctx, inventory).await?;
 
         Ok(())
-    }
-
-    /// Phase 1: Init → Resumed transition.
-    ///
-    /// δ.3c-ii: on-disk checkpoint resume is retired. The projection
-    /// (rebuilt at boot via event-log replay per CHE-0051:R5 +
-    /// CHE-0048:R2) is the durable state; carry-forward of partial
-    /// in-progress runs collapses into `step_baseline`'s
-    /// `reuse_from_baseline`, which now sources from the projection
-    /// and applies the same `should_reuse(updated_at)` staleness
-    /// check that prior-run evidence used to receive on the baseline
-    /// path. This step is therefore a pure phase transition retained
-    /// for state-machine stability.
-    fn step_resume(
-        &mut self,
-        inventory: &InventoryLoad,
-        config: &RuntimeConfig,
-        state: &Arc<AppState>,
-    ) {
-        debug_assert_eq!(self.phase, SweepPhase::Init);
-        let _ = (inventory, config, state);
-        self.phase = SweepPhase::Resumed;
     }
 
     /// Phase 2: Reuse evidence from the previous baseline.
     ///
     /// Finds repos whose `updated_at` matches the baseline and
     /// pre-populates the evidence store.
-    fn step_baseline(
-        &mut self,
-        inventory: &InventoryLoad,
-        _config: &RuntimeConfig,
-        state: &Arc<AppState>,
-    ) {
+    fn step_baseline(&mut self, sweep: &SweepCtx<'_>, inventory: &InventoryLoad) {
         debug_assert_eq!(self.phase, SweepPhase::Resumed);
 
         self.baseline_cache = reuse_from_baseline(
             &inventory.active_repos,
             &self.completed,
             &self.run_timestamp,
-            state,
+            sweep.state,
         );
         self.baseline_reused = self.baseline_cache.len();
 
@@ -613,24 +606,16 @@ impl SweepSaga {
     /// CHE-0054:R1.a requires `SweepStarted` to be the first event of any
     /// `Run` instance, and CHE-0054:R5 routes subsequent commands through
     /// `runs_by_key` which is populated by the merger arm of `start_sweep`.
-    /// Invoking this before `step_resume` ensures the two pre-batch
+    /// Invoking this before the Resumed transition ensures the two pre-batch
     /// `emit_progress` calls in `run_to_completion` no longer hit an empty
     /// routing index (which previously surfaced as `RunError::RoutingMiss`
     /// swallowed by the non-fatal `SweepProgress publish failed` warn arm).
     /// Publish failure here remains non-fatal per CHE-0024:R1.
-    fn step_start_sweep(
-        &self,
-        config: &RuntimeConfig,
-        run: &RunMetadata,
-        _corr_ctx: &CorrelationContext,
-        inventory: &InventoryLoad,
-        state: &Arc<AppState>,
-    ) {
-        let _ = state;
+    fn step_start_sweep(&self, sweep: &SweepCtx<'_>, inventory: &InventoryLoad) {
         info!(
-            org = %config.org_name,
+            org = %sweep.config.org_name,
             repo_count = inventory.active_repos.len(),
-            batch_id = %run.run_id,
+            batch_id = %sweep.run().run_id,
             timestamp = %jiff::Timestamp::now(),
             snapshot_signature = %self.snapshot_signature,
             "sweep started"
@@ -645,12 +630,9 @@ impl SweepSaga {
     /// emits `SweepFailed`.
     async fn step_enqueue_and_await(
         &mut self,
-        config: &RuntimeConfig,
-        run: &RunMetadata,
-        corr_ctx: &CorrelationContext,
+        sweep: &SweepCtx<'_>,
         ctx: &CollectionContext,
         inventory: &InventoryLoad,
-        state: &Arc<AppState>,
     ) -> Result<(), AppError> {
         debug_assert_eq!(self.phase, SweepPhase::BaselineReused);
 
@@ -685,10 +667,11 @@ impl SweepSaga {
             org_summary: &self.org_summary,
             auth_metadata: &ctx.auth_metadata,
             capabilities: &ctx.capabilities,
-            config,
-            run,
+            config: sweep.config,
+            run: sweep.run(),
+            corr_ctx: &sweep.corr_ctx,
             inventory,
-            state,
+            state: sweep.state,
         });
 
         let timeout_duration = std::time::Duration::from_secs(config::SWEEP_TIMEOUT_SECS);
@@ -698,21 +681,21 @@ impl SweepSaga {
                 self.phase = SweepPhase::BatchDrained;
 
                 let total = inventory.active_repos.len() as u64;
-                Self::emit_progress(run, corr_ctx, total, total, state);
+                Self::emit_progress(sweep.run(), total, total);
             }
             Ok(Ok(false)) => {
                 let error_msg = "all jobs rejected by work queue".to_string();
                 self.phase = SweepPhase::Failed {
                     error: error_msg.clone(),
                 };
-                Self::publish_sweep_failed(state, run, corr_ctx, &error_msg, self.elapsed_ms());
+                Self::publish_sweep_failed(sweep.run(), &error_msg, self.elapsed_ms());
             }
             Ok(Err(e)) => {
                 let error_msg = e.to_string();
                 self.phase = SweepPhase::Failed {
                     error: error_msg.clone(),
                 };
-                Self::publish_sweep_failed(state, run, corr_ctx, &error_msg, self.elapsed_ms());
+                Self::publish_sweep_failed(sweep.run(), &error_msg, self.elapsed_ms());
                 return Err(e);
             }
             Err(_elapsed) => {
@@ -725,7 +708,7 @@ impl SweepSaga {
                 self.phase = SweepPhase::Failed {
                     error: error_msg.clone(),
                 };
-                Self::publish_sweep_failed(state, run, corr_ctx, &error_msg, self.elapsed_ms());
+                Self::publish_sweep_failed(sweep.run(), &error_msg, self.elapsed_ms());
             }
         }
 
@@ -736,14 +719,7 @@ impl SweepSaga {
     ///
     /// Associated function: callers already hold the values needed and pass
     /// them explicitly, mirroring [`Self::emit_progress`].
-    fn publish_sweep_failed(
-        state: &Arc<AppState>,
-        run: &RunMetadata,
-        _corr_ctx: &CorrelationContext,
-        error_msg: &str,
-        duration_ms: u64,
-    ) {
-        let _ = state;
+    fn publish_sweep_failed(run: &RunMetadata, error_msg: &str, duration_ms: u64) {
         warn!(
             batch_id = %run.run_id,
             error = %error_msg,
@@ -763,18 +739,17 @@ impl SweepSaga {
     /// terminal `EvidencePublished` event publishes (CHE-0054:R1.c).
     async fn step_finalize(
         &mut self,
-        config: &RuntimeConfig,
-        run: &mut RunMetadata,
-        corr_ctx: &CorrelationContext,
+        sweep: &mut SweepCtx<'_>,
         ctx: &CollectionContext,
         inventory: &InventoryLoad,
-        state: &Arc<AppState>,
     ) -> Result<(), AppError> {
         debug_assert_eq!(self.phase, SweepPhase::BatchDrained);
+        let config = sweep.config;
+        let state = sweep.state;
 
         let result = finalize_and_publish(FinalizeParams {
             config,
-            run,
+            run: sweep.run_mut(),
             inventory,
             org_summary: &self.org_summary,
             auth_metadata: &ctx.auth_metadata,
@@ -788,16 +763,15 @@ impl SweepSaga {
         match result {
             Ok((pages, warm_start)) => {
                 self.phase = SweepPhase::Completed;
-                let _ = corr_ctx;
                 info!(
-                    batch_id = %run.run_id,
+                    batch_id = %sweep.run().run_id,
                     duration_ms = self.elapsed_ms(),
                     repo_count = inventory.active_repos.len(),
                     timestamp = %jiff::Timestamp::now(),
                     "sweep completed"
                 );
 
-                let page_count = commit_cached_pages(state, run, pages);
+                let page_count = commit_cached_pages(state, sweep.run(), pages);
 
                 info!(
                     page_count = page_count,
@@ -812,7 +786,7 @@ impl SweepSaga {
                 self.phase = SweepPhase::Failed {
                     error: error_msg.clone(),
                 };
-                Self::publish_sweep_failed(state, run, corr_ctx, &error_msg, self.elapsed_ms());
+                Self::publish_sweep_failed(sweep.run(), &error_msg, self.elapsed_ms());
                 Err(e)
             }
         }
@@ -823,14 +797,7 @@ impl SweepSaga {
         u64::try_from(self.sweep_start.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
-    fn emit_progress(
-        run: &RunMetadata,
-        _corr_ctx: &CorrelationContext,
-        completed: u64,
-        total: u64,
-        state: &Arc<AppState>,
-    ) {
-        let _ = state;
+    fn emit_progress(run: &RunMetadata, completed: u64, total: u64) {
         info!(
             batch_id = %run.run_id,
             completed,
@@ -851,6 +818,7 @@ struct BatchParams<'a> {
     capabilities: &'a CapabilitySet,
     config: &'a RuntimeConfig,
     run: &'a RunMetadata,
+    corr_ctx: &'a CorrelationContext,
     inventory: &'a InventoryLoad,
     state: &'a Arc<AppState>,
 }
@@ -868,6 +836,7 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
         capabilities,
         config,
         run,
+        corr_ctx,
         inventory,
         state,
     } = params;
@@ -888,7 +857,7 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
         &state.work_queue,
         items,
         &crate::app::work_queue::JobSource::ScheduledBatch,
-        &run.correlation_context(),
+        corr_ctx,
     );
 
     if batch_result.accepted == 0 && !pending.is_empty() {
@@ -2162,38 +2131,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn saga_step_resume_transitions_to_resumed() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = RuntimeConfig {
-            store_dir: dir.path().to_path_buf(),
-            ..sample_config()
-        };
-        let run_meta = RunMetadata::new(
-            "TestOrg".to_string(),
-            crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
-        );
-
-        let state = AppState::new_with_cache_capacity(10).await;
-        let inventory = InventoryLoad {
-            active_repos: vec![arc_repo("repo-1"), arc_repo("repo-2")],
-            inventory_fetched_at: None,
-        };
-
-        let mut saga = make_test_saga(&config, &run_meta);
-
-        saga.step_resume(&inventory, &config, &state);
-        assert_eq!(*saga.phase(), SweepPhase::Resumed);
-        assert_eq!(saga.resumed_count, 0);
-    }
-
-    #[tokio::test]
     async fn saga_step_baseline_transitions_to_baseline_reused() {
         let dir = tempfile::tempdir().unwrap();
         let config = RuntimeConfig {
             store_dir: dir.path().to_path_buf(),
             ..sample_config()
         };
-        let run_meta = RunMetadata::new(
+        let mut run_meta = RunMetadata::new(
             "TestOrg".to_string(),
             crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
         );
@@ -2205,8 +2149,10 @@ mod tests {
         };
 
         let mut saga = make_test_saga_in(&config, &run_meta, SweepPhase::Resumed);
+        let corr_ctx = run_meta.correlation_context();
+        let sweep = SweepCtx::new(&config, &mut run_meta, &corr_ctx, &state);
 
-        saga.step_baseline(&inventory, &config, &state);
+        saga.step_baseline(&sweep, &inventory);
         assert_eq!(*saga.phase(), SweepPhase::BaselineReused);
         assert_eq!(saga.baseline_reused, 0);
     }
@@ -2457,10 +2403,46 @@ mod tests {
         run: &RunMetadata,
         state: &Arc<AppState>,
     ) {
+        let mut run = run.clone();
+        let sweep = test_sweep_ctx(config, &mut run, state);
+        saga.step_start_sweep(&sweep, inventory);
+        debug_assert_eq!(saga.phase, SweepPhase::Init);
+        saga.phase = SweepPhase::Resumed;
+        saga.step_baseline(&sweep, inventory);
+    }
+
+    fn test_sweep_ctx<'a>(
+        config: &'a RuntimeConfig,
+        run: &'a mut RunMetadata,
+        state: &'a Arc<AppState>,
+    ) -> SweepCtx<'a> {
         let corr_ctx = run.correlation_context();
-        saga.step_start_sweep(config, run, &corr_ctx, inventory, state);
-        saga.step_resume(inventory, config, state);
-        saga.step_baseline(inventory, config, state);
+        SweepCtx::new(config, run, &corr_ctx, state)
+    }
+
+    async fn saga_step_enqueue_and_await(
+        saga: &mut SweepSaga,
+        config: &RuntimeConfig,
+        run: &RunMetadata,
+        ctx: &CollectionContext,
+        inventory: &InventoryLoad,
+        state: &Arc<AppState>,
+    ) -> Result<(), AppError> {
+        let mut run = run.clone();
+        let sweep = test_sweep_ctx(config, &mut run, state);
+        saga.step_enqueue_and_await(&sweep, ctx, inventory).await
+    }
+
+    async fn saga_step_finalize(
+        saga: &mut SweepSaga,
+        config: &RuntimeConfig,
+        run: &mut RunMetadata,
+        ctx: &CollectionContext,
+        inventory: &InventoryLoad,
+        state: &Arc<AppState>,
+    ) -> Result<(), AppError> {
+        let mut sweep = test_sweep_ctx(config, run, state);
+        saga.step_finalize(&mut sweep, ctx, inventory).await
     }
 
     /// Saga-level same-day resume — every inventory repo already in
@@ -2499,16 +2481,9 @@ mod tests {
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
         assert_eq!(saga.baseline_reused, 2);
 
-        saga.step_enqueue_and_await(
-            &config,
-            &run,
-            &run.correlation_context(),
-            &ctx,
-            &inventory,
-            &state,
-        )
-        .await
-        .unwrap();
+        saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
+            .await
+            .unwrap();
         assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
         assert_eq!(state.projection_len(), 2);
     }
@@ -2686,16 +2661,9 @@ mod tests {
         };
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
-        saga.step_enqueue_and_await(
-            &config,
-            &run,
-            &run.correlation_context(),
-            &ctx,
-            &inventory,
-            &state,
-        )
-        .await
-        .unwrap();
+        saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
+            .await
+            .unwrap();
 
         assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
         assert_eq!(state.projection_len(), 3);
@@ -2734,16 +2702,9 @@ mod tests {
         };
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
-        saga.step_enqueue_and_await(
-            &config,
-            &run,
-            &run.correlation_context(),
-            &ctx,
-            &inventory,
-            &state,
-        )
-        .await
-        .unwrap();
+        saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
+            .await
+            .unwrap();
 
         assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
         assert!(state.projection_contains("id-pass-repo"));
@@ -2779,16 +2740,9 @@ mod tests {
         };
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
-        saga.step_enqueue_and_await(
-            &config,
-            &run,
-            &run.correlation_context(),
-            &ctx,
-            &inventory,
-            &state,
-        )
-        .await
-        .unwrap();
+        saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
+            .await
+            .unwrap();
 
         let snapshot = state.projection_snapshot();
         let mut found_names: Vec<String> =
@@ -2822,16 +2776,9 @@ mod tests {
         };
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
-        saga.step_enqueue_and_await(
-            &config,
-            &run,
-            &run.correlation_context(),
-            &ctx,
-            &inventory,
-            &state,
-        )
-        .await
-        .unwrap();
+        saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
+            .await
+            .unwrap();
 
         assert!(
             matches!(saga.phase(), SweepPhase::Failed { .. }),
@@ -2867,16 +2814,9 @@ mod tests {
         };
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
-        saga.step_enqueue_and_await(
-            &config,
-            &run,
-            &run.correlation_context(),
-            &ctx,
-            &inventory,
-            &state,
-        )
-        .await
-        .unwrap();
+        saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
+            .await
+            .unwrap();
 
         assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
         assert_eq!(state.projection_len(), 1);
@@ -2908,16 +2848,9 @@ mod tests {
         };
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
-        saga.step_enqueue_and_await(
-            &config,
-            &run,
-            &run.correlation_context(),
-            &ctx,
-            &inventory,
-            &state,
-        )
-        .await
-        .unwrap();
+        saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
+            .await
+            .unwrap();
 
         assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
         assert_eq!(state.projection_len(), 1);
@@ -2947,16 +2880,9 @@ mod tests {
         };
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
-        saga.step_enqueue_and_await(
-            &config,
-            &run,
-            &run.correlation_context(),
-            &ctx,
-            &inventory,
-            &state,
-        )
-        .await
-        .unwrap();
+        saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
+            .await
+            .unwrap();
 
         assert_eq!(*saga.phase(), SweepPhase::BatchDrained);
         assert_eq!(state.projection_len(), 2);
@@ -2988,19 +2914,11 @@ mod tests {
         };
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
-        saga.step_enqueue_and_await(
-            &config,
-            &run,
-            &run.correlation_context(),
-            &ctx,
-            &inventory,
-            &state,
-        )
-        .await
-        .unwrap();
+        saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
+            .await
+            .unwrap();
 
-        let corr_ctx = run.correlation_context();
-        saga.step_finalize(&config, &mut run, &corr_ctx, &ctx, &inventory, &state)
+        saga_step_finalize(&mut saga, &config, &mut run, &ctx, &inventory, &state)
             .await
             .unwrap();
 
@@ -3053,16 +2971,9 @@ mod tests {
         };
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
-        saga.step_enqueue_and_await(
-            &config,
-            &run,
-            &run.correlation_context(),
-            &ctx,
-            &inventory,
-            &state,
-        )
-        .await
-        .unwrap();
+        saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
+            .await
+            .unwrap();
 
         assert!(
             state
@@ -3074,8 +2985,7 @@ mod tests {
                 .is_some_and(|m| m.contains_key("__sentinel_pre_finalize__"))
         );
 
-        let corr_ctx = run.correlation_context();
-        saga.step_finalize(&config, &mut run, &corr_ctx, &ctx, &inventory, &state)
+        saga_step_finalize(&mut saga, &config, &mut run, &ctx, &inventory, &state)
             .await
             .unwrap();
 
@@ -3118,16 +3028,9 @@ mod tests {
         };
 
         saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
-        saga.step_enqueue_and_await(
-            &config,
-            &run,
-            &run.correlation_context(),
-            &ctx,
-            &inventory,
-            &state,
-        )
-        .await
-        .unwrap();
+        saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
+            .await
+            .unwrap();
 
         let guard = state.evidence().html_cache.load();
         let current_addr = Arc::as_ptr(&*guard) as usize;
@@ -3136,8 +3039,7 @@ mod tests {
             "html_cache must not flip during native repository writes before finalize"
         );
 
-        let corr_ctx = run.correlation_context();
-        saga.step_finalize(&config, &mut run, &corr_ctx, &ctx, &inventory, &state)
+        saga_step_finalize(&mut saga, &config, &mut run, &ctx, &inventory, &state)
             .await
             .unwrap();
 
@@ -3177,8 +3079,7 @@ mod tests {
     async fn sweep_progress_completed_reflects_current_run_not_projection_len() {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
-        let run = test_run_meta();
-        let corr_ctx = run.correlation_context();
+        let mut run = test_run_meta();
         let state = AppState::new_with_cache_capacity(10).await;
 
         let mut contaminant = sample_repo("repo-not-in-inventory");
@@ -3209,15 +3110,17 @@ mod tests {
 
         let mut saga = make_test_saga(&config, &run);
 
-        saga.step_start_sweep(&config, &run, &corr_ctx, &inventory, &state);
-        saga.step_resume(&inventory, &config, &state);
+        let sweep = test_sweep_ctx(&config, &mut run, &state);
+        saga.step_start_sweep(&sweep, &inventory);
+        debug_assert_eq!(saga.phase, SweepPhase::Init);
+        saga.phase = SweepPhase::Resumed;
 
-        SweepSaga::emit_progress(&run, &corr_ctx, saga.current_run_completed(), total, &state);
+        SweepSaga::emit_progress(sweep.run(), saga.current_run_completed(), total);
 
-        saga.step_baseline(&inventory, &config, &state);
+        saga.step_baseline(&sweep, &inventory);
         assert_eq!(saga.baseline_reused, 1, "repo-reused must reuse baseline");
 
-        SweepSaga::emit_progress(&run, &corr_ctx, saga.current_run_completed(), total, &state);
+        SweepSaga::emit_progress(sweep.run(), saga.current_run_completed(), total);
 
         assert_eq!(saga.current_run_completed(), 1);
     }
