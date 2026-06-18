@@ -1,8 +1,10 @@
 //! JetStream-backed authoritative-storage substrate for pardosa
 //! (ADR-0022 §D10, §D11).
 //!
-//! Substrate-ring sibling to `pardosa-file`; depends only on
-//! `tokio` and `async-nats`. Exports the opaque
+//! Substrate-ring sibling to `pardosa-file`; depends on
+//! `tokio`, `async-nats`, `bytes`, `blake3`, and `futures-util`.
+//! The `blake3` dependency supports duplicate suppression through
+//! deterministic `Nats-Msg-Id` values. Exports the opaque
 //! [`JetStreamHandle`] and constructor [`JetStreamBackend::open`].
 //! Sealed `AuthoritativeBackend` / `BackendSink` impls live in
 //! `pardosa` as an in-crate adapter shim.

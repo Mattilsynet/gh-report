@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- breaking? Y — pardosa removes the deprecated `JetStreamBackend::from_handle` alias after the pre-publish clean-break window; callers use `JetStreamBackend::open` directly. Mission bead: adr-fmt-41pp3. Rules: PGN-0001:R5/R6, PGN-0012:R1.
 - breaking? N — removed the workspace-internal `publish = false` `pardosa-cli` crate, an early store-exercise tool with zero external consumers and no dependents; retained the `pardosa::store` offline-recovery facade for future adopter auto-recovery. Mission bead: adr-fmt-f0gqr.
 - breaking? N — pardosa adds offline `.pgno` recovery planning and destructive recovery entry points on the synchronous `pardosa::store` facade; `pardosa-cli recover` uses them for `--dry-run` triage and `--force` truncate/re-seal without adding a direct `pardosa-file` dependency. Mission bead: adr-fmt-0l2k2. Rules: PGN-0008:R1, PGN-0017:R6/R9.
 - breaking? Y — pardosa-file bumps the `.pgix` manifest wire format from version 1 to 2, adding a footer-stamped raw `[u8; 32]` rolling unkeyed BLAKE3 frontier covered by the manifest checksum; readers still open v1 frontier-absent manifests with the PGN-0017:R10 checksum-only fallback, and `.pgno` FORMAT_VERSION / footer / index bytes remain unchanged. Mission bead: adr-fmt-geqi5.

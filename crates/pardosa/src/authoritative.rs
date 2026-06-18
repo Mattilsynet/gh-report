@@ -138,16 +138,6 @@ impl JetStreamBackend {
             adapter: jetstream::JetStreamBackendAdapter::new(handle),
         }
     }
-    /// Deprecated alias for [`JetStreamBackend::open`]; kept for
-    /// `SemVer` compatibility with the pre-0.5 naming.
-    #[must_use]
-    #[deprecated(
-        since = "0.5.0",
-        note = "renamed to `open` for parity with PgnoBackend::open; use ::open instead"
-    )]
-    pub fn from_handle(handle: pardosa_nats::JetStreamHandle) -> Self {
-        Self::open(handle)
-    }
     pub(crate) fn into_adapter(self) -> jetstream::JetStreamBackendAdapter {
         self.adapter
     }
