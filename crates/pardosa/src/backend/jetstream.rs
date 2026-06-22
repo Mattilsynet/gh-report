@@ -24,7 +24,6 @@ enum TelemetryOp {
     Append,
     Sync,
     Replay,
-    Connect,
 }
 
 impl TelemetryOp {
@@ -33,7 +32,6 @@ impl TelemetryOp {
             Self::Append => "append",
             Self::Sync => "sync",
             Self::Replay => "replay",
-            Self::Connect => "connect",
         }
     }
 }
@@ -89,7 +87,7 @@ struct MetricSpec {
     labels: &'static [MetricLabelSpec],
 }
 
-const OP_LABEL_VALUES: &[&str] = &["append", "sync", "replay", "connect"];
+const OP_LABEL_VALUES: &[&str] = &["append", "sync", "replay"];
 const TERMINAL_CATEGORY_LABEL_VALUES: &[&str] = &[
     "ok",
     "timeout",
@@ -155,20 +153,6 @@ fn terminal_category_from_backend(err: &BackendError) -> TerminalCategory {
         | BackendError::PublisherBacklog { .. } => TerminalCategory::Publish,
         BackendError::Connect { .. } => TerminalCategory::Connect,
         BackendError::Replay { .. } => TerminalCategory::Replay,
-    }
-}
-
-fn terminal_category_from_runtime(err: &JetStreamRuntimeError) -> TerminalCategory {
-    if matches!(err, JetStreamRuntimeError::Timeout { .. }) {
-        TerminalCategory::Timeout
-    } else if matches!(err, JetStreamRuntimeError::Detached) {
-        TerminalCategory::RuntimeFailure
-    } else if matches!(err, JetStreamRuntimeError::Connect { .. }) {
-        TerminalCategory::Connect
-    } else if matches!(err, JetStreamRuntimeError::Replay { .. }) {
-        TerminalCategory::Replay
-    } else {
-        TerminalCategory::Publish
     }
 }
 
@@ -270,43 +254,6 @@ fn observe_operation(
     result
 }
 
-fn observe_connect<T>(
-    run: impl FnOnce() -> Result<T, JetStreamRuntimeError>,
-) -> Result<T, JetStreamRuntimeError> {
-    let start = Instant::now();
-    let span = info_span!(
-        "pardosa.jetstream.connect",
-        op = TelemetryOp::Connect.as_str(),
-        latency_seconds = tracing::field::Empty,
-        terminal_category = tracing::field::Empty,
-    );
-    span.in_scope(|| {
-        info!(
-            phase = "entry",
-            op = TelemetryOp::Connect.as_str(),
-            "pardosa jetstream connect entry"
-        );
-    });
-    let result = run();
-    let terminal_category = result
-        .as_ref()
-        .map_or_else(terminal_category_from_runtime, |_| TerminalCategory::Ok);
-    let elapsed = start.elapsed();
-    span.record("latency_seconds", duration_seconds(elapsed));
-    span.record("terminal_category", terminal_category.as_str());
-    span.in_scope(|| {
-        info!(
-            phase = "completion",
-            op = TelemetryOp::Connect.as_str(),
-            terminal_category = terminal_category.as_str(),
-            latency_seconds = duration_seconds(elapsed),
-            "pardosa jetstream connect completion"
-        );
-    });
-    record_operation_metrics(TelemetryOp::Connect, terminal_category, elapsed);
-    result
-}
-
 fn observe_replay_operation(
     run: impl FnOnce() -> Result<Vec<pardosa_nats::JetStreamReplayRecord>, BackendError>,
 ) -> Result<Vec<pardosa_nats::JetStreamReplayRecord>, BackendError> {
@@ -390,10 +337,10 @@ impl sealed::Sealed for JetStreamBackendAdapter {}
 impl BackendSink for JetStreamBackendAdapter {
     fn append(&mut self, bytes: &[u8]) -> Result<AckPosition, BackendError> {
         observe_operation(OperationTelemetry::append(bytes.len()), || {
-            observe_connect(|| match self.schema_tag.as_deref() {
+            match self.schema_tag.as_deref() {
                 Some(schema_tag) => self.handle.append_with_replay_tag(bytes, schema_tag),
                 None => self.handle.append(bytes),
-            })
+            }
             .map(map_position)
             .map_err(|e| map_runtime_error(e, BackendOp::Append))
         })
@@ -412,7 +359,8 @@ impl JetStreamBackendAdapter {
         &mut self,
     ) -> Result<Vec<JetStreamDurableFrame>, BackendError> {
         let records = observe_replay_operation(|| {
-            observe_connect(|| self.handle.replay_all())
+            self.handle
+                .replay_all()
                 .map_err(|e| map_runtime_error(e, BackendOp::Sync))
         })?;
         Ok(records
@@ -724,7 +672,6 @@ mod tests {
             "op=\"append\"",
             "op=\"sync\"",
             "op=\"replay\"",
-            "op=\"connect\"",
             "phase=\"entry\"",
             "phase=\"completion\"",
             "terminal_category=\"runtime_failure\"",
@@ -738,6 +685,7 @@ mod tests {
             );
         }
         for forbidden in [
+            "op=\"connect\"",
             "event_id=",
             "AckPosition=",
             "ack=",
@@ -783,13 +731,11 @@ mod tests {
                 Ok(crate::durability::AckPosition::from_u64(21))
             });
             let _ = super::observe_replay_operation(|| Ok(Vec::new()));
-            let _ = super::observe_connect(|| Ok(()));
         });
         for needle in [
             "op=\"append\"",
             "op=\"sync\"",
             "op=\"replay\"",
-            "op=\"connect\"",
             "phase=\"entry\"",
             "phase=\"completion\"",
             "terminal_category=\"ok\"",
@@ -802,6 +748,12 @@ mod tests {
                 "JetStream success observability output missing `{needle}`; captured={captured:?}",
             );
         }
+        assert!(
+            !captured.contains("op=\"connect\""),
+            "no connect span is emitted on the append/replay hot path; the genuine \
+             lazy connect occurs once inside the substrate, not per operation; \
+             captured={captured:?}",
+        );
     }
 
     #[test]
