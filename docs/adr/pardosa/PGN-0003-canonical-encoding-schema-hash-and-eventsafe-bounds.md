@@ -16,7 +16,7 @@ Sources rescue ADR-0005 (canonical encoding contract), rescue ADR-0020 (`EventSa
 
 ## Decision
 
-`Encode` and `Decode` produce a canonical, deterministic byte form. `pardosa-derive` is the blessed source of derives for application types. `SCHEMA_HASH` is derived from the type's structural shape and changes whenever wire bytes change. `EventSafe`'s supertrait set is **`sealed::Sealed` only**; `GenomeSafe: EventSafe: Sealed`. Per-impl codec bounds are body-scoped: writer paths use `T: Encode + GenomeSafe`, reader and cursor paths use `T: Decode + GenomeSafe`. Decode-only and encode-only payload types are structurally permitted. The closed foreign-type impl inventory and the fuzz coverage matrix are pinned in R5; implementation-status commentary is recorded in `docs/adr/pgn/CHANGELOG.md` per PGN-0001 R7, not in this Decision.
+`Encode` and `Decode` produce a canonical, deterministic byte form. `pardosa-derive` is the blessed source of derives for application types. `SCHEMA_HASH` is derived from the type's structural shape and changes whenever wire bytes change. `EventSafe`'s supertrait set is **`sealed::Sealed` only**; `GenomeSafe: EventSafe: Sealed`. Per-impl codec bounds are body-scoped: writer paths use `T: Encode + GenomeSafe`, reader and cursor paths use `T: Decode + GenomeSafe`. Decode-only and encode-only payload types are structurally permitted. The closed foreign-type impl inventory and the fuzz coverage matrix are pinned in R5. PGN-0001 keeps implementation-status commentary out of Decisions, and PGN-0018 retires the former record-file home.
 
 R1 [4]: `Encode` and `Decode` produce a canonical, platform-deterministic
   byte form; non-determinism (`HashMap` iteration, time-dependent bytes,

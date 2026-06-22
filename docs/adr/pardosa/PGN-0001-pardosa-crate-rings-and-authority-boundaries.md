@@ -35,17 +35,14 @@ R4 [5]: External consumers depend only on `pardosa` and import items via
 R5 [4]: While pre-publish and no external dependent exists, prefer the smallest
   patch that restores the violated doctrinal rule exactly, even if breaking,
   over a soft-deprecation shim.
-R6 [5]: Every break under the clean-break posture records `breaking? Y`
-  plus a one-line scope description in `docs/adr/pgn/CHANGELOG.md` under
-  `[Unreleased]`; PGN release-governance entries live there until a
-  repo-level `CHANGELOG.md` is established.
+R6 [5]: Every break under the clean-break posture is a judgement call
+  gated by author review; `cargo-semver-checks` remains advisory under
+  PGN-0012, and PGN-0018 retires the former record-file gate.
 R7 [5]: A PGN ADR that defines a sealed trait or codec contract carries
-  the closed in-tree impl inventory for that contract in its own rule
-  set (impl-inventory authority follows trait authority); a PGN ADR's
-  Decision and Rules state contracts and invariants only, never
-  status-of-today (which symbols ship versus which are deferred to a
-  follow-up mission). Status-of-today belongs in
-  `docs/adr/pgn/CHANGELOG.md` per R6.
+  the closed in-tree impl inventory for that contract in its rule set
+  (impl-inventory authority follows trait authority). Decision and
+  Rules state contracts and invariants only, never status-of-today;
+  status-of-today lives in mission beads and commit history.
 
 ## Consequences
 

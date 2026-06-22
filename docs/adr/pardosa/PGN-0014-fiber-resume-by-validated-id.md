@@ -35,8 +35,9 @@ R5 [5]: A resume verb takes exactly one already-resolved `FiberId`; against a
   `Diverged` `K` (PGN-0011 R4) the adopter selects the fiber by payload-side
   domain logic before calling, and the substrate offers no divergence opinion.
 R6 [5]: PGN-0008 R4's payload-only clause is amended to cover origination
-  verbs only; admitting a validated `FiberId` on a resume verb is recorded as
-  a public-surface change in `docs/adr/pgn/CHANGELOG.md` per PGN-0001 R6.
+  verbs only; admitting a validated `FiberId` on a resume verb is a
+  public-surface change under PGN-0012 semver governance, with author
+  judgement as gate and the former record-file gate retired by PGN-0018.
 
 ## Consequences
 

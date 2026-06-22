@@ -84,6 +84,7 @@ risks/migration: opaque-byte payloads with cheap-clone ergonomics
   overlap with `EventBytes`/`EventVec` at wire shape. Default
   decoded-payload cap and decompression-bomb ordering are owned by
   PGN-0004 R2 and are not restated here. Removing `Box<T>` and
-  `Arc<T>` eligibility narrows the public type vocabulary and is
-  recorded as `breaking? Y` under PGN-0012, but it is wire- and
-  schema-hash-neutral for existing unboxed shapes.
+  `Arc<T>` eligibility narrows the public type vocabulary under
+  PGN-0012 semver governance; PGN-0018 retires the former record-file
+  gate. The change is wire- and schema-hash-neutral for existing
+  unboxed shapes.

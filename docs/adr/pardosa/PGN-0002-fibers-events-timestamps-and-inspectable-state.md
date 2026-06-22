@@ -44,4 +44,5 @@ risks/migration: rescue ADR-0013 supersedes any earlier Solon decision that
   placed timestamps on the substrate; PAR-0016 (Solon timestamp policy) is
   not retired by this ADR — the retirement is deferred to a follow-up
   mission. Removing the timestamp field is a pre-publish breaking change
-  recorded in CHANGELOG per PGN-0012.
+  under the PGN-0009 clean-break posture; PGN-0018 retires the former
+  record-file gate.
