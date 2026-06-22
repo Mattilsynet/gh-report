@@ -72,7 +72,7 @@ const DEFAULT_MAX_MESSAGE_COUNT: u64 =
 #[derive(Debug, Clone, Copy)]
 #[expect(
     clippy::struct_field_names,
-    reason = "pub ReaderOptions fields include the PGN-0004:R2-named decompression-bomb cap; renaming is a PGN-0012 breaking change, CHANGELOG-gated and out of scope for a lint sweep"
+    reason = "pub ReaderOptions fields include the PGN-0004:R2-named decompression-bomb cap; renaming is a PGN-0012 breaking change deferred under the PGN-0009 clean-break posture and out of scope for a lint sweep"
 )]
 pub struct ReaderOptions {
     pub(crate) max_decompressed_message_bytes: usize,

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 #[non_exhaustive]
 #[expect(
     clippy::struct_field_names,
-    reason = "pub field names on prelude-reachable Event<T> are PGN-0012 breaking surface; renaming for clippy taste is CHANGELOG-gated and out of scope for a lint sweep"
+    reason = "pub field names on prelude-reachable Event<T> are PGN-0012 breaking surface; renaming for clippy taste is deferred under the PGN-0009 clean-break posture and out of scope for a lint sweep"
 )]
 pub struct Event<T> {
     event_id: EventId,
