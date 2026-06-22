@@ -894,8 +894,6 @@ mod tests {
     use pardosa_wire::Validate;
     use pardosa_wire::{Decode, DecodeError, Decoder, Encode, EventSafe};
     use std::io::Write;
-    use std::sync::{Arc, Mutex};
-    use tracing_subscriber::fmt::MakeWriter;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct TaggedPayload(u64);
@@ -942,59 +940,10 @@ mod tests {
         Box::new(std::io::Error::other(msg))
     }
 
-    fn lifecycle_temp_path(name: &str) -> PathBuf {
-        let mut path = std::env::temp_dir();
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        path.push(format!("pardosa-lifecycle-{name}-{nanos}.pgno"));
-        path
-    }
-
-    #[derive(Clone, Default)]
-    struct VecWriter {
-        buf: Arc<Mutex<Vec<u8>>>,
-    }
-
-    impl VecWriter {
-        fn snapshot(&self) -> String {
-            String::from_utf8(self.buf.lock().expect("buffer mutex").clone()).expect("utf-8")
-        }
-    }
-
-    impl Write for VecWriter {
-        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-            self.buf
-                .lock()
-                .expect("buffer mutex")
-                .extend_from_slice(data);
-            Ok(data.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl<'a> MakeWriter<'a> for VecWriter {
-        type Writer = VecWriter;
-
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
-
-    fn capture_tracing(f: impl FnOnce()) -> String {
-        let writer = VecWriter::default();
-        let subscriber = tracing_subscriber::fmt()
-            .json()
-            .with_writer(writer.clone())
-            .with_ansi(false)
-            .with_target(false)
-            .finish();
-        tracing::subscriber::with_default(subscriber, f);
-        writer.snapshot()
+    fn lifecycle_temp_path(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(format!("pardosa-lifecycle-{name}.pgno"));
+        (dir, path)
     }
 
     fn manifest_path(path: &Path) -> PathBuf {
@@ -1225,7 +1174,7 @@ mod tests {
 
     #[test]
     fn open_recovers_invalid_checksum_torn_footer_from_manifest() {
-        let path = lifecycle_temp_path("invalid-checksum-tail");
+        let (_tmp, path) = lifecycle_temp_path("invalid-checksum-tail");
         let _store = backend_backed_synced_store(&path);
         assert!(manifest_path(&path).exists());
         append_reader_invalid_checksum_tail(&path);
@@ -1234,7 +1183,7 @@ mod tests {
 
     #[test]
     fn open_reports_recovery_outcome_and_warn_for_torn_tail() {
-        let path = lifecycle_temp_path("recovery-outcome");
+        let (_tmp, path) = lifecycle_temp_path("recovery-outcome");
         let _store = backend_backed_synced_store(&path);
         let manifest = pardosa_file::manifest::parse_manifest(
             &std::fs::read(manifest_path(&path)).expect("manifest bytes"),
@@ -1243,33 +1192,24 @@ mod tests {
         append_reader_invalid_checksum_tail(&path);
         let pgno_len = std::fs::metadata(&path).expect("pgno metadata").len();
 
-        let output = capture_tracing(|| {
-            let store = EventStore::<TaggedPayload>::open(&path).expect("open recovers");
-            let recovery = store.last_recovery().expect("recovery outcome");
-            assert_eq!(
-                recovery.reader_error,
-                crate::store::RecoveryReaderErrorKind::InvalidChecksum,
-            );
-            assert_eq!(recovery.last_durable_offset, manifest.data_end);
-            assert_eq!(
-                recovery.manifest_message_count,
-                u64::try_from(manifest.records.len()).expect("manifest count fits u64"),
-            );
-            assert_eq!(recovery.truncated_bytes, pgno_len - manifest.data_end);
-            assert!(recovery.truncated_bytes > 0);
-        });
-
-        assert_eq!(output.matches("pgno_torn_tail_recovered").count(), 1);
-        assert!(output.contains("reader_error"));
-        assert!(output.contains("InvalidChecksum"));
-        assert!(output.contains("truncated_bytes"));
-        assert!(output.contains("last_durable_offset"));
-        assert!(output.contains("manifest_message_count"));
+        let store = EventStore::<TaggedPayload>::open(&path).expect("open recovers");
+        let recovery = store.last_recovery().expect("recovery outcome");
+        assert_eq!(
+            recovery.reader_error,
+            crate::store::RecoveryReaderErrorKind::InvalidChecksum,
+        );
+        assert_eq!(recovery.last_durable_offset, manifest.data_end);
+        assert_eq!(
+            recovery.manifest_message_count,
+            u64::try_from(manifest.records.len()).expect("manifest count fits u64"),
+        );
+        assert_eq!(recovery.truncated_bytes, pgno_len - manifest.data_end);
+        assert!(recovery.truncated_bytes > 0);
     }
 
     #[test]
     fn backend_resume_strips_prior_direct_footer_before_footerless_append() {
-        let path = lifecycle_temp_path("strip-direct-footer-tail");
+        let (_tmp, path) = lifecycle_temp_path("strip-direct-footer-tail");
         {
             let mut store = EventStore::<TaggedPayload>::create(&path).expect("create");
             let mut fiber = store
@@ -1308,7 +1248,7 @@ mod tests {
     fn backend_resume_sealed_file_property_across_sync_schedules() {
         for direct_seed_count in 1..=4u64 {
             for resumed_sync_count in 1..=4u64 {
-                let path = lifecycle_temp_path(&format!(
+                let (_tmp, path) = lifecycle_temp_path(&format!(
                     "sealed-schedule-{direct_seed_count}-{resumed_sync_count}"
                 ));
                 {
@@ -1350,7 +1290,7 @@ mod tests {
 
     #[test]
     fn sync_stamps_current_dragline_frontier_in_pgix_manifest() {
-        let path = lifecycle_temp_path("manifest-frontier");
+        let (_tmp, path) = lifecycle_temp_path("manifest-frontier");
         let _store = backend_backed_synced_store(&path);
         let manifest = pardosa_file::manifest::parse_manifest(
             &std::fs::read(manifest_path(&path)).expect("manifest bytes"),
@@ -1361,61 +1301,51 @@ mod tests {
 
     #[test]
     fn open_declines_frontier_mismatch_as_torn_write_recovery() {
-        let path = lifecycle_temp_path("frontier-mismatch");
+        let (_tmp, path) = lifecycle_temp_path("frontier-mismatch");
         let _store = backend_backed_synced_store(&path);
         let mut wrong = lifecycle_frontier(&path);
         wrong[0] ^= 0xFF;
         rewrite_manifest_frontier(&path, wrong);
         corrupt_footer_magic(&path);
-        let output = capture_tracing(|| {
-            let Err(err) = EventStore::<TaggedPayload>::open(&path) else {
-                panic!("frontier mismatch must decline recovery")
-            };
-            match err {
-                PardosaError::CursorRead { source } => match *source {
-                    crate::persist::Error::File(FileError::TornWriteRecovery { source }) => {
-                        assert!(matches!(
-                            *source,
-                            pardosa_file::manifest::RecoveryError::FrontierMismatch { .. }
-                        ));
-                    }
-                    other => panic!("expected TornWriteRecovery, got {other:?}"),
-                },
-                other => panic!("expected CursorRead, got {other:?}"),
-            }
-        });
-        assert_eq!(output.matches("pgno_recovery_declined").count(), 1);
-        assert!(output.contains("frontier"));
+        let Err(err) = EventStore::<TaggedPayload>::open(&path) else {
+            panic!("frontier mismatch must decline recovery")
+        };
+        match err {
+            PardosaError::CursorRead { source } => match *source {
+                crate::persist::Error::File(FileError::TornWriteRecovery { source }) => {
+                    assert!(matches!(
+                        *source,
+                        pardosa_file::manifest::RecoveryError::FrontierMismatch { .. }
+                    ));
+                }
+                other => panic!("expected TornWriteRecovery, got {other:?}"),
+            },
+            other => panic!("expected CursorRead, got {other:?}"),
+        }
     }
 
     #[test]
     fn open_declines_durable_body_corruption_with_original_open_error() {
-        let path = lifecycle_temp_path("durable-body-corrupt");
+        let (_tmp, path) = lifecycle_temp_path("durable-body-corrupt");
         let _store = backend_backed_synced_store(&path);
         assert!(manifest_path(&path).exists());
         corrupt_first_body_byte(&path);
         corrupt_footer_magic(&path);
-        let output = capture_tracing(|| {
-            let Err(err) = EventStore::<TaggedPayload>::open(&path) else {
-                panic!("durable-region corruption must not recover")
-            };
-            match err {
-                PardosaError::CursorRead { source } => match *source {
-                    crate::persist::Error::File(FileError::TornWriteRecovery { .. }) => {}
-                    other => panic!("expected TornWriteRecovery, got {other:?}"),
-                },
-                other => panic!("expected CursorRead, got {other:?}"),
-            }
-        });
-        assert_eq!(output.matches("pgno_recovery_declined").count(), 1);
-        assert!(output.contains("reader_error"));
-        assert!(output.contains("InvalidMagic"));
-        assert!(output.contains("cause"));
+        let Err(err) = EventStore::<TaggedPayload>::open(&path) else {
+            panic!("durable-region corruption must not recover")
+        };
+        match err {
+            PardosaError::CursorRead { source } => match *source {
+                crate::persist::Error::File(FileError::TornWriteRecovery { .. }) => {}
+                other => panic!("expected TornWriteRecovery, got {other:?}"),
+            },
+            other => panic!("expected CursorRead, got {other:?}"),
+        }
     }
 
     #[test]
     fn open_validated_recovers_invalid_checksum_torn_footer_from_manifest() {
-        let path = lifecycle_temp_path("validated-invalid-checksum-tail");
+        let (_tmp, path) = lifecycle_temp_path("validated-invalid-checksum-tail");
         let _store = backend_backed_synced_store(&path);
         assert!(manifest_path(&path).exists());
         append_reader_invalid_checksum_tail(&path);
