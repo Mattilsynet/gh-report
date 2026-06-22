@@ -14,7 +14,7 @@
 #   podman run --rm -p 8080:8080 -e GITHUB_TOKEN=ghp_... -e BIND_ADDRESS=0.0.0.0 gh-report --org MyOrg
 
 # ── Stage 1: Build ───────────────────────────────────────────────
-FROM rust:1.96.0-bookworm@sha256:13c186980fa33cc12759b429662a1322939dbe697484b7c33b47dd2698d28460 AS builder
+FROM rust:1.96.0-bookworm@sha256:19817ead3289c8c631c73df281e18b59b172f6a31f4f563290f69cddd06c30e9 AS builder
 
 # cmake + clang + perl: required by aws-lc-sys (transitive dep of jsonwebtoken).
 # --no-install-recommends keeps the layer small.
@@ -50,9 +50,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 # ── Stage 2: Runtime ────────────────────────────────────────────
 # distroless/cc: glibc + libgcc (required by Rust glibc-linked binaries).
-# :nonroot tag runs as uid 65534 — no shell, no package manager.
+# :nonroot tag runs as uid 65532 — no shell, no package manager.
 # Pinned to digest for supply-chain integrity; update digest when upgrading.
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:4589ac94334222262b0cc69d1b481fe23dfb2aa2637598236747a2443011dace
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:b0ae8e989418b458e0f25489bc3be523718938a2b70864cc0f6a00af1ddbd985
 
 COPY --from=builder --chmod=0555 /usr/local/bin/gh-report /gh-report
 
