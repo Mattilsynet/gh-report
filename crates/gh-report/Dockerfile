@@ -32,16 +32,14 @@ ENV RUSTUP_TOOLCHAIN=1.96.0
 # Copy workspace manifest and lockfile first for dependency layer caching.
 COPY Cargo.toml Cargo.lock ./
 
-# Copy all crate manifests (needed by cargo to resolve the workspace).
-COPY crates/gh-report/Cargo.toml    crates/gh-report/Cargo.toml
-COPY crates/quics-memoization/Cargo.toml crates/quics-memoization/Cargo.toml
-COPY crates/quics-aggregate/Cargo.toml crates/quics-aggregate/Cargo.toml
-
-# Copy all crate sources.
-COPY crates/gh-report/src/          crates/gh-report/src/
-COPY crates/gh-report/templates/    crates/gh-report/templates/
-COPY crates/quics-memoization/src/  crates/quics-memoization/src/
-COPY crates/quics-aggregate/src/      crates/quics-aggregate/src/
+# Copy the whole crates/ tree. The root Cargo.toml is a workspace manifest
+# listing all 20 members by path, so cargo resolves the entire workspace even
+# under `-p gh-report`; every member manifest must therefore be present. Copying
+# the full tree is the simple-correct approach (COM-0001) and is robust against
+# inter-member manifest references; only gh-report's dependency graph actually
+# compiles. gh-report's transitive local crates are cherry-pit-{core,storage,
+# web,wq} and pardosa{,-derive,-file,-nats,-schema,-wire}.
+COPY crates/ crates/
 
 # Cache mounts: Cargo registry + target dir survive across builds.
 # The final binary is copied out so the cache mount is not in the image.
@@ -71,7 +69,7 @@ ENV GH_REPORT_LOG_FORMAT=json
 # Bind to all interfaces (container networking requires this).
 ENV BIND_ADDRESS=0.0.0.0
 
-LABEL org.opencontainers.image.source="https://github.com/acje/quicksilver"
+LABEL org.opencontainers.image.source="https://github.com/acje/solon"
 LABEL org.opencontainers.image.description="GitHub organization governance collector and reporter"
 
 # --org is required and must be supplied at deploy time via container args.
