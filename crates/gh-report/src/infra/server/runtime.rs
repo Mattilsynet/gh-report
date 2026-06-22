@@ -700,7 +700,7 @@ const DEFAULT_CSP: &str = "default-src 'self'; style-src 'self'; script-src 'sel
 /// # Panics
 ///
 /// Panics if `extra_routes` contains routes that conflict with built-in
-/// paths (`/healthz`, `/readyz`, `/ws`). Axum's
+/// paths (`/healthz`, `/readyz`, `/favicon.ico`, `/ws`). Axum's
 /// `Router::merge()` panics on overlapping route definitions.
 pub(crate) fn build_router<S: ServerState>(
     state: Arc<S>,
@@ -717,6 +717,7 @@ pub(crate) fn build_router<S: ServerState>(
     let builtin_routes = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz::<S>))
+        .route("/favicon.ico", get(favicon))
         .route("/ws", get(ws_handler::<S>))
         .fallback(cache_fallback::<S>)
         .layer(RequestBodyLimitLayer::new(body_limit));
@@ -759,6 +760,16 @@ async fn http_concurrency_limit(
     };
 
     next.run(request).await
+}
+
+/// Answer `GET /favicon.ico` with 204 No Content.
+///
+/// Browsers request `/favicon.ico` once per session. Without an explicit
+/// route it falls through to the HTML-cache fallback and logs a 404 for
+/// every fresh visitor. A 204 is the smallest honest answer for a daemon
+/// that ships no favicon, and it keeps the access log clean.
+async fn favicon() -> impl IntoResponse {
+    StatusCode::NO_CONTENT
 }
 
 /// Zero-allocation liveness probe. Returns a static JSON body — no
@@ -1017,6 +1028,46 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), 404);
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn favicon_returns_204_without_shadowing_cache_fallback() {
+        let state = state_with_cache(&[("index.html", "<html>hi</html>")]);
+        let app = build_router(state, &default_config(), None);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        wait_for_server(addr).await;
+
+        let favicon = reqwest::get(format!("http://{addr}/favicon.ico"))
+            .await
+            .unwrap();
+        assert_eq!(
+            favicon.status(),
+            204,
+            "browsers request /favicon.ico every session; the daemon must answer \
+             204 No Content rather than routing it through the HTML cache fallback \
+             and logging a 404",
+        );
+        let body = favicon.bytes().await.unwrap();
+        assert!(body.is_empty(), "204 No Content carries no body");
+
+        let missing = reqwest::get(format!("http://{addr}/nonexistent.html"))
+            .await
+            .unwrap();
+        assert_eq!(
+            missing.status(),
+            404,
+            "the exact-match favicon route must not shadow the cache fallback; \
+             a genuine missing page still 404s",
+        );
 
         handle.abort();
     }
