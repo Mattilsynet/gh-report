@@ -1,0 +1,29 @@
+# cargo-nextest configuration.
+#
+# Adopted as the workspace test runner (test-stability initiative P0).
+# Per-test process isolation is the primary stability win: it dissolves
+# shared-process-state flakes (e.g. global tracing/$TMPDIR contention) that
+# the single-process `cargo test` harness exposes.
+#
+# Doctests are NOT run by nextest; CI retains a separate `cargo test --doc`
+# step (oracle ruling adr-fmt-cus9e, condition C1).
+
+[profile.default]
+# Local developer runs: surface flakes, do not mask them. No retries here on
+# purpose — a flaky test should be seen and fixed, not silently re-run.
+retries = 0
+fail-fast = false
+slow-timeout = { period = "30s", terminal-after = 3 }
+
+[profile.ci]
+# CI runs: a single retry quarantines a residual intermittent failure into a
+# visible FLAKY signal instead of a hard red, while still reporting it. This
+# buys stability during the stabilization rollout; flaky tests remain tracked
+# and fixed (the goal is zero, not hidden).
+retries = 1
+fail-fast = false
+slow-timeout = { period = "60s", terminal-after = 3 }
+final-status-level = "flaky"
+
+[profile.ci.junit]
+path = "junit.xml"
