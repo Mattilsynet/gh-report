@@ -19,26 +19,41 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
-  build:
-    name: build
+  build-test-lint:
+    name: build, test, lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.96.0
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo build --workspace --all-features
-
-  test:
-    name: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: 1.96.0
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        if: always()
+      - run: cargo fmt --check
+        if: always()
+      # Tripwire: deny `async-trait` (direct or transitive) in every cherry-pit-*
+      # crate's resolved feature-aware dep tree. Locks in CHE-0025 (port traits
+      # use RPITIT, not `#[async_trait]` macro) and CHE-0029:R4 (forbidden-dep
+      # budget for cherry-pit-core, extended workspace-wide for the cherry-pit-*
+      # family as the architectural floor). Authored in mission
+      # phase2-v2-track-1 SM-1 (bd: adr-fmt-6bua). Audit artefact:
+      # .ooda/track-1-4-rpitit-audit-*.md.
+      - name: deny async-trait in cherry-pit-* dep trees
+        if: always()
+        run: |
+          set -euo pipefail
+          fail=0
+          for c in cherry-pit-core cherry-pit-gateway cherry-pit-web cherry-pit-agent \
+                   cherry-pit-projection cherry-pit-wq cherry-pit-storage; do
+            if cargo tree -p "$c" -e features 2>&1 | grep -q async-trait; then
+              echo "::error::$c transitively depends on async-trait (CHE-0025/CHE-0029:R4)"
+              fail=1
+            fi
+          done
+          exit $fail
       # The pardosa-nats live-test harness (crates/pardosa-nats/src/test_support.rs)
       # spawns a real `nats-server` and asserts its --version matches the pin in
       # tools/.nats-server-version. Install exactly that version, checksum-verified
@@ -56,35 +71,7 @@ jobs:
           install -m 0755 "${asset}/nats-server" /usr/local/bin/nats-server
           nats-server --version | grep -F "v${version}"
       - run: cargo test --workspace --all-features
-
-  # Tripwire: deny `async-trait` (direct or transitive) in every cherry-pit-*
-  # crate's resolved feature-aware dep tree. Locks in CHE-0025 (port traits
-  # use RPITIT, not `#[async_trait]` macro) and CHE-0029:R4 (forbidden-dep
-  # budget for cherry-pit-core, extended workspace-wide for the cherry-pit-*
-  # family as the architectural floor). Authored in mission
-  # phase2-v2-track-1 SM-1 (bd: adr-fmt-6bua). Audit artefact:
-  # .ooda/track-1-4-rpitit-audit-*.md.
-  async-trait-tripwire:
-    name: async-trait tripwire (CHE-0025, CHE-0029:R4)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: 1.96.0
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - name: deny async-trait in cherry-pit-* dep trees
-        run: |
-          set -euo pipefail
-          fail=0
-          for c in cherry-pit-core cherry-pit-gateway cherry-pit-web cherry-pit-agent \
-                   cherry-pit-projection cherry-pit-wq cherry-pit-storage; do
-            if cargo tree -p "$c" -e features 2>&1 | grep -q async-trait; then
-              echo "::error::$c transitively depends on async-trait (CHE-0025/CHE-0029:R4)"
-              fail=1
-            fi
-          done
-          exit $fail
+        if: always()
 
   # Tripwire: pin the `projection_state` mutex chokepoint in gh-report.
   # Per `crates/gh-report/src/app/state.rs:300-316`, `AppState::lock_projection()`
@@ -101,7 +88,7 @@ jobs:
   # (CHE-0054:R5/R6) are untouched. The await-holding contract is
   # additionally enforced by `clippy::await_holding_lock` (clippy pedantic
   # group, denied by `RUSTFLAGS: -D warnings`).
-  gh-report-projection-lock-tripwire:
+  projection-lock-tripwire:
     name: gh-report projection-lock chokepoint (CHE-0048:R2)
     runs-on: ubuntu-latest
     steps:
@@ -119,31 +106,8 @@ jobs:
             exit 1
           fi
 
-  clippy:
-    name: clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: 1.96.0
-          components: clippy
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-  fmt:
-    name: fmt
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: 1.96.0
-          components: rustfmt
-      - run: cargo fmt --check
-
-  audit:
-    name: audit
+  supply-chain:
+    name: supply-chain (audit + deny)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -153,18 +117,10 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo install --locked cargo-audit
       - run: cargo audit
-
-  deny:
-    name: deny
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: 1.96.0
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo install --locked cargo-deny
+        if: always()
       - run: cargo deny check
+        if: always()
 
   # Scheduled fresh-checkout supply-chain scan closes oracle gap G2.
   scheduled-supply-chain:
@@ -176,7 +132,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.96.0
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo install --locked cargo-deny
       - run: cargo deny check
       - run: cargo install --locked cargo-audit
