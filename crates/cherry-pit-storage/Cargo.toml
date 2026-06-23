@@ -30,5 +30,4 @@ rustix = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true }
-tokio-test = { workspace = true }
 proptest = { workspace = true }

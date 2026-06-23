@@ -24,7 +24,5 @@ tracing = { workspace = true }
 cherry-pit-core = { workspace = true, features = ["testing"] }
 serde = { workspace = true }
 tokio = { workspace = true }
-jiff = { workspace = true }
-uuid = { workspace = true }
 proptest = { workspace = true }
 fastrand = { workspace = true }
