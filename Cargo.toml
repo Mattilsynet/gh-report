@@ -55,7 +55,7 @@ futures-util = "0.3"
 
 # === Web framework ===
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "tokio", "json", "ws"] }
-tower-http = { version = "0.6", features = ["limit", "trace"] }
+tower-http = { version = "0.7", features = ["limit", "trace"] }
 # async-graphql: GraphQL server runtime for adr-srv (AFM-0027 service crate).
 # Pinned on the 7.x stable line; the 8.x line is rc-only as of 2026-05.
 # default-features off drops tempfile/graphiql/dynamic-schema to keep the
