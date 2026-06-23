@@ -19,8 +19,6 @@ adr-fmt = { path = "../adr-fmt" }
 # rmp-serde, file-per-aggregate).
 cherry-pit-core = { workspace = true }
 cherry-pit-gateway = { workspace = true }
-# SEC-0003 path-segment sanitisation surface (used in M1.3 scrape).
-cherry-pit-web = { workspace = true }
 
 # Wire substrate.
 axum = { workspace = true }

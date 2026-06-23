@@ -18,14 +18,10 @@ workspace = true
 
 [features]
 default = []
-# Read-side projection adapter scaffold (cherry-pit-projection edge).
-# Phase 3 of m5-projection-port wires the full handler set + WS upgrade
-# per CHE-0049 R11–R14.
-projection = ["dep:cherry-pit-projection", "dep:futures-util"]
+projection = ["dep:futures-util"]
 
 [dependencies]
 cherry-pit-core = { workspace = true }
-cherry-pit-projection = { workspace = true, optional = true }
 axum = { workspace = true }
 bytes = { workspace = true }
 futures-util = { workspace = true, optional = true }
