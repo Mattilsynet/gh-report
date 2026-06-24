@@ -23,7 +23,7 @@
 //! 8. Render HTML report and update in-memory cache
 //! 9. Release on-disk run lock; in-process sweep guard drops at function exit
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::sync::Arc;
 
@@ -207,6 +207,7 @@ struct CollectionContext {
 
 struct InventoryLoad {
     active_repos: Vec<Arc<Repository>>,
+    complete: bool,
     /// ISO 8601 timestamp of when inventory was fetched from API.
     inventory_fetched_at: Option<String>,
 }
@@ -744,6 +745,10 @@ impl SweepSaga {
         let config = sweep.config;
         let state = sweep.state;
 
+        if inventory.complete && !inventory.active_repos.is_empty() {
+            reconcile_deleted_repositories(state, inventory, &sweep.run().timestamp())?;
+        }
+
         let result = finalize_and_publish(FinalizeParams {
             config,
             run: sweep.run_mut(),
@@ -963,6 +968,11 @@ async fn finalize_and_publish(
 
     let evidence = build_evidence(BuildEvidenceParams {
         repositories: evidence_repos,
+        deleted: state
+            .projection_deleted_snapshot()
+            .into_iter()
+            .map(|(_, record)| record)
+            .collect(),
         org_state: state.projection_org_state(),
         config,
         run,
@@ -1087,8 +1097,46 @@ fn inventory_load_from_payload(payload: inventory::InventoryPayload) -> Inventor
         payload.repositories.into_iter().map(Arc::new).collect();
     InventoryLoad {
         active_repos,
+        complete: payload.complete,
         inventory_fetched_at,
     }
+}
+
+fn reconcile_deleted_repositories(
+    state: &AppState,
+    inventory: &InventoryLoad,
+    detected_at: &str,
+) -> Result<(), PersistenceError> {
+    let active_keys: BTreeSet<&str> = inventory
+        .active_repos
+        .iter()
+        .map(|repo| repo.inventory_key.as_str())
+        .collect();
+    let disappeared: Vec<(String, String)> = state
+        .projection_snapshot()
+        .into_iter()
+        .filter(|evidence| !active_keys.contains(evidence.repository.inventory_key.as_str()))
+        .map(|evidence| (evidence.repository.inventory_key, evidence.repository.name))
+        .collect();
+    for (domain_key, repo_name) in disappeared {
+        state.mark_repo_deleted(&domain_key, &repo_name, detected_at)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn reconcile_deleted_repositories_after_successful_inventory(
+    state: &AppState,
+    inventory_result: &Result<InventoryLoad, AppError>,
+    detected_at: &str,
+) -> Result<(), PersistenceError> {
+    let Ok(inventory) = inventory_result else {
+        return Ok(());
+    };
+    if !inventory.complete || inventory.active_repos.is_empty() {
+        return Ok(());
+    }
+    reconcile_deleted_repositories(state, inventory, detected_at)
 }
 
 async fn collect_org_alert_context(
@@ -1145,6 +1193,11 @@ pub(crate) async fn warm_start_from_baseline(
 
     let evidence = build_evidence(BuildEvidenceParams {
         repositories: repos,
+        deleted: state
+            .projection_deleted_snapshot()
+            .into_iter()
+            .map(|(_, record)| record)
+            .collect(),
         org_state,
         config,
         run: &run,
@@ -1388,6 +1441,11 @@ fn spawn_partial_publisher_from_store(
 
                     let evidence = build_evidence(BuildEvidenceParams {
                         repositories: all_evidence,
+                        deleted: state
+                            .projection_deleted_snapshot()
+                            .into_iter()
+                            .map(|(_, record)| record)
+                            .collect(),
                         org_state: state.projection_org_state(),
                         config: &pp.config,
                         run: &pp.run,
@@ -1521,6 +1579,7 @@ fn failure_evidence_with_reason(
 /// parameter list.
 struct BuildEvidenceParams<'a> {
     repositories: Vec<RepositoryEvidence>,
+    deleted: Vec<crate::projection::DeletedRepoRecord>,
     org_state: Option<crate::projection::OrgReadModel>,
     config: &'a RuntimeConfig,
     run: &'a RunMetadata,
@@ -1607,6 +1666,7 @@ fn build_evidence(params: BuildEvidenceParams<'_>) -> Evidence {
         metrics: aggregated,
         secret_scanning_observability: observability,
         repositories: params.repositories,
+        deleted: params.deleted,
     }
 }
 
@@ -1664,6 +1724,7 @@ mod tests {
             organization: "TestOrg".to_string(),
             generated_at: "2026-06-02T00:00:00+00:00".to_string(),
             repositories: repos,
+            complete: true,
             inventory_fetched_at: Some("2026-06-02T00:00:01+00:00".to_string()),
         }
     }
@@ -1781,6 +1842,7 @@ mod tests {
 
         let evidence = build_evidence(BuildEvidenceParams {
             repositories: repos,
+            deleted: vec![],
             org_state: None,
             config: &config,
             run: &run_meta,
@@ -1814,6 +1876,7 @@ mod tests {
 
         let evidence = build_evidence(BuildEvidenceParams {
             repositories: repos,
+            deleted: vec![],
             org_state: None,
             config: &config,
             run: &run_meta,
@@ -1846,6 +1909,7 @@ mod tests {
 
         let evidence = build_evidence(BuildEvidenceParams {
             repositories: repos,
+            deleted: vec![],
             org_state: Some(org_state),
             config: &config,
             run: &run_meta,
@@ -1873,6 +1937,7 @@ mod tests {
 
         let evidence = build_evidence(BuildEvidenceParams {
             repositories: Vec::new(),
+            deleted: vec![],
             org_state: None,
             config: &config,
             run: &run_meta,
@@ -1898,6 +1963,7 @@ mod tests {
 
         let evidence = build_evidence(BuildEvidenceParams {
             repositories: repos,
+            deleted: vec![],
             org_state: None,
             config: &config,
             run: &run_meta,
@@ -2128,6 +2194,7 @@ mod tests {
         let state = AppState::new_with_cache_capacity(10).await;
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1")],
+            complete: true,
             inventory_fetched_at: None,
         };
 
@@ -2457,6 +2524,7 @@ mod tests {
                 arc_repo_with_updated_at("repo-1", Some("2026-04-10T00:00:00Z")),
                 arc_repo_with_updated_at("repo-2", Some("2026-04-10T00:00:00Z")),
             ],
+            complete: true,
             inventory_fetched_at: None,
         };
 
@@ -2494,6 +2562,7 @@ mod tests {
                 arc_repo_with_updated_at("repo-1", Some("2026-04-10T00:00:00Z")),
                 arc_repo("repo-2"),
             ],
+            complete: true,
             inventory_fetched_at: None,
         };
 
@@ -2517,6 +2586,7 @@ mod tests {
 
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1"), arc_repo("repo-2")],
+            complete: true,
             inventory_fetched_at: None,
         };
 
@@ -2549,6 +2619,7 @@ mod tests {
                 "repo-1",
                 Some("2026-04-10T00:00:00Z"),
             )],
+            complete: true,
             inventory_fetched_at: None,
         };
 
@@ -2582,6 +2653,7 @@ mod tests {
                 "repo-1",
                 Some("2026-04-10T12:00:00Z"),
             )],
+            complete: true,
             inventory_fetched_at: None,
         };
 
@@ -2613,6 +2685,7 @@ mod tests {
 
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1")],
+            complete: true,
             inventory_fetched_at: None,
         };
 
@@ -2639,6 +2712,7 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1"), arc_repo("repo-2"), arc_repo("repo-3")],
+            complete: true,
             inventory_fetched_at: None,
         };
 
@@ -2680,6 +2754,7 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("pass-repo"), arc_repo("fail-repo")],
+            complete: true,
             inventory_fetched_at: None,
         };
 
@@ -2718,6 +2793,7 @@ mod tests {
         let names = ["zebra", "alpha", "middle"];
         let inventory = InventoryLoad {
             active_repos: names.iter().map(|n| arc_repo(n)).collect(),
+            complete: true,
             inventory_fetched_at: None,
         };
 
@@ -2754,6 +2830,7 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("panic-repo")],
+            complete: true,
             inventory_fetched_at: None,
         };
 
@@ -2792,6 +2869,7 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1")],
+            complete: true,
             inventory_fetched_at: None,
         };
 
@@ -2826,6 +2904,7 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1")],
+            complete: true,
             inventory_fetched_at: None,
         };
 
@@ -2858,6 +2937,7 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1"), arc_repo("repo-2")],
+            complete: true,
             inventory_fetched_at: None,
         };
 
@@ -2892,6 +2972,7 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1")],
+            complete: true,
             inventory_fetched_at: None,
         };
 
@@ -2910,6 +2991,166 @@ mod tests {
         );
         assert!(state.html_cache().load().is_some());
 
+        state.work_queue.close();
+    }
+
+    #[tokio::test]
+    async fn successful_non_empty_inventory_moves_disappeared_repo_to_deleted_before_finalize() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let mut run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10).await;
+        let ctx = make_test_collection_context();
+        let timestamp = run.timestamp();
+        let kept = sample_repo("kept-repo");
+        let disappeared = sample_repo("disappeared-repo");
+        let kept_key = kept.repository.inventory_key.clone();
+        let disappeared_key = disappeared.repository.inventory_key.clone();
+        let disappeared_name = disappeared.repository.name.clone();
+
+        for evidence in [kept.clone(), disappeared.clone()] {
+            let domain_key = evidence.repository.inventory_key.clone();
+            let repo_name = evidence.repository.name.clone();
+            state
+                .record_repo(&domain_key, evidence, &repo_name, &timestamp)
+                .expect("record repo");
+        }
+
+        let mut saga = make_test_saga_in(&config, &run, SweepPhase::BatchDrained);
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo("kept-repo")],
+            complete: true,
+            inventory_fetched_at: Some("2026-06-24T00:00:00Z".to_string()),
+        };
+
+        saga_step_finalize(&mut saga, &config, &mut run, &ctx, &inventory, &state)
+            .await
+            .expect("finalize");
+
+        assert!(state.projection_contains(&kept_key));
+        assert!(!state.projection_contains(&disappeared_key));
+        let deleted = state.projection_deleted_snapshot();
+        let record = deleted
+            .iter()
+            .find(|(key, _)| key == &disappeared_key)
+            .map(|(_, record)| record)
+            .expect("deleted record");
+        assert_eq!(record.repo_name, disappeared_name);
+        let expected_detected_at = crate::domain::time::parse_iso8601(&timestamp)
+            .expect("run timestamp parses")
+            .to_string();
+        assert_eq!(record.detected_at, expected_detected_at);
+    }
+
+    #[tokio::test]
+    async fn failed_inventory_result_skips_deleted_reconciliation() {
+        let state = AppState::new_with_cache_capacity(10).await;
+        let timestamp = "2026-06-24T00:00:00Z";
+        let evidence = sample_repo("failed-load-kept");
+        let domain_key = evidence.repository.inventory_key.clone();
+        let repo_name = evidence.repository.name.clone();
+        state
+            .record_repo(&domain_key, evidence, &repo_name, timestamp)
+            .expect("record repo");
+        let failed = Err(AppError::Inventory(
+            crate::error::InventoryError::ApiFetchFailed {
+                reason: "simulated load failure".to_string(),
+            },
+        ));
+
+        reconcile_deleted_repositories_after_successful_inventory(&state, &failed, timestamp)
+            .expect("skip failed inventory");
+
+        assert!(state.projection_contains(&domain_key));
+        assert!(state.projection_deleted_snapshot().is_empty());
+    }
+
+    #[tokio::test]
+    async fn empty_inventory_result_does_not_mass_delete_projection() {
+        let state = AppState::new_with_cache_capacity(10).await;
+        let timestamp = "2026-06-24T00:00:00Z";
+        let repos = [sample_repo("empty-guard-a"), sample_repo("empty-guard-b")];
+        let keys: Vec<String> = repos
+            .iter()
+            .map(|evidence| evidence.repository.inventory_key.clone())
+            .collect();
+        for evidence in repos {
+            let domain_key = evidence.repository.inventory_key.clone();
+            let repo_name = evidence.repository.name.clone();
+            state
+                .record_repo(&domain_key, evidence, &repo_name, timestamp)
+                .expect("record repo");
+        }
+        let empty = Ok(InventoryLoad {
+            active_repos: vec![],
+            complete: true,
+            inventory_fetched_at: Some(timestamp.to_string()),
+        });
+
+        reconcile_deleted_repositories_after_successful_inventory(&state, &empty, timestamp)
+            .expect("skip empty inventory");
+
+        for key in keys {
+            assert!(state.projection_contains(&key));
+        }
+        assert!(state.projection_deleted_snapshot().is_empty());
+    }
+
+    #[tokio::test]
+    async fn partial_inventory_does_not_delete_omitted_repo() {
+        let state = AppState::new_with_cache_capacity(10).await;
+        let timestamp = "2026-06-24T00:00:00Z";
+        let evidence = sample_repo("partial-kept");
+        let key = evidence.repository.inventory_key.clone();
+        let name = evidence.repository.name.clone();
+        state
+            .record_repo(&key, evidence, &name, timestamp)
+            .expect("record repo");
+        let partial = Ok(InventoryLoad {
+            active_repos: vec![arc_repo("some-other-repo")],
+            complete: false,
+            inventory_fetched_at: Some(timestamp.to_string()),
+        });
+
+        reconcile_deleted_repositories_after_successful_inventory(&state, &partial, timestamp)
+            .expect("skip partial inventory");
+
+        assert!(state.projection_contains(&key));
+        assert!(state.projection_deleted_snapshot().is_empty());
+    }
+
+    #[tokio::test]
+    async fn saga_reappearing_deleted_repo_resurrects_to_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10).await;
+        let ctx = make_test_collection_context();
+        let timestamp = run.timestamp();
+        let repo = arc_repo("resurrected-repo");
+        let domain_key = repo.inventory_key.clone();
+        state
+            .mark_repo_deleted(&domain_key, &repo.name, &timestamp)
+            .expect("mark repo deleted");
+
+        let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
+            |repo: &Repository, ts: &str| Ok(sample_repo_from_domain(repo, ts)),
+        )));
+        let (_pool, _delivery) = start_test_worker_pool(&state, evaluator, 1);
+        let mut saga = make_test_saga(&config, &run);
+        let inventory = InventoryLoad {
+            active_repos: vec![repo],
+            complete: true,
+            inventory_fetched_at: Some(timestamp.clone()),
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
+        saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
+            .await
+            .expect("enqueue");
+
+        assert!(state.projection_contains(&domain_key));
+        assert!(state.projection_deleted_snapshot().is_empty());
         state.work_queue.close();
     }
 
@@ -2946,6 +3187,7 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1")],
+            complete: true,
             inventory_fetched_at: None,
         };
 
@@ -3001,6 +3243,7 @@ mod tests {
         let mut saga = make_test_saga(&config, &run);
         let inventory = InventoryLoad {
             active_repos: vec![arc_repo("repo-1")],
+            complete: true,
             inventory_fetched_at: None,
         };
 
@@ -3080,6 +3323,7 @@ mod tests {
                 arc_repo_with_updated_at("repo-reused", Some("2026-04-10T00:00:00Z")),
                 arc_repo("repo-pending"),
             ],
+            complete: true,
             inventory_fetched_at: None,
         };
         let total = inventory.active_repos.len() as u64;

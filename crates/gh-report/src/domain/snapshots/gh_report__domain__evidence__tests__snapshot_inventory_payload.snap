@@ -26,5 +26,6 @@ expression: payload
       "topics": [],
       "license_spdx": null
     }
-  ]
+  ],
+  "complete": true
 }

@@ -413,6 +413,26 @@ impl AppState {
         }
     }
 
+    pub(crate) fn projection_deleted_snapshot(
+        &self,
+    ) -> Vec<(String, crate::projection::DeletedRepoRecord)> {
+        let projection = self.lock_projection();
+        match crate::projection::EvidenceProjectionReadPort::resolve(
+            &projection,
+            crate::projection::EvidenceProjectionQuery::DeletedSnapshot,
+        ) {
+            crate::projection::EvidenceProjectionResponse::Deleted(deleted) => deleted,
+            _ => Vec::new(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn projection_deleted_contains(&self, key: &str) -> bool {
+        self.projection_deleted_snapshot()
+            .iter()
+            .any(|(deleted_key, _)| deleted_key == key)
+    }
+
     pub(crate) fn projection_org_state(&self) -> Option<crate::projection::OrgReadModel> {
         let projection = self.lock_projection();
         match crate::projection::EvidenceProjectionReadPort::resolve(
@@ -589,17 +609,35 @@ fn fold_native_event(
     detached: bool,
     event: &NativeDomainEvent,
 ) {
-    let NativeDomainEvent::RepositoryStateCaptured {
-        domain_key,
-        evidence,
-        ..
-    } = event;
-    if detached {
-        projection.repositories.remove(domain_key.as_str());
-    } else if let Some(evidence) = evidence.as_ref() {
-        projection
-            .repositories
-            .insert(domain_key.as_str().to_string(), (*evidence).clone().into());
+    match event {
+        NativeDomainEvent::RepositoryStateCaptured {
+            domain_key,
+            evidence,
+            ..
+        } => {
+            if detached {
+                projection.repositories.remove(domain_key.as_str());
+            } else if let Some(evidence) = evidence.as_ref() {
+                projection.deleted.remove(domain_key.as_str());
+                projection
+                    .repositories
+                    .insert(domain_key.as_str().to_string(), (*evidence).clone().into());
+            }
+        }
+        NativeDomainEvent::RepositoryDeleted {
+            domain_key,
+            repo_name,
+            detected_at,
+        } => {
+            projection.repositories.remove(domain_key.as_str());
+            projection.deleted.insert(
+                domain_key.as_str().to_string(),
+                crate::projection::DeletedRepoRecord {
+                    repo_name: repo_name.as_str().to_string(),
+                    detected_at: event_timestamp_string(*detected_at),
+                },
+            );
+        }
     }
 }
 
@@ -661,6 +699,11 @@ fn event_timestamp(field: &'static str, value: &str) -> Result<EventTimestamp, P
     })
 }
 
+fn event_timestamp_string(timestamp: EventTimestamp) -> String {
+    jiff::Timestamp::from_nanosecond(i128::from(timestamp.as_nanos()))
+        .map_or_else(|_| String::new(), |value| value.to_string())
+}
+
 fn repo_event(
     domain_key: &str,
     repo_name: &str,
@@ -672,6 +715,18 @@ fn repo_event(
         repo_name: non_empty("repo_name", repo_name)?,
         timestamp: event_timestamp("timestamp", timestamp)?,
         evidence,
+    })
+}
+
+fn deleted_repo_event(
+    domain_key: &str,
+    repo_name: &str,
+    detected_at: &str,
+) -> Result<NativeDomainEvent, PersistenceError> {
+    Ok(NativeDomainEvent::RepositoryDeleted {
+        domain_key: non_empty("domain_key", domain_key)?,
+        repo_name: non_empty("repo_name", repo_name)?,
+        detected_at: event_timestamp("detected_at", detected_at)?,
     })
 }
 
@@ -880,6 +935,25 @@ impl AppState {
             .detach(domain_key, event.clone())
             .map_err(native_store_persistence)?;
         self.fold_repository_event_into_projection(true, &event);
+        Ok(())
+    }
+
+    /// Record a repository deleted by successful inventory reconciliation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence error when event construction or store append fails.
+    pub fn mark_repo_deleted(
+        &self,
+        domain_key: &str,
+        repo_name: &str,
+        detected_at: &str,
+    ) -> Result<(), PersistenceError> {
+        let event = deleted_repo_event(domain_key, repo_name, detected_at)?;
+        self.event_store
+            .record(domain_key, event.clone())
+            .map_err(native_store_persistence)?;
+        self.fold_repository_event_into_projection(false, &event);
         Ok(())
     }
 
@@ -1229,6 +1303,18 @@ mod tests {
         projection
     }
 
+    fn repository_deleted_event(
+        domain_key: &str,
+        repo_name: &str,
+        detected_at: &str,
+    ) -> NativeDomainEvent {
+        NativeDomainEvent::RepositoryDeleted {
+            domain_key: NonEmptyEventString::try_new(domain_key).expect("domain key fits"),
+            repo_name: NonEmptyEventString::try_new(repo_name).expect("repo name fits"),
+            detected_at: event_timestamp("detected_at", detected_at).expect("timestamp fits"),
+        }
+    }
+
     fn rendered_evidence_from_projection(
         repositories: Vec<crate::domain::evidence::RepositoryEvidence>,
     ) -> Evidence {
@@ -1244,7 +1330,43 @@ mod tests {
             metrics: crate::test_fixtures::make_minimal_metrics(),
             secret_scanning_observability: crate::test_fixtures::make_observability(),
             repositories,
+            deleted: vec![],
         }
+    }
+
+    #[test]
+    fn repository_deleted_fold_moves_to_deleted_and_live_snapshot_resurrects() {
+        let timestamp = "2026-06-24T00:00:00Z";
+        let evidence = crate::test_fixtures::all_passing_evidence("deleted-then-live");
+        let domain_key = evidence.repository.inventory_key.clone();
+        let repo_name = evidence.repository.name.clone();
+        let live_event = repo_event(
+            &domain_key,
+            &repo_name,
+            timestamp,
+            Some(crate::event::RepositoryEvidence::try_from(evidence).expect("event evidence")),
+        )
+        .expect("live event");
+        let deleted_event = repository_deleted_event(&domain_key, &repo_name, timestamp);
+
+        let deleted_projection =
+            fold_public_event_stream(vec![(false, live_event.clone()), (false, deleted_event)]);
+        assert!(!deleted_projection.repositories.contains_key(&domain_key));
+        let deleted = deleted_projection
+            .deleted
+            .get(&domain_key)
+            .expect("deleted record");
+        assert_eq!(deleted.repo_name, repo_name);
+        assert_eq!(deleted.detected_at, timestamp);
+
+        let resurrected_projection =
+            fold_public_event_stream(vec![(false, live_event.clone()), (false, live_event)]);
+        assert!(
+            resurrected_projection
+                .repositories
+                .contains_key(&domain_key)
+        );
+        assert!(!resurrected_projection.deleted.contains_key(&domain_key));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1728,6 +1850,11 @@ mod tests {
                     Some(&org.alert_summary),
                 ),
             repositories: projection.sorted_snapshot(),
+            deleted: projection
+                .deleted_snapshot()
+                .into_iter()
+                .map(|(_, record)| record)
+                .collect(),
         };
         let pages = crate::report::html::render_dashboard(
             &evidence,
@@ -1831,6 +1958,46 @@ mod tests {
             live.iter()
                 .any(|e| e.repository.inventory_key == kept_b.repository.inventory_key)
         );
+    }
+
+    #[tokio::test]
+    async fn mark_repo_deleted_writes_event_and_replay_rebuilds_deleted_projection() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let nats = NatsStoreConfig::for_org("org", crate::config::runtime::DEFAULT_NATS_URL)
+            .expect("nats config");
+        let state = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats.clone())
+            .await
+            .expect("with_stores");
+        let timestamp = "2026-06-24T00:00:00Z";
+        let deleted = crate::test_fixtures::all_passing_evidence("write-wrapper-deleted");
+        let domain_key = deleted.repository.inventory_key.clone();
+        let repo_name = deleted.repository.name.clone();
+
+        state
+            .record_repo(&domain_key, deleted, &repo_name, timestamp)
+            .expect("record repo");
+        state
+            .mark_repo_deleted(&domain_key, &repo_name, timestamp)
+            .expect("mark repo deleted");
+
+        assert!(!state.projection_contains(&domain_key));
+        assert!(state.projection_deleted_contains(&domain_key));
+        let deleted_snapshot = state.projection_deleted_snapshot();
+        let deleted_record = deleted_snapshot
+            .iter()
+            .find(|(key, _)| key == &domain_key)
+            .map(|(_, record)| record)
+            .expect("deleted record");
+        assert_eq!(deleted_record.repo_name, repo_name);
+        assert_eq!(deleted_record.detected_at, timestamp);
+
+        drop(state);
+        let restarted = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats)
+            .await
+            .expect("restart");
+        assert!(!restarted.projection_contains(&domain_key));
+        assert!(restarted.projection_deleted_contains(&domain_key));
     }
 
     #[tokio::test]

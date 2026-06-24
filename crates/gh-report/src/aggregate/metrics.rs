@@ -919,6 +919,44 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_metrics_exclude_deleted_projection_rows_from_denominators() {
+        let active = make_repository_evidence(
+            "active-denominator",
+            Visibility::Public,
+            false,
+            make_checks(
+                policy_pass_setting(),
+                secret_enabled_observable(false),
+                dependabot_enabled(),
+                branch_pass(),
+                codeowners_conforming(),
+            ),
+        );
+        let mut projection = crate::projection::EvidenceProjection::default();
+        projection
+            .repositories
+            .insert(active.repository.inventory_key.clone(), active.clone());
+        projection.deleted.insert(
+            "id-deleted-denominator".to_string(),
+            crate::projection::DeletedRepoRecord {
+                repo_name: "deleted-denominator".to_string(),
+                detected_at: "2026-06-24T00:00:00Z".to_string(),
+            },
+        );
+        let repos = projection.sorted_snapshot();
+
+        let stats = build_collection_statistics(&repos);
+        let metrics = aggregate_metrics(&repos);
+
+        assert_eq!(stats.total_repos, 1);
+        assert_eq!(metrics.security_policy_coverage.denominator, 1);
+        assert_eq!(metrics.secret_scanning_coverage.denominator, 1);
+        assert_eq!(metrics.dependabot_security_updates_coverage.denominator, 1);
+        assert_eq!(metrics.branch_protection_coverage.denominator, 1);
+        assert_eq!(metrics.codeowners_coverage.denominator, 1);
+    }
+
+    #[test]
     fn collection_statistics_empty_repos() {
         let stats = build_collection_statistics(&[]);
         assert_eq!(stats.total_repos, 0);

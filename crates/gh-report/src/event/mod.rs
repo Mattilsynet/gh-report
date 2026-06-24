@@ -350,6 +350,10 @@ impl HasEventSchemaSource for OrgStateCaptured {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "durable event schema keeps full repository snapshot inline; boxing would reshape persisted bytes"
+)]
 #[repr(u8)]
 pub enum DomainEvent {
     RepositoryStateCaptured {
@@ -358,6 +362,11 @@ pub enum DomainEvent {
         timestamp: Timestamp,
         evidence: Option<RepositoryEvidence>,
     } = 0,
+    RepositoryDeleted {
+        domain_key: NonEmptyEventString<MAX_DOMAIN_KEY>,
+        repo_name: NonEmptyEventString<MAX_REPO_NAME>,
+        detected_at: Timestamp,
+    } = 1,
 }
 
 impl DomainEvent {
@@ -365,6 +374,7 @@ impl DomainEvent {
     pub fn event_type(&self) -> &'static str {
         match self {
             Self::RepositoryStateCaptured { .. } => "RepositoryStateCaptured",
+            Self::RepositoryDeleted { .. } => "RepositoryDeleted",
         }
     }
 }
@@ -622,6 +632,19 @@ mod tests {
     }
 
     #[test]
+    fn native_repository_deleted_round_trips() {
+        let event = DomainEvent::RepositoryDeleted {
+            domain_key: nes("id-repo-1"),
+            repo_name: nes("repo-1"),
+            detected_at: ts(50),
+        };
+        let wire = to_vec(&event);
+        let decoded: DomainEvent = from_bytes(&wire).expect("decode native event");
+        assert_eq!(decoded, event);
+        assert_eq!(decoded.event_type(), "RepositoryDeleted");
+    }
+
+    #[test]
     fn org_state_captured_round_trips_domain_snapshot() {
         let domain = domain_org_snapshot();
         let event = OrgStateCaptured::try_from(domain.clone()).expect("org snapshot fits event");
@@ -676,7 +699,7 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(
             first,
-            75_550_468_962_126_600_101_883_407_802_917_765_349_u128
+            275_195_719_777_709_701_441_897_251_379_147_148_878_u128
         );
         assert_ne!(
             first, 19_710_905_809_486_475_925_592_730_934_028_496_282_u128,
@@ -688,7 +711,7 @@ mod tests {
     fn repository_event_envelope_identity_is_stable() {
         assert_eq!(
             pardosa::store::Event::<DomainEvent>::ENVELOPE_HASH,
-            61_904_540_321_486_313_945_795_997_551_207_330_525_u128
+            115_262_504_534_011_819_886_868_485_259_975_564_459_u128
         );
         assert_eq!(
             <DomainEvent as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,

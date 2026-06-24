@@ -275,6 +275,26 @@ pub struct OrphanedViewModel {
     pub has_stale_repos: bool,
 }
 
+/// A row in the deleted repositories table.
+#[derive(Debug, Clone)]
+pub struct DeletedRepoRow {
+    /// Repository name.
+    pub repo_name: String,
+    /// ISO 8601 timestamp when deletion was detected.
+    pub detected_at: String,
+}
+
+/// View model for the deleted repositories page.
+#[derive(Debug, Clone)]
+pub struct DeletedViewModel {
+    /// One row per deleted repo, sorted by name.
+    pub rows: Vec<DeletedRepoRow>,
+    /// Organization name for the page title.
+    pub organization: String,
+    /// Total count of deleted repos.
+    pub deleted_count: u32,
+}
+
 /// Operator-facing diagnostics for collection health and credentials.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdminDiagnosticsViewModel {
@@ -567,6 +587,8 @@ pub struct ReportViewModel {
 
     /// Count of orphaned repositories (drives nav link label).
     pub orphaned_count: u32,
+    /// Count of deleted repositories (drives nav link label).
+    pub deleted_count: u32,
 
     /// Whether this report was rendered from a cached baseline (warm-start)
     /// rather than a fresh API collection.
@@ -704,6 +726,7 @@ impl ReportViewModel {
             owners: None,
             top_security_teams: Vec::new(),
             orphaned_count: 0,
+            deleted_count: u32::try_from(evidence.deleted.len()).unwrap_or(u32::MAX),
             warm_start: metadata.warm_start,
             admin_diagnostics,
         }

@@ -567,7 +567,10 @@ enum Resolved {
 }
 
 fn key_of(event: &Event<DomainEvent>) -> std::iter::Once<String> {
-    let DomainEvent::RepositoryStateCaptured { domain_key, .. } = event.domain_event();
+    let domain_key = match event.domain_event() {
+        DomainEvent::RepositoryStateCaptured { domain_key, .. }
+        | DomainEvent::RepositoryDeleted { domain_key, .. } => domain_key,
+    };
     std::iter::once(domain_key.as_str().to_string())
 }
 
@@ -608,7 +611,10 @@ fn latest_defined(
 ) -> Result<Vec<(String, DomainEvent)>, StoreError> {
     let keys = RefCell::new(Vec::<String>::new());
     let index = store.reader().fiber_index::<String, _, _>(|event| {
-        let DomainEvent::RepositoryStateCaptured { domain_key, .. } = event.domain_event();
+        let domain_key = match event.domain_event() {
+            DomainEvent::RepositoryStateCaptured { domain_key, .. }
+            | DomainEvent::RepositoryDeleted { domain_key, .. } => domain_key,
+        };
         let key = domain_key.as_str().to_string();
         keys.borrow_mut().push(key.clone());
         std::iter::once(key)

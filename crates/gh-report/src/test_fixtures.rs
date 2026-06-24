@@ -592,5 +592,6 @@ pub fn make_full_evidence(
         metrics,
         secret_scanning_observability: observability,
         repositories: repos,
+        deleted: vec![],
     }
 }

@@ -52,6 +52,7 @@ pub enum ApiOutcome {
         status_code: u16,
         data: Option<serde_json::Value>,
         headers: Option<HashMap<String, String>>,
+        truncated: bool,
     },
     /// Failed API response (non-2xx, timeout, network error, etc.).
     Failure {
@@ -133,7 +134,20 @@ impl ApiOutcome {
             status_code: 200,
             data: Some(data),
             headers: None,
+            truncated: false,
         }
+    }
+
+    /// Whether a successful paginated response stopped before exhaustion.
+    #[must_use]
+    pub fn is_truncated(&self) -> bool {
+        matches!(
+            self,
+            ApiOutcome::Success {
+                truncated: true,
+                ..
+            }
+        )
     }
 
     /// Create a failed result.
@@ -302,6 +316,23 @@ fn is_same_origin(url_str: &str, trusted_origin: &str) -> bool {
         Some(origin) => origin == trusted_origin,
         None => false,
     }
+}
+
+fn trusted_next_url(headers: &HeaderMap, trusted_origin: &str) -> Option<String> {
+    let candidate_url = pagination::next_url(headers)?;
+    if is_same_origin(&candidate_url, trusted_origin) {
+        return Some(candidate_url);
+    }
+    let sanitized: String = candidate_url
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(200)
+        .collect();
+    warn!(
+        url = %sanitized,
+        "rejecting pagination URL from untrusted origin"
+    );
+    None
 }
 
 /// Validate that a URL uses HTTPS (or HTTP only if explicitly opted in).
@@ -796,6 +827,7 @@ impl GitHubClient {
                 status_code: status,
                 data: None,
                 headers: extracted_headers,
+                truncated: false,
             };
         }
 
@@ -809,6 +841,7 @@ impl GitHubClient {
                     status_code: status,
                     data: Some(data),
                     headers: extracted_headers,
+                    truncated: false,
                 }
             }
             Err(e) => ApiOutcome::failure(Some(status), format!("invalid json: {e}"), false),
@@ -868,21 +901,7 @@ impl GitHubClient {
                 return ApiOutcome::failure(Some(status), truncate_error_body(&body), retryable);
             }
 
-            if let Some(candidate_url) = pagination::next_url(response.headers()) {
-                if is_same_origin(&candidate_url, &self.trusted_origin) {
-                    next_url = Some(candidate_url);
-                } else {
-                    let sanitized: String = candidate_url
-                        .chars()
-                        .filter(|c| !c.is_control())
-                        .take(200)
-                        .collect();
-                    warn!(
-                        url = %sanitized,
-                        "rejecting pagination URL from untrusted origin"
-                    );
-                }
-            }
+            next_url = trusted_next_url(response.headers(), &self.trusted_origin);
 
             let body = match read_body_limited(response, config::MAX_RESPONSE_BODY_BYTES).await {
                 Ok(b) => b,
@@ -928,7 +947,12 @@ impl GitHubClient {
             truncated,
             "paginated request complete"
         );
-        ApiOutcome::success(serde_json::Value::Array(all_items))
+        ApiOutcome::Success {
+            status_code: 200,
+            data: Some(serde_json::Value::Array(all_items)),
+            headers: None,
+            truncated,
+        }
     }
 
     /// Send a single HTTP GET for a pagination page.
@@ -1019,6 +1043,7 @@ impl GitHubClient {
                     status_code,
                     data,
                     headers: None,
+                    truncated: false,
                 };
             }
             Some(CacheHit::Stale {
@@ -1140,6 +1165,7 @@ impl GitHubClient {
                 status_code: cached_status,
                 data: cached_data.cloned(),
                 headers: None,
+                truncated: false,
             });
         }
 
@@ -1181,6 +1207,7 @@ impl GitHubClient {
                 status_code: status,
                 data: None,
                 headers: None,
+                truncated: false,
             });
         }
 
@@ -1200,6 +1227,7 @@ impl GitHubClient {
                         status_code: cached.status_code,
                         data: cached.data.clone(),
                         headers: None,
+                        truncated: false,
                     })
             }
             Err(e) => {

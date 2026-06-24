@@ -24,6 +24,8 @@ pub struct InventoryPayload {
     pub organization: String,
     pub generated_at: String,
     pub repositories: Vec<Repository>,
+    /// True when pagination reached natural completion without truncation.
+    pub complete: bool,
     /// ISO 8601 timestamp of when the inventory API call completed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inventory_fetched_at: Option<String>,
@@ -137,6 +139,7 @@ pub async fn build_inventory_from_api(
         organization: client.org_name.clone(),
         generated_at: format_utc(now),
         repositories,
+        complete: !response.is_truncated(),
         inventory_fetched_at: Some(format_utc(Timestamp::now())),
     })
 }

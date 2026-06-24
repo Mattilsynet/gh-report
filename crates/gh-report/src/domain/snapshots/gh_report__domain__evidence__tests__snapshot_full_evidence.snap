@@ -1,6 +1,5 @@
 ---
 source: crates/gh-report/src/domain/evidence.rs
-assertion_line: 171
 expression: evidence
 ---
 {
@@ -168,5 +167,6 @@ expression: evidence
       },
       "last_commit": null
     }
-  ]
+  ],
+  "deleted": []
 }

@@ -19,6 +19,15 @@ pub struct OrgReadModel {
     pub alert_summary: OrgAlertSummary,
 }
 
+/// Pruned read-model row for a repository detected as deleted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeletedRepoRecord {
+    /// Repository name at deletion detection time.
+    pub repo_name: String,
+    /// ISO 8601 timestamp when deletion was detected.
+    pub detected_at: String,
+}
+
 impl From<OrgStateSnapshot> for OrgReadModel {
     fn from(value: OrgStateSnapshot) -> Self {
         Self {
@@ -46,6 +55,9 @@ pub struct EvidenceProjection {
     /// stability (B8').
     pub repositories: BTreeMap<String, RepositoryEvidence>,
 
+    /// Repositories absent from a successful inventory sweep.
+    pub deleted: BTreeMap<String, DeletedRepoRecord>,
+
     /// Last-known org-level state folded from the org event stream.
     pub org_state: Option<OrgReadModel>,
 }
@@ -61,6 +73,8 @@ pub enum EvidenceProjectionQuery {
     Contains(String),
     /// Return all repository evidence in render-stable order.
     SortedSnapshot,
+    /// Return deleted repository rows in key order.
+    DeletedSnapshot,
     /// Return the latest org read-model part.
     OrgState,
 }
@@ -76,6 +90,8 @@ pub enum EvidenceProjectionResponse {
     Contains(bool),
     /// Ordered repository evidence result.
     Many(Vec<RepositoryEvidence>),
+    /// Ordered deleted repository rows.
+    Deleted(Vec<(String, DeletedRepoRecord)>),
     /// Optional org read-model result.
     OrgState(Box<Option<OrgReadModel>>),
 }
@@ -110,7 +126,7 @@ impl EvidenceProjection {
     /// True when no repositories are materialised. Pairs with [`Self::len`].
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.repositories.is_empty() && self.org_state.is_none()
+        self.repositories.is_empty() && self.deleted.is_empty() && self.org_state.is_none()
     }
 
     /// Apply an org snapshot as latest-event-read state.
@@ -141,6 +157,15 @@ impl EvidenceProjection {
                 .then_with(|| a.repository.name.cmp(&b.repository.name))
         });
         entries
+    }
+
+    /// Snapshot of deleted repository rows in deterministic key order.
+    #[must_use]
+    pub fn deleted_snapshot(&self) -> Vec<(String, DeletedRepoRecord)> {
+        self.deleted
+            .iter()
+            .map(|(key, record)| (key.clone(), record.clone()))
+            .collect()
     }
 
     /// Bulk-load baseline evidence.
@@ -208,6 +233,9 @@ impl ReadPort for EvidenceProjectionReadPort {
             EvidenceProjectionQuery::SortedSnapshot => {
                 EvidenceProjectionResponse::Many(projection.sorted_snapshot())
             }
+            EvidenceProjectionQuery::DeletedSnapshot => {
+                EvidenceProjectionResponse::Deleted(projection.deleted_snapshot())
+            }
             EvidenceProjectionQuery::OrgState => {
                 EvidenceProjectionResponse::OrgState(Box::new(projection.org_state.clone()))
             }
@@ -223,7 +251,22 @@ mod tests {
     fn default_projection_is_empty() {
         let p = EvidenceProjection::default();
         assert!(p.repositories.is_empty());
+        assert!(p.deleted.is_empty());
         assert!(p.org_state.is_none());
+    }
+
+    #[test]
+    fn is_empty_reflects_deleted_entries() {
+        let mut p = EvidenceProjection::default();
+        assert!(p.is_empty());
+        p.deleted.insert(
+            "id-deleted".to_string(),
+            DeletedRepoRecord {
+                repo_name: "deleted".to_string(),
+                detected_at: "2026-06-24T00:00:00Z".to_string(),
+            },
+        );
+        assert!(!p.is_empty());
     }
 
     fn ev(domain_key: &str, name: &str) -> RepositoryEvidence {

@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::projection::DeletedRepoRecord;
+
 use super::auth::{AuthMode, Capability, TokenTier};
 use super::checks::RepositoryChecks;
 use super::metrics::{
@@ -100,6 +102,9 @@ pub struct Evidence {
     pub secret_scanning_observability: SecretScanningObservability,
     /// Per-repository evidence with check results.
     pub repositories: Vec<RepositoryEvidence>,
+    /// Pruned records for repositories detected as deleted.
+    #[serde(default)]
+    pub deleted: Vec<DeletedRepoRecord>,
 }
 
 #[cfg(test)]
@@ -136,6 +141,7 @@ mod tests {
             organization: "TestOrg".to_string(),
             generated_at: "2026-04-09T12:00:00+00:00".to_string(),
             repositories: vec![repo],
+            complete: true,
             inventory_fetched_at: None,
         };
         assert_json_snapshot!(payload);

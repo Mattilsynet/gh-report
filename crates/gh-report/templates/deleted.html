@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Deleted Repositories — {{ vm.organization }}</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="ws.js" defer></script>
+    {% if warm_start %}<meta http-equiv="refresh" content="5">{% endif %}
+</head>
+
+<body>
+
+    <nav class="top-nav">
+        <a href="index.html">Dashboard</a>
+        <a href="report.html">Report</a>
+        <a href="owners.html">Owners</a>
+        <a href="orphans.html">Orphans ({{ orphaned_count }})</a>
+        <a href="deleted.html">Deleted ({{ vm.deleted_count }})</a>
+        <a href="admin.html" class="admin-link">Admin{% if technical_issues_total > 0 %} <span class="warning-badge">{{ technical_issues_total }}</span>{% endif %}</a>
+    </nav>
+
+    <h1>Deleted Repositories</h1>
+
+    <ul class="breadcrumb">
+        <li><a href="index.html">Dashboard</a></li>
+        <li>Deleted</li>
+    </ul>
+
+    <p class="meta">Repositories absent from a successful inventory sweep in <code>{{ vm.organization }}</code>.</p>
+
+    {% if vm.rows.is_empty() %}
+    <p class="meta">No deleted repositories detected.</p>
+    {% else %}
+    <div class="table-wrapper">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Repository</th>
+                    <th>Detected At</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in vm.rows %}
+                <tr>
+                    <td>{{ row.repo_name }}</td>
+                    <td>{{ row.detected_at }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+</body>
+
+</html>

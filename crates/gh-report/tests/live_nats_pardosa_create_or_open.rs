@@ -91,6 +91,9 @@ fn assert_loaded_event(event: &DomainEvent) {
             assert_eq!(domain_key.as_str(), "m5/repo");
             assert_eq!(repo_name.as_str(), "repo");
         }
+        DomainEvent::RepositoryDeleted { .. } => {
+            panic!("expected RepositoryStateCaptured fixture event")
+        }
     }
 }
 

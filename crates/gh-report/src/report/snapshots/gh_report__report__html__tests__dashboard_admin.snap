@@ -20,6 +20,7 @@ expression: "&pages[\"admin.html\"]"
         <a href="report.html">Report</a>
         
         <a href="orphans.html">Orphans (0)</a>
+        <a href="deleted.html">Deleted (0)</a>
         <a href="admin.html" class="admin-link">Admin <span class="warning-badge">8</span></a>
     </nav>
 

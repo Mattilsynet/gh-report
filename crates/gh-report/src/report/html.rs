@@ -22,9 +22,10 @@ use crate::domain::metrics::OwnerType;
 use crate::domain::time::{is_repo_stale, parse_iso8601};
 use crate::error::ReportError;
 use crate::report::view_model::{
-    ControlCell, CoverageTier, OrphanedRepoRow, OrphanedViewModel, OwnerDetailViewModel,
-    OwnerOverviewRow, OwnerRepoRow, OwnersViewModel, ReportViewModel, StatusDot, SummaryCard,
-    TopSecurityTeam, compute_health_score, rate_to_width_class, strip_org_prefix,
+    ControlCell, CoverageTier, DeletedRepoRow, DeletedViewModel, OrphanedRepoRow,
+    OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow, OwnerRepoRow, OwnersViewModel,
+    ReportViewModel, StatusDot, SummaryCard, TopSecurityTeam, compute_health_score,
+    rate_to_width_class, strip_org_prefix,
 };
 
 /// Askama template for the security posture report.
@@ -98,6 +99,19 @@ struct OrphansTemplate {
     /// When `true`, emits a `<meta http-equiv="refresh">` tag so the
     /// browser auto-reloads until fresh collection data replaces the
     /// warm-start cache.
+    warm_start: bool,
+}
+
+/// Askama template for the deleted repositories page.
+#[derive(Template)]
+#[template(path = "deleted.html")]
+struct DeletedTemplate {
+    vm: DeletedViewModel,
+    /// Count of orphaned repositories for nav parity.
+    orphaned_count: u32,
+    /// Count of collection-health technical issues, surfaced as the admin nav badge.
+    technical_issues_total: u32,
+    /// When `true`, emits a `<meta http-equiv="refresh">` tag.
     warm_start: bool,
 }
 
@@ -220,6 +234,10 @@ pub fn render_dashboard(
         &evidence.assessment_metadata.run_timestamp,
     );
     let orphaned_count = orphaned_vm.orphaned_count;
+    let deleted_vm = build_deleted_view_model(
+        &evidence.deleted,
+        &evidence.assessment_metadata.organization,
+    );
 
     let mut vm = ReportViewModel::from_evidence(evidence, tiers);
     vm.owners.clone_from(&owners_vm);
@@ -277,6 +295,14 @@ pub fn render_dashboard(
         warm_start,
     })?;
     pages.insert("orphans.html".to_string(), orphaned_html);
+
+    let deleted_html = render_template(&DeletedTemplate {
+        vm: deleted_vm,
+        orphaned_count,
+        technical_issues_total,
+        warm_start,
+    })?;
+    pages.insert("deleted.html".to_string(), deleted_html);
 
     debug!(page_count = pages.len(), "dashboard rendering complete");
     Ok(pages)
@@ -756,6 +782,26 @@ fn build_orphaned_view_model(
     }
 }
 
+fn build_deleted_view_model(
+    deleted: &[crate::projection::DeletedRepoRecord],
+    organization: &str,
+) -> DeletedViewModel {
+    let mut rows: Vec<DeletedRepoRow> = deleted
+        .iter()
+        .map(|record| DeletedRepoRow {
+            repo_name: record.repo_name.clone(),
+            detected_at: record.detected_at.clone(),
+        })
+        .collect();
+    rows.sort_by_cached_key(|row| row.repo_name.to_lowercase());
+    let deleted_count = u32::try_from(rows.len()).unwrap_or(u32::MAX);
+    DeletedViewModel {
+        rows,
+        organization: organization.to_string(),
+        deleted_count,
+    }
+}
+
 /// Extract the `YYYY-MM-DD` date from an optional ISO 8601 timestamp,
 /// converting to UTC first so that date-boundary crossings are correct.
 ///
@@ -1180,7 +1226,8 @@ mod tests {
         assert!(pages.contains_key("style.css"));
         assert!(pages.contains_key("ws.js"));
         assert!(pages.contains_key("orphans.html"));
-        assert_eq!(pages.len(), 6);
+        assert!(pages.contains_key("deleted.html"));
+        assert_eq!(pages.len(), 7);
     }
 
     #[test]
@@ -2630,6 +2677,23 @@ mod tests {
         assert!(orphaned.contains("orphan-repo"));
         assert!(!orphaned.contains("owned-repo"));
         assert!(orphaned.contains("Orphans (1)"));
+    }
+
+    #[test]
+    fn render_dashboard_deleted_page_shows_pruned_deleted_repos() {
+        let mut evidence = sample_evidence();
+        evidence.deleted = vec![crate::projection::DeletedRepoRecord {
+            repo_name: "deleted-repo".to_string(),
+            detected_at: "2026-06-24T00:00:00Z".to_string(),
+        }];
+
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+        let deleted = &pages["deleted.html"];
+        assert!(deleted.contains("Deleted Repositories"));
+        assert!(deleted.contains("deleted-repo"));
+        assert!(deleted.contains("2026-06-24T00:00:00Z"));
+        assert!(!deleted.contains("Security Policy"));
     }
 
     #[test]
