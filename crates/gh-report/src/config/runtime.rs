@@ -26,6 +26,8 @@ pub struct RuntimeConfig {
     pub pardosa_backend: PardosaBackend,
     /// NATS server URL used when `pardosa_backend` is `Nats`.
     pub nats_url: String,
+    /// NATS `.creds` file path used when `pardosa_backend` is `Nats`.
+    pub nats_creds: Option<PathBuf>,
     /// Forcibly remove an existing lock before acquiring.
     pub force_unlock: bool,
     /// Dashboard rendering configuration.
@@ -51,6 +53,8 @@ pub struct NatsStoreConfig {
     pub subject: String,
     /// Per-org durable consumer name used during replay.
     pub durable_consumer: String,
+    /// NATS `.creds` file path used for authenticated `JetStream` connects.
+    pub credentials_path: Option<PathBuf>,
 }
 
 impl NatsStoreConfig {
@@ -71,7 +75,15 @@ impl NatsStoreConfig {
             stream_name: format!("gh-report-{token}"),
             subject: format!("gh-report.{token}.events"),
             durable_consumer: format!("gh-report-{token}"),
+            credentials_path: None,
         })
+    }
+
+    /// Attach a NATS `.creds` file path for authenticated `JetStream` connects.
+    #[must_use]
+    pub fn with_credentials_path(mut self, credentials_path: Option<PathBuf>) -> Self {
+        self.credentials_path = credentials_path;
+        self
     }
 
     /// Derive the distinct org-event `JetStream` names paired with this repo stream.
@@ -85,6 +97,7 @@ impl NatsStoreConfig {
                 |base| format!("{base}.org.events"),
             ),
             durable_consumer: format!("{}-org", self.durable_consumer),
+            credentials_path: self.credentials_path.clone(),
         }
     }
 }
@@ -136,6 +149,7 @@ impl RuntimeConfig {
             store_dir,
             pardosa_backend: PardosaBackend::Pgno,
             nats_url: DEFAULT_NATS_URL.to_string(),
+            nats_creds: None,
             force_unlock: false,
             dashboard_config: DashboardConfig::default(),
         })
@@ -168,7 +182,10 @@ impl RuntimeConfig {
     ///
     /// Returns [`ConfigError::MissingField`] if `org_name` is empty.
     pub fn nats_store_config(&self) -> Result<NatsStoreConfig, ConfigError> {
-        NatsStoreConfig::for_org(&self.org_name, self.nats_url.clone())
+        Ok(
+            NatsStoreConfig::for_org(&self.org_name, self.nats_url.clone())?
+                .with_credentials_path(self.nats_creds.clone()),
+        )
     }
 }
 
@@ -221,6 +238,15 @@ mod tests {
     }
 
     #[test]
+    fn runtime_config_defaults_to_pgno_and_anonymous_nats() {
+        let cfg = RuntimeConfig::new("org", false, 8, PathBuf::from("s")).unwrap();
+
+        assert_eq!(cfg.pardosa_backend, PardosaBackend::Pgno);
+        assert_eq!(cfg.nats_url, DEFAULT_NATS_URL);
+        assert!(cfg.nats_creds.is_none());
+    }
+
+    #[test]
     fn nats_store_config_uses_injective_hex_org_token() {
         let my_org = NatsStoreConfig::for_org("my org", DEFAULT_NATS_URL).unwrap();
         let my_dash_org = NatsStoreConfig::for_org("my-org", DEFAULT_NATS_URL).unwrap();
@@ -252,6 +278,27 @@ mod tests {
     }
 
     #[test]
+    fn nats_store_config_threads_credentials_path() {
+        let path = PathBuf::from("/var/secrets/nats.creds");
+        let cfg = NatsStoreConfig::for_org("my org", DEFAULT_NATS_URL)
+            .unwrap()
+            .with_credentials_path(Some(path.clone()));
+
+        assert_eq!(cfg.credentials_path, Some(path));
+    }
+
+    #[test]
+    fn nats_store_config_org_events_carries_credentials_path() {
+        let path = PathBuf::from("/var/secrets/nats.creds");
+        let repo = NatsStoreConfig::for_org("my org", DEFAULT_NATS_URL)
+            .unwrap()
+            .with_credentials_path(Some(path.clone()));
+        let org = repo.org_events();
+
+        assert_eq!(org.credentials_path, Some(path));
+    }
+
+    #[test]
     fn nats_store_config_rejects_empty_org() {
         let result = NatsStoreConfig::for_org("", DEFAULT_NATS_URL);
 
@@ -266,6 +313,20 @@ mod tests {
         assert_eq!(
             cfg.nats_store_config().unwrap().stream_name,
             "gh-report-org_6f7267"
+        );
+        assert!(cfg.nats_store_config().unwrap().credentials_path.is_none());
+    }
+
+    #[test]
+    fn runtime_config_carries_nats_creds_to_store_config() {
+        let path = PathBuf::from("/var/secrets/nats.creds");
+        let mut cfg = RuntimeConfig::new("org", false, 8, PathBuf::from("store")).unwrap();
+        cfg.pardosa_backend = PardosaBackend::Nats;
+        cfg.nats_creds = Some(path.clone());
+
+        assert_eq!(
+            cfg.nats_store_config().unwrap().credentials_path,
+            Some(path)
         );
     }
 }

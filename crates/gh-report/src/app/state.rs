@@ -545,15 +545,17 @@ fn jetstream_backend(
     nats: crate::config::runtime::NatsStoreConfig,
     handle: tokio::runtime::Handle,
 ) -> PardosaJetStreamBackend {
-    let cfg = JetStreamConfig::builder()
+    let mut builder = JetStreamConfig::builder()
         .stream_name(nats.stream_name)
         .subject(nats.subject)
         .durable_consumer(nats.durable_consumer)
         .nats_url(nats.nats_url)
         .runtime_handle(RuntimeHandle::from_tokio(handle))
-        .single_writer_fence_enabled(true)
-        .build()
-        .expect("validated NATS store config");
+        .single_writer_fence_enabled(true);
+    if let Some(path) = nats.credentials_path {
+        builder = builder.credentials_path(path);
+    }
+    let cfg = builder.build().expect("validated NATS store config");
     let substrate = SubstrateJetStreamBackend::open(cfg);
     PardosaJetStreamBackend::open(substrate)
 }

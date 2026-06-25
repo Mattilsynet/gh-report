@@ -82,6 +82,10 @@ struct Cli {
     #[arg(long, default_value = runtime::DEFAULT_NATS_URL, env = "GH_REPORT_NATS_URL")]
     nats_url: String,
 
+    /// Filesystem path to a NATS .creds file for the pardosa Nats backend.
+    #[arg(long, env = "GH_REPORT_NATS_CREDS")]
+    nats_creds: Option<PathBuf>,
+
     /// Dump the baseline file as JSON to stdout and exit.
     #[arg(long)]
     dump_baseline: bool,
@@ -111,7 +115,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let app_state = gh_report::app::state::AppState::with_stores(
             &events_dir,
             runtime::PardosaBackend::from(cli.pardosa_backend),
-            runtime::NatsStoreConfig::for_org(org, cli.nats_url.clone())?,
+            runtime::NatsStoreConfig::for_org(org, cli.nats_url.clone())?
+                .with_credentials_path(cli.nats_creds.clone()),
         )
         .await?;
         if let Err(e) = app_state.snapshot_fast_path_init() {
@@ -165,6 +170,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     config.pardosa_backend = runtime::PardosaBackend::from(cli.pardosa_backend);
     config.nats_url = cli.nats_url;
+    config.nats_creds = cli.nats_creds;
     gh_report::app::daemon::run(config).await?;
 
     Ok(())
@@ -278,6 +284,52 @@ mod tests {
         .unwrap();
 
         assert_eq!(cli.nats_url, "nats://127.0.0.1:4223");
+    }
+
+    #[test]
+    fn cli_parses_nats_creds_flag() {
+        let cli = Cli::try_parse_from([
+            "gh-report",
+            "--org",
+            "test-org",
+            "--pardosa-backend",
+            "nats",
+            "--nats-creds",
+            "/var/secrets/nats.creds",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.nats_creds,
+            Some(PathBuf::from("/var/secrets/nats.creds"))
+        );
+    }
+
+    #[test]
+    fn cli_parses_nats_creds_env() {
+        const CHILD_ENV: &str = "GH_REPORT_NATS_CREDS_ENV_CHILD";
+        let path = PathBuf::from("/var/secrets/nats.creds");
+
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("cli_parses_nats_creds_env")
+                .arg("--exact")
+                .env(CHILD_ENV, "1")
+                .env("GH_REPORT_NATS_CREDS", &path)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "child test failed: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let cli = Cli::try_parse_from(["gh-report", "--org", "test-org"]).unwrap();
+
+        assert_eq!(cli.nats_creds, Some(path));
     }
 
     #[test]

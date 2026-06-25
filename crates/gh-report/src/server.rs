@@ -303,6 +303,7 @@ mod tests {
             store_dir: dir.path().to_path_buf(),
             pardosa_backend: PardosaBackend::Pgno,
             nats_url: crate::config::runtime::DEFAULT_NATS_URL.to_string(),
+            nats_creds: None,
             force_unlock: false,
             dashboard_config: DashboardConfig::default(),
         };
@@ -391,6 +392,7 @@ mod tests {
             store_dir: std::path::PathBuf::from("/tmp/ws-e2e-test"),
             pardosa_backend: crate::config::runtime::PardosaBackend::Pgno,
             nats_url: crate::config::runtime::DEFAULT_NATS_URL.to_string(),
+            nats_creds: None,
             force_unlock: false,
             dashboard_config: crate::config::dashboard::DashboardConfig::default(),
         };

@@ -1769,6 +1769,7 @@ mod tests {
             store_dir: std::path::PathBuf::from("/tmp/test-store"),
             pardosa_backend: crate::config::runtime::PardosaBackend::Pgno,
             nats_url: crate::config::runtime::DEFAULT_NATS_URL.to_string(),
+            nats_creds: None,
             force_unlock: false,
             dashboard_config: DashboardConfig::default(),
         }
