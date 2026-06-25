@@ -344,7 +344,7 @@ fn spawn_collection_loop(
                 Err(AppError::Persistence(PersistenceError::LockFailed { ref reason })) => {
                     error!(reason = %reason, "initial collection skipped: lock held");
                 }
-                Err(e) => error!(error = %e, "initial collection failed — will retry"),
+                Err(e) => log_initial_collection_failure(&e),
             }
         }
 
@@ -378,6 +378,11 @@ fn spawn_collection_loop(
             }
         }
     })
+}
+
+fn log_initial_collection_failure(error: &AppError) {
+    log_error_chain("gh_report_initial_collection_failed", error);
+    error!(error = %error, "initial collection failed — will retry");
 }
 
 async fn bind_serving_port_before_next_step<F>(
@@ -595,6 +600,95 @@ fn server_error_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tracing_subscriber::fmt::MakeWriter;
+
+    #[derive(Clone, Default)]
+    struct VecWriter {
+        buf: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl VecWriter {
+        fn snapshot(&self) -> String {
+            String::from_utf8(self.buf.lock().expect("buffer mutex").clone()).expect("utf-8")
+        }
+    }
+
+    impl Write for VecWriter {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.buf
+                .lock()
+                .expect("buffer mutex")
+                .extend_from_slice(data);
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for VecWriter {
+        type Writer = VecWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture_tracing(f: impl FnOnce()) -> String {
+        let writer = VecWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_writer(writer.clone())
+            .with_ansi(false)
+            .with_target(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::callsite::rebuild_interest_cache();
+            f();
+            tracing::callsite::rebuild_interest_cache();
+        });
+        writer.snapshot()
+    }
+
+    fn unused_local_nats_url() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+        drop(listener);
+        format!("nats://127.0.0.1:{port}")
+    }
+
+    fn nats_connect_app_error(source: impl std::error::Error + Send + Sync + 'static) -> AppError {
+        let runtime = pardosa_nats::JetStreamRuntimeError::Connect {
+            source: Box::new(source),
+        };
+        let backend = pardosa::store::BackendError::Connect {
+            op: pardosa::store::BackendOp::Sync,
+            source: Box::new(runtime),
+        };
+        let store = crate::store::StoreError::BackendInfrastructure {
+            op: pardosa::store::BackendOp::Sync,
+            source: Box::new(backend),
+        };
+        AppError::Persistence(PersistenceError::Io(std::io::Error::other(store)))
+    }
+
+    fn captured_error_chain(output: &str) -> String {
+        output
+            .lines()
+            .find_map(|line| {
+                let event = serde_json::from_str::<serde_json::Value>(line).ok()?;
+                event
+                    .get("fields")?
+                    .get("error_chain")?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| {
+                panic!("initial collection failure log must include error_chain field: {output}")
+            })
+    }
 
     #[test]
     fn resolve_port_defaults_to_8080() {
@@ -674,6 +768,34 @@ mod tests {
     #[test]
     fn duration_millis_reports_whole_milliseconds() {
         assert_eq!(duration_millis(Duration::from_millis(1_234)), 1_234);
+    }
+
+    #[tokio::test]
+    async fn initial_collection_failure_logs_full_nats_connect_error_chain() {
+        let url = unused_local_nats_url();
+        let connect = async_nats::connect(&url)
+            .await
+            .expect_err("unused local port must reject async-nats connect");
+        let app_error = nats_connect_app_error(connect);
+
+        let output = capture_tracing(|| log_initial_collection_failure(&app_error));
+        let error_chain = captured_error_chain(&output);
+        let depth = error_chain.matches("\"level\":").count();
+
+        assert!(
+            depth > 1,
+            "initial daemon absorption must preserve a non-flattened chain: {error_chain}"
+        );
+        assert!(
+            error_chain.contains("connect")
+                || error_chain.contains("Connection")
+                || error_chain.contains("refused"),
+            "chain must include the underlying async-nats connect source: {error_chain}"
+        );
+        assert!(
+            !error_chain.contains("BEGIN NATS USER JWT"),
+            "NATS credential bytes must not appear in connect diagnostics: {error_chain}"
+        );
     }
 
     #[tokio::test]
