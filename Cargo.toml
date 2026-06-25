@@ -134,7 +134,7 @@ proc-macro-crate = "3"
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full", "extra-traits"] }
-async-nats = { version = "0.49", default-features = false, features = ["server_2_14", "jetstream", "ring"] }
+async-nats = { version = "0.49", default-features = false, features = ["server_2_14", "jetstream", "ring", "nkeys"] }
 
 # === Async runtime extras ===
 tokio-util = { version = "0.7", default-features = false }

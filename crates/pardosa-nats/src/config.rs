@@ -1,6 +1,7 @@
 use crate::error::JetStreamConfigError;
 use crate::runtime::RuntimeHandle;
 use std::num::NonZeroU16;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub(crate) const DEFAULT_NATS_URL: &str = "nats://localhost:4222";
@@ -46,6 +47,7 @@ pub struct JetStreamConfig {
     replicas: NonZeroU16,
     runtime_handle: RuntimeHandle,
     nats_url: String,
+    credentials_path: Option<PathBuf>,
     operation_timeout: Duration,
     single_writer_fence_enabled: bool,
     stream_description_marker: Option<String>,
@@ -109,6 +111,12 @@ impl JetStreamConfig {
     pub fn nats_url(&self) -> &str {
         &self.nats_url
     }
+    /// Optional NATS credentials file path copied into the `async-nats`
+    /// connect options when present.
+    #[must_use]
+    pub fn credentials_path(&self) -> Option<&Path> {
+        self.credentials_path.as_deref()
+    }
     /// Per-operation timeout applied to `JetStream` connect, publish,
     /// replay, and publish-ack operations. Defaults to
     /// [`DEFAULT_OPERATION_TIMEOUT`] unless overridden by the builder
@@ -143,6 +151,7 @@ pub struct JetStreamConfigBuilder {
     replicas: Option<u16>,
     runtime_handle: Option<RuntimeHandle>,
     nats_url: Option<String>,
+    credentials_path: Option<PathBuf>,
     operation_timeout: Option<Duration>,
     single_writer_fence_enabled: Option<bool>,
     stream_description_marker: Option<String>,
@@ -204,6 +213,12 @@ impl JetStreamConfigBuilder {
     #[must_use]
     pub fn nats_url(mut self, url: impl Into<String>) -> Self {
         self.nats_url = Some(url.into());
+        self
+    }
+    /// Set the NATS credentials file path used for authenticated connects.
+    #[must_use]
+    pub fn credentials_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.credentials_path = Some(path.into());
         self
     }
     /// Override the `JetStream` per-operation timeout. Defaults to
@@ -274,6 +289,9 @@ impl JetStreamConfigBuilder {
             .nats_url
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| DEFAULT_NATS_URL.to_owned());
+        let credentials_path = self
+            .credentials_path
+            .filter(|path| !path.as_os_str().is_empty());
         let operation_timeout = match self.operation_timeout {
             Some(timeout) => validate_operation_timeout(timeout)?,
             None => operation_timeout_from_env()?,
@@ -289,6 +307,7 @@ impl JetStreamConfigBuilder {
             replicas,
             runtime_handle,
             nats_url,
+            credentials_path,
             operation_timeout,
             single_writer_fence_enabled,
             stream_description_marker,
@@ -342,5 +361,26 @@ mod tests {
             .expect("marker-bearing config builds");
 
         assert_eq!(cfg.stream_description_marker(), Some("opaque-marker"));
+    }
+
+    #[test]
+    fn builder_round_trips_credentials_path_locator() {
+        let path = Path::new("/run/secrets/nats.creds");
+        let cfg = minimal_builder()
+            .credentials_path(path)
+            .build()
+            .expect("credential-path config builds");
+
+        assert_eq!(cfg.credentials_path(), Some(path));
+    }
+
+    #[test]
+    fn builder_treats_empty_credentials_path_as_none() {
+        let cfg = minimal_builder()
+            .credentials_path("")
+            .build()
+            .expect("empty credential path config builds");
+
+        assert_eq!(cfg.credentials_path(), None);
     }
 }

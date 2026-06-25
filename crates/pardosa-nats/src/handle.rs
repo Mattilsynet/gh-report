@@ -2,6 +2,7 @@ use crate::config::JetStreamConfig;
 use crate::error::JetStreamRuntimeError;
 use bytes::Bytes;
 use futures_util::StreamExt;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::runtime::Handle;
@@ -65,6 +66,26 @@ struct LiveState {
     js: async_nats::jetstream::Context,
     last_ack_seq: u64,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ConnectDecision {
+    credentials_path: Option<PathBuf>,
+    require_tls: bool,
+}
+
+impl ConnectDecision {
+    fn uses_bare_anonymous_connect(&self) -> bool {
+        self.credentials_path.is_none() && !self.require_tls
+    }
+}
+
+fn connect_decision(url: &str, credentials_path: Option<&Path>) -> ConnectDecision {
+    ConnectDecision {
+        credentials_path: credentials_path.map(Path::to_path_buf),
+        require_tls: url.starts_with("tls://"),
+    }
+}
+
 /// Opaque handle to a JetStream-backed authoritative-storage
 /// substrate (ADR-0022 §D10 sibling crate; §D11 sealed-trait +
 /// in-crate adapter pattern — this crate exports only the handle,
@@ -349,11 +370,8 @@ async fn ensure_state(
         }
     }
     let url = cfg.nats_url().to_owned();
-    let client = async_nats::connect(url)
-        .await
-        .map_err(|e| JetStreamRuntimeError::Connect {
-            source: Box::new(e),
-        })?;
+    let decision = connect_decision(&url, cfg.credentials_path());
+    let client = connect_client(&url, &decision).await?;
     let js = async_nats::jetstream::new(client);
     provision_stream(&js, cfg).await?;
     let mut guard = lock_state(state);
@@ -367,6 +385,38 @@ async fn ensure_state(
         js
     };
     Ok(resolved)
+}
+
+async fn connect_client(
+    url: &str,
+    decision: &ConnectDecision,
+) -> Result<async_nats::Client, JetStreamRuntimeError> {
+    if decision.uses_bare_anonymous_connect() {
+        async_nats::connect(url)
+            .await
+            .map_err(|e| JetStreamRuntimeError::Connect {
+                source: Box::new(e),
+            })
+    } else {
+        let mut options = async_nats::ConnectOptions::new();
+        if let Some(path) = decision.credentials_path.as_deref() {
+            options = options
+                .credentials_file(path)
+                .await
+                .map_err(|e| JetStreamRuntimeError::Connect {
+                    source: Box::new(e),
+                })?;
+        }
+        if decision.require_tls {
+            options = options.require_tls(true);
+        }
+        options
+            .connect(url)
+            .await
+            .map_err(|e| JetStreamRuntimeError::Connect {
+                source: Box::new(e),
+            })
+    }
 }
 async fn provision_stream(
     js: &async_nats::jetstream::Context,
@@ -580,6 +630,45 @@ mod tests {
              (linus review round 1 M1)"
         );
     }
+    #[test]
+    fn connect_decision_tls_url_with_credentials_requires_tls_and_applies_credentials() {
+        let creds = std::path::Path::new("/run/secrets/nats.creds");
+        let decision = connect_decision("tls://connect.nats.mattilsynet.io:4222", Some(creds));
+
+        assert_eq!(decision.credentials_path.as_deref(), Some(creds));
+        assert!(
+            decision.require_tls,
+            "tls:// URL with credentials must require TLS"
+        );
+        assert!(
+            !decision.uses_bare_anonymous_connect(),
+            "credentials path must leave the anonymous connect branch"
+        );
+    }
+
+    #[test]
+    fn connect_decision_nats_url_with_credentials_does_not_force_tls() {
+        let creds = std::path::Path::new("/run/secrets/nats.creds");
+        let decision = connect_decision("nats://127.0.0.1:4222", Some(creds));
+
+        assert_eq!(decision.credentials_path.as_deref(), Some(creds));
+        assert!(
+            !decision.require_tls,
+            "nats:// URL must not force TLS for the local live-NATS harness"
+        );
+    }
+
+    #[test]
+    fn connect_decision_none_credentials_on_nats_url_preserves_anonymous_branch() {
+        let decision = connect_decision("nats://127.0.0.1:4222", None);
+
+        assert_eq!(decision.credentials_path, None);
+        assert!(
+            decision.uses_bare_anonymous_connect(),
+            "None credentials on nats:// must preserve the bare anonymous connect branch"
+        );
+    }
+
     fn minimal_config() -> JetStreamConfig {
         JetStreamConfig::builder()
             .stream_name("PARDOSA_TEST")
