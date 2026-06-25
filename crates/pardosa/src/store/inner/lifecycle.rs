@@ -432,6 +432,25 @@ fn fetch_jetstream_frames(
         .fetch_durable_frames()
         .map_err(|e| backend_error_to_cursor_read("JetStream rehydrate fetch failed", e))
 }
+
+fn fetch_gated_jetstream_frames<T>(
+    adapter: &mut crate::authoritative::jetstream::JetStreamBackendAdapter,
+    expected_marker: &str,
+) -> Result<Vec<JetStreamDurableFrame>, PardosaError>
+where
+    T: GenomeSafe,
+{
+    adapter
+        .set_schema_tag(expected_marker.to_owned())
+        .map_err(io_error_to_cursor_read)?;
+    let frames = fetch_jetstream_frames(adapter)?;
+    let marker = adapter
+        .read_stream_description()
+        .map_err(|e| backend_error_to_cursor_read("JetStream stream marker read failed", e))?;
+    gate_stream_marker::<T>(marker.as_deref(), frames.is_empty())?;
+    Ok(frames)
+}
+
 fn rehydrate_jetstream_frames<T>(
     frames: &[JetStreamDurableFrame],
 ) -> Result<(crate::dragline::Line<T>, usize), PardosaError>
@@ -494,6 +513,31 @@ fn parse_schema_tag(tag: &str) -> Option<u128> {
     u128::from_str_radix(hex, 16).ok()
 }
 
+fn schema_marker_mismatch(expected: u128, found: u128) -> PardosaError {
+    persist_error_to_cursor_read(crate::persist::Error::SchemaHashMismatch { expected, found })
+}
+
+fn gate_stream_marker<T>(marker: Option<&str>, stream_is_empty: bool) -> Result<(), PardosaError>
+where
+    T: GenomeSafe,
+{
+    let expected = Event::<T>::ENVELOPE_HASH;
+    let Some(marker) = marker else {
+        return if stream_is_empty {
+            Ok(())
+        } else {
+            Err(persist_error_to_cursor_read(
+                crate::persist::Error::SchemaMarkerAbsent { expected },
+            ))
+        };
+    };
+    let found = parse_schema_tag(marker).unwrap_or_else(|| mismatch_sentinel(expected));
+    if found == expected {
+        return Ok(());
+    }
+    Err(schema_marker_mismatch(expected, found))
+}
+
 fn gate_replay_schema_tag<T>(tag: Option<&str>) -> Result<(), PardosaError>
 where
     T: GenomeSafe,
@@ -506,9 +550,7 @@ where
     if found == expected {
         return Ok(());
     }
-    Err(persist_error_to_cursor_read(
-        crate::persist::Error::SchemaHashMismatch { expected, found },
-    ))
+    Err(schema_marker_mismatch(expected, found))
 }
 fn event_frames_from_pgno<T>(bytes: &[u8]) -> Result<Vec<Vec<u8>>, PardosaError>
 where
@@ -683,9 +725,9 @@ where
             BackendDispatch::Pgno(p) => Self::create(p.path()),
             BackendDispatch::JetStream(boxed_adapter) => {
                 let mut adapter = *boxed_adapter;
-                let frames = fetch_jetstream_frames(&mut adapter)?;
+                let marker = schema_tag::<T>();
+                let frames = fetch_gated_jetstream_frames::<T>(&mut adapter, &marker)?;
                 let (dragline, synced_events) = rehydrate_jetstream_frames::<T>(&frames)?;
-                adapter.set_schema_tag(schema_tag::<T>());
                 let scratch =
                     tempfile::tempfile().map_err(|e| PardosaError::CursorJournalOpen {
                         source: Box::new(e),
@@ -812,9 +854,9 @@ where
             }
             BackendDispatch::JetStream(boxed_adapter) => {
                 let mut adapter = *boxed_adapter;
-                let frames = fetch_jetstream_frames(&mut adapter)?;
+                let marker = schema_tag::<T>();
+                let frames = fetch_gated_jetstream_frames::<T>(&mut adapter, &marker)?;
                 let (dragline, synced_events) = rehydrate_jetstream_frames::<T>(&frames)?;
-                adapter.set_schema_tag(schema_tag::<T>());
                 let scratch =
                     tempfile::tempfile().map_err(|e| PardosaError::CursorJournalOpen {
                         source: Box::new(e),
@@ -1135,6 +1177,51 @@ mod tests {
                     );
                 }
                 other => panic!("expected Io flattening, got {other:?}"),
+            },
+            other => panic!("expected CursorRead, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gate_stream_marker_allows_present_matching_marker() {
+        let marker = schema_tag::<TaggedPayload>();
+        gate_stream_marker::<TaggedPayload>(Some(&marker), false)
+            .expect("matching stream marker admits populated stream");
+    }
+
+    #[test]
+    fn gate_stream_marker_rejects_present_differing_marker() {
+        let err =
+            gate_stream_marker::<TaggedPayload>(Some("fedcba9876543210fedcba9876543210"), false)
+                .expect_err("foreign stream marker must refuse before rehydrate");
+        match err {
+            PardosaError::CursorRead { source } => match *source {
+                crate::persist::Error::SchemaHashMismatch { expected, found } => {
+                    assert_eq!(expected, Event::<TaggedPayload>::ENVELOPE_HASH);
+                    assert_eq!(found, 0xfedc_ba98_7654_3210_fedc_ba98_7654_3210);
+                }
+                other => panic!("expected SchemaHashMismatch, got {other:?}"),
+            },
+            other => panic!("expected CursorRead, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gate_stream_marker_allows_absent_empty_stream() {
+        gate_stream_marker::<TaggedPayload>(None, true)
+            .expect("markerless empty stream remains admissible");
+    }
+
+    #[test]
+    fn gate_stream_marker_rejects_absent_populated_stream() {
+        let err = gate_stream_marker::<TaggedPayload>(None, false)
+            .expect_err("markerless populated stream must refuse");
+        match err {
+            PardosaError::CursorRead { source } => match *source {
+                crate::persist::Error::SchemaMarkerAbsent { expected } => {
+                    assert_eq!(expected, Event::<TaggedPayload>::ENVELOPE_HASH);
+                }
+                other => panic!("expected SchemaMarkerAbsent, got {other:?}"),
             },
             other => panic!("expected CursorRead, got {other:?}"),
         }

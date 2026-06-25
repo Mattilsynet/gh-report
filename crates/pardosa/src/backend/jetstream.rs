@@ -355,6 +355,12 @@ impl BackendSink for JetStreamBackendAdapter {
     }
 }
 impl JetStreamBackendAdapter {
+    pub(crate) fn read_stream_description(&self) -> Result<Option<String>, BackendError> {
+        self.handle
+            .read_stream_description()
+            .map_err(|e| map_runtime_error(e, BackendOp::Sync))
+    }
+
     pub(crate) fn fetch_durable_frames(
         &mut self,
     ) -> Result<Vec<JetStreamDurableFrame>, BackendError> {

@@ -64,8 +64,9 @@ If neither GitHub App nor `GITHUB_TOKEN` is configured, `gh-report` falls back t
 | Repository inventory and metadata | Repository metadata: **read** |
 | SECURITY.md / CODEOWNERS content checks | Repository contents: **read** |
 | Branch protection / rulesets / security settings | Repository administration: **read** |
-| Secret scanning alerts (repository) | Secret scanning alerts (Repository): **read** |
-| Secret scanning alerts (organization) | Secret scanning alerts (Organization): **read** |
+| Secret scanning alerts (repository **and** organization) | Secret scanning alerts: **read** |
+
+> **Secret scanning alerts is a Repository permission.** GitHub classifies "Secret scanning alerts" as a *repository* permission even though it also gates the org-scoped endpoint `GET /orgs/{org}/secret-scanning/alerts`. Selecting it once (under **Repository permissions** → **All repositories**) grants both the per-repository and organization-level alert reads. There is no separate organization-level toggle for this; do **not** confuse it with "Secret scanning alert dismissal requests", which is a distinct organization permission gating the delegated-dismissal workflow and is **not** used by `gh-report`.
 
 > **Repository access** must be set to **All repositories** for the token to see all org repos. Fine-grained PATs do not expose the `X-OAuth-Scopes` header — the token tier will display as `Unknown` in the report metadata. This is expected.
 

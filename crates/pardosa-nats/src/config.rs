@@ -48,6 +48,7 @@ pub struct JetStreamConfig {
     nats_url: String,
     operation_timeout: Duration,
     single_writer_fence_enabled: bool,
+    stream_description_marker: Option<String>,
 }
 impl JetStreamConfig {
     /// Begin assembling a [`JetStreamConfig`] via the builder.
@@ -123,6 +124,12 @@ impl JetStreamConfig {
     pub const fn single_writer_fence_enabled(&self) -> bool {
         self.single_writer_fence_enabled
     }
+    /// Opaque stream-level marker copied into the `JetStream` stream
+    /// `description` during provisioning when present.
+    #[must_use]
+    pub fn stream_description_marker(&self) -> Option<&str> {
+        self.stream_description_marker.as_deref()
+    }
 }
 /// Incremental builder for [`JetStreamConfig`]. Validation runs
 /// exactly once, in [`Self::build`].
@@ -138,6 +145,7 @@ pub struct JetStreamConfigBuilder {
     nats_url: Option<String>,
     operation_timeout: Option<Duration>,
     single_writer_fence_enabled: Option<bool>,
+    stream_description_marker: Option<String>,
 }
 impl JetStreamConfigBuilder {
     /// Set the `JetStream` stream name (rejected if empty at
@@ -212,6 +220,14 @@ impl JetStreamConfigBuilder {
         self.single_writer_fence_enabled = Some(enabled);
         self
     }
+    /// Set the opaque stream-level marker copied into the `JetStream`
+    /// stream `description` during provisioning. Empty values are
+    /// treated the same as omitting the marker.
+    #[must_use]
+    pub fn stream_description_marker(mut self, marker: impl Into<String>) -> Self {
+        self.stream_description_marker = Some(marker.into());
+        self
+    }
     /// Run validation and assemble the immutable [`JetStreamConfig`].
     ///
     /// # Errors
@@ -263,6 +279,7 @@ impl JetStreamConfigBuilder {
             None => operation_timeout_from_env()?,
         };
         let single_writer_fence_enabled = self.single_writer_fence_enabled.unwrap_or(false);
+        let stream_description_marker = self.stream_description_marker.filter(|s| !s.is_empty());
         Ok(JetStreamConfig {
             stream_name,
             subject,
@@ -274,6 +291,7 @@ impl JetStreamConfigBuilder {
             nats_url,
             operation_timeout,
             single_writer_fence_enabled,
+            stream_description_marker,
         })
     }
 }
@@ -300,5 +318,29 @@ fn operation_timeout_from_env() -> Result<Duration, JetStreamConfigError> {
                 value: value.to_string_lossy().into_owned(),
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn minimal_builder() -> JetStreamConfigBuilder {
+        JetStreamConfig::builder()
+            .stream_name("PARDOSA_TEST")
+            .subject("pardosa.test")
+            .durable_consumer("pardosa-test")
+            .runtime_handle(RuntimeHandle::detached_for_tests())
+            .operation_timeout(Duration::from_secs(1))
+    }
+
+    #[test]
+    fn builder_round_trips_opaque_stream_description_marker() {
+        let cfg = minimal_builder()
+            .stream_description_marker("opaque-marker")
+            .build()
+            .expect("marker-bearing config builds");
+
+        assert_eq!(cfg.stream_description_marker(), Some("opaque-marker"));
     }
 }

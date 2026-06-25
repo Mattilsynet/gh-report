@@ -97,17 +97,11 @@ fn create_with_backend_fresh_write_reopen_and_idempotent_create_preserves_events
         stream_name,
     };
 
-    let open_error =
-        match EventStore::<LedgerEntry>::open_with_backend(jetstream_backend(&tag, &rt, &nats_url))
-        {
-            Ok(_) => panic!("fresh JetStream open_with_backend must remain rehydrate-only"),
-            Err(error) => error.to_string(),
-        };
+    let fresh_open =
+        EventStore::<LedgerEntry>::open_with_backend(jetstream_backend(&tag, &rt, &nats_url));
     assert!(
-        open_error.contains("failed to fill whole buffer")
-            || open_error.contains("unexpected end of file")
-            || open_error.contains("file error"),
-        "fresh open_with_backend error must identify empty rehydrate bytes, got: {open_error}"
+        fresh_open.is_ok(),
+        "fresh open_with_backend must admit an empty markerless JetStream stream under the stream-level gate"
     );
 
     let mut store =

@@ -83,6 +83,8 @@ impl From<PardosaError> for RehydrateInvariant {
 pub enum Error {
     #[error("schema hash mismatch: expected 0x{expected:032X}, found 0x{found:032X}")]
     SchemaHashMismatch { expected: u128, found: u128 },
+    #[error("schema marker absent on populated stream: expected 0x{expected:032X}")]
+    SchemaMarkerAbsent { expected: u128 },
     /// Carries the operation-scoped `RehydrateInvariant` (F2 / ADR-0014):
     /// this variant deliberately does **not** wrap [`PardosaError`], so
     /// `PardosaError::CursorRead → persist::Error::InvariantViolation`
@@ -154,6 +156,7 @@ impl Error {
                 | RehydrateInvariant::PrecursorHashMismatch { .. },
             ) => true,
             Self::SchemaHashMismatch { .. }
+            | Self::SchemaMarkerAbsent { .. }
             | Self::InvariantViolation(_)
             | Self::Decode(_)
             | Self::Io(_)

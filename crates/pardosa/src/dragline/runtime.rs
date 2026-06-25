@@ -1044,6 +1044,10 @@ mod tests {
                 .durable_consumer(format!("p3a-schema-tag-{tag}"))
                 .runtime_handle(RuntimeHandle::from_tokio(rt.handle().clone()))
                 .nats_url(server.url().to_owned())
+                .stream_description_marker(format!(
+                    "{:032x}",
+                    Event::<P3aZeroSeedPayload>::ENVELOPE_HASH
+                ))
                 .build()
                 .expect("config valid")
         }

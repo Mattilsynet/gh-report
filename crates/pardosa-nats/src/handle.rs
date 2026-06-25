@@ -253,6 +253,37 @@ impl JetStreamHandle {
         }
         Ok(records)
     }
+    /// Read the stream `description` currently stored in `JetStream`.
+    ///
+    /// The returned string is opaque substrate metadata. This crate
+    /// does not parse, validate, or compare it.
+    ///
+    /// # Errors
+    ///
+    /// * [`JetStreamRuntimeError::Detached`] — detached test handle.
+    /// * [`JetStreamRuntimeError::Connect`] — connection / stream
+    ///   provisioning failed.
+    /// * [`JetStreamRuntimeError::Replay`] — stream lookup or stream
+    ///   info fetch failed.
+    /// * [`JetStreamRuntimeError::Timeout`] — info fetch not within
+    ///   the configured operation timeout.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the state mutex is poisoned.
+    pub fn read_stream_description(&self) -> Result<Option<String>, JetStreamRuntimeError> {
+        let runtime = self
+            .config
+            .runtime_handle()
+            .as_tokio()
+            .ok_or(JetStreamRuntimeError::Detached)?
+            .clone();
+        let cfg = &self.config;
+        run_op(&runtime, cfg.operation_timeout(), async {
+            let js = ensure_state(&self.state, cfg).await?;
+            read_stream_description_once(&js, cfg.stream_name()).await
+        })
+    }
     fn state_locked(&self) -> MutexGuard<'_, Option<LiveState>> {
         lock_state(&self.state)
     }
@@ -341,6 +372,16 @@ async fn provision_stream(
     js: &async_nats::jetstream::Context,
     cfg: &JetStreamConfig,
 ) -> Result<(), JetStreamRuntimeError> {
+    let stream_cfg = build_stream_config(cfg);
+    js.get_or_create_stream(stream_cfg)
+        .await
+        .map_err(|e| JetStreamRuntimeError::Connect {
+            source: Box::new(e),
+        })?;
+    Ok(())
+}
+
+fn build_stream_config(cfg: &JetStreamConfig) -> async_nats::jetstream::stream::Config {
     use async_nats::jetstream::stream::{
         Config as StreamConfig, DiscardPolicy, RetentionPolicy, StorageType,
     };
@@ -351,22 +392,36 @@ async fn provision_stream(
         crate::Discard::New => DiscardPolicy::New,
         crate::Discard::Old => DiscardPolicy::Old,
     };
-    let stream_cfg = StreamConfig {
+    StreamConfig {
         name: cfg.stream_name().to_string(),
         subjects: vec![cfg.subject().to_string()],
         storage,
         num_replicas: usize::from(cfg.replicas().get()),
         retention: RetentionPolicy::Limits,
         discard,
+        description: cfg.stream_description_marker().map(str::to_owned),
         duplicate_window: Duration::from_mins(2),
         ..Default::default()
-    };
-    js.get_or_create_stream(stream_cfg)
+    }
+}
+
+async fn read_stream_description_once(
+    js: &async_nats::jetstream::Context,
+    stream_name: &str,
+) -> Result<Option<String>, JetStreamRuntimeError> {
+    let stream = js
+        .get_stream(stream_name)
         .await
-        .map_err(|e| JetStreamRuntimeError::Connect {
+        .map_err(|e| JetStreamRuntimeError::Replay {
             source: Box::new(e),
         })?;
-    Ok(())
+    let info = stream
+        .get_info()
+        .await
+        .map_err(|e| JetStreamRuntimeError::Replay {
+            source: Box::new(e),
+        })?;
+    Ok(info.config.description)
 }
 async fn publish_once(
     js: &async_nats::jetstream::Context,
@@ -524,6 +579,51 @@ mod tests {
              JetStream server reclaims the consumer if replay_all is interrupted \
              (linus review round 1 M1)"
         );
+    }
+    fn minimal_config() -> JetStreamConfig {
+        JetStreamConfig::builder()
+            .stream_name("PARDOSA_TEST")
+            .subject("pardosa.test")
+            .durable_consumer("pardosa-test")
+            .runtime_handle(crate::RuntimeHandle::detached_for_tests())
+            .operation_timeout(Duration::from_secs(1))
+            .build()
+            .expect("test config builds")
+    }
+
+    #[test]
+    fn stream_config_carries_opaque_description_marker_when_configured() {
+        let cfg = JetStreamConfig::builder()
+            .stream_name("PARDOSA_TEST")
+            .subject("pardosa.test")
+            .durable_consumer("pardosa-test")
+            .runtime_handle(crate::RuntimeHandle::detached_for_tests())
+            .operation_timeout(Duration::from_secs(1))
+            .stream_description_marker("opaque-marker")
+            .build()
+            .expect("marker-bearing config builds");
+
+        let stream_cfg = build_stream_config(&cfg);
+
+        assert_eq!(stream_cfg.description, Some("opaque-marker".to_owned()));
+    }
+
+    #[test]
+    fn stream_config_leaves_description_unset_without_marker() {
+        let stream_cfg = build_stream_config(&minimal_config());
+
+        assert_eq!(stream_cfg.description, None);
+    }
+
+    #[test]
+    fn detached_handle_read_stream_description_returns_detached() {
+        let handle = JetStreamBackend::open(minimal_config());
+
+        let err = handle
+            .read_stream_description()
+            .expect_err("detached test handle cannot read live stream info");
+
+        assert!(matches!(err, JetStreamRuntimeError::Detached));
     }
     #[test]
     fn wrong_last_sequence_ack_error_maps_to_neutral_variant() {

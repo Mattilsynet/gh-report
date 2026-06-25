@@ -22,7 +22,9 @@
 //!   --exact jetstream_authoritative_store_append_sync_reopen_recovers_events
 //! ```
 mod support_live_nats;
-use pardosa::store::{EventStore, FiberId, GenomeSafe, HasEventSchemaSource, JetStreamBackend};
+use pardosa::store::{
+    Event, EventStore, FiberId, GenomeSafe, HasEventSchemaSource, JetStreamBackend,
+};
 use pardosa_nats::{
     JetStreamBackend as SubstrateJetStreamBackend, JetStreamConfig, JetStreamHandle, RuntimeHandle,
 };
@@ -53,6 +55,7 @@ fn build_live_config(tag: &str, rt: &Runtime, server: &LiveNatsServer) -> JetStr
         .durable_consumer(format!("pardosa-js-recovery-c-{tag}"))
         .runtime_handle(RuntimeHandle::from_tokio(rt.handle().clone()))
         .nats_url(server.url().to_owned())
+        .stream_description_marker(format!("{:032x}", Event::<LedgerEntry>::ENVELOPE_HASH))
         .build()
         .expect("config valid")
 }

@@ -263,8 +263,30 @@ pub(crate) mod jetstream {
                 schema_tag: None,
             }
         }
-        pub(crate) fn set_schema_tag(&mut self, schema_tag: String) {
+        pub(crate) fn set_schema_tag(&mut self, schema_tag: String) -> Result<(), std::io::Error> {
+            if schema_tag.is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "JetStream schema marker must not be empty",
+                ));
+            }
+            let cfg = pardosa_nats::JetStreamConfig::builder()
+                .stream_name(self.handle.config().stream_name().to_owned())
+                .subject(self.handle.config().subject().to_owned())
+                .durable_consumer(self.handle.config().durable_consumer().to_owned())
+                .storage(self.handle.config().storage())
+                .discard(self.handle.config().discard())
+                .replicas(self.handle.config().replicas().get())
+                .runtime_handle(self.handle.config().runtime_handle().clone())
+                .nats_url(self.handle.config().nats_url().to_owned())
+                .operation_timeout(self.handle.config().operation_timeout())
+                .single_writer_fence_enabled(self.handle.config().single_writer_fence_enabled())
+                .stream_description_marker(schema_tag.clone())
+                .build()
+                .map_err(std::io::Error::other)?;
+            self.handle = pardosa_nats::JetStreamBackend::open(cfg);
             self.schema_tag = Some(schema_tag);
+            Ok(())
         }
         /// Borrow the wrapped [`JetStreamHandle`] for in-crate
         /// inspection (config probing in tests; the runtime's
@@ -314,6 +336,20 @@ mod jetstream_adapter_shim_tests {
         let adapter = JetStreamBackendAdapter::new(handle);
         requires_backend_sink(&adapter);
     }
+
+    #[test]
+    fn adapter_schema_tag_sets_stream_description_marker_on_substrate_config() {
+        let handle = JetStreamBackend::open(detached_config("schema-marker"));
+        let mut adapter = JetStreamBackendAdapter::new(handle);
+        adapter
+            .set_schema_tag("0123456789abcdef0123456789abcdef".to_string())
+            .expect("non-empty marker is valid");
+        assert_eq!(
+            adapter.handle().config().stream_description_marker(),
+            Some("0123456789abcdef0123456789abcdef"),
+        );
+    }
+
     #[test]
     fn adapter_constructor_consumes_handle_and_preserves_config_view() {
         let handle = JetStreamBackend::open(detached_config("config-view"));
