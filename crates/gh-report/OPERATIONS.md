@@ -512,7 +512,7 @@ Multi-stage Dockerfile: Rust builder on Debian bookworm, runtime on `gcr.io/dist
 | Log format | JSON (set via `GH_REPORT_LOG_FORMAT=json`) |
 | Signal handling | SIGINT + SIGTERM → graceful shutdown |
 
-#### Container Build (Podman)
+#### Local Container Build (Podman)
 
 Create a Podman machine with sufficient resources for Rust compilation (LTO + single codegen unit requires significant memory):
 
@@ -521,7 +521,7 @@ podman machine init --memory 16384 --cpus 4 --disk-size 60 gh-report-builder
 podman machine start gh-report-builder
 ```
 
-Build the image natively (must match host architecture):
+Build the image natively for local testing (must match host architecture):
 
 ```sh
 podman build -f crates/gh-report/Dockerfile -t gh-report .
@@ -529,7 +529,7 @@ podman build -f crates/gh-report/Dockerfile -t gh-report .
 
 Cache mounts (`--mount=type=cache`) accelerate repeat builds by preserving the Cargo registry and target directory across invocations.
 
-> **Architecture note:** On Apple Silicon (ARM64), this produces a `linux/arm64` image. Deploy to Cloud Run with `--execution-environment gen2` and ARM-based T2A instances for native performance. Cross-compiling to `linux/amd64` via QEMU is **not supported** — Rust's jemalloc allocator crashes under QEMU user-space emulation (`SIGSEGV` in `rustc -vV`). For `linux/amd64` images, use Cloud Build or a native x86_64 CI runner.
+> **Architecture note:** On Apple Silicon (ARM64), this produces a `linux/arm64` image for local validation. The shipped production image is built by CI as `linux/amd64` via Docker Buildx. Cross-compiling to `linux/amd64` via QEMU is **not supported** — Rust's jemalloc allocator crashes under QEMU user-space emulation (`SIGSEGV` in `rustc -vV`). For ad-hoc `linux/amd64` images, use a native x86_64 runner.
 
 #### Verify
 
@@ -554,9 +554,28 @@ podman tag gh-report REGION-docker.pkg.dev/PROJECT/REPO/gh-report:TAG
 podman push REGION-docker.pkg.dev/PROJECT/REPO/gh-report:TAG
 ```
 
-#### Cloud Run Deployment
+#### Production Cloud Run Deployment
 
-The container requires `--org` at runtime. Supply it via Cloud Run args:
+Production Cloud Run is defined in the sibling `gh-report-ops` repository under `cloudrun/ghreport/main.tf`. The service uses the Terraform module `github.com/Mattilsynet/map-tf-cloudrun?ref=v0.19.0`, passes `container_args = ["--org", "Mattilsynet"]`, pins the deployed digest at `europe-north1-docker.pkg.dev/artifacts-352708/stabsec/gh-report@...`, and sets the module argument `ignore_image = true` so image rollout is coordinated outside Terraform.
+
+Image publishing is handled by `.github/workflows/build.yml` on `v*` tag pushes. The workflow authenticates to Google Cloud with `google-github-actions/auth@v3` Workload Identity Federation, builds `linux/amd64` with Docker Buildx, and pushes both `:latest` and `:<tag>` to `europe-north1-docker.pkg.dev/artifacts-352708/<ARTIFACT_REPO_ID>/<repo>`.
+
+The deployed service authenticates to GitHub with `GITHUB_TOKEN` sourced from Secret Manager secret `gh-report-token` key `latest`.
+
+Production NATS wiring is:
+
+| Setting | Production value |
+|---------|------------------|
+| `GH_REPORT_PARDOSA_BACKEND` | `nats` |
+| `GH_REPORT_NATS_URL` | `tls://connect.nats.mattilsynet.io:4222` |
+| `GH_REPORT_NATS_CREDS` | `/etc/nats/creds/user.creds` |
+| Secret volume | Secret Manager `nats-user-gh-report-creds`, key `latest`, mounted at `/etc/nats/creds` with file `user.creds` |
+
+See [NATS (MAP) backend](#nats-map-backend) for the JWT `.creds`, SCP, and SEC-0007 credential-handling explanation.
+
+#### Local / Break-glass Cloud Run Deployment
+
+The container requires `--org` at runtime. For local or break-glass manual deploys, supply it via Cloud Run args and include the production NATS settings above if the service should use the MAP backend:
 
 ```sh
 gcloud run deploy gh-report \
@@ -574,14 +593,14 @@ gcloud run deploy gh-report \
   --no-allow-unauthenticated
 ```
 
-> **ARM64 images:** Add `--execution-environment gen2` and `--cpu-boost` to the deploy command. Cloud Run gen2 supports ARM-based T2A instances. Without gen2, the deployment may fail or fall back to x86 emulation.
+> **ARM64 images:** This applies only to local/break-glass images built on ARM64. The production image from CI is `linux/amd64`.
 
 **Deployment notes:**
 
 - `--min-instances=1` — the daemon must stay running for scheduled re-collection (3-hour interval).
 - `--max-instances=1` — prevents concurrent instances with conflicting file locks.
-- **Secrets:** For GitHub App auth, mount the private key via Cloud Run secret volumes (`GH_APP_PRIVATE_KEY_PATH`) rather than inline env vars. Inline `GH_APP_PRIVATE_KEY` works but secret volumes are preferred for key rotation.
-- **Persistence:** `store/baseline.msgpack` is ephemeral (lost on instance restart). For persistent baselines across restarts, mount a Cloud Storage FUSE volume to `/home/nonroot/store`.
+- **Secrets:** Production uses `GITHUB_TOKEN` from Secret Manager secret `gh-report-token`; the GitHub App variables remain useful for local/break-glass deployments that intentionally use app auth.
+- **Persistence:** Production durability is NATS JetStream plus the in-memory projection rebuilt from the event log. The deployed Terraform has no Cloud Storage FUSE mount, and `baseline.msgpack` is retired from the gh-report boot path.
 - **Shutdown:** Cloud Run sends SIGTERM with a 10-second default grace period (`terminationGracePeriodSeconds`). For large organizations where baseline flush may exceed 10 seconds, increase this value (max 3600s). The daemon handles SIGTERM for graceful server and collection shutdown.
 
 ## Web Server
@@ -601,7 +620,7 @@ The server serves pages from an in-memory cache (no disk I/O on the serving path
 | Path | Description | Source |
 |------|-------------|--------|
 | `/healthz` | Liveness probe — always returns `{"status": "ok"}` | Built-in (infra::server) |
-| `/readyz` | Readiness probe — returns 200 after first successful collection | Built-in (infra::server) |
+| `/readyz` | Readiness probe — returns 200 only when both event stores are backend-reachable and a run completed, cached pages exist, or the projection is non-empty; otherwise 503 with `{"status":"not_ready","reason":"no reports published yet"}` | Built-in (infra::server) |
 | `/api/v1/status` | JSON status (last run time, run count, etc.) | Extra route (gh-report) |
 | `/ws` | WebSocket endpoint for real-time page update notifications | Built-in (infra::server) |
 
