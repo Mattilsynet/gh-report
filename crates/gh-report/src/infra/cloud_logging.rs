@@ -110,6 +110,9 @@ impl Visit for JsonVisitor {
     fn record_str(&mut self, field: &Field, value: &str) {
         if field.name() == "message" {
             self.message = Some(value.to_string());
+        } else if field.name() == "error_chain" {
+            let value = serde_json::from_str(value).unwrap_or_else(|_| serde_json::json!(value));
+            self.fields.insert(field.name().to_string(), value);
         } else {
             self.fields
                 .insert(field.name().to_string(), serde_json::json!(value));
@@ -305,6 +308,30 @@ mod tests {
         assert_eq!(json["status"], 200);
         assert_eq!(json["cached"], true);
         assert_eq!(json["latency"], 1.5);
+    }
+
+    #[test]
+    fn diagnostic_event_fields_appear_as_top_level_keys() {
+        let output = capture_stdout(|| {
+            tracing::info!(
+                nats_url = "tls://connect.nats.mattilsynet.io:4222",
+                creds_path = "/etc/nats/creds/user.creds",
+                creds_exists = true,
+                creds_len = 29_u64,
+                creds_sha256_prefix = "8f9c2d10",
+                error_chain = "[{\"level\":0,\"display\":\"outer\",\"debug\":\"Outer\"}]",
+                "nats connect diagnostics"
+            );
+        });
+
+        let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        assert_eq!(json["nats_url"], "tls://connect.nats.mattilsynet.io:4222");
+        assert_eq!(json["creds_path"], "/etc/nats/creds/user.creds");
+        assert_eq!(json["creds_exists"], true);
+        assert_eq!(json["creds_len"], 29);
+        assert_eq!(json["creds_sha256_prefix"], "8f9c2d10");
+        assert_eq!(json["error_chain"][0]["level"], 0);
+        assert_eq!(json["error_chain"][0]["display"], "outer");
     }
 
     #[test]

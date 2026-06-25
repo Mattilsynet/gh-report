@@ -173,6 +173,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.pardosa_backend = runtime::PardosaBackend::from(cli.pardosa_backend);
     config.nats_url = cli.nats_url;
     config.nats_creds = cli.nats_creds;
+    let nats_creds_path = config
+        .nats_creds
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    tracing::info!(
+        org = %config.org_name,
+        backend = ?config.pardosa_backend,
+        nats_url = %config.nats_url,
+        nats_creds_path = %nats_creds_path,
+        "effective startup config"
+    );
     gh_report::app::daemon::run(config).await?;
 
     Ok(())

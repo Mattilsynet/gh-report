@@ -22,6 +22,8 @@
 //! [`REPO_CACHE_TTL_HOURS`]: crate::config::REPO_CACHE_TTL_HOURS
 
 use std::collections::HashMap;
+use std::error::Error;
+use std::fmt::Write as _;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -35,6 +37,7 @@ use pardosa::store::JetStreamBackend as PardosaJetStreamBackend;
 use pardosa::store::RecoveryOutcome;
 use pardosa_nats::{JetStreamBackend as SubstrateJetStreamBackend, JetStreamConfig, RuntimeHandle};
 use pardosa_schema::{NonEmptyEventString, Timestamp as EventTimestamp};
+use sha2::{Digest, Sha256};
 
 pub use crate::infra::server::state::{CachedPage, PageUpdateEvent};
 
@@ -655,16 +658,122 @@ fn native_store_persistence(error: crate::store::StoreError) -> PersistenceError
         crate::store::StoreError::TornWriteRecovery { source } => {
             PersistenceError::TornWriteRecovery { source }
         }
-        other => PersistenceError::LoadFailed {
-            reason: other.to_string(),
-        },
+        other => {
+            log_error_chain("gh_report_persistence_load_failed", &other);
+            PersistenceError::LoadFailed {
+                reason: other.to_string(),
+            }
+        }
     }
 }
 
 fn conversion_persistence(error: &EventConversionError) -> PersistenceError {
+    log_error_chain("gh_report_event_conversion_failed", error);
     PersistenceError::LoadFailed {
         reason: error.to_string(),
     }
+}
+
+pub(crate) fn emit_nats_connect_diagnostics(nats_url: &str, credentials_path: Option<&Path>) {
+    let creds_path = credentials_path
+        .map(Path::display)
+        .map(|path| path.to_string());
+    let creds_path_display = creds_path.as_deref().unwrap_or("");
+    let creds = credentials_path.map_or(CredsDiagnostic::missing_path(), creds_diagnostic);
+    tracing::info!(
+        nats_url = nats_url,
+        creds_path = creds_path_display,
+        creds_exists = creds.exists,
+        creds_len = creds.len,
+        creds_sha256_prefix = creds.sha256_prefix.as_deref().unwrap_or(""),
+        "nats connect diagnostics"
+    );
+}
+
+struct CredsDiagnostic {
+    exists: bool,
+    len: u64,
+    sha256_prefix: Option<String>,
+}
+
+impl CredsDiagnostic {
+    const fn missing_path() -> Self {
+        Self {
+            exists: false,
+            len: 0,
+            sha256_prefix: None,
+        }
+    }
+}
+
+fn creds_diagnostic(path: &Path) -> CredsDiagnostic {
+    let metadata = path.metadata();
+    let exists = metadata.is_ok();
+    let len = metadata.as_ref().map_or(0, std::fs::Metadata::len);
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let digest = Sha256::digest(&bytes);
+            CredsDiagnostic {
+                exists: true,
+                len: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+                sha256_prefix: Some(hex_prefix_8(&digest)),
+            }
+        }
+        Err(_) => CredsDiagnostic {
+            exists,
+            len,
+            sha256_prefix: None,
+        },
+    }
+}
+
+fn hex_prefix_8(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(8);
+    for byte in bytes.iter().take(4) {
+        out.push(char::from(HEX[usize::from(byte >> 4)]));
+        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    out
+}
+
+pub(crate) fn log_error_chain(event: &'static str, error: &(dyn Error + 'static)) {
+    let error_chain = error_chain_json(error);
+    tracing::error!(
+        diagnostic_event = event,
+        error_chain = error_chain.as_str(),
+        error = %error,
+        "persistence error chain captured before flattening"
+    );
+}
+
+fn error_chain_json(error: &(dyn Error + 'static)) -> String {
+    let mut chain = String::from("[");
+    let mut current = Some(error);
+    let mut level = 0_u64;
+    while let Some(error) = current {
+        if level > 0 {
+            chain.push(',');
+        }
+        let display = json_escape(&error.to_string());
+        let debug = json_escape(&format!("{error:?}"));
+        write!(
+            chain,
+            "{{\"level\":{level},\"display\":\"{display}\",\"debug\":\"{debug}\"}}"
+        )
+        .expect("string write succeeds");
+        current = error.source();
+        level += 1;
+    }
+    chain.push(']');
+    chain
+}
+
+fn json_escape(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(char::escape_default)
+        .collect::<String>()
 }
 
 fn non_empty<const MAX: usize>(
@@ -820,6 +929,9 @@ impl AppState {
     ) -> Result<Arc<Self>, std::io::Error> {
         let handle = tokio::runtime::Handle::current();
         let events_dir = events_dir.to_path_buf();
+        if matches!(backend, crate::config::runtime::PardosaBackend::Nats) {
+            emit_nats_connect_diagnostics(&nats.nats_url, nats.credentials_path.as_deref());
+        }
         let event_store =
             open_event_store_blocking(events_dir.clone(), backend, nats.clone(), handle.clone())
                 .await?;
@@ -1280,6 +1392,9 @@ mod tests {
     use crate::domain::evidence::Evidence;
     use crate::infra::server::state::ServerState;
     use std::io::Write;
+    use std::sync::Arc;
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::layer::{Context, SubscriberExt};
 
     const SYNTHETIC_RECOVERY_RECORDS: u64 = 7;
 
@@ -1334,6 +1449,67 @@ mod tests {
             repositories,
             deleted: vec![],
         }
+    }
+
+    struct CapturedEvents {
+        lines: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CapturedEvents {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = CapturedFields::default();
+            event.record(&mut visitor);
+            self.lines
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(visitor.line);
+        }
+    }
+
+    #[derive(Default)]
+    struct CapturedFields {
+        line: String,
+    }
+
+    impl CapturedFields {
+        fn push(&mut self, field: &Field, value: impl std::fmt::Display) {
+            write!(&mut self.line, "{}={value};", field.name()).expect("string write succeeds");
+        }
+    }
+
+    impl Visit for CapturedFields {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            self.push(field, format_args!("{value:?}"));
+        }
+
+        fn record_str(&mut self, field: &Field, value: &str) {
+            self.push(field, value);
+        }
+
+        fn record_bool(&mut self, field: &Field, value: bool) {
+            self.push(field, value);
+        }
+
+        fn record_u64(&mut self, field: &Field, value: u64) {
+            self.push(field, value);
+        }
+    }
+
+    fn capture_events(f: impl FnOnce()) -> String {
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let layer = CapturedEvents {
+            lines: Arc::clone(&lines),
+        };
+        let subscriber = tracing_subscriber::Registry::default().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::callsite::rebuild_interest_cache();
+            f();
+            tracing::callsite::rebuild_interest_cache();
+        });
+        lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .join("\n")
     }
 
     #[test]
@@ -1714,6 +1890,58 @@ mod tests {
                 PersistenceError::TornWriteRecovery { .. }
             ),
             "torn-write recovery failures must stay typed before Display flattening"
+        );
+    }
+
+    #[test]
+    fn native_store_persistence_logs_full_error_chain_before_flattening() {
+        let err = crate::store::StoreError::BackendInfrastructure {
+            op: pardosa::store::BackendOp::Sync,
+            source: Box::new(pardosa::store::BackendError::Connect {
+                op: pardosa::store::BackendOp::Sync,
+                source: Box::new(std::io::Error::other("nats: authorization violation")),
+            }),
+        };
+
+        let output = capture_events(|| {
+            let persistence = native_store_persistence(err);
+
+            let PersistenceError::LoadFailed { reason } = persistence else {
+                panic!("backend infrastructure failure should flatten to LoadFailed");
+            };
+            assert!(
+                reason.contains("authorization violation"),
+                "flattened reason remains operator-visible: {reason}"
+            );
+        });
+        assert!(
+            output.contains("error_chain"),
+            "diagnostic event must carry an error_chain field: {output}"
+        );
+        assert!(
+            output.contains("nats: authorization violation"),
+            "full diagnostic chain must include innermost source"
+        );
+    }
+
+    #[test]
+    fn nats_connect_diagnostics_log_creds_fingerprint_without_secret_bytes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("user.creds");
+        let secret = "super-secret-material-for-test";
+        std::fs::write(&path, secret).expect("write creds");
+
+        let output = capture_events(|| {
+            emit_nats_connect_diagnostics("tls://connect.nats.mattilsynet.io:4222", Some(&path));
+        });
+
+        assert!(output.contains("nats_url=tls://connect.nats.mattilsynet.io:4222"));
+        assert!(output.contains("creds_exists=true"));
+        assert!(output.contains(&format!("creds_len={};", secret.len())));
+        assert!(output.contains("creds_sha256_prefix="));
+        assert!(
+            !output.contains(secret),
+            "diagnostics must not log credential bytes: {output}"
         );
     }
 

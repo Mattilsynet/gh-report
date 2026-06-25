@@ -43,7 +43,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::app::collect;
-use crate::app::state::AppState;
+use crate::app::state::{AppState, log_error_chain};
 use crate::app::work_queue::JobSource;
 use crate::app::worker_pool::JobOutcome;
 use crate::config;
@@ -146,6 +146,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     let app_state = AppState::with_stores(&events_dir, config.pardosa_backend, nats)
         .await
         .map_err(|source| {
+            log_error_chain("gh_report_open_event_store_failed", &source);
             AppError::Persistence(PersistenceError::LoadFailed {
                 reason: format!("open event store at {}: {source}", events_dir.display()),
             })
