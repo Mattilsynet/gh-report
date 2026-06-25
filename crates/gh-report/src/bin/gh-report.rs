@@ -105,6 +105,8 @@ struct Cli {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    gh_report::infra::tls::install_default_crypto_provider();
+
     let cli = Cli::parse();
 
     if cli.dump_baseline {

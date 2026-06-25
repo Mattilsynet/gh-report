@@ -400,12 +400,11 @@ async fn connect_client(
     } else {
         let mut options = async_nats::ConnectOptions::new();
         if let Some(path) = decision.credentials_path.as_deref() {
-            options = options
-                .credentials_file(path)
-                .await
-                .map_err(|e| JetStreamRuntimeError::Connect {
+            options = options.credentials_file(path).await.map_err(|e| {
+                JetStreamRuntimeError::Connect {
                     source: Box::new(e),
-                })?;
+                }
+            })?;
         }
         if decision.require_tls {
             options = options.require_tls(true);

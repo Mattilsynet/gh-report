@@ -12,3 +12,4 @@ pub mod lock;
 pub mod logging;
 pub mod server;
 pub mod signal;
+pub mod tls;
