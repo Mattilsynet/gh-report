@@ -753,6 +753,17 @@ The `POST /webhook` endpoint accepts GitHub webhook deliveries to drive incremen
 | `GH_REPORT_LOG_FORMAT` | Log output format (`text` or `json`) | `text` |
 | `RUST_LOG` | Tracing filter directive | `info` |
 | `WEBHOOK_SECRET` | HMAC-SHA256 secret for `POST /webhook`. Unset disables the webhook route entirely. Rotation requires daemon restart (read once at startup). | — |
+| `GH_REPORT_PARDOSA_BACKEND` | Authoritative event-store backend (`pgno` or `nats`). | `pgno` |
+| `GH_REPORT_NATS_URL` | NATS broker URL. For MAP, use `tls://connect.nats.mattilsynet.io:4222`. | `nats://localhost:4222` |
+| `GH_REPORT_NATS_CREDS` | Filesystem path to a NATS `.creds` JWT credentials file. Required for MAP NATS auth; mount the Secret Manager value as a file volume and set this to that path. Omit for anonymous/local NATS. | — |
+
+### NATS (MAP) backend
+
+`pgno` remains the default authoritative event-store backend. Switching to NATS requires `GH_REPORT_PARDOSA_BACKEND=nats`, a reachable broker, and valid authentication for the target account.
+
+For MAP, set `GH_REPORT_NATS_URL=tls://connect.nats.mattilsynet.io:4222`. The endpoint requires TLS and JWT `.creds` authentication. The `.creds` file is issued from Synadia Control Plane (`scp.nats.mattilsynet.io`) and delivered through GCP Secret Manager as `nats-user-<username>-creds`; mount that secret as a file volume and set `GH_REPORT_NATS_CREDS` to the mounted path. Never commit a `.creds` file; credentials are delivered via Secret Manager under SEC-0007.
+
+At startup, gh-report creates its per-organisation JetStream stream at runtime: stream `gh-report-<org_token>` and subject `gh-report.<org_token>.events`. The configured NATS user must have JetStream permissions in its account for that stream and subject.
 
 ## See also
 
