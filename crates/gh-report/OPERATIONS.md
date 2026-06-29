@@ -147,7 +147,6 @@ Default level is `info`.
 
 ```
 store/
-├── baseline.msgpack           ← baseline cache for cross-run reuse
 ├── collector.lock             ← file lock preventing overlapping collections
 └── checkpoint-YYYY-MM-DD.ckpt ← binary MessagePack checkpoint (removed after success)
 ```
@@ -166,7 +165,7 @@ There are no per-run directories, staging areas, symlinks, or `evidence.json` fi
 | `style.css` | Shared stylesheet (compiled into binary, served from cache) |
 | `ws.js` | WebSocket auto-reconnect client for live page updates |
 
-**Security invariant:** The web server serves only from the in-memory cache. Only `.html`, `.css`, and `.js` content is stored. Baseline and checkpoint files are never exposed via HTTP.
+**Security invariant:** The web server serves only from the in-memory cache. Only `.html`, `.css`, and `.js` content is stored. Event-log and checkpoint files are never exposed via HTTP.
 
 ## Architecture Dataflow
 
@@ -229,7 +228,6 @@ flowchart TB
 
     subgraph PERSIST["Persist"]
         direction TB
-        baseline[("store/<br/>baseline.msgpack")]
         checkpoint[("store/<br/>checkpoint-*.ckpt")]
     end
 
@@ -241,9 +239,7 @@ flowchart TB
     scc_cache -- "miss → fetch" --> api
     checks -- "periodic save" --> checkpoint
     QUICS_MEMO -- "atomic write + lock" --> PERSIST
-    evidence -- "save after run" --> baseline
     swap -- "atomic read" --> read
-    baseline -. "warm-start" .-> render
     headers --> user
 
     CACHE ~~~ PERSIST
@@ -259,7 +255,7 @@ flowchart TB
     class scc_cache,moka,evidence,render,compress,swap cache
     class read,path,etag,neg,headers serve
     class api,user ext
-    class baseline,checkpoint store
+    class checkpoint store
     class budget,ratelimit,pagination lib
     class atomicfs,runlock,signature lib
 ```
@@ -271,7 +267,7 @@ flowchart TB
 - **Pre-compressed serving.** HTML, CSS, and JS pages are compressed with zstd (level 19) at cache-population time. `CachedPage` stores the raw body alongside the compressed variant. The server selects zstd → identity based on `Accept-Encoding`, with zero runtime re-compression.
 - **Atomic publish.** A single `ArcSwap::store()` call replaces all pages instantly — no filesystem staging, no directory swaps, no reader-visible intermediate state. The serving path performs zero disk I/O.
 - **ETag / 304.** Each `CachedPage` carries a weak `ETag` (SHA-256 truncated to 16 bytes). `If-None-Match` requests receive a 304 with no body transfer.
-- **Warm-start.** If `store/baseline.msgpack` exists from a prior run, the daemon renders and publishes a cache from it before the first API collection completes, giving sub-second startup for page requests.
+- **Warm-start.** On daemon startup, the event log is folded into the in-memory projection. If that projection already contains repository evidence, the daemon renders and publishes pages from the projection snapshot before the first API collection completes.
 - **Partial publish on budget pause.** When the API call budget is exhausted mid-run, a background task builds interim evidence with pending-repo markers and publishes a partial cache.
 - **Checkpoint format** is binary MessagePack with a `CKPT` magic header.
 
@@ -337,37 +333,38 @@ The set of controls and the per-status mapping are part of the schema contract: 
 | Artifact | Retention | Notes |
 |----------|-----------|-------|
 | In-memory pages | Current run only | Atomically replaced on each collection via `ArcSwap` |
-| `store/baseline.msgpack` | Persistent | Overwritten after each successful run; size limit 200 MB |
+| NATS JetStream event log | Persistent | Production durability; replay rebuilds the projection |
+| In-memory projection | Process lifetime | Rebuilt from the event log; drives reuse and warm-start rendering |
 | `store/checkpoint-*` | Transient | Removed after successful publication |
 
-No disk-based retention policies, pruning, or run directories exist. The baseline file is the only persistent artifact written by `gh-report` during normal operation.
+No disk-based baseline retention policies, pruning, or run directories exist. Production persistence is NATS JetStream; the projection is rebuilt from the event log.
 
 ## Baseline
 
-The baseline mechanism reduces API calls across runs by reusing evidence for repositories that have not changed.
+The baseline mechanism reduces API calls by reusing evidence for repositories that have not changed. Baseline is now a projection concept, not an on-disk cache file; the former `baseline.msgpack` file is retired.
 
-**Location:** `store/baseline.msgpack`
+**Location:** In-memory projection rebuilt from the event log.
 
-**How it works:** After each successful collection run, a baseline file is saved containing per-repository evidence keyed by inventory key. On subsequent runs, if a repository's `updated_at` timestamp matches the baseline entry, the previous evidence is reused without re-evaluating the repository via the GitHub API.
+**How it works:** The daemon folds the event log into an in-memory projection containing per-repository evidence keyed by inventory key. During collection, if a repository's `updated_at` timestamp matches the projection entry, `should_reuse` keeps the previous evidence without re-evaluating the repository via the GitHub API.
 
 **Staleness note:** The `updated_at` timestamp reflects pushes and some settings changes, but not all security-relevant changes. For example, branch protection rule modifications may not alter `updated_at`, which could lead to stale baseline reuse for that check. The staleness window between inventory fetch and evaluation is documented in the `inventory_fetched_at` field of the report metadata.
 
-**How to reset:** Delete `store/baseline.msgpack` to force a full re-evaluation on the next run, or bump the schema version (which invalidates the baseline automatically on load).
+**How to reset:** Start from an empty event stream or remove the reusable evidence from the authoritative store. A process restart alone folds the full event log and rebuilds the same projection.
 
-**Schema version bumps:** When `EVIDENCE_SCHEMA_VERSION` changes between releases, the baseline and any in-flight checkpoint are automatically discarded on the next run. This triggers a full cold-start re-collection. For large organizations this may take hours and consumes more API quota than a normal incremental run. The warm-start cache will be empty until the first full collection completes.
+**Schema version bumps:** `EVIDENCE_SCHEMA_VERSION` is stamped on evidence for observability. Replaying the event log does not discard the projection because the schema string changed.
 
-**Size limit:** 200 MB. Baseline files exceeding this limit are discarded with a warning.
+**Size limit:** None for a baseline file; there is no on-disk baseline snapshot.
 
 ## Schema Versions
 
-`gh-report` stamps two schema version strings on its output. They are independent: each governs a distinct payload, and only `EVIDENCE_SCHEMA_VERSION` participates in baseline/checkpoint invalidation.
+`gh-report` stamps two schema version strings on its output. They are independent: each governs a distinct payload and is emitted for downstream operators and debugging. Event-log replay folds all stored events; the daemon does not discard projection state because a stamped evidence schema version changed.
 
 ### Current versions
 
 | Constant | Current value | Stamped on | Validated against on load? |
 |----------|---------------|-----------|----------------------------|
 | `INVENTORY_SCHEMA_VERSION` | `1.0` | `InventoryPayload` (per-run inventory snapshot) | No — informational metadata for downstream consumers; never read back by the daemon. |
-| `EVIDENCE_SCHEMA_VERSION` | `15.0` | `Evidence`, `RepositoryEvidence`, `Checkpoint` | Yes — baseline and in-flight checkpoint are discarded on mismatch. |
+| `EVIDENCE_SCHEMA_VERSION` | `15.0` | `Evidence`, `RepositoryEvidence`, `Checkpoint` | No — stamped for observability; projection replay does not discard state on mismatch. |
 
 Both constants live in `crates/gh-report/src/config/mod.rs`.
 
@@ -379,9 +376,9 @@ Both constants live in `crates/gh-report/src/config/mod.rs`.
 
 - Adding, removing, or renaming a field on `Evidence`, `RepositoryEvidence`, or any nested check struct.
 - Changing the meaning or value domain of an existing enum (e.g. CODEOWNERS conformance semantics).
-- Changing how a check is computed in a way that makes prior baseline values incomparable to new ones.
+- Changing how a check is computed in a way that makes prior projection evidence incomparable to new output.
 
-Each bump triggers full baseline + checkpoint discard on next run (see [Baseline](#baseline)). For large organisations this is a non-trivial cost — hours of API quota — so bumps are deliberate, batched, and documented in the relevant ADR / changelog entry.
+Each bump is a contract signal for operators and downstream readers. It does not delete projection state; the event log is replayed in full and new collections replace reusable evidence as repositories are evaluated. Bumps remain deliberate, batched, and documented in the relevant ADR / changelog entry.
 
 ### Version history
 
@@ -389,11 +386,11 @@ Version history is maintained forward-only from this point. Prior versions exist
 
 | Version | Date introduced | Notes |
 |---------|-----------------|-------|
-| `EVIDENCE_SCHEMA_VERSION = 14.0` | (initial) | Baseline at the time this section was written. |
+| `EVIDENCE_SCHEMA_VERSION = 14.0` | (initial) | Evidence schema at the time this section was written. |
 | `EVIDENCE_SCHEMA_VERSION = 15.0` | 2026-05-05 | Added `CodeownersResult.truncation: Option<CodeownersTruncationReason>` and `CodeownersCounts.truncated: u32`. Surfaces previously-silent CODEOWNERS parse skips (encoding mismatch, oversized base64, decode/UTF-8 failure) so operators can detect data loss without scanning per-repo evidence. |
 | `INVENTORY_SCHEMA_VERSION = 1.0` | (current) | Initial published version. |
 
-When bumping, append a row with the new version, the date, and a one-line note describing what shape change drove the bump. The version of `EVIDENCE_SCHEMA_VERSION` is also surfaced in the report metadata so a baseline file's version is observable via `gh-report --dump-baseline`.
+When bumping, append a row with the new version, the date, and a one-line note describing what shape change drove the bump. The version of `EVIDENCE_SCHEMA_VERSION` is also surfaced in the report metadata so the projected baseline's version is observable via `gh-report --dump-baseline --org <org>`.
 
 ### Event log
 
@@ -472,7 +469,7 @@ spec:
 
 `/healthz` returns 200 immediately (liveness). `/readyz` returns 200 only after the first successful collection completes.
 
-For **first-ever deployments** (no `baseline.msgpack`), the initial collection may take minutes to hours depending on organization size. During this time `/readyz` returns 503, which can cause Kubernetes to kill the pod before it becomes ready. Use a `startupProbe` to give the pod time to complete its first collection:
+For **first-ever deployments** (empty projection), the initial collection may take minutes to hours depending on organization size. During this time `/readyz` returns 503, which can cause Kubernetes to kill the pod before it becomes ready. Use a `startupProbe` to give the pod time to complete its first collection:
 
 ```yaml
 startupProbe:
@@ -493,7 +490,7 @@ readinessProbe:
   periodSeconds: 5
 ```
 
-**Warm-start** deployments (existing `baseline.msgpack`) render and publish a cache from the baseline within seconds, so `/readyz` passes quickly without needing a long startup grace period.
+**Warm-start** deployments (non-empty projection) render and publish a cache from projected evidence within seconds, so `/readyz` passes quickly without needing a long startup grace period.
 
 ### Container / Cloud Run
 
@@ -601,7 +598,7 @@ gcloud run deploy gh-report \
 - `--max-instances=1` — prevents concurrent instances with conflicting file locks.
 - **Secrets:** Production uses `GITHUB_TOKEN` from Secret Manager secret `gh-report-token`; the GitHub App variables remain useful for local/break-glass deployments that intentionally use app auth.
 - **Persistence:** Production durability is NATS JetStream plus the in-memory projection rebuilt from the event log. The deployed Terraform has no Cloud Storage FUSE mount, and `baseline.msgpack` is retired from the gh-report boot path.
-- **Shutdown:** Cloud Run sends SIGTERM with a 10-second default grace period (`terminationGracePeriodSeconds`). For large organizations where baseline flush may exceed 10 seconds, increase this value (max 3600s). The daemon handles SIGTERM for graceful server and collection shutdown.
+- **Shutdown:** Cloud Run sends SIGTERM with a 10-second default grace period (`terminationGracePeriodSeconds`). For large organizations where collection shutdown may exceed 10 seconds, increase this value (max 3600s). The daemon handles SIGTERM for graceful server and collection shutdown.
 
 ## Web Server
 
@@ -664,11 +661,11 @@ Client → server messages are reserved for future use and currently ignored.
 Dump the current baseline as JSON to stdout without starting the daemon:
 
 ```sh
-gh-report --dump-baseline
-gh-report --dump-baseline --store-dir /data/gh
+gh-report --org MyOrg --dump-baseline
+gh-report --org MyOrg --dump-baseline --store-dir /data/gh/events/MyOrg
 ```
 
-This reads `store/baseline.msgpack` (or the path specified by `--store-dir`), deserialises it, and prints the full evidence as JSON. Useful for debugging, auditing baseline content, and verifying schema versions. The `--org` flag is not required for this mode.
+This replays the event log for `--org`, rebuilds the projection, and prints the projection-derived baseline as JSON. Useful for debugging, auditing reusable evidence, and verifying schema versions. The `--org` flag is required; `--store-dir` points at the event store directory for that organization when overriding the default.
 
 ## Build
 
