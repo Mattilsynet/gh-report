@@ -739,12 +739,120 @@ fn hex_prefix_8(bytes: &[u8]) -> String {
 
 pub(crate) fn log_error_chain(event: &'static str, error: &(dyn Error + 'static)) {
     let error_chain = error_chain_json(error);
+    let error_display = redact_nats_credentials(&error.to_string());
+    let class = classify_nats_failure(error);
+    let nats_failure_class = class.as_str();
+    let nats_failure_remediation = nats_failure_remediation(class);
     tracing::error!(
         diagnostic_event = event,
+        nats_failure_class = nats_failure_class,
+        nats_failure_remediation = nats_failure_remediation,
         error_chain = error_chain.as_str(),
-        error = %error,
+        error = error_display.as_str(),
         "persistence error chain captured before flattening"
     );
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NatsFailureClass {
+    AuthzViolation,
+    CredsStaleInvalid,
+    TlsConnection,
+    ConnectionRefused,
+    SecretPath,
+    Unknown,
+}
+
+impl NatsFailureClass {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::AuthzViolation => "authz_violation",
+            Self::CredsStaleInvalid => "creds_stale_invalid",
+            Self::TlsConnection => "tls_connection",
+            Self::ConnectionRefused => "connection_refused",
+            Self::SecretPath => "secret_path",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+fn nats_failure_remediation(class: NatsFailureClass) -> &'static str {
+    match class {
+        NatsFailureClass::AuthzViolation => {
+            "check the NATS account permissions for the configured subject"
+        }
+        NatsFailureClass::CredsStaleInvalid => {
+            "rotate the NATS credentials secret and restart the service"
+        }
+        NatsFailureClass::TlsConnection => "check NATS TLS endpoint and trust configuration",
+        NatsFailureClass::ConnectionRefused => {
+            "check NATS endpoint reachability and service status"
+        }
+        NatsFailureClass::SecretPath => "check the configured NATS credentials secret mount path",
+        NatsFailureClass::Unknown => "inspect the preserved error_chain and NATS service logs",
+    }
+}
+
+fn classify_nats_failure(error: &(dyn Error + 'static)) -> NatsFailureClass {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        let class = classify_nats_failure_display(&error.to_string());
+        if class != NatsFailureClass::Unknown {
+            return class;
+        }
+        if let Some(io) = error.downcast_ref::<std::io::Error>()
+            && let Some(inner) = io.get_ref()
+        {
+            let class = classify_nats_failure(inner);
+            if class != NatsFailureClass::Unknown {
+                return class;
+            }
+        }
+        current = error.source();
+    }
+    NatsFailureClass::Unknown
+}
+
+fn classify_nats_failure_display(display: &str) -> NatsFailureClass {
+    let lower = display.to_ascii_lowercase();
+    if lower.contains("authorization violation")
+        || lower.contains("permissions violation")
+        || lower.contains("permission violation")
+        || lower.contains("not authorized")
+    {
+        return NatsFailureClass::AuthzViolation;
+    }
+    if lower.contains("invalid credentials")
+        || lower.contains("stale credentials")
+        || lower.contains("expired") && lower.contains("credential")
+        || lower.contains("jwt") && (lower.contains("expired") || lower.contains("invalid"))
+    {
+        return NatsFailureClass::CredsStaleInvalid;
+    }
+    if lower.contains("no such file")
+        || lower.contains("not found") && lower.contains("credential")
+        || lower.contains("credentials file")
+        || lower.contains("secret") && lower.contains("path")
+    {
+        return NatsFailureClass::SecretPath;
+    }
+    if lower.contains("tls")
+        || lower.contains("certificate")
+        || lower.contains("cert") && lower.contains("invalid")
+        || lower.contains("handshake")
+    {
+        return NatsFailureClass::TlsConnection;
+    }
+    if lower.contains("connection refused")
+        || lower.contains("connection reset")
+        || lower.contains("connection aborted")
+        || lower.contains("operation timed out")
+        || lower.contains("timed out") && lower.contains("connect")
+    {
+        return NatsFailureClass::ConnectionRefused;
+    }
+    NatsFailureClass::Unknown
 }
 
 fn error_chain_json(error: &(dyn Error + 'static)) -> String {
@@ -755,8 +863,8 @@ fn error_chain_json(error: &(dyn Error + 'static)) -> String {
         if level > 0 {
             chain.push(',');
         }
-        let display = json_escape(&error.to_string());
-        let debug = json_escape(&format!("{error:?}"));
+        let display = json_escape(&redact_nats_credentials(&error.to_string()));
+        let debug = json_escape(&redact_nats_credentials(&format!("{error:?}")));
         write!(
             chain,
             "{{\"level\":{level},\"display\":\"{display}\",\"debug\":\"{debug}\"}}"
@@ -767,6 +875,64 @@ fn error_chain_json(error: &(dyn Error + 'static)) -> String {
     }
     chain.push(']');
     chain
+}
+
+fn redact_nats_credentials(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some((begin, begin_fence)) = find_pem_begin(rest) {
+        output.push_str(&rest[..begin]);
+        output.push_str("[redacted nats credential block]");
+        let after_begin = &rest[begin + begin_fence.fence_len..];
+        if let Some(end) = find_pem_end(after_begin, begin_fence.label) {
+            rest = &after_begin[end..];
+        } else {
+            rest = "";
+        }
+    }
+    output.push_str(rest);
+    output
+}
+
+#[derive(Clone, Copy)]
+struct PemBeginFence<'a> {
+    label: &'a str,
+    fence_len: usize,
+}
+
+fn find_pem_begin(value: &str) -> Option<(usize, PemBeginFence<'_>)> {
+    ["-----BEGIN ", "------BEGIN "]
+        .into_iter()
+        .filter_map(|prefix| {
+            let begin = value.find(prefix)?;
+            let after_prefix = &value[begin + prefix.len()..];
+            let label_end = after_prefix.find('-')?;
+            let label = &after_prefix[..label_end];
+            let trailing = &after_prefix[label_end..];
+            let trailing_len = pem_fence_dash_len(trailing)?;
+            let fence_len = prefix.len() + label.len() + trailing_len;
+            Some((begin, PemBeginFence { label, fence_len }))
+        })
+        .min_by_key(|(begin, _)| *begin)
+}
+
+fn find_pem_end(value: &str, label: &str) -> Option<usize> {
+    let five_dash = format!("-----END {label}-----");
+    let six_dash = format!("------END {label}------");
+    [five_dash.as_str(), six_dash.as_str()]
+        .into_iter()
+        .filter_map(|fence| value.find(fence).map(|start| start + fence.len()))
+        .min()
+}
+
+fn pem_fence_dash_len(value: &str) -> Option<usize> {
+    if value.starts_with("------") {
+        Some(6)
+    } else if value.starts_with("-----") {
+        Some(5)
+    } else {
+        None
+    }
 }
 
 fn json_escape(value: &str) -> String {
@@ -1922,6 +2088,96 @@ mod tests {
             output.contains("nats: authorization violation"),
             "full diagnostic chain must include innermost source"
         );
+        assert!(output.contains("nats_failure_class=authz_violation"));
+        assert!(output.contains(
+            "nats_failure_remediation=check the NATS account permissions for the configured subject"
+        ));
+    }
+
+    fn assert_nats_failure_class(message: &'static str, expected: &'static str) {
+        let err = std::io::Error::other(message);
+
+        assert_eq!(classify_nats_failure(&err).as_str(), expected);
+    }
+
+    #[test]
+    fn nats_failure_classifies_authz_violation() {
+        assert_nats_failure_class("nats: authorization violation", "authz_violation");
+    }
+
+    #[test]
+    fn nats_failure_classifies_creds_stale_invalid() {
+        assert_nats_failure_class(
+            "nats: invalid credentials jwt expired",
+            "creds_stale_invalid",
+        );
+    }
+
+    #[test]
+    fn nats_failure_classifies_tls_connection() {
+        assert_nats_failure_class(
+            "tls handshake failed: invalid certificate",
+            "tls_connection",
+        );
+    }
+
+    #[test]
+    fn nats_failure_classifies_connection_refused() {
+        assert_nats_failure_class(
+            "connect error: Connection refused (os error 61)",
+            "connection_refused",
+        );
+    }
+
+    #[test]
+    fn nats_failure_classifies_secret_path() {
+        assert_nats_failure_class(
+            "credentials file /var/secrets/nats.creds: No such file or directory",
+            "secret_path",
+        );
+    }
+
+    #[test]
+    fn nats_failure_classifies_unknown() {
+        assert_nats_failure_class("backend reported an unmapped startup error", "unknown");
+    }
+
+    #[test]
+    fn native_store_persistence_logs_nats_failure_fields_without_secret_bytes() {
+        let first_secret = "super-secret-material-for-test";
+        let second_secret = "second-super-secret-material-for-test";
+        let message = format!(
+            "nats: invalid credentials\n-----BEGIN NATS USER JWT-----\n{first_secret}\n------END NATS USER JWT------\n-----BEGIN USER NKEY SEED-----\n{second_secret}\n-----END USER NKEY SEED-----"
+        );
+        let err = std::io::Error::other(message);
+
+        let output = capture_events(|| {
+            log_error_chain("gh_report_persistence_load_failed", &err);
+        });
+
+        assert!(output.contains("nats_failure_class=creds_stale_invalid"));
+        assert!(output.contains(
+            "nats_failure_remediation=rotate the NATS credentials secret and restart the service"
+        ));
+        assert!(output.contains("error_chain"));
+        assert!(output.contains("[redacted nats credential block]"));
+        assert!(
+            !output.contains(first_secret),
+            "NATS startup diagnostics must not log credential bytes: {output}"
+        );
+        assert!(
+            !output.contains(second_secret),
+            "NATS startup diagnostics must not log credential bytes: {output}"
+        );
+    }
+
+    #[test]
+    fn redact_nats_credentials_truncates_unclosed_pem_block() {
+        let output = redact_nats_credentials(
+            "prefix\n-----BEGIN USER NKEY SEED-----\nsecret\nvisible text after missing fence",
+        );
+
+        assert_eq!(output, "prefix\n[redacted nats credential block]");
     }
 
     #[test]
