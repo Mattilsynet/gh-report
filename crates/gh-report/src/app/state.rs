@@ -757,6 +757,7 @@ pub(crate) fn log_error_chain(event: &'static str, error: &(dyn Error + 'static)
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NatsFailureClass {
     AuthzViolation,
+    JetStreamProvisioningDenied,
     CredsStaleInvalid,
     TlsConnection,
     ConnectionRefused,
@@ -768,6 +769,7 @@ impl NatsFailureClass {
     const fn as_str(self) -> &'static str {
         match self {
             Self::AuthzViolation => "authz_violation",
+            Self::JetStreamProvisioningDenied => "jetstream_provisioning_denied",
             Self::CredsStaleInvalid => "creds_stale_invalid",
             Self::TlsConnection => "tls_connection",
             Self::ConnectionRefused => "connection_refused",
@@ -781,6 +783,9 @@ fn nats_failure_remediation(class: NatsFailureClass) -> &'static str {
     match class {
         NatsFailureClass::AuthzViolation => {
             "check the NATS account permissions for the configured subject"
+        }
+        NatsFailureClass::JetStreamProvisioningDenied => {
+            "enable JetStream for the NATS account, grant stream and subject create permissions, and verify stream configuration"
         }
         NatsFailureClass::CredsStaleInvalid => {
             "rotate the NATS credentials secret and restart the service"
@@ -797,6 +802,10 @@ fn nats_failure_remediation(class: NatsFailureClass) -> &'static str {
 fn classify_nats_failure(error: &(dyn Error + 'static)) -> NatsFailureClass {
     let mut current = Some(error);
     while let Some(error) = current {
+        let class = classify_nats_failure_typed(error);
+        if class != NatsFailureClass::Unknown {
+            return class;
+        }
         let class = classify_nats_failure_display(&error.to_string());
         if class != NatsFailureClass::Unknown {
             return class;
@@ -812,6 +821,33 @@ fn classify_nats_failure(error: &(dyn Error + 'static)) -> NatsFailureClass {
         current = error.source();
     }
     NatsFailureClass::Unknown
+}
+
+fn classify_nats_failure_typed(error: &(dyn Error + 'static)) -> NatsFailureClass {
+    if let Some(create_stream_error) =
+        error.downcast_ref::<async_nats::jetstream::context::CreateStreamError>()
+    {
+        return classify_create_stream_error(create_stream_error);
+    }
+    NatsFailureClass::Unknown
+}
+
+fn classify_create_stream_error(
+    error: &async_nats::jetstream::context::CreateStreamError,
+) -> NatsFailureClass {
+    match error.kind() {
+        async_nats::jetstream::context::CreateStreamErrorKind::JetStream(error) => {
+            classify_jetstream_error_code(error.error_code().0)
+        }
+        _ => NatsFailureClass::Unknown,
+    }
+}
+
+const fn classify_jetstream_error_code(error_code: u64) -> NatsFailureClass {
+    match error_code {
+        10023 | 10035 | 10039 => NatsFailureClass::JetStreamProvisioningDenied,
+        _ => NatsFailureClass::Unknown,
+    }
 }
 
 fn classify_nats_failure_display(display: &str) -> NatsFailureClass {
@@ -2098,6 +2134,45 @@ mod tests {
         let err = std::io::Error::other(message);
 
         assert_eq!(classify_nats_failure(&err).as_str(), expected);
+    }
+
+    fn jetstream_create_stream_error(
+        error_code: u64,
+    ) -> async_nats::jetstream::context::CreateStreamError {
+        let error = serde_json::from_value::<async_nats::jetstream::Error>(serde_json::json!({
+            "code": 503,
+            "err_code": error_code,
+            "description": "unstable server description"
+        }))
+        .expect("synthetic JetStream error should deserialize");
+
+        error.into()
+    }
+
+    #[test]
+    fn nats_failure_classifies_jetstream_provisioning_denied_by_error_code() {
+        let err = crate::store::StoreError::BackendInfrastructure {
+            op: pardosa::store::BackendOp::Sync,
+            source: Box::new(pardosa::store::BackendError::Connect {
+                op: pardosa::store::BackendOp::Sync,
+                source: Box::new(jetstream_create_stream_error(10039)),
+            }),
+        };
+        let class = classify_nats_failure(&err);
+
+        assert_eq!(class.as_str(), "jetstream_provisioning_denied");
+        assert_eq!(
+            nats_failure_remediation(class),
+            "enable JetStream for the NATS account, grant stream and subject create permissions, and verify stream configuration"
+        );
+
+        let output = capture_events(|| {
+            log_error_chain("gh_report_persistence_load_failed", &err);
+        });
+        assert!(output.contains("nats_failure_class=jetstream_provisioning_denied"));
+        assert!(output.contains(
+            "nats_failure_remediation=enable JetStream for the NATS account, grant stream and subject create permissions, and verify stream configuration"
+        ));
     }
 
     #[test]
