@@ -398,24 +398,33 @@ async fn connect_client(
                 source: Box::new(e),
             })
     } else {
-        let mut options = async_nats::ConnectOptions::new();
-        if let Some(path) = decision.credentials_path.as_deref() {
-            options = options.credentials_file(path).await.map_err(|e| {
-                JetStreamRuntimeError::Connect {
-                    source: Box::new(e),
-                }
-            })?;
-        }
-        if decision.require_tls {
-            options = options.require_tls(true);
-        }
+        let options = build_connect_options(decision).await?;
         options
             .connect(url)
             .await
             .map_err(|e| JetStreamRuntimeError::Connect {
                 source: Box::new(e),
-            })
+        })
     }
+}
+
+async fn build_connect_options(
+    decision: &ConnectDecision,
+) -> Result<async_nats::ConnectOptions, JetStreamRuntimeError> {
+    let mut options = async_nats::ConnectOptions::new();
+    if let Some(path) = decision.credentials_path.as_deref() {
+        options =
+            options
+                .credentials_file(path)
+                .await
+                .map_err(|e| JetStreamRuntimeError::Connect {
+                    source: Box::new(e),
+                })?;
+    }
+    if decision.require_tls {
+        options = options.require_tls(true);
+    }
+    Ok(options)
 }
 async fn provision_stream(
     js: &async_nats::jetstream::Context,
