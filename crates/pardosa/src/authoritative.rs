@@ -270,7 +270,7 @@ pub(crate) mod jetstream {
                     "JetStream schema marker must not be empty",
                 ));
             }
-            let cfg = pardosa_nats::JetStreamConfig::builder()
+            let mut builder = pardosa_nats::JetStreamConfig::builder()
                 .stream_name(self.handle.config().stream_name().to_owned())
                 .subject(self.handle.config().subject().to_owned())
                 .durable_consumer(self.handle.config().durable_consumer().to_owned())
@@ -281,9 +281,11 @@ pub(crate) mod jetstream {
                 .nats_url(self.handle.config().nats_url().to_owned())
                 .operation_timeout(self.handle.config().operation_timeout())
                 .single_writer_fence_enabled(self.handle.config().single_writer_fence_enabled())
-                .stream_description_marker(schema_tag.clone())
-                .build()
-                .map_err(std::io::Error::other)?;
+                .stream_description_marker(schema_tag.clone());
+            if let Some(path) = self.handle.config().credentials_path() {
+                builder = builder.credentials_path(path.to_path_buf());
+            }
+            let cfg = builder.build().map_err(std::io::Error::other)?;
             self.handle = pardosa_nats::JetStreamBackend::open(cfg);
             self.schema_tag = Some(schema_tag);
             Ok(())
@@ -322,6 +324,16 @@ mod jetstream_adapter_shim_tests {
             .build()
             .expect("offline config is valid")
     }
+    fn detached_config_with_creds(tag: &str, creds: &str) -> JetStreamConfig {
+        JetStreamConfig::builder()
+            .stream_name(format!("shim-{tag}"))
+            .subject(format!("shim.{tag}"))
+            .durable_consumer(format!("shim-c-{tag}"))
+            .runtime_handle(RuntimeHandle::detached_for_tests())
+            .credentials_path(creds)
+            .build()
+            .expect("offline config is valid")
+    }
     #[test]
     fn adapter_satisfies_authoritative_backend_marker() {
         fn requires_authoritative_backend<B: AuthoritativeBackend>(_: &B) {}
@@ -347,6 +359,22 @@ mod jetstream_adapter_shim_tests {
         assert_eq!(
             adapter.handle().config().stream_description_marker(),
             Some("0123456789abcdef0123456789abcdef"),
+        );
+    }
+
+    #[test]
+    fn adapter_schema_tag_preserves_credentials_path_on_substrate_config() {
+        let handle = JetStreamBackend::open(detached_config_with_creds(
+            "schema-marker-creds",
+            "/some/test.creds",
+        ));
+        let mut adapter = JetStreamBackendAdapter::new(handle);
+        adapter
+            .set_schema_tag("0123456789abcdef0123456789abcdef".to_string())
+            .expect("non-empty marker is valid");
+        assert_eq!(
+            adapter.handle().config().credentials_path(),
+            Some(std::path::Path::new("/some/test.creds")),
         );
     }
 
