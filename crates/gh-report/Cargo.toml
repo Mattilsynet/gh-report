@@ -26,6 +26,8 @@ workspace = true
 cherry-pit-wq = { version = "0.2.0", path = "../cherry-pit-wq" }
 # cherry-pit-storage — M5 B3 swap target for PersistenceError / RunLock / build_snapshot_signature re-exports (CHE-0053:R3 flat surface)
 cherry-pit-storage = { version = "0.1.0", path = "../cherry-pit-storage" }
+cherry-pit-gateway = { workspace = true }
+cherry-pit-app = { workspace = true }
 
 # cherry-pit-core — correlation context threaded through cherry-pit-wq jobs.
 cherry-pit-core = { workspace = true }

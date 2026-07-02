@@ -42,6 +42,10 @@ pub use crate::infra::server::state::{CachedPage, PageUpdateEvent};
 
 pub type EventStoreImpl = crate::store::NativeStore;
 pub type OrgEventStoreImpl = crate::store::NativeOrgStore;
+pub(crate) type SchedulerEventStoreImpl =
+    cherry_pit_gateway::MsgpackFileStore<cherry_pit_core::SchedulerEvent>;
+pub(crate) type SweepTimeoutEventStoreImpl =
+    cherry_pit_gateway::MsgpackFileStore<crate::event::SweepTimeoutEvent>;
 
 pub use crate::app::evidence_service::EvidenceState;
 pub use crate::app::github_infra::GithubState;
@@ -118,6 +122,9 @@ pub struct AppState {
 
     /// Durable native pardosa org event store.
     pub org_event_store: Arc<OrgEventStoreImpl>,
+
+    pub(crate) scheduler_event_store: Arc<SchedulerEventStoreImpl>,
+    pub(crate) sweep_timeout_event_store: Arc<SweepTimeoutEventStoreImpl>,
 
     /// Materialised projection state rebuilt from [`Self::event_store`].
     pub(crate) projection_state: Arc<Mutex<crate::projection::EvidenceProjection>>,
@@ -497,6 +504,14 @@ fn open_org_event_store(
     }
 }
 
+fn scheduler_event_store(events_dir: &Path) -> SchedulerEventStoreImpl {
+    SchedulerEventStoreImpl::new(events_dir.join("sweep-timeout-schedules"))
+}
+
+fn sweep_timeout_event_store(events_dir: &Path) -> SweepTimeoutEventStoreImpl {
+    SweepTimeoutEventStoreImpl::new(events_dir.join("sweep-timeouts"))
+}
+
 fn open_or_create_jetstream(
     nats: crate::config::runtime::NatsStoreConfig,
     handle: tokio::runtime::Handle,
@@ -778,6 +793,18 @@ async fn noop_org_event_store() -> Arc<OrgEventStoreImpl> {
 }
 
 #[cfg(test)]
+fn noop_scheduler_event_store() -> Arc<SchedulerEventStoreImpl> {
+    let dir = tempfile::tempdir().expect("test tempdir");
+    Arc::new(scheduler_event_store(dir.keep().as_path()))
+}
+
+#[cfg(test)]
+fn noop_sweep_timeout_event_store() -> Arc<SweepTimeoutEventStoreImpl> {
+    let dir = tempfile::tempdir().expect("test tempdir");
+    Arc::new(sweep_timeout_event_store(dir.keep().as_path()))
+}
+
+#[cfg(test)]
 impl AppState {
     /// Create a new `AppState` (for daemon mode).
     ///
@@ -798,6 +825,8 @@ impl AppState {
     pub async fn new() -> Arc<Self> {
         let event_store = noop_event_store().await;
         let org_event_store = noop_org_event_store().await;
+        let scheduler_event_store = noop_scheduler_event_store();
+        let sweep_timeout_event_store = noop_sweep_timeout_event_store();
         let projection_state =
             Arc::new(Mutex::new(crate::projection::EvidenceProjection::default()));
         Arc::new(Self {
@@ -811,6 +840,8 @@ impl AppState {
             worker_pool_cancel: WorkerShutdownToken::new(),
             event_store,
             org_event_store,
+            scheduler_event_store,
+            sweep_timeout_event_store,
             projection_state,
             webhook: WebhookState::from_environment(),
             github: GithubState::new(),
@@ -852,9 +883,12 @@ impl AppState {
             open_event_store_blocking(events_dir.clone(), backend, nats.clone(), handle.clone())
                 .await?;
         let org_event_store =
-            open_org_event_store_blocking(events_dir, backend, nats.org_events(), handle).await?;
+            open_org_event_store_blocking(events_dir.clone(), backend, nats.org_events(), handle)
+                .await?;
         let event_store = Arc::new(event_store);
         let org_event_store = Arc::new(org_event_store);
+        let scheduler_event_store = Arc::new(scheduler_event_store(&events_dir));
+        let sweep_timeout_event_store = Arc::new(sweep_timeout_event_store(&events_dir));
         let last_recovery = org_event_store
             .last_recovery()
             .map(|recovery| LastRecoveryStatus::from_outcome("orgs", recovery))
@@ -878,6 +912,8 @@ impl AppState {
             worker_pool_cancel: WorkerShutdownToken::new(),
             event_store,
             org_event_store,
+            scheduler_event_store,
+            sweep_timeout_event_store,
             projection_state,
             webhook: WebhookState::from_environment(),
             github: GithubState::new(),
@@ -1103,6 +1139,8 @@ impl AppStateBuilder {
         let webhook = WebhookState::with_secret(self.webhook_secret);
         let event_store = noop_event_store().await;
         let org_event_store = noop_org_event_store().await;
+        let scheduler_event_store = noop_scheduler_event_store();
+        let sweep_timeout_event_store = noop_sweep_timeout_event_store();
         let projection_state =
             Arc::new(Mutex::new(crate::projection::EvidenceProjection::default()));
 
@@ -1117,6 +1155,8 @@ impl AppStateBuilder {
             worker_pool_cancel: WorkerShutdownToken::new(),
             event_store,
             org_event_store,
+            scheduler_event_store,
+            sweep_timeout_event_store,
             projection_state,
             webhook,
             github,

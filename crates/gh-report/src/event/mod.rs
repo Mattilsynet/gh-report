@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 
+use cherry_pit_core::{DomainEvent as CherryDomainEvent, ScheduledDomainEvent};
 use pardosa::store::HasEventSchemaSource;
 use pardosa_schema::{EventString, EventVec, GenomeSafe, NonEmptyEventString, Timestamp, Validate};
+use serde::{Deserialize, Serialize};
 
 pub mod convert;
 
@@ -30,6 +32,7 @@ pub mod limits {
     pub const MAX_RUN_ID: usize = 256;
     pub const MAX_TOKEN_SCOPES: usize = 8192;
     pub const MAX_TIMESTAMP_TEXT: usize = 128;
+    pub const MAX_SWEEP_TIMEOUT_ERROR: usize = 256;
     pub const MAX_UNAVAILABLE_CAPABILITIES: usize = 32;
     pub const MAX_ORG_ALERT_REPOS: usize = 1_000_000;
     pub const MAX_ALERT_BUCKET: usize = 128;
@@ -41,9 +44,123 @@ use limits::{
     MAX_CODEOWNERS_ENTRIES, MAX_CODEOWNERS_OWNER, MAX_CODEOWNERS_OWNERS, MAX_CODEOWNERS_PATTERN,
     MAX_DESCRIPTION, MAX_DOMAIN_KEY, MAX_GITHUB_ID, MAX_LANGUAGE, MAX_LICENSE, MAX_LOGIN,
     MAX_NODE_ID, MAX_ORG_ALERT_REPOS, MAX_PATH, MAX_PERSON_NAME, MAX_REASON, MAX_REPO_NAME,
-    MAX_RUN_ID, MAX_SCHEMA_VERSION, MAX_TIMESTAMP_TEXT, MAX_TOKEN_SCOPES, MAX_TOPIC, MAX_TOPICS,
-    MAX_UNAVAILABLE_CAPABILITIES, MAX_URL,
+    MAX_RUN_ID, MAX_SCHEMA_VERSION, MAX_SWEEP_TIMEOUT_ERROR, MAX_TIMESTAMP_TEXT, MAX_TOKEN_SCOPES,
+    MAX_TOPIC, MAX_TOPICS, MAX_UNAVAILABLE_CAPABILITIES, MAX_URL,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+#[repr(u8)]
+pub(crate) enum SweepTimeoutEvent {
+    TargetOpened {
+        event_id: uuid::Uuid,
+    } = 0,
+    TimeoutFired {
+        event_id: uuid::Uuid,
+        run_id: EventString<MAX_RUN_ID>,
+        error: EventString<MAX_SWEEP_TIMEOUT_ERROR>,
+        elapsed_ms: u64,
+    } = 1,
+}
+
+impl SweepTimeoutEvent {
+    pub(crate) fn try_timeout_fired(
+        event_id: uuid::Uuid,
+        run_id: String,
+        error: &str,
+        elapsed_ms: u64,
+    ) -> Result<Self, pardosa_schema::DomainError> {
+        Ok(Self::TimeoutFired {
+            event_id,
+            run_id: EventString::try_from(run_id)?,
+            error: EventString::try_from(error.to_string())?,
+            elapsed_ms,
+        })
+    }
+
+    #[must_use]
+    pub(crate) fn target_opened(event_id: uuid::Uuid) -> Self {
+        Self::TargetOpened { event_id }
+    }
+
+    #[must_use]
+    fn event_type(&self) -> &'static str {
+        match self {
+            Self::TargetOpened { .. } => "gh-report.sweep_timeout_target_opened",
+            Self::TimeoutFired { .. } => "gh-report.sweep_timeout_fired",
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+enum SweepTimeoutEventWire {
+    TargetOpened {
+        event_id: uuid::Uuid,
+    },
+    TimeoutFired {
+        event_id: uuid::Uuid,
+        run_id: String,
+        error: String,
+        elapsed_ms: u64,
+    },
+}
+
+impl Serialize for SweepTimeoutEvent {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let wire = match self {
+            Self::TargetOpened { event_id } => SweepTimeoutEventWire::TargetOpened {
+                event_id: *event_id,
+            },
+            Self::TimeoutFired {
+                event_id,
+                run_id,
+                error,
+                elapsed_ms,
+            } => SweepTimeoutEventWire::TimeoutFired {
+                event_id: *event_id,
+                run_id: run_id.as_str().to_string(),
+                error: error.as_str().to_string(),
+                elapsed_ms: *elapsed_ms,
+            },
+        };
+        wire.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SweepTimeoutEvent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = SweepTimeoutEventWire::deserialize(deserializer)?;
+        match wire {
+            SweepTimeoutEventWire::TargetOpened { event_id } => Ok(Self::TargetOpened { event_id }),
+            SweepTimeoutEventWire::TimeoutFired {
+                event_id,
+                run_id,
+                error,
+                elapsed_ms,
+            } => Self::try_timeout_fired(event_id, run_id, &error, elapsed_ms)
+                .map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+impl CherryDomainEvent for SweepTimeoutEvent {
+    fn event_type(&self) -> &'static str {
+        Self::event_type(self)
+    }
+}
+
+impl ScheduledDomainEvent for SweepTimeoutEvent {
+    fn scheduled_event_id(&self) -> uuid::Uuid {
+        match self {
+            Self::TargetOpened { event_id } | Self::TimeoutFired { event_id, .. } => *event_id,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
 pub struct RepositoryEvidence {
@@ -704,6 +821,22 @@ mod tests {
         assert_ne!(
             first, 19_710_905_809_486_475_925_592_730_934_028_496_282_u128,
             "current schema hash must differ from the prior P4b value"
+        );
+    }
+
+    #[test]
+    fn sweep_timeout_event_schema_identity_is_stable() {
+        assert_eq!(
+            <SweepTimeoutEvent as GenomeSafe>::SCHEMA_HASH,
+            301_696_112_480_366_676_711_246_767_551_761_140_277_u128
+        );
+        assert_ne!(
+            <SweepTimeoutEvent as GenomeSafe>::SCHEMA_HASH,
+            <DomainEvent as GenomeSafe>::SCHEMA_HASH
+        );
+        assert_eq!(
+            SweepTimeoutEvent::target_opened(uuid::Uuid::from_u128(1)).event_type(),
+            "gh-report.sweep_timeout_target_opened"
         );
     }
 

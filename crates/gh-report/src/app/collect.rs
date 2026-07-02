@@ -25,10 +25,16 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
+use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use cherry_pit_core::CorrelationContext;
+use cherry_pit_app::{DurableScheduler, InProcessEventBus, SchedulePayloadDecoder};
+use cherry_pit_core::{
+    AggregateId, CorrelationContext, EventScheduler, EventStore, ScheduleArmed, ScheduleCancelled,
+    ScheduleFired, ScheduleId,
+};
+use jiff::SignedDuration;
 use tracing::{debug, error, info, warn};
 
 use crate::aggregate::metrics;
@@ -47,6 +53,7 @@ use crate::domain::metrics::OrgAlertSummary;
 use crate::domain::repository::Repository;
 use crate::domain::run::RunMetadata;
 use crate::error::{AppError, GitHubApiError, PersistenceError};
+use crate::event::SweepTimeoutEvent;
 use crate::github::auth::{AuthMetadata, CapabilitySet, GitHubAppConfig, GitHubCredential};
 use crate::github::client::GitHubClient;
 use crate::infra::{baseline, checkpoint, lock};
@@ -273,6 +280,8 @@ async fn run_collection_inner(
     corr_ctx: &CorrelationContext,
     state: &Arc<AppState>,
 ) -> Result<CollectionOutcome, AppError> {
+    recover_due_sweep_timeouts(state.as_ref()).await?;
+
     let setup = prepare_collection(config, run, state).await?;
 
     state.ensure_worker_pool().await;
@@ -430,6 +439,175 @@ impl<'a> SweepCtx<'a> {
     fn run_mut(&mut self) -> &mut RunMetadata {
         &mut *self.run
     }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct SweepTimeoutPayload {
+    run_id: String,
+    error: String,
+    elapsed_ms: u64,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum SweepTimeoutDecodeError {
+    #[error("decode sweep timeout payload failed: {0}")]
+    Decode(#[from] rmp_serde::decode::Error),
+    #[error("invalid sweep timeout payload field: {0}")]
+    InvalidField(#[from] pardosa_schema::DomainError),
+}
+
+#[derive(Clone)]
+struct SweepTimeoutDecoder;
+
+impl SchedulePayloadDecoder<SweepTimeoutEvent> for SweepTimeoutDecoder {
+    type Error = SweepTimeoutDecodeError;
+
+    fn decode(&self, fired: &ScheduleFired) -> Result<SweepTimeoutEvent, Self::Error> {
+        let payload: SweepTimeoutPayload = rmp_serde::from_slice(fired.payload())?;
+        Ok(SweepTimeoutEvent::try_timeout_fired(
+            fired.caller_event_id(),
+            payload.run_id,
+            &payload.error,
+            payload.elapsed_ms,
+        )?)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ArmedSweepTimeout {
+    schedule_id: ScheduleId,
+    fire_at: jiff::Timestamp,
+}
+
+fn sweep_timeout_target_aggregate() -> AggregateId {
+    AggregateId::new(NonZeroU64::MIN)
+}
+
+fn sweep_timeout_persistence(error: impl std::fmt::Display) -> AppError {
+    AppError::Persistence(PersistenceError::LoadFailed {
+        reason: error.to_string(),
+    })
+}
+
+async fn ensure_sweep_timeout_target(
+    state: &AppState,
+    context: CorrelationContext,
+) -> Result<AggregateId, AppError> {
+    let target = sweep_timeout_target_aggregate();
+    let history = state
+        .sweep_timeout_event_store
+        .load(target)
+        .await
+        .map_err(sweep_timeout_persistence)?;
+    if history.is_empty() {
+        let (created, _) = state
+            .sweep_timeout_event_store
+            .create(
+                vec![SweepTimeoutEvent::target_opened(uuid::Uuid::now_v7())],
+                context,
+            )
+            .await
+            .map_err(sweep_timeout_persistence)?;
+        if created != target {
+            return Err(sweep_timeout_persistence(format!(
+                "sweep timeout target aggregate must be {target}, got {created}"
+            )));
+        }
+    }
+    Ok(target)
+}
+
+async fn arm_sweep_timeout(
+    sweep: &SweepCtx<'_>,
+    error: &str,
+) -> Result<ArmedSweepTimeout, AppError> {
+    let timeout_secs = i64::try_from(config::SWEEP_TIMEOUT_SECS)
+        .expect("sweep timeout seconds fits signed duration");
+    let elapsed_ms = config::SWEEP_TIMEOUT_SECS.saturating_mul(1_000);
+    let fire_at = jiff::Timestamp::now() + SignedDuration::from_secs(timeout_secs);
+    let target = ensure_sweep_timeout_target(sweep.state.as_ref(), sweep.corr_ctx.clone()).await?;
+    let payload = SweepTimeoutPayload {
+        run_id: sweep.run().run_id.clone(),
+        error: error.to_string(),
+        elapsed_ms,
+    };
+    let encoded = rmp_serde::to_vec(&payload).map_err(sweep_timeout_persistence)?;
+    let schedule_id = ScheduleId::from_uuid(uuid::Uuid::now_v7());
+    let event_id = uuid::Uuid::now_v7();
+    let event = ScheduleArmed::new(
+        schedule_id,
+        fire_at,
+        target,
+        event_id,
+        "gh-report.sweep_timeout_fired",
+        encoded,
+        sweep.corr_ctx.clone(),
+    );
+    let bus = InProcessEventBus::<SweepTimeoutEvent>::new();
+    let scheduler = DurableScheduler::<_, _, _, _, SweepTimeoutEvent>::new(
+        sweep.state.scheduler_event_store.as_ref(),
+        sweep.state.sweep_timeout_event_store.as_ref(),
+        &bus,
+        SweepTimeoutDecoder,
+    );
+    EventScheduler::arm(&scheduler, event)
+        .await
+        .map_err(sweep_timeout_persistence)?;
+    Ok(ArmedSweepTimeout {
+        schedule_id,
+        fire_at,
+    })
+}
+
+async fn cancel_sweep_timeout(
+    sweep: &SweepCtx<'_>,
+    armed: ArmedSweepTimeout,
+) -> Result<(), AppError> {
+    let bus = InProcessEventBus::<SweepTimeoutEvent>::new();
+    let scheduler = DurableScheduler::<_, _, _, _, SweepTimeoutEvent>::new(
+        sweep.state.scheduler_event_store.as_ref(),
+        sweep.state.sweep_timeout_event_store.as_ref(),
+        &bus,
+        SweepTimeoutDecoder,
+    );
+    EventScheduler::cancel(
+        &scheduler,
+        ScheduleCancelled::new(armed.schedule_id),
+        sweep.corr_ctx.clone(),
+    )
+    .await
+    .map_err(sweep_timeout_persistence)
+}
+
+async fn fire_due_sweep_timeout(
+    sweep: &SweepCtx<'_>,
+    armed: ArmedSweepTimeout,
+) -> Result<(), AppError> {
+    let bus = InProcessEventBus::<SweepTimeoutEvent>::new();
+    let scheduler = DurableScheduler::<_, _, _, _, SweepTimeoutEvent>::new(
+        sweep.state.scheduler_event_store.as_ref(),
+        sweep.state.sweep_timeout_event_store.as_ref(),
+        &bus,
+        SweepTimeoutDecoder,
+    );
+    let _report = EventScheduler::recover_due(&scheduler, armed.fire_at)
+        .await
+        .map_err(sweep_timeout_persistence)?;
+    Ok(())
+}
+
+pub(crate) async fn recover_due_sweep_timeouts(state: &AppState) -> Result<(), AppError> {
+    let bus = InProcessEventBus::<SweepTimeoutEvent>::new();
+    let scheduler = DurableScheduler::<_, _, _, _, SweepTimeoutEvent>::new(
+        state.scheduler_event_store.as_ref(),
+        state.sweep_timeout_event_store.as_ref(),
+        &bus,
+        SweepTimeoutDecoder,
+    );
+    let _report = EventScheduler::recover_due(&scheduler, jiff::Timestamp::now())
+        .await
+        .map_err(sweep_timeout_persistence)?;
+    Ok(())
 }
 
 /// Current phase of the sweep saga state machine.
@@ -672,23 +850,28 @@ impl SweepSaga {
             state: sweep.state,
         });
 
-        let timeout_duration = std::time::Duration::from_secs(config::SWEEP_TIMEOUT_SECS);
+        let timeout_error = format!("sweep timed out after {}s", config::SWEEP_TIMEOUT_SECS);
+        let armed_timeout = arm_sweep_timeout(sweep, &timeout_error).await?;
 
-        match tokio::time::timeout(timeout_duration, batch_future).await {
-            Ok(Ok(true)) => {
+        tokio::select! {
+            result = batch_future => match result {
+            Ok(true) => {
+                cancel_sweep_timeout(sweep, armed_timeout).await?;
                 self.phase = SweepPhase::BatchDrained;
 
                 let total = inventory.active_repos.len() as u64;
                 Self::emit_progress(sweep.run(), total, total);
             }
-            Ok(Ok(false)) => {
+            Ok(false) => {
+                cancel_sweep_timeout(sweep, armed_timeout).await?;
                 let error_msg = "all jobs rejected by work queue".to_string();
                 self.phase = SweepPhase::Failed {
                     error: error_msg.clone(),
                 };
                 Self::publish_sweep_failed(sweep.run(), &error_msg, self.elapsed_ms());
             }
-            Ok(Err(e)) => {
+            Err(e) => {
+                cancel_sweep_timeout(sweep, armed_timeout).await?;
                 let error_msg = e.to_string();
                 self.phase = SweepPhase::Failed {
                     error: error_msg.clone(),
@@ -696,17 +879,18 @@ impl SweepSaga {
                 Self::publish_sweep_failed(sweep.run(), &error_msg, self.elapsed_ms());
                 return Err(e);
             }
-            Err(_elapsed) => {
-                let error_msg = format!("sweep timed out after {}s", config::SWEEP_TIMEOUT_SECS);
+            },
+            () = tokio::time::sleep_until(tokio::time::Instant::now() + std::time::Duration::from_secs(config::SWEEP_TIMEOUT_SECS)) => {
                 warn!(
                     timeout_secs = config::SWEEP_TIMEOUT_SECS,
                     elapsed_ms = self.elapsed_ms(),
                     "sweep batch timed out"
                 );
+                fire_due_sweep_timeout(sweep, armed_timeout).await?;
                 self.phase = SweepPhase::Failed {
-                    error: error_msg.clone(),
+                    error: timeout_error.clone(),
                 };
-                Self::publish_sweep_failed(sweep.run(), &error_msg, self.elapsed_ms());
+                Self::publish_sweep_failed(sweep.run(), &timeout_error, self.elapsed_ms());
             }
         }
 
@@ -2847,6 +3031,66 @@ mod tests {
         );
 
         state.work_queue.close();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn saga_timeout_persists_auditable_scheduled_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta();
+        let state = AppState::with_stores(
+            dir.path(),
+            crate::config::runtime::PardosaBackend::Pgno,
+            crate::config::runtime::NatsStoreConfig::for_org("TestOrg", "nats://localhost:4222")
+                .expect("valid test nats config"),
+        )
+        .await
+        .expect("create test state with stores");
+        let ctx = make_test_collection_context();
+
+        let evaluator: Arc<PanickingEvaluator> = Arc::new(PanickingEvaluator);
+
+        let (pool, delivery) = start_test_worker_pool(&state, evaluator, 1);
+
+        let mut saga = make_test_saga(&config, &run);
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo("panic-repo")],
+            complete: true,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
+        saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(saga.phase(), SweepPhase::Failed { .. }),
+            "expected Failed phase after scheduled sweep timeout, got {:?}",
+            saga.phase()
+        );
+        assert!(
+            config.store_dir.join("sweep-timeouts").exists(),
+            "scheduled sweep timeout must persist an auditable domain event under store_dir/sweep-timeouts"
+        );
+        state.work_queue.close();
+        pool.abort();
+        delivery.abort();
+        let _pool_result = pool.await;
+        let _delivery_result = delivery.await;
+        drop(state);
+
+        let restarted = AppState::with_stores(
+            dir.path(),
+            crate::config::runtime::PardosaBackend::Pgno,
+            crate::config::runtime::NatsStoreConfig::for_org("TestOrg", "nats://localhost:4222")
+                .expect("valid test nats config"),
+        )
+        .await
+        .expect("reopen test state with stores");
+        recover_due_sweep_timeouts(restarted.as_ref())
+            .await
+            .expect("recover stored sweep timeout");
     }
 
     /// Test 7: `max_workers=0` is clamped to `MIN_WORKERS` by `RuntimeConfig`.
