@@ -24,13 +24,14 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::future::Future;
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
 use arc_swap::ArcSwap;
-use cherry_pit_core::ReadPort;
+use cherry_pit_core::{AggregateId, EventEnvelope, Projection, ReadPort};
 use jiff::Timestamp;
 use pardosa::store::JetStreamBackend as PardosaJetStreamBackend;
 use pardosa::store::RecoveryOutcome;
@@ -42,6 +43,7 @@ pub use crate::infra::server::state::{CachedPage, PageUpdateEvent};
 
 pub type EventStoreImpl = crate::store::NativeStore;
 pub type OrgEventStoreImpl = crate::store::NativeOrgStore;
+pub(crate) type ProjectionState<P> = Arc<Mutex<P>>;
 pub(crate) type SchedulerEventStoreImpl =
     cherry_pit_gateway::MsgpackFileStore<cherry_pit_core::SchedulerEvent>;
 pub(crate) type SweepTimeoutEventStoreImpl =
@@ -127,7 +129,7 @@ pub struct AppState {
     pub(crate) sweep_timeout_event_store: Arc<SweepTimeoutEventStoreImpl>,
 
     /// Materialised projection state rebuilt from [`Self::event_store`].
-    pub(crate) projection_state: Arc<Mutex<crate::projection::EvidenceProjection>>,
+    pub(crate) projection_state: ProjectionState<crate::projection::EvidenceProjection>,
 
     /// Webhook ingestion concerns (secret, replay, debounce).
     webhook: WebhookState,
@@ -346,9 +348,7 @@ impl AppState {
     pub(crate) fn lock_projection(
         &self,
     ) -> std::sync::MutexGuard<'_, crate::projection::EvidenceProjection> {
-        self.projection_state
-            .lock()
-            .expect("projection_state mutex poisoned")
+        lock_projection_state(&self.projection_state)
     }
 
     /// Number of repositories materialised in `projection_state`.
@@ -358,14 +358,15 @@ impl AppState {
     /// no `MutexGuard` escapes (D-CD-3). Panics on poisoned mutex
     /// to match [`Self::lock_projection`].
     pub(crate) fn projection_len(&self) -> usize {
-        let projection = self.lock_projection();
-        match crate::projection::EvidenceProjectionReadPort::resolve(
-            &projection,
-            crate::projection::EvidenceProjectionQuery::Len,
-        ) {
-            crate::projection::EvidenceProjectionResponse::Len(len) => len,
-            _ => 0,
-        }
+        resolve_projection(&self.projection_state, |projection| {
+            match crate::projection::EvidenceProjectionReadPort::resolve(
+                projection,
+                crate::projection::EvidenceProjectionQuery::Len,
+            ) {
+                crate::projection::EvidenceProjectionResponse::Len(len) => len,
+                _ => 0,
+            }
+        })
     }
 
     /// Look up evidence for `key` in `projection_state`, returning an
@@ -378,14 +379,15 @@ impl AppState {
         &self,
         key: &str,
     ) -> Option<crate::domain::evidence::RepositoryEvidence> {
-        let projection = self.lock_projection();
-        match crate::projection::EvidenceProjectionReadPort::resolve(
-            &projection,
-            crate::projection::EvidenceProjectionQuery::ByKey(key.to_string()),
-        ) {
-            crate::projection::EvidenceProjectionResponse::One(evidence) => *evidence,
-            _ => None,
-        }
+        resolve_projection(&self.projection_state, |projection| {
+            match crate::projection::EvidenceProjectionReadPort::resolve(
+                projection,
+                crate::projection::EvidenceProjectionQuery::ByKey(key.to_string()),
+            ) {
+                crate::projection::EvidenceProjectionResponse::One(evidence) => *evidence,
+                _ => None,
+            }
+        })
     }
 
     /// True when `key` is materialised in `projection_state`.
@@ -394,14 +396,15 @@ impl AppState {
     /// `self.projection_get(key).is_some()` but avoids the clone.
     /// Guard does not escape (D-CD-3); panics on poisoned mutex.
     pub(crate) fn projection_contains(&self, key: &str) -> bool {
-        let projection = self.lock_projection();
-        match crate::projection::EvidenceProjectionReadPort::resolve(
-            &projection,
-            crate::projection::EvidenceProjectionQuery::Contains(key.to_string()),
-        ) {
-            crate::projection::EvidenceProjectionResponse::Contains(contains) => contains,
-            _ => false,
-        }
+        resolve_projection(&self.projection_state, |projection| {
+            match crate::projection::EvidenceProjectionReadPort::resolve(
+                projection,
+                crate::projection::EvidenceProjectionQuery::Contains(key.to_string()),
+            ) {
+                crate::projection::EvidenceProjectionResponse::Contains(contains) => contains,
+                _ => false,
+            }
+        })
     }
 
     /// Sorted snapshot of all evidence in `projection_state`.
@@ -412,27 +415,29 @@ impl AppState {
     /// is `O(n log n)` per call; see the underlying method for
     /// ordering rationale.
     pub(crate) fn projection_snapshot(&self) -> Vec<crate::domain::evidence::RepositoryEvidence> {
-        let projection = self.lock_projection();
-        match crate::projection::EvidenceProjectionReadPort::resolve(
-            &projection,
-            crate::projection::EvidenceProjectionQuery::SortedSnapshot,
-        ) {
-            crate::projection::EvidenceProjectionResponse::Many(evidence) => evidence,
-            _ => Vec::new(),
-        }
+        resolve_projection(&self.projection_state, |projection| {
+            match crate::projection::EvidenceProjectionReadPort::resolve(
+                projection,
+                crate::projection::EvidenceProjectionQuery::SortedSnapshot,
+            ) {
+                crate::projection::EvidenceProjectionResponse::Many(evidence) => evidence,
+                _ => Vec::new(),
+            }
+        })
     }
 
     pub(crate) fn projection_deleted_snapshot(
         &self,
     ) -> Vec<(String, crate::projection::DeletedRepoRecord)> {
-        let projection = self.lock_projection();
-        match crate::projection::EvidenceProjectionReadPort::resolve(
-            &projection,
-            crate::projection::EvidenceProjectionQuery::DeletedSnapshot,
-        ) {
-            crate::projection::EvidenceProjectionResponse::Deleted(deleted) => deleted,
-            _ => Vec::new(),
-        }
+        resolve_projection(&self.projection_state, |projection| {
+            match crate::projection::EvidenceProjectionReadPort::resolve(
+                projection,
+                crate::projection::EvidenceProjectionQuery::DeletedSnapshot,
+            ) {
+                crate::projection::EvidenceProjectionResponse::Deleted(deleted) => deleted,
+                _ => Vec::new(),
+            }
+        })
     }
 
     #[cfg(test)]
@@ -443,14 +448,15 @@ impl AppState {
     }
 
     pub(crate) fn projection_org_state(&self) -> Option<crate::projection::OrgReadModel> {
-        let projection = self.lock_projection();
-        match crate::projection::EvidenceProjectionReadPort::resolve(
-            &projection,
-            crate::projection::EvidenceProjectionQuery::OrgState,
-        ) {
-            crate::projection::EvidenceProjectionResponse::OrgState(org_state) => *org_state,
-            _ => None,
-        }
+        resolve_projection(&self.projection_state, |projection| {
+            match crate::projection::EvidenceProjectionReadPort::resolve(
+                projection,
+                crate::projection::EvidenceProjectionQuery::OrgState,
+            ) {
+                crate::projection::EvidenceProjectionResponse::OrgState(org_state) => *org_state,
+                _ => None,
+            }
+        })
     }
 
     /// Test-only accessor for the materialised `projection_state`.
@@ -623,6 +629,59 @@ fn projection_from_stores(
         .map_err(std::io::Error::other)
 }
 
+fn lock_projection_state<P>(projection_state: &ProjectionState<P>) -> std::sync::MutexGuard<'_, P>
+where
+    P: Projection,
+{
+    projection_state
+        .lock()
+        .expect("projection_state mutex poisoned")
+}
+
+fn replace_projection_state<P>(projection_state: &ProjectionState<P>, projection: P)
+where
+    P: Projection,
+{
+    let mut guard = projection_state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = projection;
+}
+
+fn resolve_projection<P, R>(
+    projection_state: &ProjectionState<P>,
+    resolve: impl FnOnce(&P) -> R,
+) -> R
+where
+    P: Projection,
+{
+    let projection = lock_projection_state(projection_state);
+    resolve(&projection)
+}
+
+fn apply_projection_event<P>(projection: &mut P, event: P::Event)
+where
+    P: Projection,
+{
+    let envelope = match EventEnvelope::new(
+        uuid::Uuid::now_v7(),
+        AggregateId::new(NonZeroU64::MIN),
+        NonZeroU64::MIN,
+        Timestamp::now(),
+        None,
+        None,
+        event,
+    ) {
+        Ok(envelope) => envelope,
+        Err(error) => panic!("projection envelope invariant violated: {error}"),
+    };
+    projection.apply(&envelope);
+}
+
+fn org_projection_event(event: OrgStateCaptured) -> crate::projection::EvidenceProjectionEvent {
+    crate::projection::EvidenceProjectionEvent::OrgStateCaptured(Box::new(event.into()))
+}
+
 fn fold_native_event(
     projection: &mut crate::projection::EvidenceProjection,
     detached: bool,
@@ -633,35 +692,33 @@ fn fold_native_event(
             domain_key,
             evidence,
             ..
-        } => {
-            if detached {
-                projection.repositories.remove(domain_key.as_str());
-            } else if let Some(evidence) = evidence.as_ref() {
-                projection.deleted.remove(domain_key.as_str());
-                projection
-                    .repositories
-                    .insert(domain_key.as_str().to_string(), (*evidence).clone().into());
-            }
-        }
+        } => apply_projection_event(
+            projection,
+            crate::projection::EvidenceProjectionEvent::RepositoryStateCaptured {
+                detached,
+                domain_key: domain_key.as_str().to_string(),
+                evidence: evidence
+                    .as_ref()
+                    .map(|evidence| Box::new((*evidence).clone().into())),
+            },
+        ),
         NativeDomainEvent::RepositoryDeleted {
             domain_key,
             repo_name,
             detected_at,
-        } => {
-            projection.repositories.remove(domain_key.as_str());
-            projection.deleted.insert(
-                domain_key.as_str().to_string(),
-                crate::projection::DeletedRepoRecord {
-                    repo_name: repo_name.as_str().to_string(),
-                    detected_at: event_timestamp_string(*detected_at),
-                },
-            );
-        }
+        } => apply_projection_event(
+            projection,
+            crate::projection::EvidenceProjectionEvent::RepositoryDeleted {
+                domain_key: domain_key.as_str().to_string(),
+                repo_name: repo_name.as_str().to_string(),
+                detected_at: event_timestamp_string(*detected_at),
+            },
+        ),
     }
 }
 
 fn fold_org_event(projection: &mut crate::projection::EvidenceProjection, event: OrgStateCaptured) {
-    projection.apply_org_state(event.into());
+    apply_projection_event(projection, org_projection_event(event));
 }
 
 fn native_store_persistence(error: crate::store::StoreError) -> PersistenceError {
@@ -937,27 +994,17 @@ impl AppState {
     fn refresh_projection(&self) -> Result<(), std::io::Error> {
         let projection =
             projection_from_stores(self.event_store.as_ref(), self.org_event_store.as_ref())?;
-        let mut guard = self
-            .projection_state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *guard = projection;
+        replace_projection_state(&self.projection_state, projection);
         Ok(())
     }
 
     fn fold_repository_event_into_projection(&self, detached: bool, event: &NativeDomainEvent) {
-        let mut guard = self
-            .projection_state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = lock_projection_state(&self.projection_state);
         fold_native_event(&mut guard, detached, event);
     }
 
     fn fold_org_event_into_projection(&self, event: OrgStateCaptured) {
-        let mut guard = self
-            .projection_state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = lock_projection_state(&self.projection_state);
         fold_org_event(&mut guard, event);
     }
 

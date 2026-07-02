@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use cherry_pit_core::ReadPort;
+use cherry_pit_core::{DomainEvent, EventEnvelope, Projection, ReadPort};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::evidence::{AssessmentMetadata, OrgStateSnapshot, RepositoryEvidence};
@@ -60,6 +60,82 @@ pub struct EvidenceProjection {
 
     /// Last-known org-level state folded from the org event stream.
     pub org_state: Option<OrgReadModel>,
+}
+
+/// Projection-input event consumed by the core [`cherry_pit_core::Projection`] impl.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum EvidenceProjectionEvent {
+    /// Repository state observed from the gh-report native repository store.
+    RepositoryStateCaptured {
+        /// Pardosa detached-envelope flag for repository soft-delete replay.
+        detached: bool,
+        /// Repository projection key.
+        domain_key: String,
+        /// Repository evidence when the fiber is live.
+        evidence: Option<Box<RepositoryEvidence>>,
+    },
+    /// Repository deletion observed during successful inventory reconciliation.
+    RepositoryDeleted {
+        /// Repository projection key.
+        domain_key: String,
+        /// Repository name at deletion detection time.
+        repo_name: String,
+        /// ISO 8601 deletion detection timestamp.
+        detected_at: String,
+    },
+    /// Org-level read model observed from the gh-report native org store.
+    OrgStateCaptured(Box<OrgStateSnapshot>),
+}
+
+impl DomainEvent for EvidenceProjectionEvent {
+    fn event_type(&self) -> &'static str {
+        match self {
+            Self::RepositoryStateCaptured { .. } => {
+                "gh-report.projection.repository_state_captured"
+            }
+            Self::RepositoryDeleted { .. } => "gh-report.projection.repository_deleted",
+            Self::OrgStateCaptured(_) => "gh-report.projection.org_state_captured",
+        }
+    }
+}
+
+impl Projection for EvidenceProjection {
+    type Event = EvidenceProjectionEvent;
+
+    fn apply(&mut self, envelope: &EventEnvelope<Self::Event>) {
+        match envelope.payload() {
+            EvidenceProjectionEvent::RepositoryStateCaptured {
+                detached,
+                domain_key,
+                evidence,
+            } => {
+                if *detached {
+                    self.repositories.remove(domain_key);
+                } else if let Some(evidence) = evidence.as_ref() {
+                    self.deleted.remove(domain_key);
+                    self.repositories
+                        .insert(domain_key.clone(), evidence.as_ref().clone());
+                }
+            }
+            EvidenceProjectionEvent::RepositoryDeleted {
+                domain_key,
+                repo_name,
+                detected_at,
+            } => {
+                self.repositories.remove(domain_key);
+                self.deleted.insert(
+                    domain_key.clone(),
+                    DeletedRepoRecord {
+                        repo_name: repo_name.clone(),
+                        detected_at: detected_at.clone(),
+                    },
+                );
+            }
+            EvidenceProjectionEvent::OrgStateCaptured(snapshot) => {
+                self.apply_org_state(snapshot.as_ref().clone());
+            }
+        }
+    }
 }
 
 /// Typed read query for the governance evidence projection.
