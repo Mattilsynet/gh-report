@@ -16,7 +16,7 @@ use alloc::vec::Vec;
     note = "Only types blessed by `#[derive(GenomeSafe)]` or workspace-internal impls may implement `EventSafe`. See GEN-0036 and Solon doctrine (ADOPTION.md, 16 Rules).",
     note = "Common substitutions: `String` → `EventString<MAX>` / `NonEmptyEventString<MAX>`; `Vec<T>` → `EventVec<T, MAX>`; `Vec<u8>` → `EventBytes<MAX>` (all from `pardosa_schema::bounded`).",
     note = "Timestamps: use `pardosa_wire::Timestamp` (nonzero-u64 nanos since UNIX epoch).",
-    note = "Map- and set-shaped payloads (`HashMap`/`BTreeMap`/`HashSet`/`BTreeSet`) are forbidden by Solon doctrine (STORY §4.2): enumerate keys as named struct fields or an enum, or store the map outside the event store."
+    note = "Map- and set-shaped payloads (`HashMap`/`BTreeMap`/`HashSet`/`BTreeSet`) are forbidden by Solon doctrine (map- and set-shaped payloads are non-canonical): enumerate keys as named struct fields or an enum, or store the map outside the event store."
 )]
 pub trait EventSafe: sealed::Sealed {}
 pub trait Encode {

@@ -141,9 +141,9 @@ fn reject_hashmap_type(ty: &syn::Type) -> syn::Result<()> {
                     return Err(syn::Error::new_spanned(
                         ty,
                         "EVT-014: GenomeSafe: Map- and set-shaped event payloads are \
-                         forbidden by Solon doctrine (STORY §4.2): enumerate keys as \
-                         named struct fields or an enum, or store the map outside the \
-                         event store.",
+                         forbidden by Solon doctrine (map- and set-shaped payloads are \
+                         non-canonical): enumerate keys as named struct fields or an \
+                         enum, or store the map outside the event store.",
                     ));
                 }
             }
