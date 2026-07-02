@@ -398,28 +398,29 @@ async fn connect_client(
                 source: Box::new(e),
             })
     } else {
-        let options = build_connect_options(decision).await?;
+        let options = build_connect_options(decision)?;
         options
             .connect(url)
             .await
             .map_err(|e| JetStreamRuntimeError::Connect {
                 source: Box::new(e),
-        })
+            })
     }
 }
 
-async fn build_connect_options(
+fn build_connect_options(
     decision: &ConnectDecision,
 ) -> Result<async_nats::ConnectOptions, JetStreamRuntimeError> {
     let mut options = async_nats::ConnectOptions::new();
     if let Some(path) = decision.credentials_path.as_deref() {
-        options =
-            options
-                .credentials_file(path)
-                .await
-                .map_err(|e| JetStreamRuntimeError::Connect {
-                    source: Box::new(e),
-                })?;
+        let creds = std::fs::read_to_string(path).map_err(|e| JetStreamRuntimeError::Connect {
+            source: Box::new(e),
+        })?;
+        options = async_nats::ConnectOptions::with_credentials(&creds).map_err(|e| {
+            JetStreamRuntimeError::Connect {
+                source: Box::new(e),
+            }
+        })?;
     }
     if decision.require_tls {
         options = options.require_tls(true);
@@ -675,6 +676,90 @@ mod tests {
             decision.uses_bare_anonymous_connect(),
             "None credentials on nats:// must preserve the bare anonymous connect branch"
         );
+    }
+
+    #[test]
+    fn build_connect_options_accepts_valid_creds_fixture_without_tokio_blocking_pool() {
+        let dir = tempfile::tempdir().expect("tempdir is created");
+        let creds_path = dir.path().join("user.creds");
+        std::fs::write(&creds_path, valid_user_creds()).expect("creds fixture is written");
+        let decision = ConnectDecision {
+            credentials_path: Some(creds_path),
+            require_tls: false,
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .max_blocking_threads(1)
+            .build()
+            .expect("current-thread runtime is created with one blocking thread");
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let options = runtime.block_on(async {
+            let blocker = tokio::task::spawn_blocking(move || {
+                entered_tx.send(()).expect("blocking task starts");
+                release_rx.recv().expect("blocking task is released");
+            });
+            entered_rx.recv().expect("blocking task has started");
+            let result = tokio::time::timeout(Duration::from_millis(100), async {
+                build_connect_options(&decision)
+            })
+            .await;
+            release_tx.send(()).expect("blocking task release is sent");
+            blocker.await.expect("blocking task joins");
+            result
+        });
+
+        assert!(
+            matches!(options, Ok(Ok(_))),
+            "valid credentials fixture must build connect options without tokio file IO"
+        );
+        assert!(!decision.uses_bare_anonymous_connect());
+    }
+
+    #[test]
+    fn build_connect_options_missing_creds_file_returns_connect_error() {
+        let dir = tempfile::tempdir().expect("tempdir is created");
+        let decision = ConnectDecision {
+            credentials_path: Some(dir.path().join("missing.creds")),
+            require_tls: false,
+        };
+
+        let result = blocking_build_connect_options(&decision);
+
+        assert!(matches!(result, Err(JetStreamRuntimeError::Connect { .. })));
+    }
+
+    #[test]
+    fn build_connect_options_garbage_creds_returns_connect_error() {
+        let dir = tempfile::tempdir().expect("tempdir is created");
+        let creds_path = dir.path().join("garbage.creds");
+        std::fs::write(&creds_path, "not creds").expect("garbage fixture is written");
+        let decision = ConnectDecision {
+            credentials_path: Some(creds_path),
+            require_tls: false,
+        };
+
+        let result = blocking_build_connect_options(&decision);
+
+        assert!(matches!(result, Err(JetStreamRuntimeError::Connect { .. })));
+    }
+
+    fn blocking_build_connect_options(
+        decision: &ConnectDecision,
+    ) -> Result<async_nats::ConnectOptions, JetStreamRuntimeError> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("current-thread runtime is created")
+            .block_on(async { build_connect_options(decision) })
+    }
+
+    fn valid_user_creds() -> String {
+        let seed = "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM";
+        format!(
+            "-----BEGIN NATS USER JWT-----\nnot.a.jwt\n------END NATS USER JWT------\n\n-----BEGIN USER NKEY SEED-----\n{seed}\n------END USER NKEY SEED------\n"
+        )
     }
 
     fn minimal_config() -> JetStreamConfig {
