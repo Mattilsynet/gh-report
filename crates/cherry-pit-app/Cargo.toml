@@ -19,7 +19,7 @@ workspace = true
 cherry-pit-core = { workspace = true }
 cherry-pit-gateway = { workspace = true }
 cherry-pit-projection = { workspace = true }
-cherry-pit-web = { workspace = true }
+cherry-pit-web = { workspace = true, features = ["projection"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
