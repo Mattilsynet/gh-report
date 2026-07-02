@@ -68,9 +68,6 @@ Operational recovery procedures live at
 
 ## More
 
-- [`docs/STORY.md`](docs/STORY.md) — strategic intent; *where to play*
-  and *how to win*. Apex over the ADR corpus on questions of *why*.
-  Start here.
 - Per-crate `README.md` files under [`crates/`](crates/).
 
 ## License

@@ -13,7 +13,7 @@ References: PGN-0010, CHE-0044, CHE-0074, CHE-0048, CHE-0073
 
 ## Context
 
-gh-report needs an operator-visible way to choose the pardosa authoritative backend without turning storage into runtime-pluggable topology. Oracle Q5 ruled that a startup selector choosing a sealed pardosa handle while preserving one concrete `EventStore` type complies with STORY §7. The initial implementation must keep `.pgno` working and make incomplete NATS wiring explicit.
+gh-report needs an operator-visible way to choose the pardosa authoritative backend without turning storage into runtime-pluggable topology. Oracle Q5 ruled that a startup selector choosing a sealed pardosa handle while preserving one concrete `EventStore` type stays within the compile-time-composition constraint (CHE-0005:R1) and the no-runtime-pluggable-architectures non-goal. The initial implementation must keep `.pgno` working and make incomplete NATS wiring explicit.
 
 ## Decision
 

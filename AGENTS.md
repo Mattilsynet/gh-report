@@ -89,6 +89,34 @@ These are load-bearing; violating them is an abort-class change:
   `#[allow(.., reason=..)]` only where `#[expect]` would be unfulfilled (e.g. a
   lint that fires under `--test` but not `--all-features`).
 
+## Intent (why this repo exists — the Solon stance)
+
+Solon lays down a *small, observable, ratified* set of enabling constraints —
+after Solon the lawgiver — so that correct software is easier to build than
+incorrect software. The bet is **subtractive**: remove enough degrees of
+freedom that the remaining moves are obviously correct. When the type system
+rejects illegal architectures, the search space an agent must explore collapses.
+
+- **The libraries are the product; the binaries are evidence they work.**
+  `cherry-pit-*` is the EDA+DDD+hexagonal substrate (illegal compositions —
+  multiple writers per aggregate, async in the domain, leaky identity — do not
+  type-check). `pardosa*` is the durable event-store substrate. `adr-fmt`/
+  `adr-srv` are the governance plane. `gh-report` is the first non-trivial
+  consumer, load-bearing proof the substrate carries real work.
+- **Niche — where to play:** high-complexity, durable, *intra-org* workloads
+  that do **not** need arbitrary horizontal scale-out. Single writer per
+  aggregate; sync domain, async edges; linearizable per aggregate; sub-PB,
+  single-region; crash-fail with recovery. Webscale is a different game and is
+  not played here.
+- **Non-goals** (recorded so they aren't rediscovered): multi-region/multi-tenant
+  webscale; frameworks/scaffolding/starter-kits (the constraints *are* the
+  guidance); runtime-pluggable architectures (composition is compile-time,
+  CHE-0005:R1); schema evolution as a runtime feature (cross-major migration is
+  a ratified operation); public-API surface freeze before v0.3 (invariants are
+  frozen, surface is not yet).
+- ADRs are binding for *what*; this section is orientation for *why*. Read the
+  ADRs continuously, this once.
+
 ## ADR governance (this repo is ADR-driven)
 
 - Corpus under `docs/adr/` (domains: `ground`/GND, `common`/COM, `rust`/RST,
@@ -99,7 +127,6 @@ These are load-bearing; violating them is an abort-class change:
   validates corpus integrity; `--tree`/`--refs` inspect structure/citations.
 - Repo-local skills available: `adr-context`, `adr-lint`, `adr-refs`,
   `adr-tree`, `graphify`.
-- `docs/STORY.md` is the apex on *why* (strategy); start there for intent.
 
 ## Tooling notes
 

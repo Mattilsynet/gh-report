@@ -11,8 +11,8 @@ References: CHE-0051, CHE-0005, CHE-0048, CHE-0024, CHE-0017, CHE-0001
 
 ## Context
 
-STORY makes type constraints the primary guidance and excludes templates,
-scaffolding, and starter kits (`docs/STORY.md:213-219`). Composition knowledge
+Type constraints are the primary guidance for this substrate, and templates,
+scaffolding, and starter kits are an explicit non-goal. Composition knowledge
 still spans `App::new`, policy registration, projection tuples, and dispatch
 closures (`crates/cherry-pit-app/src/lib.rs:13-29`). The two-aggregate fixture
 already separates domain from wiring (`crates/cherry-pit-app/tests/two_aggregate_fixture/mod.rs:10-18`).
