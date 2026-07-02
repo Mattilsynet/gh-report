@@ -652,13 +652,6 @@ mod tests {
         writer.snapshot()
     }
 
-    fn unused_local_nats_url() -> String {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-        let port = listener.local_addr().expect("local addr").port();
-        drop(listener);
-        format!("nats://127.0.0.1:{port}")
-    }
-
     fn nats_connect_app_error(source: impl std::error::Error + Send + Sync + 'static) -> AppError {
         let runtime = pardosa_nats::JetStreamRuntimeError::Connect {
             source: Box::new(source),
@@ -770,12 +763,9 @@ mod tests {
         assert_eq!(duration_millis(Duration::from_millis(1_234)), 1_234);
     }
 
-    #[tokio::test]
-    async fn initial_collection_failure_logs_full_nats_connect_error_chain() {
-        let url = unused_local_nats_url();
-        let connect = async_nats::connect(&url)
-            .await
-            .expect_err("unused local port must reject async-nats connect");
+    #[test]
+    fn initial_collection_failure_logs_full_nats_connect_error_chain() {
+        let connect = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "connect refused");
         let app_error = nats_connect_app_error(connect);
 
         let output = capture_tracing(|| log_initial_collection_failure(&app_error));

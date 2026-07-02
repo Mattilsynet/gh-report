@@ -34,7 +34,6 @@ pardosa-fiber-store = { path = "../pardosa-fiber-store", version = "=0.1.0" }
 pardosa-file = { path = "../pardosa-file", version = "=0.1.0" }
 pardosa-schema = { path = "../pardosa-schema", version = "=0.1.0" }
 pardosa-nats = { path = "../pardosa-nats", version = "=0.1.0" }
-async-nats = { workspace = true }
 
 # cherry-pit-web — security/transport helpers (sanitize_path_segment,
 # SVG_CSP, http_trace_layer, normalize_request_path, security_headers)
@@ -141,6 +140,7 @@ moka = { workspace = true }
 # Structured JSON logging is handled by infra::cloud_logging (custom layer)
 
 [dev-dependencies]
+async-nats = { workspace = true }
 pardosa-nats = { path = "../pardosa-nats", version = "=0.1.0", features = ["test-support"] }
 # HTTP mocking
 wiremock = { workspace = true }

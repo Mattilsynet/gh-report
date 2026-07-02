@@ -297,6 +297,13 @@ pub mod replay {
 pub mod migrate {
     pub use crate::migrate::{MigrationError, MigrationReport, migrate_keep};
 }
+/// NATS operational diagnostics owned by the `pardosa` adapter ring.
+pub mod diagnostics {
+    pub use crate::backend::diagnostics::{
+        NatsFailureClass, classify_nats_failure, emit_nats_connect_diagnostics, error_chain_json,
+        nats_failure_remediation, redact_nats_credentials,
+    };
+}
 /// Store-scoped adopter-facing test affordances (ADR-0022 §D11).
 ///
 /// Cfg-gated re-export of the in-memory `AuthoritativeBackend` /

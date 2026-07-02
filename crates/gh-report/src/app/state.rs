@@ -23,7 +23,6 @@
 
 use std::collections::HashMap;
 use std::error::Error;
-use std::fmt::Write as _;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -35,9 +34,9 @@ use cherry_pit_core::ReadPort;
 use jiff::Timestamp;
 use pardosa::store::JetStreamBackend as PardosaJetStreamBackend;
 use pardosa::store::RecoveryOutcome;
+use pardosa::store::diagnostics as nats_diagnostics;
 use pardosa_nats::{JetStreamBackend as SubstrateJetStreamBackend, JetStreamConfig, RuntimeHandle};
 use pardosa_schema::{NonEmptyEventString, Timestamp as EventTimestamp};
-use sha2::{Digest, Sha256};
 
 pub use crate::infra::server::state::{CachedPage, PageUpdateEvent};
 
@@ -674,75 +673,12 @@ fn conversion_persistence(error: &EventConversionError) -> PersistenceError {
     }
 }
 
-pub(crate) fn emit_nats_connect_diagnostics(nats_url: &str, credentials_path: Option<&Path>) {
-    let creds_path = credentials_path
-        .map(Path::display)
-        .map(|path| path.to_string());
-    let creds_path_display = creds_path.as_deref().unwrap_or("");
-    let creds = credentials_path.map_or(CredsDiagnostic::missing_path(), creds_diagnostic);
-    tracing::info!(
-        nats_url = nats_url,
-        creds_path = creds_path_display,
-        creds_exists = creds.exists,
-        creds_len = creds.len,
-        creds_sha256_prefix = creds.sha256_prefix.as_deref().unwrap_or(""),
-        "nats connect diagnostics"
-    );
-}
-
-struct CredsDiagnostic {
-    exists: bool,
-    len: u64,
-    sha256_prefix: Option<String>,
-}
-
-impl CredsDiagnostic {
-    const fn missing_path() -> Self {
-        Self {
-            exists: false,
-            len: 0,
-            sha256_prefix: None,
-        }
-    }
-}
-
-fn creds_diagnostic(path: &Path) -> CredsDiagnostic {
-    let metadata = path.metadata();
-    let exists = metadata.is_ok();
-    let len = metadata.as_ref().map_or(0, std::fs::Metadata::len);
-    match std::fs::read(path) {
-        Ok(bytes) => {
-            let digest = Sha256::digest(&bytes);
-            CredsDiagnostic {
-                exists: true,
-                len: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-                sha256_prefix: Some(hex_prefix_8(&digest)),
-            }
-        }
-        Err(_) => CredsDiagnostic {
-            exists,
-            len,
-            sha256_prefix: None,
-        },
-    }
-}
-
-fn hex_prefix_8(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(8);
-    for byte in bytes.iter().take(4) {
-        out.push(char::from(HEX[usize::from(byte >> 4)]));
-        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    out
-}
-
 pub(crate) fn log_error_chain(event: &'static str, error: &(dyn Error + 'static)) {
-    let error_chain = error_chain_json(error);
-    let error_display = redact_nats_credentials(&error.to_string());
-    let class = classify_nats_failure(error);
+    let error_chain = nats_diagnostics::error_chain_json(error);
+    let error_display = nats_diagnostics::redact_nats_credentials(&error.to_string());
+    let class = nats_diagnostics::classify_nats_failure(error);
     let nats_failure_class = class.as_str();
-    let nats_failure_remediation = nats_failure_remediation(class);
+    let nats_failure_remediation = nats_diagnostics::nats_failure_remediation(class);
     tracing::error!(
         diagnostic_event = event,
         nats_failure_class = nats_failure_class,
@@ -751,231 +687,6 @@ pub(crate) fn log_error_chain(event: &'static str, error: &(dyn Error + 'static)
         error = error_display.as_str(),
         "persistence error chain captured before flattening"
     );
-}
-
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum NatsFailureClass {
-    AuthzViolation,
-    JetStreamProvisioningDenied,
-    CredsStaleInvalid,
-    TlsConnection,
-    ConnectionRefused,
-    SecretPath,
-    Unknown,
-}
-
-impl NatsFailureClass {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::AuthzViolation => "authz_violation",
-            Self::JetStreamProvisioningDenied => "jetstream_provisioning_denied",
-            Self::CredsStaleInvalid => "creds_stale_invalid",
-            Self::TlsConnection => "tls_connection",
-            Self::ConnectionRefused => "connection_refused",
-            Self::SecretPath => "secret_path",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
-fn nats_failure_remediation(class: NatsFailureClass) -> &'static str {
-    match class {
-        NatsFailureClass::AuthzViolation => {
-            "check the NATS account permissions for the configured subject"
-        }
-        NatsFailureClass::JetStreamProvisioningDenied => {
-            "enable JetStream for the NATS account, grant stream and subject create permissions, and verify stream configuration"
-        }
-        NatsFailureClass::CredsStaleInvalid => {
-            "rotate the NATS credentials secret and restart the service"
-        }
-        NatsFailureClass::TlsConnection => "check NATS TLS endpoint and trust configuration",
-        NatsFailureClass::ConnectionRefused => {
-            "check NATS endpoint reachability and service status"
-        }
-        NatsFailureClass::SecretPath => "check the configured NATS credentials secret mount path",
-        NatsFailureClass::Unknown => "inspect the preserved error_chain and NATS service logs",
-    }
-}
-
-fn classify_nats_failure(error: &(dyn Error + 'static)) -> NatsFailureClass {
-    let mut current = Some(error);
-    while let Some(error) = current {
-        let class = classify_nats_failure_typed(error);
-        if class != NatsFailureClass::Unknown {
-            return class;
-        }
-        let class = classify_nats_failure_display(&error.to_string());
-        if class != NatsFailureClass::Unknown {
-            return class;
-        }
-        if let Some(io) = error.downcast_ref::<std::io::Error>()
-            && let Some(inner) = io.get_ref()
-        {
-            let class = classify_nats_failure(inner);
-            if class != NatsFailureClass::Unknown {
-                return class;
-            }
-        }
-        current = error.source();
-    }
-    NatsFailureClass::Unknown
-}
-
-fn classify_nats_failure_typed(error: &(dyn Error + 'static)) -> NatsFailureClass {
-    if let Some(create_stream_error) =
-        error.downcast_ref::<async_nats::jetstream::context::CreateStreamError>()
-    {
-        return classify_create_stream_error(create_stream_error);
-    }
-    NatsFailureClass::Unknown
-}
-
-fn classify_create_stream_error(
-    error: &async_nats::jetstream::context::CreateStreamError,
-) -> NatsFailureClass {
-    match error.kind() {
-        async_nats::jetstream::context::CreateStreamErrorKind::JetStream(error) => {
-            classify_jetstream_error_code(error.error_code().0)
-        }
-        _ => NatsFailureClass::Unknown,
-    }
-}
-
-const fn classify_jetstream_error_code(error_code: u64) -> NatsFailureClass {
-    match error_code {
-        10023 | 10035 | 10039 => NatsFailureClass::JetStreamProvisioningDenied,
-        _ => NatsFailureClass::Unknown,
-    }
-}
-
-fn classify_nats_failure_display(display: &str) -> NatsFailureClass {
-    let lower = display.to_ascii_lowercase();
-    if lower.contains("authorization violation")
-        || lower.contains("permissions violation")
-        || lower.contains("permission violation")
-        || lower.contains("not authorized")
-    {
-        return NatsFailureClass::AuthzViolation;
-    }
-    if lower.contains("invalid credentials")
-        || lower.contains("stale credentials")
-        || lower.contains("expired") && lower.contains("credential")
-        || lower.contains("jwt") && (lower.contains("expired") || lower.contains("invalid"))
-    {
-        return NatsFailureClass::CredsStaleInvalid;
-    }
-    if lower.contains("no such file")
-        || lower.contains("not found") && lower.contains("credential")
-        || lower.contains("credentials file")
-        || lower.contains("secret") && lower.contains("path")
-    {
-        return NatsFailureClass::SecretPath;
-    }
-    if lower.contains("tls")
-        || lower.contains("certificate")
-        || lower.contains("cert") && lower.contains("invalid")
-        || lower.contains("handshake")
-    {
-        return NatsFailureClass::TlsConnection;
-    }
-    if lower.contains("connection refused")
-        || lower.contains("connection reset")
-        || lower.contains("connection aborted")
-        || lower.contains("operation timed out")
-        || lower.contains("timed out") && lower.contains("connect")
-    {
-        return NatsFailureClass::ConnectionRefused;
-    }
-    NatsFailureClass::Unknown
-}
-
-fn error_chain_json(error: &(dyn Error + 'static)) -> String {
-    let mut chain = String::from("[");
-    let mut current = Some(error);
-    let mut level = 0_u64;
-    while let Some(error) = current {
-        if level > 0 {
-            chain.push(',');
-        }
-        let display = json_escape(&redact_nats_credentials(&error.to_string()));
-        let debug = json_escape(&redact_nats_credentials(&format!("{error:?}")));
-        write!(
-            chain,
-            "{{\"level\":{level},\"display\":\"{display}\",\"debug\":\"{debug}\"}}"
-        )
-        .expect("string write succeeds");
-        current = error.source();
-        level += 1;
-    }
-    chain.push(']');
-    chain
-}
-
-fn redact_nats_credentials(value: &str) -> String {
-    let mut output = String::with_capacity(value.len());
-    let mut rest = value;
-    while let Some((begin, begin_fence)) = find_pem_begin(rest) {
-        output.push_str(&rest[..begin]);
-        output.push_str("[redacted nats credential block]");
-        let after_begin = &rest[begin + begin_fence.fence_len..];
-        if let Some(end) = find_pem_end(after_begin, begin_fence.label) {
-            rest = &after_begin[end..];
-        } else {
-            rest = "";
-        }
-    }
-    output.push_str(rest);
-    output
-}
-
-#[derive(Clone, Copy)]
-struct PemBeginFence<'a> {
-    label: &'a str,
-    fence_len: usize,
-}
-
-fn find_pem_begin(value: &str) -> Option<(usize, PemBeginFence<'_>)> {
-    ["-----BEGIN ", "------BEGIN "]
-        .into_iter()
-        .filter_map(|prefix| {
-            let begin = value.find(prefix)?;
-            let after_prefix = &value[begin + prefix.len()..];
-            let label_end = after_prefix.find('-')?;
-            let label = &after_prefix[..label_end];
-            let trailing = &after_prefix[label_end..];
-            let trailing_len = pem_fence_dash_len(trailing)?;
-            let fence_len = prefix.len() + label.len() + trailing_len;
-            Some((begin, PemBeginFence { label, fence_len }))
-        })
-        .min_by_key(|(begin, _)| *begin)
-}
-
-fn find_pem_end(value: &str, label: &str) -> Option<usize> {
-    let five_dash = format!("-----END {label}-----");
-    let six_dash = format!("------END {label}------");
-    [five_dash.as_str(), six_dash.as_str()]
-        .into_iter()
-        .filter_map(|fence| value.find(fence).map(|start| start + fence.len()))
-        .min()
-}
-
-fn pem_fence_dash_len(value: &str) -> Option<usize> {
-    if value.starts_with("------") {
-        Some(6)
-    } else if value.starts_with("-----") {
-        Some(5)
-    } else {
-        None
-    }
-}
-
-fn json_escape(value: &str) -> String {
-    value
-        .chars()
-        .flat_map(char::escape_default)
-        .collect::<String>()
 }
 
 fn non_empty<const MAX: usize>(
@@ -1132,7 +843,10 @@ impl AppState {
         let handle = tokio::runtime::Handle::current();
         let events_dir = events_dir.to_path_buf();
         if matches!(backend, crate::config::runtime::PardosaBackend::Nats) {
-            emit_nats_connect_diagnostics(&nats.nats_url, nats.credentials_path.as_deref());
+            nats_diagnostics::emit_nats_connect_diagnostics(
+                &nats.nats_url,
+                nats.credentials_path.as_deref(),
+            );
         }
         let event_store =
             open_event_store_blocking(events_dir.clone(), backend, nats.clone(), handle.clone())
@@ -1593,6 +1307,7 @@ mod tests {
     use crate::domain::cache::CachedRepoDetail;
     use crate::domain::evidence::Evidence;
     use crate::infra::server::state::ServerState;
+    use std::fmt::Write as _;
     use std::io::Write;
     use std::sync::Arc;
     use tracing::field::{Field, Visit};
@@ -2130,93 +1845,6 @@ mod tests {
         ));
     }
 
-    fn assert_nats_failure_class(message: &'static str, expected: &'static str) {
-        let err = std::io::Error::other(message);
-
-        assert_eq!(classify_nats_failure(&err).as_str(), expected);
-    }
-
-    fn jetstream_create_stream_error(
-        error_code: u64,
-    ) -> async_nats::jetstream::context::CreateStreamError {
-        let error = serde_json::from_value::<async_nats::jetstream::Error>(serde_json::json!({
-            "code": 503,
-            "err_code": error_code,
-            "description": "unstable server description"
-        }))
-        .expect("synthetic JetStream error should deserialize");
-
-        error.into()
-    }
-
-    #[test]
-    fn nats_failure_classifies_jetstream_provisioning_denied_by_error_code() {
-        let err = crate::store::StoreError::BackendInfrastructure {
-            op: pardosa::store::BackendOp::Sync,
-            source: Box::new(pardosa::store::BackendError::Connect {
-                op: pardosa::store::BackendOp::Sync,
-                source: Box::new(jetstream_create_stream_error(10039)),
-            }),
-        };
-        let class = classify_nats_failure(&err);
-
-        assert_eq!(class.as_str(), "jetstream_provisioning_denied");
-        assert_eq!(
-            nats_failure_remediation(class),
-            "enable JetStream for the NATS account, grant stream and subject create permissions, and verify stream configuration"
-        );
-
-        let output = capture_events(|| {
-            log_error_chain("gh_report_persistence_load_failed", &err);
-        });
-        assert!(output.contains("nats_failure_class=jetstream_provisioning_denied"));
-        assert!(output.contains(
-            "nats_failure_remediation=enable JetStream for the NATS account, grant stream and subject create permissions, and verify stream configuration"
-        ));
-    }
-
-    #[test]
-    fn nats_failure_classifies_authz_violation() {
-        assert_nats_failure_class("nats: authorization violation", "authz_violation");
-    }
-
-    #[test]
-    fn nats_failure_classifies_creds_stale_invalid() {
-        assert_nats_failure_class(
-            "nats: invalid credentials jwt expired",
-            "creds_stale_invalid",
-        );
-    }
-
-    #[test]
-    fn nats_failure_classifies_tls_connection() {
-        assert_nats_failure_class(
-            "tls handshake failed: invalid certificate",
-            "tls_connection",
-        );
-    }
-
-    #[test]
-    fn nats_failure_classifies_connection_refused() {
-        assert_nats_failure_class(
-            "connect error: Connection refused (os error 61)",
-            "connection_refused",
-        );
-    }
-
-    #[test]
-    fn nats_failure_classifies_secret_path() {
-        assert_nats_failure_class(
-            "credentials file /var/secrets/nats.creds: No such file or directory",
-            "secret_path",
-        );
-    }
-
-    #[test]
-    fn nats_failure_classifies_unknown() {
-        assert_nats_failure_class("backend reported an unmapped startup error", "unknown");
-    }
-
     #[test]
     fn native_store_persistence_logs_nats_failure_fields_without_secret_bytes() {
         let first_secret = "super-secret-material-for-test";
@@ -2243,36 +1871,6 @@ mod tests {
         assert!(
             !output.contains(second_secret),
             "NATS startup diagnostics must not log credential bytes: {output}"
-        );
-    }
-
-    #[test]
-    fn redact_nats_credentials_truncates_unclosed_pem_block() {
-        let output = redact_nats_credentials(
-            "prefix\n-----BEGIN USER NKEY SEED-----\nsecret\nvisible text after missing fence",
-        );
-
-        assert_eq!(output, "prefix\n[redacted nats credential block]");
-    }
-
-    #[test]
-    fn nats_connect_diagnostics_log_creds_fingerprint_without_secret_bytes() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("user.creds");
-        let secret = "super-secret-material-for-test";
-        std::fs::write(&path, secret).expect("write creds");
-
-        let output = capture_events(|| {
-            emit_nats_connect_diagnostics("tls://connect.nats.mattilsynet.io:4222", Some(&path));
-        });
-
-        assert!(output.contains("nats_url=tls://connect.nats.mattilsynet.io:4222"));
-        assert!(output.contains("creds_exists=true"));
-        assert!(output.contains(&format!("creds_len={};", secret.len())));
-        assert!(output.contains("creds_sha256_prefix="));
-        assert!(
-            !output.contains(secret),
-            "diagnostics must not log credential bytes: {output}"
         );
     }
 

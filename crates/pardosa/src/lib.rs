@@ -51,7 +51,7 @@ assert_auto_traits! {
     event::Index, event::IndexTooLargeForUsize, event::Precursor, event::FiberId,
     EventId, Event < u64 >, error::FiberInvariantKind, error::FiberLenReason,
     error::IndexOrderingKind, error::LinevecAppendKind, error::IntegrityKind,
-    error::FromRawPartsKind, PardosaError, fiber_state::FiberState,
+    error::FromRawPartsKind, backend::diagnostics::NatsFailureClass, PardosaError, fiber_state::FiberState,
     fiber_state::FiberMigrationPolicy, fiber_state::LockedRescuePolicy,
     fiber_state::FiberAction, frontier::Frontier, error::PublishError,
     error::BackendError, error::BackendOp, error::RuntimeFailureKind,

@@ -128,6 +128,7 @@ where
         Ok(AckPosition::from_u64(pos))
     }
 }
+pub(crate) mod diagnostics;
 /// `BackendSink` impl for the cfg-gated in-memory fake in
 /// [`crate::authoritative::fake`] (ADR-0022 §D11). Split across two
 /// source files so each fake reaches its own file-private sealing
