@@ -113,6 +113,7 @@ description = """\
     AFM-0030 (deferral lifted)."""
 crates = [
     "pardosa",
+    "pardosa-fiber-store",
     "pardosa-wire",
     "pardosa-schema",
     "pardosa-file",

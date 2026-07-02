@@ -1,0 +1,21 @@
+[package]
+name = "pardosa-fiber-store"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Synchronous one-key-one-fiber adapter over the pardosa public store facade"
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[lib]
+name = "pardosa_fiber_store"
+path = "src/lib.rs"
+
+[dependencies]
+pardosa = { path = "../pardosa", version = "=0.4.0" }
+thiserror = { workspace = true }
+tokio = { workspace = true }

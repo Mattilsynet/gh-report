@@ -13,6 +13,7 @@ members = [
     "crates/cherry-pit-web",
     "crates/gh-report",
     "crates/pardosa",
+    "crates/pardosa-fiber-store",
     "crates/pardosa-derive",
     "crates/pardosa-file",
     "crates/pardosa-nats",
