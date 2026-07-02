@@ -198,11 +198,11 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
         Arc::clone(&force_flag),
         collect_cancel_rx,
     );
-    let server_config = crate::infra::server::config::ServerConfig::builder()
+    let server_config = cherry_pit_web::serve::ServerConfig::builder()
         .build()
         .expect("default config is valid");
 
-    let server_result = crate::infra::server::runtime::start(
+    let server_result = cherry_pit_web::serve::start(
         port,
         &bind_address,
         Some(listener),
@@ -388,11 +388,11 @@ fn log_initial_collection_failure(error: &AppError) {
 async fn bind_serving_port_before_next_step<F>(
     addr: SocketAddr,
     next_step: F,
-) -> Result<TcpListener, crate::infra::server::error::ServerError>
+) -> Result<TcpListener, cherry_pit_web::serve::ServerError>
 where
     F: FnOnce(),
 {
-    let listener = crate::infra::server::runtime::bind_serving_port(addr).await?;
+    let listener = cherry_pit_web::serve::bind_serving_port(addr).await?;
     next_step();
     Ok(listener)
 }
@@ -584,16 +584,14 @@ where
 fn parse_serving_addr(
     bind_address: &str,
     port: u16,
-) -> Result<SocketAddr, crate::infra::server::error::ServerError> {
+) -> Result<SocketAddr, cherry_pit_web::serve::ServerError> {
     let address = format!("{bind_address}:{port}");
-    address.parse().map_err(
-        |source| crate::infra::server::error::ServerError::InvalidAddress { address, source },
-    )
+    address
+        .parse()
+        .map_err(|source| cherry_pit_web::serve::ServerError::InvalidAddress { address, source })
 }
 
-fn server_error_runtime(
-    error: &crate::infra::server::error::ServerError,
-) -> crate::error::ServerError {
+fn server_error_runtime(error: &cherry_pit_web::serve::ServerError) -> crate::error::ServerError {
     crate::error::ServerError::Runtime(error.to_string())
 }
 
@@ -803,7 +801,7 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(crate::infra::server::error::ServerError::BindFailed { address, .. })
+                Err(cherry_pit_web::serve::ServerError::BindFailed { address, .. })
                     if address == addr
             ),
             "duplicate instance must return BindFailed before store construction, got {result:?}"

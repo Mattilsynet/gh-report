@@ -74,13 +74,7 @@ axum = { workspace = true }
 # HTTP middleware (request body limits, tracing)
 tower-http = { workspace = true }
 
-# Server SERVE pipeline (absorbed under P1-A.5.2):
-# zstd pre-compression of cached pages (level 19 at population time);
-# Bytes for zero-copy body clones on the serving hot path;
-# futures-util for WebSocket SinkExt/StreamExt (broadcast → client forwarding).
 bytes = { workspace = true }
-zstd = { workspace = true }
-futures-util = { workspace = true }
 
 # Templating
 askama = { workspace = true }
@@ -165,8 +159,7 @@ tokio-tungstenite = { workspace = true }
 # Axum handler testing (tower::ServiceExt::oneshot)
 tower = { workspace = true }
 
-# WebSocket stream splitting in tests
-# (futures-util now a main dep — see [dependencies])
+futures-util = { workspace = true }
 
 # panic = "unwind" (default) is intentional — Drop-based lock cleanup in
 # src/infra/lock.rs requires stack unwinding, and tokio::spawn catches task

@@ -1,10 +1,5 @@
 //! Server state trait, cached page types, and compression utilities.
 //!
-//! Absorbed under mission `absorb-server-1778695800` (P1-A.5.2).
-//! Preserves byte-for-byte the original security-relevant
-//! `compute_etag`, `compress_zstd`, and `CachedPage::new` logic so
-//! observable behaviour is identical to the upstream source.
-//!
 //! # API Design Choices
 //!
 //! ## `ArcSwap<Option<HashMap<...>>>`
@@ -26,7 +21,7 @@
 //! ## `HashMap<String, CachedPage>`
 //!
 //! Simple key-value lookup by cache key (e.g., `"index.html"`,
-//! `"owners/team-a.html"`). The entire cache is swapped atomically
+//! `"section/item.html"`). The entire cache is swapped atomically
 //! via `ArcSwap`, so there is no need for concurrent map structures
 //! like `DashMap` or `scc::HashMap`.
 
@@ -36,20 +31,20 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use axum::http::HeaderValue;
 use bytes::Bytes;
-use sha2::{Digest, Sha256};
 use tracing::warn;
+
+use crate::middleware::compression::{MAX_PRECOMPRESS_BYTES, compress_zstd, compute_etag};
 
 /// Trait abstracting the shared state required by the in-process HTTP server.
 ///
 /// Implementations provide the HTML cache, WebSocket broadcast channel,
-/// and readiness logic. The single concrete implementor is
-/// [`crate::app::state::AppState`]; the trait remains local to this
-/// module (`pub(crate)`) so `infra::server` does not depend on `app`,
-/// preserving the infra → app layer direction.
+/// and readiness logic. Consumers implement the trait on their concrete
+/// application state; the router remains statically dispatched over that
+/// concrete type.
 ///
 /// Application-specific endpoints (e.g., status, metrics) are
-/// registered via `extra_routes` in [`super::server::build_router`].
-pub(crate) trait ServerState: Send + Sync + 'static {
+/// registered via `extra_routes` in [`super::runtime::build_router`].
+pub trait ServerState: Send + Sync + 'static {
     /// The in-memory HTML page cache. `None` means no content has been
     /// published yet (server returns 503 for page requests).
     fn html_cache(&self) -> &ArcSwap<Option<HashMap<String, CachedPage>>>;
@@ -66,8 +61,8 @@ pub(crate) trait ServerState: Send + Sync + 'static {
 
 /// Event broadcast to connected WebSocket clients when pages are updated.
 ///
-/// Sent over `tokio::sync::broadcast` from the worker pool (after a Job
-/// completes and re-renders pages) to all connected WebSocket sessions.
+/// Sent over `tokio::sync::broadcast` by the producer that refreshed the
+/// cache to all connected WebSocket sessions.
 /// The client inspects `pages` to decide whether to reload.
 ///
 /// The `json` field contains the pre-serialized JSON payload so that each
@@ -79,14 +74,14 @@ pub struct PageUpdateEvent {
     /// Cache keys of pages that changed.
     ///
     /// Keys must match the `html_cache` `HashMap` keys. Examples:
-    /// `"index.html"`, `"report.html"`, `"owners/team-a.html"`.
+    /// `"index.html"`, `"page.html"`, `"section/item.html"`.
     ///
     /// The client compares these against `location.pathname` (with the
     /// leading `/` stripped) to decide whether the current page needs
     /// a reload.
     pub pages: Arc<[Arc<str>]>,
-    /// Repository that triggered this update (empty for full sweep).
-    pub repo: Arc<str>,
+    /// Caller-supplied JSON metadata included in the outbound payload.
+    pub metadata: Arc<serde_json::Map<String, serde_json::Value>>,
     /// ISO-8601 timestamp of the evidence that produced this update.
     pub timestamp: Arc<str>,
     /// Pre-serialized JSON payload for zero-cost forwarding to WebSocket
@@ -95,20 +90,39 @@ pub struct PageUpdateEvent {
 }
 
 impl PageUpdateEvent {
-    /// Create a new event, pre-serializing the JSON payload once.
+    /// Create a new event with no metadata, pre-serializing the JSON payload once.
     #[must_use]
-    pub fn new(pages: Vec<String>, repo: String, timestamp: String) -> Self {
-        let json = serde_json::json!({
-            "type": "update",
-            "pages": pages,
-            "repo": repo,
-            "timestamp": timestamp,
-        })
-        .to_string();
+    pub fn new(pages: Vec<String>, timestamp: String) -> Self {
+        Self::with_metadata(pages, serde_json::Map::new(), timestamp)
+    }
+
+    /// Create a new event with caller-supplied metadata.
+    #[must_use]
+    pub fn with_metadata(
+        pages: Vec<String>,
+        metadata: serde_json::Map<String, serde_json::Value>,
+        timestamp: String,
+    ) -> Self {
+        let page_values = pages
+            .iter()
+            .cloned()
+            .map(serde_json::Value::String)
+            .collect();
+        let mut payload = metadata.clone();
+        payload.insert(
+            "type".to_string(),
+            serde_json::Value::String("update".to_string()),
+        );
+        payload.insert("pages".to_string(), serde_json::Value::Array(page_values));
+        payload.insert(
+            "timestamp".to_string(),
+            serde_json::Value::String(timestamp.clone()),
+        );
+        let json = serde_json::Value::Object(payload).to_string();
         let pages: Arc<[Arc<str>]> = pages.into_iter().map(Arc::from).collect();
         Self {
             pages,
-            repo: Arc::from(repo),
+            metadata: Arc::new(metadata),
             timestamp: Arc::from(timestamp),
             json: Arc::from(json),
         }
@@ -196,31 +210,6 @@ impl CachedPage {
     }
 }
 
-/// Compute a weak `ETag` from a SHA-256 hash of `body`, truncated to 16 bytes.
-///
-/// Format: `W/"<32 hex chars>"` — weak because the same `ETag` matches
-/// regardless of content encoding (gzip, zstd, identity).
-///
-/// Uses a single `String::with_capacity(36)` allocation: 3 bytes for `W/"`,
-/// 32 hex chars, and 1 closing `"`. No intermediate allocations.
-///
-/// # Panics
-///
-/// Panics if the generated `ETag` string is not valid ASCII (should never
-/// happen since the output is hex-encoded).
-#[must_use]
-pub(crate) fn compute_etag(body: &[u8]) -> HeaderValue {
-    use std::fmt::Write;
-    let hash = Sha256::digest(body);
-    let mut etag_str = String::with_capacity(36);
-    etag_str.push_str("W/\"");
-    for b in &hash[..16] {
-        write!(etag_str, "{b:02x}").expect("hex write to String is infallible");
-    }
-    etag_str.push('"');
-    HeaderValue::from_str(&etag_str).expect("ETag is valid ASCII")
-}
-
 /// Look up extension metadata via `match` (O(1) branch table).
 fn lookup_ext(ext: Option<&str>) -> Option<(&'static str, bool)> {
     let lower = ext?.to_ascii_lowercase();
@@ -260,24 +249,6 @@ pub(crate) fn content_type_for_ext(ext: Option<&str>) -> HeaderValue {
 #[must_use]
 pub(crate) fn is_compressible_ext(ext: Option<&str>) -> bool {
     lookup_ext(ext).is_some_and(|(_, compressible)| compressible)
-}
-
-/// Maximum input size accepted by [`compress_zstd`] (1 MiB).
-///
-/// Pages larger than this are served identity-only. Bounds the worst-case
-/// CPU cost of cache-population at zstd level 19, mitigating R1 (unbounded
-/// compression CPU) from `CORRECTNESS.md`. Inputs above the limit return
-/// `None` from `compress_zstd`; `CachedPage::new` already logs a `warn!`
-/// and falls back to identity serving on `None`.
-pub(crate) const MAX_PRECOMPRESS_BYTES: usize = 1 << 20;
-
-/// Compress `body` with zstd (level 19).
-#[must_use]
-pub(crate) fn compress_zstd(body: &[u8]) -> Option<Vec<u8>> {
-    if body.len() > MAX_PRECOMPRESS_BYTES {
-        return None;
-    }
-    zstd::stream::encode_all(std::io::Cursor::new(body), 19).ok()
 }
 
 /// Pre-compute a `Content-Length` header value from a byte count.
@@ -572,15 +543,13 @@ mod tests {
     #[test]
     fn page_update_event_json_structure() {
         let event = PageUpdateEvent::new(
-            vec!["index.html".into(), "report.html".into()],
-            "my-repo".into(),
+            vec!["index.html".into(), "page.html".into()],
             "2026-04-15T12:00:00Z".into(),
         );
         let parsed: serde_json::Value = serde_json::from_str(&event.json).unwrap();
         assert_eq!(parsed["type"], "update");
         assert_eq!(parsed["pages"][0], "index.html");
-        assert_eq!(parsed["pages"][1], "report.html");
-        assert_eq!(parsed["repo"], "my-repo");
+        assert_eq!(parsed["pages"][1], "page.html");
         assert_eq!(parsed["timestamp"], "2026-04-15T12:00:00Z");
     }
 }

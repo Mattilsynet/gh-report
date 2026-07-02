@@ -1,7 +1,7 @@
 //! In-memory content web server.
 //!
-//! Serves pre-rendered pages from an in-memory cache (`ArcSwap`-based).
-//! Pages are rendered into `HashMap<String, CachedPage>` by the upstream
+//! Serves pre-rendered content from an in-memory cache (`ArcSwap`-based).
+//! Entries are rendered into `HashMap<String, CachedPage>` by the upstream
 //! pipeline and swapped atomically — no disk I/O on the serving path.
 //!
 //! Content encoding: **zstd-only**. Clients that do not advertise
@@ -10,8 +10,8 @@
 //!
 //! # Trust Model
 //!
-//! - **No TLS built in** — requires reverse proxy / load balancer (e.g.,
-//!   Cloud Run, nginx) for HTTPS termination.
+//! - **No TLS built in** — requires reverse proxy / load balancer for
+//!   HTTPS termination.
 //! - **No authentication built in** — enforce at the ingress layer.
 //! - **No rate limiting built in** — enforce at the ingress layer.
 //! - **WebSocket** carries only page-update notifications (cache key names
@@ -30,8 +30,8 @@
 //! # Security Invariants
 //!
 //! - Binds to the address specified by the caller (default `127.0.0.1`);
-//!   container deployments set `BIND_ADDRESS=0.0.0.0` and rely on TLS
-//!   termination at the load balancer / reverse proxy layer (e.g., Cloud Run)
+//!   container deployments can set an all-interface bind address and rely
+//!   on TLS termination at the load balancer / reverse proxy layer
 //! - `normalize_request_path` rejects path traversal attempts (`../`,
 //!   percent-encoded variants, null bytes, backslashes)
 //! - Only keys present in the cache are served — no filesystem access
@@ -52,7 +52,6 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use cherry_pit_web::{SVG_CSP, http_trace_layer, normalize_request_path, security_headers};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tower_http::limit::RequestBodyLimitLayer;
@@ -62,6 +61,7 @@ use tracing::{debug, info, warn};
 use super::config::ValidatedConfig;
 use super::error::ServerError;
 use super::state::ServerState;
+use crate::middleware::{SVG_CSP, http_trace_layer, normalize_request_path, security_headers};
 
 /// Supported response encodings, in preference order.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -128,15 +128,13 @@ const WS_MAX_MESSAGE_SIZE: usize = 4096;
 /// Validate that the WebSocket `Origin` header matches the request `Host`.
 ///
 /// Prevents Cross-Site WebSocket Hijacking (CSWSH) where an attacker's page
-/// opens a WebSocket to the service and the browser attaches session cookies
-/// (e.g., Cloud Run IAP cookies), leaking organizational metadata via
-/// page-update notifications.
+/// opens a WebSocket to the service and the browser attaches ambient cookies,
+/// leaking caller-supplied update metadata via page-update notifications.
 ///
 /// # Algorithm
 ///
 /// 1. Reject non-HTTP/HTTPS schemes (e.g., `ftp://`, `file://`).
-/// 2. Extract the host portion from the `Origin` URL (e.g.,
-///    `https://reports.example.com` → `reports.example.com`).
+/// 2. Extract the host portion from the `Origin` URL.
 /// 3. Normalize ports: strip the default port for the scheme (443 for
 ///    `https`, 80 for `http`) from both Origin and Host, then compare
 ///    the `(hostname, port)` tuples.
@@ -152,8 +150,8 @@ const WS_MAX_MESSAGE_SIZE: usize = 4096;
 /// Allowing absent `Origin` means non-browser clients can connect without
 /// restriction. This is intentional: the WebSocket carries only page-update
 /// notifications (cache key names and timestamps), not secrets. Production
-/// deployments should enforce authentication at the ingress layer (Cloud Run,
-/// reverse proxy) to restrict access to authorized clients.
+/// deployments should enforce authentication at the ingress layer to
+/// restrict access to authorized clients.
 fn validate_ws_origin(headers: &HeaderMap) -> bool {
     let Some(origin) = headers.get(header::ORIGIN) else {
         return true;
@@ -172,11 +170,9 @@ fn validate_ws_origin(headers: &HeaderMap) -> bool {
         _ => return false,
     };
 
-    // SAFETY: `split('/').next()` on any `&str` always returns `Some`.
     let origin_authority = after_scheme
-        .split('/')
-        .next()
-        .expect("split always yields at least one element");
+        .split_once('/')
+        .map_or(after_scheme, |(head, _)| head);
 
     let Some(host_hdr) = headers.get(header::HOST) else {
         return false;
@@ -231,7 +227,7 @@ fn normalize_authority<'a>(authority: &'a str, default_port: &str) -> (&'a str, 
 /// Protocol (server → client):
 ///
 /// 1. On connect: `{"type":"connected"}`
-/// 2. On page update: `{"type":"update","pages":[...],"repo":"...","timestamp":"..."}`
+/// 2. On page update: `{"type":"update","pages":[...],"timestamp":"..."}`
 /// 3. On lag (client too slow): `{"type":"reload"}`
 ///
 /// Server sends Ping frames every 30 s; closes the connection if Pong is
@@ -250,7 +246,7 @@ fn normalize_authority<'a>(authority: &'a str, default_port: &str) -> (&'a str, 
 /// - No application-level authentication — same trust model as the dashboard
 ///   pages. Authentication is enforced at the ingress layer (Cloud Run /
 ///   reverse proxy). The WebSocket carries only page-update notifications
-///   (cache key names and timestamps), no secrets or credentials.
+///   (cache key names and timestamps), no secrets or private payloads.
 /// - No application-level rate limiting on WebSocket connections beyond the
 ///   semaphore cap. Production deployments must enforce rate limiting at the
 ///   ingress layer (Cloud Run, reverse proxy, or load balancer) to prevent
@@ -539,7 +535,7 @@ async fn cache_fallback<S: ServerState>(
     let cache_guard = state.html_cache().load();
     let Some(cache) = cache_guard.as_ref() else {
         info!(path = %normalized.key, "cache not populated: returning 503");
-        return (StatusCode::SERVICE_UNAVAILABLE, "reports not yet available").into_response();
+        return (StatusCode::SERVICE_UNAVAILABLE, "content not yet available").into_response();
     };
 
     if let Some(page) = resolve_cache_key(cache, &normalized.key, normalized.has_trailing_slash) {
@@ -580,7 +576,7 @@ fn etag_weak_match(client_val: &HeaderValue, server_val: &HeaderValue) -> bool {
 /// # Errors
 ///
 /// Returns [`ServerError::BindFailed`] when the socket cannot be bound.
-pub(crate) async fn bind_serving_port(addr: SocketAddr) -> Result<TcpListener, ServerError> {
+pub async fn bind_serving_port(addr: SocketAddr) -> Result<TcpListener, ServerError> {
     TcpListener::bind(addr)
         .await
         .map_err(|e| ServerError::BindFailed {
@@ -589,7 +585,7 @@ pub(crate) async fn bind_serving_port(addr: SocketAddr) -> Result<TcpListener, S
         })
 }
 
-/// Start the in-memory report web server and run until the provided shutdown
+/// Start the in-memory content web server and run until the provided shutdown
 /// signal completes.
 ///
 /// Serves pages from the in-memory `html_cache` on the state. Binds to
@@ -626,7 +622,7 @@ pub(crate) async fn bind_serving_port(addr: SocketAddr) -> Result<TcpListener, S
     clippy::too_many_arguments,
     reason = "server startup wiring keeps call-site ownership explicit"
 )]
-pub(crate) async fn start<S: ServerState>(
+pub async fn start<S: ServerState>(
     port: u16,
     bind_address: &str,
     listener: Option<TcpListener>,
@@ -639,8 +635,8 @@ pub(crate) async fn start<S: ServerState>(
     if bind_address != "127.0.0.1" && bind_address != "::1" && bind_address != "localhost" {
         warn!(
             bind = %bind_address,
-            "server is binding to a non-localhost address; \
-             ensure reports are safe for the target network"
+             "server is binding to a non-localhost address; \
+             ensure content is safe for the target network"
         );
     }
 
@@ -702,7 +698,7 @@ const DEFAULT_CSP: &str = "default-src 'self'; style-src 'self'; script-src 'sel
 /// Panics if `extra_routes` contains routes that conflict with built-in
 /// paths (`/healthz`, `/readyz`, `/favicon.ico`, `/ws`). Axum's
 /// `Router::merge()` panics on overlapping route definitions.
-pub(crate) fn build_router<S: ServerState>(
+pub fn build_router<S: ServerState>(
     state: Arc<S>,
     config: &ValidatedConfig,
     extra_routes: Option<Router<Arc<S>>>,
@@ -798,7 +794,7 @@ async fn readyz<S: ServerState>(State(state): State<Arc<S>>) -> impl IntoRespons
         (
             StatusCode::SERVICE_UNAVAILABLE,
             [(header::CONTENT_TYPE, "application/json")],
-            r#"{"status":"not_ready","reason":"no reports published yet"}"#,
+            r#"{"status":"not_ready","reason":"no content published yet"}"#,
         )
     }
 }
@@ -914,35 +910,35 @@ mod tests {
 
     #[test]
     fn normalize_simple_path() {
-        let result = normalize_request_path("/report.html").unwrap();
-        assert_eq!(result.key, "report.html");
+        let result = normalize_request_path("/page.html").unwrap();
+        assert_eq!(result.key, "page.html");
         assert!(!result.has_trailing_slash);
     }
 
     #[test]
     fn normalize_nested_path() {
-        let result = normalize_request_path("/owners/acme.html").unwrap();
-        assert_eq!(result.key, "owners/acme.html");
+        let result = normalize_request_path("/section/item.html").unwrap();
+        assert_eq!(result.key, "section/item.html");
         assert!(!result.has_trailing_slash);
     }
 
     #[test]
     fn normalize_collapses_double_slashes() {
         assert_eq!(
-            normalize_request_path("//report.html").unwrap().key,
-            "report.html"
+            normalize_request_path("//page.html").unwrap().key,
+            "page.html"
         );
         assert_eq!(
-            normalize_request_path("/owners///acme.html").unwrap().key,
-            "owners/acme.html"
+            normalize_request_path("/section///item.html").unwrap().key,
+            "section/item.html"
         );
     }
 
     #[test]
     fn normalize_strips_dot_segments() {
         assert_eq!(
-            normalize_request_path("/./report.html").unwrap().key,
-            "report.html"
+            normalize_request_path("/./page.html").unwrap().key,
+            "page.html"
         );
     }
 
@@ -989,7 +985,7 @@ mod tests {
 
     #[tokio::test]
     async fn server_serves_cached_pages() {
-        let state = state_with_cache(&[("report.html", "<html>test</html>")]);
+        let state = state_with_cache(&[("page.html", "<html>test</html>")]);
         let app = build_router(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1001,7 +997,7 @@ mod tests {
 
         wait_for_server(addr).await;
 
-        let resp = reqwest::get(format!("http://{addr}/report.html"))
+        let resp = reqwest::get(format!("http://{addr}/page.html"))
             .await
             .unwrap();
         assert_eq!(resp.status(), 200);
@@ -1125,7 +1121,7 @@ mod tests {
     async fn server_serves_index_for_root() {
         let state = state_with_cache(&[
             ("index.html", "<html>dashboard</html>"),
-            ("report.html", "<html>report</html>"),
+            ("page.html", "<html>page</html>"),
         ]);
         let app = build_router(state, &default_config(), None);
 
@@ -1143,11 +1139,11 @@ mod tests {
         let body = resp.text().await.unwrap();
         assert_eq!(body, "<html>dashboard</html>");
 
-        let resp = reqwest::get(format!("http://{addr}/report.html"))
+        let resp = reqwest::get(format!("http://{addr}/page.html"))
             .await
             .unwrap();
         assert_eq!(resp.status(), 200);
-        assert_eq!(resp.text().await.unwrap(), "<html>report</html>");
+        assert_eq!(resp.text().await.unwrap(), "<html>page</html>");
 
         handle.abort();
     }
@@ -1403,7 +1399,7 @@ mod tests {
 
     #[tokio::test]
     async fn server_includes_security_headers_on_cached_page() {
-        let state = state_with_cache(&[("report.html", "<html>secure</html>")]);
+        let state = state_with_cache(&[("page.html", "<html>secure</html>")]);
         let app = build_router(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1415,11 +1411,11 @@ mod tests {
 
         wait_for_server(addr).await;
 
-        let resp = reqwest::get(format!("http://{addr}/report.html"))
+        let resp = reqwest::get(format!("http://{addr}/page.html"))
             .await
             .unwrap();
         assert_eq!(resp.status(), 200);
-        assert_security_headers(&resp, "/report.html");
+        assert_security_headers(&resp, "/page.html");
 
         let csp = resp
             .headers()
@@ -1583,7 +1579,7 @@ mod tests {
 
     #[tokio::test]
     async fn etag_304_still_includes_no_cache() {
-        let state = state_with_cache(&[("report.html", "<html>report</html>")]);
+        let state = state_with_cache(&[("page.html", "<html>page</html>")]);
         let app = build_router(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1595,7 +1591,7 @@ mod tests {
 
         wait_for_server(addr).await;
 
-        let resp = reqwest::get(format!("http://{addr}/report.html"))
+        let resp = reqwest::get(format!("http://{addr}/page.html"))
             .await
             .unwrap();
         let etag = resp
@@ -1608,7 +1604,7 @@ mod tests {
 
         let client = reqwest::Client::new();
         let resp = client
-            .get(format!("http://{addr}/report.html"))
+            .get(format!("http://{addr}/page.html"))
             .header("If-None-Match", &etag)
             .send()
             .await
@@ -1850,8 +1846,7 @@ mod tests {
         state
             .ws_broadcast
             .send(PageUpdateEvent::new(
-                vec!["index.html".into(), "report.html".into()],
-                "my-repo".into(),
+                vec!["index.html".into(), "page.html".into()],
                 "2026-04-14T12:00:00Z".into(),
             ))
             .unwrap();
@@ -1859,9 +1854,8 @@ mod tests {
         let text = msg_text(ws.next().await.unwrap().unwrap());
         let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(parsed["type"], "update");
-        assert_eq!(parsed["repo"], "my-repo");
         assert_eq!(parsed["pages"][0], "index.html");
-        assert_eq!(parsed["pages"][1], "report.html");
+        assert_eq!(parsed["pages"][1], "page.html");
         assert_eq!(parsed["timestamp"], "2026-04-14T12:00:00Z");
 
         ws.close(None).await.ok();
@@ -1895,7 +1889,6 @@ mod tests {
                 .ws_broadcast
                 .send(PageUpdateEvent::new(
                     vec![format!("page-{i}.html")],
-                    format!("repo-{i}"),
                     "2026-04-14T12:00:00Z".into(),
                 ))
                 .ok();
@@ -2101,7 +2094,6 @@ mod tests {
             .ws_broadcast
             .send(PageUpdateEvent::new(
                 vec!["index.html".into()],
-                "fanout-repo".into(),
                 "2026-04-15T12:00:00Z".into(),
             ))
             .unwrap();
@@ -2110,7 +2102,6 @@ mod tests {
             let text = msg_text(ws.next().await.unwrap().unwrap());
             let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
             assert_eq!(parsed["type"], "update", "client {i} should get update");
-            assert_eq!(parsed["repo"], "fanout-repo", "client {i} repo mismatch");
             assert_eq!(
                 parsed["pages"][0], "index.html",
                 "client {i} pages mismatch"
@@ -3301,10 +3292,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(
-                result,
-                Err(crate::infra::server::error::ServerError::InvalidAddress { .. })
-            ),
+            matches!(result, Err(ServerError::InvalidAddress { .. })),
             "invalid bind address should return InvalidAddress, got: {result:?}"
         );
     }

@@ -1,6 +1,6 @@
 //! # cherry-pit-web
 //!
-//! HTTP adapter exposing [`cherry_pit_core::CommandGateway`] over axum.
+//! HTTP adapter family over axum.
 //!
 //! Realises **CHE-0049** (cherry-pit-web design) by translating HTTP
 //! requests into domain commands, dispatching them via the gateway, and
@@ -9,10 +9,11 @@
 //! consumer-owned wire-deserialize-and-dispatch trait threaded through
 //! `AppState` and `build_router` as a third type parameter `R`.
 //!
-//! The crate is HTTP-only in v0.1 (CHE-0049 R3) — no WebSocket surface
-//! on the cqrs router, no built-in auth (R2), no static-content cache
-//! (R8). Consumers attach auth via the [`build_router`] `extra_routes`
-//! merge point. Under `feature = "projection"`, a second router
+//! The cqrs router remains HTTP-only in v0.1 (CHE-0049 R3) — no
+//! WebSocket surface on that router, no built-in auth (R2). Consumers
+//! attach auth via the [`build_router`] `extra_routes` merge point.
+//! The [`serve`] module provides the CHE-0086 generic read-serve
+//! surface. Under `feature = "projection"`, a second router
 //! [`build_projection_router`] mounts a read-side surface with a
 //! narrowed WS upgrade for snapshot-delta push only (CHE-0049 R11).
 //!
@@ -51,6 +52,7 @@ pub(crate) mod middleware;
 #[cfg(feature = "projection")]
 mod projection;
 mod router;
+pub mod serve;
 mod state;
 
 pub mod correlation;
@@ -69,4 +71,5 @@ pub use projection::{
     ServerConfigBuilder, ServerError, ValidatedConfig, build_projection_router,
 };
 pub use router::build_router;
+pub use serve::{CachedPage, PageUpdateEvent, ServerState};
 pub use state::AppState;

@@ -1484,7 +1484,6 @@ pub(crate) fn commit_cached_pages(
 
     let _ = state.send_page_update(crate::app::state::PageUpdateEvent::new(
         page_keys,
-        String::new(),
         jiff::Timestamp::now().to_string(),
     ));
 
@@ -1888,8 +1887,8 @@ mod tests {
     use crate::domain::auth::AuthMode;
     use crate::domain::auth::{Capability, TokenTier};
     use crate::domain::repository::Visibility;
-    use crate::infra::server::state::ServerState;
     use crate::test_fixtures;
+    use cherry_pit_web::serve::ServerState;
 
     /// Compile-time assertion: `LiveEvaluator` satisfies `JobExecutor` bounds.
     /// This ensures the impl stays in sync with the trait as both evolve.

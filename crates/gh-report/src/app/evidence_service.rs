@@ -13,7 +13,7 @@ use arc_swap::ArcSwap;
 
 use crate::app::work_queue::BatchTracker;
 use crate::domain::metrics::OrgAlertSummary;
-use crate::infra::server::state::{CachedPage, PageUpdateEvent};
+use cherry_pit_web::serve::{CachedPage, PageUpdateEvent};
 
 /// Evidence service sub-aggregate.
 ///

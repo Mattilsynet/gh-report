@@ -1,9 +1,5 @@
 //! Server configuration with typestate builder pattern.
 //!
-//! Absorbed under mission `absorb-server-1778695800` (P1-A.5.2).
-//! Byte-for-byte port; only doc-example crate paths and the
-//! `crate::server::build_router` reference were rewritten.
-//!
 //! Configuration flows through two types:
 //!
 //! - [`ServerConfigBuilder`] — mutable builder with setter methods.
@@ -12,7 +8,7 @@
 //!   Created only via [`ServerConfigBuilder::build()`].
 //!
 //! This pattern makes invalid configuration unrepresentable:
-//! [`super::server::build_router`] accepts `&ValidatedConfig`, so
+//! [`super::runtime::build_router`] accepts `&ValidatedConfig`, so
 //! callers cannot pass unchecked values.
 
 use thiserror::Error;

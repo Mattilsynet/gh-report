@@ -737,6 +737,7 @@ dependencies = [
 name = "cherry-pit-web"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "axum",
  "bytes",
  "cherry-pit-core",
@@ -1575,7 +1576,6 @@ dependencies = [
  "uuid",
  "wiremock",
  "zeroize",
- "zstd",
 ]
 
 [[package]]

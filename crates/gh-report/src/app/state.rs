@@ -39,7 +39,7 @@ use pardosa::store::diagnostics as nats_diagnostics;
 use pardosa_nats::{JetStreamBackend as SubstrateJetStreamBackend, JetStreamConfig, RuntimeHandle};
 use pardosa_schema::{NonEmptyEventString, Timestamp as EventTimestamp};
 
-pub use crate::infra::server::state::{CachedPage, PageUpdateEvent};
+pub use cherry_pit_web::serve::{CachedPage, PageUpdateEvent};
 
 pub type EventStoreImpl = crate::store::NativeStore;
 pub type OrgEventStoreImpl = crate::store::NativeOrgStore;
@@ -84,7 +84,7 @@ pub static CACHED_WS_JS: LazyLock<CachedPage> =
 /// Shared application state.
 ///
 /// Passed via `Arc<AppState>` to all axum handlers and the collection pipeline.
-/// Implements [`crate::infra::server::state::ServerState`] so that the
+/// Implements [`cherry_pit_web::serve::ServerState`] so that the
 /// generic in-memory HTTP server can serve pages, health probes, and
 /// WebSocket updates without any governance-specific knowledge.
 ///
@@ -1369,7 +1369,7 @@ impl AppState {
     }
 }
 
-impl crate::infra::server::state::ServerState for AppState {
+impl cherry_pit_web::serve::ServerState for AppState {
     fn html_cache(&self) -> &ArcSwap<Option<HashMap<String, CachedPage>>> {
         &self.evidence.html_cache
     }
@@ -1393,7 +1393,7 @@ mod tests {
     use crate::config::runtime::{NatsStoreConfig, PardosaBackend};
     use crate::domain::cache::CachedRepoDetail;
     use crate::domain::evidence::Evidence;
-    use crate::infra::server::state::ServerState;
+    use cherry_pit_web::serve::ServerState;
     use std::fmt::Write as _;
     use std::io::Write;
     use std::sync::Arc;
@@ -2356,7 +2356,7 @@ mod tests {
 
     #[tokio::test]
     async fn is_ready_false_when_no_run_and_no_cache() {
-        use crate::infra::server::state::ServerState;
+        use cherry_pit_web::serve::ServerState;
         let state = AppStateBuilder::new().build().await;
         assert!(
             !state.is_ready(),
@@ -2366,7 +2366,7 @@ mod tests {
 
     #[tokio::test]
     async fn is_ready_true_when_html_cache_populated() {
-        use crate::infra::server::state::ServerState;
+        use cherry_pit_web::serve::ServerState;
         let state = AppStateBuilder::new().build().await;
         let mut pages = HashMap::new();
         pages.insert(
@@ -2379,7 +2379,7 @@ mod tests {
 
     #[tokio::test]
     async fn is_ready_false_when_cache_populated_but_jetstream_connect_failed() {
-        use crate::infra::server::state::ServerState;
+        use cherry_pit_web::serve::ServerState;
         let state = AppStateBuilder::new().build().await;
         let mut pages = HashMap::new();
         pages.insert(

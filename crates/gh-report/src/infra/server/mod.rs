@@ -1,12 +1,7 @@
-//! In-memory HTTP server: config, state types, request pipeline.
+//! In-memory HTTP serve pipeline shim.
 //!
-//! Absorbed under mission `absorb-server-1778695800` (P1-A.5.2).
-//! Provides a generic SERVE pipeline (security headers, ETag/304,
-//! zstd negotiation, WebSocket live updates, path normalization) —
-//! zero domain knowledge. Domain-specific state implements
-//! [`state::ServerState`].
+//! The implementation lives in `cherry-pit-web`; this module preserves
+//! existing `gh-report` paths while app-side state implements the public
+//! trait from the library.
 
-pub mod config;
-pub mod error;
-pub mod runtime;
-pub mod state;
+pub use cherry_pit_web::serve::{config, error, runtime, state};

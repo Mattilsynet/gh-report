@@ -1,9 +1,9 @@
-//! Server integration — delegates to [`crate::infra::server`].
+//! Server integration — delegates to [`cherry_pit_web::serve`].
 //!
 //! This module provides:
 //!
 //! - [`status_router`] — the `/api/v1/status` route (registered as an
-//!   extra route, not an `infra::server` built-in).
+//!   extra route, not a `cherry_pit_web::serve` built-in).
 //! - [`build_router`] — convenience wrapper that wires `AppState` to the
 //!   generic server router with the status route included.
 //!
@@ -24,8 +24,8 @@ use crate::app::state::AppState;
 ///
 /// Returns a router with a 1 KB body limit (defence-in-depth for a
 /// GET-only endpoint). Meant to be merged as `extra_routes` into
-/// [`crate::infra::server::runtime::build_router`] or
-/// [`crate::infra::server::runtime::start`].
+/// [`cherry_pit_web::serve::build_router`] or
+/// [`cherry_pit_web::serve::start`].
 pub(crate) fn status_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/v1/status", get(status))
@@ -43,7 +43,7 @@ async fn status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
 
 /// Build the [`Router`] for `AppState` using the generic in-memory server.
 ///
-/// Wires `AppState` (which implements [`crate::infra::server::state::ServerState`])
+/// Wires `AppState` (which implements [`cherry_pit_web::serve::ServerState`])
 /// to the generic server router with the status endpoint registered as an
 /// extra route.
 ///
@@ -52,9 +52,9 @@ async fn status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
 /// Panics if the default `ServerConfig` cannot be built (indicates a
 /// programming error in the hardcoded defaults).
 pub fn build_router(state: Arc<AppState>) -> Router {
-    crate::infra::server::runtime::build_router(
+    cherry_pit_web::serve::build_router(
         state,
-        &crate::infra::server::config::ServerConfig::builder()
+        &cherry_pit_web::serve::ServerConfig::builder()
             .build()
             .expect("default config is valid"),
         Some(status_router()),
@@ -213,7 +213,7 @@ mod tests {
 
     #[tokio::test]
     async fn admin_html_serves_from_dashboard_cache_read_only() {
-        use crate::infra::server::state::CachedPage;
+        use cherry_pit_web::serve::CachedPage;
         use std::collections::HashMap;
 
         let state = state_no_cache().await;
@@ -259,8 +259,8 @@ mod tests {
         use crate::app::collect::warm_start_from_baseline;
         use crate::config::dashboard::DashboardConfig;
         use crate::config::runtime::{NatsStoreConfig, PardosaBackend, RuntimeConfig};
-        use crate::infra::server::state::ServerState;
         use crate::test_fixtures;
+        use cherry_pit_web::serve::ServerState;
 
         let dir = tempfile::tempdir().unwrap();
         let events_dir = dir.path().join("events");
@@ -331,7 +331,7 @@ mod tests {
 
     #[tokio::test]
     async fn readyz_returns_503_when_cache_warm_but_backend_connect_failed() {
-        use crate::infra::server::state::CachedPage;
+        use cherry_pit_web::serve::CachedPage;
         use std::collections::HashMap;
 
         let state = state_no_cache().await;
