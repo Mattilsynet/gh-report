@@ -745,16 +745,29 @@ fn conversion_persistence(error: &EventConversionError) -> PersistenceError {
     }
 }
 
+const fn deployment_remediation_hint(
+    class: nats_diagnostics::NatsFailureClass,
+) -> Option<&'static str> {
+    match class {
+        nats_diagnostics::NatsFailureClass::AuthzViolation => Some(
+            "if creds are byte-valid but the failure only occurs from the deployed service: the NATS account is likely not activated for the Cloud Run egress origin; request MAP platform-team origin activation or allow-listing",
+        ),
+        _ => None,
+    }
+}
+
 pub(crate) fn log_error_chain(event: &'static str, error: &(dyn Error + 'static)) {
     let error_chain = nats_diagnostics::error_chain_json(error);
     let error_display = nats_diagnostics::redact_nats_credentials(&error.to_string());
     let class = nats_diagnostics::classify_nats_failure(error);
     let nats_failure_class = class.as_str();
     let nats_failure_remediation = nats_diagnostics::nats_failure_remediation(class);
+    let deployment_remediation_hint = deployment_remediation_hint(class).unwrap_or("");
     tracing::error!(
         diagnostic_event = event,
         nats_failure_class = nats_failure_class,
         nats_failure_remediation = nats_failure_remediation,
+        deployment_remediation_hint = deployment_remediation_hint,
         error_chain = error_chain.as_str(),
         error = error_display.as_str(),
         "persistence error chain captured before flattening"
@@ -1969,7 +1982,10 @@ mod tests {
         );
         assert!(output.contains("nats_failure_class=authz_violation"));
         assert!(output.contains(
-            "nats_failure_remediation=check the NATS account permissions for the configured subject"
+            "nats_failure_remediation=check the NATS account permissions for the configured subject; if credentials are byte-valid, suspect a connection-origin or network-identity mismatch at the connection boundary"
+        ));
+        assert!(output.contains(
+            "deployment_remediation_hint=if creds are byte-valid but the failure only occurs from the deployed service: the NATS account is likely not activated for the Cloud Run egress origin; request MAP platform-team origin activation or allow-listing"
         ));
     }
 
@@ -1990,6 +2006,14 @@ mod tests {
         assert!(output.contains(
             "nats_failure_remediation=rotate the NATS credentials secret and restart the service"
         ));
+        assert!(
+            output.contains("deployment_remediation_hint=;"),
+            "non-authz class must not carry the Cloud-Run hint: {output}"
+        );
+        assert!(
+            !output.contains("Cloud Run"),
+            "non-authz class must not leak the Cloud-Run-specific hint: {output}"
+        );
         assert!(output.contains("error_chain"));
         assert!(output.contains("[redacted nats credential block]"));
         assert!(
@@ -1999,6 +2023,24 @@ mod tests {
         assert!(
             !output.contains(second_secret),
             "NATS startup diagnostics must not log credential bytes: {output}"
+        );
+    }
+
+    #[test]
+    fn deployment_remediation_hint_targets_authz_violation_only() {
+        assert_eq!(
+            deployment_remediation_hint(nats_diagnostics::NatsFailureClass::AuthzViolation),
+            Some(
+                "if creds are byte-valid but the failure only occurs from the deployed service: the NATS account is likely not activated for the Cloud Run egress origin; request MAP platform-team origin activation or allow-listing"
+            )
+        );
+        assert_eq!(
+            deployment_remediation_hint(nats_diagnostics::NatsFailureClass::CredsStaleInvalid),
+            None
+        );
+        assert_eq!(
+            deployment_remediation_hint(nats_diagnostics::NatsFailureClass::Unknown),
+            None
         );
     }
 

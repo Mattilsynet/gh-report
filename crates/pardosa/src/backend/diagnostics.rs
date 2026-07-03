@@ -45,7 +45,7 @@ impl NatsFailureClass {
 pub const fn nats_failure_remediation(class: NatsFailureClass) -> &'static str {
     match class {
         NatsFailureClass::AuthzViolation => {
-            "check the NATS account permissions for the configured subject"
+            "check the NATS account permissions for the configured subject; if credentials are byte-valid, suspect a connection-origin or network-identity mismatch at the connection boundary"
         }
         NatsFailureClass::JetStreamProvisioningDenied => {
             "enable JetStream for the NATS account, grant stream and subject create permissions, and verify stream configuration"
@@ -494,6 +494,14 @@ mod tests {
     #[test]
     fn nats_failure_classifies_authz_violation() {
         assert_nats_failure_class("nats: authorization violation", "authz_violation");
+    }
+
+    #[test]
+    fn nats_failure_remediation_names_origin_class_for_authz_violation() {
+        assert_eq!(
+            nats_failure_remediation(NatsFailureClass::AuthzViolation),
+            "check the NATS account permissions for the configured subject; if credentials are byte-valid, suspect a connection-origin or network-identity mismatch at the connection boundary"
+        );
     }
 
     #[test]
