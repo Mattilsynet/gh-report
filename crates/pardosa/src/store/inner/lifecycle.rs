@@ -546,6 +546,13 @@ where
         return if stream_is_empty {
             Ok(())
         } else {
+            let expected_marker = format!("{expected:032x}");
+            tracing::warn!(
+                event = "schema_marker_absent_populated_stream",
+                expected_schema_marker = %expected_marker,
+                recovery = "stream may have been recreated out-of-band; bounce the revision to re-provision it; see crates/gh-report/OPERATIONS.md",
+                "schema marker absent on populated JetStream stream"
+            );
             Err(persist_error_to_cursor_read(
                 crate::persist::Error::SchemaMarkerAbsent { expected },
             ))
@@ -956,6 +963,8 @@ mod tests {
     use pardosa_wire::Validate;
     use pardosa_wire::{Decode, DecodeError, Decoder, Encode, EventSafe};
     use std::io::Write;
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::fmt::MakeWriter;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct TaggedPayload(u64);
@@ -985,6 +994,64 @@ mod tests {
     }
     impl crate::typed::HasEventSchemaSource for TaggedPayload {
         const EVENT_SCHEMA_SOURCE: Option<&'static str> = Some(Self::SCHEMA_SOURCE);
+    }
+
+    #[derive(Clone, Default)]
+    struct TraceWriter {
+        buf: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl TraceWriter {
+        fn snapshot(&self) -> String {
+            String::from_utf8(self.buf.lock().expect("buffer mutex").clone()).expect("utf-8")
+        }
+    }
+
+    impl Write for TraceWriter {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.buf
+                .lock()
+                .expect("buffer mutex")
+                .extend_from_slice(data);
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for TraceWriter {
+        type Writer = TraceWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture_tracing<R>(f: impl FnOnce() -> R) -> (R, String) {
+        let writer = TraceWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(writer.clone())
+            .with_ansi(false)
+            .with_target(false)
+            .finish();
+        let result = tracing::subscriber::with_default(subscriber, f);
+        (result, writer.snapshot())
+    }
+
+    fn assert_schema_marker_absent(err: PardosaError) {
+        match err {
+            PardosaError::CursorRead { source } => match *source {
+                crate::persist::Error::SchemaMarkerAbsent { expected } => {
+                    assert_eq!(expected, Event::<TaggedPayload>::ENVELOPE_HASH);
+                }
+                other => panic!("expected SchemaMarkerAbsent, got {other:?}"),
+            },
+            other => panic!("expected CursorRead, got {other:?}"),
+        }
     }
 
     fn frame(value: u64) -> Vec<u8> {
@@ -1228,23 +1295,33 @@ mod tests {
 
     #[test]
     fn gate_stream_marker_allows_absent_empty_stream() {
-        gate_stream_marker::<TaggedPayload>(None, true)
-            .expect("markerless empty stream remains admissible");
+        let (result, logs) = capture_tracing(|| gate_stream_marker::<TaggedPayload>(None, true));
+        result.expect("markerless empty stream remains admissible");
+        assert!(
+            !logs.contains("schema_marker_absent_populated_stream"),
+            "markerless empty stream must not warn: {logs}"
+        );
     }
 
     #[test]
     fn gate_stream_marker_rejects_absent_populated_stream() {
-        let err = gate_stream_marker::<TaggedPayload>(None, false)
-            .expect_err("markerless populated stream must refuse");
-        match err {
-            PardosaError::CursorRead { source } => match *source {
-                crate::persist::Error::SchemaMarkerAbsent { expected } => {
-                    assert_eq!(expected, Event::<TaggedPayload>::ENVELOPE_HASH);
-                }
-                other => panic!("expected SchemaMarkerAbsent, got {other:?}"),
-            },
-            other => panic!("expected CursorRead, got {other:?}"),
-        }
+        let (err, logs) = capture_tracing(|| {
+            gate_stream_marker::<TaggedPayload>(None, false)
+                .expect_err("markerless populated stream must refuse")
+        });
+        assert_schema_marker_absent(err);
+        assert!(
+            logs.contains("schema_marker_absent_populated_stream"),
+            "markerless populated stream must warn: {logs}"
+        );
+        assert!(
+            logs.contains(&format!("{:032x}", Event::<TaggedPayload>::ENVELOPE_HASH)),
+            "warn must include expected schema marker: {logs}"
+        );
+        assert!(
+            logs.contains("OPERATIONS.md"),
+            "warn must point operators to the runbook: {logs}"
+        );
     }
 
     #[test]

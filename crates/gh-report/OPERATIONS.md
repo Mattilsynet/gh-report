@@ -781,6 +781,14 @@ For MAP, set `GH_REPORT_NATS_URL=tls://connect.nats.mattilsynet.io:4222`. The en
 
 At startup, gh-report creates its per-organisation JetStream stream at runtime: stream `gh-report-<org_token>` and subject `gh-report.<org_token>.events`. The configured NATS user must have JetStream permissions in its account for that stream and subject.
 
+### Recovering from an out-of-band JetStream stream recreation
+
+**Symptom:** An operator deleted and recreated a `gh-report` JetStream stream while the app was running. The process does not receive a NATS reconnect event; it keeps serving from its in-memory projection and publishes to the new empty stream. On the next read/replay gate, a `schema_marker_absent_populated_stream` warning and `SchemaMarkerAbsent` error may appear if the recreated stream is populated without the schema marker.
+
+**Why:** JetStream provisioning writes the PGN-0019 stream-level schema marker at process startup and is memoised for the process lifetime. A mid-life stream recreation is re-provisioned only at the next cold start. This is an operational surface: who may recreate a stream out of band is not fenced in code by design, while PGN-0016 continues to fence application appends.
+
+**Recovery:** Bounce the Cloud Run revision or otherwise restart the process. Cold start re-runs provisioning, including the OPT-1 marker back-fill shipped in `57e449f` / `v0.1.8`, rewrites the stream marker, lets the open gate pass, and rehydrates the store. This restart-based recovery is the ratified path; do not tag, deploy, or recreate streams as part of the bounce unless a separate release or incident procedure authorises it.
+
 ## See also
 
 - [Substrate recovery runbooks](../cherry-pit-gateway/RUNBOOKS.md) — substrate-side recovery procedures (CHE-0047 R1–R6); applicable to gh-report instances using the `MsgpackFileStore` backend.
