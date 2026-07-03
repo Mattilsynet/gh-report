@@ -1132,6 +1132,45 @@ mod tests {
     }
 
     #[test]
+    fn collection_health_taxonomy_pre_extension_three_rows_contain_expected_counts() {
+        let mut repos = sample_repos();
+        repos[0].checks.branch_protection.details.reason_kind =
+            Some(CollectionFailureReason::PermissionSuspected);
+        repos[3].checks.branch_protection.details.reason_kind =
+            Some(CollectionFailureReason::NotFoundAbsent);
+
+        let metrics = aggregate_metrics(&repos);
+
+        assert!(
+            metrics
+                .collection_health_counts
+                .contains(&CollectionHealthCount {
+                    check_kind: CollectionHealthCheckKind::SecretScanning,
+                    reason: CollectionFailureReason::PermissionDenied,
+                    count: 1,
+                })
+        );
+        assert!(
+            metrics
+                .collection_health_counts
+                .contains(&CollectionHealthCount {
+                    check_kind: CollectionHealthCheckKind::BranchProtection,
+                    reason: CollectionFailureReason::PermissionSuspected,
+                    count: 1,
+                })
+        );
+        assert!(
+            metrics
+                .collection_health_counts
+                .contains(&CollectionHealthCount {
+                    check_kind: CollectionHealthCheckKind::BranchProtection,
+                    reason: CollectionFailureReason::NotFoundAbsent,
+                    count: 1,
+                })
+        );
+    }
+
+    #[test]
     fn aggregate_metrics_codeowners_counts() {
         let repos = sample_repos();
         let metrics = aggregate_metrics(&repos);
