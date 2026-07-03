@@ -255,6 +255,85 @@ fn live_replay_all_on_purged_stream_returns_empty_vec_promptly() {
     );
     rt.block_on(teardown_stream(&server, &stream_name));
 }
+
+#[test]
+fn live_update_stream_description_round_trips_on_populated_markerless_stream() {
+    let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+    let rt = Runtime::new().expect("tokio runtime");
+    let tag = unique_stream_tag();
+    let stream_name = format!("PARDOSA_LIVE_{tag}");
+    let subject = format!("pardosa.live.{tag}");
+    let marker = "0123456789abcdef0123456789abcdef".to_owned();
+    let read_back = rt.block_on(async {
+        use async_nats::jetstream::stream::{
+            Config as StreamConfig, DiscardPolicy, RetentionPolicy, StorageType,
+        };
+        let client = async_nats::connect(server.url()).await.expect("connect");
+        let js = async_nats::jetstream::new(client);
+        let mut stream_cfg = StreamConfig {
+            name: stream_name.clone(),
+            subjects: vec![subject.clone()],
+            storage: StorageType::File,
+            num_replicas: 1,
+            retention: RetentionPolicy::Limits,
+            discard: DiscardPolicy::New,
+            duplicate_window: Duration::from_mins(2),
+            ..Default::default()
+        };
+        js.get_or_create_stream(stream_cfg.clone())
+            .await
+            .expect("provision markerless stream");
+        let publish_ack = js
+            .publish(
+                subject.clone(),
+                bytes::Bytes::from_static(b"gap-a-populated"),
+            )
+            .await
+            .expect("publish accepted by JetStream")
+            .await
+            .expect("publish ack received");
+        assert!(
+            publish_ack.sequence > 0,
+            "publish ack sequence proves the markerless stream is populated"
+        );
+        stream_cfg.description = Some(marker.clone());
+        let update_info = js
+            .update_stream(stream_cfg.clone())
+            .await
+            .expect("update stream description");
+        assert_eq!(
+            update_info.config.description.as_deref(),
+            Some(marker.as_str()),
+            "update_stream response carries the written description"
+        );
+        let second_update_info = js
+            .update_stream(stream_cfg)
+            .await
+            .expect("repeat stream description update");
+        assert_eq!(
+            second_update_info.config.description.as_deref(),
+            Some(marker.as_str()),
+            "identical update_stream remains conflict-free"
+        );
+        let stream = js
+            .get_stream(stream_name.as_str())
+            .await
+            .expect("get stream");
+        let info = stream.get_info().await.expect("read stream info");
+        let read_back = info.config.description;
+        eprintln!(
+            "GAP_A_READ_BACK_DESCRIPTION={}",
+            read_back.as_deref().unwrap_or("<none>")
+        );
+        read_back
+    });
+    rt.block_on(teardown_stream(&server, &stream_name));
+    assert_eq!(
+        read_back.as_deref(),
+        Some(marker.as_str()),
+        "NATS 2.14.2 must read back a description on a populated stream"
+    );
+}
 #[test]
 #[ignore = "requires nats-server matching tools/.nats-server-version on PATH (mission nats-recovery-03-live-harness)"]
 fn live_replay_all_collapses_duplicate_publishes() {

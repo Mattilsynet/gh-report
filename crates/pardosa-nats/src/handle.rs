@@ -432,11 +432,18 @@ async fn provision_stream(
     cfg: &JetStreamConfig,
 ) -> Result<(), JetStreamRuntimeError> {
     let stream_cfg = build_stream_config(cfg);
-    js.get_or_create_stream(stream_cfg)
+    js.get_or_create_stream(stream_cfg.clone())
         .await
         .map_err(|e| JetStreamRuntimeError::Connect {
             source: Box::new(e),
         })?;
+    if stream_cfg.description.is_some() {
+        js.update_stream(stream_cfg)
+            .await
+            .map_err(|e| JetStreamRuntimeError::Connect {
+                source: Box::new(e),
+            })?;
+    }
     Ok(())
 }
 

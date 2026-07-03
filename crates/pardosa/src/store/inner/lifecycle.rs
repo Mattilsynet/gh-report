@@ -460,13 +460,7 @@ where
     if frames.is_empty() {
         return Ok((crate::dragline::Line::new(), 0));
     }
-    if let Some((pgno_idx, event_frames)) =
-        frames.iter().enumerate().rev().find_map(|(idx, frame)| {
-            event_frames_from_pgno::<T>(&frame.payload)
-                .ok()
-                .map(|frames| (idx, frames))
-        })
-    {
+    if let Some((pgno_idx, event_frames)) = event_frames_from_latest_pgno::<T>(frames)? {
         if pgno_idx + 1 == frames.len() {
             let line = from_pgno_bytes_unchecked::<T>(&frames[pgno_idx].payload)
                 .map_err(persist_error_to_cursor_read)?;
@@ -485,6 +479,32 @@ where
     let line = rehydrate_event_frames::<T>(frames)?;
     let synced_events = line.read_line().len();
     Ok((line, synced_events))
+}
+
+type PgnoFrameMatch = Option<(usize, Vec<Vec<u8>>)>;
+
+fn event_frames_from_latest_pgno<T>(
+    frames: &[JetStreamDurableFrame],
+) -> Result<PgnoFrameMatch, PardosaError>
+where
+    T: Decode + GenomeSafe,
+{
+    for (idx, frame) in frames.iter().enumerate().rev() {
+        match event_frames_from_pgno::<T>(&frame.payload) {
+            Ok(frames) => return Ok(Some((idx, frames))),
+            Err(err) if is_schema_hash_mismatch(&err) => return Err(err),
+            Err(_) => {}
+        }
+    }
+    Ok(None)
+}
+
+fn is_schema_hash_mismatch(err: &PardosaError) -> bool {
+    matches!(
+        err,
+        PardosaError::CursorRead { source }
+            if matches!(source.as_ref(), crate::persist::Error::SchemaHashMismatch { .. })
+    )
 }
 
 fn legacy_jetstream_frame(payload: Vec<u8>) -> JetStreamDurableFrame {

@@ -24,6 +24,7 @@ R3 [5]: A present matching marker opens; a present differing marker refuses with
 R4 [5]: Marker writes are substrate provisioning mechanics in `pardosa-nats`; marker comparison and fail-closed policy live in the `pardosa` adapter ring, preserving the PGN-0010 / PGN-0016 split.
 R5 [5]: The marker is gate metadata only; it never contributes to the canonical bytes, envelope hash, frontier CRH, or event payload encoding.
 R6 [5]: Reading the marker stays behind the synchronous `EventStore` facade; no public async store API is introduced.
+Clarification: provisioning may back-fill this marker on an existing stream via an explicit stream update, distinct from the create-or-get path.
 
 ## Consequences
 
