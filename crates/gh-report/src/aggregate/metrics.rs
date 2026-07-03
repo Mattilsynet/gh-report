@@ -360,6 +360,10 @@ struct CollectionHealthTaxonomyCounts {
     secret_scanning_permission_denied: u32,
     branch_protection_permission_suspected: u32,
     branch_protection_not_found_absent: u32,
+    branch_protection_permission_denied: u32,
+    branch_protection_transient: u32,
+    branch_protection_rate_limited: u32,
+    branch_protection_invalid: u32,
 }
 
 impl CollectionHealthTaxonomyCounts {
@@ -382,6 +386,30 @@ impl CollectionHealthTaxonomyCounts {
             CollectionHealthCheckKind::BranchProtection,
             CollectionFailureReason::NotFoundAbsent,
             self.branch_protection_not_found_absent,
+        );
+        push_collection_health_count(
+            &mut counts,
+            CollectionHealthCheckKind::BranchProtection,
+            CollectionFailureReason::PermissionDenied,
+            self.branch_protection_permission_denied,
+        );
+        push_collection_health_count(
+            &mut counts,
+            CollectionHealthCheckKind::BranchProtection,
+            CollectionFailureReason::Transient,
+            self.branch_protection_transient,
+        );
+        push_collection_health_count(
+            &mut counts,
+            CollectionHealthCheckKind::BranchProtection,
+            CollectionFailureReason::RateLimited,
+            self.branch_protection_rate_limited,
+        );
+        push_collection_health_count(
+            &mut counts,
+            CollectionHealthCheckKind::BranchProtection,
+            CollectionFailureReason::Invalid,
+            self.branch_protection_invalid,
         );
         counts.sort_by_key(|entry| (entry.check_kind, entry.reason));
         counts
@@ -422,13 +450,23 @@ fn count_collection_health_reasons(
                 counts.branch_protection_not_found_absent =
                     counts.branch_protection_not_found_absent.saturating_add(1);
             }
-            Some(
-                CollectionFailureReason::PermissionDenied
-                | CollectionFailureReason::Transient
-                | CollectionFailureReason::RateLimited
-                | CollectionFailureReason::Invalid,
-            )
-            | None => {}
+            Some(CollectionFailureReason::PermissionDenied) => {
+                counts.branch_protection_permission_denied =
+                    counts.branch_protection_permission_denied.saturating_add(1);
+            }
+            Some(CollectionFailureReason::Transient) => {
+                counts.branch_protection_transient =
+                    counts.branch_protection_transient.saturating_add(1);
+            }
+            Some(CollectionFailureReason::RateLimited) => {
+                counts.branch_protection_rate_limited =
+                    counts.branch_protection_rate_limited.saturating_add(1);
+            }
+            Some(CollectionFailureReason::Invalid) => {
+                counts.branch_protection_invalid =
+                    counts.branch_protection_invalid.saturating_add(1);
+            }
+            None => {}
         }
     }
     counts
@@ -816,7 +854,10 @@ fn merge_age_buckets(source: &HashMap<String, u64>) -> HashMap<String, u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::checks::{SecretScanningResult, SecretScanningStatus};
+    use crate::domain::checks::{
+        BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus,
+        SecretScanningResult, SecretScanningStatus,
+    };
     use crate::domain::metrics::{CollectionHealthCheckKind, CollectionHealthCount};
     use crate::domain::repository::Visibility;
     use crate::domain::status::CollectionStatus;
@@ -906,6 +947,45 @@ mod tests {
                 ),
             ),
         ]
+    }
+
+    fn branch_protection_result_with_reason(
+        reason_kind: CollectionFailureReason,
+    ) -> BranchProtectionResult {
+        BranchProtectionResult {
+            status: BranchProtectionStatus::Unknown,
+            details: BranchProtectionDetails {
+                default_branch: "main".to_string(),
+                has_pr: None,
+                required_reviewers: None,
+                has_status_checks: None,
+                admin_equivalent: None,
+                has_broad_bypass: None,
+                reason: None,
+                reason_kind: Some(reason_kind),
+                http_status: None,
+                force_push_blocked: None,
+                deletion_blocked: None,
+            },
+            timestamp: make_timestamp(),
+        }
+    }
+
+    fn repo_with_branch_protection_reason(
+        reason_kind: CollectionFailureReason,
+    ) -> RepositoryEvidence {
+        make_repository_evidence(
+            "reason-kind-probe",
+            Visibility::Public,
+            false,
+            make_checks(
+                policy_pass_setting(),
+                secret_enabled_observable(false),
+                dependabot_enabled(),
+                branch_protection_result_with_reason(reason_kind),
+                codeowners_conforming(),
+            ),
+        )
     }
 
     #[test]
@@ -1168,6 +1248,37 @@ mod tests {
                     count: 1,
                 })
         );
+    }
+
+    #[test]
+    fn branch_protection_additional_reasons_counted_when_present_absent_when_not() {
+        let reasons = [
+            CollectionFailureReason::RateLimited,
+            CollectionFailureReason::Transient,
+            CollectionFailureReason::Invalid,
+            CollectionFailureReason::PermissionDenied,
+        ];
+        for reason in reasons {
+            let present = aggregate_metrics(&[repo_with_branch_protection_reason(reason)]);
+            assert!(
+                present
+                    .collection_health_counts
+                    .contains(&CollectionHealthCount {
+                        check_kind: CollectionHealthCheckKind::BranchProtection,
+                        reason,
+                        count: 1,
+                    }),
+                "expected a BranchProtection/{reason:?} row when the reason is present"
+            );
+
+            let absent = aggregate_metrics(&[all_passing_evidence("clean")]);
+            assert!(
+                !absent.collection_health_counts.iter().any(|c| c.check_kind
+                    == CollectionHealthCheckKind::BranchProtection
+                    && c.reason == reason),
+                "did not expect a BranchProtection/{reason:?} row when the reason is absent"
+            );
+        }
     }
 
     #[test]
