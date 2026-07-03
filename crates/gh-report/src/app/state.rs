@@ -426,6 +426,26 @@ impl AppState {
         })
     }
 
+    /// `(inventory_key, name)` snapshot of all evidence in
+    /// `projection_state`, without cloning full repository evidence.
+    ///
+    /// Lock-and-release wrapper over
+    /// [`crate::projection::EvidenceProjection::key_name_snapshot`];
+    /// the guard does not escape (D-CD-3). Panics on poisoned mutex.
+    /// Cost is `O(n)` per call, cloning two `String` fields per entry
+    /// instead of the full `RepositoryEvidence`.
+    pub(crate) fn projection_key_name_snapshot(&self) -> Vec<(String, String)> {
+        resolve_projection(&self.projection_state, |projection| {
+            match crate::projection::EvidenceProjectionReadPort::resolve(
+                projection,
+                crate::projection::EvidenceProjectionQuery::KeyNameSnapshot,
+            ) {
+                crate::projection::EvidenceProjectionResponse::KeyNamePairs(pairs) => pairs,
+                _ => Vec::new(),
+            }
+        })
+    }
+
     /// Deep, heap-inclusive serialized-byte sample of the resident
     /// projection evidence.
     ///

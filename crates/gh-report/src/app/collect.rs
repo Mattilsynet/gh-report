@@ -1297,10 +1297,9 @@ fn reconcile_deleted_repositories(
         .map(|repo| repo.inventory_key.as_str())
         .collect();
     let disappeared: Vec<(String, String)> = state
-        .projection_snapshot()
+        .projection_key_name_snapshot()
         .into_iter()
-        .filter(|evidence| !active_keys.contains(evidence.repository.inventory_key.as_str()))
-        .map(|evidence| (evidence.repository.inventory_key, evidence.repository.name))
+        .filter(|(inventory_key, _name)| !active_keys.contains(inventory_key.as_str()))
         .collect();
     for (domain_key, repo_name) in disappeared {
         state.mark_repo_deleted(&domain_key, &repo_name, detected_at)?;
@@ -3284,6 +3283,54 @@ mod tests {
             .expect("run timestamp parses")
             .to_string();
         assert_eq!(record.detected_at, expected_detected_at);
+    }
+
+    #[tokio::test]
+    async fn reconcile_marks_exactly_the_disappeared_set_across_multiple_repos() {
+        let state = AppState::new_with_cache_capacity(10).await;
+        let timestamp = "2026-06-24T00:00:00Z";
+        let kept_names = ["kept-a", "kept-b"];
+        let gone_names = ["gone-a", "gone-b", "gone-c"];
+
+        for name in kept_names.into_iter().chain(gone_names) {
+            let evidence = sample_repo(name);
+            let domain_key = evidence.repository.inventory_key.clone();
+            let repo_name = evidence.repository.name.clone();
+            state
+                .record_repo(&domain_key, evidence, &repo_name, timestamp)
+                .expect("record repo");
+        }
+
+        let active_repos: Vec<Arc<Repository>> = kept_names.into_iter().map(arc_repo).collect();
+        let inventory = Ok(InventoryLoad {
+            active_repos,
+            complete: true,
+            inventory_fetched_at: Some(timestamp.to_string()),
+        });
+
+        reconcile_deleted_repositories_after_successful_inventory(&state, &inventory, timestamp)
+            .expect("reconcile");
+
+        for name in kept_names {
+            assert!(state.projection_contains(&format!("id-{name}")));
+        }
+
+        let deleted = state.projection_deleted_snapshot();
+        assert_eq!(
+            deleted.len(),
+            gone_names.len(),
+            "exactly the disappeared repos must be marked deleted, no more no less"
+        );
+        for name in gone_names {
+            let key = format!("id-{name}");
+            assert!(!state.projection_contains(&key));
+            let record = deleted
+                .iter()
+                .find(|(deleted_key, _)| deleted_key == &key)
+                .map(|(_, record)| record)
+                .expect("deleted record present for disappeared repo");
+            assert_eq!(record.repo_name, name);
+        }
     }
 
     #[tokio::test]

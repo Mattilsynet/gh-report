@@ -151,6 +151,9 @@ pub enum EvidenceProjectionQuery {
     SortedSnapshot,
     /// Return deleted repository rows in key order.
     DeletedSnapshot,
+    /// Return `(inventory_key, name)` pairs for all materialised
+    /// repositories, without cloning full repository evidence.
+    KeyNameSnapshot,
     /// Return the latest org read-model part.
     OrgState,
 }
@@ -168,6 +171,8 @@ pub enum EvidenceProjectionResponse {
     Many(Vec<RepositoryEvidence>),
     /// Ordered deleted repository rows.
     Deleted(Vec<(String, DeletedRepoRecord)>),
+    /// Ordered `(inventory_key, name)` pairs.
+    KeyNamePairs(Vec<(String, String)>),
     /// Optional org read-model result.
     OrgState(Box<Option<OrgReadModel>>),
 }
@@ -244,6 +249,26 @@ impl EvidenceProjection {
             .collect()
     }
 
+    /// Snapshot of `(inventory_key, name)` pairs for all materialised
+    /// repositories.
+    ///
+    /// Clones only the two `String` fields per entry rather than the
+    /// full `RepositoryEvidence` — for read sites that need repository
+    /// identity but not the rest of the evidence (e.g. reconcile's
+    /// disappeared-repo detection).
+    #[must_use]
+    pub fn key_name_snapshot(&self) -> Vec<(String, String)> {
+        self.repositories
+            .values()
+            .map(|evidence| {
+                (
+                    evidence.repository.inventory_key.clone(),
+                    evidence.repository.name.clone(),
+                )
+            })
+            .collect()
+    }
+
     /// Bulk-load baseline evidence.
     ///
     /// Merges into existing entries; entries with the same
@@ -311,6 +336,9 @@ impl ReadPort for EvidenceProjectionReadPort {
             }
             EvidenceProjectionQuery::DeletedSnapshot => {
                 EvidenceProjectionResponse::Deleted(projection.deleted_snapshot())
+            }
+            EvidenceProjectionQuery::KeyNameSnapshot => {
+                EvidenceProjectionResponse::KeyNamePairs(projection.key_name_snapshot())
             }
             EvidenceProjectionQuery::OrgState => {
                 EvidenceProjectionResponse::OrgState(Box::new(projection.org_state.clone()))
