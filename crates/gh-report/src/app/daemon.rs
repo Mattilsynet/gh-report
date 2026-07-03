@@ -49,7 +49,7 @@ use crate::app::worker_pool::JobOutcome;
 use crate::config;
 use crate::config::runtime::RuntimeConfig;
 use crate::domain::evidence::RepositoryEvidence;
-use crate::error::{AppError, ConfigError, PersistenceError};
+use crate::error::{AppError, ConfigError, PersistenceError, persist_error_variant};
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
@@ -487,7 +487,11 @@ fn handle_success_outcome(
     let repo_name = result.repository.name.clone();
     let timestamp = jiff::Timestamp::now().to_string();
     if let Err(e) = state.record_repo(domain_key, result, &repo_name, &timestamp) {
-        tracing::warn!(?e, "repository state record failed, non-fatal");
+        tracing::error!(
+            persist_error_variant = persist_error_variant(&e),
+            ?e,
+            "repository state record failed, non-fatal"
+        );
     }
     info!(
         key = %domain_key,
@@ -517,7 +521,11 @@ fn handle_failure_outcome(
         );
         let timestamp = jiff::Timestamp::now().to_string();
         if let Err(e) = state.record_repo(domain_key, failure, &name, &timestamp) {
-            tracing::warn!(?e, "repository failure state record failed, non-fatal");
+            tracing::error!(
+                persist_error_variant = persist_error_variant(&e),
+                ?e,
+                "repository failure state record failed, non-fatal"
+            );
         }
         name
     } else {
@@ -679,6 +687,46 @@ mod tests {
             .unwrap_or_else(|| {
                 panic!("initial collection failure log must include error_chain field: {output}")
             })
+    }
+
+    #[tokio::test]
+    async fn handle_success_outcome_escalates_swallowed_persist_failure_to_error() {
+        let state = AppState::new().await;
+        let evidence = crate::test_fixtures::all_passing_evidence("");
+
+        let output = capture_tracing(|| {
+            handle_success_outcome(
+                &state,
+                "escalation-test-key",
+                evidence,
+                &JobSource::InitialLoad,
+                Duration::from_millis(1),
+            );
+        });
+
+        let event = output
+            .lines()
+            .find_map(|line| {
+                let event = serde_json::from_str::<serde_json::Value>(line).ok()?;
+                event.get("fields")?.get("persist_error_variant")?;
+                Some(event)
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "swallowed persist failure must emit a persist_error_variant field: {output}"
+                )
+            });
+
+        assert_eq!(
+            event.get("level").and_then(serde_json::Value::as_str),
+            Some("ERROR"),
+            "escalated persist failure must log at ERROR, not WARN: {event}"
+        );
+        assert_eq!(
+            event["fields"]["persist_error_variant"].as_str(),
+            Some("LoadFailed"),
+            "empty repo name must surface as a LoadFailed persist error: {event}"
+        );
     }
 
     #[test]

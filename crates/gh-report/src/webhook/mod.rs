@@ -36,6 +36,7 @@ use crate::app::state::AppState;
 use crate::app::work_queue::{EnqueueResult, JobSource, JobSpec};
 use crate::config;
 use crate::domain::repository::Repository;
+use crate::error::persist_error_variant;
 
 use self::events::{WebhookAction, map_event_to_action};
 use self::signature::verify_signature;
@@ -158,7 +159,11 @@ fn execute_remove(
             &jiff::Timestamp::now().to_string(),
         )
     {
-        tracing::warn!(?e, "repository removal failed, non-fatal");
+        tracing::error!(
+            persist_error_variant = persist_error_variant(&e),
+            ?e,
+            "repository removal failed, non-fatal"
+        );
     }
     info!(
         event = event_type,

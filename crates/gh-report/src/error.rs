@@ -92,3 +92,67 @@ pub enum ConfigError {
     #[error("invalid configuration value: {field}: {reason}")]
     InvalidValue { field: String, reason: String },
 }
+
+#[must_use]
+pub(crate) fn persist_error_variant(error: &PersistenceError) -> &'static str {
+    match error {
+        PersistenceError::LockFailed { .. } => "LockFailed",
+        PersistenceError::AtomicWriteFailed { .. } => "AtomicWriteFailed",
+        PersistenceError::LoadFailed { .. } => "LoadFailed",
+        PersistenceError::TornWriteRecovery { .. } => "TornWriteRecovery",
+        PersistenceError::FencedConflict { .. } => "FencedConflict",
+        PersistenceError::Io(_) => "Io",
+        _ => "other",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persist_error_variant_names_lock_failed() {
+        let error = PersistenceError::LockFailed {
+            reason: "x".to_string(),
+        };
+        assert_eq!(persist_error_variant(&error), "LockFailed");
+    }
+
+    #[test]
+    fn persist_error_variant_names_atomic_write_failed() {
+        let error = PersistenceError::AtomicWriteFailed {
+            reason: "x".to_string(),
+        };
+        assert_eq!(persist_error_variant(&error), "AtomicWriteFailed");
+    }
+
+    #[test]
+    fn persist_error_variant_names_load_failed() {
+        let error = PersistenceError::LoadFailed {
+            reason: "x".to_string(),
+        };
+        assert_eq!(persist_error_variant(&error), "LoadFailed");
+    }
+
+    #[test]
+    fn persist_error_variant_names_torn_write_recovery() {
+        let error = PersistenceError::TornWriteRecovery {
+            source: Box::new(std::io::Error::other("x")),
+        };
+        assert_eq!(persist_error_variant(&error), "TornWriteRecovery");
+    }
+
+    #[test]
+    fn persist_error_variant_names_fenced_conflict() {
+        let error = PersistenceError::FencedConflict {
+            source: Box::new(std::io::Error::other("x")),
+        };
+        assert_eq!(persist_error_variant(&error), "FencedConflict");
+    }
+
+    #[test]
+    fn persist_error_variant_names_io() {
+        let error = PersistenceError::Io(std::io::Error::other("x"));
+        assert_eq!(persist_error_variant(&error), "Io");
+    }
+}
