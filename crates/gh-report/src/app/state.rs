@@ -426,6 +426,22 @@ impl AppState {
         })
     }
 
+    /// Deep, heap-inclusive serialized-byte sample of the resident
+    /// projection evidence.
+    ///
+    /// Lock-and-release: takes an owned snapshot via
+    /// [`Self::projection_snapshot`] (guard does not escape, D-CD-3),
+    /// then serializes the snapshot with `rmp_serde::to_vec` after the
+    /// lock has already been released. Returns `None` rather than
+    /// panicking on a serialize failure, so a sampling defect cannot
+    /// crash the collection tick. Panics on poisoned mutex to match
+    /// [`Self::projection_snapshot`]. Cost is `O(n)` over the resident
+    /// entries — call from the collection tick, not per HTTP request.
+    pub(crate) fn projection_bytes_deep(&self) -> Option<usize> {
+        let snapshot = self.projection_snapshot();
+        rmp_serde::to_vec(&snapshot).ok().map(|bytes| bytes.len())
+    }
+
     pub(crate) fn projection_deleted_snapshot(
         &self,
     ) -> Vec<(String, crate::projection::DeletedRepoRecord)> {
@@ -1388,6 +1404,10 @@ impl AppState {
     /// `projection_bytes_est`). `projection_bytes_est` is a shallow
     /// struct-size floor (`size_of::<RepositoryEvidence>() * count`)
     /// excluding heap-owned `String`/`Vec` data — not measured RSS.
+    /// The heap-inclusive sample ([`Self::projection_bytes_deep`]) is
+    /// deliberately NOT computed here — it is `O(n)` and only sampled
+    /// on the collection-tick log, keeping this per-request payload
+    /// clone-free and cheap.
     /// Registered as an extra route in [`crate::server::status_router`],
     /// not as a built-in route of the generic server module.
     pub(crate) fn status_payload(&self) -> serde_json::Value {
@@ -2111,6 +2131,37 @@ mod tests {
             .expect("remove repo");
         let projection = state.lock_projection();
         assert!(!projection.repositories.contains_key(&domain_key));
+    }
+
+    #[tokio::test]
+    async fn projection_bytes_deep_is_heap_inclusive() {
+        let state = AppState::new().await;
+
+        for name in ["deep-repo-a", "deep-repo-b"] {
+            let mut evidence = crate::test_fixtures::all_passing_evidence(name);
+            evidence.repository.description = Some("d".repeat(4096));
+            evidence.repository.topics = (0..64)
+                .map(|i| format!("topic-{name}-{i}-padding-for-heap-bytes"))
+                .collect();
+            let domain_key = evidence.repository.inventory_key.clone();
+            state
+                .lock_projection()
+                .repositories
+                .insert(domain_key, evidence);
+        }
+
+        let repo_count = state.projection_len();
+        assert_eq!(repo_count, 2);
+        let shallow_floor =
+            repo_count * std::mem::size_of::<crate::domain::evidence::RepositoryEvidence>();
+
+        let deep = state
+            .projection_bytes_deep()
+            .expect("well-formed evidence serializes");
+        assert!(
+            deep > shallow_floor,
+            "deep sample ({deep}) must exceed the shallow struct-size floor ({shallow_floor}) to prove heap-inclusive measurement"
+        );
     }
 
     #[tokio::test]

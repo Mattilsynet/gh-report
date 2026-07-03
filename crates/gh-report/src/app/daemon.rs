@@ -368,6 +368,7 @@ fn spawn_collection_loop(
                     info!(
                         rss_kb = ?read_rss_kb(),
                         projection_repo_count = state.projection_len(),
+                        projection_bytes_deep = ?state.projection_bytes_deep(),
                         "scheduled collection complete"
                     );
                 }
