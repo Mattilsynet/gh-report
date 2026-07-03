@@ -358,7 +358,7 @@ impl JetStreamBackendAdapter {
     pub(crate) fn read_stream_description(&self) -> Result<Option<String>, BackendError> {
         self.handle
             .read_stream_description()
-            .map_err(|e| map_runtime_error(e, BackendOp::Sync))
+            .map_err(|e| map_runtime_error(e, BackendOp::Open))
     }
 
     pub(crate) fn fetch_durable_frames(
@@ -367,7 +367,7 @@ impl JetStreamBackendAdapter {
         let records = observe_replay_operation(|| {
             self.handle
                 .replay_all()
-                .map_err(|e| map_runtime_error(e, BackendOp::Sync))
+                .map_err(|e| map_runtime_error(e, BackendOp::Open))
         })?;
         Ok(records
             .into_iter()
@@ -569,6 +569,30 @@ mod tests {
                 assert_eq!(
                     source.to_string(),
                     "replay-failed",
+                    "source preserved without wrapping",
+                );
+            }
+            other => panic!("expected BackendError::Replay, got {other:?}"),
+        }
+    }
+    #[test]
+    fn open_gate_read_replay_failure_maps_to_backend_replay_preserving_open_op() {
+        let mapped = map_runtime_error(
+            JetStreamRuntimeError::Replay {
+                source: boxed_source("stream marker read failed"),
+            },
+            BackendOp::Open,
+        );
+        match mapped {
+            BackendError::Replay { op, source } => {
+                assert!(
+                    matches!(op, BackendOp::Open),
+                    "read_stream_description/fetch_durable_frames open-gate reads must tag \
+                     BackendOp::Open, not the append-time Sync durability fence",
+                );
+                assert_eq!(
+                    source.to_string(),
+                    "stream marker read failed",
                     "source preserved without wrapping",
                 );
             }

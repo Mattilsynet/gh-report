@@ -59,9 +59,10 @@ pub(crate) enum RehydrateError {
     /// ([`RehydrateableBackend::fetch_durable_bytes`]) rejected
     /// the substrate dispatch before any bytes reached the
     /// `.pgno` decoder. `op` is the [`BackendOp`] discriminator
-    /// for the failing sub-op (`BackendOp::Sync` for a fetch
-    /// that conceptually mirrors the sync fence, mirroring
-    /// [`SyncError::Backend`]'s `op`-discriminator shape).
+    /// for the failing sub-op (`BackendOp::Open` — a rehydrate
+    /// fetch is an open-gate read, distinct from
+    /// [`SyncError::Backend`]'s append-time `Sync` fence tag,
+    /// though the field shape mirrors it).
     #[error("backend fetch failed during `{op}`: {source}")]
     Backend {
         op: BackendOp,
@@ -308,7 +309,7 @@ where
         let bytes = backend
             .fetch_durable_bytes()
             .map_err(|source| RehydrateError::Backend {
-                op: BackendOp::Sync,
+                op: BackendOp::Open,
                 source,
             })?;
         let line = super::rehydrate::from_pgno_bytes_unchecked::<T>(&bytes)?;

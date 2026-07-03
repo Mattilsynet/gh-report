@@ -425,8 +425,8 @@ mod pardosa_error_tests {
 /// Operation tag carried by [`BackendError::Timeout`] (ADR-0022
 /// §D7). Names the backend operation whose per-operation timeout
 /// fired. Adopters discriminate timeout-on-append from
-/// timeout-on-sync from timeout-on-cursor-advance for retry /
-/// alerting logic.
+/// timeout-on-sync from timeout-on-cursor-advance from
+/// timeout-on-open for retry / alerting logic.
 ///
 /// `#[non_exhaustive]`: ADR-0007 default. Backends may surface
 /// additional operations in later phases without breaking
@@ -441,6 +441,12 @@ pub enum BackendOp {
     /// Cursor advance (`next` on the substrate cursor iterator,
     /// ADR-0022 §D7's third per-op-timeout call site).
     CursorNext,
+    /// Open-gate read: stream-info / marker fetch
+    /// (`read_stream_description`) and replay-based rehydrate
+    /// fetch (`replay_all` / `fetch_durable_bytes`) — reads at
+    /// connect/rehydrate time, distinct from the append-time
+    /// [`Self::Sync`] durability fence.
+    Open,
 }
 impl core::fmt::Display for BackendOp {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -448,6 +454,7 @@ impl core::fmt::Display for BackendOp {
             Self::Append => f.write_str("append"),
             Self::Sync => f.write_str("sync"),
             Self::CursorNext => f.write_str("cursor next"),
+            Self::Open => f.write_str("open"),
         }
     }
 }
@@ -617,6 +624,7 @@ mod backend_error_tests {
         assert_eq!(BackendOp::Append.to_string(), "append");
         assert_eq!(BackendOp::Sync.to_string(), "sync");
         assert_eq!(BackendOp::CursorNext.to_string(), "cursor next");
+        assert_eq!(BackendOp::Open.to_string(), "open");
     }
 }
 /// Transport-level failure surfaced by a [`FrontierPublisher`].
