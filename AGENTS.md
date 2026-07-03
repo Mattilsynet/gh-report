@@ -136,6 +136,27 @@ rejects illegal architectures, the search space an agent must explore collapses.
 - `.beads/` is an embedded-dolt store (gitignored) — bd mutations do **not**
   produce a git commit; the audit trail is dolt history + `interactions.jsonl`.
   Don't try to `git add` bead state.
+- Two bd stores exist for this repo's work, selected by cwd:
+  - Repo-local store: `.beads/` here (prefix `adr-fmt`) — the CANONICAL home
+    for any mission that describes THIS repo's code.
+  - HOME store: `~/.beads` (prefix `anders_jensen`) — for cross-repo / personal
+    work with no single repo home.
+- Convention (advisory — bd has no mechanism to enforce it; see below):
+  - Run `bd` from the gh-report repo root (or any path inside it) for any
+    repo-scoped mission, so beads auto-discover the repo-local `.beads/` and
+    land with the `adr-fmt` prefix, co-located with the code they describe.
+  - Use the HOME store only for genuinely cross-repo or personal-planning work.
+  - A `mission:<slug>` label must resolve to an epic IN THE SAME STORE. Never
+    use a bead/mission ID as a label value (`mission:anders_jensen-4gt` was such
+    a malformed label — a mission-id masquerading as a slug; stripped
+    2026-07-03).
+- Why this is advisory only: `.beads/` is gitignored and bd mutations produce no
+  git commit, so a git pre-commit hook cannot see (and therefore cannot block) a
+  bead written to the wrong store. Recurrence-prevention here rests on running
+  bd from the right cwd, not on tooling enforcement. Symptom of the failure this
+  prevents: repo-scoped evidence beads accumulating in the HOME store with
+  `mission:` labels that resolve to no epic in the repo-local store (the exact
+  mess reconciled by mission anders_jensen-t0q, 2026-07-03).
 - `cherry-pit-*` atomic-write protocol is CHE-0032 (temp → fsync → rename →
   parent-dir fsync); the production path in
   `cherry-pit-gateway/src/event_store/msgpack_file.rs::write_atomic` already
