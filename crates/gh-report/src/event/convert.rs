@@ -29,6 +29,7 @@ use crate::domain::time::parse_iso8601;
 /// Failure converting a serde domain value into its native pardosa
 /// counterpart.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum EventConversionError {
     #[error("field {field}: value exceeds bounded length")]
     TooLong { field: &'static str },

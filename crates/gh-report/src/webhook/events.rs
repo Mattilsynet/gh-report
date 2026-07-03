@@ -16,6 +16,7 @@ use crate::domain::repository::{Repository, Visibility};
 
 /// Errors that can occur when mapping a webhook event to an action.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum WebhookError {
     /// The JSON payload could not be parsed.
     InvalidJson(serde_json::Error),
