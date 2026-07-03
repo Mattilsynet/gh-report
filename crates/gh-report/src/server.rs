@@ -114,6 +114,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn status_endpoint_exposes_memory_gauges() {
+        use crate::config::runtime::{NatsStoreConfig, PardosaBackend};
+        use crate::test_fixtures;
+
+        let dir = tempfile::tempdir().unwrap();
+        let events_dir = dir.path().join("events");
+        let nats =
+            NatsStoreConfig::for_org("MemGaugeOrg", crate::config::runtime::DEFAULT_NATS_URL)
+                .unwrap();
+        let writer_state = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats.clone())
+            .await
+            .unwrap();
+        let timestamp = "2026-06-14T00:00:00Z";
+        for name in ["gauge-repo-a", "gauge-repo-b"] {
+            let evidence = test_fixtures::all_passing_evidence(name);
+            writer_state
+                .record_repo(
+                    &evidence.repository.inventory_key,
+                    evidence.clone(),
+                    &evidence.repository.name,
+                    timestamp,
+                )
+                .unwrap();
+        }
+        drop(writer_state);
+
+        let state = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats)
+            .await
+            .unwrap();
+        assert_eq!(state.projection_len(), 2);
+
+        let app = build_router(Arc::clone(&state));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        wait_for_server(addr).await;
+
+        let resp = reqwest::get(format!("http://{addr}/api/v1/status"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
+
+        assert_eq!(body["projection_repo_count"], serde_json::json!(2));
+        assert_eq!(
+            body["projection_bytes_est"],
+            serde_json::json!(
+                2 * std::mem::size_of::<crate::domain::evidence::RepositoryEvidence>()
+            )
+        );
+
+        #[cfg(target_os = "linux")]
+        assert!(
+            body["rss_kb"].as_u64().is_some_and(|kb| kb > 0),
+            "rss_kb must be a positive integer on linux: {:?}",
+            body["rss_kb"]
+        );
+        #[cfg(not(target_os = "linux"))]
+        assert!(
+            body["rss_kb"].is_null(),
+            "rss_kb must be null off-linux: {:?}",
+            body["rss_kb"]
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
     async fn status_endpoint_valid_json_with_concurrent_run() {
         let state = state_no_cache().await;
 

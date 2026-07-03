@@ -1348,10 +1348,33 @@ async fn drain_join_handle_or_abort(
     drained
 }
 
+/// Read resident set size in kilobytes from `/proc/self/status` (`VmRSS:`).
+///
+/// Linux-only self-read; `std::fs` only, no unsafe. Returns `None` on
+/// other platforms so callers can treat the value as a uniformly
+/// optional gauge.
+#[cfg(target_os = "linux")]
+pub(crate) fn read_rss_kb() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    status.lines().find_map(|line| {
+        let value = line.strip_prefix("VmRSS:")?;
+        value.split_whitespace().next()?.parse::<u64>().ok()
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn read_rss_kb() -> Option<u64> {
+    None
+}
+
 impl AppState {
     /// Build the JSON payload for the `/api/v1/status` endpoint.
     ///
-    /// Returns current and last completed run metadata plus uptime.
+    /// Returns current and last completed run metadata, uptime, and
+    /// memory gauges (`rss_kb`, `projection_repo_count`,
+    /// `projection_bytes_est`). `projection_bytes_est` is a shallow
+    /// struct-size floor (`size_of::<RepositoryEvidence>() * count`)
+    /// excluding heap-owned `String`/`Vec` data — not measured RSS.
     /// Registered as an extra route in [`crate::server::status_router`],
     /// not as a built-in route of the generic server module.
     pub(crate) fn status_payload(&self) -> serde_json::Value {
@@ -1360,11 +1383,17 @@ impl AppState {
         let last_recovery = self.last_recovery.load();
         let uptime_duration = Timestamp::now().duration_since(self.started_at);
         let uptime = u64::try_from(uptime_duration.as_secs().max(0)).unwrap_or(0);
+        let projection_repo_count = self.projection_len();
+        let projection_bytes_est = projection_repo_count
+            * std::mem::size_of::<crate::domain::evidence::RepositoryEvidence>();
         serde_json::json!({
             "current_run": current.as_ref(),
             "last_completed_run": last.as_ref(),
             "last_recovery": last_recovery.as_ref(),
             "uptime_secs": uptime,
+            "rss_kb": read_rss_kb(),
+            "projection_repo_count": projection_repo_count,
+            "projection_bytes_est": projection_bytes_est,
         })
     }
 }
@@ -1620,6 +1649,18 @@ mod tests {
                 .expect("append torn synthetic tail");
         }
         manifest.data_end
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn read_rss_kb_is_none_off_linux() {
+        assert_eq!(read_rss_kb(), None);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn read_rss_kb_is_some_positive_on_linux() {
+        assert!(read_rss_kb().is_some_and(|kb| kb > 0));
     }
 
     #[tokio::test(flavor = "multi_thread")]

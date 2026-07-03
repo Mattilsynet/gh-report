@@ -43,7 +43,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::app::collect;
-use crate::app::state::{AppState, log_error_chain};
+use crate::app::state::{AppState, log_error_chain, read_rss_kb};
 use crate::app::work_queue::JobSource;
 use crate::app::worker_pool::JobOutcome;
 use crate::config;
@@ -364,7 +364,13 @@ fn spawn_collection_loop(
             let mut cfg = config.clone();
             cfg.force_unlock = force_flag.load(Ordering::Acquire);
             match collect::run_with_outcome(cfg, Arc::clone(&state)).await {
-                Ok(collect::CollectionOutcome::Completed) => info!("scheduled collection complete"),
+                Ok(collect::CollectionOutcome::Completed) => {
+                    info!(
+                        rss_kb = ?read_rss_kb(),
+                        projection_repo_count = state.projection_len(),
+                        "scheduled collection complete"
+                    );
+                }
                 Ok(collect::CollectionOutcome::Cancelled) => {
                     info!("scheduled collection aborted on shutdown — no report published");
                 }
