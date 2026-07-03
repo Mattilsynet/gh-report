@@ -55,18 +55,16 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CloudLoggingLayer 
         };
 
         let timestamp = format_rfc3339_now();
+        let target = event.metadata().target();
 
         let mut json = serde_json::Map::new();
         json.insert("severity".to_string(), serde_json::json!(severity));
         json.insert(
             "message".to_string(),
-            serde_json::json!(visitor.message.unwrap_or_default()),
+            serde_json::json!(visitor.message.as_deref().unwrap_or(target)),
         );
         json.insert("time".to_string(), serde_json::json!(timestamp));
-        json.insert(
-            "target".to_string(),
-            serde_json::json!(event.metadata().target()),
-        );
+        json.insert("target".to_string(), serde_json::json!(target));
 
         for (k, v) in visitor.fields {
             json.insert(k, v);
@@ -209,18 +207,16 @@ mod tests {
             };
 
             let timestamp = format_rfc3339_now();
+            let target = event.metadata().target();
 
             let mut json = serde_json::Map::new();
             json.insert("severity".to_string(), serde_json::json!(severity));
             json.insert(
                 "message".to_string(),
-                serde_json::json!(visitor.message.unwrap_or_default()),
+                serde_json::json!(visitor.message.as_deref().unwrap_or(target)),
             );
             json.insert("time".to_string(), serde_json::json!(timestamp));
-            json.insert(
-                "target".to_string(),
-                serde_json::json!(event.metadata().target()),
-            );
+            json.insert("target".to_string(), serde_json::json!(target));
             for (k, v) in visitor.fields {
                 json.insert(k, v);
             }
@@ -367,5 +363,29 @@ mod tests {
         assert_eq!(ts.len(), 27);
         let year: u32 = ts[..4].parse().unwrap();
         assert!(year >= 2026);
+    }
+
+    #[test]
+    fn message_less_event_with_fields_retains_fields_and_synthesizes_message() {
+        let output = capture_stdout(|| {
+            tracing::warn!(error = "boom");
+        });
+
+        let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        assert_eq!(json["error"], "boom");
+        assert_ne!(json["message"], "");
+        assert_eq!(json["message"], json["target"]);
+    }
+
+    #[test]
+    fn message_less_event_with_no_fields_synthesizes_message_from_target() {
+        let output = capture_stdout(|| {
+            tracing::event!(target: module_path!(), tracing::Level::WARN, {});
+        });
+
+        let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        assert_eq!(json["severity"], "WARNING");
+        assert_ne!(json["message"], "");
+        assert_eq!(json["message"], json["target"]);
     }
 }
