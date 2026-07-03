@@ -11,7 +11,7 @@
 //! Positions are monotonic within one backend instance and carry no
 //! cross-backend meaning.
 use crate::durability::AckPosition;
-use crate::error::BackendError;
+use crate::error::{BackendError, BackendOp};
 use std::io::Seek;
 /// Private sealed-trait root for [`BackendSink`] (ADR-0022 §D2 / §D11).
 ///
@@ -105,24 +105,28 @@ where
         self.inner
             .write_all(bytes)
             .map_err(|e| BackendError::Publish {
+                op: BackendOp::Append,
                 source: Box::new(e),
             })?;
         let pos = self
             .inner
             .stream_position()
             .map_err(|e| BackendError::Publish {
+                op: BackendOp::Append,
                 source: Box::new(e),
             })?;
         Ok(AckPosition::from_u64(pos))
     }
     fn sync(&mut self) -> Result<AckPosition, BackendError> {
         pardosa_file::Syncable::sync_data(&mut self.inner).map_err(|e| BackendError::Publish {
+            op: BackendOp::Sync,
             source: Box::new(e),
         })?;
         let pos = self
             .inner
             .stream_position()
             .map_err(|e| BackendError::Publish {
+                op: BackendOp::Sync,
                 source: Box::new(e),
             })?;
         Ok(AckPosition::from_u64(pos))

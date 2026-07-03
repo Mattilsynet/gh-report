@@ -1248,6 +1248,7 @@ mod tests {
     #[test]
     fn backend_publish_still_flattens_to_cursor_read() {
         let err = crate::error::BackendError::Publish {
+            op: crate::error::BackendOp::Open,
             source: backend_source("ordinary publish failure"),
         };
         match backend_error_to_cursor_read("JetStream rehydrate fetch failed", err) {

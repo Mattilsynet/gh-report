@@ -541,8 +541,9 @@ pub enum BackendError {
     /// A transient downstream publisher failure. Recovery is the
     /// publisher trait's rebuffer policy (ADR-0015 §D3); the
     /// adopter does not retry directly.
-    #[error("backend publish failure: {source}")]
+    #[error("backend publish failure during `{op}`: {source}")]
     Publish {
+        op: BackendOp,
         #[source]
         source: Box<dyn core::error::Error + Send + Sync + 'static>,
     },
@@ -600,7 +601,10 @@ mod backend_error_tests {
     fn publish_carries_source_chain() {
         let inner: Box<dyn core::error::Error + Send + Sync + 'static> =
             Box::new(std::io::Error::other("downstream link reset"));
-        let err = BackendError::Publish { source: inner };
+        let err = BackendError::Publish {
+            op: BackendOp::Append,
+            source: inner,
+        };
         let src = core::error::Error::source(&err).expect("source attached");
         assert!(src.to_string().contains("downstream link reset"));
     }

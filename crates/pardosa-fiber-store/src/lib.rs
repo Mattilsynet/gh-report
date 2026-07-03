@@ -307,7 +307,8 @@ fn backend_op_from_backend_error(error: &BackendError) -> Option<BackendOp> {
     match error {
         BackendError::Timeout { op, .. }
         | BackendError::Connect { op, .. }
-        | BackendError::Replay { op, .. } => Some(*op),
+        | BackendError::Replay { op, .. }
+        | BackendError::Publish { op, .. } => Some(*op),
         _ => None,
     }
 }
@@ -552,6 +553,13 @@ mod tests {
         }))
     }
 
+    fn backend_publish(op: BackendOp) -> pardosa::store::replay::Error {
+        pardosa::store::replay::Error::Io(std::io::Error::other(BackendError::Publish {
+            op,
+            source: Box::new(std::io::Error::other("authorization violation")),
+        }))
+    }
+
     #[test]
     fn timeout_on_sync_renders_distinctly_from_timeout_on_append_at_store_boundary() {
         let append = FiberStoreError::from_replay_error(backend_timeout(BackendOp::Append));
@@ -578,6 +586,20 @@ mod tests {
         );
         assert!(sync_rendered.contains("sync"), "render: {sync_rendered}");
         assert_ne!(append_rendered, sync_rendered);
+    }
+
+    #[test]
+    fn publish_failure_on_append_leg_carries_append_op_not_flattened_to_infrastructure() {
+        let error = FiberStoreError::from_replay_error(backend_publish(BackendOp::Append));
+
+        match &error {
+            FiberStoreError::BackendInfrastructure { op, .. } => {
+                assert!(matches!(*op, BackendOp::Append), "append op carried");
+            }
+            other => panic!(
+                "expected BackendInfrastructure for append-leg publish failure, got {other:?}"
+            ),
+        }
     }
 
     #[test]

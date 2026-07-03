@@ -325,10 +325,11 @@ fn map_runtime_error(err: JetStreamRuntimeError, op: BackendOp) -> BackendError 
         JetStreamRuntimeError::WrongLastSequence { source } => {
             BackendError::ConcurrencyConflict { source }
         }
-        JetStreamRuntimeError::Publish { source } => BackendError::Publish { source },
+        JetStreamRuntimeError::Publish { source } => BackendError::Publish { op, source },
         JetStreamRuntimeError::Connect { source } => BackendError::Connect { op, source },
         JetStreamRuntimeError::Replay { source } => BackendError::Replay { op, source },
         other => BackendError::Publish {
+            op,
             source: Box::new(other),
         },
     }
@@ -509,7 +510,8 @@ mod tests {
             BackendOp::Append,
         );
         match mapped {
-            BackendError::Publish { source } => {
+            BackendError::Publish { op, source } => {
+                assert!(matches!(op, BackendOp::Append), "op preserved");
                 assert!(
                     source.to_string().contains("publish-failed"),
                     "source preserved: {source}",
@@ -798,6 +800,7 @@ mod tests {
             kind: RuntimeFailureKind::RuntimeShutdown,
         };
         let publish = BackendError::Publish {
+            op: BackendOp::Append,
             source: boxed_source("publish"),
         };
         let backlog = BackendError::PublisherBacklog {

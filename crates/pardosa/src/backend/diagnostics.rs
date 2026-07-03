@@ -173,7 +173,7 @@ fn classify_backend_error(error: &BackendError) -> NatsFailureClass {
     match error {
         BackendError::Timeout { .. } => NatsFailureClass::ConnectionRefused,
         BackendError::Connect { source, .. }
-        | BackendError::Publish { source }
+        | BackendError::Publish { source, .. }
         | BackendError::ConcurrencyConflict { source }
         | BackendError::Replay { source, .. } => classify_nats_failure(source.as_ref()),
         BackendError::RuntimeFailure { .. } | BackendError::PublisherBacklog { .. } => {

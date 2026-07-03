@@ -107,7 +107,7 @@ fn write_publish_sidecar(path: &Path, id: EventId) -> Result<(), persist::Error>
 fn backend_error_to_persist_error(e: crate::error::BackendError) -> persist::Error {
     use crate::error::BackendError;
     match e {
-        BackendError::Publish { source } => match source.downcast::<std::io::Error>() {
+        BackendError::Publish { source, .. } => match source.downcast::<std::io::Error>() {
             Ok(io) => persist::Error::Io(*io),
             Err(boxed) => persist::Error::Io(std::io::Error::other(boxed)),
         },
