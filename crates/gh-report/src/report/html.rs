@@ -18,14 +18,14 @@ use crate::domain::checks::{
     SecretScanningStatus, SecurityPolicyStatus,
 };
 use crate::domain::evidence::{Evidence, RepositoryEvidence};
-use crate::domain::metrics::OwnerType;
+use crate::domain::metrics::{OwnerType, TeamMemberRole, TeamRoster, TeamRosterStatus};
 use crate::domain::time::{is_repo_stale, parse_iso8601};
 use crate::error::ReportError;
 use crate::report::view_model::{
     ControlCell, CoverageTier, DeletedRepoRow, DeletedViewModel, OrphanedRepoRow,
-    OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow, OwnerRepoRow, OwnersViewModel,
-    ReportViewModel, StatusDot, SummaryCard, TopSecurityTeam, compute_health_score,
-    rate_to_width_class, strip_org_prefix,
+    OrphanedTeamGroup, OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow, OwnerRepoRow,
+    OwnersViewModel, ReportViewModel, StatusDot, SummaryCard, TeamMemberRow, TeamRosterViewModel,
+    TopSecurityTeam, compute_health_score, generate_slug, rate_to_width_class, strip_org_prefix,
 };
 
 /// Askama template for the security posture report.
@@ -232,6 +232,7 @@ pub fn render_dashboard(
         &evidence.repositories,
         &evidence.assessment_metadata.organization,
         &evidence.assessment_metadata.run_timestamp,
+        &evidence.metrics.team_rosters,
     );
     let orphaned_count = orphaned_vm.orphaned_count;
     let deleted_vm = build_deleted_view_model(
@@ -277,6 +278,7 @@ pub fn render_dashboard(
             tiers,
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
+            &evidence.metrics.team_rosters,
         );
         for (slug, detail_vm) in &detail_vms {
             let detail_html = render_template(&OwnerDetailTemplate {
@@ -447,6 +449,41 @@ fn build_control_cell(
     }
 }
 
+/// Build a [`TeamRosterViewModel`] from a fetched [`TeamRoster`] (B1).
+fn build_team_roster_view_model(roster: &TeamRoster) -> TeamRosterViewModel {
+    let mut members: Vec<TeamMemberRow> = roster
+        .members
+        .iter()
+        .map(|member| TeamMemberRow {
+            login: member.login.clone(),
+            role_label: match member.role {
+                TeamMemberRole::Maintainer => "Maintainer",
+                TeamMemberRole::Member => "Member",
+            },
+            profile_url: format!(
+                "{}/{}",
+                config::DEFAULT_GITHUB_WEB_BASE_URL,
+                utf8_percent_encode(&member.login, PATH_SEGMENT)
+            ),
+        })
+        .collect();
+    members.sort_by_cached_key(|m| m.login.to_lowercase());
+    let member_count = u32::try_from(members.len()).unwrap_or(u32::MAX);
+
+    let (is_complete, status_label) = match roster.status {
+        TeamRosterStatus::Complete => (true, "Complete"),
+        TeamRosterStatus::PermissionDenied => (false, "Permission denied"),
+        TeamRosterStatus::TransientError => (false, "Temporarily unavailable"),
+    };
+
+    TeamRosterViewModel {
+        is_complete,
+        status_label,
+        members,
+        member_count,
+    }
+}
+
 /// Build per-owner detail view models with per-repo status rows.
 ///
 /// Accepts a pre-computed `owner_repo_map` (built via
@@ -457,6 +494,10 @@ fn build_control_cell(
 /// `run_timestamp` is the ISO 8601 assessment timestamp, used to compute
 /// staleness (repos with `updated_at` > 2 years before this value).
 ///
+/// `team_rosters` supplies the B1 member roster for team-type owners,
+/// matched by canonical owner name; `None` for user-type owners or teams
+/// B1 has not (yet) fetched a roster for.
+///
 /// Returns a list of (slug, detail view model) pairs.
 fn build_owner_detail_view_models(
     owner_metrics: &[crate::domain::metrics::OwnerMetrics],
@@ -464,6 +505,7 @@ fn build_owner_detail_view_models(
     tiers: &CoverageTiers,
     organization: &str,
     run_timestamp: &str,
+    team_rosters: &[TeamRoster],
 ) -> Vec<(String, OwnerDetailViewModel)> {
     if owner_metrics.is_empty() {
         return Vec::new();
@@ -521,6 +563,11 @@ fn build_owner_detail_view_models(
             };
             let stale_width_class = rate_to_width_class(stale_pct);
 
+            let roster = team_rosters
+                .iter()
+                .find(|r| r.canonical_owner == m.owner)
+                .map(build_team_roster_view_model);
+
             let detail = OwnerDetailViewModel {
                 owner: m.display_name.clone(),
                 owner_short: strip_org_prefix(&m.display_name),
@@ -533,6 +580,7 @@ fn build_owner_detail_view_models(
                 stale_repo_count,
                 total_repo_count,
                 stale_width_class,
+                roster,
             };
 
             Some((slug, detail))
@@ -720,6 +768,23 @@ fn is_orphaned(repo: &RepositoryEvidence) -> bool {
     }
 }
 
+/// Find the roster whose members list `committer_login` (case-insensitive).
+///
+/// B2: this is the sole join between team membership (B1, render-time
+/// fetch) and orphan attribution — no persisted surface is involved.
+fn attributed_roster<'a>(
+    committer_login: Option<&str>,
+    team_rosters: &'a [TeamRoster],
+) -> Option<&'a TeamRoster> {
+    let login = committer_login?;
+    team_rosters.iter().find(|roster| {
+        roster
+            .members
+            .iter()
+            .any(|m| m.login.eq_ignore_ascii_case(login))
+    })
+}
+
 /// Build the orphaned repositories view model.
 ///
 /// Filters repos by the orphan predicate, builds display rows, and sorts
@@ -729,6 +794,7 @@ fn build_orphaned_view_model(
     repositories: &[RepositoryEvidence],
     organization: &str,
     run_timestamp: &str,
+    team_rosters: &[TeamRoster],
 ) -> OrphanedViewModel {
     let org_encoded = utf8_percent_encode(organization, PATH_SEGMENT).to_string();
 
@@ -739,6 +805,11 @@ fn build_orphaned_view_model(
             let name_encoded = utf8_percent_encode(&repo.repository.name, PATH_SEGMENT);
             let commit = extract_last_commit_display(repo);
             let (repo_name, repo_url) = build_repo_display(repo, &org_encoded, &name_encoded);
+            let raw_committer_login = repo
+                .last_commit
+                .as_ref()
+                .and_then(|info| info.committer_login.as_deref());
+            let attributed = attributed_roster(raw_committer_login, team_rosters);
 
             OrphanedRepoRow {
                 repo_name,
@@ -760,6 +831,8 @@ fn build_orphaned_view_model(
                 last_committer_url: commit.url,
                 last_commit_date: commit.date,
                 is_stale: is_repo_stale(repo.repository.updated_at.as_deref(), run_timestamp),
+                attributed_team: attributed.map(|r| r.canonical_owner.clone()),
+                attributed_team_slug: attributed.map(|r| generate_slug(&r.canonical_owner)),
             }
         })
         .collect();
@@ -773,13 +846,47 @@ fn build_orphaned_view_model(
 
     let has_stale_repos = rows.iter().any(|r| r.is_stale);
     let orphaned_count = u32::try_from(rows.len()).unwrap_or(u32::MAX);
+    let by_team = build_orphaned_by_team(&rows);
 
     OrphanedViewModel {
         rows,
         organization: organization.to_string(),
         orphaned_count,
         has_stale_repos,
+        by_team,
     }
+}
+
+/// Group orphan rows by attributed team (B2), sorted by team name.
+///
+/// Only rows with an [`OrphanedRepoRow::attributed_team`] match contribute;
+/// each group's rows are sorted by repo name.
+fn build_orphaned_by_team(rows: &[OrphanedRepoRow]) -> Vec<OrphanedTeamGroup> {
+    let mut by_team: HashMap<String, Vec<OrphanedRepoRow>> = HashMap::new();
+    for row in rows {
+        if let Some(team) = &row.attributed_team {
+            by_team.entry(team.clone()).or_default().push(row.clone());
+        }
+    }
+
+    let mut groups: Vec<OrphanedTeamGroup> = by_team
+        .into_iter()
+        .map(|(team, mut team_rows)| {
+            team_rows.sort_by_cached_key(|r| r.repo_name.to_lowercase());
+            let slug = team_rows
+                .first()
+                .and_then(|r| r.attributed_team_slug.clone())
+                .unwrap_or_default();
+            OrphanedTeamGroup {
+                team_short: strip_org_prefix(&team),
+                team,
+                slug,
+                rows: team_rows,
+            }
+        })
+        .collect();
+    groups.sort_by(|a, b| a.team.cmp(&b.team));
+    groups
 }
 
 fn build_deleted_view_model(
@@ -1010,6 +1117,7 @@ mod tests {
             },
             owner_metrics: vec![],
             collection_health_counts: vec![],
+            team_rosters: vec![],
         }
     }
 
@@ -1629,6 +1737,7 @@ mod tests {
             &CoverageTiers::default(),
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
+            &[],
         );
 
         assert_eq!(detail_vms.len(), 1);
@@ -1654,6 +1763,7 @@ mod tests {
             &CoverageTiers::default(),
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
+            &[],
         );
 
         let (_, vm) = &detail_vms[0];
@@ -1675,6 +1785,7 @@ mod tests {
             &CoverageTiers::default(),
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
+            &[],
         );
 
         let (_, vm) = &detail_vms[0];
@@ -1704,6 +1815,7 @@ mod tests {
             &CoverageTiers::default(),
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
+            &[],
         );
 
         let (_, vm) = &detail_vms[0];
@@ -1721,6 +1833,7 @@ mod tests {
             &CoverageTiers::default(),
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
+            &[],
         );
 
         let (_, vm) = &detail_vms[0];
@@ -1757,6 +1870,7 @@ mod tests {
             &CoverageTiers::default(),
             "TestOrg",
             "2026-04-09T12:00:00+00:00",
+            &[],
         );
 
         assert_eq!(detail_vms.len(), 1);
@@ -1796,6 +1910,7 @@ mod tests {
             &CoverageTiers::default(),
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
+            &[],
         );
 
         assert_eq!(detail_vms.len(), 2);
@@ -1820,6 +1935,7 @@ mod tests {
             &CoverageTiers::default(),
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
+            &[],
         );
 
         let (_, vm) = &detail_vms[0];
@@ -1865,6 +1981,7 @@ mod tests {
             &CoverageTiers::default(),
             "My Org",
             &evidence.assessment_metadata.run_timestamp,
+            &[],
         );
 
         assert_eq!(detail_vms.len(), 1);
@@ -1931,6 +2048,53 @@ mod tests {
         assert!(
             owners_html.contains("Orphans ("),
             "owners.html should have orphans nav link"
+        );
+    }
+
+    /// B1: a realistic multi-member team roster renders on the owner
+    /// detail page — both a maintainer and a plain member, with role
+    /// labels distinguishing them.
+    #[test]
+    fn render_owner_detail_html_contains_team_roster() {
+        use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRoster, TeamRosterStatus};
+
+        let mut evidence = evidence_with_owner_repos();
+        evidence.metrics.team_rosters = vec![TeamRoster {
+            canonical_owner: "@org/team-a".to_string(),
+            team_slug: "team-a".to_string(),
+            status: TeamRosterStatus::Complete,
+            members: vec![
+                TeamMember {
+                    login: "alice".to_string(),
+                    role: TeamMemberRole::Maintainer,
+                },
+                TeamMember {
+                    login: "bob".to_string(),
+                    role: TeamMemberRole::Member,
+                },
+            ],
+        }];
+
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let detail_page = &pages["owners/org-team-a.html"];
+
+        assert!(
+            detail_page.contains("Team Members"),
+            "expected a Team Members section"
+        );
+        assert!(detail_page.contains("alice"), "expected maintainer login");
+        assert!(detail_page.contains("bob"), "expected member login");
+        assert!(
+            detail_page.contains("Maintainer"),
+            "expected role label Maintainer"
+        );
+        assert!(
+            !detail_page.contains("this list may be incomplete"),
+            "Complete status must not show the degraded-roster notice"
+        );
+        assert!(
+            detail_page.contains("../report.html#add-a-team-member"),
+            "expected the A3 add-a-member affordance to be reused, not duplicated"
         );
     }
 
@@ -2051,6 +2215,7 @@ mod tests {
             &CoverageTiers::default(),
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
+            &[],
         );
 
         let (_, vm) = &detail_vms[0];
@@ -2116,6 +2281,7 @@ mod tests {
             &CoverageTiers::default(),
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
+            &[],
         );
 
         assert_eq!(detail_vms.len(), 1);
@@ -2176,6 +2342,7 @@ mod tests {
             &CoverageTiers::default(),
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
+            &[],
         );
 
         let (_, vm) = &detail_vms[0];
@@ -2308,6 +2475,7 @@ mod tests {
             &CoverageTiers::default(),
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
+            &[],
         );
 
         let (_, vm) = &detail_vms[0];
@@ -2586,7 +2754,8 @@ mod tests {
         });
 
         let repos = vec![repo_a, repo_b, repo_c];
-        let vm = super::build_orphaned_view_model(&repos, "TestOrg", "2026-04-09T12:00:00+00:00");
+        let vm =
+            super::build_orphaned_view_model(&repos, "TestOrg", "2026-04-09T12:00:00+00:00", &[]);
 
         assert_eq!(vm.rows.len(), 3);
         assert_eq!(vm.rows[0].repo_name, "alpha-repo");
@@ -2595,6 +2764,144 @@ mod tests {
         assert_eq!(vm.rows[1].last_committer_login, "Alice");
         assert_eq!(vm.rows[2].repo_name, "beta-repo");
         assert_eq!(vm.rows[2].last_committer_login, "bob");
+    }
+
+    /// B2: an orphan repo is attributed to the team whose roster lists its
+    /// last committer, matched by the raw GitHub login (not the display
+    /// name) so `TeamMember.login` comparisons are unaffected by
+    /// `committer_name` formatting.
+    #[test]
+    fn build_orphaned_vm_attributes_team_via_last_committer_login() {
+        use crate::domain::evidence::LastCommitInfo;
+        use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRoster, TeamRosterStatus};
+
+        let mut orphan = test_fixtures::make_repository_evidence(
+            "orphan-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_absent(),
+            ),
+        );
+        orphan.last_commit = Some(LastCommitInfo {
+            committer_login: Some("alice".to_string()),
+            committer_name: Some("Alice Anderson".to_string()),
+            commit_date: Some("2026-04-01T00:00:00Z".to_string()),
+        });
+
+        let mut unattributed = test_fixtures::make_repository_evidence(
+            "unattributed-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_absent(),
+            ),
+        );
+        unattributed.last_commit = Some(LastCommitInfo {
+            committer_login: Some("someone-else".to_string()),
+            committer_name: None,
+            commit_date: None,
+        });
+
+        let team_rosters = vec![TeamRoster {
+            canonical_owner: "@org/team-a".to_string(),
+            team_slug: "team-a".to_string(),
+            status: TeamRosterStatus::Complete,
+            members: vec![TeamMember {
+                login: "alice".to_string(),
+                role: TeamMemberRole::Maintainer,
+            }],
+        }];
+
+        let vm = super::build_orphaned_view_model(
+            &[orphan, unattributed],
+            "TestOrg",
+            "2026-04-09T12:00:00+00:00",
+            &team_rosters,
+        );
+
+        let orphan_row = vm
+            .rows
+            .iter()
+            .find(|r| r.repo_name == "orphan-repo")
+            .expect("orphan-repo present");
+        assert_eq!(
+            orphan_row.attributed_team.as_deref(),
+            Some("@org/team-a"),
+            "matched via raw login 'alice', not display name 'Alice Anderson'"
+        );
+
+        let unattributed_row = vm
+            .rows
+            .iter()
+            .find(|r| r.repo_name == "unattributed-repo")
+            .expect("unattributed-repo present");
+        assert_eq!(unattributed_row.attributed_team, None);
+
+        assert_eq!(vm.by_team.len(), 1);
+        assert_eq!(vm.by_team[0].team, "@org/team-a");
+        assert_eq!(vm.by_team[0].rows.len(), 1);
+        assert_eq!(vm.by_team[0].rows[0].repo_name, "orphan-repo");
+    }
+
+    /// B2: the "Orphans by Team" section renders in the HTML page.
+    #[test]
+    fn render_orphaned_html_contains_orphans_by_team_section() {
+        use crate::domain::evidence::LastCommitInfo;
+        use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRoster, TeamRosterStatus};
+
+        let mut orphan = test_fixtures::make_repository_evidence(
+            "orphan-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_absent(),
+            ),
+        );
+        orphan.last_commit = Some(LastCommitInfo {
+            committer_login: Some("alice".to_string()),
+            committer_name: None,
+            commit_date: Some("2026-04-01T00:00:00Z".to_string()),
+        });
+
+        let mut evidence = test_fixtures::make_full_evidence(
+            test_fixtures::make_metadata(),
+            crate::aggregate::metrics::build_collection_statistics(&[orphan.clone()]),
+            crate::aggregate::metrics::aggregate_metrics(&[orphan.clone()]),
+            test_fixtures::make_observability(),
+            vec![orphan],
+        );
+        evidence.metrics.team_rosters = vec![TeamRoster {
+            canonical_owner: "@org/team-a".to_string(),
+            team_slug: "team-a".to_string(),
+            status: TeamRosterStatus::Complete,
+            members: vec![TeamMember {
+                login: "alice".to_string(),
+                role: TeamMemberRole::Maintainer,
+            }],
+        }];
+
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let orphans_html = &pages["orphans.html"];
+
+        assert!(
+            orphans_html.contains("Orphans by Team"),
+            "expected the B2 orphans-by-team section"
+        );
+        assert!(orphans_html.contains("owners/org-team-a.html"));
+        assert!(orphans_html.contains("orphan-repo"));
     }
 
     #[test]
@@ -2612,7 +2919,8 @@ mod tests {
             ),
         );
 
-        let vm = super::build_orphaned_view_model(&[repo], "TestOrg", "2026-04-09T12:00:00+00:00");
+        let vm =
+            super::build_orphaned_view_model(&[repo], "TestOrg", "2026-04-09T12:00:00+00:00", &[]);
 
         assert_eq!(vm.rows.len(), 1);
         assert_eq!(vm.rows[0].repo_name, "secret-repo");
@@ -2657,6 +2965,7 @@ mod tests {
             &[active, archived],
             "TestOrg",
             "2026-04-09T12:00:00+00:00",
+            &[],
         );
 
         assert_eq!(vm.orphaned_count, 1);
@@ -2667,7 +2976,8 @@ mod tests {
     #[test]
     fn build_orphaned_vm_empty_when_no_orphans() {
         let repo = test_fixtures::all_passing_evidence("owned-repo");
-        let vm = super::build_orphaned_view_model(&[repo], "TestOrg", "2026-04-09T12:00:00+00:00");
+        let vm =
+            super::build_orphaned_view_model(&[repo], "TestOrg", "2026-04-09T12:00:00+00:00", &[]);
 
         assert!(vm.rows.is_empty());
         assert_eq!(vm.orphaned_count, 0);
@@ -2791,7 +3101,8 @@ mod tests {
             ),
         );
 
-        let vm = super::build_orphaned_view_model(&[repo], "TestOrg", "2026-04-09T12:00:00+00:00");
+        let vm =
+            super::build_orphaned_view_model(&[repo], "TestOrg", "2026-04-09T12:00:00+00:00", &[]);
 
         assert_eq!(vm.rows.len(), 1);
         assert_eq!(vm.rows[0].visibility, "Public");

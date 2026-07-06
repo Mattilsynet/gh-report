@@ -193,6 +193,13 @@ pub struct AggregatedMetrics {
     /// Report-side collection-health taxonomy keyed by check kind and reason.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub collection_health_counts: Vec<CollectionHealthCount>,
+    /// Team rosters fetched fresh at render time (B1), one per team-type
+    /// owner in `owner_metrics`. Assigned by the evidence builder after
+    /// aggregation returns, because the roster fetch is async and this
+    /// struct is otherwise built synchronously from already-collected
+    /// repository evidence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub team_rosters: Vec<TeamRoster>,
 }
 
 /// Collection-health check-kind axis for report-side aggregation.
@@ -249,6 +256,93 @@ impl std::fmt::Display for OwnerType {
             Self::User => f.write_str("User"),
         }
     }
+}
+
+/// A GitHub team member's role within the team.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamMemberRole {
+    /// Team maintainer (elevated team-management permissions).
+    Maintainer,
+    /// Ordinary team member.
+    Member,
+}
+
+impl std::fmt::Display for TeamMemberRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Maintainer => f.write_str("Maintainer"),
+            Self::Member => f.write_str("Member"),
+        }
+    }
+}
+
+/// A single GitHub team member, fetched fresh at render time (B1).
+///
+/// Render-time-only: never persisted to the native per-repo event payload
+/// (oracle adr-fmt-kqavx CLASS B verdict).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamMember {
+    /// GitHub login.
+    pub login: String,
+    /// The member's role on this team.
+    pub role: TeamMemberRole,
+}
+
+/// Outcome of fetching a single team's roster.
+///
+/// Deliberately separate from [`super::auth::Capability`]: `Capability`
+/// derives `GenomeSafe` and rides in the persisted `AssessmentMetadata`, so
+/// adding a variant there would bump `SCHEMA_HASH`. Membership-read
+/// degradation is a render-time-only concern instead (oracle adr-fmt-kqavx).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamRosterStatus {
+    /// Both member and maintainer pages were fetched successfully.
+    Complete,
+    /// The GitHub API denied access to this team's membership.
+    PermissionDenied,
+    /// The fetch failed for a retryable/transient reason.
+    TransientError,
+}
+
+/// A GitHub team's member roster, fetched fresh each collection tick (B1).
+///
+/// Render-time-only, mirroring [`OwnerMetrics`]: rebuilt on every render,
+/// never folded into the persisted native event tree.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TeamRoster {
+    /// Canonical owner name matching [`OwnerMetrics::owner`] (e.g. `@org/team-slug`).
+    pub canonical_owner: String,
+    /// GitHub team slug used in API paths (e.g. `team-slug`).
+    pub team_slug: String,
+    /// Whether the roster fetch completed or degraded.
+    pub status: TeamRosterStatus,
+    /// Team members, complete and role-tagged when `status == Complete`.
+    pub members: Vec<TeamMember>,
+}
+
+/// Extract the GitHub team slug from a canonical CODEOWNERS owner string.
+///
+/// Returns `None` for user-type owners (no `/`) or malformed input. The
+/// canonical form is `@org/team-slug` (already lowercased by
+/// [`build_owner_repo_map`]'s dedup key); the API path needs only the
+/// `team-slug` segment, since the org is supplied separately.
+///
+/// ```
+/// use gh_report::domain::metrics::team_slug_from_canonical_owner;
+///
+/// assert_eq!(
+///     team_slug_from_canonical_owner("@mattilsynet/team-foo"),
+///     Some("team-foo")
+/// );
+/// assert_eq!(team_slug_from_canonical_owner("@individual-user"), None);
+/// ```
+#[must_use]
+pub fn team_slug_from_canonical_owner(canonical_owner: &str) -> Option<&str> {
+    let stripped = canonical_owner.strip_prefix('@')?;
+    let (_, slug) = stripped.split_once('/')?;
+    (!slug.is_empty()).then_some(slug)
 }
 
 /// Collection statistics for the run.
@@ -362,6 +456,26 @@ pub fn build_owner_repo_map<'a>(
     }
 
     owner_repos
+}
+
+/// List `(canonical_owner, team_slug)` pairs for every team-type owner
+/// referenced by CODEOWNERS across `repositories`.
+///
+/// Pure and cheap (delegates to [`build_owner_repo_map`]); called once per
+/// collection tick, before the team-roster fetch, to determine which teams
+/// to fetch. Excludes user-type owners (no `/`) and any malformed canonical
+/// string that [`team_slug_from_canonical_owner`] cannot parse.
+#[must_use]
+pub fn team_owner_slugs(repositories: &[RepositoryEvidence]) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> = build_owner_repo_map(repositories)
+        .into_keys()
+        .filter_map(|canonical| {
+            team_slug_from_canonical_owner(&canonical)
+                .map(|slug| (canonical.clone(), slug.to_string()))
+        })
+        .collect();
+    pairs.sort();
+    pairs
 }
 
 #[cfg(test)]

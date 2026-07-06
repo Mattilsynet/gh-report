@@ -137,6 +137,7 @@ pub fn aggregate_metrics(repositories: &[RepositoryEvidence]) -> AggregatedMetri
         codeowners_counts,
         owner_metrics: build_owner_metrics(repositories),
         collection_health_counts: taxonomy.into_counts(),
+        team_rosters: Vec::new(),
     }
 }
 
@@ -2052,6 +2053,32 @@ mod tests {
         assert_eq!(display, "@org/team-a");
         assert_eq!(repos_list.len(), 1);
         assert_eq!(repos_list[0].repository.name, "repo-1");
+    }
+
+    #[test]
+    fn team_owner_slugs_excludes_user_owners_and_extracts_team_slug() {
+        use crate::domain::metrics::team_owner_slugs;
+
+        let repos = vec![make_repository_evidence(
+            "repo-1",
+            Visibility::Public,
+            false,
+            make_checks(
+                policy_pass_setting(),
+                secret_enabled_observable(false),
+                dependabot_enabled(),
+                branch_pass(),
+                codeowners_with_owners(&["@org/team-a", "@individual-user"]),
+            ),
+        )];
+
+        let pairs = team_owner_slugs(&repos);
+
+        assert_eq!(
+            pairs,
+            vec![("@org/team-a".to_string(), "team-a".to_string())],
+            "user-type owner (@individual-user) must not surface as a team"
+        );
     }
 
     #[test]

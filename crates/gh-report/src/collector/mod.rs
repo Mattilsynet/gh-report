@@ -12,3 +12,4 @@ pub mod inventory;
 pub mod last_commit;
 pub mod ref_matching;
 pub mod security_policy;
+pub mod team_membership;

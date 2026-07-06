@@ -239,7 +239,7 @@ expression: "&pages[\"report.html\"]"
         </table>
     </details>
 
-    <p class="caveat">Prefer a GitHub <strong>team</strong> (for example <code>@TestOrg/team-slug</code>) as
+    <p class="caveat" id="add-a-team-member">Prefer a GitHub <strong>team</strong> (for example <code>@TestOrg/team-slug</code>) as
         CODEOWNERS owner rather than an individual user: the CODEOWNERS Summary "top security teams" ranking only
         considers team-type owners, and a team survives one person leaving. To add a member to a team, contact
         <strong>#plattform</strong> on the Mattilsynet Slack with the person's GitHub username and product-team name —

@@ -59,6 +59,17 @@ pub struct LicenseInfo {
     pub name: Option<String>,
 }
 
+/// A member of a GitHub team, from the "List team members" REST endpoint.
+///
+/// The endpoint returns a full `simple-user` object; only `login` is needed
+/// here, so every other field is ignored by serde (see
+/// `extra_unknown_fields_ignored` for the general precedent this relies on).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GhTeamMember {
+    /// GitHub login of the team member.
+    pub login: String,
+}
+
 /// Security and analysis settings from repository details.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityAndAnalysis {
@@ -230,5 +241,27 @@ mod tests {
             Some("enabled")
         );
         assert!(sa.dependabot_security_updates.is_none());
+    }
+
+    #[test]
+    fn gh_team_member_round_trip() {
+        let json = serde_json::json!({
+            "login": "octocat",
+            "id": 1,
+            "node_id": "MDQ6VXNlcjE=",
+            "type": "User"
+        });
+        let member: GhTeamMember = serde_json::from_value(json).unwrap();
+        assert_eq!(member.login, "octocat");
+    }
+
+    #[test]
+    fn gh_team_member_missing_login_fails() {
+        let json = serde_json::json!({ "id": 1 });
+        let result = serde_json::from_value::<GhTeamMember>(json);
+        assert!(
+            result.is_err(),
+            "should fail without required 'login' field"
+        );
     }
 }

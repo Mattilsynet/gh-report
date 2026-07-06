@@ -558,6 +558,7 @@ pub fn make_minimal_metrics() -> AggregatedMetrics {
         },
         owner_metrics: vec![],
         collection_health_counts: vec![],
+        team_rosters: vec![],
     }
 }
 

@@ -40,6 +40,7 @@ use tracing::{debug, error, info, warn};
 use crate::aggregate::metrics;
 use crate::app::state::{AppState, CACHED_STYLESHEET, CACHED_WS_JS, CachedPage};
 use crate::collector::ghas_scanning;
+use crate::collector::team_membership;
 use crate::collector::{branch_protection, codeowners, dependabot, inventory, security_policy};
 use crate::config;
 use crate::config::runtime::RuntimeConfig;
@@ -1150,6 +1151,9 @@ async fn finalize_and_publish(
 
     let evidence_repos = state.projection_snapshot();
 
+    let team_slugs = crate::domain::metrics::team_owner_slugs(&evidence_repos);
+    let team_rosters = team_membership::collect_team_rosters(client, &team_slugs).await;
+
     let evidence = build_evidence(BuildEvidenceParams {
         repositories: evidence_repos,
         deleted: state
@@ -1165,6 +1169,7 @@ async fn finalize_and_publish(
         auth_metadata,
         capabilities,
         rate_limit_warnings,
+        team_rosters,
     });
 
     let pages = build_cached_pages(config, &evidence).await?;
@@ -1393,6 +1398,7 @@ pub(crate) async fn warm_start_from_baseline(
         },
         capabilities: &CapabilitySet::default(),
         rate_limit_warnings: 0,
+        team_rosters: Vec::new(),
     });
 
     let warm_repo_count: u64 = u64::from(evidence.collection_statistics.total_repos);
@@ -1636,6 +1642,7 @@ fn spawn_partial_publisher_from_store(
                         auth_metadata: &pp.auth_metadata,
                         capabilities: &pp.capabilities,
                         rate_limit_warnings: 0,
+                        team_rosters: Vec::new(),
                     });
 
                     let pending_repos: u64 = 0;
@@ -1770,6 +1777,11 @@ struct BuildEvidenceParams<'a> {
     auth_metadata: &'a AuthMetadata,
     capabilities: &'a CapabilitySet,
     rate_limit_warnings: u32,
+    /// Team rosters fetched fresh this tick (B1). Empty at warm-start and
+    /// during mid-sweep partial publishes — see [`finalize_and_publish`],
+    /// the only call site with both a completed CODEOWNERS-derived team
+    /// list and a live `GitHubClient` to fetch with.
+    team_rosters: Vec<crate::domain::metrics::TeamRoster>,
 }
 
 struct OrgSnapshotParams<'a> {
@@ -1819,6 +1831,7 @@ fn build_evidence(params: BuildEvidenceParams<'_>) -> Evidence {
         &params.repositories,
         &params.run.timestamp(),
     );
+    aggregated.team_rosters = params.team_rosters;
     let alert_summary = params
         .org_state
         .as_ref()
@@ -2034,6 +2047,7 @@ mod tests {
             auth_metadata: &test_auth_metadata(),
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
+            team_rosters: Vec::new(),
         });
 
         assert_eq!(evidence.assessment_metadata.organization, "TestOrg");
@@ -2044,6 +2058,43 @@ mod tests {
         assert_eq!(evidence.collection_statistics.total_repos, 2);
         assert_eq!(evidence.collection_statistics.public_repos, 2);
         assert_eq!(evidence.repositories.len(), 2);
+    }
+
+    #[test]
+    fn build_evidence_threads_team_rosters_into_metrics() {
+        use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRoster, TeamRosterStatus};
+
+        let repos = vec![sample_repo("repo-1")];
+        let config = sample_config();
+        let run_meta = RunMetadata::new(
+            "TestOrg".to_string(),
+            crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
+        );
+        let rosters = vec![TeamRoster {
+            canonical_owner: "@testorg/team-foo".to_string(),
+            team_slug: "team-foo".to_string(),
+            status: TeamRosterStatus::Complete,
+            members: vec![TeamMember {
+                login: "octocat".to_string(),
+                role: TeamMemberRole::Maintainer,
+            }],
+        }];
+
+        let evidence = build_evidence(BuildEvidenceParams {
+            repositories: repos,
+            deleted: vec![],
+            org_state: None,
+            config: &config,
+            run: &run_meta,
+            inventory_fetched_at: None,
+            org_alert_summary: None,
+            auth_metadata: &test_auth_metadata(),
+            capabilities: &test_capabilities(),
+            rate_limit_warnings: 0,
+            team_rosters: rosters.clone(),
+        });
+
+        assert_eq!(evidence.metrics.team_rosters, rosters);
     }
 
     #[test]
@@ -2068,6 +2119,7 @@ mod tests {
             auth_metadata: &test_auth_metadata(),
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
+            team_rosters: Vec::new(),
         });
 
         assert_eq!(evidence.collection_statistics.total_repos, 1);
@@ -2101,6 +2153,7 @@ mod tests {
             auth_metadata: &test_auth_metadata(),
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
+            team_rosters: Vec::new(),
         });
 
         assert_eq!(evidence.collection_statistics.total_repos, 1);
@@ -2129,6 +2182,7 @@ mod tests {
             auth_metadata: &test_auth_metadata(),
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
+            team_rosters: Vec::new(),
         });
 
         assert_eq!(evidence.collection_statistics.total_repos, 0);
@@ -2155,6 +2209,7 @@ mod tests {
             auth_metadata: &test_auth_metadata(),
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
+            team_rosters: Vec::new(),
         });
 
         assert_eq!(evidence.metrics.security_policy_coverage.numerator, 1);

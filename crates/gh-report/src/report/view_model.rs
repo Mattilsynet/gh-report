@@ -177,6 +177,31 @@ pub struct SummaryCard {
     pub cell: ControlCell,
 }
 
+/// A single member row in a team roster (B1).
+#[derive(Debug, Clone)]
+pub struct TeamMemberRow {
+    /// GitHub login.
+    pub login: String,
+    /// `"Maintainer"` or `"Member"`.
+    pub role_label: &'static str,
+    /// URL to the member's GitHub profile.
+    pub profile_url: String,
+}
+
+/// View model for a team's member roster (B1), embedded in
+/// [`OwnerDetailViewModel`] for team-type owners.
+#[derive(Debug, Clone)]
+pub struct TeamRosterViewModel {
+    /// Whether the roster fetch completed; drives a degraded-state notice.
+    pub is_complete: bool,
+    /// Human-readable fetch status (e.g., `"Complete"`, `"Permission denied"`).
+    pub status_label: &'static str,
+    /// Roster rows, sorted by login.
+    pub members: Vec<TeamMemberRow>,
+    /// `members.len()`, for the section heading.
+    pub member_count: u32,
+}
+
 /// View model for a single owner's detail page.
 #[derive(Debug, Clone)]
 pub struct OwnerDetailViewModel {
@@ -206,6 +231,10 @@ pub struct OwnerDetailViewModel {
     /// for this owner — distinct from the org-level stale rate on the
     /// dashboard which measures archival coverage.
     pub stale_width_class: &'static str,
+    /// Team member roster (B1). `Some` only for team-type owners with a
+    /// fetched roster; `None` for user-type owners or when B1 has not
+    /// (yet) collected this team.
+    pub roster: Option<TeamRosterViewModel>,
 }
 
 /// View model for the owners overview page.
@@ -262,6 +291,27 @@ pub struct OrphanedRepoRow {
     pub last_commit_date: String,
     /// Whether this repository is stale (`updated_at` > 2 years before report date).
     pub is_stale: bool,
+    /// Display name of the team the last committer belongs to (B2), if any
+    /// fetched roster lists `last_committer_login` as a member. `None` when
+    /// no roster match is found (committer unknown, not on any team, or no
+    /// roster fetched).
+    pub attributed_team: Option<String>,
+    /// URL-safe slug of `attributed_team`, for linking to its detail page.
+    pub attributed_team_slug: Option<String>,
+}
+
+/// One team's group of orphan repos attributed via last-committer
+/// membership (B2), for the "Orphans by Team" section.
+#[derive(Debug, Clone)]
+pub struct OrphanedTeamGroup {
+    /// Display name of the team.
+    pub team: String,
+    /// Short display name with org prefix stripped.
+    pub team_short: String,
+    /// URL-safe slug, for linking to the team's detail page.
+    pub slug: String,
+    /// Orphan repos attributed to this team, sorted by repo name.
+    pub rows: Vec<OrphanedRepoRow>,
 }
 
 /// View model for the orphaned repositories page.
@@ -275,6 +325,9 @@ pub struct OrphanedViewModel {
     pub orphaned_count: u32,
     /// Whether any repo row is flagged as stale (drives footnote rendering).
     pub has_stale_repos: bool,
+    /// Orphan repos grouped by attributed team (B2), sorted by team name.
+    /// Only teams with at least one attributed orphan appear.
+    pub by_team: Vec<OrphanedTeamGroup>,
 }
 
 /// A row in the deleted repositories table.
@@ -1677,6 +1730,7 @@ mod tests {
             },
             owner_metrics: vec![],
             collection_health_counts: vec![],
+            team_rosters: vec![],
         }
     }
 
