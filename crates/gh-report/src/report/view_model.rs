@@ -306,6 +306,8 @@ pub struct AdminDiagnosticsViewModel {
     pub technical_issues_total: u32,
     /// Active credential mode, tier, and degraded capabilities.
     pub credentials: CredentialLimitationsViewModel,
+    /// Derived red flags, sorted by severity then category then id.
+    pub red_flags: Vec<RedFlag>,
 }
 
 impl AdminDiagnosticsViewModel {
@@ -759,7 +761,7 @@ impl ReportViewModel {
         let stats = &evidence.collection_statistics;
         let m = &evidence.metrics;
         let org_alert = org_alert_display(evidence);
-        let admin_diagnostics = build_admin_diagnostics(metadata, &m.collection_health_counts);
+        let admin_diagnostics = build_admin_diagnostics(metadata, m, &evidence.repositories);
 
         let dependabot_observable = extra_u32(
             &m.dependabot_security_updates_coverage.extra,
@@ -881,15 +883,17 @@ fn health_display(
 
 fn build_admin_diagnostics(
     metadata: &crate::domain::evidence::AssessmentMetadata,
-    collection_health_counts: &[CollectionHealthCount],
+    metrics: &AggregatedMetrics,
+    repos: &[RepositoryEvidence],
 ) -> AdminDiagnosticsViewModel {
     let (collection_health_sections, technical_issues_total) =
-        build_collection_health_sections(collection_health_counts);
+        build_collection_health_sections(&metrics.collection_health_counts);
 
     AdminDiagnosticsViewModel {
         collection_health_sections,
         technical_issues_total,
         credentials: build_credential_limitations(metadata),
+        red_flags: build_red_flags(metadata, metrics, repos),
     }
 }
 
@@ -1832,6 +1836,42 @@ mod tests {
         assert_eq!(diagnostics.technical_issues_total, 0);
         assert!(diagnostics.collection_health_sections.is_empty());
         assert!(!diagnostics.credentials.has_degraded_capabilities());
+    }
+
+    #[test]
+    fn admin_diagnostics_wires_red_flags_from_evidence() {
+        let mut metadata = neutral_metadata();
+        metadata.token_tier = TokenTier::Unknown;
+        let evidence = test_fixtures::make_full_evidence(
+            metadata,
+            test_fixtures::make_collection_statistics(1, 1, 0, 0),
+            neutral_metrics(),
+            test_fixtures::make_observability(),
+            neutral_repos(),
+        );
+
+        let vm = ReportViewModel::from_evidence(&evidence, &CoverageTiers::default());
+
+        assert_eq!(vm.admin_diagnostics.red_flags.len(), 1);
+        assert_eq!(
+            vm.admin_diagnostics.red_flags[0].id,
+            RedFlagId::TokenTierUnknown
+        );
+    }
+
+    #[test]
+    fn admin_diagnostics_red_flags_empty_when_nothing_fires() {
+        let evidence = test_fixtures::make_full_evidence(
+            neutral_metadata(),
+            test_fixtures::make_collection_statistics(1, 1, 0, 0),
+            neutral_metrics(),
+            test_fixtures::make_observability(),
+            neutral_repos(),
+        );
+
+        let vm = ReportViewModel::from_evidence(&evidence, &CoverageTiers::default());
+
+        assert!(vm.admin_diagnostics.red_flags.is_empty());
     }
 
     #[test]
