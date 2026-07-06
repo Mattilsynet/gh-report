@@ -1411,7 +1411,7 @@ fn push_posture_flag(flags: &mut Vec<RedFlag>, affected_repos: Vec<String>, spec
         affected: AffectedScope::Repos(affected_repos),
         remedy: Remedy {
             summary: spec.remedy_summary.to_string(),
-            anchor: None,
+            anchor: Some("branch-protection-coverage"),
             fix_target: FixTarget::Repo(primary),
         },
     });
@@ -2883,6 +2883,35 @@ mod tests {
                 .iter()
                 .any(|f| f.id == RedFlagId::IntegrityControlGap)
         );
+    }
+
+    #[test]
+    fn branch_protection_posture_flags_carry_operations_anchor() {
+        let repos = vec![repo_with_branch_protection(
+            "posture-anchor-repo",
+            branch_protection_with(
+                Some(CollectionFailureReason::NotFoundAbsent),
+                Some(true),
+                Some(false),
+                Some(false),
+                Some(false),
+            ),
+        )];
+        let fired = build_red_flags(&neutral_metadata(), &neutral_metrics(), &repos);
+
+        let posture_ids = [
+            RedFlagId::BranchProtectionAbsent,
+            RedFlagId::BroadBypassPresent,
+            RedFlagId::AdminEnforcementNotEquivalent,
+            RedFlagId::IntegrityControlGap,
+        ];
+        for id in posture_ids {
+            let flag = fired
+                .iter()
+                .find(|f| f.id == id)
+                .unwrap_or_else(|| panic!("{id:?} should fire"));
+            assert_eq!(flag.remedy.anchor, Some("branch-protection-coverage"));
+        }
     }
 
     #[test]

@@ -39,26 +39,35 @@
     <p class="question">Do we communicate to external parties how to inform us about security issues found in our public
         repositories?</p>
     <p><code>Security Policy Coverage</code>: <span class="metric">{{ vm.policy_coverage_formatted }}</span>
-        <em>(non-archived public repos only)</em></p>
+        <em>(non-archived public repos only)</em> ·
+        <a href="OPERATIONS.md#security-policy-coverage" title="What it means and how to add a security policy">Les mer</a>
+    </p>
 
     <p class="question">Do we have Dependabot security updates enabled so GitHub can automatically open remediation pull
         requests for vulnerable dependencies?</p>
     <p><code>Dependabot Status</code>: <span class="metric">{{ vm.dependabot_coverage_formatted
-            }}</span></p>
+            }}</span> ·
+        <a href="OPERATIONS.md#dependabot-coverage" title="What it means and how to enable Dependabot security updates">Les mer</a>
+    </p>
 
     <p class="question">Do we scan our repositories for leaked secrets?</p>
-    <p><code>Secret Scanning Coverage</code>: <span class="metric">{{ vm.secret_scanning_coverage_formatted }}</span>
+    <p><code>Secret Scanning Coverage</code>: <span class="metric">{{ vm.secret_scanning_coverage_formatted }}</span> ·
+        <a href="OPERATIONS.md#secret-scanning-coverage" title="What it means and how to enable secret scanning">Les mer</a>
     </p>
 
     <h3>Ownership Metrics</h3>
 
     <p class="question">Do we enforce branch protection rules?</p>
     <p><code>Branch Protection</code>: <span class="metric">{{ vm.branch_protection_coverage_formatted
-            }}</span></p>
+            }}</span> ·
+        <a href="OPERATIONS.md#branch-protection-coverage" title="What it means and how to configure branch protection">Les mer</a>
+    </p>
 
     <p class="question">Do we have CODEOWNERS files in <code>{{ vm.conforming_codeowners_path }}</code> or
         <code>./{{ vm.non_conforming_codeowners_path }}</code>?</p>
-    <p><code>CODEOWNERS Coverage</code>: <span class="metric">{{ vm.codeowners_coverage_formatted }}</span></p>
+    <p><code>CODEOWNERS Coverage</code>: <span class="metric">{{ vm.codeowners_coverage_formatted }}</span> ·
+        <a href="OPERATIONS.md#codeowners-coverage" title="What it means, team-over-user preference, and how to add a team member">Les mer</a>
+    </p>
 
     <h2>Supporting Counts and Details</h2>
 
@@ -227,6 +236,17 @@
             </tbody>
         </table>
     </details>
+
+    <p class="caveat">Prefer a GitHub <strong>team</strong> (for example <code>@{{ vm.organization }}/team-slug</code>) as
+        CODEOWNERS owner rather than an individual user: the CODEOWNERS Summary "top security teams" ranking only
+        considers team-type owners, and a team survives one person leaving. To add a member to a team, contact
+        <strong>#plattform</strong> on the Mattilsynet Slack with the person's GitHub username and product-team name —
+        team membership is governed by the team's Azure AD security group, not a configuration file. See
+        <a href="https://map.mattilsynet.io/ecosystem/github/github/#hvordan-far-jeg-tilgang" target="_blank"
+            rel="noopener noreferrer">MA³P: Hvordan får jeg tilgang?</a> or the
+        <a href="https://mattilsynet.atlassian.net/wiki/spaces/OPS/pages/15860389/Selvbetjening" target="_blank"
+            rel="noopener noreferrer">Confluence Selvbetjening page</a> (Atlassian login required) for the self-service
+        path.</p>
 
     <h2>Metric Caveats</h2>
 

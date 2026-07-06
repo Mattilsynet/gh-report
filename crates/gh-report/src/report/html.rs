@@ -1098,6 +1098,48 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_report_includes_les_mer_remediation_links() {
+        let evidence = sample_evidence();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let html = &pages["report.html"];
+
+        assert!(html.contains(r#"href="OPERATIONS.md#security-policy-coverage""#));
+        assert!(html.contains(r#"href="OPERATIONS.md#dependabot-coverage""#));
+        assert!(html.contains(r#"href="OPERATIONS.md#secret-scanning-coverage""#));
+        assert!(html.contains(r#"href="OPERATIONS.md#branch-protection-coverage""#));
+        assert!(html.contains(r#"href="OPERATIONS.md#codeowners-coverage""#));
+        assert_eq!(html.matches("Les mer").count(), 5);
+    }
+
+    #[test]
+    fn dashboard_report_codeowners_prefers_team_over_user() {
+        let evidence = sample_evidence();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let html = &pages["report.html"];
+
+        assert!(html.contains("Prefer a GitHub <strong>team</strong>"));
+        assert!(html.contains("top security teams"));
+    }
+
+    #[test]
+    fn dashboard_report_add_member_guidance_points_at_ad_group_and_slack_not_config_pr() {
+        let evidence = sample_evidence();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let html = &pages["report.html"];
+
+        assert!(html.contains("#plattform"));
+        assert!(html.contains("Azure AD security group"));
+        assert!(html.contains(
+            "https://map.mattilsynet.io/ecosystem/github/github/#hvordan-far-jeg-tilgang"
+        ));
+        assert!(html.contains(
+            "https://mattilsynet.atlassian.net/wiki/spaces/OPS/pages/15860389/Selvbetjening"
+        ));
+        assert!(!html.to_lowercase().contains("open a pr"));
+        assert!(!html.to_lowercase().contains("pull request to"));
+    }
+
+    #[test]
     fn dashboard_report_snapshot() {
         let evidence = sample_evidence();
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();

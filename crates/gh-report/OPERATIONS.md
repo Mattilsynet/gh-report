@@ -328,6 +328,48 @@ Configuration constraints (validated at startup): both thresholds are in `[0.0, 
 
 The set of controls and the per-status mapping are part of the schema contract: any change is a `EVIDENCE_SCHEMA_VERSION` bump (see [Schema Versions](#schema-versions)). The threshold defaults are not part of the schema contract — they are runtime configuration and may be overridden per deployment without invalidating baselines.
 
+### Fixing Coverage Gaps
+
+Concrete remediation steps for each control, linked from the report's "Les mer" affordances.
+
+#### Security Policy Coverage
+
+**What it means:** the repository has a `SECURITY.md` file, or the GitHub repository security-policy setting is enabled, so external parties know how to report a vulnerability.
+
+**How to fix:** add a `SECURITY.md` file to the repository root (or `.github/`), or enable it under **Settings → Code security → Security policy**.
+
+#### Dependabot Coverage
+
+**What it means:** GitHub Dependabot security updates are enabled, so vulnerable dependencies get automatic remediation pull requests.
+
+**How to fix:** enable **Settings → Code security → Dependabot security updates** on the repository, or set it as an organization-wide default.
+
+#### Secret Scanning Coverage
+
+**What it means:** GitHub secret scanning is enabled, so accidentally committed credentials are detected.
+
+**How to fix:** enable **Settings → Code security → Secret scanning** (availability depends on repository visibility and your GitHub Advanced Security entitlement).
+
+#### Branch Protection Coverage
+
+**What it means:** the default branch requires reviews and blocks force-push/deletion; see [Metric Caveats](#metric-caveats) for the T0/T1/T2 tiers this feeds.
+
+**How to fix:** add a branch protection rule or ruleset on the default branch under **Settings → Branches**: require pull request review, and block force pushes and branch deletion. Bind the rule to administrators too — an admin bypass or a broad bypass actor defeats the protection.
+
+#### CODEOWNERS Coverage
+
+**What it means:** the repository has a `.github/CODEOWNERS` file (preferred location; repo-root `CODEOWNERS` is also recognized but non-conforming) naming who is responsible for reviewing changes.
+
+**How to fix:** add `.github/CODEOWNERS` mapping paths to owners, for example:
+
+```text
+*   @Mattilsynet/team-slug
+```
+
+**Prefer a team over an individual user.** Name a GitHub **team** (`@Mattilsynet/team-slug`) as the owner rather than a person (`@username`): the CODEOWNERS Summary "top security teams" ranking only considers team-type owners — individual users are excluded — and a team survives a single person leaving. Every product team has a corresponding Azure AD security group that syncs to GitHub, so a team to name as owner already exists for your product area.
+
+**Adding a member to that team:** team membership is governed by the team's Azure AD security group, not by a configuration file in this or any repository. Contact **#plattform** on the Mattilsynet Slack with the person's GitHub username and product-team name; team leads administer the group (2FA is required for GitHub accounts in this organization). See [MA³P: Hvordan får jeg tilgang?](https://map.mattilsynet.io/ecosystem/github/github/#hvordan-far-jeg-tilgang) for the self-service path, or the [Confluence Selvbetjening page](https://mattilsynet.atlassian.net/wiki/spaces/OPS/pages/15860389/Selvbetjening) if you have Atlassian access.
+
 
 
 | Artifact | Retention | Notes |
