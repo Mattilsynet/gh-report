@@ -211,6 +211,18 @@ code {
    text-align: center;
 }
 
+.warning-badge.severity-critical {
+   background: var(--status-fail);
+}
+
+.warning-badge.severity-high {
+   background: var(--status-warn);
+}
+
+.warning-badge.severity-medium {
+   background: var(--status-unknown);
+}
+
 /* ── Breadcrumb ─────────────────────────────────────────────────── */
 
 .breadcrumb {

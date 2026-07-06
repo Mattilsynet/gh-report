@@ -556,6 +556,16 @@ impl AdminDiagnosticsViewModel {
         }
         counts
     }
+
+    /// Most severe [`Severity`] among `red_flags`, or `None` when none fired.
+    ///
+    /// `Severity`'s declaration order is `Critical < High < Medium`, so the
+    /// iterator minimum is the most severe flag present. Drives the admin
+    /// nav badge's severity-class modifier.
+    #[must_use]
+    pub fn max_red_flag_severity(&self) -> Option<Severity> {
+        self.red_flags.iter().map(|flag| flag.severity).min()
+    }
 }
 
 /// Generate a URL-safe slug from an owner name.
@@ -1934,6 +1944,61 @@ mod tests {
         let vm = ReportViewModel::from_evidence(&evidence, &CoverageTiers::default());
 
         assert!(vm.admin_diagnostics.red_flags.is_empty());
+    }
+
+    fn flag_with_severity(severity: Severity) -> RedFlag {
+        RedFlag {
+            id: RedFlagId::TokenTierUnknown,
+            severity,
+            category: RedFlagCategory::Credential,
+            title: "t".to_string(),
+            detail: "d".to_string(),
+            affected: AffectedScope::OrgWide,
+            remedy: Remedy {
+                summary: "s".to_string(),
+                anchor: None,
+                fix_target: FixTarget::Token,
+            },
+        }
+    }
+
+    fn diagnostics_with_flags(red_flags: Vec<RedFlag>) -> AdminDiagnosticsViewModel {
+        AdminDiagnosticsViewModel {
+            collection_health_sections: vec![],
+            technical_issues_total: 0,
+            credentials: CredentialLimitationsViewModel {
+                auth_mode: AuthMode::GitHubApp,
+                auth_mode_label: "github_app".to_string(),
+                token_tier: TokenTier::Limited,
+                token_tier_label: "Limited".to_string(),
+                unavailable_capabilities: vec![],
+            },
+            red_flags,
+        }
+    }
+
+    #[test]
+    fn max_red_flag_severity_none_when_empty() {
+        let diagnostics = diagnostics_with_flags(vec![]);
+        assert_eq!(diagnostics.max_red_flag_severity(), None);
+    }
+
+    #[test]
+    fn max_red_flag_severity_critical_wins_over_high_and_medium() {
+        let diagnostics = diagnostics_with_flags(vec![
+            flag_with_severity(Severity::Medium),
+            flag_with_severity(Severity::Critical),
+            flag_with_severity(Severity::High),
+        ]);
+        let severity = diagnostics.max_red_flag_severity();
+        assert_eq!(severity, Some(Severity::Critical));
+        assert_eq!(severity.unwrap().css_class(), "severity-critical");
+    }
+
+    #[test]
+    fn max_red_flag_severity_only_medium_present() {
+        let diagnostics = diagnostics_with_flags(vec![flag_with_severity(Severity::Medium)]);
+        assert_eq!(diagnostics.max_red_flag_severity(), Some(Severity::Medium));
     }
 
     #[test]
