@@ -33,6 +33,79 @@ expression: "&pages[\"admin.html\"]"
 
     <p class="meta">Read-only technical diagnostics for <code>TestOrg</code>. Technical issues total: <strong>8</strong>.</p>
 
+    <h2>Red Flags (5)</h2>
+
+    
+    
+    <p class="red-flags-summary">[Critical 0 · High 4 · Medium 1]</p>
+    
+    <div class="red-flag-card severity-high">
+        <p class="red-flag-header">
+            <span class="status-dot status-warn"></span>
+            <span class="red-flag-category">Credential</span>
+            <strong>Org-level secret scanning alerts capability unavailable</strong>
+        </p>
+        <p>Organization-wide secret-scanning alert observability is degraded; alert-based coverage metrics may undercount.</p>
+        <p>Fix: Grant the missing scope or permission listed under Capability probes, or accept the degraded coverage for this credential tier. <a href="OPERATIONS.md#capability-probes">[why?]</a></p>
+        
+        <p class="meta">Affected: organization-wide</p>
+        
+    </div>
+    
+    <div class="red-flag-card severity-high">
+        <p class="red-flag-header">
+            <span class="status-dot status-warn"></span>
+            <span class="red-flag-category">Credential</span>
+            <strong>Private/internal branch-protection reads capability unavailable</strong>
+        </p>
+        <p>Private and internal repositories cannot be distinguished from not-found responses; branch protection scores Unknown for them.</p>
+        <p>Fix: Grant the missing scope or permission listed under Capability probes, or accept the degraded coverage for this credential tier. <a href="OPERATIONS.md#capability-probes">[why?]</a></p>
+        
+        <p class="meta">Affected: organization-wide</p>
+        
+    </div>
+    
+    <div class="red-flag-card severity-high">
+        <p class="red-flag-header">
+            <span class="status-dot status-warn"></span>
+            <span class="red-flag-category">Integrity</span>
+            <strong>Collection requests were rate-limited</strong>
+        </p>
+        <p>One or more checks were rate-limited by the GitHub API; the affected repositories&#39; results are incomplete for this run.</p>
+        <p>Fix: Re-run collection after the rate-limit window resets, or reduce the concurrent worker count.</p>
+        
+        <p class="meta">Affected: 4</p>
+        
+    </div>
+    
+    <div class="red-flag-card severity-high">
+        <p class="red-flag-header">
+            <span class="status-dot status-warn"></span>
+            <span class="red-flag-category">Integrity</span>
+            <strong>Collection run is stale</strong>
+        </p>
+        <p>The last completed collection run is more than twice the scheduled collection interval old; the daemon may be stuck and this report may not reflect current state.</p>
+        <p>Fix: Check daemon liveness/readiness and Cloud Run min-instances, then restart the collection process if it is stuck. <a href="OPERATIONS.md#kubernetes--knative-probe-configuration">[why?]</a></p>
+        
+        <p class="meta">Affected: organization-wide</p>
+        
+    </div>
+    
+    <div class="red-flag-card severity-medium">
+        <p class="red-flag-header">
+            <span class="status-dot status-unknown"></span>
+            <span class="red-flag-category">Credential</span>
+            <strong>Branch protection reads suspected permission-denied</strong>
+        </p>
+        <p>One or more branch-protection checks returned an ambiguous not-found response consistent with insufficient read access on a private repository.</p>
+        <p>Fix: Verify the token has Repository administration: read (or classic repo scope) and retry collection. <a href="OPERATIONS.md#capability-probes">[why?]</a></p>
+        
+        <p class="meta">Affected: 1</p>
+        
+    </div>
+    
+    
+
     <h2>Collection Health</h2>
 
     

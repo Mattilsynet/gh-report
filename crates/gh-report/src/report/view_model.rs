@@ -388,6 +388,28 @@ pub enum Severity {
     Medium,
 }
 
+impl Severity {
+    /// CSS class for the red-flag card's left-border accent.
+    #[must_use]
+    pub fn css_class(&self) -> &'static str {
+        match self {
+            Self::Critical => "severity-critical",
+            Self::High => "severity-high",
+            Self::Medium => "severity-medium",
+        }
+    }
+
+    /// CSS class for status-dot rendering; reuses the existing status palette.
+    #[must_use]
+    pub fn status_dot_class(&self) -> &'static str {
+        match self {
+            Self::Critical => "status-fail",
+            Self::High => "status-warn",
+            Self::Medium => "status-unknown",
+        }
+    }
+}
+
 /// Routing axis for a derived red flag: who is best placed to act on it.
 ///
 /// Declaration order is the secondary sort order used by [`build_red_flags`].
@@ -399,6 +421,18 @@ pub enum RedFlagCategory {
     Integrity,
     /// Fix is a configuration change on the affected repository itself.
     Posture,
+}
+
+impl RedFlagCategory {
+    /// Human-readable category label.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Credential => "Credential",
+            Self::Integrity => "Integrity",
+            Self::Posture => "Posture",
+        }
+    }
 }
 
 /// Stable identity for a derived red-flag family.
@@ -494,6 +528,34 @@ pub struct RedFlag {
     pub affected: AffectedScope,
     /// Actionable remedy.
     pub remedy: Remedy,
+}
+
+/// Count of derived red flags at each [`Severity`] level.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RedFlagSeverityCounts {
+    /// Number of `Severity::Critical` flags.
+    pub critical: u32,
+    /// Number of `Severity::High` flags.
+    pub high: u32,
+    /// Number of `Severity::Medium` flags.
+    pub medium: u32,
+}
+
+impl AdminDiagnosticsViewModel {
+    /// Count of `red_flags` at each severity level, for the Red Flags
+    /// section summary line.
+    #[must_use]
+    pub fn red_flag_severity_counts(&self) -> RedFlagSeverityCounts {
+        let mut counts = RedFlagSeverityCounts::default();
+        for flag in &self.red_flags {
+            match flag.severity {
+                Severity::Critical => counts.critical = counts.critical.saturating_add(1),
+                Severity::High => counts.high = counts.high.saturating_add(1),
+                Severity::Medium => counts.medium = counts.medium.saturating_add(1),
+            }
+        }
+        counts
+    }
 }
 
 /// Generate a URL-safe slug from an owner name.

@@ -490,6 +490,50 @@ a.card:hover {
    background-color: var(--status-unknown);
 }
 
+/* ── Red Flags ──────────────────────────────────────────────────── */
+
+.red-flags-summary {
+   color: var(--text-muted);
+   font-weight: 600;
+   margin-bottom: 1em;
+}
+
+.red-flag-card {
+   border: 1px solid var(--border-default);
+   border-radius: 6px;
+   padding: 1em 1.2em;
+   margin: 1em 0;
+   background: var(--bg-card);
+}
+
+.red-flag-card.severity-critical {
+   border-left: 4px solid var(--status-fail);
+   background: color-mix(in srgb, var(--status-fail) 6%, var(--bg-card));
+}
+
+.red-flag-card.severity-high {
+   border-left: 4px solid var(--status-warn);
+   background: color-mix(in srgb, var(--status-warn) 6%, var(--bg-card));
+}
+
+.red-flag-card.severity-medium {
+   border-left: 4px solid var(--status-unknown);
+   background: color-mix(in srgb, var(--status-unknown) 6%, var(--bg-card));
+}
+
+.red-flag-header {
+   display: flex;
+   align-items: baseline;
+   gap: .5em;
+   margin-top: 0;
+}
+
+.red-flag-category {
+   font-size: 0.8em;
+   color: var(--text-muted);
+   text-transform: uppercase;
+}
+
 /* ── Tables ─────────────────────────────────────────────────────── */
 
 .table-wrapper {

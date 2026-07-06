@@ -29,6 +29,41 @@
 
     <p class="meta">Read-only technical diagnostics for <code>{{ vm.organization }}</code>. Technical issues total: <strong>{{ vm.admin_diagnostics.technical_issues_total }}</strong>.</p>
 
+    <h2>Red Flags ({{ vm.admin_diagnostics.red_flags.len() }})</h2>
+
+    {% if vm.admin_diagnostics.red_flags.is_empty() %}
+    <p class="meta">No red flags detected.</p>
+    {% else %}
+    {% let severity_counts = vm.admin_diagnostics.red_flag_severity_counts() %}
+    <p class="red-flags-summary">[Critical {{ severity_counts.critical }} · High {{ severity_counts.high }} · Medium {{ severity_counts.medium }}]</p>
+    {% for flag in vm.admin_diagnostics.red_flags %}
+    <div class="red-flag-card {{ flag.severity.css_class() }}">
+        <p class="red-flag-header">
+            <span class="status-dot {{ flag.severity.status_dot_class() }}"></span>
+            <span class="red-flag-category">{{ flag.category.label() }}</span>
+            <strong>{{ flag.title }}</strong>
+        </p>
+        <p>{{ flag.detail }}</p>
+        <p>Fix: {{ flag.remedy.summary }}{% if let Some(anchor) = flag.remedy.anchor %} <a href="OPERATIONS.md#{{ anchor }}">[why?]</a>{% endif %}</p>
+        {% match flag.affected %}
+        {% when crate::report::view_model::AffectedScope::Count(n) %}
+        <p class="meta">Affected: {{ n }}</p>
+        {% when crate::report::view_model::AffectedScope::OrgWide %}
+        <p class="meta">Affected: organization-wide</p>
+        {% when crate::report::view_model::AffectedScope::Repos(repo_names) %}
+        <details>
+            <summary>Affected repositories ({{ repo_names.len() }})</summary>
+            <ul>
+                {% for name in repo_names %}
+                <li>{{ name }}</li>
+                {% endfor %}
+            </ul>
+        </details>
+        {% endmatch %}
+    </div>
+    {% endfor %}
+    {% endif %}
+
     <h2>Collection Health</h2>
 
     {% if vm.admin_diagnostics.collection_health_sections.is_empty() %}
