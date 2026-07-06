@@ -17,13 +17,13 @@ expression: "&pages[\"report.html\"]"
 <body>
 
     <nav class="top-nav">
-        <a href="index.html">Dashboard</a>
-        <a href="report.html">Report</a>
-        
-        <a href="orphans.html">Orphans (0)</a>
-        <a href="deleted.html">Deleted (0)</a>
-        <a href="admin.html" class="admin-link">Admin</a>
-    </nav>
+    <a href="index.html">Dashboard</a>
+    <a href="report.html">Report</a>
+    
+    <a href="orphans.html">Orphans (0)</a>
+    <a href="deleted.html">Deleted (0)</a>
+    <a href="admin.html" class="admin-link">Admin</a>
+</nav>
 
     <h1>TestOrg GitHub Security Posture Overview</h1>
 

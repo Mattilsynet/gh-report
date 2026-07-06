@@ -25,7 +25,8 @@ use crate::report::view_model::{
     ControlCell, CoverageTier, DeletedRepoRow, DeletedViewModel, OrphanedRepoRow,
     OrphanedTeamGroup, OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow, OwnerRepoRow,
     OwnersViewModel, ReportViewModel, StatusDot, SummaryCard, TeamMemberRow, TeamRosterViewModel,
-    TopSecurityTeam, compute_health_score, generate_slug, rate_to_width_class, strip_org_prefix,
+    TopNav, TopSecurityTeam, compute_health_score, generate_slug, rate_to_width_class,
+    strip_org_prefix,
 };
 
 /// Askama template for the security posture report.
@@ -38,6 +39,7 @@ use crate::report::view_model::{
 #[template(path = "report.html")]
 struct ReportTemplate<'a> {
     vm: &'a ReportViewModel,
+    nav: TopNav,
 }
 
 /// Askama template for the dashboard index page.
@@ -47,6 +49,7 @@ struct ReportTemplate<'a> {
 #[template(path = "index.html")]
 struct IndexTemplate<'a> {
     vm: &'a ReportViewModel,
+    nav: TopNav,
 }
 
 /// Askama template for the admin diagnostics page.
@@ -54,6 +57,7 @@ struct IndexTemplate<'a> {
 #[template(path = "admin.html")]
 struct AdminTemplate<'a> {
     vm: &'a ReportViewModel,
+    nav: TopNav,
 }
 
 /// Askama template for the owners overview page.
@@ -63,10 +67,7 @@ struct OwnersTemplate<'a> {
     vm: &'a OwnersViewModel,
     organization: String,
     total_repos: u32,
-    orphaned_count: u32,
-    /// Count of collection-health technical issues, surfaced as the admin
-    /// nav badge.
-    technical_issues_total: u32,
+    nav: TopNav,
     /// When `true`, emits a `<meta http-equiv="refresh">` tag so the
     /// browser auto-reloads until fresh collection data replaces the
     /// warm-start cache.
@@ -78,10 +79,7 @@ struct OwnersTemplate<'a> {
 #[template(path = "owner_detail.html")]
 struct OwnerDetailTemplate {
     vm: OwnerDetailViewModel,
-    orphaned_count: u32,
-    /// Count of collection-health technical issues, surfaced as the admin
-    /// nav badge.
-    technical_issues_total: u32,
+    nav: TopNav,
     /// When `true`, emits a `<meta http-equiv="refresh">` tag so the
     /// browser auto-reloads until fresh collection data replaces the
     /// warm-start cache.
@@ -93,9 +91,7 @@ struct OwnerDetailTemplate {
 #[template(path = "orphans.html")]
 struct OrphansTemplate {
     vm: OrphanedViewModel,
-    /// Count of collection-health technical issues, surfaced as the admin
-    /// nav badge.
-    technical_issues_total: u32,
+    nav: TopNav,
     /// When `true`, emits a `<meta http-equiv="refresh">` tag so the
     /// browser auto-reloads until fresh collection data replaces the
     /// warm-start cache.
@@ -107,10 +103,7 @@ struct OrphansTemplate {
 #[template(path = "deleted.html")]
 struct DeletedTemplate {
     vm: DeletedViewModel,
-    /// Count of orphaned repositories for nav parity.
-    orphaned_count: u32,
-    /// Count of collection-health technical issues, surfaced as the admin nav badge.
-    technical_issues_total: u32,
+    nav: TopNav,
     /// When `true`, emits a `<meta http-equiv="refresh">` tag.
     warm_start: bool,
 }
@@ -250,10 +243,17 @@ pub fn render_dashboard(
         vm.top_security_teams = build_top_security_teams(ov);
     }
 
-    let report = render_template(&ReportTemplate { vm: &vm })?;
-    let index = render_template(&IndexTemplate { vm: &vm })?;
-    let admin = render_template(&AdminTemplate { vm: &vm })?;
-    let technical_issues_total = vm.admin_diagnostics.technical_issues_total;
+    let nav = TopNav {
+        base: "",
+        show_owners: owners_vm.is_some(),
+        orphaned_count,
+        deleted_count: vm.deleted_count,
+        technical_issues_total: vm.admin_diagnostics.technical_issues_total,
+    };
+
+    let report = render_template(&ReportTemplate { vm: &vm, nav })?;
+    let index = render_template(&IndexTemplate { vm: &vm, nav })?;
+    let admin = render_template(&AdminTemplate { vm: &vm, nav })?;
 
     let mut pages = HashMap::new();
     pages.insert("report.html".to_string(), report);
@@ -267,8 +267,7 @@ pub fn render_dashboard(
             vm: owners,
             organization: evidence.assessment_metadata.organization.clone(),
             total_repos: evidence.collection_statistics.total_repos,
-            orphaned_count,
-            technical_issues_total,
+            nav,
             warm_start,
         })?;
         pages.insert("owners.html".to_string(), owners_html);
@@ -282,11 +281,11 @@ pub fn render_dashboard(
             &evidence.assessment_metadata.run_timestamp,
             &evidence.metrics.team_rosters,
         );
+        let nested_nav = TopNav { base: "../", ..nav };
         for (slug, detail_vm) in &detail_vms {
             let detail_html = render_template(&OwnerDetailTemplate {
                 vm: detail_vm.clone(),
-                orphaned_count,
-                technical_issues_total,
+                nav: nested_nav,
                 warm_start,
             })?;
             pages.insert(format!("owners/{slug}.html"), detail_html);
@@ -295,15 +294,14 @@ pub fn render_dashboard(
 
     let orphaned_html = render_template(&OrphansTemplate {
         vm: orphaned_vm,
-        technical_issues_total,
+        nav,
         warm_start,
     })?;
     pages.insert("orphans.html".to_string(), orphaned_html);
 
     let deleted_html = render_template(&DeletedTemplate {
         vm: deleted_vm,
-        orphaned_count,
-        technical_issues_total,
+        nav,
         warm_start,
     })?;
     pages.insert("deleted.html".to_string(), deleted_html);
@@ -1799,6 +1797,92 @@ mod tests {
             test_fixtures::make_observability(),
             repos,
         )
+    }
+
+    fn evidence_with_full_nav_surface() -> Evidence {
+        let mut evidence = evidence_with_owner_repos();
+        evidence
+            .repositories
+            .push(test_fixtures::make_repository_evidence(
+                "orphan-repo",
+                Visibility::Public,
+                false,
+                test_fixtures::make_checks(
+                    test_fixtures::policy_pass_setting(),
+                    test_fixtures::secret_enabled_observable(false),
+                    test_fixtures::dependabot_enabled(),
+                    test_fixtures::branch_pass(),
+                    test_fixtures::codeowners_absent(),
+                ),
+            ));
+        evidence.metrics = crate::aggregate::metrics::aggregate_metrics(&evidence.repositories);
+        evidence.collection_statistics =
+            crate::aggregate::metrics::build_collection_statistics(&evidence.repositories);
+        evidence.deleted = vec![crate::projection::DeletedRepoRecord {
+            repo_name: "deleted-repo".to_string(),
+            detected_at: "2026-06-24T00:00:00Z".to_string(),
+        }];
+        evidence.metrics.collection_health_counts = vec![CollectionHealthCount {
+            check_kind: CollectionHealthCheckKind::Rulesets,
+            reason: CollectionFailureReason::RateLimited,
+            count: 4,
+        }];
+        evidence
+    }
+
+    fn extract_top_nav(html: &str) -> &str {
+        let start = html
+            .find("<nav class=\"top-nav\">")
+            .expect("page should render a top-nav element");
+        let end = html[start..]
+            .find("</nav>")
+            .expect("top-nav element should close");
+        &html[start..start + end + "</nav>".len()]
+    }
+
+    #[test]
+    fn nav_identical_across_all_page_types() {
+        let evidence = evidence_with_full_nav_surface();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+        let canonical = extract_top_nav(&pages["index.html"]);
+        assert!(
+            canonical.contains("Orphans ("),
+            "canonical nav should show an orphans count"
+        );
+        assert!(
+            canonical.contains("Deleted ("),
+            "canonical nav should show a deleted count"
+        );
+        assert!(
+            canonical.contains("warning-badge"),
+            "canonical nav should show the admin warning badge"
+        );
+        assert!(
+            canonical.contains(">Owners<"),
+            "canonical nav should show the Owners link when owner data exists"
+        );
+
+        for page in [
+            "report.html",
+            "owners.html",
+            "orphans.html",
+            "deleted.html",
+            "admin.html",
+        ] {
+            assert_eq!(
+                extract_top_nav(&pages[page]),
+                canonical,
+                "{page} top-nav must be byte-identical to index.html's canonical nav"
+            );
+        }
+
+        let detail_page = &pages["owners/org-team-a.html"];
+        let detail_nav = extract_top_nav(detail_page).replace("../", "");
+        assert_eq!(
+            detail_nav, canonical,
+            "owner_detail.html top-nav must match the canonical nav once its ../ prefix is stripped"
+        );
     }
 
     #[test]

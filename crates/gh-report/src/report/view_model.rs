@@ -73,6 +73,37 @@ impl CoverageTier {
     }
 }
 
+/// Canonical page-header navigation menu (UF2-4).
+///
+/// Built once per rendering pass and passed unchanged — or re-based to a
+/// nested page via `base` — to every page template, so the six top-level
+/// pages and every owner-detail page render byte-identical nav markup
+/// (see `nav_identical_across_all_page_types` in
+/// [`crate::report::html`]'s test module) instead of each page carrying
+/// its own drifting copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TopNav {
+    /// Relative path prefix to the dashboard root: `""` at the root, or
+    /// `"../"` for a page nested one directory deep (owner detail pages).
+    pub base: &'static str,
+    /// Whether the Owners link renders (owner/CODEOWNERS metrics available).
+    pub show_owners: bool,
+    /// Count shown on the Orphans link.
+    pub orphaned_count: u32,
+    /// Count shown on the Deleted link.
+    pub deleted_count: u32,
+    /// Count shown on the Admin badge; the badge itself is hidden at zero.
+    pub technical_issues_total: u32,
+}
+
+impl TopNav {
+    /// Whether the Admin badge renders at all.
+    #[must_use]
+    pub fn has_technical_issues(&self) -> bool {
+        self.technical_issues_total > 0
+    }
+}
+
 /// A row in the owners overview table.
 #[derive(Debug, Clone)]
 pub struct OwnerOverviewRow {
@@ -619,8 +650,7 @@ impl AdminDiagnosticsViewModel {
     /// Most severe [`Severity`] among `red_flags`, or `None` when none fired.
     ///
     /// `Severity`'s declaration order is `Critical < High < Medium`, so the
-    /// iterator minimum is the most severe flag present. Drives the admin
-    /// nav badge's severity-class modifier.
+    /// iterator minimum is the most severe flag present.
     #[must_use]
     pub fn max_red_flag_severity(&self) -> Option<Severity> {
         self.red_flags.iter().map(|flag| flag.severity).min()

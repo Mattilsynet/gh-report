@@ -1,0 +1,8 @@
+<nav class="top-nav">
+    <a href="{{ nav.base }}index.html">Dashboard</a>
+    <a href="{{ nav.base }}report.html">Report</a>
+    {% if nav.show_owners %}<a href="{{ nav.base }}owners.html">Owners</a>{% endif %}
+    <a href="{{ nav.base }}orphans.html">Orphans ({{ nav.orphaned_count }})</a>
+    <a href="{{ nav.base }}deleted.html">Deleted ({{ nav.deleted_count }})</a>
+    <a href="{{ nav.base }}admin.html" class="admin-link">Admin{% if nav.has_technical_issues() %} <span class="warning-badge">{{ nav.technical_issues_total }}</span>{% endif %}</a>
+</nav>
