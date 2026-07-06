@@ -239,14 +239,17 @@
 
     <p class="caveat" id="add-a-team-member">Prefer a GitHub <strong>team</strong> (for example <code>@{{ vm.organization }}/team-slug</code>) as
         CODEOWNERS owner rather than an individual user: the CODEOWNERS Summary "top security teams" ranking only
-        considers team-type owners, and a team survives one person leaving. To add a member to a team, contact
-        <strong>#plattform</strong> on the Mattilsynet Slack with the person's GitHub username and product-team name —
-        team membership is governed by the team's Azure AD security group, not a configuration file. See
-        <a href="https://map.mattilsynet.io/ecosystem/github/github/#hvordan-far-jeg-tilgang" target="_blank"
-            rel="noopener noreferrer">MA³P: Hvordan får jeg tilgang?</a> or the
-        <a href="https://mattilsynet.atlassian.net/wiki/spaces/OPS/pages/15860389/Selvbetjening" target="_blank"
-            rel="noopener noreferrer">Confluence Selvbetjening page</a> (Atlassian login required) for the self-service
-        path.</p>
+        considers team-type owners, and a team survives one person leaving. {{ vm.team_access_guidance }}</p>
+    {% if !vm.team_access_help_links.is_empty() %}
+    <div class="caveat help-links">
+        <span>Self-service references:</span>
+        <ul>
+            {% for link in vm.team_access_help_links %}
+            <li><a href="{{ link.url }}" target="_blank" rel="noopener noreferrer">{{ link.label }}</a></li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
 
     <h2>Metric Caveats</h2>
 

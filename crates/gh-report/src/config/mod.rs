@@ -1,6 +1,7 @@
 //! Configuration and constants for the gh-report application.
 
 pub mod dashboard;
+pub mod org;
 pub mod runtime;
 
 /// Paths checked for a SECURITY.md file, in precedence order.

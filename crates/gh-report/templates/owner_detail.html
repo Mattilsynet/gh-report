@@ -21,7 +21,8 @@
         <a href="../admin.html" class="admin-link">Admin{% if technical_issues_total > 0 %} <span class="warning-badge">{{ technical_issues_total }}</span>{% endif %}</a>
     </nav>
 
-    <h1 title="{{ vm.owner }}">{{ vm.owner_short }}</h1>
+    <h1 title="{{ vm.owner }}">{% if let Some(url) = vm.github_url %}<a href="{{ url }}" target="_blank"
+            rel="noopener noreferrer">{{ vm.owner_short }}</a>{% else %}{{ vm.owner_short }}{% endif %}</h1>
 
     <ul class="breadcrumb">
         <li><a href="../index.html">Dashboard</a></li>

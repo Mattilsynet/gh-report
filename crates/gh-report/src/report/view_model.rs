@@ -11,6 +11,7 @@ use jiff::{SignedDuration, Timestamp};
 
 use crate::config;
 use crate::config::dashboard::CoverageTiers;
+use crate::config::org::{HelpLink, TeamAccessGuidance};
 use crate::domain::auth::{AuthMode, Capability, TokenTier};
 use crate::domain::checks::{CollectionFailureReason, SecretScanningStatus};
 use crate::domain::evidence::{AssessmentMetadata, Evidence, RepositoryEvidence};
@@ -235,6 +236,11 @@ pub struct OwnerDetailViewModel {
     /// fetched roster; `None` for user-type owners or when B1 has not
     /// (yet) collected this team.
     pub roster: Option<TeamRosterViewModel>,
+    /// This owner's page on GitHub — an org team page for team-type
+    /// owners, a user profile page for user-type owners (UF2-3). `None`
+    /// only when the canonical owner string is malformed (no extractable
+    /// team slug or login).
+    pub github_url: Option<String>,
 }
 
 /// View model for the owners overview page.
@@ -789,6 +795,15 @@ pub struct ReportViewModel {
     pub conforming_codeowners_path: &'static str,
     pub non_conforming_codeowners_path: &'static str,
 
+    /// Pre-composed "add a team member" remediation sentence (UF2-1),
+    /// derived from org-derived team-access guidance (UF2-GEN seam) via
+    /// [`compose_team_access_guidance`]. Generic when the deployment
+    /// supplies no organization-specific contact or governance text.
+    pub team_access_guidance: String,
+    /// Reference links for the team-access self-service path (UF2-GEN
+    /// seam); empty when the deployment supplies none.
+    pub team_access_help_links: Vec<HelpLink>,
+
     pub policy_tier: CoverageTier,
     pub secret_scanning_tier: CoverageTier,
     pub dependabot_tier: CoverageTier,
@@ -905,6 +920,7 @@ impl ReportViewModel {
         ) = compute_archival_coverage(evidence, tiers);
 
         let health = health_display(m, stale_rate, tiers);
+        let team_access = compose_team_access_guidance(&TeamAccessGuidance::default());
 
         Self {
             organization: metadata.organization.clone(),
@@ -946,6 +962,8 @@ impl ReportViewModel {
             org_alert_total_open_secret_alerts: org_alert.total_open_secret_alerts,
             conforming_codeowners_path: config::CONFORMING_CODEOWNERS_PATH,
             non_conforming_codeowners_path: config::NON_CONFORMING_CODEOWNERS_PATH,
+            team_access_guidance: team_access.0,
+            team_access_help_links: team_access.1,
             policy_tier: CoverageTier::from_rate(m.security_policy_coverage.rate, tiers),
             secret_scanning_tier: CoverageTier::from_rate(m.secret_scanning_coverage.rate, tiers),
             dependabot_tier: CoverageTier::from_rate(
@@ -982,6 +1000,41 @@ impl ReportViewModel {
             admin_diagnostics,
         }
     }
+}
+
+/// Compose the "add a team member" remediation sentence and reference
+/// links from org-derived team-access guidance (UF2-GEN seam).
+///
+/// Falls back to organization-agnostic phrasing when the deployment
+/// supplies no specific contact or governance text, so the guidance stays
+/// actionable (UF2-1) without hardcoding any one organization's process.
+///
+/// # Examples
+///
+/// ```
+/// use gh_report::config::org::TeamAccessGuidance;
+/// use gh_report::report::view_model::compose_team_access_guidance;
+///
+/// let (text, links) = compose_team_access_guidance(&TeamAccessGuidance::default());
+/// assert!(text.contains("your GitHub organization's administrators"));
+/// assert!(links.is_empty());
+/// ```
+#[must_use]
+pub fn compose_team_access_guidance(cfg: &TeamAccessGuidance) -> (String, Vec<HelpLink>) {
+    let contact = cfg
+        .contact
+        .as_deref()
+        .unwrap_or("your GitHub organization's administrators");
+    let governance = cfg
+        .governance_model
+        .as_deref()
+        .unwrap_or("an identity provider or admin process outside this repository");
+    let text = format!(
+        "To add a member to a team, contact {contact} with the person's GitHub username and \
+         the team they should join — team membership is typically governed by {governance}, \
+         not a configuration file."
+    );
+    (text, cfg.help_links.clone())
 }
 
 fn health_display(

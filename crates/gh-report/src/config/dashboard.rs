@@ -2,6 +2,7 @@
 //!
 //! Thresholds are set via CLI arguments with sensible defaults.
 
+use crate::config::org::OrgHelpConfig;
 use crate::error::ConfigError;
 
 /// Dashboard rendering configuration.
@@ -9,10 +10,16 @@ use crate::error::ConfigError;
 pub struct DashboardConfig {
     /// Coverage tier thresholds.
     pub tiers: CoverageTiers,
+    /// Organization-derived remediation/help configuration (UF2-GEN seam).
+    pub org_help: OrgHelpConfig,
 }
 
 impl DashboardConfig {
     /// Create a new `DashboardConfig` from threshold values.
+    ///
+    /// `org_help` starts fully generic (no organization-specific strings);
+    /// set [`DashboardConfig::org_help`] directly to supply a deployment's
+    /// own remediation guidance.
     ///
     /// # Errors
     ///
@@ -24,7 +31,10 @@ impl DashboardConfig {
             warn_threshold,
         };
         validate_tiers(&tiers)?;
-        Ok(Self { tiers })
+        Ok(Self {
+            tiers,
+            org_help: OrgHelpConfig::default(),
+        })
     }
 }
 

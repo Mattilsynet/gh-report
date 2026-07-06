@@ -243,6 +243,8 @@ pub fn render_dashboard(
     let mut vm = ReportViewModel::from_evidence(evidence, tiers);
     vm.owners.clone_from(&owners_vm);
     vm.orphaned_count = orphaned_count;
+    (vm.team_access_guidance, vm.team_access_help_links) =
+        crate::report::view_model::compose_team_access_guidance(&config.org_help.team_access);
 
     if let Some(ref ov) = owners_vm {
         vm.top_security_teams = build_top_security_teams(ov);
@@ -484,6 +486,44 @@ fn build_team_roster_view_model(roster: &TeamRoster) -> TeamRosterViewModel {
     }
 }
 
+/// Build the GitHub-hosted URL for an owner: an org team page for
+/// team-type owners, a user profile page for user-type owners (UF2-3).
+///
+/// Built from `DEFAULT_GITHUB_WEB_BASE_URL` (already organization-agnostic —
+/// every GitHub org lives under the same host) plus the already-generic
+/// `org_encoded` and the owner's own canonical slug/login, so no
+/// organization-specific literal is introduced (UF2-GEN).
+///
+/// Returns `None` only when `canonical_owner` is malformed: a team string
+/// with no extractable slug, or a user string that is just `"@"`.
+fn build_owner_github_url(
+    owner_type: OwnerType,
+    canonical_owner: &str,
+    org_encoded: &str,
+) -> Option<String> {
+    match owner_type {
+        OwnerType::Team => {
+            let slug = crate::domain::metrics::team_slug_from_canonical_owner(canonical_owner)?;
+            Some(format!(
+                "{}/orgs/{}/teams/{}",
+                config::DEFAULT_GITHUB_WEB_BASE_URL,
+                org_encoded,
+                utf8_percent_encode(slug, PATH_SEGMENT)
+            ))
+        }
+        OwnerType::User => {
+            let login = canonical_owner.strip_prefix('@')?;
+            (!login.is_empty()).then(|| {
+                format!(
+                    "{}/{}",
+                    config::DEFAULT_GITHUB_WEB_BASE_URL,
+                    utf8_percent_encode(login, PATH_SEGMENT)
+                )
+            })
+        }
+    }
+}
+
 /// Build per-owner detail view models with per-repo status rows.
 ///
 /// Accepts a pre-computed `owner_repo_map` (built via
@@ -537,6 +577,7 @@ fn build_owner_detail_view_models(
 
             let canonical_key = m.owner.clone();
             let org_encoded = utf8_percent_encode(organization, PATH_SEGMENT).to_string();
+            let github_url = build_owner_github_url(m.owner_type, &m.owner, &org_encoded);
             let mut repo_rows: Vec<OwnerRepoRow> = owner_repo_map
                 .get(&canonical_key)
                 .map(|(_, repos)| {
@@ -581,6 +622,7 @@ fn build_owner_detail_view_models(
                 total_repo_count,
                 stale_width_class,
                 roster,
+                github_url,
             };
 
             Some((slug, detail))
@@ -1230,21 +1272,53 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_report_add_member_guidance_points_at_ad_group_and_slack_not_config_pr() {
+    fn dashboard_report_add_member_guidance_is_generic_by_default() {
         let evidence = sample_evidence();
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
         let html = &pages["report.html"];
 
-        assert!(html.contains("#plattform"));
-        assert!(html.contains("Azure AD security group"));
-        assert!(html.contains(
-            "https://map.mattilsynet.io/ecosystem/github/github/#hvordan-far-jeg-tilgang"
-        ));
-        assert!(html.contains(
-            "https://mattilsynet.atlassian.net/wiki/spaces/OPS/pages/15860389/Selvbetjening"
-        ));
+        assert!(html.contains("your GitHub organization"));
+        assert!(html.contains("administrators"));
+        assert!(html.contains("not a configuration file"));
+        assert!(!html.to_lowercase().contains("mattilsynet"));
         assert!(!html.to_lowercase().contains("open a pr"));
         assert!(!html.to_lowercase().contains("pull request to"));
+    }
+
+    /// UF2-GEN proof: swapping the org-derived config to a different
+    /// organization's values renders that organization's guidance, and
+    /// leaks zero "Mattilsynet" strings anywhere in the multi-page output —
+    /// proving remediation copy is config-derived, not hardcoded.
+    #[test]
+    fn org_help_config_swap_renders_configured_org_with_no_mattilsynet_leak() {
+        let evidence = sample_evidence();
+        let config = DashboardConfig {
+            org_help: config::org::OrgHelpConfig {
+                team_access: config::org::TeamAccessGuidance {
+                    contact: Some("#it-helpdesk on the Acme Slack".to_string()),
+                    governance_model: Some("an Acme Identity Center group".to_string()),
+                    help_links: vec![config::org::HelpLink {
+                        label: "Acme access guide".to_string(),
+                        url: "https://acme.example/access".to_string(),
+                    }],
+                },
+            },
+            ..DashboardConfig::default()
+        };
+        let pages = render_dashboard(&evidence, &config).unwrap();
+        let report_html = &pages["report.html"];
+
+        assert!(report_html.contains("#it-helpdesk on the Acme Slack"));
+        assert!(report_html.contains("an Acme Identity Center group"));
+        assert!(report_html.contains(r#"href="https://acme.example/access""#));
+        assert!(report_html.contains("Acme access guide"));
+
+        for (page_name, body) in &pages {
+            assert!(
+                !body.to_lowercase().contains("mattilsynet"),
+                "page {page_name} leaked a Mattilsynet string after org config swap"
+            );
+        }
     }
 
     #[test]
@@ -2049,6 +2123,49 @@ mod tests {
             owners_html.contains("Orphans ("),
             "owners.html should have orphans nav link"
         );
+    }
+
+    /// UF2-3 rendering test: the owner-detail heading renders the team
+    /// handle as a hyperlink to its GitHub team page, with the link base
+    /// derived from the already-generic `DEFAULT_GITHUB_WEB_BASE_URL` seam
+    /// (org name comes from `vm.organization`, never a literal).
+    #[test]
+    fn render_owner_detail_html_team_handle_links_to_github_team_page() {
+        let evidence = evidence_with_owner_repos();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let detail_page = &pages["owners/org-team-a.html"];
+
+        assert!(
+            detail_page.contains(r#"<a href="https://github.com/orgs/TestOrg/teams/team-a""#),
+            "expected the H1 team handle to link to the GitHub team page; got: {detail_page}"
+        );
+    }
+
+    #[test]
+    fn build_owner_github_url_team_type_uses_org_teams_path() {
+        let url = build_owner_github_url(OwnerType::Team, "@acme/security-team", "acme");
+        assert_eq!(
+            url.as_deref(),
+            Some("https://github.com/orgs/acme/teams/security-team")
+        );
+    }
+
+    #[test]
+    fn build_owner_github_url_user_type_uses_profile_path() {
+        let url = build_owner_github_url(OwnerType::User, "@octocat", "acme");
+        assert_eq!(url.as_deref(), Some("https://github.com/octocat"));
+    }
+
+    #[test]
+    fn build_owner_github_url_malformed_team_returns_none() {
+        let url = build_owner_github_url(OwnerType::Team, "@team-with-no-slash", "acme");
+        assert_eq!(url, None);
+    }
+
+    #[test]
+    fn build_owner_github_url_bare_at_user_returns_none() {
+        let url = build_owner_github_url(OwnerType::User, "@", "acme");
+        assert_eq!(url, None);
     }
 
     /// B1: a realistic multi-member team roster renders on the owner

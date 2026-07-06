@@ -363,12 +363,12 @@ Concrete remediation steps for each control, linked from the report's "Les mer" 
 **How to fix:** add `.github/CODEOWNERS` mapping paths to owners, for example:
 
 ```text
-*   @Mattilsynet/team-slug
+*   @your-org/team-slug
 ```
 
-**Prefer a team over an individual user.** Name a GitHub **team** (`@Mattilsynet/team-slug`) as the owner rather than a person (`@username`): the CODEOWNERS Summary "top security teams" ranking only considers team-type owners — individual users are excluded — and a team survives a single person leaving. Every product team has a corresponding Azure AD security group that syncs to GitHub, so a team to name as owner already exists for your product area.
+**Prefer a team over an individual user.** Name a GitHub **team** (`@your-org/team-slug`) as the owner rather than a person (`@username`): the CODEOWNERS Summary "top security teams" ranking only considers team-type owners — individual users are excluded — and a team survives a single person leaving. Many organizations already maintain an identity-provider group per product team that syncs to GitHub, so a team to name as owner may already exist for your product area.
 
-**Adding a member to that team:** team membership is governed by the team's Azure AD security group, not by a configuration file in this or any repository. Contact **#plattform** on the Mattilsynet Slack with the person's GitHub username and product-team name; team leads administer the group (2FA is required for GitHub accounts in this organization). See [MA³P: Hvordan får jeg tilgang?](https://map.mattilsynet.io/ecosystem/github/github/#hvordan-far-jeg-tilgang) for the self-service path, or the [Confluence Selvbetjening page](https://mattilsynet.atlassian.net/wiki/spaces/OPS/pages/15860389/Selvbetjening) if you have Atlassian access.
+**Adding a member to that team:** team membership is typically governed by your organization's identity provider or GitHub admins, not by a configuration file in this or any repository. Contact your platform/DevOps team with the person's GitHub username and the team they should join. This deployment may supply its own self-service contact, governance description, and reference links via `DashboardConfig::org_help` (see `crates/gh-report/src/config/org.rs`) — when configured, the rendered report's "add a team member" note reflects the organization's actual process instead of this generic default.
 
 
 
