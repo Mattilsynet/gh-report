@@ -73,7 +73,6 @@ fn match_path_segments(pattern_parts: &[&str], candidate_parts: &[&str], depth: 
         return candidate_parts.is_empty();
     }
 
-    // SAFETY: `pattern_parts.is_empty()` is checked above, so split_first
     let Some((head, tail)) = pattern_parts.split_first() else {
         return false;
     };

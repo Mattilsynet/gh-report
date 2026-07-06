@@ -1336,7 +1336,6 @@ impl GitHubClient {
     /// both `export_cache` and `seed_cache` must be updated to preserve it.
     pub fn export_cache(&self) -> Vec<(String, crate::domain::cache::CachedRepoDetail)> {
         let now = Timestamp::now();
-        // SAFETY: iter_sync closure must not contain .await
         let mut exported = Vec::new();
         self.repo_detail_cache.iter_sync(|key, cached| {
             if let Some(data) = cached.data.as_ref() {
