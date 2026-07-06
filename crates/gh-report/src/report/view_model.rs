@@ -7,15 +7,17 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use jiff::{SignedDuration, Timestamp};
+
 use crate::config;
 use crate::config::dashboard::CoverageTiers;
 use crate::domain::auth::{AuthMode, Capability, TokenTier};
-use crate::domain::checks::CollectionFailureReason;
-use crate::domain::evidence::Evidence;
+use crate::domain::checks::{CollectionFailureReason, SecretScanningStatus};
+use crate::domain::evidence::{AssessmentMetadata, Evidence, RepositoryEvidence};
 use crate::domain::metrics::{
     AggregatedMetrics, CollectionHealthCheckKind, CollectionHealthCount, OwnerType,
 };
-use crate::domain::time::is_repo_stale;
+use crate::domain::time::{is_repo_stale, parse_iso8601};
 
 /// Coverage tier classification for dashboard display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -368,6 +370,128 @@ pub struct CredentialCapabilityLimitation {
     pub capability: Capability,
     /// Human-readable capability label.
     pub label: String,
+}
+
+/// Severity ranking for a derived red flag.
+///
+/// Declaration order is the primary sort order used by [`build_red_flags`]
+/// (most severe first).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Severity {
+    /// Collection is materially incomplete or actively misleading.
+    Critical,
+    /// Actionable now; meaningfully degrades coverage or posture.
+    High,
+    /// Actionable; narrower or lower-confidence impact than `High`.
+    Medium,
+}
+
+/// Routing axis for a derived red flag: who is best placed to act on it.
+///
+/// Declaration order is the secondary sort order used by [`build_red_flags`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RedFlagCategory {
+    /// Fix is a token/credential rotation or a deployment configuration change.
+    Credential,
+    /// Fix is investigating an incomplete or stale collection run.
+    Integrity,
+    /// Fix is a configuration change on the affected repository itself.
+    Posture,
+}
+
+/// Stable identity for a derived red-flag family.
+///
+/// Declaration order is the tie-breaking sort order used by
+/// [`build_red_flags`] after severity and category. A single id may back
+/// more than one [`RedFlag`] (for example, `DegradedCapability` emits one
+/// flag per unavailable capability).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RedFlagId {
+    /// `token_tier == TokenTier::Unknown`.
+    TokenTierUnknown,
+    /// An entry in `unavailable_capabilities`.
+    DegradedCapability,
+    /// Branch-protection reads suspected permission-denied.
+    BranchProtectionPermissionSuspected,
+    /// Secret-scanning reads denied by permissions.
+    SecretScanningPermissionDenied,
+    /// `auth_mode == AuthMode::Pat`.
+    AuthModePat,
+    /// Any check rate-limited during collection.
+    RateLimitedCollection,
+    /// Any check returned a transient or invalid response.
+    UnstableCollectionResult,
+    /// CODEOWNERS content parsing was skipped for one or more repos.
+    CodeownersTruncated,
+    /// The last completed run is older than twice the collection interval.
+    CollectionRunStale,
+    /// Secret scanning reports enabled but alert data is not observable.
+    SecretScanningUnobservable,
+    /// Branch protection confirmed absent on the default branch.
+    BranchProtectionAbsent,
+    /// Branch protection has a broad bypass actor.
+    BroadBypassPresent,
+    /// Branch protection does not bind repository administrators.
+    AdminEnforcementNotEquivalent,
+    /// Force pushes or branch deletion are not blocked on the default branch.
+    IntegrityControlGap,
+}
+
+/// Magnitude or scope of the repositories affected by a red flag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AffectedScope {
+    /// A count of affected repositories or checks, without individual identity.
+    Count(u32),
+    /// The specific affected repositories, as `organization/name`.
+    Repos(Vec<String>),
+    /// The condition applies to the whole collection run, not specific repos.
+    OrgWide,
+}
+
+/// What kind of action clears a red flag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FixTarget {
+    /// Rotate or reconfigure the collection credential.
+    Token,
+    /// Change Cloud Run or other deployment configuration.
+    CloudRunConfig,
+    /// Change settings on the named repository.
+    Repo(String),
+    /// Re-run collection or inspect collector logs.
+    Investigate,
+}
+
+/// Actionable remedy attached to a red flag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Remedy {
+    /// Imperative instruction (for example, `"Rotate to a token with ..."`).
+    pub summary: String,
+    /// Deep-link anchor into `OPERATIONS.md`, when a matching section exists.
+    pub anchor: Option<&'static str>,
+    /// What kind of action clears the flag.
+    pub fix_target: FixTarget,
+}
+
+/// A single derived red-flag finding for the admin diagnostics page.
+///
+/// Built by [`build_red_flags`] from already-collected evidence; carries no
+/// state of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedFlag {
+    /// Stable identity for the flag family.
+    pub id: RedFlagId,
+    /// Severity; drives colour and sort order.
+    pub severity: Severity,
+    /// Who is best placed to act on this flag.
+    pub category: RedFlagCategory,
+    /// Human-readable title.
+    pub title: String,
+    /// Cause-to-effect sentence explaining the finding.
+    pub detail: String,
+    /// Scope of repositories or checks affected.
+    pub affected: AffectedScope,
+    /// Actionable remedy.
+    pub remedy: Remedy,
 }
 
 /// Generate a URL-safe slug from an owner name.
@@ -851,6 +975,425 @@ fn build_credential_limitations(
     }
 }
 
+/// Derive the admin diagnostics "Red Flags" from already-collected evidence.
+///
+/// Render-time-only: every input is already present in [`AssessmentMetadata`],
+/// [`AggregatedMetrics`], and the per-repository [`RepositoryEvidence`] slice.
+/// Adds no persisted field; the only input besides the three parameters is
+/// the current time, used solely to detect a stale collection run
+/// ([`RedFlagId::CollectionRunStale`]).
+///
+/// Sorted by severity (most severe first), then category, then id.
+#[must_use]
+pub fn build_red_flags(
+    metadata: &AssessmentMetadata,
+    metrics: &AggregatedMetrics,
+    repos: &[RepositoryEvidence],
+) -> Vec<RedFlag> {
+    let mut flags = Vec::new();
+
+    push_token_tier_unknown(&mut flags, metadata);
+    push_degraded_capabilities(&mut flags, metadata);
+    push_branch_protection_permission_suspected(&mut flags, metrics);
+    push_secret_scanning_permission_denied(&mut flags, metrics);
+    push_auth_mode_pat(&mut flags, metadata);
+    push_rate_limited_collection(&mut flags, metrics);
+    push_unstable_collection_result(&mut flags, metrics);
+    push_codeowners_truncated(&mut flags, metrics);
+    push_collection_run_stale(&mut flags, metadata);
+    push_secret_scanning_unobservable(&mut flags, repos);
+    push_branch_protection_posture_flags(&mut flags, metadata, repos);
+
+    flags.sort_by_key(|flag| (flag.severity, flag.category, flag.id));
+    flags
+}
+
+fn repo_full_name(metadata: &AssessmentMetadata, repo: &RepositoryEvidence) -> String {
+    format!("{}/{}", metadata.organization, repo.repository.name)
+}
+
+fn sum_collection_health(
+    counts: &[CollectionHealthCount],
+    predicate: impl Fn(&CollectionHealthCount) -> bool,
+) -> u32 {
+    counts
+        .iter()
+        .filter(|count| predicate(count))
+        .fold(0_u32, |total, count| total.saturating_add(count.count))
+}
+
+fn push_token_tier_unknown(flags: &mut Vec<RedFlag>, metadata: &AssessmentMetadata) {
+    if metadata.token_tier != TokenTier::Unknown {
+        return;
+    }
+    flags.push(RedFlag {
+        id: RedFlagId::TokenTierUnknown,
+        severity: Severity::High,
+        category: RedFlagCategory::Credential,
+        title: "Token capability tier is unknown".to_string(),
+        detail: "Token tier could not be classified from OAuth scopes; optional checks may be silently skipped without being flagged as failures.".to_string(),
+        affected: AffectedScope::OrgWide,
+        remedy: Remedy {
+            summary: "Confirm the active token's effective permissions against the Required Permissions / Scopes table; fine-grained PATs and GitHub Apps are expected to show Unknown.".to_string(),
+            anchor: Some("fine-grained-pat--github-app"),
+            fix_target: FixTarget::Token,
+        },
+    });
+}
+
+fn degraded_capability_text(capability: Capability) -> (&'static str, &'static str) {
+    match capability {
+        Capability::OrgSecretScanningAlerts => (
+            "Org-level secret scanning alerts capability unavailable",
+            "Organization-wide secret-scanning alert observability is degraded; alert-based coverage metrics may undercount.",
+        ),
+        Capability::PrivateBranchProtectionRead => (
+            "Private/internal branch-protection reads capability unavailable",
+            "Private and internal repositories cannot be distinguished from not-found responses; branch protection scores Unknown for them.",
+        ),
+    }
+}
+
+fn push_degraded_capabilities(flags: &mut Vec<RedFlag>, metadata: &AssessmentMetadata) {
+    let mut capabilities = metadata.unavailable_capabilities.clone();
+    capabilities.sort_by_key(|capability| capability_order(*capability));
+
+    for capability in capabilities {
+        let (title, detail) = degraded_capability_text(capability);
+        flags.push(RedFlag {
+            id: RedFlagId::DegradedCapability,
+            severity: Severity::High,
+            category: RedFlagCategory::Credential,
+            title: title.to_string(),
+            detail: detail.to_string(),
+            affected: AffectedScope::OrgWide,
+            remedy: Remedy {
+                summary: "Grant the missing scope or permission listed under Capability probes, or accept the degraded coverage for this credential tier.".to_string(),
+                anchor: Some("capability-probes"),
+                fix_target: FixTarget::Token,
+            },
+        });
+    }
+}
+
+fn push_branch_protection_permission_suspected(
+    flags: &mut Vec<RedFlag>,
+    metrics: &AggregatedMetrics,
+) {
+    let count = sum_collection_health(&metrics.collection_health_counts, |count| {
+        count.check_kind == CollectionHealthCheckKind::BranchProtection
+            && count.reason == CollectionFailureReason::PermissionSuspected
+    });
+    if count == 0 {
+        return;
+    }
+    flags.push(RedFlag {
+        id: RedFlagId::BranchProtectionPermissionSuspected,
+        severity: Severity::Medium,
+        category: RedFlagCategory::Credential,
+        title: "Branch protection reads suspected permission-denied".to_string(),
+        detail: "One or more branch-protection checks returned an ambiguous not-found response consistent with insufficient read access on a private repository.".to_string(),
+        affected: AffectedScope::Count(count),
+        remedy: Remedy {
+            summary: "Verify the token has Repository administration: read (or classic repo scope) and retry collection.".to_string(),
+            anchor: Some("capability-probes"),
+            fix_target: FixTarget::Token,
+        },
+    });
+}
+
+fn push_secret_scanning_permission_denied(flags: &mut Vec<RedFlag>, metrics: &AggregatedMetrics) {
+    let count = sum_collection_health(&metrics.collection_health_counts, |count| {
+        count.check_kind == CollectionHealthCheckKind::SecretScanning
+            && count.reason == CollectionFailureReason::PermissionDenied
+    });
+    if count == 0 {
+        return;
+    }
+    flags.push(RedFlag {
+        id: RedFlagId::SecretScanningPermissionDenied,
+        severity: Severity::Medium,
+        category: RedFlagCategory::Credential,
+        title: "Secret scanning reads denied by permissions".to_string(),
+        detail: "One or more repositories returned an explicit permission-denied response for secret scanning; alert coverage for those repos is incomplete.".to_string(),
+        affected: AffectedScope::Count(count),
+        remedy: Remedy {
+            summary: "Grant Secret scanning alerts: read (or classic repo + security_events scope) and retry collection.".to_string(),
+            anchor: Some("capability-probes"),
+            fix_target: FixTarget::Token,
+        },
+    });
+}
+
+fn push_auth_mode_pat(flags: &mut Vec<RedFlag>, metadata: &AssessmentMetadata) {
+    if !matches!(metadata.auth_mode, AuthMode::Pat) {
+        return;
+    }
+    flags.push(RedFlag {
+        id: RedFlagId::AuthModePat,
+        severity: Severity::Medium,
+        category: RedFlagCategory::Credential,
+        title: "Running on Personal Access Token authentication".to_string(),
+        detail: "PAT is a fallback credential class; GitHub App authentication is the recommended production mode.".to_string(),
+        affected: AffectedScope::OrgWide,
+        remedy: Remedy {
+            summary: "Switch production deployments to GitHub App authentication.".to_string(),
+            anchor: Some("1-github-app-recommended-for-production"),
+            fix_target: FixTarget::CloudRunConfig,
+        },
+    });
+}
+
+fn push_rate_limited_collection(flags: &mut Vec<RedFlag>, metrics: &AggregatedMetrics) {
+    let count = sum_collection_health(&metrics.collection_health_counts, |count| {
+        count.reason == CollectionFailureReason::RateLimited
+    });
+    if count == 0 {
+        return;
+    }
+    flags.push(RedFlag {
+        id: RedFlagId::RateLimitedCollection,
+        severity: Severity::High,
+        category: RedFlagCategory::Integrity,
+        title: "Collection requests were rate-limited".to_string(),
+        detail: "One or more checks were rate-limited by the GitHub API; the affected repositories' results are incomplete for this run.".to_string(),
+        affected: AffectedScope::Count(count),
+        remedy: Remedy {
+            summary: "Re-run collection after the rate-limit window resets, or reduce the concurrent worker count.".to_string(),
+            anchor: None,
+            fix_target: FixTarget::Investigate,
+        },
+    });
+}
+
+fn push_unstable_collection_result(flags: &mut Vec<RedFlag>, metrics: &AggregatedMetrics) {
+    let count = sum_collection_health(&metrics.collection_health_counts, |count| {
+        matches!(
+            count.reason,
+            CollectionFailureReason::Transient | CollectionFailureReason::Invalid
+        )
+    });
+    if count == 0 {
+        return;
+    }
+    flags.push(RedFlag {
+        id: RedFlagId::UnstableCollectionResult,
+        severity: Severity::Medium,
+        category: RedFlagCategory::Integrity,
+        title: "Collection responses were transient or invalid".to_string(),
+        detail: "One or more checks failed with a retryable or malformed response; the affected repositories' results may not reflect current state.".to_string(),
+        affected: AffectedScope::Count(count),
+        remedy: Remedy {
+            summary: "Re-run collection; if the condition persists, inspect collector logs for the affected check.".to_string(),
+            anchor: None,
+            fix_target: FixTarget::Investigate,
+        },
+    });
+}
+
+fn push_codeowners_truncated(flags: &mut Vec<RedFlag>, metrics: &AggregatedMetrics) {
+    let count = metrics.codeowners_counts.truncated;
+    if count == 0 {
+        return;
+    }
+    flags.push(RedFlag {
+        id: RedFlagId::CodeownersTruncated,
+        severity: Severity::Medium,
+        category: RedFlagCategory::Integrity,
+        title: "CODEOWNERS parsing was truncated".to_string(),
+        detail: "One or more CODEOWNERS files were found but not parsed (encoding mismatch, oversized payload, or decode failure); owner coverage for those repos is incomplete.".to_string(),
+        affected: AffectedScope::Count(count),
+        remedy: Remedy {
+            summary: "Inspect the affected CODEOWNERS files for encoding or size issues and re-run collection.".to_string(),
+            anchor: None,
+            fix_target: FixTarget::Investigate,
+        },
+    });
+}
+
+fn is_collection_run_stale(run_timestamp: &str) -> bool {
+    let Some(run_ts) = parse_iso8601(run_timestamp) else {
+        return false;
+    };
+    let threshold_secs =
+        i64::try_from(config::COLLECTION_INTERVAL_SECS.saturating_mul(2)).unwrap_or(i64::MAX);
+    Timestamp::now().duration_since(run_ts) > SignedDuration::from_secs(threshold_secs)
+}
+
+fn push_collection_run_stale(flags: &mut Vec<RedFlag>, metadata: &AssessmentMetadata) {
+    if !is_collection_run_stale(&metadata.run_timestamp) {
+        return;
+    }
+    flags.push(RedFlag {
+        id: RedFlagId::CollectionRunStale,
+        severity: Severity::High,
+        category: RedFlagCategory::Integrity,
+        title: "Collection run is stale".to_string(),
+        detail: "The last completed collection run is more than twice the scheduled collection interval old; the daemon may be stuck and this report may not reflect current state.".to_string(),
+        affected: AffectedScope::OrgWide,
+        remedy: Remedy {
+            summary: "Check daemon liveness/readiness and Cloud Run min-instances, then restart the collection process if it is stuck.".to_string(),
+            anchor: Some("kubernetes--knative-probe-configuration"),
+            fix_target: FixTarget::Investigate,
+        },
+    });
+}
+
+fn count_secret_scanning_unobservable(repos: &[RepositoryEvidence]) -> u32 {
+    let count = repos
+        .iter()
+        .filter(|repo| {
+            repo.checks.secret_scanning.status == SecretScanningStatus::Enabled
+                && !repo.checks.secret_scanning.alerts_observable
+        })
+        .count();
+    u32::try_from(count).unwrap_or(u32::MAX)
+}
+
+fn push_secret_scanning_unobservable(flags: &mut Vec<RedFlag>, repos: &[RepositoryEvidence]) {
+    let count = count_secret_scanning_unobservable(repos);
+    if count == 0 {
+        return;
+    }
+    flags.push(RedFlag {
+        id: RedFlagId::SecretScanningUnobservable,
+        severity: Severity::Medium,
+        category: RedFlagCategory::Integrity,
+        title: "Secret scanning enabled but alerts not observable".to_string(),
+        detail: "One or more repositories report secret scanning enabled but alert data is not observable; the enabled status is cosmetic for those repos.".to_string(),
+        affected: AffectedScope::Count(count),
+        remedy: Remedy {
+            summary: "Verify organization-level secret-scanning alert access and re-run collection.".to_string(),
+            anchor: Some("capability-probes"),
+            fix_target: FixTarget::Token,
+        },
+    });
+}
+
+struct PostureScanResults {
+    absent: Vec<String>,
+    broad_bypass: Vec<String>,
+    admin_not_bound: Vec<String>,
+    integrity_gap: Vec<String>,
+}
+
+fn scan_branch_protection_posture(
+    metadata: &AssessmentMetadata,
+    repos: &[RepositoryEvidence],
+) -> PostureScanResults {
+    let mut results = PostureScanResults {
+        absent: Vec::new(),
+        broad_bypass: Vec::new(),
+        admin_not_bound: Vec::new(),
+        integrity_gap: Vec::new(),
+    };
+
+    for repo in repos {
+        let details = &repo.checks.branch_protection.details;
+        let name = repo_full_name(metadata, repo);
+
+        if details.reason_kind == Some(CollectionFailureReason::NotFoundAbsent) {
+            results.absent.push(name.clone());
+        }
+        if details.has_broad_bypass == Some(true) {
+            results.broad_bypass.push(name.clone());
+        }
+        if details.admin_equivalent == Some(false) {
+            results.admin_not_bound.push(name.clone());
+        }
+        if details.force_push_blocked == Some(false) || details.deletion_blocked == Some(false) {
+            results.integrity_gap.push(name);
+        }
+    }
+
+    results.absent.sort_unstable();
+    results.broad_bypass.sort_unstable();
+    results.admin_not_bound.sort_unstable();
+    results.integrity_gap.sort_unstable();
+    results
+}
+
+#[derive(Clone, Copy)]
+struct PostureFlagSpec {
+    id: RedFlagId,
+    severity: Severity,
+    title: &'static str,
+    detail: &'static str,
+    remedy_summary: &'static str,
+}
+
+fn push_posture_flag(flags: &mut Vec<RedFlag>, affected_repos: Vec<String>, spec: PostureFlagSpec) {
+    let Some(primary) = affected_repos.first().cloned() else {
+        return;
+    };
+    flags.push(RedFlag {
+        id: spec.id,
+        severity: spec.severity,
+        category: RedFlagCategory::Posture,
+        title: spec.title.to_string(),
+        detail: spec.detail.to_string(),
+        affected: AffectedScope::Repos(affected_repos),
+        remedy: Remedy {
+            summary: spec.remedy_summary.to_string(),
+            anchor: None,
+            fix_target: FixTarget::Repo(primary),
+        },
+    });
+}
+
+fn push_branch_protection_posture_flags(
+    flags: &mut Vec<RedFlag>,
+    metadata: &AssessmentMetadata,
+    repos: &[RepositoryEvidence],
+) {
+    let scan = scan_branch_protection_posture(metadata, repos);
+
+    push_posture_flag(
+        flags,
+        scan.absent,
+        PostureFlagSpec {
+            id: RedFlagId::BranchProtectionAbsent,
+            severity: Severity::High,
+            title: "Branch protection is absent",
+            detail: "GitHub confirms no branch protection is configured on the default branch — this is a definitive absence, not a permission-limited read.",
+            remedy_summary: "Configure branch protection on the default branch (required reviews, status checks, and push/deletion restrictions).",
+        },
+    );
+    push_posture_flag(
+        flags,
+        scan.broad_bypass,
+        PostureFlagSpec {
+            id: RedFlagId::BroadBypassPresent,
+            severity: Severity::High,
+            title: "Branch protection has a broad bypass actor",
+            detail: "A broad bypass actor, for example organization admins, can skip branch protection rules entirely on the default branch.",
+            remedy_summary: "Remove or narrow the bypass actor so branch protection cannot be broadly circumvented.",
+        },
+    );
+    push_posture_flag(
+        flags,
+        scan.admin_not_bound,
+        PostureFlagSpec {
+            id: RedFlagId::AdminEnforcementNotEquivalent,
+            severity: Severity::Medium,
+            title: "Administrators are exempt from branch protection",
+            detail: "Branch protection does not apply to repository administrators on the default branch.",
+            remedy_summary: "Enable enforcement for administrators on the default branch protection rule.",
+        },
+    );
+    push_posture_flag(
+        flags,
+        scan.integrity_gap,
+        PostureFlagSpec {
+            id: RedFlagId::IntegrityControlGap,
+            severity: Severity::Medium,
+            title: "Default branch history is rewritable or deletable",
+            detail: "Force pushes or branch deletion are not blocked on the default branch, allowing history rewrites or accidental or malicious deletion.",
+            remedy_summary: "Enable force-push and deletion restrictions on the default branch protection rule.",
+        },
+    );
+}
+
 /// CSS class names for each 5% increment: `"w-0"` through `"w-100"`.
 const WIDTH_CLASSES: [&str; 21] = [
     "w-0", "w-5", "w-10", "w-15", "w-20", "w-25", "w-30", "w-35", "w-40", "w-45", "w-50", "w-55",
@@ -981,12 +1524,16 @@ fn format_run_timestamp(ts: &str) -> String {
 mod tests {
     use super::*;
     use crate::domain::auth::{AuthMode, Capability, TokenTier};
-    use crate::domain::checks::CollectionFailureReason;
+    use crate::domain::checks::{
+        BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus,
+        CollectionFailureReason,
+    };
     use crate::domain::metrics::{
         AggregatedMetrics, BranchProtectionCounts, CodeownersCounts, CollectionHealthCheckKind,
         CollectionHealthCount, DependabotCounts, PolicyCounts, RateMetric, SecretAlertCounts,
         SecretScanningCounts,
     };
+    use crate::domain::repository::Visibility;
     use crate::test_fixtures;
     use std::collections::HashMap;
 
@@ -1806,5 +2353,399 @@ mod tests {
     #[test]
     fn strip_org_prefix_multibyte_no_panic() {
         assert_eq!(strip_org_prefix("@組織/チーム"), "チーム");
+    }
+
+    fn neutral_metadata() -> AssessmentMetadata {
+        let mut metadata = test_fixtures::make_metadata();
+        metadata.auth_mode = AuthMode::GitHubApp;
+        metadata.run_timestamp = Timestamp::now().to_string();
+        metadata
+    }
+
+    fn neutral_metrics() -> AggregatedMetrics {
+        test_fixtures::make_minimal_metrics()
+    }
+
+    fn neutral_repos() -> Vec<RepositoryEvidence> {
+        vec![test_fixtures::all_passing_evidence("clean-repo")]
+    }
+
+    fn branch_protection_with(
+        reason_kind: Option<CollectionFailureReason>,
+        has_broad_bypass: Option<bool>,
+        admin_equivalent: Option<bool>,
+        force_push_blocked: Option<bool>,
+        deletion_blocked: Option<bool>,
+    ) -> BranchProtectionResult {
+        BranchProtectionResult {
+            status: BranchProtectionStatus::Partial,
+            details: BranchProtectionDetails {
+                default_branch: "main".to_string(),
+                has_pr: Some(true),
+                required_reviewers: Some(1),
+                has_status_checks: Some(true),
+                admin_equivalent,
+                has_broad_bypass,
+                reason: None,
+                reason_kind,
+                http_status: None,
+                force_push_blocked,
+                deletion_blocked,
+            },
+            timestamp: test_fixtures::make_timestamp(),
+        }
+    }
+
+    fn repo_with_branch_protection(
+        name: &str,
+        branch: BranchProtectionResult,
+    ) -> RepositoryEvidence {
+        test_fixtures::make_repository_evidence(
+            name,
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                branch,
+                test_fixtures::codeowners_conforming(),
+            ),
+        )
+    }
+
+    #[test]
+    fn build_red_flags_zero_flags_is_neutral() {
+        let flags = build_red_flags(&neutral_metadata(), &neutral_metrics(), &neutral_repos());
+        assert!(flags.is_empty());
+    }
+
+    #[test]
+    fn red_flag_token_tier_unknown_fires_and_absent() {
+        let mut metadata = neutral_metadata();
+        metadata.token_tier = TokenTier::Unknown;
+        let fired = build_red_flags(&metadata, &neutral_metrics(), &neutral_repos());
+        assert!(fired.iter().any(|f| f.id == RedFlagId::TokenTierUnknown));
+
+        let absent = build_red_flags(&neutral_metadata(), &neutral_metrics(), &neutral_repos());
+        assert!(!absent.iter().any(|f| f.id == RedFlagId::TokenTierUnknown));
+    }
+
+    #[test]
+    fn red_flag_degraded_capability_fires_and_absent() {
+        let mut metadata = neutral_metadata();
+        metadata.unavailable_capabilities = vec![
+            Capability::PrivateBranchProtectionRead,
+            Capability::OrgSecretScanningAlerts,
+        ];
+        let fired = build_red_flags(&metadata, &neutral_metrics(), &neutral_repos());
+        let capability_flags: Vec<_> = fired
+            .iter()
+            .filter(|f| f.id == RedFlagId::DegradedCapability)
+            .collect();
+        assert_eq!(capability_flags.len(), 2);
+        assert!(capability_flags[0].title.contains("Org-level"));
+        assert!(capability_flags[1].title.contains("Private/internal"));
+
+        let absent = build_red_flags(&neutral_metadata(), &neutral_metrics(), &neutral_repos());
+        assert!(!absent.iter().any(|f| f.id == RedFlagId::DegradedCapability));
+    }
+
+    #[test]
+    fn red_flag_branch_protection_permission_suspected_fires_and_absent() {
+        let mut metrics = neutral_metrics();
+        metrics.collection_health_counts = vec![CollectionHealthCount {
+            check_kind: CollectionHealthCheckKind::BranchProtection,
+            reason: CollectionFailureReason::PermissionSuspected,
+            count: 3,
+        }];
+        let fired = build_red_flags(&neutral_metadata(), &metrics, &neutral_repos());
+        let flag = fired
+            .iter()
+            .find(|f| f.id == RedFlagId::BranchProtectionPermissionSuspected)
+            .expect("flag should fire");
+        assert_eq!(flag.affected, AffectedScope::Count(3));
+
+        let absent = build_red_flags(&neutral_metadata(), &neutral_metrics(), &neutral_repos());
+        assert!(
+            !absent
+                .iter()
+                .any(|f| f.id == RedFlagId::BranchProtectionPermissionSuspected)
+        );
+    }
+
+    #[test]
+    fn red_flag_secret_scanning_permission_denied_fires_and_absent() {
+        let mut metrics = neutral_metrics();
+        metrics.collection_health_counts = vec![CollectionHealthCount {
+            check_kind: CollectionHealthCheckKind::SecretScanning,
+            reason: CollectionFailureReason::PermissionDenied,
+            count: 2,
+        }];
+        let fired = build_red_flags(&neutral_metadata(), &metrics, &neutral_repos());
+        let flag = fired
+            .iter()
+            .find(|f| f.id == RedFlagId::SecretScanningPermissionDenied)
+            .expect("flag should fire");
+        assert_eq!(flag.affected, AffectedScope::Count(2));
+
+        let absent = build_red_flags(&neutral_metadata(), &neutral_metrics(), &neutral_repos());
+        assert!(
+            !absent
+                .iter()
+                .any(|f| f.id == RedFlagId::SecretScanningPermissionDenied)
+        );
+    }
+
+    #[test]
+    fn red_flag_auth_mode_pat_fires_and_absent() {
+        let mut metadata = neutral_metadata();
+        metadata.auth_mode = AuthMode::Pat;
+        let fired = build_red_flags(&metadata, &neutral_metrics(), &neutral_repos());
+        assert!(fired.iter().any(|f| f.id == RedFlagId::AuthModePat));
+
+        let absent = build_red_flags(&neutral_metadata(), &neutral_metrics(), &neutral_repos());
+        assert!(!absent.iter().any(|f| f.id == RedFlagId::AuthModePat));
+    }
+
+    #[test]
+    fn red_flag_rate_limited_collection_fires_and_absent() {
+        let mut metrics = neutral_metrics();
+        metrics.collection_health_counts = vec![CollectionHealthCount {
+            check_kind: CollectionHealthCheckKind::Dependabot,
+            reason: CollectionFailureReason::RateLimited,
+            count: 4,
+        }];
+        let fired = build_red_flags(&neutral_metadata(), &metrics, &neutral_repos());
+        let flag = fired
+            .iter()
+            .find(|f| f.id == RedFlagId::RateLimitedCollection)
+            .expect("flag should fire");
+        assert_eq!(flag.affected, AffectedScope::Count(4));
+
+        let absent = build_red_flags(&neutral_metadata(), &neutral_metrics(), &neutral_repos());
+        assert!(
+            !absent
+                .iter()
+                .any(|f| f.id == RedFlagId::RateLimitedCollection)
+        );
+    }
+
+    #[test]
+    fn red_flag_unstable_collection_result_fires_and_absent() {
+        let mut metrics = neutral_metrics();
+        metrics.collection_health_counts = vec![
+            CollectionHealthCount {
+                check_kind: CollectionHealthCheckKind::Codeowners,
+                reason: CollectionFailureReason::Invalid,
+                count: 1,
+            },
+            CollectionHealthCount {
+                check_kind: CollectionHealthCheckKind::SecretScanning,
+                reason: CollectionFailureReason::Transient,
+                count: 2,
+            },
+        ];
+        let fired = build_red_flags(&neutral_metadata(), &metrics, &neutral_repos());
+        let flag = fired
+            .iter()
+            .find(|f| f.id == RedFlagId::UnstableCollectionResult)
+            .expect("flag should fire");
+        assert_eq!(flag.affected, AffectedScope::Count(3));
+
+        let absent = build_red_flags(&neutral_metadata(), &neutral_metrics(), &neutral_repos());
+        assert!(
+            !absent
+                .iter()
+                .any(|f| f.id == RedFlagId::UnstableCollectionResult)
+        );
+    }
+
+    #[test]
+    fn red_flag_codeowners_truncated_fires_and_absent() {
+        let mut metrics = neutral_metrics();
+        metrics.codeowners_counts.truncated = 5;
+        let fired = build_red_flags(&neutral_metadata(), &metrics, &neutral_repos());
+        let flag = fired
+            .iter()
+            .find(|f| f.id == RedFlagId::CodeownersTruncated)
+            .expect("flag should fire");
+        assert_eq!(flag.affected, AffectedScope::Count(5));
+
+        let absent = build_red_flags(&neutral_metadata(), &neutral_metrics(), &neutral_repos());
+        assert!(
+            !absent
+                .iter()
+                .any(|f| f.id == RedFlagId::CodeownersTruncated)
+        );
+    }
+
+    #[test]
+    fn red_flag_collection_run_stale_fires_and_absent() {
+        let mut metadata = neutral_metadata();
+        metadata.run_timestamp = "2000-01-01T00:00:00Z".to_string();
+        let fired = build_red_flags(&metadata, &neutral_metrics(), &neutral_repos());
+        assert!(fired.iter().any(|f| f.id == RedFlagId::CollectionRunStale));
+
+        let absent = build_red_flags(&neutral_metadata(), &neutral_metrics(), &neutral_repos());
+        assert!(!absent.iter().any(|f| f.id == RedFlagId::CollectionRunStale));
+    }
+
+    #[test]
+    fn red_flag_secret_scanning_unobservable_fires_and_absent() {
+        let repos = vec![test_fixtures::make_repo_with_updated_at(
+            "unobservable-repo",
+            None,
+            true,
+            None,
+            false,
+            &[],
+        )];
+        let fired = build_red_flags(&neutral_metadata(), &neutral_metrics(), &repos);
+        let flag = fired
+            .iter()
+            .find(|f| f.id == RedFlagId::SecretScanningUnobservable)
+            .expect("flag should fire");
+        assert_eq!(flag.affected, AffectedScope::Count(1));
+
+        let absent = build_red_flags(&neutral_metadata(), &neutral_metrics(), &neutral_repos());
+        assert!(
+            !absent
+                .iter()
+                .any(|f| f.id == RedFlagId::SecretScanningUnobservable)
+        );
+    }
+
+    #[test]
+    fn red_flag_branch_protection_absent_fires_and_absent() {
+        let repos = vec![repo_with_branch_protection(
+            "absent-bp-repo",
+            branch_protection_with(
+                Some(CollectionFailureReason::NotFoundAbsent),
+                Some(false),
+                Some(true),
+                Some(true),
+                Some(true),
+            ),
+        )];
+        let fired = build_red_flags(&neutral_metadata(), &neutral_metrics(), &repos);
+        let flag = fired
+            .iter()
+            .find(|f| f.id == RedFlagId::BranchProtectionAbsent)
+            .expect("flag should fire");
+        assert_eq!(
+            flag.affected,
+            AffectedScope::Repos(vec!["TestOrg/absent-bp-repo".to_string()])
+        );
+        assert_eq!(
+            flag.remedy.fix_target,
+            FixTarget::Repo("TestOrg/absent-bp-repo".to_string())
+        );
+
+        let absent = build_red_flags(&neutral_metadata(), &neutral_metrics(), &neutral_repos());
+        assert!(
+            !absent
+                .iter()
+                .any(|f| f.id == RedFlagId::BranchProtectionAbsent)
+        );
+    }
+
+    #[test]
+    fn red_flag_broad_bypass_fires_and_absent() {
+        let repos = vec![repo_with_branch_protection(
+            "broad-bypass-repo",
+            branch_protection_with(None, Some(true), Some(true), Some(true), Some(true)),
+        )];
+        let fired = build_red_flags(&neutral_metadata(), &neutral_metrics(), &repos);
+        let flag = fired
+            .iter()
+            .find(|f| f.id == RedFlagId::BroadBypassPresent)
+            .expect("flag should fire");
+        assert_eq!(
+            flag.affected,
+            AffectedScope::Repos(vec!["TestOrg/broad-bypass-repo".to_string()])
+        );
+
+        let absent = build_red_flags(&neutral_metadata(), &neutral_metrics(), &neutral_repos());
+        assert!(!absent.iter().any(|f| f.id == RedFlagId::BroadBypassPresent));
+    }
+
+    #[test]
+    fn red_flag_admin_enforcement_not_equivalent_fires_and_absent() {
+        let repos = vec![repo_with_branch_protection(
+            "admin-gap-repo",
+            branch_protection_with(None, Some(false), Some(false), Some(true), Some(true)),
+        )];
+        let fired = build_red_flags(&neutral_metadata(), &neutral_metrics(), &repos);
+        let flag = fired
+            .iter()
+            .find(|f| f.id == RedFlagId::AdminEnforcementNotEquivalent)
+            .expect("flag should fire");
+        assert_eq!(
+            flag.affected,
+            AffectedScope::Repos(vec!["TestOrg/admin-gap-repo".to_string()])
+        );
+
+        let absent = build_red_flags(&neutral_metadata(), &neutral_metrics(), &neutral_repos());
+        assert!(
+            !absent
+                .iter()
+                .any(|f| f.id == RedFlagId::AdminEnforcementNotEquivalent)
+        );
+    }
+
+    #[test]
+    fn red_flag_integrity_control_gap_fires_and_absent() {
+        let repos = vec![repo_with_branch_protection(
+            "integrity-gap-repo",
+            branch_protection_with(None, Some(false), Some(true), Some(false), Some(true)),
+        )];
+        let fired = build_red_flags(&neutral_metadata(), &neutral_metrics(), &repos);
+        let flag = fired
+            .iter()
+            .find(|f| f.id == RedFlagId::IntegrityControlGap)
+            .expect("flag should fire");
+        assert_eq!(
+            flag.affected,
+            AffectedScope::Repos(vec!["TestOrg/integrity-gap-repo".to_string()])
+        );
+
+        let absent = build_red_flags(&neutral_metadata(), &neutral_metrics(), &neutral_repos());
+        assert!(
+            !absent
+                .iter()
+                .any(|f| f.id == RedFlagId::IntegrityControlGap)
+        );
+    }
+
+    #[test]
+    fn build_red_flags_sorted_by_severity_then_category_then_id() {
+        let mut metadata = neutral_metadata();
+        metadata.token_tier = TokenTier::Unknown;
+        metadata.run_timestamp = "2000-01-01T00:00:00Z".to_string();
+
+        let mut metrics = neutral_metrics();
+        metrics.collection_health_counts = vec![CollectionHealthCount {
+            check_kind: CollectionHealthCheckKind::BranchProtection,
+            reason: CollectionFailureReason::PermissionSuspected,
+            count: 2,
+        }];
+
+        let repos = vec![repo_with_branch_protection(
+            "posture-repo",
+            branch_protection_with(None, Some(false), Some(false), Some(true), Some(true)),
+        )];
+
+        let flags = build_red_flags(&metadata, &metrics, &repos);
+
+        assert_eq!(
+            flags.iter().map(|f| f.id).collect::<Vec<_>>(),
+            vec![
+                RedFlagId::TokenTierUnknown,
+                RedFlagId::CollectionRunStale,
+                RedFlagId::BranchProtectionPermissionSuspected,
+                RedFlagId::AdminEnforcementNotEquivalent,
+            ]
+        );
     }
 }
