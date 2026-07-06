@@ -323,8 +323,6 @@ expression: "&pages[\"report.html\"]"
         </tbody>
     </table>
 
-    <p class="footer">This report shows aggregated metrics only and does not list individual repository names.</p>
-
 </body>
 
 </html>
