@@ -568,6 +568,7 @@ fn build_owner_detail_view_models(
             let summary_cards: Vec<SummaryCard> = CONTROL_NAMES
                 .iter()
                 .map(|&key| SummaryCard {
+                    key,
                     label: control_display_name(key).to_string(),
                     cell: build_control_cell(&m.per_control_coverage, key, tiers),
                 })
@@ -1243,6 +1244,26 @@ mod tests {
         assert!(html.contains("66.7% (2/3)"));
         assert!(html.contains("80.0% (4/5)"));
         assert!(html.contains("60.0% (3/5)"));
+    }
+
+    /// UF2-6: the security-policy caption must state the population the
+    /// code actually computes (`total_public`, `Visibility::Public` incl.
+    /// archived — metrics.rs:98-101,173) rather than the stale
+    /// "non-archived public repos only" claim it previously carried.
+    #[test]
+    fn security_policy_caption_matches_computed_population() {
+        let evidence = sample_evidence();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let html = &pages["report.html"];
+
+        assert!(
+            html.contains("(public repos only, including archived)"),
+            "security-policy caption must state the true population: public, including archived"
+        );
+        assert!(
+            !html.contains("non-archived public repos only"),
+            "must not claim archived repos are excluded from security-policy coverage"
+        );
     }
 
     #[test]
@@ -2333,6 +2354,35 @@ mod tests {
         assert!(detail_page.contains("Secret Scanning"));
         assert!(detail_page.contains("Dependabot"));
         assert!(detail_page.contains("Branch Protection"));
+    }
+
+    /// UF2-7(c): the owner-detail Secret Scanning card carries generalized
+    /// descriptive copy (answering "do we scan for leaked secrets?") that
+    /// states its population is public-only, scoped to that ONE card via
+    /// `SummaryCard::key` (not the human `label`, which could reword).
+    #[test]
+    fn render_owner_detail_html_secret_scanning_card_has_population_tooltip() {
+        let evidence = evidence_with_owner_repos();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+        let detail_page = pages
+            .iter()
+            .find(|(k, _)| k.starts_with("owners/"))
+            .expect("expected an owner detail page")
+            .1;
+
+        assert!(
+            detail_page.contains("Do we scan for leaked secrets?"),
+            "expected the secret-scanning population question on the owner detail page"
+        );
+        assert!(
+            detail_page.contains("this owner's public repositories only"),
+            "expected the secret-scanning tooltip to state the public-only population"
+        );
+        assert!(
+            !detail_page.to_lowercase().contains("mattilsynet"),
+            "generalized copy must not hardcode the org name (UF2-A seam)"
+        );
     }
 
     #[test]

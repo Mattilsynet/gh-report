@@ -76,7 +76,10 @@ fn count_by_visibility(active: &[&RepositoryEvidence], visibility: Visibility) -
 
 /// Aggregate security metrics across repository evidence.
 ///
-/// Aggregation semantics:
+/// Aggregation semantics (this is the org-page half of the per-metric
+/// population matrix; the owner-page half lives on
+/// `build_per_control_coverage`'s doc comment — single source for both:
+/// bd bead `adr-fmt-5dfp2`):
 ///
 /// - **Security policy**: counted over **all public** repositories,
 ///   including archived ones. Denominator is total public repos
@@ -696,9 +699,18 @@ type ControlPredicate = (&'static str, fn(&&RepositoryEvidence) -> bool);
 /// - **`branch_protection`**: `Status::Pass`
 /// - **`codeowners`**: `Conforming` or `NonConforming` (file present)
 ///
-/// The denominator for each control is the total number of repos in the set,
-/// except `security_policy` which uses a custom denominator excluding
-/// `NotApplicable` repos.
+/// The denominator for each control is the total number of repos in the set
+/// (all visibilities), except two security-posture controls that use a
+/// custom, public-only denominator — mirroring the org-level population
+/// (see `aggregate_metrics` doc comment; single source: bd bead
+/// `adr-fmt-5dfp2`):
+/// - **`security_policy`**: excludes `NotApplicable` repos (in practice,
+///   non-public repos always evaluate to `NotApplicable` — see
+///   `collector::security_policy::evaluate`).
+/// - **`secret_scanning`**: filters directly on `Visibility::Public` (UF2-7;
+///   no `NotApplicable` status exists for this control, so the org-page
+///   filter is mirrored explicitly rather than piggy-backing on a status
+///   value).
 fn build_per_control_coverage(repos: &[&RepositoryEvidence]) -> HashMap<String, RateMetric> {
     let total = count_as_u32(repos.len());
 
@@ -714,10 +726,19 @@ fn build_per_control_coverage(repos: &[&RepositoryEvidence]) -> HashMap<String, 
     );
     let sp_total = count_as_u32(sp_applicable.len());
 
+    let secret_scanning_public_repos: Vec<_> = repos
+        .iter()
+        .filter(|r| r.repository.visibility == Visibility::Public)
+        .collect();
+    let secret_scanning_pass = count_as_u32(
+        secret_scanning_public_repos
+            .iter()
+            .filter(|r| r.checks.secret_scanning.status == SecretScanningStatus::Enabled)
+            .count(),
+    );
+    let secret_scanning_denominator = count_as_u32(secret_scanning_public_repos.len());
+
     let controls: &[ControlPredicate] = &[
-        ("secret_scanning", |r| {
-            r.checks.secret_scanning.status == SecretScanningStatus::Enabled
-        }),
         ("dependabot_security_updates", |r| {
             r.checks.dependabot_security_updates.status == DependabotStatus::Enabled
         }),
@@ -746,6 +767,10 @@ fn build_per_control_coverage(repos: &[&RepositoryEvidence]) -> HashMap<String, 
     result.insert(
         "security_policy".to_string(),
         RateMetric::new(sp_pass, sp_total),
+    );
+    result.insert(
+        "secret_scanning".to_string(),
+        RateMetric::new(secret_scanning_pass, secret_scanning_denominator),
     );
 
     result
@@ -1965,6 +1990,171 @@ mod tests {
                 .unwrap()
                 .numerator,
             2
+        );
+    }
+
+    /// UF2-7: an owner's secret-scanning denominator must count only the
+    /// owner's PUBLIC repos, mirroring the org-page population and the
+    /// existing `sp_total` custom-denominator idiom for `security_policy`.
+    /// Before UF2-7 this used the shared `total` (all of the owner's
+    /// non-archived repos, every visibility) — this test pins the flip.
+    #[test]
+    fn owner_secret_scanning_denominator_counts_public_only() {
+        let repos = vec![
+            make_repository_evidence(
+                "pub-repo",
+                Visibility::Public,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_with_owners(&["@org/team"]),
+                ),
+            ),
+            make_repository_evidence(
+                "priv-repo",
+                Visibility::Private,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_with_owners(&["@org/team"]),
+                ),
+            ),
+        ];
+        let result = build_owner_metrics(&repos);
+        assert_eq!(result.len(), 1);
+        let team = &result[0];
+        assert_eq!(
+            team.total_repos, 2,
+            "owner set still counts all visibilities"
+        );
+
+        let secret_scanning = team.per_control_coverage.get("secret_scanning").unwrap();
+        assert_eq!(
+            secret_scanning.denominator, 1,
+            "secret_scanning denominator must count only the owner's public \
+             repos (mirrors sp_total idiom), got {secret_scanning:?}"
+        );
+        assert_eq!(secret_scanning.numerator, 1);
+
+        let dependabot = team
+            .per_control_coverage
+            .get("dependabot_security_updates")
+            .unwrap();
+        assert_eq!(
+            dependabot.denominator, 2,
+            "dependabot denominator must remain all-visibilities (contrast control)"
+        );
+    }
+
+    /// UF2-8: cross-page consistency guard for the DECIDED population matrix
+    /// (single source: bd bead `adr-fmt-5dfp2`). Builds ONE repo set — an
+    /// owner with one public and one private non-archived repo — and
+    /// asserts the VISIBILITY axis holds on BOTH the org page
+    /// (`aggregate_metrics`) and the owner page (`build_owner_metrics`)
+    /// from the SAME underlying data: `security_policy` + `secret_scanning`
+    /// are public-only on both scopes; `dependabot_security_updates` +
+    /// `branch_protection` + `codeowners` are all-visibilities on both
+    /// scopes. Does NOT assert archived-parity between org-wide and
+    /// owner-attributed scopes — those are legitimately different
+    /// denominator universes, guarded instead by the four named
+    /// archived-axis regression tests
+    /// (`warm_start_replay_preserves_archived_public_security_policy_in_aggregate_metrics`,
+    /// `aggregate_metrics_archived_public_repo_included_in_security_policy`,
+    /// `aggregate_metrics_secret_scanning_denominator_counts_public_including_archived`,
+    /// `aggregate_metrics_includes_archived_public_repos_with_security_policy`)
+    /// plus `owner_metrics_excludes_archived` for the owner-side exclusion.
+    #[test]
+    fn population_matrix_visibility_axis_consistent_org_and_owner() {
+        let repos = vec![
+            make_repository_evidence(
+                "pub-repo",
+                Visibility::Public,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_with_owners(&["@org/team"]),
+                ),
+            ),
+            make_repository_evidence(
+                "priv-repo",
+                Visibility::Private,
+                false,
+                make_checks(
+                    crate::domain::checks::SecurityPolicyResult {
+                        status: SecurityPolicyStatus::NotApplicable,
+                        evidence: SecurityPolicyEvidence::NotApplicable,
+                        path: None,
+                        timestamp: make_timestamp(),
+                    },
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_with_owners(&["@org/team"]),
+                ),
+            ),
+        ];
+
+        let org_metrics = aggregate_metrics(&repos);
+        assert_eq!(
+            org_metrics.security_policy_coverage.denominator, 1,
+            "org security_policy must be public-only"
+        );
+        assert_eq!(
+            org_metrics.secret_scanning_coverage.denominator, 1,
+            "org secret_scanning must be public-only"
+        );
+        assert_eq!(
+            org_metrics.dependabot_security_updates_coverage.denominator, 2,
+            "org dependabot must be all-visibilities"
+        );
+        assert_eq!(
+            org_metrics.branch_protection_coverage.denominator, 2,
+            "org branch_protection must be all-visibilities"
+        );
+        assert_eq!(
+            org_metrics.codeowners_coverage.denominator, 2,
+            "org codeowners must be all-visibilities"
+        );
+
+        let owners = build_owner_metrics(&repos);
+        assert_eq!(owners.len(), 1, "both repos attribute to the same owner");
+        let coverage = &owners[0].per_control_coverage;
+        assert_eq!(
+            coverage.get("security_policy").unwrap().denominator,
+            1,
+            "owner security_policy must be public-only"
+        );
+        assert_eq!(
+            coverage.get("secret_scanning").unwrap().denominator,
+            1,
+            "owner secret_scanning must be public-only"
+        );
+        assert_eq!(
+            coverage
+                .get("dependabot_security_updates")
+                .unwrap()
+                .denominator,
+            2,
+            "owner dependabot must be all-visibilities"
+        );
+        assert_eq!(
+            coverage.get("branch_protection").unwrap().denominator,
+            2,
+            "owner branch_protection must be all-visibilities"
+        );
+        assert_eq!(
+            coverage.get("codeowners").unwrap().denominator,
+            2,
+            "owner codeowners must be all-visibilities"
         );
     }
 

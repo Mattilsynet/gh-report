@@ -203,6 +203,11 @@ pub struct StatusDot {
 /// Pre-zipped for template iteration (Askama does not support array indexing).
 #[derive(Debug, Clone)]
 pub struct SummaryCard {
+    /// Machine-stable control key (e.g., `"secret_scanning"`), matching
+    /// [`crate::domain::metrics::OwnerMetrics::per_control_coverage`] keys.
+    /// Lets templates target one control's rendering (e.g. a tooltip)
+    /// without matching on the human-readable `label`, which can reword.
+    pub key: &'static str,
     /// Human-readable control name (e.g., `"Security Policy"`).
     pub label: String,
     /// Coverage rate and tier for styling.
@@ -1630,6 +1635,24 @@ const WIDTH_CLASSES: [&str; 21] = [
 /// Returns:
 /// - `None` if all rates are `None`.
 /// - Otherwise, the geometric mean rounded to 1 decimal place.
+///
+/// # Ratified rule (UF2-5)
+///
+/// This is the decided scoring rule, not a placeholder — see bd bead
+/// `adr-fmt-m1s6p` for the full ratification record. Two behaviours are
+/// deliberate, not incidental:
+///
+/// - **`None` is excluded, never coerced to `0.0`.** A geometric mean is a
+///   product of terms (computed here via `exp(mean(ln(x)))`); if a missing
+///   metric were coerced to `0.0` instead of dropped, that one absent
+///   control would zero the entire product regardless of how every other
+///   control scores. Exclusion means "no observable population" does not
+///   punish controls that *are* observed.
+/// - **A genuine `0.0` is floored to `0.1` before entering the product**,
+///   for the same reason in reverse: an unfloored `0.0` in a product-based
+///   mean collapses the whole score to zero, masking every passing control.
+///   Flooring keeps a real failure scored near the bottom without the
+///   all-or-nothing collapse.
 pub(crate) fn compute_health_score(rates: &[Option<f64>]) -> Option<f64> {
     let available: Vec<f64> = rates
         .iter()
@@ -2531,6 +2554,20 @@ mod tests {
     fn health_score_all_same_rate() {
         let score = compute_health_score(&[Some(50.0), Some(50.0), Some(50.0), None, None]);
         assert_eq!(score, Some(50.0));
+    }
+
+    /// UF2-5 ratification pin: `None` exclusion and the `0.0` -> `0.1` floor
+    /// composing in the SAME calculation. Neither existing edge test
+    /// (`health_score_excludes_none_rates`, `health_score_any_zero_floors_to_0_1`)
+    /// exercises both at once — this closes that gap. Expected: `None` is
+    /// dropped entirely (not counted in `n`, not counted as a zero), the
+    /// real `0.0` is floored to `0.1`, geometric mean of `[0.1, 50.0]` is
+    /// `sqrt(5.0)` ~= 2.236, rounded to 1 decimal.
+    #[test]
+    fn health_score_na_excluded_and_zero_floored_together() {
+        let score = compute_health_score(&[Some(0.0), None, Some(50.0)]);
+        let s = score.expect("mixed N/A + zero should still produce a score");
+        assert!((s - 2.2).abs() < 0.05, "expected ~2.2, got {s}");
     }
 
     #[test]
