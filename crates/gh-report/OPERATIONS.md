@@ -737,6 +737,34 @@ cargo test
 - `#![forbid(unsafe_code)]` enforced
 - Release profile: LTO enabled, symbols stripped, single codegen unit
 
+## Versioning and Releasing
+
+**Tag as the source of truth.** The git tag `vX.Y.Z` is the single source of truth for the release/deploy version. `crates/gh-report/Cargo.toml`'s `version` field is deliberately `0.0.0` and is not hand-bumped: `gh-report` is a deployed service, never published to crates.io, so the crate version carries no release meaning — the tag is what identifies a release.
+
+**How the binary reports its version.** At build time, `build.rs` stamps the compile-time `GH_REPORT_VERSION` value with this precedence:
+
+1. `APP_VERSION` environment variable, if set and non-empty (CI/Docker sets this from the git tag; a leading `v` is stripped).
+2. `git describe --tags --always --dirty`, if `APP_VERSION` is unset (local dev builds).
+3. `CARGO_PKG_VERSION`, as a final fallback (a source tarball with no git and no `APP_VERSION`).
+
+`gh-report --version` and the GitHub API `User-Agent` header both report this stamped value — neither reads `CARGO_PKG_VERSION` directly.
+
+**Release procedure.** Cutting a release never touches `Cargo.toml`:
+
+1. Annotate and create the tag.
+2. Push `main`.
+3. Push the tag.
+
+```sh
+git tag -a vX.Y.Z -m "release vX.Y.Z"
+git push origin main
+git push origin vX.Y.Z
+```
+
+Pushing the tag triggers `.github/workflows/build.yml` (on `v*` tags): it runs CI, builds the `linux/amd64` image with `APP_VERSION=<tag>`, pushes `:latest` and `:<tag>` to GAR, and deploys the pinned digest to Cloud Run. No other release step is needed.
+
+**Local build staleness.** `build.rs`'s only rebuild trigger is `cargo:rerun-if-env-changed=APP_VERSION` — there is intentionally no rerun-on-git-HEAD trigger, to keep incremental builds fast. A local `--version` can therefore show a stale `git describe` string after a new commit that changes no source file and no `APP_VERSION`. Force a refresh with `cargo clean -p gh-report` (or touch `build.rs`, or set `APP_VERSION`). This does not affect CI or production: the Docker builder stage is fresh on every build and always sets `APP_VERSION` from the tag, so the deployed version is always exact.
+
 ## WebSocket Push Notifications
 
 The dashboard uses WebSocket connections (`GET /ws`) to receive real-time page update notifications. When a collection run completes (or a partial update is published during a long run), connected browsers automatically reload the affected page.
