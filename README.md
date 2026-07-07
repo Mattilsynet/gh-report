@@ -2,10 +2,11 @@
 
 Enabling constraints for agent-first development
 
-Cherry-pit is a library family primarily for coding agents. It constrains compositions that could quietly break how the system fits together. The rules it enforces live in a sizable ADR corpus of ~180 active documents under docs/adr/, each averaging about 5 rules.
+Cherry-pit is a library family primarily for coding agents. It constrains compositions that could quietly break how the system fits together. The rules it enforces live in a sizable ADR corpus of ~190 active documents under docs/adr/, each averaging about 5 rules.
 
-A Rust workspace shipping binaries (`adr-fmt`, `adr-srv`, `gh-report`)
-plus their supporting library crates and a governed ADR corpus.
+A Rust workspace (edition 2024, MSRV 1.96) shipping binaries
+(`adr-fmt`, `adr-srv`, `gh-report`, `comment-free`) plus their
+supporting library crates and a governed ADR corpus.
 
 ## What's here
 
@@ -13,11 +14,17 @@ plus their supporting library crates and a governed ADR corpus.
   See [`crates/adr-fmt/`](crates/adr-fmt/).
 - **`adr-srv`** — GraphQL service over a projection of the ADR corpus.
   See [`crates/adr-srv/`](crates/adr-srv/).
+- **`comment-free`** — doc-lint tool enforcing the fleet-wide
+  no-`//`-comments rule on Rust source.
+  See [`crates/comment-free/`](crates/comment-free/).
 - **`gh-report`** — GitHub organisation evidence collector and HTML
   reporter. Built on a family of internal `cherry-pit-*` crates
   providing an event-sourcing substrate (core, gateway, projection,
-  agent, web, work-queue, storage primitives). See
-  [`crates/gh-report/`](crates/gh-report/).
+  agent, web, work-queue, storage primitives), with durable events
+  persisted through the `pardosa*` `.pgno` store (or a NATS/JetStream
+  backend). The served dashboard reports per-repository security
+  posture, per-team ownership and orphaned repositories, and inline
+  remediation guidance. See [`crates/gh-report/`](crates/gh-report/).
 - **ADR corpus** at [`docs/adr/`](docs/adr/). Two domains are actively
   edited: `adr-fmt/` (prefix `AFM`) governs the validator; `cherry/`
   (prefix `CHE`) governs cherry-pit, adr-srv, and gh-report.
