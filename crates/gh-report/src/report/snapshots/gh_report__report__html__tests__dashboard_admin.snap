@@ -46,7 +46,7 @@ expression: "&pages[\"admin.html\"]"
             <strong>Org-level secret scanning alerts capability unavailable</strong>
         </p>
         <p>Organization-wide secret-scanning alert observability is degraded; alert-based coverage metrics may undercount.</p>
-        <p>Fix: Grant the missing scope or permission listed under Capability probes, or accept the degraded coverage for this credential tier. <a href="OPERATIONS.md#capability-probes">[why?]</a></p>
+        <p>Fix: Grant the missing scope or permission listed under Capability probes, or accept the degraded coverage for this credential tier. <a href="OPERATIONS.html#capability-probes">[why?]</a></p>
         
         <p class="meta">Affected: organization-wide</p>
         
@@ -59,7 +59,7 @@ expression: "&pages[\"admin.html\"]"
             <strong>Private/internal branch-protection reads capability unavailable</strong>
         </p>
         <p>Private and internal repositories cannot be distinguished from not-found responses; branch protection scores Unknown for them.</p>
-        <p>Fix: Grant the missing scope or permission listed under Capability probes, or accept the degraded coverage for this credential tier. <a href="OPERATIONS.md#capability-probes">[why?]</a></p>
+        <p>Fix: Grant the missing scope or permission listed under Capability probes, or accept the degraded coverage for this credential tier. <a href="OPERATIONS.html#capability-probes">[why?]</a></p>
         
         <p class="meta">Affected: organization-wide</p>
         
@@ -85,7 +85,7 @@ expression: "&pages[\"admin.html\"]"
             <strong>Collection run is stale</strong>
         </p>
         <p>The last completed collection run is more than twice the scheduled collection interval old; the daemon may be stuck and this report may not reflect current state.</p>
-        <p>Fix: Check daemon liveness/readiness and Cloud Run min-instances, then restart the collection process if it is stuck. <a href="OPERATIONS.md#kubernetes--knative-probe-configuration">[why?]</a></p>
+        <p>Fix: Check daemon liveness/readiness and Cloud Run min-instances, then restart the collection process if it is stuck. <a href="OPERATIONS.html#kubernetes--knative-probe-configuration">[why?]</a></p>
         
         <p class="meta">Affected: organization-wide</p>
         
@@ -98,7 +98,7 @@ expression: "&pages[\"admin.html\"]"
             <strong>Branch protection reads suspected permission-denied</strong>
         </p>
         <p>One or more branch-protection checks returned an ambiguous not-found response consistent with insufficient read access on a private repository.</p>
-        <p>Fix: Verify the token has Repository administration: read (or classic repo scope) and retry collection. <a href="OPERATIONS.md#capability-probes">[why?]</a></p>
+        <p>Fix: Verify the token has Repository administration: read (or classic repo scope) and retry collection. <a href="OPERATIONS.html#capability-probes">[why?]</a></p>
         
         <p class="meta">Affected: 1</p>
         

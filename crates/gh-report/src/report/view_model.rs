@@ -868,7 +868,9 @@ pub struct ReportViewModel {
     /// Formula: `archived / (archived + stale_active) × 100`.
     /// `None` when `archived_repos == 0` and no active repos are stale.
     pub stale_rate: Option<f64>,
-    /// Formatted stale rate string (e.g., `"12.5%"` or `"N/A"`).
+    /// Formatted stale rate string with the truthful `(archived/denominator)`
+    /// ratio, matching the sibling coverage metrics' `RateMetric` display
+    /// (e.g., `"12.5% (3/24)"` or `"N/A (0/0)"`).
     pub stale_rate_formatted: String,
     /// Coverage tier for the stale rate.
     pub stale_tier: CoverageTier,
@@ -1720,7 +1722,10 @@ fn compute_archival_coverage(
         None
     };
     let stale_tier = CoverageTier::from_rate(stale_rate, tiers);
-    let stale_rate_formatted = stale_rate.map_or_else(|| "N/A".to_string(), |s| format!("{s:.1}%"));
+    let stale_rate_formatted = stale_rate.map_or_else(
+        || format!("N/A ({archived}/{stale_denominator})"),
+        |s| format!("{s:.1}% ({archived}/{stale_denominator})"),
+    );
     let stale_width_class = rate_to_width_class(stale_rate);
 
     (
@@ -2605,7 +2610,7 @@ mod tests {
         let vm = ReportViewModel::from_evidence(&evidence, &CoverageTiers::default());
 
         assert_eq!(vm.stale_rate, None);
-        assert_eq!(vm.stale_rate_formatted, "N/A");
+        assert_eq!(vm.stale_rate_formatted, "N/A (0/0)");
         assert_eq!(vm.stale_tier, CoverageTier::Na);
         assert_eq!(vm.stale_width_class, "w-0");
         assert_eq!(vm.archived_repos, 0);
@@ -2620,7 +2625,7 @@ mod tests {
         let vm = ReportViewModel::from_evidence(&evidence, &CoverageTiers::default());
 
         assert_eq!(vm.stale_rate, Some(100.0));
-        assert_eq!(vm.stale_rate_formatted, "100.0%");
+        assert_eq!(vm.stale_rate_formatted, "100.0% (3/3)");
         assert_eq!(vm.archived_repos, 3);
         assert_eq!(vm.stale_active_repos, 0);
     }
@@ -2637,6 +2642,38 @@ mod tests {
         assert_eq!(vm.archived_repos, 2);
         let s = vm.stale_rate.unwrap();
         assert!((s - 66.7).abs() < 0.1, "expected ~66.7, got {s}");
+        assert_eq!(vm.stale_rate_formatted, "66.7% (2/3)");
+    }
+
+    #[test]
+    fn stale_rate_formatted_ratio_is_truthful_to_computation() {
+        let mut evidence = sample_evidence();
+        evidence.repositories[0].repository.updated_at = Some("2023-01-01T00:00:00Z".to_string());
+        evidence.collection_statistics.archived_repos = 3;
+
+        let vm = ReportViewModel::from_evidence(&evidence, &CoverageTiers::default());
+
+        let numerator = vm.archived_repos;
+        let denominator = vm.archived_repos + vm.stale_active_repos;
+        assert_eq!(numerator, 3);
+        assert_eq!(denominator, 4);
+
+        let ratio_suffix = format!("({numerator}/{denominator})");
+        assert!(
+            vm.stale_rate_formatted.contains(&ratio_suffix),
+            "displayed ratio {:?} must contain {ratio_suffix} (archived/(archived+stale))",
+            vm.stale_rate_formatted
+        );
+
+        let recomputed_pct = (f64::from(numerator) / f64::from(denominator)) * 100.0;
+        let displayed_pct_prefix = format!("{recomputed_pct:.1}%");
+        assert!(
+            vm.stale_rate_formatted.starts_with(&displayed_pct_prefix),
+            "numerator/denominator*100 ({displayed_pct_prefix}) must equal the displayed \
+             percentage in {:?}",
+            vm.stale_rate_formatted
+        );
+        assert_eq!(vm.stale_rate_formatted, "75.0% (3/4)");
     }
 
     #[test]

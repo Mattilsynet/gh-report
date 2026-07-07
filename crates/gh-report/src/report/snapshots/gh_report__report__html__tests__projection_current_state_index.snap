@@ -80,7 +80,7 @@ expression: "&pages[\"index.html\"]"
         </div>
         <div class="card tier-na" title="Proportion of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better.">
             <p class="card-label">Archival Coverage</p>
-            <p class="card-value">N/A</p>
+            <p class="card-value">N/A (0/0)</p>
             <p class="card-detail">0 archived · 0 stale</p>
             <div class="progress-bar">
                 <div class="progress-fill tier-na w-0"></div>

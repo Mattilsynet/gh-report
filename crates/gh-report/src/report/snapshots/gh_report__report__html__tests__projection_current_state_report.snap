@@ -44,31 +44,31 @@ expression: "&pages[\"report.html\"]"
         repositories?</p>
     <p><code>Security Policy Coverage</code>: <span class="metric">66.7% (2/3)</span>
         <em>(public repos only, including archived)</em> ·
-        <a href="OPERATIONS.md#security-policy-coverage" title="What it means and how to add a security policy">Les mer</a>
+        <a href="OPERATIONS.html#security-policy-coverage" title="What it means and how to add a security policy">Les mer</a>
     </p>
 
     <p class="question">Do we have Dependabot security updates enabled so GitHub can automatically open remediation pull
         requests for vulnerable dependencies?</p>
     <p><code>Dependabot Status</code>: <span class="metric">60.0% (3/5)</span> ·
-        <a href="OPERATIONS.md#dependabot-coverage" title="What it means and how to enable Dependabot security updates">Les mer</a>
+        <a href="OPERATIONS.html#dependabot-coverage" title="What it means and how to enable Dependabot security updates">Les mer</a>
     </p>
 
     <p class="question">Do we scan our repositories for leaked secrets?</p>
     <p><code>Secret Scanning Coverage</code>: <span class="metric">80.0% (4/5)</span> ·
-        <a href="OPERATIONS.md#secret-scanning-coverage" title="What it means and how to enable secret scanning">Les mer</a>
+        <a href="OPERATIONS.html#secret-scanning-coverage" title="What it means and how to enable secret scanning">Les mer</a>
     </p>
 
     <h3>Ownership Metrics</h3>
 
     <p class="question">Do we enforce branch protection rules?</p>
     <p><code>Branch Protection</code>: <span class="metric">60.0% (3/5)</span> ·
-        <a href="OPERATIONS.md#branch-protection-coverage" title="What it means and how to configure branch protection">Les mer</a>
+        <a href="OPERATIONS.html#branch-protection-coverage" title="What it means and how to configure branch protection">Les mer</a>
     </p>
 
     <p class="question">Do we have CODEOWNERS files in <code>.github/CODEOWNERS</code> or
         <code>./CODEOWNERS</code>?</p>
     <p><code>CODEOWNERS Coverage</code>: <span class="metric">80.0% (4/5)</span> ·
-        <a href="OPERATIONS.md#codeowners-coverage" title="What it means, team-over-user preference, and how to add a team member">Les mer</a>
+        <a href="OPERATIONS.html#codeowners-coverage" title="What it means, team-over-user preference, and how to add a team member">Les mer</a>
     </p>
 
     <h2>Supporting Counts and Details</h2>
@@ -244,7 +244,7 @@ expression: "&pages[\"report.html\"]"
         considers team-type owners, and a team survives one person leaving. To add a member to a team, contact your GitHub organization&#39;s administrators with the person&#39;s GitHub username and the team they should join — team membership is typically governed by an identity provider or admin process outside this repository, not a configuration file.</p>
     
 
-    <h2>Metric Caveats</h2>
+    <h2 id="metric-caveats">Metric Caveats</h2>
 
     <div class="caveat">
         <p>Branch protection coverage counts only <code>pass</code> as sufficient; <code>partial</code> remains

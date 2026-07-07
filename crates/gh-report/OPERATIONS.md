@@ -352,7 +352,7 @@ Concrete remediation steps for each control, linked from the report's "Les mer" 
 
 #### Branch Protection Coverage
 
-**What it means:** the default branch requires reviews and blocks force-push/deletion; see [Metric Caveats](#metric-caveats) for the T0/T1/T2 tiers this feeds.
+**What it means:** the default branch requires reviews and blocks force-push/deletion; see [Metric Caveats](report.html#metric-caveats) for the T0/T1/T2 tiers this feeds.
 
 **How to fix:** add a branch protection rule or ruleset on the default branch under **Settings → Branches**: require pull request review, and block force pushes and branch deletion. Bind the rule to administrators too — an admin bypass or a broad bypass actor defeats the protection.
 

@@ -108,6 +108,21 @@ struct DeletedTemplate {
     warm_start: bool,
 }
 
+/// Askama template for the rendered operations runbook (UF3-2).
+///
+/// `body` is pre-rendered HTML from [`crate::report::markdown::render`],
+/// trusted repo-owned content, and is emitted with the `safe` filter so
+/// Askama's default auto-escaping does not double-encode it.
+#[derive(Template)]
+#[template(path = "operations.html")]
+struct OperationsTemplate<'a> {
+    organization: &'a str,
+    body: &'a str,
+    nav: TopNav,
+    /// When `true`, emits a `<meta http-equiv="refresh">` tag.
+    warm_start: bool,
+}
+
 /// Embedded CSS stylesheet, compiled into the binary at build time.
 ///
 /// Published as `style.css` alongside the HTML pages so the server's
@@ -120,6 +135,13 @@ const STYLESHEET: &str = include_str!("../../templates/style.css");
 /// and page-reload on server-pushed update events. Uses `script-src 'self'`
 /// in CSP — no inline scripts needed.
 const WS_CLIENT_JS: &str = include_str!("../../templates/ws.js");
+
+/// Embedded operations runbook source, compiled into the binary at build time.
+///
+/// Rendered to HTML by [`crate::report::markdown::render`] and published as
+/// `OPERATIONS.html` (UF3-2) so the report's "Les mer" deep links resolve
+/// over live HTTP instead of 404ing against an unserved `.md` path.
+const OPERATIONS_MD: &str = include_str!("../../OPERATIONS.md");
 
 /// Control names in canonical order for owner tables.
 const CONTROL_NAMES: &[&str] = &[
@@ -207,6 +229,8 @@ fn control_display_name(key: &str) -> &'static str {
 /// - `orphans.html` — Repositories without identifiable code owners.
 /// - `owners.html` — Owner coverage overview (if owner metrics available).
 /// - `owners/{slug}.html` — Per-owner detail pages (if owner metrics available).
+/// - `OPERATIONS.html` — Rendered operations runbook (UF3-2), the target of
+///   every report/admin "Les mer" deep link.
 ///
 /// # Errors
 ///
@@ -254,6 +278,13 @@ pub fn render_dashboard(
     let report = render_template(&ReportTemplate { vm: &vm, nav })?;
     let index = render_template(&IndexTemplate { vm: &vm, nav })?;
     let admin = render_template(&AdminTemplate { vm: &vm, nav })?;
+    let operations_body = crate::report::markdown::render(OPERATIONS_MD);
+    let operations = render_template(&OperationsTemplate {
+        organization: &vm.organization,
+        body: &operations_body,
+        nav,
+        warm_start,
+    })?;
 
     let mut pages = HashMap::new();
     pages.insert("report.html".to_string(), report);
@@ -261,6 +292,7 @@ pub fn render_dashboard(
     pages.insert("admin.html".to_string(), admin);
     pages.insert("style.css".to_string(), STYLESHEET.to_string());
     pages.insert("ws.js".to_string(), WS_CLIENT_JS.to_string());
+    pages.insert("OPERATIONS.html".to_string(), operations);
 
     if let Some(ref owners) = owners_vm {
         let owners_html = render_template(&OwnersTemplate {
@@ -1078,6 +1110,8 @@ fn build_status_dots(checks: &crate::domain::checks::RepositoryChecks) -> Vec<St
 mod tests {
     use super::*;
 
+    use std::collections::HashSet;
+
     use crate::domain::auth::{AuthMode, Capability, TokenTier};
     use crate::domain::checks::CollectionFailureReason;
     use crate::domain::metrics::{
@@ -1246,6 +1280,26 @@ mod tests {
         assert!(html.contains("60.0% (3/5)"));
     }
 
+    #[test]
+    fn dashboard_index_archival_coverage_shows_truthful_ratio() {
+        let mut evidence = sample_evidence();
+        evidence.repositories[0].repository.updated_at = Some("2023-01-01T00:00:00Z".to_string());
+        evidence.collection_statistics.archived_repos = 3;
+
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let index = &pages["index.html"];
+
+        assert!(
+            index.contains("75.0% (3/4)"),
+            "Archival Coverage card must show archived/(archived+stale) as (n/d), matching \
+             the sibling coverage cards' RateMetric-derived format"
+        );
+        assert!(
+            index.contains("3 archived · 1 stale"),
+            "card-detail sub-counts must stay consistent with the (n/d) numerator/denominator"
+        );
+    }
+
     /// UF2-6: the security-policy caption must state the population the
     /// code actually computes (`total_public`, `Visibility::Public` incl.
     /// archived — metrics.rs:98-101,173) rather than the stale
@@ -1272,11 +1326,11 @@ mod tests {
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
         let html = &pages["report.html"];
 
-        assert!(html.contains(r#"href="OPERATIONS.md#security-policy-coverage""#));
-        assert!(html.contains(r#"href="OPERATIONS.md#dependabot-coverage""#));
-        assert!(html.contains(r#"href="OPERATIONS.md#secret-scanning-coverage""#));
-        assert!(html.contains(r#"href="OPERATIONS.md#branch-protection-coverage""#));
-        assert!(html.contains(r#"href="OPERATIONS.md#codeowners-coverage""#));
+        assert!(html.contains(r#"href="OPERATIONS.html#security-policy-coverage""#));
+        assert!(html.contains(r#"href="OPERATIONS.html#dependabot-coverage""#));
+        assert!(html.contains(r#"href="OPERATIONS.html#secret-scanning-coverage""#));
+        assert!(html.contains(r#"href="OPERATIONS.html#branch-protection-coverage""#));
+        assert!(html.contains(r#"href="OPERATIONS.html#codeowners-coverage""#));
         assert_eq!(html.matches("Les mer").count(), 5);
     }
 
@@ -1333,6 +1387,9 @@ mod tests {
         assert!(report_html.contains("Acme access guide"));
 
         for (page_name, body) in &pages {
+            if page_name == "OPERATIONS.html" {
+                continue;
+            }
             assert!(
                 !body.to_lowercase().contains("mattilsynet"),
                 "page {page_name} leaked a Mattilsynet string after org config swap"
@@ -1470,7 +1527,8 @@ mod tests {
         assert!(pages.contains_key("ws.js"));
         assert!(pages.contains_key("orphans.html"));
         assert!(pages.contains_key("deleted.html"));
-        assert_eq!(pages.len(), 7);
+        assert!(pages.contains_key("OPERATIONS.html"));
+        assert_eq!(pages.len(), 8);
     }
 
     #[test]
@@ -1904,6 +1962,133 @@ mod tests {
             detail_nav, canonical,
             "owner_detail.html top-nav must match the canonical nav once its ../ prefix is stripped"
         );
+    }
+
+    fn extract_attr_values<'a>(html: &'a str, attr: &str) -> Vec<&'a str> {
+        let needle = format!("{attr}=\"");
+        let mut out = Vec::new();
+        let mut rest = html;
+        while let Some(pos) = rest.find(&needle) {
+            let after = &rest[pos + needle.len()..];
+            let Some(end) = after.find('"') else { break };
+            out.push(&after[..end]);
+            rest = &after[end + 1..];
+        }
+        out
+    }
+
+    fn resolve_href_target(href: &str, current_page: &str) -> (String, Option<String>) {
+        let (page_part, fragment) = match href.split_once('#') {
+            Some((page, frag)) => (page, Some(frag.to_string())),
+            None => (href, None),
+        };
+        let target_page = if let Some(stripped) = page_part.strip_prefix("../") {
+            stripped.to_string()
+        } else if page_part.is_empty() {
+            current_page.to_string()
+        } else {
+            page_part.to_string()
+        };
+        (target_page, fragment)
+    }
+
+    fn is_servable_page_reference(target: &str) -> bool {
+        std::path::Path::new(target).extension().is_some_and(|ext| {
+            ext.eq_ignore_ascii_case("html")
+                || ext.eq_ignore_ascii_case("css")
+                || ext.eq_ignore_ascii_case("js")
+        })
+    }
+
+    /// UF3-2 "links in general" guard (mirrors COM-0027/COM-0017 and the
+    /// adr-fmt link-integrity discipline): renders the full page set,
+    /// extracts every internal `href`, and asserts each resolves to a
+    /// served page and — for fragments — an existing `id=` anchor on that
+    /// page. Also directly confirms the 5 contractual `OPERATIONS.html`
+    /// anchors so a future heading rename breaks this build.
+    #[test]
+    fn served_pages_have_no_dangling_internal_links() {
+        let mut evidence = evidence_with_full_nav_surface();
+        evidence.assessment_metadata.auth_mode = AuthMode::Pat;
+        evidence.assessment_metadata.token_tier = TokenTier::Unknown;
+        evidence.assessment_metadata.unavailable_capabilities = vec![
+            Capability::PrivateBranchProtectionRead,
+            Capability::OrgSecretScanningAlerts,
+        ];
+        evidence
+            .metrics
+            .collection_health_counts
+            .push(CollectionHealthCount {
+                check_kind: CollectionHealthCheckKind::BranchProtection,
+                reason: CollectionFailureReason::PermissionSuspected,
+                count: 1,
+            });
+
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+        let ids_by_page: HashMap<&str, HashSet<&str>> = pages
+            .iter()
+            .map(|(key, html)| {
+                (
+                    key.as_str(),
+                    extract_attr_values(html, "id").into_iter().collect(),
+                )
+            })
+            .collect();
+
+        let mut dangling = Vec::new();
+        for (page, html) in &pages {
+            let is_html_page = std::path::Path::new(page)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("html"));
+            if !is_html_page {
+                continue;
+            }
+            for href in extract_attr_values(html, "href") {
+                if href.starts_with("http://")
+                    || href.starts_with("https://")
+                    || href.starts_with("mailto:")
+                {
+                    continue;
+                }
+                let (target_page, fragment) = resolve_href_target(href, page);
+                if !is_servable_page_reference(&target_page) {
+                    continue;
+                }
+                if !pages.contains_key(target_page.as_str()) {
+                    dangling.push(format!(
+                        "{page}: href=\"{href}\" targets unserved page {target_page:?}"
+                    ));
+                    continue;
+                }
+                if let Some(frag) = fragment
+                    && !ids_by_page[target_page.as_str()].contains(frag.as_str())
+                {
+                    dangling.push(format!(
+                        "{page}: href=\"{href}\" fragment #{frag} has no id= on {target_page}"
+                    ));
+                }
+            }
+        }
+        assert!(
+            dangling.is_empty(),
+            "dangling internal links found:\n{}",
+            dangling.join("\n")
+        );
+
+        let operations_ids = &ids_by_page["OPERATIONS.html"];
+        for anchor in [
+            "security-policy-coverage",
+            "dependabot-coverage",
+            "secret-scanning-coverage",
+            "branch-protection-coverage",
+            "codeowners-coverage",
+        ] {
+            assert!(
+                operations_ids.contains(anchor),
+                "OPERATIONS.html missing required anchor id={anchor}"
+            );
+        }
     }
 
     #[test]
