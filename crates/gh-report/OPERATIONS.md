@@ -8,7 +8,7 @@ Deployment, authentication, permissions, logging, output layout, retention, and 
 
 1. Performs an initial data collection against the configured GitHub organization.
 2. Starts an HTTP server (in-memory cache — no disk I/O on the serving path).
-3. Re-collects every 3 hours.
+3. Re-collects every 45 minutes.
 4. Shuts down gracefully on `Ctrl-C` or `SIGTERM`.
 
 A file lock (`store/collector.lock`) prevents overlapping collections. If a scheduled run starts while a previous one is still in progress, the new run is skipped with a warning.
@@ -159,9 +159,12 @@ There are no per-run directories, staging areas, symlinks, or `evidence.json` fi
 |------|-------------|
 | `index.html` | Dashboard landing page (`http://localhost:8080/`) |
 | `report.html` | Detailed security posture report |
+| `admin.html` | Read-only operator diagnostics |
+| `OPERATIONS.html` | Rendered operations runbook (this document) — target of report/admin "Les mer" deep links |
 | `owners.html` | Owner summary (when CODEOWNERS data is available) |
 | `owners/{slug}.html` | Per-owner detail pages |
 | `orphans.html` | Repositories without CODEOWNERS |
+| `deleted.html` | Repositories detected as removed from the organization |
 | `style.css` | Shared stylesheet (compiled into binary, served from cache) |
 | `ws.js` | WebSocket auto-reconnect client for live page updates |
 
@@ -181,7 +184,7 @@ flowchart TB
         inv --> alerts --> checks
     end
 
-    subgraph QUICS_AGGREGATE["quics-aggregate"]
+    subgraph CHERRY_PIT_WQ["cherry-pit-wq"]
         direction TB
         budget["BudgetGate<br/>CAS call counter"]
         ratelimit["RateLimitState<br/>atomic header tracking"]
@@ -209,14 +212,14 @@ flowchart TB
         evidence --> render --> compress --> swap
     end
 
-    subgraph QUICS_MEMO["quics-memoization"]
+    subgraph CHERRY_PIT_STORAGE["cherry-pit-storage"]
         direction TB
         atomicfs["Atomic file writes<br/>temp + fsync + rename"]
         runlock["RunLock<br/>RAII file lock"]
         signature["Snapshot signatures<br/>canonical JSON + SHA-256"]
     end
 
-    subgraph SERVE["Serve (infra::server)"]
+    subgraph SERVE["Serve (cherry-pit-web::serve)"]
         direction TB
         read["ArcSwap.load()<br/>zero-copy read"]
         path["Path normalization<br/>+ traversal guard"]
@@ -234,11 +237,11 @@ flowchart TB
     user(("Browser"))
 
     api -- "paginated" --> inv
-    QUICS_COLLECT -- "budget + rate" --> COLLECT
+    CHERRY_PIT_WQ -- "budget + rate" --> COLLECT
     checks -- "cache or fetch" --> scc_cache
     scc_cache -- "miss → fetch" --> api
     checks -- "periodic save" --> checkpoint
-    QUICS_MEMO -- "atomic write + lock" --> PERSIST
+    CHERRY_PIT_STORAGE -- "atomic write + lock" --> PERSIST
     swap -- "atomic read" --> read
     headers --> user
 
@@ -436,7 +439,7 @@ When bumping, append a row with the new version, the date, and a one-line note d
 
 ### Event log
 
-The durable event log under `<events_dir>` (typically `store/events/`) is stored as MessagePack file-per-aggregate (`cherry_pit_gateway::MsgpackFileStore`, one `<aggregate-id>.msgpack` file per aggregate, atomic rewrite-on-append). CHE-0043:R1 flock semantics (advisory lock on `<events_dir>/.lock`) gate concurrent access.
+The durable domain event log under `<events_dir>` (typically `store/events/`) defaults to native pardosa `.pgno` storage (`pardosa_fiber_store::FiberStore`, one fiber per repository domain key, recovered across restarts via validated-identity resume, PGN-0014). Setting `GH_REPORT_PARDOSA_BACKEND=nats` switches the same domain log to the production backend, NATS JetStream — see [NATS (MAP) backend](#nats-map-backend).
 
 ### systemd (recommended)
 
@@ -636,7 +639,7 @@ gcloud run deploy gh-report \
 
 **Deployment notes:**
 
-- `--min-instances=1` — the daemon must stay running for scheduled re-collection (3-hour interval).
+- `--min-instances=1` — the daemon must stay running for scheduled re-collection (45-minute interval).
 - `--max-instances=1` — prevents concurrent instances with conflicting file locks.
 - **Secrets:** Production uses `GITHUB_TOKEN` from Secret Manager secret `gh-report-token`; the GitHub App variables remain useful for local/break-glass deployments that intentionally use app auth.
 - **Persistence:** Production durability is NATS JetStream plus the in-memory projection rebuilt from the event log. The deployed Terraform has no Cloud Storage FUSE mount, and `baseline.msgpack` is retired from the gh-report boot path.
@@ -646,11 +649,11 @@ gcloud run deploy gh-report \
 
 The HTTP server is built into the process — there is no separate serve command. It starts automatically after the initial collection completes.
 
-The server layer lives in `crates/gh-report/src/infra/server/`, which implements the generic SERVE pipeline: in-memory page cache, ETag/304, zstd content negotiation, WebSocket live updates, path normalization, security headers, and health probes. `gh-report` implements `infra::server::state::ServerState` via its `AppState` struct to wire governance-specific behaviour (status payload with `organization`, readiness based on completed runs).
+The generic SERVE pipeline — in-memory page cache, ETag/304, zstd content negotiation, WebSocket live updates, path normalization, security headers, and health probes — lives in `cherry-pit-web::serve`. `crates/gh-report/src/infra/server/` is a thin re-export shim over it. `gh-report` implements `cherry_pit_web::serve::ServerState` via its `AppState` struct to wire governance-specific behaviour (status payload with `organization`, readiness based on completed runs), and owns the one extra route, `/api/v1/status`.
 
-The persistence layer uses [`quics-memoization`](../quics-memoization/) for crash-safe atomic file writes, RAII run-locking with stale detection, and canonical JSON + SHA-256 snapshot signatures for content-addressable diffing.
+The persistence layer uses [`cherry-pit-storage`](../cherry-pit-storage/) for crash-safe atomic file writes, RAII run-locking with stale detection, and canonical JSON + SHA-256 snapshot signatures for content-addressable diffing.
 
-The collection layer uses [`quics-aggregate`](../quics-aggregate/) for API call budget gating, rate limit tracking from HTTP response headers, and Link header parsing for paginated responses.
+The collection layer uses [`cherry-pit-wq`](../cherry-pit-wq/) for API call budget gating, rate limit tracking from HTTP response headers, and Link header parsing for paginated responses.
 
 The server serves pages from an in-memory cache (no disk I/O on the serving path). After each collection, the cache is atomically swapped.
 
@@ -658,10 +661,10 @@ The server serves pages from an in-memory cache (no disk I/O on the serving path
 
 | Path | Description | Source |
 |------|-------------|--------|
-| `/healthz` | Liveness probe — always returns `{"status": "ok"}` | Built-in (infra::server) |
-| `/readyz` | Readiness probe — returns 200 only when both event stores are backend-reachable and a run completed, cached pages exist, or the projection is non-empty; otherwise 503 with `{"status":"not_ready","reason":"no reports published yet"}` | Built-in (infra::server) |
+| `/healthz` | Liveness probe — always returns `{"status": "ok"}` | Built-in (cherry-pit-web::serve) |
+| `/readyz` | Readiness probe — returns 200 only when both event stores are backend-reachable and a run completed, cached pages exist, or the projection is non-empty; otherwise 503 with `{"status":"not_ready","reason":"no reports published yet"}` | Built-in (cherry-pit-web::serve) |
 | `/api/v1/status` | JSON status (last run time, run count, etc.) | Extra route (gh-report) |
-| `/ws` | WebSocket endpoint for real-time page update notifications | Built-in (infra::server) |
+| `/ws` | WebSocket endpoint for real-time page update notifications | Built-in (cherry-pit-web::serve) |
 
 **Security headers** applied to all responses:
 
@@ -740,7 +743,7 @@ The dashboard uses WebSocket connections (`GET /ws`) to receive real-time page u
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| Max concurrent connections | 200 | Hardcoded semaphore. Returns `503 Service Unavailable` when exhausted. |
+| Max concurrent connections | 200 | cherry-pit-web `serve::config` default (`serve/config.rs:108`), semaphore-bounded. Returns `503 Service Unavailable` when exhausted. |
 | Ping interval | 30 seconds | Server sends WebSocket Ping frames to detect dead connections. |
 | Pong deadline | 10 seconds | Connection closed if client does not respond to Ping within this window. |
 | Max inbound message size | 4 KB | Client messages are discarded; limit prevents memory exhaustion. |
@@ -760,7 +763,7 @@ The dashboard uses WebSocket connections (`GET /ws`) to receive real-time page u
 
 ## Webhook Receiver
 
-The `POST /webhook` endpoint accepts GitHub webhook deliveries to drive incremental, event-triggered re-evaluation between the 3-hour scheduled collection cycles. The route is registered **only when `WEBHOOK_SECRET` is set** in the environment; with the secret unset, the route is absent (404) and the daemon runs in scheduled-only mode.
+The `POST /webhook` endpoint accepts GitHub webhook deliveries to drive incremental, event-triggered re-evaluation between the 45-minute scheduled collection cycles. The route is registered **only when `WEBHOOK_SECRET` is set** in the environment; with the secret unset, the route is absent (404) and the daemon runs in scheduled-only mode.
 
 ### Configuration
 
@@ -833,4 +836,4 @@ At startup, gh-report creates its per-organisation JetStream stream at runtime: 
 
 ## See also
 
-- [Substrate recovery runbooks](../cherry-pit-gateway/RUNBOOKS.md) — substrate-side recovery procedures (CHE-0047 R1–R6); applicable to gh-report instances using the `MsgpackFileStore` backend.
+- [Substrate recovery runbooks](../cherry-pit-gateway/RUNBOOKS.md) — substrate-side recovery procedures (CHE-0047 R1–R6) for services built on the `MsgpackFileStore` backend. `gh-report`'s own durable domain event log defaults to pardosa `.pgno`, with NATS JetStream in production.
