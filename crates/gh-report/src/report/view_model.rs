@@ -212,6 +212,9 @@ pub struct SummaryCard {
     pub label: String,
     /// Coverage rate and tier for styling.
     pub cell: ControlCell,
+    /// Deep-link anchor into `OPERATIONS.html` for this control's
+    /// remediation section (UF3-2), when one exists.
+    pub operations_anchor: Option<&'static str>,
 }
 
 /// A single member row in a team roster (B1).
@@ -256,6 +259,11 @@ pub struct OwnerDetailViewModel {
     pub control_names: Vec<String>,
     /// Summary scorecard cards (one per control, same order as `control_names`).
     pub summary_cards: Vec<SummaryCard>,
+    /// Deep-link anchor into `OPERATIONS.html` for the CODEOWNERS
+    /// remediation section (UF3-2); CODEOWNERS has no per-owner
+    /// `SummaryCard` cell (tautological at this level), so the team/roster
+    /// guidance links here instead.
+    pub codeowners_operations_anchor: &'static str,
     /// Whether any repo row is flagged as stale (drives footnote rendering).
     pub has_stale_repos: bool,
     /// Number of stale repos for this owner (`updated_at` > 2 years before report date).
@@ -851,6 +859,12 @@ pub struct ReportViewModel {
     pub branch_protection_width_class: &'static str,
     pub codeowners_width_class: &'static str,
 
+    pub policy_operations_anchor: &'static str,
+    pub secret_scanning_operations_anchor: &'static str,
+    pub dependabot_operations_anchor: &'static str,
+    pub branch_protection_operations_anchor: &'static str,
+    pub codeowners_operations_anchor: &'static str,
+
     /// Composite health score (geometric mean of available coverage rates).
     /// `None` when all 6 control rates are N/A (`security_policy`,
     /// `secret_scanning`, `dependabot_security_updates`, `branch_protection`,
@@ -913,6 +927,39 @@ struct HealthDisplay {
     width_class: &'static str,
 }
 
+struct OperationsAnchors {
+    policy: &'static str,
+    secret_scanning: &'static str,
+    dependabot: &'static str,
+    branch_protection: &'static str,
+    codeowners: &'static str,
+}
+
+fn dashboard_operations_anchors() -> OperationsAnchors {
+    OperationsAnchors {
+        policy: coverage_control_anchor("security_policy").unwrap_or_default(),
+        secret_scanning: coverage_control_anchor("secret_scanning").unwrap_or_default(),
+        dependabot: coverage_control_anchor("dependabot_security_updates").unwrap_or_default(),
+        branch_protection: coverage_control_anchor("branch_protection").unwrap_or_default(),
+        codeowners: coverage_control_anchor("codeowners").unwrap_or_default(),
+    }
+}
+
+struct ObservableRepos {
+    dependabot: u32,
+    secret_scanning: u32,
+}
+
+fn observable_repos(m: &AggregatedMetrics) -> ObservableRepos {
+    ObservableRepos {
+        dependabot: extra_u32(
+            &m.dependabot_security_updates_coverage.extra,
+            "observable_repositories",
+        ),
+        secret_scanning: extra_u32(&m.secret_scanning_coverage.extra, "observable_repositories"),
+    }
+}
+
 fn org_alert_display(evidence: &Evidence) -> OrgAlertDisplay {
     OrgAlertDisplay {
         status: evidence
@@ -939,13 +986,8 @@ impl ReportViewModel {
         let m = &evidence.metrics;
         let org_alert = org_alert_display(evidence);
         let admin_diagnostics = build_admin_diagnostics(metadata, m, &evidence.repositories);
-
-        let dependabot_observable = extra_u32(
-            &m.dependabot_security_updates_coverage.extra,
-            "observable_repositories",
-        );
-        let secret_scanning_observable =
-            extra_u32(&m.secret_scanning_coverage.extra, "observable_repositories");
+        let anchors = dashboard_operations_anchors();
+        let observable = observable_repos(m);
 
         let (
             archived,
@@ -975,11 +1017,11 @@ impl ReportViewModel {
             policy_via_file: m.policy_counts.via_file,
             policy_missing: m.policy_counts.missing,
             policy_unknown: m.policy_counts.unknown,
-            dependabot_observable_repos: dependabot_observable,
+            dependabot_observable_repos: observable.dependabot,
             dependabot_paused: m.dependabot_security_updates_counts.paused,
             dependabot_disabled: m.dependabot_security_updates_counts.disabled,
             dependabot_unknown: m.dependabot_security_updates_counts.unknown,
-            secret_scanning_observable_repos: secret_scanning_observable,
+            secret_scanning_observable_repos: observable.secret_scanning,
             secret_scanning_disabled: m.secret_scanning_counts.disabled,
             secret_scanning_permission_denied: m.secret_scanning_counts.permission_denied,
             secret_scanning_unknown: m.secret_scanning_counts.unknown,
@@ -1019,6 +1061,11 @@ impl ReportViewModel {
             ),
             branch_protection_width_class: rate_to_width_class(m.branch_protection_coverage.rate),
             codeowners_width_class: rate_to_width_class(m.codeowners_coverage.rate),
+            policy_operations_anchor: anchors.policy,
+            secret_scanning_operations_anchor: anchors.secret_scanning,
+            dependabot_operations_anchor: anchors.dependabot,
+            branch_protection_operations_anchor: anchors.branch_protection,
+            codeowners_operations_anchor: anchors.codeowners,
             health_score: health.score,
             health_tier: health.tier,
             health_score_formatted: health.score_formatted,
@@ -1694,6 +1741,17 @@ pub(crate) fn rate_to_width_class(rate: Option<f64>) -> &'static str {
                 .map_or(0, |(candidate, _)| candidate);
             WIDTH_CLASSES[index]
         }
+    }
+}
+
+pub(crate) fn coverage_control_anchor(key: &str) -> Option<&'static str> {
+    match key {
+        "security_policy" => Some("security-policy-coverage"),
+        "secret_scanning" => Some("secret-scanning-coverage"),
+        "dependabot_security_updates" => Some("dependabot-coverage"),
+        "branch_protection" => Some("branch-protection-coverage"),
+        "codeowners" => Some("codeowners-coverage"),
+        _ => None,
     }
 }
 
@@ -2451,6 +2509,37 @@ mod tests {
         assert_eq!(rate_to_width_class(Some(f64::NAN)), "w-0");
         assert_eq!(rate_to_width_class(Some(f64::INFINITY)), "w-100");
         assert_eq!(rate_to_width_class(Some(f64::NEG_INFINITY)), "w-0");
+    }
+
+    #[test]
+    fn coverage_control_anchor_maps_known_controls() {
+        assert_eq!(
+            coverage_control_anchor("security_policy"),
+            Some("security-policy-coverage")
+        );
+        assert_eq!(
+            coverage_control_anchor("secret_scanning"),
+            Some("secret-scanning-coverage")
+        );
+        assert_eq!(
+            coverage_control_anchor("dependabot_security_updates"),
+            Some("dependabot-coverage")
+        );
+        assert_eq!(
+            coverage_control_anchor("branch_protection"),
+            Some("branch-protection-coverage")
+        );
+        assert_eq!(
+            coverage_control_anchor("codeowners"),
+            Some("codeowners-coverage")
+        );
+    }
+
+    #[test]
+    fn coverage_control_anchor_returns_none_for_unknown_key() {
+        assert_eq!(coverage_control_anchor("non_stale"), None);
+        assert_eq!(coverage_control_anchor("alert_free"), None);
+        assert_eq!(coverage_control_anchor("bogus"), None);
     }
 
     #[test]

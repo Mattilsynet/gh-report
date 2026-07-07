@@ -1,3 +1,4 @@
+{%- import "partials/remediation_link.html" as remediation -%}
 <!DOCTYPE html>
 <html lang="en">
 
@@ -32,6 +33,7 @@
             <div class="progress-bar">
                 <div class="progress-fill {{ vm.policy_tier.css_class() }} {{ vm.policy_width_class }}"></div>
             </div>
+            <p class="card-detail">{% call remediation::remediation_link(nav.base, vm.policy_operations_anchor, "Read more", "Security Policy remediation guidance") %}{% endcall %}</p>
         </div>
         <div class="card {{ vm.dependabot_tier.css_class() }}" title="Percentage of repos with Dependabot security updates enabled (auto-PRs for vulnerable dependencies).">
             <p class="card-label">Dependabot Status</p>
@@ -39,6 +41,7 @@
             <div class="progress-bar">
                 <div class="progress-fill {{ vm.dependabot_tier.css_class() }} {{ vm.dependabot_width_class }}"></div>
             </div>
+            <p class="card-detail">{% call remediation::remediation_link(nav.base, vm.dependabot_operations_anchor, "Read more", "Dependabot Status remediation guidance") %}{% endcall %}</p>
         </div>
         <div class="card {{ vm.secret_scanning_tier.css_class() }}" title="Percentage of repos with GitHub secret scanning enabled to detect leaked credentials.">
             <p class="card-label">Secret Scanning</p>
@@ -49,6 +52,7 @@
                     class="progress-fill {{ vm.secret_scanning_tier.css_class() }} {{ vm.secret_scanning_width_class }}">
                 </div>
             </div>
+            <p class="card-detail">{% call remediation::remediation_link(nav.base, vm.secret_scanning_operations_anchor, "Read more", "Secret Scanning remediation guidance") %}{% endcall %}</p>
         </div>
         <div class="card {{ vm.branch_protection_tier.css_class() }}" title="Percentage of observable repos at branch-protection T2 or higher; T1 is minimal baseline, T0 is below baseline, unreadable repos are excluded.">
             <p class="card-label">Branch Protection</p>
@@ -59,6 +63,7 @@
                     class="progress-fill {{ vm.branch_protection_tier.css_class() }} {{ vm.branch_protection_width_class }}">
                 </div>
             </div>
+            <p class="card-detail">{% call remediation::remediation_link(nav.base, vm.branch_protection_operations_anchor, "Read more", "Branch Protection remediation guidance") %}{% endcall %}</p>
         </div>
         <div class="card {{ vm.codeowners_tier.css_class() }}" title="Percentage of repos with a CODEOWNERS file identifying responsible teams or individuals.">
             <p class="card-label">CODEOWNERS</p>
@@ -66,6 +71,7 @@
             <div class="progress-bar">
                 <div class="progress-fill {{ vm.codeowners_tier.css_class() }} {{ vm.codeowners_width_class }}"></div>
             </div>
+            <p class="card-detail">{% call remediation::remediation_link(nav.base, vm.codeowners_operations_anchor, "Read more", "CODEOWNERS remediation guidance") %}{% endcall %}</p>
         </div>
         <div class="card {{ vm.stale_tier.css_class() }}" title="Proportion of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better.">
             <p class="card-label">Archival Coverage</p>

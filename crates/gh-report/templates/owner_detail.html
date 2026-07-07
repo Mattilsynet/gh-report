@@ -1,3 +1,4 @@
+{%- import "partials/remediation_link.html" as remediation -%}
 <!DOCTYPE html>
 <html lang="en">
 
@@ -54,6 +55,7 @@
     <p class="meta">{{ roster.member_count }} member{% if roster.member_count != 1 %}s{% endif %}. <a
             href="../report.html#add-a-team-member">How do I add or remove a member?</a></p>
     {% endif %}
+    <p class="meta">{% call remediation::remediation_link(nav.base, vm.codeowners_operations_anchor, "Read more", "CODEOWNERS remediation guidance") %}{% endcall %}</p>
     {% endif %}
 
     <div class="scorecard">
@@ -64,6 +66,9 @@
             <div class="progress-bar">
                 <div class="progress-fill {{ card.cell.tier.css_class() }} {{ card.cell.width_class }}"></div>
             </div>
+            {% if let Some(anchor) = card.operations_anchor %}
+            <p class="card-detail">{% call remediation::remediation_link(nav.base, anchor, "Read more", card.label ~ " remediation guidance") %}{% endcall %}</p>
+            {% endif %}
         </div>
         {% endfor %}
         <div class="card{% if vm.stale_repo_count > 0 %} tier-warn{% endif %}">

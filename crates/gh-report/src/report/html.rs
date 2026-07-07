@@ -25,8 +25,8 @@ use crate::report::view_model::{
     ControlCell, CoverageTier, DeletedRepoRow, DeletedViewModel, OrphanedRepoRow,
     OrphanedTeamGroup, OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow, OwnerRepoRow,
     OwnersViewModel, ReportViewModel, StatusDot, SummaryCard, TeamMemberRow, TeamRosterViewModel,
-    TopNav, TopSecurityTeam, compute_health_score, generate_slug, rate_to_width_class,
-    strip_org_prefix,
+    TopNav, TopSecurityTeam, compute_health_score, coverage_control_anchor, generate_slug,
+    rate_to_width_class, strip_org_prefix,
 };
 
 /// Askama template for the security posture report.
@@ -67,6 +67,7 @@ struct OwnersTemplate<'a> {
     vm: &'a OwnersViewModel,
     organization: String,
     total_repos: u32,
+    codeowners_operations_anchor: &'static str,
     nav: TopNav,
     /// When `true`, emits a `<meta http-equiv="refresh">` tag so the
     /// browser auto-reloads until fresh collection data replaces the
@@ -299,6 +300,7 @@ pub fn render_dashboard(
             vm: owners,
             organization: evidence.assessment_metadata.organization.clone(),
             total_repos: evidence.collection_statistics.total_repos,
+            codeowners_operations_anchor: coverage_control_anchor("codeowners").unwrap_or_default(),
             nav,
             warm_start,
         })?;
@@ -603,6 +605,7 @@ fn build_owner_detail_view_models(
                     key,
                     label: control_display_name(key).to_string(),
                     cell: build_control_cell(&m.per_control_coverage, key, tiers),
+                    operations_anchor: coverage_control_anchor(key),
                 })
                 .collect();
 
@@ -648,6 +651,8 @@ fn build_owner_detail_view_models(
                 repo_rows,
                 control_names: control_names.clone(),
                 summary_cards,
+                codeowners_operations_anchor: coverage_control_anchor("codeowners")
+                    .unwrap_or_default(),
                 has_stale_repos,
                 stale_repo_count,
                 total_repo_count,
@@ -1332,6 +1337,24 @@ mod tests {
         assert!(html.contains(r#"href="OPERATIONS.html#branch-protection-coverage""#));
         assert!(html.contains(r#"href="OPERATIONS.html#codeowners-coverage""#));
         assert_eq!(html.matches("Read more").count(), 5);
+    }
+
+    #[test]
+    fn dashboard_index_links_control_cards_to_operations() {
+        let evidence = sample_evidence();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let html = &pages["index.html"];
+
+        assert!(html.contains(r#"href="OPERATIONS.html#security-policy-coverage""#));
+        assert!(html.contains(r#"href="OPERATIONS.html#dependabot-coverage""#));
+        assert!(html.contains(r#"href="OPERATIONS.html#secret-scanning-coverage""#));
+        assert!(html.contains(r#"href="OPERATIONS.html#branch-protection-coverage""#));
+        assert!(html.contains(r#"href="OPERATIONS.html#codeowners-coverage""#));
+        assert_eq!(
+            html.matches("Read more").count(),
+            5,
+            "exactly the 5 control cards should link out, not the 2 aggregate cards"
+        );
     }
 
     #[test]
@@ -2140,6 +2163,39 @@ mod tests {
     }
 
     #[test]
+    fn detail_vm_summary_cards_have_operations_anchor() {
+        let evidence = evidence_with_owner_repos();
+        let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
+        let detail_vms = build_owner_detail_view_models(
+            &evidence.metrics.owner_metrics,
+            &owner_repo_map,
+            &CoverageTiers::default(),
+            &evidence.assessment_metadata.organization,
+            &evidence.assessment_metadata.run_timestamp,
+            &[],
+        );
+
+        let (_, vm) = &detail_vms[0];
+        assert_eq!(
+            vm.summary_cards[0].operations_anchor,
+            Some("security-policy-coverage")
+        );
+        assert_eq!(
+            vm.summary_cards[1].operations_anchor,
+            Some("secret-scanning-coverage")
+        );
+        assert_eq!(
+            vm.summary_cards[2].operations_anchor,
+            Some("dependabot-coverage")
+        );
+        assert_eq!(
+            vm.summary_cards[3].operations_anchor,
+            Some("branch-protection-coverage")
+        );
+        assert_eq!(vm.codeowners_operations_anchor, "codeowners-coverage");
+    }
+
+    #[test]
     fn detail_vm_repo_rows_populated() {
         let evidence = evidence_with_owner_repos();
         let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
@@ -2415,6 +2471,15 @@ mod tests {
         );
     }
 
+    #[test]
+    fn owners_page_links_codeowners_guidance_to_operations() {
+        let evidence = evidence_with_owner_repos();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let owners_html = &pages["owners.html"];
+
+        assert!(owners_html.contains(r#"href="OPERATIONS.html#codeowners-coverage""#));
+    }
+
     /// UF2-3 rendering test: the owner-detail heading renders the team
     /// handle as a hyperlink to its GitHub team page, with the link base
     /// derived from the already-generic `DEFAULT_GITHUB_WEB_BASE_URL` seam
@@ -2428,6 +2493,22 @@ mod tests {
         assert!(
             detail_page.contains(r#"<a href="https://github.com/orgs/TestOrg/teams/team-a""#),
             "expected the H1 team handle to link to the GitHub team page; got: {detail_page}"
+        );
+    }
+
+    #[test]
+    fn render_owner_detail_html_summary_cards_link_to_operations_with_base_prefix() {
+        let evidence = evidence_with_owner_repos();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let detail_page = &pages["owners/org-team-a.html"];
+
+        assert!(detail_page.contains(r#"href="../OPERATIONS.html#security-policy-coverage""#));
+        assert!(detail_page.contains(r#"href="../OPERATIONS.html#secret-scanning-coverage""#));
+        assert!(detail_page.contains(r#"href="../OPERATIONS.html#dependabot-coverage""#));
+        assert!(detail_page.contains(r#"href="../OPERATIONS.html#branch-protection-coverage""#));
+        assert!(
+            !detail_page.contains(r#"href="OPERATIONS.html#security-policy-coverage""#),
+            "owner detail links must carry the ../ base prefix, not a bare root-relative href"
         );
     }
 
@@ -2502,6 +2583,34 @@ mod tests {
         assert!(
             detail_page.contains("../report.html#add-a-team-member"),
             "expected the A3 add-a-member affordance to be reused, not duplicated"
+        );
+    }
+
+    #[test]
+    fn render_owner_detail_html_codeowners_guidance_links_to_operations() {
+        use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRoster, TeamRosterStatus};
+
+        let mut evidence = evidence_with_owner_repos();
+        evidence.metrics.team_rosters = vec![TeamRoster {
+            canonical_owner: "@org/team-a".to_string(),
+            team_slug: "team-a".to_string(),
+            status: TeamRosterStatus::Complete,
+            members: vec![TeamMember {
+                login: "alice".to_string(),
+                role: TeamMemberRole::Maintainer,
+            }],
+        }];
+
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let detail_page = &pages["owners/org-team-a.html"];
+
+        assert!(
+            detail_page.contains(r#"href="../OPERATIONS.html#codeowners-coverage""#),
+            "expected a CODEOWNERS remediation link alongside the team roster"
+        );
+        assert!(
+            detail_page.contains("../report.html#add-a-team-member"),
+            "existing add-a-team-member link must still resolve unchanged"
         );
     }
 

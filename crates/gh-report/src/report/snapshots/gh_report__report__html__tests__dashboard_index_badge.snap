@@ -43,6 +43,7 @@ expression: "&pages[\"index.html\"]"
             <div class="progress-bar">
                 <div class="progress-fill tier-warn w-65"></div>
             </div>
+            <p class="card-detail"><a href="OPERATIONS.html#security-policy-coverage" title="Security Policy remediation guidance">Read more</a></p>
         </div>
         <div class="card tier-warn" title="Percentage of repos with Dependabot security updates enabled (auto-PRs for vulnerable dependencies).">
             <p class="card-label">Dependabot Status</p>
@@ -50,6 +51,7 @@ expression: "&pages[\"index.html\"]"
             <div class="progress-bar">
                 <div class="progress-fill tier-warn w-60"></div>
             </div>
+            <p class="card-detail"><a href="OPERATIONS.html#dependabot-coverage" title="Dependabot Status remediation guidance">Read more</a></p>
         </div>
         <div class="card tier-pass" title="Percentage of repos with GitHub secret scanning enabled to detect leaked credentials.">
             <p class="card-label">Secret Scanning</p>
@@ -60,6 +62,7 @@ expression: "&pages[\"index.html\"]"
                     class="progress-fill tier-pass w-80">
                 </div>
             </div>
+            <p class="card-detail"><a href="OPERATIONS.html#secret-scanning-coverage" title="Secret Scanning remediation guidance">Read more</a></p>
         </div>
         <div class="card tier-warn" title="Percentage of observable repos at branch-protection T2 or higher; T1 is minimal baseline, T0 is below baseline, unreadable repos are excluded.">
             <p class="card-label">Branch Protection</p>
@@ -70,6 +73,7 @@ expression: "&pages[\"index.html\"]"
                     class="progress-fill tier-warn w-60">
                 </div>
             </div>
+            <p class="card-detail"><a href="OPERATIONS.html#branch-protection-coverage" title="Branch Protection remediation guidance">Read more</a></p>
         </div>
         <div class="card tier-pass" title="Percentage of repos with a CODEOWNERS file identifying responsible teams or individuals.">
             <p class="card-label">CODEOWNERS</p>
@@ -77,6 +81,7 @@ expression: "&pages[\"index.html\"]"
             <div class="progress-bar">
                 <div class="progress-fill tier-pass w-80"></div>
             </div>
+            <p class="card-detail"><a href="OPERATIONS.html#codeowners-coverage" title="CODEOWNERS remediation guidance">Read more</a></p>
         </div>
         <div class="card tier-na" title="Proportion of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better.">
             <p class="card-label">Archival Coverage</p>
