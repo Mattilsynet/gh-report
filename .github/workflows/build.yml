@@ -11,8 +11,13 @@ concurrency:
 # Adapted from Mattilsynet/rust-ci-conf/.github/workflows/upload.yaml.
 
 jobs:
-  upload:
-    name: Upload to GAR
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci-reusable.yml
+
+  build:
+    name: Build and push to GAR
+    needs: ci
     runs-on: ubuntu-latest
 
     env:
@@ -24,6 +29,9 @@ jobs:
       contents: read
       packages: write
       id-token: write
+
+    outputs:
+      digest: ${{ steps.build-push.outputs.digest }}
 
     steps:
       - uses: actions/checkout@v7
@@ -47,7 +55,8 @@ jobs:
           username: oauth2accesstoken
           password: ${{ steps.auth-gar.outputs.access_token }}
 
-      - name: Build and push docker image to GAR
+      - id: build-push
+        name: Build and push docker image to GAR
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -59,3 +68,30 @@ jobs:
             ${{ env.IMAGE }}:${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to Cloud Run
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - id: auth-deploy
+        name: Authenticate to Google Cloud (deploy)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/75951934649/locations/global/workloadIdentityPools/gh-actions/providers/github
+          service_account: cloudrun-wi-sa-github-actions@ghreport-d302.iam.gserviceaccount.com
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run by digest
+        run: |
+          gcloud run services update ghreport \
+            --region europe-north1 \
+            --project ghreport-d302 \
+            --image "europe-north1-docker.pkg.dev/artifacts-352708/${{ vars.ARTIFACT_REPO_ID }}/${{ github.event.repository.name }}@${{ needs.build.outputs.digest }}"
