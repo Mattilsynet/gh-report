@@ -136,12 +136,12 @@ Default level is `info`.
 
 ### Redaction discipline
 
-- Tokens are stored as `SecretString` (via the `secrecy` crate) and never logged
+- `gh-report` stores tokens as `SecretString` (via the `secrecy` crate) and never logs them
 - The `GitHubCredential` and `InstallationTokenResponse` types use manual `Debug` implementations that emit `[REDACTED]` for token fields
-- `expose_secret()` is only called at the I/O boundary (HTTP Authorization header, JWT signing)
-- API error response bodies are truncated to 1024 bytes to prevent token echo attacks
-- Untrusted pagination URLs are sanitized before logging
-- No `println!` / `eprintln!` usage — all output goes through `tracing`
+- `gh-report` calls `expose_secret()` only at the I/O boundary (HTTP Authorization header, JWT signing)
+- `gh-report` truncates API error response bodies to 1024 bytes to prevent token echo attacks
+- `gh-report` sanitizes untrusted pagination URLs before logging
+- `gh-report` emits no `println!` / `eprintln!` output — all output goes through `tracing`
 
 ## Output Layout
 
@@ -316,7 +316,7 @@ The result is rounded to one decimal place for display.
 
 ### Tiers
 
-The numeric score is classified into a tier for colour-coding and tier-level metrics:
+The numeric score is classified into a tier for color-coding and tier-level metrics:
 
 | Tier | Default range | Default threshold | Override |
 |------|---------------|-------------------|----------|
@@ -337,27 +337,27 @@ Concrete remediation steps for each control, linked from the report's "Read more
 
 #### Security Policy Coverage
 
-**What it means:** the repository has a `SECURITY.md` file, or the GitHub repository security-policy setting is enabled, so external parties know how to report a vulnerability.
+**What it means:** the repository publishes a security policy — a `SECURITY.md` file or a completed guided setup — so external parties know how to report a vulnerability.
 
-**How to fix:** add a `SECURITY.md` file to the repository root (or `.github/`), or enable it under **Settings → Code security → Security policy**.
+**How to fix:** add a `SECURITY.md` file to the repository root, `.github/`, or `docs/` — or use the repository's **Security** tab → **Reporting → Security policy → Start setup** to create one via a guided pull request.
 
 #### Dependabot Coverage
 
 **What it means:** GitHub Dependabot security updates are enabled, so vulnerable dependencies get automatic remediation pull requests.
 
-**How to fix:** enable **Settings → Code security → Dependabot security updates** on the repository, or set it as an organization-wide default.
+**How to fix:** enable it on the repository under **Settings → Security → Advanced Security**: to the right of **Dependabot alerts**, click **Enable** (this also governs Dependabot security updates); or apply it organization-wide via a **security configuration**.
 
 #### Secret Scanning Coverage
 
 **What it means:** GitHub secret scanning is enabled, so accidentally committed credentials are detected.
 
-**How to fix:** enable **Settings → Code security → Secret scanning** (availability depends on repository visibility and your GitHub Advanced Security entitlement).
+**How to fix:** enable it under **Settings → Security → Advanced Security**: to the right of **Secret Protection**, click **Enable → Enable Secret Protection** (this turns on secret scanning and push protection together; availability depends on repository visibility and your GitHub Advanced Security / Secret Protection entitlement).
 
 #### Branch Protection Coverage
 
 **What it means:** the default branch requires reviews and blocks force-push/deletion; see [Metric Caveats](report.html#metric-caveats) for the T0/T1/T2 tiers this feeds.
 
-**How to fix:** add a branch protection rule or ruleset on the default branch under **Settings → Branches**: require pull request review, and block force pushes and branch deletion. Bind the rule to administrators too — an admin bypass or a broad bypass actor defeats the protection.
+**How to fix:** add a branch protection **rule** on the default branch under **Settings → Branches** (classic model), or a **ruleset** under **Settings → Rules → Rulesets → New branch ruleset** (the newer model GitHub recommends). Require a pull request with review; leave **Allow force pushes** and **Allow deletions** unchecked; and enable **Do not allow bypassing the above settings** so administrators and broad bypass actors cannot defeat the protection.
 
 #### CODEOWNERS Coverage
 
@@ -368,6 +368,8 @@ Concrete remediation steps for each control, linked from the report's "Read more
 ```text
 *   @your-org/team-slug
 ```
+
+**Write access is required.** The user or team you name as an owner must already have write access to the repository, or GitHub will not assign it as a code owner: for a team, the team itself must be visible and hold write access, even when every individual member already has it.
 
 **Prefer a team over an individual user.** Name a GitHub **team** (`@your-org/team-slug`) as the owner rather than a person (`@username`): the CODEOWNERS Summary "top security teams" ranking only considers team-type owners — individual users are excluded — and a team survives a single person leaving. Many organizations already maintain an identity-provider group per product team that syncs to GitHub, so a team to name as owner may already exist for your product area.
 
@@ -649,7 +651,7 @@ gcloud run deploy gh-report \
 
 The HTTP server is built into the process — there is no separate serve command. It starts automatically after the initial collection completes.
 
-The generic SERVE pipeline — in-memory page cache, ETag/304, zstd content negotiation, WebSocket live updates, path normalization, security headers, and health probes — lives in `cherry-pit-web::serve`. `crates/gh-report/src/infra/server/` is a thin re-export shim over it. `gh-report` implements `cherry_pit_web::serve::ServerState` via its `AppState` struct to wire governance-specific behaviour (status payload with `organization`, readiness based on completed runs), and owns the one extra route, `/api/v1/status`.
+The generic SERVE pipeline — in-memory page cache, ETag/304, zstd content negotiation, WebSocket live updates, path normalization, security headers, and health probes — lives in `cherry-pit-web::serve`. `crates/gh-report/src/infra/server/` is a thin re-export shim over it. `gh-report` implements `cherry_pit_web::serve::ServerState` via its `AppState` struct to wire governance-specific behavior (status payload with `organization`, readiness based on completed runs), and owns the one extra route, `/api/v1/status`.
 
 The persistence layer uses [`cherry-pit-storage`](../cherry-pit-storage/) for crash-safe atomic file writes, RAII run-locking with stale detection, and canonical JSON + SHA-256 snapshot signatures for content-addressable diffing.
 
@@ -697,7 +699,7 @@ The `/ws` endpoint provides real-time page update notifications via WebSocket. D
 
 Client → server messages are reserved for future use and currently ignored.
 
-**Reconnect behaviour:** The client reconnects with exponential backoff (base 1 s, max 30 s) plus random jitter (0–1 s) to prevent thundering herd on server restart. Warm-start pages (which use `<meta http-equiv="refresh">`) skip the WebSocket connection until the first real collection completes.
+**Reconnect behavior:** The client reconnects with exponential backoff (base 1 s, max 30 s) plus random jitter (0–1 s) to prevent thundering herd on server restart. Warm-start pages (which use `<meta http-equiv="refresh">`) skip the WebSocket connection until the first real collection completes.
 
 **Security:** No application-level authentication — same trust model as the dashboard pages. Authentication is enforced at the ingress layer (Cloud Run / reverse proxy). The WebSocket carries only page-update notifications (cache key names and timestamps), no secrets or credentials.
 
@@ -824,7 +826,7 @@ The `POST /webhook` endpoint accepts GitHub webhook deliveries to drive incremen
 
 For MAP, set `GH_REPORT_NATS_URL=tls://connect.nats.mattilsynet.io:4222`. The endpoint requires TLS and JWT `.creds` authentication. The `.creds` file is issued from Synadia Control Plane (`scp.nats.mattilsynet.io`) and delivered through GCP Secret Manager as `nats-user-<username>-creds`; mount that secret as a file volume and set `GH_REPORT_NATS_CREDS` to the mounted path. Never commit a `.creds` file; credentials are delivered via Secret Manager under SEC-0007.
 
-At startup, gh-report creates its per-organisation JetStream stream at runtime: stream `gh-report-<org_token>` and subject `gh-report.<org_token>.events`. The configured NATS user must have JetStream permissions in its account for that stream and subject.
+At startup, gh-report creates its per-organization JetStream stream at runtime: stream `gh-report-<org_token>` and subject `gh-report.<org_token>.events`. The configured NATS user must have JetStream permissions in its account for that stream and subject.
 
 ### Recovering from an out-of-band JetStream stream recreation
 
@@ -832,7 +834,7 @@ At startup, gh-report creates its per-organisation JetStream stream at runtime: 
 
 **Why:** JetStream provisioning writes the PGN-0019 stream-level schema marker at process startup and is memoised for the process lifetime. A mid-life stream recreation is re-provisioned only at the next cold start. This is an operational surface: who may recreate a stream out of band is not fenced in code by design, while PGN-0016 continues to fence application appends.
 
-**Recovery:** Bounce the Cloud Run revision or otherwise restart the process. Cold start re-runs provisioning, including the OPT-1 marker back-fill shipped in `57e449f` / `v0.1.8`, rewrites the stream marker, lets the open gate pass, and rehydrates the store. This restart-based recovery is the ratified path; do not tag, deploy, or recreate streams as part of the bounce unless a separate release or incident procedure authorises it.
+**Recovery:** Bounce the Cloud Run revision or otherwise restart the process. Cold start re-runs provisioning, including the OPT-1 marker back-fill shipped in `57e449f` / `v0.1.8`, rewrites the stream marker, lets the open gate pass, and rehydrates the store. This restart-based recovery is the ratified path; do not tag, deploy, or recreate streams as part of the bounce unless a separate release or incident procedure authorizes it.
 
 ## See also
 
