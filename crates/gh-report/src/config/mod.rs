@@ -45,7 +45,7 @@ pub const DEFAULT_GITHUB_WEB_BASE_URL: &str = "https://github.com";
 pub const GITHUB_API_VERSION: &str = "2022-11-28";
 
 /// User-Agent string for API requests.
-pub const USER_AGENT: &str = concat!("gh-report/", env!("CARGO_PKG_VERSION"));
+pub const USER_AGENT: &str = concat!("gh-report/", env!("GH_REPORT_VERSION"));
 
 /// Default HTTP connect timeout in seconds.
 pub const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
@@ -157,3 +157,18 @@ pub const REPLAY_CACHE_TTL_SECS: u64 = 3_600;
 /// Maximum time to wait for a sweep batch to drain before declaring
 /// timeout failure (seconds). The saga emits `SweepFailed` if exceeded.
 pub const SWEEP_TIMEOUT_SECS: u64 = 7_200;
+
+#[cfg(test)]
+mod tests {
+    use super::USER_AGENT;
+
+    #[test]
+    fn gh_report_version_is_non_empty() {
+        assert!(!env!("GH_REPORT_VERSION").is_empty());
+    }
+
+    #[test]
+    fn user_agent_interpolates_build_stamped_version() {
+        assert_eq!(USER_AGENT, concat!("gh-report/", env!("GH_REPORT_VERSION")));
+    }
+}

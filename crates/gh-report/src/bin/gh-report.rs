@@ -40,7 +40,7 @@ impl From<PardosaBackendArg> for runtime::PardosaBackend {
 #[command(
     name = "gh-report",
     about = "GitHub organization governance collector and reporter",
-    version
+    version = env!("GH_REPORT_VERSION")
 )]
 #[allow(
     clippy::struct_excessive_bools,

@@ -1,6 +1,6 @@
 [package]
 name = "gh-report"
-version = "0.1.8"
+version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "GitHub organization governance collector and reporter"
