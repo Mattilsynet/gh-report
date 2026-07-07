@@ -160,7 +160,7 @@ There are no per-run directories, staging areas, symlinks, or `evidence.json` fi
 | `index.html` | Dashboard landing page (`http://localhost:8080/`) |
 | `report.html` | Detailed security posture report |
 | `admin.html` | Read-only operator diagnostics |
-| `OPERATIONS.html` | Rendered operations runbook (this document) — target of report/admin "Les mer" deep links |
+| `OPERATIONS.html` | Rendered operations runbook (this document) — target of report/admin "Read more" deep links |
 | `owners.html` | Owner summary (when CODEOWNERS data is available) |
 | `owners/{slug}.html` | Per-owner detail pages |
 | `orphans.html` | Repositories without CODEOWNERS |
@@ -333,7 +333,7 @@ The set of controls and the per-status mapping are part of the schema contract: 
 
 ### Fixing Coverage Gaps
 
-Concrete remediation steps for each control, linked from the report's "Les mer" affordances.
+Concrete remediation steps for each control, linked from the report's "Read more" affordances.
 
 #### Security Policy Coverage
 

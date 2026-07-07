@@ -139,7 +139,7 @@ const WS_CLIENT_JS: &str = include_str!("../../templates/ws.js");
 /// Embedded operations runbook source, compiled into the binary at build time.
 ///
 /// Rendered to HTML by [`crate::report::markdown::render`] and published as
-/// `OPERATIONS.html` (UF3-2) so the report's "Les mer" deep links resolve
+/// `OPERATIONS.html` (UF3-2) so the report's "Read more" deep links resolve
 /// over live HTTP instead of 404ing against an unserved `.md` path.
 const OPERATIONS_MD: &str = include_str!("../../OPERATIONS.md");
 
@@ -230,7 +230,7 @@ fn control_display_name(key: &str) -> &'static str {
 /// - `owners.html` — Owner coverage overview (if owner metrics available).
 /// - `owners/{slug}.html` — Per-owner detail pages (if owner metrics available).
 /// - `OPERATIONS.html` — Rendered operations runbook (UF3-2), the target of
-///   every report/admin "Les mer" deep link.
+///   every report/admin "Read more" deep link.
 ///
 /// # Errors
 ///
@@ -1331,7 +1331,7 @@ mod tests {
         assert!(html.contains(r#"href="OPERATIONS.html#secret-scanning-coverage""#));
         assert!(html.contains(r#"href="OPERATIONS.html#branch-protection-coverage""#));
         assert!(html.contains(r#"href="OPERATIONS.html#codeowners-coverage""#));
-        assert_eq!(html.matches("Les mer").count(), 5);
+        assert_eq!(html.matches("Read more").count(), 5);
     }
 
     #[test]
