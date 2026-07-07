@@ -602,6 +602,8 @@ pub struct CapabilitySet {
     pub repos_list: CapabilityStatus,
     /// Organization secret scanning alerts — optional.
     pub org_secret_scanning_alerts: CapabilityStatus,
+    /// Private/internal repository branch-protection reads — optional.
+    pub private_branch_protection_read: CapabilityStatus,
 }
 
 impl Default for CapabilitySet {
@@ -609,6 +611,7 @@ impl Default for CapabilitySet {
         Self {
             repos_list: CapabilityStatus::NotProbed,
             org_secret_scanning_alerts: CapabilityStatus::NotProbed,
+            private_branch_protection_read: CapabilityStatus::NotProbed,
         }
     }
 }
@@ -627,7 +630,9 @@ impl CapabilitySet {
             Capability::OrgSecretScanningAlerts => {
                 self.org_secret_scanning_alerts == CapabilityStatus::Available
             }
-            Capability::PrivateBranchProtectionRead => false,
+            Capability::PrivateBranchProtectionRead => {
+                self.private_branch_protection_read == CapabilityStatus::Available
+            }
         }
     }
 
@@ -638,17 +643,20 @@ impl CapabilitySet {
         if self.org_secret_scanning_alerts != CapabilityStatus::Available {
             unavail.push(Capability::OrgSecretScanningAlerts);
         }
-        unavail
-    }
-
-    /// Return unavailable capabilities including active-auth-mode limitations.
-    #[must_use]
-    pub fn unavailable_capabilities_for_auth_mode(&self, auth_mode: AuthMode) -> Vec<Capability> {
-        let mut unavail = self.unavailable_capabilities();
-        if auth_mode != AuthMode::GitHubApp {
+        if self.private_branch_protection_read != CapabilityStatus::Available {
             unavail.push(Capability::PrivateBranchProtectionRead);
         }
         unavail
+    }
+
+    /// Return unavailable capabilities as probed at startup.
+    ///
+    /// `auth_mode` no longer gates `PrivateBranchProtectionRead`: capability
+    /// availability is driven entirely by the real startup probe result.
+    /// The parameter is retained for call-site stability.
+    #[must_use]
+    pub fn unavailable_capabilities_for_auth_mode(&self, _auth_mode: AuthMode) -> Vec<Capability> {
+        self.unavailable_capabilities()
     }
 }
 
@@ -807,19 +815,46 @@ mod tests {
         let caps = CapabilitySet {
             repos_list: CapabilityStatus::Available,
             org_secret_scanning_alerts: CapabilityStatus::Unavailable,
+            private_branch_protection_read: CapabilityStatus::Available,
         };
         let unavail = caps.unavailable_capabilities();
-        assert_eq!(unavail, vec![Capability::OrgSecretScanningAlerts,]);
+        assert_eq!(unavail, vec![Capability::OrgSecretScanningAlerts]);
     }
 
     #[test]
-    fn pat_without_app_capability_reports_private_branch_protection_limitation() {
+    fn private_branch_protection_read_available_when_probed_available() {
         let caps = CapabilitySet {
             repos_list: CapabilityStatus::Available,
             org_secret_scanning_alerts: CapabilityStatus::Available,
+            private_branch_protection_read: CapabilityStatus::Available,
         };
-        let unavail = caps.unavailable_capabilities_for_auth_mode(AuthMode::Pat);
-        assert!(unavail.contains(&Capability::PrivateBranchProtectionRead));
+        assert!(caps.is_available(Capability::PrivateBranchProtectionRead));
+        assert!(
+            !caps
+                .unavailable_capabilities()
+                .contains(&Capability::PrivateBranchProtectionRead)
+        );
+        assert!(
+            !caps
+                .unavailable_capabilities_for_auth_mode(AuthMode::Pat)
+                .contains(&Capability::PrivateBranchProtectionRead),
+            "a Pat-mode token whose real probe succeeded must not be gated unavailable"
+        );
+    }
+
+    #[test]
+    fn private_branch_protection_read_unavailable_when_probe_denied_regardless_of_auth_mode() {
+        let caps = CapabilitySet {
+            repos_list: CapabilityStatus::Available,
+            org_secret_scanning_alerts: CapabilityStatus::Available,
+            private_branch_protection_read: CapabilityStatus::PermissionDenied,
+        };
+        assert!(!caps.is_available(Capability::PrivateBranchProtectionRead));
+        assert!(
+            caps.unavailable_capabilities_for_auth_mode(AuthMode::GitHubApp)
+                .contains(&Capability::PrivateBranchProtectionRead),
+            "GitHubApp mode must not silently hide a real probe failure"
+        );
     }
 
     #[test]
@@ -829,6 +864,7 @@ mod tests {
             ..Default::default()
         };
         assert!(!caps.is_available(Capability::OrgSecretScanningAlerts));
+        assert!(!caps.is_available(Capability::PrivateBranchProtectionRead));
     }
 
     #[test]

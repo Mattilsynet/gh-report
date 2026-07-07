@@ -1899,6 +1899,7 @@ mod tests {
     use crate::domain::auth::AuthMode;
     use crate::domain::auth::{Capability, TokenTier};
     use crate::domain::repository::Visibility;
+    use crate::github::auth::CapabilityStatus;
     use crate::test_fixtures;
     use cherry_pit_web::serve::ServerState;
 
@@ -2249,6 +2250,56 @@ mod tests {
             metadata
                 .unavailable_capabilities
                 .contains(&Capability::PrivateBranchProtectionRead)
+        );
+    }
+
+    #[test]
+    fn build_assessment_metadata_reports_probed_capability_available_under_pat_auth() {
+        let config = sample_config();
+        let run_meta = RunMetadata::new(
+            "TestOrg".to_string(),
+            crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
+        );
+        let auth = test_auth_metadata();
+        let caps = CapabilitySet {
+            repos_list: CapabilityStatus::Available,
+            org_secret_scanning_alerts: CapabilityStatus::Available,
+            private_branch_protection_read: CapabilityStatus::Available,
+        };
+
+        let metadata = build_assessment_metadata(&config, &run_meta, None, &auth, &caps, 0);
+
+        assert_eq!(auth.auth_mode, AuthMode::Pat);
+        assert!(
+            !metadata
+                .unavailable_capabilities
+                .contains(&Capability::PrivateBranchProtectionRead),
+            "a Pat-mode token whose real rulesets probe succeeded must not be reported degraded"
+        );
+    }
+
+    #[test]
+    fn build_assessment_metadata_reports_probed_capability_unavailable_under_github_app_auth() {
+        let config = sample_config();
+        let run_meta = RunMetadata::new(
+            "TestOrg".to_string(),
+            crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
+        );
+        let mut auth = test_auth_metadata();
+        auth.auth_mode = AuthMode::GitHubApp;
+        let caps = CapabilitySet {
+            repos_list: CapabilityStatus::Available,
+            org_secret_scanning_alerts: CapabilityStatus::Available,
+            private_branch_protection_read: CapabilityStatus::PermissionDenied,
+        };
+
+        let metadata = build_assessment_metadata(&config, &run_meta, None, &auth, &caps, 0);
+
+        assert!(
+            metadata
+                .unavailable_capabilities
+                .contains(&Capability::PrivateBranchProtectionRead),
+            "GitHubApp auth mode must not mask a real probe failure"
         );
     }
 
