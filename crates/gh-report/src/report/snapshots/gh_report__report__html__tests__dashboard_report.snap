@@ -92,7 +92,7 @@ expression: "&pages[\"report.html\"]"
                     <td class="text-right">1</td>
                 </tr>
                 <tr>
-                    <td title="Repos with a SECURITY.md file committed in the repository root.">Via <code>SECURITY.md</code> presence</td>
+                    <td title="Repos with a SECURITY.md file committed in the repository root, .github/, or docs/.">Via <code>SECURITY.md</code> presence</td>
                     <td class="text-right">1</td>
                 </tr>
                 <tr>
@@ -194,11 +194,11 @@ expression: "&pages[\"report.html\"]"
                     <td class="text-right">1</td>
                 </tr>
                 <tr>
-                    <td title="Repos at T0 below baseline: unprotected, unreadable genuine absence, or force-push/deletion not blocked.">T0 below baseline</td>
+                    <td title="Repos at T0 below baseline: protection absent (including confirmed absence via a 404), force-push/deletion not blocked, or the repo was unreadable/permission-suspected — this last case is classified here, not excluded from the percentage.">T0 below baseline</td>
                     <td class="text-right">0</td>
                 </tr>
                 <tr>
-                    <td title="Repos where branch protection could not be scored because collection was unreadable or permission-suspected.">Excluded / unreadable</td>
+                    <td title="Reserved bucket for repos whose branch protection could not be scored — currently always zero, because unreadable/permission-suspected repos are folded into T0 below baseline (above) instead of being excluded here.">Excluded / unreadable</td>
                     <td class="text-right">1</td>
                 </tr>
             </tbody>

@@ -1,0 +1,100 @@
+---
+source: crates/gh-report/src/report/html.rs
+expression: "&pages[\"owners.html\"]"
+---
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Owner Coverage — TestOrg</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="ws.js" defer></script>
+    
+</head>
+<body>
+
+<nav class="top-nav">
+    <a href="index.html">Dashboard</a>
+    <a href="report.html">Report</a>
+    <a href="owners.html">Owners</a>
+    <a href="orphans.html">Orphans (0)</a>
+    <a href="deleted.html">Deleted (0)</a>
+    <a href="admin.html" class="admin-link">Admin</a>
+</nav>
+
+<h1>Owner Coverage Breakdown</h1>
+
+<ul class="breadcrumb">
+    <li><a href="index.html">Dashboard</a></li>
+    <li>Owners</li>
+</ul>
+
+<p class="meta">Coverage per CODEOWNERS-identified owner across 2 non-archived repositories. <a href="OPERATIONS.html#codeowners-coverage" title="CODEOWNERS remediation guidance">Read more</a></p>
+
+
+<div class="table-wrapper">
+<table class="data-table">
+    <thead>
+        <tr>
+            <th><span class="tooltip-header" tabindex="0" data-tooltip="The CODEOWNERS-identified team or user these repositories are grouped under; links to that owner's detail page." title="The CODEOWNERS-identified team or user these repositories are grouped under; links to that owner's detail page.">Owner</span></th>
+            <th><span class="tooltip-header" tabindex="0" data-tooltip="Whether this owner is a GitHub team or an individual user, parsed from the CODEOWNERS entry." title="Whether this owner is a GitHub team or an individual user, parsed from the CODEOWNERS entry.">Type</span></th>
+            <th><span class="tooltip-header" tabindex="0" data-tooltip="Number of repositories attributed to this owner via CODEOWNERS." title="Number of repositories attributed to this owner via CODEOWNERS.">Repos</span></th>
+            <th class="text-center"><span class="tooltip-header" tabindex="0" data-tooltip="Geometric-mean security posture across six controls for this owner's repos — Security Policy, Secret Scanning, Dependabot, Branch Protection, Non-Stale, Alert-Free. Excludes CODEOWNERS, which is always 100% at the owner level by construction. N/A when no control is scorable." title="Geometric-mean security posture across six controls for this owner's repos — Security Policy, Secret Scanning, Dependabot, Branch Protection, Non-Stale, Alert-Free. Excludes CODEOWNERS, which is always 100% at the owner level by construction. N/A when no control is scorable.">Sec Score</span></th>
+            
+            <th class="text-center"><span class="tooltip-header" tabindex="0" data-tooltip="Security policy presence — a SECURITY.md file (repo root, .github/, or docs/) or GitHub&#39;s security-policy setting enabled. Same per-repo check behind both this column and the org-wide Security Policy Coverage metric (non-public repos excluded as not applicable)." title="Security policy presence — a SECURITY.md file (repo root, .github/, or docs/) or GitHub&#39;s security-policy setting enabled. Same per-repo check behind both this column and the org-wide Security Policy Coverage metric (non-public repos excluded as not applicable).">Security Policy</span></th>
+            
+            <th class="text-center"><span class="tooltip-header" tabindex="0" data-tooltip="GitHub secret scanning presence — catches leaked credentials pushed to the repo. Same per-repo check behind both this column and the org-wide Secret Scanning Coverage metric (that metric&#39;s rate counts public repos only; the check itself runs regardless of visibility)." title="GitHub secret scanning presence — catches leaked credentials pushed to the repo. Same per-repo check behind both this column and the org-wide Secret Scanning Coverage metric (that metric&#39;s rate counts public repos only; the check itself runs regardless of visibility).">Secret Scanning</span></th>
+            
+            <th class="text-center"><span class="tooltip-header" tabindex="0" data-tooltip="Dependabot security updates presence — when enabled, GitHub opens automatic pull requests for vulnerable dependencies. Same per-repo check behind both this column and the org-wide Dependabot Status metric." title="Dependabot security updates presence — when enabled, GitHub opens automatic pull requests for vulnerable dependencies. Same per-repo check behind both this column and the org-wide Dependabot Status metric.">Dependabot Status</span></th>
+            
+            <th class="text-center"><span class="tooltip-header" tabindex="0" data-tooltip="Branch protection at the T2 accept-bar or better — pull request review required, on top of T1&#39;s force-push and deletion blocking. Same per-repo check behind both this column and the org-wide Branch Protection metric." title="Branch protection at the T2 accept-bar or better — pull request review required, on top of T1&#39;s force-push and deletion blocking. Same per-repo check behind both this column and the org-wide Branch Protection metric.">Branch Protection</span></th>
+            
+        </tr>
+    </thead>
+    <tbody>
+        
+        <tr>
+            <td><a href="owners/org-team-a.html" title="@org/team-a">team-a</a></td>
+            <td>Team</td>
+            <td>2</td>
+            <td class="text-center">
+                <div class="score-bar-inline">
+                    <div class="progress-bar">
+                        <div class="progress-fill tier-warn w-60"></div>
+                    </div>
+                    <span class="score-label">59.5%</span>
+                </div>
+            </td>
+            
+            <td class="text-center">
+                <span class="status-dot status-warn" title="50.0% (1/2)"></span>
+                50.0% (1/2)
+            </td>
+            
+            <td class="text-center">
+                <span class="status-dot status-pass" title="100.0% (1/1)"></span>
+                100.0% (1/1)
+            </td>
+            
+            <td class="text-center">
+                <span class="status-dot status-warn" title="50.0% (1/2)"></span>
+                50.0% (1/2)
+            </td>
+            
+            <td class="text-center">
+                <span class="status-dot status-warn" title="50.0% (1/2)"></span>
+                50.0% (1/2)
+            </td>
+            
+        </tr>
+        
+    </tbody>
+</table>
+</div>
+
+
+<p class="footer">This page shows aggregated owner-level metrics and does not list individual repository names.</p>
+
+</body>
+</html>

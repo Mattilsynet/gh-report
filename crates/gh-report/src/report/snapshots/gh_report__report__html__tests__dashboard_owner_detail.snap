@@ -1,0 +1,208 @@
+---
+source: crates/gh-report/src/report/html.rs
+expression: "&pages[\"owners/org-team-a.html\"]"
+---
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>@org/team-a — Owner Detail</title>
+    <link rel="stylesheet" href="../style.css">
+    <script src="../ws.js" defer></script>
+    
+</head>
+
+<body>
+
+    <nav class="top-nav">
+    <a href="../index.html">Dashboard</a>
+    <a href="../report.html">Report</a>
+    <a href="../owners.html">Owners</a>
+    <a href="../orphans.html">Orphans (0)</a>
+    <a href="../deleted.html">Deleted (0)</a>
+    <a href="../admin.html" class="admin-link">Admin</a>
+</nav>
+
+    <h1 title="@org/team-a"><a href="https://github.com/orgs/TestOrg/teams/team-a" target="_blank"
+            rel="noopener noreferrer">team-a</a></h1>
+
+    <ul class="breadcrumb">
+        <li><a href="../index.html">Dashboard</a></li>
+        <li><a href="../owners.html">Owners</a></li>
+        <li>@org/team-a</li>
+    </ul>
+
+    <p class="meta">Team · 2 repositories</p>
+
+    
+
+    <div class="scorecard">
+        
+        <div class="card tier-warn">
+            <p class="card-label">Security Policy</p>
+            <p class="card-value">50.0% (1/2)</p>
+            <div class="progress-bar">
+                <div class="progress-fill tier-warn w-50"></div>
+            </div>
+            
+            <p class="card-detail"><a href="../OPERATIONS.html#security-policy-coverage" title="Security Policy remediation guidance">Read more</a></p>
+            
+        </div>
+        
+        <div class="card tier-pass">
+            <p class="card-label" title="Do we scan for leaked secrets? Counts this owner's public repositories only, mirroring the organisation-wide Secret Scanning figure.">Secret Scanning</p>
+            <p class="card-value">100.0% (1/1)</p>
+            <div class="progress-bar">
+                <div class="progress-fill tier-pass w-100"></div>
+            </div>
+            
+            <p class="card-detail"><a href="../OPERATIONS.html#secret-scanning-coverage" title="Secret Scanning remediation guidance">Read more</a></p>
+            
+        </div>
+        
+        <div class="card tier-warn">
+            <p class="card-label">Dependabot Status</p>
+            <p class="card-value">50.0% (1/2)</p>
+            <div class="progress-bar">
+                <div class="progress-fill tier-warn w-50"></div>
+            </div>
+            
+            <p class="card-detail"><a href="../OPERATIONS.html#dependabot-coverage" title="Dependabot Status remediation guidance">Read more</a></p>
+            
+        </div>
+        
+        <div class="card tier-warn">
+            <p class="card-label">Branch Protection</p>
+            <p class="card-value">50.0% (1/2)</p>
+            <div class="progress-bar">
+                <div class="progress-fill tier-warn w-50"></div>
+            </div>
+            
+            <p class="card-detail"><a href="../OPERATIONS.html#branch-protection-coverage" title="Branch Protection remediation guidance">Read more</a></p>
+            
+        </div>
+        
+        <div class="card">
+            <p class="card-label">Stale Repos</p>
+            <p class="card-value">0 / 2</p>
+            <div class="progress-bar">
+                <div class="progress-fill w-0"></div>
+            </div>
+        </div>
+    </div>
+
+    
+    <h2>Repositories</h2>
+    <div class="table-wrapper">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th><span class="tooltip-header" tabindex="0" data-tooltip="Repository name; links to it on GitHub when a URL is known." title="Repository name; links to it on GitHub when a URL is known.">Repository</span></th>
+                    <th><span class="tooltip-header" tabindex="0" data-tooltip="The repository's GitHub visibility: Public, Internal, or Private." title="The repository's GitHub visibility: Public, Internal, or Private.">Visibility</span></th>
+                    <th class="text-center"><span class="tooltip-header" tabindex="0" data-tooltip="This repo's pass rate across five controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS. Unlike the owner-level Sec Score, this includes CODEOWNERS and simply excludes unscorable controls. N/A when none are scorable." title="This repo's pass rate across five controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS. Unlike the owner-level Sec Score, this includes CODEOWNERS and simply excludes unscorable controls. N/A when none are scorable.">Repo Score</span></th>
+                    
+                    <th class="text-center"><span class="tooltip-header" tabindex="0" data-tooltip="Security policy presence — a SECURITY.md file (repo root, .github/, or docs/) or GitHub&#39;s security-policy setting enabled. Same per-repo check behind both this column and the org-wide Security Policy Coverage metric (non-public repos excluded as not applicable)." title="Security policy presence — a SECURITY.md file (repo root, .github/, or docs/) or GitHub&#39;s security-policy setting enabled. Same per-repo check behind both this column and the org-wide Security Policy Coverage metric (non-public repos excluded as not applicable).">Security Policy</span></th>
+                    
+                    <th class="text-center"><span class="tooltip-header" tabindex="0" data-tooltip="GitHub secret scanning presence — catches leaked credentials pushed to the repo. Same per-repo check behind both this column and the org-wide Secret Scanning Coverage metric (that metric&#39;s rate counts public repos only; the check itself runs regardless of visibility)." title="GitHub secret scanning presence — catches leaked credentials pushed to the repo. Same per-repo check behind both this column and the org-wide Secret Scanning Coverage metric (that metric&#39;s rate counts public repos only; the check itself runs regardless of visibility).">Secret Scanning</span></th>
+                    
+                    <th class="text-center"><span class="tooltip-header" tabindex="0" data-tooltip="Dependabot security updates presence — when enabled, GitHub opens automatic pull requests for vulnerable dependencies. Same per-repo check behind both this column and the org-wide Dependabot Status metric." title="Dependabot security updates presence — when enabled, GitHub opens automatic pull requests for vulnerable dependencies. Same per-repo check behind both this column and the org-wide Dependabot Status metric.">Dependabot Status</span></th>
+                    
+                    <th class="text-center"><span class="tooltip-header" tabindex="0" data-tooltip="Branch protection at the T2 accept-bar or better — pull request review required, on top of T1&#39;s force-push and deletion blocking. Same per-repo check behind both this column and the org-wide Branch Protection metric." title="Branch protection at the T2 accept-bar or better — pull request review required, on top of T1&#39;s force-push and deletion blocking. Same per-repo check behind both this column and the org-wide Branch Protection metric.">Branch Protection</span></th>
+                    
+                    <th><span class="tooltip-header" tabindex="0" data-tooltip="Repository description from GitHub, or — when none is set." title="Repository description from GitHub, or — when none is set.">Description</span></th>
+                    <th><span class="tooltip-header" tabindex="0" data-tooltip="Primary language GitHub detected for the repository, or — when none is set." title="Primary language GitHub detected for the repository, or — when none is set.">Language</span></th>
+                    <th class="text-center"><span class="tooltip-header" tabindex="0" data-tooltip="Yes if this repository is a fork of another repository." title="Yes if this repository is a fork of another repository.">Fork</span></th>
+                    <th><span class="tooltip-header" tabindex="0" data-tooltip="SPDX license identifier detected for the repository, or — when none is set." title="SPDX license identifier detected for the repository, or — when none is set.">License</span></th>
+                    <th><span class="tooltip-header" tabindex="0" data-tooltip="Timestamp of the repository's most recent git push, from the GitHub API's repository record — distinct from Last Commit below, which is scoped to the default branch." title="Timestamp of the repository's most recent git push, from the GitHub API's repository record — distinct from Last Commit below, which is scoped to the default branch.">Last Push</span></th>
+                    <th><span class="tooltip-header" tabindex="0" data-tooltip="Timestamp of when the repository was created on GitHub." title="Timestamp of when the repository was created on GitHub.">Created</span></th>
+                    <th><span class="tooltip-header" tabindex="0" data-tooltip="GitHub login of the author of the most recent commit on the default branch; links to their profile when known." title="GitHub login of the author of the most recent commit on the default branch; links to their profile when known.">Last Committer</span></th>
+                    <th><span class="tooltip-header" tabindex="0" data-tooltip="Date of the most recent commit on the repository's default branch." title="Date of the most recent commit on the repository's default branch.">Last Commit</span></th>
+                </tr>
+            </thead>
+            <tbody>
+                
+                <tr>
+                    <td><a href="https://github.com/TestOrg/alpha-repo"
+                            target="_blank" rel="noopener noreferrer">alpha-repo</a></td>
+                    <td>Private</td>
+                    <td class="text-center">
+                        <div class="score-bar-inline">
+                            <div class="progress-bar">
+                                <div class="progress-fill tier-fail w-20"></div>
+                            </div>
+                            <span class="score-label">20.0%</span>
+                        </div>
+                    </td>
+                    
+                    <td class="text-center"><span class="status-dot status-fail" title="fail"></span>
+                    </td>
+                    
+                    <td class="text-center"><span class="status-dot status-fail" title="disabled"></span>
+                    </td>
+                    
+                    <td class="text-center"><span class="status-dot status-fail" title="disabled"></span>
+                    </td>
+                    
+                    <td class="text-center"><span class="status-dot status-fail" title="fail"></span>
+                    </td>
+                    
+                    <td class="cell-truncate" title="—">—</td>
+                    <td>—</td>
+                    <td class="text-center"></td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td>—</td>
+                </tr>
+                
+                <tr>
+                    <td><a href="https://github.com/TestOrg/beta-repo"
+                            target="_blank" rel="noopener noreferrer">beta-repo</a></td>
+                    <td>Public</td>
+                    <td class="text-center">
+                        <div class="score-bar-inline">
+                            <div class="progress-bar">
+                                <div class="progress-fill tier-pass w-100"></div>
+                            </div>
+                            <span class="score-label">100.0%</span>
+                        </div>
+                    </td>
+                    
+                    <td class="text-center"><span class="status-dot status-pass" title="pass"></span>
+                    </td>
+                    
+                    <td class="text-center"><span class="status-dot status-pass" title="enabled"></span>
+                    </td>
+                    
+                    <td class="text-center"><span class="status-dot status-pass" title="enabled"></span>
+                    </td>
+                    
+                    <td class="text-center"><span class="status-dot status-pass" title="pass"></span>
+                    </td>
+                    
+                    <td class="cell-truncate" title="—">—</td>
+                    <td>—</td>
+                    <td class="text-center"></td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td>—</td>
+                </tr>
+                
+            </tbody>
+        </table>
+    </div>
+    
+
+    
+
+    <p class="footer">This page lists all repositories (including private and internal) associated with this owner.
+        Ensure access to this dashboard is restricted to authorised personnel.</p>
+
+</body>
+
+</html>

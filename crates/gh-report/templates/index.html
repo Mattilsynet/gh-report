@@ -44,7 +44,7 @@
             </div>
             <p class="card-detail">{% call remediation::remediation_link(nav.base, vm.dependabot_operations_anchor, "Read more", "Dependabot Status remediation guidance") %}{% endcall %}</p>
         </div>
-        <div class="card {{ vm.secret_scanning_tier.css_class() }}" title="Percentage of repos with GitHub secret scanning enabled to detect leaked credentials.">
+        <div class="card {{ vm.secret_scanning_tier.css_class() }}" title="Percentage of public repos with GitHub secret scanning enabled to detect leaked credentials.">
             <p class="card-label">Secret Scanning {% call tooltip::tooltip(vm.secret_scanning_how_to_fix) %}{% endcall %}</p>
             <p class="card-value">{{ vm.secret_scanning_coverage_formatted }}</p>
             <p class="card-detail">{{ vm.org_alert_total_open_secret_alerts }} open org alerts · {{ vm.org_alert_collection_status }}</p>
@@ -55,10 +55,10 @@
             </div>
             <p class="card-detail">{% call remediation::remediation_link(nav.base, vm.secret_scanning_operations_anchor, "Read more", "Secret Scanning remediation guidance") %}{% endcall %}</p>
         </div>
-        <div class="card {{ vm.branch_protection_tier.css_class() }}" title="Percentage of observable repos at branch-protection T2 or higher; T1 is minimal baseline, T0 is below baseline, unreadable repos are excluded.">
+        <div class="card {{ vm.branch_protection_tier.css_class() }}" title="Percentage of observable repos at branch-protection T2 or higher; T1 is minimal baseline, T0 is below baseline. Unreadable or permission-suspected repos are classified as T0 and count against this percentage — they are not excluded.">
             <p class="card-label">Branch Protection {% call tooltip::tooltip(vm.branch_protection_how_to_fix) %}{% endcall %}</p>
             <p class="card-value">{{ vm.branch_protection_coverage_formatted }}</p>
-            <p class="card-detail">T1 {{ vm.branch_protection_partial }} · T0 {{ vm.branch_protection_fail }} · excluded {{ vm.branch_protection_unknown }}</p>
+            <p class="card-detail">T1 {{ vm.branch_protection_partial }} · T0 {{ vm.branch_protection_fail }} · reserved {{ vm.branch_protection_unknown }}</p>
             <div class="progress-bar">
                 <div
                     class="progress-fill {{ vm.branch_protection_tier.css_class() }} {{ vm.branch_protection_width_class }}">

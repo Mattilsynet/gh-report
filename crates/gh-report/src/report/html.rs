@@ -2492,6 +2492,22 @@ mod tests {
         assert!(owners_html.contains(r#"href="OPERATIONS.html#codeowners-coverage""#));
     }
 
+    #[test]
+    fn render_dashboard_owners_snapshot() {
+        let evidence = evidence_with_owner_repos();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+        insta::assert_snapshot!("dashboard_owners", &pages["owners.html"]);
+    }
+
+    #[test]
+    fn render_dashboard_owner_detail_snapshot() {
+        let evidence = evidence_with_owner_repos();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+        insta::assert_snapshot!("dashboard_owner_detail", &pages["owners/org-team-a.html"]);
+    }
+
     /// UF2-3 rendering test: the owner-detail heading renders the team
     /// handle as a hyperlink to its GitHub team page, with the link base
     /// derived from the already-generic `DEFAULT_GITHUB_WEB_BASE_URL` seam
