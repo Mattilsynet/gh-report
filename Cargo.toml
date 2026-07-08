@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/adr-fmt",
     "crates/adr-srv",
+    "crates/architect",
     "crates/cherry-pit-app",
     "crates/cherry-pit-core",
     "crates/cherry-pit-gateway",
