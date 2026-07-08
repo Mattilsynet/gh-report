@@ -865,6 +865,12 @@ pub struct ReportViewModel {
     pub branch_protection_operations_anchor: &'static str,
     pub codeowners_operations_anchor: &'static str,
 
+    pub policy_how_to_fix: &'static str,
+    pub secret_scanning_how_to_fix: &'static str,
+    pub dependabot_how_to_fix: &'static str,
+    pub branch_protection_how_to_fix: &'static str,
+    pub codeowners_how_to_fix: &'static str,
+
     /// Composite health score (geometric mean of available coverage rates).
     /// `None` when all 6 control rates are N/A (`security_policy`,
     /// `secret_scanning`, `dependabot_security_updates`, `branch_protection`,
@@ -945,6 +951,24 @@ fn dashboard_operations_anchors() -> OperationsAnchors {
     }
 }
 
+struct ControlHowToFix {
+    policy: &'static str,
+    secret_scanning: &'static str,
+    dependabot: &'static str,
+    branch_protection: &'static str,
+    codeowners: &'static str,
+}
+
+fn dashboard_control_how_to_fix() -> ControlHowToFix {
+    ControlHowToFix {
+        policy: coverage_control_how_to_fix("security_policy").unwrap_or_default(),
+        secret_scanning: coverage_control_how_to_fix("secret_scanning").unwrap_or_default(),
+        dependabot: coverage_control_how_to_fix("dependabot_security_updates").unwrap_or_default(),
+        branch_protection: coverage_control_how_to_fix("branch_protection").unwrap_or_default(),
+        codeowners: coverage_control_how_to_fix("codeowners").unwrap_or_default(),
+    }
+}
+
 struct ObservableRepos {
     dependabot: u32,
     secret_scanning: u32,
@@ -980,6 +1004,10 @@ impl ReportViewModel {
     /// All formatting is done eagerly so the template layer stays thin.
     /// Coverage tiers are computed from the provided thresholds.
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "constructing ReportViewModel is a flat multi-field assignment from pre-computed per-control helpers (anchors, how-to-fix copy, health, archival, team-access); the 5 new *_how_to_fix fields mirror the existing *_operations_anchor fields and pushed an already near-threshold constructor over the line count — extracting further would fragment one cohesive struct literal without improving readability"
+    )]
     pub fn from_evidence(evidence: &Evidence, tiers: &CoverageTiers) -> Self {
         let metadata = &evidence.assessment_metadata;
         let stats = &evidence.collection_statistics;
@@ -987,6 +1015,7 @@ impl ReportViewModel {
         let org_alert = org_alert_display(evidence);
         let admin_diagnostics = build_admin_diagnostics(metadata, m, &evidence.repositories);
         let anchors = dashboard_operations_anchors();
+        let how_to_fix = dashboard_control_how_to_fix();
         let observable = observable_repos(m);
 
         let (
@@ -1066,6 +1095,11 @@ impl ReportViewModel {
             dependabot_operations_anchor: anchors.dependabot,
             branch_protection_operations_anchor: anchors.branch_protection,
             codeowners_operations_anchor: anchors.codeowners,
+            policy_how_to_fix: how_to_fix.policy,
+            secret_scanning_how_to_fix: how_to_fix.secret_scanning,
+            dependabot_how_to_fix: how_to_fix.dependabot,
+            branch_protection_how_to_fix: how_to_fix.branch_protection,
+            codeowners_how_to_fix: how_to_fix.codeowners,
             health_score: health.score,
             health_tier: health.tier,
             health_score_formatted: health.score_formatted,
@@ -1751,6 +1785,27 @@ pub(crate) fn coverage_control_anchor(key: &str) -> Option<&'static str> {
         "dependabot_security_updates" => Some("dependabot-coverage"),
         "branch_protection" => Some("branch-protection-coverage"),
         "codeowners" => Some("codeowners-coverage"),
+        _ => None,
+    }
+}
+
+pub(crate) fn coverage_control_how_to_fix(key: &str) -> Option<&'static str> {
+    match key {
+        "security_policy" => Some(
+            "Add a SECURITY.md file to the repo root, .github/, or docs/ — or use the Security tab's Reporting → Security policy → Start setup for a guided pull request.",
+        ),
+        "secret_scanning" => Some(
+            "Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together).",
+        ),
+        "dependabot_security_updates" => Some(
+            "Enable it under Settings → Security → Advanced Security: click Enable next to Dependabot alerts (this also governs Dependabot security updates), or apply it org-wide via a security configuration.",
+        ),
+        "branch_protection" => Some(
+            "Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: require PR review, disallow force-push and deletion, and disable bypass so admins can't skip it.",
+        ),
+        "codeowners" => Some(
+            "Add .github/CODEOWNERS naming a GitHub team (not an individual) with write access to the repo, e.g. `*   @your-org/team-slug` — teams survive membership changes.",
+        ),
         _ => None,
     }
 }
@@ -2540,6 +2595,47 @@ mod tests {
         assert_eq!(coverage_control_anchor("non_stale"), None);
         assert_eq!(coverage_control_anchor("alert_free"), None);
         assert_eq!(coverage_control_anchor("bogus"), None);
+    }
+
+    #[test]
+    fn coverage_control_how_to_fix_maps_known_controls() {
+        assert_eq!(
+            coverage_control_how_to_fix("security_policy"),
+            Some(
+                "Add a SECURITY.md file to the repo root, .github/, or docs/ — or use the Security tab's Reporting → Security policy → Start setup for a guided pull request."
+            )
+        );
+        assert_eq!(
+            coverage_control_how_to_fix("secret_scanning"),
+            Some(
+                "Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together)."
+            )
+        );
+        assert_eq!(
+            coverage_control_how_to_fix("dependabot_security_updates"),
+            Some(
+                "Enable it under Settings → Security → Advanced Security: click Enable next to Dependabot alerts (this also governs Dependabot security updates), or apply it org-wide via a security configuration."
+            )
+        );
+        assert_eq!(
+            coverage_control_how_to_fix("branch_protection"),
+            Some(
+                "Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: require PR review, disallow force-push and deletion, and disable bypass so admins can't skip it."
+            )
+        );
+        assert_eq!(
+            coverage_control_how_to_fix("codeowners"),
+            Some(
+                "Add .github/CODEOWNERS naming a GitHub team (not an individual) with write access to the repo, e.g. `*   @your-org/team-slug` — teams survive membership changes."
+            )
+        );
+    }
+
+    #[test]
+    fn coverage_control_how_to_fix_returns_none_for_unknown_key() {
+        assert_eq!(coverage_control_how_to_fix("non_stale"), None);
+        assert_eq!(coverage_control_how_to_fix("alert_free"), None);
+        assert_eq!(coverage_control_how_to_fix("bogus"), None);
     }
 
     #[test]

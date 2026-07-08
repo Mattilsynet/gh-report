@@ -38,7 +38,7 @@ expression: "&pages[\"index.html\"]"
             </div>
         </div>
         <div class="card tier-warn" title="Percentage of public repos with a SECURITY.md or GitHub security-policy setting enabled.">
-            <p class="card-label">Security Policy</p>
+            <p class="card-label">Security Policy <span class="tooltip-trigger" tabindex="0" data-tooltip="Add a SECURITY.md file to the repo root, .github/, or docs/ — or use the Security tab&#39;s Reporting → Security policy → Start setup for a guided pull request." title="Add a SECURITY.md file to the repo root, .github/, or docs/ — or use the Security tab&#39;s Reporting → Security policy → Start setup for a guided pull request.">ⓘ</span></p>
             <p class="card-value">66.7% (2/3)</p>
             <div class="progress-bar">
                 <div class="progress-fill tier-warn w-65"></div>
@@ -46,7 +46,7 @@ expression: "&pages[\"index.html\"]"
             <p class="card-detail"><a href="OPERATIONS.html#security-policy-coverage" title="Security Policy remediation guidance">Read more</a></p>
         </div>
         <div class="card tier-warn" title="Percentage of repos with Dependabot security updates enabled (auto-PRs for vulnerable dependencies).">
-            <p class="card-label">Dependabot Status</p>
+            <p class="card-label">Dependabot Status <span class="tooltip-trigger" tabindex="0" data-tooltip="Enable it under Settings → Security → Advanced Security: click Enable next to Dependabot alerts (this also governs Dependabot security updates), or apply it org-wide via a security configuration." title="Enable it under Settings → Security → Advanced Security: click Enable next to Dependabot alerts (this also governs Dependabot security updates), or apply it org-wide via a security configuration.">ⓘ</span></p>
             <p class="card-value">60.0% (3/5)</p>
             <div class="progress-bar">
                 <div class="progress-fill tier-warn w-60"></div>
@@ -54,7 +54,7 @@ expression: "&pages[\"index.html\"]"
             <p class="card-detail"><a href="OPERATIONS.html#dependabot-coverage" title="Dependabot Status remediation guidance">Read more</a></p>
         </div>
         <div class="card tier-pass" title="Percentage of repos with GitHub secret scanning enabled to detect leaked credentials.">
-            <p class="card-label">Secret Scanning</p>
+            <p class="card-label">Secret Scanning <span class="tooltip-trigger" tabindex="0" data-tooltip="Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together)." title="Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together).">ⓘ</span></p>
             <p class="card-value">80.0% (4/5)</p>
             <p class="card-detail">1 open org alerts · success</p>
             <div class="progress-bar">
@@ -65,7 +65,7 @@ expression: "&pages[\"index.html\"]"
             <p class="card-detail"><a href="OPERATIONS.html#secret-scanning-coverage" title="Secret Scanning remediation guidance">Read more</a></p>
         </div>
         <div class="card tier-warn" title="Percentage of observable repos at branch-protection T2 or higher; T1 is minimal baseline, T0 is below baseline, unreadable repos are excluded.">
-            <p class="card-label">Branch Protection</p>
+            <p class="card-label">Branch Protection <span class="tooltip-trigger" tabindex="0" data-tooltip="Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: require PR review, disallow force-push and deletion, and disable bypass so admins can&#39;t skip it." title="Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: require PR review, disallow force-push and deletion, and disable bypass so admins can&#39;t skip it.">ⓘ</span></p>
             <p class="card-value">60.0% (3/5)</p>
             <p class="card-detail">T1 1 · T0 0 · excluded 1</p>
             <div class="progress-bar">
@@ -76,7 +76,7 @@ expression: "&pages[\"index.html\"]"
             <p class="card-detail"><a href="OPERATIONS.html#branch-protection-coverage" title="Branch Protection remediation guidance">Read more</a></p>
         </div>
         <div class="card tier-pass" title="Percentage of repos with a CODEOWNERS file identifying responsible teams or individuals.">
-            <p class="card-label">CODEOWNERS</p>
+            <p class="card-label">CODEOWNERS <span class="tooltip-trigger" tabindex="0" data-tooltip="Add .github/CODEOWNERS naming a GitHub team (not an individual) with write access to the repo, e.g. `*   @your-org/team-slug` — teams survive membership changes." title="Add .github/CODEOWNERS naming a GitHub team (not an individual) with write access to the repo, e.g. `*   @your-org/team-slug` — teams survive membership changes.">ⓘ</span></p>
             <p class="card-value">80.0% (4/5)</p>
             <div class="progress-bar">
                 <div class="progress-fill tier-pass w-80"></div>
