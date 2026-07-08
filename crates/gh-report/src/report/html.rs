@@ -2957,6 +2957,14 @@ mod tests {
             detail_page.contains("not been updated in over 2 years"),
             "detail page should contain stale footnote"
         );
+        assert!(
+            detail_page.contains("Stale: not updated in 2+ years"),
+            "stale row should carry a per-row tooltip explaining the colour"
+        );
+        assert!(
+            detail_page.contains("Rows highlighted in pink have not been updated in over 2 years and may be abandoned."),
+            "footnote should reword the colour to pink"
+        );
     }
 
     #[test]
@@ -2976,6 +2984,10 @@ mod tests {
         assert!(
             !detail_page.contains("not been updated in over 2 years"),
             "stale footnote should not appear when no repos are stale"
+        );
+        assert!(
+            !detail_page.contains("Stale: not updated in 2+ years"),
+            "stale row tooltip should not appear when no repos are stale"
         );
     }
 
@@ -3464,6 +3476,73 @@ mod tests {
         );
         assert!(orphans_html.contains("owners/org-team-a.html"));
         assert!(orphans_html.contains("orphan-repo"));
+    }
+
+    #[test]
+    fn render_orphaned_html_stale_repo_has_stale_marker_and_footnote() {
+        use crate::domain::evidence::LastCommitInfo;
+        use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRoster, TeamRosterStatus};
+
+        let mut orphan = test_fixtures::make_repository_evidence(
+            "ancient-orphan-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_absent(),
+            ),
+        );
+        orphan.repository.updated_at = Some("2023-01-01T00:00:00Z".to_string());
+        orphan.last_commit = Some(LastCommitInfo {
+            committer_login: Some("alice".to_string()),
+            committer_name: None,
+            commit_date: Some("2026-04-01T00:00:00Z".to_string()),
+        });
+
+        let mut evidence = test_fixtures::make_full_evidence(
+            test_fixtures::make_metadata(),
+            crate::aggregate::metrics::build_collection_statistics(&[orphan.clone()]),
+            crate::aggregate::metrics::aggregate_metrics(&[orphan.clone()]),
+            test_fixtures::make_observability(),
+            vec![orphan],
+        );
+        evidence.metrics.team_rosters = vec![TeamRoster {
+            canonical_owner: "@org/team-a".to_string(),
+            team_slug: "team-a".to_string(),
+            status: TeamRosterStatus::Complete,
+            members: vec![TeamMember {
+                login: "alice".to_string(),
+                role: TeamMemberRole::Maintainer,
+            }],
+        }];
+
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let orphans_html = &pages["orphans.html"];
+
+        assert!(
+            orphans_html.contains("row-stale"),
+            "stale orphan repo should have row-stale CSS class"
+        );
+        assert!(
+            orphans_html
+                .matches("Stale: not updated in 2+ years")
+                .count()
+                >= 2,
+            "stale marker tooltip should render in both the main table and the by-team table"
+        );
+        assert!(
+            orphans_html.contains(
+                "Rows highlighted in pink have not been updated in over 2 years and may be abandoned."
+            ),
+            "footnote should reword the colour to pink and keep the 2-year explanation"
+        );
+        assert!(
+            !orphans_html.contains("highlighted in orange"),
+            "stale footnote must not reference the old, incorrect colour word"
+        );
     }
 
     #[test]

@@ -1,4 +1,5 @@
 {%- import "partials/remediation_link.html" as remediation -%}
+{%- import "partials/tooltip.html" as tooltip -%}
 <!DOCTYPE html>
 <html lang="en">
 
@@ -108,7 +109,7 @@
                 {% for row in vm.repo_rows %}
                 <tr{% if row.is_stale %} class="row-stale"{% endif %}>
                     <td>{% if row.repo_url.is_empty() %}{{ row.repo_name }}{% else %}<a href="{{ row.repo_url }}"
-                            target="_blank" rel="noopener noreferrer">{{ row.repo_name }}</a>{% endif %}</td>
+                            target="_blank" rel="noopener noreferrer">{{ row.repo_name }}</a>{% endif %}{% if row.is_stale %} {% call tooltip::tooltip("Stale: not updated in 2+ years") %}{% endcall %}{% endif %}</td>
                     <td>{{ row.visibility }}</td>
                     <td class="text-center">
                         <div class="score-bar-inline">
@@ -140,7 +141,7 @@
     {% endif %}
 
     {% if vm.has_stale_repos %}
-    <p class="footer">Rows highlighted in orange have not been updated in over 2 years and may be abandoned.</p>
+    <p class="footer">Rows highlighted in pink have not been updated in over 2 years and may be abandoned.</p>
     {% endif %}
 
     <p class="footer">This page lists all repositories (including private and internal) associated with this owner.
