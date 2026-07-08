@@ -115,8 +115,8 @@ expression: "&pages[\"admin.html\"]"
         <table class="data-table">
             <thead>
                 <tr>
-                    <th>Reason</th>
-                    <th class="text-right">Count</th>
+                    <th><span class="tooltip-header" tabindex="0" data-tooltip="Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error." title="Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error.">Reason</span></th>
+                    <th class="text-right"><span class="tooltip-header" tabindex="0" data-tooltip="Number of repositories or checks that failed for this reason during this run." title="Number of repositories or checks that failed for this reason during this run.">Count</span></th>
                 </tr>
             </thead>
             <tbody>
@@ -144,8 +144,8 @@ expression: "&pages[\"admin.html\"]"
         <table class="data-table">
             <thead>
                 <tr>
-                    <th>Reason</th>
-                    <th class="text-right">Count</th>
+                    <th><span class="tooltip-header" tabindex="0" data-tooltip="Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error." title="Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error.">Reason</span></th>
+                    <th class="text-right"><span class="tooltip-header" tabindex="0" data-tooltip="Number of repositories or checks that failed for this reason during this run." title="Number of repositories or checks that failed for this reason during this run.">Count</span></th>
                 </tr>
             </thead>
             <tbody>

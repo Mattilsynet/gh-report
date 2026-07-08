@@ -242,6 +242,18 @@ pub struct TeamRosterViewModel {
     pub member_count: u32,
 }
 
+/// A control column header, pairing the display name with its tooltip copy.
+///
+/// Pre-zipped for template iteration (Askama does not support array indexing).
+#[derive(Debug, Clone)]
+pub struct ControlColumn {
+    /// Human-readable control name (e.g., `"Security Policy"`).
+    pub name: &'static str,
+    /// Header tooltip copy explaining what this column measures and how
+    /// it's computed. Empty string for an unrecognised key.
+    pub tooltip: &'static str,
+}
+
 /// View model for a single owner's detail page.
 #[derive(Debug, Clone)]
 pub struct OwnerDetailViewModel {
@@ -255,9 +267,9 @@ pub struct OwnerDetailViewModel {
     pub breadcrumb_label: String,
     /// Per-repo rows with status dots.
     pub repo_rows: Vec<OwnerRepoRow>,
-    /// Ordered control names for table headers (e.g., `["Security Policy", …]`).
-    pub control_names: Vec<String>,
-    /// Summary scorecard cards (one per control, same order as `control_names`).
+    /// Ordered control columns for table headers (name + header tooltip).
+    pub control_columns: Vec<ControlColumn>,
+    /// Summary scorecard cards (one per control, same order as `control_columns`).
     pub summary_cards: Vec<SummaryCard>,
     /// Deep-link anchor into `OPERATIONS.html` for the CODEOWNERS
     /// remediation section (UF3-2); CODEOWNERS has no per-owner
@@ -292,8 +304,8 @@ pub struct OwnerDetailViewModel {
 pub struct OwnersViewModel {
     /// One row per owner, sorted.
     pub rows: Vec<OwnerOverviewRow>,
-    /// Ordered control names for table headers.
-    pub control_names: Vec<String>,
+    /// Ordered control columns for table headers (name + header tooltip).
+    pub control_columns: Vec<ControlColumn>,
 }
 
 /// A top-scoring security team for display in the CODEOWNERS Summary box.
@@ -1810,6 +1822,24 @@ pub(crate) fn coverage_control_how_to_fix(key: &str) -> Option<&'static str> {
     }
 }
 
+pub(crate) fn coverage_control_column_tooltip(key: &str) -> Option<&'static str> {
+    match key {
+        "security_policy" => Some(
+            "Security policy presence — a SECURITY.md file (repo root, .github/, or docs/) or GitHub's security-policy setting enabled. Same per-repo check behind both this column and the org-wide Security Policy Coverage metric (non-public repos excluded as not applicable).",
+        ),
+        "secret_scanning" => Some(
+            "GitHub secret scanning presence — catches leaked credentials pushed to the repo. Same per-repo check behind both this column and the org-wide Secret Scanning Coverage metric (that metric's rate counts public repos only; the check itself runs regardless of visibility).",
+        ),
+        "dependabot_security_updates" => Some(
+            "Dependabot security updates presence — when enabled, GitHub opens automatic pull requests for vulnerable dependencies. Same per-repo check behind both this column and the org-wide Dependabot Status metric.",
+        ),
+        "branch_protection" => Some(
+            "Branch protection at the T2 accept-bar or better — pull request review required, on top of T1's force-push and deletion blocking. Same per-repo check behind both this column and the org-wide Branch Protection metric.",
+        ),
+        _ => None,
+    }
+}
+
 /// Compute archival coverage metrics from evidence.
 ///
 /// Returns `(archived, stale_active_repos, stale_rate, stale_tier,
@@ -2636,6 +2666,41 @@ mod tests {
         assert_eq!(coverage_control_how_to_fix("non_stale"), None);
         assert_eq!(coverage_control_how_to_fix("alert_free"), None);
         assert_eq!(coverage_control_how_to_fix("bogus"), None);
+    }
+
+    #[test]
+    fn coverage_control_column_tooltip_maps_known_controls() {
+        assert_eq!(
+            coverage_control_column_tooltip("security_policy"),
+            Some(
+                "Security policy presence — a SECURITY.md file (repo root, .github/, or docs/) or GitHub's security-policy setting enabled. Same per-repo check behind both this column and the org-wide Security Policy Coverage metric (non-public repos excluded as not applicable)."
+            )
+        );
+        assert_eq!(
+            coverage_control_column_tooltip("secret_scanning"),
+            Some(
+                "GitHub secret scanning presence — catches leaked credentials pushed to the repo. Same per-repo check behind both this column and the org-wide Secret Scanning Coverage metric (that metric's rate counts public repos only; the check itself runs regardless of visibility)."
+            )
+        );
+        assert_eq!(
+            coverage_control_column_tooltip("dependabot_security_updates"),
+            Some(
+                "Dependabot security updates presence — when enabled, GitHub opens automatic pull requests for vulnerable dependencies. Same per-repo check behind both this column and the org-wide Dependabot Status metric."
+            )
+        );
+        assert_eq!(
+            coverage_control_column_tooltip("branch_protection"),
+            Some(
+                "Branch protection at the T2 accept-bar or better — pull request review required, on top of T1's force-push and deletion blocking. Same per-repo check behind both this column and the org-wide Branch Protection metric."
+            )
+        );
+    }
+
+    #[test]
+    fn coverage_control_column_tooltip_returns_none_for_unknown_key() {
+        assert_eq!(coverage_control_column_tooltip("codeowners"), None);
+        assert_eq!(coverage_control_column_tooltip("non_stale"), None);
+        assert_eq!(coverage_control_column_tooltip("bogus"), None);
     }
 
     #[test]

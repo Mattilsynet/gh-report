@@ -738,6 +738,43 @@ details>*:not(summary) {
    visibility: visible;
 }
 
+/* ── Header-cell tooltip (CSS-only; wraps the <th> label itself) ──── */
+
+.tooltip-header {
+   position: relative;
+   cursor: help;
+}
+
+.tooltip-header::after {
+   content: attr(data-tooltip);
+   position: absolute;
+   left: 0;
+   top: calc(100% + .5em);
+   bottom: auto;
+   z-index: 10;
+   width: max-content;
+   max-width: 18em;
+   padding: .5em .7em;
+   border-radius: 6px;
+   background: var(--text-primary);
+   color: var(--bg-card);
+   font-size: 0.85em;
+   font-weight: normal;
+   line-height: 1.4;
+   white-space: normal;
+   opacity: 0;
+   visibility: hidden;
+   transition: opacity 0.15s ease;
+   pointer-events: none;
+}
+
+.tooltip-header:hover::after,
+.tooltip-header:focus::after,
+.tooltip-header:focus-within::after {
+   opacity: 1;
+   visibility: visible;
+}
+
 /* ── Responsive ─────────────────────────────────────────────────── */
 
 @media (max-width: 64em) {

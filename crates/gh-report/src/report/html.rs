@@ -22,11 +22,11 @@ use crate::domain::metrics::{OwnerType, TeamMemberRole, TeamRoster, TeamRosterSt
 use crate::domain::time::{is_repo_stale, parse_iso8601};
 use crate::error::ReportError;
 use crate::report::view_model::{
-    ControlCell, CoverageTier, DeletedRepoRow, DeletedViewModel, OrphanedRepoRow,
+    ControlCell, ControlColumn, CoverageTier, DeletedRepoRow, DeletedViewModel, OrphanedRepoRow,
     OrphanedTeamGroup, OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow, OwnerRepoRow,
     OwnersViewModel, ReportViewModel, StatusDot, SummaryCard, TeamMemberRow, TeamRosterViewModel,
-    TopNav, TopSecurityTeam, compute_health_score, coverage_control_anchor, generate_slug,
-    rate_to_width_class, strip_org_prefix,
+    TopNav, TopSecurityTeam, compute_health_score, coverage_control_anchor,
+    coverage_control_column_tooltip, generate_slug, rate_to_width_class, strip_org_prefix,
 };
 
 /// Askama template for the security posture report.
@@ -413,9 +413,12 @@ fn build_owners_view_model(
         .collect();
     let slugs = crate::report::view_model::generate_unique_slugs(&owners);
 
-    let control_names: Vec<String> = CONTROL_NAMES
+    let control_columns: Vec<ControlColumn> = CONTROL_NAMES
         .iter()
-        .map(|&k| control_display_name(k).to_string())
+        .map(|&k| ControlColumn {
+            name: control_display_name(k),
+            tooltip: coverage_control_column_tooltip(k).unwrap_or_default(),
+        })
         .collect();
 
     let rows: Vec<OwnerOverviewRow> = owner_metrics
@@ -460,7 +463,7 @@ fn build_owners_view_model(
 
     Some(OwnersViewModel {
         rows,
-        control_names,
+        control_columns,
     })
 }
 
@@ -589,9 +592,12 @@ fn build_owner_detail_view_models(
         .collect();
     let slugs = crate::report::view_model::generate_unique_slugs(&owners);
 
-    let control_names: Vec<String> = CONTROL_NAMES
+    let control_columns: Vec<ControlColumn> = CONTROL_NAMES
         .iter()
-        .map(|&k| control_display_name(k).to_string())
+        .map(|&k| ControlColumn {
+            name: control_display_name(k),
+            tooltip: coverage_control_column_tooltip(k).unwrap_or_default(),
+        })
         .collect();
 
     owner_metrics
@@ -649,7 +655,7 @@ fn build_owner_detail_view_models(
                 owner_type_label,
                 breadcrumb_label: m.display_name.clone(),
                 repo_rows,
-                control_names: control_names.clone(),
+                control_columns: control_columns.clone(),
                 summary_cards,
                 codeowners_operations_anchor: coverage_control_anchor("codeowners")
                     .unwrap_or_default(),
@@ -2115,7 +2121,7 @@ mod tests {
     }
 
     #[test]
-    fn detail_vm_control_names_populated() {
+    fn detail_vm_control_columns_populated() {
         let evidence = evidence_with_owner_repos();
         let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
         let detail_vms = build_owner_detail_view_models(
@@ -2129,8 +2135,9 @@ mod tests {
 
         assert_eq!(detail_vms.len(), 1);
         let (_, vm) = &detail_vms[0];
+        let names: Vec<&str> = vm.control_columns.iter().map(|c| c.name).collect();
         assert_eq!(
-            vm.control_names,
+            names,
             vec![
                 "Security Policy",
                 "Secret Scanning",
@@ -2138,6 +2145,11 @@ mod tests {
                 "Branch Protection"
             ]
         );
+        assert_eq!(
+            vm.control_columns[0].tooltip,
+            coverage_control_column_tooltip("security_policy").unwrap()
+        );
+        assert!(vm.control_columns.iter().all(|c| !c.tooltip.is_empty()));
     }
 
     #[test]
@@ -2690,8 +2702,11 @@ mod tests {
             .expect("expected an owner detail page")
             .1;
 
-        assert!(detail_page.contains("<th class=\"text-center\">Security Policy</th>"));
-        assert!(detail_page.contains("<th class=\"text-center\">Dependabot Status</th>"));
+        assert!(detail_page.contains(
+            "<th class=\"text-center\"><span class=\"tooltip-header\" tabindex=\"0\" data-tooltip=\""
+        ));
+        assert!(detail_page.contains(">Security Policy</span></th>"));
+        assert!(detail_page.contains(">Dependabot Status</span></th>"));
     }
 
     #[test]
@@ -2975,14 +2990,16 @@ mod tests {
             .expect("expected an owner detail page")
             .1;
 
-        assert!(detail_page.contains("<th>Description</th>"));
-        assert!(detail_page.contains("<th>Language</th>"));
-        assert!(detail_page.contains("<th class=\"text-center\">Fork</th>"));
-        assert!(detail_page.contains("<th>License</th>"));
-        assert!(detail_page.contains("<th>Last Push</th>"));
-        assert!(detail_page.contains("<th>Created</th>"));
-        assert!(detail_page.contains("<th>Last Committer</th>"));
-        assert!(detail_page.contains("<th>Last Commit</th>"));
+        assert!(detail_page.contains(">Description</span></th>"));
+        assert!(detail_page.contains(">Language</span></th>"));
+        assert!(detail_page.contains(
+            "<th class=\"text-center\"><span class=\"tooltip-header\" tabindex=\"0\" data-tooltip=\"Yes if this repository is a fork of another repository.\" title=\"Yes if this repository is a fork of another repository.\">Fork</span></th>"
+        ));
+        assert!(detail_page.contains(">License</span></th>"));
+        assert!(detail_page.contains(">Last Push</span></th>"));
+        assert!(detail_page.contains(">Created</span></th>"));
+        assert!(detail_page.contains(">Last Committer</span></th>"));
+        assert!(detail_page.contains(">Last Commit</span></th>"));
     }
 
     #[test]
@@ -2997,7 +3014,7 @@ mod tests {
             .1;
 
         assert!(
-            detail_page.contains("<th>Visibility</th>"),
+            detail_page.contains(">Visibility</span></th>"),
             "owner detail page should contain Visibility column header"
         );
         assert!(
@@ -3622,7 +3639,7 @@ mod tests {
         let orphaned = &pages["orphans.html"];
 
         assert!(
-            orphaned.contains("<th>Visibility</th>"),
+            orphaned.contains(">Visibility</span></th>"),
             "orphaned page should contain Visibility column header"
         );
         assert!(
