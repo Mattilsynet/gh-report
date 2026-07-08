@@ -144,8 +144,40 @@
     <p class="footer">Rows highlighted in pink have not been updated in over 2 years and may be abandoned.</p>
     {% endif %}
 
+    {% if !vm.orphan_repo_rows.is_empty() %}
+    <details>
+        <summary>Orphan repositories ({{ vm.orphan_repo_rows.len() }})</summary>
+        <div class="table-wrapper">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th><span class="tooltip-header" tabindex="0" data-tooltip="Repository name; links to it on GitHub when a URL is known." title="Repository name; links to it on GitHub when a URL is known.">Repository</span></th>
+                        <th><span class="tooltip-header" tabindex="0" data-tooltip="The repository's GitHub visibility: Public, Internal, or Private." title="The repository's GitHub visibility: Public, Internal, or Private.">Visibility</span></th>
+                        <th><span class="tooltip-header" tabindex="0" data-tooltip="GitHub login of the author of the most recent commit on the default branch; links to their profile when known." title="GitHub login of the author of the most recent commit on the default branch; links to their profile when known.">Last Committer</span></th>
+                        <th><span class="tooltip-header" tabindex="0" data-tooltip="Date of the most recent commit on the repository's default branch." title="Date of the most recent commit on the repository's default branch.">Last Commit</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in vm.orphan_repo_rows %}
+                    <tr{% if row.is_stale %} class="row-stale"{% endif %}>
+                        <td>{% if row.repo_url.is_empty() %}{{ row.repo_name }}{% else %}<a href="{{ row.repo_url }}"
+                                target="_blank" rel="noopener noreferrer">{{ row.repo_name }}</a>{% endif %}{% if row.is_stale %} {% call tooltip::tooltip("Stale: not updated in 2+ years") %}{% endcall %}{% endif %}</td>
+                        <td>{{ row.visibility }}</td>
+                        <td>{% if row.last_committer_url.is_empty() %}{{ row.last_committer_login }}{% else %}<a
+                                href="{{ row.last_committer_url }}" target="_blank" rel="noopener noreferrer">{{
+                                row.last_committer_login }}</a>{% endif %}</td>
+                        <td>{{ row.last_commit_date }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </details>
+    {% endif %}
+
     <p class="footer">This page lists all repositories (including private and internal) associated with this owner.
         Ensure access to this dashboard is restricted to authorised personnel.</p>
+
 
 </body>
 

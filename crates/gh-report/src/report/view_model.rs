@@ -297,6 +297,11 @@ pub struct OwnerDetailViewModel {
     /// only when the canonical owner string is malformed (no extractable
     /// team slug or login).
     pub github_url: Option<String>,
+    /// Orphan repos attributed to this owner via last-committer roster
+    /// membership (B2), joined by canonical owner name; empty when this
+    /// owner has no attributed orphans (item 7 — drives the collapsible
+    /// bottom-of-page section, omitted when empty).
+    pub orphan_repo_rows: Vec<OrphanedRepoRow>,
 }
 
 /// View model for the owners overview page.

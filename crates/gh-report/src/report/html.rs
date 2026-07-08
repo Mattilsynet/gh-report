@@ -314,6 +314,7 @@ pub fn render_dashboard(
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
             &evidence.metrics.team_rosters,
+            &orphaned_vm.by_team,
         );
         let nested_nav = TopNav { base: "../", ..nav };
         for (slug, detail_vm) in &detail_vms {
@@ -573,6 +574,10 @@ fn build_owner_github_url(
 /// matched by canonical owner name; `None` for user-type owners or teams
 /// B1 has not (yet) fetched a roster for.
 ///
+/// `orphaned_by_team` supplies each team's orphan-repo rows (B2), joined
+/// by canonical owner name (`group.team == owner_metrics[..].owner`), for
+/// the collapsible orphan section on that team's own detail page (item 7).
+///
 /// Returns a list of (slug, detail view model) pairs.
 fn build_owner_detail_view_models(
     owner_metrics: &[crate::domain::metrics::OwnerMetrics],
@@ -581,6 +586,7 @@ fn build_owner_detail_view_models(
     organization: &str,
     run_timestamp: &str,
     team_rosters: &[TeamRoster],
+    orphaned_by_team: &[OrphanedTeamGroup],
 ) -> Vec<(String, OwnerDetailViewModel)> {
     if owner_metrics.is_empty() {
         return Vec::new();
@@ -649,6 +655,12 @@ fn build_owner_detail_view_models(
                 .find(|r| r.canonical_owner == m.owner)
                 .map(build_team_roster_view_model);
 
+            let orphan_repo_rows: Vec<OrphanedRepoRow> = orphaned_by_team
+                .iter()
+                .find(|group| group.team == m.owner)
+                .map(|group| group.rows.clone())
+                .unwrap_or_default();
+
             let detail = OwnerDetailViewModel {
                 owner: m.display_name.clone(),
                 owner_short: strip_org_prefix(&m.display_name),
@@ -665,6 +677,7 @@ fn build_owner_detail_view_models(
                 stale_width_class,
                 roster,
                 github_url,
+                orphan_repo_rows,
             };
 
             Some((slug, detail))
@@ -2131,6 +2144,7 @@ mod tests {
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
             &[],
+            &[],
         );
 
         assert_eq!(detail_vms.len(), 1);
@@ -2163,6 +2177,7 @@ mod tests {
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
             &[],
+            &[],
         );
 
         let (_, vm) = &detail_vms[0];
@@ -2184,6 +2199,7 @@ mod tests {
             &CoverageTiers::default(),
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
+            &[],
             &[],
         );
 
@@ -2218,6 +2234,7 @@ mod tests {
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
             &[],
+            &[],
         );
 
         let (_, vm) = &detail_vms[0];
@@ -2248,6 +2265,7 @@ mod tests {
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
             &[],
+            &[],
         );
 
         let (_, vm) = &detail_vms[0];
@@ -2265,6 +2283,7 @@ mod tests {
             &CoverageTiers::default(),
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
+            &[],
             &[],
         );
 
@@ -2302,6 +2321,7 @@ mod tests {
             &CoverageTiers::default(),
             "TestOrg",
             "2026-04-09T12:00:00+00:00",
+            &[],
             &[],
         );
 
@@ -2343,6 +2363,7 @@ mod tests {
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
             &[],
+            &[],
         );
 
         assert_eq!(detail_vms.len(), 2);
@@ -2367,6 +2388,7 @@ mod tests {
             &CoverageTiers::default(),
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
+            &[],
             &[],
         );
 
@@ -2413,6 +2435,7 @@ mod tests {
             &CoverageTiers::default(),
             "My Org",
             &evidence.assessment_metadata.run_timestamp,
+            &[],
             &[],
         );
 
@@ -2506,6 +2529,90 @@ mod tests {
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
 
         insta::assert_snapshot!("dashboard_owner_detail", &pages["owners/org-team-a.html"]);
+    }
+
+    /// Item 7: a team's attributed orphan repos render in a default-
+    /// collapsed `<details>` section at the bottom of its own detail page,
+    /// joined by canonical owner name (not slug) — and a sibling team with
+    /// zero attributed orphans omits the section entirely on its own page.
+    #[test]
+    fn render_owner_detail_html_contains_orphan_repositories_section() {
+        use crate::domain::evidence::LastCommitInfo;
+        use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRoster, TeamRosterStatus};
+
+        let mut evidence = evidence_with_owner_repos();
+        evidence
+            .repositories
+            .push(test_fixtures::make_repository_evidence(
+                "gamma-repo",
+                Visibility::Public,
+                false,
+                test_fixtures::make_checks(
+                    test_fixtures::policy_pass_setting(),
+                    test_fixtures::secret_enabled_observable(false),
+                    test_fixtures::dependabot_enabled(),
+                    test_fixtures::branch_pass(),
+                    test_fixtures::codeowners_with_owners(&["@org/team-b"]),
+                ),
+            ));
+
+        let mut orphan = test_fixtures::make_repository_evidence(
+            "orphan-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_absent(),
+            ),
+        );
+        orphan.last_commit = Some(LastCommitInfo {
+            committer_login: Some("alice".to_string()),
+            committer_name: None,
+            commit_date: Some("2026-04-01T00:00:00Z".to_string()),
+        });
+        evidence.repositories.push(orphan);
+
+        evidence.metrics = crate::aggregate::metrics::aggregate_metrics(&evidence.repositories);
+        evidence.collection_statistics =
+            crate::aggregate::metrics::build_collection_statistics(&evidence.repositories);
+        evidence.metrics.team_rosters = vec![TeamRoster {
+            canonical_owner: "@org/team-a".to_string(),
+            team_slug: "team-a".to_string(),
+            status: TeamRosterStatus::Complete,
+            members: vec![TeamMember {
+                login: "alice".to_string(),
+                role: TeamMemberRole::Maintainer,
+            }],
+        }];
+
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+        let attributed_page = &pages["owners/org-team-a.html"];
+        assert!(
+            attributed_page.contains("<details>"),
+            "team-a has one attributed orphan; expected a details section"
+        );
+        assert!(
+            !attributed_page.contains("<details open"),
+            "the orphan section must be default-collapsed (no open attribute)"
+        );
+        assert!(
+            attributed_page.contains("Orphan repositories (1)"),
+            "expected the orphan count in the summary"
+        );
+        assert!(
+            attributed_page.contains("orphan-repo"),
+            "expected the attributed orphan repo row to render"
+        );
+
+        let unattributed_page = &pages["owners/org-team-b.html"];
+        assert!(
+            !unattributed_page.contains("<details>"),
+            "team-b has zero attributed orphans; the section must be omitted entirely"
+        );
     }
 
     /// UF2-3 rendering test: the owner-detail heading renders the team
@@ -2792,6 +2899,7 @@ mod tests {
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
             &[],
+            &[],
         );
 
         let (_, vm) = &detail_vms[0];
@@ -2858,6 +2966,7 @@ mod tests {
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
             &[],
+            &[],
         );
 
         assert_eq!(detail_vms.len(), 1);
@@ -2918,6 +3027,7 @@ mod tests {
             &CoverageTiers::default(),
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
+            &[],
             &[],
         );
 
@@ -3065,6 +3175,7 @@ mod tests {
             &CoverageTiers::default(),
             &evidence.assessment_metadata.organization,
             &evidence.assessment_metadata.run_timestamp,
+            &[],
             &[],
         );
 
