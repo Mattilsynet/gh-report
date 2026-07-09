@@ -435,7 +435,11 @@ The baseline mechanism reduces API calls by reusing evidence for repositories th
 
 **Staleness note:** The `updated_at` timestamp reflects pushes and some settings changes, but not all security-relevant changes. For example, branch protection rule modifications may not alter `updated_at`, which could lead to stale baseline reuse for that check. The staleness window between inventory fetch and evaluation is documented in the `inventory_fetched_at` field of the report metadata.
 
-**How to reset:** Start from an empty event stream or remove the reusable evidence from the authoritative store. A process restart alone folds the full event log and rebuilds the same projection.
+**How to reset:** Start `gh-report` with `--force-refresh` (or set `GH_REPORT_FORCE_REFRESH=true`) for the supported in-process reset — see [Force refresh](#force-refresh) below; no event deletion. For a full historical wipe instead, start from an empty event stream or remove the reusable evidence from the authoritative store. A process restart alone folds the full event log and rebuilds the same projection.
+
+### Force refresh
+
+Set `--force-refresh` (or `GH_REPORT_FORCE_REFRESH=true`) to bypass baseline reuse for the first collection after process start: every repository is re-fetched from the GitHub API and fresh evidence appends to the event log through the normal `record_repo` path (no deletion — SEC-0008:R1 append-only). One-shot: the flag is consumed by the first collection only; scheduled collections after it resume normal baseline reuse. Warm-start dashboard rendering is unaffected — the server still renders immediately from the existing projection before the first (bypassed) collection completes. Typical use: force a full re-evaluation after rotating credentials or GitHub App permissions, without restarting from an empty event stream.
 
 **Schema version bumps:** `EVIDENCE_SCHEMA_VERSION` is stamped on evidence for observability. Replaying the event log does not discard the projection because the schema string changed.
 
@@ -887,6 +891,7 @@ The `POST /webhook` endpoint accepts GitHub webhook deliveries to drive incremen
 | `GH_REPORT_PARDOSA_BACKEND` | Authoritative event-store backend (`pgno` or `nats`). | `pgno` |
 | `GH_REPORT_NATS_URL` | NATS broker URL. For MAP, use `tls://connect.nats.mattilsynet.io:4222`. | `nats://localhost:4222` |
 | `GH_REPORT_NATS_CREDS` | Filesystem path to a NATS `.creds` JWT credentials file. Required for MAP NATS auth; mount the Secret Manager value as a file volume and set this to that path. Omit for anonymous/local NATS. | — |
+| `GH_REPORT_FORCE_REFRESH` | Bypass baseline reuse for the first collection after process start (one-shot) — see [Force refresh](#force-refresh). | `false` |
 
 ### NATS (MAP) backend
 
