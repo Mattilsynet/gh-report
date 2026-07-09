@@ -35,8 +35,10 @@ pub struct BudgetGate {
     calls: AtomicU64,
     /// Cumulative call counter. Never reset.
     total_calls: AtomicU64,
-    /// Maximum calls per epoch.
-    limit: u64,
+    /// Maximum calls per epoch. Mutable via [`Self::set_epoch_limit`]
+    /// for live per-run resizing; a fixed value at construction behaves
+    /// exactly as before.
+    limit: AtomicU64,
     /// How long to sleep when the budget is exhausted.
     wait_duration: Duration,
     /// Election flag for the epoch-transition sleeper. CAS false→true
@@ -61,7 +63,7 @@ impl std::fmt::Debug for BudgetGate {
         f.debug_struct("BudgetGate")
             .field("calls", &self.calls.load(Ordering::Relaxed))
             .field("total_calls", &self.total_calls.load(Ordering::Relaxed))
-            .field("limit", &self.limit)
+            .field("limit", &self.limit.load(Ordering::Relaxed))
             .field("wait_duration", &self.wait_duration)
             .finish_non_exhaustive()
     }
@@ -79,7 +81,7 @@ impl BudgetGate {
         Self {
             calls: AtomicU64::new(0),
             total_calls: AtomicU64::new(0),
-            limit,
+            limit: AtomicU64::new(limit),
             wait_duration,
             resetting: AtomicBool::new(false),
             epoch_advanced: Notify::new(),
@@ -109,6 +111,23 @@ impl BudgetGate {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(notify);
     }
 
+    /// Change the per-epoch call limit that `acquire` gates against.
+    ///
+    /// Safe to call on a shared `Arc<BudgetGate>` — uses an atomic
+    /// store, no lock. Takes effect for any `acquire` loop iteration
+    /// that has not yet snapshotted the previous limit; does not reset
+    /// `calls`, so a lower limit takes effect once `calls` reaches it
+    /// via new `acquire` calls or the next epoch reset.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `limit` is 0 (would cause infinite epoch transitions),
+    /// matching [`Self::new`]'s invariant.
+    pub fn set_epoch_limit(&self, limit: u64) {
+        assert!(limit > 0, "budget limit must be > 0");
+        self.limit.store(limit, Ordering::Release);
+    }
+
     /// Acquire one API call permit.
     ///
     /// Returns immediately if budget is available. If the epoch limit is
@@ -121,8 +140,9 @@ impl BudgetGate {
     /// reset and callers should exit rather than resume work.
     pub async fn acquire(&self, cancel: &CancellationToken) -> bool {
         loop {
+            let limit = self.limit.load(Ordering::Acquire);
             let current = self.calls.load(Ordering::Acquire);
-            if current < self.limit {
+            if current < limit {
                 match self.calls.compare_exchange_weak(
                     current,
                     current + 1,
@@ -142,12 +162,12 @@ impl BudgetGate {
                 .is_ok()
             {
                 let guard = ResetGuard { gate: self };
-                if self.calls.load(Ordering::Acquire) < self.limit {
+                if self.calls.load(Ordering::Acquire) < limit {
                     drop(guard);
                     continue;
                 }
                 warn!(
-                    calls = self.limit,
+                    calls = limit,
                     wait_secs = self.wait_duration.as_secs(),
                     "API budget exhausted, pausing collection"
                 );
@@ -171,7 +191,7 @@ impl BudgetGate {
             let notified = self.epoch_advanced.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            if self.calls.load(Ordering::Acquire) < self.limit {
+            if self.calls.load(Ordering::Acquire) < limit {
                 continue;
             }
             notified.await;
@@ -484,5 +504,31 @@ mod tests {
         assert!(!acquired);
         assert_eq!(gate.total_calls_made(), 1);
         assert_eq!(gate.calls_made(), 1);
+    }
+
+    #[tokio::test]
+    async fn set_epoch_limit_raises_ceiling_live() {
+        let gate = BudgetGate::new(2, Duration::from_mins(1));
+        let cancel = CancellationToken::new();
+
+        assert!(gate.acquire(&cancel).await);
+        assert!(gate.acquire(&cancel).await);
+        assert_eq!(gate.calls_made(), 2);
+
+        gate.set_epoch_limit(10);
+
+        let acquired = tokio::time::timeout(Duration::from_millis(100), gate.acquire(&cancel))
+            .await
+            .expect("acquire after raising the epoch limit should not block");
+        assert!(acquired);
+        assert_eq!(gate.calls_made(), 3);
+        assert_eq!(gate.total_calls_made(), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "budget limit must be > 0")]
+    fn set_epoch_limit_zero_panics() {
+        let gate = BudgetGate::new(1, Duration::from_secs(1));
+        gate.set_epoch_limit(0);
     }
 }
