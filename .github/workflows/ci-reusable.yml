@@ -23,8 +23,15 @@ jobs:
         with:
           toolchain: 1.96.0
           components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo build --workspace --all-features
+      # CHE-0087 R5/R6: the Leptos CSR client is wasm32-only and excluded from
+      # the default build set. Its committed .wasm/.js artefacts are embedded
+      # into gh-report via include_bytes!/include_str!; this step compiles the
+      # crate for its real target every CI run so source drift from the
+      # committed artefact cannot pass unnoticed.
+      - run: cargo build -p gh-report-web-client --target wasm32-unknown-unknown --release
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
         if: always()
       - run: cargo fmt --check

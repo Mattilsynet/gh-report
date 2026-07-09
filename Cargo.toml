@@ -26,6 +26,35 @@ members = [
     "crates/pardosa-test-support-harness",
 ]
 
+# gh-report-web-client is wasm32-only (Leptos CSR, CHE-0087 R6): excluded
+# from the default build set so a bare `cargo build` / `cargo test` never
+# drives the wasm crate on the host toolchain. It builds under an explicit
+# `--target wasm32-unknown-unknown` (or `-p gh-report-web-client`) only.
+default-members = [
+    "crates/adr-fmt",
+    "crates/adr-srv",
+    "crates/architect",
+    "crates/cherry-pit-app",
+    "crates/cherry-pit-core",
+    "crates/cherry-pit-gateway",
+    "crates/cherry-pit-merger",
+    "crates/cherry-pit-projection",
+    "crates/cherry-pit-wq",
+    "crates/cherry-pit-storage",
+    "crates/cherry-pit-web",
+    "crates/gh-report",
+    "crates/pardosa",
+    "crates/pardosa-fiber-store",
+    "crates/pardosa-derive",
+    "crates/pardosa-file",
+    "crates/pardosa-nats",
+    "crates/pardosa-schema",
+    "crates/pardosa-wire",
+    "crates/comment-free",
+    "crates/pardosa-mint-private-tests",
+    "crates/pardosa-test-support-harness",
+]
+
 [workspace.package]
 edition = "2024"
 rust-version = "1.96"
