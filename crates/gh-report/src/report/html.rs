@@ -550,6 +550,7 @@ fn build_team_roster_view_model(roster: &TeamRoster) -> TeamRosterViewModel {
 
     let (is_complete, status_label) = match roster.status {
         TeamRosterStatus::Complete => (true, "Complete"),
+        TeamRosterStatus::Deleted => (false, "Deleted"),
         TeamRosterStatus::PermissionDenied => (false, "Permission denied"),
         TeamRosterStatus::TransientError => (false, "Temporarily unavailable"),
     };

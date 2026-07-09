@@ -335,6 +335,9 @@ pub struct TeamMember {
 pub enum TeamRosterStatus {
     /// Both member and maintainer pages were fetched successfully.
     Complete,
+    /// The team no longer exists on GitHub (404) — a CODEOWNERS reference
+    /// to a team GitHub has deleted.
+    Deleted,
     /// The GitHub API denied access to this team's membership.
     PermissionDenied,
     /// The fetch failed for a retryable/transient reason.
