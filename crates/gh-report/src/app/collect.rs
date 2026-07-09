@@ -1198,6 +1198,7 @@ async fn finalize_and_publish(
 
     let team_slugs = crate::domain::metrics::team_owner_slugs(&evidence_repos);
     let team_rosters = team_membership::collect_team_rosters(client, &team_slugs).await;
+    let org_members = team_membership::collect_org_members(client).await;
 
     let evidence = build_evidence(BuildEvidenceParams {
         repositories: evidence_repos,
@@ -1215,6 +1216,7 @@ async fn finalize_and_publish(
         capabilities,
         rate_limit_warnings,
         team_rosters,
+        org_members,
     });
 
     let pages = build_cached_pages(config, &evidence).await?;
@@ -1444,6 +1446,7 @@ pub(crate) async fn warm_start_from_baseline(
         capabilities: &CapabilitySet::default(),
         rate_limit_warnings: 0,
         team_rosters: Vec::new(),
+        org_members: None,
     });
 
     let warm_repo_count: u64 = u64::from(evidence.collection_statistics.total_repos);
@@ -1704,6 +1707,7 @@ fn spawn_partial_publisher_from_store(
                         capabilities: &pp.capabilities,
                         rate_limit_warnings: 0,
                         team_rosters: Vec::new(),
+                        org_members: None,
                     });
 
                     let pending_repos: u64 = 0;
@@ -1843,6 +1847,12 @@ struct BuildEvidenceParams<'a> {
     /// the only call site with both a completed CODEOWNERS-derived team
     /// list and a live `GitHubClient` to fetch with.
     team_rosters: Vec<crate::domain::metrics::TeamRoster>,
+    /// Org-members login set fetched fresh this tick (item9 Part B).
+    /// `None` at warm-start, during mid-sweep partial publishes, and
+    /// whenever the fetch degraded — [`build_evidence`] treats `None`
+    /// identically to a degraded fetch (no departure flags), so there is
+    /// no separate "unfetched" vs "degraded" distinction to thread here.
+    org_members: Option<std::collections::HashSet<String>>,
 }
 
 struct OrgSnapshotParams<'a> {
@@ -1892,7 +1902,15 @@ fn build_evidence(params: BuildEvidenceParams<'_>) -> Evidence {
         &params.repositories,
         &params.run.timestamp(),
     );
+    metrics::enrich_owner_metrics_with_org_membership(
+        &mut aggregated.owner_metrics,
+        params.org_members.as_ref(),
+    );
     aggregated.team_rosters = params.team_rosters;
+    team_membership::enrich_team_rosters_with_org_membership(
+        &mut aggregated.team_rosters,
+        params.org_members.as_ref(),
+    );
     let alert_summary = params
         .org_state
         .as_ref()
@@ -2133,6 +2151,7 @@ mod tests {
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
             team_rosters: Vec::new(),
+            org_members: None,
         });
 
         assert_eq!(evidence.assessment_metadata.organization, "TestOrg");
@@ -2162,6 +2181,7 @@ mod tests {
             members: vec![TeamMember {
                 login: "octocat".to_string(),
                 role: TeamMemberRole::Maintainer,
+                in_org: None,
             }],
         }];
 
@@ -2177,9 +2197,118 @@ mod tests {
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
             team_rosters: rosters.clone(),
+            org_members: None,
         });
 
         assert_eq!(evidence.metrics.team_rosters, rosters);
+    }
+
+    /// item9 Part B integration test: `build_evidence` wires a fetched
+    /// org-members set all the way into `TeamMember::in_org` — a member
+    /// not in the set is flagged `Some(false)`, one in the set is
+    /// `Some(true)`, mirroring [`enrich_team_rosters_flags_departed_member_and_clears_present_member`]
+    /// (`crate::collector::team_membership`) at the `build_evidence` seam.
+    #[test]
+    fn build_evidence_applies_org_membership_to_team_rosters() {
+        use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRoster, TeamRosterStatus};
+
+        let repos = vec![sample_repo("repo-1")];
+        let config = sample_config();
+        let run_meta = RunMetadata::new(
+            "TestOrg".to_string(),
+            crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
+        );
+        let rosters = vec![TeamRoster {
+            canonical_owner: "@testorg/team-foo".to_string(),
+            team_slug: "team-foo".to_string(),
+            status: TeamRosterStatus::Complete,
+            members: vec![
+                TeamMember {
+                    login: "Octocat".to_string(),
+                    role: TeamMemberRole::Maintainer,
+                    in_org: None,
+                },
+                TeamMember {
+                    login: "departed-user".to_string(),
+                    role: TeamMemberRole::Member,
+                    in_org: None,
+                },
+            ],
+        }];
+        let org_members: std::collections::HashSet<String> =
+            ["octocat".to_string()].into_iter().collect();
+
+        let evidence = build_evidence(BuildEvidenceParams {
+            repositories: repos,
+            deleted: vec![],
+            org_state: None,
+            config: &config,
+            run: &run_meta,
+            inventory_fetched_at: None,
+            org_alert_summary: None,
+            auth_metadata: &test_auth_metadata(),
+            capabilities: &test_capabilities(),
+            rate_limit_warnings: 0,
+            team_rosters: rosters,
+            org_members: Some(org_members),
+        });
+
+        let members = &evidence.metrics.team_rosters[0].members;
+        assert_eq!(
+            members[0].in_org,
+            Some(true),
+            "'Octocat' must match lowercased set entry 'octocat'"
+        );
+        assert_eq!(
+            members[1].in_org,
+            Some(false),
+            "'departed-user' is absent from the set — flagged departed"
+        );
+    }
+
+    /// item9 Part B integration test: when the org-members fetch degraded
+    /// (`org_members: None`), `build_evidence` must not flag anyone —
+    /// every `TeamMember::in_org` stays `None`.
+    #[test]
+    fn build_evidence_flags_nobody_when_org_members_degraded() {
+        use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRoster, TeamRosterStatus};
+
+        let repos = vec![sample_repo("repo-1")];
+        let config = sample_config();
+        let run_meta = RunMetadata::new(
+            "TestOrg".to_string(),
+            crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
+        );
+        let rosters = vec![TeamRoster {
+            canonical_owner: "@testorg/team-foo".to_string(),
+            team_slug: "team-foo".to_string(),
+            status: TeamRosterStatus::Complete,
+            members: vec![TeamMember {
+                login: "octocat".to_string(),
+                role: TeamMemberRole::Maintainer,
+                in_org: None,
+            }],
+        }];
+
+        let evidence = build_evidence(BuildEvidenceParams {
+            repositories: repos,
+            deleted: vec![],
+            org_state: None,
+            config: &config,
+            run: &run_meta,
+            inventory_fetched_at: None,
+            org_alert_summary: None,
+            auth_metadata: &test_auth_metadata(),
+            capabilities: &test_capabilities(),
+            rate_limit_warnings: 0,
+            team_rosters: rosters,
+            org_members: None,
+        });
+
+        assert_eq!(
+            evidence.metrics.team_rosters[0].members[0].in_org, None,
+            "degraded org-members fetch must not flag anyone"
+        );
     }
 
     #[test]
@@ -2205,6 +2334,7 @@ mod tests {
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
             team_rosters: Vec::new(),
+            org_members: None,
         });
 
         assert_eq!(evidence.collection_statistics.total_repos, 1);
@@ -2239,6 +2369,7 @@ mod tests {
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
             team_rosters: Vec::new(),
+            org_members: None,
         });
 
         assert_eq!(evidence.collection_statistics.total_repos, 1);
@@ -2268,6 +2399,7 @@ mod tests {
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
             team_rosters: Vec::new(),
+            org_members: None,
         });
 
         assert_eq!(evidence.collection_statistics.total_repos, 0);
@@ -2295,6 +2427,7 @@ mod tests {
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
             team_rosters: Vec::new(),
+            org_members: None,
         });
 
         assert_eq!(evidence.metrics.security_policy_coverage.numerator, 1);

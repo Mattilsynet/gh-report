@@ -6,7 +6,7 @@
 //! wrapping when counts are near `u32::MAX` (e.g., from defensive
 //! `u32::try_from(...).unwrap_or(u32::MAX)` fallbacks).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tracing::warn;
 
@@ -684,6 +684,7 @@ pub fn build_owner_metrics(repositories: &[RepositoryEvidence]) -> Vec<OwnerMetr
                 total_repos,
                 per_control_coverage: coverage.per_control_coverage,
                 score_exclusion_counts: coverage.score_exclusion_counts,
+                in_org: None,
             }
         })
         .collect();
@@ -776,6 +777,42 @@ pub(crate) fn enrich_owner_metrics_with_lifecycle(
             }
             owner.per_control_coverage.insert(key.to_string(), metric);
         }
+    }
+}
+
+/// Cross-check each individual-user owner's login against the org-members
+/// set, setting [`OwnerMetrics::in_org`] in place (item9 Part B).
+///
+/// Only `OwnerType::User` owners are checked — team-type owners' canonical
+/// name (`@org/team-slug`) isn't a login, so team membership (already
+/// handled separately via [`crate::collector::team_membership::enrich_team_rosters_with_org_membership`])
+/// is the relevant check there, not org membership of the owner string
+/// itself; team-type owners are left at `in_org: None`.
+///
+/// `org_members` is `None` when the org-members fetch was unfetched or
+/// degraded — every user-type owner's `in_org` is set to `None` in that
+/// case (no flag on missing data). When `Some`, both sides of the
+/// comparison are lowercased (`alice` in the set matches owner `@Alice`).
+///
+/// # Contract
+///
+/// Must be called **after** [`aggregate_metrics`] (which invokes
+/// [`build_owner_metrics`] and populates `owner_metrics`). Mutates
+/// `in_org` in-place; idempotent (overwrites on repeated calls).
+pub(crate) fn enrich_owner_metrics_with_org_membership(
+    owners: &mut [OwnerMetrics],
+    org_members: Option<&HashSet<String>>,
+) {
+    for owner in owners.iter_mut() {
+        if owner.owner_type != OwnerType::User {
+            continue;
+        }
+        let login = owner
+            .owner
+            .strip_prefix('@')
+            .unwrap_or(owner.owner.as_str())
+            .to_lowercase();
+        owner.in_org = org_members.map(|set| set.contains(&login));
     }
 }
 

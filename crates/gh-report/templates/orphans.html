@@ -47,7 +47,7 @@
                     <td>{% if row.repo_url.is_empty() %}{{ row.repo_name }}{% else %}<a href="{{ row.repo_url }}"
                             target="_blank" rel="noopener noreferrer">{{ row.repo_name }}</a>{% endif %}{% if row.is_stale %} {% call tooltip::tooltip("Stale: not updated in 2+ years") %}{% endcall %}{% endif %}</td>
                     <td>{{ row.visibility }}</td>
-                    <td>{% if row.last_committer_url.is_empty() %}{{ row.last_committer_login }}{% else %}<a
+                    <td>{% if row.last_committer_url.is_empty() %}{{ row.last_committer_login }}{% if row.last_committer_unregistered %} {% call tooltip::warning("Unregistered or unknown GitHub user — this commit's author could not be matched to a GitHub account.") %}{% endcall %}{% endif %}{% else %}<a
                             href="{{ row.last_committer_url }}" target="_blank" rel="noopener noreferrer">{{
                             row.last_committer_login }}</a>{% endif %}</td>
                     <td>{{ row.last_commit_date }}</td>
@@ -85,7 +85,7 @@
                     <td>{% if row.repo_url.is_empty() %}{{ row.repo_name }}{% else %}<a href="{{ row.repo_url }}"
                             target="_blank" rel="noopener noreferrer">{{ row.repo_name }}</a>{% endif %}{% if row.is_stale %} {% call tooltip::tooltip("Stale: not updated in 2+ years") %}{% endcall %}{% endif %}</td>
                     <td>{{ row.visibility }}</td>
-                    <td>{% if row.last_committer_url.is_empty() %}{{ row.last_committer_login }}{% else %}<a
+                    <td>{% if row.last_committer_url.is_empty() %}{{ row.last_committer_login }}{% if row.last_committer_unregistered %} {% call tooltip::warning("Unregistered or unknown GitHub user — this commit's author could not be matched to a GitHub account.") %}{% endcall %}{% endif %}{% else %}<a
                             href="{{ row.last_committer_url }}" target="_blank" rel="noopener noreferrer">{{
                             row.last_committer_login }}</a>{% endif %}</td>
                     <td>{{ row.last_commit_date }}</td>

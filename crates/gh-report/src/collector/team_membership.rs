@@ -1,17 +1,22 @@
-//! GitHub team membership collection (B1).
+//! GitHub team and organization membership collection (B1, item9 Part B).
 //!
 //! Fetches the complete, role-tagged member roster for each GitHub team
-//! referenced by CODEOWNERS. Render-time only (oracle adr-fmt-kqavx CLASS B
-//! verdict): rosters are fetched fresh every collection tick via the
-//! existing budget/rate-limit-gated [`GitHubClient::request`] and are never
+//! referenced by CODEOWNERS, plus (optionally) the current org-members
+//! list used to cross-check whether a team member or individual-user
+//! CODEOWNERS owner has left the organization. Render-time only (oracle
+//! adr-fmt-kqavx CLASS B verdict): rosters and the org-members set are
+//! fetched fresh every collection tick via the existing
+//! budget/rate-limit-gated [`GitHubClient::request`] and are never
 //! persisted to the native per-repo event payload.
+
+use std::collections::HashSet;
 
 use tracing::{info, warn};
 
 use crate::config;
 use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRoster, TeamRosterStatus};
 use crate::github::client::{ApiOutcome, GitHubClient};
-use crate::github::dto::GhTeamMember;
+use crate::github::dto::{GhOrgMember, GhTeamMember};
 
 /// Fetch rosters for every `(canonical_owner, team_slug)` pair.
 ///
@@ -140,7 +145,11 @@ async fn collect_one_team_roster(
             } else {
                 TeamMemberRole::Member
             };
-            TeamMember { login, role }
+            TeamMember {
+                login,
+                role,
+                in_org: None,
+            }
         })
         .collect();
     members.sort_by_cached_key(|m| m.login.to_lowercase());
@@ -150,6 +159,86 @@ async fn collect_one_team_roster(
         team_slug: team_slug.to_string(),
         status: TeamRosterStatus::Complete,
         members,
+    }
+}
+
+/// Fetch the organization's current member logins (item9 Part B).
+///
+/// Optional capability: mirrors
+/// [`crate::collector::ghas_scanning::collect_org_alerts`]'s shape exactly
+/// — same paginated, budget/rate-limit-gated [`GitHubClient::request`]
+/// call, same graceful-degradation-on-failure discipline. Degrades to
+/// `None` on any fetch failure (403, network error, transient 5xx, etc.)
+/// rather than returning an empty set — an empty set would be
+/// indistinguishable from "the org genuinely has zero members", and
+/// callers must never read fetch failure as "everyone left the org".
+///
+/// The returned set is lowercased so callers can cross-check a login with
+/// a single `.to_lowercase()` on their side (`alice` matches `Alice`).
+pub async fn collect_org_members(client: &GitHubClient) -> Option<HashSet<String>> {
+    let path = format!(
+        "/orgs/{}/members?per_page={}",
+        client.org_name,
+        config::DEFAULT_PAGE_SIZE
+    );
+    let outcome = client
+        .request(&path, true, 1, config::DEFAULT_REQUEST_TIMEOUT_SECS)
+        .await;
+
+    if !outcome.is_ok() {
+        warn!(
+            status = ?outcome.status_code(),
+            retryable = outcome.is_retryable(),
+            "org members fetch failed — degrading to unknown (no departure flags this run)"
+        );
+        return None;
+    }
+
+    Some(
+        org_member_logins_from_outcome(&outcome)
+            .into_iter()
+            .map(|login| login.to_lowercase())
+            .collect(),
+    )
+}
+
+/// Parse a successful org-members-list `ApiOutcome` into a list of logins.
+///
+/// Entries that fail to parse as [`GhOrgMember`] are skipped and logged;
+/// they do not fail the whole fetch. Mirrors [`logins_from_outcome`]
+/// exactly, against the org-members DTO instead of the team-members DTO.
+fn org_member_logins_from_outcome(outcome: &ApiOutcome) -> Vec<String> {
+    let items = outcome
+        .data()
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut logins = Vec::with_capacity(items.len());
+    for item in items {
+        match serde_json::from_value::<GhOrgMember>(item) {
+            Ok(member) => logins.push(member.login),
+            Err(e) => warn!(error = %e, "failed to parse org member entry — skipping"),
+        }
+    }
+    logins
+}
+
+/// Cross-check every team member's login against the org-members set,
+/// setting [`TeamMember::in_org`] in place (item9 Part B).
+///
+/// `org_members` is `None` when the org-members fetch was unfetched or
+/// degraded — every member's `in_org` is set to `None` in that case (no
+/// flag on missing data, per [`collect_org_members`]'s contract). When
+/// `Some`, both sides of the comparison are lowercased (`alice` in the set
+/// matches login `Alice`).
+pub(crate) fn enrich_team_rosters_with_org_membership(
+    rosters: &mut [TeamRoster],
+    org_members: Option<&HashSet<String>>,
+) {
+    for roster in rosters.iter_mut() {
+        for member in &mut roster.members {
+            member.in_org = org_members.map(|set| set.contains(&member.login.to_lowercase()));
+        }
     }
 }
 
@@ -354,5 +443,135 @@ mod tests {
         assert_eq!(rosters[0].members.len(), 1);
         assert_eq!(rosters[0].members[0].login, "dan");
         assert_eq!(rosters[0].members[0].role, TeamMemberRole::Member);
+    }
+
+    /// item9 Part B test (d): the org-members fetch is complete across a
+    /// multi-page, Link-header-paginated response — mirrors
+    /// [`roster_fetch_is_complete_across_pages_and_roles`]'s pagination
+    /// shape, proving `collect_org_members` inherits
+    /// `request_paginated`'s Link-header-driven pagination loop rather
+    /// than reading only the first page.
+    #[tokio::test]
+    async fn collect_org_members_is_complete_across_pages() {
+        let server = MockServer::start().await;
+
+        Mock::given(path("/orgs/test-org/members"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"login": "Alice"}, {"login": "bob"}]))
+                    .insert_header(
+                        "link",
+                        format!("<{}/members-page-2>; rel=\"next\"", server.uri()),
+                    ),
+            )
+            .mount(&server)
+            .await;
+
+        Mock::given(path("/members-page-2"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{"login": "carol"}])),
+            )
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let members = collect_org_members(&client)
+            .await
+            .expect("fetch should succeed");
+
+        let mut logins: Vec<&String> = members.iter().collect();
+        logins.sort_unstable();
+        assert_eq!(
+            logins,
+            vec!["alice", "bob", "carol"],
+            "org-members set must be complete across every page, and lowercased"
+        );
+    }
+
+    /// item9 Part B test (d): a failed org-members fetch degrades to
+    /// `None` — mirrors [`roster_fetch_permission_denied_degrades_status`]'s
+    /// degradation discipline. `None`, not an empty set, so callers never
+    /// read "fetch failed" as "org has zero members".
+    #[tokio::test]
+    async fn collect_org_members_degrades_to_none_on_failure() {
+        let server = MockServer::start().await;
+
+        Mock::given(path("/orgs/test-org/members"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let members = collect_org_members(&client).await;
+
+        assert_eq!(
+            members, None,
+            "a degraded fetch must yield None, never an empty set"
+        );
+    }
+
+    /// item9 Part B test (b): a team member NOT in the org-members set is
+    /// flagged `in_org = Some(false)`; one IN the set is `Some(true)`.
+    /// Comparison is lowercase on both sides — a set entry `"alice"`
+    /// matches login `"Alice"`.
+    #[test]
+    fn enrich_team_rosters_flags_departed_member_and_clears_present_member() {
+        let mut rosters = vec![TeamRoster {
+            canonical_owner: "@test-org/team-a".to_string(),
+            team_slug: "team-a".to_string(),
+            status: TeamRosterStatus::Complete,
+            members: vec![
+                TeamMember {
+                    login: "Alice".to_string(),
+                    role: TeamMemberRole::Member,
+                    in_org: None,
+                },
+                TeamMember {
+                    login: "departed-bob".to_string(),
+                    role: TeamMemberRole::Member,
+                    in_org: None,
+                },
+            ],
+        }];
+        let org_members: HashSet<String> = ["alice".to_string()].into_iter().collect();
+
+        enrich_team_rosters_with_org_membership(&mut rosters, Some(&org_members));
+
+        let members = &rosters[0].members;
+        assert_eq!(
+            members[0].in_org,
+            Some(true),
+            "'Alice' must match lowercased set entry 'alice'"
+        );
+        assert_eq!(
+            members[1].in_org,
+            Some(false),
+            "'departed-bob' is absent from the set — flagged departed"
+        );
+    }
+
+    /// item9 Part B test (c): when the org-members fetch degraded
+    /// (`org_members: None`), no member is flagged — every `in_org` stays
+    /// `None`, not `Some(false)`. This is the whole point: absence of the
+    /// list must never be read as "everyone departed".
+    #[test]
+    fn enrich_team_rosters_flags_nobody_when_org_members_degraded() {
+        let mut rosters = vec![TeamRoster {
+            canonical_owner: "@test-org/team-a".to_string(),
+            team_slug: "team-a".to_string(),
+            status: TeamRosterStatus::Complete,
+            members: vec![TeamMember {
+                login: "alice".to_string(),
+                role: TeamMemberRole::Member,
+                in_org: None,
+            }],
+        }];
+
+        enrich_team_rosters_with_org_membership(&mut rosters, None);
+
+        assert_eq!(
+            rosters[0].members[0].in_org, None,
+            "degraded org-members fetch must not flag anyone"
+        );
     }
 }

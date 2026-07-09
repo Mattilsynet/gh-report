@@ -178,6 +178,10 @@ pub struct OwnerRepoRow {
     pub last_committer_login: String,
     /// URL to the last committer's GitHub profile, or empty string if unknown.
     pub last_committer_url: String,
+    /// `true` when a committer name is present but no GitHub account could
+    /// be matched to it (`last_committer_url` empty and `last_committer_login`
+    /// is not the neutral `"—"` no-data placeholder) — item9 Part A.
+    pub last_committer_unregistered: bool,
     /// Date of the last commit, formatted as `YYYY-MM-DD`, or `"—"`.
     pub last_commit_date: String,
     /// Whether this repository is stale (`updated_at` > 2 years before report date).
@@ -233,6 +237,22 @@ pub struct TeamMemberRow {
     pub role_label: &'static str,
     /// URL to the member's GitHub profile.
     pub profile_url: String,
+    /// Current org-membership state (item9 Part B): `None` when the
+    /// org-members list was unfetched/degraded (no flag), `Some(false)`
+    /// when this login is confirmed absent from the org (departed —
+    /// warn), `Some(true)` when confirmed present.
+    pub in_org: Option<bool>,
+}
+
+impl TeamMemberRow {
+    /// Whether this member is confirmed no longer part of the org.
+    ///
+    /// `false` for both "confirmed present" (`Some(true)`) and
+    /// "unfetched/degraded" (`None`) — never flag on missing data.
+    #[must_use]
+    pub fn departed(&self) -> bool {
+        self.in_org == Some(false)
+    }
 }
 
 /// View model for a team's member roster (B1), embedded in
@@ -309,6 +329,25 @@ pub struct OwnerDetailViewModel {
     /// owner has no attributed orphans (item 7 — drives the collapsible
     /// bottom-of-page section, omitted when empty).
     pub orphan_repo_rows: Vec<OrphanedRepoRow>,
+    /// Current org-membership state of this owner, meaningful only when
+    /// `owner_type_label == "User"` (item9 Part B): `None` when the
+    /// org-members list was unfetched/degraded or this is a team-type
+    /// owner (no flag), `Some(false)` when this individual-user owner is
+    /// confirmed absent from the org (departed — warn), `Some(true)`
+    /// when confirmed present.
+    pub owner_in_org: Option<bool>,
+}
+
+impl OwnerDetailViewModel {
+    /// Whether this (individual-user) owner is confirmed no longer part
+    /// of the org.
+    ///
+    /// `false` for both "confirmed present" (`Some(true)`) and
+    /// "unfetched/degraded/team-type" (`None`) — never flag on missing data.
+    #[must_use]
+    pub fn owner_departed(&self) -> bool {
+        self.owner_in_org == Some(false)
+    }
 }
 
 /// View model for the owners overview page.
@@ -361,6 +400,10 @@ pub struct OrphanedRepoRow {
     pub last_committer_login: String,
     /// URL to the last committer's GitHub profile, or empty string.
     pub last_committer_url: String,
+    /// `true` when a committer name is present but no GitHub account could
+    /// be matched to it (`last_committer_url` empty and `last_committer_login`
+    /// is not the neutral `"—"` no-data placeholder) — item9 Part A.
+    pub last_committer_unregistered: bool,
     /// Date of the last commit, formatted as `YYYY-MM-DD`, or `"—"`.
     pub last_commit_date: String,
     /// Whether this repository is stale (`updated_at` > 2 years before report date).

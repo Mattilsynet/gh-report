@@ -548,6 +548,7 @@ fn build_team_roster_view_model(roster: &TeamRoster) -> TeamRosterViewModel {
                 config::DEFAULT_GITHUB_WEB_BASE_URL,
                 utf8_percent_encode(&member.login, PATH_SEGMENT)
             ),
+            in_org: member.in_org,
         })
         .collect();
     members.sort_by_cached_key(|m| m.login.to_lowercase());
@@ -729,6 +730,7 @@ fn build_owner_detail_view_models(
                 roster,
                 github_url,
                 orphan_repo_rows,
+                owner_in_org: m.in_org,
             };
 
             Some((slug, detail))
@@ -744,11 +746,23 @@ struct LastCommitDisplay {
     login: String,
     url: String,
     date: String,
+    /// `true` when a committer name is present but GitHub could not match
+    /// the commit to any GitHub account (item9 Part A) — see
+    /// [`extract_last_commit_display`] for the exact predicate.
+    unregistered: bool,
 }
 
 const EM_DASH: &str = "\u{2014}";
 
 /// Extract last-commit display fields from a [`RepositoryEvidence`].
+///
+/// `unregistered` distinguishes two states that both render an empty
+/// `url` (item9 Part A): a committer name is present but
+/// `committer_login` is `None` (GitHub could not match the commit to a
+/// GitHub account — `unregistered: true`), versus no commit data at all
+/// (`last_commit: None`, `login` falls back to [`EM_DASH`] —
+/// `unregistered: false`, neutral dash). Keyed on `url.is_empty() &&
+/// login != EM_DASH` so the two states never conflate.
 fn extract_last_commit_display(repo: &RepositoryEvidence) -> LastCommitDisplay {
     match &repo.last_commit {
         Some(info) => {
@@ -767,12 +781,19 @@ fn extract_last_commit_display(repo: &RepositoryEvidence) -> LastCommitDisplay {
                 })
                 .unwrap_or_default();
             let date = format_date_prefix(info.commit_date.as_deref());
-            LastCommitDisplay { login, url, date }
+            let unregistered = url.is_empty() && login != EM_DASH;
+            LastCommitDisplay {
+                login,
+                url,
+                date,
+                unregistered,
+            }
         }
         None => LastCommitDisplay {
             login: EM_DASH.to_string(),
             url: String::new(),
             date: EM_DASH.to_string(),
+            unregistered: false,
         },
     }
 }
@@ -839,6 +860,7 @@ fn build_owner_repo_row(
         created_at: format_date_prefix(repo.repository.created_at.as_deref()),
         last_committer_login: commit.login,
         last_committer_url: commit.url,
+        last_committer_unregistered: commit.unregistered,
         last_commit_date: commit.date,
         is_stale: is_repo_stale(repo.repository.updated_at.as_deref(), run_timestamp),
         repo_score: repo_score_val,
@@ -977,6 +999,7 @@ fn build_orphaned_view_model(
                     .to_string(),
                 last_committer_login: commit.login,
                 last_committer_url: commit.url,
+                last_committer_unregistered: commit.unregistered,
                 last_commit_date: commit.date,
                 is_stale: is_repo_stale(repo.repository.updated_at.as_deref(), run_timestamp),
                 attributed_team: attributed.map(|r| r.canonical_owner.clone()),
@@ -2583,6 +2606,7 @@ mod tests {
             total_repos: 1,
             per_control_coverage: std::collections::HashMap::new(),
             score_exclusion_counts: Vec::new(),
+            in_org: None,
         }];
 
         let empty_repos: &[RepositoryEvidence] = &[];
@@ -2936,6 +2960,7 @@ mod tests {
             members: vec![TeamMember {
                 login: "alice".to_string(),
                 role: TeamMemberRole::Maintainer,
+                in_org: None,
             }],
         }];
 
@@ -3041,10 +3066,12 @@ mod tests {
                 TeamMember {
                     login: "alice".to_string(),
                     role: TeamMemberRole::Maintainer,
+                    in_org: Some(false),
                 },
                 TeamMember {
                     login: "bob".to_string(),
                     role: TeamMemberRole::Member,
+                    in_org: Some(true),
                 },
             ],
         }];
@@ -3070,6 +3097,56 @@ mod tests {
             detail_page.contains("../report.html#add-a-team-member"),
             "expected the A3 add-a-member affordance to be reused, not duplicated"
         );
+        assert!(
+            detail_page.contains("No longer a member of this GitHub organisation."),
+            "item9 Part B: departed member 'alice' (in_org=Some(false)) must show the warning tooltip"
+        );
+        let alice_idx = detail_page.find("alice").expect("alice login rendered");
+        let bob_idx = detail_page.find("bob").expect("bob login rendered");
+        let warn_idx = detail_page
+            .find("No longer a member of this GitHub organisation.")
+            .expect("warning tooltip rendered");
+        assert!(
+            alice_idx < warn_idx && warn_idx < bob_idx,
+            "warning badge must render on alice's row (between alice's and bob's rows), not bob's — \
+             alice={alice_idx} warn={warn_idx} bob={bob_idx}"
+        );
+    }
+
+    /// item9 Part B test (b)/(c) render-level: a member confirmed present
+    /// (`Some(true)`) shows no warning; a member with `in_org` unknown
+    /// (`None`, degraded fetch) also shows no warning — never flag on
+    /// missing data.
+    #[test]
+    fn render_owner_detail_html_no_departed_warning_when_present_or_degraded() {
+        use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRoster, TeamRosterStatus};
+
+        let mut evidence = evidence_with_owner_repos();
+        evidence.metrics.team_rosters = vec![TeamRoster {
+            canonical_owner: "@org/team-a".to_string(),
+            team_slug: "team-a".to_string(),
+            status: TeamRosterStatus::Complete,
+            members: vec![
+                TeamMember {
+                    login: "alice".to_string(),
+                    role: TeamMemberRole::Maintainer,
+                    in_org: Some(true),
+                },
+                TeamMember {
+                    login: "bob".to_string(),
+                    role: TeamMemberRole::Member,
+                    in_org: None,
+                },
+            ],
+        }];
+
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let detail_page = &pages["owners/org-team-a.html"];
+
+        assert!(
+            !detail_page.contains("No longer a member of this GitHub organisation."),
+            "present (Some(true)) and unknown (None) members must never show the departed warning"
+        );
     }
 
     #[test]
@@ -3084,6 +3161,7 @@ mod tests {
             members: vec![TeamMember {
                 login: "alice".to_string(),
                 role: TeamMemberRole::Maintainer,
+                in_org: None,
             }],
         }];
 
@@ -3265,6 +3343,10 @@ mod tests {
         assert_eq!(row.last_committer_login, "\u{2014}");
         assert!(row.last_committer_url.is_empty());
         assert_eq!(row.last_commit_date, "\u{2014}");
+        assert!(
+            !row.last_committer_unregistered,
+            "item9 Part A: no-commit-data must render the neutral dash, not the unregistered-user warning"
+        );
     }
 
     #[test]
@@ -3336,6 +3418,70 @@ mod tests {
             format!("{}/octocat", config::DEFAULT_GITHUB_WEB_BASE_URL),
         );
         assert_eq!(row.last_commit_date, "2026-04-08");
+        assert!(
+            !row.last_committer_unregistered,
+            "item9 Part A: a matched committer_login must not show the unregistered-user warning"
+        );
+    }
+
+    /// item9 Part A test (a): a committer name is present but GitHub could
+    /// not match the commit to any GitHub account (`committer_login:
+    /// None`) — this must render the unregistered-user warning, distinct
+    /// from both "matched" (registered) and "no commit data at all"
+    /// (neutral dash, covered by `detail_vm_repo_row_metadata_defaults_when_no_data`).
+    #[test]
+    fn detail_vm_unregistered_committer_flagged_when_name_present_but_no_login_matched() {
+        use crate::domain::evidence::LastCommitInfo;
+
+        let mut repo = test_fixtures::make_repository_evidence(
+            "unmatched-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_with_owners(&["@org/team-unmatched"]),
+            ),
+        );
+        repo.last_commit = Some(LastCommitInfo {
+            committer_login: None,
+            committer_name: Some("Jane Doe".to_string()),
+            commit_date: Some("2026-04-08T10:30:00Z".to_string()),
+        });
+
+        let repos = vec![repo];
+        let metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
+        let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
+        let evidence = test_fixtures::make_full_evidence(
+            test_fixtures::make_metadata(),
+            stats,
+            metrics,
+            test_fixtures::make_observability(),
+            repos,
+        );
+
+        let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
+        let detail_vms = build_owner_detail_view_models(
+            &evidence.metrics.owner_metrics,
+            &owner_repo_map,
+            &CoverageTiers::default(),
+            &evidence.assessment_metadata.organization,
+            &evidence.assessment_metadata.run_timestamp,
+            &[],
+            &[],
+        );
+
+        let (_, vm) = &detail_vms[0];
+        let row = &vm.repo_rows[0];
+
+        assert_eq!(row.last_committer_login, "Jane Doe");
+        assert!(row.last_committer_url.is_empty());
+        assert!(
+            row.last_committer_unregistered,
+            "a committer name with no matched GitHub login must be flagged unregistered"
+        );
     }
 
     #[test]
@@ -3465,6 +3611,75 @@ mod tests {
         assert!(
             !detail_page.contains("Stale: not updated in 2+ years"),
             "stale row tooltip should not appear when no repos are stale"
+        );
+    }
+
+    /// item9 Part A render-level test: an unregistered committer (name
+    /// present, no matched GitHub login) shows the warning tooltip on the
+    /// owner-detail Repositories table; a repo with no commit data at all
+    /// (the `evidence_with_owner_repos` fixture) shows neither the warning
+    /// nor a stray tooltip.
+    #[test]
+    fn render_owner_detail_html_unregistered_committer_shows_warning_badge() {
+        use crate::domain::evidence::LastCommitInfo;
+
+        let mut repo = test_fixtures::make_repository_evidence(
+            "unmatched-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_with_owners(&["@org/team-unmatched"]),
+            ),
+        );
+        repo.last_commit = Some(LastCommitInfo {
+            committer_login: None,
+            committer_name: Some("Jane Doe".to_string()),
+            commit_date: Some("2026-04-08T10:30:00Z".to_string()),
+        });
+
+        let repos = vec![repo];
+        let metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
+        let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
+        let evidence = test_fixtures::make_full_evidence(
+            test_fixtures::make_metadata(),
+            stats,
+            metrics,
+            test_fixtures::make_observability(),
+            repos,
+        );
+
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let detail_page = pages
+            .iter()
+            .find(|(k, _)| k.starts_with("owners/"))
+            .expect("expected an owner detail page")
+            .1;
+
+        assert!(detail_page.contains("Jane Doe"));
+        assert!(
+            detail_page.contains("unregistered/unknown GitHub user")
+                || detail_page.contains("could not be matched to a GitHub account"),
+            "expected an unregistered-committer warning tooltip; got: {detail_page}"
+        );
+    }
+
+    #[test]
+    fn render_owner_detail_html_no_warning_badge_when_no_commit_data() {
+        let evidence = evidence_with_owner_repos();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let detail_page = pages
+            .iter()
+            .find(|(k, _)| k.starts_with("owners/"))
+            .expect("expected an owner detail page")
+            .1;
+
+        assert!(
+            !detail_page.contains("could not be matched to a GitHub account"),
+            "no-commit-data (neutral dash) must not show the unregistered-committer warning"
         );
     }
 
@@ -3818,6 +4033,76 @@ mod tests {
         assert_eq!(vm.rows[2].last_committer_login, "bob");
     }
 
+    /// item9 Part A test (a), orphans view model: mirrors the owner-detail
+    /// coverage above (`detail_vm_unregistered_committer_flagged_when_name_present_but_no_login_matched`)
+    /// at the `build_orphaned_view_model` seam — a committer name present
+    /// with no matched login is flagged; a matched login is not.
+    #[test]
+    fn build_orphaned_vm_flags_unregistered_committer_only_when_name_present_and_login_absent() {
+        use crate::domain::evidence::LastCommitInfo;
+
+        let mut unregistered = test_fixtures::make_repository_evidence(
+            "unregistered-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_absent(),
+            ),
+        );
+        unregistered.last_commit = Some(LastCommitInfo {
+            committer_login: None,
+            committer_name: Some("Jane Doe".to_string()),
+            commit_date: Some("2026-04-01T00:00:00Z".to_string()),
+        });
+
+        let mut registered = test_fixtures::make_repository_evidence(
+            "registered-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_absent(),
+            ),
+        );
+        registered.last_commit = Some(LastCommitInfo {
+            committer_login: Some("alice".to_string()),
+            committer_name: Some("Alice".to_string()),
+            commit_date: Some("2026-04-02T00:00:00Z".to_string()),
+        });
+
+        let repos = vec![unregistered, registered];
+        let vm =
+            super::build_orphaned_view_model(&repos, "TestOrg", "2026-04-09T12:00:00+00:00", &[]);
+
+        let unregistered_row = vm
+            .rows
+            .iter()
+            .find(|r| r.repo_name == "unregistered-repo")
+            .expect("unregistered-repo row present");
+        assert!(unregistered_row.last_committer_url.is_empty());
+        assert!(
+            unregistered_row.last_committer_unregistered,
+            "committer name present with no matched login must be flagged unregistered"
+        );
+
+        let registered_row = vm
+            .rows
+            .iter()
+            .find(|r| r.repo_name == "registered-repo")
+            .expect("registered-repo row present");
+        assert!(
+            !registered_row.last_committer_unregistered,
+            "a matched committer_login must not be flagged unregistered"
+        );
+    }
+
     /// B2: an orphan repo is attributed to the team whose roster lists its
     /// last committer, matched by the raw GitHub login (not the display
     /// name) so `TeamMember.login` comparisons are unaffected by
@@ -3870,6 +4155,7 @@ mod tests {
             members: vec![TeamMember {
                 login: "alice".to_string(),
                 role: TeamMemberRole::Maintainer,
+                in_org: None,
             }],
         }];
 
@@ -3942,6 +4228,7 @@ mod tests {
             members: vec![TeamMember {
                 login: "alice".to_string(),
                 role: TeamMemberRole::Maintainer,
+                in_org: None,
             }],
         }];
 
@@ -3954,6 +4241,49 @@ mod tests {
         );
         assert!(orphans_html.contains("owners/org-team-a.html"));
         assert!(orphans_html.contains("orphan-repo"));
+    }
+
+    /// item9 Part A render-level test, orphans.html: an unregistered
+    /// committer (name present, no matched login) shows the warning
+    /// tooltip on the top-level orphans table.
+    #[test]
+    fn render_orphaned_html_unregistered_committer_shows_warning_badge() {
+        use crate::domain::evidence::LastCommitInfo;
+
+        let mut orphan = test_fixtures::make_repository_evidence(
+            "orphan-unmatched-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_absent(),
+            ),
+        );
+        orphan.last_commit = Some(LastCommitInfo {
+            committer_login: None,
+            committer_name: Some("Jane Doe".to_string()),
+            commit_date: Some("2026-04-01T00:00:00Z".to_string()),
+        });
+
+        let evidence = test_fixtures::make_full_evidence(
+            test_fixtures::make_metadata(),
+            crate::aggregate::metrics::build_collection_statistics(&[orphan.clone()]),
+            crate::aggregate::metrics::aggregate_metrics(&[orphan.clone()]),
+            test_fixtures::make_observability(),
+            vec![orphan],
+        );
+
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let orphans_html = &pages["orphans.html"];
+
+        assert!(orphans_html.contains("Jane Doe"));
+        assert!(
+            orphans_html.contains("could not be matched to a GitHub account"),
+            "expected an unregistered-committer warning tooltip on orphans.html; got: {orphans_html}"
+        );
     }
 
     #[test]
@@ -3994,6 +4324,7 @@ mod tests {
             members: vec![TeamMember {
                 login: "alice".to_string(),
                 role: TeamMemberRole::Maintainer,
+                in_org: None,
             }],
         }];
 
@@ -4871,6 +5202,61 @@ mod tests {
         assert!(
             index.contains("security-team") || index.contains("infra-team"),
             "podium should contain at least one team owner"
+        );
+    }
+
+    /// item9 Part B render-level test: a departed (`in_org=Some(false)`)
+    /// individual-user CODEOWNERS owner shows the warning tooltip on
+    /// their own owner-detail H1 (the sole GitHub-profile-link site for
+    /// user-type owners — `owners.html`'s overview table links only to
+    /// this internal detail page, never directly to GitHub).
+    #[test]
+    fn render_owner_detail_html_departed_individual_user_owner_shows_warning_badge() {
+        use crate::domain::metrics::OwnerType;
+
+        let mut evidence = evidence_with_mixed_owner_types();
+        for owner in &mut evidence.metrics.owner_metrics {
+            if owner.owner_type == OwnerType::User {
+                owner.in_org = Some(false);
+            }
+        }
+
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let alice_page = pages
+            .iter()
+            .find(|(k, _)| k.starts_with("owners/") && k.contains("alice"))
+            .expect("expected an owner detail page for @alice")
+            .1;
+
+        assert!(
+            alice_page.contains("No longer a member of this GitHub organisation."),
+            "departed individual-user owner must show the warning tooltip on their H1; got: {alice_page}"
+        );
+    }
+
+    /// item9 Part B render-level test: an individual-user owner confirmed
+    /// present (`Some(true)`) shows no warning.
+    #[test]
+    fn render_owner_detail_html_present_individual_user_owner_shows_no_warning_badge() {
+        use crate::domain::metrics::OwnerType;
+
+        let mut evidence = evidence_with_mixed_owner_types();
+        for owner in &mut evidence.metrics.owner_metrics {
+            if owner.owner_type == OwnerType::User {
+                owner.in_org = Some(true);
+            }
+        }
+
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let alice_page = pages
+            .iter()
+            .find(|(k, _)| k.starts_with("owners/") && k.contains("alice"))
+            .expect("expected an owner detail page for @alice")
+            .1;
+
+        assert!(
+            !alice_page.contains("No longer a member of this GitHub organisation."),
+            "present individual-user owner must not show the departed warning"
         );
     }
 

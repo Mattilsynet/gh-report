@@ -18,7 +18,7 @@
     {% include "partials/nav.html" %}
 
     <h1 title="{{ vm.owner }}">{% if let Some(url) = vm.github_url %}<a href="{{ url }}" target="_blank"
-            rel="noopener noreferrer">{{ vm.owner_short }}</a>{% else %}{{ vm.owner_short }}{% endif %}</h1>
+            rel="noopener noreferrer">{{ vm.owner_short }}</a>{% else %}{{ vm.owner_short }}{% endif %}{% if vm.owner_departed() %} {% call tooltip::warning("No longer a member of this GitHub organisation.") %}{% endcall %}{% endif %}</h1>
 
     <ul class="breadcrumb">
         <li><a href="../index.html">Dashboard</a></li>
@@ -47,7 +47,7 @@
             <tbody>
                 {% for member in roster.members %}
                 <tr>
-                    <td><a href="{{ member.profile_url }}" target="_blank" rel="noopener noreferrer">{{ member.login }}</a></td>
+                    <td><a href="{{ member.profile_url }}" target="_blank" rel="noopener noreferrer">{{ member.login }}</a>{% if member.departed() %} {% call tooltip::warning("No longer a member of this GitHub organisation.") %}{% endcall %}{% endif %}</td>
                     <td>{{ member.role_label }}</td>
                 </tr>
                 {% endfor %}
@@ -133,7 +133,7 @@
                     <td>{{ row.license }}</td>
                     <td>{{ row.pushed_at }}</td>
                     <td>{{ row.created_at }}</td>
-                    <td>{% if row.last_committer_url.is_empty() %}{{ row.last_committer_login }}{% else %}<a
+                    <td>{% if row.last_committer_url.is_empty() %}{{ row.last_committer_login }}{% if row.last_committer_unregistered %} {% call tooltip::warning("Unregistered or unknown GitHub user — this commit's author could not be matched to a GitHub account.") %}{% endcall %}{% endif %}{% else %}<a
                             href="{{ row.last_committer_url }}" target="_blank" rel="noopener noreferrer">{{
                             row.last_committer_login }}</a>{% endif %}</td>
                     <td>{{ row.last_commit_date }}</td>

@@ -709,6 +709,10 @@ details>*:not(summary) {
    cursor: help;
 }
 
+.tooltip-trigger.tooltip-warn {
+   color: var(--status-warn);
+}
+
 .tooltip-trigger::after {
    content: attr(data-tooltip);
    position: absolute;

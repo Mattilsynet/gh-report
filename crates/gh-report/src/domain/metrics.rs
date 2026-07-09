@@ -272,6 +272,17 @@ pub struct OwnerMetrics {
     /// on `RepositoryEvidence` (CHE-0082:R6/CHE-0022:R6).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub score_exclusion_counts: Vec<ScoreExclusionCount>,
+    /// Current org-membership state for `OwnerType::User` owners, fetched
+    /// fresh at render time (item9 Part B). `None` for `OwnerType::Team`
+    /// owners (team membership isn't org membership) and whenever the
+    /// org-members fetch was unfetched/degraded (never flag on missing
+    /// data); `Some(false)`/`Some(true)` when the org-members set was
+    /// fetched and this owner's login was checked against it. Render-time
+    /// only, mirroring [`TeamMember::in_org`] — never persisted to the
+    /// native per-repo event payload (oracle adr-fmt-kqavx CLASS B verdict,
+    /// re-confirmed adr-fmt-v6hgj).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_org: Option<bool>,
 }
 
 /// Owner type classification.
@@ -322,6 +333,15 @@ pub struct TeamMember {
     pub login: String,
     /// The member's role on this team.
     pub role: TeamMemberRole,
+    /// Current org-membership state, cross-checked at render time against
+    /// a freshly-fetched org-members set (item9 Part B). `None` when the
+    /// org-members fetch was unfetched/degraded — never flag on missing
+    /// data; `Some(false)` when this login is confirmed absent from the
+    /// org (departed); `Some(true)` when confirmed present. Render-time
+    /// only, same CLASS B verdict as the rest of this type (oracle
+    /// adr-fmt-kqavx, re-confirmed adr-fmt-v6hgj).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_org: Option<bool>,
 }
 
 /// Outcome of fetching a single team's roster.

@@ -70,6 +70,18 @@ pub struct GhTeamMember {
     pub login: String,
 }
 
+/// A member of a GitHub organization, from the "List organization
+/// members" REST endpoint (item9 Part B).
+///
+/// Same `simple-user` response shape as [`GhTeamMember`]; only `login` is
+/// needed to build the org-members cross-check set, so every other field
+/// is ignored by serde.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GhOrgMember {
+    /// GitHub login of the org member.
+    pub login: String,
+}
+
 /// Security and analysis settings from repository details.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityAndAnalysis {
@@ -259,6 +271,28 @@ mod tests {
     fn gh_team_member_missing_login_fails() {
         let json = serde_json::json!({ "id": 1 });
         let result = serde_json::from_value::<GhTeamMember>(json);
+        assert!(
+            result.is_err(),
+            "should fail without required 'login' field"
+        );
+    }
+
+    #[test]
+    fn gh_org_member_round_trip() {
+        let json = serde_json::json!({
+            "login": "octocat",
+            "id": 1,
+            "node_id": "MDQ6VXNlcjE=",
+            "type": "User"
+        });
+        let member: GhOrgMember = serde_json::from_value(json).unwrap();
+        assert_eq!(member.login, "octocat");
+    }
+
+    #[test]
+    fn gh_org_member_missing_login_fails() {
+        let json = serde_json::json!({ "id": 1 });
+        let result = serde_json::from_value::<GhOrgMember>(json);
         assert!(
             result.is_err(),
             "should fail without required 'login' field"
