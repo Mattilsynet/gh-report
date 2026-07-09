@@ -1137,11 +1137,11 @@ mod tests {
     use std::collections::HashSet;
 
     use crate::domain::auth::{AuthMode, Capability, TokenTier};
-    use crate::domain::checks::CollectionFailureReason;
+    use crate::domain::checks::{CollectionFailureReason, ExclusionReason};
     use crate::domain::metrics::{
         AggregatedMetrics, BranchProtectionCounts, CodeownersCounts, CollectionHealthCheckKind,
-        CollectionHealthCount, DependabotCounts, PolicyCounts, RateMetric, SecretAlertCounts,
-        SecretScanningCounts,
+        CollectionHealthCount, DependabotCounts, PolicyCounts, RateMetric, ScoreExclusionCount,
+        SecretAlertCounts, SecretScanningCounts,
     };
     use crate::domain::repository::Visibility;
     use cherry_pit_core::ReadPort;
@@ -1216,6 +1216,23 @@ mod tests {
             },
             owner_metrics: vec![],
             collection_health_counts: vec![],
+            score_exclusion_counts: vec![
+                ScoreExclusionCount {
+                    check_kind: CollectionHealthCheckKind::Dependabot,
+                    reason: ExclusionReason::Unknown,
+                    count: 1,
+                },
+                ScoreExclusionCount {
+                    check_kind: CollectionHealthCheckKind::BranchProtection,
+                    reason: ExclusionReason::Unknown,
+                    count: 1,
+                },
+                ScoreExclusionCount {
+                    check_kind: CollectionHealthCheckKind::Codeowners,
+                    reason: ExclusionReason::Unknown,
+                    count: 1,
+                },
+            ],
             team_rosters: vec![],
         }
     }
@@ -1291,6 +1308,47 @@ mod tests {
 
         assert!(html.contains("TestOrg GitHub Security Posture Overview"));
         assert!(html.contains("<code>TestOrg</code>"));
+    }
+
+    #[test]
+    fn dashboard_report_shows_by_reason_exclusion_breakdown_per_control() {
+        let evidence = sample_evidence();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let html = &pages["report.html"];
+
+        assert!(
+            html.contains("1 unmeasured (1 unknown)"),
+            "expected the dependabot/branch_protection/codeowners tables to show their \
+             1-unknown exclusion from sample_metrics(); report.html:\n{html}"
+        );
+        assert_eq!(
+            html.matches("1 unmeasured (1 unknown)").count(),
+            3,
+            "dependabot, branch_protection, and codeowners each carry exactly 1 unknown \
+             exclusion in sample_metrics()"
+        );
+        assert!(
+            html.contains("0 unmeasured"),
+            "security_policy and secret_scanning carry 0 exclusions in sample_metrics()"
+        );
+    }
+
+    #[test]
+    fn dashboard_index_shows_by_reason_exclusion_breakdown_on_scorecard() {
+        let evidence = sample_evidence();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let html = &pages["index.html"];
+
+        assert!(
+            html.contains("1 unmeasured (1 unknown)"),
+            "expected the scorecard to surface the by-reason exclusion breakdown; \
+             index.html:\n{html}"
+        );
+        assert!(
+            !html.contains("reserved 0"),
+            "the dead always-zero 'reserved' branch-protection label must be gone \
+             now that the bucket is live (pcoqb fix)"
+        );
     }
 
     #[test]

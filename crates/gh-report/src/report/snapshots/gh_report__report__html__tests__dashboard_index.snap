@@ -51,6 +51,7 @@ expression: "&pages[\"index.html\"]"
             <div class="progress-bar">
                 <div class="progress-fill tier-warn w-60"></div>
             </div>
+            <p class="card-detail">1 unmeasured (1 unknown)</p>
             <p class="card-detail"><a href="OPERATIONS.html#dependabot-coverage" title="Dependabot Status remediation guidance">Read more</a></p>
         </div>
         <div class="card tier-pass" title="Percentage of public repos with GitHub secret scanning enabled to detect leaked credentials.">
@@ -64,10 +65,10 @@ expression: "&pages[\"index.html\"]"
             </div>
             <p class="card-detail"><a href="OPERATIONS.html#secret-scanning-coverage" title="Secret Scanning remediation guidance">Read more</a></p>
         </div>
-        <div class="card tier-warn" title="Percentage of observable repos at branch-protection T2 or higher; T1 is minimal baseline, T0 is below baseline. Unreadable or permission-suspected repos are classified as T0 and count against this percentage — they are not excluded.">
+        <div class="card tier-warn" title="Percentage of observable repos at branch-protection T2 or higher; T1 is minimal baseline, T0 is below baseline. Unreadable or permission-suspected repos are excluded from this percentage (see the unmeasured breakdown below), not classified as T0.">
             <p class="card-label">Branch Protection <span class="tooltip-trigger" tabindex="0" data-tooltip="Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: require PR review, disallow force-push and deletion, and disable bypass so admins can&#39;t skip it." title="Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: require PR review, disallow force-push and deletion, and disable bypass so admins can&#39;t skip it.">ⓘ</span></p>
             <p class="card-value">60.0% (3/5)</p>
-            <p class="card-detail">T1 1 · T0 0 · reserved 1</p>
+            <p class="card-detail">T1 1 · T0 0 · 1 unmeasured (1 unknown)</p>
             <div class="progress-bar">
                 <div
                     class="progress-fill tier-warn w-60">
@@ -81,6 +82,7 @@ expression: "&pages[\"index.html\"]"
             <div class="progress-bar">
                 <div class="progress-fill tier-pass w-80"></div>
             </div>
+            <p class="card-detail">1 unmeasured (1 unknown)</p>
             <p class="card-detail"><a href="OPERATIONS.html#codeowners-coverage" title="CODEOWNERS remediation guidance">Read more</a></p>
         </div>
         <div class="card tier-na" title="Proportion of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better.">

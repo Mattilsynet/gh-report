@@ -17,6 +17,7 @@ use crate::domain::checks::{CollectionFailureReason, SecretScanningStatus};
 use crate::domain::evidence::{AssessmentMetadata, Evidence, RepositoryEvidence};
 use crate::domain::metrics::{
     AggregatedMetrics, CollectionHealthCheckKind, CollectionHealthCount, OwnerType,
+    ScoreExclusionCount,
 };
 use crate::domain::time::{is_repo_stale, parse_iso8601};
 
@@ -816,6 +817,21 @@ pub struct ReportViewModel {
     pub branch_protection_coverage_formatted: String,
     pub codeowners_coverage_formatted: String,
 
+    /// Count of repos excluded from `policy_coverage_formatted`'s
+    /// denominator (indeterminate or not-applicable status), and a
+    /// formatted `"N unmeasured (breakdown)"` string broken down by
+    /// [`crate::domain::checks::ExclusionReason`].
+    pub policy_excluded_total: u32,
+    pub policy_excluded_formatted: String,
+    pub secret_scanning_excluded_total: u32,
+    pub secret_scanning_excluded_formatted: String,
+    pub dependabot_excluded_total: u32,
+    pub dependabot_excluded_formatted: String,
+    pub branch_protection_excluded_total: u32,
+    pub branch_protection_excluded_formatted: String,
+    pub codeowners_excluded_total: u32,
+    pub codeowners_excluded_formatted: String,
+
     pub policy_via_setting: u32,
     pub policy_via_file: u32,
     pub policy_missing: u32,
@@ -986,6 +1002,47 @@ fn dashboard_control_how_to_fix() -> ControlHowToFix {
     }
 }
 
+struct ControlExclusion {
+    total: u32,
+    formatted: String,
+}
+
+struct ExclusionBreakdown {
+    policy: ControlExclusion,
+    secret_scanning: ControlExclusion,
+    dependabot: ControlExclusion,
+    branch_protection: ControlExclusion,
+    codeowners: ControlExclusion,
+}
+
+fn format_exclusion(
+    check_kind: CollectionHealthCheckKind,
+    counts: &[ScoreExclusionCount],
+) -> ControlExclusion {
+    let mut total = 0u32;
+    let mut parts = Vec::new();
+    for entry in counts.iter().filter(|c| c.check_kind == check_kind) {
+        total = total.saturating_add(entry.count);
+        parts.push(format!("{} {}", entry.count, entry.reason));
+    }
+    let formatted = if parts.is_empty() {
+        "0 unmeasured".to_string()
+    } else {
+        format!("{total} unmeasured ({})", parts.join(", "))
+    };
+    ControlExclusion { total, formatted }
+}
+
+fn dashboard_exclusion_breakdown(counts: &[ScoreExclusionCount]) -> ExclusionBreakdown {
+    ExclusionBreakdown {
+        policy: format_exclusion(CollectionHealthCheckKind::SecurityPolicy, counts),
+        secret_scanning: format_exclusion(CollectionHealthCheckKind::SecretScanning, counts),
+        dependabot: format_exclusion(CollectionHealthCheckKind::Dependabot, counts),
+        branch_protection: format_exclusion(CollectionHealthCheckKind::BranchProtection, counts),
+        codeowners: format_exclusion(CollectionHealthCheckKind::Codeowners, counts),
+    }
+}
+
 struct ObservableRepos {
     dependabot: u32,
     secret_scanning: u32,
@@ -1023,7 +1080,7 @@ impl ReportViewModel {
     #[must_use]
     #[expect(
         clippy::too_many_lines,
-        reason = "constructing ReportViewModel is a flat multi-field assignment from pre-computed per-control helpers (anchors, how-to-fix copy, health, archival, team-access); the 5 new *_how_to_fix fields mirror the existing *_operations_anchor fields and pushed an already near-threshold constructor over the line count — extracting further would fragment one cohesive struct literal without improving readability"
+        reason = "constructing ReportViewModel is a flat multi-field assignment from pre-computed per-control helpers (anchors, how-to-fix copy, health, archival, team-access, exclusion breakdown); the 5 new *_how_to_fix fields mirror the existing *_operations_anchor fields, and the 10 new *_excluded_* fields mirror them again for the by-reason exclusion breakdown (item6 adr-fmt-6mi2t), pushing an already near-threshold constructor over the line count — extracting further would fragment one cohesive struct literal without improving readability"
     )]
     pub fn from_evidence(evidence: &Evidence, tiers: &CoverageTiers) -> Self {
         let metadata = &evidence.assessment_metadata;
@@ -1033,6 +1090,7 @@ impl ReportViewModel {
         let admin_diagnostics = build_admin_diagnostics(metadata, m, &evidence.repositories);
         let anchors = dashboard_operations_anchors();
         let how_to_fix = dashboard_control_how_to_fix();
+        let exclusion = dashboard_exclusion_breakdown(&m.score_exclusion_counts);
         let observable = observable_repos(m);
 
         let (
@@ -1059,6 +1117,16 @@ impl ReportViewModel {
             secret_scanning_coverage_formatted: m.secret_scanning_coverage.to_string(),
             branch_protection_coverage_formatted: m.branch_protection_coverage.to_string(),
             codeowners_coverage_formatted: m.codeowners_coverage.to_string(),
+            policy_excluded_total: exclusion.policy.total,
+            policy_excluded_formatted: exclusion.policy.formatted,
+            secret_scanning_excluded_total: exclusion.secret_scanning.total,
+            secret_scanning_excluded_formatted: exclusion.secret_scanning.formatted,
+            dependabot_excluded_total: exclusion.dependabot.total,
+            dependabot_excluded_formatted: exclusion.dependabot.formatted,
+            branch_protection_excluded_total: exclusion.branch_protection.total,
+            branch_protection_excluded_formatted: exclusion.branch_protection.formatted,
+            codeowners_excluded_total: exclusion.codeowners.total,
+            codeowners_excluded_formatted: exclusion.codeowners.formatted,
             policy_via_setting: m.policy_counts.via_setting,
             policy_via_file: m.policy_counts.via_file,
             policy_missing: m.policy_counts.missing,
@@ -1914,12 +1982,12 @@ mod tests {
     use crate::domain::auth::{AuthMode, Capability, TokenTier};
     use crate::domain::checks::{
         BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus,
-        CollectionFailureReason,
+        CollectionFailureReason, ExclusionReason,
     };
     use crate::domain::metrics::{
         AggregatedMetrics, BranchProtectionCounts, CodeownersCounts, CollectionHealthCheckKind,
-        CollectionHealthCount, DependabotCounts, PolicyCounts, RateMetric, SecretAlertCounts,
-        SecretScanningCounts,
+        CollectionHealthCount, DependabotCounts, PolicyCounts, RateMetric, ScoreExclusionCount,
+        SecretAlertCounts, SecretScanningCounts,
     };
     use crate::domain::repository::Visibility;
     use crate::test_fixtures;
@@ -1989,6 +2057,28 @@ mod tests {
             },
             owner_metrics: vec![],
             collection_health_counts: vec![],
+            score_exclusion_counts: vec![
+                ScoreExclusionCount {
+                    check_kind: CollectionHealthCheckKind::SecretScanning,
+                    reason: ExclusionReason::Unknown,
+                    count: 1,
+                },
+                ScoreExclusionCount {
+                    check_kind: CollectionHealthCheckKind::Dependabot,
+                    reason: ExclusionReason::Unknown,
+                    count: 1,
+                },
+                ScoreExclusionCount {
+                    check_kind: CollectionHealthCheckKind::BranchProtection,
+                    reason: ExclusionReason::Unknown,
+                    count: 1,
+                },
+                ScoreExclusionCount {
+                    check_kind: CollectionHealthCheckKind::Codeowners,
+                    reason: ExclusionReason::Unknown,
+                    count: 1,
+                },
+            ],
             team_rosters: vec![],
         }
     }

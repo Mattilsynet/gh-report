@@ -13,14 +13,15 @@ use tracing::warn;
 use crate::config;
 use crate::domain::checks::{
     BranchProtectionTier, CodeownersStatus, CollectionFailureReason, DependabotStatus,
-    SecretScanningStatus, SecurityPolicyEvidence, SecurityPolicyStatus,
+    ExclusionReason, ScoreCategory, SecretScanningStatus, SecurityPolicyEvidence,
+    SecurityPolicyStatus,
 };
 use crate::domain::evidence::RepositoryEvidence;
 use crate::domain::metrics::{
     AggregatedMetrics, BranchProtectionCounts, CodeownersCounts, CollectionHealthCheckKind,
     CollectionHealthCount, CollectionStatistics, DependabotCounts, OrgAlertSummary, OwnerMetrics,
-    OwnerType, PolicyCounts, RateMetric, RepoAlertSummary, SecretAlertCounts, SecretScanningCounts,
-    SecretScanningObservability,
+    OwnerType, PolicyCounts, RateMetric, RepoAlertSummary, ScoreExclusionCount, SecretAlertCounts,
+    SecretScanningCounts, SecretScanningObservability,
 };
 use crate::domain::repository::Visibility;
 use crate::domain::status::CollectionStatus;
@@ -112,9 +113,8 @@ pub fn aggregate_metrics(repositories: &[RepositoryEvidence]) -> AggregatedMetri
 
     let taxonomy = count_collection_health_reasons(&active);
     let alert_observable_enabled = count_alert_observable_enabled(&active);
+    let branch_protection_exclusions = count_branch_protection_exclusion_reasons(&active);
     let coverage = build_coverage_metrics(CoverageInputs {
-        total_active: count_as_u32(active.len()),
-        total_public: count_as_u32(public_policy.len()),
         policy_counts: &policy_counts,
         secret_counts: &secret_counts,
         dependabot_counts: &dependabot_counts,
@@ -124,6 +124,28 @@ pub fn aggregate_metrics(repositories: &[RepositoryEvidence]) -> AggregatedMetri
         taxonomy: &taxonomy,
         alert_observable_enabled,
     });
+
+    let mut score_exclusion_counts = Vec::new();
+    exclusion_tally_from_policy(&policy_counts).push_counts(
+        CollectionHealthCheckKind::SecurityPolicy,
+        &mut score_exclusion_counts,
+    );
+    exclusion_tally_from_secret_scanning(&secret_counts).push_counts(
+        CollectionHealthCheckKind::SecretScanning,
+        &mut score_exclusion_counts,
+    );
+    exclusion_tally_from_dependabot(&dependabot_counts).push_counts(
+        CollectionHealthCheckKind::Dependabot,
+        &mut score_exclusion_counts,
+    );
+    branch_protection_exclusions.push_counts(
+        CollectionHealthCheckKind::BranchProtection,
+        &mut score_exclusion_counts,
+    );
+    exclusion_tally_from_codeowners(&codeowners_counts).push_counts(
+        CollectionHealthCheckKind::Codeowners,
+        &mut score_exclusion_counts,
+    );
 
     AggregatedMetrics {
         security_policy_coverage: coverage.security_policy,
@@ -140,14 +162,13 @@ pub fn aggregate_metrics(repositories: &[RepositoryEvidence]) -> AggregatedMetri
         codeowners_counts,
         owner_metrics: build_owner_metrics(repositories),
         collection_health_counts: taxonomy.into_counts(),
+        score_exclusion_counts,
         team_rosters: Vec::new(),
     }
 }
 
 #[derive(Clone, Copy)]
 struct CoverageInputs<'a> {
-    total_active: u32,
-    total_public: u32,
     policy_counts: &'a PolicyCounts,
     secret_counts: &'a SecretScanningCounts,
     dependabot_counts: &'a DependabotCounts,
@@ -156,6 +177,89 @@ struct CoverageInputs<'a> {
     secret_alert_counts: &'a SecretAlertCounts,
     taxonomy: &'a CollectionHealthTaxonomyCounts,
     alert_observable_enabled: u32,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct ExclusionTally {
+    permission_denied: u32,
+    unknown: u32,
+    not_applicable: u32,
+    other: u32,
+}
+
+impl ExclusionTally {
+    fn record(&mut self, reason: ExclusionReason) {
+        match reason {
+            ExclusionReason::PermissionDenied => {
+                self.permission_denied = self.permission_denied.saturating_add(1);
+            }
+            ExclusionReason::Unknown => self.unknown = self.unknown.saturating_add(1),
+            ExclusionReason::NotApplicable => {
+                self.not_applicable = self.not_applicable.saturating_add(1);
+            }
+            ExclusionReason::Other => self.other = self.other.saturating_add(1),
+        }
+    }
+
+    fn push_counts(
+        self,
+        check_kind: CollectionHealthCheckKind,
+        out: &mut Vec<ScoreExclusionCount>,
+    ) {
+        for (reason, count) in [
+            (ExclusionReason::PermissionDenied, self.permission_denied),
+            (ExclusionReason::Unknown, self.unknown),
+            (ExclusionReason::NotApplicable, self.not_applicable),
+            (ExclusionReason::Other, self.other),
+        ] {
+            if count > 0 {
+                out.push(ScoreExclusionCount {
+                    check_kind,
+                    reason,
+                    count,
+                });
+            }
+        }
+    }
+}
+
+fn exclusion_tally_from_policy(counts: &PolicyCounts) -> ExclusionTally {
+    ExclusionTally {
+        unknown: counts.unknown,
+        ..ExclusionTally::default()
+    }
+}
+
+fn exclusion_tally_from_secret_scanning(counts: &SecretScanningCounts) -> ExclusionTally {
+    ExclusionTally {
+        permission_denied: counts.permission_denied,
+        unknown: counts.unknown,
+        ..ExclusionTally::default()
+    }
+}
+
+fn exclusion_tally_from_dependabot(counts: &DependabotCounts) -> ExclusionTally {
+    ExclusionTally {
+        unknown: counts.unknown,
+        ..ExclusionTally::default()
+    }
+}
+
+fn exclusion_tally_from_codeowners(counts: &CodeownersCounts) -> ExclusionTally {
+    ExclusionTally {
+        unknown: counts.unknown,
+        ..ExclusionTally::default()
+    }
+}
+
+fn count_branch_protection_exclusion_reasons(active: &[&RepositoryEvidence]) -> ExclusionTally {
+    let mut tally = ExclusionTally::default();
+    for repo in active {
+        if let ScoreCategory::Excluded(reason) = repo.checks.branch_protection.score_category() {
+            tally.record(reason);
+        }
+    }
+    tally
 }
 
 struct CoverageMetrics {
@@ -172,12 +276,10 @@ fn build_coverage_metrics(input: CoverageInputs<'_>) -> CoverageMetrics {
         .policy_counts
         .via_setting
         .saturating_add(input.policy_counts.via_file);
+    let policy_observable = policy_pass.saturating_add(input.policy_counts.missing);
     CoverageMetrics {
-        security_policy: RateMetric::new(policy_pass, input.total_public)
-            .with_extra(
-                "observable_repositories",
-                policy_pass.saturating_add(input.policy_counts.missing),
-            )
+        security_policy: RateMetric::new(policy_pass, policy_observable)
+            .with_extra("observable_repositories", policy_observable)
             .with_extra("unknown", input.policy_counts.unknown),
         secret_scanning: secret_scanning_coverage(input),
         dependabot: dependabot_coverage(input),
@@ -188,17 +290,15 @@ fn build_coverage_metrics(input: CoverageInputs<'_>) -> CoverageMetrics {
 }
 
 fn secret_scanning_coverage(input: CoverageInputs<'_>) -> RateMetric {
-    RateMetric::new(input.secret_counts.enabled, input.total_public)
+    let observable = input
+        .secret_counts
+        .enabled
+        .saturating_add(input.secret_counts.disabled);
+    RateMetric::new(input.secret_counts.enabled, observable)
         .with_extra("disabled", input.secret_counts.disabled)
         .with_extra("permission_denied", input.secret_counts.permission_denied)
         .with_extra("unknown", input.secret_counts.unknown)
-        .with_extra(
-            "observable_repositories",
-            input
-                .secret_counts
-                .enabled
-                .saturating_add(input.secret_counts.disabled),
-        )
+        .with_extra("observable_repositories", observable)
         .with_extra(
             "collection_health_secret_scanning_permission_denied",
             input.taxonomy.secret_scanning_permission_denied,
@@ -206,18 +306,16 @@ fn secret_scanning_coverage(input: CoverageInputs<'_>) -> RateMetric {
 }
 
 fn dependabot_coverage(input: CoverageInputs<'_>) -> RateMetric {
-    RateMetric::new(input.dependabot_counts.enabled, input.total_active)
+    let observable = input
+        .dependabot_counts
+        .enabled
+        .saturating_add(input.dependabot_counts.paused)
+        .saturating_add(input.dependabot_counts.disabled);
+    RateMetric::new(input.dependabot_counts.enabled, observable)
         .with_extra("paused", input.dependabot_counts.paused)
         .with_extra("disabled", input.dependabot_counts.disabled)
         .with_extra("unknown", input.dependabot_counts.unknown)
-        .with_extra(
-            "observable_repositories",
-            input
-                .dependabot_counts
-                .enabled
-                .saturating_add(input.dependabot_counts.paused)
-                .saturating_add(input.dependabot_counts.disabled),
-        )
+        .with_extra("observable_repositories", observable)
 }
 
 fn open_secret_alert_prevalence(input: CoverageInputs<'_>) -> RateMetric {
@@ -263,19 +361,13 @@ fn codeowners_coverage(input: CoverageInputs<'_>) -> RateMetric {
         .codeowners_counts
         .conforming
         .saturating_add(input.codeowners_counts.non_conforming);
-    RateMetric::new(codeowners_present, input.total_active)
+    let observable = codeowners_present.saturating_add(input.codeowners_counts.absent);
+    RateMetric::new(codeowners_present, observable)
         .with_extra("non_conforming", input.codeowners_counts.non_conforming)
         .with_extra("absent", input.codeowners_counts.absent)
         .with_extra("unknown", input.codeowners_counts.unknown)
         .with_extra("truncated", input.codeowners_counts.truncated)
-        .with_extra(
-            "observable_repositories",
-            input
-                .codeowners_counts
-                .conforming
-                .saturating_add(input.codeowners_counts.non_conforming)
-                .saturating_add(input.codeowners_counts.absent),
-        )
+        .with_extra("observable_repositories", observable)
 }
 
 /// Count security policy statuses across public repos.
@@ -485,9 +577,8 @@ fn count_branch_protection_statuses(active: &[&RepositoryEvidence]) -> BranchPro
                 counts.pass = counts.pass.saturating_add(1);
             }
             BranchProtectionTier::Minimal => counts.partial = counts.partial.saturating_add(1),
-            BranchProtectionTier::BelowBaseline | BranchProtectionTier::Excluded => {
-                counts.fail = counts.fail.saturating_add(1);
-            }
+            BranchProtectionTier::BelowBaseline => counts.fail = counts.fail.saturating_add(1),
+            BranchProtectionTier::Excluded => counts.unknown = counts.unknown.saturating_add(1),
         },
     )
 }
@@ -884,7 +975,9 @@ mod tests {
         BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus,
         SecretScanningResult, SecretScanningStatus,
     };
-    use crate::domain::metrics::{CollectionHealthCheckKind, CollectionHealthCount};
+    use crate::domain::metrics::{
+        CollectionHealthCheckKind, CollectionHealthCount, ScoreExclusionCount,
+    };
     use crate::domain::repository::Visibility;
     use crate::domain::status::CollectionStatus;
     use crate::test_fixtures::*;
@@ -1014,6 +1107,265 @@ mod tests {
         )
     }
 
+    fn three_pass_two_fail_one_excluded_branch_protection() -> Vec<RepositoryEvidence> {
+        let passing = |name: &str| all_passing_evidence(name);
+        let failing = |name: &str, branch: BranchProtectionResult| {
+            make_repository_evidence(
+                name,
+                Visibility::Public,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch,
+                    codeowners_conforming(),
+                ),
+            )
+        };
+        vec![
+            passing("pass-1"),
+            passing("pass-2"),
+            passing("pass-3"),
+            failing("fail-1", branch_partial()),
+            failing("fail-2", branch_fail()),
+            failing(
+                "excluded-1",
+                branch_protection_result_with_reason(CollectionFailureReason::PermissionDenied),
+            ),
+        ]
+    }
+
+    #[test]
+    fn branch_protection_excluded_repo_leaves_denominator_and_counted_by_reason() {
+        let repos = three_pass_two_fail_one_excluded_branch_protection();
+        let metrics = aggregate_metrics(&repos);
+
+        assert_eq!(metrics.branch_protection_coverage.numerator, 3);
+        assert_eq!(
+            metrics.branch_protection_coverage.denominator, 5,
+            "pcoqb: the excluded repo must leave the denominator (5, not 6 folded into fail)"
+        );
+        assert_eq!(metrics.branch_protection_coverage.rate, Some(60.0));
+        assert_eq!(metrics.branch_protection_counts.fail, 1);
+        assert_eq!(metrics.branch_protection_counts.unknown, 1);
+
+        assert!(
+            metrics
+                .score_exclusion_counts
+                .contains(&ScoreExclusionCount {
+                    check_kind: CollectionHealthCheckKind::BranchProtection,
+                    reason: ExclusionReason::PermissionDenied,
+                    count: 1,
+                }),
+            "expected a BranchProtection/PermissionDenied/1 exclusion row, got {:?}",
+            metrics.score_exclusion_counts
+        );
+    }
+
+    #[test]
+    fn secret_scanning_excluded_repo_leaves_denominator_mission_fixture_shape() {
+        let repos = vec![
+            make_repository_evidence(
+                "pub-1",
+                Visibility::Public,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_conforming(),
+                ),
+            ),
+            make_repository_evidence(
+                "pub-2",
+                Visibility::Public,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_conforming(),
+                ),
+            ),
+            make_repository_evidence(
+                "pub-3",
+                Visibility::Public,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_conforming(),
+                ),
+            ),
+            make_repository_evidence(
+                "pub-4",
+                Visibility::Public,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_disabled(),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_conforming(),
+                ),
+            ),
+            make_repository_evidence(
+                "pub-5",
+                Visibility::Public,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_disabled(),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_conforming(),
+                ),
+            ),
+            make_repository_evidence(
+                "pub-6-excluded",
+                Visibility::Public,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_permission_denied(),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_conforming(),
+                ),
+            ),
+        ];
+        let metrics = aggregate_metrics(&repos);
+
+        assert_eq!(metrics.secret_scanning_coverage.numerator, 3);
+        assert_eq!(metrics.secret_scanning_coverage.denominator, 5);
+        assert_eq!(metrics.secret_scanning_coverage.rate, Some(60.0));
+
+        assert!(
+            metrics
+                .score_exclusion_counts
+                .contains(&ScoreExclusionCount {
+                    check_kind: CollectionHealthCheckKind::SecretScanning,
+                    reason: ExclusionReason::PermissionDenied,
+                    count: 1,
+                })
+        );
+    }
+
+    #[test]
+    fn score_exclusion_counts_by_reason_breakdown_sums_to_excluded_total() {
+        let repos = vec![
+            repo_with_branch_protection_reason(CollectionFailureReason::PermissionDenied),
+            repo_with_branch_protection_reason(CollectionFailureReason::NotFoundAbsent),
+            repo_with_branch_protection_reason(CollectionFailureReason::Transient),
+        ];
+        let metrics = aggregate_metrics(&repos);
+
+        assert_eq!(metrics.branch_protection_coverage.denominator, 0);
+
+        let branch_protection_exclusions: Vec<_> = metrics
+            .score_exclusion_counts
+            .iter()
+            .filter(|c| c.check_kind == CollectionHealthCheckKind::BranchProtection)
+            .collect();
+        let total: u32 = branch_protection_exclusions.iter().map(|c| c.count).sum();
+        assert_eq!(total, 3, "all 3 repos are excluded, none dropped silently");
+        assert!(
+            branch_protection_exclusions.contains(&&ScoreExclusionCount {
+                check_kind: CollectionHealthCheckKind::BranchProtection,
+                reason: ExclusionReason::PermissionDenied,
+                count: 1,
+            })
+        );
+        assert!(
+            branch_protection_exclusions.contains(&&ScoreExclusionCount {
+                check_kind: CollectionHealthCheckKind::BranchProtection,
+                reason: ExclusionReason::Unknown,
+                count: 1,
+            })
+        );
+        assert!(
+            branch_protection_exclusions.contains(&&ScoreExclusionCount {
+                check_kind: CollectionHealthCheckKind::BranchProtection,
+                reason: ExclusionReason::Other,
+                count: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn score_exclusion_counts_empty_when_no_exclusions() {
+        let repos = vec![all_passing_evidence("clean")];
+        let metrics = aggregate_metrics(&repos);
+        assert!(metrics.score_exclusion_counts.is_empty());
+    }
+
+    #[test]
+    fn codeowners_org_numerator_preserves_file_present_semantics() {
+        let repos = vec![
+            make_repository_evidence(
+                "conforming",
+                Visibility::Public,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_conforming(),
+                ),
+            ),
+            make_repository_evidence(
+                "non-conforming",
+                Visibility::Public,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_non_conforming(),
+                ),
+            ),
+            make_repository_evidence(
+                "excluded",
+                Visibility::Public,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_unknown(),
+                ),
+            ),
+        ];
+        let metrics = aggregate_metrics(&repos);
+
+        assert_eq!(
+            metrics.codeowners_coverage.numerator, 2,
+            "non-conforming still counts as present in the org numerator (unchanged)"
+        );
+        assert_eq!(
+            metrics.codeowners_coverage.denominator, 2,
+            "the 1 excluded (unknown) repo drops out of the denominator: 2, not 3"
+        );
+        assert_eq!(metrics.codeowners_coverage.rate, Some(100.0));
+        assert!(
+            metrics
+                .score_exclusion_counts
+                .contains(&ScoreExclusionCount {
+                    check_kind: CollectionHealthCheckKind::Codeowners,
+                    reason: ExclusionReason::Unknown,
+                    count: 1,
+                })
+        );
+    }
+
     #[test]
     fn collection_statistics_counts_active_repos() {
         let repos = sample_repos();
@@ -1100,8 +1452,15 @@ mod tests {
         assert_eq!(metrics.policy_counts.unknown, 1);
 
         assert_eq!(metrics.security_policy_coverage.numerator, 2);
-        assert_eq!(metrics.security_policy_coverage.denominator, 4);
-        assert_eq!(metrics.security_policy_coverage.rate, Some(50.0));
+        assert_eq!(
+            metrics.security_policy_coverage.denominator, 3,
+            "public-3's policy_unknown() excludes it from the denominator (3, not 4)"
+        );
+        assert_eq!(
+            metrics.security_policy_coverage.rate,
+            Some(66.7),
+            "excluding the 1 unmeasured repo raises the rate from 50.0% (2/4) to 66.7% (2/3)"
+        );
     }
 
     #[test]
@@ -1125,13 +1484,20 @@ mod tests {
 
         assert!(archived_public_count > 0);
         assert_ne!(public_repo_count, active_repo_count);
+
         assert_eq!(
-            metrics.security_policy_coverage.denominator,
-            public_repo_count
+            metrics.security_policy_coverage.numerator, 2,
+            "archived-1 (a passing archived public repo) contributes to the numerator, \
+             proving archived-public inclusion directly rather than via a raw \
+             denominator == total_public equality"
         );
+        assert_eq!(metrics.security_policy_coverage.denominator, 3);
+        assert_eq!(metrics.secret_scanning_coverage.numerator, 2);
         assert_eq!(
             metrics.secret_scanning_coverage.denominator,
-            public_repo_count
+            public_repo_count - 1,
+            "denominator = public repos minus the 1 excluded (permission_denied); \
+             archived-1 (a passing archived public repo) still contributes to the numerator"
         );
     }
 
@@ -1146,8 +1512,15 @@ mod tests {
         assert_eq!(metrics.secret_scanning_counts.unknown, 0);
 
         assert_eq!(metrics.secret_scanning_coverage.numerator, 2);
-        assert_eq!(metrics.secret_scanning_coverage.denominator, 4);
-        assert_eq!(metrics.secret_scanning_coverage.rate, Some(50.0));
+        assert_eq!(
+            metrics.secret_scanning_coverage.denominator, 3,
+            "public-3's secret_permission_denied() excludes it from the denominator (3, not 4)"
+        );
+        assert_eq!(
+            metrics.secret_scanning_coverage.rate,
+            Some(66.7),
+            "excluding the 1 unmeasured repo raises the rate from 50.0% (2/4) to 66.7% (2/3)"
+        );
     }
 
     #[test]
@@ -1160,10 +1533,14 @@ mod tests {
         assert_eq!(metrics.dependabot_security_updates_counts.unknown, 1);
 
         assert_eq!(metrics.dependabot_security_updates_coverage.numerator, 3);
-        assert_eq!(metrics.dependabot_security_updates_coverage.denominator, 5);
+        assert_eq!(
+            metrics.dependabot_security_updates_coverage.denominator, 4,
+            "public-3's dependabot_unknown() excludes it from the denominator (4, not 5)"
+        );
         assert_eq!(
             metrics.dependabot_security_updates_coverage.rate,
-            Some(60.0)
+            Some(75.0),
+            "excluding the 1 unmeasured repo raises the rate from 60.0% (3/5) to 75.0% (3/4)"
         );
     }
 
@@ -1174,12 +1551,20 @@ mod tests {
 
         assert_eq!(metrics.branch_protection_counts.pass, 2);
         assert_eq!(metrics.branch_protection_counts.partial, 1);
-        assert_eq!(metrics.branch_protection_counts.fail, 2);
-        assert_eq!(metrics.branch_protection_counts.unknown, 0);
+        assert_eq!(
+            metrics.branch_protection_counts.fail, 1,
+            "pcoqb fix: public-3's excluded tier routes to .unknown, not folded into .fail \
+             (only private-1's genuine BelowBaseline remains)"
+        );
+        assert_eq!(metrics.branch_protection_counts.unknown, 1);
 
         assert_eq!(metrics.branch_protection_coverage.numerator, 2);
-        assert_eq!(metrics.branch_protection_coverage.denominator, 5);
-        assert_eq!(metrics.branch_protection_coverage.rate, Some(40.0));
+        assert_eq!(metrics.branch_protection_coverage.denominator, 4);
+        assert_eq!(
+            metrics.branch_protection_coverage.rate,
+            Some(50.0),
+            "excluding the 1 unmeasured repo raises the rate from 40.0% (2/5) to 50.0% (2/4)"
+        );
     }
 
     #[test]
@@ -1318,8 +1703,15 @@ mod tests {
         assert_eq!(metrics.codeowners_counts.unknown, 1);
 
         assert_eq!(metrics.codeowners_coverage.numerator, 3);
-        assert_eq!(metrics.codeowners_coverage.denominator, 5);
-        assert_eq!(metrics.codeowners_coverage.rate, Some(60.0));
+        assert_eq!(
+            metrics.codeowners_coverage.denominator, 4,
+            "public-3's codeowners_unknown() excludes it from the denominator (4, not 5)"
+        );
+        assert_eq!(
+            metrics.codeowners_coverage.rate,
+            Some(75.0),
+            "excluding the 1 unmeasured repo raises the rate from 60.0% (3/5) to 75.0% (3/4)"
+        );
     }
 
     #[test]
@@ -1688,14 +2080,17 @@ mod tests {
 
         assert_eq!(
             metrics.branch_protection_coverage.extra.get("insufficient"),
-            Some(&serde_json::json!(3))
+            Some(&serde_json::json!(2)),
+            "insufficient = partial(1) + fail(1); public-3's excluded tier no longer folds \
+             into fail (pcoqb fix), so this drops from 3 to 2"
         );
         assert_eq!(
             metrics
                 .branch_protection_coverage
                 .extra
                 .get("observable_repositories"),
-            Some(&serde_json::json!(5))
+            Some(&serde_json::json!(4)),
+            "observable = pass(2) + partial(1) + fail(1); excludes public-3, dropping from 5 to 4"
         );
 
         assert_eq!(

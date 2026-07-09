@@ -735,8 +735,17 @@ impl std::fmt::Display for CodeownersStatus {
 /// maps to [`ScoreCategory::Excluded`] selects one of these variants, with
 /// `Other` as the explicit catch-all for causes the score breakdown does not
 /// otherwise distinguish.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// # Wire format
+///
+/// Serializable so it can ride in report-side aggregates (e.g. a
+/// `(check_kind, reason) -> count` breakdown); never persisted on
+/// `RepositoryEvidence` itself (CHE-0082:R6/CHE-0022:R6) — the reason
+/// already lives in the per-check `*Status` enums via the
+/// `From<...> for ScoreCategory` funnel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[repr(u8)]
+#[serde(rename_all = "snake_case")]
 pub enum ExclusionReason {
     /// The check returned an explicit or suspected permission-denied response.
     PermissionDenied = 0,
@@ -747,6 +756,17 @@ pub enum ExclusionReason {
     /// Any other exclusion cause not otherwise distinguished (e.g. transient,
     /// rate-limited, or invalid collection responses).
     Other = 3,
+}
+
+impl std::fmt::Display for ExclusionReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PermissionDenied => write!(f, "permission_denied"),
+            Self::Unknown => write!(f, "unknown"),
+            Self::NotApplicable => write!(f, "not_applicable"),
+            Self::Other => write!(f, "other"),
+        }
+    }
 }
 
 /// How a check status maps to score computation.
@@ -1173,6 +1193,22 @@ mod tests {
         assert_eq!(json, "\"not_applicable\"");
         let deserialized: SecurityPolicyEvidence = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, SecurityPolicyEvidence::NotApplicable);
+    }
+
+    #[test]
+    fn serde_round_trip_exclusion_reason_all_variants() {
+        for (reason, wire) in [
+            (ExclusionReason::PermissionDenied, "\"permission_denied\""),
+            (ExclusionReason::Unknown, "\"unknown\""),
+            (ExclusionReason::NotApplicable, "\"not_applicable\""),
+            (ExclusionReason::Other, "\"other\""),
+        ] {
+            let json = serde_json::to_string(&reason).unwrap();
+            assert_eq!(json, wire);
+            let deserialized: ExclusionReason = serde_json::from_str(&json).unwrap();
+            assert_eq!(deserialized, reason);
+            assert_eq!(reason.to_string(), wire.trim_matches('"'));
+        }
     }
 
     #[test]

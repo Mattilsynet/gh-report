@@ -88,6 +88,10 @@ expression: "&pages[\"report.html\"]"
                     <td class="text-right">66.7% (2/3)</td>
                 </tr>
                 <tr>
+                    <td title="Repos excluded from the Coverage percentage above because the control's status is indeterminate or not applicable, broken down by reason.">Excluded from coverage</td>
+                    <td class="text-right">0 unmeasured</td>
+                </tr>
+                <tr>
                     <td title="Repos where the GitHub security-policy setting is enabled at the org or repo level.">Via GitHub setting</td>
                     <td class="text-right">1</td>
                 </tr>
@@ -120,6 +124,10 @@ expression: "&pages[\"report.html\"]"
                 <tr>
                     <td title="Percentage of repos with Dependabot security updates enabled.">Coverage</td>
                     <td class="text-right">60.0% (3/5)</td>
+                </tr>
+                <tr>
+                    <td title="Repos excluded from the Coverage percentage above because the control's status is indeterminate, broken down by reason.">Excluded from coverage</td>
+                    <td class="text-right">1 unmeasured (1 unknown)</td>
                 </tr>
                 <tr>
                     <td title="Repos where the API returned enabled, disabled, or paused status.">Repos with confirmed enabled/disabled/paused evidence</td>
@@ -156,6 +164,10 @@ expression: "&pages[\"report.html\"]"
                     <td class="text-right">80.0% (4/5)</td>
                 </tr>
                 <tr>
+                    <td title="Repos excluded from the Coverage percentage above because the control's status is indeterminate or permission denied, broken down by reason.">Excluded from coverage</td>
+                    <td class="text-right">0 unmeasured</td>
+                </tr>
+                <tr>
                     <td title="Repos where the API returned enabled or disabled status.">Repos with confirmed enabled/disabled evidence</td>
                     <td class="text-right">5</td>
                 </tr>
@@ -190,15 +202,19 @@ expression: "&pages[\"report.html\"]"
                     <td class="text-right">60.0% (3/5)</td>
                 </tr>
                 <tr>
+                    <td title="Repos excluded from the T2+ coverage percentage above because branch protection could not be read (permission denied, unreadable, or a rate-limited/transient collection failure), broken down by reason.">Excluded from coverage</td>
+                    <td class="text-right">1 unmeasured (1 unknown)</td>
+                </tr>
+                <tr>
                     <td title="Repos at T1 minimal: branch protected with force-push and deletion blocked, but missing PR-review accept bar.">T1 minimal</td>
                     <td class="text-right">1</td>
                 </tr>
                 <tr>
-                    <td title="Repos at T0 below baseline: protection absent (including confirmed absence via a 404), force-push/deletion not blocked, or the repo was unreadable/permission-suspected — this last case is classified here, not excluded from the percentage.">T0 below baseline</td>
+                    <td title="Repos at T0 below baseline: protection absent (including confirmed absence via a 404), or force-push/deletion not blocked. Unreadable or permission-suspected repos are excluded above, not counted here.">T0 below baseline</td>
                     <td class="text-right">0</td>
                 </tr>
                 <tr>
-                    <td title="Reserved bucket for repos whose branch protection could not be scored — currently always zero, because unreadable/permission-suspected repos are folded into T0 below baseline (above) instead of being excluded here.">Excluded / unreadable</td>
+                    <td title="Total repos excluded from the T2+ coverage percentage above because branch protection could not be scored (permission denied, unreadable, or rate-limited/transient). See the by-reason breakdown row above for the split.">Excluded / unreadable</td>
                     <td class="text-right">1</td>
                 </tr>
             </tbody>
@@ -218,6 +234,10 @@ expression: "&pages[\"report.html\"]"
                 <tr>
                     <td title="Percentage of repos with a CODEOWNERS file in a recognized location.">Coverage</td>
                     <td class="text-right">80.0% (4/5)</td>
+                </tr>
+                <tr>
+                    <td title="Repos excluded from the Coverage percentage above because the control's status is indeterminate, broken down by reason.">Excluded from coverage</td>
+                    <td class="text-right">1 unmeasured (1 unknown)</td>
                 </tr>
                 <tr>
                     <td title="Repos with CODEOWNERS in the preferred .github/ directory.">Conforming (<code>.github/CODEOWNERS</code>)</td>

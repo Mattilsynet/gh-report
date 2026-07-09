@@ -34,6 +34,9 @@
             <div class="progress-bar">
                 <div class="progress-fill {{ vm.policy_tier.css_class() }} {{ vm.policy_width_class }}"></div>
             </div>
+            {%- if vm.policy_excluded_total > 0 %}
+            <p class="card-detail">{{ vm.policy_excluded_formatted }}</p>
+            {%- endif %}
             <p class="card-detail">{% call remediation::remediation_link(nav.base, vm.policy_operations_anchor, "Read more", "Security Policy remediation guidance") %}{% endcall %}</p>
         </div>
         <div class="card {{ vm.dependabot_tier.css_class() }}" title="Percentage of repos with Dependabot security updates enabled (auto-PRs for vulnerable dependencies).">
@@ -42,6 +45,9 @@
             <div class="progress-bar">
                 <div class="progress-fill {{ vm.dependabot_tier.css_class() }} {{ vm.dependabot_width_class }}"></div>
             </div>
+            {%- if vm.dependabot_excluded_total > 0 %}
+            <p class="card-detail">{{ vm.dependabot_excluded_formatted }}</p>
+            {%- endif %}
             <p class="card-detail">{% call remediation::remediation_link(nav.base, vm.dependabot_operations_anchor, "Read more", "Dependabot Status remediation guidance") %}{% endcall %}</p>
         </div>
         <div class="card {{ vm.secret_scanning_tier.css_class() }}" title="Percentage of public repos with GitHub secret scanning enabled to detect leaked credentials.">
@@ -53,12 +59,15 @@
                     class="progress-fill {{ vm.secret_scanning_tier.css_class() }} {{ vm.secret_scanning_width_class }}">
                 </div>
             </div>
+            {%- if vm.secret_scanning_excluded_total > 0 %}
+            <p class="card-detail">{{ vm.secret_scanning_excluded_formatted }}</p>
+            {%- endif %}
             <p class="card-detail">{% call remediation::remediation_link(nav.base, vm.secret_scanning_operations_anchor, "Read more", "Secret Scanning remediation guidance") %}{% endcall %}</p>
         </div>
-        <div class="card {{ vm.branch_protection_tier.css_class() }}" title="Percentage of observable repos at branch-protection T2 or higher; T1 is minimal baseline, T0 is below baseline. Unreadable or permission-suspected repos are classified as T0 and count against this percentage — they are not excluded.">
+        <div class="card {{ vm.branch_protection_tier.css_class() }}" title="Percentage of observable repos at branch-protection T2 or higher; T1 is minimal baseline, T0 is below baseline. Unreadable or permission-suspected repos are excluded from this percentage (see the unmeasured breakdown below), not classified as T0.">
             <p class="card-label">Branch Protection {% call tooltip::tooltip(vm.branch_protection_how_to_fix) %}{% endcall %}</p>
             <p class="card-value">{{ vm.branch_protection_coverage_formatted }}</p>
-            <p class="card-detail">T1 {{ vm.branch_protection_partial }} · T0 {{ vm.branch_protection_fail }} · reserved {{ vm.branch_protection_unknown }}</p>
+            <p class="card-detail">T1 {{ vm.branch_protection_partial }} · T0 {{ vm.branch_protection_fail }}{% if vm.branch_protection_excluded_total > 0 %} · {{ vm.branch_protection_excluded_formatted }}{% endif %}</p>
             <div class="progress-bar">
                 <div
                     class="progress-fill {{ vm.branch_protection_tier.css_class() }} {{ vm.branch_protection_width_class }}">
@@ -72,6 +81,9 @@
             <div class="progress-bar">
                 <div class="progress-fill {{ vm.codeowners_tier.css_class() }} {{ vm.codeowners_width_class }}"></div>
             </div>
+            {%- if vm.codeowners_excluded_total > 0 %}
+            <p class="card-detail">{{ vm.codeowners_excluded_formatted }}</p>
+            {%- endif %}
             <p class="card-detail">{% call remediation::remediation_link(nav.base, vm.codeowners_operations_anchor, "Read more", "CODEOWNERS remediation guidance") %}{% endcall %}</p>
         </div>
         <div class="card {{ vm.stale_tier.css_class() }}" title="Proportion of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better.">

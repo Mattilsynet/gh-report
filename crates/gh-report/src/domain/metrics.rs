@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::domain::checks::CollectionFailureReason;
+use crate::domain::checks::{CollectionFailureReason, ExclusionReason};
 use crate::domain::status::CollectionStatus;
 
 /// A rate metric with numerator, denominator, and optional rate percentage.
@@ -193,6 +193,14 @@ pub struct AggregatedMetrics {
     /// Report-side collection-health taxonomy keyed by check kind and reason.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub collection_health_counts: Vec<CollectionHealthCount>,
+    /// Report-side breakdown of the 5 shared controls' `Excluded`
+    /// classifications, keyed by `(check_kind, reason)`. Each control's
+    /// coverage denominator above already drops these repos; this field
+    /// says *why* they were dropped. Derived from `ScoreCategory`
+    /// classification — never persisted on `RepositoryEvidence`
+    /// (CHE-0082:R6/CHE-0022:R6). Mirrors `collection_health_counts`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub score_exclusion_counts: Vec<ScoreExclusionCount>,
     /// Team rosters fetched fresh at render time (B1), one per team-type
     /// owner in `owner_metrics`. Assigned by the evidence builder after
     /// aggregation returns, because the roster fetch is async and this
@@ -221,6 +229,18 @@ pub enum CollectionHealthCheckKind {
 pub struct CollectionHealthCount {
     pub check_kind: CollectionHealthCheckKind,
     pub reason: CollectionFailureReason,
+    pub count: u32,
+}
+
+/// Report-side count of `Excluded` classifications for one shared control,
+/// keyed by `(check_kind, reason)`. Mirrors [`CollectionHealthCount`], but
+/// counts a different axis: how many repos this control's org-wide rate
+/// dropped from its denominator, and why (per [`ExclusionReason`]) — not
+/// raw collection-health signal prevalence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScoreExclusionCount {
+    pub check_kind: CollectionHealthCheckKind,
+    pub reason: ExclusionReason,
     pub count: u32,
 }
 
