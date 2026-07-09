@@ -18,7 +18,10 @@ use crate::domain::checks::{
     SecretScanningStatus, SecurityPolicyStatus,
 };
 use crate::domain::evidence::{Evidence, RepositoryEvidence};
-use crate::domain::metrics::{OwnerType, TeamMemberRole, TeamRoster, TeamRosterStatus};
+use crate::domain::metrics::{
+    CollectionHealthCheckKind, OwnerType, ScoreExclusionCount, TeamMemberRole, TeamRoster,
+    TeamRosterStatus,
+};
 use crate::domain::time::{is_repo_stale, parse_iso8601};
 use crate::error::ReportError;
 use crate::report::view_model::{
@@ -26,7 +29,8 @@ use crate::report::view_model::{
     OrphanedTeamGroup, OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow, OwnerRepoRow,
     OwnersViewModel, ReportViewModel, StatusDot, SummaryCard, TeamMemberRow, TeamRosterViewModel,
     TopNav, TopSecurityTeam, compute_health_score, coverage_control_anchor,
-    coverage_control_column_tooltip, generate_slug, rate_to_width_class, strip_org_prefix,
+    coverage_control_column_tooltip, format_exclusion, generate_slug, rate_to_width_class,
+    strip_org_prefix,
 };
 
 /// Askama template for the security posture report.
@@ -432,7 +436,14 @@ fn build_owners_view_model(
 
             let controls: Vec<ControlCell> = CONTROL_NAMES
                 .iter()
-                .map(|&key| build_control_cell(&m.per_control_coverage, key, tiers))
+                .map(|&key| {
+                    build_control_cell(
+                        &m.per_control_coverage,
+                        &m.score_exclusion_counts,
+                        key,
+                        tiers,
+                    )
+                })
                 .collect();
 
             let sec_rates: Vec<Option<f64>> = SEC_SCORE_CONTROLS
@@ -468,22 +479,51 @@ fn build_owners_view_model(
     })
 }
 
+/// Map an owner per-control coverage key to its `CollectionHealthCheckKind`
+/// axis, for looking up that control's by-reason exclusion breakdown in
+/// [`crate::domain::metrics::OwnerMetrics::score_exclusion_counts`]
+/// (item6-03, bd bead `adr-fmt-orvyn`). `None` for keys with no
+/// `ScoreExclusionCount` axis (the owner-only lifecycle controls `non_stale`
+/// and `alert_free`, item6-04's D4 relabel).
+fn control_key_to_check_kind(key: &str) -> Option<CollectionHealthCheckKind> {
+    match key {
+        "security_policy" => Some(CollectionHealthCheckKind::SecurityPolicy),
+        "secret_scanning" => Some(CollectionHealthCheckKind::SecretScanning),
+        "dependabot_security_updates" => Some(CollectionHealthCheckKind::Dependabot),
+        "branch_protection" => Some(CollectionHealthCheckKind::BranchProtection),
+        "codeowners" => Some(CollectionHealthCheckKind::Codeowners),
+        _ => None,
+    }
+}
+
 /// Build a [`ControlCell`] from an owner's per-control coverage map.
 ///
 /// Shared by [`build_owners_view_model`] (overview table) and
-/// [`build_owner_detail_view_models`] (summary cards).
+/// [`build_owner_detail_view_models`] (summary cards). `score_exclusion_counts`
+/// is the owner's by-reason exclusion breakdown (item6-03); controls with no
+/// `ScoreExclusionCount` axis (see [`control_key_to_check_kind`]) get `0`/`"0
+/// unmeasured"`.
 fn build_control_cell(
     per_control_coverage: &std::collections::HashMap<String, crate::domain::metrics::RateMetric>,
+    score_exclusion_counts: &[ScoreExclusionCount],
     key: &str,
     tiers: &CoverageTiers,
 ) -> ControlCell {
     let rate_metric = per_control_coverage.get(key);
     let rate = rate_metric.and_then(|rm| rm.rate);
     let formatted = rate_metric.map_or_else(|| "N/A".to_string(), ToString::to_string);
+    let exclusion = control_key_to_check_kind(key)
+        .map(|check_kind| format_exclusion(check_kind, score_exclusion_counts));
+    let (excluded_total, excluded_formatted) = match exclusion {
+        Some(e) => (e.total, e.formatted),
+        None => (0, "0 unmeasured".to_string()),
+    };
     ControlCell {
         rate_formatted: formatted,
         tier: CoverageTier::from_rate(rate, tiers),
         width_class: rate_to_width_class(rate),
+        excluded_total,
+        excluded_formatted,
     }
 }
 
@@ -616,7 +656,12 @@ fn build_owner_detail_view_models(
                 .map(|&key| SummaryCard {
                     key,
                     label: control_display_name(key).to_string(),
-                    cell: build_control_cell(&m.per_control_coverage, key, tiers),
+                    cell: build_control_cell(
+                        &m.per_control_coverage,
+                        &m.score_exclusion_counts,
+                        key,
+                        tiers,
+                    ),
                     operations_anchor: coverage_control_anchor(key),
                 })
                 .collect();
@@ -1978,6 +2023,52 @@ mod tests {
         )
     }
 
+    /// Owner-scoped variant of [`evidence_with_owner_repos`] where one
+    /// repo's `security_policy` status is `Unknown` (item6-03, bd bead
+    /// `adr-fmt-orvyn`) — exercises the by-reason exclusion breakdown
+    /// surfaced on the owners overview tooltip and the owner detail summary
+    /// card, distinct from the clean (no-exclusion) fixture used by the
+    /// locked `dashboard_owners`/`dashboard_owner_detail` snapshots.
+    fn evidence_with_owner_repo_exclusions() -> Evidence {
+        let repos = vec![
+            test_fixtures::make_repository_evidence(
+                "beta-repo",
+                Visibility::Public,
+                false,
+                test_fixtures::make_checks(
+                    test_fixtures::policy_pass_setting(),
+                    test_fixtures::secret_enabled_observable(false),
+                    test_fixtures::dependabot_enabled(),
+                    test_fixtures::branch_pass(),
+                    test_fixtures::codeowners_with_owners(&["@org/team-a"]),
+                ),
+            ),
+            test_fixtures::make_repository_evidence(
+                "gamma-repo",
+                Visibility::Public,
+                false,
+                test_fixtures::make_checks(
+                    test_fixtures::policy_unknown(),
+                    test_fixtures::secret_enabled_observable(false),
+                    test_fixtures::dependabot_enabled(),
+                    test_fixtures::branch_pass(),
+                    test_fixtures::codeowners_with_owners(&["@org/team-a"]),
+                ),
+            ),
+        ];
+
+        let metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
+        let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
+
+        test_fixtures::make_full_evidence(
+            test_fixtures::make_metadata(),
+            stats,
+            metrics,
+            test_fixtures::make_observability(),
+            repos,
+        )
+    }
+
     fn evidence_with_full_nav_surface() -> Evidence {
         let mut evidence = evidence_with_owner_repos();
         evidence
@@ -2369,6 +2460,7 @@ mod tests {
             owner_type: OwnerType::Team,
             total_repos: 1,
             per_control_coverage: std::collections::HashMap::new(),
+            score_exclusion_counts: Vec::new(),
         }];
 
         let empty_repos: &[RepositoryEvidence] = &[];
@@ -2587,6 +2679,51 @@ mod tests {
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
 
         insta::assert_snapshot!("dashboard_owner_detail", &pages["owners/org-team-a.html"]);
+    }
+
+    #[test]
+    fn owners_page_surfaces_by_reason_exclusion_in_tooltip() {
+        let evidence = evidence_with_owner_repo_exclusions();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let owners_html = &pages["owners.html"];
+
+        assert!(
+            owners_html.contains("1 unmeasured (1 unknown)"),
+            "expected the security_policy status-dot tooltip to surface the \
+             1-unknown exclusion for @org/team-a; owners.html:\n{owners_html}"
+        );
+    }
+
+    #[test]
+    fn owner_detail_page_surfaces_by_reason_exclusion_on_summary_card() {
+        let evidence = evidence_with_owner_repo_exclusions();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let detail_html = &pages["owners/org-team-a.html"];
+
+        assert!(
+            detail_html.contains("1 unmeasured (1 unknown)"),
+            "expected the security_policy summary card to surface the \
+             1-unknown exclusion; owner detail html:\n{detail_html}"
+        );
+    }
+
+    #[test]
+    fn owners_page_clean_owner_omits_exclusion_text_unconditionally() {
+        let evidence = evidence_with_owner_repos();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+        assert!(
+            !pages["owners.html"].contains("unmeasured"),
+            "no control is excluded in evidence_with_owner_repos(); the \
+             tooltip addition must stay silent (gated on excluded_total > 0), \
+             not print '0 unmeasured' unconditionally"
+        );
+        assert!(
+            !pages["owners/org-team-a.html"].contains("unmeasured"),
+            "no control is excluded in evidence_with_owner_repos(); the \
+             summary-card addition must stay silent, not print '0 unmeasured' \
+             unconditionally"
+        );
     }
 
     /// Item 7: a team's attributed orphan repos render in a default-

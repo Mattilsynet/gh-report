@@ -67,6 +67,9 @@
             <div class="progress-bar">
                 <div class="progress-fill {{ card.cell.tier.css_class() }} {{ card.cell.width_class }}"></div>
             </div>
+            {%- if card.cell.excluded_total > 0 %}
+            <p class="card-detail">{{ card.cell.excluded_formatted }}</p>
+            {%- endif %}
             {% if let Some(anchor) = card.operations_anchor %}
             <p class="card-detail">{% call remediation::remediation_link(nav.base, anchor, "Read more", card.label ~ " remediation guidance") %}{% endcall %}</p>
             {% endif %}

@@ -142,6 +142,12 @@ pub struct ControlCell {
     pub tier: CoverageTier,
     /// CSS width class for progress bar rendering (e.g., `"w-80"`).
     pub width_class: &'static str,
+    /// Count of repos excluded from this control's denominator (unmeasured
+    /// or not applicable), `0` when none.
+    pub excluded_total: u32,
+    /// Formatted `"N unmeasured (breakdown)"` string, or `"0 unmeasured"`
+    /// when `excluded_total` is `0` (item6-03, bd bead `adr-fmt-orvyn`).
+    pub excluded_formatted: String,
 }
 
 /// A row in the per-owner detail table (one repo).
@@ -1002,9 +1008,12 @@ fn dashboard_control_how_to_fix() -> ControlHowToFix {
     }
 }
 
-struct ControlExclusion {
-    total: u32,
-    formatted: String,
+/// Count and formatted breakdown of repos excluded from one control's
+/// coverage denominator. Shared by the org-wide [`ReportViewModel`] fields
+/// and the owner-scoped [`ControlCell`] (item6-03, bd bead `adr-fmt-orvyn`).
+pub(crate) struct ControlExclusion {
+    pub(crate) total: u32,
+    pub(crate) formatted: String,
 }
 
 struct ExclusionBreakdown {
@@ -1015,7 +1024,14 @@ struct ExclusionBreakdown {
     codeowners: ControlExclusion,
 }
 
-fn format_exclusion(
+/// Format the `(check_kind, reason) -> count` breakdown for one control into
+/// a total count plus a human-readable `"N unmeasured (breakdown)"` string.
+/// `check_kind` selects which control's rows to fold out of `counts`; reused
+/// for both the org-wide [`ScoreExclusionCount`] rows on `AggregatedMetrics`
+/// and the owner-scoped rows on `OwnerMetrics::score_exclusion_counts`
+/// (item6-03, bd bead `adr-fmt-orvyn`) — the shape is identical at both
+/// scopes, only the input slice differs.
+pub(crate) fn format_exclusion(
     check_kind: CollectionHealthCheckKind,
     counts: &[ScoreExclusionCount],
 ) -> ControlExclusion {

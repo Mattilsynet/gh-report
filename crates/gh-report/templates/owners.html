@@ -54,7 +54,7 @@
             </td>
             {% for cell in row.controls %}
             <td class="text-center">
-                <span class="status-dot {{ cell.tier.status_dot_class() }}" title="{{ cell.rate_formatted }}"></span>
+                <span class="status-dot {{ cell.tier.status_dot_class() }}" title="{{ cell.rate_formatted }}{% if cell.excluded_total > 0 %} — {{ cell.excluded_formatted }}{% endif %}"></span>
                 {{ cell.rate_formatted }}
             </td>
             {% endfor %}

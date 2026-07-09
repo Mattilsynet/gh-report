@@ -257,6 +257,15 @@ pub struct OwnerMetrics {
     pub total_repos: u32,
     /// Per-control pass rate metrics.
     pub per_control_coverage: HashMap<String, RateMetric>,
+    /// Report-side breakdown of this owner's shared controls' `Excluded`
+    /// classifications, keyed by `(check_kind, reason)`. Each control's
+    /// coverage denominator in `per_control_coverage` already drops these
+    /// repos; this field says *why*. Mirrors
+    /// `AggregatedMetrics::score_exclusion_counts`, scoped to this owner's
+    /// repos. Derived from `ScoreCategory` classification — never persisted
+    /// on `RepositoryEvidence` (CHE-0082:R6/CHE-0022:R6).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub score_exclusion_counts: Vec<ScoreExclusionCount>,
 }
 
 /// Owner type classification.
