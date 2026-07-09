@@ -802,6 +802,9 @@ impl SweepSaga {
     ///
     /// Finds repos whose `updated_at` matches the baseline and
     /// pre-populates the evidence store.
+    ///
+    /// Honours `force_refresh` (threaded via `sweep.config`): when set, no
+    /// baseline evidence is reused this collection.
     fn step_baseline(&mut self, sweep: &SweepCtx<'_>, inventory: &InventoryLoad) {
         debug_assert_eq!(self.phase, SweepPhase::Resumed);
 
@@ -1558,6 +1561,10 @@ pub(crate) async fn publish_evidence(
 ///
 /// Returns a separate map of baseline-reused entries (kept separate from
 /// checkpoint-completed entries so checkpoints remain small).
+///
+/// When `force_refresh` is set, the baseline is skipped entirely and an
+/// empty map is returned so every repository is re-fetched by the normal
+/// collection path.
 fn reuse_from_baseline(
     repositories: &[Arc<Repository>],
     completed: &HashMap<String, Arc<RepositoryEvidence>>,
