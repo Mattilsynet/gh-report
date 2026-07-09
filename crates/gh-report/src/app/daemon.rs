@@ -36,6 +36,9 @@
 //! **`--force-unlock` semantics:** The flag is one-shot — it applies only
 //! to the initial collection run. Subsequent scheduled runs do not
 //! force-unlock.
+//! **`--force-refresh` semantics:** Same one-shot shape as `--force-unlock`
+//! — it bypasses baseline reuse for the initial collection only.
+//! Subsequent scheduled runs resume normal baseline reuse.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -173,6 +176,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
     };
 
     let force_flag = Arc::new(AtomicBool::new(config.force_unlock));
+    let force_refresh_flag = Arc::new(AtomicBool::new(config.force_refresh));
     let (collect_cancel_tx, collect_cancel_rx) = tokio::sync::watch::channel(false);
 
     let mut extra_routes = crate::server::status_router();
@@ -196,6 +200,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
         config.clone(),
         Arc::clone(&app_state),
         Arc::clone(&force_flag),
+        Arc::clone(&force_refresh_flag),
         collect_cancel_rx,
     );
     let server_config = cherry_pit_web::serve::ServerConfig::builder()
@@ -327,12 +332,14 @@ fn spawn_collection_loop(
     config: RuntimeConfig,
     state: Arc<AppState>,
     force_flag: Arc<AtomicBool>,
+    force_refresh_flag: Arc<AtomicBool>,
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         {
             let mut cfg = config.clone();
             cfg.force_unlock = force_flag.fetch_and(false, Ordering::AcqRel);
+            cfg.force_refresh = force_refresh_flag.fetch_and(false, Ordering::AcqRel);
             match collect::run_with_outcome(cfg, Arc::clone(&state)).await {
                 Ok(collect::CollectionOutcome::Completed) => info!("initial collection complete"),
                 Ok(collect::CollectionOutcome::Cancelled) => {
@@ -363,6 +370,7 @@ fn spawn_collection_loop(
             }
             let mut cfg = config.clone();
             cfg.force_unlock = force_flag.load(Ordering::Acquire);
+            cfg.force_refresh = force_refresh_flag.load(Ordering::Acquire);
             match collect::run_with_outcome(cfg, Arc::clone(&state)).await {
                 Ok(collect::CollectionOutcome::Completed) => {
                     info!(
@@ -809,6 +817,28 @@ mod tests {
         assert_eq!(MESSAGE_READY, "daemon ready — serving");
         assert_eq!(MESSAGE_SHUTDOWN_BEGIN, "beginning graceful shutdown");
         assert_eq!(MESSAGE_STOPPED, "daemon stopped");
+    }
+
+    #[test]
+    fn one_shot_flag_yields_true_once_then_false_on_subsequent_runs() {
+        let force_refresh_flag = Arc::new(AtomicBool::new(true));
+
+        let initial_run_value = force_refresh_flag.fetch_and(false, Ordering::AcqRel);
+        let scheduled_run_value = force_refresh_flag.load(Ordering::Acquire);
+        let second_scheduled_run_value = force_refresh_flag.load(Ordering::Acquire);
+
+        assert!(
+            initial_run_value,
+            "initial collection must observe the flag as armed"
+        );
+        assert!(
+            !scheduled_run_value,
+            "first scheduled collection must observe the flag as consumed"
+        );
+        assert!(
+            !second_scheduled_run_value,
+            "flag must stay consumed across further scheduled collections"
+        );
     }
 
     #[test]

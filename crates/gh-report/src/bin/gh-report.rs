@@ -70,6 +70,11 @@ struct Cli {
     #[arg(long)]
     force_unlock: bool,
 
+    /// Bypass baseline reuse for the initial collection, re-fetching every
+    /// repository. Applies to the initial collection only (one-shot).
+    #[arg(long, env = "GH_REPORT_FORCE_REFRESH")]
+    force_refresh: bool,
+
     /// Persistent store directory for baseline, checkpoints, and lock files.
     #[arg(long, default_value = "store")]
     store_dir: PathBuf,
@@ -173,6 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.pardosa_backend = runtime::PardosaBackend::from(cli.pardosa_backend);
     config.nats_url = cli.nats_url;
     config.nats_creds = cli.nats_creds;
+    config.force_refresh = cli.force_refresh;
     let nats_creds_path = config
         .nats_creds
         .as_ref()
@@ -245,6 +251,39 @@ mod tests {
         let cli =
             Cli::try_parse_from(["gh-report", "--org", "test-org", "--force-unlock"]).unwrap();
         assert!(cli.force_unlock);
+    }
+
+    #[test]
+    fn cli_parses_force_refresh() {
+        let cli =
+            Cli::try_parse_from(["gh-report", "--org", "test-org", "--force-refresh"]).unwrap();
+        assert!(cli.force_refresh);
+    }
+
+    #[test]
+    fn cli_parses_force_refresh_env() {
+        const CHILD_ENV: &str = "GH_REPORT_FORCE_REFRESH_ENV_CHILD";
+
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("cli_parses_force_refresh_env")
+                .arg("--exact")
+                .env(CHILD_ENV, "1")
+                .env("GH_REPORT_FORCE_REFRESH", "true")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "child test failed: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let cli = Cli::try_parse_from(["gh-report", "--org", "test-org"]).unwrap();
+
+        assert!(cli.force_refresh);
     }
 
     #[test]

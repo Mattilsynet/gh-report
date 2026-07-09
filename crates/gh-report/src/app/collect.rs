@@ -1566,6 +1566,10 @@ fn reuse_from_baseline(
     force_refresh: bool,
 ) -> HashMap<String, Arc<RepositoryEvidence>> {
     if force_refresh {
+        info!(
+            repos = repositories.len(),
+            "force-refresh: ignoring baseline for this collection, re-reading all repos"
+        );
         return HashMap::new();
     }
 
@@ -3050,6 +3054,56 @@ mod tests {
         assert_eq!(saga.baseline_reused, 0);
     }
 
+    #[tokio::test]
+    async fn reuse_from_baseline_reuses_unchanged_repo_when_force_refresh_is_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new_with_cache_capacity(10).await;
+
+        let mut evidence = sample_repo("repo-1");
+        evidence.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
+        seed_baseline(
+            dir.path(),
+            &state,
+            vec![("repo-1", "2026-04-10T00:00:00Z", evidence)],
+        );
+
+        let repo = arc_repo_with_updated_at("repo-1", Some("2026-04-10T00:00:00Z"));
+        let completed = HashMap::new();
+
+        let baseline_cache =
+            reuse_from_baseline(&[repo], &completed, "2026-04-10T00:00:00Z", &state, false);
+
+        assert!(
+            baseline_cache.contains_key("id-repo-1"),
+            "unchanged repo must be reused when force_refresh is false"
+        );
+    }
+
+    #[tokio::test]
+    async fn reuse_from_baseline_bypasses_unchanged_repo_when_force_refresh_is_true() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new_with_cache_capacity(10).await;
+
+        let mut evidence = sample_repo("repo-1");
+        evidence.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
+        seed_baseline(
+            dir.path(),
+            &state,
+            vec![("repo-1", "2026-04-10T00:00:00Z", evidence)],
+        );
+
+        let repo = arc_repo_with_updated_at("repo-1", Some("2026-04-10T00:00:00Z"));
+        let completed = HashMap::new();
+
+        let baseline_cache =
+            reuse_from_baseline(&[repo], &completed, "2026-04-10T00:00:00Z", &state, true);
+
+        assert!(
+            baseline_cache.is_empty(),
+            "force_refresh must bypass baseline reuse even for an unchanged repo"
+        );
+    }
+
     /// Test 1: All repos in input appear in output evidence store.
     #[tokio::test]
     async fn saga_evaluates_all_repos() {
@@ -3756,6 +3810,34 @@ mod tests {
         assert!(
             state.html_cache().load().is_some(),
             "warm-start must populate html cache from projection"
+        );
+    }
+
+    #[tokio::test]
+    async fn warm_start_ignores_force_refresh_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = RuntimeConfig {
+            force_refresh: true,
+            ..config_with_dir(dir.path())
+        };
+        let state = AppState::new_with_cache_capacity(10).await;
+
+        let mut evidence = sample_repo("repo-1");
+        evidence.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
+        seed_baseline(
+            dir.path(),
+            &state,
+            vec![("repo-1", "2026-04-10T00:00:00Z", evidence)],
+        );
+
+        let ok = warm_start_from_baseline(&config, &state).await;
+        assert!(
+            ok,
+            "warm-start must succeed from a seeded baseline even when force_refresh is set"
+        );
+        assert!(
+            state.html_cache().load().is_some(),
+            "warm-start must populate html cache regardless of force_refresh"
         );
     }
 
