@@ -3,7 +3,7 @@
 Date: 2026-07-09
 Last-reviewed: 2026-07-09
 Tier: B
-Status: Proposed
+Status: Accepted
 Crates: gh-report, gh-report-web-client
 
 ## Related
