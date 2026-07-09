@@ -1732,6 +1732,25 @@ mod tests {
     }
 
     #[test]
+    fn every_html_page_has_balanced_script_tags() {
+        let evidence = sample_evidence();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+        for (name, body) in &pages {
+            if !name.ends_with(".html") {
+                continue;
+            }
+            let opens = body.matches("<script").count();
+            let closes = body.matches("</script>").count();
+            assert_eq!(
+                opens, closes,
+                "{name} has {opens} <script> vs {closes} </script>; an unclosed \
+                 script tag swallows the rest of the document as script text"
+            );
+        }
+    }
+
+    #[test]
     fn render_dashboard_index_badge_counts_admin_technical_issues() {
         let evidence = sample_evidence_with_admin_diagnostics();
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();

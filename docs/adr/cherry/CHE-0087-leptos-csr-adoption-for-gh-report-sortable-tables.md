@@ -12,7 +12,7 @@ References: CHE-0007, CHE-0086, RST-0005, SEC-0004, RST-0004, RST-0002, SEC-0009
 
 ## Context
 
-gh-report's HTML tables are server-rendered and static; users cannot re-sort by column without a full page reload and a server-side query change. Leptos 0.8.20 (Rust→WASM CSR) compiled via wasm-bindgen 0.2.126 is MSRV-compatible with the pinned 1.96 toolchain (Leptos MSRV 1.88) and needs no nightly feature. Client-side sorting is pure DOM enhancement with no server round-trip. The blocker is RST-0005/CHE-0007's workspace-wide `#![forbid(unsafe_code)]`: wasm-bindgen's FFI glue generates `unsafe` at the crate boundary that `forbid` — unlike `deny` — cannot locally `#[allow]`. RST-0005 R2 and SEC-0004 R4 both require a dedicated ADR before any crate may omit the workspace default; this is that ADR.
+gh-report's HTML tables are server-rendered and static; users cannot re-sort a column without a full page reload and a server-side query change. Leptos 0.8.20 (Rust→WASM CSR) via wasm-bindgen 0.2.126 is MSRV-compatible with the pinned 1.96 toolchain (Leptos MSRV 1.88), needs no nightly, and sorts client-side with no server round-trip. The tension is RST-0005/CHE-0007's workspace `#![forbid(unsafe_code)]`: wasm-bindgen's FFI glue is generated `unsafe`. The current pins compile clean under `forbid`, but `forbid` cannot be `#[allow]`-overridden should a future wasm-bindgen emit `unsafe` the lint rejects — so this crate uses `#![deny(unsafe_code)]`, banning hand-authored `unsafe` while tolerating generated FFI glue across version drift. RST-0005 R2 and SEC-0004 R4 require a dedicated ADR before a crate omits the workspace default; this is that ADR.
 
 ## Decision
 
@@ -20,7 +20,7 @@ Adopt Leptos CSR (feature `csr`, no nightly) as gh-report's client-rendering sta
 
 R1 [5]: Adopt Leptos 0.8.20 (feature = "csr" only, no "nightly") compiled via wasm-bindgen 0.2.126 to `wasm32-unknown-unknown` as the client-side rendering stack for gh-report's interactive sortable-table enhancement; this is the workspace's first client-render precedent.
 
-R2 [5]: The new crate `gh-report-web-client` omits `#![forbid(unsafe_code)]` entirely rather than pairing it with an inner `#[allow(unsafe_code)]`, because `forbid` cannot be allow-overridden per CHE-0007's Consequences; upon acceptance this ADR amends CHE-0007's enumerated member list and RST-0005 R1 to exclude that one named crate, never workspace-wide.
+R2 [5]: `gh-report-web-client` omits `#![forbid(unsafe_code)]` and uses `#![deny(unsafe_code)]` instead: `deny` bans hand-authored `unsafe` while tolerating wasm-bindgen's generated FFI glue across version drift, whereas `forbid` cannot be `#[allow]`-overridden (per CHE-0007's Consequences). Upon acceptance this ADR amends CHE-0007's member list and RST-0005 R1 to exclude that one named crate, never workspace-wide.
 
 R3 [5]: No hand-authored `unsafe` is permitted in `gh-report-web-client`; the only unsafe present originates from wasm-bindgen's macro-GENERATED FFI glue marshalling values across the JS/WASM boundary — the exact FFI case RST-0005 R2 anticipates — and `cargo-geiger` (SEC-0009 R3) characterizes that generated-plus-transitive surface as an ADR-cited artefact on each dependency review.
 

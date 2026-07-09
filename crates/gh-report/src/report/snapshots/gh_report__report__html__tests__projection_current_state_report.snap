@@ -11,7 +11,7 @@ expression: "&pages[\"report.html\"]"
     <title>TestOrg GitHub Security Posture Overview</title>
     <link rel="stylesheet" href="style.css">
     <script src="ws.js" defer></script>
-    <script type="module" src="sort-init.js">
+    <script type="module" src="sort-init.js"></script>
     
 </head>
 

@@ -32,6 +32,10 @@ jobs:
       # crate for its real target every CI run so source drift from the
       # committed artefact cannot pass unnoticed.
       - run: cargo build -p gh-report-web-client --target wasm32-unknown-unknown --release
+      # Lint the wasm-only crate on its real target so dom.rs (cfg(wasm32))
+      # is clippy-checked, not merely compiled (CHE-0087 R6).
+      - run: cargo clippy -p gh-report-web-client --target wasm32-unknown-unknown --all-targets -- -D warnings
+        if: always()
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
         if: always()
       - run: cargo fmt --check
