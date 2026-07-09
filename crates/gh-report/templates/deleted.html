@@ -4,7 +4,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Deleted Repositories — {{ vm.organization }}</title>
+    <title>Deleted Repositories and Teams — {{ vm.organization }}</title>
     <link rel="stylesheet" href="style.css">
     <script src="ws.js" defer></script>
     {% if warm_start %}<meta http-equiv="refresh" content="5">{% endif %}
@@ -39,6 +39,31 @@
                 <tr>
                     <td>{{ row.repo_name }}</td>
                     <td>{{ row.detected_at }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    {% if !vm.deleted_teams.is_empty() %}
+    <h2>Deleted Teams</h2>
+
+    <p class="meta">GitHub teams referenced by CODEOWNERS in <code>{{ vm.organization }}</code> that GitHub no longer has.</p>
+
+    <div class="table-wrapper">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th><span class="tooltip-header" tabindex="0" data-tooltip="GitHub team slug that a CODEOWNERS file still references, but GitHub has deleted (404 on roster fetch)." title="GitHub team slug that a CODEOWNERS file still references, but GitHub has deleted (404 on roster fetch).">Team</span></th>
+                    <th><span class="tooltip-header" tabindex="0" data-tooltip="Repositories whose CODEOWNERS file still names this deleted team." title="Repositories whose CODEOWNERS file still names this deleted team.">Referencing Repositories</span></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for team in vm.deleted_teams %}
+                <tr>
+                    <td><a href="{{ team.team_url }}" target="_blank" rel="noopener noreferrer">{{ team.team_slug }}</a></td>
+                    <td>{{ team.referencing_repos.join(", ") }}</td>
                 </tr>
                 {% endfor %}
             </tbody>

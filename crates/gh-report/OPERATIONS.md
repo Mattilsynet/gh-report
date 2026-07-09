@@ -164,11 +164,13 @@ There are no per-run directories, staging areas, symlinks, or `evidence.json` fi
 | `owners.html` | Owner summary (when CODEOWNERS data is available) |
 | `owners/{slug}.html` | Per-owner detail pages |
 | `orphans.html` | Repositories without CODEOWNERS |
-| `deleted.html` | Repositories detected as removed from the organization |
+| `deleted.html` | Repositories detected as removed from the organization, plus a render-time "Deleted Teams" section (see note below) |
 | `style.css` | Shared stylesheet (compiled into binary, served from cache) |
 | `ws.js` | WebSocket auto-reconnect client for live page updates |
 
 **Security invariant:** The web server serves only from the in-memory cache. Only `.html`, `.css`, and `.js` content is stored. Event-log and checkpoint files are never exposed via HTTP.
+
+**Deleted teams (render-time-only).** `deleted.html`'s "Deleted Teams" section lists every CODEOWNERS-referenced GitHub team whose roster fetch returned 404 — i.e. a repository's CODEOWNERS file still names a team GitHub no longer has — together with the repos still referencing it. Unlike the deleted-repositories table above, this section is not event-sourced: it is recomputed fresh on every render from the current CODEOWNERS state and the current collection's team-roster fetches, so a team drops off the list automatically once no live repo's CODEOWNERS references it, or reappears if GitHub restores it. Nothing about a deleted team is written to the persisted event log.
 
 ## Architecture Dataflow
 

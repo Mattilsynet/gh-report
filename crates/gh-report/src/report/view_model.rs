@@ -413,6 +413,22 @@ pub struct DeletedRepoRow {
     pub detected_at: String,
 }
 
+/// A row in the deleted teams table.
+///
+/// Render-time-only (oracle adr-fmt-kqavx): built fresh on every render from
+/// [`crate::domain::metrics::TeamRoster`] entries whose fetch 404'd, joined
+/// to their CODEOWNERS-referencing repos. Never persisted; a team drops off
+/// automatically once no live CODEOWNERS references it or it exists again.
+#[derive(Debug, Clone)]
+pub struct DeletedTeamRow {
+    /// Bare GitHub team slug (e.g. `team-foo`).
+    pub team_slug: String,
+    /// GitHub-hosted team page URL.
+    pub team_url: String,
+    /// Names of repositories whose CODEOWNERS still reference this team.
+    pub referencing_repos: Vec<String>,
+}
+
 /// View model for the deleted repositories page.
 #[derive(Debug, Clone)]
 pub struct DeletedViewModel {
@@ -422,6 +438,9 @@ pub struct DeletedViewModel {
     pub organization: String,
     /// Total count of deleted repos.
     pub deleted_count: u32,
+    /// Deleted (404) CODEOWNERS-referenced teams, sorted by team slug.
+    /// Render-time-only (oracle adr-fmt-kqavx); see [`DeletedTeamRow`].
+    pub deleted_teams: Vec<DeletedTeamRow>,
 }
 
 /// Operator-facing diagnostics for collection health and credentials.

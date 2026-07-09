@@ -25,10 +25,10 @@ use crate::domain::metrics::{
 use crate::domain::time::{is_repo_stale, parse_iso8601};
 use crate::error::ReportError;
 use crate::report::view_model::{
-    ControlCell, ControlColumn, CoverageTier, DeletedRepoRow, DeletedViewModel, OrphanedRepoRow,
-    OrphanedTeamGroup, OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow, OwnerRepoRow,
-    OwnersViewModel, ReportViewModel, StatusDot, SummaryCard, TeamMemberRow, TeamRosterViewModel,
-    TopNav, TopSecurityTeam, compute_health_score, coverage_control_anchor,
+    ControlCell, ControlColumn, CoverageTier, DeletedRepoRow, DeletedTeamRow, DeletedViewModel,
+    OrphanedRepoRow, OrphanedTeamGroup, OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow,
+    OwnerRepoRow, OwnersViewModel, ReportViewModel, StatusDot, SummaryCard, TeamMemberRow,
+    TeamRosterViewModel, TopNav, TopSecurityTeam, compute_health_score, coverage_control_anchor,
     coverage_control_column_tooltip, format_exclusion, generate_slug, rate_to_width_class,
     strip_org_prefix,
 };
@@ -260,6 +260,8 @@ pub fn render_dashboard(
     let deleted_vm = build_deleted_view_model(
         &evidence.deleted,
         &evidence.assessment_metadata.organization,
+        &evidence.repositories,
+        &evidence.metrics.team_rosters,
     );
 
     let mut vm = ReportViewModel::from_evidence(evidence, tiers);
@@ -1032,9 +1034,23 @@ fn build_orphaned_by_team(rows: &[OrphanedRepoRow]) -> Vec<OrphanedTeamGroup> {
     groups
 }
 
+/// Build the deleted-repositories-and-teams page view model.
+///
+/// `rows` (deleted repos) comes from the persisted, event-sourced
+/// [`crate::projection::DeletedRepoRecord`] set. `deleted_teams` is the
+/// opposite: render-time-only (oracle adr-fmt-kqavx), rebuilt fresh every
+/// call from `team_rosters` and `repositories` — never persisted. A
+/// CODEOWNERS-referenced team whose roster fetch classified `Deleted` (404)
+/// is joined to its referencing repos via
+/// [`crate::domain::metrics::build_owner_repo_map`], keyed by the team's
+/// full lowercased canonical owner (`@org/slug`), not its bare GitHub API
+/// slug — the two are different strings and only the canonical form is a
+/// valid map key.
 fn build_deleted_view_model(
     deleted: &[crate::projection::DeletedRepoRecord],
     organization: &str,
+    repositories: &[RepositoryEvidence],
+    team_rosters: &[TeamRoster],
 ) -> DeletedViewModel {
     let mut rows: Vec<DeletedRepoRow> = deleted
         .iter()
@@ -1045,10 +1061,35 @@ fn build_deleted_view_model(
         .collect();
     rows.sort_by_cached_key(|row| row.repo_name.to_lowercase());
     let deleted_count = u32::try_from(rows.len()).unwrap_or(u32::MAX);
+
+    let org_encoded = utf8_percent_encode(organization, PATH_SEGMENT).to_string();
+    let owner_repo_map = crate::domain::metrics::build_owner_repo_map(repositories);
+    let mut deleted_teams: Vec<DeletedTeamRow> = team_rosters
+        .iter()
+        .filter(|roster| roster.status == TeamRosterStatus::Deleted)
+        .map(|roster| {
+            let mut referencing_repos: Vec<String> = owner_repo_map
+                .get(&roster.canonical_owner.to_lowercase())
+                .map(|(_, repos)| repos.iter().map(|r| r.repository.name.clone()).collect())
+                .unwrap_or_default();
+            referencing_repos.sort_by_cached_key(|name| name.to_lowercase());
+            let team_url =
+                build_owner_github_url(OwnerType::Team, &roster.canonical_owner, &org_encoded)
+                    .unwrap_or_default();
+            DeletedTeamRow {
+                team_slug: roster.team_slug.clone(),
+                team_url,
+                referencing_repos,
+            }
+        })
+        .collect();
+    deleted_teams.sort_by_cached_key(|row| row.team_slug.to_lowercase());
+
     DeletedViewModel {
         rows,
         organization: organization.to_string(),
         deleted_count,
+        deleted_teams,
     }
 }
 
@@ -4084,6 +4125,120 @@ mod tests {
         assert!(deleted.contains("deleted-repo"));
         assert!(deleted.contains("2026-06-24T00:00:00Z"));
         assert!(!deleted.contains("Security Policy"));
+    }
+
+    /// Falsifier for the canonical-vs-bare-slug join: `team_rosters` entries
+    /// key their referencing-repos lookup by the full lowercased canonical
+    /// owner (`@org/dead-team`), not the bare GitHub API `team_slug`
+    /// (`dead-team`) that the roster itself also carries. Keying on the
+    /// bare slug returns no match and this test fails.
+    #[test]
+    fn build_deleted_view_model_includes_deleted_team_with_referencing_repos() {
+        let repos = vec![test_fixtures::make_repository_evidence(
+            "codeowners-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_with_owners(&["@org/dead-team"]),
+            ),
+        )];
+        let team_rosters = vec![TeamRoster {
+            canonical_owner: "@org/dead-team".to_string(),
+            team_slug: "dead-team".to_string(),
+            status: TeamRosterStatus::Deleted,
+            members: Vec::new(),
+        }];
+
+        let vm = build_deleted_view_model(&[], "TestOrg", &repos, &team_rosters);
+
+        assert_eq!(
+            vm.deleted_teams.len(),
+            1,
+            "expected exactly one deleted team"
+        );
+        let row = &vm.deleted_teams[0];
+        assert_eq!(row.team_slug, "dead-team");
+        assert!(
+            row.referencing_repos
+                .contains(&"codeowners-repo".to_string()),
+            "expected dead-team's referencing repos to include codeowners-repo \
+             (joined via canonical_owner, not bare team_slug); got {:?}",
+            row.referencing_repos
+        );
+        assert!(
+            row.team_url.contains("dead-team"),
+            "expected team_url to reference the bare team slug; got {}",
+            row.team_url
+        );
+    }
+
+    #[test]
+    fn build_deleted_view_model_omits_deleted_teams_when_none_are_deleted() {
+        let repos = vec![test_fixtures::make_repository_evidence(
+            "codeowners-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_with_owners(&["@org/live-team"]),
+            ),
+        )];
+        let team_rosters = vec![TeamRoster {
+            canonical_owner: "@org/live-team".to_string(),
+            team_slug: "live-team".to_string(),
+            status: TeamRosterStatus::Complete,
+            members: Vec::new(),
+        }];
+
+        let vm = build_deleted_view_model(&[], "TestOrg", &repos, &team_rosters);
+
+        assert!(vm.deleted_teams.is_empty());
+    }
+
+    #[test]
+    fn render_dashboard_deleted_page_omits_deleted_teams_section_when_none() {
+        let evidence = sample_evidence();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let deleted = &pages["deleted.html"];
+
+        assert!(
+            !deleted.contains("Deleted Teams"),
+            "expected the Deleted Teams section to be omitted entirely when \
+             there are no deleted teams; got:\n{deleted}"
+        );
+    }
+
+    #[test]
+    fn render_dashboard_deleted_page_lists_deleted_team_with_referencing_repo() {
+        let mut evidence = evidence_with_owner_repos();
+        evidence.metrics.team_rosters = vec![TeamRoster {
+            canonical_owner: "@org/team-a".to_string(),
+            team_slug: "team-a".to_string(),
+            status: TeamRosterStatus::Deleted,
+            members: Vec::new(),
+        }];
+
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let deleted = &pages["deleted.html"];
+
+        assert!(
+            deleted.contains("Deleted Teams"),
+            "expected the Deleted Teams section to render; got:\n{deleted}"
+        );
+        assert!(deleted.contains("team-a"));
+        assert!(deleted.contains("beta-repo"));
+        assert!(deleted.contains("alpha-repo"));
+        assert!(
+            deleted.contains("https://github.com/orgs/TestOrg/teams/team-a"),
+            "expected the team row to link to the GitHub team page; got:\n{deleted}"
+        );
     }
 
     #[test]
