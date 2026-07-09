@@ -276,7 +276,7 @@ flowchart TB
 
 ## Scoring Contract
 
-Each repository receives a posture score derived from five security controls of equal weight. This section is the authoritative description of how that number is computed and classified; the dashboard, the report HTML, and downstream consumers all rely on it.
+`gh-report` computes three related security scores from a shared set of controls: **Repo Posture** (per repository, arithmetic mean), **Team Health** (per CODEOWNERS owner, geometric mean), and **Org Governance** (organization-wide, geometric mean). This section is the authoritative description of how each is computed and classified; the dashboard, the report HTML, and downstream consumers all rely on it.
 
 ### Controls
 
@@ -288,7 +288,9 @@ Each repository receives a posture score derived from five security controls of 
 | 4 | Branch protection on default branch | `checks.branch_protection.status` |
 | 5 | CODEOWNERS present and conforming | `checks.codeowners.status` |
 
-All five controls carry equal weight. There is no aggregation hierarchy and no weighted policy.
+All five controls carry equal weight within whichever score consumes them. There is no aggregation hierarchy and no weighted policy.
+
+**Repo Posture** uses all five. **Team Health** (owner-level) uses four of the five — it drops `codeowners`, which is tautologically 100% at the per-owner level (repos are associated with an owner *by* CODEOWNERS parsing, so the control carries no signal there). **Org Governance** uses all five. Team Health and Org Governance each additionally fold in lifecycle-derived rates that are not in the table above — see [Aggregation](#aggregation).
 
 ### Per-status classification
 
@@ -302,28 +304,64 @@ Each control's status maps to one of three score categories:
 
 Concretely: `Pass`, `Enabled`, `Conforming` map to `Pass`; `Fail`, `Disabled`, `Paused`, `Partial`, `NonConforming`, `Absent` map to `Fail`; `Unknown`, `PermissionDenied`, and `NotApplicable` map to `Excluded`. The complete enum-by-enum mapping is enforced by `From<…Status> for ScoreCategory` impls in `crates/gh-report/src/domain/checks.rs` and exercised by the `score_category_from_*` unit tests.
 
+**CODEOWNERS numerator caveat.** The mapping above is the `ScoreCategory` classification, ratified for Repo Posture and for the exclusion axis (previous section) at every level. The org- and owner-level CODEOWNERS *numerator* diverges from it: a repo counts as passing when a CODEOWNERS file is present at all (`Conforming` **or** `NonConforming`), not `Conforming`-only as this table's `NonConforming → Fail` row would imply if applied literally at org/owner scope. This is a pre-existing, deliberate-for-now divergence on the numerator axis only, orthogonal to the exclusion-symmetry fix this section otherwise documents. Narrowing the org/owner numerator to `Conforming`-only is tracked separately (bd bead `adr-fmt-pptla`) and is not part of this change.
+
 ### Aggregation
 
-Per repository:
+All three scores apply the same exclusion rule before computing their respective mean: **`Excluded` is structurally distinct from `Fail` — it does not penalise the score, it removes the control from the denominator, at repo, owner, and org level alike ("unmeasured != fail")**. This prevents permission gaps and inapplicable statuses from being indistinguishable from genuine misconfiguration. Historically only the repo-level score applied this; org- and owner-level control rates used a fixed-population denominator that counted an unmeasured/excluded repo as an effective fail. That asymmetry is fixed as of `EVIDENCE_SCHEMA_VERSION = 16.0` (see [Version history](#version-history)).
+
+#### Repo Posture (arithmetic, per repository)
 
 ```text
 score = 100 × pass_count / total_count           where total_count = pass_count + fail_count
 ```
 
-When `total_count == 0` (every control is `Excluded`, e.g. a brand-new private repository where capability probes returned `PermissionDenied` for everything), the repository is reported with score `N/A` rather than `0` or `100`. **`Excluded` is structurally distinct from `Fail`:** it does not penalise the score, it removes the control from the denominator. This prevents permission gaps and inapplicable statuses from being indistinguishable from genuine misconfiguration.
+When `total_count == 0` (every control is `Excluded`, e.g. a brand-new private repository where capability probes returned `PermissionDenied` for everything), the repository is reported with score `N/A` rather than `0` or `100`.
 
 The result is rounded to one decimal place for display.
 
+#### Team Health (geometric, per owner) and Org Governance (geometric, organization-wide)
+
+Both are a geometric mean over that score's set of measured control rates:
+
+```text
+score = exp( mean( ln(rate_i) ) )     over the n controls with a non-N/A rate;
+                                       a real 0.0% rate floors to 0.1% first so
+                                       one failing control does not collapse the
+                                       whole product to zero
+```
+
+- **Team Health** (owner-level, six control rates): Security Policy, Secret Scanning, Dependabot, Branch Protection, Freshness, Alert-Free.
+- **Org Governance** (org-level, six control rates): Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS, Archival Coverage.
+
+Each of the four (Team Health) or five (Org Governance) shared security-control rates is itself a `Pass/(Pass+Fail)`-shaped coverage rate computed over that owner's or the org's repos, with `Excluded` repos dropped from the denominator per the rule above — a control whose every repo is `Excluded` (zero denominator) contributes `N/A` and is dropped from the geometric mean rather than treated as `0`. The composite score itself is `N/A` only when every one of its six input rates is `N/A`.
+
+Result rounded to one decimal place for display.
+
+#### Lifecycle-derived rates (not among the five shared controls)
+
+Team Health and Org Governance each fold in rate(s) outside the five-control table above. These are pure report-side aggregations over already-collected evidence fields (repository `updated_at`, secret-scanning alert observability) — no new persisted field, so they are not independently subject to `EVIDENCE_SCHEMA_VERSION`:
+
+- **Freshness** (owner-level, feeds Team Health only): `(total − stale) / total`, where a repo is "stale" per `domain::time::is_repo_stale` (`updated_at` more than `STALE_THRESHOLD_DAYS` — currently 730 days — before the run timestamp; unknown `updated_at` is never stale). Denominator = the owner's total repo count.
+- **Alert-Free** (owner-level, feeds Team Health only): the percentage of the owner's *observable* repos (secret scanning `Enabled` **and** alerts observable) with no open secret-scanning alert. Denominator = observable repo count; zero observable repos → `N/A`.
+- **Archival Coverage** (org-level, feeds Org Governance only): `archived / (archived + stale_active)` — the fraction of stale-lifecycle repositories (already archived, plus still-active-but-stale) that have actually been archived. `None` when there are no archived repos and no active repos are stale.
+
+Each is `RateMetric`-shaped (`N/A` on a zero denominator) and participates in its score's geometric mean exactly like the security-control rates above.
+
+### By-reason exclusion breakdown
+
+Alongside each org- and owner-level control rate, the report surfaces *why* the excluded repos were dropped from that control's denominator: a count keyed by `(check_kind, reason)`, where `reason` is one of `PermissionDenied | Unknown | NotApplicable | Other` (`ExclusionReason`, `crates/gh-report/src/domain/checks.rs`). Org-wide this is `AggregatedMetrics::score_exclusion_counts`; per-owner it is `OwnerMetrics::score_exclusion_counts` — both `Vec<ScoreExclusionCount>` (`crates/gh-report/src/domain/metrics.rs`). Both are report-side derivations computed fresh from the same per-check `*Status` evidence that already drives the `ScoreCategory` funnel above; neither is persisted on `RepositoryEvidence` (CHE-0082:R6 / CHE-0022:R6). This mirrors the pre-existing `collection_health_counts` pattern.
+
 ### Tiers
 
-The numeric score is classified into a tier for color-coding and tier-level metrics:
+The numeric score — Repo Posture, Team Health, or Org Governance alike — is classified into a tier for color-coding and tier-level metrics:
 
 | Tier | Default range | Default threshold | Override |
 |------|---------------|-------------------|----------|
 | Pass (green) | `score ≥ 80.0` | `pass_threshold` | `--pass-threshold <pct>` |
 | Warn (yellow) | `50.0 ≤ score < 80.0` | `warn_threshold` | `--warn-threshold <pct>` |
 | Fail (red) | `score < 50.0` | — | — |
-| N/A | `total_count == 0` | — | — |
+| N/A | no measured controls (`total_count == 0` for the arithmetic score; every input rate `N/A` for a geometric score) | — | — |
 
 Configuration constraints (validated at startup): both thresholds are in `[0.0, 100.0]` and `pass_threshold ≥ warn_threshold`. When `pass_threshold == warn_threshold`, the warn band collapses and scores are strictly pass or fail — this is a supported configuration.
 
@@ -411,7 +449,7 @@ The baseline mechanism reduces API calls by reusing evidence for repositories th
 | Constant | Current value | Stamped on | Validated against on load? |
 |----------|---------------|-----------|----------------------------|
 | `INVENTORY_SCHEMA_VERSION` | `1.0` | `InventoryPayload` (per-run inventory snapshot) | No — informational metadata for downstream consumers; never read back by the daemon. |
-| `EVIDENCE_SCHEMA_VERSION` | `15.0` | `Evidence`, `RepositoryEvidence`, `Checkpoint` | No — stamped for observability; projection replay does not discard state on mismatch. |
+| `EVIDENCE_SCHEMA_VERSION` | `16.0` | `Evidence`, `RepositoryEvidence`, `Checkpoint` | No — stamped for observability; projection replay does not discard state on mismatch. |
 
 Both constants live in `crates/gh-report/src/config/mod.rs`.
 
@@ -435,6 +473,7 @@ Version history is maintained forward-only from this point. Prior versions exist
 |---------|-----------------|-------|
 | `EVIDENCE_SCHEMA_VERSION = 14.0` | (initial) | Evidence schema at the time this section was written. |
 | `EVIDENCE_SCHEMA_VERSION = 15.0` | 2026-05-05 | Added `CodeownersResult.truncation: Option<CodeownersTruncationReason>` and `CodeownersCounts.truncated: u32`. Surfaces previously-silent CODEOWNERS parse skips (encoding mismatch, oversized base64, decode/UTF-8 failure) so operators can detect data loss without scanning per-repo evidence. |
+| `EVIDENCE_SCHEMA_VERSION = 16.0` | 2026-07-09 | Org and owner security scores now exclude unmeasured controls (unknown / permission-denied / not-applicable) from the denominator, matching the repo model; exclusion reason threaded through scoring and surfaced as a by-reason breakdown. |
 | `INVENTORY_SCHEMA_VERSION = 1.0` | (current) | Initial published version. |
 
 When bumping, append a row with the new version, the date, and a one-line note describing what shape change drove the bump. The version of `EVIDENCE_SCHEMA_VERSION` is also surfaced in the report metadata so the projected baseline's version is observable via `gh-report --dump-baseline --org <org>`.

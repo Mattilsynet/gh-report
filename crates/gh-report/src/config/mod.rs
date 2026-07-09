@@ -20,8 +20,12 @@ pub const INVENTORY_SCHEMA_VERSION: &str = "1.0";
 /// Current evidence/checkpoint schema version.
 ///
 /// Bump when metadata fields are added/removed, check field shapes change,
-/// or CODEOWNERS conformance semantics change.
-pub const EVIDENCE_SCHEMA_VERSION: &str = "15.0";
+/// CODEOWNERS conformance semantics change, or a check's computation
+/// changes in a way that makes prior projection evidence incomparable to
+/// new output. OPERATIONS.md § Scoring Contract → Stability and § Schema
+/// Versions → When to bump are the prose authority for this rule; this
+/// constant is the value authority — keep both in sync (COM-0027).
+pub const EVIDENCE_SCHEMA_VERSION: &str = "16.0";
 
 /// Default page size for GitHub API list endpoints.
 pub const DEFAULT_PAGE_SIZE: u32 = 100;

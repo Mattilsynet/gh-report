@@ -117,7 +117,13 @@ pub struct BranchProtectionCounts {
     pub partial: u32,
     /// Repos at T0 below baseline.
     pub fail: u32,
-    /// Repos excluded because branch protection could not be scored.
+    /// Repos where branch protection is `Excluded` from scoring — status
+    /// indeterminate or not applicable (`BranchProtectionTier::Excluded`) —
+    /// and so dropped from `branch_protection_coverage`'s denominator
+    /// rather than counted as `fail`. Populated since item6-02; previously
+    /// dead (folded into `fail`, never incremented — adr-fmt-pcoqb). See
+    /// [`AggregatedMetrics::score_exclusion_counts`] for the breakdown by
+    /// exclusion reason.
     pub unknown: u32,
 }
 
