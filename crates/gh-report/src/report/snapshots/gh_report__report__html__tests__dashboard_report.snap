@@ -11,6 +11,7 @@ expression: "&pages[\"report.html\"]"
     <title>TestOrg GitHub Security Posture Overview</title>
     <link rel="stylesheet" href="style.css">
     <script src="ws.js" defer></script>
+    <script type="module" src="sort-init.js">
     
 </head>
 
@@ -272,11 +273,11 @@ expression: "&pages[\"report.html\"]"
     </div>
 
     <h2>Assessment Metadata</h2>
-    <table class="data-table">
+    <table class="data-table" data-sortable>
         <thead>
             <tr>
-                <th><span class="tooltip-header" tabindex="0" data-tooltip="Name of the metadata item this row reports." title="Name of the metadata item this row reports.">Field</span></th>
-                <th class="text-right"><span class="tooltip-header" tabindex="0" data-tooltip="The measured count or percentage for this collection run." title="The measured count or percentage for this collection run.">Value</span></th>
+                <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="Name of the metadata item this row reports." title="Name of the metadata item this row reports.">Field</span></th>
+                <th class="text-right" data-nosort><span class="tooltip-header" tabindex="0" data-tooltip="The measured count or percentage for this collection run." title="The measured count or percentage for this collection run.">Value</span></th>
             </tr>
         </thead>
         <tbody>

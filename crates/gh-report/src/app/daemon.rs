@@ -70,6 +70,7 @@ const PHASE_STOPPED: &str = "stopped";
 const MESSAGE_READY: &str = "daemon ready — serving";
 const MESSAGE_SHUTDOWN_BEGIN: &str = "beginning graceful shutdown";
 const MESSAGE_STOPPED: &str = "daemon stopped";
+const SERVED_CSP_WITH_WASM_UNSAFE_EVAL: &str = "default-src 'self'; style-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; base-uri 'none'; form-action 'none'";
 
 fn duration_millis(duration: Duration) -> u128 {
     duration.as_millis()
@@ -204,6 +205,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
         collect_cancel_rx,
     );
     let server_config = cherry_pit_web::serve::ServerConfig::builder()
+        .csp_override(SERVED_CSP_WITH_WASM_UNSAFE_EVAL)
         .build()
         .expect("default config is valid");
 
@@ -817,6 +819,31 @@ mod tests {
         assert_eq!(MESSAGE_READY, "daemon ready — serving");
         assert_eq!(MESSAGE_SHUTDOWN_BEGIN, "beginning graceful shutdown");
         assert_eq!(MESSAGE_STOPPED, "daemon stopped");
+    }
+
+    #[test]
+    fn served_csp_adds_only_wasm_unsafe_eval_to_script_src() {
+        let default_script_src_token = "script-src 'self';";
+        let served_script_src_token = "script-src 'self' 'wasm-unsafe-eval';";
+        assert!(!SERVED_CSP_WITH_WASM_UNSAFE_EVAL.contains(default_script_src_token));
+        assert!(SERVED_CSP_WITH_WASM_UNSAFE_EVAL.contains(served_script_src_token));
+        assert!(SERVED_CSP_WITH_WASM_UNSAFE_EVAL.contains("default-src 'self'"));
+        assert!(SERVED_CSP_WITH_WASM_UNSAFE_EVAL.contains("style-src 'self'"));
+        assert!(SERVED_CSP_WITH_WASM_UNSAFE_EVAL.contains("connect-src 'self'"));
+        assert!(SERVED_CSP_WITH_WASM_UNSAFE_EVAL.contains("base-uri 'none'"));
+        assert!(SERVED_CSP_WITH_WASM_UNSAFE_EVAL.contains("form-action 'none'"));
+    }
+
+    #[test]
+    fn served_csp_is_accepted_by_server_config_builder() {
+        let config = cherry_pit_web::serve::ServerConfig::builder()
+            .csp_override(SERVED_CSP_WITH_WASM_UNSAFE_EVAL)
+            .build()
+            .unwrap();
+        assert_eq!(
+            config.csp_override(),
+            Some(SERVED_CSP_WITH_WASM_UNSAFE_EVAL)
+        );
     }
 
     #[test]

@@ -299,6 +299,9 @@ pub fn render_dashboard(
     pages.insert("admin.html".to_string(), admin);
     pages.insert("style.css".to_string(), STYLESHEET.to_string());
     pages.insert("ws.js".to_string(), WS_CLIENT_JS.to_string());
+    pages.insert("gh-report-web-client.js".to_string(), String::new());
+    pages.insert("gh-report-web-client_bg.wasm".to_string(), String::new());
+    pages.insert("sort-init.js".to_string(), String::new());
     pages.insert("OPERATIONS.html".to_string(), operations);
 
     if let Some(ref owners) = owners_vm {
@@ -1327,9 +1330,11 @@ mod tests {
     /// Returns `true` for non-HTML assets (`.css`, `.js`) that should be
     /// skipped when asserting on HTML content in rendered dashboards.
     fn is_non_html_asset(name: &str) -> bool {
-        std::path::Path::new(name)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("css") || ext.eq_ignore_ascii_case("js"))
+        std::path::Path::new(name).extension().is_some_and(|ext| {
+            ext.eq_ignore_ascii_case("css")
+                || ext.eq_ignore_ascii_case("js")
+                || ext.eq_ignore_ascii_case("wasm")
+        })
     }
 
     fn sample_evidence() -> Evidence {
@@ -1712,10 +1717,13 @@ mod tests {
         assert!(pages.contains_key("admin.html"));
         assert!(pages.contains_key("style.css"));
         assert!(pages.contains_key("ws.js"));
+        assert!(pages.contains_key("gh-report-web-client.js"));
+        assert!(pages.contains_key("gh-report-web-client_bg.wasm"));
+        assert!(pages.contains_key("sort-init.js"));
         assert!(pages.contains_key("orphans.html"));
         assert!(pages.contains_key("deleted.html"));
         assert!(pages.contains_key("OPERATIONS.html"));
-        assert_eq!(pages.len(), 8);
+        assert_eq!(pages.len(), 11);
     }
 
     #[test]

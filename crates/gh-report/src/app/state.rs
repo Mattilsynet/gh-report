@@ -67,6 +67,27 @@ const STYLESHEET: &str = include_str!("../../templates/style.css");
 /// Embedded WebSocket client script, compiled into the binary at build time.
 const WS_CLIENT_JS: &str = include_str!("../../templates/ws.js");
 
+/// Embedded Leptos CSR client WASM glue (ES module), compiled into the
+/// binary at build time. See [`crate::app::state`] module docs and
+/// CHE-0087; source crate `gh-report-web-client`, rebuilt and
+/// recommitted per that crate's own build instructions (never a host
+/// `build.rs` step).
+const SORT_CLIENT_JS: &str = include_str!("../../templates/gh-report-web-client.js");
+
+/// Embedded Leptos CSR client WASM binary, compiled into the binary at
+/// build time. Binary (not UTF-8), so it bypasses the
+/// `HashMap<String, String>` page map entirely and can only be served
+/// via the [`CachedPage`] `LazyLock` path below (see
+/// [`crate::app::collect::build_cached_pages`]).
+const SORT_CLIENT_WASM: &[u8] = include_bytes!("../../templates/gh-report-web-client_bg.wasm");
+
+/// Embedded ES-module bootstrap for the Leptos CSR client, compiled
+/// into the binary at build time. Served as an external module script
+/// (referenced via `<script type="module" src="sort-init.js">`) rather
+/// than inlined, so the served Content-Security-Policy keeps
+/// `script-src 'self'` without needing `'unsafe-inline'` (CHE-0087 R8).
+const SORT_INIT_JS: &str = include_str!("../../templates/sort-init.js");
+
 /// Pre-computed `CachedPage` for `style.css`.
 ///
 /// Zstd compression and SHA-256 hashing are performed once at first
@@ -80,6 +101,33 @@ pub static CACHED_STYLESHEET: LazyLock<CachedPage> =
 /// Same rationale as [`CACHED_STYLESHEET`]: compute once, clone cheaply.
 pub static CACHED_WS_JS: LazyLock<CachedPage> =
     LazyLock::new(|| CachedPage::new("ws.js", WS_CLIENT_JS.as_bytes().to_vec()));
+
+/// Pre-computed `CachedPage` for `gh-report-web-client.js` (the Leptos
+/// CSR client's ES module glue).
+///
+/// Same rationale as [`CACHED_STYLESHEET`]: compute once, clone cheaply.
+pub static CACHED_SORT_CLIENT_JS: LazyLock<CachedPage> = LazyLock::new(|| {
+    CachedPage::new(
+        "gh-report-web-client.js",
+        SORT_CLIENT_JS.as_bytes().to_vec(),
+    )
+});
+
+/// Pre-computed `CachedPage` for `gh-report-web-client_bg.wasm` (the
+/// Leptos CSR client's compiled WASM binary).
+///
+/// Binary content: `CachedPage::new` already skips zstd
+/// pre-compression and maps the `.wasm` extension to
+/// `application/wasm` (see `cherry_pit_web::serve`'s `content_type_for_ext`).
+pub static CACHED_SORT_CLIENT_WASM: LazyLock<CachedPage> =
+    LazyLock::new(|| CachedPage::new("gh-report-web-client_bg.wasm", SORT_CLIENT_WASM.to_vec()));
+
+/// Pre-computed `CachedPage` for `sort-init.js` (the external ES-module
+/// bootstrap that imports and initialises the Leptos CSR client).
+///
+/// Same rationale as [`CACHED_STYLESHEET`]: compute once, clone cheaply.
+pub static CACHED_SORT_INIT_JS: LazyLock<CachedPage> =
+    LazyLock::new(|| CachedPage::new("sort-init.js", SORT_INIT_JS.as_bytes().to_vec()));
 
 /// Shared application state.
 ///

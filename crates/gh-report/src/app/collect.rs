@@ -38,7 +38,10 @@ use jiff::SignedDuration;
 use tracing::{debug, error, info, warn};
 
 use crate::aggregate::metrics;
-use crate::app::state::{AppState, CACHED_STYLESHEET, CACHED_WS_JS, CachedPage};
+use crate::app::state::{
+    AppState, CACHED_SORT_CLIENT_JS, CACHED_SORT_CLIENT_WASM, CACHED_SORT_INIT_JS,
+    CACHED_STYLESHEET, CACHED_WS_JS, CachedPage,
+};
 use crate::collector::ghas_scanning;
 use crate::collector::team_membership;
 use crate::collector::{branch_protection, codeowners, dependabot, inventory, security_policy};
@@ -1502,6 +1505,9 @@ pub(crate) async fn build_cached_pages(
                 let page = match path.as_str() {
                     "style.css" => CACHED_STYLESHEET.clone(),
                     "ws.js" => CACHED_WS_JS.clone(),
+                    "gh-report-web-client.js" => CACHED_SORT_CLIENT_JS.clone(),
+                    "gh-report-web-client_bg.wasm" => CACHED_SORT_CLIENT_WASM.clone(),
+                    "sort-init.js" => CACHED_SORT_INIT_JS.clone(),
                     _ => CachedPage::new(&path, content.into_bytes()),
                 };
                 (path, page)
