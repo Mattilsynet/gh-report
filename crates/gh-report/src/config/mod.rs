@@ -97,7 +97,11 @@ pub const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1";
 /// the previous collection completes.
 pub const COLLECTION_INTERVAL_SECS: u64 = 2_700;
 
-/// Maximum API calls per budget epoch before pausing.
+/// Fallback API budget ceiling used only before the first GitHub API
+/// response of a fresh process (`RateLimitState::load_remaining()` is
+/// `None`). Every subsequent run sizes its ceiling live from the
+/// observed `remaining` count minus a 100-call buffer instead — see
+/// `crate::app::collect::effective_budget_ceiling`.
 pub const API_BUDGET_LIMIT: u64 = 4000;
 
 /// Duration to wait when budget is exhausted (seconds).

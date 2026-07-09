@@ -225,6 +225,42 @@ struct OrgAlertContext {
     snapshot: Option<serde_json::Value>,
 }
 
+/// Effective per-run API call budget ceiling from the last-observed
+/// GitHub rate-limit `remaining` count, reserving a 100-call buffer.
+///
+/// Returns [`config::API_BUDGET_LIMIT`] when `remaining` is `None`
+/// (no API response observed yet in this process — the first run of
+/// a fresh daemon). Otherwise returns `remaining - 100`, clamped to a
+/// minimum of 1 so the result is always a valid argument to
+/// [`cherry_pit_wq::BudgetGate::set_epoch_limit`], which panics on 0.
+fn effective_budget_ceiling(remaining: Option<u32>) -> u64 {
+    match remaining {
+        None => config::API_BUDGET_LIMIT,
+        Some(r) => u64::from(r.saturating_sub(100)).max(1),
+    }
+}
+
+/// Size this run's API call budget ceiling from the last-observed
+/// GitHub rate-limit signal, before any work is dispatched.
+///
+/// Reads `rate_limit_state.load_remaining()` — populated by the
+/// *previous* run's responses, `None` before the first response of
+/// this process — and applies [`effective_budget_ceiling`] via
+/// `budget_gate.set_epoch_limit`. Logs the chosen ceiling and whether
+/// it reflects a live rate-limit signal or the first-run fallback.
+fn apply_per_run_budget_ceiling(state: &AppState) {
+    let (budget_gate, rate_limit_state) = state.github_api_controls();
+    let remaining = rate_limit_state.load_remaining();
+    let ceiling = effective_budget_ceiling(remaining);
+    budget_gate.set_epoch_limit(ceiling);
+    info!(
+        ceiling,
+        remaining = ?remaining,
+        live = remaining.is_some(),
+        "per-run API budget ceiling sized"
+    );
+}
+
 /// Execute a single collection run.
 ///
 /// Acquires the in-process [`AppState::sweep_lock`] as its first
@@ -260,6 +296,8 @@ pub(crate) async fn run_with_outcome(
         org = %run.organization,
         "collection run starting"
     );
+
+    apply_per_run_budget_ceiling(&state);
 
     state.current_run.store(Arc::new(Some(run.clone())));
 
@@ -1955,6 +1993,28 @@ mod tests {
         let load = inventory_load_from_payload(payload);
 
         assert_eq!(load.active_repos.iter().filter(|r| r.archived).count(), 2);
+    }
+
+    #[test]
+    fn effective_budget_ceiling_uses_remaining_minus_buffer() {
+        assert_eq!(effective_budget_ceiling(Some(4999)), 4899);
+    }
+
+    #[test]
+    fn effective_budget_ceiling_falls_back_when_remaining_unknown() {
+        assert_eq!(effective_budget_ceiling(None), config::API_BUDGET_LIMIT);
+    }
+
+    #[test]
+    fn effective_budget_ceiling_clamps_to_one_at_or_below_buffer() {
+        assert_eq!(effective_budget_ceiling(Some(100)), 1);
+        assert_eq!(effective_budget_ceiling(Some(0)), 1);
+        assert_eq!(effective_budget_ceiling(Some(50)), 1);
+    }
+
+    #[test]
+    fn effective_budget_ceiling_boundary_just_above_buffer() {
+        assert_eq!(effective_budget_ceiling(Some(101)), 1);
     }
 
     fn sample_config() -> RuntimeConfig {
