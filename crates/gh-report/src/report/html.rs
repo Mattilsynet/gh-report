@@ -1733,20 +1733,28 @@ mod tests {
 
     #[test]
     fn every_html_page_has_balanced_script_tags() {
-        let evidence = sample_evidence();
-        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
-
-        for (name, body) in &pages {
-            if !name.ends_with(".html") {
-                continue;
+        let cases = [
+            sample_evidence(),
+            sample_evidence_with_admin_diagnostics(),
+            evidence_with_owner_repos(),
+        ];
+        for evidence in &cases {
+            let pages = render_dashboard(evidence, &DashboardConfig::default()).unwrap();
+            for (name, body) in &pages {
+                let is_html = std::path::Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("html"));
+                if !is_html {
+                    continue;
+                }
+                let opens = body.matches("<script").count();
+                let closes = body.matches("</script>").count();
+                assert_eq!(
+                    opens, closes,
+                    "{name} has {opens} <script> vs {closes} </script>; an unclosed \
+                     script tag swallows the rest of the document as script text"
+                );
             }
-            let opens = body.matches("<script").count();
-            let closes = body.matches("</script>").count();
-            assert_eq!(
-                opens, closes,
-                "{name} has {opens} <script> vs {closes} </script>; an unclosed \
-                 script tag swallows the rest of the document as script text"
-            );
         }
     }
 
