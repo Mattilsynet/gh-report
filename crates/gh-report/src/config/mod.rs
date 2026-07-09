@@ -95,7 +95,7 @@ pub const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1";
 
 /// Fixed interval between collection runs (seconds). Timer starts after
 /// the previous collection completes.
-pub const COLLECTION_INTERVAL_SECS: u64 = 2_700;
+pub const COLLECTION_INTERVAL_SECS: u64 = 900;
 
 /// Fallback API budget ceiling used only before the first GitHub API
 /// response of a fresh process (`RateLimitState::load_remaining()` is

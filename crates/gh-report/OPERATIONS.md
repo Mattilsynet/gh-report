@@ -8,7 +8,7 @@ Deployment, authentication, permissions, logging, output layout, retention, and 
 
 1. Performs an initial data collection against the configured GitHub organization.
 2. Starts an HTTP server (in-memory cache — no disk I/O on the serving path).
-3. Re-collects every 45 minutes.
+3. Re-collects every 15 minutes.
 4. Shuts down gracefully on `Ctrl-C` or `SIGTERM`.
 
 A file lock (`store/collector.lock`) prevents overlapping collections. If a scheduled run starts while a previous one is still in progress, the new run is skipped with a warning.
@@ -271,6 +271,7 @@ flowchart TB
 - **Atomic publish.** A single `ArcSwap::store()` call replaces all pages instantly — no filesystem staging, no directory swaps, no reader-visible intermediate state. The serving path performs zero disk I/O.
 - **ETag / 304.** Each `CachedPage` carries a weak `ETag` (SHA-256 truncated to 16 bytes). `If-None-Match` requests receive a 304 with no body transfer.
 - **Warm-start.** On daemon startup, the event log is folded into the in-memory projection. If that projection already contains repository evidence, the daemon renders and publishes pages from the projection snapshot before the first API collection completes.
+- **Live per-run budget ceiling.** Each run sizes its API call budget to the last-observed GitHub rate-limit `remaining` count minus a 100-call safety buffer, so a run spends all available quota short of that buffer before pausing. Before the first API response of a fresh process (`remaining` not yet known), the run falls back to a fixed default (`API_BUDGET_LIMIT`, 4000 calls).
 - **Partial publish on budget pause.** When the API call budget is exhausted mid-run, a background task builds interim evidence with pending-repo markers and publishes a partial cache.
 - **Checkpoint format** is binary MessagePack with a `CKPT` magic header.
 
@@ -680,7 +681,7 @@ gcloud run deploy gh-report \
 
 **Deployment notes:**
 
-- `--min-instances=1` — the daemon must stay running for scheduled re-collection (45-minute interval).
+- `--min-instances=1` — the daemon must stay running for scheduled re-collection (15-minute interval).
 - `--max-instances=1` — prevents concurrent instances with conflicting file locks.
 - **Secrets:** Production uses `GITHUB_TOKEN` from Secret Manager secret `gh-report-token`; the GitHub App variables remain useful for local/break-glass deployments that intentionally use app auth.
 - **Persistence:** Production durability is NATS JetStream plus the in-memory projection rebuilt from the event log. The deployed Terraform has no Cloud Storage FUSE mount, and `baseline.msgpack` is retired from the gh-report boot path.
@@ -832,7 +833,7 @@ The dashboard uses WebSocket connections (`GET /ws`) to receive real-time page u
 
 ## Webhook Receiver
 
-The `POST /webhook` endpoint accepts GitHub webhook deliveries to drive incremental, event-triggered re-evaluation between the 45-minute scheduled collection cycles. The route is registered **only when `WEBHOOK_SECRET` is set** in the environment; with the secret unset, the route is absent (404) and the daemon runs in scheduled-only mode.
+The `POST /webhook` endpoint accepts GitHub webhook deliveries to drive incremental, event-triggered re-evaluation between the 15-minute scheduled collection cycles. The route is registered **only when `WEBHOOK_SECRET` is set** in the environment; with the secret unset, the route is absent (404) and the daemon runs in scheduled-only mode.
 
 ### Configuration
 
