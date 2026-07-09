@@ -30,6 +30,9 @@ pub struct RuntimeConfig {
     pub nats_creds: Option<PathBuf>,
     /// Forcibly remove an existing lock before acquiring.
     pub force_unlock: bool,
+    /// Bypass baseline reuse for the first collection after process start
+    /// (one-shot); every repository is re-fetched on that collection only.
+    pub force_refresh: bool,
     /// Dashboard rendering configuration.
     pub dashboard_config: DashboardConfig,
 }
@@ -151,6 +154,7 @@ impl RuntimeConfig {
             nats_url: DEFAULT_NATS_URL.to_string(),
             nats_creds: None,
             force_unlock: false,
+            force_refresh: false,
             dashboard_config: DashboardConfig::default(),
         })
     }

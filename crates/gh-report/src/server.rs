@@ -376,6 +376,7 @@ mod tests {
             nats_url: crate::config::runtime::DEFAULT_NATS_URL.to_string(),
             nats_creds: None,
             force_unlock: false,
+            force_refresh: false,
             dashboard_config: DashboardConfig::default(),
         };
 
@@ -465,6 +466,7 @@ mod tests {
             nats_url: crate::config::runtime::DEFAULT_NATS_URL.to_string(),
             nats_creds: None,
             force_unlock: false,
+            force_refresh: false,
             dashboard_config: crate::config::dashboard::DashboardConfig::default(),
         };
         let evidence = test_fixtures::make_full_evidence(

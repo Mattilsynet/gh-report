@@ -810,6 +810,7 @@ impl SweepSaga {
             &self.completed,
             &self.run_timestamp,
             sweep.state,
+            sweep.config.force_refresh,
         );
         self.baseline_reused = self.baseline_cache.len();
 
@@ -1562,7 +1563,12 @@ fn reuse_from_baseline(
     completed: &HashMap<String, Arc<RepositoryEvidence>>,
     run_timestamp: &str,
     state: &Arc<AppState>,
+    force_refresh: bool,
 ) -> HashMap<String, Arc<RepositoryEvidence>> {
+    if force_refresh {
+        return HashMap::new();
+    }
+
     let pending_before_baseline: Vec<&Arc<Repository>> = repositories
         .iter()
         .filter(|r| !completed.contains_key(&r.inventory_key))
@@ -2027,6 +2033,7 @@ mod tests {
             nats_url: crate::config::runtime::DEFAULT_NATS_URL.to_string(),
             nats_creds: None,
             force_unlock: false,
+            force_refresh: false,
             dashboard_config: DashboardConfig::default(),
         }
     }
