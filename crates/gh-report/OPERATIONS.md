@@ -172,6 +172,11 @@ There are no per-run directories, staging areas, symlinks, or `evidence.json` fi
 
 **Deleted teams (render-time-only).** `deleted.html`'s "Deleted Teams" section lists every CODEOWNERS-referenced GitHub team whose roster fetch returned 404 — i.e. a repository's CODEOWNERS file still names a team GitHub no longer has — together with the repos still referencing it. Unlike the deleted-repositories table above, this section is not event-sourced: it is recomputed fresh on every render from the current CODEOWNERS state and the current collection's team-roster fetches, so a team drops off the list automatically once no live repo's CODEOWNERS references it, or reappears if GitHub restores it. Nothing about a deleted team is written to the persisted event log.
 
+**User validity warnings (render-time-only).** Two independent, render-time-only warning badges surface possibly-invalid GitHub user references, neither of which is persisted to the event log:
+
+- **Unregistered/unknown committer.** The "Last Committer" column on `orphans.html` and each owner's `owners/{slug}.html` Repositories table shows a small ⚠ tooltip when a repository's most recent commit has a committer *name* (raw git metadata) but GitHub could not associate that commit with any GitHub account (`committer_login` absent from the commits API response). This is distinct from a repository with no commit data at all, which shows a neutral dash with no warning.
+- **Departed org member.** An optional `GET /orgs/{org}/members` fetch (mirroring the existing org-level secret-scanning-alerts fetch: same budget/rate-limit gating, same Link-header pagination) builds the current organization's member-login set once per collection tick. Each GitHub team's member roster (`owners/{slug}.html`'s "Team Members" table) and each CODEOWNERS individual-user owner (that owner's own detail-page heading) is cross-checked against this set; a login absent from it shows a ⚠ "no longer a member of this GitHub organisation" tooltip. This is an **optional capability**: if the fetch fails or is denied (e.g. insufficient scope), the check degrades to "unknown" and **nobody is flagged** — a failed fetch is never read as "everyone left the org". As with team rosters, this membership set is fetched fresh every tick and never persisted.
+
 ## Architecture Dataflow
 
 ```mermaid
