@@ -30,8 +30,8 @@ expression: "&pages[\"index.html\"]"
     </div>
 
     <div class="scorecard">
-        <div class="card health-score-card tier-warn" title="Geometric mean of all coverage rates. Rewards balanced improvement across all controls.">
-            <p class="card-label">Organisation Governance Score</p>
+        <div class="card health-score-card tier-warn" title="Geometric mean of measured control rates across six controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS, Archival Coverage. Unmeasured controls are excluded from each rate's denominator. Rewards balanced improvement across all controls.">
+            <p class="card-label">Org Governance</p>
             <p class="card-value">68.8%</p>
             <div class="progress-bar">
                 <div class="progress-fill tier-warn w-70"></div>
@@ -85,7 +85,7 @@ expression: "&pages[\"index.html\"]"
             <p class="card-detail">1 unmeasured (1 unknown)</p>
             <p class="card-detail"><a href="OPERATIONS.html#codeowners-coverage" title="CODEOWNERS remediation guidance">Read more</a></p>
         </div>
-        <div class="card tier-na" title="Proportion of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better.">
+        <div class="card tier-na" title="Archived / (archived + stale-active) — fraction of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better.">
             <p class="card-label">Archival Coverage</p>
             <p class="card-value">N/A (0/0)</p>
             <p class="card-detail">0 archived · 0 stale</p>

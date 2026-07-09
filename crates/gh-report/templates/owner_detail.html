@@ -76,7 +76,7 @@
         </div>
         {% endfor %}
         <div class="card{% if vm.stale_repo_count > 0 %} tier-warn{% endif %}">
-            <p class="card-label">Stale Repos</p>
+            <p class="card-label">Stale Repos {% call tooltip::tooltip("Repos not updated in 2+ years, out of this owner's total. The complement (total - stale) / total is this owner's Freshness rate, one of six controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.") %}{% endcall %}</p>
             <p class="card-value">{{ vm.stale_repo_count }} / {{ vm.total_repo_count }}</p>
             <div class="progress-bar">
                 <div class="progress-fill{% if vm.stale_repo_count > 0 %} tier-warn{% endif %} {{ vm.stale_width_class }}"></div>
@@ -94,7 +94,7 @@
                 <tr>
                     <th><span class="tooltip-header" tabindex="0" data-tooltip="Repository name; links to it on GitHub when a URL is known." title="Repository name; links to it on GitHub when a URL is known.">Repository</span></th>
                     <th><span class="tooltip-header" tabindex="0" data-tooltip="The repository's GitHub visibility: Public, Internal, or Private." title="The repository's GitHub visibility: Public, Internal, or Private.">Visibility</span></th>
-                    <th class="text-center"><span class="tooltip-header" tabindex="0" data-tooltip="This repo's pass rate across five controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS. Unlike the owner-level Sec Score, this includes CODEOWNERS and simply excludes unscorable controls. N/A when none are scorable." title="This repo's pass rate across five controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS. Unlike the owner-level Sec Score, this includes CODEOWNERS and simply excludes unscorable controls. N/A when none are scorable.">Repo Score</span></th>
+                    <th class="text-center"><span class="tooltip-header" tabindex="0" data-tooltip="Arithmetic mean: 100 × passing / measured controls, across five controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS. Unmeasured controls (unknown, permission-denied, or not-applicable) are excluded from the denominator. Unlike the owner-level Team Health score, this includes CODEOWNERS. N/A when none are scorable." title="Arithmetic mean: 100 × passing / measured controls, across five controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS. Unmeasured controls (unknown, permission-denied, or not-applicable) are excluded from the denominator. Unlike the owner-level Team Health score, this includes CODEOWNERS. N/A when none are scorable.">Repo Posture</span></th>
                     {% for column in vm.control_columns %}
                     <th class="text-center"><span class="tooltip-header" tabindex="0" data-tooltip="{{ column.tooltip }}" title="{{ column.tooltip }}">{{ column.name }}</span></th>
                     {% endfor %}

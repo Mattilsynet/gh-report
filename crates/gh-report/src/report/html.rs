@@ -156,7 +156,7 @@ const CONTROL_NAMES: &[&str] = &[
     "branch_protection",
 ];
 
-/// All 6 security controls used for the per-owner sec score geometric mean.
+/// All 6 security controls used for the per-owner Team Health score geometric mean.
 ///
 /// Excludes `codeowners` — it is tautological at the per-owner level because
 /// repos are associated with owners via CODEOWNERS parsing, so every owner's
@@ -218,7 +218,7 @@ fn control_display_name(key: &str) -> &'static str {
         "secret_scanning" => "Secret Scanning",
         "dependabot_security_updates" => "Dependabot Status",
         "branch_protection" => "Branch Protection",
-        "non_stale" => "Non-Stale",
+        "non_stale" => "Freshness",
         "alert_free" => "Alert-Free",
         _ => "Unknown",
     }
@@ -1730,8 +1730,12 @@ mod tests {
         let index = &pages["index.html"];
 
         assert!(
-            index.contains("Organisation Governance Score"),
-            "index should contain governance score card label"
+            index.contains("Org Governance"),
+            "index should contain the Org Governance card label"
+        );
+        assert!(
+            !index.contains("Organisation Governance Score"),
+            "the old 'Organisation Governance Score' label must be fully replaced (item6-04)"
         );
         assert!(
             index.contains("health-score"),
@@ -1748,6 +1752,42 @@ mod tests {
     }
 
     #[test]
+    fn render_dashboard_index_org_governance_tooltip_states_formula_and_exclusion_rule() {
+        let evidence = sample_evidence();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let index = &pages["index.html"];
+
+        assert!(
+            index.contains("Geometric mean of measured control rates across six controls"),
+            "Org Governance tooltip must state its exact formula; index.html:\n{index}"
+        );
+        assert!(
+            index.contains(
+                "Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS, Archival Coverage"
+            ),
+            "Org Governance tooltip must state its six-control set"
+        );
+        assert!(
+            index.contains("Unmeasured controls are excluded from each rate's denominator"),
+            "Org Governance tooltip must state the exclusion rule"
+        );
+    }
+
+    #[test]
+    fn render_dashboard_index_archival_coverage_tooltip_states_formula() {
+        let evidence = sample_evidence();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let index = &pages["index.html"];
+
+        assert!(
+            index.contains(
+                "Archived / (archived + stale-active) — fraction of stale-lifecycle repos that have been archived"
+            ),
+            "Archival Coverage tooltip must state its exact formula; index.html:\n{index}"
+        );
+    }
+
+    #[test]
     fn render_dashboard_index_health_score_na_when_all_zero_denom() {
         let mut evidence = sample_evidence();
         evidence.metrics.security_policy_coverage = RateMetric::new(0, 0);
@@ -1760,8 +1800,8 @@ mod tests {
         let index = &pages["index.html"];
 
         assert!(
-            index.contains("Organisation Governance Score"),
-            "governance score card should still appear when N/A"
+            index.contains("Org Governance"),
+            "Org Governance card should still appear when N/A"
         );
         assert!(
             index.contains("tier-na"),
@@ -2679,6 +2719,40 @@ mod tests {
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
 
         insta::assert_snapshot!("dashboard_owner_detail", &pages["owners/org-team-a.html"]);
+    }
+
+    #[test]
+    fn owners_page_team_health_tooltip_states_formula_and_exclusion_rule() {
+        let evidence = evidence_with_owner_repos();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let owners_html = &pages["owners.html"];
+
+        assert!(
+            owners_html.contains("Team Health"),
+            "owners.html should contain the Team Health column label"
+        );
+        assert!(
+            !owners_html.contains("Sec Score"),
+            "the old 'Sec Score' label must be fully replaced (item6-04)"
+        );
+        assert!(
+            owners_html.contains("Geometric mean of measured control rates across six controls"),
+            "Team Health tooltip must state its exact formula; owners.html:\n{owners_html}"
+        );
+        assert!(
+            owners_html.contains(
+                "Security Policy, Secret Scanning, Dependabot, Branch Protection, Freshness, Alert-Free"
+            ),
+            "Team Health tooltip must state its six-control set using the new Freshness label"
+        );
+        assert!(
+            !owners_html.contains("Non-Stale"),
+            "the old 'Non-Stale' control label must be fully replaced by 'Freshness' (item6-04 D4)"
+        );
+        assert!(
+            owners_html.contains("Unmeasured controls are excluded from each rate's denominator"),
+            "Team Health tooltip must state the exclusion rule"
+        );
     }
 
     #[test]
@@ -4348,7 +4422,7 @@ mod tests {
     }
 
     #[test]
-    fn render_owner_detail_html_contains_repo_score_header() {
+    fn render_owner_detail_html_contains_repo_posture_header() {
         let evidence = evidence_with_owner_repos();
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
 
@@ -4359,12 +4433,80 @@ mod tests {
             .1;
 
         assert!(
-            detail_page.contains("Repo Score"),
-            "owner detail page should contain 'Repo Score' header, not bare 'Score'"
+            detail_page.contains("Repo Posture"),
+            "owner detail page should contain 'Repo Posture' header, not bare 'Score'"
+        );
+        assert!(
+            !detail_page.contains("Repo Score"),
+            "the old 'Repo Score' label must be fully replaced (item6-04)"
         );
         assert!(
             !detail_page.contains("<th class=\"text-center\">Score</th>"),
             "owner detail page should not have bare 'Score' column header"
+        );
+    }
+
+    #[test]
+    fn render_owner_detail_html_repo_posture_tooltip_states_formula_and_exclusion_rule() {
+        let evidence = evidence_with_owner_repos();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+        let detail_page = pages
+            .iter()
+            .find(|(k, _)| k.starts_with("owners/"))
+            .expect("expected an owner detail page")
+            .1;
+
+        assert!(
+            detail_page.contains("Arithmetic mean: 100 × passing / measured controls"),
+            "Repo Posture tooltip must state its exact formula; detail page:\n{detail_page}"
+        );
+        assert!(
+            detail_page.contains(
+                "Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS"
+            ),
+            "Repo Posture tooltip must state its five-control set"
+        );
+        assert!(
+            detail_page.contains("excluded from the denominator"),
+            "Repo Posture tooltip must state the exclusion rule"
+        );
+        assert!(
+            detail_page.contains("Unlike the owner-level Team Health score"),
+            "Repo Posture tooltip must disambiguate from Team Health using the new owner score name"
+        );
+        assert!(
+            !detail_page.contains("Sec Score"),
+            "the old 'Sec Score' name must be fully replaced (item6-04)"
+        );
+    }
+
+    #[test]
+    fn render_owner_detail_html_stale_repos_card_disambiguates_freshness_from_archival_coverage() {
+        let evidence = evidence_with_owner_repos();
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+        let detail_page = pages
+            .iter()
+            .find(|(k, _)| k.starts_with("owners/"))
+            .expect("expected an owner detail page")
+            .1;
+
+        assert!(
+            detail_page.contains("Stale Repos"),
+            "Stale Repos card label must be unchanged (no value/label change for this card)"
+        );
+        assert!(
+            detail_page.contains("(total - stale) / total"),
+            "Stale Repos card tooltip must state the Freshness control's exact formula; detail page:\n{detail_page}"
+        );
+        assert!(
+            detail_page.contains("Freshness"),
+            "Stale Repos card tooltip must name the Freshness control it disambiguates from"
+        );
+        assert!(
+            detail_page.contains("Distinct from the org-wide Archival Coverage"),
+            "Stale Repos card tooltip must explicitly disambiguate from the org-level Archival Coverage metric"
         );
     }
 
@@ -4437,7 +4579,7 @@ mod tests {
 
     #[test]
     fn control_display_name_non_stale() {
-        assert_eq!(super::control_display_name("non_stale"), "Non-Stale");
+        assert_eq!(super::control_display_name("non_stale"), "Freshness");
     }
 
     #[test]

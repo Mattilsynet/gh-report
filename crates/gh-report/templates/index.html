@@ -21,8 +21,8 @@
     </div>
 
     <div class="scorecard">
-        <div class="card health-score-card {{ vm.health_tier.css_class() }}" title="Geometric mean of all coverage rates. Rewards balanced improvement across all controls.">
-            <p class="card-label">Organisation Governance Score</p>
+        <div class="card health-score-card {{ vm.health_tier.css_class() }}" title="Geometric mean of measured control rates across six controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS, Archival Coverage. Unmeasured controls are excluded from each rate's denominator. Rewards balanced improvement across all controls.">
+            <p class="card-label">Org Governance</p>
             <p class="card-value">{{ vm.health_score_formatted }}</p>
             <div class="progress-bar">
                 <div class="progress-fill {{ vm.health_tier.css_class() }} {{ vm.health_width_class }}"></div>
@@ -86,7 +86,7 @@
             {%- endif %}
             <p class="card-detail">{% call remediation::remediation_link(nav.base, vm.codeowners_operations_anchor, "Read more", "CODEOWNERS remediation guidance") %}{% endcall %}</p>
         </div>
-        <div class="card {{ vm.stale_tier.css_class() }}" title="Proportion of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better.">
+        <div class="card {{ vm.stale_tier.css_class() }}" title="Archived / (archived + stale-active) — fraction of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better.">
             <p class="card-label">Archival Coverage</p>
             <p class="card-value">{{ vm.stale_rate_formatted }}</p>
             <p class="card-detail">{{ vm.archived_repos }} archived · {{ vm.stale_active_repos }} stale</p>

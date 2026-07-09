@@ -297,7 +297,7 @@ expression: "&pages[\"report.html\"]"
                 <td class="text-right">Fresh collection</td>
             </tr>
             <tr>
-                <td>Organisation governance score</td>
+                <td>Org governance score</td>
                 <td class="text-right">68.8%</td>
             </tr>
             <tr>

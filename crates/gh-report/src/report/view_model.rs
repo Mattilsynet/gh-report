@@ -1801,11 +1801,13 @@ const WIDTH_CLASSES: [&str; 21] = [
     "w-60", "w-65", "w-70", "w-75", "w-80", "w-85", "w-90", "w-95", "w-100",
 ];
 
-/// Compute the Organisation Governance Score as the geometric mean of available
-/// coverage rates.
+/// Compute the Org Governance score (or, when called with an owner's control
+/// rates, the Team Health score) as the geometric mean of available coverage
+/// rates.
 ///
 /// Combines security control rates (Security Policy, Secret Scanning,
-/// Dependabot, Branch Protection, CODEOWNERS, and optionally Archival Coverage).
+/// Dependabot, Branch Protection, CODEOWNERS, and optionally Archival
+/// Coverage, for the org-level caller).
 /// Controls with `None` rates (N/A) are excluded from the computation —
 /// they are not treated as zero.
 ///
