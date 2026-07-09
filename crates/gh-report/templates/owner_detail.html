@@ -9,6 +9,7 @@
     <title>{{ vm.owner }} — Owner Detail</title>
     <link rel="stylesheet" href="../style.css">
     <script src="../ws.js" defer></script>
+    <script type="module" src="../sort-init.js"></script>
     {% if warm_start %}<meta http-equiv="refresh" content="5">{% endif %}
 </head>
 
@@ -36,11 +37,11 @@
     <p class="meta">No members found for this team.</p>
     {% else %}
     <div class="table-wrapper">
-        <table class="data-table">
+        <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th><span class="tooltip-header" tabindex="0" data-tooltip="GitHub login of the team member; links to their profile." title="GitHub login of the team member; links to their profile.">Member</span></th>
-                    <th><span class="tooltip-header" tabindex="0" data-tooltip="The member's role on this GitHub team: Maintainer or Member." title="The member's role on this GitHub team: Maintainer or Member.">Role</span></th>
+                    <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="GitHub login of the team member; links to their profile." title="GitHub login of the team member; links to their profile.">Member</span></th>
+                    <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="The member's role on this GitHub team: Maintainer or Member." title="The member's role on this GitHub team: Maintainer or Member.">Role</span></th>
                 </tr>
             </thead>
             <tbody>
@@ -89,23 +90,23 @@
     {% else %}
     <h2>Repositories</h2>
     <div class="table-wrapper">
-        <table class="data-table">
+        <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th><span class="tooltip-header" tabindex="0" data-tooltip="Repository name; links to it on GitHub when a URL is known." title="Repository name; links to it on GitHub when a URL is known.">Repository</span></th>
-                    <th><span class="tooltip-header" tabindex="0" data-tooltip="The repository's GitHub visibility: Public, Internal, or Private." title="The repository's GitHub visibility: Public, Internal, or Private.">Visibility</span></th>
-                    <th class="text-center"><span class="tooltip-header" tabindex="0" data-tooltip="Arithmetic mean: 100 × passing / measured controls, across five controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS. Unmeasured controls (unknown, permission-denied, or not-applicable) are excluded from the denominator. Unlike the owner-level Team Health score, this includes CODEOWNERS. N/A when none are scorable." title="Arithmetic mean: 100 × passing / measured controls, across five controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS. Unmeasured controls (unknown, permission-denied, or not-applicable) are excluded from the denominator. Unlike the owner-level Team Health score, this includes CODEOWNERS. N/A when none are scorable.">Repo Posture</span></th>
+                    <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="Repository name; links to it on GitHub when a URL is known." title="Repository name; links to it on GitHub when a URL is known.">Repository</span></th>
+                    <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="The repository's GitHub visibility: Public, Internal, or Private." title="The repository's GitHub visibility: Public, Internal, or Private.">Visibility</span></th>
+                    <th class="text-center" data-sort-type="numeric"><span class="tooltip-header" tabindex="0" data-tooltip="Arithmetic mean: 100 × passing / measured controls, across five controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS. Unmeasured controls (unknown, permission-denied, or not-applicable) are excluded from the denominator. Unlike the owner-level Team Health score, this includes CODEOWNERS. N/A when none are scorable." title="Arithmetic mean: 100 × passing / measured controls, across five controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS. Unmeasured controls (unknown, permission-denied, or not-applicable) are excluded from the denominator. Unlike the owner-level Team Health score, this includes CODEOWNERS. N/A when none are scorable.">Repo Posture</span></th>
                     {% for column in vm.control_columns %}
-                    <th class="text-center"><span class="tooltip-header" tabindex="0" data-tooltip="{{ column.tooltip }}" title="{{ column.tooltip }}">{{ column.name }}</span></th>
+                    <th class="text-center" data-nosort><span class="tooltip-header" tabindex="0" data-tooltip="{{ column.tooltip }}" title="{{ column.tooltip }}">{{ column.name }}</span></th>
                     {% endfor %}
-                    <th><span class="tooltip-header" tabindex="0" data-tooltip="Repository description from GitHub, or — when none is set." title="Repository description from GitHub, or — when none is set.">Description</span></th>
-                    <th><span class="tooltip-header" tabindex="0" data-tooltip="Primary language GitHub detected for the repository, or — when none is set." title="Primary language GitHub detected for the repository, or — when none is set.">Language</span></th>
-                    <th class="text-center"><span class="tooltip-header" tabindex="0" data-tooltip="Yes if this repository is a fork of another repository." title="Yes if this repository is a fork of another repository.">Fork</span></th>
-                    <th><span class="tooltip-header" tabindex="0" data-tooltip="SPDX license identifier detected for the repository, or — when none is set." title="SPDX license identifier detected for the repository, or — when none is set.">License</span></th>
-                    <th><span class="tooltip-header" tabindex="0" data-tooltip="Timestamp of the repository's most recent git push, from the GitHub API's repository record — distinct from Last Commit below, which is scoped to the default branch." title="Timestamp of the repository's most recent git push, from the GitHub API's repository record — distinct from Last Commit below, which is scoped to the default branch.">Last Push</span></th>
-                    <th><span class="tooltip-header" tabindex="0" data-tooltip="Timestamp of when the repository was created on GitHub." title="Timestamp of when the repository was created on GitHub.">Created</span></th>
-                    <th><span class="tooltip-header" tabindex="0" data-tooltip="GitHub login of the author of the most recent commit on the default branch; links to their profile when known." title="GitHub login of the author of the most recent commit on the default branch; links to their profile when known.">Last Committer</span></th>
-                    <th><span class="tooltip-header" tabindex="0" data-tooltip="Date of the most recent commit on the repository's default branch." title="Date of the most recent commit on the repository's default branch.">Last Commit</span></th>
+                    <th data-nosort><span class="tooltip-header" tabindex="0" data-tooltip="Repository description from GitHub, or — when none is set." title="Repository description from GitHub, or — when none is set.">Description</span></th>
+                    <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="Primary language GitHub detected for the repository, or — when none is set." title="Primary language GitHub detected for the repository, or — when none is set.">Language</span></th>
+                    <th class="text-center" data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="Yes if this repository is a fork of another repository." title="Yes if this repository is a fork of another repository.">Fork</span></th>
+                    <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="SPDX license identifier detected for the repository, or — when none is set." title="SPDX license identifier detected for the repository, or — when none is set.">License</span></th>
+                    <th data-sort-type="date"><span class="tooltip-header" tabindex="0" data-tooltip="Timestamp of the repository's most recent git push, from the GitHub API's repository record — distinct from Last Commit below, which is scoped to the default branch." title="Timestamp of the repository's most recent git push, from the GitHub API's repository record — distinct from Last Commit below, which is scoped to the default branch.">Last Push</span></th>
+                    <th data-sort-type="date"><span class="tooltip-header" tabindex="0" data-tooltip="Timestamp of when the repository was created on GitHub." title="Timestamp of when the repository was created on GitHub.">Created</span></th>
+                    <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="GitHub login of the author of the most recent commit on the default branch; links to their profile when known." title="GitHub login of the author of the most recent commit on the default branch; links to their profile when known.">Last Committer</span></th>
+                    <th data-sort-type="date"><span class="tooltip-header" tabindex="0" data-tooltip="Date of the most recent commit on the repository's default branch." title="Date of the most recent commit on the repository's default branch.">Last Commit</span></th>
                 </tr>
             </thead>
             <tbody>
@@ -151,13 +152,13 @@
     <details>
         <summary>Orphan repositories ({{ vm.orphan_repo_rows.len() }})</summary>
         <div class="table-wrapper">
-            <table class="data-table">
+            <table class="data-table" data-sortable>
                 <thead>
                     <tr>
-                        <th><span class="tooltip-header" tabindex="0" data-tooltip="Repository name; links to it on GitHub when a URL is known." title="Repository name; links to it on GitHub when a URL is known.">Repository</span></th>
-                        <th><span class="tooltip-header" tabindex="0" data-tooltip="The repository's GitHub visibility: Public, Internal, or Private." title="The repository's GitHub visibility: Public, Internal, or Private.">Visibility</span></th>
-                        <th><span class="tooltip-header" tabindex="0" data-tooltip="GitHub login of the author of the most recent commit on the default branch; links to their profile when known." title="GitHub login of the author of the most recent commit on the default branch; links to their profile when known.">Last Committer</span></th>
-                        <th><span class="tooltip-header" tabindex="0" data-tooltip="Date of the most recent commit on the repository's default branch." title="Date of the most recent commit on the repository's default branch.">Last Commit</span></th>
+                        <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="Repository name; links to it on GitHub when a URL is known." title="Repository name; links to it on GitHub when a URL is known.">Repository</span></th>
+                        <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="The repository's GitHub visibility: Public, Internal, or Private." title="The repository's GitHub visibility: Public, Internal, or Private.">Visibility</span></th>
+                        <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="GitHub login of the author of the most recent commit on the default branch; links to their profile when known." title="GitHub login of the author of the most recent commit on the default branch; links to their profile when known.">Last Committer</span></th>
+                        <th data-sort-type="date"><span class="tooltip-header" tabindex="0" data-tooltip="Date of the most recent commit on the repository's default branch." title="Date of the most recent commit on the repository's default branch.">Last Commit</span></th>
                     </tr>
                 </thead>
                 <tbody>

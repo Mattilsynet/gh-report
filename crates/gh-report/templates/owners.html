@@ -7,6 +7,7 @@
     <title>Owner Coverage — {{ organization }}</title>
     <link rel="stylesheet" href="style.css">
     <script src="ws.js" defer></script>
+    <script type="module" src="sort-init.js"></script>
     {% if warm_start %}<meta http-equiv="refresh" content="5">{% endif %}
 </head>
 <body>
@@ -26,15 +27,15 @@
 <p class="meta">No CODEOWNERS data available. Ensure repositories contain CODEOWNERS files.</p>
 {% else %}
 <div class="table-wrapper">
-<table class="data-table">
+<table class="data-table" data-sortable>
     <thead>
         <tr>
-            <th><span class="tooltip-header" tabindex="0" data-tooltip="The CODEOWNERS-identified team or user these repositories are grouped under; links to that owner's detail page." title="The CODEOWNERS-identified team or user these repositories are grouped under; links to that owner's detail page.">Owner</span></th>
-            <th><span class="tooltip-header" tabindex="0" data-tooltip="Whether this owner is a GitHub team or an individual user, parsed from the CODEOWNERS entry." title="Whether this owner is a GitHub team or an individual user, parsed from the CODEOWNERS entry.">Type</span></th>
-            <th><span class="tooltip-header" tabindex="0" data-tooltip="Number of repositories attributed to this owner via CODEOWNERS." title="Number of repositories attributed to this owner via CODEOWNERS.">Repos</span></th>
-            <th class="text-center"><span class="tooltip-header" tabindex="0" data-tooltip="Geometric mean of measured control rates across six controls for this owner's repos — Security Policy, Secret Scanning, Dependabot, Branch Protection, Freshness, Alert-Free. Unmeasured controls are excluded from each rate's denominator. Excludes CODEOWNERS, which is always 100% at the owner level by construction. N/A when no control is scorable." title="Geometric mean of measured control rates across six controls for this owner's repos — Security Policy, Secret Scanning, Dependabot, Branch Protection, Freshness, Alert-Free. Unmeasured controls are excluded from each rate's denominator. Excludes CODEOWNERS, which is always 100% at the owner level by construction. N/A when no control is scorable.">Team Health</span></th>
+            <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="The CODEOWNERS-identified team or user these repositories are grouped under; links to that owner's detail page." title="The CODEOWNERS-identified team or user these repositories are grouped under; links to that owner's detail page.">Owner</span></th>
+            <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="Whether this owner is a GitHub team or an individual user, parsed from the CODEOWNERS entry." title="Whether this owner is a GitHub team or an individual user, parsed from the CODEOWNERS entry.">Type</span></th>
+            <th data-sort-type="numeric"><span class="tooltip-header" tabindex="0" data-tooltip="Number of repositories attributed to this owner via CODEOWNERS." title="Number of repositories attributed to this owner via CODEOWNERS.">Repos</span></th>
+            <th class="text-center" data-sort-type="numeric"><span class="tooltip-header" tabindex="0" data-tooltip="Geometric mean of measured control rates across six controls for this owner's repos — Security Policy, Secret Scanning, Dependabot, Branch Protection, Freshness, Alert-Free. Unmeasured controls are excluded from each rate's denominator. Excludes CODEOWNERS, which is always 100% at the owner level by construction. N/A when no control is scorable." title="Geometric mean of measured control rates across six controls for this owner's repos — Security Policy, Secret Scanning, Dependabot, Branch Protection, Freshness, Alert-Free. Unmeasured controls are excluded from each rate's denominator. Excludes CODEOWNERS, which is always 100% at the owner level by construction. N/A when no control is scorable.">Team Health</span></th>
             {% for column in vm.control_columns %}
-            <th class="text-center"><span class="tooltip-header" tabindex="0" data-tooltip="{{ column.tooltip }}" title="{{ column.tooltip }}">{{ column.name }}</span></th>
+            <th class="text-center" data-sort-type="numeric"><span class="tooltip-header" tabindex="0" data-tooltip="{{ column.tooltip }}" title="{{ column.tooltip }}">{{ column.name }}</span></th>
             {% endfor %}
         </tr>
     </thead>

@@ -1643,7 +1643,12 @@ mod tests {
         assert!(admin.contains("org_secret_scanning_alerts"));
         assert!(!admin.contains("<form"));
         assert!(!admin.contains("method=\"post\""));
-        assert!(!admin.contains("<script"));
+        assert_eq!(
+            admin.matches("<script").count(),
+            1,
+            "admin page carries only the sort-init.js progressive-enhancement loader"
+        );
+        assert!(admin.contains("<script type=\"module\" src=\"sort-init.js\"></script>"));
     }
 
     #[test]
@@ -3145,7 +3150,7 @@ mod tests {
             .1;
 
         assert!(detail_page.contains(
-            "<th class=\"text-center\"><span class=\"tooltip-header\" tabindex=\"0\" data-tooltip=\""
+            "<th class=\"text-center\" data-nosort><span class=\"tooltip-header\" tabindex=\"0\" data-tooltip=\""
         ));
         assert!(detail_page.contains(">Security Policy</span></th>"));
         assert!(detail_page.contains(">Dependabot Status</span></th>"));
@@ -3450,7 +3455,7 @@ mod tests {
         assert!(detail_page.contains(">Description</span></th>"));
         assert!(detail_page.contains(">Language</span></th>"));
         assert!(detail_page.contains(
-            "<th class=\"text-center\"><span class=\"tooltip-header\" tabindex=\"0\" data-tooltip=\"Yes if this repository is a fork of another repository.\" title=\"Yes if this repository is a fork of another repository.\">Fork</span></th>"
+            "<th class=\"text-center\" data-sort-type=\"text\"><span class=\"tooltip-header\" tabindex=\"0\" data-tooltip=\"Yes if this repository is a fork of another repository.\" title=\"Yes if this repository is a fork of another repository.\">Fork</span></th>"
         ));
         assert!(detail_page.contains(">License</span></th>"));
         assert!(detail_page.contains(">Last Push</span></th>"));

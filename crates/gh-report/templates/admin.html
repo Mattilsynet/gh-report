@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ vm.organization }} Admin Diagnostics</title>
     <link rel="stylesheet" href="style.css">
+    <script type="module" src="sort-init.js"></script>
     {% if vm.warm_start %}<meta http-equiv="refresh" content="5">{% endif %}
 </head>
 
@@ -65,11 +66,11 @@
     {% for section in vm.admin_diagnostics.collection_health_sections %}
     <section class="diagnostics-section">
         <h3>{{ section.label }}</h3>
-        <table class="data-table">
+        <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th><span class="tooltip-header" tabindex="0" data-tooltip="Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error." title="Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error.">Reason</span></th>
-                    <th class="text-right"><span class="tooltip-header" tabindex="0" data-tooltip="Number of repositories or checks that failed for this reason during this run." title="Number of repositories or checks that failed for this reason during this run.">Count</span></th>
+                    <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error." title="Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error.">Reason</span></th>
+                    <th class="text-right" data-sort-type="numeric"><span class="tooltip-header" tabindex="0" data-tooltip="Number of repositories or checks that failed for this reason during this run." title="Number of repositories or checks that failed for this reason during this run.">Count</span></th>
                 </tr>
             </thead>
             <tbody>

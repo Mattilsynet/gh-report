@@ -7,6 +7,7 @@
     <title>Deleted Repositories and Teams — {{ vm.organization }}</title>
     <link rel="stylesheet" href="style.css">
     <script src="ws.js" defer></script>
+    <script type="module" src="sort-init.js"></script>
     {% if warm_start %}<meta http-equiv="refresh" content="5">{% endif %}
 </head>
 
@@ -27,11 +28,11 @@
     <p class="meta">No deleted repositories detected.</p>
     {% else %}
     <div class="table-wrapper">
-        <table class="data-table">
+        <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th><span class="tooltip-header" tabindex="0" data-tooltip="Name of the repository no longer found in a successful inventory sweep." title="Name of the repository no longer found in a successful inventory sweep.">Repository</span></th>
-                    <th><span class="tooltip-header" tabindex="0" data-tooltip="Timestamp when this repository was first observed missing from inventory." title="Timestamp when this repository was first observed missing from inventory.">Detected At</span></th>
+                    <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="Name of the repository no longer found in a successful inventory sweep." title="Name of the repository no longer found in a successful inventory sweep.">Repository</span></th>
+                    <th data-sort-type="date"><span class="tooltip-header" tabindex="0" data-tooltip="Timestamp when this repository was first observed missing from inventory." title="Timestamp when this repository was first observed missing from inventory.">Detected At</span></th>
                 </tr>
             </thead>
             <tbody>
@@ -52,11 +53,11 @@
     <p class="meta">GitHub teams referenced by CODEOWNERS in <code>{{ vm.organization }}</code> that GitHub no longer has.</p>
 
     <div class="table-wrapper">
-        <table class="data-table">
+        <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th><span class="tooltip-header" tabindex="0" data-tooltip="GitHub team slug that a CODEOWNERS file still references, but GitHub has deleted (404 on roster fetch)." title="GitHub team slug that a CODEOWNERS file still references, but GitHub has deleted (404 on roster fetch).">Team</span></th>
-                    <th><span class="tooltip-header" tabindex="0" data-tooltip="Repositories whose CODEOWNERS file still names this deleted team." title="Repositories whose CODEOWNERS file still names this deleted team.">Referencing Repositories</span></th>
+                    <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="GitHub team slug that a CODEOWNERS file still references, but GitHub has deleted (404 on roster fetch)." title="GitHub team slug that a CODEOWNERS file still references, but GitHub has deleted (404 on roster fetch).">Team</span></th>
+                    <th data-nosort><span class="tooltip-header" tabindex="0" data-tooltip="Repositories whose CODEOWNERS file still names this deleted team." title="Repositories whose CODEOWNERS file still names this deleted team.">Referencing Repositories</span></th>
                 </tr>
             </thead>
             <tbody>
