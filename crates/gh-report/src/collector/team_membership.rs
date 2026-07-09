@@ -6,7 +6,7 @@
 //! existing budget/rate-limit-gated [`GitHubClient::request`] and are never
 //! persisted to the native per-repo event payload.
 
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::config;
 use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRoster, TeamRosterStatus};
@@ -38,9 +38,15 @@ fn degraded_roster(canonical_owner: &str, team_slug: &str, status: TeamRosterSta
 }
 
 /// Classify a failed [`ApiOutcome`] into a [`TeamRosterStatus`].
+///
+/// A 404 means the team itself is gone (a CODEOWNERS reference to a team
+/// GitHub has deleted); a 403 means the team may still exist but access was
+/// denied. These are distinct outcomes for both logging (a 404 is routine
+/// and should not warn) and rendering (`Deleted` vs `Permission denied`).
 fn failure_status(outcome: &ApiOutcome) -> TeamRosterStatus {
     match outcome.status_code() {
-        Some(403 | 404) => TeamRosterStatus::PermissionDenied,
+        Some(404) => TeamRosterStatus::Deleted,
+        Some(403) => TeamRosterStatus::PermissionDenied,
         _ => TeamRosterStatus::TransientError,
     }
 }
@@ -95,12 +101,17 @@ async fn collect_one_team_roster(
 
     let all_outcome = fetch_role(client, &safe_slug, "all").await;
     if !all_outcome.is_ok() {
-        warn!(
-            team_slug,
-            status = ?all_outcome.status_code(),
-            "team roster fetch failed"
-        );
-        return degraded_roster(canonical_owner, team_slug, failure_status(&all_outcome));
+        let status = failure_status(&all_outcome);
+        if status == TeamRosterStatus::Deleted {
+            info!(team_slug, "team no longer exists on GitHub; skipping");
+        } else {
+            warn!(
+                team_slug,
+                status = ?all_outcome.status_code(),
+                "team roster fetch failed"
+            );
+        }
+        return degraded_roster(canonical_owner, team_slug, status);
     }
     let all_logins = logins_from_outcome(&all_outcome);
 
@@ -151,6 +162,43 @@ mod tests {
     use std::time::Duration;
     use wiremock::matchers::{path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn failing_outcome(status: Option<u16>) -> ApiOutcome {
+        ApiOutcome::Failure {
+            status_code: status,
+            error: "simulated failure".to_string(),
+            retryable: status.is_none(),
+        }
+    }
+
+    #[test]
+    fn failure_status_maps_404_to_deleted_403_to_permission_denied_other_to_transient() {
+        assert_eq!(
+            failure_status(&failing_outcome(Some(404))),
+            TeamRosterStatus::Deleted
+        );
+        assert_eq!(
+            failure_status(&failing_outcome(Some(403))),
+            TeamRosterStatus::PermissionDenied
+        );
+        assert_eq!(
+            failure_status(&failing_outcome(Some(500))),
+            TeamRosterStatus::TransientError
+        );
+        assert_eq!(
+            failure_status(&failing_outcome(None)),
+            TeamRosterStatus::TransientError
+        );
+    }
+
+    #[test]
+    fn deleted_status_is_distinct_from_permission_denied() {
+        assert_ne!(
+            failure_status(&failing_outcome(Some(404))),
+            failure_status(&failing_outcome(Some(403))),
+            "404 (deleted team) and 403 (permission denied) must classify distinctly"
+        );
+    }
 
     fn test_client(base_url: &str) -> GitHubClient {
         let credential = GitHubCredential {
