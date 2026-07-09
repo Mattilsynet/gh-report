@@ -169,9 +169,12 @@ async fn collect_one_team_roster(
 /// — same paginated, budget/rate-limit-gated [`GitHubClient::request`]
 /// call, same graceful-degradation-on-failure discipline. Degrades to
 /// `None` on any fetch failure (403, network error, transient 5xx, etc.)
-/// rather than returning an empty set — an empty set would be
-/// indistinguishable from "the org genuinely has zero members", and
-/// callers must never read fetch failure as "everyone left the org".
+/// *or* a truncated-but-technically-successful paginated fetch (adr-fmt-
+/// jlfs1 H1) rather than returning an empty or partial set — an
+/// incomplete set is indistinguishable from "the org genuinely has zero
+/// (or only these) members", and callers must never read a failed or
+/// truncated fetch as "everyone else left the org". See
+/// [`org_members_from_outcome`] for the degrade decision.
 ///
 /// The returned set is lowercased so callers can cross-check a login with
 /// a single `.to_lowercase()` on their side (`alice` matches `Alice`).
@@ -185,17 +188,36 @@ pub async fn collect_org_members(client: &GitHubClient) -> Option<HashSet<String
         .request(&path, true, 1, config::DEFAULT_REQUEST_TIMEOUT_SECS)
         .await;
 
-    if !outcome.is_ok() {
+    org_members_from_outcome(&outcome)
+}
+
+/// Decide the org-members set from an already-fetched `ApiOutcome`, or
+/// degrade to `None` (item9 H1, adr-fmt-jlfs1).
+///
+/// Degrades on ANY of: outright failure (`!outcome.is_ok()`), OR a
+/// truncated-but-technically-successful paginated fetch
+/// (`outcome.is_truncated()` — pagination-page cap, paginated-item cap,
+/// or a concurrent rate-limit/budget halt mid-pagination all surface
+/// this way per [`GitHubClient`]'s `request_paginated`). A truncated
+/// fetch's `is_ok()` is `true`, so checking `is_ok()` alone is not
+/// sufficient — a partial set is exactly as dangerous as no set at all: a
+/// genuine current member who happens to live on an unfetched page would
+/// otherwise be falsely flagged as departed. Mirrors the `is_truncated()`
+/// precedent at [`crate::collector::inventory`]'s `InventoryPayload`
+/// construction (`complete: !response.is_truncated()`).
+fn org_members_from_outcome(outcome: &ApiOutcome) -> Option<HashSet<String>> {
+    if !outcome.is_ok() || outcome.is_truncated() {
         warn!(
             status = ?outcome.status_code(),
             retryable = outcome.is_retryable(),
-            "org members fetch failed — degrading to unknown (no departure flags this run)"
+            truncated = outcome.is_truncated(),
+            "org members fetch failed or truncated — degrading to unknown (no departure flags this run)"
         );
         return None;
     }
 
     Some(
-        org_member_logins_from_outcome(&outcome)
+        org_member_logins_from_outcome(outcome)
             .into_iter()
             .map(|login| login.to_lowercase())
             .collect(),
@@ -507,6 +529,68 @@ mod tests {
         assert_eq!(
             members, None,
             "a degraded fetch must yield None, never an empty set"
+        );
+    }
+
+    /// item9 Part B test (e), H1 fix (adr-fmt-jlfs1): a truncated-but-
+    /// technically-successful paginated fetch (`ApiOutcome::Success {
+    /// truncated: true, .. }` — `is_ok()` is `true`, so the pre-fix guard
+    /// `!outcome.is_ok()` alone would NOT degrade this) must still yield
+    /// `None`, never `Some(partial_set)`. The outcome carries a real
+    /// member login ("alice") to prove this isn't merely an
+    /// empty-response case caught by some other path — a truncated
+    /// response WITH real data must still degrade fully, because a
+    /// genuine current member could sit on the unfetched remainder.
+    #[test]
+    fn org_members_from_outcome_degrades_on_truncation_even_with_real_data() {
+        let truncated = ApiOutcome::Success {
+            status_code: 200,
+            data: Some(serde_json::json!([{"login": "alice"}])),
+            headers: None,
+            truncated: true,
+        };
+
+        assert_eq!(
+            org_members_from_outcome(&truncated),
+            None,
+            "a truncated paginated fetch must degrade to None, never Some(partial), \
+             even when the partial data contains real members"
+        );
+    }
+
+    /// item9 Part B test (e), enrichment-layer proof: chaining a
+    /// truncated outcome's `None` result into
+    /// [`enrich_team_rosters_with_org_membership`] confirms the whole
+    /// path — not just the fetch function in isolation — leaves a real,
+    /// present member's `in_org` at `None`, never falsely `Some(false)`
+    /// (departed).
+    #[test]
+    fn truncated_fetch_flags_nobody_through_the_full_enrichment_chain() {
+        let truncated = ApiOutcome::Success {
+            status_code: 200,
+            data: Some(serde_json::json!([{"login": "alice"}])),
+            headers: None,
+            truncated: true,
+        };
+        let org_members = org_members_from_outcome(&truncated);
+
+        let mut rosters = vec![TeamRoster {
+            canonical_owner: "@test-org/team-a".to_string(),
+            team_slug: "team-a".to_string(),
+            status: TeamRosterStatus::Complete,
+            members: vec![TeamMember {
+                login: "alice".to_string(),
+                role: TeamMemberRole::Member,
+                in_org: None,
+            }],
+        }];
+
+        enrich_team_rosters_with_org_membership(&mut rosters, org_members.as_ref());
+
+        assert_eq!(
+            rosters[0].members[0].in_org, None,
+            "a genuine present member must not be flagged departed just because \
+             the org-members fetch that would have confirmed them was truncated"
         );
     }
 
