@@ -432,7 +432,32 @@ impl BranchProtectionResult {
     /// Map the report-side tier to score inclusion semantics.
     #[must_use]
     pub fn score_category(&self) -> ScoreCategory {
-        self.tier().into()
+        match self.tier() {
+            BranchProtectionTier::AcceptBar | BranchProtectionTier::Bonus => ScoreCategory::Pass,
+            BranchProtectionTier::Minimal | BranchProtectionTier::BelowBaseline => {
+                ScoreCategory::Fail
+            }
+            BranchProtectionTier::Excluded => ScoreCategory::Excluded(
+                branch_protection_exclusion_reason(self.details.reason_kind),
+            ),
+        }
+    }
+}
+
+fn branch_protection_exclusion_reason(
+    reason_kind: Option<CollectionFailureReason>,
+) -> ExclusionReason {
+    match reason_kind {
+        Some(
+            CollectionFailureReason::PermissionDenied
+            | CollectionFailureReason::PermissionSuspected,
+        ) => ExclusionReason::PermissionDenied,
+        Some(
+            CollectionFailureReason::Transient
+            | CollectionFailureReason::RateLimited
+            | CollectionFailureReason::Invalid,
+        ) => ExclusionReason::Other,
+        Some(CollectionFailureReason::NotFoundAbsent) | None => ExclusionReason::Unknown,
     }
 }
 
@@ -704,21 +729,41 @@ impl std::fmt::Display for CodeownersStatus {
     }
 }
 
+/// Reason a control was excluded from scoring.
+///
+/// Exhaustive over the exclusion space (COM-0028): every `*Status` source that
+/// maps to [`ScoreCategory::Excluded`] selects one of these variants, with
+/// `Other` as the explicit catch-all for causes the score breakdown does not
+/// otherwise distinguish.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+pub enum ExclusionReason {
+    /// The check returned an explicit or suspected permission-denied response.
+    PermissionDenied = 0,
+    /// The check's status could not be determined.
+    Unknown = 1,
+    /// The check does not apply to this repository.
+    NotApplicable = 2,
+    /// Any other exclusion cause not otherwise distinguished (e.g. transient,
+    /// rate-limited, or invalid collection responses).
+    Other = 3,
+}
+
 /// How a check status maps to score computation.
 ///
 /// - `Pass` — control satisfied, counts as 1/1.
 /// - `Fail` — control not satisfied, counts as 0/1.
 /// - `Excluded` — status is indeterminate or not applicable, excluded from both
-///   numerator and denominator.
+///   numerator and denominator. Carries [`ExclusionReason`] so an unmeasured
+///   control's cause cannot be dropped (COM-0020 MISU).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
 pub enum ScoreCategory {
     /// Control is satisfied.
-    Pass = 0,
+    Pass,
     /// Control is not satisfied.
-    Fail = 1,
+    Fail,
     /// Control is indeterminate or not applicable; excluded from scoring.
-    Excluded = 2,
+    Excluded(ExclusionReason),
 }
 
 impl From<SecurityPolicyStatus> for ScoreCategory {
@@ -726,7 +771,8 @@ impl From<SecurityPolicyStatus> for ScoreCategory {
         match s {
             SecurityPolicyStatus::Pass => Self::Pass,
             SecurityPolicyStatus::Fail => Self::Fail,
-            SecurityPolicyStatus::Unknown | SecurityPolicyStatus::NotApplicable => Self::Excluded,
+            SecurityPolicyStatus::Unknown => Self::Excluded(ExclusionReason::Unknown),
+            SecurityPolicyStatus::NotApplicable => Self::Excluded(ExclusionReason::NotApplicable),
         }
     }
 }
@@ -736,9 +782,10 @@ impl From<SecretScanningStatus> for ScoreCategory {
         match s {
             SecretScanningStatus::Enabled => Self::Pass,
             SecretScanningStatus::Disabled => Self::Fail,
-            SecretScanningStatus::PermissionDenied | SecretScanningStatus::Unknown => {
-                Self::Excluded
+            SecretScanningStatus::PermissionDenied => {
+                Self::Excluded(ExclusionReason::PermissionDenied)
             }
+            SecretScanningStatus::Unknown => Self::Excluded(ExclusionReason::Unknown),
         }
     }
 }
@@ -748,7 +795,7 @@ impl From<DependabotStatus> for ScoreCategory {
         match s {
             DependabotStatus::Enabled => Self::Pass,
             DependabotStatus::Paused | DependabotStatus::Disabled => Self::Fail,
-            DependabotStatus::Unknown => Self::Excluded,
+            DependabotStatus::Unknown => Self::Excluded(ExclusionReason::Unknown),
         }
     }
 }
@@ -758,7 +805,7 @@ impl From<BranchProtectionStatus> for ScoreCategory {
         match s {
             BranchProtectionStatus::Pass => Self::Pass,
             BranchProtectionStatus::Partial | BranchProtectionStatus::Fail => Self::Fail,
-            BranchProtectionStatus::Unknown => Self::Excluded,
+            BranchProtectionStatus::Unknown => Self::Excluded(ExclusionReason::Unknown),
         }
     }
 }
@@ -768,7 +815,7 @@ impl From<BranchProtectionTier> for ScoreCategory {
         match tier {
             BranchProtectionTier::AcceptBar | BranchProtectionTier::Bonus => Self::Pass,
             BranchProtectionTier::Minimal | BranchProtectionTier::BelowBaseline => Self::Fail,
-            BranchProtectionTier::Excluded => Self::Excluded,
+            BranchProtectionTier::Excluded => Self::Excluded(ExclusionReason::Unknown),
         }
     }
 }
@@ -778,7 +825,7 @@ impl From<CodeownersStatus> for ScoreCategory {
         match s {
             CodeownersStatus::Conforming => Self::Pass,
             CodeownersStatus::NonConforming | CodeownersStatus::Absent => Self::Fail,
-            CodeownersStatus::Unknown => Self::Excluded,
+            CodeownersStatus::Unknown => Self::Excluded(ExclusionReason::Unknown),
         }
     }
 }
@@ -1172,11 +1219,11 @@ mod tests {
         );
         assert_eq!(
             ScoreCategory::from(SecurityPolicyStatus::Unknown),
-            ScoreCategory::Excluded
+            ScoreCategory::Excluded(ExclusionReason::Unknown)
         );
         assert_eq!(
             ScoreCategory::from(SecurityPolicyStatus::NotApplicable),
-            ScoreCategory::Excluded
+            ScoreCategory::Excluded(ExclusionReason::NotApplicable)
         );
     }
 
@@ -1192,11 +1239,11 @@ mod tests {
         );
         assert_eq!(
             ScoreCategory::from(SecretScanningStatus::PermissionDenied),
-            ScoreCategory::Excluded
+            ScoreCategory::Excluded(ExclusionReason::PermissionDenied)
         );
         assert_eq!(
             ScoreCategory::from(SecretScanningStatus::Unknown),
-            ScoreCategory::Excluded
+            ScoreCategory::Excluded(ExclusionReason::Unknown)
         );
     }
 
@@ -1216,7 +1263,7 @@ mod tests {
         );
         assert_eq!(
             ScoreCategory::from(DependabotStatus::Unknown),
-            ScoreCategory::Excluded
+            ScoreCategory::Excluded(ExclusionReason::Unknown)
         );
     }
 
@@ -1236,7 +1283,70 @@ mod tests {
         );
         assert_eq!(
             ScoreCategory::from(BranchProtectionStatus::Unknown),
-            ScoreCategory::Excluded
+            ScoreCategory::Excluded(ExclusionReason::Unknown)
+        );
+    }
+
+    #[test]
+    fn score_category_from_branch_protection_tier() {
+        assert_eq!(
+            ScoreCategory::from(BranchProtectionTier::AcceptBar),
+            ScoreCategory::Pass
+        );
+        assert_eq!(
+            ScoreCategory::from(BranchProtectionTier::Bonus),
+            ScoreCategory::Pass
+        );
+        assert_eq!(
+            ScoreCategory::from(BranchProtectionTier::Minimal),
+            ScoreCategory::Fail
+        );
+        assert_eq!(
+            ScoreCategory::from(BranchProtectionTier::BelowBaseline),
+            ScoreCategory::Fail
+        );
+        assert_eq!(
+            ScoreCategory::from(BranchProtectionTier::Excluded),
+            ScoreCategory::Excluded(ExclusionReason::Unknown)
+        );
+    }
+
+    #[test]
+    fn branch_protection_score_category_carries_specific_reason() {
+        fn excluded_with(reason_kind: Option<CollectionFailureReason>) -> ScoreCategory {
+            let mut details = branch_details(None, None, None, None, None, None, None);
+            details.reason_kind = reason_kind;
+            BranchProtectionResult {
+                status: BranchProtectionStatus::Unknown,
+                details,
+                timestamp: "2026-06-17T11:31:04Z".to_string(),
+            }
+            .score_category()
+        }
+
+        assert_eq!(
+            excluded_with(Some(CollectionFailureReason::PermissionDenied)),
+            ScoreCategory::Excluded(ExclusionReason::PermissionDenied)
+        );
+        assert_eq!(
+            excluded_with(Some(CollectionFailureReason::PermissionSuspected)),
+            ScoreCategory::Excluded(ExclusionReason::PermissionDenied)
+        );
+        assert_eq!(
+            excluded_with(Some(CollectionFailureReason::Transient)),
+            ScoreCategory::Excluded(ExclusionReason::Other)
+        );
+        assert_eq!(
+            excluded_with(Some(CollectionFailureReason::RateLimited)),
+            ScoreCategory::Excluded(ExclusionReason::Other)
+        );
+        assert_eq!(
+            excluded_with(Some(CollectionFailureReason::Invalid)),
+            ScoreCategory::Excluded(ExclusionReason::Other)
+        );
+        assert_eq!(
+            excluded_with(None),
+            ScoreCategory::Excluded(ExclusionReason::Unknown)
         );
     }
 
@@ -1256,7 +1366,7 @@ mod tests {
         );
         assert_eq!(
             ScoreCategory::from(CodeownersStatus::Unknown),
-            ScoreCategory::Excluded
+            ScoreCategory::Excluded(ExclusionReason::Unknown)
         );
     }
 

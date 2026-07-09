@@ -827,7 +827,7 @@ fn compute_repo_score(
             ScoreCategory::Fail => {
                 total += 1;
             }
-            ScoreCategory::Excluded => {}
+            ScoreCategory::Excluded(_) => {}
         }
     }
 
