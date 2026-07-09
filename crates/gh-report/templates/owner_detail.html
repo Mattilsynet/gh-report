@@ -26,7 +26,7 @@
         <li>{{ vm.breadcrumb_label }}</li>
     </ul>
 
-    <p class="meta">{{ vm.owner_type_label }} · {{ vm.repo_rows.len() }} repositories</p>
+    <p class="meta">{{ vm.owner_type_label }} · {{ vm.repo_rows.len() }} repositories{% if let Some(url) = vm.security_url %} · <a href="{{ url }}" target="_blank" rel="noopener noreferrer" title="Open GitHub's security overview for this team's non-archived repositories.">Security overview ↗</a>{% endif %}</p>
 
     {% if let Some(roster) = vm.roster %}
     <h2>Team Members</h2>

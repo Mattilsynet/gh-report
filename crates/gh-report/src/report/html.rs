@@ -203,6 +203,11 @@ const PATH_SEGMENT: &AsciiSet = &CONTROLS
     .add(b'|')
     .add(b'}');
 
+/// Percent-encode set for a URL query-string *value*. Extends
+/// [`PATH_SEGMENT`] with the query sub-delimiters (`:`, `&`, `=`, `+`)
+/// so a value like `team:foo bar` cannot alter query structure.
+const QUERY_VALUE: &AsciiSet = &PATH_SEGMENT.add(b'&').add(b'=').add(b'+').add(b':');
+
 /// Render an Askama template, mapping errors to [`ReportError`].
 fn render_template<T: askama::Template>(tmpl: &T) -> Result<String, ReportError> {
     tmpl.render()
@@ -607,6 +612,30 @@ fn build_owner_github_url(
     }
 }
 
+/// Build the GitHub security-overview deep-link for a team, filtered to
+/// that team's non-archived repositories.
+///
+/// Only teams have a security-overview scope; user-type owners return
+/// `None`. The query mirrors GitHub's own security-overview filter
+/// syntax: `archived:false tool:github team:<slug>`.
+fn build_team_security_url(
+    owner_type: OwnerType,
+    canonical_owner: &str,
+    org_encoded: &str,
+) -> Option<String> {
+    let OwnerType::Team = owner_type else {
+        return None;
+    };
+    let slug = crate::domain::metrics::team_slug_from_canonical_owner(canonical_owner)?;
+    let query = format!("archived:false tool:github team:{slug}");
+    Some(format!(
+        "{}/orgs/{}/security/overview?query={}",
+        config::DEFAULT_GITHUB_WEB_BASE_URL,
+        org_encoded,
+        utf8_percent_encode(&query, QUERY_VALUE)
+    ))
+}
+
 /// Build per-owner detail view models with per-repo status rows.
 ///
 /// Accepts a pre-computed `owner_repo_map` (built via
@@ -676,6 +705,7 @@ fn build_owner_detail_view_models(
             let canonical_key = m.owner.clone();
             let org_encoded = utf8_percent_encode(organization, PATH_SEGMENT).to_string();
             let github_url = build_owner_github_url(m.owner_type, &m.owner, &org_encoded);
+            let security_url = build_team_security_url(m.owner_type, &m.owner, &org_encoded);
             let mut repo_rows: Vec<OwnerRepoRow> = owner_repo_map
                 .get(&canonical_key)
                 .map(|(_, repos)| {
@@ -729,6 +759,7 @@ fn build_owner_detail_view_models(
                 stale_width_class,
                 roster,
                 github_url,
+                security_url,
                 orphan_repo_rows,
                 owner_in_org: m.in_org,
             };
@@ -3048,6 +3079,33 @@ mod tests {
     fn build_owner_github_url_bare_at_user_returns_none() {
         let url = build_owner_github_url(OwnerType::User, "@", "acme");
         assert_eq!(url, None);
+    }
+
+    #[test]
+    fn build_team_security_url_team_type_targets_security_overview() {
+        let url = build_team_security_url(OwnerType::Team, "@acme/app-platform", "acme");
+        assert_eq!(
+            url.as_deref(),
+            Some(
+                "https://github.com/orgs/acme/security/overview?query=archived%3Afalse%20tool%3Agithub%20team%3Aapp-platform"
+            )
+        );
+    }
+
+    #[test]
+    fn build_team_security_url_user_type_returns_none() {
+        assert_eq!(
+            build_team_security_url(OwnerType::User, "@octocat", "acme"),
+            None
+        );
+    }
+
+    #[test]
+    fn build_team_security_url_malformed_team_returns_none() {
+        assert_eq!(
+            build_team_security_url(OwnerType::Team, "@team-with-no-slash", "acme"),
+            None
+        );
     }
 
     /// B1: a realistic multi-member team roster renders on the owner

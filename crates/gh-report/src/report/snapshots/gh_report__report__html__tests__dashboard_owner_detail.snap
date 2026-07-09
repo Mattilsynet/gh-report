@@ -35,7 +35,7 @@ expression: "&pages[\"owners/org-team-a.html\"]"
         <li>@org/team-a</li>
     </ul>
 
-    <p class="meta">Team · 2 repositories</p>
+    <p class="meta">Team · 2 repositories · <a href="https://github.com/orgs/TestOrg/security/overview?query=archived%3Afalse%20tool%3Agithub%20team%3Ateam-a" target="_blank" rel="noopener noreferrer" title="Open GitHub's security overview for this team's non-archived repositories.">Security overview ↗</a></p>
 
     
 

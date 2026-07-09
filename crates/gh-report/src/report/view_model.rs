@@ -324,6 +324,11 @@ pub struct OwnerDetailViewModel {
     /// only when the canonical owner string is malformed (no extractable
     /// team slug or login).
     pub github_url: Option<String>,
+    /// GitHub security-overview deep-link for this team, filtered to its
+    /// non-archived repositories (item 1). `None` for user-type owners
+    /// (only teams have a security-overview scope) and when the team slug
+    /// is not extractable.
+    pub security_url: Option<String>,
     /// Orphan repos attributed to this owner via last-committer roster
     /// membership (B2), joined by canonical owner name; empty when this
     /// owner has no attributed orphans (item 7 — drives the collapsible
