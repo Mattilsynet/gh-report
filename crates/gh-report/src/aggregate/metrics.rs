@@ -2484,6 +2484,106 @@ mod tests {
         );
     }
 
+    /// item9 Part B (M1, adr-fmt-jlfs1): mirrors
+    /// `enrich_team_rosters_flags_departed_member_and_clears_present_member`
+    /// (`crate::collector::team_membership`) at the `OwnerMetrics` seam —
+    /// a `User`-type owner NOT in the org-members set is flagged
+    /// `Some(false)`; one IN the set is `Some(true)` (lowercase
+    /// cross-match: set entry `"alice"` matches owner login `@Alice`). A
+    /// `Team`-type owner is left `None` regardless of set contents — team
+    /// membership is cross-checked separately via `TeamMember::in_org`,
+    /// not via the owner string itself.
+    #[test]
+    fn enrich_owner_metrics_flags_departed_user_clears_present_user_skips_team() {
+        let mut owners = vec![
+            OwnerMetrics {
+                owner: "@Alice".to_string(),
+                display_name: "@Alice".to_string(),
+                owner_type: OwnerType::User,
+                total_repos: 1,
+                per_control_coverage: HashMap::new(),
+                score_exclusion_counts: Vec::new(),
+                in_org: None,
+            },
+            OwnerMetrics {
+                owner: "@departed-carol".to_string(),
+                display_name: "@departed-carol".to_string(),
+                owner_type: OwnerType::User,
+                total_repos: 1,
+                per_control_coverage: HashMap::new(),
+                score_exclusion_counts: Vec::new(),
+                in_org: None,
+            },
+            OwnerMetrics {
+                owner: "@org/some-team".to_string(),
+                display_name: "@org/some-team".to_string(),
+                owner_type: OwnerType::Team,
+                total_repos: 1,
+                per_control_coverage: HashMap::new(),
+                score_exclusion_counts: Vec::new(),
+                in_org: None,
+            },
+        ];
+        let org_members: HashSet<String> = ["alice".to_string()].into_iter().collect();
+
+        enrich_owner_metrics_with_org_membership(&mut owners, Some(&org_members));
+
+        assert_eq!(
+            owners[0].in_org,
+            Some(true),
+            "'@Alice' must match lowercased set entry 'alice'"
+        );
+        assert_eq!(
+            owners[1].in_org,
+            Some(false),
+            "'@departed-carol' is absent from the set — flagged departed"
+        );
+        assert_eq!(
+            owners[2].in_org, None,
+            "a Team-type owner is never cross-checked against the org-members set"
+        );
+    }
+
+    /// item9 Part B (M1, adr-fmt-jlfs1): mirrors
+    /// `enrich_team_rosters_flags_nobody_when_org_members_degraded` — when
+    /// the org-members fetch degraded (`org_members: None`), a `User`-type
+    /// owner stays `None` (no flag on missing data); a `Team`-type owner
+    /// stays `None` too (always skipped, independent of degrade state).
+    #[test]
+    fn enrich_owner_metrics_flags_nobody_when_org_members_degraded() {
+        let mut owners = vec![
+            OwnerMetrics {
+                owner: "@alice".to_string(),
+                display_name: "@alice".to_string(),
+                owner_type: OwnerType::User,
+                total_repos: 1,
+                per_control_coverage: HashMap::new(),
+                score_exclusion_counts: Vec::new(),
+                in_org: None,
+            },
+            OwnerMetrics {
+                owner: "@org/some-team".to_string(),
+                display_name: "@org/some-team".to_string(),
+                owner_type: OwnerType::Team,
+                total_repos: 1,
+                per_control_coverage: HashMap::new(),
+                score_exclusion_counts: Vec::new(),
+                in_org: None,
+            },
+        ];
+
+        enrich_owner_metrics_with_org_membership(&mut owners, None);
+
+        assert_eq!(
+            owners[0].in_org, None,
+            "degraded org-members fetch must not flag a User-type owner"
+        );
+        assert_eq!(
+            owners[1].in_org, None,
+            "a Team-type owner stays None regardless of degrade state"
+        );
+    }
+
     /// UF2-7: an owner's secret-scanning denominator must count only the
     /// owner's PUBLIC repos, mirroring the org-page population and the
     /// existing `sp_total` custom-denominator idiom for `security_policy`.
