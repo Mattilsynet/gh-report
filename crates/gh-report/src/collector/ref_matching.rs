@@ -1,12 +1,13 @@
 //! Ref and branch name matching for GitHub rulesets.
 //!
-//! Implements `~ALL`, `~DEFAULT_BRANCH`, exact matches, full refs,
-//! and slash-sensitive wildcard matching. This logic is implemented
-//! directly and tested heavily rather than delegated to a generic glob crate.
+//! Implements `~ALL`, `~DEFAULT_BRANCH`, exact matches, and full-ref
+//! matching, delegating slash-sensitive wildcard matching to
+//! [`crate::pattern_match`].
 
 use std::fmt;
 
 use crate::config;
+use crate::pattern_match;
 
 /// Ref type a GitHub ruleset targets.
 ///
@@ -131,106 +132,12 @@ pub fn ref_name_matches(pattern: &str, branch: &str, default_branch: &str) -> bo
 
 /// Match a slash-sensitive wildcard pattern against a candidate path.
 ///
-/// Supports `*` (matches any single path segment component, excluding `/`),
-/// `**` (matches zero or more path segments), and `?` (matches a single character).
-///
-/// Protected against combinatorial explosion with a recursion depth limit.
+/// Thin wrapper over [`pattern_match::path_pattern_matches`] supplying this
+/// crate's configured recursion bound; see that function for the pattern
+/// grammar.
 #[must_use]
 pub fn path_pattern_matches(pattern: &str, candidate: &str) -> bool {
-    let pattern_parts: Vec<&str> = pattern.split('/').collect();
-    let candidate_parts: Vec<&str> = candidate.split('/').collect();
-    match_path_segments(&pattern_parts, &candidate_parts, 0)
-}
-
-/// Maximum recursion depth for segment-level matching.
-/// Separate from fnmatch char-level depth to bound `**` combinatorics.
-const MAX_SEGMENT_RECURSION_DEPTH: usize = 64;
-
-fn match_path_segments(pattern_parts: &[&str], candidate_parts: &[&str], depth: usize) -> bool {
-    if depth > MAX_SEGMENT_RECURSION_DEPTH {
-        return false;
-    }
-
-    if pattern_parts.is_empty() {
-        return candidate_parts.is_empty();
-    }
-
-    let Some((head, tail)) = pattern_parts.split_first() else {
-        return false;
-    };
-
-    if *head == "**" {
-        if tail.is_empty() {
-            return true;
-        }
-        return (0..=candidate_parts.len())
-            .any(|index| match_path_segments(tail, &candidate_parts[index..], depth + 1));
-    }
-
-    if candidate_parts.is_empty() {
-        return false;
-    }
-
-    if !fnmatch_segment(head, candidate_parts[0]) {
-        return false;
-    }
-
-    match_path_segments(tail, &candidate_parts[1..], depth + 1)
-}
-
-/// Simple fnmatch-style matching for a single path segment.
-///
-/// Supports `*` (match any sequence of non-`/` chars) and `?` (match single char).
-/// Consecutive `*` chars are collapsed before matching to prevent exponential
-/// backtracking. Protected with a recursion depth limit as a secondary guard.
-fn fnmatch_segment(pattern: &str, candidate: &str) -> bool {
-    let pattern_bytes: Vec<u8> = {
-        let raw = pattern.as_bytes();
-        let mut out = Vec::with_capacity(raw.len());
-        for &b in raw {
-            if b == b'*' && out.last() == Some(&b'*') {
-                continue;
-            }
-            out.push(b);
-        }
-        out
-    };
-    let candidate_bytes = candidate.as_bytes();
-    fnmatch_bytes(&pattern_bytes, candidate_bytes, 0)
-}
-
-/// Byte-level fnmatch implementation.
-///
-/// GitHub ref names are ASCII, so byte-level matching is safe and avoids
-/// the overhead of `chars().collect::<Vec<char>>()`.
-fn fnmatch_bytes(pattern: &[u8], candidate: &[u8], depth: usize) -> bool {
-    if depth > config::FNMATCH_MAX_RECURSION_DEPTH {
-        return false;
-    }
-
-    if pattern.is_empty() {
-        return candidate.is_empty();
-    }
-
-    match pattern[0] {
-        b'*' => {
-            (0..=candidate.len()).any(|i| fnmatch_bytes(&pattern[1..], &candidate[i..], depth + 1))
-        }
-        b'?' => {
-            if candidate.is_empty() {
-                false
-            } else {
-                fnmatch_bytes(&pattern[1..], &candidate[1..], depth + 1)
-            }
-        }
-        ch => {
-            if candidate.is_empty() || candidate[0] != ch {
-                false
-            } else {
-                fnmatch_bytes(&pattern[1..], &candidate[1..], depth + 1)
-            }
-        }
-    }
+    pattern_match::path_pattern_matches(pattern, candidate, config::FNMATCH_MAX_RECURSION_DEPTH)
 }
 
 /// Check if a ruleset applies to a given branch.
@@ -395,12 +302,5 @@ mod tests {
             .collect::<Vec<_>>()
             .join("/");
         let _result = path_pattern_matches(&pattern, &candidate);
-    }
-
-    #[test]
-    fn adversarial_fnmatch_pattern_does_not_hang() {
-        let pattern = "*a*a*a*a*a*a*a*a*a*a";
-        let candidate = "aaaaaaaaaaaaaaaaaaaab";
-        assert!(!fnmatch_segment(pattern, candidate));
     }
 }

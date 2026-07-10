@@ -20,6 +20,7 @@ pub mod error;
 pub mod event;
 pub mod github;
 pub mod infra;
+pub mod pattern_match;
 pub mod projection;
 pub mod report;
 pub mod server;
