@@ -40,8 +40,11 @@ fn clean_recovered_prefix(path: &Path) -> Result<(RecoveredPrefix, bool), crate:
             checksum: entry.checksum(),
         })
         .collect();
+    let epoch_len = reader
+        .epoch()
+        .map(|e| u32::try_from(e.len()).unwrap_or(u32::MAX));
     let data_end = records.iter().try_fold(
-        pardosa_file::format::messages_offset(reader.schema_size()) as u64,
+        pardosa_file::format::messages_offset_with_epoch(reader.schema_size(), epoch_len) as u64,
         |_, record| {
             record
                 .offset
