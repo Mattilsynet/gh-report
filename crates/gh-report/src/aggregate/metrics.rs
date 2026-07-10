@@ -2687,7 +2687,7 @@ mod tests {
     /// adr-fmt-voxg6 item1 CRITICAL GUARD: `secret_scanning` filters non-public
     /// repos *before* classification (metrics.rs guard at the top of
     /// `build_per_control_coverage`'s loop), so an all-private team never
-    /// records any secret_scanning outcome — the tally is empty, not a
+    /// records any `secret_scanning` outcome — the tally is empty, not a
     /// measurement failure — and the rate must stay `None`, not floor to 0.0.
     #[test]
     fn owner_control_coverage_all_private_secret_scanning_stays_none() {
