@@ -4,7 +4,89 @@
 //! and slash-sensitive wildcard matching. This logic is implemented
 //! directly and tested heavily rather than delegated to a generic glob crate.
 
+use std::fmt;
+
 use crate::config;
+
+/// Ref type a GitHub ruleset targets.
+///
+/// Mirrors the closed `target` enum in GitHub's repository-ruleset wire
+/// schema (`branch` | `tag` | `push`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RulesetTarget {
+    /// The ruleset targets branch refs.
+    Branch,
+    /// The ruleset targets tag refs.
+    Tag,
+    /// The ruleset targets pushes (push rulesets).
+    Push,
+}
+
+impl RulesetTarget {
+    /// Parse a GitHub wire-format target string.
+    ///
+    /// Returns `None` for any value outside the closed set; callers treat an
+    /// unrecognized target as not matching any known ruleset target.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "branch" => Some(Self::Branch),
+            "tag" => Some(Self::Tag),
+            "push" => Some(Self::Push),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for RulesetTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Branch => write!(f, "branch"),
+            Self::Tag => write!(f, "tag"),
+            Self::Push => write!(f, "push"),
+        }
+    }
+}
+
+/// Enforcement state of a GitHub ruleset.
+///
+/// Mirrors the closed `enforcement` enum in GitHub's repository-ruleset wire
+/// schema (`disabled` | `active` | `evaluate`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RulesetEnforcement {
+    /// The ruleset is defined but not enforced.
+    Disabled,
+    /// The ruleset is actively enforced.
+    Active,
+    /// The ruleset runs in dry-run mode without blocking.
+    Evaluate,
+}
+
+impl RulesetEnforcement {
+    /// Parse a GitHub wire-format enforcement string.
+    ///
+    /// Returns `None` for any value outside the closed set; callers treat an
+    /// unrecognized enforcement as not active.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "disabled" => Some(Self::Disabled),
+            "active" => Some(Self::Active),
+            "evaluate" => Some(Self::Evaluate),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for RulesetEnforcement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Disabled => write!(f, "disabled"),
+            Self::Active => write!(f, "active"),
+            Self::Evaluate => write!(f, "evaluate"),
+        }
+    }
+}
 
 /// Normalize a branch name to a full ref (refs/heads/...).
 #[must_use]
@@ -154,17 +236,17 @@ fn fnmatch_bytes(pattern: &[u8], candidate: &[u8], depth: usize) -> bool {
 /// Check if a ruleset applies to a given branch.
 #[must_use]
 pub fn ruleset_applies_to_branch(
-    target: Option<&str>,
-    enforcement: Option<&str>,
+    target: Option<RulesetTarget>,
+    enforcement: Option<RulesetEnforcement>,
     include: &[String],
     exclude: &[String],
     branch: &str,
     default_branch: &str,
 ) -> bool {
-    if target != Some("branch") {
+    if target != Some(RulesetTarget::Branch) {
         return false;
     }
-    if !matches!(enforcement, None | Some("active")) {
+    if !matches!(enforcement, None | Some(RulesetEnforcement::Active)) {
         return false;
     }
 
@@ -260,8 +342,8 @@ mod tests {
     #[test]
     fn ruleset_applies_basic() {
         assert!(ruleset_applies_to_branch(
-            Some("branch"),
-            Some("active"),
+            Some(RulesetTarget::Branch),
+            Some(RulesetEnforcement::Active),
             &[],
             &[],
             "main",
@@ -272,8 +354,8 @@ mod tests {
     #[test]
     fn ruleset_skips_non_branch_target() {
         assert!(!ruleset_applies_to_branch(
-            Some("tag"),
-            Some("active"),
+            Some(RulesetTarget::Tag),
+            Some(RulesetEnforcement::Active),
             &[],
             &[],
             "main",
@@ -284,8 +366,8 @@ mod tests {
     #[test]
     fn ruleset_skips_disabled_enforcement() {
         assert!(!ruleset_applies_to_branch(
-            Some("branch"),
-            Some("disabled"),
+            Some(RulesetTarget::Branch),
+            Some(RulesetEnforcement::Disabled),
             &[],
             &[],
             "main",
@@ -296,8 +378,8 @@ mod tests {
     #[test]
     fn ruleset_exclude_takes_precedence() {
         assert!(!ruleset_applies_to_branch(
-            Some("branch"),
-            Some("active"),
+            Some(RulesetTarget::Branch),
+            Some(RulesetEnforcement::Active),
             &["~ALL".to_string()],
             &["main".to_string()],
             "main",

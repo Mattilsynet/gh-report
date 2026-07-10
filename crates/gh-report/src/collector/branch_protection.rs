@@ -367,11 +367,15 @@ fn classify_failure_reason(
 /// here we extract the fields from raw JSON since the evaluation works
 /// with `serde_json::Value` directly.
 fn ruleset_applies(ruleset: &serde_json::Value, default_branch: &str) -> bool {
-    let target = ruleset.get("target").and_then(serde_json::Value::as_str);
+    let target = ruleset
+        .get("target")
+        .and_then(serde_json::Value::as_str)
+        .and_then(crate::collector::ref_matching::RulesetTarget::parse);
 
     let enforcement = ruleset
         .get("enforcement")
-        .and_then(serde_json::Value::as_str);
+        .and_then(serde_json::Value::as_str)
+        .and_then(crate::collector::ref_matching::RulesetEnforcement::parse);
 
     let ref_name = ruleset.get("conditions").and_then(|c| c.get("ref_name"));
 
