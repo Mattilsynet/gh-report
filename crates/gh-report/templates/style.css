@@ -73,12 +73,30 @@
 
 body {
    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-   max-width: 72em;
+   /* Grows past the old 72em cap only on large viewports (>~1250px);
+      floor stays 72em so small/medium screens are unchanged. */
+   max-width: clamp(72em, 92vw, 160em);
    margin: 0 auto;
    padding: 1em 1.5em 2em;
    color: var(--text-primary);
    background: var(--bg-page);
    line-height: 1.6;
+}
+
+/* Prose stays at the readable measure even though body now widens —
+   only data/table containers (below) opt in to the full body width. */
+p,
+.caveat,
+.footer {
+   max-width: 72em;
+}
+
+/* ── Large-screen density: data containers opt out of the prose cap ── */
+
+.table-wrapper,
+.scorecard,
+.owner-summary {
+   max-width: none;
 }
 
 h1 {
@@ -588,6 +606,13 @@ a.card:hover {
    font-weight: 500;
 }
 
+/* Numeric columns (counts, rates, scores) already carry .text-right or
+   .text-center — align their digits instead of adding a new class. */
+.data-table .text-right,
+.data-table .text-center {
+   font-variant-numeric: tabular-nums;
+}
+
 .cell-truncate {
    max-width: 20em;
    overflow: hidden;
@@ -868,6 +893,15 @@ details>*:not(summary) {
 
    h1 {
       font-size: 1.1em;
+   }
+}
+
+/* Mirrors the shrink-below-48em rule above (:821-824) for the opposite
+   end: denser rows once there's enough width to spare. */
+@media (min-width: 100em) {
+   .data-table th,
+   .data-table td {
+      padding: .4em .7em;
    }
 }
 
