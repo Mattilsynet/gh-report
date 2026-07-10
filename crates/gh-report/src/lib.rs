@@ -12,6 +12,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 pub mod aggregate;
+pub mod api_outcome;
 pub mod app;
 pub mod collector;
 pub mod config;
