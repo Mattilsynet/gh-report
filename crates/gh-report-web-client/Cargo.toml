@@ -18,3 +18,12 @@ leptos = { workspace = true }
 wasm-bindgen = { workspace = true }
 web-sys = { workspace = true }
 js-sys = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3.76"
+
+[target.wasm32-unknown-unknown.dependencies]
+any_spawner = { version = "0.3.0", default-features = false, features = ["wasm-bindgen"] }
+
+[target.wasm32-unknown-unknown.dev-dependencies]
+wasm-bindgen-futures = "0.4.76"

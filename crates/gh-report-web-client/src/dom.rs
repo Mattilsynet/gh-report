@@ -3,7 +3,8 @@
 //! click. Progressive enhancement over server-rendered HTML — see
 //! CHE-0087.
 
-use leptos::prelude::{Effect, Get, RwSignal, Update};
+use any_spawner::Executor;
+use leptos::prelude::{Effect, Get, Owner, RwSignal, Update};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -25,6 +26,11 @@ struct SortState {
 /// enhancement, never a hard requirement for page correctness.
 #[wasm_bindgen(start)]
 pub fn start() {
+    let _ = Executor::init_wasm_bindgen();
+    let owner = Owner::new();
+    owner.set();
+    std::mem::forget(owner);
+
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
     };
@@ -171,4 +177,68 @@ fn cell_text(row: &HtmlTableRowElement, column: u32) -> String {
         .item(column)
         .map(|cell| cell.text_content().unwrap_or_default())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::start;
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_test::wasm_bindgen_test;
+    use web_sys::{Element, Event, HtmlElement, HtmlTableRowElement, HtmlTableSectionElement};
+
+    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
+    async fn yield_to_microtasks() {
+        for _ in 0..8 {
+            let promise = js_sys::Promise::resolve(&wasm_bindgen::JsValue::NULL);
+            wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
+        }
+    }
+
+    fn row_names(tbody: &HtmlTableSectionElement) -> Vec<String> {
+        let rows = tbody.rows();
+        (0..rows.length())
+            .filter_map(|i| rows.item(i))
+            .filter_map(|node| node.dyn_into::<HtmlTableRowElement>().ok())
+            .map(|row| {
+                row.cells()
+                    .item(0)
+                    .map(|cell| cell.text_content().unwrap_or_default())
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    #[wasm_bindgen_test]
+    async fn click_on_sortable_header_reorders_rows() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let table: Element = document.create_element("table").unwrap();
+        table.set_attribute("data-sortable", "").unwrap();
+        table.set_inner_html(
+            "<thead><tr><th data-sort-type=\"text\">Name</th></tr></thead>\
+             <tbody><tr><td>Zeta</td></tr><tr><td>Alpha</td></tr></tbody>",
+        );
+        document.body().unwrap().append_child(&table).unwrap();
+
+        start();
+
+        let header: HtmlElement = document
+            .query_selector("th")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        let click = Event::new("click").unwrap();
+        header.dispatch_event(&click).unwrap();
+
+        yield_to_microtasks().await;
+
+        let tbody: HtmlTableSectionElement = document
+            .query_selector("tbody")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert_eq!(row_names(&tbody), vec!["Alpha", "Zeta"]);
+    }
 }
