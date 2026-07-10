@@ -225,28 +225,6 @@ code {
    margin-left: auto;
 }
 
-.warning-badge {
-   display: inline-block;
-   min-width: 1.5em;
-   padding: .05em .45em;
-   border-radius: 999px;
-   color: #fff;
-   background: var(--status-warn);
-   text-align: center;
-}
-
-.warning-badge.severity-critical {
-   background: var(--status-fail);
-}
-
-.warning-badge.severity-high {
-   background: var(--status-warn);
-}
-
-.warning-badge.severity-medium {
-   background: var(--status-unknown);
-}
-
 /* ── Breadcrumb ─────────────────────────────────────────────────── */
 
 .breadcrumb {
