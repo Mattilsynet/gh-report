@@ -774,6 +774,20 @@ details>*:not(summary) {
    cursor: help;
 }
 
+/* Sortable headers are clickable to sort; the pointer cursor signals that
+   affordance instead of the tooltip's help cursor. Non-sortable headers
+   (data-nosort) keep the help cursor. */
+.data-table[data-sortable] th:not([data-nosort]) .tooltip-header {
+   cursor: pointer;
+}
+
+/* Lift the interacted header above sibling <th> cells so its overflowing
+   tooltip is not occluded by the next column's sticky header. */
+.data-table th:hover,
+.data-table th:focus-within {
+   z-index: 11;
+}
+
 .tooltip-header::after {
    content: attr(data-tooltip);
    position: absolute;

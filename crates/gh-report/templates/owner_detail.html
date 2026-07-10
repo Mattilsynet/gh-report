@@ -28,34 +28,36 @@
     <p class="meta">{{ vm.owner_type_label }} · {{ vm.repo_rows.len() }} repositories{% if let Some(url) = vm.security_url %} · <a href="{{ url }}" target="_blank" rel="noopener noreferrer" title="Open GitHub's security overview for this team's non-archived repositories.">Security overview ↗</a>{% endif %}</p>
 
     {% if let Some(roster) = vm.roster %}
-    <h2>Team Members</h2>
-    {% if !roster.is_complete %}
-    <p class="meta tier-warn">Roster fetch: {{ roster.status_label }} — this list may be incomplete.</p>
-    {% endif %}
-    {% if roster.members.is_empty() %}
-    <p class="meta">No members found for this team.</p>
-    {% else %}
-    <div class="table-wrapper">
-        <table class="data-table" data-sortable>
-            <thead>
-                <tr>
-                    <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="GitHub login of the team member; links to their profile.">Member</span></th>
-                    <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="The member's role on this GitHub team: Maintainer or Member.">Role</span></th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for member in roster.members %}
-                <tr>
-                    <td><a href="{{ member.profile_url }}" target="_blank" rel="noopener noreferrer">{{ member.login }}</a>{% if member.departed() %} {% call tooltip::warning("No longer a member of this GitHub organisation.") %}{% endcall %}{% endif %}</td>
-                    <td>{{ member.role_label }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-    <p class="meta">{{ roster.member_count }} member{% if roster.member_count != 1 %}s{% endif %}. <a
-            href="../report.html#add-a-team-member">How do I add or remove a member?</a></p>
-    {% endif %}
+    <details>
+        <summary>Team Members ({{ roster.member_count }})</summary>
+        {% if !roster.is_complete %}
+        <p class="meta tier-warn">Roster fetch: {{ roster.status_label }} — this list may be incomplete.</p>
+        {% endif %}
+        {% if roster.members.is_empty() %}
+        <p class="meta">No members found for this team.</p>
+        {% else %}
+        <div class="table-wrapper">
+            <table class="data-table" data-sortable>
+                <thead>
+                    <tr>
+                        <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="GitHub login of the team member; links to their profile.">Member</span></th>
+                        <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="The member's role on this GitHub team: Maintainer or Member.">Role</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for member in roster.members %}
+                    <tr>
+                        <td><a href="{{ member.profile_url }}" target="_blank" rel="noopener noreferrer">{{ member.login }}</a>{% if member.departed() %} {% call tooltip::warning("No longer a member of this GitHub organisation.") %}{% endcall %}{% endif %}</td>
+                        <td>{{ member.role_label }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <p class="meta">{{ roster.member_count }} member{% if roster.member_count != 1 %}s{% endif %}. <a
+                href="../report.html#add-a-team-member">How do I add or remove a member?</a></p>
+        {% endif %}
+    </details>
     {% endif %}
 
     <div class="scorecard">
