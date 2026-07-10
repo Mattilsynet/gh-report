@@ -19,8 +19,7 @@ use crate::domain::checks::{
 };
 use crate::domain::evidence::{Evidence, RepositoryEvidence};
 use crate::domain::metrics::{
-    CollectionHealthCheckKind, OwnerType, ScoreExclusionCount, TeamMemberRole, TeamRoster,
-    TeamRosterStatus,
+    CollectionHealthCheckKind, OwnerType, ScoreExclusionCount, TeamRoster, TeamRosterStatus,
 };
 use crate::domain::time::{is_repo_stale, parse_iso8601};
 use crate::error::ReportError;
@@ -510,10 +509,7 @@ fn build_team_roster_view_model(roster: &TeamRoster) -> TeamRosterViewModel {
         .iter()
         .map(|member| TeamMemberRow {
             login: member.login.clone(),
-            role_label: match member.role {
-                TeamMemberRole::Maintainer => "Maintainer",
-                TeamMemberRole::Member => "Member",
-            },
+            role_label: member.role,
             profile_url: format!(
                 "{}/{}",
                 config::DEFAULT_GITHUB_WEB_BASE_URL,

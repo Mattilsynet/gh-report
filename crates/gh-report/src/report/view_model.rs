@@ -17,7 +17,7 @@ use crate::domain::checks::{CollectionFailureReason, SecretScanningStatus};
 use crate::domain::evidence::{AssessmentMetadata, Evidence, RepositoryEvidence};
 use crate::domain::metrics::{
     AggregatedMetrics, CollectionHealthCheckKind, CollectionHealthCount, OwnerType,
-    ScoreExclusionCount,
+    ScoreExclusionCount, TeamMemberRole,
 };
 use crate::domain::time::{is_repo_stale, parse_iso8601};
 
@@ -233,8 +233,8 @@ pub struct SummaryCard {
 pub struct TeamMemberRow {
     /// GitHub login.
     pub login: String,
-    /// `"Maintainer"` or `"Member"`.
-    pub role_label: &'static str,
+    /// The member's team role; renders via [`TeamMemberRole`]'s `Display`.
+    pub role_label: TeamMemberRole,
     /// URL to the member's GitHub profile.
     pub profile_url: String,
     /// Current org-membership state (item9 Part B): `None` when the
