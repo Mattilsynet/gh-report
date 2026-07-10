@@ -25,7 +25,13 @@ pub const INVENTORY_SCHEMA_VERSION: &str = "1.0";
 /// new output. OPERATIONS.md § Scoring Contract → Stability and § Schema
 /// Versions → When to bump are the prose authority for this rule; this
 /// constant is the value authority — keep both in sync (COM-0027).
-pub const EVIDENCE_SCHEMA_VERSION: &str = "16.0";
+pub const EVIDENCE_SCHEMA_VERSION: &str = "17.0";
+
+/// Schema-major token embedded in `JetStream` stream identity so a
+/// schema bump provisions fresh, coexisting streams and leaves prior
+/// streams untouched. Must equal `"v" + major(EVIDENCE_SCHEMA_VERSION)`;
+/// a unit test enforces that relationship.
+pub const EVIDENCE_SCHEMA_MAJOR: &str = "v17";
 
 /// Default page size for GitHub API list endpoints.
 pub const DEFAULT_PAGE_SIZE: u32 = 100;
@@ -168,11 +174,20 @@ pub const SWEEP_TIMEOUT_SECS: u64 = 7_200;
 
 #[cfg(test)]
 mod tests {
-    use super::USER_AGENT;
+    use super::{EVIDENCE_SCHEMA_MAJOR, EVIDENCE_SCHEMA_VERSION, USER_AGENT};
 
     #[test]
     fn gh_report_version_is_non_empty() {
         assert!(!env!("GH_REPORT_VERSION").is_empty());
+    }
+
+    #[test]
+    fn schema_major_tracks_evidence_schema_version_major() {
+        let major = EVIDENCE_SCHEMA_VERSION
+            .split('.')
+            .next()
+            .expect("schema version has a major component");
+        assert_eq!(EVIDENCE_SCHEMA_MAJOR, format!("v{major}"));
     }
 
     #[test]

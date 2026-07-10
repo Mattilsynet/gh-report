@@ -460,7 +460,7 @@ Set `--force-refresh` (or `GH_REPORT_FORCE_REFRESH=true`) to bypass baseline reu
 | Constant | Current value | Stamped on | Validated against on load? |
 |----------|---------------|-----------|----------------------------|
 | `INVENTORY_SCHEMA_VERSION` | `1.0` | `InventoryPayload` (per-run inventory snapshot) | No — informational metadata for downstream consumers; never read back by the daemon. |
-| `EVIDENCE_SCHEMA_VERSION` | `16.0` | `Evidence`, `RepositoryEvidence`, `Checkpoint` | No — stamped for observability; projection replay does not discard state on mismatch. |
+| `EVIDENCE_SCHEMA_VERSION` | `17.0` | `Evidence`, `RepositoryEvidence`, `Checkpoint` | No — stamped for observability; projection replay does not discard state on mismatch. |
 
 Both constants live in `crates/gh-report/src/config/mod.rs`.
 
@@ -485,6 +485,7 @@ Version history is maintained forward-only from this point. Prior versions exist
 | `EVIDENCE_SCHEMA_VERSION = 14.0` | (initial) | Evidence schema at the time this section was written. |
 | `EVIDENCE_SCHEMA_VERSION = 15.0` | 2026-05-05 | Added `CodeownersResult.truncation: Option<CodeownersTruncationReason>` and `CodeownersCounts.truncated: u32`. Surfaces previously-silent CODEOWNERS parse skips (encoding mismatch, oversized base64, decode/UTF-8 failure) so operators can detect data loss without scanning per-repo evidence. |
 | `EVIDENCE_SCHEMA_VERSION = 16.0` | 2026-07-09 | Org and owner security scores now exclude unmeasured controls (unknown / permission-denied / not-applicable) from the denominator, matching the repo model; exclusion reason threaded through scoring and surfaced as a by-reason breakdown. |
+| `EVIDENCE_SCHEMA_VERSION = 17.0` | 2026-07-11 | Schema-major cutover to a fresh JetStream stream. No evidence field change; the bump provisions new `-v17` streams (stream name, subject, durable consumer carry the `EVIDENCE_SCHEMA_MAJOR` token) and retires the mixed-history pre-`v17` streams, which are left in place untouched. Replaces the reverted Opaque Semantic Fence (PGN-0021) approach with plain version-in-name. |
 | `INVENTORY_SCHEMA_VERSION = 1.0` | (current) | Initial published version. |
 
 When bumping, append a row with the new version, the date, and a one-line note describing what shape change drove the bump. The version of `EVIDENCE_SCHEMA_VERSION` is also surfaced in the report metadata so the projected baseline's version is observable via `gh-report --dump-baseline --org <org>`.
