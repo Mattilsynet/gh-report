@@ -1,7 +1,7 @@
 # CHE-0087. Leptos CSR Adoption for gh-report Sortable Tables
 
 Date: 2026-07-09
-Last-reviewed: 2026-07-09
+Last-reviewed: 2026-07-10
 Tier: B
 Status: Accepted
 Crates: gh-report, gh-report-web-client
@@ -38,10 +38,12 @@ R9 [5]: Server-rendered HTML remains pre-sorted and fully readable with WASM abs
 
 R10 [5]: Adding the `wasm32-unknown-unknown` compilation target is a target-add under RST-0001, not a toolchain channel bump; the pinned 1.96 channel and MSRV stay unchanged, since Leptos 0.8.20's own MSRV (1.88) already sits below that floor.
 
+R11 [5]: Any no-mount CSR path in gh-report-web-client — i.e. progressive enhancement that never calls mount_to_body/mount_to (R9) — MUST, before constructing any Effect::new or other reactive primitive, establish (a) an initialized async executor via Executor::init_wasm_bindgen() and (b) a page-lifetime reactive Owner that is set as the current owner and retained for the document lifetime (let owner = Owner::new(); owner.set(); std::mem::forget(owner);), mirroring Leptos's own hydrate_islands idiom. Without both, effects are constructed but never run (their driving future is never spawned and no owner context exists), so the enhancement silently no-ops while server HTML stays correct per R9. This is an ADDED runtime-init obligation created by the no-mount choice, consistent with and not a reversal of R9.
+
 ## Consequences
 
 + becomes easier: users sort large tables client-side with no page reload or extra query parameters; the read-serve pipeline gains a reusable pattern for client-rendered enhancements.
-− becomes harder: `gh-report-web-client` sits outside the workspace's uniform forbid(unsafe_code) guarantee, requiring cargo-geiger review each dependency bump (SEC-0009 R3); the build gains a wasm32 leg regenerated and re-committed on source changes; gh-report's CSP is no longer one shared constant.
+− becomes harder: `gh-report-web-client` sits outside the workspace's uniform forbid(unsafe_code) guarantee, requiring cargo-geiger review each dependency bump (SEC-0009 R3); the build gains a wasm32 leg regenerated and re-committed on source changes; gh-report's CSP is no longer one shared constant; the no-mount progressive-enhancement path must manually bootstrap the reactive runtime (executor + retained owner) that mount_to_body would otherwise supply; omitting it makes effects silently inert (R11).
 risks/migration: this ADR amends CHE-0007's enumerated list and RST-0005 R1 only upon acceptance — no CHE-0007 file edit happens while Proposed, mirroring how CHE-0086 amends CHE-0049:R8 without editing CHE-0049. Release-profile (CHE-0026) bundle-size tuning is deferred to sub-mission 2; wasm-bindgen-cli/library version drift is an open operational risk.
 
 ## Rejected Alternatives
