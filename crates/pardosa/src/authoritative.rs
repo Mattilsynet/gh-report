@@ -229,6 +229,65 @@ pub(crate) mod jetstream {
     use super::AuthoritativeBackend;
     use super::sealed;
     use pardosa_nats::JetStreamHandle;
+    /// Sentinel infix separating the envelope-hash segment from the
+    /// optional `adopter_epoch` segment in a `JetStream`
+    /// `stream_description_marker` (PGN-0021 R6). Its presence, not
+    /// segment length, is the discriminant between `None` and
+    /// `Some(&[])` (PGN-0021 R3).
+    pub(crate) const EPOCH_SENTINEL: &str = ":e:";
+    /// Compose the compound `JetStream` stream-description marker
+    /// (PGN-0021 R6): `envelope_hash_hex` alone when `epoch` is
+    /// `None` — byte-for-byte today's marker (R8) — or
+    /// `envelope_hash_hex:e:<hex>` when `Some(_)`, including a
+    /// zero-length hex segment for `Some(&[])` so presence is
+    /// discriminated by the sentinel, never by length (R3).
+    #[must_use]
+    pub(crate) fn compose_stream_marker(envelope_hash_hex: &str, epoch: Option<&[u8]>) -> String {
+        match epoch {
+            None => envelope_hash_hex.to_owned(),
+            Some(bytes) => format!("{envelope_hash_hex}{EPOCH_SENTINEL}{}", encode_hex(bytes)),
+        }
+    }
+    /// Split a stored marker into its envelope-hash segment and, if
+    /// present, the raw hex text of the `adopter_epoch` segment
+    /// (PGN-0021 R6). Absence of [`EPOCH_SENTINEL`] means `None`;
+    /// its presence (even before a zero-length hex tail) means
+    /// `Some(_)`.
+    pub(crate) fn split_stream_marker(marker: &str) -> (&str, Option<&str>) {
+        marker
+            .split_once(EPOCH_SENTINEL)
+            .map_or((marker, None), |(envelope, epoch_hex)| {
+                (envelope, Some(epoch_hex))
+            })
+    }
+    fn encode_hex(bytes: &[u8]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            out.push(char::from(HEX[usize::from(byte >> 4)]));
+            out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+        out
+    }
+    /// Decode a hex-encoded `adopter_epoch` segment back to raw
+    /// bytes. Empty input decodes to `Some(&[])` (present-but-empty,
+    /// PGN-0021 R3). Malformed hex (odd length or non-hex digits)
+    /// decodes to `None` so a corrupted marker is treated as
+    /// undecodable rather than panicking; the caller must fail
+    /// closed on that case (PGN-0021 R7).
+    pub(crate) fn decode_hex_epoch(hex: &str) -> Option<Box<[u8]>> {
+        if !hex.is_ascii() || !hex.len().is_multiple_of(2) {
+            return None;
+        }
+        let bytes = hex.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len() / 2);
+        for chunk in bytes.chunks_exact(2) {
+            let hi = (chunk[0] as char).to_digit(16)?;
+            let lo = (chunk[1] as char).to_digit(16)?;
+            out.push(u8::try_from(hi * 16 + lo).ok()?);
+        }
+        Some(out.into_boxed_slice())
+    }
     /// In-crate adapter wrapping a [`JetStreamHandle`] so the
     /// `JetStream` substrate participates in the sealed
     /// [`AuthoritativeBackend`] + [`crate::backend::BackendSink`]
@@ -263,13 +322,18 @@ pub(crate) mod jetstream {
                 schema_tag: None,
             }
         }
-        pub(crate) fn set_schema_tag(&mut self, schema_tag: String) -> Result<(), std::io::Error> {
-            if schema_tag.is_empty() {
+        pub(crate) fn set_schema_tag(
+            &mut self,
+            envelope_hash_hex: String,
+            epoch: Option<&[u8]>,
+        ) -> Result<(), std::io::Error> {
+            if envelope_hash_hex.is_empty() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "JetStream schema marker must not be empty",
                 ));
             }
+            let stream_marker = compose_stream_marker(&envelope_hash_hex, epoch);
             let mut builder = pardosa_nats::JetStreamConfig::builder()
                 .stream_name(self.handle.config().stream_name().to_owned())
                 .subject(self.handle.config().subject().to_owned())
@@ -281,13 +345,13 @@ pub(crate) mod jetstream {
                 .nats_url(self.handle.config().nats_url().to_owned())
                 .operation_timeout(self.handle.config().operation_timeout())
                 .single_writer_fence_enabled(self.handle.config().single_writer_fence_enabled())
-                .stream_description_marker(schema_tag.clone());
+                .stream_description_marker(stream_marker);
             if let Some(path) = self.handle.config().credentials_path() {
                 builder = builder.credentials_path(path.to_path_buf());
             }
             let cfg = builder.build().map_err(std::io::Error::other)?;
             self.handle = pardosa_nats::JetStreamBackend::open(cfg);
-            self.schema_tag = Some(schema_tag);
+            self.schema_tag = Some(envelope_hash_hex);
             Ok(())
         }
         /// Borrow the wrapped [`JetStreamHandle`] for in-crate
@@ -354,11 +418,50 @@ mod jetstream_adapter_shim_tests {
         let handle = JetStreamBackend::open(detached_config("schema-marker"));
         let mut adapter = JetStreamBackendAdapter::new(handle);
         adapter
-            .set_schema_tag("0123456789abcdef0123456789abcdef".to_string())
+            .set_schema_tag("0123456789abcdef0123456789abcdef".to_string(), None)
             .expect("non-empty marker is valid");
         assert_eq!(
             adapter.handle().config().stream_description_marker(),
             Some("0123456789abcdef0123456789abcdef"),
+        );
+    }
+
+    #[test]
+    fn adapter_schema_tag_appends_sentinel_prefixed_epoch_segment() {
+        let handle = JetStreamBackend::open(detached_config("schema-marker-epoch"));
+        let mut adapter = JetStreamBackendAdapter::new(handle);
+        adapter
+            .set_schema_tag(
+                "0123456789abcdef0123456789abcdef".to_string(),
+                Some(b"16.0"),
+            )
+            .expect("non-empty marker with epoch is valid");
+        assert_eq!(
+            adapter.handle().config().stream_description_marker(),
+            Some("0123456789abcdef0123456789abcdef:e:31362e30"),
+        );
+    }
+
+    #[test]
+    fn adapter_schema_tag_distinguishes_none_from_present_empty_epoch() {
+        let none_handle = JetStreamBackend::open(detached_config("schema-marker-epoch-none"));
+        let mut none_adapter = JetStreamBackendAdapter::new(none_handle);
+        none_adapter
+            .set_schema_tag("0123456789abcdef0123456789abcdef".to_string(), None)
+            .expect("non-empty marker is valid");
+        let empty_handle = JetStreamBackend::open(detached_config("schema-marker-epoch-empty"));
+        let mut empty_adapter = JetStreamBackendAdapter::new(empty_handle);
+        empty_adapter
+            .set_schema_tag("0123456789abcdef0123456789abcdef".to_string(), Some(&[]))
+            .expect("present-but-empty epoch is valid");
+        assert_ne!(
+            none_adapter.handle().config().stream_description_marker(),
+            empty_adapter.handle().config().stream_description_marker(),
+            "None and Some(&[]) must produce distinct markers (PGN-0021 R3)"
+        );
+        assert_eq!(
+            empty_adapter.handle().config().stream_description_marker(),
+            Some("0123456789abcdef0123456789abcdef:e:"),
         );
     }
 
@@ -370,7 +473,7 @@ mod jetstream_adapter_shim_tests {
         ));
         let mut adapter = JetStreamBackendAdapter::new(handle);
         adapter
-            .set_schema_tag("0123456789abcdef0123456789abcdef".to_string())
+            .set_schema_tag("0123456789abcdef0123456789abcdef".to_string(), None)
             .expect("non-empty marker is valid");
         assert_eq!(
             adapter.handle().config().credentials_path(),
@@ -390,5 +493,15 @@ mod jetstream_adapter_shim_tests {
             cfg.runtime_handle().is_detached_for_tests(),
             "detached test handle round-trips through the adapter"
         );
+    }
+
+    #[test]
+    fn decode_hex_epoch_rejects_non_ascii_odd_length_and_non_hex_without_panicking() {
+        use crate::authoritative::jetstream::decode_hex_epoch;
+        assert_eq!(decode_hex_epoch("\u{20ac}0"), None);
+        assert_eq!(decode_hex_epoch("abc"), None);
+        assert_eq!(decode_hex_epoch("zz"), None);
+        assert_eq!(decode_hex_epoch(""), Some(Box::from([])));
+        assert_eq!(decode_hex_epoch("31362e30"), Some(Box::from(*b"16.0")));
     }
 }
