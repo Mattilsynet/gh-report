@@ -42,7 +42,7 @@ expression: "&pages[\"owners/org-team-a.html\"]"
     <div class="scorecard">
         
         <div class="card tier-warn">
-            <p class="card-label">Security Policy</p>
+            <p class="card-label">Security Policy <span class="tooltip-trigger" tabindex="0" data-tooltip="Add a SECURITY.md file to the repo root, .github/, or docs/ — or use the Security tab&#39;s Reporting → Security policy → Start setup for a guided pull request." title="Add a SECURITY.md file to the repo root, .github/, or docs/ — or use the Security tab&#39;s Reporting → Security policy → Start setup for a guided pull request.">ⓘ</span></p>
             <p class="card-value">50.0% (1/2)</p>
             <div class="progress-bar">
                 <div class="progress-fill tier-warn w-50"></div>
@@ -50,7 +50,7 @@ expression: "&pages[\"owners/org-team-a.html\"]"
         </div>
         
         <div class="card tier-pass">
-            <p class="card-label" title="Do we scan for leaked secrets? Counts this owner's public repositories only, mirroring the organisation-wide Secret Scanning figure.">Secret Scanning</p>
+            <p class="card-label">Secret Scanning <span class="tooltip-trigger" tabindex="0" data-tooltip="Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together). Counts public repositories only, mirroring the organisation-wide Secret Scanning figure." title="Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together). Counts public repositories only, mirroring the organisation-wide Secret Scanning figure.">ⓘ</span></p>
             <p class="card-value">100.0% (1/1)</p>
             <div class="progress-bar">
                 <div class="progress-fill tier-pass w-100"></div>
@@ -58,7 +58,7 @@ expression: "&pages[\"owners/org-team-a.html\"]"
         </div>
         
         <div class="card tier-warn">
-            <p class="card-label">Dependabot Status</p>
+            <p class="card-label">Dependabot Status <span class="tooltip-trigger" tabindex="0" data-tooltip="Enable it under Settings → Security → Advanced Security: click Enable next to Dependabot alerts (this also governs Dependabot security updates), or apply it org-wide via a security configuration." title="Enable it under Settings → Security → Advanced Security: click Enable next to Dependabot alerts (this also governs Dependabot security updates), or apply it org-wide via a security configuration.">ⓘ</span></p>
             <p class="card-value">50.0% (1/2)</p>
             <div class="progress-bar">
                 <div class="progress-fill tier-warn w-50"></div>
@@ -66,7 +66,7 @@ expression: "&pages[\"owners/org-team-a.html\"]"
         </div>
         
         <div class="card tier-warn">
-            <p class="card-label">Branch Protection</p>
+            <p class="card-label">Branch Protection <span class="tooltip-trigger" tabindex="0" data-tooltip="Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: require PR review, disallow force-push and deletion, and disable bypass so admins can&#39;t skip it." title="Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: require PR review, disallow force-push and deletion, and disable bypass so admins can&#39;t skip it.">ⓘ</span></p>
             <p class="card-value">50.0% (1/2)</p>
             <div class="progress-bar">
                 <div class="progress-fill tier-warn w-50"></div>

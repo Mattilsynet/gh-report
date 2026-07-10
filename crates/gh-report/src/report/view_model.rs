@@ -223,6 +223,9 @@ pub struct SummaryCard {
     pub label: String,
     /// Coverage rate and tier for styling.
     pub cell: ControlCell,
+    /// Info-tooltip copy for this control, from
+    /// [`coverage_control_how_to_fix`].
+    pub how_to_fix: &'static str,
 }
 
 /// A single member row in a team roster (B1).
@@ -1907,7 +1910,7 @@ pub(crate) fn coverage_control_how_to_fix(key: &str) -> Option<&'static str> {
             "Add a SECURITY.md file to the repo root, .github/, or docs/ — or use the Security tab's Reporting → Security policy → Start setup for a guided pull request.",
         ),
         "secret_scanning" => Some(
-            "Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together).",
+            "Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together). Counts public repositories only, mirroring the organisation-wide Secret Scanning figure.",
         ),
         "dependabot_security_updates" => Some(
             "Enable it under Settings → Security → Advanced Security: click Enable next to Dependabot alerts (this also governs Dependabot security updates), or apply it org-wide via a security configuration.",
@@ -2728,7 +2731,7 @@ mod tests {
         assert_eq!(
             coverage_control_how_to_fix("secret_scanning"),
             Some(
-                "Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together)."
+                "Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together). Counts public repositories only, mirroring the organisation-wide Secret Scanning figure."
             )
         );
         assert_eq!(

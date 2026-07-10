@@ -29,8 +29,8 @@ use crate::report::view_model::{
     OrphanedRepoRow, OrphanedTeamGroup, OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow,
     OwnerRepoRow, OwnersViewModel, ReportViewModel, StatusDot, SummaryCard, TeamMemberRow,
     TeamRosterViewModel, TopNav, TopSecurityTeam, compute_health_score,
-    coverage_control_column_tooltip, format_exclusion, generate_slug, rate_to_width_class,
-    strip_org_prefix,
+    coverage_control_column_tooltip, coverage_control_how_to_fix, format_exclusion, generate_slug,
+    rate_to_width_class, strip_org_prefix,
 };
 
 /// Askama template for the security posture report.
@@ -664,6 +664,7 @@ fn build_owner_detail_view_models(
                         key,
                         tiers,
                     ),
+                    how_to_fix: coverage_control_how_to_fix(key).unwrap_or_default(),
                 })
                 .collect();
 
@@ -3207,11 +3208,11 @@ mod tests {
             .1;
 
         assert!(
-            detail_page.contains("Do we scan for leaked secrets?"),
-            "expected the secret-scanning population question on the owner detail page"
+            detail_page.contains("Enable it under Settings → Security → Advanced Security"),
+            "expected the secret-scanning how-to-fix tooltip on the owner detail page"
         );
         assert!(
-            detail_page.contains("this owner's public repositories only"),
+            detail_page.contains("public repositories only"),
             "expected the secret-scanning tooltip to state the public-only population"
         );
         assert!(

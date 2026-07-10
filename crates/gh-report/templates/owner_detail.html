@@ -61,7 +61,7 @@
     <div class="scorecard">
         {% for card in vm.summary_cards %}
         <div class="card {{ card.cell.tier.css_class() }}">
-            <p class="card-label"{% if card.key == "secret_scanning" %} title="Do we scan for leaked secrets? Counts this owner's public repositories only, mirroring the organisation-wide Secret Scanning figure."{% endif %}>{{ card.label }}</p>
+            <p class="card-label">{{ card.label }} {% call tooltip::tooltip(card.how_to_fix) %}{% endcall %}</p>
             <p class="card-value">{{ card.cell.rate_formatted }}</p>
             <div class="progress-bar">
                 <div class="progress-fill {{ card.cell.tier.css_class() }} {{ card.cell.width_class }}"></div>
