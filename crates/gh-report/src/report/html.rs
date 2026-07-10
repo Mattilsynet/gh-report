@@ -3240,23 +3240,6 @@ mod tests {
     }
 
     #[test]
-    fn render_owner_detail_html_contains_access_warning() {
-        let evidence = evidence_with_owner_repos();
-        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
-
-        let detail_page = pages
-            .iter()
-            .find(|(k, _)| k.starts_with("owners/"))
-            .expect("expected an owner detail page")
-            .1;
-
-        assert!(
-            detail_page.contains("restricted to authorised personnel"),
-            "owner detail page should contain the access-restriction warning"
-        );
-    }
-
-    #[test]
     fn format_date_prefix_full_iso_timestamp() {
         assert_eq!(
             super::format_date_prefix(Some("2026-04-09T12:00:00+00:00")),

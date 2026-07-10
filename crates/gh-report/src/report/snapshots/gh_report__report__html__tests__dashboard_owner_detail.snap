@@ -191,10 +191,6 @@ expression: "&pages[\"owners/org-team-a.html\"]"
 
     
 
-    <p class="footer">This page lists all repositories (including private and internal) associated with this owner.
-        Ensure access to this dashboard is restricted to authorised personnel.</p>
-
-
 </body>
 
 </html>

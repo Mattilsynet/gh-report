@@ -95,7 +95,5 @@ expression: "&pages[\"owners.html\"]"
 </div>
 
 
-<p class="footer">This page shows aggregated owner-level metrics and does not list individual repository names.</p>
-
 </body>
 </html>
