@@ -14,6 +14,7 @@ use std::os::unix::process::ExitStatusExt;
 
 use assert_cmd::Command;
 use gh_report::app::state::EventStoreImpl;
+use gh_report::config::EVIDENCE_SCHEMA_VERSION;
 use gh_report::event::DomainEvent;
 use gh_report::infra::lock;
 use pardosa_file::Reader;
@@ -95,13 +96,16 @@ fn child_main() -> ! {
     let pgno = events_dir.join("events.pgno");
 
     if !pgno.exists() {
-        let store = EventStoreImpl::create_pgno(&pgno).expect("create pgno bootstrap store");
+        let store =
+            EventStoreImpl::create_pgno_with_epoch(&pgno, EVIDENCE_SCHEMA_VERSION.as_bytes())
+                .expect("create pgno bootstrap store");
         store
             .record("bootstrap", native_event("bootstrap", "sigkill-bootstrap"))
             .expect("record bootstrap event");
     }
 
-    let store = EventStoreImpl::open_pgno(&pgno).expect("open pgno append store");
+    let store = EventStoreImpl::open_pgno_with_epoch(&pgno, EVIDENCE_SCHEMA_VERSION.as_bytes())
+        .expect("open pgno append store");
     let mut events_written = 0;
     for event_index in 0..events_per_cycle {
         let domain_key = format!("cycle-{cycle}-event-{event_index}");
@@ -231,11 +235,14 @@ fn dump_baseline(store_dir: &Path) -> usize {
 }
 
 fn recovered_event_count(store_dir: &Path) -> usize {
-    EventStoreImpl::open_pgno(&events_path(store_dir))
-        .expect("open recovered pgno")
-        .events()
-        .expect("read recovered events")
-        .len()
+    EventStoreImpl::open_pgno_with_epoch(
+        &events_path(store_dir),
+        EVIDENCE_SCHEMA_VERSION.as_bytes(),
+    )
+    .expect("open recovered pgno")
+    .events()
+    .expect("read recovered events")
+    .len()
 }
 
 fn events_path(store_dir: &Path) -> PathBuf {

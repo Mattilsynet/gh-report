@@ -51,6 +51,37 @@ impl NativeStore {
         Ok(Self::from_store(store))
     }
 
+    /// [`Self::create_pgno`] sibling threading an opaque
+    /// `adopter_epoch` token into the `.pgno` header (PGN-0021, OSF
+    /// phase 3). Callers pass
+    /// [`crate::config::EVIDENCE_SCHEMA_VERSION`] to fail closed on
+    /// the next [`Self::open_pgno_with_epoch`] whenever the
+    /// deployed evidence schema drifts silently.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Infrastructure`] when pardosa cannot create
+    /// the backing container.
+    pub fn create_pgno_with_epoch(path: &Path, epoch: &[u8]) -> Result<Self, StoreError> {
+        let store = FiberStore::<DomainEvent>::create_pgno_with_epoch(path, epoch)?;
+        Ok(Self::from_store(store))
+    }
+
+    /// [`Self::open_pgno`] sibling threading an opaque
+    /// `adopter_epoch` token (PGN-0021, OSF phase 3): fails closed
+    /// with [`StoreError`] wrapping `SemanticEpochMismatch` when the
+    /// stored header epoch does not byte-match `epoch`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Infrastructure`] when pardosa cannot open,
+    /// gate, or fold the backing container.
+    pub fn open_pgno_with_epoch(path: &Path, epoch: &[u8]) -> Result<Self, StoreError> {
+        let store = FiberStore::<DomainEvent>::open_pgno_with_epoch(path, epoch)?;
+        warn_pgno_recovery("repositories", path, store.last_recovery());
+        Ok(Self::from_store(store))
+    }
+
     /// Create a fresh JetStream-backed store.
     ///
     /// # Errors
@@ -216,6 +247,33 @@ impl NativeOrgStore {
     /// fold the backing container.
     pub fn open_pgno(path: &Path) -> Result<Self, StoreError> {
         let store = FiberStore::<OrgStateCaptured>::open_pgno(path)?;
+        warn_pgno_recovery("orgs", path, store.last_recovery());
+        Ok(Self::from_store(store))
+    }
+
+    /// [`Self::create_pgno`] sibling threading an opaque
+    /// `adopter_epoch` token (PGN-0021, OSF phase 3); see
+    /// [`NativeStore::create_pgno_with_epoch`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Infrastructure`] when pardosa cannot create
+    /// the backing container.
+    pub fn create_pgno_with_epoch(path: &Path, epoch: &[u8]) -> Result<Self, StoreError> {
+        let store = FiberStore::<OrgStateCaptured>::create_pgno_with_epoch(path, epoch)?;
+        Ok(Self::from_store(store))
+    }
+
+    /// [`Self::open_pgno`] sibling threading an opaque
+    /// `adopter_epoch` token (PGN-0021, OSF phase 3); see
+    /// [`NativeStore::open_pgno_with_epoch`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Infrastructure`] when pardosa cannot open,
+    /// gate, or fold the backing container.
+    pub fn open_pgno_with_epoch(path: &Path, epoch: &[u8]) -> Result<Self, StoreError> {
+        let store = FiberStore::<OrgStateCaptured>::open_pgno_with_epoch(path, epoch)?;
         warn_pgno_recovery("orgs", path, store.last_recovery());
         Ok(Self::from_store(store))
     }
@@ -476,5 +534,48 @@ mod tests {
             u64::try_from(store.events().expect("events").len()).expect("event count fits"),
             SYNTHETIC_RECOVERY_RECORDS
         );
+    }
+
+    /// OSF phase 3 proof: the v0.1.17-class silent mix (15.0 -> 16.0,
+    /// no struct change) now fails closed at boot instead of silently
+    /// mixing schema-incompatible events on one fiber (PGN-0021).
+    #[test]
+    fn open_pgno_with_epoch_fails_closed_on_stored_epoch_mismatch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("events.pgno");
+
+        let seeded = NativeStore::create_pgno_with_epoch(&path, b"15.0").expect("seed v15.0 store");
+        seeded
+            .record("domain-0", synthetic_domain_event(0))
+            .expect("record synthetic event");
+        drop(seeded);
+
+        let Err(error) = NativeStore::open_pgno_with_epoch(&path, b"16.0") else {
+            panic!("opening a 15.0-epoch store with the 16.0 epoch must fail closed")
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("semantic epoch mismatch")
+                && message.contains("expected Some([49, 54, 46, 48])")
+                && message.contains("found Some([49, 53, 46, 48])"),
+            "expected a SemanticEpochMismatch(expected=16.0, found=15.0) error, got: {message}"
+        );
+    }
+
+    /// Same-epoch happy path: the fence must not false-positive when
+    /// the stored and expected epochs match (the normal case).
+    #[test]
+    fn open_pgno_with_epoch_succeeds_on_matching_epoch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("events.pgno");
+
+        let seeded = NativeStore::create_pgno_with_epoch(&path, b"16.0").expect("seed 16.0 store");
+        seeded
+            .record("domain-0", synthetic_domain_event(0))
+            .expect("record synthetic event");
+        drop(seeded);
+
+        NativeStore::open_pgno_with_epoch(&path, b"16.0")
+            .expect("opening a 16.0-epoch store with the 16.0 epoch must succeed");
     }
 }

@@ -24,6 +24,7 @@
 //! semantics, which `bootstrap_replay` already covers in-process.
 
 use gh_report::app::state::EventStoreImpl;
+use gh_report::config::EVIDENCE_SCHEMA_VERSION;
 use gh_report::event::DomainEvent;
 use pardosa_schema::{NonEmptyEventString, Timestamp as EventTimestamp};
 
@@ -99,7 +100,11 @@ async fn dump_baseline_against_seeded_store_exits_zero() {
     std::fs::create_dir_all(&events_dir).expect("mk events dir");
 
     {
-        let store = EventStoreImpl::create_pgno(&events_dir.join("events.pgno")).unwrap();
+        let store = EventStoreImpl::create_pgno_with_epoch(
+            &events_dir.join("events.pgno"),
+            EVIDENCE_SCHEMA_VERSION.as_bytes(),
+        )
+        .unwrap();
         store
             .record("id-q4-smoke", native_event("id-q4-smoke", "q4-smoke"))
             .expect("record repo");
