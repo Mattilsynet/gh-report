@@ -3675,7 +3675,7 @@ mod tests {
         assert!(detail_page.contains(">Description</span></th>"));
         assert!(detail_page.contains(">Language</span></th>"));
         assert!(detail_page.contains(
-            "<th class=\"text-center\" data-sort-type=\"text\"><span class=\"tooltip-header\" tabindex=\"0\" data-tooltip=\"Yes if this repository is a fork of another repository.\" title=\"Yes if this repository is a fork of another repository.\">Fork</span></th>"
+            "<th class=\"text-center\" data-sort-type=\"text\"><span class=\"tooltip-header\" tabindex=\"0\" data-tooltip=\"Yes if this repository is a fork of another repository.\">Fork</span></th>"
         ));
         assert!(detail_page.contains(">License</span></th>"));
         assert!(detail_page.contains(">Last Push</span></th>"));
