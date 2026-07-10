@@ -46,7 +46,9 @@ fn high_flag_bits_are_reserved_zero() {
     hdr[HEADER_MAGIC_OFFSET..HEADER_MAGIC_OFFSET + 4].copy_from_slice(&MAGIC);
     hdr[HEADER_VERSION_OFFSET..HEADER_VERSION_OFFSET + 2]
         .copy_from_slice(&FORMAT_VERSION.to_le_bytes());
-    hdr[HEADER_FLAGS_OFFSET..HEADER_FLAGS_OFFSET + 2].copy_from_slice(&8u16.to_le_bytes());
+    // Bit 3 (0x08) is PGN-0021's epoch-presence flag as of FORMAT_VERSION
+    // 6 — no longer reserved. Bit 4 (0x10) remains genuinely reserved.
+    hdr[HEADER_FLAGS_OFFSET..HEADER_FLAGS_OFFSET + 2].copy_from_slice(&0x10u16.to_le_bytes());
     hdr[HEADER_SCHEMA_SIZE_OFFSET..HEADER_SCHEMA_SIZE_OFFSET + 4].copy_from_slice(&[0u8; 4]);
     let mut foot = [0u8; FILE_FOOTER_SIZE];
     let idx_off = u64::try_from(messages_offset(0)).expect("messages_offset(0) fits u64");
