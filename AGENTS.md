@@ -48,9 +48,9 @@ binaries plus an ADR-governed library family and a large ADR corpus.
 
 `crates/pardosa-nats/src/test_support.rs` spawns a real `nats-server` and
 **asserts its `--version` matches `tools/.nats-server-version` (currently
-2.14.2)** — it panics on mismatch or if the binary is absent. Affected tests
+2.14.3)** — it panics on mismatch or if the binary is absent. Affected tests
 include `pardosa`'s `dragline::runtime::tests::*jetstream*`. To run them:
-install `nats-server` v2.14.2 onto `PATH`. CI installs it in the `test` job
+install `nats-server` v2.14.3 onto `PATH`. CI installs it in the `test` job
 (checksum-verified). `async-nats` is pinned to the `server_2_14` feature to
 match.
 

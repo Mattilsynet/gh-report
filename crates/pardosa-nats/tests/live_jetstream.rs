@@ -331,7 +331,7 @@ fn live_update_stream_description_round_trips_on_populated_markerless_stream() {
     assert_eq!(
         read_back.as_deref(),
         Some(marker.as_str()),
-        "NATS 2.14.2 must read back a description on a populated stream"
+        "NATS 2.14.3 must read back a description on a populated stream"
     );
 }
 #[test]

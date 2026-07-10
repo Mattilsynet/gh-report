@@ -19,7 +19,7 @@ Optimistic Concurrency Without Locks" names expected-sequence headers as OCC:
 detect races, reject losers, and retry from current sequence. NATS ADR-42 says
 `pinned_client` has no exclusivity guarantee, and ADR-8 says KV direct reads
 lack read-after-write consistency. NATS ADR-50 makes atomic batch publish
-all-or-nothing in nats-server 2.12; this workspace pins nats-server 2.14.2 and
+all-or-nothing in nats-server 2.12; this workspace pins nats-server 2.14.3 and
 async-nats 0.49.1. The server reports sequence conflicts as err_code 10071.
 
 ## Decision
