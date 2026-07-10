@@ -47,9 +47,6 @@ expression: "&pages[\"owners/org-team-a.html\"]"
             <div class="progress-bar">
                 <div class="progress-fill tier-warn w-50"></div>
             </div>
-            
-            <p class="card-detail"><a href="../OPERATIONS.html#security-policy-coverage" title="Security Policy remediation guidance">Read more</a></p>
-            
         </div>
         
         <div class="card tier-pass">
@@ -58,9 +55,6 @@ expression: "&pages[\"owners/org-team-a.html\"]"
             <div class="progress-bar">
                 <div class="progress-fill tier-pass w-100"></div>
             </div>
-            
-            <p class="card-detail"><a href="../OPERATIONS.html#secret-scanning-coverage" title="Secret Scanning remediation guidance">Read more</a></p>
-            
         </div>
         
         <div class="card tier-warn">
@@ -69,9 +63,6 @@ expression: "&pages[\"owners/org-team-a.html\"]"
             <div class="progress-bar">
                 <div class="progress-fill tier-warn w-50"></div>
             </div>
-            
-            <p class="card-detail"><a href="../OPERATIONS.html#dependabot-coverage" title="Dependabot Status remediation guidance">Read more</a></p>
-            
         </div>
         
         <div class="card tier-warn">
@@ -80,9 +71,6 @@ expression: "&pages[\"owners/org-team-a.html\"]"
             <div class="progress-bar">
                 <div class="progress-fill tier-warn w-50"></div>
             </div>
-            
-            <p class="card-detail"><a href="../OPERATIONS.html#branch-protection-coverage" title="Branch Protection remediation guidance">Read more</a></p>
-            
         </div>
         
         <div class="card">

@@ -33,34 +33,29 @@
     <p class="question">Do we communicate to external parties how to inform us about security issues found in our public
         repositories?</p>
     <p><code>Security Policy Coverage</code>: <span class="metric">{{ vm.policy_coverage_formatted }}</span>
-        <em>(public repos only, including archived)</em> ·
-        <a href="OPERATIONS.html#security-policy-coverage" title="What it means and how to add a security policy">Read more</a>
+        <em>(public repos only, including archived)</em>
     </p>
 
     <p class="question">Do we have Dependabot security updates enabled so GitHub can automatically open remediation pull
         requests for vulnerable dependencies?</p>
     <p><code>Dependabot Status</code>: <span class="metric">{{ vm.dependabot_coverage_formatted
-            }}</span> ·
-        <a href="OPERATIONS.html#dependabot-coverage" title="What it means and how to enable Dependabot security updates">Read more</a>
+            }}</span>
     </p>
 
     <p class="question">Do we scan our repositories for leaked secrets?</p>
-    <p><code>Secret Scanning Coverage</code>: <span class="metric">{{ vm.secret_scanning_coverage_formatted }}</span> ·
-        <a href="OPERATIONS.html#secret-scanning-coverage" title="What it means and how to enable secret scanning">Read more</a>
+    <p><code>Secret Scanning Coverage</code>: <span class="metric">{{ vm.secret_scanning_coverage_formatted }}</span>
     </p>
 
     <h3>Ownership Metrics</h3>
 
     <p class="question">Do we enforce branch protection rules?</p>
     <p><code>Branch Protection</code>: <span class="metric">{{ vm.branch_protection_coverage_formatted
-            }}</span> ·
-        <a href="OPERATIONS.html#branch-protection-coverage" title="What it means and how to configure branch protection">Read more</a>
+            }}</span>
     </p>
 
     <p class="question">Do we have CODEOWNERS files in <code>{{ vm.conforming_codeowners_path }}</code> or
         <code>./{{ vm.non_conforming_codeowners_path }}</code>?</p>
-    <p><code>CODEOWNERS Coverage</code>: <span class="metric">{{ vm.codeowners_coverage_formatted }}</span> ·
-        <a href="OPERATIONS.html#codeowners-coverage" title="What it means, team-over-user preference, and how to add a team member">Read more</a>
+    <p><code>CODEOWNERS Coverage</code>: <span class="metric">{{ vm.codeowners_coverage_formatted }}</span>
     </p>
 
     <h2>Supporting Counts and Details</h2>

@@ -31,7 +31,7 @@ expression: "&pages[\"owners.html\"]"
     <li>Owners</li>
 </ul>
 
-<p class="meta">Coverage per CODEOWNERS-identified owner across 2 non-archived repositories. <a href="OPERATIONS.html#codeowners-coverage" title="CODEOWNERS remediation guidance">Read more</a></p>
+<p class="meta">Coverage per CODEOWNERS-identified owner across 2 non-archived repositories.</p>
 
 
 <div class="table-wrapper">

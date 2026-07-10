@@ -28,7 +28,7 @@ use crate::report::view_model::{
     ControlCell, ControlColumn, CoverageTier, DeletedRepoRow, DeletedTeamRow, DeletedViewModel,
     OrphanedRepoRow, OrphanedTeamGroup, OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow,
     OwnerRepoRow, OwnersViewModel, ReportViewModel, StatusDot, SummaryCard, TeamMemberRow,
-    TeamRosterViewModel, TopNav, TopSecurityTeam, compute_health_score, coverage_control_anchor,
+    TeamRosterViewModel, TopNav, TopSecurityTeam, compute_health_score,
     coverage_control_column_tooltip, format_exclusion, generate_slug, rate_to_width_class,
     strip_org_prefix,
 };
@@ -71,7 +71,6 @@ struct OwnersTemplate<'a> {
     vm: &'a OwnersViewModel,
     organization: String,
     total_repos: u32,
-    codeowners_operations_anchor: &'static str,
     nav: TopNav,
     /// When `true`, emits a `<meta http-equiv="refresh">` tag so the
     /// browser auto-reloads until fresh collection data replaces the
@@ -113,21 +112,6 @@ struct DeletedTemplate {
     warm_start: bool,
 }
 
-/// Askama template for the rendered operations runbook (UF3-2).
-///
-/// `body` is pre-rendered HTML from [`crate::report::markdown::render`],
-/// trusted repo-owned content, and is emitted with the `safe` filter so
-/// Askama's default auto-escaping does not double-encode it.
-#[derive(Template)]
-#[template(path = "operations.html")]
-struct OperationsTemplate<'a> {
-    organization: &'a str,
-    body: &'a str,
-    nav: TopNav,
-    /// When `true`, emits a `<meta http-equiv="refresh">` tag.
-    warm_start: bool,
-}
-
 /// Embedded CSS stylesheet, compiled into the binary at build time.
 ///
 /// Published as `style.css` alongside the HTML pages so the server's
@@ -140,13 +124,6 @@ const STYLESHEET: &str = include_str!("../../templates/style.css");
 /// and page-reload on server-pushed update events. Uses `script-src 'self'`
 /// in CSP — no inline scripts needed.
 const WS_CLIENT_JS: &str = include_str!("../../templates/ws.js");
-
-/// Embedded operations runbook source, compiled into the binary at build time.
-///
-/// Rendered to HTML by [`crate::report::markdown::render`] and published as
-/// `OPERATIONS.html` (UF3-2) so the report's "Read more" deep links resolve
-/// over live HTTP instead of 404ing against an unserved `.md` path.
-const OPERATIONS_MD: &str = include_str!("../../OPERATIONS.md");
 
 /// Control names in canonical order for owner tables.
 const CONTROL_NAMES: &[&str] = &[
@@ -239,8 +216,6 @@ fn control_display_name(key: &str) -> &'static str {
 /// - `orphans.html` — Repositories without identifiable code owners.
 /// - `owners.html` — Owner coverage overview (if owner metrics available).
 /// - `owners/{slug}.html` — Per-owner detail pages (if owner metrics available).
-/// - `OPERATIONS.html` — Rendered operations runbook (UF3-2), the target of
-///   every report/admin "Read more" deep link.
 ///
 /// # Errors
 ///
@@ -290,13 +265,6 @@ pub fn render_dashboard(
     let report = render_template(&ReportTemplate { vm: &vm, nav })?;
     let index = render_template(&IndexTemplate { vm: &vm, nav })?;
     let admin = render_template(&AdminTemplate { vm: &vm, nav })?;
-    let operations_body = crate::report::markdown::render(OPERATIONS_MD);
-    let operations = render_template(&OperationsTemplate {
-        organization: &vm.organization,
-        body: &operations_body,
-        nav,
-        warm_start,
-    })?;
 
     let mut pages = HashMap::new();
     pages.insert("report.html".to_string(), report);
@@ -307,14 +275,12 @@ pub fn render_dashboard(
     pages.insert("gh-report-web-client.js".to_string(), String::new());
     pages.insert("gh-report-web-client_bg.wasm".to_string(), String::new());
     pages.insert("sort-init.js".to_string(), String::new());
-    pages.insert("OPERATIONS.html".to_string(), operations);
 
     if let Some(ref owners) = owners_vm {
         let owners_html = render_template(&OwnersTemplate {
             vm: owners,
             organization: evidence.assessment_metadata.organization.clone(),
             total_repos: evidence.collection_statistics.total_repos,
-            codeowners_operations_anchor: coverage_control_anchor("codeowners").unwrap_or_default(),
             nav,
             warm_start,
         })?;
@@ -698,7 +664,6 @@ fn build_owner_detail_view_models(
                         key,
                         tiers,
                     ),
-                    operations_anchor: coverage_control_anchor(key),
                 })
                 .collect();
 
@@ -751,8 +716,6 @@ fn build_owner_detail_view_models(
                 repo_rows,
                 control_columns: control_columns.clone(),
                 summary_cards,
-                codeowners_operations_anchor: coverage_control_anchor("codeowners")
-                    .unwrap_or_default(),
                 has_stale_repos,
                 stale_repo_count,
                 total_repo_count,
@@ -1549,34 +1512,25 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_report_includes_les_mer_remediation_links() {
+    fn dashboard_report_has_no_operations_read_more_links() {
         let evidence = sample_evidence();
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
         let html = &pages["report.html"];
 
-        assert!(html.contains(r#"href="OPERATIONS.html#security-policy-coverage""#));
-        assert!(html.contains(r#"href="OPERATIONS.html#dependabot-coverage""#));
-        assert!(html.contains(r#"href="OPERATIONS.html#secret-scanning-coverage""#));
-        assert!(html.contains(r#"href="OPERATIONS.html#branch-protection-coverage""#));
-        assert!(html.contains(r#"href="OPERATIONS.html#codeowners-coverage""#));
-        assert_eq!(html.matches("Read more").count(), 5);
+        assert!(!html.contains("OPERATIONS.html"));
+        assert!(!html.contains("Read more"));
     }
 
     #[test]
-    fn dashboard_index_links_control_cards_to_operations() {
+    fn dashboard_index_has_no_operations_read_more_links() {
         let evidence = sample_evidence();
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
         let html = &pages["index.html"];
 
-        assert!(html.contains(r#"href="OPERATIONS.html#security-policy-coverage""#));
-        assert!(html.contains(r#"href="OPERATIONS.html#dependabot-coverage""#));
-        assert!(html.contains(r#"href="OPERATIONS.html#secret-scanning-coverage""#));
-        assert!(html.contains(r#"href="OPERATIONS.html#branch-protection-coverage""#));
-        assert!(html.contains(r#"href="OPERATIONS.html#codeowners-coverage""#));
-        assert_eq!(
-            html.matches("Read more").count(),
-            5,
-            "exactly the 5 control cards should link out, not the 2 aggregate cards"
+        assert!(!html.contains("OPERATIONS.html"));
+        assert!(
+            !html.contains("Read more"),
+            "control cards must no longer emit Read-more links now that OPERATIONS.html is removed"
         );
     }
 
@@ -1633,9 +1587,6 @@ mod tests {
         assert!(report_html.contains("Acme access guide"));
 
         for (page_name, body) in &pages {
-            if page_name == "OPERATIONS.html" {
-                continue;
-            }
             assert!(
                 !body.to_lowercase().contains("mattilsynet"),
                 "page {page_name} leaked a Mattilsynet string after org config swap"
@@ -1781,8 +1732,8 @@ mod tests {
         assert!(pages.contains_key("sort-init.js"));
         assert!(pages.contains_key("orphans.html"));
         assert!(pages.contains_key("deleted.html"));
-        assert!(pages.contains_key("OPERATIONS.html"));
-        assert_eq!(pages.len(), 11);
+        assert!(!pages.contains_key("OPERATIONS.html"));
+        assert_eq!(pages.len(), 10);
     }
 
     #[test]
@@ -2371,8 +2322,7 @@ mod tests {
     /// adr-fmt link-integrity discipline): renders the full page set,
     /// extracts every internal `href`, and asserts each resolves to a
     /// served page and — for fragments — an existing `id=` anchor on that
-    /// page. Also directly confirms the 5 contractual `OPERATIONS.html`
-    /// anchors so a future heading rename breaks this build.
+    /// page.
     #[test]
     fn served_pages_have_no_dangling_internal_links() {
         let mut evidence = evidence_with_full_nav_surface();
@@ -2443,19 +2393,10 @@ mod tests {
             dangling.join("\n")
         );
 
-        let operations_ids = &ids_by_page["OPERATIONS.html"];
-        for anchor in [
-            "security-policy-coverage",
-            "dependabot-coverage",
-            "secret-scanning-coverage",
-            "branch-protection-coverage",
-            "codeowners-coverage",
-        ] {
-            assert!(
-                operations_ids.contains(anchor),
-                "OPERATIONS.html missing required anchor id={anchor}"
-            );
-        }
+        assert!(
+            !ids_by_page.contains_key("OPERATIONS.html"),
+            "OPERATIONS.html must no longer be a served page"
+        );
     }
 
     #[test]
@@ -2515,37 +2456,17 @@ mod tests {
     }
 
     #[test]
-    fn detail_vm_summary_cards_have_operations_anchor() {
+    fn detail_vm_summary_cards_have_no_operations_anchor_field() {
         let evidence = evidence_with_owner_repos();
-        let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
-        let detail_vms = build_owner_detail_view_models(
-            &evidence.metrics.owner_metrics,
-            &owner_repo_map,
-            &CoverageTiers::default(),
-            &evidence.assessment_metadata.organization,
-            &evidence.assessment_metadata.run_timestamp,
-            &[],
-            &[],
-        );
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let detail_page = pages
+            .iter()
+            .find(|(k, _)| k.starts_with("owners/"))
+            .expect("expected an owner detail page")
+            .1;
 
-        let (_, vm) = &detail_vms[0];
-        assert_eq!(
-            vm.summary_cards[0].operations_anchor,
-            Some("security-policy-coverage")
-        );
-        assert_eq!(
-            vm.summary_cards[1].operations_anchor,
-            Some("secret-scanning-coverage")
-        );
-        assert_eq!(
-            vm.summary_cards[2].operations_anchor,
-            Some("dependabot-coverage")
-        );
-        assert_eq!(
-            vm.summary_cards[3].operations_anchor,
-            Some("branch-protection-coverage")
-        );
-        assert_eq!(vm.codeowners_operations_anchor, "codeowners-coverage");
+        assert!(!detail_page.contains("OPERATIONS.html"));
+        assert!(!detail_page.contains("Read more"));
     }
 
     #[test]
@@ -2834,12 +2755,13 @@ mod tests {
     }
 
     #[test]
-    fn owners_page_links_codeowners_guidance_to_operations() {
+    fn owners_page_has_no_operations_read_more_link() {
         let evidence = evidence_with_owner_repos();
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
         let owners_html = &pages["owners.html"];
 
-        assert!(owners_html.contains(r#"href="OPERATIONS.html#codeowners-coverage""#));
+        assert!(!owners_html.contains("OPERATIONS.html"));
+        assert!(!owners_html.contains("Read more"));
     }
 
     #[test]
@@ -3039,18 +2961,15 @@ mod tests {
     }
 
     #[test]
-    fn render_owner_detail_html_summary_cards_link_to_operations_with_base_prefix() {
+    fn render_owner_detail_html_summary_cards_have_no_operations_link() {
         let evidence = evidence_with_owner_repos();
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
         let detail_page = &pages["owners/org-team-a.html"];
 
-        assert!(detail_page.contains(r#"href="../OPERATIONS.html#security-policy-coverage""#));
-        assert!(detail_page.contains(r#"href="../OPERATIONS.html#secret-scanning-coverage""#));
-        assert!(detail_page.contains(r#"href="../OPERATIONS.html#dependabot-coverage""#));
-        assert!(detail_page.contains(r#"href="../OPERATIONS.html#branch-protection-coverage""#));
+        assert!(!detail_page.contains("OPERATIONS.html"));
         assert!(
-            !detail_page.contains(r#"href="OPERATIONS.html#security-policy-coverage""#),
-            "owner detail links must carry the ../ base prefix, not a bare root-relative href"
+            !detail_page.contains("Read more"),
+            "owner detail summary cards must no longer emit Read-more links"
         );
     }
 
@@ -3208,7 +3127,7 @@ mod tests {
     }
 
     #[test]
-    fn render_owner_detail_html_codeowners_guidance_links_to_operations() {
+    fn render_owner_detail_html_codeowners_meta_has_no_operations_link() {
         use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRoster, TeamRosterStatus};
 
         let mut evidence = evidence_with_owner_repos();
@@ -3227,8 +3146,8 @@ mod tests {
         let detail_page = &pages["owners/org-team-a.html"];
 
         assert!(
-            detail_page.contains(r#"href="../OPERATIONS.html#codeowners-coverage""#),
-            "expected a CODEOWNERS remediation link alongside the team roster"
+            !detail_page.contains("OPERATIONS.html"),
+            "CODEOWNERS meta line must no longer link to OPERATIONS.html"
         );
         assert!(
             detail_page.contains("../report.html#add-a-team-member"),

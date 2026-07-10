@@ -1,4 +1,3 @@
-{%- import "partials/remediation_link.html" as remediation -%}
 {%- import "partials/tooltip.html" as tooltip -%}
 <!DOCTYPE html>
 <html lang="en">
@@ -37,7 +36,6 @@
             {%- if vm.policy_excluded_total > 0 %}
             <p class="card-detail">{{ vm.policy_excluded_formatted }}</p>
             {%- endif %}
-            <p class="card-detail">{% call remediation::remediation_link(nav.base, vm.policy_operations_anchor, "Read more", "Security Policy remediation guidance") %}{% endcall %}</p>
         </div>
         <div class="card {{ vm.dependabot_tier.css_class() }}" title="Percentage of repos with Dependabot security updates enabled (auto-PRs for vulnerable dependencies).">
             <p class="card-label">Dependabot Status {% call tooltip::tooltip(vm.dependabot_how_to_fix) %}{% endcall %}</p>
@@ -48,7 +46,6 @@
             {%- if vm.dependabot_excluded_total > 0 %}
             <p class="card-detail">{{ vm.dependabot_excluded_formatted }}</p>
             {%- endif %}
-            <p class="card-detail">{% call remediation::remediation_link(nav.base, vm.dependabot_operations_anchor, "Read more", "Dependabot Status remediation guidance") %}{% endcall %}</p>
         </div>
         <div class="card {{ vm.secret_scanning_tier.css_class() }}" title="Percentage of public repos with GitHub secret scanning enabled to detect leaked credentials.">
             <p class="card-label">Secret Scanning {% call tooltip::tooltip(vm.secret_scanning_how_to_fix) %}{% endcall %}</p>
@@ -62,7 +59,6 @@
             {%- if vm.secret_scanning_excluded_total > 0 %}
             <p class="card-detail">{{ vm.secret_scanning_excluded_formatted }}</p>
             {%- endif %}
-            <p class="card-detail">{% call remediation::remediation_link(nav.base, vm.secret_scanning_operations_anchor, "Read more", "Secret Scanning remediation guidance") %}{% endcall %}</p>
         </div>
         <div class="card {{ vm.branch_protection_tier.css_class() }}" title="Percentage of observable repos at branch-protection T2 or higher; T1 is minimal baseline, T0 is below baseline. Unreadable or permission-suspected repos are excluded from this percentage (see the unmeasured breakdown below), not classified as T0.">
             <p class="card-label">Branch Protection {% call tooltip::tooltip(vm.branch_protection_how_to_fix) %}{% endcall %}</p>
@@ -73,7 +69,6 @@
                     class="progress-fill {{ vm.branch_protection_tier.css_class() }} {{ vm.branch_protection_width_class }}">
                 </div>
             </div>
-            <p class="card-detail">{% call remediation::remediation_link(nav.base, vm.branch_protection_operations_anchor, "Read more", "Branch Protection remediation guidance") %}{% endcall %}</p>
         </div>
         <div class="card {{ vm.codeowners_tier.css_class() }}" title="Percentage of repos with a CODEOWNERS file identifying responsible teams or individuals.">
             <p class="card-label">CODEOWNERS {% call tooltip::tooltip(vm.codeowners_how_to_fix) %}{% endcall %}</p>
@@ -84,7 +79,6 @@
             {%- if vm.codeowners_excluded_total > 0 %}
             <p class="card-detail">{{ vm.codeowners_excluded_formatted }}</p>
             {%- endif %}
-            <p class="card-detail">{% call remediation::remediation_link(nav.base, vm.codeowners_operations_anchor, "Read more", "CODEOWNERS remediation guidance") %}{% endcall %}</p>
         </div>
         <div class="card {{ vm.stale_tier.css_class() }}" title="Archived / (archived + stale-active) — fraction of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better.">
             <p class="card-label">Archival Coverage</p>

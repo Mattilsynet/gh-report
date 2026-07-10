@@ -38,7 +38,7 @@
             <strong>{{ flag.title }}</strong>
         </p>
         <p>{{ flag.detail }}</p>
-        <p>Fix: {{ flag.remedy.summary }}{% if let Some(anchor) = flag.remedy.anchor %} <a href="OPERATIONS.html#{{ anchor }}">[why?]</a>{% endif %}</p>
+        <p>Fix: {{ flag.remedy.summary }}</p>
         {% match flag.affected %}
         {% when crate::report::view_model::AffectedScope::Count(n) %}
         <p class="meta">Affected: {{ n }}</p>

@@ -1,4 +1,3 @@
-{%- import "partials/remediation_link.html" as remediation -%}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -21,7 +20,7 @@
     <li>Owners</li>
 </ul>
 
-<p class="meta">Coverage per CODEOWNERS-identified owner across {{ total_repos }} non-archived repositories. {% call remediation::remediation_link(nav.base, codeowners_operations_anchor, "Read more", "CODEOWNERS remediation guidance") %}{% endcall %}</p>
+<p class="meta">Coverage per CODEOWNERS-identified owner across {{ total_repos }} non-archived repositories.</p>
 
 {% if vm.rows.is_empty() %}
 <p class="meta">No CODEOWNERS data available. Ensure repositories contain CODEOWNERS files.</p>

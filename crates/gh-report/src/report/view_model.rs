@@ -223,9 +223,6 @@ pub struct SummaryCard {
     pub label: String,
     /// Coverage rate and tier for styling.
     pub cell: ControlCell,
-    /// Deep-link anchor into `OPERATIONS.html` for this control's
-    /// remediation section (UF3-2), when one exists.
-    pub operations_anchor: Option<&'static str>,
 }
 
 /// A single member row in a team roster (B1).
@@ -298,11 +295,6 @@ pub struct OwnerDetailViewModel {
     pub control_columns: Vec<ControlColumn>,
     /// Summary scorecard cards (one per control, same order as `control_columns`).
     pub summary_cards: Vec<SummaryCard>,
-    /// Deep-link anchor into `OPERATIONS.html` for the CODEOWNERS
-    /// remediation section (UF3-2); CODEOWNERS has no per-owner
-    /// `SummaryCard` cell (tautological at this level), so the team/roster
-    /// guidance links here instead.
-    pub codeowners_operations_anchor: &'static str,
     /// Whether any repo row is flagged as stale (drives footnote rendering).
     pub has_stale_repos: bool,
     /// Number of stale repos for this owner (`updated_at` > 2 years before report date).
@@ -696,8 +688,6 @@ pub enum FixTarget {
 pub struct Remedy {
     /// Imperative instruction (for example, `"Rotate to a token with ..."`).
     pub summary: String,
-    /// Deep-link anchor into `OPERATIONS.md`, when a matching section exists.
-    pub anchor: Option<&'static str>,
     /// What kind of action clears the flag.
     pub fix_target: FixTarget,
 }
@@ -965,12 +955,6 @@ pub struct ReportViewModel {
     pub branch_protection_width_class: &'static str,
     pub codeowners_width_class: &'static str,
 
-    pub policy_operations_anchor: &'static str,
-    pub secret_scanning_operations_anchor: &'static str,
-    pub dependabot_operations_anchor: &'static str,
-    pub branch_protection_operations_anchor: &'static str,
-    pub codeowners_operations_anchor: &'static str,
-
     pub policy_how_to_fix: &'static str,
     pub secret_scanning_how_to_fix: &'static str,
     pub dependabot_how_to_fix: &'static str,
@@ -1037,24 +1021,6 @@ struct HealthDisplay {
     tier: CoverageTier,
     score_formatted: String,
     width_class: &'static str,
-}
-
-struct OperationsAnchors {
-    policy: &'static str,
-    secret_scanning: &'static str,
-    dependabot: &'static str,
-    branch_protection: &'static str,
-    codeowners: &'static str,
-}
-
-fn dashboard_operations_anchors() -> OperationsAnchors {
-    OperationsAnchors {
-        policy: coverage_control_anchor("security_policy").unwrap_or_default(),
-        secret_scanning: coverage_control_anchor("secret_scanning").unwrap_or_default(),
-        dependabot: coverage_control_anchor("dependabot_security_updates").unwrap_or_default(),
-        branch_protection: coverage_control_anchor("branch_protection").unwrap_or_default(),
-        codeowners: coverage_control_anchor("codeowners").unwrap_or_default(),
-    }
 }
 
 struct ControlHowToFix {
@@ -1163,7 +1129,7 @@ impl ReportViewModel {
     #[must_use]
     #[expect(
         clippy::too_many_lines,
-        reason = "constructing ReportViewModel is a flat multi-field assignment from pre-computed per-control helpers (anchors, how-to-fix copy, health, archival, team-access, exclusion breakdown); the 5 new *_how_to_fix fields mirror the existing *_operations_anchor fields, and the 10 new *_excluded_* fields mirror them again for the by-reason exclusion breakdown (item6 adr-fmt-6mi2t), pushing an already near-threshold constructor over the line count — extracting further would fragment one cohesive struct literal without improving readability"
+        reason = "constructing ReportViewModel is a flat multi-field assignment from pre-computed per-control helpers (how-to-fix copy, health, archival, team-access, exclusion breakdown); the 5 *_how_to_fix fields mirror per-control helper output, and the 10 *_excluded_* fields mirror them again for the by-reason exclusion breakdown (item6 adr-fmt-6mi2t), pushing an already near-threshold constructor over the line count — extracting further would fragment one cohesive struct literal without improving readability"
     )]
     pub fn from_evidence(evidence: &Evidence, tiers: &CoverageTiers) -> Self {
         let metadata = &evidence.assessment_metadata;
@@ -1171,7 +1137,6 @@ impl ReportViewModel {
         let m = &evidence.metrics;
         let org_alert = org_alert_display(evidence);
         let admin_diagnostics = build_admin_diagnostics(metadata, m, &evidence.repositories);
-        let anchors = dashboard_operations_anchors();
         let how_to_fix = dashboard_control_how_to_fix();
         let exclusion = dashboard_exclusion_breakdown(&m.score_exclusion_counts);
         let observable = observable_repos(m);
@@ -1258,11 +1223,6 @@ impl ReportViewModel {
             ),
             branch_protection_width_class: rate_to_width_class(m.branch_protection_coverage.rate),
             codeowners_width_class: rate_to_width_class(m.codeowners_coverage.rate),
-            policy_operations_anchor: anchors.policy,
-            secret_scanning_operations_anchor: anchors.secret_scanning,
-            dependabot_operations_anchor: anchors.dependabot,
-            branch_protection_operations_anchor: anchors.branch_protection,
-            codeowners_operations_anchor: anchors.codeowners,
             policy_how_to_fix: how_to_fix.policy,
             secret_scanning_how_to_fix: how_to_fix.secret_scanning,
             dependabot_how_to_fix: how_to_fix.dependabot,
@@ -1503,7 +1463,6 @@ fn push_token_tier_unknown(flags: &mut Vec<RedFlag>, metadata: &AssessmentMetada
         affected: AffectedScope::OrgWide,
         remedy: Remedy {
             summary: "Confirm the active token's effective permissions against the Required Permissions / Scopes table; fine-grained PATs and GitHub Apps are expected to show Unknown.".to_string(),
-            anchor: Some("fine-grained-pat--github-app"),
             fix_target: FixTarget::Token,
         },
     });
@@ -1537,7 +1496,6 @@ fn push_degraded_capabilities(flags: &mut Vec<RedFlag>, metadata: &AssessmentMet
             affected: AffectedScope::OrgWide,
             remedy: Remedy {
                 summary: "Grant the missing scope or permission listed under Capability probes, or accept the degraded coverage for this credential tier.".to_string(),
-                anchor: Some("capability-probes"),
                 fix_target: FixTarget::Token,
             },
         });
@@ -1564,7 +1522,6 @@ fn push_branch_protection_permission_suspected(
         affected: AffectedScope::Count(count),
         remedy: Remedy {
             summary: "Verify the token has Repository administration: read (or classic repo scope) and retry collection.".to_string(),
-            anchor: Some("capability-probes"),
             fix_target: FixTarget::Token,
         },
     });
@@ -1587,7 +1544,6 @@ fn push_secret_scanning_permission_denied(flags: &mut Vec<RedFlag>, metrics: &Ag
         affected: AffectedScope::Count(count),
         remedy: Remedy {
             summary: "Grant Secret scanning alerts: read (or classic repo + security_events scope) and retry collection.".to_string(),
-            anchor: Some("capability-probes"),
             fix_target: FixTarget::Token,
         },
     });
@@ -1606,7 +1562,6 @@ fn push_auth_mode_pat(flags: &mut Vec<RedFlag>, metadata: &AssessmentMetadata) {
         affected: AffectedScope::OrgWide,
         remedy: Remedy {
             summary: "Switch production deployments to GitHub App authentication.".to_string(),
-            anchor: Some("1-github-app-recommended-for-production"),
             fix_target: FixTarget::CloudRunConfig,
         },
     });
@@ -1628,7 +1583,6 @@ fn push_rate_limited_collection(flags: &mut Vec<RedFlag>, metrics: &AggregatedMe
         affected: AffectedScope::Count(count),
         remedy: Remedy {
             summary: "Re-run collection after the rate-limit window resets, or reduce the concurrent worker count.".to_string(),
-            anchor: None,
             fix_target: FixTarget::Investigate,
         },
     });
@@ -1653,7 +1607,6 @@ fn push_unstable_collection_result(flags: &mut Vec<RedFlag>, metrics: &Aggregate
         affected: AffectedScope::Count(count),
         remedy: Remedy {
             summary: "Re-run collection; if the condition persists, inspect collector logs for the affected check.".to_string(),
-            anchor: None,
             fix_target: FixTarget::Investigate,
         },
     });
@@ -1673,7 +1626,6 @@ fn push_codeowners_truncated(flags: &mut Vec<RedFlag>, metrics: &AggregatedMetri
         affected: AffectedScope::Count(count),
         remedy: Remedy {
             summary: "Inspect the affected CODEOWNERS files for encoding or size issues and re-run collection.".to_string(),
-            anchor: None,
             fix_target: FixTarget::Investigate,
         },
     });
@@ -1701,7 +1653,6 @@ fn push_collection_run_stale(flags: &mut Vec<RedFlag>, metadata: &AssessmentMeta
         affected: AffectedScope::OrgWide,
         remedy: Remedy {
             summary: "Check daemon liveness/readiness and Cloud Run min-instances, then restart the collection process if it is stuck.".to_string(),
-            anchor: Some("kubernetes--knative-probe-configuration"),
             fix_target: FixTarget::Investigate,
         },
     });
@@ -1732,7 +1683,6 @@ fn push_secret_scanning_unobservable(flags: &mut Vec<RedFlag>, repos: &[Reposito
         affected: AffectedScope::Count(count),
         remedy: Remedy {
             summary: "Verify organization-level secret-scanning alert access and re-run collection.".to_string(),
-            anchor: Some("capability-probes"),
             fix_target: FixTarget::Token,
         },
     });
@@ -1803,7 +1753,6 @@ fn push_posture_flag(flags: &mut Vec<RedFlag>, affected_repos: Vec<String>, spec
         affected: AffectedScope::Repos(affected_repos),
         remedy: Remedy {
             summary: spec.remedy_summary.to_string(),
-            anchor: Some("branch-protection-coverage"),
             fix_target: FixTarget::Repo(primary),
         },
     });
@@ -1949,17 +1898,6 @@ pub(crate) fn rate_to_width_class(rate: Option<f64>) -> &'static str {
                 .map_or(0, |(candidate, _)| candidate);
             WIDTH_CLASSES[index]
         }
-    }
-}
-
-pub(crate) fn coverage_control_anchor(key: &str) -> Option<&'static str> {
-    match key {
-        "security_policy" => Some("security-policy-coverage"),
-        "secret_scanning" => Some("secret-scanning-coverage"),
-        "dependabot_security_updates" => Some("dependabot-coverage"),
-        "branch_protection" => Some("branch-protection-coverage"),
-        "codeowners" => Some("codeowners-coverage"),
-        _ => None,
     }
 }
 
@@ -2448,7 +2386,6 @@ mod tests {
             affected: AffectedScope::OrgWide,
             remedy: Remedy {
                 summary: "s".to_string(),
-                anchor: None,
                 fix_target: FixTarget::Token,
             },
         }
@@ -2778,37 +2715,6 @@ mod tests {
         assert_eq!(rate_to_width_class(Some(f64::NAN)), "w-0");
         assert_eq!(rate_to_width_class(Some(f64::INFINITY)), "w-100");
         assert_eq!(rate_to_width_class(Some(f64::NEG_INFINITY)), "w-0");
-    }
-
-    #[test]
-    fn coverage_control_anchor_maps_known_controls() {
-        assert_eq!(
-            coverage_control_anchor("security_policy"),
-            Some("security-policy-coverage")
-        );
-        assert_eq!(
-            coverage_control_anchor("secret_scanning"),
-            Some("secret-scanning-coverage")
-        );
-        assert_eq!(
-            coverage_control_anchor("dependabot_security_updates"),
-            Some("dependabot-coverage")
-        );
-        assert_eq!(
-            coverage_control_anchor("branch_protection"),
-            Some("branch-protection-coverage")
-        );
-        assert_eq!(
-            coverage_control_anchor("codeowners"),
-            Some("codeowners-coverage")
-        );
-    }
-
-    #[test]
-    fn coverage_control_anchor_returns_none_for_unknown_key() {
-        assert_eq!(coverage_control_anchor("non_stale"), None);
-        assert_eq!(coverage_control_anchor("alert_free"), None);
-        assert_eq!(coverage_control_anchor("bogus"), None);
     }
 
     #[test]
@@ -3528,35 +3434,6 @@ mod tests {
                 .iter()
                 .any(|f| f.id == RedFlagId::IntegrityControlGap)
         );
-    }
-
-    #[test]
-    fn branch_protection_posture_flags_carry_operations_anchor() {
-        let repos = vec![repo_with_branch_protection(
-            "posture-anchor-repo",
-            branch_protection_with(
-                Some(CollectionFailureReason::NotFoundAbsent),
-                Some(true),
-                Some(false),
-                Some(false),
-                Some(false),
-            ),
-        )];
-        let fired = build_red_flags(&neutral_metadata(), &neutral_metrics(), &repos);
-
-        let posture_ids = [
-            RedFlagId::BranchProtectionAbsent,
-            RedFlagId::BroadBypassPresent,
-            RedFlagId::AdminEnforcementNotEquivalent,
-            RedFlagId::IntegrityControlGap,
-        ];
-        for id in posture_ids {
-            let flag = fired
-                .iter()
-                .find(|f| f.id == id)
-                .unwrap_or_else(|| panic!("{id:?} should fire"));
-            assert_eq!(flag.remedy.anchor, Some("branch-protection-coverage"));
-        }
     }
 
     #[test]
