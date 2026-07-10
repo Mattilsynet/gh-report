@@ -841,6 +841,7 @@ fn build_owner_repo_row(
             .unwrap_or(EM_DASH)
             .to_string(),
         is_fork: repo.repository.fork,
+        is_empty: repo.repository.is_empty,
         license: repo
             .repository
             .license_spdx
@@ -988,6 +989,7 @@ fn build_orphaned_view_model(
                     .as_deref()
                     .unwrap_or(EM_DASH)
                     .to_string(),
+                is_empty: repo.repository.is_empty,
                 last_committer_login: commit.login,
                 last_committer_url: commit.url,
                 last_committer_unregistered: commit.unregistered,
@@ -3622,6 +3624,51 @@ mod tests {
                 || detail_page.contains("could not be matched to a GitHub account"),
             "expected an unregistered-committer warning tooltip; got: {detail_page}"
         );
+    }
+
+    /// Empty repo (`size:0`, `is_empty` derived at the collector boundary)
+    /// exercises the empty-repo pill in the owner detail table
+    /// (adr-fmt-nvf8w).
+    #[test]
+    fn render_owner_detail_html_empty_repo_shows_pill_snapshot() {
+        let mut repo = test_fixtures::make_repository_evidence(
+            "empty-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_with_owners(&["@org/team-empty"]),
+            ),
+        );
+        repo.repository.is_empty = true;
+
+        let repos = vec![repo];
+        let metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
+        let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
+        let evidence = test_fixtures::make_full_evidence(
+            test_fixtures::make_metadata(),
+            stats,
+            metrics,
+            test_fixtures::make_observability(),
+            repos,
+        );
+
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let detail_page = pages
+            .iter()
+            .find(|(k, _)| k.starts_with("owners/"))
+            .expect("expected an owner detail page")
+            .1;
+
+        assert!(
+            detail_page.contains(r#"<span class="repo-badge-empty">empty</span>"#),
+            "expected empty-repo pill markup; got: {detail_page}"
+        );
+
+        insta::assert_snapshot!("dashboard_owner_detail_empty_repo_badge", detail_page);
     }
 
     #[test]

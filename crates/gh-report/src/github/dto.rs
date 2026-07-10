@@ -36,6 +36,8 @@ pub struct GhRepository {
     pub description: Option<String>,
     /// Whether this repository is a fork of another repository.
     pub fork: Option<bool>,
+    /// Repository disk size in KB; 0 indicates an empty repository with no commits.
+    pub size: Option<u64>,
     /// Browser URL for the repository (e.g., `https://github.com/org/repo`).
     pub html_url: Option<String>,
     /// Topic tags applied to the repository.

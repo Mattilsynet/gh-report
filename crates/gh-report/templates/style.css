@@ -470,6 +470,18 @@ a.card:hover {
    width: 100%;
 }
 
+/* ── Empty Repo Badge ───────────────────────────────────────────── */
+
+.repo-badge-empty {
+   display: inline-block;
+   margin-left: .4em;
+   padding: .1em .5em;
+   border: 1px solid var(--border-muted);
+   border-radius: 1em;
+   font-size: 0.75em;
+   color: var(--text-muted);
+}
+
 /* ── Status Dots ────────────────────────────────────────────────── */
 
 .status-dot {

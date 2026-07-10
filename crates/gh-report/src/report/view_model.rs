@@ -152,6 +152,10 @@ pub struct ControlCell {
 
 /// A row in the per-owner detail table (one repo).
 #[derive(Debug, Clone)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool renders an independent table-row indicator (fork, is_empty, stale, unregistered committer), not a state-machine encoding"
+)]
 pub struct OwnerRepoRow {
     /// Repository name.
     pub repo_name: String,
@@ -168,6 +172,8 @@ pub struct OwnerRepoRow {
     pub language: String,
     /// Whether this repository is a fork.
     pub is_fork: bool,
+    /// Whether the repository is genuinely empty on GitHub (no commits or content).
+    pub is_empty: bool,
     /// SPDX license identifier, or `"—"` if none.
     pub license: String,
     /// ISO 8601 date of last git push, formatted as `YYYY-MM-DD`, or `"—"`.
@@ -396,6 +402,8 @@ pub struct OrphanedRepoRow {
     pub description: String,
     /// Primary language, or `"—"` if none.
     pub language: String,
+    /// Whether the repository is genuinely empty on GitHub (no commits or content).
+    pub is_empty: bool,
     /// GitHub login of the last committer, or `"—"`.
     pub last_committer_login: String,
     /// URL to the last committer's GitHub profile, or empty string.

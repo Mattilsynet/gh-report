@@ -45,7 +45,7 @@
                 {% for row in vm.rows %}
                 <tr{% if row.is_stale %} class="row-stale"{% endif %}>
                     <td>{% if row.repo_url.is_empty() %}{{ row.repo_name }}{% else %}<a href="{{ row.repo_url }}"
-                            target="_blank" rel="noopener noreferrer">{{ row.repo_name }}</a>{% endif %}{% if row.is_stale %} {% call tooltip::tooltip("Stale: not updated in 2+ years") %}{% endcall %}{% endif %}</td>
+                            target="_blank" rel="noopener noreferrer">{{ row.repo_name }}</a>{% endif %}{% if row.is_stale %} {% call tooltip::tooltip("Stale: not updated in 2+ years") %}{% endcall %}{% endif %}{% if row.is_empty %} <span class="repo-badge-empty">empty</span>{% endif %}</td>
                     <td>{{ row.visibility }}</td>
                     <td>{% if row.last_committer_url.is_empty() %}{{ row.last_committer_login }}{% if row.last_committer_unregistered %} {% call tooltip::warning("Unregistered or unknown GitHub user — this commit's author could not be matched to a GitHub account.") %}{% endcall %}{% endif %}{% else %}<a
                             href="{{ row.last_committer_url }}" target="_blank" rel="noopener noreferrer">{{
@@ -83,7 +83,7 @@
                 {% for row in group.rows %}
                 <tr{% if row.is_stale %} class="row-stale"{% endif %}>
                     <td>{% if row.repo_url.is_empty() %}{{ row.repo_name }}{% else %}<a href="{{ row.repo_url }}"
-                            target="_blank" rel="noopener noreferrer">{{ row.repo_name }}</a>{% endif %}{% if row.is_stale %} {% call tooltip::tooltip("Stale: not updated in 2+ years") %}{% endcall %}{% endif %}</td>
+                            target="_blank" rel="noopener noreferrer">{{ row.repo_name }}</a>{% endif %}{% if row.is_stale %} {% call tooltip::tooltip("Stale: not updated in 2+ years") %}{% endcall %}{% endif %}{% if row.is_empty %} <span class="repo-badge-empty">empty</span>{% endif %}</td>
                     <td>{{ row.visibility }}</td>
                     <td>{% if row.last_committer_url.is_empty() %}{{ row.last_committer_login }}{% if row.last_committer_unregistered %} {% call tooltip::warning("Unregistered or unknown GitHub user — this commit's author could not be matched to a GitHub account.") %}{% endcall %}{% endif %}{% else %}<a
                             href="{{ row.last_committer_url }}" target="_blank" rel="noopener noreferrer">{{

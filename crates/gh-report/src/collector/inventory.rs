@@ -120,6 +120,7 @@ pub async fn build_inventory_from_api(
             created_at: repo.created_at.clone(),
             description: repo.description.clone(),
             fork: repo.fork.unwrap_or(false),
+            is_empty: derive_is_empty(repo.size),
             html_url: repo.html_url.clone(),
             topics: repo.topics.clone().unwrap_or_default(),
             license_spdx: repo.license.as_ref().and_then(|l| l.spdx_id.clone()),
@@ -179,6 +180,13 @@ fn sort_repositories(repos: &mut [Repository]) {
     repos.sort();
 }
 
+/// Derive whether a repository is genuinely empty from its GitHub `size`
+/// field (disk size in KB). `size == 0` means no commits or content;
+/// absent size is conservatively treated as not-empty.
+fn derive_is_empty(size: Option<u64>) -> bool {
+    size.is_some_and(|size| size == 0)
+}
+
 /// Format a UTC timestamp as ISO 8601 without microseconds.
 fn format_utc(ts: Timestamp) -> String {
     ts.strftime("%Y-%m-%dT%H:%M:%S+00:00").to_string()
@@ -228,5 +236,12 @@ mod tests {
     fn sanitize_default_branch_preserves_normal() {
         assert_eq!(sanitize_default_branch("develop"), "develop");
         assert_eq!(sanitize_default_branch("release/v2"), "release/v2");
+    }
+
+    #[test]
+    fn derive_is_empty_flags_zero_size() {
+        assert!(derive_is_empty(Some(0)));
+        assert!(!derive_is_empty(Some(42)));
+        assert!(!derive_is_empty(None));
     }
 }

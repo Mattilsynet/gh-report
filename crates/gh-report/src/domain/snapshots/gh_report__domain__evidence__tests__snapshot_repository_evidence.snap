@@ -1,6 +1,5 @@
 ---
 source: crates/gh-report/src/domain/evidence.rs
-assertion_line: 146
 expression: evidence
 ---
 {
@@ -19,6 +18,7 @@ expression: evidence
     "created_at": null,
     "description": null,
     "fork": false,
+    "is_empty": false,
     "html_url": null,
     "topics": [],
     "license_spdx": null

@@ -22,6 +22,7 @@ expression: payload
       "created_at": null,
       "description": null,
       "fork": false,
+      "is_empty": false,
       "html_url": null,
       "topics": [],
       "license_spdx": null

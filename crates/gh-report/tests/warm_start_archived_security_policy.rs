@@ -227,6 +227,7 @@ fn evidence_for(
             created_at: None,
             description: None,
             fork: false,
+            is_empty: false,
             html_url: None,
             topics: vec![],
             license_spdx: None,

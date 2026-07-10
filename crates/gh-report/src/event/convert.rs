@@ -283,6 +283,7 @@ conversion_pair!(sr::Repository => Repository {
         created_at: ts_to_string_opt(r.created_at),
         description: r.description.map(|v| v.as_str().to_string()),
         fork: r.fork,
+        is_empty: false,
         html_url: r.html_url.map(|v| v.as_str().to_string()),
         topics: r.topics.iter().map(|t| t.as_str().to_string()).collect(),
         license_spdx: r.license_spdx.map(|v| v.as_str().to_string()),

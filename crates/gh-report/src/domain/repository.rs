@@ -14,6 +14,10 @@ use serde::{Deserialize, Serialize};
 /// excluded so that checkpoint and baseline deduplication are not
 /// affected by cosmetic changes to these fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent GitHub repository attribute (archived, has_issues, fork, is_empty), not a state-machine encoding"
+)]
 pub struct Repository {
     /// Numeric or node ID from GitHub API.
     pub id: String,
@@ -46,6 +50,9 @@ pub struct Repository {
     pub description: Option<String>,
     /// Whether this repository is a fork of another repository.
     pub fork: bool,
+    /// Whether the repository is genuinely empty on GitHub (size 0 KB, no
+    /// commits or branches). Derived from `size` at the collector boundary.
+    pub is_empty: bool,
     /// Browser URL for the repository (e.g., `https://github.com/org/repo`).
     pub html_url: Option<String>,
     /// Topic tags applied to the repository.
