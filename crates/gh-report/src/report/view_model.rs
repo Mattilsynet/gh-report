@@ -1900,7 +1900,11 @@ const WIDTH_CLASSES: [&str; 21] = [
 ///   metric were coerced to `0.0` instead of dropped, that one absent
 ///   control would zero the entire product regardless of how every other
 ///   control scores. Exclusion means "no observable population" does not
-///   punish controls that *are* observed.
+///   punish controls that *are* observed. None here denotes *no applicable
+///   population* only; a control that is applicable but could not be
+///   measured is floored to a real failure upstream at `RateMetric`
+///   construction, never surfaced as None (see UF2-5 clause 6, bd
+///   `adr-fmt-m1s6p`).
 /// - **A genuine `0.0` is floored to `0.1` before entering the product**,
 ///   for the same reason in reverse: an unfloored `0.0` in a product-based
 ///   mean collapses the whole score to zero, masking every passing control.
