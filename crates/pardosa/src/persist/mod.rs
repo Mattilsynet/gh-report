@@ -20,8 +20,11 @@ pub use checked::{CheckedEventStream, stream_checked};
 pub use error::{
     CheckedReplayKind, Error, RehydrateInvariant, UnpersistableKind, ValidatedReplayError,
 };
+#[cfg(test)]
+pub(crate) use rehydrate::persist_with_source;
 pub(crate) use rehydrate::{
-    persist_with_source, persist_with_source_append, rehydrate_unchecked, rehydrate_validated,
+    persist_with_source_append, persist_with_source_with_epoch, rehydrate_unchecked,
+    rehydrate_validated,
 };
 pub use validated::{ValidatedEventStream, stream_validated};
 #[cfg(test)]

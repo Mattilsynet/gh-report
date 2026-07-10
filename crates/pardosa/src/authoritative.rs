@@ -36,7 +36,7 @@ mod sealed {
 }
 pub(crate) enum BackendDispatch {
     Pgno(PgnoBackend),
-    JetStream(Box<jetstream::JetStreamBackendAdapter>),
+    JetStream(Box<jetstream::JetStreamBackendAdapter>, Option<Box<[u8]>>),
     #[cfg(any(test, feature = "test-support"))]
     #[allow(
         dead_code,
@@ -80,6 +80,7 @@ pub trait AuthoritativeBackend: sealed::Sealed {}
 /// contiguity checks are preserved.
 pub struct PgnoBackend {
     path: PathBuf,
+    adopter_epoch: Option<Box<[u8]>>,
 }
 impl PgnoBackend {
     /// Capture `path` as the substrate identifier for a future
@@ -91,10 +92,27 @@ impl PgnoBackend {
     /// surface at the `open_with_backend` site, not here.
     #[must_use]
     pub fn open(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            adopter_epoch: None,
+        }
+    }
+    /// Attach an opaque `adopter_epoch` token (PGN-0021 R8/R9).
+    ///
+    /// `None` (the default) reproduces exactly today's behavior:
+    /// no epoch is written on create, and no epoch gate runs on
+    /// open. Byte-for-byte opaque comparison only — pardosa never
+    /// interprets these bytes.
+    #[must_use]
+    pub fn with_adopter_epoch(mut self, epoch: &[u8]) -> Self {
+        self.adopter_epoch = Some(Box::from(epoch));
+        self
     }
     pub(crate) fn path(&self) -> &Path {
         &self.path
+    }
+    pub(crate) fn adopter_epoch(&self) -> Option<&[u8]> {
+        self.adopter_epoch.as_deref()
     }
 }
 impl sealed::Sealed for PgnoBackend {
@@ -120,6 +138,7 @@ impl AuthoritativeBackend for PgnoBackend {}
 /// No I/O at construction time: the wrapped handle is lazy-connect.
 pub struct JetStreamBackend {
     adapter: jetstream::JetStreamBackendAdapter,
+    adopter_epoch: Option<Box<[u8]>>,
 }
 impl JetStreamBackend {
     /// Wrap the supplied [`pardosa_nats::JetStreamHandle`]
@@ -136,10 +155,20 @@ impl JetStreamBackend {
     pub fn open(handle: pardosa_nats::JetStreamHandle) -> Self {
         Self {
             adapter: jetstream::JetStreamBackendAdapter::new(handle),
+            adopter_epoch: None,
         }
     }
-    pub(crate) fn into_adapter(self) -> jetstream::JetStreamBackendAdapter {
-        self.adapter
+    /// Attach an opaque `adopter_epoch` token (PGN-0021 R8/R9).
+    ///
+    /// `None` (the default) reproduces exactly today's behavior:
+    /// no epoch is written into the stream-description marker, and
+    /// no epoch gate runs on rehydrate. Byte-for-byte opaque
+    /// comparison only — pardosa never interprets these bytes.
+    /// Mirrors [`PgnoBackend::with_adopter_epoch`] at parity.
+    #[must_use]
+    pub fn with_adopter_epoch(mut self, epoch: &[u8]) -> Self {
+        self.adopter_epoch = Some(Box::from(epoch));
+        self
     }
 }
 impl sealed::Sealed for JetStreamBackend {
@@ -148,7 +177,7 @@ impl sealed::Sealed for JetStreamBackend {
         reason = "see sealed::Sealed declaration: trait is private, dispatch enum is pub(crate); admission stays in-crate"
     )]
     fn __admit_into_dispatch(self) -> BackendDispatch {
-        BackendDispatch::JetStream(Box::new(self.into_adapter()))
+        BackendDispatch::JetStream(Box::new(self.adapter), self.adopter_epoch)
     }
 }
 impl AuthoritativeBackend for JetStreamBackend {}
@@ -368,7 +397,7 @@ pub(crate) mod jetstream {
             reason = "see sealed::Sealed declaration: trait is private, dispatch enum is pub(crate); admission stays in-crate"
         )]
         fn __admit_into_dispatch(self) -> super::BackendDispatch {
-            super::BackendDispatch::JetStream(Box::new(self))
+            super::BackendDispatch::JetStream(Box::new(self), None)
         }
     }
     impl AuthoritativeBackend for JetStreamBackendAdapter {}

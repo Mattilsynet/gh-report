@@ -615,6 +615,40 @@ fn gate_stream_epoch(
     ))
 }
 
+/// Read the `adopter_epoch` header field back out of an existing
+/// `.pgno` file at `path`, without disturbing the caller's own
+/// rehydrate pass (PGN-0021 R5/R8). `None` on a container written
+/// without an epoch, matching [`pardosa_file::Reader::epoch`].
+fn read_pgno_epoch(path: &Path) -> Result<Option<Box<[u8]>>, PardosaError> {
+    let file = std::fs::File::open(path).map_err(|e| PardosaError::CursorRead {
+        source: Box::new(crate::persist::Error::Io(e)),
+    })?;
+    let reader = Reader::open(file).map_err(|e| PardosaError::CursorRead {
+        source: Box::new(crate::persist::Error::File(e)),
+    })?;
+    Ok(reader.epoch().map(Box::from))
+}
+
+/// `.pgno` sibling of [`gate_stream_epoch`] (PGN-0021 R8/R9): same
+/// byte-for-byte opaque comparison via
+/// `pardosa_file::format::epoch_bytes_eq`, evaluated against the
+/// header field read by [`read_pgno_epoch`] rather than the
+/// `JetStream` stream-description marker.
+fn gate_pgno_epoch(
+    stored_epoch: Option<&[u8]>,
+    expected_epoch: Option<&[u8]>,
+) -> Result<(), PardosaError> {
+    if pardosa_file::format::epoch_bytes_eq(stored_epoch, expected_epoch) {
+        return Ok(());
+    }
+    Err(persist_error_to_cursor_read(
+        crate::persist::Error::SemanticEpochMismatch {
+            expected: expected_epoch.map(Box::from),
+            found: stored_epoch.map(Box::from),
+        },
+    ))
+}
+
 fn gate_replay_schema_tag<T>(tag: Option<&str>) -> Result<(), PardosaError>
 where
     T: GenomeSafe,
@@ -758,6 +792,13 @@ where
     /// [`PardosaError::CursorJournalOpen`] on file create failure
     /// or on parent-directory `sync_data` failure.
     pub fn create(path: &Path) -> Result<Self, PardosaError> {
+        Self::create_with_epoch(path, None)
+    }
+    /// [`Self::create`] sibling threading an opaque `adopter_epoch`
+    /// token into the `.pgno` header (PGN-0021 R5/R8). `epoch =
+    /// None` is byte-identical to [`Self::create`]; `create_with_backend`
+    /// is the only in-crate caller of the `Some` arm.
+    fn create_with_epoch(path: &Path, epoch: Option<&[u8]>) -> Result<Self, PardosaError> {
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -771,7 +812,7 @@ where
         pardosa_file::fsync_parent_dir(parent).map_err(|e| PardosaError::CursorJournalOpen {
             source: Box::new(e),
         })?;
-        let inner = Dragline::new(file);
+        let inner = Dragline::new(file).with_adopter_epoch(epoch.map(Box::from));
         let schema_source = <T as crate::typed::HasEventSchemaSource>::EVENT_SCHEMA_SOURCE;
         Ok(Self {
             inner,
@@ -799,11 +840,15 @@ where
     /// seed sync, or `.pgno` rehydrate fails.
     pub fn create_with_backend<B: AuthoritativeBackend>(backend: B) -> Result<Self, PardosaError> {
         match admit_into_dispatch(backend) {
-            BackendDispatch::Pgno(p) => Self::create(p.path()),
-            BackendDispatch::JetStream(boxed_adapter) => {
+            BackendDispatch::Pgno(p) => Self::create_with_epoch(p.path(), p.adopter_epoch()),
+            BackendDispatch::JetStream(boxed_adapter, adopter_epoch) => {
                 let mut adapter = *boxed_adapter;
                 let marker = schema_tag::<T>();
-                let frames = fetch_gated_jetstream_frames::<T>(&mut adapter, &marker, None)?;
+                let frames = fetch_gated_jetstream_frames::<T>(
+                    &mut adapter,
+                    &marker,
+                    adopter_epoch.as_deref(),
+                )?;
                 let (dragline, synced_events) = rehydrate_jetstream_frames::<T>(&frames)?;
                 let scratch =
                     tempfile::tempfile().map_err(|e| PardosaError::CursorJournalOpen {
@@ -915,6 +960,8 @@ where
             BackendDispatch::Pgno(p) => {
                 let (file, dragline, recovered_prefix, manifest_already_synced, last_recovery) =
                     open_rw_seek_and_rehydrate_unchecked::<T>(p.path())?;
+                let stored_epoch = read_pgno_epoch(p.path())?;
+                gate_pgno_epoch(stored_epoch.as_deref(), p.adopter_epoch())?;
                 let inner = Dragline::from_backend_for_open(
                     dragline,
                     file,
@@ -929,10 +976,14 @@ where
                     last_recovery,
                 })
             }
-            BackendDispatch::JetStream(boxed_adapter) => {
+            BackendDispatch::JetStream(boxed_adapter, adopter_epoch) => {
                 let mut adapter = *boxed_adapter;
                 let marker = schema_tag::<T>();
-                let frames = fetch_gated_jetstream_frames::<T>(&mut adapter, &marker, None)?;
+                let frames = fetch_gated_jetstream_frames::<T>(
+                    &mut adapter,
+                    &marker,
+                    adopter_epoch.as_deref(),
+                )?;
                 let (dragline, synced_events) = rehydrate_jetstream_frames::<T>(&frames)?;
                 let scratch =
                     tempfile::tempfile().map_err(|e| PardosaError::CursorJournalOpen {
@@ -960,39 +1011,6 @@ where
                 )),
             }),
         }
-    }
-    /// Test seam for the `JetStream` `adopter_epoch` gate (PGN-0021
-    /// R7/R9): mirrors [`EventStore::open_with_backend`]'s
-    /// `JetStream` arm exactly, but threads `expected_epoch` into
-    /// [`fetch_gated_jetstream_frames`] so the gate is exercisable
-    /// before the public API gains an epoch parameter (deferred to
-    /// a follow-up sub-mission).
-    ///
-    /// # Errors
-    ///
-    /// [`PardosaError`] from the rehydrate pipeline, including
-    /// [`crate::persist::Error::SemanticEpochMismatch`] when the
-    /// stored and expected `adopter_epoch` disagree.
-    #[cfg(test)]
-    pub(crate) fn open_jetstream_with_epoch(
-        handle: pardosa_nats::JetStreamHandle,
-        expected_epoch: Option<&[u8]>,
-    ) -> Result<Self, PardosaError> {
-        let mut adapter = crate::authoritative::jetstream::JetStreamBackendAdapter::new(handle);
-        let marker = schema_tag::<T>();
-        let frames = fetch_gated_jetstream_frames::<T>(&mut adapter, &marker, expected_epoch)?;
-        let (dragline, synced_events) = rehydrate_jetstream_frames::<T>(&frames)?;
-        let scratch = tempfile::tempfile().map_err(|e| PardosaError::CursorJournalOpen {
-            source: Box::new(e),
-        })?;
-        let inner =
-            Dragline::from_backend_for_open_jetstream(dragline, scratch, adapter, synced_events);
-        Ok(Self {
-            inner,
-            journal: PathBuf::new(),
-            schema_source: None,
-            last_recovery: None,
-        })
     }
     /// Open an existing `.pgno` log at `path` and attach a durable
     /// [`FrontierPublisher`] (ADR-0018 §12 bullet 3;
