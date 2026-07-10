@@ -1771,7 +1771,7 @@ mod tests {
         let index = &pages["index.html"];
 
         assert!(index.contains("href=\"admin.html\""));
-        assert!(index.contains(r#"warning-badge">8</span>"#));
+        assert!(index.contains("Admin (8)"));
     }
 
     #[test]
@@ -1781,7 +1781,7 @@ mod tests {
         let index = &pages["index.html"];
 
         assert!(index.contains("href=\"admin.html\""));
-        assert!(!index.contains("warning-badge"));
+        assert!(!index.contains("Admin ("));
     }
 
     #[test]
@@ -2253,8 +2253,8 @@ mod tests {
             "canonical nav should show a deleted count"
         );
         assert!(
-            canonical.contains("warning-badge"),
-            "canonical nav should show the admin warning badge"
+            canonical.contains("Admin ("),
+            "canonical nav should show the admin technical-issues count"
         );
         assert!(
             canonical.contains(">Owners<"),

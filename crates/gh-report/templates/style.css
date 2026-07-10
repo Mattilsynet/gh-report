@@ -219,6 +219,12 @@ code {
    font-weight: 500;
 }
 
+/* Pushes this link and the ones after it (Deleted, Admin) to the right
+   edge of the flex nav, leaving the left group flush left. */
+.top-nav a.nav-right {
+   margin-left: auto;
+}
+
 .warning-badge {
    display: inline-block;
    min-width: 1.5em;
