@@ -1,14 +1,14 @@
 # PGN-0011. `FiberIndex` Routing Accelerator
 
 Date: 2026-06-08
-Last-reviewed: 2026-06-08
+Last-reviewed: 2026-07-10
 Tier: B
 Status: Accepted
 Crates: pardosa
 
 ## Related
 
-References: PGN-0001, PGN-0002, PGN-0008
+References: PGN-0001, PGN-0002, PGN-0008, PGN-0021
 
 ## Context
 
@@ -21,6 +21,12 @@ journal. `FiberIndex<K>` is publicly admitted under the `pardosa::store`
 façade (PGN-0008 R1), construction is opt-in via the reader side of the
 façade, and a journal opened without an index pays no per-event
 indexing cost. The substrate persists no part of `K`.
+
+Amendment 2026-07-10 (Opaque Semantic Fence, PGN-0021): R5 narrowed to
+carve out one opt-in exception unrelated to `FiberIndex<K>`'s own `K` — an
+adopter-supplied `adopter_epoch` gate token, persisted in gate metadata
+only, byte-compared at open, never interpreted or mixed into a schema
+hash. `FiberIndex<K>`'s causality key `K` is untouched; see PGN-0021.
 
 ## Decision
 
@@ -43,7 +49,11 @@ R4 [5]: Lookup returns `Empty` / `Unique(fiber)` / `Diverged(fibers)`;
   is forbidden.
 R5 [5]: `K` is application-owned and opaque to the substrate; the
   substrate never persists `K`, transmits `K` over a wire, mixes `K`
-  into any schema hash, or encodes `K` into `.pgno` bytes.
+  into any schema hash, or encodes `K` into `.pgno` bytes. Sole exception,
+  carved out by PGN-0021: an `adopter_epoch` gate token — distinct from
+  `K` — the substrate may persist in gate metadata only, byte-compared at
+  open, never interpreted or mixed into a schema hash; PGN-0021 R1 states
+  the boundary.
 R6 [5]: No writer method accepts an `expected_version`-shaped parameter
   under this ADR; any future primitive requires a follow-up ADR keyed on
   this identity contract and naming the partial-failure shape against a
