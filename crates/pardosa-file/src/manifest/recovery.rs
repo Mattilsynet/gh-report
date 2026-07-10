@@ -7,7 +7,7 @@ use crate::format::{
     FOOTER_MAGIC_OFFSET, FOOTER_MESSAGE_COUNT_OFFSET, FORMAT_VERSION as PGNO_FORMAT_VERSION,
     HEADER_FLAGS_OFFSET, HEADER_MAGIC_OFFSET, HEADER_PAGE_CLASS_OFFSET, HEADER_SCHEMA_HASH_LEN,
     HEADER_SCHEMA_HASH_OFFSET, HEADER_SCHEMA_SIZE_OFFSET, HEADER_VERSION_OFFSET, INDEX_ENTRY_SIZE,
-    MAGIC as PGNO_MAGIC,
+    MAGIC as PGNO_MAGIC, messages_offset,
 };
 use std::io::{Seek, SeekFrom};
 use xxhash_rust::xxh64::xxh64;
@@ -135,8 +135,8 @@ pub fn recover_footerless_prefix(
     manifest_bytes: &[u8],
 ) -> Result<RecoveredPrefix, RecoveryError> {
     let snap = parse_manifest(manifest_bytes).map_err(RecoveryError::Manifest)?;
-    let (schema_source, epoch_len) = validate_pgno_header_and_extract_schema(pgno_bytes, &snap)?;
-    let body_start = crate::format::messages_offset_with_epoch(snap.schema_size, epoch_len) as u64;
+    let schema_source = validate_pgno_header_and_extract_schema(pgno_bytes, &snap)?;
+    let body_start = messages_offset(snap.schema_size) as u64;
     let mut computed_frontier = super::GENESIS_FRONTIER;
     for (i, rec) in snap.records.iter().enumerate() {
         let i_u64 = i as u64;
@@ -189,7 +189,7 @@ pub fn recover_footerless_prefix(
 fn validate_pgno_header_and_extract_schema(
     pgno_bytes: &[u8],
     snap: &ManifestSnapshot,
-) -> Result<(Option<String>, Option<u32>), RecoveryError> {
+) -> Result<Option<String>, RecoveryError> {
     if pgno_bytes.len() < FILE_HEADER_SIZE {
         return Err(RecoveryError::DataEndExceedsFile {
             manifest_data_end: snap.data_end,
@@ -215,7 +215,7 @@ fn validate_pgno_header_and_extract_schema(
             .try_into()
             .expect("slice len 2"),
     );
-    if flags & !crate::format::HEADER_FLAGS_KNOWN_MASK != 0 {
+    if flags & !0b111 != 0 {
         return Err(RecoveryError::PgnoHeader(
             FileError::UnsupportedCompression((flags & 0b111) as u8),
         ));
@@ -255,57 +255,26 @@ fn validate_pgno_header_and_extract_schema(
             pgno_len: pgno_bytes.len() as u64,
         });
     }
-    let schema_source = extract_pgno_schema_source(pgno_bytes, snap)?;
-    let epoch_present = flags & crate::format::HEADER_EPOCH_PRESENT_FLAG != 0;
-    let epoch_len = extract_pgno_epoch_len(pgno_bytes, snap, epoch_present)?;
-    Ok((schema_source, epoch_len))
-}
-fn extract_pgno_schema_source(
-    pgno_bytes: &[u8],
-    snap: &ManifestSnapshot,
-) -> Result<Option<String>, RecoveryError> {
     if snap.schema_size == 0 {
-        return Ok(None);
+        Ok(None)
+    } else {
+        let start = FILE_HEADER_SIZE;
+        let size = snap.schema_size as usize;
+        let end = start
+            .checked_add(size)
+            .ok_or(RecoveryError::PgnoHeader(FileError::IndexOverflow))?;
+        if pgno_bytes.len() < end {
+            return Err(RecoveryError::DataEndExceedsFile {
+                manifest_data_end: snap.data_end,
+                pgno_len: pgno_bytes.len() as u64,
+            });
+        }
+        let raw = &pgno_bytes[start..end];
+        let s = std::str::from_utf8(raw)
+            .map_err(|_| RecoveryError::PgnoHeader(FileError::InvalidSchemaSource))?
+            .to_owned();
+        Ok(Some(s))
     }
-    let start = FILE_HEADER_SIZE;
-    let size = snap.schema_size as usize;
-    let end = start
-        .checked_add(size)
-        .ok_or(RecoveryError::PgnoHeader(FileError::IndexOverflow))?;
-    if pgno_bytes.len() < end {
-        return Err(RecoveryError::DataEndExceedsFile {
-            manifest_data_end: snap.data_end,
-            pgno_len: pgno_bytes.len() as u64,
-        });
-    }
-    let raw = &pgno_bytes[start..end];
-    let s = std::str::from_utf8(raw)
-        .map_err(|_| RecoveryError::PgnoHeader(FileError::InvalidSchemaSource))?
-        .to_owned();
-    Ok(Some(s))
-}
-fn extract_pgno_epoch_len(
-    pgno_bytes: &[u8],
-    snap: &ManifestSnapshot,
-    epoch_present: bool,
-) -> Result<Option<u32>, RecoveryError> {
-    if !epoch_present {
-        return Ok(None);
-    }
-    let epoch_len_offset = crate::format::epoch_region_offset(snap.schema_size);
-    let end = epoch_len_offset
-        .checked_add(crate::format::EPOCH_LEN_PREFIX_SIZE)
-        .ok_or(RecoveryError::Manifest(FileError::IndexOverflow))?;
-    if pgno_bytes.len() < end {
-        return Err(RecoveryError::DataEndExceedsFile {
-            manifest_data_end: snap.data_end,
-            pgno_len: pgno_bytes.len() as u64,
-        });
-    }
-    let len_bytes: [u8; 4] = pgno_bytes[epoch_len_offset..end]
-        .try_into()
-        .expect("slice len 4");
-    Ok(Some(u32::from_le_bytes(len_bytes)))
 }
 /// Write the index, footer, and footer checksum into `sink` at the
 /// recovered prefix's `data_end`, producing a

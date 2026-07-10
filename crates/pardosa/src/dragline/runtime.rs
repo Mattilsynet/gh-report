@@ -144,7 +144,6 @@ pub(crate) struct Dragline<T, W: Syncable + Seek> {
     mode: PublishMode,
     strategy: WriteStrategy,
     jetstream_synced_events: usize,
-    adopter_epoch: Option<Box<[u8]>>,
 }
 enum WriteStrategy {
     Direct,
@@ -199,18 +198,7 @@ where
             mode: PublishMode::NoPublisher,
             strategy: WriteStrategy::Direct,
             jetstream_synced_events: 0,
-            adopter_epoch: None,
         }
-    }
-    /// Attach an opaque `adopter_epoch` token (PGN-0021 R5/R8) to
-    /// be embedded in the `.pgno` header on the next
-    /// [`Self::sync_data_with_source`] call under
-    /// [`WriteStrategy::Direct`]. `None` (the default) is
-    /// byte-identical to omitting this call entirely.
-    #[must_use]
-    pub(crate) fn with_adopter_epoch(mut self, epoch: Option<Box<[u8]>>) -> Self {
-        self.adopter_epoch = epoch;
-        self
     }
     /// Construct a Dragline with an attached [`FrontierPublisher`]
     /// and a durable publish-watermark sidecar (ADR-0016 §§D5–D8).
@@ -249,7 +237,6 @@ where
             },
             strategy: WriteStrategy::Direct,
             jetstream_synced_events: 0,
-            adopter_epoch: None,
         })
     }
     /// Restart-without-publisher variant used by the
@@ -266,7 +253,6 @@ where
             mode: PublishMode::NoPublisher,
             strategy: WriteStrategy::Direct,
             jetstream_synced_events: 0,
-            adopter_epoch: None,
         }
     }
     pub(crate) fn from_backend_for_open(
@@ -295,7 +281,6 @@ where
                 manifest_header_synced: manifest_already_synced,
             },
             jetstream_synced_events: 0,
-            adopter_epoch: None,
         }
     }
     /// Open variant routing sync writes through the supplied
@@ -323,7 +308,6 @@ where
             mode: PublishMode::NoPublisher,
             strategy: WriteStrategy::JetStreamBacked(Box::new(adapter)),
             jetstream_synced_events: synced_events,
-            adopter_epoch: None,
         }
     }
     /// The most recently acked `Lsn`, or `None` if `sync_data` has not
@@ -464,12 +448,7 @@ where
         let lsn_value = match &mut self.strategy {
             WriteStrategy::Direct => {
                 self.sink.seek(SeekFrom::Start(0))?;
-                persist::persist_with_source_with_epoch(
-                    &self.line,
-                    &mut self.sink,
-                    schema_source,
-                    self.adopter_epoch.as_deref(),
-                )?;
+                persist::persist_with_source(&self.line, &mut self.sink, schema_source)?;
                 let pos = self.sink.stream_position()?;
                 <W as Syncable>::set_len(&mut self.sink, pos)?;
                 <W as Syncable>::sync_data(&mut self.sink)?;
@@ -671,27 +650,6 @@ mod tests {
         }
     }
     impl HasEventSchemaSource for P3aZeroSeedPayload {
-        const EVENT_SCHEMA_SOURCE: Option<&'static str> = None;
-    }
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    struct P3aForeignEnvelopePayload(u64);
-    impl pardosa_wire::sealed::Sealed for P3aForeignEnvelopePayload {}
-    impl EventSafe for P3aForeignEnvelopePayload {}
-    impl GenomeSafe for P3aForeignEnvelopePayload {
-        const SCHEMA_HASH: u128 = schema_hash_bytes(b"P3aForeignEnvelopePayload");
-        const SCHEMA_SOURCE: &'static str = "P3aForeignEnvelopePayload";
-    }
-    impl Encode for P3aForeignEnvelopePayload {
-        fn encode(&self, out: &mut Vec<u8>) {
-            self.0.encode(out);
-        }
-    }
-    impl Decode for P3aForeignEnvelopePayload {
-        fn decode(d: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-            u64::decode(d).map(Self)
-        }
-    }
-    impl HasEventSchemaSource for P3aForeignEnvelopePayload {
         const EVENT_SCHEMA_SOURCE: Option<&'static str> = None;
     }
     /// W2 truncation invariant (ADR-0010): a shorter rewrite of a
@@ -1200,260 +1158,5 @@ mod tests {
             "stored messages must equal folded event count after zero-message seed create"
         );
         rt.block_on(delete_stream(&server, &stream_name));
-    }
-
-    /// PGN-0021: shared harness for the OSF adopter-epoch gate live
-    /// tests below (R6 compound marker, R7 fail-closed mismatch, R8
-    /// backward-compat, R9 downgrade refusal).
-    mod osf_epoch_gate {
-        use super::{Event, P3aForeignEnvelopePayload, P3aZeroSeedPayload, PardosaError, persist};
-        use crate::authoritative::JetStreamBackend as PardosaJetStreamBackend;
-        use crate::store::EventStore;
-        use pardosa_nats::test_support::LiveNatsServer;
-        use pardosa_nats::{JetStreamBackend, JetStreamConfig, RuntimeHandle};
-        use std::sync::Arc;
-        use std::time::{SystemTime, UNIX_EPOCH};
-        use tokio::runtime::Runtime;
-        /// Build the public sealed [`PardosaJetStreamBackend`] handle
-        /// for [`EventStore::open_with_backend`], threading the test's
-        /// `Option<&[u8]>` epoch through
-        /// [`PardosaJetStreamBackend::with_adopter_epoch`] (PGN-0021
-        /// R8/R9). Promotes what was previously the `#[cfg(test)]`
-        /// `open_jetstream_with_epoch` seam onto the real public path.
-        fn jetstream_backend_with_epoch(
-            handle: pardosa_nats::JetStreamHandle,
-            epoch: Option<&[u8]>,
-        ) -> PardosaJetStreamBackend {
-            match epoch {
-                Some(bytes) => PardosaJetStreamBackend::open(handle).with_adopter_epoch(bytes),
-                None => PardosaJetStreamBackend::open(handle),
-            }
-        }
-        fn tag() -> String {
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos();
-            format!("{}_{}", std::process::id(), nanos)
-        }
-        fn config(name: &str, tag: &str, rt: &Runtime, server: &LiveNatsServer) -> JetStreamConfig {
-            JetStreamConfig::builder()
-                .stream_name(format!("{name}_{tag}"))
-                .subject(format!("osf.{name}.{tag}"))
-                .durable_consumer(format!("osf-{name}-{tag}"))
-                .runtime_handle(RuntimeHandle::from_tokio(rt.handle().clone()))
-                .nats_url(server.url().to_owned())
-                .build()
-                .expect("config valid")
-        }
-        async fn delete_stream(server: &LiveNatsServer, stream_name: &str) {
-            let Ok(client) = async_nats::connect(server.url()).await else {
-                return;
-            };
-            let js = async_nats::jetstream::new(client);
-            let _ = js.delete_stream(stream_name).await;
-        }
-
-        #[test]
-        #[ignore = "requires nats-server matching tools/.nats-server-version on PATH (mission osf-jetstream-marker)"]
-        fn none_epoch_reproduces_todays_marker_byte_for_byte_and_opens_unchanged() {
-            let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
-            let rt = Runtime::new().expect("tokio runtime");
-            let tag = tag();
-            let stream_name = format!("OSF_NONE_{tag}");
-            let handle = JetStreamBackend::open(config("OSF_NONE", &tag, &rt, &server));
-            let mut store = EventStore::<P3aZeroSeedPayload>::open_with_backend(
-                jetstream_backend_with_epoch(handle, None),
-            )
-            .expect("None-epoch create seeds today's plain envelope-hash marker");
-            let _ = store
-                .writer()
-                .begin(P3aZeroSeedPayload(0))
-                .expect("begin event");
-            let _ = store.writer().sync().expect("sync events");
-            let reopen_handle = JetStreamBackend::open(config("OSF_NONE", &tag, &rt, &server));
-            let marker = reopen_handle
-                .read_stream_description()
-                .expect("read marker");
-            assert_eq!(
-                marker.as_deref(),
-                Some(format!("{:032x}", Event::<P3aZeroSeedPayload>::ENVELOPE_HASH).as_str()),
-                "None epoch must reproduce today's plain envelope-hash marker byte-for-byte (R8)"
-            );
-            let reopen =
-                EventStore::<P3aZeroSeedPayload>::open_with_backend(jetstream_backend_with_epoch(
-                    JetStreamBackend::open(config("OSF_NONE", &tag, &rt, &server)),
-                    None,
-                ));
-            reopen.expect("populated stream with no epoch opens unchanged under None (R8)");
-            rt.block_on(delete_stream(&server, &stream_name));
-        }
-
-        #[test]
-        #[ignore = "requires nats-server matching tools/.nats-server-version on PATH (mission osf-jetstream-marker)"]
-        fn some_epoch_seeds_on_empty_stream_matches_on_reopen_mismatches_on_differing_epoch() {
-            let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
-            let rt = Runtime::new().expect("tokio runtime");
-            let tag = tag();
-            let stream_name = format!("OSF_SEED_{tag}");
-            let seed_handle = JetStreamBackend::open(config("OSF_SEED", &tag, &rt, &server));
-            let mut store = EventStore::<P3aZeroSeedPayload>::open_with_backend(
-                jetstream_backend_with_epoch(seed_handle, Some(b"16.0")),
-            )
-            .expect("Some(_) epoch seeds on empty stream (R8)");
-            let _ = store
-                .writer()
-                .begin(P3aZeroSeedPayload(0))
-                .expect("begin event");
-            let _ = store.writer().sync().expect("sync events");
-            let matching =
-                EventStore::<P3aZeroSeedPayload>::open_with_backend(jetstream_backend_with_epoch(
-                    JetStreamBackend::open(config("OSF_SEED", &tag, &rt, &server)),
-                    Some(b"16.0"),
-                ));
-            matching.expect("re-opening with the seeded epoch matches byte-for-byte");
-            let mismatching =
-                EventStore::<P3aZeroSeedPayload>::open_with_backend(jetstream_backend_with_epoch(
-                    JetStreamBackend::open(config("OSF_SEED", &tag, &rt, &server)),
-                    Some(b"15.0"),
-                ));
-            let Err(err) = mismatching else {
-                panic!("differing adopter_epoch must refuse before rehydrate (R7)")
-            };
-            match err {
-                PardosaError::CursorRead { source } => match *source {
-                    persist::Error::SemanticEpochMismatch { expected, found } => {
-                        assert_eq!(expected.as_deref(), Some(b"15.0".as_slice()));
-                        assert_eq!(found.as_deref(), Some(b"16.0".as_slice()));
-                    }
-                    other => panic!("expected SemanticEpochMismatch, got {other:?}"),
-                },
-                other => panic!("expected CursorRead, got {other:?}"),
-            }
-            rt.block_on(delete_stream(&server, &stream_name));
-        }
-
-        #[test]
-        #[ignore = "requires nats-server matching tools/.nats-server-version on PATH (mission osf-jetstream-marker)"]
-        fn none_and_present_empty_epoch_are_distinguished_on_open() {
-            let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
-            let rt = Runtime::new().expect("tokio runtime");
-            let tag = tag();
-            let stream_name = format!("OSF_EMPTY_{tag}");
-            let seed_handle = JetStreamBackend::open(config("OSF_EMPTY", &tag, &rt, &server));
-            let mut store = EventStore::<P3aZeroSeedPayload>::open_with_backend(
-                jetstream_backend_with_epoch(seed_handle, Some(&[])),
-            )
-            .expect("Some(&[]) is a legitimate present epoch value (R3)");
-            let _ = store
-                .writer()
-                .begin(P3aZeroSeedPayload(0))
-                .expect("begin event");
-            let _ = store.writer().sync().expect("sync events");
-            let reopen_present_empty =
-                EventStore::<P3aZeroSeedPayload>::open_with_backend(jetstream_backend_with_epoch(
-                    JetStreamBackend::open(config("OSF_EMPTY", &tag, &rt, &server)),
-                    Some(&[]),
-                ));
-            reopen_present_empty.expect("Some(&[]) stored vs Some(&[]) expected matches");
-            let reopen_none =
-                EventStore::<P3aZeroSeedPayload>::open_with_backend(jetstream_backend_with_epoch(
-                    JetStreamBackend::open(config("OSF_EMPTY", &tag, &rt, &server)),
-                    None,
-                ));
-            let Err(err) = reopen_none else {
-                panic!("Some(&[]) stored vs None expected must mismatch, not silently pass (R3/R4)")
-            };
-            match err {
-                PardosaError::CursorRead { source } => match *source {
-                    persist::Error::SemanticEpochMismatch { expected, found } => {
-                        assert_eq!(expected, None);
-                        assert_eq!(found.as_deref(), Some(b"".as_slice()));
-                    }
-                    other => panic!("expected SemanticEpochMismatch, got {other:?}"),
-                },
-                other => panic!("expected CursorRead, got {other:?}"),
-            }
-            rt.block_on(delete_stream(&server, &stream_name));
-        }
-
-        #[test]
-        #[ignore = "requires nats-server matching tools/.nats-server-version on PATH (mission osf-jetstream-marker)"]
-        fn downgrade_from_populated_epoch_to_none_is_refused() {
-            let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
-            let rt = Runtime::new().expect("tokio runtime");
-            let tag = tag();
-            let stream_name = format!("OSF_DOWNGRADE_{tag}");
-            let seed_handle = JetStreamBackend::open(config("OSF_DOWNGRADE", &tag, &rt, &server));
-            let mut store = EventStore::<P3aZeroSeedPayload>::open_with_backend(
-                jetstream_backend_with_epoch(seed_handle, Some(b"16.0")),
-            )
-            .expect("Some(_) epoch seeds on empty stream (R8)");
-            let _ = store
-                .writer()
-                .begin(P3aZeroSeedPayload(0))
-                .expect("begin event");
-            let _ = store.writer().sync().expect("sync events");
-            let downgrade =
-                EventStore::<P3aZeroSeedPayload>::open_with_backend(jetstream_backend_with_epoch(
-                    JetStreamBackend::open(config("OSF_DOWNGRADE", &tag, &rt, &server)),
-                    None,
-                ));
-            let Err(err) = downgrade else {
-                panic!("Some(_) -> None downgrade on a populated stream must be refused (R9)")
-            };
-            match err {
-                PardosaError::CursorRead { source } => match *source {
-                    persist::Error::SemanticEpochMismatch { expected, found } => {
-                        assert_eq!(expected, None);
-                        assert_eq!(found.as_deref(), Some(b"16.0".as_slice()));
-                    }
-                    other => panic!("expected SemanticEpochMismatch, got {other:?}"),
-                },
-                other => panic!("expected CursorRead, got {other:?}"),
-            }
-            rt.block_on(delete_stream(&server, &stream_name));
-        }
-
-        #[test]
-        #[ignore = "requires nats-server matching tools/.nats-server-version on PATH (mission osf-jetstream-marker)"]
-        fn structural_envelope_hash_gate_fires_first_and_independently_of_epoch_gate() {
-            let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
-            let rt = Runtime::new().expect("tokio runtime");
-            let tag = tag();
-            let stream_name = format!("OSF_STRUCT_{tag}");
-            let seed_handle = JetStreamBackend::open(config("OSF_STRUCT", &tag, &rt, &server));
-            let mut store = EventStore::<P3aZeroSeedPayload>::open_with_backend(
-                jetstream_backend_with_epoch(seed_handle, Some(b"16.0")),
-            )
-            .expect("Some(_) epoch seeds on empty stream (R8)");
-            let _ = store
-                .writer()
-                .begin(P3aZeroSeedPayload(0))
-                .expect("begin event");
-            let _ = store.writer().sync().expect("sync events");
-            let foreign = EventStore::<P3aForeignEnvelopePayload>::open_with_backend(
-                jetstream_backend_with_epoch(
-                    JetStreamBackend::open(config("OSF_STRUCT", &tag, &rt, &server)),
-                    Some(b"16.0"),
-                ),
-            );
-            let Err(err) = foreign else {
-                panic!("differing envelope hash must refuse before the epoch gate runs")
-            };
-            match err {
-                PardosaError::CursorRead { source } => match *source {
-                    persist::Error::SchemaHashMismatch { expected, found } => {
-                        assert_eq!(expected, Event::<P3aForeignEnvelopePayload>::ENVELOPE_HASH);
-                        assert_eq!(found, Event::<P3aZeroSeedPayload>::ENVELOPE_HASH);
-                    }
-                    other => panic!(
-                        "structural gate must fire first; expected SchemaHashMismatch, got {other:?}"
-                    ),
-                },
-                other => panic!("expected CursorRead, got {other:?}"),
-            }
-            rt.block_on(delete_stream(&server, &stream_name));
-        }
     }
 }

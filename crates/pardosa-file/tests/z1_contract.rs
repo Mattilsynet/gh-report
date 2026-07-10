@@ -10,9 +10,8 @@
 //! in `z1_no_feature_zstd.rs`.
 use pardosa_file::format::{
     FILE_FOOTER_SIZE, FILE_HEADER_SIZE, FOOTER_CHECKSUM_OFFSET, FOOTER_INDEX_OFFSET,
-    FOOTER_MAGIC_OFFSET, FOOTER_MESSAGE_COUNT_OFFSET, FORMAT_VERSION, HEADER_FLAGS_KNOWN_MASK,
-    HEADER_FLAGS_OFFSET, HEADER_MAGIC_OFFSET, HEADER_SCHEMA_SIZE_OFFSET, HEADER_VERSION_OFFSET,
-    MAGIC, messages_offset,
+    FOOTER_MAGIC_OFFSET, FOOTER_MESSAGE_COUNT_OFFSET, FORMAT_VERSION, HEADER_FLAGS_OFFSET,
+    HEADER_MAGIC_OFFSET, HEADER_SCHEMA_SIZE_OFFSET, HEADER_VERSION_OFFSET, MAGIC, messages_offset,
 };
 use pardosa_file::{FileError, Reader};
 use std::io::Cursor;
@@ -47,8 +46,7 @@ fn high_flag_bits_are_reserved_zero() {
     hdr[HEADER_MAGIC_OFFSET..HEADER_MAGIC_OFFSET + 4].copy_from_slice(&MAGIC);
     hdr[HEADER_VERSION_OFFSET..HEADER_VERSION_OFFSET + 2]
         .copy_from_slice(&FORMAT_VERSION.to_le_bytes());
-    hdr[HEADER_FLAGS_OFFSET..HEADER_FLAGS_OFFSET + 2]
-        .copy_from_slice(&(HEADER_FLAGS_KNOWN_MASK + 1).to_le_bytes());
+    hdr[HEADER_FLAGS_OFFSET..HEADER_FLAGS_OFFSET + 2].copy_from_slice(&8u16.to_le_bytes());
     hdr[HEADER_SCHEMA_SIZE_OFFSET..HEADER_SCHEMA_SIZE_OFFSET + 4].copy_from_slice(&[0u8; 4]);
     let mut foot = [0u8; FILE_FOOTER_SIZE];
     let idx_off = u64::try_from(messages_offset(0)).expect("messages_offset(0) fits u64");

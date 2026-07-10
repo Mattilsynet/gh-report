@@ -27,12 +27,6 @@ pub const INVENTORY_SCHEMA_VERSION: &str = "1.0";
 /// constant is the value authority — keep both in sync (COM-0027).
 pub const EVIDENCE_SCHEMA_VERSION: &str = "16.0";
 
-/// Schema-major component of [`EVIDENCE_SCHEMA_VERSION`], used to version
-/// `JetStream` stream identity (stream name, subject, durable consumer) so a
-/// schema bump provisions a fresh, coexisting stream rather than mutating an
-/// existing one in place.
-pub const EVIDENCE_SCHEMA_MAJOR: &str = "v16";
-
 /// Default page size for GitHub API list endpoints.
 pub const DEFAULT_PAGE_SIZE: u32 = 100;
 
@@ -174,7 +168,7 @@ pub const SWEEP_TIMEOUT_SECS: u64 = 7_200;
 
 #[cfg(test)]
 mod tests {
-    use super::{EVIDENCE_SCHEMA_MAJOR, EVIDENCE_SCHEMA_VERSION, USER_AGENT};
+    use super::USER_AGENT;
 
     #[test]
     fn gh_report_version_is_non_empty() {
@@ -184,11 +178,5 @@ mod tests {
     #[test]
     fn user_agent_interpolates_build_stamped_version() {
         assert_eq!(USER_AGENT, concat!("gh-report/", env!("GH_REPORT_VERSION")));
-    }
-
-    #[test]
-    fn evidence_schema_major_derives_from_schema_version() {
-        let expected = format!("v{}", EVIDENCE_SCHEMA_VERSION.split('.').next().unwrap());
-        assert_eq!(EVIDENCE_SCHEMA_MAJOR, expected);
     }
 }

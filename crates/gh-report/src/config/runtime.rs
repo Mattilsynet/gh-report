@@ -73,12 +73,11 @@ impl NatsStoreConfig {
             });
         }
         let token = org_token(org_name.as_bytes());
-        let major = config::EVIDENCE_SCHEMA_MAJOR;
         Ok(Self {
             nats_url: nats_url.into(),
-            stream_name: format!("gh-report-{token}-{major}"),
-            subject: format!("gh-report.{token}.{major}.events"),
-            durable_consumer: format!("gh-report-{token}-{major}"),
+            stream_name: format!("gh-report-{token}"),
+            subject: format!("gh-report.{token}.events"),
+            durable_consumer: format!("gh-report-{token}"),
             credentials_path: None,
         })
     }
@@ -258,9 +257,9 @@ mod tests {
         let dotted = NatsStoreConfig::for_org("a.b", DEFAULT_NATS_URL).unwrap();
         let dashed = NatsStoreConfig::for_org("a-b", DEFAULT_NATS_URL).unwrap();
 
-        assert_eq!(my_org.stream_name, "gh-report-org_6d79206f7267-v16");
-        assert_eq!(my_org.subject, "gh-report.org_6d79206f7267.v16.events");
-        assert_eq!(my_org.durable_consumer, "gh-report-org_6d79206f7267-v16");
+        assert_eq!(my_org.stream_name, "gh-report-org_6d79206f7267");
+        assert_eq!(my_org.subject, "gh-report.org_6d79206f7267.events");
+        assert_eq!(my_org.durable_consumer, "gh-report-org_6d79206f7267");
         assert_ne!(my_org.stream_name, my_dash_org.stream_name);
         assert_ne!(my_org.subject, my_dash_org.subject);
         assert_ne!(dotted.stream_name, dashed.stream_name);
@@ -275,9 +274,9 @@ mod tests {
         let repo = NatsStoreConfig::for_org("my org", DEFAULT_NATS_URL).unwrap();
         let org = repo.org_events();
 
-        assert_eq!(org.stream_name, "gh-report-org_6d79206f7267-v16-org");
-        assert_eq!(org.subject, "gh-report.org_6d79206f7267.v16.org.events");
-        assert_eq!(org.durable_consumer, "gh-report-org_6d79206f7267-v16-org");
+        assert_eq!(org.stream_name, "gh-report-org_6d79206f7267-org");
+        assert_eq!(org.subject, "gh-report.org_6d79206f7267.org.events");
+        assert_eq!(org.durable_consumer, "gh-report-org_6d79206f7267-org");
         assert_ne!(repo.stream_name, org.stream_name);
         assert_ne!(repo.subject, org.subject);
     }
@@ -317,7 +316,7 @@ mod tests {
         assert_eq!(cfg.nats_url, DEFAULT_NATS_URL);
         assert_eq!(
             cfg.nats_store_config().unwrap().stream_name,
-            "gh-report-org_6f7267-v16"
+            "gh-report-org_6f7267"
         );
         assert!(cfg.nats_store_config().unwrap().credentials_path.is_none());
     }

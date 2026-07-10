@@ -18,11 +18,11 @@
 use crate::config::PageClass;
 use crate::error::FileError;
 use crate::format::{
-    EPOCH_LEN_PREFIX_SIZE, FILE_FOOTER_SIZE, FILE_HEADER_SIZE, FOOTER_CHECKSUM_OFFSET,
-    FOOTER_INDEX_OFFSET, FOOTER_MAGIC_OFFSET, FOOTER_MESSAGE_COUNT_OFFSET, FORMAT_VERSION,
-    HEADER_EPOCH_PRESENT_FLAG, HEADER_FLAGS_OFFSET, HEADER_MAGIC_OFFSET, HEADER_PAGE_CLASS_OFFSET,
-    HEADER_SCHEMA_HASH_LEN, HEADER_SCHEMA_HASH_OFFSET, HEADER_SCHEMA_SIZE_OFFSET,
-    HEADER_VERSION_OFFSET, INDEX_ENTRY_SIZE, MAGIC, messages_offset_with_epoch, pad_to_8,
+    FILE_FOOTER_SIZE, FILE_HEADER_SIZE, FOOTER_CHECKSUM_OFFSET, FOOTER_INDEX_OFFSET,
+    FOOTER_MAGIC_OFFSET, FOOTER_MESSAGE_COUNT_OFFSET, FORMAT_VERSION, HEADER_FLAGS_OFFSET,
+    HEADER_MAGIC_OFFSET, HEADER_PAGE_CLASS_OFFSET, HEADER_SCHEMA_HASH_LEN,
+    HEADER_SCHEMA_HASH_OFFSET, HEADER_SCHEMA_SIZE_OFFSET, HEADER_VERSION_OFFSET, INDEX_ENTRY_SIZE,
+    MAGIC, messages_offset, pad_to_8,
 };
 use crate::options::{Compression, WriterOptions};
 use crate::syncable::Syncable;
@@ -50,7 +50,6 @@ pub struct Writer<'w, W: Syncable> {
     schema_hash: u128,
     page_class: u8,
     schema_source: Option<&'w str>,
-    epoch: Option<&'w [u8]>,
     cursor: u64,
     header_written: bool,
     index: Vec<IndexEntry>,
@@ -70,7 +69,6 @@ impl<'w, W: Syncable> Writer<'w, W> {
             schema_hash,
             page_class: 0,
             schema_source: None,
-            epoch: None,
             cursor: 0,
             header_written: false,
             index: Vec::new(),
@@ -107,18 +105,6 @@ impl<'w, W: Syncable> Writer<'w, W> {
     #[must_use]
     pub fn with_schema_source(mut self, schema_source: &'w str) -> Self {
         self.schema_source = Some(schema_source);
-        self
-    }
-    /// Set the opaque `adopter_epoch` token (PGN-0021).
-    ///
-    /// `Some(&[])` (present, zero-length) is on-disk distinct from
-    /// `None` (absent) — the presence bit in header `flags` carries
-    /// the discriminant, never the length (PGN-0021 R3). pardosa
-    /// never interprets these bytes; they are stored and later
-    /// byte-compared only.
-    #[must_use]
-    pub fn with_epoch(mut self, epoch: &'w [u8]) -> Self {
-        self.epoch = Some(epoch);
         self
     }
     /// Append a single message body and its xxh64 checksum to the file, updating the
@@ -220,22 +206,15 @@ impl<'w, W: Syncable> Writer<'w, W> {
     fn write_header(&mut self) -> Result<(), FileError> {
         let schema_bytes: &[u8] = self.schema_source.map_or(&[], str::as_bytes);
         let schema_size = u32::try_from(schema_bytes.len()).map_err(|_| FileError::InvalidIndex)?;
-        let epoch_len = match self.epoch {
-            Some(bytes) => Some(u32::try_from(bytes.len()).map_err(|_| FileError::InvalidIndex)?),
-            None => None,
-        };
         let mut buf = [0u8; FILE_HEADER_SIZE];
         buf[HEADER_MAGIC_OFFSET..HEADER_MAGIC_OFFSET + 4].copy_from_slice(&MAGIC);
         buf[HEADER_VERSION_OFFSET..HEADER_VERSION_OFFSET + 2]
             .copy_from_slice(&FORMAT_VERSION.to_le_bytes());
-        let mut flags: u16 = match self.options.compression {
+        let flags: u16 = match self.options.compression {
             Compression::None => 0,
             #[cfg(feature = "zstd")]
             Compression::Zstd9 | Compression::Zstd19 => u16::from(crate::format::ALGO_ZSTD),
         };
-        if self.epoch.is_some() {
-            flags |= HEADER_EPOCH_PRESENT_FLAG;
-        }
         buf[HEADER_FLAGS_OFFSET..HEADER_FLAGS_OFFSET + 2].copy_from_slice(&flags.to_le_bytes());
         buf[HEADER_SCHEMA_HASH_OFFSET..HEADER_SCHEMA_HASH_OFFSET + HEADER_SCHEMA_HASH_LEN]
             .copy_from_slice(&self.schema_hash.to_le_bytes());
@@ -251,20 +230,7 @@ impl<'w, W: Syncable> Writer<'w, W> {
                 self.sink.write_all(&zeros[..pad_len]).map_err(io_to_file)?;
             }
         }
-        if let Some(bytes) = self.epoch {
-            let len_prefix = u32::try_from(bytes.len())
-                .map_err(|_| FileError::InvalidIndex)?
-                .to_le_bytes();
-            self.sink.write_all(&len_prefix).map_err(io_to_file)?;
-            self.sink.write_all(bytes).map_err(io_to_file)?;
-            let written = EPOCH_LEN_PREFIX_SIZE + bytes.len();
-            let pad_len = pad_to_8(written) - written;
-            if pad_len > 0 {
-                let zeros = [0u8; 7];
-                self.sink.write_all(&zeros[..pad_len]).map_err(io_to_file)?;
-            }
-        }
-        self.cursor = messages_offset_with_epoch(schema_size, epoch_len) as u64;
+        self.cursor = messages_offset(schema_size) as u64;
         self.header_written = true;
         Ok(())
     }

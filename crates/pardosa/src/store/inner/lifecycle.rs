@@ -40,11 +40,8 @@ fn clean_recovered_prefix(path: &Path) -> Result<(RecoveredPrefix, bool), crate:
             checksum: entry.checksum(),
         })
         .collect();
-    let epoch_len = reader
-        .epoch()
-        .map(|e| u32::try_from(e.len()).unwrap_or(u32::MAX));
     let data_end = records.iter().try_fold(
-        pardosa_file::format::messages_offset_with_epoch(reader.schema_size(), epoch_len) as u64,
+        pardosa_file::format::messages_offset(reader.schema_size()) as u64,
         |_, record| {
             record
                 .offset
@@ -438,25 +435,19 @@ fn fetch_jetstream_frames(
 
 fn fetch_gated_jetstream_frames<T>(
     adapter: &mut crate::authoritative::jetstream::JetStreamBackendAdapter,
-    envelope_hash_hex: &str,
-    expected_epoch: Option<&[u8]>,
+    expected_marker: &str,
 ) -> Result<Vec<JetStreamDurableFrame>, PardosaError>
 where
     T: GenomeSafe,
 {
+    adapter
+        .set_schema_tag(expected_marker.to_owned())
+        .map_err(io_error_to_cursor_read)?;
     let frames = fetch_jetstream_frames(adapter)?;
-    let mut marker = adapter
+    let marker = adapter
         .read_stream_description()
         .map_err(|e| backend_error_to_cursor_read("JetStream stream marker read failed", e))?;
-    if marker.is_none() {
-        adapter
-            .set_schema_tag(envelope_hash_hex.to_owned(), expected_epoch)
-            .map_err(io_error_to_cursor_read)?;
-        marker = adapter
-            .read_stream_description()
-            .map_err(|e| backend_error_to_cursor_read("JetStream stream marker seed failed", e))?;
-    }
-    gate_stream_marker::<T>(marker.as_deref(), frames.is_empty(), expected_epoch)?;
+    gate_stream_marker::<T>(marker.as_deref(), frames.is_empty())?;
     Ok(frames)
 }
 
@@ -546,11 +537,7 @@ fn schema_marker_mismatch(expected: u128, found: u128) -> PardosaError {
     persist_error_to_cursor_read(crate::persist::Error::SchemaHashMismatch { expected, found })
 }
 
-fn gate_stream_marker<T>(
-    marker: Option<&str>,
-    stream_is_empty: bool,
-    expected_epoch: Option<&[u8]>,
-) -> Result<(), PardosaError>
+fn gate_stream_marker<T>(marker: Option<&str>, stream_is_empty: bool) -> Result<(), PardosaError>
 where
     T: GenomeSafe,
 {
@@ -571,85 +558,11 @@ where
             ))
         };
     };
-    let (envelope_part, epoch_hex) = crate::authoritative::jetstream::split_stream_marker(marker);
-    let found = parse_schema_tag(envelope_part).unwrap_or_else(|| mismatch_sentinel(expected));
-    if found != expected {
-        return Err(schema_marker_mismatch(expected, found));
-    }
-    gate_stream_epoch(epoch_hex, expected_epoch)
-}
-
-/// PGN-0021 R7/R9: the semantic `adopter_epoch` gate, evaluated
-/// only after [`gate_stream_marker`]'s structural envelope-hash
-/// check has already passed (R2). Byte-for-byte comparison, same
-/// semantics as `pardosa_file::format::epoch_bytes_eq` (R4): `None`
-/// compares unequal to every `Some(_)` including `Some(&[])`; two
-/// `Some(_)` values compare equal only on exact byte identity.
-fn gate_stream_epoch(
-    stored_epoch_hex: Option<&str>,
-    expected_epoch: Option<&[u8]>,
-) -> Result<(), PardosaError> {
-    let expected_epoch_boxed: Option<Box<[u8]>> = expected_epoch.map(Box::from);
-    let stored_epoch: Option<Box<[u8]>> = match stored_epoch_hex {
-        None => None,
-        Some(hex) => match crate::authoritative::jetstream::decode_hex_epoch(hex) {
-            Some(bytes) => Some(bytes),
-            None => {
-                return Err(persist_error_to_cursor_read(
-                    crate::persist::Error::SemanticEpochMismatch {
-                        expected: expected_epoch_boxed,
-                        found: None,
-                    },
-                ));
-            }
-        },
-    };
-    if pardosa_file::format::epoch_bytes_eq(
-        stored_epoch.as_deref(),
-        expected_epoch_boxed.as_deref(),
-    ) {
+    let found = parse_schema_tag(marker).unwrap_or_else(|| mismatch_sentinel(expected));
+    if found == expected {
         return Ok(());
     }
-    Err(persist_error_to_cursor_read(
-        crate::persist::Error::SemanticEpochMismatch {
-            expected: expected_epoch_boxed,
-            found: stored_epoch,
-        },
-    ))
-}
-
-/// Read the `adopter_epoch` header field back out of an existing
-/// `.pgno` file at `path`, without disturbing the caller's own
-/// rehydrate pass (PGN-0021 R5/R8). `None` on a container written
-/// without an epoch, matching [`pardosa_file::Reader::epoch`].
-fn read_pgno_epoch(path: &Path) -> Result<Option<Box<[u8]>>, PardosaError> {
-    let file = std::fs::File::open(path).map_err(|e| PardosaError::CursorRead {
-        source: Box::new(crate::persist::Error::Io(e)),
-    })?;
-    let reader = Reader::open(file).map_err(|e| PardosaError::CursorRead {
-        source: Box::new(crate::persist::Error::File(e)),
-    })?;
-    Ok(reader.epoch().map(Box::from))
-}
-
-/// `.pgno` sibling of [`gate_stream_epoch`] (PGN-0021 R8/R9): same
-/// byte-for-byte opaque comparison via
-/// `pardosa_file::format::epoch_bytes_eq`, evaluated against the
-/// header field read by [`read_pgno_epoch`] rather than the
-/// `JetStream` stream-description marker.
-fn gate_pgno_epoch(
-    stored_epoch: Option<&[u8]>,
-    expected_epoch: Option<&[u8]>,
-) -> Result<(), PardosaError> {
-    if pardosa_file::format::epoch_bytes_eq(stored_epoch, expected_epoch) {
-        return Ok(());
-    }
-    Err(persist_error_to_cursor_read(
-        crate::persist::Error::SemanticEpochMismatch {
-            expected: expected_epoch.map(Box::from),
-            found: stored_epoch.map(Box::from),
-        },
-    ))
+    Err(schema_marker_mismatch(expected, found))
 }
 
 fn gate_replay_schema_tag<T>(tag: Option<&str>) -> Result<(), PardosaError>
@@ -795,13 +708,6 @@ where
     /// [`PardosaError::CursorJournalOpen`] on file create failure
     /// or on parent-directory `sync_data` failure.
     pub fn create(path: &Path) -> Result<Self, PardosaError> {
-        Self::create_with_epoch(path, None)
-    }
-    /// [`Self::create`] sibling threading an opaque `adopter_epoch`
-    /// token into the `.pgno` header (PGN-0021 R5/R8). `epoch =
-    /// None` is byte-identical to [`Self::create`]; `create_with_backend`
-    /// is the only in-crate caller of the `Some` arm.
-    fn create_with_epoch(path: &Path, epoch: Option<&[u8]>) -> Result<Self, PardosaError> {
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -815,7 +721,7 @@ where
         pardosa_file::fsync_parent_dir(parent).map_err(|e| PardosaError::CursorJournalOpen {
             source: Box::new(e),
         })?;
-        let inner = Dragline::new(file).with_adopter_epoch(epoch.map(Box::from));
+        let inner = Dragline::new(file);
         let schema_source = <T as crate::typed::HasEventSchemaSource>::EVENT_SCHEMA_SOURCE;
         Ok(Self {
             inner,
@@ -843,15 +749,11 @@ where
     /// seed sync, or `.pgno` rehydrate fails.
     pub fn create_with_backend<B: AuthoritativeBackend>(backend: B) -> Result<Self, PardosaError> {
         match admit_into_dispatch(backend) {
-            BackendDispatch::Pgno(p) => Self::create_with_epoch(p.path(), p.adopter_epoch()),
-            BackendDispatch::JetStream(boxed_adapter, adopter_epoch) => {
+            BackendDispatch::Pgno(p) => Self::create(p.path()),
+            BackendDispatch::JetStream(boxed_adapter) => {
                 let mut adapter = *boxed_adapter;
                 let marker = schema_tag::<T>();
-                let frames = fetch_gated_jetstream_frames::<T>(
-                    &mut adapter,
-                    &marker,
-                    adopter_epoch.as_deref(),
-                )?;
+                let frames = fetch_gated_jetstream_frames::<T>(&mut adapter, &marker)?;
                 let (dragline, synced_events) = rehydrate_jetstream_frames::<T>(&frames)?;
                 let scratch =
                     tempfile::tempfile().map_err(|e| PardosaError::CursorJournalOpen {
@@ -963,8 +865,6 @@ where
             BackendDispatch::Pgno(p) => {
                 let (file, dragline, recovered_prefix, manifest_already_synced, last_recovery) =
                     open_rw_seek_and_rehydrate_unchecked::<T>(p.path())?;
-                let stored_epoch = read_pgno_epoch(p.path())?;
-                gate_pgno_epoch(stored_epoch.as_deref(), p.adopter_epoch())?;
                 let inner = Dragline::from_backend_for_open(
                     dragline,
                     file,
@@ -979,14 +879,10 @@ where
                     last_recovery,
                 })
             }
-            BackendDispatch::JetStream(boxed_adapter, adopter_epoch) => {
+            BackendDispatch::JetStream(boxed_adapter) => {
                 let mut adapter = *boxed_adapter;
                 let marker = schema_tag::<T>();
-                let frames = fetch_gated_jetstream_frames::<T>(
-                    &mut adapter,
-                    &marker,
-                    adopter_epoch.as_deref(),
-                )?;
+                let frames = fetch_gated_jetstream_frames::<T>(&mut adapter, &marker)?;
                 let (dragline, synced_events) = rehydrate_jetstream_frames::<T>(&frames)?;
                 let scratch =
                     tempfile::tempfile().map_err(|e| PardosaError::CursorJournalOpen {
@@ -1377,18 +1273,15 @@ mod tests {
     #[test]
     fn gate_stream_marker_allows_present_matching_marker() {
         let marker = schema_tag::<TaggedPayload>();
-        gate_stream_marker::<TaggedPayload>(Some(&marker), false, None)
+        gate_stream_marker::<TaggedPayload>(Some(&marker), false)
             .expect("matching stream marker admits populated stream");
     }
 
     #[test]
     fn gate_stream_marker_rejects_present_differing_marker() {
-        let err = gate_stream_marker::<TaggedPayload>(
-            Some("fedcba9876543210fedcba9876543210"),
-            false,
-            None,
-        )
-        .expect_err("foreign stream marker must refuse before rehydrate");
+        let err =
+            gate_stream_marker::<TaggedPayload>(Some("fedcba9876543210fedcba9876543210"), false)
+                .expect_err("foreign stream marker must refuse before rehydrate");
         match err {
             PardosaError::CursorRead { source } => match *source {
                 crate::persist::Error::SchemaHashMismatch { expected, found } => {
@@ -1403,8 +1296,7 @@ mod tests {
 
     #[test]
     fn gate_stream_marker_allows_absent_empty_stream() {
-        let (result, logs) =
-            capture_tracing(|| gate_stream_marker::<TaggedPayload>(None, true, None));
+        let (result, logs) = capture_tracing(|| gate_stream_marker::<TaggedPayload>(None, true));
         result.expect("markerless empty stream remains admissible");
         assert!(
             !logs.contains("schema_marker_absent_populated_stream"),
@@ -1415,7 +1307,7 @@ mod tests {
     #[test]
     fn gate_stream_marker_rejects_absent_populated_stream() {
         let (err, logs) = capture_tracing(|| {
-            gate_stream_marker::<TaggedPayload>(None, false, None)
+            gate_stream_marker::<TaggedPayload>(None, false)
                 .expect_err("markerless populated stream must refuse")
         });
         assert_schema_marker_absent(err);
@@ -1431,94 +1323,6 @@ mod tests {
             logs.contains("OPERATIONS.md"),
             "warn must point operators to the runbook: {logs}"
         );
-    }
-
-    fn compound_marker(epoch: Option<&[u8]>) -> String {
-        let envelope_hex = schema_tag::<TaggedPayload>();
-        crate::authoritative::jetstream::compose_stream_marker(&envelope_hex, epoch)
-    }
-
-    #[test]
-    fn gate_stream_marker_allows_matching_epoch_on_populated_stream() {
-        let marker = compound_marker(Some(b"16.0"));
-        gate_stream_marker::<TaggedPayload>(Some(&marker), false, Some(b"16.0"))
-            .expect("matching adopter_epoch admits populated stream");
-    }
-
-    #[test]
-    fn gate_stream_marker_rejects_differing_epoch_on_populated_stream() {
-        let marker = compound_marker(Some(b"16.0"));
-        let err = gate_stream_marker::<TaggedPayload>(Some(&marker), false, Some(b"15.0"))
-            .expect_err("differing adopter_epoch must refuse before rehydrate");
-        match err {
-            PardosaError::CursorRead { source } => match *source {
-                crate::persist::Error::SemanticEpochMismatch { expected, found } => {
-                    assert_eq!(expected.as_deref(), Some(b"15.0".as_slice()));
-                    assert_eq!(found.as_deref(), Some(b"16.0".as_slice()));
-                }
-                other => panic!("expected SemanticEpochMismatch, got {other:?}"),
-            },
-            other => panic!("expected CursorRead, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn gate_stream_marker_distinguishes_none_from_present_empty_epoch() {
-        let none_marker = compound_marker(None);
-        gate_stream_marker::<TaggedPayload>(Some(&none_marker), false, Some(&[]))
-            .expect_err("None stored vs Some(&[]) expected must mismatch (PGN-0021 R3/R4)");
-        let empty_marker = compound_marker(Some(&[]));
-        gate_stream_marker::<TaggedPayload>(Some(&empty_marker), false, None)
-            .expect_err("Some(&[]) stored vs None expected must mismatch (PGN-0021 R3/R4)");
-        gate_stream_marker::<TaggedPayload>(Some(&empty_marker), false, Some(&[]))
-            .expect("Some(&[]) stored vs Some(&[]) expected matches byte-for-byte");
-    }
-
-    #[test]
-    fn gate_stream_marker_refuses_downgrade_from_populated_epoch_to_none() {
-        let marker = compound_marker(Some(b"16.0"));
-        let err = gate_stream_marker::<TaggedPayload>(Some(&marker), false, None).expect_err(
-            "Some(_) stored vs None expected on populated stream is a refused downgrade (R9)",
-        );
-        match err {
-            PardosaError::CursorRead { source } => match *source {
-                crate::persist::Error::SemanticEpochMismatch { expected, found } => {
-                    assert_eq!(expected, None);
-                    assert_eq!(found.as_deref(), Some(b"16.0".as_slice()));
-                }
-                other => panic!("expected SemanticEpochMismatch, got {other:?}"),
-            },
-            other => panic!("expected CursorRead, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn gate_stream_marker_never_fires_epoch_check_when_both_none() {
-        let marker = compound_marker(None);
-        gate_stream_marker::<TaggedPayload>(Some(&marker), false, None)
-            .expect("None stored vs None expected never mismatches (R9)");
-    }
-
-    #[test]
-    fn gate_stream_marker_structural_mismatch_wins_over_epoch_mismatch() {
-        let err = gate_stream_marker::<TaggedPayload>(
-            Some("fedcba9876543210fedcba9876543210:e:31362e30"),
-            false,
-            Some(b"15.0"),
-        )
-        .expect_err("structural gate must fire first and independently of the epoch gate");
-        match err {
-            PardosaError::CursorRead { source } => match *source {
-                crate::persist::Error::SchemaHashMismatch { expected, found } => {
-                    assert_eq!(expected, Event::<TaggedPayload>::ENVELOPE_HASH);
-                    assert_eq!(found, 0xfedc_ba98_7654_3210_fedc_ba98_7654_3210);
-                }
-                other => panic!(
-                    "structural (envelope-hash) gate must win; expected SchemaHashMismatch, got {other:?}"
-                ),
-            },
-            other => panic!("expected CursorRead, got {other:?}"),
-        }
     }
 
     #[test]

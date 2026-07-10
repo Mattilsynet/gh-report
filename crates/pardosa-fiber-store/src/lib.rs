@@ -81,23 +81,6 @@ where
         Ok(Self::from_store(store, false, None))
     }
 
-    /// [`Self::create_pgno`] sibling threading an opaque
-    /// `adopter_epoch` token into the `.pgno` header (PGN-0021,
-    /// OSF phase 3). The epoch is written on create and gated on
-    /// every subsequent [`Self::open_pgno_with_epoch`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FiberStoreError::Infrastructure`] when pardosa cannot create
-    /// the backing container.
-    pub fn create_pgno_with_epoch(path: &Path, epoch: &[u8]) -> Result<Self, FiberStoreError> {
-        let store = PardosaStore::<E>::create_with_backend(
-            PgnoBackend::open(path).with_adopter_epoch(epoch),
-        )
-        .map_err(classify_infrastructure_error)?;
-        Ok(Self::from_store(store, false, None))
-    }
-
     /// Create a fresh JetStream-backed store.
     ///
     /// # Errors
@@ -130,25 +113,6 @@ where
     pub fn open_pgno(path: &Path) -> Result<Self, FiberStoreError> {
         let store = PardosaStore::<E>::open_with_backend(PgnoBackend::open(path))
             .map_err(classify_infrastructure_error)?;
-        let last_recovery = store.last_recovery().cloned();
-        Ok(Self::from_store(store, false, last_recovery))
-    }
-
-    /// [`Self::open_pgno`] sibling threading an opaque
-    /// `adopter_epoch` token (PGN-0021, OSF phase 3): the stored
-    /// header epoch is gated byte-for-byte against `epoch`, failing
-    /// closed with `pardosa::PardosaError` wrapping
-    /// `SemanticEpochMismatch` on any mismatch (including a store
-    /// that was written without an epoch at all).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FiberStoreError::Infrastructure`] when pardosa cannot open,
-    /// gate, or fold the backing container.
-    pub fn open_pgno_with_epoch(path: &Path, epoch: &[u8]) -> Result<Self, FiberStoreError> {
-        let store =
-            PardosaStore::<E>::open_with_backend(PgnoBackend::open(path).with_adopter_epoch(epoch))
-                .map_err(classify_infrastructure_error)?;
         let last_recovery = store.last_recovery().cloned();
         Ok(Self::from_store(store, false, last_recovery))
     }

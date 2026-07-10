@@ -85,17 +85,6 @@ pub enum Error {
     SchemaHashMismatch { expected: u128, found: u128 },
     #[error("schema marker absent on populated stream: expected 0x{expected:032X}")]
     SchemaMarkerAbsent { expected: u128 },
-    /// PGN-0021 R7/R9: adopter-supplied opaque epoch token disagrees
-    /// between the stored marker and the caller-supplied expectation,
-    /// raised fail-closed at open before any frame decode, parity
-    /// with [`Error::SchemaHashMismatch`]. Fires whenever presence
-    /// (`Some` vs `None`) or, when both are `Some`, byte content
-    /// disagrees; never fires when both are `None` (PGN-0021 R9).
-    #[error("semantic epoch mismatch: expected {expected:?}, found {found:?}")]
-    SemanticEpochMismatch {
-        expected: Option<Box<[u8]>>,
-        found: Option<Box<[u8]>>,
-    },
     /// Carries the operation-scoped `RehydrateInvariant` (F2 / ADR-0014):
     /// this variant deliberately does **not** wrap [`PardosaError`], so
     /// `PardosaError::CursorRead → persist::Error::InvariantViolation`
@@ -168,7 +157,6 @@ impl Error {
             ) => true,
             Self::SchemaHashMismatch { .. }
             | Self::SchemaMarkerAbsent { .. }
-            | Self::SemanticEpochMismatch { .. }
             | Self::InvariantViolation(_)
             | Self::Decode(_)
             | Self::Io(_)
@@ -264,33 +252,4 @@ pub enum ValidatedReplayError<E> {
     Envelope(#[source] crate::event::EnvelopeError),
     #[error("payload validation failed: {0}")]
     Payload(#[source] E),
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn semantic_epoch_mismatch_display_carries_both_fields() {
-        let err = Error::SemanticEpochMismatch {
-            expected: Some(Box::from(*b"16.0")),
-            found: Some(Box::from(*b"15.0")),
-        };
-        let rendered = err.to_string();
-        assert!(rendered.contains("semantic epoch mismatch"));
-        assert!(rendered.contains("[49, 54, 46, 48]"));
-        assert!(rendered.contains("[49, 53, 46, 48]"));
-        let debugged = format!("{err:?}");
-        assert!(debugged.contains("SemanticEpochMismatch"));
-    }
-    #[test]
-    fn semantic_epoch_mismatch_none_vs_some_differ() {
-        let none_err = Error::SemanticEpochMismatch {
-            expected: None,
-            found: None,
-        };
-        let some_err = Error::SemanticEpochMismatch {
-            expected: None,
-            found: Some(Box::from(*b"")),
-        };
-        assert_ne!(none_err.to_string(), some_err.to_string());
-    }
 }

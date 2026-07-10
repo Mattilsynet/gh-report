@@ -1,5 +1,4 @@
 use gh_report::app::state::{AppState, EventStoreImpl, OrgEventStoreImpl};
-use gh_report::config::EVIDENCE_SCHEMA_VERSION;
 use gh_report::config::runtime::{DEFAULT_NATS_URL, NatsStoreConfig, PardosaBackend};
 use gh_report::domain::auth::{AuthMode, TokenTier};
 use gh_report::domain::evidence::OrgStateSnapshot;
@@ -64,7 +63,7 @@ fn jetstream_backend(
         .build()
         .expect("config valid");
     let substrate = SubstrateJetStreamBackend::open(cfg);
-    PardosaJetStreamBackend::open(substrate).with_adopter_epoch(EVIDENCE_SCHEMA_VERSION.as_bytes())
+    PardosaJetStreamBackend::open(substrate)
 }
 
 async fn open_state(events_dir: &Path, nats: NatsStoreConfig) -> Arc<AppState> {

@@ -18,31 +18,10 @@ use std::io::{Read, Seek};
 /// # Errors
 /// [`Error::File`] for framing/encoding errors from `pardosa-file`,
 /// or [`Error::Io`] propagated from the underlying writer.
-#[cfg(test)]
 pub(crate) fn persist_with_source<T, W>(
     dragline: &Line<T>,
     sink: &mut W,
     schema_source: Option<&'static str>,
-) -> Result<(), Error>
-where
-    T: Encode + GenomeSafe,
-    W: Syncable,
-{
-    persist_with_source_with_epoch(dragline, sink, schema_source, None)
-}
-/// [`persist_with_source`] sibling threading an opaque
-/// `adopter_epoch` token into the `.pgno` header (PGN-0021 R5/R8).
-/// `adopter_epoch = None` is byte-identical to
-/// [`persist_with_source`].
-///
-/// # Errors
-/// [`Error::File`] for framing/encoding errors from `pardosa-file`,
-/// or [`Error::Io`] propagated from the underlying writer.
-pub(crate) fn persist_with_source_with_epoch<T, W>(
-    dragline: &Line<T>,
-    sink: &mut W,
-    schema_source: Option<&'static str>,
-    adopter_epoch: Option<&[u8]>,
 ) -> Result<(), Error>
 where
     T: Encode + GenomeSafe,
@@ -54,9 +33,6 @@ where
     let mut writer = Writer::new(sink, Event::<T>::ENVELOPE_HASH);
     if let Some(source) = schema_source {
         writer = writer.with_schema_source(source);
-    }
-    if let Some(epoch) = adopter_epoch {
-        writer = writer.with_epoch(epoch);
     }
     for event in dragline.read_line() {
         let bytes = to_vec(event);

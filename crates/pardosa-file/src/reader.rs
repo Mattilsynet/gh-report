@@ -15,13 +15,12 @@
 use crate::config::PageClass;
 use crate::error::FileError;
 use crate::format::{
-    EPOCH_LEN_PREFIX_SIZE, FILE_FOOTER_SIZE, FILE_HEADER_SIZE, FOOTER_CHECKSUM_OFFSET,
-    FOOTER_INDEX_OFFSET, FOOTER_MAGIC_OFFSET, FOOTER_MESSAGE_COUNT_OFFSET, FOOTER_RESERVED_LEN,
-    FOOTER_RESERVED_OFFSET, FORMAT_VERSION, HEADER_DICT_ID_OFFSET, HEADER_EPOCH_PRESENT_FLAG,
-    HEADER_FLAGS_KNOWN_MASK, HEADER_FLAGS_OFFSET, HEADER_MAGIC_OFFSET, HEADER_PAGE_CLASS_OFFSET,
-    HEADER_RESERVED_LEN, HEADER_RESERVED_OFFSET, HEADER_SCHEMA_HASH_LEN, HEADER_SCHEMA_HASH_OFFSET,
-    HEADER_SCHEMA_SIZE_OFFSET, HEADER_VERSION_OFFSET, INDEX_ENTRY_SIZE, MAGIC,
-    messages_offset_with_epoch, pad_to_8,
+    FILE_FOOTER_SIZE, FILE_HEADER_SIZE, FOOTER_CHECKSUM_OFFSET, FOOTER_INDEX_OFFSET,
+    FOOTER_MAGIC_OFFSET, FOOTER_MESSAGE_COUNT_OFFSET, FOOTER_RESERVED_LEN, FOOTER_RESERVED_OFFSET,
+    FORMAT_VERSION, HEADER_DICT_ID_OFFSET, HEADER_FLAGS_OFFSET, HEADER_MAGIC_OFFSET,
+    HEADER_PAGE_CLASS_OFFSET, HEADER_RESERVED_LEN, HEADER_RESERVED_OFFSET, HEADER_SCHEMA_HASH_LEN,
+    HEADER_SCHEMA_HASH_OFFSET, HEADER_SCHEMA_SIZE_OFFSET, HEADER_VERSION_OFFSET, INDEX_ENTRY_SIZE,
+    MAGIC, messages_offset, pad_to_8,
 };
 use crate::options::ReaderOptions;
 use std::io::{Read, Seek, SeekFrom};
@@ -77,7 +76,6 @@ pub struct Reader<R: Read + Seek> {
     page_class: u8,
     schema_size: u32,
     schema_source: Option<String>,
-    epoch: Option<Box<[u8]>>,
     message_count: u64,
     index: Vec<IndexEntry>,
     #[cfg_attr(
@@ -144,11 +142,10 @@ impl<R: Read + Seek> Reader<R> {
                 .try_into()
                 .expect("slice len 2"),
         );
-        if flags & !HEADER_FLAGS_KNOWN_MASK != 0 {
+        if flags & !0b111 != 0 {
             return Err(FileError::UnsupportedCompression((flags & 0b111) as u8));
         }
         let compression_algo = (flags & 0b111) as u8;
-        let epoch_present = flags & HEADER_EPOCH_PRESENT_FLAG != 0;
         match compression_algo {
             crate::format::ALGO_NONE => {}
             #[cfg(feature = "zstd")]
@@ -207,34 +204,6 @@ impl<R: Read + Seek> Reader<R> {
             }
             Some(s)
         };
-        let (epoch, epoch_len_for_offset) = if epoch_present {
-            let mut len_buf = [0u8; EPOCH_LEN_PREFIX_SIZE];
-            source.read_exact(&mut len_buf).map_err(FileError::Io)?;
-            let epoch_len = u32::from_le_bytes(len_buf);
-            if epoch_len > options.max_schema_source_bytes {
-                return Err(FileError::EpochTooLarge {
-                    claimed: epoch_len,
-                    limit: options.max_schema_source_bytes,
-                });
-            }
-            let size = usize::try_from(epoch_len).map_err(|_| FileError::IndexOverflow)?;
-            let mut buf = vec![0u8; size];
-            source.read_exact(&mut buf).map_err(FileError::Io)?;
-            let written = EPOCH_LEN_PREFIX_SIZE + size;
-            let pad_len = pad_to_8(written) - written;
-            if pad_len > 0 {
-                let mut pad = [0u8; 7];
-                source
-                    .read_exact(&mut pad[..pad_len])
-                    .map_err(FileError::Io)?;
-                if pad[..pad_len].iter().any(|&b| b != 0) {
-                    return Err(FileError::InvalidReserved);
-                }
-            }
-            (Some(buf.into_boxed_slice()), Some(epoch_len))
-        } else {
-            (None, None)
-        };
         let file_len = source.seek(SeekFrom::End(0)).map_err(FileError::Io)?;
         if file_len < (FILE_HEADER_SIZE + FILE_FOOTER_SIZE) as u64 {
             return Err(FileError::InvalidIndex);
@@ -281,7 +250,7 @@ impl<R: Read + Seek> Reader<R> {
         let index_bytes = message_count
             .checked_mul(INDEX_ENTRY_SIZE as u64)
             .ok_or(FileError::IndexOverflow)?;
-        let msgs_start = messages_offset_with_epoch(schema_size, epoch_len_for_offset) as u64;
+        let msgs_start = messages_offset(schema_size) as u64;
         if index_offset < msgs_start {
             return Err(FileError::InvalidIndex);
         }
@@ -345,7 +314,6 @@ impl<R: Read + Seek> Reader<R> {
             page_class,
             schema_size,
             schema_source,
-            epoch,
             message_count,
             index,
             compression_algo,
@@ -387,17 +355,6 @@ impl<R: Read + Seek> Reader<R> {
     #[must_use]
     pub fn schema_source(&self) -> Option<&str> {
         self.schema_source.as_deref()
-    }
-    /// Opaque `adopter_epoch` token (PGN-0021), if present.
-    ///
-    /// `None` on a container written without an epoch (including
-    /// every pre-OSF container). `Some(&[])` is a distinct,
-    /// present-but-empty value — presence is carried by a header
-    /// `flags` bit, never by length (PGN-0021 R3). pardosa never
-    /// interprets these bytes.
-    #[must_use]
-    pub fn epoch(&self) -> Option<&[u8]> {
-        self.epoch.as_deref()
     }
     #[must_use]
     pub fn index(&self) -> &[IndexEntry] {

@@ -2,7 +2,7 @@ use pardosa_file::format::*;
 #[test]
 fn format_constants() {
     assert_eq!(MAGIC, *b"PGNO");
-    assert_eq!(FORMAT_VERSION, 6);
+    assert_eq!(FORMAT_VERSION, 5);
     assert_eq!(FILE_HEADER_SIZE, 40);
     assert_eq!(FILE_FOOTER_SIZE, 32);
     assert_eq!(INDEX_ENTRY_SIZE, 24);

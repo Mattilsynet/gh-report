@@ -55,7 +55,6 @@ pub use crate::app::webhook_context::WebhookState;
 
 use crate::app::collect::JobContext;
 use crate::app::work_queue::WorkQueue;
-use crate::config::EVIDENCE_SCHEMA_VERSION;
 use crate::domain::evidence::RepositoryEvidence;
 use crate::domain::run::RunMetadata;
 use crate::error::PersistenceError;
@@ -562,11 +561,9 @@ fn open_event_store(
             std::fs::create_dir_all(events_dir)?;
             let path = events_dir.join("events.pgno");
             if path.exists() && path.metadata()?.len() > 0 {
-                EventStoreImpl::open_pgno_with_epoch(&path, EVIDENCE_SCHEMA_VERSION.as_bytes())
-                    .map_err(std::io::Error::other)
+                EventStoreImpl::open_pgno(&path).map_err(std::io::Error::other)
             } else {
-                EventStoreImpl::create_pgno_with_epoch(&path, EVIDENCE_SCHEMA_VERSION.as_bytes())
-                    .map_err(std::io::Error::other)
+                EventStoreImpl::create_pgno(&path).map_err(std::io::Error::other)
             }
         }
         crate::config::runtime::PardosaBackend::Nats => {
@@ -586,11 +583,9 @@ fn open_org_event_store(
             std::fs::create_dir_all(events_dir)?;
             let path = events_dir.join("org-events.pgno");
             if path.exists() && path.metadata()?.len() > 0 {
-                OrgEventStoreImpl::open_pgno_with_epoch(&path, EVIDENCE_SCHEMA_VERSION.as_bytes())
-                    .map_err(std::io::Error::other)
+                OrgEventStoreImpl::open_pgno(&path).map_err(std::io::Error::other)
             } else {
-                OrgEventStoreImpl::create_pgno_with_epoch(&path, EVIDENCE_SCHEMA_VERSION.as_bytes())
-                    .map_err(std::io::Error::other)
+                OrgEventStoreImpl::create_pgno(&path).map_err(std::io::Error::other)
             }
         }
         crate::config::runtime::PardosaBackend::Nats => {
@@ -669,7 +664,7 @@ fn jetstream_backend(
     }
     let cfg = builder.build().expect("validated NATS store config");
     let substrate = SubstrateJetStreamBackend::open(cfg);
-    PardosaJetStreamBackend::open(substrate).with_adopter_epoch(EVIDENCE_SCHEMA_VERSION.as_bytes())
+    PardosaJetStreamBackend::open(substrate)
 }
 
 /// Open the selected event store on Tokio's blocking pool.
@@ -1721,9 +1716,7 @@ mod tests {
 
     fn synthesize_torn_footer_store(path: &Path, records: u64) -> u64 {
         {
-            let store =
-                EventStoreImpl::create_pgno_with_epoch(path, EVIDENCE_SCHEMA_VERSION.as_bytes())
-                    .expect("create synthetic store");
+            let store = EventStoreImpl::create_pgno(path).expect("create synthetic store");
             for i in 0..records {
                 store
                     .record(&format!("domain-{i}"), synthetic_domain_event(i))
@@ -1732,8 +1725,7 @@ mod tests {
         }
         {
             let mut store = pardosa::store::EventStore::<NativeDomainEvent>::open_with_backend(
-                pardosa::store::PgnoBackend::open(path)
-                    .with_adopter_epoch(EVIDENCE_SCHEMA_VERSION.as_bytes()),
+                pardosa::store::PgnoBackend::open(path),
             )
             .expect("open backend-backed synthetic store");
             let _ = store.writer().sync().expect("sync synthetic manifest");

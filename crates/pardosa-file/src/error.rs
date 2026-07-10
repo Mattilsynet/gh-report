@@ -53,14 +53,6 @@ pub enum FileError {
         claimed: u64,
         limit: u64,
     },
-    /// PGN-0021 R5: the header-declared `adopter_epoch` length exceeds
-    /// the reader's schema-source cap (reused as the epoch-region
-    /// cap). Rejected before the epoch buffer is allocated, mirroring
-    /// [`FileError::SchemaSourceTooLarge`].
-    EpochTooLarge {
-        claimed: u32,
-        limit: u32,
-    },
     TornWriteRecovery {
         source: Box<RecoveryError>,
     },
@@ -137,12 +129,6 @@ impl fmt::Display for FileError {
                 write!(
                     f,
                     "footer-declared message_count {claimed} exceeds cap of {limit}"
-                )
-            }
-            Self::EpochTooLarge { claimed, limit } => {
-                write!(
-                    f,
-                    "header-declared adopter_epoch length {claimed} exceeds cap of {limit} bytes"
                 )
             }
             Self::TornWriteRecovery { source } => write!(f, "torn-write recovery failed: {source}"),

@@ -374,36 +374,17 @@ async fn ensure_state(
     let client = connect_client(&url, &decision).await?;
     let js = async_nats::jetstream::new(client);
     provision_stream(&js, cfg).await?;
-    let tail = fetch_stream_tail(&js, cfg.stream_name()).await?;
     let mut guard = lock_state(state);
     let resolved = if let Some(s) = guard.as_ref() {
         s.js.clone()
     } else {
         *guard = Some(LiveState {
             js: js.clone(),
-            last_ack_seq: tail,
+            last_ack_seq: 0,
         });
         js
     };
     Ok(resolved)
-}
-async fn fetch_stream_tail(
-    js: &async_nats::jetstream::Context,
-    stream_name: &str,
-) -> Result<u64, JetStreamRuntimeError> {
-    let stream = js
-        .get_stream(stream_name)
-        .await
-        .map_err(|e| JetStreamRuntimeError::Connect {
-            source: Box::new(e),
-        })?;
-    let info = stream
-        .get_info()
-        .await
-        .map_err(|e| JetStreamRuntimeError::Connect {
-            source: Box::new(e),
-        })?;
-    Ok(info.state.last_sequence)
 }
 
 async fn connect_client(
@@ -957,82 +938,6 @@ mod tests {
              metadata in the runtime crate (substrate-level I2 ordered opaque \
              positions; mission rescue-pardosa-k67j)"
         );
-    }
-    #[test]
-    fn reopened_handle_resyncs_fence_to_live_tail_after_seed_reopen() {
-        use crate::test_support::LiveNatsServer;
-        use std::sync::Arc;
-        use std::time::{SystemTime, UNIX_EPOCH};
-        use tokio::runtime::Runtime;
-        fn tag() -> String {
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos();
-            format!("{}_{}", std::process::id(), nanos)
-        }
-        fn config(
-            stream_name: &str,
-            subject: &str,
-            rt: &Runtime,
-            server: &LiveNatsServer,
-            marker: Option<&str>,
-        ) -> JetStreamConfig {
-            let mut builder = JetStreamConfig::builder()
-                .stream_name(stream_name.to_owned())
-                .subject(subject.to_owned())
-                .durable_consumer(format!("{stream_name}-consumer"))
-                .runtime_handle(crate::RuntimeHandle::from_tokio(rt.handle().clone()))
-                .nats_url(server.url().to_owned())
-                .single_writer_fence_enabled(true);
-            if let Some(marker) = marker {
-                builder = builder.stream_description_marker(marker.to_owned());
-            }
-            builder.build().expect("config valid")
-        }
-        async fn delete_stream(server: &LiveNatsServer, stream_name: &str) {
-            let Ok(client) = async_nats::connect(server.url()).await else {
-                return;
-            };
-            let js = async_nats::jetstream::new(client);
-            let _ = js.delete_stream(stream_name).await;
-        }
-        let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
-        let rt = Runtime::new().expect("tokio runtime");
-        let tag = tag();
-        let stream_name = format!("FENCE_STORM_{tag}");
-        let subject = format!("fence.storm.{tag}");
-        let pre_seeded_tail_depth = 5u32;
-        let handle_before_marker_seed_reopen =
-            JetStreamBackend::open(config(&stream_name, &subject, &rt, &server, None));
-        for i in 0..pre_seeded_tail_depth {
-            let _ = handle_before_marker_seed_reopen
-                .append(format!("pre-seed-{i}").as_bytes())
-                .expect("pre-seed append advances tail");
-        }
-        let handle_after_osf_marker_seed_reopen = JetStreamBackend::open(config(
-            &stream_name,
-            &subject,
-            &rt,
-            &server,
-            Some("seed-marker"),
-        ));
-        for i in 0..3u32 {
-            let ack = handle_after_osf_marker_seed_reopen
-                .append(format!("post-reopen-{i}").as_bytes())
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "post-reopen append {i} must not hit WrongLastSequence \
-                         after the fence resyncs to the live tail: {e}"
-                    )
-                });
-            assert!(
-                ack.as_u64() > u64::from(pre_seeded_tail_depth),
-                "ack sequence must advance past the pre-seeded tail, got {}",
-                ack.as_u64()
-            );
-        }
-        rt.block_on(delete_stream(&server, &stream_name));
     }
     #[test]
     fn replay_record_payload_carries_bytes_verbatim_without_reframing() {
