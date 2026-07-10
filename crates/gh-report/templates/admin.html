@@ -1,3 +1,4 @@
+{%- import "partials/tooltip.html" as tooltip -%}
 <!DOCTYPE html>
 <html lang="en">
 
@@ -69,8 +70,8 @@
         <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error.">Reason</span></th>
-                    <th class="text-right" data-sort-type="numeric"><span class="tooltip-header" tabindex="0" data-tooltip="Number of repositories or checks that failed for this reason during this run.">Count</span></th>
+                    <th data-sort-type="text">{% call tooltip::header("Reason", "Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error.") %}{% endcall %}</th>
+                    <th class="text-right" data-sort-type="numeric">{% call tooltip::header("Count", "Number of repositories or checks that failed for this reason during this run.") %}{% endcall %}</th>
                 </tr>
             </thead>
             <tbody>

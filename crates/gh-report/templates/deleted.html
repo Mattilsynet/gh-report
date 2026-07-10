@@ -1,3 +1,4 @@
+{%- import "partials/tooltip.html" as tooltip -%}
 <!DOCTYPE html>
 <html lang="en">
 
@@ -31,8 +32,8 @@
         <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="Name of the repository no longer found in a successful inventory sweep.">Repository</span></th>
-                    <th data-sort-type="date"><span class="tooltip-header" tabindex="0" data-tooltip="Timestamp when this repository was first observed missing from inventory.">Detected At</span></th>
+                    <th data-sort-type="text">{% call tooltip::header("Repository", "Name of the repository no longer found in a successful inventory sweep.") %}{% endcall %}</th>
+                    <th data-sort-type="date">{% call tooltip::header("Detected At", "Timestamp when this repository was first observed missing from inventory.") %}{% endcall %}</th>
                 </tr>
             </thead>
             <tbody>
@@ -56,8 +57,8 @@
         <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="GitHub team slug that a CODEOWNERS file still references, but GitHub has deleted (404 on roster fetch).">Team</span></th>
-                    <th data-nosort><span class="tooltip-header" tabindex="0" data-tooltip="Repositories whose CODEOWNERS file still names this deleted team.">Referencing Repositories</span></th>
+                    <th data-sort-type="text">{% call tooltip::header("Team", "GitHub team slug that a CODEOWNERS file still references, but GitHub has deleted (404 on roster fetch).") %}{% endcall %}</th>
+                    <th data-nosort>{% call tooltip::header("Referencing Repositories", "Repositories whose CODEOWNERS file still names this deleted team.") %}{% endcall %}</th>
                 </tr>
             </thead>
             <tbody>

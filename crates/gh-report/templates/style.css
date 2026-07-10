@@ -751,18 +751,12 @@ details>*:not(summary) {
    visibility: visible;
 }
 
-/* ── Header-cell tooltip (CSS-only; wraps the <th> label itself) ──── */
+/* ── Header-cell tooltip trigger (opens downward; a sticky header row
+   at the top of the viewport clips an upward-opening bubble) ──────── */
 
-.tooltip-header {
-   position: relative;
-   cursor: help;
-}
-
-/* Sortable headers are clickable to sort; the pointer cursor signals that
-   affordance instead of the tooltip's help cursor. Non-sortable headers
-   (data-nosort) keep the help cursor. */
-.data-table[data-sortable] th:not([data-nosort]) .tooltip-header {
-   cursor: pointer;
+.tooltip-trigger-header::after {
+   top: calc(100% + .5em);
+   bottom: auto;
 }
 
 /* Lift the interacted header above sibling <th> cells so its overflowing
@@ -770,6 +764,15 @@ details>*:not(summary) {
 .data-table th:hover,
 .data-table th:focus-within {
    z-index: 11;
+}
+
+.tooltip-header {
+   position: relative;
+   cursor: help;
+}
+
+.data-table[data-sortable] th:not([data-nosort]) .tooltip-header {
+   cursor: pointer;
 }
 
 .tooltip-header::after {

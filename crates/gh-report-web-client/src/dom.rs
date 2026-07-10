@@ -105,7 +105,7 @@ fn attach_click_handler(
     });
     let _ignored = th.add_event_listener_with_callback("click", closure.as_ref().unchecked_ref());
     closure.forget();
-    let _ignored = th.style().set_property("cursor", "pointer");
+    let _ignored = th.style().set_property("cursor", "ns-resize");
 }
 
 /// Resolve a column's [`SortType`] from its header's `data-sort-type`

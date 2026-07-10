@@ -2806,7 +2806,8 @@ mod tests {
             "the old 'Non-Stale' control label must be fully replaced by 'Freshness' (item6-04 D4)"
         );
         assert!(
-            owners_html.contains("Unmeasured controls are excluded from each rate's denominator"),
+            owners_html
+                .contains("Unmeasured controls are excluded from each rate&#39;s denominator"),
             "Team Health tooltip must state the exclusion rule"
         );
     }
@@ -3229,10 +3230,9 @@ mod tests {
             .1;
 
         assert!(detail_page.contains(
-            "<th class=\"text-center\" data-nosort><span class=\"tooltip-header\" tabindex=\"0\" data-tooltip=\""
+            "<th class=\"text-center\" data-nosort>Security Policy <span class=\"tooltip-trigger tooltip-trigger-header\" tabindex=\"0\" data-tooltip=\""
         ));
-        assert!(detail_page.contains(">Security Policy</span></th>"));
-        assert!(detail_page.contains(">Dependabot Status</span></th>"));
+        assert!(detail_page.contains(">Dependabot Status <span class=\"tooltip-trigger"));
     }
 
     #[test]
@@ -3651,16 +3651,16 @@ mod tests {
             .expect("expected an owner detail page")
             .1;
 
-        assert!(detail_page.contains(">Description</span></th>"));
-        assert!(detail_page.contains(">Language</span></th>"));
+        assert!(detail_page.contains(">Description <span class=\"tooltip-trigger"));
+        assert!(detail_page.contains(">Language <span class=\"tooltip-trigger"));
         assert!(detail_page.contains(
-            "<th class=\"text-center\" data-sort-type=\"text\"><span class=\"tooltip-header\" tabindex=\"0\" data-tooltip=\"Yes if this repository is a fork of another repository.\">Fork</span></th>"
+            "<th class=\"text-center\" data-sort-type=\"text\">Fork <span class=\"tooltip-trigger tooltip-trigger-header\" tabindex=\"0\" data-tooltip=\"Yes if this repository is a fork of another repository.\">ⓘ</span></th>"
         ));
-        assert!(detail_page.contains(">License</span></th>"));
-        assert!(detail_page.contains(">Last Push</span></th>"));
-        assert!(detail_page.contains(">Created</span></th>"));
-        assert!(detail_page.contains(">Last Committer</span></th>"));
-        assert!(detail_page.contains(">Last Commit</span></th>"));
+        assert!(detail_page.contains(">License <span class=\"tooltip-trigger"));
+        assert!(detail_page.contains(">Last Push <span class=\"tooltip-trigger"));
+        assert!(detail_page.contains(">Created <span class=\"tooltip-trigger"));
+        assert!(detail_page.contains(">Last Committer <span class=\"tooltip-trigger"));
+        assert!(detail_page.contains(">Last Commit <span class=\"tooltip-trigger"));
     }
 
     #[test]
@@ -3675,7 +3675,7 @@ mod tests {
             .1;
 
         assert!(
-            detail_page.contains(">Visibility</span></th>"),
+            detail_page.contains(">Visibility <span class=\"tooltip-trigger"),
             "owner detail page should contain Visibility column header"
         );
         assert!(
@@ -4598,7 +4598,7 @@ mod tests {
         let orphaned = &pages["orphans.html"];
 
         assert!(
-            orphaned.contains(">Visibility</span></th>"),
+            orphaned.contains(">Visibility <span class=\"tooltip-trigger"),
             "orphaned page should contain Visibility column header"
         );
         assert!(

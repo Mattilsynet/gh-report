@@ -116,8 +116,8 @@ expression: "&pages[\"admin.html\"]"
         <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error.">Reason</span></th>
-                    <th class="text-right" data-sort-type="numeric"><span class="tooltip-header" tabindex="0" data-tooltip="Number of repositories or checks that failed for this reason during this run.">Count</span></th>
+                    <th data-sort-type="text">Reason <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error.">ⓘ</span></th>
+                    <th class="text-right" data-sort-type="numeric">Count <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Number of repositories or checks that failed for this reason during this run.">ⓘ</span></th>
                 </tr>
             </thead>
             <tbody>
@@ -145,8 +145,8 @@ expression: "&pages[\"admin.html\"]"
         <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th data-sort-type="text"><span class="tooltip-header" tabindex="0" data-tooltip="Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error.">Reason</span></th>
-                    <th class="text-right" data-sort-type="numeric"><span class="tooltip-header" tabindex="0" data-tooltip="Number of repositories or checks that failed for this reason during this run.">Count</span></th>
+                    <th data-sort-type="text">Reason <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error.">ⓘ</span></th>
+                    <th class="text-right" data-sort-type="numeric">Count <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Number of repositories or checks that failed for this reason during this run.">ⓘ</span></th>
                 </tr>
             </thead>
             <tbody>

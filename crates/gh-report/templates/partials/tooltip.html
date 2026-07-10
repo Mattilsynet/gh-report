@@ -1,3 +1,4 @@
 {% macro tooltip(text) %}<span class="tooltip-trigger" tabindex="0" data-tooltip="{{ text }}">ⓘ</span>{% endmacro %}
 {% macro warning(text) %}<span class="tooltip-trigger tooltip-warn" tabindex="0" data-tooltip="{{ text }}">⚠</span>{% endmacro %}
+{% macro header(label, text) %}{{ label }} <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="{{ text }}">ⓘ</span>{% endmacro %}
 
