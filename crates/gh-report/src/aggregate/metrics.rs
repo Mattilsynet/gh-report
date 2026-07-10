@@ -113,7 +113,11 @@ pub fn aggregate_metrics(repositories: &[RepositoryEvidence]) -> AggregatedMetri
 
     let taxonomy = count_collection_health_reasons(&active);
     let alert_observable_enabled = count_alert_observable_enabled(&active);
+    let policy_tally = exclusion_tally_from_policy(&policy_counts);
+    let secret_tally = exclusion_tally_from_secret_scanning(&secret_counts);
+    let dependabot_tally = exclusion_tally_from_dependabot(&dependabot_counts);
     let branch_protection_exclusions = count_branch_protection_exclusion_reasons(&active);
+    let codeowners_tally = exclusion_tally_from_codeowners(&codeowners_counts);
     let coverage = build_coverage_metrics(CoverageInputs {
         policy_counts: &policy_counts,
         secret_counts: &secret_counts,
@@ -123,18 +127,23 @@ pub fn aggregate_metrics(repositories: &[RepositoryEvidence]) -> AggregatedMetri
         secret_alert_counts: &secret_alert_counts,
         taxonomy: &taxonomy,
         alert_observable_enabled,
+        policy_tally: &policy_tally,
+        secret_tally: &secret_tally,
+        dependabot_tally: &dependabot_tally,
+        branch_tally: &branch_protection_exclusions,
+        codeowners_tally: &codeowners_tally,
     });
 
     let mut score_exclusion_counts = Vec::new();
-    exclusion_tally_from_policy(&policy_counts).push_counts(
+    policy_tally.push_counts(
         CollectionHealthCheckKind::SecurityPolicy,
         &mut score_exclusion_counts,
     );
-    exclusion_tally_from_secret_scanning(&secret_counts).push_counts(
+    secret_tally.push_counts(
         CollectionHealthCheckKind::SecretScanning,
         &mut score_exclusion_counts,
     );
-    exclusion_tally_from_dependabot(&dependabot_counts).push_counts(
+    dependabot_tally.push_counts(
         CollectionHealthCheckKind::Dependabot,
         &mut score_exclusion_counts,
     );
@@ -142,7 +151,7 @@ pub fn aggregate_metrics(repositories: &[RepositoryEvidence]) -> AggregatedMetri
         CollectionHealthCheckKind::BranchProtection,
         &mut score_exclusion_counts,
     );
-    exclusion_tally_from_codeowners(&codeowners_counts).push_counts(
+    codeowners_tally.push_counts(
         CollectionHealthCheckKind::Codeowners,
         &mut score_exclusion_counts,
     );
@@ -177,6 +186,11 @@ struct CoverageInputs<'a> {
     secret_alert_counts: &'a SecretAlertCounts,
     taxonomy: &'a CollectionHealthTaxonomyCounts,
     alert_observable_enabled: u32,
+    policy_tally: &'a ExclusionTally,
+    secret_tally: &'a ExclusionTally,
+    dependabot_tally: &'a ExclusionTally,
+    branch_tally: &'a ExclusionTally,
+    codeowners_tally: &'a ExclusionTally,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -188,6 +202,16 @@ struct ExclusionTally {
 }
 
 impl ExclusionTally {
+    /// Whether the tally contains at least one repo excluded for a
+    /// measurement-failure reason (`PermissionDenied`/`Unknown`/`Other`), as
+    /// opposed to `NotApplicable` or an empty tally. An applicable-but-
+    /// unmeasured control must be scored as a genuine failure rather than
+    /// vanish as "no observable population" (UF2-5 clause 6, bd
+    /// `adr-fmt-m1s6p`).
+    fn has_measurement_failure(&self) -> bool {
+        self.permission_denied > 0 || self.unknown > 0 || self.other > 0
+    }
+
     fn record(&mut self, reason: ExclusionReason) {
         match reason {
             ExclusionReason::PermissionDenied => {
@@ -220,6 +244,25 @@ impl ExclusionTally {
                 });
             }
         }
+    }
+}
+
+/// Build a coverage `RateMetric` with a reason-aware floor for the
+/// all-excluded case (UF2-5 clause 6, bd `adr-fmt-m1s6p`).
+///
+/// When `pass + fail == 0` (nothing observable) AND `tally` records a
+/// measurement failure, the control is applicable but could not be
+/// measured — it must enter the health-score product as a genuine `0.0`
+/// (`RateMetric::new(0, 1)`), not vanish as `None`. When `pass + fail == 0`
+/// and the tally is empty or all-`NotApplicable`, there is no observable
+/// population and `None` is the correct, legitimate result. When
+/// `pass + fail > 0`, behaviour is unchanged.
+fn coverage_metric(pass: u32, fail: u32, tally: &ExclusionTally) -> RateMetric {
+    let denominator = pass.saturating_add(fail);
+    if denominator == 0 && tally.has_measurement_failure() {
+        RateMetric::new(0, 1)
+    } else {
+        RateMetric::new(pass, denominator)
     }
 }
 
@@ -278,9 +321,13 @@ fn build_coverage_metrics(input: CoverageInputs<'_>) -> CoverageMetrics {
         .saturating_add(input.policy_counts.via_file);
     let policy_observable = policy_pass.saturating_add(input.policy_counts.missing);
     CoverageMetrics {
-        security_policy: RateMetric::new(policy_pass, policy_observable)
-            .with_extra("observable_repositories", policy_observable)
-            .with_extra("unknown", input.policy_counts.unknown),
+        security_policy: coverage_metric(
+            policy_pass,
+            input.policy_counts.missing,
+            input.policy_tally,
+        )
+        .with_extra("observable_repositories", policy_observable)
+        .with_extra("unknown", input.policy_counts.unknown),
         secret_scanning: secret_scanning_coverage(input),
         dependabot: dependabot_coverage(input),
         open_secret_alerts: open_secret_alert_prevalence(input),
@@ -294,28 +341,36 @@ fn secret_scanning_coverage(input: CoverageInputs<'_>) -> RateMetric {
         .secret_counts
         .enabled
         .saturating_add(input.secret_counts.disabled);
-    RateMetric::new(input.secret_counts.enabled, observable)
-        .with_extra("disabled", input.secret_counts.disabled)
-        .with_extra("permission_denied", input.secret_counts.permission_denied)
-        .with_extra("unknown", input.secret_counts.unknown)
-        .with_extra("observable_repositories", observable)
-        .with_extra(
-            "collection_health_secret_scanning_permission_denied",
-            input.taxonomy.secret_scanning_permission_denied,
-        )
+    coverage_metric(
+        input.secret_counts.enabled,
+        input.secret_counts.disabled,
+        input.secret_tally,
+    )
+    .with_extra("disabled", input.secret_counts.disabled)
+    .with_extra("permission_denied", input.secret_counts.permission_denied)
+    .with_extra("unknown", input.secret_counts.unknown)
+    .with_extra("observable_repositories", observable)
+    .with_extra(
+        "collection_health_secret_scanning_permission_denied",
+        input.taxonomy.secret_scanning_permission_denied,
+    )
 }
 
 fn dependabot_coverage(input: CoverageInputs<'_>) -> RateMetric {
-    let observable = input
+    let non_enabled = input
         .dependabot_counts
-        .enabled
-        .saturating_add(input.dependabot_counts.paused)
+        .paused
         .saturating_add(input.dependabot_counts.disabled);
-    RateMetric::new(input.dependabot_counts.enabled, observable)
-        .with_extra("paused", input.dependabot_counts.paused)
-        .with_extra("disabled", input.dependabot_counts.disabled)
-        .with_extra("unknown", input.dependabot_counts.unknown)
-        .with_extra("observable_repositories", observable)
+    let observable = input.dependabot_counts.enabled.saturating_add(non_enabled);
+    coverage_metric(
+        input.dependabot_counts.enabled,
+        non_enabled,
+        input.dependabot_tally,
+    )
+    .with_extra("paused", input.dependabot_counts.paused)
+    .with_extra("disabled", input.dependabot_counts.disabled)
+    .with_extra("unknown", input.dependabot_counts.unknown)
+    .with_extra("observable_repositories", observable)
 }
 
 fn open_secret_alert_prevalence(input: CoverageInputs<'_>) -> RateMetric {
@@ -331,19 +386,13 @@ fn open_secret_alert_prevalence(input: CoverageInputs<'_>) -> RateMetric {
 }
 
 fn branch_protection_coverage(input: CoverageInputs<'_>) -> RateMetric {
-    let observable = input
+    let non_pass = input
         .branch_counts
-        .pass
-        .saturating_add(input.branch_counts.partial)
+        .partial
         .saturating_add(input.branch_counts.fail);
-    RateMetric::new(input.branch_counts.pass, observable)
-        .with_extra(
-            "insufficient",
-            input
-                .branch_counts
-                .partial
-                .saturating_add(input.branch_counts.fail),
-        )
+    let observable = input.branch_counts.pass.saturating_add(non_pass);
+    coverage_metric(input.branch_counts.pass, non_pass, input.branch_tally)
+        .with_extra("insufficient", non_pass)
         .with_extra("unknown", input.branch_counts.unknown)
         .with_extra("observable_repositories", observable)
         .with_extra(
@@ -362,12 +411,16 @@ fn codeowners_coverage(input: CoverageInputs<'_>) -> RateMetric {
         .conforming
         .saturating_add(input.codeowners_counts.non_conforming);
     let observable = codeowners_present.saturating_add(input.codeowners_counts.absent);
-    RateMetric::new(codeowners_present, observable)
-        .with_extra("non_conforming", input.codeowners_counts.non_conforming)
-        .with_extra("absent", input.codeowners_counts.absent)
-        .with_extra("unknown", input.codeowners_counts.unknown)
-        .with_extra("truncated", input.codeowners_counts.truncated)
-        .with_extra("observable_repositories", observable)
+    coverage_metric(
+        codeowners_present,
+        input.codeowners_counts.absent,
+        input.codeowners_tally,
+    )
+    .with_extra("non_conforming", input.codeowners_counts.non_conforming)
+    .with_extra("absent", input.codeowners_counts.absent)
+    .with_extra("unknown", input.codeowners_counts.unknown)
+    .with_extra("truncated", input.codeowners_counts.truncated)
+    .with_extra("observable_repositories", observable)
 }
 
 /// Count security policy statuses across public repos.
@@ -916,23 +969,23 @@ fn build_per_control_coverage(repos: &[&RepositoryEvidence]) -> OwnerControlCove
     let mut per_control_coverage = HashMap::new();
     per_control_coverage.insert(
         "security_policy".to_string(),
-        RateMetric::new(sp_pass, sp_pass.saturating_add(sp_fail)),
+        coverage_metric(sp_pass, sp_fail, &sp_tally),
     );
     per_control_coverage.insert(
         "secret_scanning".to_string(),
-        RateMetric::new(secret_pass, secret_pass.saturating_add(secret_fail)),
+        coverage_metric(secret_pass, secret_fail, &secret_tally),
     );
     per_control_coverage.insert(
         "dependabot_security_updates".to_string(),
-        RateMetric::new(db_pass, db_pass.saturating_add(db_fail)),
+        coverage_metric(db_pass, db_fail, &db_tally),
     );
     per_control_coverage.insert(
         "branch_protection".to_string(),
-        RateMetric::new(bp_pass, bp_pass.saturating_add(bp_fail)),
+        coverage_metric(bp_pass, bp_fail, &bp_tally),
     );
     per_control_coverage.insert(
         "codeowners".to_string(),
-        RateMetric::new(co_present, co_present.saturating_add(co_absent)),
+        coverage_metric(co_present, co_absent, &co_tally),
     );
 
     let mut score_exclusion_counts = Vec::new();
@@ -1069,7 +1122,7 @@ mod tests {
     use super::*;
     use crate::domain::checks::{
         BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus,
-        SecretScanningResult, SecretScanningStatus,
+        SecretScanningResult, SecretScanningStatus, SecurityPolicyResult,
     };
     use crate::domain::metrics::{
         CollectionHealthCheckKind, CollectionHealthCount, ScoreExclusionCount,
@@ -1361,7 +1414,12 @@ mod tests {
         ];
         let metrics = aggregate_metrics(&repos);
 
-        assert_eq!(metrics.branch_protection_coverage.denominator, 0);
+        // adr-fmt-voxg6: all 3 exclusion reasons here (PermissionDenied,
+        // Unknown via NotFoundAbsent, Other via Transient) are measurement
+        // failures, so the control floors to a genuine 0.0 rather than
+        // vanishing to `None`/denominator 0.
+        assert_eq!(metrics.branch_protection_coverage.denominator, 1);
+        assert_eq!(metrics.branch_protection_coverage.rate, Some(0.0));
 
         let branch_protection_exclusions: Vec<_> = metrics
             .score_exclusion_counts
@@ -2484,6 +2542,189 @@ mod tests {
         );
     }
 
+    /// adr-fmt-voxg6 item1: a control where every repo is `Excluded` for a
+    /// measurement-failure reason (`Unknown`/`PermissionDenied`/`Other`) must
+    /// floor to a genuine failure (`Some(0.0)`), not vanish to `None` — an
+    /// all-unmeasured control silently inflating Team Health to a vacuous
+    /// 100% (adr-fmt-doyc8/e861p) is the bug this guards against.
+    #[test]
+    fn owner_control_coverage_all_measurement_failure_floors_to_zero_rate() {
+        let repos = vec![
+            make_repository_evidence(
+                "repo-1",
+                Visibility::Public,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_unknown(),
+                    codeowners_with_owners(&["@org/team"]),
+                ),
+            ),
+            make_repository_evidence(
+                "repo-2",
+                Visibility::Public,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_unknown(),
+                    codeowners_with_owners(&["@org/team"]),
+                ),
+            ),
+        ];
+        let result = build_owner_metrics(&repos);
+        let team = &result[0];
+        let branch_protection = team.per_control_coverage.get("branch_protection").unwrap();
+        assert_eq!(branch_protection.numerator, 0);
+        assert_eq!(branch_protection.denominator, 1);
+        assert_eq!(branch_protection.rate, Some(0.0));
+    }
+
+    /// adr-fmt-voxg6 item1: a control where every repo is `Excluded` for
+    /// `NotApplicable` — no observable population — legitimately vanishes to
+    /// `None`. Security policy is `NotApplicable` on non-public repos.
+    #[test]
+    fn owner_control_coverage_all_not_applicable_stays_none() {
+        let not_applicable_policy = || SecurityPolicyResult {
+            status: SecurityPolicyStatus::NotApplicable,
+            evidence: SecurityPolicyEvidence::NotApplicable,
+            path: None,
+            timestamp: make_timestamp(),
+        };
+        let repos = vec![
+            make_repository_evidence(
+                "repo-1",
+                Visibility::Private,
+                false,
+                make_checks(
+                    not_applicable_policy(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_with_owners(&["@org/team"]),
+                ),
+            ),
+            make_repository_evidence(
+                "repo-2",
+                Visibility::Private,
+                false,
+                make_checks(
+                    not_applicable_policy(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_with_owners(&["@org/team"]),
+                ),
+            ),
+        ];
+        let result = build_owner_metrics(&repos);
+        let team = &result[0];
+        let security_policy = team.per_control_coverage.get("security_policy").unwrap();
+        assert_eq!(security_policy.numerator, 0);
+        assert_eq!(security_policy.denominator, 0);
+        assert_eq!(security_policy.rate, None);
+    }
+
+    /// adr-fmt-voxg6 item1 REGRESSION GUARD: a mixed team (pass + fail +
+    /// excluded) must keep excluding the excluded repo from the denominator
+    /// and compute the rate over the measured population only — denom > 0,
+    /// so `coverage_metric`'s reason-aware floor never engages. Matches the
+    /// pre-change value.
+    #[test]
+    fn owner_control_coverage_mixed_team_excludes_not_floors() {
+        let repos = vec![
+            make_repository_evidence(
+                "pass-1",
+                Visibility::Public,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_with_owners(&["@org/team"]),
+                ),
+            ),
+            make_repository_evidence(
+                "fail-1",
+                Visibility::Public,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_fail(),
+                    codeowners_with_owners(&["@org/team"]),
+                ),
+            ),
+            make_repository_evidence(
+                "excluded-1",
+                Visibility::Public,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_unknown(),
+                    codeowners_with_owners(&["@org/team"]),
+                ),
+            ),
+        ];
+        let result = build_owner_metrics(&repos);
+        let team = &result[0];
+        let branch_protection = team.per_control_coverage.get("branch_protection").unwrap();
+        assert_eq!(branch_protection.numerator, 1);
+        assert_eq!(
+            branch_protection.denominator, 2,
+            "excluded repo must leave the denominator (2), not be floored/counted"
+        );
+        assert_eq!(branch_protection.rate, Some(50.0));
+    }
+
+    /// adr-fmt-voxg6 item1 CRITICAL GUARD: `secret_scanning` filters non-public
+    /// repos *before* classification (metrics.rs guard at the top of
+    /// `build_per_control_coverage`'s loop), so an all-private team never
+    /// records any secret_scanning outcome — the tally is empty, not a
+    /// measurement failure — and the rate must stay `None`, not floor to 0.0.
+    #[test]
+    fn owner_control_coverage_all_private_secret_scanning_stays_none() {
+        let repos = vec![
+            make_repository_evidence(
+                "repo-1",
+                Visibility::Private,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_with_owners(&["@org/team"]),
+                ),
+            ),
+            make_repository_evidence(
+                "repo-2",
+                Visibility::Private,
+                false,
+                make_checks(
+                    policy_pass_setting(),
+                    secret_enabled_observable(false),
+                    dependabot_enabled(),
+                    branch_pass(),
+                    codeowners_with_owners(&["@org/team"]),
+                ),
+            ),
+        ];
+        let result = build_owner_metrics(&repos);
+        let team = &result[0];
+        let secret_scanning = team.per_control_coverage.get("secret_scanning").unwrap();
+        assert_eq!(secret_scanning.numerator, 0);
+        assert_eq!(secret_scanning.denominator, 0);
+        assert_eq!(secret_scanning.rate, None);
+    }
+
     /// item9 Part B (M1, adr-fmt-jlfs1): mirrors
     /// `enrich_team_rosters_flags_departed_member_and_clears_present_member`
     /// (`crate::collector::team_membership`) at the `OwnerMetrics` seam —
@@ -2982,7 +3223,14 @@ mod tests {
             .per_control_coverage
             .get("branch_protection")
             .unwrap();
-        assert_eq!(branch_protection.denominator, 0, "all 3 repos are excluded");
+        // adr-fmt-voxg6: all 3 exclusion reasons here are measurement
+        // failures, so the control floors to a genuine 0.0 rather than
+        // vanishing to `None`/denominator 0.
+        assert_eq!(
+            branch_protection.denominator, 1,
+            "all 3 repos excluded for measurement failure floors to 0.0, not None"
+        );
+        assert_eq!(branch_protection.rate, Some(0.0));
 
         let exclusions: Vec<_> = owners[0]
             .score_exclusion_counts
