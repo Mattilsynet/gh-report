@@ -325,7 +325,7 @@ mod tests {
         handle.abort();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn coldstart_projection_serves_200_without_github_api() {
         use crate::app::collect::warm_start_from_baseline;
         use crate::config::dashboard::DashboardConfig;
@@ -434,7 +434,7 @@ mod tests {
         handle.abort();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn ws_e2e_publish_evidence_broadcasts_to_client() {
         use crate::app::collect::publish_evidence;
         use crate::config::runtime::RuntimeConfig;

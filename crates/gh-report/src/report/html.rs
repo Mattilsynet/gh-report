@@ -216,6 +216,12 @@ fn control_display_name(key: &str) -> &'static str {
 /// - `owners.html` — Owner coverage overview (if owner metrics available).
 /// - `owners/{slug}.html` — Per-owner detail pages (if owner metrics available).
 ///
+/// Convenience wrapper over [`render_dashboard_streaming`] that collects
+/// every page into a `HashMap`. Test callers use this form; the production
+/// cache-build path (`gh_report::app::collect::build_cached_pages`) calls
+/// [`render_dashboard_streaming`] directly so peak memory holds ~one raw
+/// page rather than the full page set.
+///
 /// # Errors
 ///
 /// Returns [`ReportError::TemplateRenderFailed`] if any template rendering fails.
@@ -223,6 +229,32 @@ pub fn render_dashboard(
     evidence: &Evidence,
     config: &DashboardConfig,
 ) -> Result<HashMap<String, String>, ReportError> {
+    let mut pages = HashMap::new();
+    render_dashboard_streaming(evidence, config, |path, content| {
+        pages.insert(path, content);
+    })?;
+    Ok(pages)
+}
+
+/// Render the complete multi-page dashboard, handing each rendered page to
+/// `sink` as soon as it is produced instead of accumulating a full
+/// `HashMap<String, String>`.
+///
+/// Same page set as [`render_dashboard`] (see its docs for the full list).
+/// Callers that immediately convert each page into a smaller owned form
+/// (e.g. a compressed [`cherry_pit_web::serve::CachedPage`]) and drop the
+/// raw `String` keep peak memory at ~one raw page plus the accumulating
+/// output, instead of the whole rendered set (mem-opt-cachedpage-2026-07-11,
+/// Option 1).
+///
+/// # Errors
+///
+/// Returns [`ReportError::TemplateRenderFailed`] if any template rendering fails.
+pub fn render_dashboard_streaming(
+    evidence: &Evidence,
+    config: &DashboardConfig,
+    mut sink: impl FnMut(String, String),
+) -> Result<(), ReportError> {
     debug!(org = %evidence.assessment_metadata.organization, "rendering dashboard pages");
     let tiers = &config.tiers;
     let warm_start = evidence.assessment_metadata.warm_start;
@@ -265,15 +297,14 @@ pub fn render_dashboard(
     let index = render_template(&IndexTemplate { vm: &vm, nav })?;
     let admin = render_template(&AdminTemplate { vm: &vm, nav })?;
 
-    let mut pages = HashMap::new();
-    pages.insert("report.html".to_string(), report);
-    pages.insert("index.html".to_string(), index);
-    pages.insert("admin.html".to_string(), admin);
-    pages.insert("style.css".to_string(), STYLESHEET.to_string());
-    pages.insert("ws.js".to_string(), WS_CLIENT_JS.to_string());
-    pages.insert("gh-report-web-client.js".to_string(), String::new());
-    pages.insert("gh-report-web-client_bg.wasm".to_string(), String::new());
-    pages.insert("sort-init.js".to_string(), String::new());
+    sink("report.html".to_string(), report);
+    sink("index.html".to_string(), index);
+    sink("admin.html".to_string(), admin);
+    sink("style.css".to_string(), STYLESHEET.to_string());
+    sink("ws.js".to_string(), WS_CLIENT_JS.to_string());
+    sink("gh-report-web-client.js".to_string(), String::new());
+    sink("gh-report-web-client_bg.wasm".to_string(), String::new());
+    sink("sort-init.js".to_string(), String::new());
 
     if let Some(ref owners) = owners_vm {
         let owners_html = render_template(&OwnersTemplate {
@@ -283,7 +314,7 @@ pub fn render_dashboard(
             nav,
             warm_start,
         })?;
-        pages.insert("owners.html".to_string(), owners_html);
+        sink("owners.html".to_string(), owners_html);
 
         let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
         let detail_vms = build_owner_detail_view_models(
@@ -302,7 +333,7 @@ pub fn render_dashboard(
                 nav: nested_nav,
                 warm_start,
             })?;
-            pages.insert(format!("owners/{slug}.html"), detail_html);
+            sink(format!("owners/{slug}.html"), detail_html);
         }
     }
 
@@ -311,17 +342,16 @@ pub fn render_dashboard(
         nav,
         warm_start,
     })?;
-    pages.insert("orphans.html".to_string(), orphaned_html);
+    sink("orphans.html".to_string(), orphaned_html);
 
     let deleted_html = render_template(&DeletedTemplate {
         vm: deleted_vm,
         nav,
         warm_start,
     })?;
-    pages.insert("deleted.html".to_string(), deleted_html);
+    sink("deleted.html".to_string(), deleted_html);
 
-    debug!(page_count = pages.len(), "dashboard rendering complete");
-    Ok(pages)
+    Ok(())
 }
 
 /// Build the top-3 security team podium from owner overview data.
@@ -1733,6 +1763,24 @@ mod tests {
         assert!(pages.contains_key("deleted.html"));
         assert!(!pages.contains_key("OPERATIONS.html"));
         assert_eq!(pages.len(), 10);
+    }
+
+    #[test]
+    fn render_dashboard_streaming_produces_same_key_set_as_render_dashboard() {
+        let evidence = evidence_with_owner_repos();
+        let via_map = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+        let mut via_sink = std::collections::HashSet::new();
+        render_dashboard_streaming(&evidence, &DashboardConfig::default(), |path, _content| {
+            via_sink.insert(path);
+        })
+        .unwrap();
+
+        let map_keys: std::collections::HashSet<String> = via_map.keys().cloned().collect();
+        assert_eq!(
+            via_sink, map_keys,
+            "streaming sink page-key set must match the HashMap-collecting wrapper"
+        );
     }
 
     #[test]

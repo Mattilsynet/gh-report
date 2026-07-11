@@ -1484,45 +1484,58 @@ pub(crate) async fn render_and_cache_evidence(
 }
 
 /// Render dashboard HTML and build the per-page zstd-compressed cache
-/// entries on the blocking thread pool. Pure compute — no shared state
-/// is mutated and no broadcast fires. Fallible (template rendering /
-/// blocking-task join). CHE-0068:R2 two-phase render: callers that
-/// need barrier-aligned visibility commit the result via
+/// entries. Pure compute — no shared state is mutated and no broadcast
+/// fires. Fallible (template rendering). CHE-0068:R2 two-phase render:
+/// callers that need barrier-aligned visibility commit the result via
 /// [`commit_cached_pages`] strictly after the barrier event has been
 /// published.
+///
+/// Streams each rendered page directly into a `CachedPage` as soon as it
+/// is produced (mem-opt-cachedpage-2026-07-11, Option 1) instead of
+/// materialising the full rendered page set as `HashMap<String, String>`
+/// before compressing it: peak memory holds ~one raw page plus the
+/// accumulating `CachedPage` map (whose `Compressed` entries no longer
+/// retain raw — see `cherry_pit_web::serve::CachedBody`), not the whole
+/// rendered set. Runs via `block_in_place` (not `spawn_blocking`) so the
+/// borrowed `evidence`/`config` never need to be cloned or made `'static`;
+/// the streaming loop is CPU-bound (Askama rendering + zstd) for its
+/// entire duration, matching the prior `spawn_blocking` intent of keeping
+/// this work off the async-task fast path. Kept `async` (though its body
+/// has no `.await`) to preserve the call-chain signature shared by
+/// [`render_and_cache_evidence`] / [`publish_evidence`]; `block_in_place`
+/// itself requires an async multi-thread-runtime context to call into,
+/// which the `#[expect]` below documents.
+#[expect(
+    clippy::unused_async,
+    reason = "block_in_place must run inside an async task on a multi-thread runtime; \
+              kept async to match render_and_cache_evidence/publish_evidence call chain"
+)]
 pub(crate) async fn build_cached_pages(
     config: &RuntimeConfig,
     evidence: &Evidence,
 ) -> Result<HashMap<String, CachedPage>, AppError> {
-    let pages = html::render_dashboard(evidence, &config.dashboard_config)?;
-    info!(
-        page_count = pages.len(),
-        total_bytes = pages.values().map(String::len).sum::<usize>(),
-        "dashboard pages rendered"
-    );
-
-    tokio::task::spawn_blocking(move || {
-        pages
-            .into_iter()
-            .map(|(path, content)| {
-                let page = match path.as_str() {
-                    "style.css" => CACHED_STYLESHEET.clone(),
-                    "ws.js" => CACHED_WS_JS.clone(),
-                    "gh-report-web-client.js" => CACHED_SORT_CLIENT_JS.clone(),
-                    "gh-report-web-client_bg.wasm" => CACHED_SORT_CLIENT_WASM.clone(),
-                    "sort-init.js" => CACHED_SORT_INIT_JS.clone(),
-                    _ => CachedPage::new(&path, content.into_bytes()),
-                };
-                (path, page)
-            })
-            .collect()
-    })
-    .await
-    .map_err(|e| {
-        AppError::Report(crate::error::ReportError::TemplateRenderFailed {
-            reason: format!("cache build task panicked: {e}"),
-        })
-    })
+    let dashboard_config = &config.dashboard_config;
+    let mut page_count = 0usize;
+    let mut total_bytes = 0usize;
+    let cache = tokio::task::block_in_place(|| {
+        let mut cache = HashMap::new();
+        html::render_dashboard_streaming(evidence, dashboard_config, |path, content| {
+            page_count += 1;
+            total_bytes += content.len();
+            let page = match path.as_str() {
+                "style.css" => CACHED_STYLESHEET.clone(),
+                "ws.js" => CACHED_WS_JS.clone(),
+                "gh-report-web-client.js" => CACHED_SORT_CLIENT_JS.clone(),
+                "gh-report-web-client_bg.wasm" => CACHED_SORT_CLIENT_WASM.clone(),
+                "sort-init.js" => CACHED_SORT_INIT_JS.clone(),
+                _ => CachedPage::new(&path, content.into_bytes()),
+            };
+            cache.insert(path, page);
+        })?;
+        Ok::<_, crate::error::ReportError>(cache)
+    })?;
+    info!(page_count, total_bytes, "dashboard pages rendered");
+    Ok(cache)
 }
 
 /// Commit pre-built cached pages: atomically replace the html cache
@@ -3572,7 +3585,7 @@ mod tests {
         assert!(delivery_result.is_ok(), "delivery loop should exit cleanly");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn step_finalize_renders_from_native_projection() {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
@@ -3610,7 +3623,7 @@ mod tests {
         state.work_queue.close();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn successful_non_empty_inventory_moves_disappeared_repo_to_deleted_before_finalize() {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
@@ -3825,7 +3838,7 @@ mod tests {
     /// delivered: at `SweepCompleted` the cache must still hold the
     /// pre-finalize state; at `EvidencePublished` it must hold the
     /// fresh terminal render.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn step_finalize_commits_html_cache_after_native_write() {
         use std::collections::HashMap as StdHashMap;
 
@@ -3886,7 +3899,7 @@ mod tests {
         state.work_queue.close();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn html_cache_must_not_be_visible_before_finalize_commits() {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
@@ -3937,7 +3950,7 @@ mod tests {
         state.work_queue.close();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn warm_start_renders_seeded_projection_without_durable_lifecycle_events() {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
@@ -3959,7 +3972,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn warm_start_ignores_force_refresh_flag() {
         let dir = tempfile::tempdir().unwrap();
         let config = RuntimeConfig {
