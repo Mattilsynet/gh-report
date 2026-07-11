@@ -129,6 +129,83 @@ impl PageUpdateEvent {
     }
 }
 
+/// Type-distinct body storage for a [`CachedPage`] (Option 2+3, mem-opt-cachedpage-2026-07-11).
+///
+/// A page body is in exactly one of two legal states — never both, never
+/// neither:
+///
+/// - [`CachedBody::Compressed`] — the common case. Raw body is dropped once
+///   the zstd variant exists; identity/non-zstd clients get bounded
+///   decode-on-demand via [`CachedBody::identity_bytes`].
+/// - [`CachedBody::RawOnly`] — the size-conditional exception (body above
+///   `MAX_PRECOMPRESS_BYTES`, or a non-compressible extension): zstd is
+///   absent, so raw is the only copy and MUST be retained.
+///
+/// `ETag` and `Content-Length` are precomputed and stored on [`CachedPage`]
+/// independently of this enum, so the 304 and identity-length paths never
+/// need to inspect the body at all (oracle adr-fmt-jw9x0, SEC-0003).
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum CachedBody {
+    /// Raw body is the only copy (oversized page or non-compressible type).
+    RawOnly {
+        /// The raw response body.
+        body: Bytes,
+    },
+    /// Zstd-compressed body only; raw was dropped after compression.
+    Compressed {
+        /// The pre-compressed zstd body, served directly to zstd clients.
+        zstd: Bytes,
+        /// The exact decoded length of `zstd`, captured at build time from
+        /// the original raw body. Bounds decode-on-demand allocation to
+        /// `raw_len + 1` bytes regardless of what the zstd stream claims,
+        /// so a corrupted/hostile stream cannot trigger unbounded alloc
+        /// (SEC-0003 decompression-bomb discipline).
+        raw_len: usize,
+    },
+}
+
+impl CachedBody {
+    /// The pre-compressed zstd body, if this page has one.
+    #[must_use]
+    pub fn zstd(&self) -> Option<&Bytes> {
+        match self {
+            CachedBody::Compressed { zstd, .. } => Some(zstd),
+            CachedBody::RawOnly { .. } => None,
+        }
+    }
+
+    /// Return identity (uncompressed) bytes, decoding on demand and bounded
+    /// to `raw_len + 1` bytes for the [`CachedBody::Compressed`] case.
+    ///
+    /// Returns `None` if decoding fails, or if the decoded length does not
+    /// match the stored `raw_len` exactly (fail-closed on corruption or a
+    /// hostile stream — never returns partially-decoded or over-length data).
+    #[must_use]
+    pub fn identity_bytes(&self) -> Option<Bytes> {
+        match self {
+            CachedBody::RawOnly { body } => Some(body.clone()),
+            CachedBody::Compressed { zstd, raw_len } => decode_bounded(zstd, *raw_len),
+        }
+    }
+}
+
+/// Decode `zstd` to identity bytes, bounding the read to `expected_len + 1`
+/// bytes so a corrupted or hostile stream cannot force unbounded allocation.
+/// Returns `None` unless the decoded length is exactly `expected_len`.
+fn decode_bounded(zstd: &[u8], expected_len: usize) -> Option<Bytes> {
+    use std::io::Read;
+    let decoder = zstd::stream::read::Decoder::new(zstd).ok()?;
+    let mut limited = decoder.take(u64::try_from(expected_len).ok()?.saturating_add(1));
+    let mut buf = Vec::with_capacity(expected_len);
+    limited.read_to_end(&mut buf).ok()?;
+    if buf.len() == expected_len {
+        Some(Bytes::from(buf))
+    } else {
+        None
+    }
+}
+
 /// A single cached HTML page ready to serve.
 ///
 /// Content-Type is derived at cache-population time from the file extension,
@@ -138,23 +215,23 @@ impl PageUpdateEvent {
 /// with zstd at cache-population time, so serving requests never
 /// re-compress identical content.
 ///
-/// Bodies are stored as [`Bytes`] (reference-counted) so that cloning on
-/// the serving path is an atomic refcount increment (~1 ns) rather than a
-/// full `memcpy` of the body buffer.
+/// `ETag` and `Content-Length` are precomputed at build time and stored
+/// independently of [`CachedBody`], so the 304 and identity-Content-Length
+/// paths never require the raw body to be resident (see [`CachedBody`] docs).
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct CachedPage {
-    /// Raw response body (UTF-8 HTML or CSS). Reference-counted for
-    /// zero-copy cloning on the serving hot path.
-    pub body: Bytes,
-    /// Pre-compressed zstd body, if the content type is compressible.
-    pub body_zstd: Option<Bytes>,
+    /// The response body, in exactly one of its two legal shapes.
+    pub body: CachedBody,
     /// Pre-computed `Content-Type` header value.
     pub content_type: HeaderValue,
-    /// Pre-computed weak `ETag` derived from body hash (e.g., `W/"a1b2c3..."`).
+    /// Pre-computed weak `ETag` derived from the raw body hash (e.g.,
+    /// `W/"a1b2c3..."`). Computed once at build time; never requires the
+    /// raw body to be resident afterward.
     pub etag: HeaderValue,
-    /// Pre-computed `Content-Length` for the raw body (avoids chunked
-    /// transfer encoding when serving identity responses).
+    /// Pre-computed `Content-Length` for the raw (identity) body. Computed
+    /// once at build time; never requires the raw body to be resident
+    /// afterward.
     pub content_length: HeaderValue,
     /// Pre-computed `Content-Length` for the zstd body (`None` when no
     /// zstd variant exists).
@@ -166,12 +243,14 @@ impl CachedPage {
     /// computing a weak `ETag` from the body's SHA-256 hash (truncated to
     /// 16 bytes / 32 hex chars for brevity).
     ///
-    /// Text content types (`.html`, `.css`, `.js`) are pre-compressed with zstd.
-    /// Non-text types store `None` for the compressed variant.
+    /// Text content types (`.html`, `.css`, `.js`) are pre-compressed with
+    /// zstd, and the raw body is dropped ([`CachedBody::Compressed`]).
+    /// Non-text types, and any body above `MAX_PRECOMPRESS_BYTES`, retain
+    /// the raw body as the only copy ([`CachedBody::RawOnly`]).
     ///
-    /// Bodies are converted to [`Bytes`] for zero-copy cloning on the
-    /// serving path. Content-Length is pre-computed to avoid chunked
-    /// transfer encoding overhead.
+    /// `ETag` and `Content-Length` are computed from the raw body before
+    /// it is (possibly) dropped, so both stay available regardless of
+    /// which `CachedBody` variant results.
     ///
     /// Supported extensions: see `content_type_for_ext` for the full table
     /// (~20 static site types including images, fonts, wasm, etc.).
@@ -184,6 +263,7 @@ impl CachedPage {
         let etag = compute_etag(&body);
         let content_length = content_length_header(body.len());
         let compressible = is_compressible_ext(ext);
+        let raw_len = body.len();
         let body_zstd = if compressible {
             let compressed = compress_zstd(&body);
             if compressed.is_none() {
@@ -199,9 +279,17 @@ impl CachedPage {
             None
         };
         let content_length_zstd = body_zstd.as_ref().map(|b| content_length_header(b.len()));
+        let cached_body = match body_zstd {
+            Some(zstd) => CachedBody::Compressed {
+                zstd: Bytes::from(zstd),
+                raw_len,
+            },
+            None => CachedBody::RawOnly {
+                body: Bytes::from(body),
+            },
+        };
         Self {
-            body: Bytes::from(body),
-            body_zstd: body_zstd.map(Bytes::from),
+            body: cached_body,
             content_type,
             etag,
             content_length,
@@ -265,22 +353,22 @@ mod tests {
     fn cached_page_compresses_html() {
         let body = "<html><body>Hello, world!</body></html>";
         let page = CachedPage::new("index.html", body.as_bytes().to_vec());
-        assert!(page.body_zstd.is_some(), "HTML should have zstd variant");
-        assert!(!page.body_zstd.as_ref().unwrap().is_empty());
+        assert!(page.body.zstd().is_some(), "HTML should have zstd variant");
+        assert!(!page.body.zstd().unwrap().is_empty());
     }
 
     #[test]
     fn cached_page_compresses_css() {
         let body = "body { color: red; margin: 0; padding: 0; }";
         let page = CachedPage::new("style.css", body.as_bytes().to_vec());
-        assert!(page.body_zstd.is_some(), "CSS should have zstd variant");
+        assert!(page.body.zstd().is_some(), "CSS should have zstd variant");
     }
 
     #[test]
     fn cached_page_compresses_js() {
         let body = "(function(){ var x = 1; console.log(x); })();";
         let page = CachedPage::new("ws.js", body.as_bytes().to_vec());
-        assert!(page.body_zstd.is_some(), "JS should have zstd variant");
+        assert!(page.body.zstd().is_some(), "JS should have zstd variant");
         assert_eq!(page.content_type, "text/javascript; charset=utf-8");
     }
 
@@ -288,7 +376,7 @@ mod tests {
     fn cached_page_skips_compression_for_binary() {
         let body = vec![0u8, 1, 2, 3, 4];
         let page = CachedPage::new("data.bin", body);
-        assert!(page.body_zstd.is_none(), "binary should not have zstd");
+        assert!(page.body.zstd().is_none(), "binary should not have zstd");
     }
 
     #[test]
@@ -296,7 +384,7 @@ mod tests {
         let original = b"<html><body>Hello, world!</body></html>";
         let page = CachedPage::new("index.html", original.to_vec());
 
-        let compressed = page.body_zstd.expect("zstd should be present");
+        let compressed = page.body.zstd().expect("zstd should be present");
         let decompressed = zstd::stream::decode_all(&compressed[..]).unwrap();
         assert_eq!(decompressed, original);
     }
@@ -478,8 +566,8 @@ mod tests {
     fn cached_page_body_is_bytes() {
         let body = b"<html>test</html>";
         let page = CachedPage::new("index.html", body.to_vec());
-        let cloned = page.body.clone();
-        assert_eq!(cloned, body[..]);
+        let identity = page.body.identity_bytes().unwrap();
+        assert_eq!(identity, body[..]);
     }
 
     #[test]
@@ -530,8 +618,76 @@ mod tests {
     fn cached_page_oversize_html_serves_identity_only() {
         let oversize_html = vec![b'x'; MAX_PRECOMPRESS_BYTES + 1];
         let page = CachedPage::new("big.html", oversize_html);
-        assert!(page.body_zstd.is_none());
+        assert!(page.body.zstd().is_none());
         assert!(page.content_length_zstd.is_none());
+    }
+
+    #[test]
+    fn oversized_page_is_raw_only_variant_and_serves_raw_identity() {
+        let oversize_html = vec![b'x'; MAX_PRECOMPRESS_BYTES + 1];
+        let page = CachedPage::new("big.html", oversize_html.clone());
+        assert!(
+            matches!(page.body, CachedBody::RawOnly { .. }),
+            "page above MAX_PRECOMPRESS_BYTES must retain raw as the only copy"
+        );
+        let identity = page
+            .body
+            .identity_bytes()
+            .expect("RawOnly identity_bytes must always succeed");
+        assert_eq!(identity, oversize_html[..]);
+    }
+
+    #[test]
+    fn compressed_page_identity_bytes_round_trip_byte_identical() {
+        let original = b"<html><body>Hello, world!</body></html>";
+        let page = CachedPage::new("index.html", original.to_vec());
+        assert!(
+            matches!(page.body, CachedBody::Compressed { .. }),
+            "compressible small body must drop raw and retain zstd only"
+        );
+        let identity = page
+            .body
+            .identity_bytes()
+            .expect("decode-on-demand must succeed for a well-formed zstd body");
+        assert_eq!(identity, original[..]);
+    }
+
+    #[test]
+    fn compressed_page_etag_and_content_length_available_without_raw() {
+        let original = b"<html><body>Hello, world!</body></html>";
+        let page = CachedPage::new("index.html", original.to_vec());
+        assert!(matches!(page.body, CachedBody::Compressed { .. }));
+        assert_eq!(page.content_length, original.len().to_string());
+        let etag = page.etag.to_str().unwrap();
+        assert!(etag.starts_with("W/\""));
+    }
+
+    #[test]
+    fn bounded_decode_guard_rejects_mismatched_decoded_length() {
+        let real = b"<html>some content that compresses fine</html>";
+        let zstd_bytes = compress_zstd(real).expect("small body should compress");
+        let mismatched = CachedBody::Compressed {
+            zstd: Bytes::from(zstd_bytes),
+            raw_len: real.len() + 1,
+        };
+        assert!(
+            mismatched.identity_bytes().is_none(),
+            "decode must fail closed on a raw_len mismatch, not silently over-allocate"
+        );
+    }
+
+    #[test]
+    fn bounded_decode_guard_caps_allocation_on_oversized_claim() {
+        let payload = vec![b'y'; 10_000];
+        let zstd_bytes = compress_zstd(&payload).expect("payload within precompress bound");
+        let tiny_claim = CachedBody::Compressed {
+            zstd: Bytes::from(zstd_bytes),
+            raw_len: 4,
+        };
+        assert!(
+            tiny_claim.identity_bytes().is_none(),
+            "decode must fail closed when actual decoded size exceeds the stored raw_len bound"
+        );
     }
 
     #[test]

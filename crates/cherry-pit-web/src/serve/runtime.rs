@@ -383,7 +383,7 @@ fn serve_page(
     status: StatusCode,
     skip_etag_check: bool,
 ) -> Response {
-    let has_compressed = page.body_zstd.is_some();
+    let has_compressed = page.body.zstd().is_some();
 
     if !skip_etag_check
         && let Some(if_none_match) = request_headers.get(axum::http::header::IF_NONE_MATCH)
@@ -410,12 +410,22 @@ fn serve_page(
         .get(axum::http::header::ACCEPT_ENCODING)
         .map_or(Encoding::Identity, negotiate_encoding);
 
-    let (body_bytes, content_encoding, content_length) = match encoding {
-        Encoding::Zstd => match page.body_zstd.as_ref() {
-            Some(b) => (b.clone(), Some("zstd"), page.content_length_zstd.clone()),
-            None => (page.body.clone(), None, Some(page.content_length.clone())),
+    let Some((body_bytes, content_encoding, content_length)) = (match encoding {
+        Encoding::Zstd => match page.body.zstd() {
+            Some(b) => Some((b.clone(), Some("zstd"), page.content_length_zstd.clone())),
+            None => page
+                .body
+                .identity_bytes()
+                .map(|b| (b, None, Some(page.content_length.clone()))),
         },
-        Encoding::Identity => (page.body.clone(), None, Some(page.content_length.clone())),
+        Encoding::Identity => page
+            .body
+            .identity_bytes()
+            .map(|b| (b, None, Some(page.content_length.clone()))),
+    }) else {
+        let mut resp = Response::new(axum::body::Body::empty());
+        *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+        return resp;
     };
 
     let mut resp = Response::new(axum::body::Body::from(body_bytes));
