@@ -15,6 +15,10 @@ use gh_report::config::{self, dashboard, runtime};
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
+#[cfg(not(any(feature = "profiling", target_env = "msvc")))]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 /// Non-shipping heap and RSS profiling harness (adr-fmt-gcuq4,
 /// adr-fmt-nfteo memprof-01). Compiled only under the non-default
 /// `profiling` feature; never active in a release build.
