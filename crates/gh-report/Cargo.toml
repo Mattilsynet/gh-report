@@ -32,7 +32,6 @@ profiling = ["dep:dhat"]
 # = dhat::Alloc;); introduces no unsafe token into this crate (adr-fmt-gcuq4
 # Q3). Never a default dependency.
 dhat = { version = "0.3.3", optional = true }
-
 # cherry-pit-wq — M5 B2 swap target for worker_pool / work_queue / rate_limit / pagination / budget re-exports
 cherry-pit-wq = { version = "0.2.0", path = "../cherry-pit-wq" }
 # cherry-pit-storage — M5 B3 swap target for PersistenceError / RunLock / build_snapshot_signature re-exports (CHE-0053:R3 flat surface)
@@ -145,20 +144,6 @@ uuid = { workspace = true }
 moka = { workspace = true }
 
 # Structured JSON logging is handled by infra::cloud_logging (custom layer)
-
-[target.'cfg(not(target_env = "msvc"))'.dependencies]
-# Shipping-binary global allocator (non-`profiling` builds only — see
-# src/bin/gh-report.rs). Attribute-only registration: `Jemalloc`'s
-# `unsafe impl GlobalAlloc` lives inside the tikv-jemallocator crate, not
-# in gh-report source; introduces no unsafe token here (same attribute-only
-# shape as dhat, adr-fmt-gcuq4 Q3). `background_threads` is a build-time
-# cargo feature (jemalloc-sys compiles background-thread-on-by-default
-# support in) — no runtime unsafe `malloc_conf` transmute needed.
-# Aggressive page-return decay tuning (dirty_decay_ms / muzzy_decay_ms) is
-# a build-time knob via the `JEMALLOC_SYS_WITH_MALLOC_CONF` env var passed
-# to `cargo build` (e.g. `JEMALLOC_SYS_WITH_MALLOC_CONF=background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:1000`),
-# not a source-level change — deploy-pipeline concern, not this crate's.
-tikv-jemallocator = { version = "0.7.0", default-features = false, features = ["background_threads_runtime_support", "background_threads"] }
 
 [dev-dependencies]
 async-nats = { workspace = true }
