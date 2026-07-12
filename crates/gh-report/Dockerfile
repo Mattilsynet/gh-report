@@ -43,22 +43,6 @@ COPY crates/ crates/
 
 ARG APP_VERSION
 
-# jemalloc page-return tuning (L1 allocator swap, mission
-# l2l1-memcertainty-1783850000): baked in at BUILD time via
-# JEMALLOC_SYS_WITH_MALLOC_CONF rather than a runtime env var, so the
-# config can never be forgotten in Cloud Run's service env and always
-# matches what was verified in this image. background_thread:true turns
-# on jemalloc's async purge threads (Linux/pthread only — this is the
-# Cloud Run runtime stage, not the QEMU cross-compile note above).
-# dirty_decay_ms/muzzy_decay_ms:1000 (1s, well below jemalloc's 10s
-# default) is the aggressive-but-safe choice: short enough to actually
-# collapse the ~130MB retained-page RSS peak (adr-fmt-iqx9a) between
-# collection bursts, long enough that background purge doesn't fire on
-# every allocation cycle and compete for CPU under Cloud Run's CPU
-# throttling (a 0ms decay purges continuously — the FLO-0008-adjacent
-# risk named in adr-fmt-ft0mf §6).
-ENV JEMALLOC_SYS_WITH_MALLOC_CONF="background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:1000"
-
 # Cache mounts: Cargo registry + target dir survive across builds.
 # The final binary is copied out so the cache mount is not in the image.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \

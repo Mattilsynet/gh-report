@@ -19,23 +19,6 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 #[global_allocator]
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-#[cfg(not(any(feature = "profiling", target_env = "msvc")))]
-fn log_jemalloc_config() {
-    match tikv_jemalloc_ctl::opt::background_thread::read() {
-        Ok(background_thread) => tracing::info!(
-            background_thread,
-            "jemalloc allocator active; effective malloc_conf confirmed via opt.background_thread"
-        ),
-        Err(e) => tracing::warn!(
-            error = %e,
-            "jemalloc allocator active; could not read opt.background_thread to confirm malloc_conf"
-        ),
-    }
-}
-
-#[cfg(any(feature = "profiling", target_env = "msvc"))]
-fn log_jemalloc_config() {}
-
 /// Non-shipping heap and RSS profiling harness (adr-fmt-gcuq4,
 /// adr-fmt-nfteo memprof-01). Compiled only under the non-default
 /// `profiling` feature; never active in a release build.
@@ -286,8 +269,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("failed to set global subscriber");
         }
     }
-
-    log_jemalloc_config();
 
     let dashboard_config = dashboard::DashboardConfig::new(cli.pass_threshold, cli.warn_threshold)?;
     let mut config = runtime::RuntimeConfig::with_force_unlock(

@@ -155,13 +155,10 @@ moka = { workspace = true }
 # cargo feature (jemalloc-sys compiles background-thread-on-by-default
 # support in) — no runtime unsafe `malloc_conf` transmute needed.
 # Aggressive page-return decay tuning (dirty_decay_ms / muzzy_decay_ms) is
-# baked in at Docker build time via the `JEMALLOC_SYS_WITH_MALLOC_CONF`
-# env var set in crates/gh-report/Dockerfile — not a source-level change.
+# a build-time knob via the `JEMALLOC_SYS_WITH_MALLOC_CONF` env var passed
+# to `cargo build` (e.g. `JEMALLOC_SYS_WITH_MALLOC_CONF=background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:1000`),
+# not a source-level change — deploy-pipeline concern, not this crate's.
 tikv-jemallocator = { version = "0.7.0", default-features = false, features = ["background_threads_runtime_support", "background_threads"] }
-# Read-only confirmation that the baked-in malloc_conf reached the linked
-# jemalloc (startup log only, see src/bin/gh-report.rs). `opt::*::read()`
-# calls are plain safe functions; no unsafe token introduced.
-tikv-jemalloc-ctl = { version = "0.7.0", default-features = false }
 
 [dev-dependencies]
 async-nats = { workspace = true }
