@@ -11,6 +11,103 @@ use clap::{Parser, ValueEnum};
 
 use gh_report::config::{self, dashboard, runtime};
 
+#[cfg(feature = "profiling")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
+/// Non-shipping heap and RSS profiling harness (adr-fmt-gcuq4,
+/// adr-fmt-nfteo memprof-01). Compiled only under the non-default
+/// `profiling` feature; never active in a release build.
+#[cfg(feature = "profiling")]
+mod profiling {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    /// RAII guard bundling the dhat heap profiler and the background RSS
+    /// sampler. Dropping this at the end of `main` flushes `dhat-heap.json`
+    /// and stops the sampler thread.
+    pub struct ProfilingGuard {
+        _dhat: dhat::Profiler,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        sampler: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl ProfilingGuard {
+        /// Starts the dhat heap profiler and an RSS-over-time sampler.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the RSS CSV path (env `RSS_CSV`, default `rss.csv`)
+        /// cannot be created.
+        #[must_use]
+        pub fn start() -> Self {
+            let dhat_profiler = dhat::Profiler::builder()
+                .file_name(
+                    std::env::var("DHAT_HEAP_JSON")
+                        .unwrap_or_else(|_| "dhat-heap.json".to_string()),
+                )
+                .build();
+
+            let csv_path = std::env::var("RSS_CSV").unwrap_or_else(|_| "rss.csv".to_string());
+            let mut csv = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&csv_path)
+                .expect("open RSS_CSV path for the profiling harness");
+            writeln!(csv, "epoch_ms,rss_bytes").ok();
+
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let stop_for_thread = std::sync::Arc::clone(&stop);
+            let pid = std::process::id();
+            let sampler = std::thread::spawn(move || {
+                while !stop_for_thread.load(std::sync::atomic::Ordering::Relaxed) {
+                    if let Some(rss_bytes) = sample_rss_bytes(pid) {
+                        let epoch_ms = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis();
+                        writeln!(csv, "{epoch_ms},{rss_bytes}").ok();
+                        csv.flush().ok();
+                    }
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+            });
+
+            Self {
+                _dhat: dhat_profiler,
+                stop,
+                sampler: Some(sampler),
+            }
+        }
+    }
+
+    impl Drop for ProfilingGuard {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            if let Some(handle) = self.sampler.take() {
+                handle.join().ok();
+            }
+        }
+    }
+
+    /// Samples the resident set size of `pid` in bytes via `ps -o rss=`.
+    ///
+    /// Returns `None` if the `ps` invocation fails or its output cannot be
+    /// parsed; the sampler simply skips that tick.
+    fn sample_rss_bytes(pid: u32) -> Option<u64> {
+        let output = std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        let rss_kb: u64 = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .ok()?;
+        Some(rss_kb * 1024)
+    }
+}
+
 /// Log output format.
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
 enum LogFormat {
@@ -110,6 +207,9 @@ struct Cli {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "profiling")]
+    let _profiling_guard = profiling::ProfilingGuard::start();
+
     gh_report::infra::tls::install_default_crypto_provider();
 
     let cli = Cli::parse();
