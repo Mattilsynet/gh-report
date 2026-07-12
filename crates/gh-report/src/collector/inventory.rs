@@ -11,7 +11,7 @@ use tracing::{debug, warn};
 use crate::config;
 use crate::domain::repository::{Repository, Visibility};
 use crate::error::InventoryError;
-use crate::github::client::GitHubClient;
+use crate::github::client::{ApiOutcome, GitHubClient};
 use crate::github::dto::GhRepository;
 
 /// Intermediate payload returned by [`build_inventory_from_api`].
@@ -73,12 +73,15 @@ pub async fn build_inventory_from_api(
         return Err(InventoryError::ApiFetchFailed { reason });
     }
 
-    let data = response
-        .data()
-        .cloned()
-        .ok_or(InventoryError::ApiFetchFailed {
+    let complete = !response.is_truncated();
+    let ApiOutcome::Success {
+        data: Some(data), ..
+    } = response
+    else {
+        return Err(InventoryError::ApiFetchFailed {
             reason: "empty response".to_string(),
-        })?;
+        });
+    };
 
     let raw_repos: Vec<GhRepository> =
         serde_json::from_value(data).map_err(|e| InventoryError::ApiFetchFailed {
@@ -140,7 +143,7 @@ pub async fn build_inventory_from_api(
         organization: client.org_name.clone(),
         generated_at: format_utc(now),
         repositories,
-        complete: !response.is_truncated(),
+        complete,
         inventory_fetched_at: Some(format_utc(Timestamp::now())),
     })
 }

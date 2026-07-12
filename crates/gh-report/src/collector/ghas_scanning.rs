@@ -217,11 +217,13 @@ pub async fn collect_org_alerts(
         return build_failure_summary(&result);
     }
 
-    let alert_items = result
-        .data()
-        .and_then(serde_json::Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+    let alert_items = match result {
+        ApiOutcome::Success {
+            data: Some(serde_json::Value::Array(items)),
+            ..
+        } => items,
+        _ => Vec::new(),
+    };
 
     debug!(
         alert_count = alert_items.len(),

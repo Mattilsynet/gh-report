@@ -805,23 +805,32 @@ impl GitHubClient {
 
             match serde_json::from_str::<serde_json::Value>(&body) {
                 Ok(serde_json::Value::Array(items)) => {
+                    let remaining = config::MAX_PAGINATED_ITEMS.saturating_sub(all_items.len());
+                    if items.len() > remaining {
+                        all_items.extend(items.into_iter().take(remaining));
+                        warn!(
+                            items = all_items.len(),
+                            path, "paginated item limit reached"
+                        );
+                        truncated = true;
+                        break;
+                    }
                     all_items.extend(items);
                 }
                 Ok(single) => {
+                    if all_items.len() >= config::MAX_PAGINATED_ITEMS {
+                        warn!(
+                            items = all_items.len(),
+                            path, "paginated item limit reached"
+                        );
+                        truncated = true;
+                        break;
+                    }
                     all_items.push(single);
                 }
                 Err(e) => {
                     return ApiOutcome::failure(Some(status), format!("invalid json: {e}"), false);
                 }
-            }
-
-            if all_items.len() > config::MAX_PAGINATED_ITEMS {
-                warn!(
-                    items = all_items.len(),
-                    path, "paginated item limit reached"
-                );
-                truncated = true;
-                break;
             }
         }
 
@@ -2564,6 +2573,40 @@ mod tests {
         assert_eq!(
             caps.private_branch_protection_read,
             CapabilityStatus::NotProbed
+        );
+    }
+
+    #[tokio::test]
+    async fn request_paginated_caps_items_before_accumulation_not_after() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let oversized_page: Vec<serde_json::Value> = (0..=config::MAX_PAGINATED_ITEMS)
+            .map(|i| serde_json::json!({"id": i}))
+            .collect();
+
+        let server = MockServer::start().await;
+        Mock::given(path("/oversized-page"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(oversized_page))
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let result = client.request("/oversized-page", true, 1, 60).await;
+
+        assert!(result.is_ok());
+        assert!(
+            result.is_truncated(),
+            "single oversized page must be reported truncated"
+        );
+        let items = result
+            .data()
+            .and_then(serde_json::Value::as_array)
+            .expect("data should be an array");
+        assert_eq!(
+            items.len(),
+            config::MAX_PAGINATED_ITEMS,
+            "cap must be enforced at accumulation time, never exceeded even transiently"
         );
     }
 }
