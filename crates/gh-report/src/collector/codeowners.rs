@@ -1,9 +1,10 @@
 //! CODEOWNERS evaluation.
 //!
-//! Checks for CODEOWNERS in `.github/CODEOWNERS` (conforming) and
-//! root `CODEOWNERS` (non-conforming). When a CODEOWNERS file is found,
-//! the content is downloaded, base64-decoded, and parsed to extract
-//! owner references.
+//! Checks for CODEOWNERS in `.github/CODEOWNERS` (conforming), root
+//! `CODEOWNERS`, and `docs/CODEOWNERS` (both non-conforming), matching
+//! GitHub's own three-location search order. When a CODEOWNERS file is
+//! found, the content is downloaded, base64-decoded, and parsed to
+//! extract owner references.
 
 use base64::Engine;
 use tracing::{debug, instrument, trace, warn};
@@ -137,17 +138,55 @@ fn try_parse_content(
     Ok(codeowners_parser::parse_codeowners(&text))
 }
 
+/// Outcome of probing a single candidate CODEOWNERS path.
+enum PathProbe {
+    /// File found at this path; classify as `status` and parse content.
+    Found(CodeownersStatus, &'static str, serde_json::Value),
+    /// Permission denied or transient failure — evaluation should stop
+    /// and report `unknown`.
+    Indeterminate,
+    /// No file at this path; caller should try the next candidate.
+    NotFound,
+}
+
+/// Probe a single candidate CODEOWNERS path via the Contents API.
+async fn probe_path(
+    client: &GitHubClient,
+    safe_name: &str,
+    path: &'static str,
+    status: CodeownersStatus,
+) -> PathProbe {
+    let outcome = client
+        .request(
+            &format!("/repos/{}/{}/contents/{}", client.org_name, safe_name, path),
+            false,
+            config::DEFAULT_MAX_RETRIES,
+            config::DEFAULT_REQUEST_TIMEOUT_SECS,
+        )
+        .await;
+
+    if is_file_response(&outcome) {
+        let Some(data) = outcome.data().cloned() else {
+            return PathProbe::Found(status, path, serde_json::Value::Null);
+        };
+        return PathProbe::Found(status, path, data);
+    }
+    if outcome.status_code() == Some(403) || outcome.is_retryable() {
+        return PathProbe::Indeterminate;
+    }
+    PathProbe::NotFound
+}
+
 /// Evaluate CODEOWNERS for a repository.
 ///
-/// Evaluation logic:
-/// 1. Check `.github/CODEOWNERS` — if a file exists, return `conforming`.
-/// 2. If permission denied or retryable, return `unknown`.
-/// 3. Check root `CODEOWNERS` — if a file exists, return `non_conforming`.
-/// 4. If permission denied or retryable, return `unknown`.
-/// 5. Otherwise, return `absent`.
+/// Checks candidate paths in order — `.github/CODEOWNERS` (conforming),
+/// root `CODEOWNERS`, then `docs/CODEOWNERS` (both non-conforming, matching
+/// GitHub's own three-location search) — returning at the first match.
+/// A permission-denied or transient failure on any candidate short-circuits
+/// to `unknown`; no file at any candidate yields `absent`.
 ///
-/// When a file is found (conforming or non-conforming), the content is
-/// downloaded, base64-decoded, and parsed to extract owner references.
+/// When a file is found, the content is downloaded, base64-decoded, and
+/// parsed to extract owner references.
 #[instrument(skip_all, fields(repo = %repo.name))]
 pub async fn evaluate(
     client: &GitHubClient,
@@ -164,68 +203,34 @@ pub async fn evaluate(
 
     trace!(repo = %repo.name, "evaluating CODEOWNERS");
 
-    let conforming = client
-        .request(
-            &format!(
-                "/repos/{}/{}/contents/{}",
-                client.org_name,
-                safe_name,
-                config::CONFORMING_CODEOWNERS_PATH
-            ),
-            false,
-            config::DEFAULT_MAX_RETRIES,
-            config::DEFAULT_REQUEST_TIMEOUT_SECS,
-        )
-        .await;
-
-    if is_file_response(&conforming) {
-        debug!(repo = %repo.name, path = config::CONFORMING_CODEOWNERS_PATH, status = "conforming", "CODEOWNERS found at conforming path");
-        let parsed_or_truncation = match conforming.data() {
-            Some(data) => try_parse_content(data, &repo.name),
-            None => Err(CodeownersTruncationReason::ContentMissing),
-        };
-        return build_result_with_parsed(
-            CodeownersStatus::Conforming,
+    let candidates = [
+        (
             config::CONFORMING_CODEOWNERS_PATH,
-            run_timestamp,
-            parsed_or_truncation,
-        );
-    }
-    if conforming.status_code() == Some(403) || conforming.is_retryable() {
-        debug!(repo = %repo.name, status = "unknown", "CODEOWNERS conforming path check failed (403 or transient)");
-        return build_result(CodeownersStatus::Unknown, None, run_timestamp);
-    }
-
-    let non_conforming = client
-        .request(
-            &format!(
-                "/repos/{}/{}/contents/{}",
-                client.org_name,
-                safe_name,
-                config::NON_CONFORMING_CODEOWNERS_PATH
-            ),
-            false,
-            config::DEFAULT_MAX_RETRIES,
-            config::DEFAULT_REQUEST_TIMEOUT_SECS,
-        )
-        .await;
-
-    if is_file_response(&non_conforming) {
-        debug!(repo = %repo.name, path = config::NON_CONFORMING_CODEOWNERS_PATH, status = "non_conforming", "CODEOWNERS found at non-conforming path");
-        let parsed_or_truncation = match non_conforming.data() {
-            Some(data) => try_parse_content(data, &repo.name),
-            None => Err(CodeownersTruncationReason::ContentMissing),
-        };
-        return build_result_with_parsed(
-            CodeownersStatus::NonConforming,
+            CodeownersStatus::Conforming,
+        ),
+        (
             config::NON_CONFORMING_CODEOWNERS_PATH,
-            run_timestamp,
-            parsed_or_truncation,
-        );
-    }
-    if non_conforming.status_code() == Some(403) || non_conforming.is_retryable() {
-        debug!(repo = %repo.name, status = "unknown", "CODEOWNERS root path check failed (403 or transient)");
-        return build_result(CodeownersStatus::Unknown, None, run_timestamp);
+            CodeownersStatus::NonConforming,
+        ),
+        (
+            config::DOCS_CODEOWNERS_PATH,
+            CodeownersStatus::NonConforming,
+        ),
+    ];
+
+    for (path, status) in candidates {
+        match probe_path(client, &safe_name, path, status).await {
+            PathProbe::Found(status, path, data) => {
+                debug!(repo = %repo.name, path, status = %status, "CODEOWNERS found");
+                let parsed_or_truncation = try_parse_content(&data, &repo.name);
+                return build_result_with_parsed(status, path, run_timestamp, parsed_or_truncation);
+            }
+            PathProbe::Indeterminate => {
+                debug!(repo = %repo.name, path, status = "unknown", "CODEOWNERS path check failed (403 or transient)");
+                return build_result(CodeownersStatus::Unknown, None, run_timestamp);
+            }
+            PathProbe::NotFound => {}
+        }
     }
 
     debug!(repo = %repo.name, status = "absent", "no CODEOWNERS file found");
@@ -235,6 +240,78 @@ pub async fn evaluate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::github::auth::GitHubCredential;
+    use crate::github::budget::BudgetGate;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use wiremock::matchers::path;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn test_client(base_url: &str) -> GitHubClient {
+        let credential = GitHubCredential {
+            mode: crate::domain::auth::AuthMode::Pat,
+            token: secrecy::SecretString::from("test-token"),
+            expires_at: None,
+        };
+        let budget = Arc::new(BudgetGate::new(
+            config::API_BUDGET_LIMIT,
+            Duration::from_secs(config::API_BUDGET_WAIT_SECS),
+        ));
+        let rate_limit = Arc::new(crate::github::rate_limit::new_default());
+        GitHubClient::new(credential, base_url, "test-org", None, budget, rate_limit)
+            .expect("test client construction should succeed")
+    }
+
+    fn not_found() -> ResponseTemplate {
+        ResponseTemplate::new(404).set_body_json(serde_json::json!({"message": "Not Found"}))
+    }
+
+    /// A repo whose only CODEOWNERS lives at `docs/CODEOWNERS` (GitHub's
+    /// third search location) must still be classified `non_conforming`
+    /// and parsed — not silently treated as `absent`.
+    #[tokio::test]
+    async fn docs_codeowners_is_found_and_classified_non_conforming() {
+        let server = MockServer::start().await;
+
+        Mock::given(path(format!(
+            "/repos/test-org/docs-only/contents/{}",
+            config::CONFORMING_CODEOWNERS_PATH
+        )))
+        .respond_with(not_found())
+        .mount(&server)
+        .await;
+        Mock::given(path(format!(
+            "/repos/test-org/docs-only/contents/{}",
+            config::NON_CONFORMING_CODEOWNERS_PATH
+        )))
+        .respond_with(not_found())
+        .mount(&server)
+        .await;
+        Mock::given(path(format!(
+            "/repos/test-org/docs-only/contents/{}",
+            config::DOCS_CODEOWNERS_PATH
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "type": "file",
+            "encoding": "base64",
+            "content": base64::engine::general_purpose::STANDARD.encode("* @org/security\n"),
+        })))
+        .mount(&server)
+        .await;
+
+        let client = test_client(&server.uri());
+        let repo = crate::test_fixtures::make_repository(
+            "docs-only",
+            false,
+            crate::domain::repository::Visibility::Public,
+        );
+        let result = evaluate(&client, &repo, "2026-01-01T00:00:00+00:00").await;
+
+        assert_eq!(result.status, CodeownersStatus::NonConforming);
+        assert_eq!(result.path.as_deref(), Some(config::DOCS_CODEOWNERS_PATH));
+        let parsed = result.parsed.expect("docs/CODEOWNERS should parse");
+        assert_eq!(parsed.entries[0].owners, vec!["@org/security"]);
+    }
 
     #[test]
     fn conforming_result_structure() {

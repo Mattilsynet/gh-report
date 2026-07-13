@@ -14,6 +14,13 @@ pub const CONFORMING_CODEOWNERS_PATH: &str = ".github/CODEOWNERS";
 /// Non-conforming CODEOWNERS location (root `CODEOWNERS`).
 pub const NON_CONFORMING_CODEOWNERS_PATH: &str = "CODEOWNERS";
 
+/// Non-conforming CODEOWNERS location (`docs/CODEOWNERS`), GitHub's third
+/// search location alongside `.github/` and root. Classified the same as
+/// [`NON_CONFORMING_CODEOWNERS_PATH`] — no new [`CodeownersStatus`] variant.
+///
+/// [`CodeownersStatus`]: crate::domain::checks::CodeownersStatus
+pub const DOCS_CODEOWNERS_PATH: &str = "docs/CODEOWNERS";
+
 /// Current inventory schema version.
 pub const INVENTORY_SCHEMA_VERSION: &str = "1.0";
 
