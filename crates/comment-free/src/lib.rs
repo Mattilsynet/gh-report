@@ -115,6 +115,7 @@ impl std::ops::AddAssign for RewriteCounts {
 }
 /// All terminal-error variants raised by the `comment-free` binary.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum CommentFreeError {
     /// ROOT path passed on the CLI is not a directory.
     #[error("ROOT is not a directory")]

@@ -59,6 +59,7 @@ pub struct ScrapeReport {
 
 /// Error variants for [`scrape_corpus`].
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ScrapeError {
     /// `adr-fmt.toml` could not be loaded.
     Config(LoadError),

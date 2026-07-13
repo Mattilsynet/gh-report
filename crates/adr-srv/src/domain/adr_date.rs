@@ -33,6 +33,7 @@ pub struct AdrDate {
 
 /// Construction error for [`AdrDate`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AdrDateError {
     /// `month` was 0 or > 12.
     InvalidMonth(u8),

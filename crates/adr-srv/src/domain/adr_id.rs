@@ -32,6 +32,7 @@ pub const KNOWN_DOMAINS: &[&str] = &[
 
 /// Parse / validation error for [`AdrId`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AdrIdError {
     /// Input did not contain the `-` separator.
     MissingSeparator,

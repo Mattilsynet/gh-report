@@ -111,6 +111,7 @@ pub fn load_quiet(marker_dir: &Path) -> Result<Config, LoadError> {
 /// malformed TOML or a missing `[corpus]` table — discovery may skip
 /// and continue walking.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum LoadError {
     Io(String),
     Parse(String),

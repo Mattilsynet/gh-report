@@ -25,6 +25,7 @@ use std::path::{Component, Path, PathBuf};
 
 /// Reason a path was rejected by [`contained_join`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ContainmentError {
     /// Segment is an absolute path.
     Absolute(String),
