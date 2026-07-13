@@ -142,7 +142,9 @@ pub enum FileOutcome {
         diff: Option<String>,
         counts: RewriteCounts,
     },
-    Unchanged,
+    Unchanged {
+        counts: RewriteCounts,
+    },
     ParseError(String),
     IoError(String),
 }
@@ -161,7 +163,10 @@ pub struct ProcessOptions {
 /// - [`FileOutcome::Rewritten`] when the file content changed (with a
 ///   unified diff in `dry_run` mode, `None` otherwise).
 /// - [`FileOutcome::Unchanged`] when neither pass produced bytes that
-///   differ from the input.
+///   differ from the input. `counts` still reports detected preserved
+///   idioms (e.g. `safety_preserved`) even though no bytes moved, so a
+///   file whose only comment is a preserved `// SAFETY:` line is not
+///   silently invisible to the rewrite summary.
 /// - [`FileOutcome::ParseError`] when the syn parse required for the
 ///   doc-link pass fails. The file is left untouched on disk.
 /// - [`FileOutcome::IoError`] for any I/O failure.
@@ -190,7 +195,7 @@ pub fn process_file(path: &Path, opts: &ProcessOptions) -> FileOutcome {
     let (rewritten, mut counts) = strip_line_comments_with_counts(&after_links);
     counts.doc_links_rewritten = doc_links_rewritten;
     if rewritten == original {
-        return FileOutcome::Unchanged;
+        return FileOutcome::Unchanged { counts };
     }
     if opts.dry_run {
         let diff = unified_diff(path, &original, &rewritten, opts.context);
@@ -1496,7 +1501,7 @@ mod process_file_tests {
         let path = td.path().join("a.rs");
         fs::write(&path, "   \n\t\n  \n").unwrap();
         match process_file(&path, &opts()) {
-            FileOutcome::Unchanged => {}
+            FileOutcome::Unchanged { .. } => {}
             other => panic!("expected Unchanged for whitespace-only file, got {other:?}"),
         }
     }
@@ -1506,8 +1511,20 @@ mod process_file_tests {
         let path = td.path().join("a.rs");
         fs::write(&path, "").unwrap();
         match process_file(&path, &opts()) {
-            FileOutcome::Unchanged => {}
+            FileOutcome::Unchanged { .. } => {}
             other => panic!("expected Unchanged for empty file, got {other:?}"),
+        }
+    }
+    #[test]
+    fn safety_only_file_is_unchanged_but_counts_safety_preserved() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("a.rs");
+        fs::write(&path, "// SAFETY: pointer is valid\nfn f() {}\n").unwrap();
+        match process_file(&path, &opts()) {
+            FileOutcome::Unchanged { counts } => {
+                assert_eq!(counts.safety_preserved, 1);
+            }
+            other => panic!("expected Unchanged for SAFETY-only file, got {other:?}"),
         }
     }
     #[test]

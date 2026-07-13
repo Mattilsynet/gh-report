@@ -216,8 +216,9 @@ fn run_strip(opts: &Options) -> u32 {
                     println!("REWRITE\t{}", path.display());
                 }
             }
-            FileOutcome::Unchanged => {
+            FileOutcome::Unchanged { counts } => {
                 unchanged += 1;
+                counts_total += counts;
             }
             FileOutcome::ParseError(msg) => {
                 errors += 1;
