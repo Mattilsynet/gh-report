@@ -58,7 +58,8 @@ match.
 
 - Triggers on push/PR to `main`. Third-party actions are **SHA-pinned**
   (Dependabot updates them); keep that pattern if you edit the workflow.
-- Two custom **tripwire** jobs grep the tree and fail the build — do not break
+- Two custom **tripwire** jobs live in `.github/workflows/ci-reusable.yml`
+  (called from `ci.yml`) and grep the tree to fail the build — do not break
   the invariants they guard:
   - `async-trait-tripwire`: no `async-trait` in any `cherry-pit-*` dep tree
     (RPITIT only; CHE-0025 / CHE-0029:R4).
