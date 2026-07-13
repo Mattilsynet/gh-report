@@ -166,6 +166,29 @@ where
     /// Returns [`FiberStoreError::DivergedFiber`] when the key already maps to
     /// more than one fiber, [`FiberStoreError::Infrastructure`] on pardosa
     /// append/sync failure, or [`FiberStoreError::Poisoned`].
+    ///
+    /// # Durability
+    ///
+    /// On `Ok(())` the event is durably captured on the key's fiber and
+    /// fenced. An `Err` means the append did NOT durably land: for a
+    /// JetStream-backed store the underlying pardosa-nats substrate performs
+    /// a single `publish_once` with NO automatic retry or backoff
+    /// (PGN-0016:R6), so a returned error is a genuine single-shot publish
+    /// failure, not a transient the substrate will absorb.
+    ///
+    /// # Recovery
+    ///
+    /// Recovery from an `Err` is the caller's obligation, not the
+    /// substrate's (COM-0025:R1, PGN-0016:R6). The caller MUST decide, per
+    /// its durability requirements, among: retry the record (safe — the
+    /// subject-sequence fence makes a re-append idempotent per
+    /// PGN-0016:R2), route the event to a dead-letter path, or accept the
+    /// loss. The store performs none of these automatically.
+    /// [`FiberStoreError::Infrastructure`] and
+    /// [`FiberStoreError::BackendInfrastructure`] are the retryable
+    /// substrate-failure surfaces; [`FiberStoreError::DivergedFiber`] and
+    /// [`FiberStoreError::Poisoned`] are terminal and MUST NOT be blindly
+    /// retried.
     pub fn record(&self, domain_key: &str, event: E, key: KeyFn<E>) -> Result<(), FiberStoreError> {
         record_defined(&self.inner, domain_key, event, key)
     }
@@ -179,6 +202,21 @@ where
     /// Returns [`FiberStoreError::DivergedFiber`],
     /// [`FiberStoreError::Infrastructure`], or [`FiberStoreError::Poisoned`]. A
     /// no-op key that was never seen or is already detached returns `Ok(())`.
+    ///
+    /// # Durability
+    ///
+    /// On `Ok(())` the soft-delete is durably fenced. As with
+    /// [`Self::record`], an `Err` from a JetStream-backed store is a
+    /// single-shot `publish_once` failure with no substrate-level retry
+    /// (PGN-0016:R6); the detach did not durably land.
+    ///
+    /// # Recovery
+    ///
+    /// Recovery is the caller's obligation (COM-0025:R1). Retry is
+    /// idempotent under the subject-sequence fence (PGN-0016:R2);
+    /// alternatively dead-letter or accept the loss. Note a never-seen or
+    /// already-detached key returns `Ok(())` (no-op), so `Err` always
+    /// denotes a genuine substrate failure, never a missing key.
     pub fn detach(&self, domain_key: &str, event: E, key: KeyFn<E>) -> Result<(), FiberStoreError> {
         let mut guard = self.inner.lock().map_err(|_| FiberStoreError::Poisoned)?;
         let inner = &mut *guard;
