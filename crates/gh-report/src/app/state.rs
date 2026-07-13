@@ -609,8 +609,8 @@ fn open_or_create_jetstream(
     let open_nats = nats.clone();
     let open_handle = handle.clone();
     open_or_create_jetstream_with(
-        move || EventStoreImpl::open_jetstream(jetstream_backend(open_nats, open_handle)),
-        move || EventStoreImpl::create_jetstream(jetstream_backend(nats, handle)),
+        move || EventStoreImpl::open_jetstream(jetstream_backend(open_nats, open_handle)?),
+        move || EventStoreImpl::create_jetstream(jetstream_backend(nats, handle)?),
     )
 }
 
@@ -621,8 +621,8 @@ fn open_or_create_org_jetstream(
     let open_nats = nats.clone();
     let open_handle = handle.clone();
     open_or_create_org_jetstream_with(
-        move || OrgEventStoreImpl::open_jetstream(jetstream_backend(open_nats, open_handle)),
-        move || OrgEventStoreImpl::create_jetstream(jetstream_backend(nats, handle)),
+        move || OrgEventStoreImpl::open_jetstream(jetstream_backend(open_nats, open_handle)?),
+        move || OrgEventStoreImpl::create_jetstream(jetstream_backend(nats, handle)?),
     )
 }
 
@@ -648,10 +648,18 @@ fn open_or_create_jetstream_with(
     }
 }
 
+/// Build a `JetStream`-backed pardosa adapter from runtime config.
+///
+/// # Errors
+///
+/// Returns [`crate::store::StoreError::Infrastructure`] when the
+/// derived `JetStreamConfig` fails validation (e.g. an
+/// environment-supplied operation timeout override that does not
+/// parse as a positive integer second count).
 fn jetstream_backend(
     nats: crate::config::runtime::NatsStoreConfig,
     handle: tokio::runtime::Handle,
-) -> PardosaJetStreamBackend {
+) -> Result<PardosaJetStreamBackend, crate::store::StoreError> {
     let mut builder = JetStreamConfig::builder()
         .stream_name(nats.stream_name)
         .subject(nats.subject)
@@ -662,9 +670,11 @@ fn jetstream_backend(
     if let Some(path) = nats.credentials_path {
         builder = builder.credentials_path(path);
     }
-    let cfg = builder.build().expect("validated NATS store config");
+    let cfg = builder
+        .build()
+        .map_err(|error| crate::store::StoreError::Infrastructure(error.to_string()))?;
     let substrate = SubstrateJetStreamBackend::open(cfg);
-    PardosaJetStreamBackend::open(substrate)
+    Ok(PardosaJetStreamBackend::open(substrate))
 }
 
 /// Open the selected event store on Tokio's blocking pool.
