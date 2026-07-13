@@ -24,10 +24,10 @@
 //!   Realised inside the WS upgrade handler via
 //!   `Arc<Semaphore>::try_acquire_owned` returning `503` on exhaustion;
 //!   the owned permit is held for the connection lifetime. Attached on
-//! the projection router only — the cqrs surface is HTTP-only per
-//! CHE-0049:R3 and ignores this field. SEC-0003:R3 route-scoped per
-//! CHE-0049:R3 + R11. Preserves the permit discipline of the original
-//! `gh-report` donor implementation this layer supersedes.
+//!   the projection router only — the cqrs surface is HTTP-only per
+//!   CHE-0049:R3 and ignores this field. SEC-0003:R3 route-scoped per
+//!   CHE-0049:R3 + R11. Preserves the permit discipline of the original
+//!   `gh-report` donor implementation this layer supersedes.
 //!
 //! ## No `Default`
 //!
