@@ -81,7 +81,9 @@ These are load-bearing; violating them is an abort-class change:
 - **`#[non_exhaustive]` on error enums is mandated** (PGN-0006, CHE-0021 scoped
   to error types) — adding variants is non-breaking, don't remove it. It is
   **not** for serde DTOs.
-- **Substrate ring purity:** `pardosa-nats` depends only on tokio + async-nats;
+- **Substrate ring purity:** `pardosa-nats` depends only on tokio, async-nats,
+  bytes, blake3, and futures-util (plus tempfile behind an optional test
+  feature) — no `cherry-pit-*` or `pardosa` adapter-ring edges;
   instrumentation/metrics belong in the `pardosa` adapter ring, never in
   `pardosa-nats`. High-cardinality ids (event_id, ack, stream) go on
   spans/logs, never metric labels (COM-0019:R6).
