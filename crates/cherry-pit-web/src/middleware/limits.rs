@@ -18,20 +18,16 @@
 //!   that returns `503 Service Unavailable` when the permit budget is
 //!   exhausted. Attached on both routers. SEC-0003:R3 ("backpressure
 //!   mechanisms exist at every ingestion point to shed load when
-//!   capacity is exceeded"). Matches the donor crate `gh-report`'s
-//!   `infra::server::http_concurrency_limit` shape byte-for-byte so the
-//!   SEC-0003 falsifier tests at
-//!   `crates/gh-report/src/infra/server/server.rs:2164,:2209` continue
-//!   to observe the same accept/shed topology once Track 4.3 migrates
-//!   them onto this router.
+//!   capacity is exceeded"). Preserves the accept/shed topology of the
+//!   original `gh-report` donor implementation this layer supersedes.
 //! - **`max_ws_connections`** — bounds concurrent WebSocket upgrades.
 //!   Realised inside the WS upgrade handler via
 //!   `Arc<Semaphore>::try_acquire_owned` returning `503` on exhaustion;
 //!   the owned permit is held for the connection lifetime. Attached on
-//!   the projection router only — the cqrs surface is HTTP-only per
-//!   CHE-0049:R3 and ignores this field. SEC-0003:R3 route-scoped per
-//!   CHE-0049:R3 + R11. Matches the donor's permit discipline at
-//!   `server.rs:3144,:3559`.
+//! the projection router only — the cqrs surface is HTTP-only per
+//! CHE-0049:R3 and ignores this field. SEC-0003:R3 route-scoped per
+//! CHE-0049:R3 + R11. Preserves the permit discipline of the original
+//! `gh-report` donor implementation this layer supersedes.
 //!
 //! ## No `Default`
 //!
@@ -136,11 +132,9 @@ impl LayerLimits {
 ///
 /// Bounds the number of in-flight HTTP requests at the router level.
 /// Returns `503 Service Unavailable` immediately on exhaustion (sheds
-/// load) rather than queueing — matches the donor crate
-/// `gh-report::infra::server::http_concurrency_limit` semantics so
-/// SEC-0003:R3 falsifier tests at
-/// `crates/gh-report/src/infra/server/server.rs:2164,:2209` observe the
-/// same accept/shed topology after Track 4.3 migration.
+/// load) rather than queueing — preserves the "shed, don't queue"
+/// accept/shed topology of the original `gh-report` donor
+/// implementation this layer supersedes, per SEC-0003:R3.
 ///
 /// `tower::limit::ConcurrencyLimit` is deliberately **not** used: that
 /// layer queues, which violates the "shed, don't queue" obligation in
