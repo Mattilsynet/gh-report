@@ -27,6 +27,13 @@ graphify-out/
 # LLM scratch notes (pre-research drafts, not intentional docs)
 docs/notes/
 
+# Memory-profiling outputs (per-run scratch from dhat / RSS sampling;
+# rebuildable, not intentional artefacts).
+dhat-heap.json
+**/dhat-heap.json
+rss.csv
+**/rss.csv
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 
