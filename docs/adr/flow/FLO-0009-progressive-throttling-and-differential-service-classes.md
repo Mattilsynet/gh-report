@@ -1,14 +1,14 @@
 # FLO-0009. Progressive Throttling and Differential Service Classes
 
 Date: 2026-05-03
-Last-reviewed: 2026-05-03
+Last-reviewed: 2026-07-13
 Tier: B
 Status: Accepted
-Parent-cross-domain: PAR-0014 — progressive-throttling-and-service-classes is the FLO-tier expression of PAR-0014's universal directive that backpressure protects writers, by replacing the binary open/closed circuit with a continuous admission gradient and adding service-class differentiation so high-cost-of-delay streams retain priority access under saturation
+Parent-cross-domain: SEC-0003 — progressive-throttling-and-service-classes is the FLO-tier expression of SEC-0003:R3's universal directive that backpressure mechanisms exist at every ingestion point to shed load, by replacing the binary open/closed circuit with a continuous admission gradient and adding service-class differentiation so high-cost-of-delay streams retain priority access under saturation
 
 ## Related
 
-References: PAR-0014
+References: SEC-0003
 
 ## Context
 

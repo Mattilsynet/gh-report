@@ -1,14 +1,14 @@
 # FLO-0006. Late Binding of Work to Writers
 
 Date: 2026-05-03
-Last-reviewed: 2026-05-03
+Last-reviewed: 2026-07-13
 Tier: A
 Status: Accepted
-Parent-cross-domain: PAR-0004 — late-binding-of-work-to-writers is the FLO-tier expression of PAR-0004's universal directive that each stream has a single writer, by deferring the choice of *which* stream a unit of work targets to dispatch time rather than submission time, so writer load becomes self-organising under variance
+Parent-cross-domain: PGN-0010 — late-binding-of-work-to-writers is the FLO-tier expression of PGN-0010's single-writer-per-authoritative-storage stance (the live successor of retired PAR-0004), by deferring the choice of *which* stream a unit of work targets to dispatch time rather than submission time, so writer load becomes self-organising under variance
 
 ## Related
 
-References: PAR-0004
+References: PGN-0010
 
 ## Context
 

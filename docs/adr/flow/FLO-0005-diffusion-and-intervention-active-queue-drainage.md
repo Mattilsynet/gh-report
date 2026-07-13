@@ -1,14 +1,14 @@
 # FLO-0005. Diffusion and Intervention: Active Queue Drainage
 
 Date: 2026-05-03
-Last-reviewed: 2026-05-03
+Last-reviewed: 2026-07-13
 Tier: B
 Status: Accepted
-Parent-cross-domain: PAR-0014 — active-queue-drainage is the FLO-tier expression of PAR-0014's universal directive that backpressure protects writers, by extending passive arrival-refusal with active drainage of items already queued when a queue diffuses into a high-saturation state and cannot self-correct
+Parent-cross-domain: SEC-0003 — active-queue-drainage is the FLO-tier expression of SEC-0003:R3's universal directive that backpressure mechanisms exist at every ingestion point to shed load, by extending passive arrival-refusal with active drainage of items already queued when a queue diffuses into a high-saturation state and cannot self-correct
 
 ## Related
 
-References: PAR-0014, FLO-0004, CHE-0041
+References: SEC-0003, FLO-0004, CHE-0041
 
 ## Context
 

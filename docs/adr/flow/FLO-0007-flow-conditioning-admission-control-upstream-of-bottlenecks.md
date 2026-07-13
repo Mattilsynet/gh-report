@@ -1,14 +1,14 @@
 # FLO-0007. Flow Conditioning and Admission Control Upstream of Bottlenecks
 
 Date: 2026-05-03
-Last-reviewed: 2026-05-03
+Last-reviewed: 2026-07-13
 Tier: B
 Status: Accepted
-Parent-cross-domain: PAR-0014 — flow-conditioning-upstream-of-bottlenecks is the FLO-tier expression of PAR-0014's universal directive that backpressure protects writers, by adding a proactive admission-shaping layer upstream of the writer that smooths arrival variance before it reaches the constraint rather than reacting after saturation
+Parent-cross-domain: SEC-0003 — flow-conditioning-upstream-of-bottlenecks is the FLO-tier expression of SEC-0003:R3's universal directive that backpressure mechanisms exist at every ingestion point to shed load, by adding a proactive admission-shaping layer upstream of the writer that smooths arrival variance before it reaches the constraint rather than reacting after saturation
 
 ## Related
 
-References: PAR-0014
+References: SEC-0003
 
 ## Context
 

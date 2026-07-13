@@ -1,14 +1,14 @@
 # FLO-0008. Operating Below the Congestion Knee
 
 Date: 2026-05-03
-Last-reviewed: 2026-05-03
+Last-reviewed: 2026-07-13
 Tier: B
 Status: Accepted
-Parent-cross-domain: PAR-0014 — operating-below-the-congestion-knee is the FLO-tier expression of PAR-0014's universal directive that backpressure protects writers, by treating capacity headroom as a first-class design parameter rather than letting components run at theoretical peak utilization where queues grow exponentially with small variance spikes
+Parent-cross-domain: SEC-0003 — operating-below-the-congestion-knee is the FLO-tier expression of SEC-0003:R3's universal directive that backpressure mechanisms exist at every ingestion point to shed load, by treating capacity headroom as a first-class design parameter rather than letting components run at theoretical peak utilization where queues grow exponentially with small variance spikes
 
 ## Related
 
-References: PAR-0014
+References: SEC-0003
 
 ## Context
 
