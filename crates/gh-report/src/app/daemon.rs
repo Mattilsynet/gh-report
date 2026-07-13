@@ -83,6 +83,30 @@ enum NextTick {
     Cancel,
 }
 
+/// A boolean flag that applies once: armed at construction, then cleared by
+/// the first [`consume`](Self::consume) call. Backs `--force-unlock` and
+/// `--force-refresh`, both of which apply only to the daemon's initial
+/// collection run (see module docs).
+struct OneShotFlag(AtomicBool);
+
+impl OneShotFlag {
+    /// Construct a flag in the given initial (armed/disarmed) state.
+    fn new(armed: bool) -> Self {
+        Self(AtomicBool::new(armed))
+    }
+
+    /// Return whether the flag was armed, clearing it in the same
+    /// read-modify-write step so a concurrent observer never double-consumes.
+    fn consume(&self) -> bool {
+        self.0.fetch_and(false, Ordering::AcqRel)
+    }
+
+    /// Return whether the flag is currently armed, without clearing it.
+    fn peek(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
 /// Wait for either the scheduled interval to elapse or a cancellation
 /// signal, whichever comes first. The watch channel makes cancellation
 /// sticky: a signal sent before the next call is observed immediately,
@@ -176,8 +200,8 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
         info!(signal = signal.as_str(), "shutdown signal received");
     };
 
-    let force_flag = Arc::new(AtomicBool::new(config.force_unlock));
-    let force_refresh_flag = Arc::new(AtomicBool::new(config.force_refresh));
+    let force_flag = Arc::new(OneShotFlag::new(config.force_unlock));
+    let force_refresh_flag = Arc::new(OneShotFlag::new(config.force_refresh));
     let (collect_cancel_tx, collect_cancel_rx) = tokio::sync::watch::channel(false);
 
     let mut extra_routes = crate::server::status_router();
@@ -333,15 +357,13 @@ async fn drain_shutdown_with_timeout(
 fn spawn_collection_loop(
     config: RuntimeConfig,
     state: Arc<AppState>,
-    force_flag: Arc<AtomicBool>,
-    force_refresh_flag: Arc<AtomicBool>,
+    force_flag: Arc<OneShotFlag>,
+    force_refresh_flag: Arc<OneShotFlag>,
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         {
-            let mut cfg = config.clone();
-            cfg.force_unlock = force_flag.fetch_and(false, Ordering::AcqRel);
-            cfg.force_refresh = force_refresh_flag.fetch_and(false, Ordering::AcqRel);
+            let cfg = initial_run_config(&config, &force_flag, &force_refresh_flag);
             match collect::run_with_outcome(cfg, Arc::clone(&state)).await {
                 Ok(collect::CollectionOutcome::Completed) => info!("initial collection complete"),
                 Ok(collect::CollectionOutcome::Cancelled) => {
@@ -370,9 +392,7 @@ fn spawn_collection_loop(
                 }
                 NextTick::Run => {}
             }
-            let mut cfg = config.clone();
-            cfg.force_unlock = force_flag.load(Ordering::Acquire);
-            cfg.force_refresh = force_refresh_flag.load(Ordering::Acquire);
+            let cfg = scheduled_run_config(&config, &force_flag, &force_refresh_flag);
             match collect::run_with_outcome(cfg, Arc::clone(&state)).await {
                 Ok(collect::CollectionOutcome::Completed) => {
                     info!(
@@ -400,6 +420,33 @@ fn spawn_collection_loop(
 fn log_initial_collection_failure(error: &AppError) {
     log_error_chain("gh_report_initial_collection_failed", error);
     error!(error = %error, "initial collection failed — will retry");
+}
+
+/// Resolve the config for the daemon's initial collection run: consumes
+/// both one-shot force flags, so subsequent scheduled runs see them cleared.
+fn initial_run_config(
+    config: &RuntimeConfig,
+    force_flag: &OneShotFlag,
+    force_refresh_flag: &OneShotFlag,
+) -> RuntimeConfig {
+    let mut cfg = config.clone();
+    cfg.force_unlock = force_flag.consume();
+    cfg.force_refresh = force_refresh_flag.consume();
+    cfg
+}
+
+/// Resolve the config for a scheduled (non-initial) collection run: reads
+/// the one-shot force flags without clearing them — they were already
+/// consumed by the initial run and stay disarmed thereafter.
+fn scheduled_run_config(
+    config: &RuntimeConfig,
+    force_flag: &OneShotFlag,
+    force_refresh_flag: &OneShotFlag,
+) -> RuntimeConfig {
+    let mut cfg = config.clone();
+    cfg.force_unlock = force_flag.peek();
+    cfg.force_refresh = force_refresh_flag.peek();
+    cfg
 }
 
 async fn bind_serving_port_before_next_step<F>(
@@ -848,11 +895,11 @@ mod tests {
 
     #[test]
     fn one_shot_flag_yields_true_once_then_false_on_subsequent_runs() {
-        let force_refresh_flag = Arc::new(AtomicBool::new(true));
+        let flag = OneShotFlag::new(true);
 
-        let initial_run_value = force_refresh_flag.fetch_and(false, Ordering::AcqRel);
-        let scheduled_run_value = force_refresh_flag.load(Ordering::Acquire);
-        let second_scheduled_run_value = force_refresh_flag.load(Ordering::Acquire);
+        let initial_run_value = flag.consume();
+        let scheduled_run_value = flag.peek();
+        let second_scheduled_run_value = flag.peek();
 
         assert!(
             initial_run_value,
@@ -865,6 +912,52 @@ mod tests {
         assert!(
             !second_scheduled_run_value,
             "flag must stay consumed across further scheduled collections"
+        );
+    }
+
+    #[test]
+    fn one_shot_flag_peek_does_not_clear() {
+        let flag = OneShotFlag::new(true);
+
+        assert!(flag.peek(), "peek must observe the armed state");
+        assert!(flag.peek(), "peek must not clear the flag");
+        assert!(flag.consume(), "flag must still be armed for consume");
+        assert!(!flag.peek(), "consume must clear the flag");
+    }
+
+    #[test]
+    fn spawn_collection_loop_integration_path_consumes_force_flags_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = RuntimeConfig {
+            org_name: "TestOrg".to_string(),
+            no_resume: true,
+            max_workers: 1,
+            store_dir: dir.path().to_path_buf(),
+            pardosa_backend: config::runtime::PardosaBackend::Pgno,
+            nats_url: config::runtime::DEFAULT_NATS_URL.to_string(),
+            nats_creds: None,
+            force_unlock: false,
+            force_refresh: false,
+            dashboard_config: config::dashboard::DashboardConfig::default(),
+        };
+        let force_flag = OneShotFlag::new(true);
+        let force_refresh_flag = OneShotFlag::new(true);
+
+        let initial_cfg = initial_run_config(&config, &force_flag, &force_refresh_flag);
+        let first_scheduled_cfg = scheduled_run_config(&config, &force_flag, &force_refresh_flag);
+        let second_scheduled_cfg = scheduled_run_config(&config, &force_flag, &force_refresh_flag);
+
+        assert!(
+            initial_cfg.force_unlock && initial_cfg.force_refresh,
+            "initial run must observe both force flags armed"
+        );
+        assert!(
+            !first_scheduled_cfg.force_unlock && !first_scheduled_cfg.force_refresh,
+            "first scheduled run must observe both force flags consumed"
+        );
+        assert!(
+            !second_scheduled_cfg.force_unlock && !second_scheduled_cfg.force_refresh,
+            "flags must stay consumed across further scheduled runs"
         );
     }
 
