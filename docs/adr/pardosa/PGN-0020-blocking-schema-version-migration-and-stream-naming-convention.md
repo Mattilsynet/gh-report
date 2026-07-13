@@ -8,7 +8,7 @@ Crates: pardosa, pardosa-nats
 
 ## Related
 
-References: PGN-0009, PGN-0019, PGN-0008, PGN-0003, PGN-0012, PGN-0013, PAR-0005
+References: PGN-0009, PGN-0019, PGN-0008, PGN-0003, PGN-0012, PGN-0013
 
 ## Context
 

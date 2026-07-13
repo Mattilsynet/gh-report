@@ -7,7 +7,7 @@ Status: Accepted
 
 ## Related
 
-References: COM-0001, PAR-0004, CHE-0006
+References: COM-0001, PGN-0010, CHE-0006
 
 ## Context
 

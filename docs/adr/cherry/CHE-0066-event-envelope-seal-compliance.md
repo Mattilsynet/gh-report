@@ -7,7 +7,7 @@ Status: Accepted
 
 ## Related
 
-References: CHE-0074, GEN-0035, GEN-0037, PAR-0024
+References: CHE-0074
 
 ## Context
 

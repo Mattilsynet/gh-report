@@ -4,11 +4,10 @@ Date: 2026-05-03
 Last-reviewed: 2026-05-03
 Tier: B
 Status: Accepted
-Parent-cross-domain: PAR-0015 — cadence-as-flow-control-contract is the FLO-tier expression of PAR-0015's universal directive that consumer delivery is acknowledged on a stable schedule, by raising periodic resynchronisation from per-message correctness to a system-level architectural contract that bounds variance accumulation
 
 ## Related
 
-References: PAR-0015, FLO-0004
+References: FLO-0004
 
 ## Context
 
