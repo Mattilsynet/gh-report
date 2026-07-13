@@ -75,7 +75,14 @@ fn track_timestamp(current: &mut Option<String>, candidate: &str, keep_oldest: b
     }
 }
 
-/// Build the initial failure summary for a failed org-level alert request.
+/// Build the degraded summary for a failed or truncated org-level alert
+/// request.
+///
+/// Used both for outright failure and for a truncated-but-technically
+/// successful paginated fetch (`result.is_ok()` is `true` but
+/// `result.is_truncated()` is also `true`) — a partial alert list is not
+/// safe to report as a complete [`OrgAlertSummary`] (adr-fmt-uhd6c, mirrors
+/// the H1 fix at [`crate::collector::team_membership::org_members_from_outcome`]).
 fn build_failure_summary(result: &ApiOutcome) -> OrgAlertSummary {
     let collection_status = match result.status_code() {
         Some(403) => CollectionStatus::PermissionDenied,
@@ -208,11 +215,12 @@ pub async fn collect_org_alerts(
         )
         .await;
 
-    if !result.is_ok() {
+    if !result.is_ok() || result.is_truncated() {
         warn!(
             status = ?result.status_code(),
             retryable = result.is_retryable(),
-            "org-level secret scanning alert collection failed"
+            truncated = result.is_truncated(),
+            "org-level secret scanning alert collection failed or truncated — degrading rather than reporting a partial list as complete"
         );
         return build_failure_summary(&result);
     }
@@ -772,6 +780,46 @@ mod tests {
             result.reason.as_deref(),
             Some("transient_error"),
             "None arm should use 'transient_error' reason"
+        );
+    }
+
+    /// adr-fmt-uhd6c H1-mirror: a truncated-but-technically-successful
+    /// paginated fetch (`ApiOutcome::Success { truncated: true, .. }` —
+    /// `is_ok()` is `true`, so the pre-fix `collect_org_alerts` guard
+    /// `!result.is_ok()` alone would NOT degrade this) must build a
+    /// degraded [`OrgAlertSummary`] via [`build_failure_summary`], never
+    /// report [`CollectionStatus::Success`] over a partial alert list. The
+    /// outcome carries a real alert item to prove this isn't merely an
+    /// empty-response case caught by some other path.
+    #[test]
+    fn truncated_success_degrades_instead_of_reporting_complete() {
+        let truncated = ApiOutcome::Success {
+            status_code: 200,
+            data: Some(serde_json::json!([{"repository": {"id": 1}}])),
+            headers: None,
+            truncated: true,
+        };
+
+        assert!(
+            truncated.is_ok(),
+            "precondition: a truncated success must still report is_ok() == true"
+        );
+        assert!(truncated.is_truncated());
+
+        let summary = build_failure_summary(&truncated);
+
+        assert_ne!(
+            summary.collection_status,
+            CollectionStatus::Success,
+            "a truncated alert list must never surface as CollectionStatus::Success"
+        );
+        assert!(
+            summary.collection_reason.is_some(),
+            "a degraded summary must carry a collection_reason"
+        );
+        assert_eq!(
+            summary.total_open_secret_alerts, 0,
+            "a degraded summary must not report partial alert counts"
         );
     }
 }
