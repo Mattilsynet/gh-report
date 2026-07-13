@@ -6,10 +6,8 @@
 //! module was deleted to collapse the cross-crate duplicate.
 
 pub mod baseline;
-pub mod checkpoint;
 pub mod cloud_logging;
 pub mod lock;
 pub mod logging;
-pub mod server;
 pub mod signal;
 pub mod tls;

@@ -60,7 +60,7 @@ use crate::error::{AppError, GitHubApiError, PersistenceError};
 use crate::event::SweepTimeoutEvent;
 use crate::github::auth::{AuthMetadata, CapabilitySet, GitHubAppConfig, GitHubCredential};
 use crate::github::client::GitHubClient;
-use crate::infra::{baseline, checkpoint, lock};
+use crate::infra::{baseline, lock};
 use crate::report::html;
 
 /// Abstraction for evaluating a single repository's security posture.
@@ -744,7 +744,9 @@ impl SweepSaga {
             baseline_reused: 0,
             sweep_start: std::time::Instant::now(),
             run_timestamp: run.timestamp(),
-            snapshot_signature: checkpoint::build_snapshot_signature(org_alert.snapshot.as_ref()),
+            snapshot_signature: cherry_pit_storage::build_snapshot_signature(
+                org_alert.snapshot.as_ref(),
+            ),
             pause_notify,
             org_summary,
             client: Arc::clone(&ctx.client),
