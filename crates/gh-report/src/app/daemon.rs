@@ -1,44 +1,26 @@
 //! The daemon: scheduled collection + serving.
 //!
-//! Runs the web server while executing collection runs on a fixed interval.
-//! The daemon is the only operational mode — it handles both data collection
-//! and serving from an in-memory cache.
+//! Runs the web server while collecting on a fixed interval; the only
+//! operational mode. Source-of-truth, snapshot fast-path: CHE-0048.
 //!
 //! ## Startup order
 //!
-//! 1. **Serving port bind** — the TCP bind is the duplicate-instance guard
-//!    and runs before store handles, projection replay, warm-start rendering,
-//!    run-lock acquisition, or credential resolution.
-//! 2. **Projection runtime init** — `snapshot_fast_path_init` replays
-//!    the event log (or fast-paths from the latest projection snapshot
-//!    per CHE-0048:R1) so the in-memory `EvidenceProjection` is current
-//!    before any reader can observe it (CHE-0048:R2 — projection is
-//!    the source of truth at boot; δ.3c-ii retired the prior
-//!    `baseline.msgpack` snapshot file).
-//! 3. **Warm-start** — render the dashboard from the projection and
-//!    populate the HTML cache so the server can respond to page
-//!    requests within seconds. Falls through gracefully if the
-//!    projection is empty (fresh install) — the server returns 503
-//!    until the first sweep completes.
-//! 4. **Start the web server** — serves through the pre-bound listener
-//!    immediately (serves warm-start data or returns 503 if the projection
-//!    was empty).
-//! 5. **Background collection** — the initial API collection and subsequent
-//!    scheduled runs happen in a background task. Each successful run
-//!    atomically updates the HTML cache.
-//! 6. **Worker pool** — started lazily by `AppState::ensure_worker_pool()`
-//!    inside `collect::run_collection_inner()` after the first successful
-//!    credential resolution. The pool persists across collection runs
-//!    (shared between sweep and webhook jobs).
+//! 1. **Port bind** — duplicate-instance guard, before store handles,
+//!    projection replay, warm-start, run-lock, credentials.
+//! 2. **Projection init** — `snapshot_fast_path_init` (CHE-0048).
+//! 3. **Warm-start** — render cache from the projection; 503 until first
+//!    sweep if empty.
+//! 4. **Web server starts** — warm-start data or 503.
+//! 5. **Background collection** — scheduled runs, each success updates
+//!    the cache atomically.
+//! 6. **Worker pool** — lazy via `AppState::ensure_worker_pool()`,
+//!    persists across runs.
 //!
-//! The daemon shuts down gracefully on `Ctrl-C` or `SIGTERM`: it cancels
-//! background collection loop and stops the HTTP server.
-//! **`--force-unlock` semantics:** The flag is one-shot — it applies only
-//! to the initial collection run. Subsequent scheduled runs do not
-//! force-unlock.
-//! **`--force-refresh` semantics:** Same one-shot shape as `--force-unlock`
-//! — it bypasses baseline reuse for the initial collection only.
-//! Subsequent scheduled runs resume normal baseline reuse.
+//! Shuts down gracefully on `Ctrl-C` / `SIGTERM`.
+//!
+//! **`--force-unlock`** / **`--force-refresh`** are one-shot: apply only to
+//! the initial run (skip run-lock / bypass baseline reuse). Later runs
+//! behave normally.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
