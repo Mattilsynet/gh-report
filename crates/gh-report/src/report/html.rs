@@ -460,6 +460,10 @@ fn build_owners_view_model(
                 Some(s) => format!("{s:.1}%"),
                 None => "N/A".to_string(),
             };
+            let sec_score_table_formatted = match sec_score {
+                Some(s) => format!("{s:.0}%"),
+                None => "N/A".to_string(),
+            };
             let sec_score_tier = CoverageTier::from_rate(sec_score, tiers);
             let sec_score_width_class = rate_to_width_class(sec_score);
 
@@ -472,6 +476,7 @@ fn build_owners_view_model(
                 controls,
                 sec_score,
                 sec_score_formatted,
+                sec_score_table_formatted,
                 sec_score_tier,
                 sec_score_width_class,
             }
@@ -517,6 +522,10 @@ fn build_control_cell(
     let rate_metric = per_control_coverage.get(key);
     let rate = rate_metric.and_then(|rm| rm.rate);
     let formatted = rate_metric.map_or_else(|| "N/A".to_string(), ToString::to_string);
+    let table_formatted = rate_metric.map_or_else(
+        || "N/A".to_string(),
+        crate::domain::metrics::RateMetric::to_table_string,
+    );
     let exclusion = control_key_to_check_kind(key)
         .map(|check_kind| format_exclusion(check_kind, score_exclusion_counts));
     let (excluded_total, excluded_formatted) = match exclusion {
@@ -525,6 +534,7 @@ fn build_control_cell(
     };
     ControlCell {
         rate_formatted: formatted,
+        rate_table_formatted: table_formatted,
         tier: CoverageTier::from_rate(rate, tiers),
         width_class: rate_to_width_class(rate),
         excluded_total,

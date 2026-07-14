@@ -81,7 +81,7 @@ expression: "&pages[\"report.html\"]"
             <tbody>
                 <tr>
                     <td title="Percentage of public repos with a security policy enabled or SECURITY.md present.">Coverage</td>
-                    <td class="text-right">66.7% (2/3)</td>
+                    <td class="text-right">67% (2/3)</td>
                 </tr>
                 <tr>
                     <td title="Repos excluded from the Coverage percentage above because the control's status is indeterminate or not applicable, broken down by reason.">Excluded from coverage</td>
@@ -119,7 +119,7 @@ expression: "&pages[\"report.html\"]"
             <tbody>
                 <tr>
                     <td title="Percentage of repos with Dependabot security updates enabled.">Coverage</td>
-                    <td class="text-right">60.0% (3/5)</td>
+                    <td class="text-right">60% (3/5)</td>
                 </tr>
                 <tr>
                     <td title="Repos excluded from the Coverage percentage above because the control's status is indeterminate, broken down by reason.">Excluded from coverage</td>
@@ -157,7 +157,7 @@ expression: "&pages[\"report.html\"]"
             <tbody>
                 <tr>
                     <td title="Percentage of repos with GitHub secret scanning enabled.">Coverage</td>
-                    <td class="text-right">80.0% (4/5)</td>
+                    <td class="text-right">80% (4/5)</td>
                 </tr>
                 <tr>
                     <td title="Repos excluded from the Coverage percentage above because the control's status is indeterminate or permission denied, broken down by reason.">Excluded from coverage</td>
@@ -195,7 +195,7 @@ expression: "&pages[\"report.html\"]"
             <tbody>
                 <tr>
                     <td title="Percentage of observable repos at branch-protection T2 or higher.">T2+ coverage</td>
-                    <td class="text-right">60.0% (3/5)</td>
+                    <td class="text-right">60% (3/5)</td>
                 </tr>
                 <tr>
                     <td title="Repos excluded from the T2+ coverage percentage above because branch protection could not be read (permission denied, unreadable, or a rate-limited/transient collection failure), broken down by reason.">Excluded from coverage</td>
@@ -229,7 +229,7 @@ expression: "&pages[\"report.html\"]"
             <tbody>
                 <tr>
                     <td title="Percentage of repos with a CODEOWNERS file in a recognized location.">Coverage</td>
-                    <td class="text-right">80.0% (4/5)</td>
+                    <td class="text-right">80% (4/5)</td>
                 </tr>
                 <tr>
                     <td title="Repos excluded from the Coverage percentage above because the control's status is indeterminate, broken down by reason.">Excluded from coverage</td>
@@ -294,7 +294,7 @@ expression: "&pages[\"report.html\"]"
             </tr>
             <tr>
                 <td>Org governance score</td>
-                <td class="text-right">68.8%</td>
+                <td class="text-right">69%</td>
             </tr>
             <tr>
                 <td>Total repositories</td>

@@ -50,13 +50,13 @@
                     <div class="progress-bar">
                         <div class="progress-fill {{ row.sec_score_tier.css_class() }} {{ row.sec_score_width_class }}"></div>
                     </div>
-                    <span class="score-label">{{ row.sec_score_formatted }}</span>
+                    <span class="score-label">{{ row.sec_score_table_formatted }}</span>
                 </div>
             </td>
             {% for cell in row.controls %}
             <td class="text-center">
-                <span class="status-dot {{ cell.tier.status_dot_class() }}" title="{{ cell.rate_formatted }}{% if cell.excluded_total > 0 %} — {{ cell.excluded_formatted }}{% endif %}"></span>
-                {{ cell.rate_formatted }}
+                <span class="status-dot {{ cell.tier.status_dot_class() }}" title="{{ cell.rate_table_formatted }}{% if cell.excluded_total > 0 %} — {{ cell.excluded_formatted }}{% endif %}"></span>
+                {{ cell.rate_table_formatted }}
             </td>
             {% endfor %}
         </tr>

@@ -125,8 +125,12 @@ pub struct OwnerOverviewRow {
     /// `branch_protection`, `non_stale`, `alert_free`.
     /// `None` when all control rates are N/A.
     pub sec_score: Option<f64>,
-    /// Formatted sec score string (e.g., `"72.3%"` or `"N/A"`).
+    /// Formatted sec score string at prose precision (e.g., `"72.3%"` or
+    /// `"N/A"`), fed to the index.html top-security-teams podium card.
     pub sec_score_formatted: String,
+    /// Formatted sec score string at whole-percent table precision (e.g.,
+    /// `"72%"` or `"N/A"`), used by the owners overview `<table>`.
+    pub sec_score_table_formatted: String,
     /// Coverage tier for the sec score.
     pub sec_score_tier: CoverageTier,
     /// CSS width class for the sec score progress bar.
@@ -136,8 +140,12 @@ pub struct OwnerOverviewRow {
 /// A per-control coverage cell in the owner overview table.
 #[derive(Debug, Clone)]
 pub struct ControlCell {
-    /// Formatted rate string (e.g., "80.0% (4/5)").
+    /// Formatted rate string at prose precision (e.g., "80.0% (4/5)"),
+    /// used by owner-detail summary cards.
     pub rate_formatted: String,
+    /// Formatted rate string at whole-percent table precision (e.g.,
+    /// "80% (4/5)"), used by the owners overview `<table>`.
+    pub rate_table_formatted: String,
     /// Coverage tier for styling.
     pub tier: CoverageTier,
     /// CSS width class for progress bar rendering (e.g., `"w-80"`).
@@ -887,11 +895,21 @@ pub struct ReportViewModel {
     /// Total repositories, including archived repositories.
     pub total_all_repos: u32,
 
+    /// Prose precision (1 decimal), used by the report.html metric
+    /// paragraphs and index.html cards.
     pub policy_coverage_formatted: String,
     pub dependabot_coverage_formatted: String,
     pub secret_scanning_coverage_formatted: String,
     pub branch_protection_coverage_formatted: String,
     pub codeowners_coverage_formatted: String,
+
+    /// Whole-percent table precision, used by the report.html detail
+    /// `<table>` Coverage rows.
+    pub policy_coverage_table_formatted: String,
+    pub dependabot_coverage_table_formatted: String,
+    pub secret_scanning_coverage_table_formatted: String,
+    pub branch_protection_coverage_table_formatted: String,
+    pub codeowners_coverage_table_formatted: String,
 
     /// Count of repos excluded from `policy_coverage_formatted`'s
     /// denominator (indeterminate or not-applicable status), and a
@@ -981,8 +999,13 @@ pub struct ReportViewModel {
     pub health_score: Option<f64>,
     /// Coverage tier for the health score.
     pub health_tier: CoverageTier,
-    /// Formatted health score (e.g., `"72.3%"` or `"N/A"`).
+    /// Formatted health score at prose precision (e.g., `"72.3%"` or
+    /// `"N/A"`), used by the index.html card.
     pub health_score_formatted: String,
+    /// Formatted health score at whole-percent table precision (e.g.,
+    /// `"72%"` or `"N/A"`), used by the report.html Assessment Metadata
+    /// `<table>`.
+    pub health_score_table_formatted: String,
     /// CSS width class for the health score progress bar.
     pub health_width_class: &'static str,
 
@@ -1033,6 +1056,7 @@ struct HealthDisplay {
     score: Option<f64>,
     tier: CoverageTier,
     score_formatted: String,
+    table_formatted: String,
     width_class: &'static str,
 }
 
@@ -1178,6 +1202,15 @@ impl ReportViewModel {
             secret_scanning_coverage_formatted: m.secret_scanning_coverage.to_string(),
             branch_protection_coverage_formatted: m.branch_protection_coverage.to_string(),
             codeowners_coverage_formatted: m.codeowners_coverage.to_string(),
+            policy_coverage_table_formatted: m.security_policy_coverage.to_table_string(),
+            dependabot_coverage_table_formatted: m
+                .dependabot_security_updates_coverage
+                .to_table_string(),
+            secret_scanning_coverage_table_formatted: m.secret_scanning_coverage.to_table_string(),
+            branch_protection_coverage_table_formatted: m
+                .branch_protection_coverage
+                .to_table_string(),
+            codeowners_coverage_table_formatted: m.codeowners_coverage.to_table_string(),
             policy_excluded_total: exclusion.policy.total,
             policy_excluded_formatted: exclusion.policy.formatted,
             secret_scanning_excluded_total: exclusion.secret_scanning.total,
@@ -1244,6 +1277,7 @@ impl ReportViewModel {
             health_score: health.score,
             health_tier: health.tier,
             health_score_formatted: health.score_formatted,
+            health_score_table_formatted: health.table_formatted,
             health_width_class: health.width_class,
             stale_rate,
             stale_rate_formatted,
@@ -1314,6 +1348,7 @@ fn health_display(
         score,
         tier: CoverageTier::from_rate(score, tiers),
         score_formatted: score.map_or_else(|| "N/A".to_string(), |s| format!("{s:.1}%")),
+        table_formatted: score.map_or_else(|| "N/A".to_string(), |s| format!("{s:.0}%")),
         width_class: rate_to_width_class(score),
     }
 }

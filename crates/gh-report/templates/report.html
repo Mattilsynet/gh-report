@@ -73,7 +73,7 @@
             <tbody>
                 <tr>
                     <td title="Percentage of public repos with a security policy enabled or SECURITY.md present.">Coverage</td>
-                    <td class="text-right">{{ vm.policy_coverage_formatted }}</td>
+                    <td class="text-right">{{ vm.policy_coverage_table_formatted }}</td>
                 </tr>
                 <tr>
                     <td title="Repos excluded from the Coverage percentage above because the control's status is indeterminate or not applicable, broken down by reason.">Excluded from coverage</td>
@@ -111,7 +111,7 @@
             <tbody>
                 <tr>
                     <td title="Percentage of repos with Dependabot security updates enabled.">Coverage</td>
-                    <td class="text-right">{{ vm.dependabot_coverage_formatted }}</td>
+                    <td class="text-right">{{ vm.dependabot_coverage_table_formatted }}</td>
                 </tr>
                 <tr>
                     <td title="Repos excluded from the Coverage percentage above because the control's status is indeterminate, broken down by reason.">Excluded from coverage</td>
@@ -149,7 +149,7 @@
             <tbody>
                 <tr>
                     <td title="Percentage of repos with GitHub secret scanning enabled.">Coverage</td>
-                    <td class="text-right">{{ vm.secret_scanning_coverage_formatted }}</td>
+                    <td class="text-right">{{ vm.secret_scanning_coverage_table_formatted }}</td>
                 </tr>
                 <tr>
                     <td title="Repos excluded from the Coverage percentage above because the control's status is indeterminate or permission denied, broken down by reason.">Excluded from coverage</td>
@@ -187,7 +187,7 @@
             <tbody>
                 <tr>
                     <td title="Percentage of observable repos at branch-protection T2 or higher.">T2+ coverage</td>
-                    <td class="text-right">{{ vm.branch_protection_coverage_formatted }}</td>
+                    <td class="text-right">{{ vm.branch_protection_coverage_table_formatted }}</td>
                 </tr>
                 <tr>
                     <td title="Repos excluded from the T2+ coverage percentage above because branch protection could not be read (permission denied, unreadable, or a rate-limited/transient collection failure), broken down by reason.">Excluded from coverage</td>
@@ -221,7 +221,7 @@
             <tbody>
                 <tr>
                     <td title="Percentage of repos with a CODEOWNERS file in a recognized location.">Coverage</td>
-                    <td class="text-right">{{ vm.codeowners_coverage_formatted }}</td>
+                    <td class="text-right">{{ vm.codeowners_coverage_table_formatted }}</td>
                 </tr>
                 <tr>
                     <td title="Repos excluded from the Coverage percentage above because the control's status is indeterminate, broken down by reason.">Excluded from coverage</td>
@@ -295,7 +295,7 @@
             </tr>
             <tr>
                 <td>Org governance score</td>
-                <td class="text-right">{{ vm.health_score_formatted }}</td>
+                <td class="text-right">{{ vm.health_score_table_formatted }}</td>
             </tr>
             <tr>
                 <td>Total repositories</td>
