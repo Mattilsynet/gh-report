@@ -206,16 +206,14 @@ fn force_remove_lock(lock_path: &Path) {
 /// regardless of stale/alive status. The previous lock's details are
 /// logged at `warn` level.
 ///
-/// Lock creation publishes the lock file via `link(2)` (a single atomic
-/// step that refuses to clobber an existing path), eliminating any
-/// partial-write window between creation and the metadata being durable.
+/// Lock creation is atomic via [`create_lock_exclusive`] (no TOCTOU
+/// window), per SEC-0006:R1 and the stale-lock recovery procedure
+/// mandated by COM-0025:R6.
 ///
 /// # Errors
 ///
 /// Returns `PersistenceError::LockFailed` if the lock cannot be acquired
-/// because another process holds a non-stale lock. The lock primitive
-/// (`create_lock_exclusive`) publishes via `link(2)` so partial-write
-/// states are not observable to other processes — no TOCTOU window.
+/// because another process holds a non-stale lock.
 pub fn acquire(
     lock_dir: &Path,
     run_id: &str,
