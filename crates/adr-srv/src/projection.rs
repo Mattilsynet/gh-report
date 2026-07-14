@@ -1,27 +1,13 @@
 //! `AdrCorpus` — corpus-wide read model: latest `AdrDocument` per
 //! `AdrId`, projected from the `AdrIngested` event stream.
 //!
-//! ## CHE-0048 substrate
+//! Single-aggregate-type projection over one event type; idempotent
+//! replace-per-`AdrId` via `AdrDocument::apply`; rebuilt in-memory on
+//! every process start by replaying the log (no snapshot store in
+//! v0.1). See CHE-0048 (R3/R5/R6) for the binding substrate contract.
 //!
-//! - **R3 idempotency**: `apply` is deterministic over the same
-//!   `EventEnvelope<AdrIngested>` sequence — total replacement of the
-//!   per-`AdrId` entry via `AdrDocument::apply` (M1 single-event-type
-//!   path) is trivially idempotent.
-//! - **R5 in-memory replay**: no `FileProjectionStore` snapshot writes
-//!   in v0.1. The corpus is rebuilt on every process start by
-//!   replaying the event log via `AdrService::new_with_replay`
-//!   (gh-report-style election per CHE-0065).
-//! - **R6 single-aggregate-type**: `type Event = AdrIngested`.
-//!   The internal `BTreeMap<AdrId, AdrDocument>` does NOT widen the
-//!   trait — every consumed event belongs to the same logical
-//!   aggregate type; per-aggregate state is partitioned by `AdrId`
-//!   inside one Projection impl.
-//!
-//! ## Why `BTreeMap`, not `HashMap`
-//!
-//! Deterministic iteration order. `adrs` queries iterate the corpus
-//! and must return ADRs in a stable order across replays so test
-//! assertions hold and any future cursor-based pagination is sound.
+//! `BTreeMap`, not `HashMap`: deterministic iteration order so `adrs`
+//! queries return a stable order across replays.
 
 use std::collections::BTreeMap;
 
