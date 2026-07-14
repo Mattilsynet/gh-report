@@ -9,7 +9,7 @@ Parent-cross-domain: PGN-0010 — backend selection uses pardosa sealed handles
 
 ## Related
 
-References: PGN-0010, CHE-0044, CHE-0074, CHE-0048, CHE-0073
+References: PGN-0010, CHE-0074, CHE-0048, CHE-0073
 
 ## Context
 

@@ -7,7 +7,7 @@ Status: Accepted
 
 ## Related
 
-References: CHE-0010, CHE-0009, CHE-0021, CHE-0071, CHE-0038, PGN-0004, CHE-0048, CHE-0051
+References: CHE-0010, CHE-0009, CHE-0021, CHE-0074, CHE-0038, PGN-0004, CHE-0048, CHE-0051
 
 ## Context
 
