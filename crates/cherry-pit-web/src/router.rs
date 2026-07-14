@@ -33,61 +33,33 @@ use crate::state::AppState;
 
 /// Build the cherry-pit-web router.
 ///
-/// Mounts cherry-pit-web's own routes under `/v1/` per CHE-0049 R9 and
-/// merges `extra_routes` at the top level so consumers can attach
-/// auth-protected or non-versioned surfaces (CHE-0049 R2). The
-/// SEC-0003 availability layers (`RequestBodyLimitLayer` +
-/// `http_concurrency_limit`) attach to the v1 sub-router only;
-/// `extra_routes` sit outside that stack so consumer-owned surfaces
-/// remain free to compose their own auth / sizing / rate-limit
-/// policies (CHE-0049 R2 + CHE-0062:R1).
-///
-/// The returned [`Router`] has its state already applied via
-/// [`Router::with_state`] — it is ready to be served by
-/// `axum::serve` or composed into a larger application.
+/// Mounts routes under `/v1/` (CHE-0049 R9); merges `extra_routes` at
+/// the top level, outside the v1 layer stack, so consumers compose
+/// their own auth/sizing/rate-limit policies (CHE-0049 R2, CHE-0062:R1).
+/// Returned [`Router`] has state applied ([`Router::with_state`]) —
+/// ready for `axum::serve` or composition. Generic dispatch is
+/// mandatory (CHE-0049 R1, CHE-0050 R4); `Box<dyn _>` forbidden.
 ///
 /// # Type parameters
 ///
-/// * `G` — the consumer's concrete [`CommandGateway`].
-/// * `S` — the consumer's concrete [`EventStore`], whose
-///   [`EventStore::Event`] matches the aggregate's
-///   [`Aggregate::Event`].
-/// * `R` — the consumer's concrete [`CommandRouter`] impl, bound to
-///   the same `G` (CHE-0050 R2).
-///
-/// Generic dispatch is mandatory per CHE-0049 R1 and CHE-0050 R4;
-/// `Box<dyn _>` over any of the three ports is forbidden.
+/// `G` — consumer's [`CommandGateway`]. `S` — consumer's
+/// [`EventStore`], `Event` matches [`Aggregate::Event`]. `R` —
+/// consumer's [`CommandRouter`] impl, bound to `G` (CHE-0050 R2).
 ///
 /// # Parameters
 ///
-/// - `state` — typed application state (CHE-0049:R1 + CHE-0050:R2).
-/// - `limits` — per-layer numeric sizing for the SEC-0003 R1/R3
-///   availability layers attached to the v1 sub-router
-///   (CHE-0062:R2). The library owns *what layer is attached where*;
-///   the consumer owns *what number goes in*. Two layers are
-///   unconditionally attached per CHE-0062:R4:
-///     - body cap → [`RequestBodyLimitLayer`] (413 on exceed,
-///       SEC-0003:R1);
-///     - inflight cap → [`http_concurrency_limit`] middleware with
-///       **503-shedding** semantics (SEC-0003:R3 — does *not*
-///       queue; `tower::limit::ConcurrencyLimit` is intentionally
-///       not used per CHE-0062:R1).
-///
-///   [`LayerLimits::max_ws_connections`] is honoured by the
-///   projection-side router only — the cqrs surface is HTTP-only per
-///   CHE-0049:R3 and ignores that field. Tests reach for
-///   [`LayerLimits::permissive_for_tests`]; production callers name
-///   the values informed by SEC-0003 sizing.
-/// - `extra_routes` — stateless [`Router`] merged at the top level,
-///   outside the SEC-0003 layer stack. Auth probes, status pages, and
-///   any other consumer-owned surface live here per CHE-0049:R2.
-///   Callers with no extras pass [`Router::new`].
+/// - `state` — typed application state (CHE-0049:R1, CHE-0050:R2).
+/// - `limits` — SEC-0003 availability-layer sizing for the v1
+///   sub-router: body cap ([`RequestBodyLimitLayer`]), inflight cap
+///   ([`http_concurrency_limit`], 503-shedding) per CHE-0062:R1/R4.
+///   [`LayerLimits::max_ws_connections`] is projection-only. Tests use
+///   [`LayerLimits::permissive_for_tests`].
+/// - `extra_routes` — stateless [`Router`] merged outside the SEC-0003
+///   stack (CHE-0049:R2); pass [`Router::new`] when unused.
 ///
 /// # Example
 ///
-/// Construct an axum [`Router`] from `AppState` plus an optional
-/// `extra_routes` merge point. See the [`AppState`] doctest for the
-/// full minimal stub set; reproduced here for self-containment.
+/// Minimal `AppState` + `extra_routes`; see [`AppState`] doctest.
 ///
 /// ```
 /// use std::num::NonZeroU64;
