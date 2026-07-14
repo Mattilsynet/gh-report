@@ -1,24 +1,20 @@
 //! Baseline algorithms for evidence reuse and `--dump-baseline` JSON shape.
 //!
-//! δ.3c-ii retired on-disk persistence (`baseline.msgpack`). The baseline
-//! is now reconstructed from the projection (in-memory; rebuilt at boot via
-//! event-log replay per CHE-0051:R5 + CHE-0048:R2). This module keeps:
-//!
-//! - `Baseline` / `BaselineEntry` — JSON shape for `--dump-baseline` output
-//!   (byte-equivalent to the pre-δ.3c-ii dump).
-//! - `build_baseline` — pure builder over `&[RepositoryEvidence]`; reused
-//!   by `--dump-baseline` (replay → project → build → JSON) and by tests.
-//! - `should_reuse` — staleness comparator (called by `reuse_from_baseline`
-//!   in `app/collect.rs`).
-//! - `is_total_failure` — total-failure filter used by `build_baseline`.
+//! The baseline is subordinate to the event log: it is reconstructed
+//! in-memory from the projection, rebuilt at boot via event-log replay,
+//! never persisted to disk (CHE-0051:R5 + CHE-0048:R2). This module holds:
+//! `Baseline`/`BaselineEntry` (the `--dump-baseline` JSON shape),
+//! `build_baseline` (pure builder over `&[RepositoryEvidence]`, reused by
+//! `--dump-baseline` and by tests), `should_reuse` (staleness comparator
+//! called by `reuse_from_baseline` in `app/collect.rs`), and
+//! `is_total_failure` (filter used by `build_baseline`).
 //!
 //! # Staleness window
 //!
-//! `updated_at` is fetched at inventory time; a repository could change
-//! between inventory and evaluation. For large organizations this window
-//! can be minutes to hours. The `inventory_fetched_at` field on
-//! [`AssessmentMetadata`](crate::domain::evidence::AssessmentMetadata)
-//! makes this observable.
+//! `updated_at` is fetched at inventory time, so a repository can change
+//! before evaluation; for large orgs this window can be minutes to hours.
+//! [`AssessmentMetadata`](crate::domain::evidence::AssessmentMetadata)'s
+//! `inventory_fetched_at` field makes this observable.
 
 use std::collections::HashMap;
 
