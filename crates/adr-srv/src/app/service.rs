@@ -1,37 +1,23 @@
 //! `ApplicationService` — load → handle → append cycle owner for the
 //! `AdrDocument` aggregate.
 //!
-//! ## CHE-0054:R8/R10 carve-out
-//!
-//! adr-srv depends on `cherry-pit-gateway` for `MsgpackFileStore` only;
-//! no `cherry-pit-app` / no `App<...>`. The `ApplicationService`
-//! consumes `cherry_pit_core::EventStore` directly via
-//! `MsgpackFileStore<AdrIngested>`. Indices (`adrs_by_id`) and
-//! per-aggregate sequence tracker (`next_seq`) are owned here rather
-//! than in a separate `App<...>` per CHE-0054:R8.
-//!
-//! Shape adapted from `crates/gh-report/src/app/state.rs` (`RunService`
-//! / `RepoService` / `WebhookService` pattern, B7'b wiring). Indices
-//! use `std::sync::Mutex<HashMap<...>>` placeholder per gh-report's
-//! B7'a shape — typed-key newtypes / `DashMap` upgrade deferred until
-//! call sites in M1.3 constrain the choice (gh-report L255-260
-//! rationale).
+//! Depends on `cherry-pit-gateway`'s `MsgpackFileStore` only (no
+//! `cherry-pit-app` / `App<...>`); consumes `cherry_pit_core::EventStore`
+//! directly via `MsgpackFileStore<AdrIngested>`. Indices (`adrs_by_id`)
+//! and the per-aggregate sequence tracker (`next_seq`) are owned here.
+//! Shape adapted from `crates/gh-report/src/app/state.rs`'s service
+//! pattern; indices use `std::sync::Mutex<HashMap<...>>` as a
+//! placeholder pending a typed-key/`DashMap` upgrade.
 //!
 //! ## M1.3 surface
 //!
 //! - `ingest_if_changed(event)` — body-hash idempotency check per
-//!   AFM-0027:R4: if no prior aggregate exists for `event.id`, call
-//!   `store.create`; if one exists and `body_hash` matches the latest
-//!   projection, return `Unchanged` with zero new events; if `body_hash`
-//!   differs, call `store.append` with the tracked `expected_sequence`.
-//! - `new_with_replay(store)` — replay-on-boot constructor: enumerates
-//!   on-disk aggregates via `MsgpackFileStore::list_aggregates`,
-//!   folds each stream via `AdrDocument::from_first` + `apply`, and
-//!   populates `adrs_by_id` + `next_seq` so a re-scrape against the
-//!   same store is idempotent.
-//! - `lookup(&AdrId) -> Option<AggregateId>` — small accessor used by
-//!   the scrape pipeline (and tests) to confirm an ADR file's
-//!   aggregate is known after ingest.
+//!   AFM-0027:R4: creates on no prior aggregate, returns `Unchanged`
+//!   when `body_hash` matches the latest projection, else appends.
+//! - `new_with_replay(store)` — replay-on-boot constructor: folds every
+//!   on-disk aggregate stream to populate `adrs_by_id` + `next_seq`.
+//! - `lookup(&AdrId) -> Option<AggregateId>` — accessor confirming an
+//!   ADR file's aggregate is known after ingest.
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
