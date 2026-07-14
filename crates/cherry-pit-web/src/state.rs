@@ -18,32 +18,24 @@ use crate::command_router::CommandRouter;
 
 /// Application state for a [`build_router`](crate::build_router) call.
 ///
-/// Generic over:
-///
-/// * `G` — the consumer's concrete [`CommandGateway`].
-/// * `S` — the consumer's concrete [`EventStore`], whose
-///   [`EventStore::Event`] matches the aggregate's
-///   [`Aggregate::Event`] (CHE-0005 R1).
-/// * `R` — the consumer's concrete [`CommandRouter`] impl, bound to
-///   the same `G` via `R: CommandRouter<Gateway = G>` (CHE-0050 R2).
+/// Generic over the consumer's [`CommandGateway`] (`G`), [`EventStore`]
+/// (`S`, whose [`EventStore::Event`] matches [`Aggregate::Event`] per
+/// CHE-0005 R1), and [`CommandRouter`] impl (`R`, bound to the same
+/// `G` per CHE-0050 R2).
 ///
 /// # Why generics over `Box<dyn _>`
 ///
-/// Per CHE-0049 R1, dynamic dispatch over the gateway and store is
-/// forbidden. Per CHE-0050 R4, the router trait is object-unsafe by
-/// construction (associated `Wire` type + generic `Gateway`).
-/// `Box<dyn _>` is therefore impossible across all three parameters.
+/// Dynamic dispatch over gateway and store is forbidden (CHE-0049
+/// R1). Router trait is object-unsafe by construction (CHE-0050
+/// R4), so `Box<dyn _>` is impossible across all three parameters.
 ///
 /// # Cloning
 ///
-/// `AppState` is cheaply [`Clone`] regardless of whether `G` or `S`
-/// implement `Clone`: gateway and store are wrapped in [`Arc`]. The
-/// router is required to be `Clone` directly (it tends to be a small
-/// stateless or `Arc`-internal value the consumer constructs once at
-/// `main`-time). The manual `Clone` impl avoids the over-tight bound a
-/// derive would emit (`G: Clone, S: Clone`). axum requires
-/// `Clone + Send + Sync + 'static` for any value passed to
-/// [`axum::Router::with_state`]; the corresponding bounds appear on `R`.
+/// Cheaply [`Clone`] regardless of `G`/`S`: gateway and store are
+/// wrapped in [`Arc`]; router is required to be `Clone` directly.
+/// Manual impl avoids the over-tight `G: Clone, S: Clone` bound a
+/// derive emits. axum requires `Clone + Send + Sync + 'static`
+/// for [`axum::Router::with_state`]; those bounds appear on `R`.
 ///
 /// # Example
 ///
