@@ -69,24 +69,22 @@ pub const REWRITE_RECORD_VERSION: u32 = 1;
 /// emitted unchanged on the same stream.
 pub const REWRITE_RECORD_GRAMMAR: &str = "\
 REWRITE_SUMMARY\\tmode=<MODE>\\tcomments_removed=<U32>\\tinline_trimmed=<U32>\\tblank_lines_collapsed=<U32>\\tdoc_links_rewritten=<U32>\\tsafety_preserved=<U32>\\tauto_trait_preserved=<U32>\\tv=<N>\\n";
-/// Per-file counters surfaced by the rewrite passes. Aggregated across
+/// Per-file counters surfaced by the rewrite passes, aggregated across
 /// files in `main`'s `REWRITE_SUMMARY` emission. All fields default to
-/// zero. The struct is marked `#[non_exhaustive]` so additional
-/// counters can be added without a breaking change; construct with
-/// `RewriteCounts::default()` and update fields explicitly.
+/// zero; `#[non_exhaustive]` allows new counters without a breaking
+/// change. Construct with `RewriteCounts::default()` and update fields
+/// explicitly.
 ///
 /// - `comments_removed` — non-doc line and block comments dropped.
-/// - `inline_trimmed` — solo-line drops are NOT counted here; this is
-///   the count of mid-line (post-code) drops that triggered the inline
-///   trailing-whitespace trim. Equals `comments_removed` minus the
-///   solo-line drops.
-/// - `blank_lines_collapsed` — symmetric-pad collapses (one per
-///   removed comment block whose source had blanks on BOTH sides).
+/// - `inline_trimmed` — subset of `comments_removed`: mid-line
+///   (post-code) drops that trimmed trailing whitespace. Solo-line
+///   drops are excluded.
+/// - `blank_lines_collapsed` — symmetric-pad collapses, one per
+///   removed comment block with blanks on both sides.
 /// - `doc_links_rewritten` — splices applied by the doc-link idiom
 ///   canonicaliser, one per rewritten literal span.
 /// - `safety_preserved` — `// SAFETY:` / `// SAFETY` lines kept.
-/// - `auto_trait_preserved` — `AUTO-TRAIT-POLICY-{BEGIN,END}` lines
-///   kept.
+/// - `auto_trait_preserved` — `AUTO-TRAIT-POLICY-{BEGIN,END}` lines kept.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RewriteCounts {
@@ -156,26 +154,24 @@ pub struct ProcessOptions {
     pub context: usize,
 }
 /// Process `path`: doc-comment link-idiom canonicalisation + lexer-based
-/// non-doc comment strip. Both passes are byte-preserving outside their
-/// targets; code formatting and whitespace outside comments are untouched.
+/// non-doc comment strip. Byte-preserving outside targets; code
+/// formatting and whitespace outside comments are untouched.
 ///
 /// Returns:
 ///
-/// - [`FileOutcome::Rewritten`] when the file content changed (with a
-///   unified diff in `dry_run` mode, `None` otherwise).
-/// - [`FileOutcome::Unchanged`] when neither pass produced bytes that
-///   differ from the input. `counts` still reports detected preserved
-///   idioms (e.g. `safety_preserved`) even though no bytes moved, so a
-///   file whose only comment is a preserved `// SAFETY:` line is not
-///   silently invisible to the rewrite summary.
-/// - [`FileOutcome::ParseError`] when the syn parse required for the
-///   doc-link pass fails. The file is left untouched on disk.
-/// - [`FileOutcome::IoError`] for any I/O failure.
+/// - [`FileOutcome::Rewritten`] — content changed (unified diff in
+///   `dry_run` mode, `None` otherwise).
+/// - [`FileOutcome::Unchanged`] — no bytes changed; `counts` still
+///   reports preserved idioms (e.g. `safety_preserved`) so a file
+///   whose only comment is `// SAFETY:` isn't invisible to the
+///   rewrite summary.
+/// - [`FileOutcome::ParseError`] — syn parse for the doc-link pass
+///   failed; file left untouched on disk.
+/// - [`FileOutcome::IoError`] — any I/O failure.
 ///
-/// Stripped: ordinary `//` line comments and `/* */` block comments.
-/// Preserved: doc comments (`///`, `//!`, `/** */`, `/*! */`),
-/// `// SAFETY:` / `// SAFETY` lines, and lines containing
-/// `AUTO-TRAIT-POLICY-BEGIN` / `AUTO-TRAIT-POLICY-END` markers.
+/// Stripped: ordinary `//` line and `/* */` block comments. Preserved:
+/// doc comments (`///`, `//!`, `/** */`, `/*! */`), `// SAFETY:` /
+/// `// SAFETY` lines, and `AUTO-TRAIT-POLICY-{BEGIN,END}` markers.
 #[must_use]
 pub fn process_file(path: &Path, opts: &ProcessOptions) -> FileOutcome {
     let original = match fs::read_to_string(path) {
@@ -237,65 +233,32 @@ pub fn line_comment_is_preserved(line_comment_body: &str) -> bool {
         .any(|tok| line_comment_body.contains(tok))
 }
 /// Strip non-doc line and block comments from `src` using
-/// [`ra_ap_rustc_lexer`], preserving every other byte verbatim.
-///
-/// Each token's text is dropped iff:
-/// - it is a `LineComment` with `doc_style: None`, OR
-/// - it is a `BlockComment` with `doc_style: None`,
-///
-/// AND the comment body does not match [`comment_text_is_preserved`].
-/// Doc comments (`doc_style: Some(_)`) and every non-comment token are
-/// preserved unchanged. String literals (whose interiors the lexer
-/// classifies as `Literal { kind: Str | ByteStr | CStr | RawStr | … }`)
-/// are structurally unreachable by this pass: their bytes cannot be
-/// reclassified as comment tokens, so marker-looking text inside a
-/// string literal round-trips byte-identical.
-///
-/// When a stripped comment sat on a line of its own (only whitespace
-/// before it on that line), the trailing newline that would otherwise
-/// remain as a blank line is collapsed away by trimming the next
-/// whitespace token's leading `\n`. This avoids leaving a blank line
-/// scar in place of a removed comment.
-///
-/// When a stripped comment sat inline after code on the same line, the
-/// run of horizontal whitespace separating the code from the removed
-/// comment token is also trimmed, so `drop(rx); // close receiver`
-/// becomes `drop(rx);` with no trailing space. Lines that did not lose
-/// a comment token are untouched; pre-existing trailing whitespace on
-/// such lines is preserved verbatim.
-///
-/// When a contiguous run of solo-line non-doc comments (a "comment
-/// block") sits between two code regions and the source has at least
-/// one blank line BOTH above and below the block, the rewrite emits
-/// `max(blanks_above, blanks_below)` blank lines between the two code
-/// regions instead of `blanks_above + blanks_below`. The intuition is
-/// that the blank immediately below the comment block was padding for
-/// the comment; removing the comment removes one unit of redundant
-/// padding without removing any blank that was not already in the
-/// source. If only one side has a blank, both blanks are preserved
-/// verbatim (no collapse). Inline (mid-line) comment drops never
-/// trigger this collapse.
+/// [`ra_ap_rustc_lexer`], preserving every other byte verbatim. Thin
+/// wrapper over [`strip_line_comments_with_counts`] discarding the
+/// [`RewriteCounts`] tally; see that function's docs for the full
+/// stripping and blank-line-collapse algorithm.
 #[must_use]
 pub fn strip_line_comments(src: &str) -> String {
     strip_line_comments_with_counts(src).0
 }
 /// Like [`strip_line_comments`] but also returns a [`RewriteCounts`]
-/// tally of the strip pass:
+/// tally of the strip pass.
 ///
-/// - `comments_removed` — non-doc `//` and `/* */` tokens dropped.
-/// - `inline_trimmed` — subset of `comments_removed` where the
-///   dropped comment sat mid-line after code (a non-zero amount of
-///   horizontal whitespace was trimmed back from `out`).
-/// - `blank_lines_collapsed` — one per completed solo-line drop run
-///   whose source had at least one blank line BOTH above and below
-///   the block (the symmetric-pad collapse path).
-/// - `safety_preserved` — `// SAFETY:` / `// SAFETY` lines kept.
-/// - `auto_trait_preserved` — `AUTO-TRAIT-POLICY-{BEGIN,END}` lines
-///   kept.
+/// Drops a token iff it is a `LineComment` or `BlockComment` with
+/// `doc_style: None` and the body doesn't match
+/// [`line_comment_is_preserved`]; doc comments and every other token
+/// are preserved unchanged. String-literal interiors are structurally
+/// unreachable by this pass, so marker-looking text inside a string
+/// round-trips byte-identical.
 ///
-/// `doc_links_rewritten` is left at the default (0); the doc-link
-/// pass is upstream of this strip pass and surfaces its own count
-/// through [`process_file`].
+/// A solo-line drop collapses its trailing blank-line scar; an inline
+/// (post-code) drop trims the preceding horizontal whitespace instead.
+/// A contiguous run of solo-line drops with blanks on both sides emits
+/// `max(blanks_above, blanks_below)` rather than their sum.
+///
+/// See [`RewriteCounts`] for field meanings; `doc_links_rewritten`
+/// stays 0 here — that count comes from [`process_file`]'s upstream
+/// doc-link pass.
 #[must_use]
 pub fn strip_line_comments_with_counts(src: &str) -> (String, RewriteCounts) {
     let mut out = String::with_capacity(src.len());
