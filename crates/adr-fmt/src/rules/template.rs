@@ -1,26 +1,17 @@
 //! Template compliance rules (T002–T020) and structure rules (S004–S007).
 //!
-//! T002: Date field present
-//! T003: Last-reviewed field required (all tiers)
-//! T004: Tier field present
-//! T005: Status section present
-//! T005c: Legacy ## Status section — migrate to Status: preamble field
-//! T006: Status value valid (strict keyword, no parentheticals)
-//! T007: Related section with at least one relationship (active ADRs only — skipped for stale)
-//! T008: Context section present (active ADRs only — skipped for stale)
-//! T009: Decision section present (active ADRs only — skipped for stale)
-//! T010: Consequences section present (active ADRs only — skipped for stale)
-//! T011: Code block exceeds 20 lines (warning)
-//! T014: Section ordering — H2 sections in canonical order
-//! T015: Section word count range — tier-scaled (configurable base)
-//! T016: Tagged rules validation — tier-scaled max count, 7–60 words each (active ADRs only — skipped for stale)
-//! T019: Rule-tier tension — rule's layer-derived tier has higher leverage than the ADR tier (`rule_rank` < `adr_rank`)
-//! T020: Reference load — tier-scaled max on References: count
-//! S004: Stale ADR missing Retirement section
-//! S005: Active ADR has Retirement section (location/status mismatch)
-//! S006: Terminal-status ADR not in stale directory
-//! S007: Stale stub-structure compliance (per AFM-0022) — disallowed
-//!       sections or non-lineage relationship verbs in stale stubs
+//! T002–T005c: preamble metadata fields (Date, Last-reviewed, Tier,
+//! Status; T005c flags legacy `## Status` heading). T006 status value
+//! validity. T007–T010 required sections (active ADRs only). T011
+//! code-block size. T014 section ordering. T015 tier-scaled prose
+//! word-count range. T016 tagged-rule validation (tier-scaled count,
+//! 7–60 words each). T019 rule/ADR tier tension. T020 tier-scaled
+//! `References:` load.
+//!
+//! S004/S005: stale ↔ Retirement-section presence mismatch. S006:
+//! terminal-status ADR not in the stale directory. S007: stale-stub
+//! structure per AFM-0022 — disallowed sections or non-lineage
+//! relationship verbs in stale stubs.
 
 use crate::config::Config;
 use crate::model::{AdrRecord, RelVerb, Status, Tier, layer_to_tier};

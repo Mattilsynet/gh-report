@@ -1,58 +1,23 @@
-//! Link and relationship rules (L001, L003, L006–L017).
+//! Link and relationship rules (L001, L003, L006–L019).
 //!
-//! L001: Dangling link — target ADR file does not exist
-//! L003: Supersedes-status consistency — if A supersedes B, B's
-//!       status must be `Superseded by A`
-//! L006: Legacy relationship verb — verb is parsed for recognition
-//!       but deprecated per AFM-0009
-//! L007: Stale reference — target ADR is in stale archive
-//! L008: Root self-reference mismatch — Root target must match own ID
-//! L009: Root + References coexistence — Root and References cannot
-//!       appear in the same Related section
+//! - L001 dangling link; L003 supersedes-status consistency; L006
+//!   legacy verb (deprecated per AFM-0009); L007 stale reference;
+//!   L008 Root self-reference mismatch; L009 Root+References
+//!   coexistence.
+//! - Tree-structure rules (parent-edge model, advisory): L010 missing
+//!   parent; L011 cross-domain parent (suppress via
+//!   `Parent-cross-domain:`); L012 non-Accepted parent; L013
+//!   parent-edge cycle; L014 unreachable from root; L015/L016
+//!   heuristics (flat-tree authoring, weak-tier parent); L017
+//!   superseded parent; L018/L019 `Parent-cross-domain` field
+//!   mismatch/dangling.
 //!
-//! Tree-structure rules (parent-edge model, advisory):
-//!
-//! L010: Missing parent — non-root ADR has no `References:` target
-//! L011: Cross-domain parent — first `References:` target is in a
-//!       different domain (suppressed by `Parent-cross-domain:`
-//!       preamble field)
-//! L012: Non-Accepted parent — first `References:` target is not in
-//!       `Accepted` status (advisory only; chain still flows through
-//!       per draft-waypoint policy)
-//! L013: Parent-edge cycle — first-references graph contains a cycle
-//! L014: Unreachable from root — non-root ADR's parent chain does
-//!       not terminate at any root
-//! L015: Heuristic — first-position parent is a root while later
-//!       references include same-domain Accepted non-root candidates
-//!       (suspicious flat-tree authoring)
-//! L016: Heuristic — parent ADR's tier is lower (further from S)
-//!       than child's tier
-//! L017: Superseded parent — first `References:` target has been
-//!       superseded; redirect to the successor
-//! L018: Parent-cross-domain mismatch — declared `Parent-cross-domain`
-//!       ID does not match the first `References:` target (stale or
-//!       misdeclared field; tree-render would treat the record as
-//!       orphaned for cross-domain-parent purposes)
-//! L019: Parent-cross-domain dangling — declared `Parent-cross-domain`
-//!       target ADR does not exist in the corpus
-//!
-//! Diagnostics are independent: a single relationship may emit
-//! multiple codes (e.g. L006 + L001 for a legacy verb pointing to
-//! a missing target; L006 + L007 for a legacy verb pointing to a
-//! stale target). Each rule encodes one concern; suppression is
-//! the author's job after fixing the underlying issue.
-//!
-//! Cycle dominance: when L013 fires for a record (parent-edge graph
-//! contains a cycle through it), the per-record parent-edge checks
-//! L011/L012/L014/L016/L017 are suppressed for that record. Rationale:
-//! "parent" is not well-defined inside a cycle — once the cycle is
-//! broken, the remaining diagnostics will re-evaluate against a
-//! well-formed graph. L010 cannot fire for cycle members (they have
-//! a parent edge by definition). L015 still fires because it
-//! evaluates other References slots, not the parent edge.
-//!
-//! Stale source: ADRs in the stale archive (`is_stale`) are exempt
-//! from L010–L017 entirely.
+//! Diagnostics are independent — one relationship may emit multiple
+//! codes. Cycle dominance: when L013 fires for a record, L011/L012/
+//! L014/L016/L017 are suppressed for it ("parent" is undefined inside
+//! a cycle); L010 cannot fire for cycle members; L015 still fires
+//! (inspects other References slots). Stale-archive ADRs (`is_stale`)
+//! are exempt from L010–L017.
 
 use std::collections::HashMap;
 
@@ -204,22 +169,15 @@ fn check_legacy_verb(source: &AdrRecord, rel: &Relationship, diags: &mut Vec<Dia
     }
 }
 
-/// L018 / L019: Validate the `Parent-cross-domain:` preamble field
+/// L018 / L019: validate the `Parent-cross-domain:` preamble field
 /// against the actual References list and the corpus.
 ///
-/// L018 fires when the declared cross-domain parent ID does not
-/// match the record's first `References:` target. The field exists
-/// to suppress L011 for a specific, intentional cross-domain edge;
-/// when it names a different ADR than the structural parent, it is
-/// either stale (the References were re-ordered) or misdeclared
-/// (the wrong ID was written). The render-tree treats the field as
-/// authoritative only when it matches the first reference, so a
-/// mismatch makes the cross-domain link invisible in `--tree`.
-///
-/// L019 fires when the declared target ADR is not present in the
-/// corpus. L001 (dangling link) only inspects relationship lines,
-/// not preamble fields, so a Parent-cross-domain pointing at a
-/// nonexistent ADR would otherwise pass silently.
+/// L018: declared ID doesn't match the first `References:` target —
+/// either stale (re-ordered References) or misdeclared. `--tree`
+/// treats the field as authoritative only on a match, so a mismatch
+/// hides the cross-domain link there. L019: declared target ADR is
+/// absent from the corpus — L001 only inspects relationship lines,
+/// not preamble fields, so this would otherwise pass silently.
 ///
 /// Roots and ADRs without `Parent-cross-domain` declared are skipped.
 fn check_parent_cross_domain_consistency(

@@ -18,27 +18,21 @@ struct EligibleContext<'a> {
 
 /// Resolve decision rules applicable to a crate, grouped by root ADR subtree.
 ///
-/// Resolution chain:
-/// 1. Find domains where `crate_name` ∈ `domain.crates` → candidate domains
-/// 2. Within candidates: if any ADR has `crates` field populated, filter
-///    to ADRs where `crate_name` ∈ `adr.crates`; else include all domain ADRs
-/// 3. Always include all ADRs from `foundation = true` domains
+/// Resolution: find domains listing `crate_name`; within those, filter to
+/// per-ADR `crates` when populated (else all domain ADRs); always include
+/// `foundation = true` domain ADRs.
 ///
-/// Assignment uses the parent-edge tree projection: each ADR's structural
-/// parent is its first `References:` target. The parent chain is walked
-/// upward (cycle-safe via visited set) until a root is reached. Non-Accepted
-/// parents (Draft/Proposed) are advisory-only — the chain flows through them
-/// per the draft-waypoint policy. Cycle members and chains that do not
-/// terminate at any root land in the Unclaimed group.
+/// Assignment walks the parent-edge tree (structural parent = first
+/// `References:` target) upward, cycle-safe, to a root. Non-Accepted
+/// parents are advisory waypoints only. Cycle members and non-terminating
+/// chains land in Unclaimed.
 ///
-/// Emission: for each root in deterministic order, traverse the parent-edge
-/// children downward (not the full citation graph) and emit rules from
-/// eligible ADRs assigned to this root. Secondary citations do not pull
-/// extra subtrees.
+/// Emission: per root (deterministic order), walk children downward and
+/// emit eligible rules assigned to that root; secondary citations don't
+/// pull extra subtrees.
 ///
-/// Returns `RootGroup` entries: foundation roots first (by min layer, then
-/// number), then domain roots (same). An unclaimed fallback group is
-/// appended when any eligible ADRs were not reached by any root.
+/// Returns `RootGroup`s: foundation roots first, then domain; an
+/// Unclaimed fallback group is appended for unreached eligible ADRs.
 ///
 /// # Errors
 ///
