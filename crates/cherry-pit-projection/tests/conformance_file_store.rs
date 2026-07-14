@@ -4,37 +4,19 @@
 //! Third of three SM-4 registrants. The harness probes the
 //! [`Projection`] trait contract (CHE-0048:R3 replay-equivalence,
 //! fold determinism). The backing [`EventStore`] is the gateway's
-//! [`MsgpackFileStore`] — exercising projection replay over
-//! envelopes that round-trip through real on-disk msgpack frames
-//! rather than just an in-process Vec.
+//! [`MsgpackFileStore`], so replay is exercised over envelopes that
+//! round-trip through real on-disk msgpack frames rather than an
+//! in-process `Vec`.
 //!
-//! ## Why pair with `MsgpackFileStore` rather than `InMemoryEventStore`
+//! Pairing with `MsgpackFileStore` (rather than `InMemoryEventStore`,
+//! which would also satisfy the harness signature) proves the fold is
+//! stable across the serde boundary, per SM-4 SC#10 ("registrants must
+//! exercise a non-trivial adapter pairing").
 //!
-//! The harness signature takes any `S: EventStore<Event = P::Event>`
-//! — the in-memory store would compile and pass. Pairing with the
-//! file store is *meaningful*: it proves the projection fold is
-//! stable across the serde boundary, not just across an in-process
-//! shuffle. The gateway dev-dep is already justified by SM-4 SC#10
-//! ("registrants must exercise a non-trivial adapter pairing"), so
-//! adding it here costs nothing structurally.
-//!
-//! ## Q02 (linus round-2 carry-over)
-//!
-//! `FileProjectionStore` (this crate's own primary type) is **not**
-//! exercised by `assert_projection_conformance` — that harness probes
-//! the `Projection` *trait*, while `FileProjectionStore` is a
-//! snapshot/checkpoint persistence backend separate from
-//! `Projection::apply`. Commutativity / dedup-under-resume would
-//! require a *new* harness that probes `FileProjectionStore::persist`
-//! / `load_snapshot` semantics — that's a different abstraction and
-//! out of SM-4 scope. Logged as future work; do not add to
-//! `assert_projection_conformance`.
-//!
-//! ## tokio
-//!
-//! cherry-pit-projection has `tokio` in dev-deps with
-//! `macros, rt-multi-thread`. `#[tokio::test]` is the natural driver
-//! for the async harness fn.
+//! `FileProjectionStore` (this crate's own persistence backend) is
+//! **not** exercised here — separate from `Projection::apply`; a
+//! commutativity/dedup-under-resume harness for it is future work,
+//! out of SM-4 scope.
 
 use std::sync::{Arc, Mutex};
 
