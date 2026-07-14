@@ -66,7 +66,7 @@
 
     {% if !vm.by_team.is_empty() %}
     <h2>Orphans by Team</h2>
-    <p class="meta">Orphan repos attributed to a team via its last committer's team membership (B1 roster).</p>
+    <p class="meta">Orphan repos attributed to a team via its last committer's team membership.</p>
     {% for group in vm.by_team %}
     <details>
         <summary><a href="owners/{{ group.slug }}.html" title="{{ group.team }}">{{ group.team_short }}</a> ({{ group.rows.len() }})</summary>
