@@ -1,32 +1,25 @@
 //! Consumer-owned wire-deserialize-and-dispatch port.
 //!
-//! Realises **CHE-0050 R1–R5**. The trait is the boundary between
-//! cherry-pit-web's HTTP plumbing (status mapping, correlation echo,
-//! idempotency-key threading, `/v1/` DTO contract — CHE-0049 R4–R6 +
-//! R10) and the consumer's domain knowledge (which wire DTO maps to
-//! which `Command`, and how to invoke `CommandGateway::create` /
-//! `::send` against it).
+//! Realises **CHE-0050 R1–R5**: the boundary between HTTP plumbing
+//! (status mapping, correlation echo, idempotency-key threading,
+//! `/v1/` DTO contract — CHE-0049 R4–R6 + R10) and the consumer's
+//! domain knowledge (wire DTO → `Command`, invoking
+//! `CommandGateway::create` / `::send`).
 //!
 //! ## Why a port, not a sum-type
 //!
-//! `cherry-pit-core::Command` carries no `Deserialize` bound by
-//! design (CHE-0014 R2). cherry-pit-web therefore cannot deserialize
-//! request bodies into a `Command` from generic code. The two
-//! alternatives — pushing a sum-type `enum AllCommands` onto the
-//! consumer or moving the create/send handlers entirely into
-//! `extra_routes` — were rejected in CHE-0050 (see Rejected
-//! Alternatives). This trait keeps deserialization and dispatch on
-//! the consumer side while leaving every HTTP concern in cherry-pit-web.
+//! `cherry-pit-core::Command` carries no `Deserialize` bound by design
+//! (CHE-0014 R2). Rejected alternatives — a consumer-side
+//! `enum AllCommands`, or moving create/send into `extra_routes` —
+//! are in CHE-0050's Rejected Alternatives. This keeps deserialization
+//! on the consumer, HTTP in cherry-pit-web.
 //!
 //! ## Object-unsafety is the design (CHE-0050 R4)
 //!
-//! The combination of an associated type (`Wire`) and a generic
-//! gateway parameter (`Gateway`) makes this trait **object-unsafe by
-//! construction**. cherry-pit-web ships zero blanket impls and zero
-//! default impls; every consumer writes one explicit impl per
-//! cherry-pit-web instance. Combined with CHE-0049 R1 (no
-//! `Box<dyn _>` over infrastructure ports) the trait is monomorphised
-//! end-to-end, preserving zero-cost dispatch.
+//! The associated `Wire` type plus generic `Gateway` make this trait
+//! object-unsafe by construction; every consumer writes one explicit
+//! impl, keeping dispatch monomorphised (CHE-0049 R1: no `Box<dyn _>`
+//! over infrastructure ports).
 
 use cherry_pit_core::{AggregateId, CorrelationContext};
 use serde::de::DeserializeOwned;
@@ -89,42 +82,30 @@ pub enum DispatchOutcome {
 ///
 /// Implementors:
 ///
-/// 1. Name a single [`Wire`](Self::Wire) type — the request DTO
-///    cherry-pit-web hands to [`dispatch`](Self::dispatch) after JSON
-///    body deserialization.
+/// 1. Name a [`Wire`](Self::Wire) type — the request DTO handed to
+///    [`dispatch`](Self::dispatch) after JSON deserialization.
 /// 2. Bind [`Gateway`](Self::Gateway) to a concrete
-///    [`cherry_pit_core::CommandGateway`] (the same `G` carried by
-///    the surrounding [`AppState`](crate::AppState)).
-/// 3. Translate the wire DTO into a `Command` and invoke
-///    `gateway.create(...)` or `gateway.send(...)` as appropriate
-///    for the wire variant.
-/// 4. Map the gateway's typed error into an [`ErrorEnvelope`] using
-///    the public mapping helpers (`map_dispatch_error`,
-///    `map_store_error`, `map_bus_error`) — cherry-pit-web's handlers
-///    will attach correlation echo (CHE-0049 R5) and convert the
-///    triple into an axum response, but the router is responsible
-///    for picking the right mapper for the error it surfaced.
+///    [`cherry_pit_core::CommandGateway`] (the `G` on
+///    [`AppState`](crate::AppState)).
+/// 3. Translate the DTO, invoke `gateway.create(...)` or
+///    `gateway.send(...)`.
+/// 4. Map the gateway's error via the public mapping helpers
+///    (`map_dispatch_error`, `map_store_error`, `map_bus_error`) —
+///    never ad-hoc.
 ///
-/// `dispatch` is the **only** method on the trait by design (R1):
-/// adding more would invite consumers to host HTTP concerns the trait
-/// has no business with.
+/// `dispatch` is the **only** method by design (R1).
 ///
 /// ## Bounds
 ///
-/// `CommandRouter` itself carries no supertrait bounds. The
-/// `Send + Sync + 'static + Clone` bounds live on the third type
-/// parameter of [`AppState`](crate::AppState) and
-/// [`build_router`](crate::build_router) per CHE-0050 R2 — they are
-/// requirements of the **storage** of an `R`, not of the trait
-/// surface itself, and stating them here would force every impl to
-/// repeat them even when stored under a different envelope (e.g.
-/// inside test harnesses that don't use `AppState`).
+/// No supertrait bounds itself; `Send + Sync + 'static + Clone` live
+/// on [`AppState`](crate::AppState)'s third parameter (CHE-0050 R2) —
+/// requirements of *storing* `R`, not the trait, so test harnesses
+/// needn't repeat them.
 ///
 /// # Example
 ///
-/// A minimal `CommandRouter` impl. The stub gateway returns
-/// `Infallible` errors; a real consumer maps the gateway error via
-/// `map_dispatch_error` (CHE-0050 R1).
+/// A minimal impl; the stub gateway returns `Infallible` errors, a
+/// real consumer maps the error via `map_dispatch_error`.
 ///
 /// ```
 /// use std::num::NonZeroU64;
@@ -204,52 +185,42 @@ pub enum DispatchOutcome {
 /// assert!(matches!(outcome, Ok(DispatchOutcome::Created { .. })));
 /// ```
 pub trait CommandRouter {
-    /// The consumer's [`CommandGateway`] type — bound to the
-    /// surrounding [`AppState`]'s `G` via
+    /// The consumer's [`CommandGateway`] type — bound via
     /// `R: CommandRouter<Gateway = G>` (CHE-0050 R2).
     ///
     /// [`CommandGateway`]: cherry_pit_core::CommandGateway
-    /// [`AppState`]: crate::AppState
     type Gateway: cherry_pit_core::CommandGateway;
 
     /// The wire-format DTO carried in the request body.
     ///
-    /// Per CHE-0050 R1 this type — and **only** this type — carries
-    /// the [`DeserializeOwned`] bound. `cherry-pit-core::Command`
-    /// remains free of `Deserialize` per CHE-0014 R2.
+    /// Per CHE-0050 R1 only this type carries the
+    /// [`DeserializeOwned`] bound; `Command` stays free of
+    /// `Deserialize` (CHE-0014 R2).
     type Wire: DeserializeOwned + Send + 'static;
 
     /// Translate a wire DTO into a domain command and dispatch it
     /// through the gateway.
     ///
-    /// cherry-pit-web has already:
-    ///
-    /// * extracted the [`CorrelationContext`] from inbound headers
-    ///   (CHE-0049 R5),
-    /// * extracted the optional [`IdempotencyKey`] (CHE-0049 R6,
-    ///   CHE-0046 R3),
-    /// * deserialized the request body into `Self::Wire`.
+    /// cherry-pit-web has already extracted [`CorrelationContext`]
+    /// (CHE-0049 R5), the optional [`IdempotencyKey`] (CHE-0049 R6,
+    /// CHE-0046 R3), and deserialized the body into `Self::Wire`.
     ///
     /// The implementation must:
     ///
-    /// * pick the right gateway method (`create` for new-aggregate
-    ///   wire variants, `send` for command-on-existing variants),
-    /// * pass `ctx` through to the gateway unchanged,
-    /// * thread `idempotency` to whatever consumer-side replay store
-    ///   the wire DTO targets (CHE-0046 R3),
+    /// * pick the right gateway method (`create` new-aggregate,
+    ///   `send` command-on-existing),
+    /// * pass `ctx` through unchanged,
+    /// * thread `idempotency` to the consumer replay store
+    ///   (CHE-0046 R3),
     /// * return [`DispatchOutcome::Created { aggregate_id }`] for
-    ///   `create` flows or [`DispatchOutcome::Sent`] for `send`
-    ///   flows,
-    /// * on gateway error, build an [`ErrorEnvelope`] via the public
-    ///   `map_dispatch_error` / `map_store_error` / `map_bus_error`
-    ///   helpers — never construct one ad-hoc (the helpers are the
-    ///   single source of truth for CHE-0049 R10 status mapping).
+    ///   `create` or [`DispatchOutcome::Sent`] for `send`,
+    /// * on error, build an [`ErrorEnvelope`] via the public mapping
+    ///   helpers (single source of truth, CHE-0049 R10).
     ///
-    /// The returned [`ErrorEnvelope`] **must not** carry HTTP-level
-    /// concerns the handler owns: correlation echo headers are added
-    /// by the surrounding middleware (CHE-0049 R5); response status
-    /// is the triple's first element; the router does not construct
-    /// `axum::response::Response` values directly (CHE-0050 R3).
+    /// The returned [`ErrorEnvelope`] must not carry HTTP concerns:
+    /// correlation echo is added by surrounding middleware (CHE-0049
+    /// R5); the router does not build `axum::response::Response`
+    /// directly (CHE-0050 R3).
     fn dispatch(
         &self,
         gateway: &Self::Gateway,

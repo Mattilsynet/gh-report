@@ -2,28 +2,20 @@
 //!
 //! # API Design Choices
 //!
-//! ## `ArcSwap<Option<HashMap<...>>>`
+//! The HTML cache is stored behind [`ArcSwap`] for zero-copy atomic
+//! swaps; [`ArcSwap::load()`] is wait-free, so concurrent readers never
+//! block each other or the writer, and the whole cache swaps atomically
+//! (no partial-update visibility).
 //!
-//! The HTML cache is stored behind [`ArcSwap`] for zero-copy atomic swaps.
-//! [`ArcSwap::load()`] is wait-free (no lock contention on the serving
-//! hot path), so concurrent readers never block each other or the writer.
-//! The entire cache is swapped atomically — no partial-update visibility.
+//! The WebSocket broadcast channel uses Tokio's `broadcast::Sender`.
+//! [`PageUpdateEvent::json`] is a pre-serialized JSON payload (`Arc<str>`)
+//! built once at broadcast time (O(1) instead of O(N) serialization);
+//! each session clones the `Arc` and forwards it directly.
 //!
-//! ## `broadcast::Sender<PageUpdateEvent>`
-//!
-//! The WebSocket broadcast channel uses Tokio's `broadcast::Sender` for
-//! O(1) per-event serialization cost. [`PageUpdateEvent::json`] contains
-//! a pre-serialized JSON payload (`Arc<str>`) built once at broadcast
-//! time, avoiding O(N) per-connection serialization. Each WebSocket
-//! session receives a clone (cheap `Arc` refcount bump) and forwards
-//! the payload directly.
-//!
-//! ## `HashMap<String, CachedPage>`
-//!
-//! Simple key-value lookup by cache key (e.g., `"index.html"`,
-//! `"section/item.html"`). The entire cache is swapped atomically
-//! via `ArcSwap`, so there is no need for concurrent map structures
-//! like `DashMap` or `scc::HashMap`.
+//! `HashMap<String, CachedPage>` gives simple key-value lookup by cache
+//! key (e.g. `"index.html"`, `"section/item.html"`); since the whole map
+//! swaps atomically via `ArcSwap`, no concurrent map structure
+//! (`DashMap`, `scc::HashMap`) is needed.
 
 use std::collections::HashMap;
 use std::sync::Arc;

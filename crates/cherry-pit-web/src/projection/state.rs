@@ -142,13 +142,11 @@ impl std::fmt::Debug for PageEntry {
 /// Per CHE-0039 R2, every update carries an explicit
 /// [`CorrelationContext`] so deltas can be correlated with the command
 /// that triggered them. The context is *not* serialised into the
-/// outgoing WS payload by default; it is held alongside for adapter-side
-/// logging and trace correlation.
+/// outgoing WS payload; it is held alongside for adapter-side logging
+/// and trace correlation.
 ///
 /// No `serde` decode bound (CHE-0014 R2; A3). `#[non_exhaustive]` so
 /// additive field growth is non-breaking.
-///
-/// Migrated from the donor crate's `state::PageUpdateEvent` (m5 Phase 3c).
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct PageUpdate {

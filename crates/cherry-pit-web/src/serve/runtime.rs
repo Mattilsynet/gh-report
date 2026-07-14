@@ -1,45 +1,28 @@
 //! In-memory content web server.
 //!
-//! Serves pre-rendered content from an in-memory cache (`ArcSwap`-based).
-//! Entries are rendered into `HashMap<String, CachedPage>` by the upstream
-//! pipeline and swapped atomically — no disk I/O on the serving path.
-//!
-//! Content encoding: **zstd-only**. Clients that do not advertise
-//! `Accept-Encoding: zstd` receive uncompressed (identity) responses.
-//! No gzip or deflate support — modern browsers universally support zstd.
+//! Serves pre-rendered content from an in-memory cache (`ArcSwap`-based),
+//! swapped atomically — no disk I/O on the serving path. Content
+//! encoding is **zstd-only**; clients without `Accept-Encoding: zstd`
+//! get uncompressed responses.
 //!
 //! # Trust Model
 //!
-//! - **No TLS built in** — requires reverse proxy / load balancer for
-//!   HTTPS termination.
-//! - **No authentication built in** — enforce at the ingress layer.
-//! - **No rate limiting built in** — enforce at the ingress layer.
-//! - **WebSocket** carries only page-update notifications (cache key names
-//!   and timestamps), not secrets.
-//! - **Path normalization** is defense-in-depth; cache-only serving
-//!   prevents filesystem access regardless.
+//! No TLS, authentication, or rate limiting built in — enforce at the
+//! ingress layer. The WebSocket carries only page-update notifications,
+//! never secrets.
 //!
 //! # Known Limitations
 //!
-//! - **Zstd-only content encoding** — intentional design choice. Gzip
-//!   and deflate are not supported. Document in README for consumers.
-//! - **`If-None-Match` single-value comparison** — RFC 7232 §3.2 allows
-//!   multiple `ETag` values in a single header value, but this server compares
-//!   only the first value. Multi-value `If-None-Match` always returns 200.
+//! `If-None-Match` compares only the first `ETag` value; a multi-value
+//! header always returns 200.
 //!
 //! # Security Invariants
 //!
-//! - Binds to the address specified by the caller (default `127.0.0.1`);
-//!   container deployments can set an all-interface bind address and rely
-//!   on TLS termination at the load balancer / reverse proxy layer
-//! - `normalize_request_path` rejects path traversal attempts (`../`,
-//!   percent-encoded variants, null bytes, backslashes)
-//! - Only keys present in the cache are served — no filesystem access
-//! - Adds security response headers to all responses (CSP is configurable
-//!   via [`ServerConfig::builder()`](super::config::ServerConfig::builder))
-//! - WebSocket upgrades validate `Origin` against `Host` to prevent CSWSH
-//! - Request body size capped (configurable, default 1 KB — all endpoints read-only)
-//! - Non-GET/HEAD requests to content pages return 405 Method Not Allowed
+//! - `normalize_request_path` rejects traversal; only cache keys served
+//! - Security headers on every response; CSP configurable via
+//!   [`ServerConfig::builder()`](super::config::ServerConfig::builder)
+//! - WebSocket upgrades validate `Origin` against `Host` (CSWSH)
+//! - Body size capped (default 1 KB); non-GET/HEAD returns 405
 //! - HTTP concurrency bounded by semaphore (defense-in-depth)
 
 use std::net::SocketAddr;
@@ -127,31 +110,22 @@ const WS_MAX_MESSAGE_SIZE: usize = 4096;
 
 /// Validate that the WebSocket `Origin` header matches the request `Host`.
 ///
-/// Prevents Cross-Site WebSocket Hijacking (CSWSH) where an attacker's page
-/// opens a WebSocket to the service and the browser attaches ambient cookies,
-/// leaking caller-supplied update metadata via page-update notifications.
+/// Prevents Cross-Site WebSocket Hijacking (CSWSH): an attacker's page
+/// opening a WebSocket to this service would otherwise have the browser
+/// attach ambient cookies, leaking page-update metadata.
 ///
 /// # Algorithm
 ///
-/// 1. Reject non-HTTP/HTTPS schemes (e.g., `ftp://`, `file://`).
-/// 2. Extract the host portion from the `Origin` URL.
-/// 3. Normalize ports: strip the default port for the scheme (443 for
-///    `https`, 80 for `http`) from both Origin and Host, then compare
-///    the `(hostname, port)` tuples.
-/// 4. Return `true` if they match, `false` otherwise.
+/// Reject non-HTTP(S) schemes; extract the host from `Origin`; strip the
+/// default port for the scheme (443/80) from both `Origin` and `Host`;
+/// compare the resulting `(hostname, port)` tuples.
 ///
-/// If no `Origin` header is present, the request is allowed — same-origin
-/// WebSocket connections from browsers always include `Origin`, so its
-/// absence indicates a non-browser client (curl, monitoring, etc.) which
-/// is not subject to CSWSH.
-///
-/// # Security trade-off
-///
-/// Allowing absent `Origin` means non-browser clients can connect without
-/// restriction. This is intentional: the WebSocket carries only page-update
-/// notifications (cache key names and timestamps), not secrets. Production
-/// deployments should enforce authentication at the ingress layer to
-/// restrict access to authorized clients.
+/// An absent `Origin` header is allowed: browsers always send `Origin` on
+/// same-origin WebSocket connections, so its absence indicates a
+/// non-browser client (curl, monitoring) not subject to CSWSH. This is a
+/// deliberate trade-off — non-browser clients connect unrestricted;
+/// production deployments should enforce authentication at the ingress
+/// layer.
 fn validate_ws_origin(headers: &HeaderMap) -> bool {
     let Some(origin) = headers.get(header::ORIGIN) else {
         return true;
@@ -230,27 +204,17 @@ fn normalize_authority<'a>(authority: &'a str, default_port: &str) -> (&'a str, 
 /// 2. On page update: `{"type":"update","pages":[...],"timestamp":"..."}`
 /// 3. On lag (client too slow): `{"type":"reload"}`
 ///
-/// Server sends Ping frames every 30 s; closes the connection if Pong is
-/// not received within 10 s.
-///
+/// Server pings every 30 s; closes if Pong is not received within 10 s.
 /// Client → server messages are ignored.
 ///
 /// # Security
 ///
-/// - `Origin` header validated against `Host` to prevent Cross-Site
-///   WebSocket Hijacking (CSWSH). Returns 403 on mismatch.
-/// - Connection count bounded by `ws_semaphore` (configurable permits). Returns
-///   503 Service Unavailable when exhausted.
-/// - Max inbound frame size: 4 KB (prevents memory exhaustion).
-/// - Ping/pong keepalive evicts unresponsive connections.
-/// - No application-level authentication — same trust model as the dashboard
-///   pages. Authentication is enforced at the ingress layer (Cloud Run /
-///   reverse proxy). The WebSocket carries only page-update notifications
-///   (cache key names and timestamps), no secrets or private payloads.
-/// - No application-level rate limiting on WebSocket connections beyond the
-///   semaphore cap. Production deployments must enforce rate limiting at the
-///   ingress layer (Cloud Run, reverse proxy, or load balancer) to prevent
-///   connection-flooding attacks.
+/// - `Origin` validated against `Host` (CSWSH); 403 on mismatch.
+/// - Connection count bounded by `ws_semaphore`; 503 when exhausted.
+/// - Max inbound frame size 4 KB (memory-exhaustion defense).
+/// - No application-level auth or rate limiting beyond the semaphore
+///   cap — same trust model as the dashboard pages. Enforce both at
+///   the ingress layer.
 async fn ws_handler<S: ServerState>(
     ws: WebSocketUpgrade,
     State(state): State<Arc<S>>,
@@ -599,30 +563,18 @@ pub async fn bind_serving_port(addr: SocketAddr) -> Result<TcpListener, ServerEr
 /// signal completes.
 ///
 /// Serves pages from the in-memory `html_cache` on the state. Binds to
-/// `bind_address` on the given port. Container deployments typically pass
-/// `"0.0.0.0"`; the default for local development is `"127.0.0.1"`.
-///
-/// # Arguments
-///
-/// * `port` — TCP port number (use `0` for ephemeral port).
-/// * `bind_address` — IP address to bind to (e.g., `"127.0.0.1"`, `"0.0.0.0"`).
-/// * `listener` — Optional pre-bound TCP listener. Pass `None` to bind inside
-///   this function.
-/// * `shutdown` — A future that resolves when the server should shut down.
-/// * `state` — Shared application state implementing [`ServerState`].
-/// * `config` — Server configuration (concurrency limits, body size limits).
-/// * `addr_tx` — Optional oneshot channel to receive the bound `SocketAddr`.
-///   Used only when `listener` is `None`. Useful for tests using ephemeral
-///   ports. Pass `None` if not needed.
-/// * `extra_routes` — Optional additional routes (e.g., webhook handler) to
-///   merge into the router. Extra routes bring their own body-limit layers;
-///   built-in routes apply the `config.max_request_body_bytes` limit via
-///   per-route layer.
+/// `bind_address:port` (container deployments typically pass `"0.0.0.0"`;
+/// local default is `"127.0.0.1"`). Pass a pre-bound `listener` to skip
+/// binding inside this function (used by tests for ephemeral ports, with
+/// `addr_tx` receiving the bound address). `extra_routes` merges additional
+/// routes (e.g., webhook handler) onto the router; they bring their own
+/// body-limit layers, while built-in routes apply
+/// `config.max_request_body_bytes` per-route.
 ///
 /// # Errors
 ///
 /// Returns [`ServerError`] if the server cannot parse the requested address,
-/// bind to the requested address, or serve requests.
+/// bind to it, or serve requests.
 ///
 /// # Panics
 ///

@@ -1,60 +1,28 @@
 //! HTTP + WebSocket handlers for the projection adapter.
 //!
-//! This module is gated behind `feature = "projection"` and realises the
-//! per-route handlers that [`super::build_projection_router`] mounts.
-//! Three concerns live here:
+//! Gated behind `feature = "projection"`; per-route handlers
+//! [`super::build_projection_router`] mounts:
 //!
-//! - HTTP health probes (`/v1/healthz`, `/v1/readyz`) — static JSON bodies,
-//!   zero-allocation hot path.
-//! - HTTP snapshot fetch (`/v1/{*path}`) — serves a [`PageEntry`] from the
-//!   current snapshot with ETag/304 + zstd negotiation per CHE-0049 R11.
-//! - WebSocket upgrade (`/ws`) — per-session subscribe to
-//!   [`ProjectionSource::subscribe`] forwarding [`PageUpdate`] deltas. The
-//!   envelope is JSON `"v": 1` per CHE-0049 R13.
+//! - Health probes (`/v1/healthz`, `/v1/readyz`) — static JSON.
+//! - Snapshot fetch (`/v1/{*path}`) — [`PageEntry`] with ETag/304 +
+//!   zstd negotiation (CHE-0049 R11).
+//! - WebSocket upgrade (`/ws`) — subscribes to
+//!   [`ProjectionSource::subscribe`], forwarding [`PageUpdate`] as
+//!   `"v": 1` JSON (CHE-0049 R13).
 //!
-//! ### CHE-0049 R11 — drop-and-resync backpressure
+//! On [`broadcast::error::RecvError::Lagged`] the socket closes with
+//! WS code **1001 "Going Away"** (drop-and-resync, CHE-0049 R11). The
+//! client re-fetches the snapshot (checkpoint, CHE-0048:R2), then
+//! re-attaches WS.
 //!
-//! When the per-socket receiver observes
-//! [`broadcast::error::RecvError::Lagged`] we close the socket with WS
-//! close code **1001 "Going Away"** (RFC 6455 §7.4.1). The chosen close
-//! code communicates "the server cannot deliver continuity on this
-//! channel; reconnect". The client recovers by following the R11
-//! reconnect protocol: HTTP-fetch the current snapshot, then re-attach a
-//! fresh WS for subsequent deltas. The snapshot per CHE-0048:R2 supplies
-//! the durable checkpoint; no replay-on-reconnect logic is required on
-//! the server.
+//! Outbound frames are pre-serialised `Arc<str>` on
+//! [`PageUpdate::json`]; no outbound DTO derives `Deserialize`, no
+//! inbound DTO exists (A3).
 //!
-//! The donor crate (module `server::ws_session`) handled lag by
-//! sending a `{"type":"reload"}` text frame and continuing the session.
-//! Cherry-pit-web's R11 contract upgrades that to a close frame: the
-//! envelope contract forbids ambiguity between "delta you missed" and
-//! "delta you got" — the only way to guarantee that is to terminate the
-//! session and force a snapshot re-fetch.
-//!
-//! ### A3 — no `Deserialize` bleed
-//!
-//! The outbound WS frames are constructed from pre-serialised
-//! `Arc<str>` payloads on [`PageUpdate::json`] (built by
-//! [`PageUpdate::new`]). No outbound DTO derives `Deserialize` and no
-//! inbound DTO exists — client frames are discarded after pong handling.
-//! Raw [`cherry_pit_core::EventEnvelope`] is structurally unreachable
-//! from this surface: the broadcast carries `PageUpdate` only.
-//!
-//! ### Scope deferred to follow-on work
-//!
-//! The donor crate's HTTP/WS concurrency semaphores
-//! ([`super::config::ValidatedConfig::concurrency_limit`] /
-//! [`super::config::ValidatedConfig::ws_max_connections`]) are NOT
-//! threaded through [`super::build_projection_router`] at this phase —
-//! the Phase-2 signature does not admit a `ValidatedConfig` parameter
-//! and changing it would balloon the public surface. The semaphore
-//! gates are defence-in-depth; production deployments rate-limit at the
-//! ingress layer regardless.
-//!
-//! Similarly the donor's `Origin`-vs-`Host` CSWSH validator is retained
-//! (`validate_ws_origin` below) but the `csp_override` knob is not
-//! threaded — the projection surface ships [`DEFAULT_CSP`] only at this
-//! phase.
+//! [`super::config::ValidatedConfig`]'s semaphores stay
+//! defence-in-depth, not yet threaded through the router builder;
+//! ingress handles rate limiting. `csp_override` is not threaded;
+//! ships [`DEFAULT_CSP`].
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -283,20 +251,16 @@ fn etag_weak_match(client_val: &HeaderValue, server_val: &HeaderValue) -> bool {
 /// [`WebSocketOriginPolicy`] carried on the `Extension<WsAuthLimits>`
 /// attached by [`super::build_projection_router`] (SEC-0012:R1). On
 /// rejection (absent `Origin` under `Strict`, malformed `Origin`, or
-/// mismatched host) the handler returns `403 FORBIDDEN` before the
-/// upgrade completes. On acceptance, attempts to acquire a permit
-/// from the WS semaphore extension (CHE-0062:R1 SEC-0003:R3
-/// route-scoped) — `503 Service Unavailable` on exhaustion. On
-/// success the owned permit moves into [`ws_session`] for the
-/// connection lifetime; drop on session exit frees the slot. Mirrors
-/// the donor's `server::ws_handler` byte-for-byte for the availability
-/// branch so CHE-0062's falsifier tests at
-/// `crates/gh-report/src/infra/server/server.rs:2164,:2209` observe an
-/// identical accept/shed topology after Track 4.3 migration.
+/// mismatched host) returns `403 FORBIDDEN` before the upgrade completes.
+/// On acceptance, attempts to acquire a permit from the WS semaphore
+/// extension (CHE-0062:R1 SEC-0003:R3 route-scoped) — `503 Service
+/// Unavailable` on exhaustion. On success the owned permit moves into
+/// [`ws_session`] for the connection lifetime; drop on exit frees the
+/// slot.
 ///
 /// Both `Extension<Arc<Semaphore>>` and `Extension<WsAuthLimits>` are
-/// attached by [`super::build_projection_router`]; the WS handler is
-/// the **only** consumer of those extensions. `state` is the typed
+/// attached by [`super::build_projection_router`]; this handler is the
+/// **only** consumer of those extensions. `state` is the typed
 /// projection state; cloning is an `Arc` bump.
 pub(crate) async fn ws_handler<P>(
     ws: WebSocketUpgrade,
