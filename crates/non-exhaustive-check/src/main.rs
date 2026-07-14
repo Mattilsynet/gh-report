@@ -1,24 +1,10 @@
 //! CI hard-gate: flag library `pub enum` error types that derive `thiserror::Error`
 //! but lack `#[non_exhaustive]`, excluding `repr` and serde DTOs.
 //!
-//! Usage: cargo run -p non-exhaustive-check -- [`ROOT`]
-//! ROOT defaults to the workspace root, discovered by walking up from the
-//! current directory until a `Cargo.toml` containing `[workspace]` is found.
-//!
-//! Heuristic (FLAG-IFF): an enum is a violation iff
-//!   `is_error_type` && `!has_non_exhaustive` && `!has_repr` && `!is_serde_dto`
-//! where:
-//!   `has_non_exhaustive` = any attribute path is exactly `non_exhaustive`
-//!   `has_repr`           = any attribute path is exactly `repr`
-//!   `is_error_type`      = any `#[derive(..)]` entry's last path segment is `Error`
-//!   `is_serde_dto`       = any `#[derive(..)]` entry's last path segment is
-//!                        `Serialize` or `Deserialize`
-//! This is deliberately conservative: it only inspects literal `pub enum` tokens
-//! that syn can parse from source. Macro-generated enums are not inspected;
-//! syn parses source tokens only, so any enum produced by a proc-macro
-//! (for example pardosa-derive output) is invisible to this tool. Under-flagging
-//! is the safe failure mode for a hard CI gate; over-flagging is not.
-//! RST-0006 / PGN-0006 / CHE-0021.
+//! Run `--help` for usage and the exact FLAG-IFF heuristic (see [`HELP_TEXT`]).
+//! Only literal `pub enum` tokens `syn` can parse are inspected; macro-generated
+//! enums are invisible to this tool, so under-flagging is the deliberate safe
+//! failure mode for this hard CI gate. Governed by RST-0006 / PGN-0006 / CHE-0021.
 
 use std::path::{Path, PathBuf};
 
