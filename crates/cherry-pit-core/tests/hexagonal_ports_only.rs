@@ -1,31 +1,22 @@
 //! Hexagonal ports-and-adapters invariant for `cherry-pit-core`.
 //!
-//! CHE-0004:R2: "Place all domain logic behind trait-based ports and all
-//! infrastructure in adapter crates." This crate is the ports crate; the
-//! adapters live in sibling crates. A regression bringing an adapter crate
-//! into the core's transitive closure — directly or via a depencency
-//! chain — must fail locally.
+//! CHE-0004:R2: domain logic behind trait-based ports, infrastructure in
+//! adapter crates. This is the ports crate; adapters live in siblings.
+//! An adapter entering core's transitive closure must fail locally.
 //!
 //! Two structural assertions:
 //!
-//! 1. **No adapter crates in the transitive closure.** BFS the workspace
-//!    `Cargo.lock` from `cherry-pit-core` and assert none of the named
-//!    adapter crates appear. Distinct from `dep_tree.rs`
-//!    (async-runtime ban) and from `adt_obligations::m3_dependency_allowlist`
-//!    (direct-dep allowlist on Cargo.toml): this test bans the closure
-//!    *outbound* from core to adapters.
+//! 1. **No adapter crates in the transitive closure.** BFS
+//!    `Cargo.lock` from `cherry-pit-core`, assert none of the named
+//!    adapters appear — bans the closure *outbound* to adapters.
+//! 2. **Port traits are publicly exposed.** A path probe (`use`
+//!    statements plus a never-called function ascribing each trait as
+//!    a trait object) fails to compile if re-exports are removed or
+//!    renamed. Not reflection, not proc-macros.
 //!
-//! 2. **Port traits are publicly exposed.** A path probe (plain `use`
-//!    statements + a never-called function ascribing each trait as a
-//!    trait object) fails to compile if the public re-exports are
-//!    removed or renamed. NOT reflection; NOT proc-macros.
-//!
-//! BFS is inline-duplicated from `dep_tree.rs`. Refactor to a shared
-//! helper is a deliberate separate mission (v0.1 permits the duplication).
-//!
-//! As in `dep_tree.rs`, `cargo metadata` is intentionally NOT invoked:
-//! a cargo subprocess spawned from a cargo-spawned test process can
-//! deadlock the build-graph file lock.
+//! BFS is duplicated from `dep_tree.rs` (shared-helper deferred);
+//! `cargo metadata` is deliberately not invoked — a spawned cargo
+//! subprocess can deadlock the build lock.
 
 use std::collections::{BTreeSet, VecDeque};
 

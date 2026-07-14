@@ -1,27 +1,22 @@
 //! Registrant 1: `InMemoryEventStore` against the conformance harness.
 //!
-//! First registrant of three for SM-4 (gateway file-store and projection
-//! file-store land alongside). Pardosa-backed store is the eventual
-//! fourth registrant (Track 2.2). The harness shape must remain
-//! adapter-agnostic — this test exercises only the public
-//! `cherry_pit_core::testing` surface.
+//! First registrant of three for SM-4 (gateway file-store and
+//! projection file-store land alongside); pardosa-backed store is the
+//! eventual fourth (Track 2.2). Harness shape stays adapter-agnostic —
+//! this test exercises only the public `cherry_pit_core::testing`
+//! surface.
 //!
-//! ## Why no `#[tokio::test]`
-//!
-//! `cherry-pit-core` has zero async-runtime dependency (CHE-0029:R4 +
-//! CHE-0018:R3). The conformance fns return RPITIT futures; we drive
-//! them with the same hand-rolled `block_on` pattern SM-3 introduced
-//! for the in-module smoke tests (`testing.rs` inner-tests block).
-//! ~30 LOC of `std::task::Waker` boilerplate, zero deps. Oracle §1.3
-//! option (b) explicitly permits this approach.
-//!
-//! ## Aggregate / Projection registrants
+//! No `#[tokio::test]`: `cherry-pit-core` has zero async-runtime
+//! dependency (CHE-0029:R4 + CHE-0018:R3). Conformance fns return
+//! RPITIT futures, driven here with the same hand-rolled `block_on`
+//! pattern SM-3 introduced for the in-module smoke tests — ~30 LOC of
+//! `std::task::Waker` boilerplate, zero deps (Oracle §1.3 option (b)
+//! permits this).
 //!
 //! `assert_aggregate_conformance` and `assert_projection_conformance`
-//! are exercised here against a minimal in-test `Counter` aggregate
-//! and `CounterView` projection. The harness shape mirrors the file-
-//! store and (eventual) pardosa registrants — only the impl types
-//! differ.
+//! run here against a minimal in-test `Counter` aggregate and
+//! `CounterView` projection; the harness mirrors the file-store and
+//! eventual pardosa registrants — only impl types differ.
 
 use std::future::Future;
 use std::num::NonZeroU64;
