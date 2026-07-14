@@ -1,17 +1,7 @@
-//! Scrape pipeline — walks the ADR corpus rooted at an `adr-fmt.toml`
-//! marker, parses domain + stale directories via the AFM-0026:R1
-//! library surface, projects each `adr_fmt::AdrRecord` into an
-//! `AdrIngested` event, and ingests via [`AdrService::ingest_if_changed`]
-//! for body-hash idempotency (AFM-0027:R4).
-//!
-//! ## Discovery
-//!
-//! `scrape_corpus(service, marker_dir)` loads `marker_dir/adr-fmt.toml`
-//! via `adr_fmt::load_quiet`, resolves the corpus root via
-//! `adr_fmt::resolve_corpus_root`, and walks every `[[domains]]`
-//! directory plus the configured stale archive.
-//!
-//! ## Projection
+//! Scrape pipeline — walks the ADR corpus via the AFM-0026:R1 library
+//! surface and projects each `adr_fmt::AdrRecord` into an `AdrIngested`
+//! event, ingested via [`AdrService::ingest_if_changed`] for body-hash
+//! idempotency. See [`scrape_corpus`] for the discovery + walk contract.
 //!
 //! Per AFM-0027:R3, adr-srv RE-PROJECTS rather than re-exporting.
 //! Records missing any of `title` / `date` / `last_reviewed` / `tier` /
@@ -19,10 +9,9 @@
 //! rather than fabricated with sentinel values — `body_hash`
 //! idempotency is meaningless for events whose payload was synthesised.
 //!
-//! `references` preserves source order including duplicates: filtered
-//! to `verb == RelVerb::References`, mapped via `Display` + `FromStr`,
-//! and emitted verbatim. The duplicate-preservation behaviour is
-//! pinned in `tests/scrape_pipeline.rs::references_preserve_order_and_duplicates`.
+//! `references` preserves source order including duplicates (filtered
+//! to `verb == RelVerb::References`); pinned by
+//! `tests/scrape_pipeline.rs::references_preserve_order_and_duplicates`.
 
 use std::fs;
 use std::path::Path;
