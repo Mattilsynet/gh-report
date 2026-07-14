@@ -1,39 +1,24 @@
 //! Per-aggregate-file roundtrip integration test for `MsgpackFileStore`.
 //!
-//! Carry from B7'b Inc 1 linus review (bead adr-fmt-8yde). Exercises the
-//! full create→append→reopen→load path against a real on-disk file under
-//! `tempfile::TempDir`, asserting:
+//! Carry from B7'b Inc 1 linus review (bead adr-fmt-8yde). Exercises
+//! create→append→reopen→load on-disk, asserting: sequence order
+//! preserved (1, 2, 3); payload equality across the persistence
+//! boundary; exactly one `*.msgpack` file per aggregate (CHE-0036
+//! file-per-stream, CHE-0048 per-aggregate-file).
 //!
-//! - sequence order preserved (1, 2, 3)
-//! - payload equality across the persistence boundary
-//! - exactly one `*.msgpack` file exists for the aggregate under the
-//!   store directory (CHE-0036 file-per-stream, CHE-0048 per-aggregate-file
-//!   invariant)
-//!
-//! Test category per CHE-0038: integration test with `tempfile` isolation
-//! (CHE-0038:R5). The `EventStore` API is async (CHE-0025 RPITIT), so the
-//! test uses `#[tokio::test]` — the "sync" framing in CHE-0038:R5 means
-//! "no spawned services / processes", not literally synchronous code.
+//! Integration test, `tempfile`-isolated (CHE-0038:R5); `EventStore`
+//! is async (CHE-0025 RPITIT), so `#[tokio::test]` drives it —
+//! CHE-0038:R5's "sync" framing means no spawned services/processes,
+//! not literal synchronous code.
 //!
 //! # Assumptions (CHE-0030 — public API only)
 //!
-//! - Three envelopes for one aggregate are produced via `create` (1 event)
-//!   then `append` (2 events) rather than hand-constructing `EventEnvelope`
-//!   values. This stays on the public `EventStore` trait surface and is the
-//!   most reversible interpretation of the brief's "N=3 envelopes for one
-//!   `AggregateId`". The brief's `expected_sequence=0` shorthand corresponds
-//!   to `nz(1)` here because `create` always lands sequence 1, so the next
-//!   `append` expects `actual_sequence == 1`.
-//! - File-count assertion filters on the `.msgpack` extension to exclude
-//!   the `.lock` sentinel file (CHE-0043:R1 process fencing). Without the
-//!   filter the directory would contain 2 entries — `.lock` plus the
-//!   aggregate file — and the invariant under test (CHE-0048) is about
-//!   aggregate files specifically, not all directory entries.
-//! - Filename format (`{id}.msgpack`) is observable from the public
-//!   docstring on `MsgpackFileStore` ("File layout" section) but treated
-//!   as an implementation detail here — we assert on count, not on the
-//!   exact filename. This keeps the test resilient to internal renames
-//!   while still pinning the one-file-per-aggregate invariant.
+//! Three envelopes come via `create` (1 event) then `append` (2
+//! events), staying on the public `EventStore` surface. File-count
+//! filters on `.msgpack` to exclude `.lock` (CHE-0043:R1); filename
+//! format is documented but treated as an implementation detail —
+//! asserting count, not filename, keeps the test resilient to
+//! internal renames.
 
 use std::num::NonZeroU64;
 

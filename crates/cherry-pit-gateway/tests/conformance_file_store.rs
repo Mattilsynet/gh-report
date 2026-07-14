@@ -1,35 +1,23 @@
 //! Registrant 2: `MsgpackFileStore` against the conformance harness.
 //!
-//! Second of three SM-4 registrants (in-memory landed in
+//! Second of three SM-4 registrants (in-memory in
 //! `cherry-pit-core/tests/conformance_in_memory.rs`; projection
-//! file-store lands in `cherry-pit-projection/tests/`). Future fourth
-//! registrant is the pardosa-backed store (Track 2.2) — its shape
-//! must match this one verbatim.
+//! file-store in `cherry-pit-projection/tests/`); the pardosa-backed
+//! store (Track 2.2) is a future fourth registrant with matching shape.
 //!
-//! ## tokio
+//! `#[tokio::test]` drives the `async fn` harness directly (gateway
+//! carries `tokio` dev-dep with `macros, rt-multi-thread`). Each
+//! scenario gets a fresh `MsgpackFileStore` rooted at a fresh
+//! `TempDir`, retained in an `Arc<Mutex<Vec<TempDir>>>` for the
+//! harness call's duration — drop order matters, since
+//! `MsgpackFileStore` holds a `.lock` file handle that must close
+//! before the `TempDir` is reaped.
 //!
-//! Gateway has `tokio` in dev-deps with `macros, rt-multi-thread`
-//! (see `Cargo.toml`). `#[tokio::test]` is the natural runtime driver
-//! here. The harness fn is `async fn` and caller-owned — we just
-//! `.await` it.
-//!
-//! ## Per-scenario isolation
-//!
-//! The harness calls `make_store()` once per scenario. Each call
-//! constructs a fresh `MsgpackFileStore` rooted at a fresh `TempDir`.
-//! The `TempDir` is owned by an Arc-Mutex'd Vec retained for the
-//! duration of the harness call so the directories outlive their
-//! stores (drop-order matters — `MsgpackFileStore` holds a `.lock`
-//! file handle that must close before the `TempDir` is reaped).
-//!
-//! ## Q01 (linus round-2 carry-over)
-//!
-//! Scenario 5 asserts `StoreError::Infrastructure` for append-to-
-//! never-created. `msgpack_file.rs:504-508` produces exactly
-//! `Infrastructure` (verified by reading the impl pre-test). Keeping
-//! the harness narrow; broadening to `Infrastructure |
-//! ConcurrencyConflict` would weaken the contract without cause. If
-//! the pardosa registrant later diverges, we relax then.
+//! Q01 (linus round-2): scenario 5 asserts `StoreError::Infrastructure`
+//! for append-to-never-created; `msgpack_file.rs:504-508` produces
+//! exactly that variant. Kept narrow deliberately — broadening to
+//! `Infrastructure | ConcurrencyConflict` weakens the contract without
+//! cause; relax only if the pardosa registrant diverges.
 
 use std::sync::{Arc, Mutex};
 
