@@ -1,30 +1,21 @@
 //! Per-aggregate event ordering proptest for F2 (mission
 //! adr-fmt-cq7vb.2).
 //!
-//! Property: under the F2 / Approach A2 design — synchronous bus
-//! fan-out (CHE-0024:§7) feeding a single bounded `tokio::sync::mpsc`
-//! channel that drains into a single sequential consumer task —
-//! envelopes arrive at the consumer in **publish order**, and
-//! therefore per-aggregate event order is preserved through dispatch.
+//! Property: under the F2 design — synchronous bus fan-out
+//! (CHE-0024:§7) feeding a bounded `tokio::sync::mpsc` channel drained
+//! by one sequential consumer — envelopes arrive in **publish order**,
+//! so per-aggregate order is preserved. Trivially true: if
+//! `(agg=a, seq=n)` publishes before `(agg=a, seq=n+1)`, `n` enters the
+//! channel first and the consumer pulls it first (FIFO `mpsc`). The
+//! proptest **observes** this under a random schedule across multiple
+//! aggregates, confirming the orphan-`handle.spawn` design (pre-F2)
+//! that violated it is gone.
 //!
-//! Sequential dispatch makes the per-aggregate ordering claim
-//! trivially true: if envelope `(agg=a, seq=n)` is published before
-//! `(agg=a, seq=n+1)`, then `n` enters the channel first (synchronous
-//! bus fan-out) and the consumer pulls `n` before `n+1` (`mpsc::Receiver`
-//! is strictly FIFO). The proptest's contribution is to **observe**
-//! the property under a random publish schedule across multiple
-//! aggregates — confirming that the orphan-`handle.spawn` design
-//! (pre-F2) which violated this property is genuinely gone.
-//!
-//! Scope deliberately narrow:
-//!
-//! - We exercise the bus → `enqueue_or_log` → channel → consumer
-//!   pipeline directly. The `run_dispatch_consumer` policy-execution
-//!   path is unit-tested in `app.rs::tests`; here we focus on the
-//!   ordering property that the pipeline preserves.
-//! - Generous channel capacity (`8 * N`) so back-pressure does NOT
-//!   drop envelopes — the back-pressure surface is a separate property
-//!   tested in `app.rs::tests::full_dispatch_channel_drops_overflow_…`.
+//! Scope: exercises the bus → `enqueue_or_log` → channel → consumer
+//! pipeline directly (`run_dispatch_consumer` is unit-tested in
+//! `app.rs::tests`). Channel capacity is generous (`8 * N`) so
+//! back-pressure does not drop envelopes here — tested separately in
+//! `app.rs::tests::full_dispatch_channel_drops_overflow_…`.
 
 use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
