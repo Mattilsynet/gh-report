@@ -74,12 +74,12 @@ pub enum Error {
 const PROTECTED_RELATIVE_NOTE: &str = "Projects/gh-report.md";
 
 /// Scans `config`'s workspace `[workspace.members]` and writes one fenced
-/// note per member (excluding this generator's own package), plus an
-/// overview note and a decisions-index note linking ADR ids resolved via
-/// `adr-fmt --context <crate>`. Content outside the
-/// `%% architect:begin/end <id> %%` markers is preserved byte-for-byte on
-/// re-run; a crate missing a README or governing ADRs gets a graceful
-/// placeholder section rather than failing the run.
+/// note per member (excluding this generator's own package), an overview
+/// note, and a decisions-index note linking ADR ids via
+/// `adr-fmt --context <crate>`. Content outside `%% architect:begin/end
+/// <id> %%` markers is preserved byte-for-byte on re-run; a crate missing
+/// a README or governing ADRs gets a placeholder section instead of
+/// failing.
 ///
 /// # Errors
 ///
