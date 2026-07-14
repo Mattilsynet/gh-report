@@ -4,56 +4,24 @@
 //!
 //! The four helpers consolidate the load → handle → create-or-append
 //! → publish-or-trace pattern. They are private to the crate
-//! (`pub(crate)`) — the public surface is the [`Merger`] +
-//! [`MergerArm`] pair, not the individual steps. Consumers who need
-//! finer-grained control implement their own [`MergerArm`].
+//! (`pub(crate)`) — the public surface is [`Merger`] + [`MergerArm`],
+//! not the individual steps. Consumers needing finer control
+//! implement their own [`MergerArm`].
 //!
 //! ## I1 TOCTOU resolution
 //!
-//! This is the canonical doctrine, lifted from the original module
-//! docs at gh-report shared.rs:34-73 and amended for the
-//! aggregate-agnostic surface:
-//!
-//! In isolation, [`lookup`] + [`create_or_append`] would form a
-//! check-then-act sequence on `Arc<Mutex<HashMap<String,
-//! AggregateId>>>`: two concurrent merger calls on the same
-//! `domain_key` could in principle both observe `lookup → None`,
-//! both call [`EventStore::create`], and both call
-//! `index.entry(...).or_insert(...)`. The second `or_insert` would
-//! be a no-op (correct routing preserved) but its
-//! [`EventStore::create`] would produce an **orphan aggregate
-//! stream** on disk that the index never points to, with the
-//! sequence tracker likewise recording an unreachable entry.
-//!
-//! The merger closes this window structurally: every call site for
-//! [`lookup`] / [`create_or_append`] lives inside an arm of the
-//! merger's `run` loop (see [`crate::Merger`]), a single-task
-//! command processor that awaits each command's full triad before
-//! dequeuing the next. Two concurrent same-`domain_key` callers
-//! serialise at the [`mpsc`] front-door, so the second observer
-//! always sees the first creator's index entry — exactly one
-//! [`EventStore::create`] per key, no orphan stream. This is the
-//! per-domain-key single-flight requirement at the coarsest
-//! granularity the sole-writer assumption permits; sharding (per-key
-//! locks, partitioned index) becomes interesting only once
-//! contention on the single mpsc front-door is measured.
-//!
-//! Note that [`create_or_append`] still releases the brief
-//! [`std::sync::Mutex`] guard on the routing index **before** the
-//! `await` on [`EventStore::create`] — the lock is taken only to
-//! perform the `or_insert`, never held across storage I/O.
-//!
-//! Regression pin: `tests/i1_toctou_pin.rs` fans out 32 concurrent
-//! same-`domain_key` `MergerArm` calls and asserts exactly one
-//! routing entry, one aggregate id, `N` envelopes with monotonic
-//! sequences, and tracker `= N`. The test fails immediately if
-//! anyone reintroduces a per-arm direct call path that bypasses the
-//! merger.
+//! [`lookup`] + [`create_or_append`] form a check-then-act sequence
+//! on the routing index, closed structurally per CHE-0069:R4: every
+//! call site runs inside an arm of the merger's single-task `run`
+//! loop (see [`crate::Merger`]), serialising same-`domain_key`
+//! callers — exactly one [`EventStore::create`] per key. The
+//! [`std::sync::Mutex`] routing-index guard is held only for the
+//! `or_insert`, released before any storage-I/O `await`. Regression
+//! pin: `tests/i1_toctou_pin.rs` (CHE-0069:R8).
 //!
 //! [`Merger`]: crate::Merger
 //! [`MergerArm`]: crate::MergerArm
 //! [`EventStore::create`]: cherry_pit_core::EventStore::create
-//! [`mpsc`]: https://docs.rs/tokio/latest/tokio/sync/mpsc/index.html
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -140,13 +108,9 @@ where
 /// (create-path only, via `or_insert`) and the sequence tracker
 /// (both paths).
 ///
-/// **I1 TOCTOU**: [`lookup`] followed by this helper is a
-/// check-then-act sequence on the routing index. Safe in this
-/// crate because every call site lives inside an arm of the
-/// single-task merger which serialises commands per the
-/// module-level "I1 TOCTOU resolution" docs. The brief
-/// [`std::sync::Mutex`] guard taken to perform `or_insert` is
-/// released before any `await` on storage I/O.
+/// **I1 TOCTOU**: safe per the module-level "I1 TOCTOU resolution"
+/// docs — every call site runs inside the single-task merger's `run`
+/// loop, which serialises same-`domain_key` callers structurally.
 ///
 /// # Errors
 ///
