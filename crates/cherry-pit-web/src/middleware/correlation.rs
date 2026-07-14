@@ -2,35 +2,20 @@
 //!
 //! Realises **CHE-0049 R5** (correlation propagation) and
 //! **CHE-0049 R6** (consumer-supplied idempotency key) at the inbound
-//! edge. Pure header → value functions; no I/O, no allocation beyond
-//! the resulting `Uuid` / `String` carriers.
+//! edge. Pure header → value functions; no I/O.
 //!
-//! ## R5 — `traceparent` primary, `X-Correlation-ID` fallback
-//!
-//! [`extract_correlation`] inspects the request `HeaderMap`:
-//!
-//! 1. If a syntactically valid W3C `traceparent` is present with both
-//!    `trace-id` and `parent-span-id` non-zero, return
-//!    [`CorrelationContext::new(trace, parent)`]. The 64-bit
-//!    parent-span-id is left-padded with zeros into a 128-bit
-//!    [`Uuid`] (lossless up-cast — the low 64 bits carry the span id;
-//!    the high 64 bits are zero by construction).
-//! 2. Otherwise, if `X-Correlation-ID` parses as a [`Uuid`], return
-//!    [`CorrelationContext::correlated(uuid)`].
-//! 3. Otherwise, return [`CorrelationContext::none()`] per
-//!    **CHE-0039 R2** (forgetting correlation is a conscious choice;
-//!    no `Default` impl, no synthesis).
-//!
-//! Malformed `traceparent` does **not** reject the request — the W3C
-//! spec instructs receivers to treat it as absent and continue.
-//!
-//! ## R6 — `Idempotency-Key` is consumer-supplied
+//! [`extract_correlation`] prefers a syntactically valid W3C
+//! `traceparent` with non-zero `trace-id`/`parent-span-id`,
+//! up-casting the 64-bit span id losslessly into a zero-padded
+//! 128-bit [`Uuid`]; else a `X-Correlation-ID` that parses as a
+//! [`Uuid`]; else [`CorrelationContext::none()`] per **CHE-0039 R2**
+//! (no synthesis). Malformed `traceparent` does not reject the
+//! request — per the W3C spec, receivers treat it as absent.
 //!
 //! [`extract_idempotency_key`] returns `Some(IdempotencyKey)` only if
-//! the header is present and non-empty. **It never auto-generates**:
-//! per CHE-0046 R3 + CHE-0049 R6 the consumer-supplied stability is
-//! the entire semantic guarantee — synthesising a key here would
-//! silently break replay safety.
+//! the header is present and non-empty, and never auto-generates:
+//! per CHE-0046 R3 + CHE-0049 R6 consumer-supplied stability is the
+//! entire semantic guarantee.
 //!
 //! [`CorrelationContext::new(trace, parent)`]: cherry_pit_core::CorrelationContext::new
 //! [`CorrelationContext::correlated(uuid)`]: cherry_pit_core::CorrelationContext::correlated

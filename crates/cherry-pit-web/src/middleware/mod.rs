@@ -2,32 +2,23 @@
 //!
 //! Realises **CHE-0049 R5** as an axum `from_fn` layer: extracts
 //! [`CorrelationContext`] from inbound request headers (via
-//! [`correlation::extract_correlation`]), stashes it in the
-//! request extensions so handlers and error responders can read it,
-//! then on the way out injects an `X-Correlation-ID` response header
-//! when (and only when) a correlation id is present.
+//! [`correlation::extract_correlation`]), stashes it in request
+//! extensions so handlers and error responders can read it, then
+//! injects an `X-Correlation-ID` response header when a correlation
+//! id is present.
 //!
 //! ## Why `from_fn` and not a typed extractor
 //!
 //! A free function over `&HeaderMap` is the simplest testable surface
-//! and intentionally does **not** widen [`crate::AppState`]'s `(G, S)`
-//! bounds — correlation extraction is type-system-orthogonal to the
-//! gateway and store. Wiring it as middleware (rather than as a
-//! per-handler extractor) means future routes opt in for free without
-//! re-threading the value through every signature.
+//! and does not widen [`crate::AppState`]'s `(G, S)` bounds.
+//! Middleware wiring lets future routes opt in for free.
 //!
 //! ## Echo policy
 //!
-//! - `correlation_id` present  → response carries `X-Correlation-ID:
-//!   <uuid>`. The canonical fallback header doubles as the canonical
-//!   echo header (see CHE-0049 R5 contract).
-//! - `correlation_id` absent  → response omits the header entirely.
-//!   Synthesising a value would violate **CHE-0039 R2** (forgetting
-//!   correlation is a conscious omission).
-//!
-//! `traceparent` is **not** echoed: W3C trace context is request-side
-//! only; the response-side surface is `tracestate`, which is out of
-//! scope for v0.1.
+//! `correlation_id` present → response carries `X-Correlation-ID:
+//! <uuid>`. Absent → header omitted; synthesising a value would
+//! violate **CHE-0039 R2**. `traceparent` is not echoed: the W3C
+//! response-side surface is `tracestate`, out of scope for v0.1.
 
 pub(crate) mod compression;
 pub(crate) mod correlation;

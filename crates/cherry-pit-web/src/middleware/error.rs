@@ -1,45 +1,31 @@
 //! Error → HTTP response mapping.
 //!
-//! Realises **CHE-0049 R4 + R10** by translating
+//! Realises **CHE-0049 R4 + R10**: translates
 //! [`cherry_pit_core::DispatchError`], [`cherry_pit_core::StoreError`],
 //! and [`cherry_pit_core::BusError`] into `(StatusCode, HeaderMap, ErrorBody)`
-//! triples that axum can turn into an `IntoResponse`.
+//! triples for `IntoResponse`.
 //!
 //! ## Mapping (canonical — drives the unit tests)
 //!
-//! | Source error                                | HTTP status | Headers       | Notes                                            |
-//! |---------------------------------------------|-------------|---------------|--------------------------------------------------|
-//! | `DispatchError::Rejected(E)`                | 422         | —             | typed body, lossless `E` Display per CHE-0015    |
-//! | `DispatchError::ConcurrencyConflict { .. }` | 409         | —             | 409 reserved for concurrency per CHE-0041:R3    |
-//! | `DispatchError::AggregateNotFound { .. }`   | 404         | —             | terminal per R10                                 |
-//! | `DispatchError::Infrastructure(_)`          | 503         | `Retry-After` | see R10 disambiguation below                     |
-//! | `StoreError::ConcurrencyConflict { .. }`    | 409         | —             | 409 reserved for concurrency per CHE-0041:R3    |
-//! | `StoreError::StoreLocked { .. }`            | 503         | `Retry-After` | retryable per R10                                |
-//! | `StoreError::CorruptData(_)`                | 500         | —             | terminal server-side fault per R10               |
-//! | `StoreError::Infrastructure(_)`             | 503         | `Retry-After` | retryable per R10                                |
-//! | `BusError`                                  | 503         | `Retry-After` | always retryable per CHE-0021:R3 + type contract |
-//! | post-persist cancellation per CHE-0046:R5   | 202         | —             | replay-safe; outcome unknown                     |
+//! | Source                                 | Status | Headers       | ADR         |
+//! |-----------------------------------------|--------|---------------|-------------|
+//! | `Rejected(E)`                           | 422    | —             | CHE-0015    |
+//! | `ConcurrencyConflict` (dispatch/store)  | 409    | —             | CHE-0041:R3 |
+//! | `AggregateNotFound`                     | 404    | —             | R10         |
+//! | `Infrastructure` (dispatch/store)       | 503    | `Retry-After` | R10, below  |
+//! | `StoreLocked`                           | 503    | `Retry-After` | R10         |
+//! | `CorruptData`                           | 500    | —             | R10         |
+//! | `BusError`                               | 503    | `Retry-After` | CHE-0021:R3 |
+//! | post-persist cancellation                | 202    | —             | CHE-0046:R5 |
 //!
-//! ## R10 disambiguation
+//! `DispatchError::Infrastructure` sits at the dispatch layer, not the
+//! store layer R10 enumerates, but maps to the same signal by the
+//! same retryable reasoning; 500 stays reserved for terminal
+//! `CorruptData`.
 //!
-//! CHE-0049 R10 enumerates store-layer retryables (`StoreLocked`, store
-//! `Infrastructure`) → 503 + `Retry-After` and "Terminal infra errors"
-//! → 500. `DispatchError::Infrastructure` is **Retryable** but lives at
-//! the dispatch layer, not the store. Following the contract's stated
-//! conservative default we map it to **503 + Retry-After** — the more
-//! conservative client signal. This treats every retryable
-//! infrastructure failure uniformly regardless of which port surfaced it,
-//! while the 500 path is reserved for genuinely terminal server faults
-//! (`StoreError::CorruptData`).
-//!
-//! ## Lossless body for `Rejected(E)` (CHE-0015)
-//!
-//! "Lossless" here means the typed error's full `Display` output is
-//! preserved in [`ErrorBody::message`]. Embedding the structured payload
-//! would require a `Serialize` bound on the gateway error generic, which
-//! CHE-0049 R1 forbids tightening. The stable `code` plus the full
-//! Display string preserves all human-observable information for
-//! diagnostics and debugging.
+//! `Rejected(E)`'s `Display` is preserved in full via
+//! [`ErrorBody::message`] (CHE-0015): a `Serialize` bound on the
+//! gateway error generic would tighten CHE-0049 R1.
 
 use std::error::Error;
 use std::fmt::Display;

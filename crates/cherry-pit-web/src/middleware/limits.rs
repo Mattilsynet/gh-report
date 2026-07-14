@@ -1,53 +1,24 @@
 //! SEC-0003 availability layers attached library-side per **CHE-0062**.
 //!
-//! Three layers discharge the SEC-0003 R1/R2/R3 obligation at every
-//! cherry-pit-web ingestion point. The library owns *what layer is
-//! attached where*; the consumer owns *what number goes in* via the
-//! [`LayerLimits`] value type. No consumer config type crosses the
-//! library boundary (CHE-0062:R3).
+//! Three layers discharge SEC-0003 R1/R2/R3 at every ingestion point;
+//! the library owns *what* is attached *where*, the consumer owns
+//! *what number* via [`LayerLimits`]. No consumer config type crosses
+//! the boundary (CHE-0062:R3).
 //!
-//! - **`max_body_bytes`** — bounds inbound request body size. Realised
-//!   by `tower_http::limit::RequestBodyLimitLayer` attached inside both
-//!   [`super::super::build_router`] (cqrs surface) and
-//!   [`super::super::projection::build_projection_router`] (read
-//!   surface). SEC-0003:R1 ("every allocation sized by external input
-//!   has a configurable maximum enforced before allocation").
-//! - **`max_inflight_requests`** — bounds in-flight HTTP requests with
-//!   **503-shedding semantics** (not queueing). Realised by
-//!   [`http_concurrency_limit`], a semaphore-`try_acquire` middleware
-//!   that returns `503 Service Unavailable` when the permit budget is
-//!   exhausted. Attached on both routers. SEC-0003:R3 ("backpressure
-//!   mechanisms exist at every ingestion point to shed load when
-//!   capacity is exceeded"). Preserves the accept/shed topology of the
-//!   original `gh-report` donor implementation this layer supersedes.
-//! - **`max_ws_connections`** — bounds concurrent WebSocket upgrades.
-//!   Realised inside the WS upgrade handler via
-//!   `Arc<Semaphore>::try_acquire_owned` returning `503` on exhaustion;
-//!   the owned permit is held for the connection lifetime. Attached on
-//!   the projection router only — the cqrs surface is HTTP-only per
-//!   CHE-0049:R3 and ignores this field. SEC-0003:R3 route-scoped per
-//!   CHE-0049:R3 + R11. Preserves the permit discipline of the original
-//!   `gh-report` donor implementation this layer supersedes.
+//! - **`max_body_bytes`** — inbound body size via
+//!   `RequestBodyLimitLayer` on both routers (SEC-0003:R1).
+//! - **`max_inflight_requests`** — in-flight requests, 503-shed (not
+//!   queued) via [`http_concurrency_limit`] (SEC-0003:R3).
+//! - **`max_ws_connections`** — concurrent WS upgrades via
+//!   `Arc<Semaphore>::try_acquire_owned`, `503` on exhaustion;
+//!   projection router only, cqrs being HTTP-only (CHE-0049:R3, R11).
 //!
-//! ## No `Default`
-//!
-//! [`LayerLimits`] deliberately does **not** implement [`Default`]: a
-//! defaulted permissive `LayerLimits` is a SEC-0003 footgun (production
-//! callers would silently mount layers that bind nothing). Tests reach
-//! for [`LayerLimits::permissive_for_tests`] with eyes open; production
-//! callers name three values.
-//!
-//! ## Field semantics
-//!
-//! All three fields are `usize` carrying a hard upper bound on the
-//! resource named by the field. `usize::MAX` is the conventional
-//! "effectively unbounded" value; `0` rejects every request the layer
-//! sees (`RequestBodyLimitLayer::new(0)` rejects any non-empty body;
-//! the semaphores hand out zero permits → unconditional `503`).
-//! Per CHE-0062:R4 each field is unconditionally honoured — there is
-//! no `Option`-per-field. Disabling a layer is out of scope; the
-//! obligation under SEC-0003 R1/R3 is unconditional at every ingestion
-//! point.
+//! [`LayerLimits`] omits [`Default`]: a defaulted permissive value is
+//! a SEC-0003 footgun. Tests use
+//! [`LayerLimits::permissive_for_tests`]; production names three
+//! values, `usize` hard upper bounds (`usize::MAX` unbounded, `0`
+//! rejects every request), each unconditionally honoured per
+//! CHE-0062:R4.
 
 use std::sync::Arc;
 

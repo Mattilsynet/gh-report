@@ -5,22 +5,20 @@
 //! between `limits` and `extra_routes` per the CHE-0049 Amendment
 //! 2026-06-10 (SEC-0012) grammar:
 //!
-//! - [`WebSocketOriginPolicy`] — the typed policy enum. `Strict` is
-//!   the default; absent `Origin` headers are rejected at WS upgrade
-//!   with `403 FORBIDDEN`. `AllowAbsent` is the documented escape
-//!   hatch for non-browser clients; consumers electing it accept
-//!   CWE-346 / CWE-1385 risk explicitly per SEC-0012:R3.
-//! - [`WsAuthLimits`] — the sibling value type to [`super::LayerLimits`].
-//!   Carries the `origin_policy` choice today; future authentication
-//!   knobs land as new fields per SEC-0012:R4 + CHE-0062:R6.
+//! - [`WebSocketOriginPolicy`] — typed policy enum. `Strict` (default)
+//!   rejects absent `Origin` at WS upgrade with `403 FORBIDDEN`.
+//!   `AllowAbsent` is the documented escape hatch for non-browser
+//!   clients; consumers electing it accept CWE-346 / CWE-1385 risk
+//!   per SEC-0012:R3.
+//! - [`WsAuthLimits`] — sibling value type to [`super::LayerLimits`],
+//!   carrying `origin_policy` today; future authentication knobs land
+//!   as new fields per SEC-0012:R4 + CHE-0062:R6.
 //!
-//! Both types carry `#[non_exhaustive]` per COM-0021:R1 so additive
-//! evolution is semver-minor; today's pinhole and tomorrow's
-//! subprotocol allowlist live on the same carrier.
+//! Both types carry `#[non_exhaustive]` per COM-0021:R1 for additive,
+//! semver-minor evolution.
 //!
-//! The companion function `validate_ws_origin(headers, policy)` lives
-//! in [`super::super::projection::handlers`] alongside the
-//! `ws_handler` that consumes it.
+//! The companion `validate_ws_origin(headers, policy)` lives in
+//! [`super::super::projection::handlers`] alongside `ws_handler`.
 
 /// Policy controlling how the projection WebSocket upgrade validates
 /// the inbound `Origin` header against the `Host` header (SEC-0012).

@@ -103,17 +103,15 @@ pub struct NormalizedPath {
 ///
 /// # Algorithm
 ///
-/// 1. Percent-decode the raw path (handles `%2e%2e`, `%2f`, etc.).
-/// 2. Reject null bytes (`\0`), backslashes (`\`).
-/// 3. Detect trailing slash before filtering (empty final segment).
-/// 4. Split on `/`, skip empty components (collapses `//`), reject `..`.
-/// 5. Re-join with `/` — the result is a clean relative path suitable
-///    for `HashMap` lookup.
-/// 6. Map empty result (root `/`) to `index.html`.
+/// Percent-decode once; reject null bytes and backslashes; detect a
+/// trailing slash before filtering; split on `/`, skip empty components
+/// (collapses `//`), reject `..`; re-join into a clean relative key;
+/// map an empty result (root `/`) to `index.html`.
 ///
-/// **Double-encoding resilience:** we decode only once. A doubly-encoded
-/// `%252e%252e` decodes to the literal `%2e%2e` which contains no `/` or
-/// `.` path separators, so it becomes a harmless (non-existent) cache key.
+/// **Double-encoding resilience:** decoding only once means a
+/// doubly-encoded `%252e%252e` decodes to the literal `%2e%2e`, which
+/// contains no `/` or `.` separators and becomes a harmless
+/// (non-existent) cache key.
 #[must_use]
 pub fn normalize_request_path(raw: &str) -> Option<NormalizedPath> {
     let decoded = percent_decode_str(raw).decode_utf8().ok()?;
