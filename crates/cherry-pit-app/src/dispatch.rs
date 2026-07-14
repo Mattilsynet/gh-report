@@ -1,76 +1,23 @@
 //! Policy-output dispatcher per CHE-0051:R4 + R6 + R7.
 //!
-//! The dispatcher is the *internal* glue called by `App`'s publish
-//! handler for each registered policy. For every published envelope:
+//! Internal glue called by `App`'s publish handler. Per envelope:
+//! construct a fresh `CorrelationContext` (CHE-0051:R6, CHE-0039:R1–R3
+//! — no `Default`, no shared state); call `policy.react` synchronously
+//! (CHE-0018:R1); invoke the caller's dispatch closure per output
+//! (CHE-0051:R4, CHE-0017:R2); on `Terminal` `AgentError`, route to the
+//! dead-letter sink (CHE-0051:R7, CHE-0024:R5, CHE-0046:R2) —
+//! `Retryable` flows back via `CommandGateway`'s retry (CHE-0046:R1).
 //!
-//! 1. Construct a fresh `CorrelationContext::new(env.correlation_id,
-//!    env.event_id)` per CHE-0051:R6 + CHE-0039:R1–R3 (no `Default`,
-//!    no shared/cached context, explicit per-dispatch construction).
-//! 2. Call `policy.react(env)` synchronously per CHE-0018:R1.
-//! 3. For every output, invoke the user-supplied dispatch closure
-//!    `Fn(P::Output, &G) -> impl Future<Output = Result<(), AgentError>>`
-//!    per CHE-0051:R4 + CHE-0017:R2 (the caller writes the exhaustive
-//!    output matcher).
-//! 4. On `Err(AgentError)` whose `category()` is `Terminal`, route to
-//!    the dead-letter sink per CHE-0051:R7 + CHE-0024:R5 + CHE-0046:R2
-//!    (no agent-level retry of `Terminal`). `Retryable` errors flow
-//!    back to the caller — typically through the `CommandGateway`'s
-//!    own retry path per CHE-0046:R1, which is *outside* this
-//!    dispatcher's scope.
+//! This satisfies GND-0005:R1 + R2 for CHE-0051:R6/CHE-0039:R1–R3;
+//! `correlation_for`'s `tracing::debug!` (line 91) is the paired
+//! runtime-telemetry mechanism for the branch the type system can't
+//! constrain (SEC-0005:R4).
 //!
-//! ## Ground-truth governance (GND-0005)
+//! Policies are stored as `Vec<Box<dyn ErasedPolicyDispatcher<G>>>` —
+//! a per-policy adapter, not `Box<dyn Policy>`; CHE-0005:R1 forbids
+//! erasing infra ports, so erasure sits at the dispatcher boundary.
 //!
-//! The per-dispatch invariants above — fresh `CorrelationContext`
-//! constructed *before* any policy call (no `Default`, no shared
-//! state), explicit envelope+context pairing, no speculative dispatch —
-//! are the **structural observation mechanism** GND-0005:R1 + R2
-//! require for the upstream directives they enforce: CHE-0051:R6 and
-//! CHE-0039:R1–R3 are made non-violable at the type/call-shape level
-//! (the invalid states are unconstructable). The `correlation_for`
-//! `tracing::debug!` line (see `dispatch.rs:91`) is the paired
-//! **runtime telemetry mechanism** for the one branch the type system
-//! cannot constrain — fresh chain-seed creation when the envelope
-//! carries no upstream correlation per CHE-0039:R3 — and cites
-//! SEC-0005:R4 directly in code. Together these satisfy GND-0005's
-//! "surface violations before integration; pair with runtime
-//! telemetry where structural enforcement is impossible" shape.
-//!
-//! GND-0006 (backbriefing) is *not* the governing principle here:
-//! GND-0006's load-bearing element is an *exchange* — issuer-side
-//! confirmation of executor intent before action commits. The
-//! dispatch path has no such confirmation step; the trace is
-//! concurrent with execution, not prior to and gating it.
-//!
-//! ## C1 boundary note (linus R1 ruling at S4 carries forward)
-//!
-//! The dispatcher stores registered policies as
-//! `Vec<Box<dyn ErasedPolicyDispatcher<G> + Send + Sync>>`. The boxed
-//! trait object is a **per-policy adapter wrapping a concrete
-//! `(Policy, dispatch_closure)` pair** — it is *not* a
-//! `Box<dyn Policy>`. CHE-0005:R1 forbids object-erasure of
-//! aggregate-bound infra ports (`EventStore`, `EventBus`,
-//! `CommandBus`, `CommandGateway`, `Policy`, `Projection`); the
-//! `ErasedPolicyDispatcher` trait is an **agent-internal helper**
-//! existing solely to thread `(envelope, gateway) → Future` for a
-//! heterogeneous list of `(P, F)` pairs that all share the same
-//! `Event = E` and gateway type `G`. The `Policy` trait itself is
-//! consumed by-value at registration and stays unboxed inside each
-//! adapter — the erasure is at the dispatcher boundary, not at the
-//! `Policy` trait. This is the same closure-vs-port reasoning linus
-//! approved at S4 (`event_bus.rs:22-37`).
-
-//! ## S5/S6 wiring note
-//!
-//! `ErasedPolicyDispatcher`, `PolicyAdapter`, `route_failure`,
-//! `dispatch_one`, and `DispatcherList` are defined here in S5 with
-//! their full unit-test coverage but are not yet driven by
-//! `App::run` (an S5 stub). S6 wires them in. The `#[cfg(test)]`
-//! tests below reach all of these items via `dispatch_one`'s call
-//! graph, so `dead_code` does not fire on them under `--all-targets`
-//! and no suppression is needed. Only `DispatcherList` — a public
-//! type alias not constructed by any test — carries
-//! `#[expect(dead_code)]` so the marker fails closed when S6 wires
-//! it into `App::run`.
+//! `DispatcherList` is unit-tested but not yet driven by `App::run`.
 
 use std::future::Future;
 use std::pin::Pin;
