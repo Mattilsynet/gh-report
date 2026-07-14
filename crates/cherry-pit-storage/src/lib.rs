@@ -1,29 +1,20 @@
 //! # cherry-pit-storage
 //!
-//! Synchronous filesystem primitives for cherry-pit consumers. Provides
-//! crash-safe atomic file writes, an RAII run-lock with TTL-based stale
-//! detection, and canonical-JSON SHA-256 content signatures.
-//!
-//! Per [CHE-0053], this crate absorbs the `error`, `fs`, `lock`, and
-//! `signature` modules from the donor `quics-memoization` crate under a
-//! cherry-pit-named, leaf-utility surface. The full enumerated public
-//! API surface is flat (CHE-0053:R3) over private modules.
+//! Synchronous filesystem primitives for cherry-pit consumers: crash-safe
+//! atomic file writes, an RAII run-lock with TTL-based stale detection, and
+//! canonical-JSON SHA-256 content signatures. Flat public API over private
+//! modules (CHE-0053:R3).
 //!
 //! ## Crash-safety
 //!
-//! `atomic_write_bytes` and `atomic_write_text` use the temp-file +
-//! fsync + rename + parent-dir-fsync pattern. File contents are
-//! fsynced before rename, and the parent directory is fsynced after
-//! rename so the rename itself is durable on filesystems whose
-//! `fsync(dir)` propagates directory-entry changes (ext4, xfs, zfs;
-//! see CHE-0032:R3). Weakening this guarantee — e.g. dropping the
-//! parent-dir fsync — is a SemVer-major break (CHE-0053:R6).
+//! Atomic writes use temp-file + fsync + rename + parent-dir-fsync, per
+//! CHE-0032:R3. Dropping the parent-dir fsync is a SemVer-major break
+//! (CHE-0053:R6).
 //!
 //! ## Synchronous-only
 //!
-//! No `async fn`, no tokio, no futures-util in the public surface
-//! (CHE-0053:R4). Consumers needing async I/O wrap calls in
-//! `tokio::task::spawn_blocking` themselves (CHE-0053:R7).
+//! No `async fn`, tokio, or futures-util in the public surface (CHE-0053:R4).
+//! Wrap calls in `tokio::task::spawn_blocking` for async I/O (CHE-0053:R7).
 //!
 //! ## Examples
 //!
