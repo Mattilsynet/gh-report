@@ -69,44 +69,34 @@ impl RunMetadata {
     /// Project this run into a `CorrelationContext` for cycle-rooted
     /// event correlation (CHE-0039:R1).
     ///
-    /// ## Projection (gap α — WU-6 v2 B7' Inc 2)
+    /// ## Projection
     ///
-    /// **Choice: parse-as-uuid.** [`run_id`](Self::run_id) is exactly
-    /// 32 lowercase hex characters by construction (see
-    /// [`generate_run_id`]) — i.e. 16 bytes — which is the byte-width
-    /// of a UUID. The projection is a pure byte reinterpretation:
+    /// [`run_id`](Self::run_id) is 32 lowercase hex characters by
+    /// construction (see [`generate_run_id`]) — 16 bytes:
     ///
     /// ```text
     /// run_id (32 hex chars) → 16 bytes → Uuid::from_bytes
     /// ```
     ///
-    /// **Determinism**: same `run_id` input → same UUID output across
-    /// process boundaries (no clock, no PRNG, no salt). This satisfies
-    /// the gap-α constraint: replay (start + checkpoint + restart)
-    /// with the same persisted `run_id` produces the same
-    /// `correlation_id` for the same cycle phase (CHE-0048:R3
-    /// idempotence + CHE-0042:R3 stream invariants). F5 abort trigger
-    /// is therefore unreachable by construction.
+    /// **Determinism**: same `run_id` → same UUID across process
+    /// boundaries (no clock, PRNG, or salt), so replay with the same
+    /// persisted `run_id` yields the same `correlation_id` per cycle
+    /// phase (CHE-0048:R3 + CHE-0042:R3).
     ///
-    /// **Note on UUID variant bits**: the resulting UUID does not
-    /// carry valid v4/v7 variant/version bits in general — `run_id`
-    /// is 16 bytes of `fastrand` output, not a structured UUID. This
-    /// is acceptable: `CorrelationContext` accepts any `Uuid` value
-    /// (CHE-0039 docs explicitly permit nil and arbitrary UUIDs;
-    /// callers own meaning). The variant is used as an opaque
-    /// 128-bit correlation key, not parsed for version metadata.
+    /// **UUID variant bits**: carries no valid v4/v7 variant bits —
+    /// `run_id` is `fastrand` output, not a structured UUID.
+    /// Acceptable: `CorrelationContext` accepts any `Uuid` (CHE-0039)
+    /// as an opaque correlation key.
     ///
-    /// **Cycle-root**: returned context uses
-    /// [`CorrelationContext::correlated`] (`correlation_id` only, no
-    /// causation) — a collection cycle is the root of its own
-    /// correlation chain (CHE-0039:R3).
+    /// **Cycle-root**: returns
+    /// [`CorrelationContext::correlated`] (`correlation_id` only) — a
+    /// collection cycle roots its own chain (CHE-0039:R3).
     ///
     /// # Panics
     ///
-    /// Panics if `run_id` is not exactly 32 lowercase hex characters
-    /// — an invariant guaranteed by [`generate_run_id`]. Construction
-    /// outside that path (e.g. forged checkpoint files) violates the
-    /// invariant; panic fails fast.
+    /// Panics if `run_id` is not 32 lowercase hex characters —
+    /// guaranteed by [`generate_run_id`]; other construction violates
+    /// the invariant.
     #[must_use]
     pub fn correlation_context(&self) -> cherry_pit_core::CorrelationContext {
         let mut bytes = [0u8; 16];

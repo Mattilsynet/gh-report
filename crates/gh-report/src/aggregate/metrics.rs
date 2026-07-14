@@ -79,20 +79,18 @@ fn count_by_visibility(active: &[&RepositoryEvidence], visibility: Visibility) -
 ///
 /// Aggregation semantics (this is the org-page half of the per-metric
 /// population matrix; the owner-page half lives on
-/// `build_per_control_coverage`'s doc comment — single source for both:
-/// bd bead `adr-fmt-5dfp2`):
+/// `build_per_control_coverage`'s doc comment — single source for both):
 ///
 /// - **Security policy**: counted over **all public** repositories,
-///   including archived ones. Denominator is total public repos
-///   (archived + active). Archived public repos with a security policy
-///   on file are intentionally included so the count reflects the
-///   organisation's published policy surface, not just its active one.
-/// - **Secret scanning**: counted over **all public** repositories, including
-///   archived ones, mirroring the security-policy denominator.
+///   including archived, since archived public repos with a policy on
+///   file still reflect published policy surface. Denominator is total
+///   public repos (archived + active).
+/// - **Secret scanning**: same **all public** population as security
+///   policy.
 /// - **Dependabot, branch protection, CODEOWNERS**: counted over **all**
-///   non-archived repos. Denominator is total active repos.
-/// - **Open secret alert prevalence**: denominator is the number of repos
-///   where secret scanning is enabled AND alerts are observable.
+///   non-archived repos; denominator is total active repos.
+/// - **Open secret alert prevalence**: denominator is repos where secret
+///   scanning is enabled AND alerts are observable.
 #[must_use]
 pub fn aggregate_metrics(repositories: &[RepositoryEvidence]) -> AggregatedMetrics {
     let active: Vec<_> = repositories
@@ -760,11 +758,12 @@ pub fn build_owner_metrics(repositories: &[RepositoryEvidence]) -> Vec<OwnerMetr
 /// Computes two additional per-control coverage rates for each owner
 /// and inserts them into `per_control_coverage`:
 ///
-/// - **`non_stale`** — percentage of the owner's repos that are *not* stale
-///   (i.e., `updated_at` is within [`STALE_THRESHOLD_DAYS`] of
-///   `run_timestamp`, or `updated_at` is `None`). Denominator = total repos.
-/// - **`alert_free`** — percentage of the owner's *observable* repos that
-///   have no open secret scanning alerts. Observable = secret scanning
+/// - **`non_stale`** — percentage of the owner's repos that are *not*
+///   stale (`updated_at` within [`STALE_THRESHOLD_DAYS`] of
+///   `run_timestamp`, or `updated_at` is `None`). Denominator = total
+///   repos.
+/// - **`alert_free`** — percentage of the owner's *observable* repos
+///   with no open secret scanning alerts. Observable = secret scanning
 ///   enabled *and* alerts observable. Denominator = observable repos
 ///   (zero denominator → N/A via [`RateMetric::new`]).
 ///
@@ -772,10 +771,9 @@ pub fn build_owner_metrics(repositories: &[RepositoryEvidence]) -> Vec<OwnerMetr
 ///
 /// - Must be called **after** [`aggregate_metrics`] (which invokes
 ///   [`build_owner_metrics`] and populates `owner_metrics`).
-/// - Mutates `per_control_coverage` in-place; idempotent (overwrites on
-///   repeated calls).
-/// - Logs a warning if either key already exists (indicates an upstream
-///   change that should be investigated).
+/// - Mutates `per_control_coverage` in-place; idempotent.
+/// - Logs a warning if either key already exists (indicates an
+///   upstream change that should be investigated).
 ///
 /// [`STALE_THRESHOLD_DAYS`]: crate::domain::time::STALE_THRESHOLD_DAYS
 pub(crate) fn enrich_owner_metrics_with_lifecycle(
@@ -833,25 +831,25 @@ pub(crate) fn enrich_owner_metrics_with_lifecycle(
     }
 }
 
-/// Cross-check each individual-user owner's login against the org-members
-/// set, setting [`OwnerMetrics::in_org`] in place (item9 Part B).
+/// Cross-check each individual-user owner's login against the
+/// org-members set, setting [`OwnerMetrics::in_org`] in place.
 ///
-/// Only `OwnerType::User` owners are checked — team-type owners' canonical
-/// name (`@org/team-slug`) isn't a login, so team membership (already
-/// handled separately via [`crate::collector::team_membership::enrich_team_rosters_with_org_membership`])
-/// is the relevant check there, not org membership of the owner string
-/// itself; team-type owners are left at `in_org: None`.
+/// Only `OwnerType::User` owners are checked — team-type owners'
+/// canonical name (`@org/team-slug`) isn't a login, so team membership
+/// (handled separately via
+/// [`crate::collector::team_membership::enrich_team_rosters_with_org_membership`])
+/// is the relevant check there; team-type owners stay `in_org: None`.
 ///
 /// `org_members` is `None` when the org-members fetch was unfetched or
-/// degraded — every user-type owner's `in_org` is set to `None` in that
-/// case (no flag on missing data). When `Some`, both sides of the
-/// comparison are lowercased (`alice` in the set matches owner `@Alice`).
+/// degraded — every user-type owner's `in_org` is `None` in that case
+/// (no flag on missing data). When `Some`, both sides of the comparison
+/// are lowercased (`alice` in the set matches owner `@Alice`).
 ///
 /// # Contract
 ///
 /// Must be called **after** [`aggregate_metrics`] (which invokes
 /// [`build_owner_metrics`] and populates `owner_metrics`). Mutates
-/// `in_org` in-place; idempotent (overwrites on repeated calls).
+/// `in_org` in-place; idempotent.
 pub(crate) fn enrich_owner_metrics_with_org_membership(
     owners: &mut [OwnerMetrics],
     org_members: Option<&HashSet<String>>,
@@ -876,32 +874,27 @@ struct OwnerControlCoverage {
     score_exclusion_counts: Vec<ScoreExclusionCount>,
 }
 
-/// Build per-control pass-rate metrics for a set of repositories, converged
-/// to the same exclusion model `compute_repo_score` and the org-level
-/// aggregate (item6-02, bd bead `adr-fmt-6mi2t`) already use: each repo's
-/// control classifies via the shared `ScoreCategory` funnel (item6-01).
-/// `Pass`/`Fail` count toward the rate; `Excluded(reason)` drops out of both
-/// numerator and denominator and is tallied by reason into
-/// `score_exclusion_counts`.
+/// Build per-control pass-rate metrics for a set of repositories,
+/// converged to the same exclusion model `compute_repo_score` and the
+/// org-level aggregate use: each control classifies via the shared
+/// `ScoreCategory` funnel. `Pass`/`Fail` count toward the rate;
+/// `Excluded(reason)` drops out of both numerator and denominator and
+/// is tallied into `score_exclusion_counts`.
 ///
 /// - **`security_policy`**: `Pass`/`Fail` per status; `Unknown` and
-///   `NotApplicable` both exclude. No separate visibility filter — non-public
-///   repos structurally classify `NotApplicable` (see
-///   `collector::security_policy::evaluate`), so they drop out without one.
-/// - **`secret_scanning`**: population is the owner's **public** repos only
-///   (UF2-7, unchanged from before this fix), mirroring the org-page
-///   population; within that population, `PermissionDenied`/`Unknown` exclude.
-/// - **`dependabot_security_updates`**: `Pass`/`Fail` per status; `Unknown` excludes.
-/// - **`branch_protection`**: uses `BranchProtectionResult::score_category()`
-///   (tier-based); an unreadable/permission-suspected repo excludes instead of
-///   folding into T0 fail (pcoqb, mirrored from item6-02's org-level fix).
-/// - **`codeowners`**: numerator stays `Conforming` OR `NonConforming` (file
-///   present) — deliberately NOT narrowed to `Conforming`-only; that
-///   numerator-semantics axis is tracked separately in bd bead
-///   `adr-fmt-pptla`. Only `Unknown` excludes from the denominator.
-///
-/// Single source for the population-scope doc across org/owner: bd bead
-/// `adr-fmt-5dfp2`.
+///   `NotApplicable` both exclude (non-public repos structurally
+///   classify `NotApplicable`, so no separate visibility filter is
+///   needed).
+/// - **`secret_scanning`**: population is the owner's **public** repos
+///   only; `PermissionDenied`/`Unknown` exclude.
+/// - **`dependabot_security_updates`**: `Pass`/`Fail` per status;
+///   `Unknown` excludes.
+/// - **`branch_protection`**: uses
+///   `BranchProtectionResult::score_category()` (tier-based); an
+///   unreadable/permission-suspected repo excludes rather than
+///   folding into T0 fail.
+/// - **`codeowners`**: numerator is `Conforming` OR `NonConforming`
+///   (file present); only `Unknown` excludes from the denominator.
 fn build_per_control_coverage(repos: &[&RepositoryEvidence]) -> OwnerControlCoverage {
     let mut sp_pass = 0u32;
     let mut sp_fail = 0u32;

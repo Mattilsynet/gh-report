@@ -1,27 +1,22 @@
 //! Collection pipeline: run a single security data collection pass.
 //!
 //! Pipeline:
-//! 1. Acquire in-process sweep lock on [`AppState::sweep_lock`]
-//!    (mission `adr-fmt-cq7vb.8.2`): serialises concurrent
-//!    [`run`] invocations against the same `AppState`, eliminating
-//!    the singleton-state clobber windows in [`SweepSaga::new`] and
-//!    [`enqueue_and_await_batch`].
-//! 2. Acquire on-disk run lock (cross-process second line of defence)
-//!    - A signal handler (SIGINT/SIGTERM) releases the lock and triggers
-//!      cooperative shutdown via `CancellationToken`, preventing orphaned
-//!      lock files on graceful termination.
-//! 3. Resolve credentials and build `GitHubClient`
-//! 4. Load or build repository inventory
-//! 5. Collect org-level secret scanning alert summary
-//! 6. Evaluate each repository against all five security checks
-//!    - Resume from checkpoint if available
-//!    - Reuse from baseline (kept separate from checkpoint)
-//!    - Isolate per-repository failures
-//!    - Persist checkpoint periodically (excludes baseline-reused entries)
-//!    - Save baseline, then remove checkpoint
-//! 7. Build evidence (assessment metadata + metrics + repositories)
-//! 8. Render HTML report and update in-memory cache
-//! 9. Release on-disk run lock; in-process sweep guard drops at function exit
+//! 1. Acquire in-process sweep lock on [`AppState::sweep_lock`] to
+//!    serialise concurrent [`run`] invocations against the same
+//!    `AppState`.
+//! 2. Acquire on-disk run lock (cross-process second line of defence);
+//!    SIGINT/SIGTERM releases it and triggers cooperative shutdown via
+//!    `CancellationToken`.
+//! 3. Resolve credentials and build `GitHubClient`.
+//! 4. Load or build repository inventory.
+//! 5. Collect org-level secret scanning alert summary.
+//! 6. Evaluate each repository against all five security checks:
+//!    resume from checkpoint, reuse from baseline, isolate
+//!    per-repository failures, persist checkpoint periodically, then
+//!    save baseline and remove checkpoint.
+//! 7. Build evidence (assessment metadata + metrics + repositories).
+//! 8. Render HTML report and update in-memory cache.
+//! 9. Release on-disk run lock; the sweep guard drops at function exit.
 
 use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
@@ -1395,20 +1390,20 @@ async fn collect_org_alert_context(
 /// can start serving immediately without waiting for the first API
 /// collection to complete.
 ///
-/// Returns `true` if the warm-start succeeded (baseline exists, is valid,
-/// and pages were rendered). Returns `false` on any graceful failure
-/// (no baseline, empty baseline, schema mismatch, render error).
+/// Returns `true` on a successful warm-start (baseline exists, is valid,
+/// and pages were rendered); `false` on any graceful failure (no
+/// baseline, empty baseline, schema mismatch, render error).
 ///
 /// # Why this is safe
 ///
 /// - `html_cache` uses [`ArcSwap`] for atomic swap — concurrent reads
-///   from the server always see a consistent snapshot.
-/// - The warm-start evidence uses placeholder `AssessmentMetadata` (auth
-///   fields set to Unknown, `warm_start: true`). `archived_repos` in
-///   `collection_statistics` is derived from the baseline repos via
+///   always see a consistent snapshot.
+/// - Warm-start evidence uses placeholder `AssessmentMetadata` (auth
+///   fields `Unknown`, `warm_start: true`); `collection_statistics`'
+///   `archived_repos` derives from baseline repos via
 ///   [`metrics::build_collection_statistics`] rather than zeroed.
-///   Templates detect `warm_start` and display a "Cached" badge.
-/// - The first real collection atomically replaces the warm-start cache.
+///   Templates detect `warm_start` and show a "Cached" badge.
+/// - The first real collection atomically replaces this cache.
 pub(crate) async fn warm_start_from_baseline(
     config: &RuntimeConfig,
     state: &Arc<AppState>,
@@ -1486,26 +1481,20 @@ pub(crate) async fn render_and_cache_evidence(
 }
 
 /// Render dashboard HTML and build the per-page zstd-compressed cache
-/// entries. Pure compute — no shared state is mutated and no broadcast
-/// fires. Fallible (template rendering). CHE-0068:R2 two-phase render:
-/// callers that need barrier-aligned visibility commit the result via
-/// [`commit_cached_pages`] strictly after the barrier event has been
-/// published.
+/// entries. Pure compute — no shared state mutated, no broadcast
+/// fires. Fallible (template rendering). Per CHE-0068:R2's two-phase
+/// render, callers needing barrier-aligned visibility commit via
+/// [`commit_cached_pages`] after the barrier event publishes.
 ///
-/// Streams each rendered page directly into a `CachedPage` as soon as it
-/// is produced (mem-opt-cachedpage-2026-07-11, Option 1) instead of
-/// materialising the full rendered page set as `HashMap<String, String>`
-/// before compressing it: peak memory holds ~one raw page plus the
-/// accumulating `CachedPage` map (whose `Compressed` entries no longer
-/// retain raw — see `cherry_pit_web::serve::CachedBody`), not the whole
-/// rendered set. Runs via `block_in_place` (not `spawn_blocking`) so the
-/// borrowed `evidence`/`config` never need to be cloned or made `'static`;
-/// the streaming loop is CPU-bound (Askama rendering + zstd) for its
-/// entire duration, matching the prior `spawn_blocking` intent of keeping
-/// this work off the async-task fast path. Kept `async` (though its body
-/// has no `.await`) to preserve the call-chain signature shared by
-/// [`render_and_cache_evidence`] / [`publish_evidence`]; `block_in_place`
-/// itself requires an async multi-thread-runtime context to call into,
+/// Streams each rendered page directly into a `CachedPage` instead of
+/// materialising the full page set before compressing, so peak memory
+/// holds ~one raw page plus the accumulating compressed map. Runs via
+/// `block_in_place` (not `spawn_blocking`) so borrowed
+/// `evidence`/`config` never need cloning or `'static`; the loop is
+/// CPU-bound (Askama + zstd) throughout. Kept `async` (no `.await` in
+/// its body) to match the call-chain signature of
+/// [`render_and_cache_evidence`] / [`publish_evidence`];
+/// `block_in_place` needs an async multi-thread-runtime context,
 /// which the `#[expect]` below documents.
 #[expect(
     clippy::unused_async,

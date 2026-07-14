@@ -875,25 +875,25 @@ impl GitHubClient {
 
     /// Get cached or fresh repository details.
     ///
-    /// Only successful results are cached. Transient failures are not cached
+    /// Only successful results are cached; transient failures are not,
     /// to allow recovery on subsequent calls.
     ///
-    /// Stale cache entries (marked by `evict_stale_entries`) are revalidated
-    /// using `ETag` conditional requests to save bandwidth when the response
-    /// body hasn't changed.
+    /// Stale cache entries (marked by `evict_stale_entries`) are
+    /// revalidated using `ETag` conditional requests to save bandwidth
+    /// when the response body hasn't changed.
     ///
-    /// The full request path uses `request()` which provides retry logic,
-    /// exponential backoff, and stale-token recovery. `ETags` are captured
-    /// via a side-channel in `request_single_inner` and read after the call.
+    /// The full request path uses `request()`, which provides retry
+    /// logic, exponential backoff, and stale-token recovery. `ETags`
+    /// are captured via a side-channel and read after the call.
     ///
     /// # Budget note
-    /// Stale entries that fail `ETag` revalidation consume two budget permits:
-    /// one for the conditional request, one for the full retry request.
-    /// This is a deliberate trade-off — stale+failed-revalidation is rare.
+    /// Stale entries that fail `ETag` revalidation consume two budget
+    /// permits: one for the conditional request, one for the full
+    /// retry — a deliberate trade-off, since this is rare.
     ///
     /// # Path safety
-    /// `repo_name` is validated by `sanitize_path_segment` before URL interpolation
-    /// to prevent path injection from API-derived data.
+    /// `repo_name` is validated by `sanitize_path_segment` before URL
+    /// interpolation to prevent path injection from API-derived data.
     pub async fn repo_details(&self, repo_name: &str) -> ApiOutcome {
         enum CacheHit {
             Fresh {

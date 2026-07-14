@@ -1888,48 +1888,27 @@ const WIDTH_CLASSES: [&str; 21] = [
     "w-60", "w-65", "w-70", "w-75", "w-80", "w-85", "w-90", "w-95", "w-100",
 ];
 
-/// Compute the Org Governance score (or, when called with an owner's control
-/// rates, the Team Health score) as the geometric mean of available coverage
-/// rates.
+/// Compute the Org Governance score (or Team Health score, for an
+/// owner's control rates) as the geometric mean of available
+/// coverage rates.
 ///
-/// Combines security control rates (Security Policy, Secret Scanning,
-/// Dependabot, Branch Protection, CODEOWNERS, and optionally Archival
-/// Coverage, for the org-level caller).
-/// Controls with `None` rates (N/A) are excluded from the computation —
-/// they are not treated as zero.
+/// Combines security control rates (Security Policy, Secret
+/// Scanning, Dependabot, Branch Protection, CODEOWNERS, optionally
+/// Archival Coverage). `None` (N/A) is excluded, not zeroed.
 ///
-/// Input rates are clamped to `[0.0, 100.0]`: negative values are treated
-/// as 0%, and values above 100% (possible when `numerator > denominator`)
-/// are capped at 100%.
+/// Rates clamp to `[0.0, 100.0]`. A genuine `0.0` floors to `0.1` so
+/// one zero-rate control doesn't collapse the mean.
 ///
-/// A 0.0% rate is floored to 0.1% so that a single zero-rate control does
-/// not collapse the entire geometric mean to zero.
+/// Returns `None` if all rates are `None`; otherwise the mean
+/// rounded to 1 decimal place.
 ///
-/// Returns:
-/// - `None` if all rates are `None`.
-/// - Otherwise, the geometric mean rounded to 1 decimal place.
+/// # Ratified rule
 ///
-/// # Ratified rule (UF2-5)
-///
-/// This is the decided scoring rule, not a placeholder — see bd bead
-/// `adr-fmt-m1s6p` for the full ratification record. Two behaviours are
-/// deliberate, not incidental:
-///
-/// - **`None` is excluded, never coerced to `0.0`.** A geometric mean is a
-///   product of terms (computed here via `exp(mean(ln(x)))`); if a missing
-///   metric were coerced to `0.0` instead of dropped, that one absent
-///   control would zero the entire product regardless of how every other
-///   control scores. Exclusion means "no observable population" does not
-///   punish controls that *are* observed. None here denotes *no applicable
-///   population* only; a control that is applicable but could not be
-///   measured is floored to a real failure upstream at `RateMetric`
-///   construction, never surfaced as None (see UF2-5 clause 6, bd
-///   `adr-fmt-m1s6p`).
-/// - **A genuine `0.0` is floored to `0.1` before entering the product**,
-///   for the same reason in reverse: an unfloored `0.0` in a product-based
-///   mean collapses the whole score to zero, masking every passing control.
-///   Flooring keeps a real failure scored near the bottom without the
-///   all-or-nothing collapse.
+/// - `None` excludes rather than coercing to `0.0`: coercing would
+///   zero the whole product regardless of other scores. `None` means
+///   *no applicable population*; an unmeasured-but-applicable
+///   control floors to a real failure upstream instead.
+/// - A genuine `0.0` floors for the same reason, reversed.
 pub(crate) fn compute_health_score(rates: &[Option<f64>]) -> Option<f64> {
     let available: Vec<f64> = rates
         .iter()
