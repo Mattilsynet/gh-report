@@ -49,40 +49,28 @@ pub trait DomainEvent: Clone + Send + Sync + 'static + Serialize + DeserializeOw
 }
 
 /// Infrastructure wrapper around a domain event.
-/// (CHE-0016 R1–R3: store creates envelopes, correlation/causation;
-/// CHE-0033 R1–R3: UUID v7 `event_id`, sequence ordering;
-/// CHE-0034 R1: `jiff::Timestamp` for temporal values;
-/// CHE-0042 R1–R4: validated construction, `NonZeroU64` sequence,
-/// private fields, `validate_stream` after deserialization.)
 ///
-/// Provided by cherry-pit-core, not implemented by the agent. This is what
-/// gets persisted and transported. The domain event is the payload;
-/// the envelope adds the metadata needed for ordering, routing, and
-/// idempotency.
+/// See CHE-0016, CHE-0033, CHE-0034, CHE-0042 for envelope creation,
+/// identity, timestamp, and construction-invariant rules.
 ///
-/// Envelopes are created by the [`EventStore`](crate::EventStore)
-/// during `create` and `append` — callers pass raw domain events,
-/// the store stamps on the metadata.
+/// Created by [`EventStore`](crate::EventStore) during `create`/`append`
+/// — callers pass raw domain events, the store stamps on metadata for
+/// ordering, routing, and idempotency around the domain payload.
 ///
 /// # Construction
 ///
-/// Fields are private — use [`EventEnvelope::new()`] to construct.
-/// The constructor validates invariants (non-nil `event_id`); the
-/// `sequence` field uses [`NonZeroU64`] to eliminate zero sequences
-/// at the type level.
+/// Fields are private; use [`EventEnvelope::new()`] to construct.
+/// The constructor validates invariants (non-nil `event_id`);
+/// `sequence` uses [`NonZeroU64`] to eliminate zero sequences at the
+/// type level.
 ///
 /// # Correlation and causation
 ///
-/// `correlation_id` groups related events across aggregates and
-/// bounded contexts into a single logical operation. All events
-/// produced by a command (and any downstream commands triggered by
-/// policies) share the same `correlation_id`.
-///
-/// `causation_id` identifies the specific event that caused this
-/// event to be produced. For events produced directly by a command,
-/// `causation_id` is `None`. For events produced by a policy
-/// reacting to a prior event, `causation_id` points to that prior
-/// event's `event_id`.
+/// `correlation_id` groups events from one logical operation — a
+/// command plus any policy-triggered downstream commands — across
+/// aggregates. `causation_id` is the `event_id` of the event that
+/// produced this one via a policy or saga; `None` for events from a
+/// direct command.
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct EventEnvelope<E: DomainEvent> {
