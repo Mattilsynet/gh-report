@@ -1,9 +1,7 @@
 //! Type-selection guide for pardosa event payloads.
 //!
-//! Field-type decisions for `#[derive(GenomeSafe)]` structs/enums, applying
-//! `PGN-0013` (bounded-wrapper alphabet), `PGN-0003` (`SCHEMA_HASH`),
-//! `PGN-0006` (rejections), `COM-0020` (reject invalid shapes at the serde
-//! boundary) — does not restate those rules.
+//! Field-type decisions for `#[derive(GenomeSafe)]` structs/enums per
+//! `PGN-0013`, `PGN-0003`, `PGN-0006`, `COM-0020` — does not restate those.
 //!
 //! # Decision tree
 //!
@@ -18,10 +16,9 @@
 //!   [`EventF32`](crate::EventF32) round-trips them when required.
 //! - Unicode scalar: [`CharScalar`](crate::CharScalar) rejects surrogates.
 //!
-//! `MAX` is part of the type and schema hash (`PGN-0013:R6`); pick it from a
-//! domain source. `GenomeSafe` closes under bounded field types, not
-//! field/variant counts. Derive diagnostics (`EVT-001..EVT-014`) source from
-//! `pardosa-derive/src/reject.rs`.
+//! `MAX` is part of the type and schema hash (`PGN-0013:R6`). `GenomeSafe`
+//! closes under bounded field types, not counts. Diagnostics
+//! (`EVT-001..EVT-014`) source from `pardosa-derive/src/reject.rs`.
 //!
 //! # Worked example: adr-srv native tree
 //!
