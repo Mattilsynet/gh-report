@@ -70,7 +70,8 @@ const PHASE_STOPPED: &str = "stopped";
 const MESSAGE_READY: &str = "daemon ready — serving";
 const MESSAGE_SHUTDOWN_BEGIN: &str = "beginning graceful shutdown";
 const MESSAGE_STOPPED: &str = "daemon stopped";
-const SERVED_CSP_WITH_WASM_UNSAFE_EVAL: &str = "default-src 'self'; style-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; base-uri 'none'; form-action 'none'";
+
+use crate::server::SERVED_CSP_WITH_WASM_UNSAFE_EVAL;
 
 fn duration_millis(duration: Duration) -> u128 {
     duration.as_millis()

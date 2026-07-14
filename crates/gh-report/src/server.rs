@@ -20,6 +20,38 @@ use tower_http::limit::RequestBodyLimitLayer;
 
 use crate::app::state::AppState;
 
+/// CSP applied to the served (dashboard) `ServerConfig`, relaxing
+/// `script-src` to permit `wasm-unsafe-eval` for the served WASM bundle.
+pub(crate) const SERVED_CSP_WITH_WASM_UNSAFE_EVAL: &str = "default-src 'self'; style-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; base-uri 'none'; form-action 'none'";
+
+/// [`cherry_pit_web::serve::ValidatedConfig`] for the served-dashboard path:
+/// applies [`SERVED_CSP_WITH_WASM_UNSAFE_EVAL`] on top of the defaults.
+///
+/// # Panics
+///
+/// Panics if the config fails to build (indicates a programming error in
+/// the hardcoded defaults).
+#[expect(dead_code, reason = "call sites land in bd-adr-fmt-tpfbe (Child 2)")]
+pub(crate) fn served_dashboard_server_config() -> cherry_pit_web::serve::ValidatedConfig {
+    cherry_pit_web::serve::ServerConfig::builder()
+        .csp_override(SERVED_CSP_WITH_WASM_UNSAFE_EVAL)
+        .build()
+        .expect("default config is valid")
+}
+
+/// Bare-default [`cherry_pit_web::serve::ValidatedConfig`] with no overrides.
+///
+/// # Panics
+///
+/// Panics if the config fails to build (indicates a programming error in
+/// the hardcoded defaults).
+#[expect(dead_code, reason = "call sites land in bd-adr-fmt-tpfbe (Child 2)")]
+pub(crate) fn default_server_config() -> cherry_pit_web::serve::ValidatedConfig {
+    cherry_pit_web::serve::ServerConfig::builder()
+        .build()
+        .expect("default config is valid")
+}
+
 /// Build a [`Router`] fragment for the `/api/v1/status` endpoint.
 ///
 /// Returns a router with a 1 KB body limit (defence-in-depth for a
@@ -65,6 +97,21 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 mod tests {
     use super::*;
     use tokio::net::TcpListener;
+
+    #[test]
+    fn served_dashboard_server_config_carries_the_relaxed_csp() {
+        let config = served_dashboard_server_config();
+        assert_eq!(
+            config.csp_override(),
+            Some(SERVED_CSP_WITH_WASM_UNSAFE_EVAL)
+        );
+    }
+
+    #[test]
+    fn default_server_config_has_no_csp_override() {
+        let config = default_server_config();
+        assert!(config.csp_override().is_none());
+    }
 
     async fn wait_for_server(addr: std::net::SocketAddr) {
         let timeout = std::time::Duration::from_secs(5);
