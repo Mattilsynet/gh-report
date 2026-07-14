@@ -185,24 +185,20 @@ pub struct FileProjectionStore<P> {
     /// path returns from [`Self::acquire_lock`] without entering the
     /// blocking section. Wrapped in `Arc` so clones share state.
     acquire_gate: Arc<StdMutex<()>>,
-    /// Per-aggregate in-process write locks per CHE-0048:R7. Maps each
+    /// Per-aggregate in-process write locks (CHE-0048:R7). Maps each
     /// active `aggregate_id` to a `tokio::sync::Mutex` held across the
-    /// whole `persist` / `delete` / `rebuild_file` critical section so
-    /// two concurrent in-process tasks targeting the **same** aggregate
-    /// serialise their writes (the deterministic temp-file name would
-    /// otherwise race on the rename). Distinct `aggregate_id`s receive
-    /// distinct locks and proceed in parallel; cross-aggregate
-    /// non-interference is additionally enforced by the aggregate-
-    /// scoped orphan-tmp sweep (see [`Self::sweep_orphan_tmp`]).
+    /// whole `persist` / `delete` / `rebuild_file` critical section,
+    /// serialising concurrent in-process writers targeting the
+    /// **same** aggregate (the deterministic temp-file name would
+    /// otherwise race on rename). Distinct aggregates proceed in
+    /// parallel; cross-aggregate non-interference is further enforced
+    /// by [`Self::sweep_orphan_tmp`].
     ///
-    /// Registry is a `std::sync::Mutex<HashMap<_, Arc<tokio::sync::Mutex<_>>>>`:
-    /// the outer std-mutex is held only for the lookup-or-insert
-    /// (microseconds, never across an `await`); the inner tokio-mutex
-    /// is the per-aggregate critical section held across the I/O
-    /// `await`s. The registry is never pruned — per-aggregate locks
-    /// outlive any individual call and are reused on the next write
-    /// for the same aggregate, mirroring `Arc<OnceLock<File>>`'s share-
-    /// across-clones pattern (clones of a `FileProjectionStore` are
+    /// The outer `std::sync::Mutex` guards only the lookup-or-insert
+    /// (never held across an `await`); the returned per-aggregate
+    /// `tokio::sync::Mutex` is the actual critical section. Never
+    /// pruned — locks outlive any single call and are reused, mirroring
+    /// `Arc<OnceLock<File>>`'s share-across-clones pattern (clones are
     /// the same backend identity per CHE-0048:R6).
     aggregate_locks: Arc<StdMutex<HashMap<AggregateId, Arc<tokio::sync::Mutex<()>>>>>,
     _projection: PhantomData<fn() -> P>,
@@ -352,34 +348,23 @@ impl<P> FileProjectionStore<P> {
         )
     }
 
-    /// CHE-0047:R1 + CHE-0048:R7 — remove orphaned `*.tmp` files
-    /// belonging to **this aggregate** before the next mutation for
-    /// the same aggregate. Conservative semantics: a `.tmp` file is
-    /// removed only when its corresponding non-tmp companion
-    /// (`.tmp` → `.msgpack`) is absent — i.e. the previous
-    /// `temp-file-then-rename` cycle crashed between write and rename.
-    /// A `.tmp` whose companion exists is left in place because it
-    /// may belong to an in-flight retry by the same aggregate's
-    /// previous call (defensive — the per-aggregate lock should
+    /// Remove orphaned `*.tmp` files belonging to **this aggregate**
+    /// before the next mutation (CHE-0047:R1, CHE-0048:R7). Conservative:
+    /// a `.tmp` is removed only when its `.msgpack` companion is absent
+    /// — i.e. a temp-file-then-rename cycle (CHE-0032) crashed between
+    /// write and rename. A `.tmp` whose companion exists is left in
+    /// place (may be an in-flight retry; the per-aggregate lock should
     /// already exclude that case).
     ///
-    /// **Aggregate-scoped sweep (CHE-0048:R7):** only `.tmp` files
-    /// whose filename begins with `{aggregate_id}-` are eligible.
-    /// The on-disk naming convention is
-    /// `{aggregate_id}-{projection_name}.{snapshot|checkpoint}.tmp`,
-    /// so every tmp belonging to this aggregate starts with the
-    /// integer aggregate id followed by `-`. Tmp files for other
-    /// aggregates (different prefix) are left untouched — without
-    /// this scope a `persist` call for aggregate A would reap a
-    /// concurrent in-flight tmp belonging to aggregate B (the
-    /// directory-wide sweep race that motivated CHE-0048:R7 in the
-    /// first place).
+    /// Only `.tmp` files named `{aggregate_id}-*` are eligible, matching
+    /// the `{aggregate_id}-{projection_name}.{snapshot|checkpoint}.tmp`
+    /// convention; other aggregates' tmp files are untouched, so a
+    /// `persist` for aggregate A cannot reap an in-flight tmp for
+    /// aggregate B (the directory-wide race CHE-0048:R7 scopes against).
     ///
-    /// Called from `persist`, `delete`, and `rebuild_file` at scoped
-    /// call sites — not from the constructor — so the sweep runs
-    /// only when a mutation for this aggregate is imminent. The
-    /// store directory is created lazily on lock acquisition;
-    /// absence of the directory at sweep time is a no-op.
+    /// Called from `persist`, `delete`, `rebuild_file`, not the
+    /// constructor, so it runs only when a mutation is imminent. A
+    /// missing store directory is a no-op.
     async fn sweep_orphan_tmp(&self, aggregate_id: AggregateId) -> ProjectionResult<()> {
         let prefix = format!("{}-", aggregate_id.get());
         let mut entries = match tokio::fs::read_dir(&self.dir).await {
@@ -428,34 +413,20 @@ where
     /// Persist `projection` and then its checkpoint.
     ///
     /// Order is snapshot-then-checkpoint with `fsync` + directory `fsync`
-    /// at each step (CHE-0048 R1+R2, CHE-0032). R1 mandates the
-    /// temp-file-then-rename snapshot write; R2 mandates the checkpoint
-    /// is written strictly after the snapshot. A crash between the two
-    /// leaves the snapshot present but the checkpoint absent; restart
-    /// code must treat that case as "rebuild" rather than "trust snapshot".
+    /// at each step (CHE-0048:R1, CHE-0048:R2, CHE-0032). R1 mandates the
+    /// temp-file-then-rename write; R2 mandates the checkpoint is written
+    /// strictly after the snapshot. A crash between the two leaves the
+    /// snapshot present but the checkpoint absent; restart code must
+    /// treat that as "rebuild" rather than "trust snapshot".
     ///
     /// # Concurrency
     ///
-    /// CHE-0048:R7 **mandates** per-aggregate write coordination via
-    /// in-process per-aggregate locks consistent with CHE-0035:R1–R3.
-    /// In v0.1 this crate does **not** provide that lock: `persist` is
-    /// store-fenced under CHE-0043 (one writer process per store
-    /// directory, surfaced as [`ProjectionError::StoreLocked`]) but is
-    /// **not** safe under concurrent in-process callers for the same
-    /// `(aggregate_id, projection_name)` pair — the temp file used by
-    /// the internal atomic-write helper is derived deterministically
-    /// from the destination path, so two concurrent in-process writers
-    /// would race on the same temp path and on the final atomic rename.
-    ///
-    /// Until per-aggregate locking lands, **callers must coordinate
-    /// writes for the same `aggregate_id` externally**, typically via
-    /// the per-aggregate write lock already required by the
-    /// single-writer-per-aggregate invariant (CHE-0006). Concurrent
-    /// `persist` for *distinct* `(aggregate_id, projection_name)`
-    /// pairs within the same store directory is safe.
-    ///
-    /// Per-aggregate lock implementation is tracked as a follow-up
-    /// (bd `adr-fmt-8y4r`, discovered-from epic `adr-fmt-hh07`).
+    /// Per-aggregate writes are serialised in-process via
+    /// [`Self::aggregate_lock`] (CHE-0048:R7); concurrent `persist` calls
+    /// for distinct `(aggregate_id, projection_name)` pairs are safe.
+    /// Across processes, `persist` is store-fenced under CHE-0043 (one
+    /// writer process per store directory), surfaced as
+    /// [`ProjectionError::StoreLocked`] on contention.
     ///
     /// # Errors
     ///
@@ -741,26 +712,18 @@ impl<P: Projection> Default for InMemoryProjection<P> {
 /// Driver that rebuilds a projection from a typed event store.
 ///
 /// `ProjectionDriver` is generic over a single `P: Projection` and a typed
-/// `S: EventStore<Event = P::Event>` — there is no `Box<dyn Projection>` and
-/// no `Box<dyn EventStore>` (CHE-0048 R3, CHE-0005 R1). [`replay`](Self::replay)
-/// loads the full stream, runs [`cherry_pit_core::EventEnvelope::validate_stream`]
-/// (CHE-0042 R4), then folds events into `P::default()`.
+/// `S: EventStore<Event = P::Event>` — never `Box<dyn _>` (CHE-0048:R3,
+/// CHE-0005:R1). [`replay`](Self::replay) loads the full stream, runs
+/// [`cherry_pit_core::EventEnvelope::validate_stream`] (CHE-0042:R4), then
+/// folds events into `P::default()`.
 ///
 /// # Examples
 ///
-/// Construct a driver and rebuild a file-backed projection (compile-checked
-/// signature only — needs a concrete `EventStore` impl to run).
-///
-/// `no_run` is structurally justified here, not a convenience: the example
-/// is a **constructor-without-IO** pattern. `ProjectionDriver::rebuild_file`
-/// requires an `S: EventStore<Event = P::Event>`, but
-/// `cherry-pit-projection` exports no concrete `EventStore` impl and pulls
-/// in no in-memory `EventStore` as a dev-dep at doctest scope (CHE-0048 R3 +
-/// CHE-0005 R1 keep both traits generic, never `Box<dyn _>`). Promoting
-/// this doctest to runnable would require either exporting a test-only
-/// store from this crate (public-API surface change, out of scope) or
-/// taking a new dev-dep solely for doctest coverage. The
-/// signature-only check is the maximum coverage available without those.
+/// Construct a driver and rebuild a file-backed projection
+/// (`no_run`: signature-only, since this crate exports no concrete
+/// `EventStore` impl to drive the doctest, keeping both traits generic
+/// per CHE-0048:R3 + CHE-0005:R1 rather than adding a dev-dep solely
+/// for doctest coverage).
 ///
 /// ```no_run
 /// use cherry_pit_core::{
