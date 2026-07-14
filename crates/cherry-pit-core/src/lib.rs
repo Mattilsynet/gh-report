@@ -1,55 +1,35 @@
 //! # cherry-pit-core
 //!
-//! Foundational traits for cherry-pit: the narrow, typed ports that
-//! agents program against. All domain logic lives behind these traits.
-//! All infrastructure lives on the other side.
-//! (CHE-0029 R4–R5: dependencies restricted to {serde, uuid, jiff};
-//! CHE-0030 R1–R2: private modules with selective pub use re-exports;
-//! CHE-0018 R3: zero async runtime dependency in core.)
+//! The narrow, typed ports agents program against: domain logic lives
+//! behind these traits, infrastructure on the other side. Dependencies
+//! restricted to `{serde, uuid, jiff}` (CHE-0029:R4–R5); private
+//! modules with selective `pub use` re-exports (CHE-0030:R1–R2); zero
+//! async-runtime dependency (CHE-0018:R3).
 //!
 //! ## Single-aggregate design
 //!
 //! Every infrastructure port (`EventStore`, `EventBus`, `CommandBus`,
-//! `CommandGateway`) is bound to a single aggregate/event type via
-//! associated types. The compiler enforces end-to-end type safety
-//! from command dispatch through event persistence and publication.
-//!
-//! Multiple aggregates are supported at the system level by deploying
-//! separate bounded contexts — each with its own typed infrastructure
-//! stack. Cross-context communication happens through event
-//! subscriptions (e.g. NATS subjects), not shared stores.
+//! `CommandGateway`) binds to one aggregate/event type via associated
+//! types, giving compiler-enforced type safety end-to-end from
+//! dispatch through persistence and publication. Multiple aggregates
+//! compose as separate bounded contexts; cross-context communication
+//! uses event subscriptions (e.g. NATS subjects), not shared stores.
 //!
 //! ## Domain traits
 //!
-//! - [`DomainEvent`] — immutable facts (something that happened)
-//! - [`Command`] — intent to change state
-//! - [`Aggregate`] — consistency boundary, reconstructed from events
-//! - [`HandleCommand`] — compile-time verified command→aggregate pairs
-//! - [`Policy`] — reacts to events by producing commands
-//! - [`Projection`] — folds events into read-optimized views
-//! - [`ReadPort`] — statically-wired reads over projection state
+//! [`DomainEvent`], [`Command`], [`Aggregate`], [`HandleCommand`],
+//! [`Policy`], [`Projection`], [`ReadPort`].
 //!
 //! ## Port traits (async, RPITIT)
 //!
-//! - [`CommandGateway`] — primary entry point for dispatching commands
-//! - [`CommandBus`] — load → handle → persist → publish lifecycle
-//! - [`EventStore`] — persistence of aggregate event streams
-//! - [`EventBus`] — fan-out of persisted events
+//! [`CommandGateway`], [`CommandBus`], [`EventStore`], [`EventBus`].
 //!
 //! ## Types
 //!
-//! - [`AggregateId`] — stream partition key (auto-assigned `u64`)
-//! - [`EventEnvelope`] — infrastructure wrapper around domain events
-//! - [`ProjectionCheckpoint`] — durable (aggregate, projection, sequence) cursor
-//! - [`CorrelationContext`] — explicit correlation/causation propagation
-//! - [`IdempotencyKey`] — consumer-supplied stability key (never synthesised)
-//! - [`DispatchError`] — typed command dispatch errors
-//! - [`DispatchResult`] — return type alias for bus/gateway dispatch
-//! - [`CreateResult`] — return type alias for aggregate creation
-//! - [`StoreError`] — event store operation errors
-//! - [`EnvelopeError`] — envelope construction/validation errors
-//! - [`BusError`] — event bus publication errors
-//! - [`ErrorCategory`] — stable retryable/terminal error guidance
+//! [`AggregateId`], [`EventEnvelope`], [`ProjectionCheckpoint`],
+//! [`CorrelationContext`], [`IdempotencyKey`], [`DispatchError`],
+//! [`DispatchResult`], [`CreateResult`], [`StoreError`],
+//! [`EnvelopeError`], [`BusError`], [`ErrorCategory`].
 
 #![forbid(unsafe_code)]
 

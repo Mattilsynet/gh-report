@@ -5,34 +5,23 @@ use serde::{Deserialize, Serialize};
 
 /// Validated aggregate instance identifier — the stream partition key.
 ///
-/// Identifies a specific aggregate instance within an event store.
-/// Each aggregate's event stream is keyed by its `AggregateId`.
-/// The `(AggregateId, sequence)` tuple is the globally unique
-/// coordinate for any single event.
+/// Identifies a specific aggregate instance within an event store. The
+/// `(AggregateId, sequence)` tuple is the globally unique coordinate
+/// for any single event.
 ///
-/// # ID assignment
+/// Assigned exclusively by [`EventStore`](crate::EventStore)'s `create`
+/// method (auto-incrementing from 1); callers never invent IDs, only
+/// receive and pass them back (CHE-0020, infrastructure-owned identity).
 ///
-/// Aggregate IDs are assigned by the [`EventStore`](crate::EventStore)
-/// via its `create` method. The store auto-increments from 1. Callers
-/// never invent IDs — they receive them from the store on creation and
-/// pass them back on subsequent commands.
-/// (CHE-0020: infrastructure-owned identity.)
+/// Backed by `NonZeroU64` — zero is not a valid ID, and store-assigned
+/// IDs start from 1 so zero never occurs in practice. This removes the
+/// `AggregateId(0)` hole at the type level at zero runtime cost
+/// (`Option<AggregateId>` niche-optimizes to the same size as
+/// `AggregateId`) (CHE-0011).
 ///
-/// # Non-zero invariant
-///
-/// Backed by `NonZeroU64` — zero is not a valid aggregate ID.
-/// Store-assigned IDs start from 1, so zero never occurs in practice.
-/// This eliminates the `AggregateId(0)` hole at the type level with
-/// zero runtime cost (niche optimization allows `Option<AggregateId>`
-/// to be the same size as `AggregateId`).
-/// (CHE-0011: `AggregateId` as `NonZeroU64`.)
-///
-/// # Single-writer assumption
-///
-/// Cherry-pit assumes single-writer aggregates: each aggregate instance
-/// is owned by exactly one process. This makes sequential numeric IDs
-/// safe without distributed coordination.
-/// (CHE-0006: single-writer per aggregate.)
+/// Sequential numeric IDs are safe without distributed coordination
+/// because each aggregate instance is single-writer, owned by exactly
+/// one process (CHE-0006).
 ///
 /// # Examples
 ///

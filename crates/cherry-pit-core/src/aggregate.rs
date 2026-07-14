@@ -5,36 +5,23 @@ use crate::event::DomainEvent;
 
 /// The aggregate root — the consistency and transactional boundary.
 ///
-/// An aggregate reconstructs its state by replaying events. It is the
-/// only place where business invariants are enforced. The aggregate
-/// itself only knows how to apply events — command handling is added
-/// via the [`HandleCommand`] trait.
-/// (CHE-0004: EDA + DDD + hexagonal; CHE-0009 R1–R2: infallible apply;
-/// CHE-0012 R1–R3: `Default` = zero state, no constructor args;
-/// CHE-0020 R1: no `id()` method; CHE-0037 R1–R2: full replay,
-/// no Serialize/Deserialize on Aggregate trait.)
+/// An aggregate reconstructs its state by replaying events, and is the
+/// only place business invariants are enforced. It only knows how to
+/// apply events; command handling is added via [`HandleCommand`]
+/// (CHE-0004: EDA + DDD + hexagonal).
 ///
-/// # Single-writer design
+/// `Default` is the zero-state starting point (CHE-0012). No `id()`
+/// method: identity is infrastructure-owned — the store assigns
+/// [`AggregateId`](crate::AggregateId) on creation; domain logic
+/// needing its own ID stores one as a field set during the first
+/// event's `apply` (CHE-0020). Full replay, no snapshotting, no
+/// `Serialize`/`Deserialize` bounds on the trait (CHE-0037).
 ///
-/// Cherry-pit assumes single-writer aggregates: each aggregate
-/// instance is owned by exactly one process. No distributed
-/// coordination is needed — the owning process serializes commands
-/// internally. Optimistic concurrency (`expected_sequence` on
-/// [`EventStore::append`](crate::EventStore::append)) serves as
-/// defense-in-depth within the single writer.
-/// (CHE-0006: single-writer per aggregate.)
-///
-/// # Design rationale
-///
-/// - `Default` — the aggregate starts as a blank slate. State is built
-///   entirely by replaying events through `apply`.
-///   (CHE-0012: aggregate default = zero state.)
-/// - No `id()` method — aggregate identity is managed by the
-///   infrastructure layer (event store, repository). The store assigns
-///   [`AggregateId`](crate::AggregateId) values on creation. If the
-///   domain logic needs its own ID, it stores it as a field set during
-///   the first event's `apply`.
-///   (CHE-0020: infrastructure-owned identity.)
+/// Single-writer: each instance is owned by one process, no
+/// distributed coordination needed. Optimistic concurrency
+/// (`expected_sequence` on
+/// [`EventStore::append`](crate::EventStore::append)) is
+/// defense-in-depth within the single writer (CHE-0006).
 ///
 /// # Examples
 ///
@@ -79,25 +66,20 @@ pub trait Aggregate: Default + Send + Sync + 'static {
 }
 
 /// Command handling is a separate trait so each command→aggregate
-/// pair is verified at compile time.
-/// (CHE-0008: pure command handling; CHE-0015: error type per command.)
+/// pair is verified at compile time (CHE-0008: pure command handling;
+/// CHE-0015: error type per command).
 ///
 /// An aggregate implements `HandleCommand` once per command type it
-/// accepts. The compiler guarantees exhaustive handling — you cannot
-/// forget to implement a command. No runtime downcasting, no
-/// match-arm gaps.
+/// accepts. The compiler guarantees exhaustive handling — no forgotten
+/// command, no runtime downcasting, no match-arm gaps.
 ///
-/// # Design rationale
-///
-/// - `handle` takes `self` by shared reference — the aggregate inspects
-///   its current state but does not mutate directly. State changes
-///   happen only through events returned by `handle`, then applied
-///   via `apply`. (CHE-0008 R1/R2: `&self`, consumes `C` by value.)
-/// - `handle` takes ownership of the command — a command represents
-///   one-time intent. After handling, it is consumed.
-/// - `Error` is an associated type on `HandleCommand`, not on
-///   `Aggregate` — different commands may have different error types.
-///   (CHE-0015 R1: error type per command.)
+/// `handle` takes `self` by shared reference — the aggregate inspects
+/// state but does not mutate directly; state changes happen only
+/// through events returned by `handle`, then applied via `apply`
+/// (CHE-0008:R1). It takes ownership of the command, consuming its
+/// one-time intent (CHE-0008:R2). `Error` is an associated type on
+/// `HandleCommand`, not on `Aggregate`, since different commands may
+/// have different error types (CHE-0015:R1).
 ///
 /// # Examples
 ///
