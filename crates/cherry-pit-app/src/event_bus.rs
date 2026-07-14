@@ -1,41 +1,24 @@
 //! In-process synchronous fan-out implementation of
 //! [`cherry_pit_core::EventBus`].
 //!
-//! Per CHE-0051:R2: handlers are stored in a `Vec<HandlerFn>` registered
-//! through an impl-specific [`InProcessEventBus::register`] method and
-//! invoked synchronously inside `publish`, satisfying CHE-0024:§7
-//! ("In-process delivery is synchronous within `publish` — the bus
-//! calls each registered handler before returning.").
-//!
-//! Per CHE-0024:R1 + CHE-0024:R2: the `EventBus` port itself acquires no
-//! `subscribe` method — registration is implementation-specific. Per
-//! CHE-0024:R1 publication failure is non-fatal at the *system* level
-//! because events are already persisted by the `EventStore` before the
-//! `CommandBus` calls `publish`. Persist-then-publish *orchestration*
-//! lives in `App` (S5), not in this bus.
-//!
-//! Per CHE-0005:R1 + CHE-0051:R2: one `InProcessEventBus<E>` instance
-//! exists per aggregate type. Multi-aggregate composition is handled by
-//! parameter expansion (CHE-0051:R9), never by a heterogeneous handler
+//! Per CHE-0051:R2, handlers live in a `Vec<HandlerFn>` registered via
+//! [`InProcessEventBus::register`], invoked synchronously inside
+//! `publish` (CHE-0024:§7 delivery contract). `EventBus` carries no
+//! `subscribe` method (CHE-0024:R1/R2); publication failure is
+//! non-fatal since events persist before `publish` runs —
+//! orchestration lives in `App` (S5). Per CHE-0005:R1 + CHE-0051:R2,
+//! one instance exists per aggregate type; multi-aggregate composition
+//! is parameter expansion (CHE-0051:R9), never a heterogeneous
 //! registry.
 //!
 //! ## C1 boundary note (Linus R1 review focus)
 //!
-//! The handler storage uses `Box<dyn Fn(&EventEnvelope<E>) + Send + Sync>`.
-//! This dynamic dispatch is over **user-supplied callback closures**, not
-//! over an infrastructure port trait. CHE-0005:R1 forbids `Box<dyn>` over
-//! `EventStore`, `EventBus`, `CommandBus`, `CommandGateway`, `Policy`,
-//! `Projection` — i.e. Aggregate-bound infra ports. Closures registered
-//! against a concrete bus impl are not infra ports; they are the
-//! synchronous-fan-out callback shape mandated by CHE-0024:§7 and
-//! CHE-0051:R2.
-//!
-//! If review rejects this dyn-closure shape, the documented mitigation
-//! (per the WU-5 brief) is a pivot to a typed-tuple-of-handlers built on
-//! the same registration surface. The pivot path is preserved by keeping
-//! `register` on the impl (not on a trait surface that App would have to
-//! re-declare).
-
+//! Handler storage is `Arc<dyn Fn(&EventEnvelope<E>) + Send + Sync>` —
+//! dispatch over user closures, not an infra port trait. CHE-0005:R1
+//! forbids `dyn` over `EventStore`, `EventBus`, `CommandBus`,
+//! `CommandGateway`, `Policy`, `Projection`; closures aren't infra
+//! ports. Rejected shape's mitigation is a typed-tuple pivot, keeping
+//! `register` on the impl.
 use std::sync::{Arc, Mutex};
 
 use cherry_pit_core::{BusError, DomainEvent, EventBus, EventEnvelope};
@@ -52,37 +35,26 @@ type HandlerFn<E> = Arc<dyn Fn(&EventEnvelope<E>) + Send + Sync>;
 /// In-process synchronous event bus implementing
 /// [`cherry_pit_core::EventBus`] per CHE-0051:R2.
 ///
-/// Holds a `Vec<HandlerFn<E>>` of user-registered closures. `publish`
-/// invokes every handler in registration order, synchronously, before
-/// returning `Ok(())`.
-///
-/// Per CHE-0051:R2 + CHE-0005:R1: one instance per aggregate event type
-/// `E`. Multi-aggregate composition expands the type-parameter list at
-/// the consumer's `App` site (CHE-0051:R9), never via a heterogeneous
-/// registry inside this bus.
+/// Holds `Vec<HandlerFn<E>>` of user-registered closures; `publish`
+/// invokes every handler in order before returning `Ok(())`. One
+/// instance exists per aggregate event type `E` (CHE-0051:R2 +
+/// CHE-0005:R1); multi-aggregate composition expands the type
+/// parameter at the `App` site (CHE-0051:R9), not a heterogeneous
+/// registry.
 ///
 /// ## Concurrency
 ///
-/// Backed by `std::sync::Mutex<Arc<Vec<HandlerFn<E>>>>` (copy-on-write).
-/// Registration briefly takes the lock to swap in a fresh `Arc<Vec<…>>`
-/// carrying the appended handler. Publication briefly takes the lock to
-/// clone the current snapshot `Arc`, releases the lock, then invokes
-/// each handler against the snapshot. The handler-vector lock is
-/// therefore never held across handler invocation, so a handler may
-/// safely re-enter the bus (`register` or `publish` on the same
-/// instance) without deadlocking on the bus's own mutex. The
-/// synchronous-fanout contract (CHE-0024:§7) is preserved: handlers
-/// still run synchronously inside `publish` before the returned future
-/// resolves.
+/// Backed by `Mutex<Arc<Vec<HandlerFn<E>>>>` (copy-on-write):
+/// registration swaps in a fresh `Arc`; publication clones the current
+/// snapshot under a brief lock, releases it, then invokes each handler
+/// — never held during invocation, so a handler may safely re-enter
+/// the bus. CHE-0024:§7's fanout contract holds regardless.
 ///
 /// ## Failure model
 ///
-/// `publish` returns `Result<(), BusError>` to satisfy the port
-/// signature. `InProcessEventBus` itself never produces a `BusError` —
-/// in-process delivery has no fallible transport. Failed *handler*
-/// dispatch (panics) would propagate; per CHE-0051:R7, dead-letter
-/// routing of failed *policy outputs* is `App`'s job (S5/S6), not the
-/// bus's.
+/// `publish` never produces `Err(BusError)` — no fallible in-process
+/// transport. A panicking handler propagates; per CHE-0051:R7,
+/// dead-letter routing of failed policy outputs is `App`'s job.
 pub struct InProcessEventBus<E: DomainEvent> {
     handlers: Mutex<Arc<Vec<HandlerFn<E>>>>,
 }
@@ -100,24 +72,21 @@ impl<E: DomainEvent> InProcessEventBus<E> {
     /// published envelope.
     ///
     /// Per CHE-0024:R2 + CHE-0051:R2 this is an **impl-specific**
-    /// registration method — the `cherry_pit_core::EventBus` port
-    /// trait deliberately does NOT carry `subscribe` / `register`.
-    /// Subscription is "inherently implementation-specific (in-process
-    /// channels vs NATS subjects vs polling)" (CHE-0024:R2 commentary).
+    /// registration method — the `cherry_pit_core::EventBus` port trait
+    /// deliberately carries no `subscribe`/`register`, since
+    /// subscription is inherently implementation-specific (in-process
+    /// channels vs NATS subjects vs polling).
     ///
     /// Handlers must be `Send + Sync + 'static` because the bus itself
-    /// is `Send + Sync + 'static` (the `EventBus` port requires it) and
-    /// publication may happen across threads (e.g. tokio multi-threaded
+    /// is, and publication may cross threads (e.g. tokio multi-threaded
     /// runtime).
     ///
     /// Registration is **copy-on-write**: the current handler vector is
-    /// cloned, the new handler is appended to the clone, and the bus
-    /// swaps the snapshot `Arc` under a brief lock. Existing snapshots
-    /// observed by an in-flight `publish` continue to fire over the
-    /// pre-registration handler set; subsequent publishes observe the
-    /// new handler. This is the mechanism that makes reentrant
-    /// `register` from inside a handler safe (no deadlock on the bus's
-    /// own mutex).
+    /// cloned, the new handler appended to the clone, and the bus swaps
+    /// the snapshot `Arc` under a brief lock. Snapshots already
+    /// observed by an in-flight `publish` keep firing over the
+    /// pre-registration handler set; later publishes observe the new
+    /// one. This makes reentrant `register` from inside a handler safe.
     pub fn register<F>(&self, handler: F)
     where
         F: Fn(&EventEnvelope<E>) + Send + Sync + 'static,
@@ -161,35 +130,28 @@ impl<E: DomainEvent> std::fmt::Debug for InProcessEventBus<E> {
 impl<E: DomainEvent> EventBus for InProcessEventBus<E> {
     type Event = E;
 
-    /// Publish synchronously to every registered handler in registration
-    /// order, then return `Ok(())`.
+    /// Publish synchronously to every registered handler in
+    /// registration order, then return `Ok(())`.
     ///
-    /// Per CHE-0024:§7: "In-process delivery is synchronous within
-    /// `publish` — the bus calls each registered handler before
-    /// returning." The returned `impl Future` resolves immediately on
-    /// the calling task; no work is spawned.
+    /// Per CHE-0024:§7, in-process delivery is synchronous within
+    /// `publish` — the bus calls each handler before returning. The
+    /// returned `impl Future` resolves immediately; no work spawns.
     ///
-    /// Per CHE-0024:R1: persist-then-publish ordering and the
-    /// non-fatality of publication failure are enforced at the
-    /// `CommandBus` / `App` level (S5), not here. This impl never
-    /// returns `Err(BusError)`.
+    /// Per CHE-0024:R1, persist-then-publish ordering and non-fatal
+    /// publication failure are enforced at `CommandBus`/`App` level.
+    /// Never returns `Err(BusError)`.
     ///
     /// # Hazards
     ///
     /// **Handlers run synchronously inside `publish` — no awaiting on
-    /// publisher-held locks (CHE-0051:R8 advisory).** Each registered
-    /// handler is invoked from the body of this method, but the
-    /// handler-vector mutex is released *before* fan-out begins: the
-    /// snapshot `Arc<Vec<…>>` of handlers is cloned under a brief lock
-    /// and then the guard is dropped, so handler bodies never run with
-    /// the bus's own mutex held. Reentrant `register` / `publish` from
-    /// within a handler is therefore deadlock-safe at the bus boundary.
+    /// publisher-held locks (CHE-0051:R8 advisory).** The mutex
+    /// releases before fan-out: the snapshot clones under a brief
+    /// lock, then drops, so handlers never hold the bus's mutex —
+    /// reentrant `register`/`publish` is deadlock-safe.
     ///
-    /// The advisory continues to apply at the *publisher* boundary:
-    /// when a handler — such as the `App::run` callback — bridges into
-    /// async via `Handle::block_on(...)`, any future driven by that
-    /// `block_on` that tries to acquire a lock the *publisher* holds
-    /// will still deadlock. See `App::run`'s `# Hazards` section.
+    /// The advisory still applies at the publisher boundary: a handler
+    /// bridging into async via `Handle::block_on(...)` can deadlock on
+    /// a publisher-held lock; see `App::run`'s `# Hazards` section.
     fn publish(
         &self,
         events: &[EventEnvelope<Self::Event>],

@@ -2,13 +2,12 @@
 //! Root composition crate wiring Aggregate/Policy/Projection against
 //! EventStore/EventBus/CommandGateway.
 //!
-//! Per [CHE-0051](../../docs/adr/cherry/CHE-0051-cherry-pit-agent-design.md):
-//! this is the only crate sanctioned to depend on every other cherry-pit
-//! crate ([CHE-0029](../../docs/adr/cherry/CHE-0029-crate-decomposition.md)
-//! line 50–57 acyclic DAG). Public API is exposed flat at the crate root
-//! via `pub use` re-exports per
-//! [CHE-0030](../../docs/adr/cherry/CHE-0030-flat-public-api.md):R1 (C7);
-//! internal module structure is implementation detail.
+//! Only crate sanctioned to depend on every other cherry-pit crate, per
+//! [CHE-0051](../../docs/adr/cherry/CHE-0051-cherry-pit-agent-design.md)
+//! (acyclic DAG, [CHE-0029](../../docs/adr/cherry/CHE-0029-crate-decomposition.md)).
+//! Public API is flat via `pub use` re-exports per
+//! [CHE-0030](../../docs/adr/cherry/CHE-0030-flat-public-api.md):R1;
+//! internal modules are implementation detail.
 //!
 //! # Wiring at a glance
 //!
@@ -48,12 +47,12 @@ pub use scheduler::*;
 /// Re-export of [`cherry_pit_core::CorrelationContext`] for ergonomic
 /// access at the agent surface.
 ///
-/// Per [CHE-0030](../../docs/adr/cherry/CHE-0030-flat-public-api.md):R1
-/// (flat public API): consumers wiring an [`App`] should not have to
-/// also depend on `cherry-pit-core` just to name the context type
-/// threaded through dispatch closures. The context is load-bearing
-/// per [CHE-0051](../../docs/adr/cherry/CHE-0051-cherry-pit-agent-design.md):R6
-/// — the dispatcher constructs it fresh per envelope and passes it as
-/// the third closure argument so policy-emitted commands inherit the
-/// correlation chain mechanically (no re-derivation by the caller).
+/// Per [CHE-0030](../../docs/adr/cherry/CHE-0030-flat-public-api.md):R1,
+/// consumers wiring an [`App`] should not have to also depend on
+/// `cherry-pit-core` just to name the context type threaded through
+/// dispatch closures. Per
+/// [CHE-0051](../../docs/adr/cherry/CHE-0051-cherry-pit-agent-design.md):R6
+/// the dispatcher constructs it fresh per envelope and passes it as the
+/// third closure argument so policy-emitted commands inherit the
+/// correlation chain mechanically, without re-derivation by the caller.
 pub use cherry_pit_core::CorrelationContext;
