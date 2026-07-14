@@ -57,6 +57,26 @@ impl RateMetric {
         self.extra.insert(key.to_string(), value.into());
         self
     }
+
+    /// Render this rate at whole-percent precision, for table-cell display
+    /// where [`std::fmt::Display`]'s 1-decimal precision is reserved for
+    /// prose (e.g. `"80% (4/5)"` vs. `Display`'s `"80.0% (4/5)"`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gh_report::domain::metrics::RateMetric;
+    ///
+    /// let metric = RateMetric::new(4, 5);
+    /// assert_eq!(metric.to_table_string(), "80% (4/5)");
+    /// ```
+    #[must_use]
+    pub fn to_table_string(&self) -> String {
+        match self.rate {
+            Some(rate) => format!("{rate:.0}% ({}/{})", self.numerator, self.denominator),
+            None => format!("N/A ({}/{})", self.numerator, self.denominator),
+        }
+    }
 }
 
 impl std::fmt::Display for RateMetric {
