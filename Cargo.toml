@@ -22,6 +22,7 @@ members = [
     "crates/pardosa-schema",
     "crates/pardosa-wire",
     "crates/comment-free",
+    "crates/non-exhaustive-check",
     "crates/pardosa-mint-private-tests",
     "crates/pardosa-test-support-harness",
 ]
@@ -51,6 +52,7 @@ default-members = [
     "crates/pardosa-schema",
     "crates/pardosa-wire",
     "crates/comment-free",
+    "crates/non-exhaustive-check",
     "crates/pardosa-mint-private-tests",
     "crates/pardosa-test-support-harness",
 ]
