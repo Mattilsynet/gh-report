@@ -169,26 +169,20 @@ where
     ///
     /// # Durability
     ///
-    /// On `Ok(())` the event is durably captured on the key's fiber and
-    /// fenced. An `Err` means the append did NOT durably land: for a
-    /// JetStream-backed store the underlying pardosa-nats substrate performs
-    /// a single `publish_once` with NO automatic retry or backoff
-    /// (PGN-0016:R6), so a returned error is a genuine single-shot publish
-    /// failure, not a transient the substrate will absorb.
+    /// `Ok(())` means durably captured and fenced. `Err` means the append did
+    /// NOT durably land: JetStream-backed stores perform a single
+    /// `publish_once` with no automatic retry (PGN-0016:R6), so an error is a
+    /// genuine single-shot failure, not an absorbed transient.
     ///
     /// # Recovery
     ///
-    /// Recovery from an `Err` is the caller's obligation, not the
-    /// substrate's (COM-0025:R1, PGN-0016:R6). The caller MUST decide, per
-    /// its durability requirements, among: retry the record (safe — the
-    /// subject-sequence fence makes a re-append idempotent per
-    /// PGN-0016:R2), route the event to a dead-letter path, or accept the
-    /// loss. The store performs none of these automatically.
-    /// [`FiberStoreError::Infrastructure`] and
+    /// Recovery from an `Err` is the caller's obligation, per the port
+    /// semantics COM-0025:R1 and PGN-0016:R6 require: retry (idempotent
+    /// under the subject-sequence fence, PGN-0016:R2), dead-letter, or
+    /// accept the loss. [`FiberStoreError::Infrastructure`] and
     /// [`FiberStoreError::BackendInfrastructure`] are the retryable
     /// substrate-failure surfaces; [`FiberStoreError::DivergedFiber`] and
-    /// [`FiberStoreError::Poisoned`] are terminal and MUST NOT be blindly
-    /// retried.
+    /// [`FiberStoreError::Poisoned`] are terminal and MUST NOT be retried.
     pub fn record(&self, domain_key: &str, event: E, key: KeyFn<E>) -> Result<(), FiberStoreError> {
         record_defined(&self.inner, domain_key, event, key)
     }
