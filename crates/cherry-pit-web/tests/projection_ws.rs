@@ -1,39 +1,19 @@
-//! WebSocket integration tests for the projection adapter (m5 Phase 4d).
+//! WebSocket integration tests for the projection adapter.
 //!
-//! Ported from the donor crate's `server` module per the donor audit at
-//! `.ooda/preflight-4c-donor-audit-1778536369.md` §"Deferred to 4d (WS)".
-//! 9 of the audit's 11 WS tests land here; 3 were deferred as
-//! architectural-scope misses per moltke's `ReDecompose` (see
-//! `.ooda/brief-sub-4d.md` §"Objective (REVISED…)"):
-//! - `ws_semaphore_exhaustion_returns_503` and
-//!   `ws_semaphore_permit_released_on_disconnect` test
-//!   `ValidatedConfig::ws_max_connections` plumbing that is deliberately
-//!   absent from `build_projection_router` per `handlers.rs:43-57`.
-//! - `ws_js_has_correct_content_type_and_zstd` tests a `/ws.js` route
-//!   that does not exist in the dest router.
+//! Routes exercised:
+//! - `/ws` — unversioned WebSocket upgrade (CHE-0049 R9 carves out WS).
+//! - `/v1/healthz`, `/v1/readyz`, `/v1/{*path}` — HTTP surface, also
+//!   reached via the GET-to-`/ws` non-upgrade path (security headers).
 //!
-//! Each filed as a `m5-followup` bd task under `adr-fmt-io96`.
+//! BC1 — envelope literal `"v":1`. Every WS test decoding a broadcast
+//! frame asserts the envelope contract via `assert_envelope_v1`
+//! (`value["v"] == 1`). Tests that don't decode a payload still cite
+//! `"v":1` in an inline comment so a `"v":1` grep hits per test.
 //!
-//! Routes touched by these tests (per `handlers.rs:489-492`):
-//! - `/ws`  — unversioned WebSocket upgrade (CHE-0049 R9 carves out WS).
-//! - `/v1/healthz`, `/v1/readyz`, `/v1/{*path}` — HTTP surface (referenced
-//!   by `ws_endpoint_has_security_headers` which exercises the GET-to-`/ws`
-//!   non-upgrade path through the same security stack).
-//!
-//! BC1 — envelope literal `"v":1`. Every WS test that decodes a broadcast
-//! frame asserts the envelope contract via `assert_envelope_v1` (which
-//! checks `value["v"] == 1` literally). Tests that don't decode a payload
-//! (upgrade-only, security headers, origin rejection, oversized rejection)
-//! still cite `"v":1` in an inline comment so PSC9's `rg '"v":1'` grep
-//! hits ≥ once per test.
-//!
-//! `ws_sends_reload_on_lag` — **REWRITE**, not a direct port. The donor
-//! (`server.rs:2052` in the removed donor crate) emits a text frame
-//! `{"type":"reload"}` on broadcast lag and continues the session. The
-//! dest (`handlers.rs:14-32`, `handlers.rs:368-383`) closes the socket
-//! with WS code 1001 ("Going Away") per CHE-0049 R11 drop-and-resync —
-//! the client recovers by HTTP-fetching the snapshot and re-attaching a
-//! fresh WS. We assert the close-code-1001 behaviour.
+//! `ws_sends_reload_on_lag` asserts the drop-and-resync contract
+//! (CHE-0049 R11): on broadcast lag the server closes the socket with
+//! WS code 1001 ("Going Away"); the client recovers by HTTP-fetching
+//! the snapshot and re-attaching a fresh WS.
 
 #![cfg(feature = "projection")]
 

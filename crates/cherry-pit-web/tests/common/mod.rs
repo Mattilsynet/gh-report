@@ -1,28 +1,25 @@
 //! Shared test fixtures for `cherry-pit-web` integration tests.
 //!
-//! Created during m5-projection-port Phase 4 (sub-mission 4a'') to provide a
-//! uniform substrate for the ported test suites (4b sync server, 4c HTTP
-//! adapter, 4d WS + proptest). Each fixture is a plain Rust item — no mock
-//! frameworks (BC8) and no `quics-*` dep edge (BC10).
+//! Plain Rust items — no mock frameworks (BC8), no `quics-*` dep edge
+//! (BC10).
 //!
 //! ## Items
 //!
-//! - [`MockProjectionSource`] — in-memory `ProjectionSource` impl driven by
-//!   tests. Subsumes the inline `TestProjectionSource` previously embedded
-//!   in `projection_ws_smoke.rs` (broader name; same shape).
-//! - [`spawn_test_server`] — binds an axum [`build_projection_router`] to
-//!   `127.0.0.1:0`, returns the bound [`SocketAddr`] + an `abort` handle
-//!   (used by 4c for reqwest-driven HTTP tests).
+//! - [`MockProjectionSource`] — in-memory `ProjectionSource` impl
+//!   driven by tests.
+//! - [`spawn_test_server`] — binds an axum [`build_projection_router`]
+//!   to `127.0.0.1:0`, returns the bound [`SocketAddr`] + an `abort`
+//!   handle.
 //! - [`assert_envelope_v1`] — asserts the WebSocket envelope contract
-//!   (CHE-0049 R13): `value["v"] == 1` literally (BC1) + a caller-supplied
-//!   `kind` field.
+//!   (CHE-0049 R13): `value["v"] == 1` literally (BC1) + a
+//!   caller-supplied `kind` field.
 //!
-//! Everything is gated on the `projection` feature because every consumer
-//! pulls in `cherry_pit_web::ProjectionSource` / `ProjectionState` /
-//! `build_projection_router`, all of which are themselves projection-gated.
+//! Gated on the `projection` feature because every consumer pulls in
+//! `cherry_pit_web::ProjectionSource` / `ProjectionState` /
+//! `build_projection_router`, all themselves projection-gated.
 //!
-//! `#![allow(dead_code)]` — integration-test `mod common` is included by
-//! every test file independently; unused items per file are expected.
+//! `#![allow(dead_code)]` — `mod common` is included by every test
+//! file independently; unused items per file are expected.
 
 #![cfg(feature = "projection")]
 #![allow(

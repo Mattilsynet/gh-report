@@ -1,21 +1,17 @@
 //! Type-level assertions for `AppState` and `build_router`.
 //!
-//! These tests prove at compile time that the public generics carry
-//! the bounds axum requires for state — `Clone + Send + Sync +
-//! 'static` — and that `build_router` is callable with any
-//! `(G, S, R)` triple satisfying the documented bounds (CHE-0049 R1 +
-//! CHE-0050 R2). They do *not* instantiate any concrete
-//! gateway/store/router impl: behavioural coverage lives in the
-//! smoke test (`command_router_smoke.rs`) and S6 integration tests.
+//! Proves at compile time that the public generics carry the bounds
+//! axum requires for state — `Clone + Send + Sync + 'static` — and
+//! that `build_router` is callable with any `(G, S, R)` triple
+//! satisfying the documented bounds (CHE-0049 R1, CHE-0050 R2). Does
+//! *not* instantiate a concrete gateway/store/router impl; behavioural
+//! coverage lives in `command_router_smoke.rs` and the S6 integration
+//! tests. A compile failure here signals a regression against
+//! CHE-0049 R1 or CHE-0050 R2.
 //!
-//! If any of these helpers fail to compile, the public API has
-//! regressed against CHE-0049 R1 or CHE-0050 R2.
-//!
-//! Every helper in this file is a compile-time bound check that is
-//! intentionally never called at runtime — `dead_code` is the expected
-//! state, and #[`expect`] fails closed when a helper gains a real caller
-//! (which would be a sign the bound check has been turned into a
-//! behavioural test and should be moved elsewhere).
+//! Every helper is a compile-time bound check never called at
+//! runtime — `dead_code` is expected, and `#[expect]` fails closed if
+//! a helper gains a real caller (a sign it should move elsewhere).
 
 use axum::Router;
 use cherry_pit_core::{Aggregate, CommandGateway, EventStore};

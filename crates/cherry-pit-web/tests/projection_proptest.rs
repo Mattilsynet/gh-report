@@ -1,36 +1,19 @@
-//! Proptest integration tests for the projection adapter (m5 Phase 4d).
+//! Proptest integration tests for the projection adapter. 7 cases:
 //!
-//! Ported from the donor crate's `server` module per the donor audit at
-//! `.ooda/preflight-4c-donor-audit-1778536369.md` §"Proptest". 7
-//! proptest cases total:
+//! - 4 path proptests exercise the public `normalize_request_path`
+//!   surface (percent-decode + traversal-rejection invariants).
+//! - 3 origin proptests drive a real `tokio_tungstenite::connect_async`
+//!   handshake against an axum server on `127.0.0.1:0`, synthesising
+//!   the `Origin` header — `validate_ws_origin` is `pub(crate)`, so
+//!   accept/reject topology is observed via the public WS endpoint.
 //!
-//! - 4 path proptests (donor `server.rs:3743` block) port directly via
-//!   the public `normalize_request_path` surface re-exported at
-//!   `cherry_pit_web::normalize_request_path`. These exercise the
-//!   percent-decode + traversal-rejection invariants.
+//! Route surface: `normalize_request_path` backs the v1 snapshot
+//! handler (`/v1/{*path}`); the WS upgrade lives at `/ws`. BC1
+//! `"v":1` is not asserted here — structural invariants only.
 //!
-//! - 3 origin proptests (donor `server.rs:3806` block) **REFRAMED** as
-//!   HTTP-integration proptests. The donor calls `validate_ws_origin`
-//!   directly; in the dest that function is `pub(crate)` at
-//!   `handlers.rs:398` and promoting it to `pub` would breach the OOS
-//!   list (production code is OOS for sub-4d — see
-//!   `.ooda/brief-sub-4d.md` §"Out of scope"). Instead we drive each
-//!   case through a real `tokio_tungstenite::connect_async` handshake
-//!   against an axum server bound to `127.0.0.1:0`, synthesising the
-//!   `Origin` header on the upgrade request. The accept/reject
-//!   topology is observable on the public WS endpoint and matches the
-//!   donor's invariants.
-//!
-//! Route surface touched: `/v1/{*path}` is referenced by the path
-//! invariants only insofar as `normalize_request_path` is the helper
-//! used by the v1 snapshot handler (`handlers.rs:140-172`); the WS
-//! upgrade lives at `/ws`. BC1 `"v":1` is not asserted here — proptests
-//! exercise structural invariants, not envelope shape.
-//!
-//! Runtime envelope: default 256 cases × ~3 proptests × ~50ms/case for
-//! the HTTP-integration ones ≈ ~40s worst case. We narrow the origin
-//! block to 64 cases via `#[proptest_config]` to keep wall-clock low
-//! while preserving invariant coverage.
+//! Runtime: default 256 cases × ~3 proptests × ~50ms/case ≈ ~40s
+//! worst case; origin block narrowed to 64 cases via
+//! `#[proptest_config]`.
 
 #![cfg(feature = "projection")]
 

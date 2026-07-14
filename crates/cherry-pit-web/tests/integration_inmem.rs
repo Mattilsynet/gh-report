@@ -1,27 +1,21 @@
 //! End-to-end integration tests against an in-memory `EventStore`.
 //!
-//! S6 of the WU-4 cherry-pit-web mission package. Builds a real
-//! `CommandGateway` over a real `EventStore` (both confined to this
-//! `tests/` file — never re-exported from the crate's public surface
-//! per CHE-0049 R1 and the WU-4 brief) and exercises the full
+//! Builds a real `CommandGateway` over a real `EventStore` (confined
+//! to this file, never re-exported per CHE-0049 R1); exercises the
 //! HTTP → router → gateway → store round-trip:
 //!
-//! - **Create** — `POST /v1/aggregates` produces 201 + assigned id;
-//!   the store now contains the produced events.
-//! - **Send** — `POST /v1/aggregates/:id/commands` against the
-//!   created aggregate produces 200 and advances the stream.
+//! - **Create** — `POST /v1/aggregates` produces 201 + assigned id.
+//! - **Send** — `POST /v1/aggregates/:id/commands` produces 200 and
+//!   advances the stream.
 //! - **Load known** — `GET /v1/aggregates/:id` returns the persisted
 //!   event stream as a flat JSON array.
-//! - **Load unknown** — `GET /v1/aggregates/:id` against an unseen id
-//!   returns **200 with an empty payload** per **CHE-0049 R7** +
-//!   **CHE-0019 R1** (never 404 from a read).
-//! - **Error path** — a wire payload that drives the gateway into
-//!   `DispatchError::Rejected` returns 422 per **CHE-0049 R4 + R6**.
-//! - **Correlation echo** — a request carrying `X-Correlation-ID`
-//!   arrives at the test router with a populated `CorrelationContext`,
-//!   the produced events carry that correlation id (the store stamps
-//!   it onto each envelope per CHE-0016), and the response echoes the
-//!   same header back per **CHE-0049 R5**.
+//! - **Load unknown** — returns **200 with an empty payload** per
+//!   **CHE-0049 R7 + CHE-0019 R1** (never 404 from a read).
+//! - **Error path** — `DispatchError::Rejected` returns 422 per
+//!   **CHE-0049 R4 + R6**.
+//! - **Correlation echo** — `X-Correlation-ID` propagates through
+//!   `CorrelationContext` to produced events (CHE-0016) and back on
+//!   the response per **CHE-0049 R5**.
 
 use std::convert::Infallible;
 use std::error::Error;

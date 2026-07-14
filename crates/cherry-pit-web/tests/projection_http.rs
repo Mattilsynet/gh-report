@@ -1,28 +1,14 @@
-//! HTTP integration tests for the projection adapter (m5 Phase 4c).
+//! HTTP integration tests for the projection adapter.
 //!
-//! Ported from the donor crate's `server` module per the donor audit at
-//! `.ooda/preflight-4c-donor-audit-1778536369.md` (bd `adr-fmt-2z86`).
-//! Each test drives a real axum server bound to `127.0.0.1:0` via the
-//! `spawn_test_server_secured` substrate so the full security-header
-//! stack — donor's `assert_security_headers` set — is composed onto the
-//! base `build_projection_router`. No production-code edits; all
-//! deviations from donor live in the substrate or in this file's
-//! per-test path-prefix rewrites.
+//! Drives a real axum server bound to `127.0.0.1:0` via
+//! `spawn_test_server_secured`, asserting the full security-header
+//! stack composes onto `build_projection_router`.
 //!
-//! Profile A+ (audit + feynman orientation):
-//! - 35 drop-in tests from the audit § "Portable to 4c" table.
-//! - 5 `negotiate_*` tests reframed as `Accept-Encoding` →
-//!   `Content-Encoding` round-trips through `build_projection_router`
-//!   (the donor exercises a private helper; dest has no `negotiate`
-//!   symbol, so the behaviour is exercised through observable HTTP).
+//! Path-prefix: every route is `/v1/<key>` (CHE-0049 R9), including
+//! health probes `/v1/healthz`, `/v1/readyz`.
 //!
-//! Path-prefix shift: every donor `/<key>` becomes `/v1/<key>`
-//! (CHE-0049 R9; BC2 verified at `handlers.rs:489-492`). Health probes
-//! shift `/healthz` → `/v1/healthz`, `/readyz` → `/v1/readyz`.
-//!
-//! Response-body shift: dest health/readyz bodies carry `"v": 1`
-//! (CHE-0049 R13) — `{"v":1,"status":"ok"}`, not the donor's
-//! `{"status":"ok"}`. Body asserts adjusted accordingly.
+//! Response-body: health/readyz bodies carry `"v": 1` (CHE-0049 R13) —
+//! `{"v":1,"status":"ok"}`.
 
 #![cfg(feature = "projection")]
 
