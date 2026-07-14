@@ -646,6 +646,8 @@ pub enum RedFlagId {
     DegradedCapability,
     /// Branch-protection reads suspected permission-denied.
     BranchProtectionPermissionSuspected,
+    /// Branch-protection reads denied by permissions.
+    BranchProtectionPermissionDenied,
     /// Secret-scanning reads denied by permissions.
     SecretScanningPermissionDenied,
     /// `auth_mode == AuthMode::Pat`.
@@ -1434,6 +1436,7 @@ pub fn build_red_flags(
     push_token_tier_unknown(&mut flags, metadata);
     push_degraded_capabilities(&mut flags, metadata);
     push_branch_protection_permission_suspected(&mut flags, metrics);
+    push_branch_protection_permission_denied(&mut flags, metrics);
     push_secret_scanning_permission_denied(&mut flags, metrics);
     push_auth_mode_pat(&mut flags, metadata);
     push_rate_limited_collection(&mut flags, metrics);
@@ -1533,6 +1536,28 @@ fn push_branch_protection_permission_suspected(
         affected: AffectedScope::Count(count),
         remedy: Remedy {
             summary: "Verify the token has Repository administration: read (or classic repo scope) and retry collection.".to_string(),
+            fix_target: FixTarget::Token,
+        },
+    });
+}
+
+fn push_branch_protection_permission_denied(flags: &mut Vec<RedFlag>, metrics: &AggregatedMetrics) {
+    let count = sum_collection_health(&metrics.collection_health_counts, |count| {
+        count.check_kind == CollectionHealthCheckKind::BranchProtection
+            && count.reason == CollectionFailureReason::PermissionDenied
+    });
+    if count == 0 {
+        return;
+    }
+    flags.push(RedFlag {
+        id: RedFlagId::BranchProtectionPermissionDenied,
+        severity: Severity::Medium,
+        category: RedFlagCategory::Credential,
+        title: "Branch protection reads denied by permissions".to_string(),
+        detail: "One or more repositories returned an explicit permission-denied response for branch protection; branch-protection posture for those repos is not observable.".to_string(),
+        affected: AffectedScope::Count(count),
+        remedy: Remedy {
+            summary: "Grant the token Repository administration: read (or classic repo scope) and retry collection.".to_string(),
             fix_target: FixTarget::Token,
         },
     });
@@ -3181,17 +3206,17 @@ mod tests {
     }
 
     #[test]
-    fn red_flag_branch_protection_permission_suspected_fires_and_absent() {
+    fn red_flag_branch_protection_permission_denied_fires_and_absent() {
         let mut metrics = neutral_metrics();
         metrics.collection_health_counts = vec![CollectionHealthCount {
             check_kind: CollectionHealthCheckKind::BranchProtection,
-            reason: CollectionFailureReason::PermissionSuspected,
+            reason: CollectionFailureReason::PermissionDenied,
             count: 3,
         }];
         let fired = build_red_flags(&neutral_metadata(), &metrics, &neutral_repos());
         let flag = fired
             .iter()
-            .find(|f| f.id == RedFlagId::BranchProtectionPermissionSuspected)
+            .find(|f| f.id == RedFlagId::BranchProtectionPermissionDenied)
             .expect("flag should fire");
         assert_eq!(flag.affected, AffectedScope::Count(3));
 
@@ -3199,7 +3224,7 @@ mod tests {
         assert!(
             !absent
                 .iter()
-                .any(|f| f.id == RedFlagId::BranchProtectionPermissionSuspected)
+                .any(|f| f.id == RedFlagId::BranchProtectionPermissionDenied)
         );
     }
 

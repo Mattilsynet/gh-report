@@ -34,11 +34,11 @@ expression: "&pages[\"admin.html\"]"
 
     <p class="meta">Read-only technical diagnostics for <code>TestOrg</code>. Technical issues total: <strong>8</strong>.</p>
 
-    <h2>Red Flags (5)</h2>
+    <h2>Red Flags (6)</h2>
 
     
     
-    <p class="red-flags-summary">[Critical 0 · High 4 · Medium 1]</p>
+    <p class="red-flags-summary">[Critical 0 · High 4 · Medium 2]</p>
     
     <div class="red-flag-card severity-high">
         <p class="red-flag-header">
@@ -102,6 +102,19 @@ expression: "&pages[\"admin.html\"]"
         <p>Fix: Verify the token has Repository administration: read (or classic repo scope) and retry collection.</p>
         
         <p class="meta">Affected: 1</p>
+        
+    </div>
+    
+    <div class="red-flag-card severity-medium">
+        <p class="red-flag-header">
+            <span class="status-dot status-unknown"></span>
+            <span class="red-flag-category">Credential</span>
+            <strong>Branch protection reads denied by permissions</strong>
+        </p>
+        <p>One or more repositories returned an explicit permission-denied response for branch protection; branch-protection posture for those repos is not observable.</p>
+        <p>Fix: Grant the token Repository administration: read (or classic repo scope) and retry collection.</p>
+        
+        <p class="meta">Affected: 3</p>
         
     </div>
     
