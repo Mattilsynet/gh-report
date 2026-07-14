@@ -1,29 +1,15 @@
-//! Smoke + API probe tests for the lib surface (Track 3.1).
+//! Smoke + API probe tests pinning the lib surface.
 //!
-//! Two purposes:
-//!   1. `run_default_mode_via_lib_api_returns_zero` — proves the
-//!      top-level entry-point `adr_fmt::run` is callable from a
-//!      library consumer (Phase 2 v2 C1 prerequisite for `adr-srv`).
-//!   2. `lib_api_modules_resolve` — compile-time probe that every
-//!      item in the Q2 public-API set resolves under its re-exported
-//!      path at the crate root. If any of these stop resolving, the
-//!      lib API contract has regressed.
+//! `run_default_mode_via_lib_api_returns_zero` proves `adr_fmt::run` is
+//! callable from a library consumer. `lib_api_modules_resolve` is a
+//! compile-time probe that every item in the Q2 public-API set (see bd
+//! adr-fmt-d7ao) resolves under its re-exported crate-root path.
 //!
-//! Q2 minimum set — see oracle bd adr-fmt-d7ao:
-//!   - `Config`, `LoadError`, `load_quiet`, `resolve_corpus_root`
-//!   - `ContainmentError`, `contained_join`, `contained_join_optional`
-//!   - `AdrId`, `AdrRecord`, `DomainDir`, `Tier`, `Status`,
-//!     `Relationship`, `RelVerb`, `parse_adr_id`
-//!   - `ParseOutcome`, `parse_domain`, `parse_stale`
-//!   - `Diagnostic`, `Severity`
+//! Modules `context`, `nav`, `output`, `refs`, `rules`, `guidelines` are
+//! private per CHE-0030 (Flat Public API via Private Modules); external
+//! consumers MUST NOT name those paths, so no probes exist for them.
 //!
-//! Modules `context`, `nav`, `output`, `refs`, `rules`, `guidelines`
-//! are private per CHE-0030 R1; their probes were dropped in commit
-//! "trim adr-fmt lib surface to CHE-0030 Q2 set" because external
-//! consumers MUST NOT name those paths.
-//!
-//! Binary regression coverage lives in `tests/integration.rs` (~84
-//! tests). These tests exist solely to pin the lib API contract.
+//! Binary regression coverage lives in `tests/integration.rs`.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
