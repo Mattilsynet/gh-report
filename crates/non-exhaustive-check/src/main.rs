@@ -196,6 +196,9 @@ fn collect_enums<'a>(items: &'a [syn::Item], out: &mut Vec<&'a syn::ItemEnum>) {
         match item {
             syn::Item::Enum(e) => out.push(e),
             syn::Item::Mod(m) => {
+                if m.attrs.iter().any(is_cfg_test) {
+                    continue;
+                }
                 if let Some((_, inner_items)) = &m.content {
                     collect_enums(inner_items, out);
                 }
@@ -207,6 +210,20 @@ fn collect_enums<'a>(items: &'a [syn::Item], out: &mut Vec<&'a syn::ItemEnum>) {
 
 fn attr_path_is(attr: &syn::Attribute, name: &str) -> bool {
     attr.path().is_ident(name)
+}
+
+fn is_cfg_test(attr: &syn::Attribute) -> bool {
+    if !attr_path_is(attr, "cfg") {
+        return false;
+    }
+    let mut found = false;
+    let _ = attr.parse_nested_meta(|meta| {
+        if meta.path.is_ident("test") {
+            found = true;
+        }
+        Ok(())
+    });
+    found
 }
 
 fn derive_idents(attr: &syn::Attribute) -> Vec<String> {
@@ -271,6 +288,26 @@ mod tests {
             }
         }
         panic!("test fixture must contain an enum");
+    }
+
+    fn collect_from(src: &str) -> usize {
+        let file = syn::parse_file(src).expect("test fixture must parse");
+        let mut out = Vec::new();
+        super::collect_enums(&file.items, &mut out);
+        out.len()
+    }
+
+    #[test]
+    fn skips_cfg_test_module_bodies() {
+        let src =
+            "#[cfg(test)] mod tests { #[derive(thiserror::Error)] pub enum TestOnlyError { A } }";
+        assert_eq!(collect_from(src), 0);
+    }
+
+    #[test]
+    fn collects_non_test_module_bodies() {
+        let src = "mod inner { #[derive(thiserror::Error)] pub enum InnerError { A } }";
+        assert_eq!(collect_from(src), 1);
     }
 
     #[test]
