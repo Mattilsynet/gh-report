@@ -8,25 +8,20 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// Filesystem-metadata evidence of a stale lock sentinel.
+/// Filesystem-metadata evidence of a stale lock sentinel, returned by
+/// [`stale_lock_evidence`] when `{store_dir}/.lock` exists.
 ///
-/// Returned by [`stale_lock_evidence`] when `{store_dir}/.lock` exists.
-/// Per CHE-0047:R5 (operational recovery runbooks), operators should
-/// record this evidence in the incident record *before* deleting the
-/// lock file, so the eventual postmortem can correlate the lock
-/// artefact with the `StoreLocked` error that triggered the runbook.
+/// Record this evidence in the incident record *before* deleting the
+/// lock file, so postmortem can correlate the artefact with the
+/// `StoreLocked` error that triggered the runbook (CHE-0047:R5).
 ///
-/// **Bound.** `flock(2)` does not portably expose the holder process's
-/// PID, so evidence is restricted to filesystem metadata that any
-/// operator could also reproduce via `stat` / `ls -la`. The value of
-/// capturing it in-process is to record it *at the moment of the
-/// `StoreLocked` error*, before clock drift or unrelated filesystem
-/// mutation can perturb the artefact.
+/// **Bound.** `flock(2)` does not portably expose the holder PID, so
+/// evidence is restricted to metadata reproducible via `stat` / `ls -la`.
+/// Capturing it in-process fixes the value *at the moment of the error*,
+/// before clock drift or unrelated mutation perturbs it.
 ///
-/// Cited from:
-/// - CHE-0043:R1 — the lock-acquisition mechanism that produces this
-///   artefact (`{store_dir}/.lock` advisory `flock`).
-/// - CHE-0047:R5 — the operational runbook this helper supports.
+/// Cited from CHE-0043:R1 (lock-acquisition mechanism producing this
+/// artefact) and CHE-0047:R5 (the runbook this helper supports).
 #[derive(Debug, Clone)]
 pub struct StaleLockEvidence {
     /// Absolute or relative path to the `.lock` sentinel file, as

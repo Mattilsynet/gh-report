@@ -1,43 +1,25 @@
 //! [`MergerArm`] trait: the per-aggregate command-handling shape that
 //! makes the merger aggregate-agnostic.
 //!
-//! Each consumer crate implements [`MergerArm`] for its aggregate's
-//! command type. The trait carries three pieces:
+//! Each consumer implements [`MergerArm`] for its aggregate's command
+//! type, supplying [`MergerArm::persist_mode`] (the persist
+//! strategy), [`MergerArm::handle`] (the pure load-then-handle step
+//! against the merger's [`Aggregate::apply`]-replayed state), and
+//! [`MergerArm::publish_label`] (the bus-failure log label).
 //!
-//! - [`MergerArm::persist_mode`] — for a given command, return the
-//!   persist strategy ([`PersistMode::Create`],
-//!   [`PersistMode::CreateOrAppend`], [`PersistMode::AppendStrict`]).
-//! - [`MergerArm::handle`] — the pure load-then-handle step. The
-//!   merger has already replayed the aggregate's prior envelopes
-//!   through [`Aggregate::apply`] and now hands the folded state to
-//!   the arm with the consumed command.
-//! - [`MergerArm::publish_label`] — the static label included in
-//!   bus-failure log records (per-command granularity matches the
-//!   gh-report convention: `"SweepStarted"`, `"RepoEvaluated"`, …).
+//! A trait, not an enum, because the merger cannot know any
+//! consumer's command type at compile time and type-erasure would
+//! defeat the single-aggregate compile-time guarantee; the consumer
+//! writes the exhaustive matcher inside its own `handle` impl per
+//! [CHE-0069:R2].
 //!
-//! ## Why a trait, not an enum
+//! [`MergerArm::Err`] must implement `From<StoreError>` so the merger
+//! can lift persist-side failures (load, create, append, concurrency
+//! conflict) into the arm's domain error shape uniformly; see
+//! [CHE-0069:R5].
 //!
-//! The merger crate cannot know any consumer's command enum at compile
-//! time, and a `Box<dyn Any>`-style erasure would defeat
-//! [CHE-0005:R1]'s single-aggregate compile-time guarantee. A trait
-//! parameterised on `A: Aggregate` keeps the dispatch monomorphic and
-//! lets the consumer write the exhaustive matcher inside its own
-//! [`handle`](MergerArm::handle) impl — exactly the
-//! [CHE-0017:R2] caller-writes-the-matcher pattern that
-//! [CHE-0051:R4]'s policy dispatch closure already follows.
-//!
-//! ## Error composition
-//!
-//! [`MergerArm::Err`] must be constructible from [`StoreError`] via a
-//! `From` bound so the merger can lift persist-side failures (load,
-//! create, append, concurrency conflict) into the arm's domain error
-//! shape uniformly. The caller therefore implements one
-//! `impl From<StoreError> for MyAggregateError` and the merger's
-//! reply channel returns `Result<(), MyAggregateError>` end-to-end.
-//!
-//! [CHE-0005:R1]: https://github.com/acje/solon/blob/main/docs/adr/cherry/CHE-0005-single-aggregate-design.md
-//! [CHE-0017:R2]: https://github.com/acje/solon/blob/main/docs/adr/cherry/CHE-0017-policy-output-static-type.md
-//! [CHE-0051:R4]: https://github.com/acje/solon/blob/main/docs/adr/cherry/CHE-0051-cherry-pit-agent-design.md
+//! [CHE-0069:R2]: https://github.com/acje/solon/blob/main/docs/adr/cherry/CHE-0069-cherry-pit-merger.md
+//! [CHE-0069:R5]: https://github.com/acje/solon/blob/main/docs/adr/cherry/CHE-0069-cherry-pit-merger.md
 //! [`StoreError`]: cherry_pit_core::StoreError
 //! [`Aggregate::apply`]: cherry_pit_core::Aggregate::apply
 
@@ -46,32 +28,24 @@ use cherry_pit_core::{Aggregate, StoreError};
 /// Per-command persist strategy returned by
 /// [`MergerArm::persist_mode`].
 ///
-/// The three variants correspond to the three triad shapes lifted
-/// verbatim from the original gh-report Merger arms:
+/// The three variants correspond to the three persist shapes fixed
+/// in [CHE-0069:R3]:
 ///
-/// - [`PersistMode::Create`] — fresh aggregate per call (write-once
-///   degenerate domains such as webhook ingest per [CHE-0054:R3]).
-///   No domain-key lookup, no fold; the merger calls
-///   [`EventStore::create`] directly with the events produced by
-///   [`MergerArm::handle`] against a default-constructed aggregate
+/// - [`PersistMode::Create`] — fresh aggregate per call, no
+///   domain-key lookup or fold; the merger calls
+///   [`EventStore::create`] directly against a default-constructed
 ///   state.
 /// - [`PersistMode::CreateOrAppend`] — lazy create-or-append by
-///   domain key (repository evaluation per [CHE-0054:R2]). The
-///   merger looks the key up in the routing index, folds prior
-///   envelopes if any, calls [`MergerArm::handle`], then either
-///   [`EventStore::create`]s + `or_insert`s the assigned id
-///   (first-reference create-path) or [`EventStore::append`]s with
-///   the caller-tracked `expected_sequence` (subsequent-reference
-///   append-path).
-/// - [`PersistMode::AppendStrict`] — strict append against an
-///   existing aggregate (run-lifecycle commands after
-///   `SweepStarted`, per [CHE-0054:R1]). The merger requires a hit
-///   in the routing index; a miss returns
+///   domain key: the merger looks the key up in the routing index,
+///   folds prior envelopes if any, calls [`MergerArm::handle`], then
+///   either [`EventStore::create`]s (first reference) or
+///   [`EventStore::append`]s against the tracked `expected_sequence`
+///   (subsequent references).
+/// - [`PersistMode::AppendStrict`] — strict append requiring an
+///   existing routing-index entry; a miss returns
 ///   [`MergerArm::missing_key_error`] without touching the store.
 ///
-/// [CHE-0054:R1]: https://github.com/acje/solon/blob/main/docs/adr/cherry/CHE-0054-gh-report-aggregate-decomposition.md
-/// [CHE-0054:R2]: https://github.com/acje/solon/blob/main/docs/adr/cherry/CHE-0054-gh-report-aggregate-decomposition.md
-/// [CHE-0054:R3]: https://github.com/acje/solon/blob/main/docs/adr/cherry/CHE-0054-gh-report-aggregate-decomposition.md
+/// [CHE-0069:R3]: https://github.com/acje/solon/blob/main/docs/adr/cherry/CHE-0069-cherry-pit-merger.md
 /// [`EventStore::create`]: cherry_pit_core::EventStore::create
 /// [`EventStore::append`]: cherry_pit_core::EventStore::append
 #[derive(Debug, Clone, PartialEq, Eq)]

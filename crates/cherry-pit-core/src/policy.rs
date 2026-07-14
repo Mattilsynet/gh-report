@@ -1,26 +1,19 @@
 use crate::event::{DomainEvent, EventEnvelope};
 
-/// A policy reacts to domain events by producing commands.
-/// (CHE-0017: policy output static type; CHE-0041: idempotency strategy.)
+/// A policy reacts to domain events by producing commands, driving
+/// cross-aggregate and cross-context coordination. Eventually consistent
+/// by nature: it observes what happened and decides what should happen
+/// next.
 ///
-/// Policies are the mechanism for cross-aggregate and cross-context
-/// coordination. They observe what happened (events) and decide what
-/// should happen next (commands). Policies are eventually consistent
-/// by nature.
+/// `Output` is a static associated type per CHE-0017 R1
+/// (`Output: Send + Sync + 'static`, not `Box<dyn AnyCommand>`), letting
+/// the compiler verify exhaustive dispatch. Policies receive
+/// `EventEnvelope` rather than raw events for the metadata (timestamp,
+/// `aggregate_id`) needed to target commands correctly.
 ///
-/// # Design rationale
-///
-/// - `Output` is a static associated type, not `Box<dyn AnyCommand>`.
-///   The agent defines an enum of possible command outputs, and the
-///   compiler verifies exhaustive matching when the infrastructure
-///   dispatches them. (CHE-0017 R1: `Output: Send + Sync + 'static`.)
-/// - Policies receive `EventEnvelope`, not raw events — they often
-///   need metadata (timestamp, `aggregate_id`) to construct correctly
-///   targeted commands.
-/// - Idempotency requirement — since event delivery may be
-///   at-least-once (especially over NATS), policies must tolerate
-///   replays. `react` must be pure: same envelope ⇒ same `Vec<Output>`.
-///   (CHE-0041 R2.)
+/// `react` must be idempotent per CHE-0041 R2: delivery may be
+/// at-least-once, so the same envelope must always produce the same
+/// `Vec<Output>`.
 ///
 /// # Examples
 ///

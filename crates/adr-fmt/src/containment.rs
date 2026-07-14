@@ -1,24 +1,9 @@
-//! Path containment for config-supplied directory strings.
+//! Strict path containment for config-supplied directory strings.
 //!
-//! `adr-fmt` joins relative paths from `adr-fmt.toml` (corpus root,
-//! domain directories, stale directory) to a parent directory before
-//! reading files. A malicious or buggy config with an absolute path,
-//! a parent traversal (`..`), or a symlink escape could induce the
-//! tool to read arbitrary files outside the intended boundary.
-//!
-//! This module provides [`contained_join`] which performs:
-//!
-//! 1. **Lexical checks** on the segment string: reject absolute
-//!    paths and any segment containing `..` or current-dir (`.`)
-//!    components beyond the start.
-//! 2. **Canonical containment**: after joining, canonicalize both
-//!    the ADR root and the joined target. Reject if the canonical
-//!    target is not a descendant of the canonical root. This
-//!    catches symlinks that escape the corpus.
-//!
-//! Errors are surfaced as [`ContainmentError`] with the offending
-//! segment and a reason suitable for inclusion in user-facing
-//! error messages.
+//! [`contained_join`] validates lexically (reject absolute paths and
+//! `..` traversal) then canonically (reject symlink escapes outside
+//! the ADR root), per AFM-0016 R1–R3. Failures surface as
+//! [`ContainmentError`] with a user-facing reason.
 
 use std::fmt;
 use std::path::{Component, Path, PathBuf};

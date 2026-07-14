@@ -1,25 +1,22 @@
 //! Dead-letter sink trait + record type per CHE-0051:R7.
 //!
-//! Per CHE-0024:R5 + CHE-0040:R3 the record carries: `event_id`,
+//! Record fields per CHE-0024:R5 + CHE-0040:R3: `event_id`,
 //! `correlation_id`, `causation_id`, `error_category`, `output_type`,
-//! `policy_identity`. This sub-mission (S5) defines the trait + record
-//! struct inline so the policy-output dispatcher can compile and route
-//! `Terminal` errors. S6 will add the `TracingDeadLetterSink` default
-//! impl, the golden-file schema test, and the tracing emission test.
+//! `policy_identity`. Defined here (S5) so the policy-output dispatcher
+//! can compile and route `Terminal` errors; S6 adds the
+//! `TracingDeadLetterSink` default impl plus golden-file and tracing
+//! emission tests.
 //!
 //! ## C1 boundary note
 //!
-//! Like the closure-handler shape on `InProcessEventBus` (linus R1
-//! ruling at `event_bus.rs:22-37`), `DeadLetterSink` is a
-//! **user-supplied infrastructure adapter trait**, not an
-//! aggregate-bound infra port from `cherry-pit-core`. CHE-0005:R1
-//! forbids `Box<dyn>` over `EventStore`, `EventBus`, `CommandBus`,
-//! `CommandGateway`, `Policy`, `Projection`. `DeadLetterSink` lives
-//! on the agent side of the boundary and exists precisely so consumers
-//! can swap in durable backends without rebuilding `App`. Storing the
-//! sink as a generic `D: DeadLetterSink` parameter on `App` keeps the
-//! type discipline; the trait itself does not need to be object-safe
-//! for the v0.1 wiring.
+//! `DeadLetterSink` is a **user-supplied infrastructure adapter trait**
+//! (same shape as the closure handler on `InProcessEventBus`, linus R1
+//! at `event_bus.rs:22-37`), not an aggregate-bound infra port. CHE-0005:R1
+//! bans `Box<dyn>` over core ports (`EventStore`, `EventBus`, `CommandBus`,
+//! `CommandGateway`, `Policy`, `Projection`); this trait sits outside that
+//! set so consumers can swap durable backends without rebuilding `App`.
+//! `App` takes it as a generic `D: DeadLetterSink`; object-safety is not
+//! required for v0.1.
 
 use std::error::Error;
 
@@ -28,23 +25,19 @@ use cherry_pit_core::ErrorCategory;
 /// Diagnostic record handed to a [`DeadLetterSink`] when a policy
 /// output's dispatch fails terminally.
 ///
-/// Field set verbatim from CHE-0024:R5 + CHE-0040:R3 + CHE-0051:R7:
-/// `event_id`, `correlation_id`, `causation_id`, `error_category`,
-/// `output_type`, `policy_identity`. An additional `error_message`
-/// field carries the stringified error for operator diagnosis — this
-/// is documentation, not a stable schema commitment, and S6's
-/// golden-file test will lock the schema.
+/// Fields per CHE-0024:R5 + CHE-0040:R3 + CHE-0051:R7: `event_id`,
+/// `correlation_id`, `causation_id`, `error_category`, `output_type`,
+/// `policy_identity`, plus `error_message` (stringified error for
+/// operator diagnosis; schema-unstable until S6's golden-file test
+/// locks it).
 ///
-/// All UUID fields are `Option<_>` to mirror `EventEnvelope`'s
-/// nullable correlation/causation IDs (CHE-0039 — user-initiated
-/// commands have no correlation context). `event_id` is always
-/// present because every persisted event has one (CHE-0033:R1).
+/// UUID fields are `Option<_>` to mirror `EventEnvelope`'s nullable
+/// correlation/causation IDs (CHE-0039); `event_id` is always present
+/// (CHE-0033:R1).
 ///
-/// Marked `#[non_exhaustive]` per CHE-0021:R1: future fields (e.g.
-/// retry attempt count, sink-supplied trace IDs) may be added
-/// without a major-version bump. Construct via [`DeadLetterRecord::new`]
-/// rather than struct literal so downstream consumers are insulated
-/// from additive changes.
+/// `#[non_exhaustive]` per CHE-0021:R1 — future fields may be added
+/// without a major-version bump. Construct via
+/// [`DeadLetterRecord::new`], not a struct literal.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct DeadLetterRecord {
