@@ -1,9 +1,9 @@
 //! ADR template and link-integrity validator — library surface.
 //!
-//! This crate ships as both a binary (`adr-fmt`) and a library (`adr_fmt`).
-//! The binary is a thin wrapper over [`run`] so future consumers
-//! (e.g. `adr-srv`, Phase 2 v2 C1) can re-use the parsing, linting,
-//! and navigation surface without spawning a subprocess.
+//! Ships as both a binary (`adr-fmt`) and a library (`adr_fmt`); the
+//! binary is a thin wrapper over [`run`] so downstream consumers
+//! (e.g. `adr-srv`) can reuse parsing, linting, and navigation
+//! without spawning a subprocess.
 //!
 //! # Modes
 //!
@@ -15,20 +15,16 @@
 //! adr-fmt --tree [DOMAIN]     # domain tree overview
 //! ```
 //!
-//! The corpus location is discovered by walking up from the current
-//! working directory until an `adr-fmt.toml` with a valid `[corpus]`
-//! table is found. There is no CLI override — discovery is the SSOT
-//! per AFM-0001.
+//! Corpus discovery walks up from CWD for an `adr-fmt.toml` with a
+//! valid `[corpus]` table; no CLI override (SSOT per AFM-0001).
 //!
-//! Exit codes:
-//!   0 — Analysis complete (warnings only, or clean)
-//!   1 — Infrastructure error or lint errors detected
+//! Exit codes: `0` — analysis complete (warnings only, or clean);
+//! `1` — infrastructure error or lint errors detected.
 //!
-//! The CLI surface is frozen for v0.1 per AFM-0001. The library API
-//! follows CHE-0030 R1: modules are private; only the minimum set
-//! of items needed by downstream consumers (`adr-srv` per Phase 2 v2 C1)
-//! is re-exported via a flat `pub use` block. Oracle Q2 set: see
-//! bd adr-fmt-d7ao.
+//! CLI surface frozen for v0.1 per AFM-0001. Library API follows
+//! AFM-0026 / CHE-0030: modules private, minimum re-export set for
+//! `adr-srv` via a flat `pub use` block (oracle summary bd
+//! `adr-fmt-d7ao`).
 
 #![forbid(unsafe_code)]
 
@@ -253,45 +249,23 @@ fn scan_corpus(
     })
 }
 
-/// Walk up from CWD looking for `adr-fmt.toml` with a structurally
-/// valid `[corpus]` table.
+/// Walk up from CWD for `adr-fmt.toml` with a structurally valid
+/// `[corpus]` table. See [`try_marker`] for per-marker validation.
 ///
-/// Termination: returns the first ancestor directory whose
-/// `adr-fmt.toml` parses, has `[corpus] root = "..."`, the resolved
-/// corpus root exists as a directory, and at least one configured
-/// domain directory either resolves cleanly to an existing path
-/// (containment-clean and on disk).
+/// A malformed TOML, missing `[corpus]` table, or containment
+/// violation is skipped with a `note:` to stderr; walk-up continues
+/// so one stray marker cannot mask a valid parent. An unreadable
+/// existing `adr-fmt.toml` is a hard error (`Err(msg)`) — skipping
+/// it would defeat the SSOT intent.
 ///
-/// **Skipping:** an ancestor with a malformed TOML, a missing
-/// `[corpus]` table, no existing configured domain, or any
-/// containment violation in `[corpus] root` / `[[domains]].directory`
-/// is treated as a stray and skipped with a single-line `note:` to
-/// stderr; walk-up continues so a stray cannot mask a valid parent.
+/// CWD is canonicalized once before the loop (handles symlinked
+/// CWDs, e.g. macOS `/var` → `/private/var`); the returned marker
+/// directory is also canonical.
 ///
-/// **Hard errors during walk-up** (NOT skipped): an `adr-fmt.toml`
-/// that exists but cannot be read (permission denied, IO error)
-/// aborts discovery and surfaces the error, since silently skipping
-/// a marker the user clearly intended would defeat the SSOT.
-///
-/// **CWD canonicalization:** the starting CWD is canonicalized once
-/// before the loop so a CWD reached via symlinks (e.g. macOS
-/// `/var → /private/var`) walks up through the resolved path. The
-/// returned marker directory is also canonical.
-///
-/// **Platform notes:** walk-up uses `Path::parent()`, inheriting
-/// Rust's path semantics. On Unix this terminates cleanly at `/`.
-/// On Windows, `parent()` of a UNC root or verbatim prefix returns
-/// `None`, also terminating. Symlinked CWDs and symlinked marker
-/// files are accepted (file resolution follows symlinks).
-///
-/// Returns `Ok(None)` if no valid marker is found before reaching
-/// the filesystem root, or if `getcwd` fails. Returns `Err(msg)` if
-/// a marker file exists but cannot be read (IO error during walk-up);
-/// callers at the binary edge map this to `eprintln! + return 1`,
-/// preserving pre-T2-lift observable behaviour while keeping the
-/// library free of `process::exit` (lift per oracle bd adr-fmt-d7ao
-/// T2; AFM-0001 R1 governs the *binary* exit-code contract, not the
-/// library).
+/// `Ok(None)` if no valid marker is found, or `getcwd` fails.
+/// Callers at the binary edge map `Err` to `eprintln! + return 1`
+/// (lift per oracle bd `adr-fmt-d7ao` T2; AFM-0001:R1 governs the
+/// binary's contract, not the library).
 fn discover_marker() -> Result<Option<(PathBuf, Config)>, String> {
     let Ok(cwd) = std::env::current_dir() else {
         return Ok(None);
@@ -332,40 +306,24 @@ enum TryMarkerError {
     Io(String),
 }
 
-/// Try to load a marker directory's `adr-fmt.toml` and validate that
-/// the resolved corpus root contains at least one configured domain.
+/// Load `marker_dir`'s `adr-fmt.toml`; validate the corpus root
+/// has at least one configured domain.
 ///
-/// Returns `Ok(Some)` on full structural validity. Returns `Ok(None)`
-/// if the config is well-formed but unfit (no `[corpus]` table,
-/// corpus root missing on disk, or no configured domain that is
-/// either present-on-disk or *intentionally* present-with-violation).
-/// Returns `Err(Parse)` if the TOML itself fails to parse; the
-/// caller emits a note and continues. Returns `Err(Io)` if the file
-/// exists but cannot be read; the caller aborts.
+/// `Ok(Some)` on full validity; `Ok(None)` if well-formed but unfit
+/// (no `[corpus]` table, missing corpus root, or no domain resolves
+/// or intentionally violates containment — see **Marker-claim
+/// rule**). `Err(Parse)` on TOML parse failure (caller notes and
+/// continues); `Err(Io)` if unreadable, including a TOCTOU race
+/// where the file vanishes between the caller's check and this read.
 ///
-/// **TOCTOU note:** the caller checks `candidate.is_file()` before
-/// invoking `try_marker`, but the file may be unlinked or chmod'd
-/// between that check and `read_to_string`. A vanished marker maps
-/// to `Err(Io)` and aborts walk-up — defensible since the file did
-/// exist at the discovery moment, and silent skipping would mask
-/// the user's clear intent.
-///
-/// **Marker-claim rule.** A marker is *claimed* (selected by walk-up)
-/// when its corpus root resolves to an existing directory AND at
-/// least one configured domain either:
-///   1. resolves cleanly to an existing directory on disk, OR
-///   2. raises a containment violation (absolute path, `..`,
-///      symlink escape).
-///
-/// Case (2) is deliberate: it surfaces the violation to the user
-/// downstream as an infrastructure error per AFM-0003 R1 rather
-/// than silently walking past. The trade-off is a known
-/// **masking footgun**: a stray `adr-fmt.toml` deeper in the tree,
-/// whose corpus root happens to exist *and* whose only domain has
-/// a violating directory, will mask a valid parent marker. Pinned
-/// by `stray_marker_with_violating_domain_masks_parent` in tests.
-/// The footgun is mitigated by the corpus-root-must-exist precheck
-/// — a fully bogus stray is skipped without claiming.
+/// **Marker-claim rule.** Claimed when the corpus root exists and
+/// a domain resolves to an existing directory, or raises a
+/// containment violation (surfaced downstream per AFM-0003:R1). A
+/// stray marker whose root exists and whose only domain violates
+/// containment can mask a
+/// valid parent — mitigated by the corpus-root-must-exist precheck.
+/// Pinned by
+/// `stray_marker_with_violating_domain_masks_parent`.
 fn try_marker(marker_dir: &Path) -> Result<Option<(PathBuf, Config)>, TryMarkerError> {
     let config = config::load_quiet(marker_dir).map_err(|e| match e {
         config::LoadError::Io(m) => TryMarkerError::Io(m),
