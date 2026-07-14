@@ -68,7 +68,8 @@
     <h2>Orphans by Team</h2>
     <p class="meta">Orphan repos attributed to a team via its last committer's team membership (B1 roster).</p>
     {% for group in vm.by_team %}
-    <h3><a href="owners/{{ group.slug }}.html" title="{{ group.team }}">{{ group.team_short }}</a> ({{ group.rows.len() }})</h3>
+    <details>
+        <summary><a href="owners/{{ group.slug }}.html" title="{{ group.team }}">{{ group.team_short }}</a> ({{ group.rows.len() }})</summary>
     <div class="table-wrapper">
         <table class="data-table" data-sortable>
             <thead>
@@ -94,6 +95,7 @@
             </tbody>
         </table>
     </div>
+    </details>
     {% endfor %}
     {% endif %}
 

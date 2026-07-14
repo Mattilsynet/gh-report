@@ -5,7 +5,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{{ vm.organization }} GitHub Security Posture Overview</title>
+    <title>{{ vm.organization }} GitHub Governance Overview</title>
     <link rel="stylesheet" href="style.css">
     <script src="ws.js" defer></script>
     <script type="module" src="sort-init.js"></script>
@@ -16,7 +16,7 @@
 
     {% include "partials/nav.html" %}
 
-    <h1>{{ vm.organization }} GitHub Security Posture Overview</h1>
+    <h1>{{ vm.organization }} GitHub Governance Overview</h1>
 
     <div class="meta">
         <p><strong>Date:</strong> {{ vm.date_time }} · <strong>Run:</strong> {{ vm.run_id }} · <strong>Scope:</strong> {{ vm.total_all_repos }} total · {{ vm.total_repos }} non-archived · {{ vm.archived_repos }} archived repositories in
@@ -25,8 +25,8 @@
 
     <h2>Summary</h2>
 
-    <p>This report provides an executive snapshot of how consistently core repository security controls
-        are applied across {{ vm.total_repos }} non-archived repositories in <code>{{ vm.organization }}</code>
+    <p>This report provides an overview of how consistently core repository security controls
+        are applied across {{ vm.total_all_repos }} repositories in <code>{{ vm.organization }}</code>
         GitHub organization.</p>
 
     <h3>Observability Metrics</h3>

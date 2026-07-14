@@ -1444,7 +1444,7 @@ mod tests {
         let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
         let html = &pages["report.html"];
 
-        assert!(html.contains("TestOrg GitHub Security Posture Overview"));
+        assert!(html.contains("TestOrg GitHub Governance Overview"));
         assert!(html.contains("<code>TestOrg</code>"));
     }
 

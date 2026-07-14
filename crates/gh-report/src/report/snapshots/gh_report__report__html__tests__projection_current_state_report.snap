@@ -8,7 +8,7 @@ expression: "&pages[\"report.html\"]"
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>TestOrg GitHub Security Posture Overview</title>
+    <title>TestOrg GitHub Governance Overview</title>
     <link rel="stylesheet" href="style.css">
     <script src="ws.js" defer></script>
     <script type="module" src="sort-init.js"></script>
@@ -26,7 +26,7 @@ expression: "&pages[\"report.html\"]"
     <a href="admin.html" class="admin-link">Admin</a>
 </nav>
 
-    <h1>TestOrg GitHub Security Posture Overview</h1>
+    <h1>TestOrg GitHub Governance Overview</h1>
 
     <div class="meta">
         <p><strong>Date:</strong> 2026-04-09 12:00 UTC · <strong>Run:</strong> test-run-id · <strong>Scope:</strong> 1 total · 1 non-archived · 0 archived repositories in
@@ -35,8 +35,8 @@ expression: "&pages[\"report.html\"]"
 
     <h2>Summary</h2>
 
-    <p>This report provides an executive snapshot of how consistently core repository security controls
-        are applied across 1 non-archived repositories in <code>TestOrg</code>
+    <p>This report provides an overview of how consistently core repository security controls
+        are applied across 1 repositories in <code>TestOrg</code>
         GitHub organization.</p>
 
     <h3>Observability Metrics</h3>
