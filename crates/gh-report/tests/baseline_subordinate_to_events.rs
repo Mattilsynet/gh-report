@@ -2,37 +2,28 @@
 //!
 //! ## Background
 //!
-//! Commit `63236ac` ("gh-report: retire baseline.msgpack + checkpoint
-//! persistence; replay-as-rebuild (δ.3c-ii)") removed the on-disk
-//! `baseline.msgpack` snapshot and the per-run `*.checkpoint`
-//! persistence surface from `crates/gh-report/src/infra/baseline.rs`
-//! and `crates/gh-report/src/infra/checkpoint.rs`. The doctrine is
-//! recorded in CHE-0048 line 24 (gh-report replay-as-rebuild
-//! exemption) and CHE-0022:R6 (no derived state in event payloads).
+//! A prior commit ("retire baseline.msgpack + checkpoint
+//! persistence; replay-as-rebuild") removed the on-disk
+//! `baseline.msgpack` snapshot and per-run `*.checkpoint`
+//! persistence from `infra/baseline.rs` and `checkpoint.rs`. Per
+//! CHE-0048 line 24 (replay-as-rebuild exemption) and CHE-0022:R6
+//! (no derived state in event payloads).
 //!
-//! Post-retirement, the event log is the **only** durable boot
-//! source; aggregate state is rebuilt on every `AppState`
-//! construction via [`AppState::snapshot_fast_path_init`] +
-//! `bootstrap_replay_state` (landed as `bootstrap_replay_indices`
-//! in M3 of `phase2-v2-completion-1779400000`; renamed +
-//! scope-expanded to also fold `projection_state` in mission
-//! `cpp-r-b-r-c` per bd `adr-fmt-5rwbu`).
+//! Post-retirement, the event log is the only durable boot source;
+//! aggregate state rebuilds on every `AppState` construction via
+//! [`AppState::snapshot_fast_path_init`] + `bootstrap_replay_state`.
 //!
 //! ## What this test asserts
 //!
-//! Any future commit re-introducing the retired write-path symbols
-//! would silently invalidate the Memory-Image bootstrap invariant
-//! (baseline file outliving the event log would shadow replay
-//! results). The grep-based assertions below pin the retired names
-//! as **absent** from the live `crates/gh-report/src/infra/` tree.
+//! Any commit re-introducing the retired write-path symbols would
+//! silently invalidate the Memory-Image bootstrap invariant. The
+//! grep-based assertions below pin the retired names as **absent**
+//! from the live `infra/` tree.
 //!
 //! ## How this would catch a regression
 //!
-//! Temporarily inserting `pub fn save_baseline() {}` into
-//! `infra/baseline.rs` makes [`save_baseline_is_retired`] fail with a
-//! message naming the offending file and line. This was confirmed by
-//! running the test against a synthetic re-introduction during M3
-//! TDD validation (see mission verify report).
+//! Inserting `pub fn save_baseline() {}` into `infra/baseline.rs`
+//! makes [`save_baseline_is_retired`] fail, naming file and line.
 
 use std::path::PathBuf;
 

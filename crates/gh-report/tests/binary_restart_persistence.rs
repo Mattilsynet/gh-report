@@ -1,27 +1,23 @@
-//! Q.4 — cross-process persistence smoke.
+//! Cross-process persistence smoke.
 //!
-//! Spawns the `gh-report` binary as a child process to validate the
-//! durability claim that an `EventEnvelope<DomainEvent>` written and
-//! fsync'd in run N is recoverable in run N+1 across process
-//! boundaries (CHE-0024 persist-then-publish; pardosa-eventstore
-//! Path B frame layer).
+//! Spawns the `gh-report` binary as a child process to validate that
+//! an `EventEnvelope<DomainEvent>` written and fsync'd in run N is
+//! recoverable in run N+1 across process boundaries (CHE-0024
+//! persist-then-publish; pardosa-eventstore Path B frame layer).
 //!
-//! In-process integration tests (`tests/bootstrap_replay.rs`) cover
-//! the projection-replay logic but cannot falsify OS-level fsync /
-//! page-cache ordering bugs because both seed and read happen inside
-//! the same process. This smoke seeds via direct `pardosa-eventstore`
-//! API in one Tokio runtime, drops the store handle (releases
-//! `RunLock`), then `assert_cmd::Command::cargo_bin` spawns a fresh
-//! process running `gh-report --dump-baseline`, which executes the
-//! full `AppState::with_stores` → `snapshot_fast_path_init` →
-//! `dump_baseline_json` chain. The kernel's writeback cache may have
-//! flushed (or not) between the two; the test exercises whichever
-//! path wins on the host.
+//! In-process tests (`bootstrap_replay.rs`) cover projection-replay
+//! logic but cannot falsify OS-level fsync/page-cache ordering bugs,
+//! since seed and read share a process. This smoke seeds via direct
+//! `pardosa-eventstore` API in one Tokio runtime, drops the store
+//! handle (releasing `RunLock`), then spawns a fresh process running
+//! `gh-report --dump-baseline`, exercising the full
+//! `AppState::with_stores` → `snapshot_fast_path_init` →
+//! `dump_baseline_json` chain.
 //!
 //! Assertion shape is intentionally coarse: exit 0 + parseable
-//! `Baseline` JSON. The point is to falsify "binary boots cleanly
-//! against a previously-written store" — not to reverify projection
-//! semantics, which `bootstrap_replay` already covers in-process.
+//! `Baseline` JSON — falsifying "binary boots cleanly against a
+//! previously-written store", not projection semantics already
+//! covered by `bootstrap_replay`.
 
 use gh_report::app::state::EventStoreImpl;
 use gh_report::event::DomainEvent;

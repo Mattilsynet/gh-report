@@ -1,47 +1,31 @@
-//! Memory-Image bootstrap regression test (Track 7.5, M3).
+//! Memory-Image bootstrap regression test.
 //!
-//! Asserts that the four routing indices on `AppState` (`runs_by_key`,
+//! Asserts the four routing indices on `AppState` (`runs_by_key`,
 //! `repos_by_key`, `deliveries_by_id`, `next_seq`) populate from
-//! event-log replay at boot — not from in-process writes alone.
+//! replay at boot, not from in-process writes alone.
 //!
-//! ## Why this test exists (CHE-0022:R6 + CHE-0048 line-24 exemption + CHE-0054:R5)
+//! ## Why (CHE-0022:R6 + CHE-0048 line-24 + CHE-0073:R5)
 //!
-//! Routing indices are derived state (CHE-0022:R6 forbids derived state
-//! in event payloads). gh-report retires `baseline.msgpack` (commit
-//! `63236ac`) and rebuilds in-memory routing state by full event-log
-//! replay at `AppState` construction (CHE-0048 line-24 exemption +
-//! CHE-0054:R5 amended in this mission: lazy → eager).
+//! Routing indices are derived state (CHE-0022:R6). gh-report
+//! rebuilds routing state by full replay at `AppState` construction
+//! (CHE-0048 line-24 exemption; routing per CHE-0073:R5, superseding
+//! CHE-0054).
 //!
-//! ## Failure shape we are guarding against
+//! ## Failure shape guarded against
 //!
-//! Pre-fix: `snapshot_fast_path_init` populates only `projection_state`
-//! and `projection_checkpoint_seq`; the four `*_by_*` / `next_seq` maps
-//! stay empty (`HashMap::new()` at construction in `state.rs:417-420`,
-//! `:521-524`, `:758-761`); any post-restart command targeting a
-//! known aggregate would `RoutingMiss` instead of resolving the
-//! aggregate id.
+//! Pre-fix: `snapshot_fast_path_init` populates only
+//! `projection_state`/`projection_checkpoint_seq`; the four
+//! `*_by_*`/`next_seq` maps stay empty, so a post-restart command
+//! would `RoutingMiss` instead of resolving.
 //!
-//! Post-fix: those maps are populated by enumerating
-//! `InMemoryEventStore::list_aggregates()` (via the
-//! [`cherry_pit_core::ListableEventStore`] trait) and folding each
-//! aggregate's envelopes into the index that matches its variant.
-//!
-//! ## Routing rules verified
-//!
-//! | Variant                | Index populated        | Key source             |
-//! |------------------------|------------------------|------------------------|
-//! | `SweepStarted`         | `runs_by_key`          | `batch_id`             |
-//! | `RepoEvaluated`        | `repos_by_key`         | `domain_key`           |
-//! | `WebhookReceived`      | (see note below)       | n/a — see CHE-0054:R5  |
-//! | (terminal/progress)    | (no new index entry)   | n/a                    |
-//!
-//! Note on `WebhookReceived`: the event payload does not carry the
-//! `delivery_id` (it lives only on the `RecordDelivery` command).
-//! `deliveries_by_id` therefore cannot be rebuilt from the event
-//! stream and remains lazy-populated per the amended CHE-0054:R5
-//! ("lazy fallback retained only for indices whose routing key is
-//! not on the wire"). `next_seq`, however, is rebuildable because
-//! the envelope itself carries `sequence`.
+//! Post-fix: those maps populate by enumerating
+//! `InMemoryEventStore::list_aggregates()` (via
+//! [`cherry_pit_core::ListableEventStore`]) and folding envelopes
+//! into the matching index: `SweepStarted` → `runs_by_key`
+//! (`batch_id`), `RepoEvaluated` → `repos_by_key` (`domain_key`).
+//! `WebhookReceived` lacks `delivery_id` on the wire, so
+//! `deliveries_by_id` stays lazy per CHE-0073:R5; `next_seq`
+//! rebuilds from the envelope's `sequence`.
 
 use gh_report::app::state::AppState;
 use gh_report::domain::checks::{
@@ -89,32 +73,25 @@ async fn bootstrap_replay_populates_routing_indices() {
     );
 }
 
-/// At HEAD (pre-fix), `AppState::snapshot_fast_path_init` folds events
-/// into `projection_state` only for `ORG_GOVERNANCE_AGGREGATE_ID` (=1).
-/// `RepoEvaluated` envelopes are emitted by per-repo aggregates on
-/// `AggregateId(2..)` and are never folded — `projection_state.
-/// repositories` stays empty even though `bootstrap_replay_state`
-/// (renamed from `bootstrap_replay_indices` in mission `cpp-r-b-r-c`)
-/// successfully walked the same envelopes (and populated `repos_by_key`).
+/// At HEAD (pre-fix), `AppState::snapshot_fast_path_init` folds
+/// events into `projection_state` only for
+/// `ORG_GOVERNANCE_AGGREGATE_ID` (=1). `RepoEvaluated` envelopes are
+/// emitted by per-repo aggregates on `AggregateId(2..)` and are
+/// never folded — `projection_state.repositories` stays empty even
+/// though `bootstrap_replay_state` walked the same envelopes.
 ///
-/// Test shape: seed one `SweepStarted` on a Run aggregate (gets
-/// `AggregateId(1)` — same id the projection-fold currently processes,
-/// but Run events do not populate `repositories`) and one
+/// Seeds one `SweepStarted` on a Run aggregate (`AggregateId(1)`,
+/// processed but doesn't populate `repositories`) and one
 /// `RepoEvaluated` (with non-`None` `evidence`) on a Repo aggregate
-/// (gets `AggregateId(2)` — the id the projection-fold currently
-/// skips). Drive `snapshot_fast_path_init`, then read
-/// `projection_state` and expect the repo entry present. Pre-fix
-/// this fails because the read-model is empty; post-fix it passes
-/// because the unified replay folds every aggregate's envelopes
-/// into `projection_state`.
+/// (`AggregateId(2)`, currently skipped). Drives
+/// `snapshot_fast_path_init`, then expects the repo entry in
+/// `projection_state`. Pre-fix fails (read-model empty); post-fix
+/// passes (unified replay folds every aggregate).
 ///
-/// Does NOT cross a process or `with_stores` boundary — the
-/// in-memory store substitute would drop state. The bug under test
-/// is in the boot-replay LOGIC, not in persistence; the in-process
-/// test exercises the relevant code path directly via the same
-/// `AppState` handle (seed → init → assert) by reaching into
-/// `app_state.event_store` (a `pub` field) to seed the same store
-/// the init path will read.
+/// Does not cross a process or `with_stores` boundary — the
+/// in-memory substitute would drop state. The bug is in boot-replay
+/// logic, not persistence; this test seeds `app_state.event_store`
+/// (a `pub` field) directly, exercising the path in-process.
 #[tokio::test]
 async fn restart_rehydrates_projection_state() {
     let tmp = tempfile::tempdir().expect("tempdir");

@@ -1,31 +1,24 @@
 //! Warm-start regression: archived public repos with security-policy
-//! evidence survive event-log replay and are reflected correctly in
-//! the cached aggregate metrics surfaced from the projection state.
+//! evidence survive event-log replay and reflect correctly in cached
+//! aggregate metrics from projection state.
 //!
-//! Guards the two-axis invariant (see
-//! `crates/gh-report/src/aggregate/metrics.rs` `aggregate_metrics`
-//! and `build_collection_statistics` doc-comments):
+//! Guards the two-axis invariant (see `aggregate_metrics` and
+//! `build_collection_statistics` in `aggregate/metrics.rs`):
 //!
 //! - `security_policy_coverage` denominator counts **all public**
-//!   repos, including archived — so an archived public repo with
-//!   a published policy stays visible on the policy-surface axis.
-//! - `branch_protection_coverage` (and the other "active-only"
-//!   coverages) denominator counts **non-archived** repos only —
-//!   so archived entries do not dilute operational health.
+//!   repos, including archived.
+//! - `branch_protection_coverage` (and other "active-only"
+//!   coverages) denominator counts **non-archived** repos only.
 //! - `CollectionStatistics::archived_repos` is non-zero when the
 //!   replayed projection state contains an archived entry.
 //!
-//! The crate has unit tests covering each axis in isolation
-//! (`aggregate_metrics_archived_public_repo_included_in_security_policy`
-//! and friends in `aggregate/metrics.rs`). This integration test
-//! adds the higher-level contract: the same invariants survive a
-//! cross-handle warm start, where the events are written through
-//! `pardosa-eventstore` (via `MsgpackFileStore`), the store handle
-//! is dropped (releasing the `RunLock` — the closest in-process
-//! analogue to a process restart), and the state is rehydrated
-//! through `AppState::with_stores` + `snapshot_fast_path_init`
-//! (the same chain the `gh-report` binary runs on boot per
-//! `bin/gh-report.rs`).
+//! Unit tests cover each axis in isolation. This integration test
+//! adds the higher-level contract: the invariants survive a
+//! cross-handle warm start, where events are written through
+//! `pardosa-eventstore` (`MsgpackFileStore`), the store handle drops
+//! (releasing `RunLock` — the closest in-process analogue to a
+//! restart), and state rehydrates through `AppState::with_stores` +
+//! `snapshot_fast_path_init` (the chain `gh-report` runs on boot).
 
 use gh_report::aggregate::metrics::{aggregate_metrics, build_collection_statistics};
 use gh_report::app::state::AppState;

@@ -1,22 +1,16 @@
-//! D-CD-4 — `EvidenceProjection::sorted_snapshot()` sort discipline:
-//! the snapshot is sorted by `(repository.id, repository.name)` —
-//! not by insertion order and not by the underlying `BTreeMap` key
-//! (`inventory_key`) order.
+//! `EvidenceProjection::sorted_snapshot()` sort discipline: sorts by
+//! `(repository.id, repository.name)` — not insertion order, not
+//! `BTreeMap` key (`inventory_key`) order.
 //!
-//! Mitigates F-LOW-1 from the M2.b linus review (review bead
-//! `adr-fmt-1oqi`, report `.ooda/review-linus-m2b-1778488527.md`): the
-//! M2.b unit test `sorted_snapshot_orders_by_id_then_name` uses fixtures
-//! whose `inventory_key` and `(id, name)` agree, so it cannot
-//! discriminate between `BTreeMap` iteration order and the documented
-//! `(id, name)` sort contract. This integration test does.
+//! Mitigates a gap in a prior unit test: `sorted_snapshot_orders_by_id_then_name`
+//! uses fixtures whose `inventory_key` and `(id, name)` agree, so it
+//! cannot discriminate `BTreeMap` order from the sort contract. This
+//! integration test does.
 //!
-//! Parent: `.ooda/brief-m2cd-readwrite-cutover.md` D-CD-4.
+//! ## Fixture design
 //!
-//! ## Fixture design (three-way distinct orderings)
-//!
-//! Three repositories chosen so insertion order, BTreeMap-key
-//! (`inventory_key`) order, and `(id, name)` order are pairwise
-//! distinct:
+//! Three repos chosen so insertion order, `inventory_key` order, and
+//! `(id, name)` order are pairwise distinct:
 //!
 //! | repo | `inventory_key` | `id`     | `name`     |
 //! |------|-----------------|----------|------------|
@@ -24,13 +18,9 @@
 //! | B    | `a-key-2`       | `c-id`   | `b-name`   |
 //! | C    | `m-key-3`       | `a-id`   | `c-name`   |
 //!
-//! - **Insertion order** (A, B, C)             → ids `b, c, a`
-//! - **`BTreeMap` key order** (`inventory_key`)  → B, C, A  (`c, a, b`)
-//! - **`(id, name)` sort order** (target)      → C, A, B  (`a-id, b-id, c-id`)
-//!
-//! All three orderings are pairwise distinct. The target-sort
-//! assertion therefore falsifies any regression that returns
-//! insertion order *or* `BTreeMap` iteration order.
+//! Insertion → `b,c,a`; `BTreeMap` key → `c,a,b`; target `(id,
+//! name)` → `a-id,b-id,c-id`. Pairwise distinct, so the assertion
+//! falsifies either regression.
 
 use gh_report::domain::checks::{
     BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus, CodeownersResult,
