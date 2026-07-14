@@ -71,8 +71,6 @@ const MESSAGE_READY: &str = "daemon ready — serving";
 const MESSAGE_SHUTDOWN_BEGIN: &str = "beginning graceful shutdown";
 const MESSAGE_STOPPED: &str = "daemon stopped";
 
-use crate::server::SERVED_CSP_WITH_WASM_UNSAFE_EVAL;
-
 fn duration_millis(duration: Duration) -> u128 {
     duration.as_millis()
 }
@@ -229,10 +227,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
         Arc::clone(&force_refresh_flag),
         collect_cancel_rx,
     );
-    let server_config = cherry_pit_web::serve::ServerConfig::builder()
-        .csp_override(SERVED_CSP_WITH_WASM_UNSAFE_EVAL)
-        .build()
-        .expect("default config is valid");
+    let server_config = crate::server::served_dashboard_server_config();
 
     let server_result = cherry_pit_web::serve::start(
         port,
@@ -671,6 +666,7 @@ fn server_error_runtime(error: &cherry_pit_web::serve::ServerError) -> crate::er
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::server::SERVED_CSP_WITH_WASM_UNSAFE_EVAL;
     use std::io::Write;
     use tracing_subscriber::fmt::MakeWriter;
 
@@ -884,10 +880,7 @@ mod tests {
 
     #[test]
     fn served_csp_is_accepted_by_server_config_builder() {
-        let config = cherry_pit_web::serve::ServerConfig::builder()
-            .csp_override(SERVED_CSP_WITH_WASM_UNSAFE_EVAL)
-            .build()
-            .unwrap();
+        let config = crate::server::served_dashboard_server_config();
         assert_eq!(
             config.csp_override(),
             Some(SERVED_CSP_WITH_WASM_UNSAFE_EVAL)

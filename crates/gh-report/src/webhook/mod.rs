@@ -310,13 +310,8 @@ mod tests {
 
     fn build_test_app(state: Arc<AppState>) -> Router {
         let extra = webhook_router();
-        cherry_pit_web::serve::build_router(
-            state,
-            &cherry_pit_web::serve::ServerConfig::builder()
-                .build()
-                .expect("default config is valid"),
-            Some(extra),
-        )
+        let config = crate::server::default_server_config();
+        cherry_pit_web::serve::build_router(state, &config, Some(extra))
     }
 
     #[tokio::test]

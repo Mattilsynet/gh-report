@@ -31,7 +31,6 @@ pub(crate) const SERVED_CSP_WITH_WASM_UNSAFE_EVAL: &str = "default-src 'self'; s
 ///
 /// Panics if the config fails to build (indicates a programming error in
 /// the hardcoded defaults).
-#[expect(dead_code, reason = "call sites land in bd-adr-fmt-tpfbe (Child 2)")]
 pub(crate) fn served_dashboard_server_config() -> cherry_pit_web::serve::ValidatedConfig {
     cherry_pit_web::serve::ServerConfig::builder()
         .csp_override(SERVED_CSP_WITH_WASM_UNSAFE_EVAL)
@@ -45,7 +44,6 @@ pub(crate) fn served_dashboard_server_config() -> cherry_pit_web::serve::Validat
 ///
 /// Panics if the config fails to build (indicates a programming error in
 /// the hardcoded defaults).
-#[expect(dead_code, reason = "call sites land in bd-adr-fmt-tpfbe (Child 2)")]
 pub(crate) fn default_server_config() -> cherry_pit_web::serve::ValidatedConfig {
     cherry_pit_web::serve::ServerConfig::builder()
         .build()
@@ -84,13 +82,8 @@ async fn status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
 /// Panics if the default `ServerConfig` cannot be built (indicates a
 /// programming error in the hardcoded defaults).
 pub fn build_router(state: Arc<AppState>) -> Router {
-    cherry_pit_web::serve::build_router(
-        state,
-        &cherry_pit_web::serve::ServerConfig::builder()
-            .build()
-            .expect("default config is valid"),
-        Some(status_router()),
-    )
+    let config = default_server_config();
+    cherry_pit_web::serve::build_router(state, &config, Some(status_router()))
 }
 
 #[cfg(test)]
