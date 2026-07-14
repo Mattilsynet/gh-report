@@ -1414,10 +1414,6 @@ mod tests {
         ];
         let metrics = aggregate_metrics(&repos);
 
-        // adr-fmt-voxg6: all 3 exclusion reasons here (PermissionDenied,
-        // Unknown via NotFoundAbsent, Other via Transient) are measurement
-        // failures, so the control floors to a genuine 0.0 rather than
-        // vanishing to `None`/denominator 0.
         assert_eq!(metrics.branch_protection_coverage.denominator, 1);
         assert_eq!(metrics.branch_protection_coverage.rate, Some(0.0));
 
@@ -3223,9 +3219,6 @@ mod tests {
             .per_control_coverage
             .get("branch_protection")
             .unwrap();
-        // adr-fmt-voxg6: all 3 exclusion reasons here are measurement
-        // failures, so the control floors to a genuine 0.0 rather than
-        // vanishing to `None`/denominator 0.
         assert_eq!(
             branch_protection.denominator, 1,
             "all 3 repos excluded for measurement failure floors to 0.0, not None"

@@ -1,7 +1,7 @@
 //! CI hard-gate: flag library `pub enum` error types that derive `thiserror::Error`
 //! but lack `#[non_exhaustive]`, excluding `repr` and serde DTOs.
 //!
-//! Usage: cargo run -p non-exhaustive-check -- [ROOT]
+//! Usage: cargo run -p non-exhaustive-check -- [`ROOT`]
 //! ROOT defaults to the workspace root, discovered by walking up from the
 //! current directory until a `Cargo.toml` containing `[workspace]` is found.
 //!
