@@ -15,15 +15,10 @@ use serde::de::DeserializeOwned;
 
 /// File-based event store using `MessagePack` serialization.
 ///
-/// Stores each aggregate's event stream as a single `.msgpack` file
-/// in the configured directory ([CHE-0036:R1]). Designed for development
-/// and small deployments where a full database is unnecessary.
-///
-/// Parameterized by `E` — the single domain event type this store
-/// persists. Each aggregate type gets its own `MsgpackFileStore<E>`
-/// instance pointing at its own directory. The type parameter
-/// guarantees at compile time that you cannot accidentally load or
-/// persist the wrong event type.
+/// One `.msgpack` file per aggregate, full-rewrite on append
+/// ([CHE-0036]). Parameterized by `E`, the event type persisted —
+/// guarantees at compile time the wrong type can't load or persist.
+/// For small deployments; not multi-process safe.
 ///
 /// # File layout
 ///
@@ -34,88 +29,26 @@ use serde::de::DeserializeOwned;
 /// └── ...
 /// ```
 ///
-/// Each file contains the complete event history for one aggregate,
-/// serialized as `Vec<EventEnvelope<E>>` in `MessagePack` format.
-/// On every append the full history is rewritten ([CHE-0036:R2]).
+/// # Protocol summary
 ///
-/// # Atomic writes ([CHE-0032])
+/// - **Writes**: temp file → `fsync` → rename; orphans recovered on
+///   next init ([CHE-0032]).
+/// - **IDs**: sequential `u64` from 1, seeded by scanning filenames.
+/// - **Concurrency**: per-aggregate write locks, lock-free reads,
+///   optimistic sequence checks ([CHE-0035], [CHE-0006]).
+/// - **Fencing**: advisory `flock`; `StoreLocked` if held elsewhere
+///   ([CHE-0043]).
+/// - **Replay**: via [`load`](EventStore::load), persisted before
+///   publish ([CHE-0024]).
+/// - **Recovery**: see [`RUNBOOKS.md`](../RUNBOOKS.md) ([CHE-0047]).
 ///
-/// All mutations write to a temporary file, call `fsync`, then rename
-/// atomically to the target path ([CHE-0032:R1], [CHE-0032:R3]).
-/// On rename failure the temp file is cleaned up best-effort
-/// ([CHE-0032:R2]). Orphaned `.msgpack.tmp` files are removed on the
-/// next store initialisation ([CHE-0032:R4], [CHE-0047:R1]).
-///
-/// # ID assignment ([CHE-0035:R1])
-///
-/// New aggregates get sequential `u64` IDs starting from 1 via
-/// [`create`](EventStore::create). Allocation is serialized by an
-/// atomic counter; the counter is lazily seeded by scanning the
-/// directory for the highest existing numeric filename on the first
-/// `create` call ([CHE-0035:R1]). Seeding runs exactly once per
-/// store instance via an async `OnceCell`.
-///
-/// # Concurrency ([CHE-0035])
-///
-/// Per-aggregate write serialization via `scc::HashMap` keyed write
-/// locks ([CHE-0035:R2]). Multiple aggregates can be written
-/// concurrently. Reads are lock-free because writes are atomic via
-/// temp-file + rename ([CHE-0035:R3]).
-///
-/// Optimistic concurrency (expected sequence check) provides
-/// defense-in-depth within the owning process ([CHE-0006:R2]).
-///
-/// Not suitable for multi-process access — use a database-backed store
-/// for that. File atomicity relies on POSIX `rename(2)` semantics.
-///
-/// # Process fencing ([CHE-0006:R1], [CHE-0043])
-///
-/// On first write, the store acquires an advisory `flock` on a `.lock`
-/// sentinel file in the store directory ([CHE-0043:R1]). Lock
-/// acquisition is lazy via `OnceCell` ([CHE-0043:R2]). If another
-/// process already holds the lock, the store returns
-/// `StoreError::StoreLocked` ([CHE-0043:R3]). This ensures each
-/// aggregate instance is owned by exactly one OS process at a time
-/// ([CHE-0006:R1]).
-///
-/// # Replay ([CHE-0024:R3])
-///
-/// Consumers replay from the event store via [`load`](EventStore::load).
-/// Events are persisted before any publication attempt ([CHE-0024:R1] —
-/// gateway owns the persist side; bus/publish layer is out of scope for
-/// v0.1). No subscribe method exists on the `EventBus` port trait
-/// ([CHE-0024:R2]).
-///
-/// # Operational recovery ([CHE-0047])
-///
-/// See [`RUNBOOKS.md`](../RUNBOOKS.md) for operator procedures covering
-/// orphan temp-file recovery (R1), corrupt data classification (R2),
-/// quarantine (R3), dead-letter schema (R4), stale-lock recovery (R5),
-/// and migration recovery (R6).
-///
-/// [CHE-0006:R1]: ../../docs/adr/cherry/CHE-0006-single-writer-assumption.md
-/// [CHE-0006:R2]: ../../docs/adr/cherry/CHE-0006-single-writer-assumption.md
-/// [CHE-0024:R1]: ../../docs/adr/cherry/CHE-0024-event-delivery-model.md
-/// [CHE-0024:R2]: ../../docs/adr/cherry/CHE-0024-event-delivery-model.md
-/// [CHE-0024:R3]: ../../docs/adr/cherry/CHE-0024-event-delivery-model.md
+/// [CHE-0006]: ../../docs/adr/cherry/CHE-0006-single-writer-assumption.md
+/// [CHE-0024]: ../../docs/adr/cherry/CHE-0024-event-delivery-model.md
 /// [CHE-0032]: ../../docs/adr/cherry/CHE-0032-atomic-file-writes.md
-/// [CHE-0032:R1]: ../../docs/adr/cherry/CHE-0032-atomic-file-writes.md
-/// [CHE-0032:R2]: ../../docs/adr/cherry/CHE-0032-atomic-file-writes.md
-/// [CHE-0032:R3]: ../../docs/adr/cherry/CHE-0032-atomic-file-writes.md
-/// [CHE-0032:R4]: ../../docs/adr/cherry/CHE-0032-atomic-file-writes.md
 /// [CHE-0035]: ../../docs/adr/cherry/CHE-0035-two-level-concurrency.md
-/// [CHE-0035:R1]: ../../docs/adr/cherry/CHE-0035-two-level-concurrency.md
-/// [CHE-0035:R2]: ../../docs/adr/cherry/CHE-0035-two-level-concurrency.md
-/// [CHE-0035:R3]: ../../docs/adr/cherry/CHE-0035-two-level-concurrency.md
-/// [CHE-0036:R1]: ../../docs/adr/cherry/CHE-0036-file-per-stream-full-rewrite-storage.md
-/// [CHE-0036:R2]: ../../docs/adr/cherry/CHE-0036-file-per-stream-full-rewrite-storage.md
-/// [CHE-0038:R5]: ../../docs/adr/cherry/CHE-0038-testing-strategy.md
+/// [CHE-0036]: ../../docs/adr/cherry/CHE-0036-file-per-stream-full-rewrite-storage.md
 /// [CHE-0043]: ../../docs/adr/cherry/CHE-0043-process-level-file-fencing.md
-/// [CHE-0043:R1]: ../../docs/adr/cherry/CHE-0043-process-level-file-fencing.md
-/// [CHE-0043:R2]: ../../docs/adr/cherry/CHE-0043-process-level-file-fencing.md
-/// [CHE-0043:R3]: ../../docs/adr/cherry/CHE-0043-process-level-file-fencing.md
 /// [CHE-0047]: ../../docs/adr/cherry/CHE-0047-operational-recovery-runbooks.md
-/// [CHE-0047:R1]: ../../docs/adr/cherry/CHE-0047-operational-recovery-runbooks.md
 ///
 /// # Example
 ///
@@ -146,21 +79,14 @@ use serde::de::DeserializeOwned;
 /// ```
 pub struct MsgpackFileStore<E: DomainEvent> {
     dir: PathBuf,
-    /// Lazy counter seeded from a one-shot directory scan. The
-    /// `OnceCell` serializes the seeding step (so `scan_max_id` runs
-    /// at most once per store instance), and the inner `AtomicU64`
-    /// serializes per-call allocation without holding any guard
-    /// across `.await`.
+    /// Lazy counter seeded from a one-shot directory scan; runs at
+    /// most once per instance.
     next_id: tokio::sync::OnceCell<AtomicU64>,
-    /// Per-aggregate write locks. `scc::HashMap` is lock-free for
-    /// concurrent reads and uses fine-grained locking for writes —
-    /// no poison risk, no contention on the map itself.
+    /// Per-aggregate write locks (`scc::HashMap`): lock-free reads,
+    /// fine-grained write locking.
     locks: scc::HashMap<u64, Arc<tokio::sync::Mutex<()>>>,
-    /// Advisory file lock on `{dir}/.lock`. Acquired lazily on first
-    /// write operation, held for the store's lifetime. Detects
-    /// accidental multi-process access to the same store directory.
-    /// The `std::fs::File` handle keeps the flock alive — releasing
-    /// happens automatically on drop.
+    /// Advisory `{dir}/.lock` file lock, acquired lazily on first
+    /// write, held for the store's lifetime, released on drop.
     dir_lock: tokio::sync::OnceCell<std::fs::File>,
     /// Best-effort recovery of orphaned temp files. Runs once after
     /// process-level fencing succeeds, before the first mutating write.
@@ -2253,24 +2179,17 @@ mod tests {
     /// tokio reactor on a `current_thread` runtime.
     ///
     /// Setup: populate the store with 2000 fake `.msgpack` files so the
-    /// blocking `std::fs::read_dir` scan does enough work to be
-    /// observable.
-    ///
-    /// Probe: under `flavor = "current_thread"`, spawn a background
-    /// task that increments a counter on every `yield_now` cycle. If
-    /// `list_aggregates` runs inline on the reactor thread, the
-    /// counter cannot advance while the scan is in flight — no other
-    /// task can be polled. With the CHE-0070:R6 `spawn_blocking` wrap
-    /// the scan runs on the blocking pool and the reactor is free to
-    /// poll the counter task, so the counter advances during the scan
-    /// window. The assertion below requires that the counter advanced
-    /// during `list_aggregates().await`, which only holds when the
-    /// wrap is in place.
+    /// blocking scan does observable work. Probe: spawn a counter task
+    /// that increments on every `yield_now`; if `list_aggregates` runs
+    /// inline on the reactor thread, the counter cannot advance while
+    /// the scan is in flight. With the CHE-0070:R6 `spawn_blocking`
+    /// wrap the scan moves to the blocking pool, so the counter
+    /// advances during the scan window — the assertion requires this.
     ///
     /// Falsifier: remove the `spawn_blocking` wrap in
-    /// `impl<E> ListableEventStore for MsgpackFileStore<E>` and re-run.
-    /// The counter delta will be 0 (or near 0) because the inline scan
-    /// starves every other task on the single reactor thread.
+    /// `impl<E> ListableEventStore for MsgpackFileStore<E>`; the
+    /// counter delta drops to ~0 because the inline scan starves every
+    /// other task on the single reactor thread.
     #[tokio::test(flavor = "current_thread")]
     async fn list_aggregates_does_not_stall_reactor() {
         use std::sync::Arc;
