@@ -112,6 +112,29 @@ jobs:
             exit 1
           fi
 
+  # Hard gate: every public library `pub enum` deriving `thiserror::Error`
+  # must carry `#[non_exhaustive]` (PGN-0006, CHE-0021), enforced by the
+  # `non-exhaustive-check` crate (RST-0006). The tool is deliberately
+  # conservative — under-flagging (missing a macro-generated enum) is the
+  # safe failure mode; over-flagging is not, so any real hit here is
+  # treated as authoritative rather than advisory.
+  non-exhaustive-check:
+    name: non-exhaustive error-enum gate (RST-0006, PGN-0006, CHE-0021)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.96.0
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: run non-exhaustive-check against the workspace root
+        run: |
+          set -euo pipefail
+          if ! cargo run -p non-exhaustive-check --quiet -- "$(pwd)"; then
+            echo "::error::missing #[non_exhaustive] on a library error enum (RST-0006, PGN-0006, CHE-0021)"
+            exit 1
+          fi
+
   supply-chain:
     name: supply-chain (audit + deny)
     runs-on: ubuntu-latest
