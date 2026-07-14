@@ -7,57 +7,30 @@ use crate::correlation::CorrelationContext;
 use crate::error::{CreateResult, DispatchResult};
 
 /// The primary entry point for dispatching commands into the system.
-/// (CHE-0005 R1: port bound to single aggregate type; CHE-0018 R2:
-/// async RPITIT; CHE-0025 R1–R2: RPITIT, no dyn Future allocation;
-/// CHE-0046 R1–R2: retry on Retryable, stop on Terminal.)
 ///
-/// Every primary adapter (webhook listener, REST API poller, scheduled
-/// job) and every Policy dispatches commands through the gateway. The
-/// gateway is the outermost port on the driving side of the hexagon.
+/// Wraps the [`CommandBus`](crate::CommandBus) with cross-cutting concerns
+/// (interceptors, retry, logging); every primary adapter and every
+/// `Policy` dispatches through the gateway, the outermost port on the
+/// driving side of the hexagon (CHE-0005:R1, CHE-0018:R2, CHE-0025:R1-R2,
+/// CHE-0046:R1-R2).
 ///
-/// The gateway adds cross-cutting concerns (interceptors, retry,
-/// logging) on top of the [`CommandBus`](crate::CommandBus).
-///
-/// Bound to a single aggregate type. The compiler verifies that every
-/// command dispatched through this gateway is accepted by the bound
-/// aggregate — no runtime routing errors possible.
+/// Bound to a single aggregate type: the compiler rejects commands not
+/// accepted by the bound aggregate.
 ///
 /// # Distributed failure model (COM-0025:R1)
 ///
-/// Three failure modes apply at trait level. The four method-scoped
-/// semantics (timeout, cancellation, retry, duplicate-delivery) are
-/// documented on [`create`](Self::create) and [`send`](Self::send).
+/// Crash, Replay, Recovery follow [`CommandBus`](crate::CommandBus)'s
+/// trait-level contract verbatim: no crash-visible state beyond the bus's
+/// guarantee, no replay primitive (rebuild via
+/// [`EventStore::load`](crate::EventStore::load) only), and each concrete
+/// gateway documents its own recovery. Timeout, cancellation, retry, and
+/// duplicate-delivery live on [`create`](Self::create) and
+/// [`send`](Self::send).
 ///
-/// ## Crash
+/// # Doctest - contract type-check
 ///
-/// The gateway adds interceptors on top of the
-/// [`CommandBus`](crate::CommandBus); the bus owns the persist/publish
-/// unit-of-work and its crash guarantees (see `CommandBus`'s "Crash"
-/// docstring). Gateway-level state (interceptor cursors, retry
-/// budgets, in-flight metadata) MUST be either reconstructible after a
-/// crash or explicitly transient. The gateway MUST NOT introduce
-/// crash-visible state that the bus does not already guarantee.
-///
-/// ## Replay
-///
-/// Commands are NOT replayable (COM-0025:R1, same as
-/// [`CommandBus`](crate::CommandBus)). The gateway exposes no replay
-/// primitive; rebuilding aggregate state is done by replaying *events*
-/// via [`EventStore::load`](crate::EventStore::load), never by
-/// re-running commands through `create`/`send`.
-///
-/// ## Recovery
-///
-/// Implementor-level recovery (interceptor teardown, retry-budget
-/// state clean-up, request-tracing flush, partial-shutdown drain) lives
-/// outside the port surface. Each concrete `CommandGateway` MUST
-/// document its recovery procedure in its own rustdoc.
-///
-/// # Doctest — contract type-check
-///
-/// The trait is async via RPITIT (CHE-0018:R2) and cherry-pit-core
-/// declares no async runtime (CHE-0029:R4); the doctest constructs the
-/// futures without awaiting them.
+/// RPITIT async; no async runtime (CHE-0029:R4). Constructs futures
+/// without awaiting.
 ///
 /// ```
 /// use cherry_pit_core::{AggregateId, Command, CommandGateway, CorrelationContext, HandleCommand};
@@ -82,55 +55,39 @@ pub trait CommandGateway: Send + Sync + 'static {
 
     /// Create a new aggregate instance.
     ///
-    /// The gateway:
-    /// 1. Runs dispatch interceptors (logging, metadata, validation).
-    /// 2. Delegates to the `CommandBus`.
-    /// 3. Optionally retries on transient infrastructure failure.
-    ///
-    /// Returns the store-assigned [`AggregateId`] and the event
-    /// envelopes produced by the aggregate on success.
+    /// Runs dispatch interceptors, delegates to the `CommandBus`, and
+    /// optionally retries on transient infrastructure failure. Returns the
+    /// store-assigned [`AggregateId`] and the produced envelopes.
     ///
     /// # Timeout
     ///
-    /// The returned future MAY resolve to
+    /// MAY resolve to
     /// [`DispatchError::Infrastructure`](crate::DispatchError::Infrastructure)
-    /// after the gateway's deadline (typically tighter than the bus's)
-    /// elapses. Timeouts are
-    /// [`Retryable`](crate::ErrorCategory::Retryable) (CHE-0046:R1).
-    /// The gateway MAY consume some of the deadline on interceptor
-    /// processing before delegating to
+    /// after the deadline; timeouts are
+    /// [`Retryable`](crate::ErrorCategory::Retryable) (CHE-0046:R1). May
+    /// spend part of the deadline on interceptors before delegating to
     /// [`CommandBus::create`](crate::CommandBus::create).
     ///
     /// # Cancellation
     ///
-    /// Dropping the returned future cancels the gateway pipeline.
-    /// Interceptor teardown MUST be drop-safe; in-flight retries MUST
-    /// terminate without producing additional bus calls. The bus's
-    /// unit-of-work guarantee (see
-    /// [`CommandBus::create`](crate::CommandBus::create)) binds under
-    /// gateway cancellation.
+    /// Dropping the future cancels the pipeline; teardown MUST be drop-safe,
+    /// retries MUST NOT add bus calls. Unit-of-work guarantee binds under
+    /// cancellation.
     ///
     /// # Retry
     ///
-    /// The gateway is the standard place to host retry policy:
-    /// implementors MAY transparently retry on
-    /// [`Retryable`](crate::ErrorCategory::Retryable) errors per
-    /// CHE-0046:R1 and MUST stop on
-    /// [`Terminal`](crate::ErrorCategory::Terminal) per CHE-0046:R2.
-    /// As with [`CommandBus::create`](crate::CommandBus::create),
-    /// retry of `create` is unsafe without an
-    /// [`IdempotencyKey`](crate::IdempotencyKey) — gateway retry MUST
-    /// either require an idempotency key on the command or refuse to
-    /// retry `create`.
+    /// Hosts retry policy: MAY retry
+    /// [`Retryable`](crate::ErrorCategory::Retryable) per CHE-0046:R1, MUST
+    /// stop on [`Terminal`](crate::ErrorCategory::Terminal) per CHE-0046:R2.
+    /// Retrying `create` needs an
+    /// [`IdempotencyKey`](crate::IdempotencyKey) — require one or refuse.
     ///
     /// # Duplicate delivery
     ///
     /// Same contract as
-    /// [`CommandBus::create`](crate::CommandBus::create): idempotency
-    /// is the command's [`IdempotencyKey`](crate::IdempotencyKey)
-    /// (CHE-0041); without it, duplicate `create` calls produce
-    /// distinct aggregates. Gateway-level retry MUST respect the
-    /// idempotency requirement.
+    /// [`CommandBus::create`](crate::CommandBus::create): idempotency is the
+    /// [`IdempotencyKey`](crate::IdempotencyKey) (CHE-0041); without it,
+    /// duplicate calls produce distinct aggregates.
     fn create<C>(
         &self,
         cmd: C,
@@ -142,56 +99,39 @@ pub trait CommandGateway: Send + Sync + 'static {
 
     /// Dispatch a command targeting an existing aggregate instance.
     ///
-    /// The gateway:
-    /// 1. Runs dispatch interceptors (logging, metadata, validation).
-    /// 2. Delegates to the `CommandBus`.
-    /// 3. Optionally retries on transient infrastructure failure.
-    ///
-    /// Returns the event envelopes produced by the aggregate on success.
+    /// Runs dispatch interceptors, delegates to the `CommandBus`, and
+    /// optionally retries on transient infrastructure failure. Returns the
+    /// event envelopes the aggregate produced.
     ///
     /// # Timeout
     ///
-    /// The returned future MAY resolve to
+    /// MAY resolve to
     /// [`DispatchError::Infrastructure`](crate::DispatchError::Infrastructure)
-    /// after the gateway's deadline elapses. Timeouts are
+    /// after the deadline; timeouts are
     /// [`Retryable`](crate::ErrorCategory::Retryable) (CHE-0046:R1).
-    /// As with [`create`](Self::create), the gateway MAY consume part
-    /// of the deadline before delegating to
-    /// [`CommandBus::dispatch`](crate::CommandBus::dispatch).
     ///
     /// # Cancellation
     ///
-    /// Dropping the returned future cancels the gateway pipeline,
-    /// including any in-flight retries. The bus's unit-of-work
-    /// guarantee (see
-    /// [`CommandBus::dispatch`](crate::CommandBus::dispatch)) binds
-    /// under gateway cancellation: a cancelled `send` either
-    /// persists-and-publishes-all or persists-and-publishes-none.
+    /// Dropping the future cancels the pipeline, including retries. The
+    /// unit-of-work guarantee binds: a cancelled `send`
+    /// persists-and-publishes-all or -none.
     ///
     /// # Retry
     ///
-    /// Retries on
-    /// [`Retryable`](crate::ErrorCategory::Retryable) errors are the
-    /// gateway's responsibility per CHE-0046:R1.
+    /// Retries on [`Retryable`](crate::ErrorCategory::Retryable) errors are
+    /// the gateway's responsibility (CHE-0046:R1).
     /// [`DispatchError::ConcurrencyConflict`](crate::DispatchError::ConcurrencyConflict)
-    /// retries MUST reload the aggregate (typically by re-entering the
-    /// gateway with a fresh dispatch); blind retry of the same future
-    /// without reload will livelock against a moving sequence head.
-    /// [`Terminal`](crate::ErrorCategory::Terminal) errors
-    /// ([`Rejected`](crate::DispatchError::Rejected),
-    /// [`AggregateNotFound`](crate::DispatchError::AggregateNotFound))
-    /// MUST NOT be retried (CHE-0046:R2).
+    /// retries MUST reload the aggregate; blind retry livelocks against a
+    /// moving sequence head. [`Terminal`](crate::ErrorCategory::Terminal)
+    /// errors MUST NOT be retried (CHE-0046:R2).
     ///
     /// # Duplicate delivery
     ///
     /// Same contract as
-    /// [`CommandBus::dispatch`](crate::CommandBus::dispatch):
-    /// duplicate commands are de-duplicated via the command's
-    /// [`IdempotencyKey`](crate::IdempotencyKey) (CHE-0041); without
-    /// it, the underlying store's `expected_sequence` check on
-    /// [`EventStore::append`](crate::EventStore::append) preserves the
-    /// at-most-once-effect property by rejecting stale retries with
-    /// `ConcurrencyConflict`.
+    /// [`CommandBus::dispatch`](crate::CommandBus::dispatch): duplicates
+    /// de-duplicate via [`IdempotencyKey`](crate::IdempotencyKey)
+    /// (CHE-0041); the store's `expected_sequence` check rejects stale
+    /// retries otherwise.
     fn send<C>(
         &self,
         id: AggregateId,

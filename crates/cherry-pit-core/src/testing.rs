@@ -3,34 +3,25 @@
 //! Gated behind `#[cfg(any(test, feature = "testing"))]` per the CHE-0058
 //! carve-out over CHE-0030:R1; downstream crates opt in via
 //! `cherry-pit-core = { features = ["testing"] }`. Items live under
-//! `cherry_pit_core::testing::*` and are deliberately **not** re-exported
-//! from the crate root — the production discoverable surface stays clean
-//! (oracle §1.2 conservative scoping).
+//! `cherry_pit_core::testing::*`, not re-exported from the crate root.
 //!
-//! ## Contents
+//! # Contents
 //!
-//! - [`FakeBus`] — `EventBus` impl that records every published envelope
-//!   into an internal `Vec` for inspection. Publication is infallible by
-//!   construction (CHE-0024:R1 non-fatal).
+//! - [`FakeBus`] — `EventBus` impl recording every published envelope
+//!   (infallible by construction, CHE-0024:R1).
 //! - [`InMemoryEventStore`] — `EventStore` impl matching the file-store
-//!   reference behaviour at
-//!   `crates/cherry-pit-gateway/src/event_store/msgpack_file.rs:316,437,480-525`:
-//!   per-aggregate sequence counter from 1, `expected_sequence` guard,
-//!   envelope construction via [`EventEnvelope::new`], `validate_stream`
-//!   in [`load`](InMemoryEventStore::load) (CHE-0042:R4).
+//!   reference: per-aggregate sequence from 1, `expected_sequence` guard,
+//!   [`EventEnvelope::new`] construction, `validate_stream` in
+//!   [`load`](InMemoryEventStore::load) (CHE-0042:R4).
 //! - [`InMemoryProjectionStore`] — concurrent map keyed by
-//!   `(AggregateId, projection_name)` matching the shape CHE-0048:R5
-//!   sanctions for the in-memory backend.
+//!   `(AggregateId, projection_name)` per CHE-0048:R5.
 //!
-//! ## Doctrine
+//! # Doctrine
 //!
-//! Zero added dependencies (CHE-0029:R4). All async returns use RPITIT
-//! against `impl Future<Output = …> + Send` constructed from
-//! `async { … }` blocks — `std::future::Future` + the `async` keyword
-//! are sufficient with no runtime crate. State lives behind
-//! `std::sync::Mutex` (CHE-0018:R3 — sync domain underneath async
-//! port). No mutation/edit API on stored envelopes (CHE-0022:R5);
-//! no `subscribe` method on `FakeBus` (CHE-0024:R2).
+//! Zero added dependencies (CHE-0029:R4). Async returns use RPITIT; no
+//! runtime crate needed. State behind `std::sync::Mutex` (CHE-0018:R3).
+//! No mutation/edit API on stored envelopes (CHE-0022:R5); no
+//! `subscribe` on `FakeBus` (CHE-0024:R2).
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -468,31 +459,25 @@ pub mod conformance {
     //! Runtime-assertable conformance for [`EventStore`], [`Aggregate`],
     //! [`Projection`].
     //!
-    //! Each `fn` asserts the documented trait contract by exercising the
-    //! impl through its public surface. On contract violation the fn
-    //! **panics with a descriptive message** — the calling integration
-    //! test fails, surfacing the specific invariant that broke. Panics
-    //! are the right shape here because (a) these are test helpers, not
-    //! production code paths, (b) `Aggregate::apply` is panic-only by
-    //! CHE-0009:R2 so the harness is consistent with the traits it
-    //! covers, and (c) `#[test]` translates panic into a failing test.
+    //! Each `fn` asserts the documented trait contract by exercising the impl
+    //! through its public surface. On violation the fn **panics** with a
+    //! descriptive message, failing the calling test with the broken
+    //! invariant named. Panics are correct: these are test helpers,
+    //! `Aggregate::apply` is panic-only (CHE-0009:R2), and `#[test]` turns
+    //! panic into a failing test.
     //!
-    //! ## No trait objects
+    //! # No trait objects
     //!
-    //! All fns are generic over concrete `S: EventStore`, `A: Aggregate`,
-    //! `P: Projection`. There is no `Box<dyn EventStore>` / `BoxFuture`
-    //! anywhere in the public surface (CHE-0005:R1, CHE-0025:R2). Async
-    //! fns use RPITIT — caller awaits with its own runtime.
+    //! Fns are generic over concrete `S: EventStore`, `A: Aggregate`,
+    //! `P: Projection`. No `Box<dyn EventStore>` / `BoxFuture` in the public
+    //! surface (CHE-0005:R1, CHE-0025:R2). Async fns use RPITIT.
     //!
-    //! ## Factories
+    //! # Factories
     //!
     //! [`assert_event_store_conformance`] and
     //! [`assert_projection_conformance`] take a `make_store: impl Fn() -> S`
-    //! closure so each scenario receives a fresh, isolated store
-    //! (tempdir-backed for file stores, freshly-constructed for in-memory
-    //! ones). This avoids cross-scenario state bleed without imposing a
-    //! reset method on the trait surface (CHE-0022:R5 — no mutation API
-    //! on stored envelopes).
+    //! closure so each scenario gets a fresh store, avoiding cross-scenario
+    //! state bleed without a reset method on the trait (CHE-0022:R5).
 
     use std::num::NonZeroU64;
 
@@ -503,45 +488,32 @@ pub mod conformance {
     use crate::projection::Projection;
     use crate::store::EventStore;
 
-    /// Assert every documented invariant of the [`EventStore`] trait
-    /// against a concrete impl `S`.
+    /// Assert every documented invariant of the [`EventStore`] trait against
+    /// a concrete impl `S`.
     ///
-    /// Scenarios exercised (each on a fresh store from `make_store`):
+    /// Scenarios (each on a fresh store from `make_store`):
     ///
-    /// 1. `create` → `load` round-trip preserves contiguous sequences
-    ///    from `1`.
-    /// 2. `append` with stale `expected_sequence` returns
-    ///    [`StoreError::ConcurrencyConflict`] (CHE-0041:R3 + ref impl
-    ///    `msgpack_file.rs:513-520`).
+    /// 1. `create` → `load` round-trip preserves contiguous sequences from
+    ///    `1`.
+    /// 2. Stale `expected_sequence` on `append` returns
+    ///    [`StoreError::ConcurrencyConflict`] (CHE-0041:R3).
     /// 3. `load` of an unknown `AggregateId` returns `Ok(vec![])`
-    ///    (CHE-0019:R1 + `store.rs:115-117`).
-    /// 4. `create` with empty events returns
-    ///    [`StoreError::Infrastructure`] (`store.rs:176-177`).
+    ///    (CHE-0019:R1).
+    /// 4. `create` with empty events returns [`StoreError::Infrastructure`].
     /// 5. `append` to a never-created aggregate returns
-    ///    [`StoreError::Infrastructure`] (CHE-0019:R3 +
-    ///    `msgpack_file.rs:504-508`).
-    /// 6. Monotonicity-and-gap-rejection: `append` after a successful
-    ///    `create` lands sequences exactly contiguous with what
-    ///    `create` produced (the doc-trait contract at
-    ///    `store.rs:115-120`).
-    ///
-    /// Panics with a descriptive message on first violation.
+    ///    [`StoreError::Infrastructure`] (CHE-0019:R3).
+    /// 6. `append` after `create` lands sequences contiguous with what
+    ///    `create` produced.
     ///
     /// # Parameters
     ///
-    /// - `make_store` — called once per scenario; returns a fresh,
-    ///   empty `S`. Implementations backed by the filesystem typically
-    ///   wrap a `tempfile::TempDir` so each scenario sees an isolated
-    ///   directory.
-    /// - `make_event` — produces a fresh `S::Event` per index. The
-    ///   harness uses indices `0..3` to build small streams; events
-    ///   need not be distinct, but distinguishable payloads make
-    ///   failure messages easier to triage.
+    /// - `make_store` — called once per scenario; returns a fresh, empty `S`.
+    /// - `make_event` — produces a fresh `S::Event` per index; the harness
+    ///   uses indices `0..3`.
     ///
     /// # Panics
     ///
-    /// Panics on any contract violation, with the violated invariant
-    /// named in the panic message.
+    /// Panics on any contract violation, naming the violated invariant.
     pub async fn assert_event_store_conformance<S, F, ME>(make_store: F, make_event: ME)
     where
         S: EventStore,
@@ -798,36 +770,28 @@ pub mod conformance {
 
     /// Assert the [`Aggregate`] trait contract for `A`.
     ///
-    /// Scenarios exercised:
+    /// Scenarios:
     ///
-    /// 1. `A::default()` constructs without panic (CHE-0012:R1 — zero state).
-    /// 2. `A::default()` does NOT satisfy the caller-supplied `probe`
-    ///    (i.e. the default state is distinguishable from a non-default
-    ///    state — CHE-0012:R3).
-    /// 3. Applying every event in `events` to a fresh default does not
-    ///    panic (CHE-0009:R1 — apply is total over well-formed events).
-    /// 4. After applying every event, the resulting state DOES satisfy
-    ///    `probe` (i.e. the events meaningfully changed state).
-    /// 5. Replay determinism: applying the same event sequence to two
-    ///    fresh defaults yields states that both satisfy `probe`
-    ///    (CHE-0009:R2 implicit; tightened in
-    ///    [`assert_projection_conformance`] which can use `PartialEq`).
+    /// 1. `A::default()` constructs without panic (CHE-0012:R1).
+    /// 2. `A::default()` does NOT satisfy the caller-supplied `probe` —
+    ///    default state is distinguishable from non-default (CHE-0012:R3).
+    /// 3. Applying every event in `events` to a fresh default does not panic
+    ///    (CHE-0009:R1).
+    /// 4. After applying every event, the state DOES satisfy `probe`.
+    /// 5. Replay determinism: the same sequence applied to two fresh
+    ///    defaults both satisfy `probe` (CHE-0009:R2).
     ///
     /// # Parameters
     ///
-    /// - `events` — a non-empty sequence of well-formed events that
-    ///   together drive `A` to a non-default state.
-    /// - `probe` — observer returning `true` iff the aggregate has
-    ///   reached the non-default state induced by `events`. Caller-
-    ///   supplied because [`Aggregate`] has no required state-
-    ///   inspection method (CHE-0020:R1 — no `id()`, and by
-    ///   generalisation no required state accessors).
+    /// - `events` — a non-empty sequence driving `A` to a non-default state.
+    /// - `probe` — observer returning `true` iff `A` reached that state,
+    ///   caller-supplied since [`Aggregate`] has no state-inspection method
+    ///   (CHE-0020:R1).
     ///
     /// # Panics
     ///
-    /// Panics on any contract violation. Panics if `events` is empty
-    /// (the harness cannot prove the default-vs-applied distinction
-    /// without at least one event).
+    /// Panics on any contract violation, or if `events` is empty (cannot
+    /// prove default-vs-applied without ≥1 event).
     pub fn assert_aggregate_conformance<A>(events: &[A::Event], probe: impl Fn(&A) -> bool)
     where
         A: Aggregate,
@@ -866,29 +830,24 @@ pub mod conformance {
         );
     }
 
-    /// Assert the [`Projection`] trait contract for `P` against a
-    /// concrete [`EventStore`] backing.
+    /// Assert the [`Projection`] trait contract for `P` against a concrete
+    /// [`EventStore`] backing.
     ///
-    /// Scenarios exercised:
+    /// Scenarios:
     ///
     /// 1. `P::default()` constructs without panic.
-    /// 2. Replay-equivalence (CHE-0048:R3): applying the envelopes
-    ///    produced by a `create` call to two fresh `P::default()`
-    ///    instances yields equal `P`s (per the caller-supplied
-    ///    `compare`).
-    /// 3. Re-replay determinism: applying the same envelope sequence
-    ///    twice into the same fresh `P` yields the same outcome
-    ///    relative to a single-application baseline (idempotence at
-    ///    the projection-fold level; CHE-0048:R3 documented
-    ///    obligation).
+    /// 2. Replay-equivalence (CHE-0048:R3): applying the envelopes from one
+    ///    `create` call to two fresh `P::default()` instances yields equal
+    ///    `P`s (per caller-supplied `compare`).
+    /// 3. Re-replay determinism: applying the same envelope sequence twice
+    ///    into fresh `P`s yields the same outcome (CHE-0048:R3).
     ///
     /// # Parameters
     ///
     /// - `make_store` — fresh isolated store per scenario.
     /// - `make_event` — produces a fresh `P::Event` per index.
-    /// - `compare` — equality observer over `P`. Pass `|a, b| a == b`
-    ///   when `P: PartialEq`; supply a custom closure for projections
-    ///   that intentionally do not implement `PartialEq`.
+    /// - `compare` — equality observer over `P`; pass `|a, b| a == b` when
+    ///   `P: PartialEq`, or a custom closure otherwise.
     ///
     /// # Panics
     ///
