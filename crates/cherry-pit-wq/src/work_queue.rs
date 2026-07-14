@@ -1,20 +1,15 @@
 //! Bounded, deduplicated FIFO work queue.
 //!
 //! Domain-agnostic: the reactor never inspects domain keys or context values.
-//! Producers (scheduled batch, external triggers, startup loader) create
-//! [`JobSpec`] values and submit them via [`WorkQueue::enqueue`]. Workers
-//! dequeue via [`WorkQueue::dequeue`].
+//! Producers create [`JobSpec`] values and submit them via
+//! [`WorkQueue::enqueue`]; workers dequeue via [`WorkQueue::dequeue`].
 //!
-//! ## Dedup semantics
-//!
-//! If a job with the same `domain_key` is already **in the queue** (not yet
-//! dequeued), new jobs for that key are silently dropped. This is safe because
-//! every job queries the source-of-truth for current state — the queued job
-//! will see all changes that occurred since it was enqueued.
-//!
-//! Once a job is **dequeued**, the key is removed from the pending set. A new
-//! job for the same key CAN then be enqueued (handles the case where the
-//! resource changes again while the previous job is executing).
+//! Dedup is keyed on `domain_key`: a job already **in the queue** (not yet
+//! dequeued) for that key causes new jobs to be silently dropped — safe
+//! because every job queries source-of-truth state at execution time, so
+//! the queued job observes any changes since it was enqueued. Once
+//! **dequeued**, the key clears from the pending set and a new job for it
+//! may be enqueued (handles the resource changing again mid-execution).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

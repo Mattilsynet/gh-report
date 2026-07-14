@@ -2,35 +2,22 @@
 //!
 //! Domain-agnostic concurrency and resource-pacing primitives for
 //! cherry-pit consumers: bounded deduplicated work queue, worker pool,
-//! API-call budget gate, and a generic rate-limit observer. Per
-//! CHE-0055 G5 the surface is runtime-neutral and policy-free —
-//! source-specific concerns (HTTP header shapes, GitHub thresholds,
-//! pagination) belong to the calling adapter crate.
+//! API-call budget gate, and a rate-limit observer. Runtime-neutral and
+//! policy-free per CHE-0055 (G5) — adapter concerns (HTTP header
+//! shapes, thresholds, pagination) belong to the calling crate.
 //!
-//! ## v0.1 surface
+//! The flat re-export set below is the SemVer-public API (CHE-0030:R2,
+//! CHE-0055:R10). [`DomainKey`], [`JobSource`], [`JobOutcome`] originate
+//! in [`cherry_pit_core`], re-exported for single-crate import.
 //!
-//! The flat re-export set below is the SemVer-public API. Shared
-//! work-execution types ([`DomainKey`], [`JobSource`], [`JobOutcome`])
-//! originate in [`cherry_pit_core`] and are re-exported here for
-//! ergonomic single-crate import; their canonical home is core.
-//! Internal module structure is implementation detail per
-//! CHE-0052:R3 / CHE-0030:R2.
+//! `JobSpec<C>` carries `pub correlation: CorrelationContext`; the worker
+//! pool propagates that chain end-to-end into the emitted
+//! [`JobOutcome::Success`]/[`JobOutcome::Failure`] (CHE-0055:R4/R6). No
+//! synthesis at the boundary — the producer chooses the chain.
 //!
-//! ## Correlation propagation (v0.1)
-//!
-//! `JobSpec<C>` carries `pub correlation: CorrelationContext` and the
-//! worker pool propagates that chain end-to-end into the emitted
-//! [`JobOutcome::Success`]/[`JobOutcome::Failure`] per CHE-0055 G5
-//! (ratified 2026-05-12), which closes the CHE-0052 v0.2 deferral.
-//! No synthesis at the worker boundary; the producer chooses the chain
-//! (`CorrelationContext::none()` for user-initiated work,
-//! `::correlated(uuid)` / `::new(corr, cause)` for policy-driven work).
-//!
-//! ## Runtime neutrality (CHE-0052:R5)
-//!
-//! No constructor here calls `tokio::runtime::Runtime::new()` or
-//! `Builder::*`. The consumer's binary owns `#[tokio::main]` and
-//! signal handling; this crate assumes an active tokio runtime context.
+//! No constructor calls `tokio::runtime::Runtime::new()` or `Builder::*`
+//! (CHE-0055:R5); the consumer's binary owns `#[tokio::main]` and signal
+//! handling.
 //!
 //! ## Example
 //!
@@ -75,7 +62,7 @@
 //! # }
 //! ```
 //!
-//! Governing ADR: CHE-0055 (G5; supersedes CHE-0052 carve-out).
+//! Governing ADR: CHE-0055.
 
 #![forbid(unsafe_code)]
 
