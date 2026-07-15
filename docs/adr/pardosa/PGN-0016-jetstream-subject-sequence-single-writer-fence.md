@@ -1,7 +1,7 @@
 # PGN-0016. JetStream Subject-Sequence Single-Writer Fence
 
 Date: 2026-06-14
-Last-reviewed: 2026-06-15
+Last-reviewed: 2026-07-15
 Tier: B
 Status: Accepted
 Crates: pardosa, pardosa-nats
@@ -33,8 +33,10 @@ R1 [5]: Use `Nats-Expected-Last-Subject-Sequence` at the pardosa append
   failures by NATS err_code 10071 or constant form 10164, never by description
   text.
 R2 [5]: Treat OCC as detection, not prevention: a losing writer is rejected
-  without authoritative append, aborts the run, and may retry only after
-  replaying the current stream state.
+  without authoritative append and aborts the run. It may retry only as a
+  cross-run writer that has aborted per R7 and re-established authoritative
+  ownership, replaying current stream state before retry; never by in-band
+  resync-and-retry inside the append path (see R10).
 R3 [5]: Reject consumer singletons, `pinned_client`, Cloud Run singleton
   assumptions, and KV read-then-act as authoritative fences; KV create/update
   may serve only as advisory acceleration when the append-path expect header
@@ -62,6 +64,11 @@ R9 [5]: Surface JetStream wrong-last-sequence (10071/10164) as neutral typed
   `pardosa::BackendError` carries `ConcurrencyConflict`, and `PardosaError`
   preserves a matchable conflict variant across the store boundary without
   string-flattening.
+R10 [5]: Never resync expected-sequence from the subject tip and retry inside
+  the append path on wrong-last-sequence: that lets a stale writer win and
+  defeats R7. Intra-handle self-fencing (TOCTOU) is fixed by serializing a
+  handle's own appends, not by tip-resync; a genuine cross-handle conflict must
+  surface, not auto-retry.
 
 ## Consequences
 
