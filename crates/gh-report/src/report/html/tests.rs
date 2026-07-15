@@ -809,92 +809,153 @@ fn make_checks_with_statuses(
     }
 }
 
-#[test]
-fn status_dots_all_passing() {
-    let checks = make_checks_with_statuses(
-        SecurityPolicyStatus::Pass,
-        SecretScanningStatus::Enabled,
-        DependabotStatus::Enabled,
-        BranchProtectionStatus::Pass,
-    );
-    let dots = build_status_dots(&checks);
+struct StatusDotsCase {
+    name: &'static str,
+    policy: SecurityPolicyStatus,
+    secret: SecretScanningStatus,
+    dependabot: DependabotStatus,
+    branch: BranchProtectionStatus,
+    pending: bool,
+    not_applicable_policy: bool,
+    expected: [(&'static str, &'static str); 4],
+}
 
-    assert_eq!(dots.len(), 4);
-    assert_eq!(dots[0].css_class, "status-pass");
-    assert_eq!(dots[0].label, "pass");
-    assert_eq!(dots[1].css_class, "status-pass");
-    assert_eq!(dots[1].label, "enabled");
-    assert_eq!(dots[2].css_class, "status-pass");
-    assert_eq!(dots[2].label, "enabled");
-    assert_eq!(dots[3].css_class, "status-pass");
-    assert_eq!(dots[3].label, "pass");
+fn status_dots_cases() -> [StatusDotsCase; 7] {
+    [
+        StatusDotsCase {
+            name: "all_passing",
+            policy: SecurityPolicyStatus::Pass,
+            secret: SecretScanningStatus::Enabled,
+            dependabot: DependabotStatus::Enabled,
+            branch: BranchProtectionStatus::Pass,
+            pending: false,
+            not_applicable_policy: false,
+            expected: [
+                ("status-pass", "pass"),
+                ("status-pass", "enabled"),
+                ("status-pass", "enabled"),
+                ("status-pass", "pass"),
+            ],
+        },
+        StatusDotsCase {
+            name: "all_failing",
+            policy: SecurityPolicyStatus::Fail,
+            secret: SecretScanningStatus::Disabled,
+            dependabot: DependabotStatus::Disabled,
+            branch: BranchProtectionStatus::Fail,
+            pending: false,
+            not_applicable_policy: false,
+            expected: [
+                ("status-fail", "fail"),
+                ("status-fail", "disabled"),
+                ("status-fail", "disabled"),
+                ("status-fail", "fail"),
+            ],
+        },
+        StatusDotsCase {
+            name: "all_unknown",
+            policy: SecurityPolicyStatus::Unknown,
+            secret: SecretScanningStatus::Unknown,
+            dependabot: DependabotStatus::Unknown,
+            branch: BranchProtectionStatus::Unknown,
+            pending: false,
+            not_applicable_policy: false,
+            expected: [
+                ("status-unknown", "unknown"),
+                ("status-unknown", "unknown"),
+                ("status-unknown", "unknown"),
+                ("status-unknown", "unknown"),
+            ],
+        },
+        StatusDotsCase {
+            name: "branch_partial",
+            policy: SecurityPolicyStatus::Pass,
+            secret: SecretScanningStatus::Enabled,
+            dependabot: DependabotStatus::Enabled,
+            branch: BranchProtectionStatus::Partial,
+            pending: false,
+            not_applicable_policy: false,
+            expected: [
+                ("status-pass", "pass"),
+                ("status-pass", "enabled"),
+                ("status-pass", "enabled"),
+                ("status-warn", "partial"),
+            ],
+        },
+        StatusDotsCase {
+            name: "secret_scanning_permission_denied",
+            policy: SecurityPolicyStatus::Pass,
+            secret: SecretScanningStatus::PermissionDenied,
+            dependabot: DependabotStatus::Enabled,
+            branch: BranchProtectionStatus::Pass,
+            pending: false,
+            not_applicable_policy: false,
+            expected: [
+                ("status-pass", "pass"),
+                ("status-unknown", "permission denied"),
+                ("status-pass", "enabled"),
+                ("status-pass", "pass"),
+            ],
+        },
+        StatusDotsCase {
+            name: "pending_repos_render_pending",
+            policy: SecurityPolicyStatus::Unknown,
+            secret: SecretScanningStatus::Unknown,
+            dependabot: DependabotStatus::Unknown,
+            branch: BranchProtectionStatus::Unknown,
+            pending: true,
+            not_applicable_policy: false,
+            expected: [
+                ("status-pending", "Pending"),
+                ("status-pending", "Pending"),
+                ("status-pending", "Pending"),
+                ("status-pending", "Pending"),
+            ],
+        },
+        StatusDotsCase {
+            name: "not_applicable_renders_na",
+            policy: SecurityPolicyStatus::NotApplicable,
+            secret: SecretScanningStatus::Enabled,
+            dependabot: DependabotStatus::Enabled,
+            branch: BranchProtectionStatus::Pass,
+            pending: false,
+            not_applicable_policy: true,
+            expected: [
+                ("status-na", "N/A"),
+                ("status-pass", "enabled"),
+                ("status-pass", "enabled"),
+                ("status-pass", "pass"),
+            ],
+        },
+    ]
 }
 
 #[test]
-fn status_dots_all_failing() {
-    let checks = make_checks_with_statuses(
-        SecurityPolicyStatus::Fail,
-        SecretScanningStatus::Disabled,
-        DependabotStatus::Disabled,
-        BranchProtectionStatus::Fail,
-    );
-    let dots = build_status_dots(&checks);
+fn status_dots_match_expected_css_and_label_per_case() {
+    for case in status_dots_cases() {
+        let mut checks =
+            make_checks_with_statuses(case.policy, case.secret, case.dependabot, case.branch);
+        if case.pending {
+            checks.secret_scanning.reason = Some("pending".to_string());
+            checks.dependabot_security_updates.reason = Some("pending".to_string());
+            checks.branch_protection.details.reason = Some("pending".to_string());
+        }
+        if case.not_applicable_policy {
+            checks.security_policy.evidence = SecurityPolicyEvidence::NotApplicable;
+        }
 
-    assert_eq!(dots[0].css_class, "status-fail");
-    assert_eq!(dots[0].label, "fail");
-    assert_eq!(dots[1].css_class, "status-fail");
-    assert_eq!(dots[1].label, "disabled");
-    assert_eq!(dots[2].css_class, "status-fail");
-    assert_eq!(dots[2].label, "disabled");
-    assert_eq!(dots[3].css_class, "status-fail");
-    assert_eq!(dots[3].label, "fail");
-}
+        let dots = build_status_dots(&checks);
 
-#[test]
-fn status_dots_all_unknown() {
-    let checks = make_checks_with_statuses(
-        SecurityPolicyStatus::Unknown,
-        SecretScanningStatus::Unknown,
-        DependabotStatus::Unknown,
-        BranchProtectionStatus::Unknown,
-    );
-    let dots = build_status_dots(&checks);
-
-    for dot in &dots {
-        assert_eq!(dot.css_class, "status-unknown");
+        assert_eq!(dots.len(), 4, "case {}: dot count", case.name);
+        for (i, (css, label)) in case.expected.iter().enumerate() {
+            assert_eq!(
+                dots[i].css_class, *css,
+                "case {}: dot {} css_class",
+                case.name, i
+            );
+            assert_eq!(dots[i].label, *label, "case {}: dot {} label", case.name, i);
+        }
     }
-    assert_eq!(dots[0].label, "unknown");
-    assert_eq!(dots[1].label, "unknown");
-    assert_eq!(dots[2].label, "unknown");
-    assert_eq!(dots[3].label, "unknown");
-}
-
-#[test]
-fn status_dots_branch_partial() {
-    let checks = make_checks_with_statuses(
-        SecurityPolicyStatus::Pass,
-        SecretScanningStatus::Enabled,
-        DependabotStatus::Enabled,
-        BranchProtectionStatus::Partial,
-    );
-    let dots = build_status_dots(&checks);
-
-    assert_eq!(dots[3].css_class, "status-warn");
-    assert_eq!(dots[3].label, "partial");
-}
-
-#[test]
-fn status_dots_secret_scanning_permission_denied() {
-    let checks = make_checks_with_statuses(
-        SecurityPolicyStatus::Pass,
-        SecretScanningStatus::PermissionDenied,
-        DependabotStatus::Enabled,
-        BranchProtectionStatus::Pass,
-    );
-    let dots = build_status_dots(&checks);
-
-    assert_eq!(dots[1].css_class, "status-unknown");
-    assert_eq!(dots[1].label, "permission denied");
 }
 
 use crate::domain::codeowners::ParsedCodeowners;
@@ -1766,58 +1827,66 @@ fn render_owner_detail_html_summary_cards_have_no_operations_link() {
     );
 }
 
-#[test]
-fn build_owner_github_url_team_type_uses_org_teams_path() {
-    let url = build_owner_github_url(OwnerType::Team, "@acme/security-team", "acme");
-    assert_eq!(
-        url.as_deref(),
-        Some("https://github.com/orgs/acme/teams/security-team")
-    );
+fn build_owner_github_url_cases()
+-> [(&'static str, OwnerType, &'static str, Option<&'static str>); 4] {
+    [
+        (
+            "team_type_uses_org_teams_path",
+            OwnerType::Team,
+            "@acme/security-team",
+            Some("https://github.com/orgs/acme/teams/security-team"),
+        ),
+        (
+            "user_type_uses_profile_path",
+            OwnerType::User,
+            "@octocat",
+            Some("https://github.com/octocat"),
+        ),
+        (
+            "malformed_team_returns_none",
+            OwnerType::Team,
+            "@team-with-no-slash",
+            None,
+        ),
+        ("bare_at_user_returns_none", OwnerType::User, "@", None),
+    ]
 }
 
 #[test]
-fn build_owner_github_url_user_type_uses_profile_path() {
-    let url = build_owner_github_url(OwnerType::User, "@octocat", "acme");
-    assert_eq!(url.as_deref(), Some("https://github.com/octocat"));
+fn build_owner_github_url_matches_expected_for_each_owner_shape() {
+    for (name, owner_type, canonical_owner, expected) in build_owner_github_url_cases() {
+        let url = build_owner_github_url(owner_type, canonical_owner, "acme");
+        assert_eq!(url.as_deref(), expected, "case {name}");
+    }
+}
+
+fn build_team_security_url_cases()
+-> [(&'static str, OwnerType, &'static str, Option<&'static str>); 3] {
+    [
+        (
+            "team_type_targets_security_overview",
+            OwnerType::Team,
+            "@acme/app-platform",
+            Some(
+                "https://github.com/orgs/acme/security/overview?query=archived%3Afalse%20tool%3Agithub%20team%3Aapp-platform",
+            ),
+        ),
+        ("user_type_returns_none", OwnerType::User, "@octocat", None),
+        (
+            "malformed_team_returns_none",
+            OwnerType::Team,
+            "@team-with-no-slash",
+            None,
+        ),
+    ]
 }
 
 #[test]
-fn build_owner_github_url_malformed_team_returns_none() {
-    let url = build_owner_github_url(OwnerType::Team, "@team-with-no-slash", "acme");
-    assert_eq!(url, None);
-}
-
-#[test]
-fn build_owner_github_url_bare_at_user_returns_none() {
-    let url = build_owner_github_url(OwnerType::User, "@", "acme");
-    assert_eq!(url, None);
-}
-
-#[test]
-fn build_team_security_url_team_type_targets_security_overview() {
-    let url = build_team_security_url(OwnerType::Team, "@acme/app-platform", "acme");
-    assert_eq!(
-        url.as_deref(),
-        Some(
-            "https://github.com/orgs/acme/security/overview?query=archived%3Afalse%20tool%3Agithub%20team%3Aapp-platform"
-        )
-    );
-}
-
-#[test]
-fn build_team_security_url_user_type_returns_none() {
-    assert_eq!(
-        build_team_security_url(OwnerType::User, "@octocat", "acme"),
-        None
-    );
-}
-
-#[test]
-fn build_team_security_url_malformed_team_returns_none() {
-    assert_eq!(
-        build_team_security_url(OwnerType::Team, "@team-with-no-slash", "acme"),
-        None
-    );
+fn build_team_security_url_matches_expected_for_each_owner_shape() {
+    for (name, owner_type, canonical_owner, expected) in build_team_security_url_cases() {
+        let url = build_team_security_url(owner_type, canonical_owner, "acme");
+        assert_eq!(url.as_deref(), expected, "case {name}");
+    }
 }
 
 /// B1: a realistic multi-member team roster renders on the owner
@@ -2030,43 +2099,34 @@ fn render_owner_detail_html_has_data_driven_table_headers() {
     assert!(detail_page.contains(">Dependabot Status <span class=\"tooltip-trigger"));
 }
 
-#[test]
-fn format_date_prefix_full_iso_timestamp() {
-    assert_eq!(
-        super::format_date_prefix(Some("2026-04-09T12:00:00+00:00")),
-        "2026-04-09"
-    );
+fn format_date_prefix_cases() -> [(&'static str, Option<&'static str>, &'static str); 6] {
+    [
+        (
+            "full_iso_timestamp",
+            Some("2026-04-09T12:00:00+00:00"),
+            "2026-04-09",
+        ),
+        ("date_only", Some("2026-04-09"), "2026-04-09"),
+        ("none_returns_em_dash", None, "\u{2014}"),
+        ("short_string_returns_em_dash", Some("2026"), "\u{2014}"),
+        (
+            "cross_date_boundary_offset",
+            Some("2026-04-09T23:30:00-05:00"),
+            "2026-04-10",
+        ),
+        (
+            "multibyte_no_panic",
+            Some("日本語タイムスタンプ"),
+            "\u{2014}",
+        ),
+    ]
 }
 
 #[test]
-fn format_date_prefix_date_only() {
-    assert_eq!(super::format_date_prefix(Some("2026-04-09")), "2026-04-09");
-}
-
-#[test]
-fn format_date_prefix_none_returns_em_dash() {
-    assert_eq!(super::format_date_prefix(None), "\u{2014}");
-}
-
-#[test]
-fn format_date_prefix_short_string_returns_em_dash() {
-    assert_eq!(super::format_date_prefix(Some("2026")), "\u{2014}");
-}
-
-#[test]
-fn format_date_prefix_cross_date_boundary_offset() {
-    assert_eq!(
-        super::format_date_prefix(Some("2026-04-09T23:30:00-05:00")),
-        "2026-04-10"
-    );
-}
-
-#[test]
-fn format_date_prefix_multibyte_no_panic() {
-    assert_eq!(
-        super::format_date_prefix(Some("日本語タイムスタンプ")),
-        "\u{2014}"
-    );
+fn format_date_prefix_matches_expected_for_each_input_shape() {
+    for (name, input, expected) in format_date_prefix_cases() {
+        assert_eq!(super::format_date_prefix(input), expected, "case {name}");
+    }
 }
 
 #[test]
@@ -3492,205 +3552,255 @@ fn render_dashboard_nav_contains_orphaned_link() {
     );
 }
 
-#[test]
-fn repo_score_all_passing() {
-    let checks = make_checks_with_statuses(
-        SecurityPolicyStatus::Pass,
-        SecretScanningStatus::Enabled,
-        DependabotStatus::Enabled,
-        BranchProtectionStatus::Pass,
-    );
-    let (score, fmt, tier, wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
-    assert_eq!(score, Some(100.0));
-    assert_eq!(fmt, "100.0%");
-    assert_eq!(tier, CoverageTier::Pass);
-    assert_eq!(wc, "w-100");
+struct RepoScoreCase {
+    name: &'static str,
+    policy: SecurityPolicyStatus,
+    secret: SecretScanningStatus,
+    dependabot: DependabotStatus,
+    branch: BranchProtectionStatus,
+    codeowners: Option<CodeownersStatus>,
+    not_applicable_policy: bool,
+    expected_score: Option<f64>,
+    expected_fmt: Option<&'static str>,
+    expected_tier: Option<CoverageTier>,
+    expected_wc: Option<&'static str>,
+}
+
+fn repo_score_cases() -> [RepoScoreCase; 15] {
+    [
+        RepoScoreCase {
+            name: "all_passing",
+            policy: SecurityPolicyStatus::Pass,
+            secret: SecretScanningStatus::Enabled,
+            dependabot: DependabotStatus::Enabled,
+            branch: BranchProtectionStatus::Pass,
+            codeowners: None,
+            not_applicable_policy: false,
+            expected_score: Some(100.0),
+            expected_fmt: Some("100.0%"),
+            expected_tier: Some(CoverageTier::Pass),
+            expected_wc: Some("w-100"),
+        },
+        RepoScoreCase {
+            name: "all_failing",
+            policy: SecurityPolicyStatus::Fail,
+            secret: SecretScanningStatus::Disabled,
+            dependabot: DependabotStatus::Disabled,
+            branch: BranchProtectionStatus::Fail,
+            codeowners: None,
+            not_applicable_policy: false,
+            expected_score: Some(20.0),
+            expected_fmt: None,
+            expected_tier: Some(CoverageTier::Fail),
+            expected_wc: None,
+        },
+        RepoScoreCase {
+            name: "all_unknown_returns_na",
+            policy: SecurityPolicyStatus::Unknown,
+            secret: SecretScanningStatus::Unknown,
+            dependabot: DependabotStatus::Unknown,
+            branch: BranchProtectionStatus::Unknown,
+            codeowners: Some(CodeownersStatus::Unknown),
+            not_applicable_policy: false,
+            expected_score: None,
+            expected_fmt: Some("N/A"),
+            expected_tier: Some(CoverageTier::Na),
+            expected_wc: Some("w-0"),
+        },
+        RepoScoreCase {
+            name: "mixed_with_unknowns_excluded",
+            policy: SecurityPolicyStatus::Pass,
+            secret: SecretScanningStatus::Unknown,
+            dependabot: DependabotStatus::Disabled,
+            branch: BranchProtectionStatus::Unknown,
+            codeowners: None,
+            not_applicable_policy: false,
+            expected_score: Some(66.7),
+            expected_fmt: None,
+            expected_tier: Some(CoverageTier::Warn),
+            expected_wc: None,
+        },
+        RepoScoreCase {
+            name: "paused_and_partial_count_as_fail",
+            policy: SecurityPolicyStatus::Pass,
+            secret: SecretScanningStatus::Enabled,
+            dependabot: DependabotStatus::Paused,
+            branch: BranchProtectionStatus::Partial,
+            codeowners: None,
+            not_applicable_policy: false,
+            expected_score: Some(60.0),
+            expected_fmt: None,
+            expected_tier: None,
+            expected_wc: None,
+        },
+        RepoScoreCase {
+            name: "secret_scanning_permission_denied_excluded",
+            policy: SecurityPolicyStatus::Pass,
+            secret: SecretScanningStatus::PermissionDenied,
+            dependabot: DependabotStatus::Enabled,
+            branch: BranchProtectionStatus::Pass,
+            codeowners: None,
+            not_applicable_policy: false,
+            expected_score: Some(100.0),
+            expected_fmt: Some("100.0%"),
+            expected_tier: Some(CoverageTier::Pass),
+            expected_wc: Some("w-100"),
+        },
+        RepoScoreCase {
+            name: "codeowners_non_conforming_counts_as_fail",
+            policy: SecurityPolicyStatus::Pass,
+            secret: SecretScanningStatus::Enabled,
+            dependabot: DependabotStatus::Enabled,
+            branch: BranchProtectionStatus::Pass,
+            codeowners: Some(CodeownersStatus::NonConforming),
+            not_applicable_policy: false,
+            expected_score: Some(80.0),
+            expected_fmt: Some("80.0%"),
+            expected_tier: Some(CoverageTier::Pass),
+            expected_wc: None,
+        },
+        RepoScoreCase {
+            name: "codeowners_absent_counts_as_fail",
+            policy: SecurityPolicyStatus::Pass,
+            secret: SecretScanningStatus::Enabled,
+            dependabot: DependabotStatus::Enabled,
+            branch: BranchProtectionStatus::Pass,
+            codeowners: Some(CodeownersStatus::Absent),
+            not_applicable_policy: false,
+            expected_score: Some(80.0),
+            expected_fmt: None,
+            expected_tier: None,
+            expected_wc: None,
+        },
+        RepoScoreCase {
+            name: "all_controls_fail",
+            policy: SecurityPolicyStatus::Fail,
+            secret: SecretScanningStatus::Disabled,
+            dependabot: DependabotStatus::Disabled,
+            branch: BranchProtectionStatus::Fail,
+            codeowners: Some(CodeownersStatus::Absent),
+            not_applicable_policy: false,
+            expected_score: Some(0.0),
+            expected_fmt: Some("0.0%"),
+            expected_tier: Some(CoverageTier::Fail),
+            expected_wc: Some("w-0"),
+        },
+        RepoScoreCase {
+            name: "single_deterministic_control_pass",
+            policy: SecurityPolicyStatus::Pass,
+            secret: SecretScanningStatus::Unknown,
+            dependabot: DependabotStatus::Unknown,
+            branch: BranchProtectionStatus::Unknown,
+            codeowners: Some(CodeownersStatus::Unknown),
+            not_applicable_policy: false,
+            expected_score: Some(100.0),
+            expected_fmt: Some("100.0%"),
+            expected_tier: Some(CoverageTier::Pass),
+            expected_wc: Some("w-100"),
+        },
+        RepoScoreCase {
+            name: "single_deterministic_control_fail",
+            policy: SecurityPolicyStatus::Unknown,
+            secret: SecretScanningStatus::Unknown,
+            dependabot: DependabotStatus::Paused,
+            branch: BranchProtectionStatus::Unknown,
+            codeowners: Some(CodeownersStatus::Unknown),
+            not_applicable_policy: false,
+            expected_score: Some(0.0),
+            expected_fmt: Some("0.0%"),
+            expected_tier: Some(CoverageTier::Fail),
+            expected_wc: Some("w-0"),
+        },
+        RepoScoreCase {
+            name: "width_class_for_boundary_value_60",
+            policy: SecurityPolicyStatus::Pass,
+            secret: SecretScanningStatus::Enabled,
+            dependabot: DependabotStatus::Paused,
+            branch: BranchProtectionStatus::Partial,
+            codeowners: None,
+            not_applicable_policy: false,
+            expected_score: Some(60.0),
+            expected_fmt: None,
+            expected_tier: None,
+            expected_wc: Some("w-60"),
+        },
+        RepoScoreCase {
+            name: "width_class_for_boundary_value_20",
+            policy: SecurityPolicyStatus::Fail,
+            secret: SecretScanningStatus::Disabled,
+            dependabot: DependabotStatus::Disabled,
+            branch: BranchProtectionStatus::Pass,
+            codeowners: Some(CodeownersStatus::NonConforming),
+            not_applicable_policy: false,
+            expected_score: Some(20.0),
+            expected_fmt: None,
+            expected_tier: None,
+            expected_wc: Some("w-20"),
+        },
+        RepoScoreCase {
+            name: "width_class_rounds_non_boundary",
+            policy: SecurityPolicyStatus::Pass,
+            secret: SecretScanningStatus::Unknown,
+            dependabot: DependabotStatus::Disabled,
+            branch: BranchProtectionStatus::Unknown,
+            codeowners: None,
+            not_applicable_policy: false,
+            expected_score: Some(66.7),
+            expected_fmt: None,
+            expected_tier: None,
+            expected_wc: Some("w-65"),
+        },
+        RepoScoreCase {
+            name: "not_applicable_excluded_from_denominator",
+            policy: SecurityPolicyStatus::NotApplicable,
+            secret: SecretScanningStatus::Enabled,
+            dependabot: DependabotStatus::Enabled,
+            branch: BranchProtectionStatus::Pass,
+            codeowners: None,
+            not_applicable_policy: true,
+            expected_score: Some(100.0),
+            expected_fmt: None,
+            expected_tier: Some(CoverageTier::Pass),
+            expected_wc: None,
+        },
+    ]
 }
 
 #[test]
-fn repo_score_all_failing() {
-    let checks = make_checks_with_statuses(
-        SecurityPolicyStatus::Fail,
-        SecretScanningStatus::Disabled,
-        DependabotStatus::Disabled,
-        BranchProtectionStatus::Fail,
-    );
-    let (score, _fmt, tier, _wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
-    assert_eq!(score, Some(20.0));
-    assert_eq!(tier, CoverageTier::Fail);
-}
+fn repo_score_matches_expected_value_per_case() {
+    for case in repo_score_cases() {
+        let mut checks =
+            make_checks_with_statuses(case.policy, case.secret, case.dependabot, case.branch);
+        if let Some(codeowners) = case.codeowners {
+            checks.codeowners.status = codeowners;
+        }
+        if case.not_applicable_policy {
+            checks.security_policy.evidence = SecurityPolicyEvidence::NotApplicable;
+        }
 
-#[test]
-fn repo_score_all_unknown_returns_na() {
-    let checks = make_checks_with_statuses(
-        SecurityPolicyStatus::Unknown,
-        SecretScanningStatus::Unknown,
-        DependabotStatus::Unknown,
-        BranchProtectionStatus::Unknown,
-    );
-    let mut checks = checks;
-    checks.codeowners.status = CodeownersStatus::Unknown;
+        let (score, fmt, tier, wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
 
-    let (score, fmt, tier, wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
-    assert_eq!(score, None);
-    assert_eq!(fmt, "N/A");
-    assert_eq!(tier, CoverageTier::Na);
-    assert_eq!(wc, "w-0");
-}
-
-#[test]
-fn repo_score_mixed_with_unknowns_excluded() {
-    let checks = make_checks_with_statuses(
-        SecurityPolicyStatus::Pass,
-        SecretScanningStatus::Unknown,
-        DependabotStatus::Disabled,
-        BranchProtectionStatus::Unknown,
-    );
-    let (score, _fmt, tier, _wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
-    let s = score.unwrap();
-    assert!((s - 66.7).abs() < 0.1, "expected ~66.7, got {s}");
-    assert_eq!(tier, CoverageTier::Warn);
-}
-
-#[test]
-fn repo_score_paused_and_partial_count_as_fail() {
-    let checks = make_checks_with_statuses(
-        SecurityPolicyStatus::Pass,
-        SecretScanningStatus::Enabled,
-        DependabotStatus::Paused,
-        BranchProtectionStatus::Partial,
-    );
-    let (score, _fmt, _tier, _wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
-    assert_eq!(score, Some(60.0));
-}
-
-#[test]
-fn repo_score_secret_scanning_permission_denied_excluded() {
-    let checks = make_checks_with_statuses(
-        SecurityPolicyStatus::Pass,
-        SecretScanningStatus::PermissionDenied,
-        DependabotStatus::Enabled,
-        BranchProtectionStatus::Pass,
-    );
-    let (score, fmt, tier, wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
-    assert_eq!(score, Some(100.0));
-    assert_eq!(fmt, "100.0%");
-    assert_eq!(tier, CoverageTier::Pass);
-    assert_eq!(wc, "w-100");
-}
-
-#[test]
-fn repo_score_codeowners_non_conforming_counts_as_fail() {
-    let mut checks = make_checks_with_statuses(
-        SecurityPolicyStatus::Pass,
-        SecretScanningStatus::Enabled,
-        DependabotStatus::Enabled,
-        BranchProtectionStatus::Pass,
-    );
-    checks.codeowners.status = CodeownersStatus::NonConforming;
-    let (score, fmt, tier, _wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
-    assert_eq!(score, Some(80.0));
-    assert_eq!(fmt, "80.0%");
-    assert_eq!(tier, CoverageTier::Pass);
-}
-
-#[test]
-fn repo_score_codeowners_absent_counts_as_fail() {
-    let mut checks = make_checks_with_statuses(
-        SecurityPolicyStatus::Pass,
-        SecretScanningStatus::Enabled,
-        DependabotStatus::Enabled,
-        BranchProtectionStatus::Pass,
-    );
-    checks.codeowners.status = CodeownersStatus::Absent;
-    let (score, _fmt, _tier, _wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
-    assert_eq!(score, Some(80.0));
-}
-
-#[test]
-fn repo_score_all_controls_fail() {
-    let mut checks = make_checks_with_statuses(
-        SecurityPolicyStatus::Fail,
-        SecretScanningStatus::Disabled,
-        DependabotStatus::Disabled,
-        BranchProtectionStatus::Fail,
-    );
-    checks.codeowners.status = CodeownersStatus::Absent;
-    let (score, fmt, tier, wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
-    assert_eq!(score, Some(0.0));
-    assert_eq!(fmt, "0.0%");
-    assert_eq!(tier, CoverageTier::Fail);
-    assert_eq!(wc, "w-0");
-}
-
-#[test]
-fn repo_score_single_deterministic_control_pass() {
-    let mut checks = make_checks_with_statuses(
-        SecurityPolicyStatus::Pass,
-        SecretScanningStatus::Unknown,
-        DependabotStatus::Unknown,
-        BranchProtectionStatus::Unknown,
-    );
-    checks.codeowners.status = CodeownersStatus::Unknown;
-    let (score, fmt, tier, wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
-    assert_eq!(score, Some(100.0));
-    assert_eq!(fmt, "100.0%");
-    assert_eq!(tier, CoverageTier::Pass);
-    assert_eq!(wc, "w-100");
-}
-
-#[test]
-fn repo_score_single_deterministic_control_fail() {
-    let mut checks = make_checks_with_statuses(
-        SecurityPolicyStatus::Unknown,
-        SecretScanningStatus::Unknown,
-        DependabotStatus::Paused,
-        BranchProtectionStatus::Unknown,
-    );
-    checks.codeowners.status = CodeownersStatus::Unknown;
-    let (score, fmt, tier, wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
-    assert_eq!(score, Some(0.0));
-    assert_eq!(fmt, "0.0%");
-    assert_eq!(tier, CoverageTier::Fail);
-    assert_eq!(wc, "w-0");
-}
-
-#[test]
-fn repo_score_width_class_for_boundary_values() {
-    let checks = make_checks_with_statuses(
-        SecurityPolicyStatus::Pass,
-        SecretScanningStatus::Enabled,
-        DependabotStatus::Paused,
-        BranchProtectionStatus::Partial,
-    );
-    let (_score, _fmt, _tier, wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
-    assert_eq!(wc, "w-60");
-
-    let mut checks2 = make_checks_with_statuses(
-        SecurityPolicyStatus::Fail,
-        SecretScanningStatus::Disabled,
-        DependabotStatus::Disabled,
-        BranchProtectionStatus::Pass,
-    );
-    checks2.codeowners.status = CodeownersStatus::NonConforming;
-    let (score2, _fmt2, _tier2, wc2) =
-        super::compute_repo_score(&checks2, &CoverageTiers::default());
-    assert_eq!(score2, Some(20.0));
-    assert_eq!(wc2, "w-20");
-}
-
-#[test]
-fn repo_score_width_class_rounds_non_boundary() {
-    let checks = make_checks_with_statuses(
-        SecurityPolicyStatus::Pass,
-        SecretScanningStatus::Unknown,
-        DependabotStatus::Disabled,
-        BranchProtectionStatus::Unknown,
-    );
-    let (score, _fmt, _tier, wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
-    let s = score.unwrap();
-    assert!((s - 66.7).abs() < 0.1, "expected ~66.7, got {s}");
-    assert_eq!(wc, "w-65");
+        match case.expected_score {
+            Some(expected) => {
+                let s = score.unwrap_or_else(|| panic!("case {}: expected a score", case.name));
+                assert!(
+                    (s - expected).abs() < 0.05,
+                    "case {}: expected ~{expected}, got {s}",
+                    case.name
+                );
+            }
+            None => assert_eq!(score, None, "case {}: expected no score", case.name),
+        }
+        if let Some(expected_fmt) = case.expected_fmt {
+            assert_eq!(fmt, expected_fmt, "case {}: fmt", case.name);
+        }
+        if let Some(expected_tier) = case.expected_tier {
+            assert_eq!(tier, expected_tier, "case {}: tier", case.name);
+        }
+        if let Some(expected_wc) = case.expected_wc {
+            assert_eq!(wc, expected_wc, "case {}: width class", case.name);
+        }
+    }
 }
 
 #[test]
@@ -3706,34 +3816,6 @@ fn owner_sec_score_computed_in_overview() {
     assert!(row.sec_score.is_some(), "sec_score should be Some");
     assert!(row.sec_score_formatted.contains('%'));
     assert_ne!(row.sec_score_width_class, "w-0");
-}
-
-#[test]
-fn status_dots_pending_repos_render_pending() {
-    let mut checks = make_checks_with_statuses(
-        SecurityPolicyStatus::Unknown,
-        SecretScanningStatus::Unknown,
-        DependabotStatus::Unknown,
-        BranchProtectionStatus::Unknown,
-    );
-    checks.secret_scanning.reason = Some("pending".to_string());
-    checks.dependabot_security_updates.reason = Some("pending".to_string());
-    checks.branch_protection.details.reason = Some("pending".to_string());
-
-    let dots = build_status_dots(&checks);
-
-    for dot in &dots {
-        assert_eq!(
-            dot.css_class, "status-pending",
-            "dot '{}' should be status-pending, got {}",
-            dot.label, dot.css_class
-        );
-        assert_eq!(
-            dot.label, "Pending",
-            "dot label should be 'Pending', got '{}'",
-            dot.label
-        );
-    }
 }
 
 #[test]
@@ -3823,37 +3905,6 @@ fn render_owner_detail_html_stale_repos_card_disambiguates_freshness_from_archiv
         detail_page.contains("Distinct from the org-wide Archival Coverage"),
         "Stale Repos card tooltip must explicitly disambiguate from the org-level Archival Coverage metric"
     );
-}
-
-#[test]
-fn status_dots_not_applicable_renders_na() {
-    let mut checks = make_checks_with_statuses(
-        SecurityPolicyStatus::NotApplicable,
-        SecretScanningStatus::Enabled,
-        DependabotStatus::Enabled,
-        BranchProtectionStatus::Pass,
-    );
-    checks.security_policy.evidence = SecurityPolicyEvidence::NotApplicable;
-
-    let dots = build_status_dots(&checks);
-
-    assert_eq!(dots[0].css_class, "status-na");
-    assert_eq!(dots[0].label, "N/A");
-    assert_eq!(dots[1].css_class, "status-pass");
-}
-
-#[test]
-fn repo_score_not_applicable_excluded_from_denominator() {
-    let mut checks = make_checks_with_statuses(
-        SecurityPolicyStatus::NotApplicable,
-        SecretScanningStatus::Enabled,
-        DependabotStatus::Enabled,
-        BranchProtectionStatus::Pass,
-    );
-    checks.security_policy.evidence = SecurityPolicyEvidence::NotApplicable;
-    let (score, _fmt, tier, _wc) = super::compute_repo_score(&checks, &CoverageTiers::default());
-    assert_eq!(score, Some(100.0));
-    assert_eq!(tier, CoverageTier::Pass);
 }
 
 #[test]
