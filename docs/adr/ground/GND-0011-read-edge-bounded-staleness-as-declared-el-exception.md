@@ -52,19 +52,32 @@ R2 [7]: Require monotonic reads within a session: a client must never observe
   The enforcement mechanism (client-carried high-water-mark token) is
   mechanism, not principle, and is delegated to the owning crate's ADR
   (PGN-0023).
-R3 [7]: Treat strict, read-your-writes consistency as a per-request opt-in
+R3 [7]: Require a causal-consistency floor — strictly stronger than R2's
+  monotonicity — for any aggregate read that feeds a command: a command
+  encodes a decision, and a decision computed on a read missing its own
+  causal history is an acausal command (an observed effect without its
+  cause), a correctness defect rather than a staleness tradeoff. Intra-
+  aggregate causality is free: the single-writer-per-aggregate append order
+  (COM-0018, PGN-0016) is already happens-before for that aggregate, so
+  fencing the read to the aggregate's own head sequence is sufficient. A
+  cross-aggregate causal dependency must be carried explicitly, as a
+  per-aggregate dependency stamp on the command, never inferred implicitly.
+  The enforcement mechanism is delegated to the owning crate's ADR
+  (PGN-0023).
+R4 [7]: Treat strict, read-your-writes consistency as a per-request opt-in
   the caller must explicitly request, never a default or a global mode; a
-  caller that does not opt in accepts bounded staleness.
-R4 [3]: Forbid a derived view from ever authoring truth: it is a pure,
+  caller that does not opt in accepts bounded staleness (or the causal
+  floor of R3, where the read feeds a command).
+R5 [3]: Forbid a derived view from ever authoring truth: it is a pure,
   read-only fold over the log. A memoization that writes back becomes a
   second writer against the aggregate and defeats the single-writer
   invariant (COM-0018) and the OCC fence (PGN-0016) GND-0010 R5 relies on.
-R5 [5]: Require every implementation of this bounded-stale contract to
+R6 [5]: Require every implementation of this bounded-stale contract to
   satisfy GND-0005: the lag bound is not a design intent unless it is
   observed and reported, not merely assumed.
-R6 [5]: Bind this principle on every read model in the pardosa and
+R7 [5]: Bind this principle on every read model in the pardosa and
   cherry-pit family; a crate-specific mechanism ADR (starting with
-  PGN-0023 for pardosa/pardosa-nats) instantiates R1-R3 with concrete
+  PGN-0023 for pardosa/pardosa-nats) instantiates R1-R4 with concrete
   enforcement, never contradicts them.
 
 ## Consequences
@@ -75,13 +88,25 @@ R6 [5]: Bind this principle on every read model in the pardosa and
   rule governed derived-view staleness; PGN-0022's applied-sequence
   high-water mark is retroactively understood as one instance of the R1
   enforcement signal this ADR requires generally.
-- **Derived-views-never-author-truth is now a ground axiom** (R4), not an
+- **Derived-views-never-author-truth is now a ground axiom** (R5), not an
   implicit assumption; COM-0018's single-writer invariant is the write-side
   half of the same guarantee this ADR completes on the read side.
-- **Per-request RYW keeps the consistency surface auditable.** R3 avoids
+- **Per-request RYW keeps the consistency surface auditable.** R4 avoids
   GND-0010's rejected Option 2 failure mode (unaudited per-call tunability)
   by scoping caller choice to an explicit, observable per-request flag
   rather than an ambient mode.
+- **Command-feeding reads get a stronger, still-coordination-free floor.**
+  R3's causal-consistency requirement sits strictly between R1's bounded
+  staleness and R4's linearizable opt-in — it is the strongest guarantee
+  achievable without consensus (Attiya CAC / COPS lineage), matched to the
+  actual correctness need of a read that a command decision depends on.
+- **Assumption to validate, not a settled fact.** Cross-aggregate causal
+  tracking (R3) costs a dependency stamp plus a fence-or-reject wait; in a
+  clean single-writer DDD shape most command handlers load only their own
+  aggregate, so intra-aggregate (free) causality is expected to dominate and
+  the cross-aggregate path is expected rare. Per R6/GND-0005, this is an
+  assumption to be confirmed by observed lag data, not asserted as settled
+  design intent.
 - **Retroactive cost.** A read model that silently claims freshness beyond
   its enforced lag bound, or that writes back into the log it folds over, is
   a defect under this ADR and must be reported per GND-0004.
