@@ -529,24 +529,32 @@ fn handle_success_outcome(
 ) {
     let repo_name = result.repository.name.clone();
     let timestamp = jiff::Timestamp::now().to_string();
-    if let Err(failure) = write_with_policy_sync(|| {
+    match write_with_policy_sync(|| {
         state.record_repo(domain_key, result.clone(), &repo_name, &timestamp)
     }) {
-        tracing::error!(
-            persist_error_variant = persist_error_variant(&failure.error),
-            category = ?failure.category,
-            response = ?failure.response,
-            error = ?failure.error,
-            "repository state record failed"
-        );
+        Ok(()) => {
+            info!(
+                key = %domain_key,
+                repo = %repo_name,
+                source = ?source,
+                duration_ms = duration.as_millis(),
+                "job completed"
+            );
+        }
+        Err(failure) => {
+            error!(
+                key = %domain_key,
+                repo = %repo_name,
+                source = ?source,
+                duration_ms = duration.as_millis(),
+                persist_error_variant = persist_error_variant(&failure.error),
+                category = ?failure.category,
+                response = ?failure.response,
+                error = ?failure.error,
+                "job outcome downgraded to failed: durable record write did not succeed"
+            );
+        }
     }
-    info!(
-        key = %domain_key,
-        repo = %repo_name,
-        source = ?source,
-        duration_ms = duration.as_millis(),
-        "job completed"
-    );
 }
 
 /// Publish a failed repo evaluation and log the failure.
@@ -739,6 +747,46 @@ mod tests {
             .unwrap_or_else(|| {
                 panic!("initial collection failure log must include error_chain field: {output}")
             })
+    }
+
+    /// L1: a durable-write failure on the success path must not be
+    /// silently swallowed by loop-continuation reporting the job as
+    /// "completed" (CHE-0088/jxma5 no-Swallow guarantee). Reuses the
+    /// empty-repo-name trick from
+    /// `handle_success_outcome_escalates_swallowed_persist_failure_to_error`
+    /// to deterministically force a classified (`Unrecoverable` ->
+    /// `Fatal`) persist failure without real store infra.
+    #[tokio::test]
+    async fn handle_success_outcome_does_not_report_job_completed_on_persist_failure() {
+        let state = AppState::new().await;
+        let evidence = crate::test_fixtures::all_passing_evidence("");
+
+        let output = capture_tracing(|| {
+            handle_success_outcome(
+                &state,
+                "no-swallow-test-key",
+                &evidence,
+                &JobSource::InitialLoad,
+                Duration::from_millis(1),
+            );
+        });
+
+        let completed = output.lines().any(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .and_then(|event| {
+                    event
+                        .get("fields")?
+                        .get("message")?
+                        .as_str()
+                        .map(String::from)
+                })
+                .is_some_and(|message| message == "job completed")
+        });
+        assert!(
+            !completed,
+            "a Fatal persist failure must not be reported as job completed: {output}"
+        );
     }
 
     #[tokio::test]

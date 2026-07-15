@@ -34,7 +34,7 @@ use tracing::{debug, info, warn};
 use crate::app::collect::JobContext;
 use crate::app::state::AppState;
 use crate::app::work_queue::{EnqueueResult, JobSource, JobSpec};
-use crate::app::write_policy::write_with_policy;
+use crate::app::write_policy::{WriteResponse, write_with_policy};
 use crate::config;
 use crate::domain::repository::Repository;
 use crate::error::persist_error_variant;
@@ -142,6 +142,17 @@ fn validate_request(
     Ok((event_type.to_string(), delivery_id.to_string()))
 }
 
+/// Map a [`WriteResponse`] to the HTTP status this call site returns.
+/// Exhaustive over the closed `WriteResponse` vocabulary (CHE-0088:R7/R8):
+/// no wildcard arm, so adding a fourth response variant fails to compile
+/// here rather than silently falling through.
+fn write_response_status(response: WriteResponse) -> StatusCode {
+    match response {
+        WriteResponse::HttpNon2xx => StatusCode::BAD_GATEWAY,
+        WriteResponse::Fatal | WriteResponse::BoundedRetry => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
 /// Execute the remove action: publish `WebhookReceived` + (conditionally) `RepoRemoved`.
 ///
 /// A durable-write failure here maps to `HttpNon2xx` regardless of its
@@ -149,7 +160,9 @@ fn validate_request(
 /// with the NATS-Msg-Id BLAKE3 dedup (PGN-0016:R5) as the idempotency
 /// backstop. A `Transient` failure is bounded-retried first
 /// (CHE-0088:R4) — identically to every other durable-write call site
-/// (jxma5) — before falling back to a non-2xx response.
+/// (jxma5) — before falling back to a non-2xx response, expressed via
+/// [`write_response_status`] so `WriteResponse::HttpNon2xx` is actually
+/// produced and consumed rather than dead vocabulary.
 async fn execute_remove(
     state: &Arc<AppState>,
     event_type: &str,
@@ -170,7 +183,7 @@ async fn execute_remove(
                 error = ?write_failure.error,
                 "repository removal failed"
             );
-            return StatusCode::BAD_GATEWAY;
+            return write_response_status(WriteResponse::HttpNon2xx);
         }
     }
     info!(
@@ -543,6 +556,72 @@ mod tests {
             .unwrap();
         let response2 = app2.oneshot(request2).await.unwrap();
         assert_eq!(response2.status(), StatusCode::OK);
+    }
+
+    /// L2 (`write_response_status` is exhaustive over the closed
+    /// `WriteResponse` vocabulary, CHE-0088:R7/R8): `HttpNon2xx` maps to a
+    /// non-2xx status so GitHub redelivers, proving the variant is
+    /// produced and consumed rather than dead vocabulary.
+    #[test]
+    fn write_response_status_maps_http_non_2xx_to_non_2xx() {
+        assert!(write_response_status(WriteResponse::HttpNon2xx).is_server_error());
+        assert_eq!(
+            write_response_status(WriteResponse::HttpNon2xx),
+            StatusCode::BAD_GATEWAY
+        );
+    }
+
+    #[test]
+    fn write_response_status_maps_fatal_and_bounded_retry_to_non_2xx() {
+        assert!(write_response_status(WriteResponse::Fatal).is_server_error());
+        assert!(write_response_status(WriteResponse::BoundedRetry).is_server_error());
+    }
+
+    /// 5dhb1 (idempotent redelivery): GitHub redelivers a webhook that
+    /// received a non-2xx response using the same delivery id. A
+    /// redelivered `disabled`/remove event must not double-process — the
+    /// NATS-Msg-Id BLAKE3 dedup (PGN-0016:R5) is the idempotency backstop
+    /// R6 relies on. Mirrors `webhook_replay_duplicate` but for the
+    /// remove action path specifically.
+    #[tokio::test]
+    async fn webhook_remove_redelivery_is_idempotent() {
+        let state = test_state_with_secret("test-secret").await;
+        let secret = secret_text(&state);
+
+        let body = serde_json::json!({
+            "action": "disabled",
+            "repository": { "id": 42424, "name": "redeliver-repo" }
+        });
+        let body_bytes = serde_json::to_vec(&body).unwrap();
+        let sig = sign(&secret, &body_bytes);
+
+        let app1 = build_test_app(Arc::clone(&state));
+        let request1 = Request::builder()
+            .method("POST")
+            .uri("/webhook")
+            .header("x-hub-signature-256", &sig)
+            .header("x-github-event", "branch_protection_configuration")
+            .header("x-github-delivery", "delivery-redeliver-1")
+            .body(Body::from(body_bytes.clone()))
+            .unwrap();
+        let response1 = app1.oneshot(request1).await.unwrap();
+        assert_eq!(response1.status(), StatusCode::ACCEPTED);
+
+        let app2 = build_test_app(Arc::clone(&state));
+        let request2 = Request::builder()
+            .method("POST")
+            .uri("/webhook")
+            .header("x-hub-signature-256", &sig)
+            .header("x-github-event", "branch_protection_configuration")
+            .header("x-github-delivery", "delivery-redeliver-1")
+            .body(Body::from(body_bytes))
+            .unwrap();
+        let response2 = app2.oneshot(request2).await.unwrap();
+        assert_eq!(
+            response2.status(),
+            StatusCode::OK,
+            "redelivery of the same delivery id must be a dedup no-op, not reprocessed"
+        );
     }
 
     #[tokio::test]

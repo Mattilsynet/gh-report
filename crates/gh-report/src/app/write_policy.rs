@@ -345,6 +345,61 @@ mod tests {
         );
     }
 
+    /// jxma5: the same `Transient` failure class must resolve identically
+    /// whether it is encountered via the sync path (delivery-loop /
+    /// startup call sites) or the async path (webhook / sweep call
+    /// sites) — both bounded-retry, same attempt count, same terminal
+    /// category/response (CHE-0088:R4).
+    #[tokio::test]
+    async fn transient_resolves_identically_sync_and_async() {
+        let mut async_calls = 0;
+        let async_result = write_with_policy(|| {
+            async_calls += 1;
+            Err(PersistenceError::BackendUnavailable {
+                reason: "nats down".to_string(),
+            })
+        })
+        .await;
+
+        let mut sync_calls = 0;
+        let sync_result = write_with_policy_sync(|| {
+            sync_calls += 1;
+            Err(PersistenceError::BackendUnavailable {
+                reason: "nats down".to_string(),
+            })
+        });
+
+        assert_eq!(
+            async_calls, sync_calls,
+            "same Transient class must retry the same bounded number of times"
+        );
+        let async_failure = async_result.expect_err("must fail after exhausting retries");
+        let sync_failure = sync_result.expect_err("must fail after exhausting retries");
+        assert_eq!(async_failure.category, sync_failure.category);
+        assert_eq!(async_failure.response, sync_failure.response);
+        assert_eq!(async_failure.category, WritePolicyCategory::Transient);
+        assert_eq!(async_failure.response, WriteResponse::BoundedRetry);
+    }
+
+    /// PGN-0016:R2 — a `Conflict`-category failure is never swallowed: it
+    /// resolves to `Fatal` (propagate/abort) at the mechanism level, never
+    /// to `BoundedRetry` or any silently-continuing response. Iterating
+    /// every closed `WritePolicyCategory` variant additionally exercises
+    /// R7 (no wildcard arm in `response()`) at the value level, not just
+    /// by compilation.
+    #[test]
+    fn conflict_category_is_never_swallowed() {
+        let failure = WriteFailure::classify(PersistenceError::FencedConflict {
+            source: Box::new(std::io::Error::other("fence")),
+        });
+        assert_eq!(failure.category, WritePolicyCategory::Conflict);
+        assert_eq!(
+            failure.response,
+            WriteResponse::Fatal,
+            "Conflict must propagate/abort per PGN-0016:R2, never continue silently"
+        );
+    }
+
     #[test]
     fn write_with_policy_sync_retries_transient_then_succeeds() {
         let mut calls = 0;
