@@ -1857,6 +1857,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gh-report-queue-viz"
+version = "0.0.0"
+dependencies = [
+ "any_spawner",
+ "js-sys",
+ "leptos",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "gh-report-web-client"
 version = "0.0.0"
 dependencies = [

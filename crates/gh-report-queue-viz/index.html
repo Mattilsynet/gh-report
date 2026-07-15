@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>gh-report queue network</title>
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'"
+    />
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        background: #0f172a;
+        color: #e2e8f0;
+        margin: 0;
+        padding: 1.5rem;
+      }
+      .queue-viz {
+        max-width: 900px;
+        margin: 0 auto;
+      }
+      .row {
+        display: flex;
+        gap: 1rem;
+        align-items: center;
+        margin: 0.75rem 0;
+        flex-wrap: wrap;
+      }
+      .source {
+        padding: 0.4rem 0.8rem;
+        border-radius: 0.4rem;
+        font-size: 0.85rem;
+      }
+      .source.scheduled {
+        background: #1d4ed8;
+      }
+      .source.external {
+        background: #15803d;
+      }
+      .track {
+        position: relative;
+        flex: 1;
+        min-height: 2.5rem;
+        background: #1e293b;
+        border-radius: 0.4rem;
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        gap: 0.2rem;
+        padding: 0.3rem;
+      }
+      .packet {
+        width: 0.8rem;
+        height: 0.8rem;
+        border-radius: 999px;
+        flex: none;
+      }
+      .packet-dropped {
+        opacity: 0.35;
+        outline: 2px solid #ef4444;
+      }
+      .packet-deduplicated {
+        opacity: 0.35;
+        outline: 2px dashed #f59e0b;
+      }
+      .packet-failure {
+        outline: 2px solid #ef4444;
+      }
+      .gauge {
+        font-variant-numeric: tabular-nums;
+        font-size: 0.9rem;
+        background: #1e293b;
+        padding: 0.3rem 0.6rem;
+        border-radius: 0.4rem;
+      }
+      button {
+        background: #334155;
+        color: #e2e8f0;
+        border: none;
+        border-radius: 0.3rem;
+        padding: 0.3rem 0.6rem;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #475569;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./bootstrap.js"></script>
+  </body>
+</html>

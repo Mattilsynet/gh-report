@@ -1,0 +1,23 @@
+[package]
+name = "gh-report-queue-viz"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Standalone animated discrete-event simulation of gh-report's queue network (educational, no gh-report dependency)"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+leptos = { workspace = true }
+wasm-bindgen = { workspace = true }
+web-sys = { workspace = true }
+js-sys = { workspace = true }
+
+[target.wasm32-unknown-unknown.dependencies]
+any_spawner = { version = "0.3.0", default-features = false, features = ["wasm-bindgen"] }
