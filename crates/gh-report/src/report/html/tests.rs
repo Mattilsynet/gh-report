@@ -3938,16 +3938,22 @@ fn evidence_with_mixed_owner_types() -> Evidence {
 #[test]
 fn podium_excludes_user_owners() {
     let evidence = evidence_with_mixed_owner_types();
-    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
-    let index = &pages["index.html"];
+    let owners_vm =
+        build_owners_view_model(&evidence.metrics.owner_metrics, &CoverageTiers::default())
+            .expect("owner metrics present");
+    let podium = build_top_security_teams(&owners_vm);
 
     assert!(
-        !index.contains("alice"),
-        "podium should not contain user owner @alice"
+        podium
+            .iter()
+            .all(|t| t.owner != "@alice" && t.owner_short != "alice"),
+        "podium should not contain user owner @alice, got {podium:?}"
     );
     assert!(
-        index.contains("security-team") || index.contains("infra-team"),
-        "podium should contain at least one team owner"
+        podium
+            .iter()
+            .any(|t| t.owner.contains("security-team") || t.owner.contains("infra-team")),
+        "podium should contain at least one team owner, got {podium:?}"
     );
 }
 
@@ -4009,28 +4015,32 @@ fn render_owner_detail_html_present_individual_user_owner_shows_no_warning_badge
 #[test]
 fn podium_gold_in_center_position() {
     let evidence = evidence_with_mixed_owner_types();
-    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
-    let index = &pages["index.html"];
+    let owners_vm =
+        build_owners_view_model(&evidence.metrics.owner_metrics, &CoverageTiers::default())
+            .expect("owner metrics present");
+    let podium = build_top_security_teams(&owners_vm);
 
+    let ranks: Vec<&str> = podium.iter().map(|t| t.rank_class).collect();
     assert!(
-        index.contains("rank-gold"),
-        "podium should contain rank-gold class"
+        ranks.contains(&"rank-gold"),
+        "podium should contain rank-gold class, got {ranks:?}"
     );
 
-    if let (Some(silver_pos), Some(gold_pos)) = (index.find("rank-silver"), index.find("rank-gold"))
-    {
+    if let (Some(silver_pos), Some(gold_pos)) = (
+        ranks.iter().position(|&r| r == "rank-silver"),
+        ranks.iter().position(|&r| r == "rank-gold"),
+    ) {
         assert!(
             silver_pos < gold_pos,
-            "Silver should appear before Gold in HTML (visual order: Silver, Gold, Bronze)"
+            "Silver should appear before Gold (visual order: Silver, Gold, Bronze)"
         );
     }
 
-    if let (Some(gold_pos), Some(bronze_pos)) = (index.find("rank-gold"), index.find("rank-bronze"))
-    {
-        assert!(
-            gold_pos < bronze_pos,
-            "Gold should appear before Bronze in HTML"
-        );
+    if let (Some(gold_pos), Some(bronze_pos)) = (
+        ranks.iter().position(|&r| r == "rank-gold"),
+        ranks.iter().position(|&r| r == "rank-bronze"),
+    ) {
+        assert!(gold_pos < bronze_pos, "Gold should appear before Bronze");
     }
 }
 
@@ -4054,21 +4064,14 @@ fn podium_zero_teams_produces_empty() {
         &repos,
         &test_fixtures::make_timestamp(),
     );
-    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
-    let evidence = test_fixtures::make_full_evidence(
-        test_fixtures::make_metadata(),
-        stats,
-        metrics,
-        test_fixtures::make_observability(),
-        repos,
-    );
 
-    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
-    let index = &pages["index.html"];
+    let owners_vm = build_owners_view_model(&metrics.owner_metrics, &CoverageTiers::default())
+        .expect("owner metrics present");
+    let podium = build_top_security_teams(&owners_vm);
 
     assert!(
-        !index.contains("rank-gold"),
-        "podium should be empty when no team owners exist"
+        podium.is_empty(),
+        "podium should be empty when no team owners exist, got {podium:?}"
     );
 }
 
@@ -4106,26 +4109,23 @@ fn podium_one_team_shows_only_gold() {
         &repos,
         &test_fixtures::make_timestamp(),
     );
-    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
-    let evidence = test_fixtures::make_full_evidence(
-        test_fixtures::make_metadata(),
-        stats,
-        metrics,
-        test_fixtures::make_observability(),
-        repos,
-    );
 
-    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
-    let index = &pages["index.html"];
+    let owners_vm = build_owners_view_model(&metrics.owner_metrics, &CoverageTiers::default())
+        .expect("owner metrics present");
+    let podium = build_top_security_teams(&owners_vm);
+    let ranks: Vec<&str> = podium.iter().map(|t| t.rank_class).collect();
 
-    assert!(index.contains("rank-gold"), "should have gold");
     assert!(
-        !index.contains("rank-silver"),
-        "should not have silver with only 1 team"
+        ranks.contains(&"rank-gold"),
+        "should have gold, got {ranks:?}"
     );
     assert!(
-        !index.contains("rank-bronze"),
-        "should not have bronze with only 1 team"
+        !ranks.contains(&"rank-silver"),
+        "should not have silver with only 1 team, got {ranks:?}"
+    );
+    assert!(
+        !ranks.contains(&"rank-bronze"),
+        "should not have bronze with only 1 team, got {ranks:?}"
     );
 }
 
