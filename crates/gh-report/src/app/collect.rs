@@ -37,6 +37,7 @@ use crate::app::state::{
     AppState, CACHED_SORT_CLIENT_JS, CACHED_SORT_CLIENT_WASM, CACHED_SORT_INIT_JS,
     CACHED_STYLESHEET, CACHED_WS_JS, CachedPage,
 };
+use crate::app::write_policy::write_with_policy;
 use crate::collector::ghas_scanning;
 use crate::collector::team_membership;
 use crate::collector::{branch_protection, codeowners, dependabot, inventory, security_policy};
@@ -51,7 +52,7 @@ use crate::domain::evidence::{AssessmentMetadata, Evidence, RepositoryEvidence};
 use crate::domain::metrics::OrgAlertSummary;
 use crate::domain::repository::Repository;
 use crate::domain::run::RunMetadata;
-use crate::error::{AppError, GitHubApiError, PersistenceError};
+use crate::error::{AppError, GitHubApiError, PersistenceError, persist_error_variant};
 use crate::event::SweepTimeoutEvent;
 use crate::github::auth::{AuthMetadata, CapabilitySet, GitHubAppConfig, GitHubCredential};
 use crate::github::client::GitHubClient;
@@ -973,7 +974,7 @@ impl SweepSaga {
         let state = sweep.state;
 
         if inventory.complete && !inventory.active_repos.is_empty() {
-            reconcile_deleted_repositories(state, inventory, &sweep.run().timestamp())?;
+            reconcile_deleted_repositories(state, inventory, &sweep.run().timestamp()).await?;
         }
 
         let result = finalize_and_publish(FinalizeParams {
@@ -1189,7 +1190,17 @@ async fn finalize_and_publish(
         capabilities,
         rate_limit_warnings,
     });
-    state.record_org(org_snapshot)?;
+    write_with_policy(|| state.record_org(org_snapshot.clone()))
+        .await
+        .map_err(|write_failure| {
+            error!(
+                persist_error_variant = persist_error_variant(&write_failure.error),
+                category = ?write_failure.category,
+                response = ?write_failure.response,
+                "org state record failed"
+            );
+            AppError::Persistence(write_failure.error)
+        })?;
 
     let evidence_repos = state.projection_snapshot();
 
@@ -1335,7 +1346,7 @@ fn inventory_load_from_payload(payload: inventory::InventoryPayload) -> Inventor
     }
 }
 
-fn reconcile_deleted_repositories(
+async fn reconcile_deleted_repositories(
     state: &AppState,
     inventory: &InventoryLoad,
     detected_at: &str,
@@ -1351,13 +1362,23 @@ fn reconcile_deleted_repositories(
         .filter(|(inventory_key, _name)| !active_keys.contains(inventory_key.as_str()))
         .collect();
     for (domain_key, repo_name) in disappeared {
-        state.mark_repo_deleted(&domain_key, &repo_name, detected_at)?;
+        write_with_policy(|| state.mark_repo_deleted(&domain_key, &repo_name, detected_at))
+            .await
+            .map_err(|write_failure| {
+                error!(
+                    persist_error_variant = persist_error_variant(&write_failure.error),
+                    category = ?write_failure.category,
+                    response = ?write_failure.response,
+                    "repository deletion record failed"
+                );
+                write_failure.error
+            })?;
     }
     Ok(())
 }
 
 #[cfg(test)]
-fn reconcile_deleted_repositories_after_successful_inventory(
+async fn reconcile_deleted_repositories_after_successful_inventory(
     state: &AppState,
     inventory_result: &Result<InventoryLoad, AppError>,
     detected_at: &str,
@@ -1368,7 +1389,7 @@ fn reconcile_deleted_repositories_after_successful_inventory(
     if !inventory.complete || inventory.active_repos.is_empty() {
         return Ok(());
     }
-    reconcile_deleted_repositories(state, inventory, detected_at)
+    reconcile_deleted_repositories(state, inventory, detected_at).await
 }
 
 async fn collect_org_alert_context(
@@ -3686,6 +3707,7 @@ mod tests {
         });
 
         reconcile_deleted_repositories_after_successful_inventory(&state, &inventory, timestamp)
+            .await
             .expect("reconcile");
 
         for name in kept_names {
@@ -3727,6 +3749,7 @@ mod tests {
         ));
 
         reconcile_deleted_repositories_after_successful_inventory(&state, &failed, timestamp)
+            .await
             .expect("skip failed inventory");
 
         assert!(state.projection_contains(&domain_key));
@@ -3756,6 +3779,7 @@ mod tests {
         });
 
         reconcile_deleted_repositories_after_successful_inventory(&state, &empty, timestamp)
+            .await
             .expect("skip empty inventory");
 
         for key in keys {
@@ -3781,6 +3805,7 @@ mod tests {
         });
 
         reconcile_deleted_repositories_after_successful_inventory(&state, &partial, timestamp)
+            .await
             .expect("skip partial inventory");
 
         assert!(state.projection_contains(&key));

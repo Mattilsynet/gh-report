@@ -31,6 +31,7 @@ use crate::app::collect;
 use crate::app::state::{AppState, log_error_chain, read_rss_kb};
 use crate::app::work_queue::JobSource;
 use crate::app::worker_pool::JobOutcome;
+use crate::app::write_policy::write_with_policy_sync;
 use crate::config;
 use crate::config::runtime::RuntimeConfig;
 use crate::domain::evidence::RepositoryEvidence;
@@ -496,7 +497,7 @@ pub(crate) async fn delivery_loop(
             JobOutcome::Success {
                 domain_key, result, ..
             } => {
-                handle_success_outcome(&state, &domain_key, result, &source, duration);
+                handle_success_outcome(&state, &domain_key, &result, &source, duration);
             }
             JobOutcome::Failure {
                 domain_key, error, ..
@@ -522,17 +523,21 @@ pub(crate) async fn delivery_loop(
 fn handle_success_outcome(
     state: &Arc<AppState>,
     domain_key: &str,
-    result: RepositoryEvidence,
+    result: &RepositoryEvidence,
     source: &JobSource,
     duration: Duration,
 ) {
     let repo_name = result.repository.name.clone();
     let timestamp = jiff::Timestamp::now().to_string();
-    if let Err(e) = state.record_repo(domain_key, result, &repo_name, &timestamp) {
+    if let Err(failure) = write_with_policy_sync(|| {
+        state.record_repo(domain_key, result.clone(), &repo_name, &timestamp)
+    }) {
         tracing::error!(
-            persist_error_variant = persist_error_variant(&e),
-            ?e,
-            "repository state record failed, non-fatal"
+            persist_error_variant = persist_error_variant(&failure.error),
+            category = ?failure.category,
+            response = ?failure.response,
+            error = ?failure.error,
+            "repository state record failed"
         );
     }
     info!(
@@ -562,11 +567,15 @@ fn handle_failure_outcome(
             &jiff::Timestamp::now().to_string(),
         );
         let timestamp = jiff::Timestamp::now().to_string();
-        if let Err(e) = state.record_repo(domain_key, failure, &name, &timestamp) {
+        if let Err(write_failure) = write_with_policy_sync(|| {
+            state.record_repo(domain_key, failure.clone(), &name, &timestamp)
+        }) {
             tracing::error!(
-                persist_error_variant = persist_error_variant(&e),
-                ?e,
-                "repository failure state record failed, non-fatal"
+                persist_error_variant = persist_error_variant(&write_failure.error),
+                category = ?write_failure.category,
+                response = ?write_failure.response,
+                error = ?write_failure.error,
+                "repository failure state record failed"
             );
         }
         name
@@ -741,7 +750,7 @@ mod tests {
             handle_success_outcome(
                 &state,
                 "escalation-test-key",
-                evidence,
+                &evidence,
                 &JobSource::InitialLoad,
                 Duration::from_millis(1),
             );

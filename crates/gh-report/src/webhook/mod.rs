@@ -34,6 +34,7 @@ use tracing::{debug, info, warn};
 use crate::app::collect::JobContext;
 use crate::app::state::AppState;
 use crate::app::work_queue::{EnqueueResult, JobSource, JobSpec};
+use crate::app::write_policy::write_with_policy;
 use crate::config;
 use crate::domain::repository::Repository;
 use crate::error::persist_error_variant;
@@ -87,7 +88,7 @@ async fn webhook_handler(
 
     match action {
         WebhookAction::Remove { inventory_key } => {
-            execute_remove(&state, &event_type, &delivery_id, &inventory_key)
+            execute_remove(&state, &event_type, &delivery_id, &inventory_key).await
         }
         WebhookAction::Enqueue {
             inventory_key,
@@ -143,8 +144,13 @@ fn validate_request(
 
 /// Execute the remove action: publish `WebhookReceived` + (conditionally) `RepoRemoved`.
 ///
-/// Extracted from [`webhook_handler`] for cohesion; no behavioural change.
-fn execute_remove(
+/// A durable-write failure here maps to `HttpNon2xx` regardless of its
+/// classified category (CHE-0088:R6): GitHub redelivers the webhook,
+/// with the NATS-Msg-Id BLAKE3 dedup (PGN-0016:R5) as the idempotency
+/// backstop. A `Transient` failure is bounded-retried first
+/// (CHE-0088:R4) — identically to every other durable-write call site
+/// (jxma5) — before falling back to a non-2xx response.
+async fn execute_remove(
     state: &Arc<AppState>,
     event_type: &str,
     delivery_id: &str,
@@ -152,18 +158,20 @@ fn execute_remove(
 ) -> StatusCode {
     let had_evidence = state.projection_contains(inventory_key);
     info!(delivery = %delivery_id, repo = %inventory_key, "webhook remove");
-    if had_evidence
-        && let Err(e) = state.remove_repo(
-            inventory_key,
-            inventory_key,
-            &jiff::Timestamp::now().to_string(),
-        )
-    {
-        tracing::error!(
-            persist_error_variant = persist_error_variant(&e),
-            ?e,
-            "repository removal failed, non-fatal"
-        );
+    if had_evidence {
+        let timestamp = jiff::Timestamp::now().to_string();
+        if let Err(write_failure) =
+            write_with_policy(|| state.remove_repo(inventory_key, inventory_key, &timestamp)).await
+        {
+            tracing::error!(
+                persist_error_variant = persist_error_variant(&write_failure.error),
+                category = ?write_failure.category,
+                response = ?write_failure.response,
+                error = ?write_failure.error,
+                "repository removal failed"
+            );
+            return StatusCode::BAD_GATEWAY;
+        }
     }
     info!(
         event = event_type,
