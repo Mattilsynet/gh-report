@@ -960,8 +960,26 @@ fn status_dots_match_expected_css_and_label_per_case() {
 
 use crate::domain::codeowners::ParsedCodeowners;
 
+/// Assembles an [`Evidence`] from a repo list using the standard
+/// metadata/observability fixtures, deriving metrics and collection
+/// statistics from `repos` via the same aggregation path production
+/// code uses. Shared by every fixture/test that needs an `Evidence`
+/// built purely from a set of repos with no post-aggregation mutation.
+fn evidence_from_repos(repos: Vec<RepositoryEvidence>) -> Evidence {
+    let metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
+    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
+
+    test_fixtures::make_full_evidence(
+        test_fixtures::make_metadata(),
+        stats,
+        metrics,
+        test_fixtures::make_observability(),
+        repos,
+    )
+}
+
 fn evidence_with_owner_repos() -> Evidence {
-    let repos = vec![
+    evidence_from_repos(vec![
         test_fixtures::make_repository_evidence(
             "beta-repo",
             Visibility::Public,
@@ -986,18 +1004,7 @@ fn evidence_with_owner_repos() -> Evidence {
                 test_fixtures::codeowners_with_owners(&["@org/team-a"]),
             ),
         ),
-    ];
-
-    let metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
-    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
-
-    test_fixtures::make_full_evidence(
-        test_fixtures::make_metadata(),
-        stats,
-        metrics,
-        test_fixtures::make_observability(),
-        repos,
-    )
+    ])
 }
 
 /// Owner-scoped variant of [`evidence_with_owner_repos`] where one
@@ -1007,7 +1014,7 @@ fn evidence_with_owner_repos() -> Evidence {
 /// card, distinct from the clean (no-exclusion) fixture used by the
 /// locked `dashboard_owners`/`dashboard_owner_detail` snapshots.
 fn evidence_with_owner_repo_exclusions() -> Evidence {
-    let repos = vec![
+    evidence_from_repos(vec![
         test_fixtures::make_repository_evidence(
             "beta-repo",
             Visibility::Public,
@@ -1032,18 +1039,7 @@ fn evidence_with_owner_repo_exclusions() -> Evidence {
                 test_fixtures::codeowners_with_owners(&["@org/team-a"]),
             ),
         ),
-    ];
-
-    let metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
-    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
-
-    test_fixtures::make_full_evidence(
-        test_fixtures::make_metadata(),
-        stats,
-        metrics,
-        test_fixtures::make_observability(),
-        repos,
-    )
+    ])
 }
 
 fn evidence_with_full_nav_surface() -> Evidence {
@@ -1443,15 +1439,7 @@ fn detail_vm_multi_owner_repo_appears_in_both() {
         ),
     )];
 
-    let metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
-    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
-    let evidence = test_fixtures::make_full_evidence(
-        test_fixtures::make_metadata(),
-        stats,
-        metrics,
-        test_fixtures::make_observability(),
-        repos,
-    );
+    let evidence = evidence_from_repos(repos);
 
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
@@ -1516,15 +1504,7 @@ fn detail_vm_repo_url_percent_encodes_special_chars() {
         ),
     )];
 
-    let metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
-    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
-    let evidence = test_fixtures::make_full_evidence(
-        test_fixtures::make_metadata(),
-        stats,
-        metrics,
-        test_fixtures::make_observability(),
-        repos,
-    );
+    let evidence = evidence_from_repos(repos);
 
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
@@ -2193,15 +2173,7 @@ fn detail_vm_repo_row_metadata_populated_with_data() {
     });
 
     let repos = vec![repo];
-    let metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
-    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
-    let evidence = test_fixtures::make_full_evidence(
-        test_fixtures::make_metadata(),
-        stats,
-        metrics,
-        test_fixtures::make_observability(),
-        repos,
-    );
+    let evidence = evidence_from_repos(repos);
 
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
@@ -2264,15 +2236,7 @@ fn detail_vm_unregistered_committer_flagged_when_name_present_but_no_login_match
     });
 
     let repos = vec![repo];
-    let metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
-    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
-    let evidence = test_fixtures::make_full_evidence(
-        test_fixtures::make_metadata(),
-        stats,
-        metrics,
-        test_fixtures::make_observability(),
-        repos,
-    );
+    let evidence = evidence_from_repos(repos);
 
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
@@ -2319,15 +2283,7 @@ fn detail_vm_last_committer_url_percent_encodes_login() {
     });
 
     let repos = vec![repo];
-    let metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
-    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
-    let evidence = test_fixtures::make_full_evidence(
-        test_fixtures::make_metadata(),
-        stats,
-        metrics,
-        test_fixtures::make_observability(),
-        repos,
-    );
+    let evidence = evidence_from_repos(repos);
 
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
@@ -2367,15 +2323,7 @@ fn render_owner_detail_html_stale_repo_has_row_stale_class() {
     repo.repository.updated_at = Some("2023-01-01T00:00:00Z".to_string());
 
     let repos = vec![repo];
-    let metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
-    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
-    let evidence = test_fixtures::make_full_evidence(
-        test_fixtures::make_metadata(),
-        stats,
-        metrics,
-        test_fixtures::make_observability(),
-        repos,
-    );
+    let evidence = evidence_from_repos(repos);
 
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
     let detail_page = pages
@@ -2456,15 +2404,7 @@ fn render_owner_detail_html_unregistered_committer_shows_warning_badge() {
     });
 
     let repos = vec![repo];
-    let metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
-    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
-    let evidence = test_fixtures::make_full_evidence(
-        test_fixtures::make_metadata(),
-        stats,
-        metrics,
-        test_fixtures::make_observability(),
-        repos,
-    );
+    let evidence = evidence_from_repos(repos);
 
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
     let detail_page = pages
@@ -2501,15 +2441,7 @@ fn render_owner_detail_html_empty_repo_shows_pill_snapshot() {
     repo.repository.is_empty = true;
 
     let repos = vec![repo];
-    let metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
-    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
-    let evidence = test_fixtures::make_full_evidence(
-        test_fixtures::make_metadata(),
-        stats,
-        metrics,
-        test_fixtures::make_observability(),
-        repos,
-    );
+    let evidence = evidence_from_repos(repos);
 
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
     let detail_page = pages
@@ -2681,15 +2613,7 @@ fn render_owner_detail_html_escapes_metadata_xss() {
     });
 
     let repos = vec![repo];
-    let metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
-    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
-    let evidence = test_fixtures::make_full_evidence(
-        test_fixtures::make_metadata(),
-        stats,
-        metrics,
-        test_fixtures::make_observability(),
-        repos,
-    );
+    let evidence = evidence_from_repos(repos);
 
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
     let detail_page = pages
@@ -3320,15 +3244,7 @@ fn render_dashboard_orphaned_page_shows_absent_repos() {
         test_fixtures::all_passing_evidence("owned-repo"),
     ];
 
-    let metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
-    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
-    let evidence = test_fixtures::make_full_evidence(
-        test_fixtures::make_metadata(),
-        stats,
-        metrics,
-        test_fixtures::make_observability(),
-        repos,
-    );
+    let evidence = evidence_from_repos(repos);
 
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
     let orphaned = &pages["orphans.html"];
@@ -3484,15 +3400,7 @@ fn render_orphaned_html_contains_visibility_header() {
         ),
     )];
 
-    let metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
-    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
-    let evidence = test_fixtures::make_full_evidence(
-        test_fixtures::make_metadata(),
-        stats,
-        metrics,
-        test_fixtures::make_observability(),
-        repos,
-    );
+    let evidence = evidence_from_repos(repos);
 
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
     let orphaned = &pages["orphans.html"];
