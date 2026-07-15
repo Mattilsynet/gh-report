@@ -6,6 +6,13 @@
 //! already declares), and animates packets colored by [`JobSource`].
 //! Raw `web-sys` + leptos reactive primitives only — no `view!` macro,
 //! mirrors `gh-report-web-client/src/dom.rs`.
+//!
+//! Renders the 8-stage pipeline from adr-fmt-223sd: CREATE (work) ->
+//! QUEUE (store) -> WORKER (work) -> STREAM (store) -> PROJECTION
+//! (store) -> BUILD (work) -> COMPRESS (work) -> CACHE (store) ->
+//! served. Packets transit two CSS-animated lanes rather than
+//! teleporting: the arrival lane (CREATE -> QUEUE) and the pipeline
+//! lane (WORKER -> served, spanning the remaining six stages).
 
 use std::cell::RefCell;
 
@@ -15,7 +22,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::wasm_bindgen;
 use web_sys::{Document, Element};
 
-use crate::sim::{EnqueueResult, JobOutcome, JobSource, Sim, SimConfig};
+use crate::sim::{Compressor, EnqueueResult, JobOutcome, JobSource, Sim, SimConfig};
 
 #[derive(Clone, Copy)]
 struct Rates {
@@ -57,6 +64,15 @@ fn source_color(source: JobSource) -> &'static str {
         JobSource::InitialLoad => "#94a3b8",
     }
 }
+
+const ARRIVAL_LANE_END: &str = "12.5%";
+const PIPELINE_LANE_START: &str = "25%";
+const PIPELINE_LANE_END: &str = "100%";
+const FAILURE_LANE_END: &str = "37.5%";
+const ARRIVAL_DURATION_MS: u32 = 700;
+const PIPELINE_DURATION_MS: u32 = 1800;
+const FAILURE_DURATION_MS: u32 = 900;
+const MAX_LANE_PACKETS: u32 = 40;
 
 #[wasm_bindgen(start)]
 pub fn start() {
@@ -165,6 +181,38 @@ fn render_gauges(document: &Document, sim: &Sim) {
         &metrics.deduplicated.to_string(),
     );
     set_text(document, "failure-count", &metrics.failures.to_string());
+    set_text(
+        document,
+        "events-written",
+        &sim.events_written().to_string(),
+    );
+    set_text(
+        document,
+        "repos-captured",
+        &sim.repositories_captured().to_string(),
+    );
+    set_text(document, "memo-hits", &sim.memo_hits().to_string());
+    set_text(document, "memo-rebuilds", &sim.memo_rebuilds().to_string());
+    set_text(
+        document,
+        "compression-ratio",
+        &compression_ratio_display(sim),
+    );
+    set_text(
+        document,
+        "arcswap-generation",
+        &sim.arcswap_generation().to_string(),
+    );
+}
+
+fn compression_ratio_display(sim: &Sim) -> String {
+    let raw = Compressor::page_size(sim.repositories_captured());
+    if raw == 0 {
+        return "n/a".to_string();
+    }
+    let compressed = sim.compressed_bytes_total();
+    let percent = (compressed * 100) / raw.max(1);
+    format!("{percent}%")
 }
 
 fn render_events(
@@ -172,7 +220,7 @@ fn render_events(
     arrivals: &[(JobSource, EnqueueResult)],
     completions: &[(JobSource, JobOutcome)],
 ) {
-    let Some(queue_track) = document.get_element_by_id("queue-track") else {
+    let Some(arrival_lane) = document.get_element_by_id("arrival-lane") else {
         return;
     };
     for (source, result) in arrivals {
@@ -181,39 +229,75 @@ fn render_events(
             EnqueueResult::Deduplicated => "packet packet-deduplicated",
             EnqueueResult::QueueFull => "packet packet-dropped",
         };
-        spawn_packet(document, &queue_track, class, source_color(*source));
+        spawn_transit_packet(
+            document,
+            &arrival_lane,
+            class,
+            source_color(*source),
+            "0%",
+            ARRIVAL_LANE_END,
+            ARRIVAL_DURATION_MS,
+        );
     }
 
-    let Some(delivery_track) = document.get_element_by_id("delivery-track") else {
+    let Some(pipeline_lane) = document.get_element_by_id("pipeline-lane") else {
         return;
     };
     for (source, outcome) in completions {
-        let class = match outcome {
-            JobOutcome::Success => "packet packet-success",
-            JobOutcome::Failure => "packet packet-failure",
-        };
-        spawn_packet(document, &delivery_track, class, source_color(*source));
+        match outcome {
+            JobOutcome::Success => spawn_transit_packet(
+                document,
+                &pipeline_lane,
+                "packet packet-success",
+                source_color(*source),
+                PIPELINE_LANE_START,
+                PIPELINE_LANE_END,
+                PIPELINE_DURATION_MS,
+            ),
+            JobOutcome::Failure => spawn_transit_packet(
+                document,
+                &pipeline_lane,
+                "packet packet-failure",
+                source_color(*source),
+                PIPELINE_LANE_START,
+                FAILURE_LANE_END,
+                FAILURE_DURATION_MS,
+            ),
+        }
     }
 }
 
-fn spawn_packet(document: &Document, parent: &Element, class: &str, color: &str) {
+fn spawn_transit_packet(
+    document: &Document,
+    lane: &Element,
+    class: &str,
+    color: &str,
+    start: &str,
+    end: &str,
+    duration_ms: u32,
+) {
     let Ok(packet) = document.create_element("div") else {
         return;
     };
     packet.set_attribute("class", class).ok();
     if let Ok(html_packet) = packet.clone().dyn_into::<web_sys::HtmlElement>() {
-        html_packet
-            .style()
-            .set_property("background-color", color)
+        let style = html_packet.style();
+        style.set_property("background-color", color).ok();
+        style.set_property("--transit-start", start).ok();
+        style.set_property("--transit-end", end).ok();
+        style
+            .set_property("animation-duration", &format!("{duration_ms}ms"))
             .ok();
     }
-    parent.append_child(&packet).ok();
+    lane.append_child(&packet).ok();
+    prune_lane(lane);
+}
 
-    let node_count = parent.child_element_count();
-    if node_count > 40
-        && let Some(first) = parent.first_element_child()
+fn prune_lane(lane: &Element) {
+    if lane.child_element_count() > MAX_LANE_PACKETS
+        && let Some(first) = lane.first_element_child()
     {
-        parent.remove_child(&first).ok();
+        lane.remove_child(&first).ok();
     }
 }
 
@@ -231,6 +315,7 @@ fn build_layout(document: &Document, root: &Element, rates: RwSignal<Rates>) {
   <div class='row sources'>
     <div class='source scheduled'>ScheduledBatch</div>
     <div class='source external'>External(webhook)</div>
+    <div class='source initial'>InitialLoad</div>
   </div>
   <div class='row controls'>
     <button id='batch-rate-down'>batch rate -</button>
@@ -240,8 +325,18 @@ fn build_layout(document: &Document, root: &Element, rates: RwSignal<Rates>) {
     <span>external every <span id='external-rate-value'>1</span> ticks</span>
     <button id='external-rate-up'>+</button>
   </div>
+  <div class='pipeline'>
+    <div class='stage stage-work'>CREATE<span class='stage-note'>timer + webhook</span></div>
+    <div class='stage stage-store'>QUEUE<span class='stage-note'>depth/cap</span></div>
+    <div class='stage stage-work'>WORKER<span class='stage-note'>16x GitHub query</span></div>
+    <div class='stage stage-store'>STREAM<span class='stage-note'>events</span></div>
+    <div class='stage stage-store'>PROJECTION<span class='stage-note'>repos</span></div>
+    <div class='stage stage-work'>BUILD<span class='stage-note'>memo</span></div>
+    <div class='stage stage-work'>COMPRESS<span class='stage-note'>zstd</span></div>
+    <div class='stage stage-store'>CACHE<span class='stage-note'>ArcSwap</span></div>
+  </div>
   <div class='row'>
-    <div id='queue-track' class='track queue'></div>
+    <div id='arrival-lane' class='lane lane-arrival'></div>
     <div class='gauge'>queue <span id='queue-depth'>0</span>/<span id='queue-capacity'>0</span></div>
   </div>
   <div class='row'>
@@ -250,12 +345,20 @@ fn build_layout(document: &Document, root: &Element, rates: RwSignal<Rates>) {
     <div class='gauge'>Deduplicated <span id='deduplicated-count'>0</span></div>
   </div>
   <div class='row'>
-    <div id='delivery-track' class='track delivery'></div>
+    <div id='pipeline-lane' class='lane lane-pipeline'></div>
     <div class='gauge'>served pages <span id='served-pages'>0</span></div>
   </div>
   <div class='row'>
     <div class='gauge'>batch remaining <span id='batch-remaining'>0</span></div>
     <div class='gauge'>failures <span id='failure-count'>0</span></div>
+    <div class='gauge'>events written <span id='events-written'>0</span></div>
+    <div class='gauge'>repos captured <span id='repos-captured'>0</span></div>
+  </div>
+  <div class='row'>
+    <div class='gauge'>memo hits <span id='memo-hits'>0</span></div>
+    <div class='gauge'>memo rebuilds <span id='memo-rebuilds'>0</span></div>
+    <div class='gauge'>compression <span id='compression-ratio'>n/a</span></div>
+    <div class='gauge'>ArcSwap gen <span id='arcswap-generation'>0</span></div>
   </div>
 </section>
 ",

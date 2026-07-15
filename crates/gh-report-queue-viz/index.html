@@ -37,23 +37,73 @@
       .source.external {
         background: #15803d;
       }
-      .track {
+      .source.initial {
+        background: #475569;
+      }
+      .pipeline {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.4rem;
+        margin: 1rem 0;
+      }
+      .stage {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 3.2rem;
+        padding: 0.4rem 0.3rem;
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-align: center;
+        color: #e2e8f0;
+      }
+      .stage-note {
+        font-size: 0.6rem;
+        font-weight: 400;
+        color: #94a3b8;
+        margin-top: 0.15rem;
+      }
+      .stage-work {
+        background: #334155;
+        border: 2px solid #64748b;
+        border-radius: 0.35rem;
+      }
+      .stage-store {
+        background: #1e3a5f;
+        border: 2px solid #3b82f6;
+        border-radius: 45% / 18%;
+      }
+      .lane {
         position: relative;
         flex: 1;
         min-height: 2.5rem;
         background: #1e293b;
         border-radius: 0.4rem;
         overflow: hidden;
-        display: flex;
-        align-items: center;
-        gap: 0.2rem;
-        padding: 0.3rem;
       }
       .packet {
+        position: absolute;
+        top: 50%;
+        left: var(--transit-start, 0%);
         width: 0.8rem;
         height: 0.8rem;
+        margin-top: -0.4rem;
         border-radius: 999px;
-        flex: none;
+        animation-name: transit-move;
+        animation-timing-function: linear;
+        animation-fill-mode: forwards;
+      }
+      @keyframes transit-move {
+        from {
+          left: var(--transit-start, 0%);
+          opacity: 1;
+        }
+        to {
+          left: var(--transit-end, 100%);
+          opacity: 0.85;
+        }
       }
       .packet-dropped {
         opacity: 0.35;
@@ -65,6 +115,9 @@
       }
       .packet-failure {
         outline: 2px solid #ef4444;
+      }
+      .packet-success {
+        outline: 2px solid #22c55e33;
       }
       .gauge {
         font-variant-numeric: tabular-nums;

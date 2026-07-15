@@ -4,7 +4,7 @@ async function main() {
   await init();
   setInterval(() => {
     tick();
-  }, 80);
+  }, 320);
 }
 
 main();

@@ -43,6 +43,12 @@ pub enum SweepPhase {
     Completed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildResult {
+    Rebuild,
+    Hit,
+}
+
 pub struct WorkQueue {
     capacity: usize,
     jobs: VecDeque<JobSpec>,
@@ -130,42 +136,155 @@ impl Default for BatchTracker {
 
 #[derive(Default)]
 pub struct EvidenceProjection {
-    repositories_captured: usize,
+    captured_keys: HashSet<DomainKey>,
 }
 
 impl EvidenceProjection {
-    pub fn fold_outcome(&mut self, outcome: JobOutcome) {
+    pub fn fold_outcome(&mut self, domain_key: DomainKey, outcome: JobOutcome) {
         if outcome == JobOutcome::Success {
-            self.repositories_captured += 1;
+            self.captured_keys.insert(domain_key);
         }
     }
 
     #[must_use]
     pub fn repositories_captured(&self) -> usize {
-        self.repositories_captured
+        self.captured_keys.len()
+    }
+}
+
+#[derive(Default)]
+pub struct StreamLog {
+    events_written: usize,
+}
+
+impl StreamLog {
+    pub fn write_event(&mut self) {
+        self.events_written += 1;
+    }
+
+    #[must_use]
+    pub fn events_written(&self) -> usize {
+        self.events_written
+    }
+}
+
+pub struct MemoBuilder {
+    last_built_generation: Option<usize>,
+    hits: usize,
+    rebuilds: usize,
+}
+
+impl MemoBuilder {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            last_built_generation: None,
+            hits: 0,
+            rebuilds: 0,
+        }
+    }
+
+    pub fn build(&mut self, projection_generation: usize) -> BuildResult {
+        let result = if self.last_built_generation == Some(projection_generation) {
+            self.hits += 1;
+            BuildResult::Hit
+        } else {
+            self.rebuilds += 1;
+            BuildResult::Rebuild
+        };
+        self.last_built_generation = Some(projection_generation);
+        result
+    }
+
+    #[must_use]
+    pub fn hits(&self) -> usize {
+        self.hits
+    }
+
+    #[must_use]
+    pub fn rebuilds(&self) -> usize {
+        self.rebuilds
+    }
+}
+
+impl Default for MemoBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct Compressor;
+
+impl Compressor {
+    const BYTES_PER_CAPTURED_REPOSITORY: usize = 256;
+    const COMPRESSED_NUMERATOR: usize = 3;
+    const COMPRESSED_DENOMINATOR: usize = 10;
+
+    #[must_use]
+    pub fn page_size(repositories_captured: usize) -> usize {
+        repositories_captured * Self::BYTES_PER_CAPTURED_REPOSITORY
+    }
+
+    #[must_use]
+    pub fn compress(page_size: usize) -> usize {
+        (page_size * Self::COMPRESSED_NUMERATOR)
+            .div_ceil(Self::COMPRESSED_DENOMINATOR)
+            .max(1)
+    }
+}
+
+#[derive(Default)]
+pub struct ArcSwapPublisher {
+    generation: usize,
+}
+
+impl ArcSwapPublisher {
+    pub fn publish(&mut self) -> usize {
+        self.generation += 1;
+        self.generation
+    }
+
+    #[must_use]
+    pub fn generation(&self) -> usize {
+        self.generation
     }
 }
 
 #[derive(Default)]
 pub struct DeliveryTail {
-    rendered_pages: usize,
-    published_events: usize,
+    publisher: ArcSwapPublisher,
+    served_pages: usize,
 }
 
 impl DeliveryTail {
-    pub fn publish(&mut self) {
-        self.rendered_pages += 1;
-        self.published_events += 1;
+    pub fn publish(&mut self) -> usize {
+        self.publisher.publish()
+    }
+
+    /// # Panics
+    ///
+    /// Panics if called before any [`Self::publish`] this delivery tail has
+    /// seen — serving a page that was never published is a causal-ordering
+    /// bug, not a recoverable state.
+    pub fn serve(&mut self) -> usize {
+        assert!(
+            self.served_pages < self.publisher.generation(),
+            "serve() called without a preceding publish(): served {} >= generation {}",
+            self.served_pages,
+            self.publisher.generation()
+        );
+        self.served_pages += 1;
+        self.served_pages
     }
 
     #[must_use]
     pub fn served_pages(&self) -> usize {
-        self.rendered_pages
+        self.served_pages
     }
 
     #[must_use]
-    pub fn published_events(&self) -> usize {
-        self.published_events
+    pub fn arcswap_generation(&self) -> usize {
+        self.publisher.generation()
     }
 }
 
@@ -209,12 +328,25 @@ pub struct Metrics {
     pub deduplicated: u64,
     pub completed: u64,
     pub failures: u64,
+    pub events_written: u64,
+    pub memo_hits: u64,
+    pub memo_rebuilds: u64,
+    pub compressed_bytes_total: usize,
+    pub arcswap_generation: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublishEvent {
+    pub build: BuildResult,
+    pub compressed_bytes: usize,
+    pub generation: usize,
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct StepEvents {
     pub arrivals: Vec<(JobSource, EnqueueResult)>,
     pub completions: Vec<(JobSource, JobOutcome)>,
+    pub publishes: Vec<PublishEvent>,
 }
 
 pub struct Sim {
@@ -224,6 +356,8 @@ pub struct Sim {
     batch_tracker: BatchTracker,
     projection: EvidenceProjection,
     delivery: DeliveryTail,
+    stream: StreamLog,
+    memo: MemoBuilder,
     metrics: Metrics,
     tick: u64,
     rng_state: u64,
@@ -240,6 +374,8 @@ impl Sim {
             batch_tracker: BatchTracker::new(),
             projection: EvidenceProjection::default(),
             delivery: DeliveryTail::default(),
+            stream: StreamLog::default(),
+            memo: MemoBuilder::new(),
             metrics: Metrics::default(),
             tick: 0,
             rng_state: seed | 1,
@@ -325,11 +461,29 @@ impl Sim {
                     JobOutcome::Success
                 };
                 events.completions.push((job.source, outcome));
-                self.projection.fold_outcome(outcome);
-                self.delivery.publish();
+                self.projection.fold_outcome(job.domain_key, outcome);
                 self.metrics.completed += 1;
                 if outcome == JobOutcome::Failure {
                     self.metrics.failures += 1;
+                } else {
+                    self.stream.write_event();
+                    let build = self.memo.build(self.projection.repositories_captured());
+                    let page_size = Compressor::page_size(self.projection.repositories_captured());
+                    let compressed_bytes = Compressor::compress(page_size);
+                    let generation = self.delivery.publish();
+                    self.delivery.serve();
+                    self.metrics.events_written += 1;
+                    self.metrics.compressed_bytes_total += compressed_bytes;
+                    self.metrics.arcswap_generation = generation;
+                    match build {
+                        BuildResult::Rebuild => self.metrics.memo_rebuilds += 1,
+                        BuildResult::Hit => self.metrics.memo_hits += 1,
+                    }
+                    events.publishes.push(PublishEvent {
+                        build,
+                        compressed_bytes,
+                        generation,
+                    });
                 }
                 if job.source == JobSource::ScheduledBatch {
                     self.batch_tracker.decrement();
@@ -386,6 +540,31 @@ impl Sim {
     }
 
     #[must_use]
+    pub fn events_written(&self) -> usize {
+        self.stream.events_written()
+    }
+
+    #[must_use]
+    pub fn memo_hits(&self) -> usize {
+        self.memo.hits()
+    }
+
+    #[must_use]
+    pub fn memo_rebuilds(&self) -> usize {
+        self.memo.rebuilds()
+    }
+
+    #[must_use]
+    pub fn compressed_bytes_total(&self) -> usize {
+        self.metrics.compressed_bytes_total
+    }
+
+    #[must_use]
+    pub fn arcswap_generation(&self) -> usize {
+        self.delivery.arcswap_generation()
+    }
+
+    #[must_use]
     pub fn is_idle(&self) -> bool {
         self.queue.depth() == 0 && self.in_flight() == 0
     }
@@ -394,7 +573,8 @@ impl Sim {
 #[cfg(test)]
 mod tests {
     use super::{
-        BatchTracker, DomainKey, EnqueueResult, JobSource, JobSpec, Sim, SimConfig, WorkQueue,
+        BatchTracker, BuildResult, DomainKey, EnqueueResult, JobSource, JobSpec, MemoBuilder, Sim,
+        SimConfig, WorkQueue,
     };
 
     fn job(key: u32, source: JobSource) -> JobSpec {
@@ -521,6 +701,97 @@ mod tests {
                 "in-flight {} exceeded worker cap {}",
                 sim.in_flight(),
                 sim.worker_count()
+            );
+        }
+    }
+
+    #[test]
+    fn events_written_equals_successes() {
+        let config = SimConfig {
+            queue_capacity: 8,
+            worker_count: 16,
+            service_ticks: 3,
+            domain_key_span: 500,
+        };
+        let mut sim = Sim::new(config, 1234);
+        for tick in 0..300u64 {
+            sim.step(tick % 2 == 0, tick % 3 == 0);
+        }
+        for _ in 0..64 {
+            sim.step(false, false);
+        }
+        assert!(sim.is_idle(), "sim must drain before checking event count");
+        let successes = sim.metrics().completed - sim.metrics().failures;
+        assert_eq!(
+            u64::try_from(sim.events_written()).expect("event count fits u64"),
+            successes,
+            "one stream event per successful job, none for failures"
+        );
+    }
+
+    #[test]
+    fn build_after_no_projection_change_is_a_hit_not_a_rebuild() {
+        let mut memo = MemoBuilder::new();
+        assert_eq!(
+            memo.build(5),
+            BuildResult::Rebuild,
+            "first build against a new generation is always a rebuild"
+        );
+        assert_eq!(
+            memo.build(5),
+            BuildResult::Hit,
+            "repeating the same generation with no projection change is a hit"
+        );
+        assert_eq!(
+            memo.build(6),
+            BuildResult::Rebuild,
+            "a changed generation forces a rebuild"
+        );
+        assert_eq!(memo.hits(), 1);
+        assert_eq!(memo.rebuilds(), 2);
+    }
+
+    #[test]
+    fn arcswap_generation_increments_monotonically_on_publish() {
+        let config = SimConfig {
+            queue_capacity: 8,
+            worker_count: 16,
+            service_ticks: 3,
+            domain_key_span: 500,
+        };
+        let mut sim = Sim::new(config, 1234);
+        let mut last_generation = sim.arcswap_generation();
+        for tick in 0..300u64 {
+            sim.step(tick % 2 == 0, tick % 3 == 0);
+            let generation = sim.arcswap_generation();
+            assert!(
+                generation >= last_generation,
+                "arcswap generation regressed from {last_generation} to {generation}"
+            );
+            last_generation = generation;
+        }
+        assert!(
+            sim.arcswap_generation() > 0,
+            "at least one publish must have occurred over 300 ticks"
+        );
+    }
+
+    #[test]
+    fn served_pages_never_exceeds_arcswap_generation() {
+        let config = SimConfig {
+            queue_capacity: 4,
+            worker_count: 16,
+            service_ticks: 5,
+            domain_key_span: 1000,
+        };
+        let mut sim = Sim::new(config, 99);
+        for tick in 0..500u64 {
+            sim.step(true, tick % 2 == 0);
+            assert!(
+                sim.served_pages() <= sim.arcswap_generation(),
+                "served {} pages before publishing generation {}",
+                sim.served_pages(),
+                sim.arcswap_generation()
             );
         }
     }
