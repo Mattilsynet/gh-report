@@ -72,15 +72,71 @@ non-convergence risk.
 
 ## Cardinality (COM-0019:R6)
 
-Current registered metrics (`OPERATION_TERMINAL_COUNTER`,
-`APPEND_LATENCY_HISTOGRAM`) carry labels `op` (3 values) ×
-`terminal_category` (6 values) = 18 series/metric, against the
-COM-0019:R6 bound of 500 (`adr-fmt-facpa`). Ample headroom for the
-Phase-1 signals named above (Seq 1, not this document).
+Current registered metrics carry labels `op` (3 values) ×
+`terminal_category` (7 values, `fence_conflict` added Seq 1) for the
+two-label metrics (`OPERATION_TERMINAL_COUNTER`, `APPEND_LATENCY_HISTOGRAM`,
+`BRIDGE_DURATION_HISTOGRAM`) = 21 series/metric, plus three op-only-label
+metrics (`ACK_TIMEOUT_COUNTER`, `OCC_CONFLICT_UNHANDLED_COUNTER`,
+`OCC_SELF_FENCE_COUNTER`) at 3 series/metric. Total 72 series against the
+COM-0019:R6 bound of 500 (`adr-fmt-facpa`). Ample headroom remains.
 
 ## Scope note
 
-Naming the signals and their bands is this document's job (Seq 0).
-*Emitting* the Phase-1 counters/histograms/gauges above (`fence.conflict`,
-`conflict_unhandled`, `self_fence`, `block_on.duration`, `replay.lag`,
-`dedup.hit`/`redelivery.observed`) is Seq 1 — out of scope here.
+Naming the signals and their bands is Seq 0's job. Seq 1 implemented,
+in `crates/pardosa/src/backend/jetstream.rs`:
+
+- **I1** (`fence.conflict`): `ConcurrencyConflict` (mapped from
+  `JetStreamRuntimeError::WrongLastSequence`, `jetstream.rs:325-331`) now
+  gets its own `TerminalCategory::FenceConflict` / `"fence_conflict"`
+  label value, distinct from `TerminalCategory::Publish`. Previously it
+  was folded into `Publish` (ground-truth gap confirmed by
+  `adr-fmt-facpa`).
+- **I2** (`conflict_unhandled`): a dedicated
+  `pardosa_jetstream_occ_conflict_unhandled_total` counter fires every
+  time a `ConcurrencyConflict` is returned to the caller. **Honest
+  boundary limit**: the adapter cannot observe whether the caller then
+  performs a clean abort/re-drive or silently drops the conflict — that
+  happens above this adapter's boundary. This counter is therefore
+  scoped to *conflict-surfaced-to-caller*, which is the adapter's whole
+  observable surface; a genuinely tighter "conflict THEN no abort"
+  signal would require call-site instrumentation outside
+  `crates/pardosa/src/backend/jetstream.rs`, out of scope for Seq 1.
+- **I2b** (`self_fence`): `pardosa_jetstream_occ_self_fence_total` is
+  registered with a healthy value of zero. `append_gate` is a
+  `Semaphore(1)` (`pardosa-nats/src/handle.rs:~203-208`), which makes
+  intra-handle self-fence structurally unreachable via any public entry
+  point today; the emitting function (`record_self_fence`) therefore has
+  no call site on the normal path (kept for defense-in-depth, marked
+  `#[expect(dead_code, ...)]`). A test pins that normal operation never
+  emits it.
+- **I5** (`block_on.duration` + `ack_timeout`): the append-only
+  `APPEND_LATENCY_HISTOGRAM` is kept unchanged (backward-compatible);
+  a new `pardosa_jetstream_bridge_duration_seconds` histogram now fires
+  for **every** op (append, sync, replay), closing the "only append"
+  gap. A new `pardosa_jetstream_ack_timeout_total` op-labelled counter
+  fires whenever `TerminalCategory::Timeout` is observed.
+- **I8** (`dedup.hit` + `redelivery.observed`) — **re-scoped, not
+  implemented as originally named.** Investigation
+  (`async-nats-0.49.1/src/jetstream/publish.rs::PublishAck.duplicate`)
+  found the JetStream server *does* expose a per-publish `duplicate:
+  bool` flag driven by its own `Nats-Msg-Id` dedup window — this is data
+  `pardosa-nats` could surface through `JetStreamAckPosition` (an
+  additive field, not a metrics call — allowed under this mission's
+  `out_of_scope` clause), but threading it through changes a
+  `#[repr(transparent)]` public type's shape across the crate boundary,
+  which did not fit this sub-mission's time budget. Per this mission's
+  `abort_if` I8 fallback ("if async-nats handles redelivery/dedup
+  transparently, re-scope to dedup-window-boundary only and document"):
+  **I8 is deferred to a follow-up sub-mission** that threads
+  `PublishAck.duplicate` through `JetStreamAckPosition` (or an
+  equivalent additive return-type extension) so `dedup.hit` and the
+  window-boundary signal can be emitted from the adapter ring without a
+  pardosa-nats metrics call. `redelivery.observed` is additionally
+  scoped down: the replay consumer uses `AckPolicy::None`
+  (`pardosa-nats/src/handle.rs:~637`), so there is no ack-driven
+  redelivery to observe on the current consumer path — that counter may
+  be vacuous by construction and needs a design decision before
+  emission, not just wiring.
+- **I6** (`replay.lag`) remains out of scope for Seq 1 per the roadmap
+  (unchanged from Seq 0 naming).
+

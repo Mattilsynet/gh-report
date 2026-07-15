@@ -47,6 +47,7 @@ enum TerminalCategory {
     Connect,
     Replay,
     Publish,
+    FenceConflict,
     RuntimeFailure,
 }
 
@@ -58,6 +59,7 @@ impl TerminalCategory {
             Self::Connect => "connect",
             Self::Replay => "replay",
             Self::Publish => "publish",
+            Self::FenceConflict => "fence_conflict",
             Self::RuntimeFailure => "runtime_failure",
         }
     }
@@ -98,18 +100,21 @@ const TERMINAL_CATEGORY_LABEL_VALUES: &[&str] = &[
     "connect",
     "replay",
     "publish",
+    "fence_conflict",
     "runtime_failure",
 ];
+const OP_LABEL: MetricLabelSpec = MetricLabelSpec {
+    name: "op",
+    values: OP_LABEL_VALUES,
+};
 const METRIC_LABELS: &[MetricLabelSpec] = &[
-    MetricLabelSpec {
-        name: "op",
-        values: OP_LABEL_VALUES,
-    },
+    OP_LABEL,
     MetricLabelSpec {
         name: "terminal_category",
         values: TERMINAL_CATEGORY_LABEL_VALUES,
     },
 ];
+const OP_ONLY_LABELS: &[MetricLabelSpec] = &[OP_LABEL];
 const OPERATION_TERMINAL_COUNTER: MetricSpec = MetricSpec {
     name: "pardosa_jetstream_operation_terminal_total",
     kind: MetricKind::Counter,
@@ -120,7 +125,48 @@ const APPEND_LATENCY_HISTOGRAM: MetricSpec = MetricSpec {
     kind: MetricKind::Histogram,
     labels: METRIC_LABELS,
 };
-const REGISTERED_METRICS: &[MetricSpec] = &[OPERATION_TERMINAL_COUNTER, APPEND_LATENCY_HISTOGRAM];
+/// I5: bridge (`block_on`) duration observed for every op, not only
+/// append — extends `APPEND_LATENCY_HISTOGRAM` (kept, unchanged, for
+/// backward compatibility) rather than replacing it.
+const BRIDGE_DURATION_HISTOGRAM: MetricSpec = MetricSpec {
+    name: "pardosa_jetstream_bridge_duration_seconds",
+    kind: MetricKind::Histogram,
+    labels: METRIC_LABELS,
+};
+/// I5: `block_on` bridge timeout counter, all ops.
+const ACK_TIMEOUT_COUNTER: MetricSpec = MetricSpec {
+    name: "pardosa_jetstream_ack_timeout_total",
+    kind: MetricKind::Counter,
+    labels: OP_ONLY_LABELS,
+};
+/// I2: `ConcurrencyConflict` surfaced to the caller. Adapter-boundary
+/// limit (documented in `docs/pardosa/observability-slo.md`): whether
+/// the caller performs a clean abort afterward is not observable from
+/// here, so this counts conflict-surfaced-to-caller, not
+/// conflict-then-non-abort.
+const OCC_CONFLICT_UNHANDLED_COUNTER: MetricSpec = MetricSpec {
+    name: "pardosa_jetstream_occ_conflict_unhandled_total",
+    kind: MetricKind::Counter,
+    labels: OP_ONLY_LABELS,
+};
+/// I2b: intra-handle self-fence. `append_gate` is a `Semaphore(1)`
+/// (`pardosa-nats/src/handle.rs`), which makes this structurally
+/// unreachable via the public API; the counter exists so its healthy
+/// value (zero) is an observable invariant, not an absence of
+/// instrumentation.
+const OCC_SELF_FENCE_COUNTER: MetricSpec = MetricSpec {
+    name: "pardosa_jetstream_occ_self_fence_total",
+    kind: MetricKind::Counter,
+    labels: OP_ONLY_LABELS,
+};
+const REGISTERED_METRICS: &[MetricSpec] = &[
+    OPERATION_TERMINAL_COUNTER,
+    APPEND_LATENCY_HISTOGRAM,
+    BRIDGE_DURATION_HISTOGRAM,
+    ACK_TIMEOUT_COUNTER,
+    OCC_CONFLICT_UNHANDLED_COUNTER,
+    OCC_SELF_FENCE_COUNTER,
+];
 
 #[derive(Clone, Copy, Debug)]
 struct OperationTelemetry {
@@ -152,9 +198,10 @@ fn terminal_category_from_backend(err: &BackendError) -> TerminalCategory {
     match err {
         BackendError::Timeout { .. } => TerminalCategory::Timeout,
         BackendError::RuntimeFailure { .. } => TerminalCategory::RuntimeFailure,
-        BackendError::Publish { .. }
-        | BackendError::ConcurrencyConflict { .. }
-        | BackendError::PublisherBacklog { .. } => TerminalCategory::Publish,
+        BackendError::ConcurrencyConflict { .. } => TerminalCategory::FenceConflict,
+        BackendError::Publish { .. } | BackendError::PublisherBacklog { .. } => {
+            TerminalCategory::Publish
+        }
         BackendError::Connect { .. } => TerminalCategory::Connect,
         BackendError::Replay { .. } => TerminalCategory::Replay,
     }
@@ -187,12 +234,51 @@ fn record_metric(
     );
 }
 
+fn record_op_only_metric(spec: MetricSpec, op: TelemetryOp, value: f64) {
+    assert!(
+        registered_metrics()
+            .iter()
+            .any(|registered| registered == &spec),
+        "metric must be registered before emission"
+    );
+    info!(
+        target: "pardosa::jetstream::metrics",
+        metric_name = spec.name,
+        metric_kind = spec.kind.as_str(),
+        metric_value = value,
+        op = op.as_str(),
+        "pardosa jetstream metric"
+    );
+}
+
+/// I2b: emits the self-fence counter. `append_gate`'s `Semaphore(1)`
+/// (`pardosa-nats/src/handle.rs`) makes intra-handle self-fence
+/// structurally unreachable via any public entry point, so this
+/// function has no call site on the normal path — it exists so the
+/// registered metric's healthy value (zero, never emitted) is an
+/// observable invariant rather than an absent signal.
+#[expect(
+    dead_code,
+    reason = "I2b defensive counter path; Semaphore(1) makes self-fence \
+              structurally unreachable today, kept registered for \
+              defense-in-depth per adr-fmt-2ysyq D.3(b)"
+)]
+fn record_self_fence(op: TelemetryOp) {
+    record_op_only_metric(OCC_SELF_FENCE_COUNTER, op, 1.0);
+}
+
 fn record_operation_metrics(
     op: TelemetryOp,
     terminal_category: TerminalCategory,
     elapsed: Duration,
 ) {
     record_metric(OPERATION_TERMINAL_COUNTER, op, terminal_category, 1.0);
+    record_metric(
+        BRIDGE_DURATION_HISTOGRAM,
+        op,
+        terminal_category,
+        duration_seconds(elapsed),
+    );
     if matches!(op, TelemetryOp::Append) {
         record_metric(
             APPEND_LATENCY_HISTOGRAM,
@@ -200,6 +286,12 @@ fn record_operation_metrics(
             terminal_category,
             duration_seconds(elapsed),
         );
+    }
+    if matches!(terminal_category, TerminalCategory::Timeout) {
+        record_op_only_metric(ACK_TIMEOUT_COUNTER, op, 1.0);
+    }
+    if matches!(terminal_category, TerminalCategory::FenceConflict) {
+        record_op_only_metric(OCC_CONFLICT_UNHANDLED_COUNTER, op, 1.0);
     }
 }
 
@@ -664,10 +756,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn jetstream_adapter_observability_emits_spans_metrics_and_bounded_labels() {
-        use crate::backend::journal::RehydrateableBackend;
-        let metrics = super::registered_metrics();
+    fn assert_metric_schema_bounded(metrics: &[super::MetricSpec]) {
         assert!(
             metrics
                 .iter()
@@ -682,21 +771,41 @@ mod tests {
         );
         for metric in metrics {
             let label_names: Vec<&str> = metric.labels.iter().map(|label| label.name).collect();
-            assert_eq!(
-                label_names,
-                vec!["op", "terminal_category"],
-                "metric `{}` label names must stay bounded",
+            assert!(
+                label_names == vec!["op", "terminal_category"] || label_names == vec!["op"],
+                "metric `{}` label names must stay bounded, got {label_names:?}",
                 metric.name,
             );
             for label in metric.labels {
                 assert!(
-                    label.values.len() <= 6,
+                    label.values.len() <= 7,
                     "metric `{}` label `{}` value set must stay bounded",
                     metric.name,
                     label.name,
                 );
             }
         }
+        let total_series: usize = metrics
+            .iter()
+            .map(|metric| {
+                metric
+                    .labels
+                    .iter()
+                    .map(|label| label.values.len())
+                    .product::<usize>()
+            })
+            .sum();
+        assert!(
+            total_series <= 500,
+            "COM-0019:R6 bound: total series across registered metrics must stay <= 500, got {total_series}",
+        );
+    }
+
+    #[test]
+    fn jetstream_adapter_observability_emits_spans_metrics_and_bounded_labels() {
+        use crate::backend::journal::RehydrateableBackend;
+        let metrics = super::registered_metrics();
+        assert_metric_schema_bounded(metrics);
         let captured = capture_tracing(|| {
             let handle = JetStreamBackend::open(detached_config("observability"));
             let mut adapter = JetStreamBackendAdapter::new(handle);
@@ -818,6 +927,9 @@ mod tests {
             op: BackendOp::Sync,
             source: boxed_source("replay"),
         };
+        let conflict = BackendError::ConcurrencyConflict {
+            source: boxed_source("wrong last sequence"),
+        };
         let observed = [
             super::terminal_category_from_backend(&timeout).as_str(),
             super::terminal_category_from_backend(&runtime_failure).as_str(),
@@ -825,6 +937,7 @@ mod tests {
             super::terminal_category_from_backend(&backlog).as_str(),
             super::terminal_category_from_backend(&connect).as_str(),
             super::terminal_category_from_backend(&replay).as_str(),
+            super::terminal_category_from_backend(&conflict).as_str(),
         ];
         assert_eq!(
             observed,
@@ -835,8 +948,10 @@ mod tests {
                 "publish",
                 "connect",
                 "replay",
+                "fence_conflict",
             ],
-            "terminal telemetry categories must match BackendError taxonomy",
+            "terminal telemetry categories must match BackendError taxonomy; \
+             ConcurrencyConflict must be `fence_conflict`, distinct from `publish` (I1)",
         );
         let terminal_values = super::REGISTERED_METRICS[0].labels[1].values;
         assert_eq!(
@@ -847,9 +962,123 @@ mod tests {
                 "connect",
                 "replay",
                 "publish",
+                "fence_conflict",
                 "runtime_failure",
             ],
             "metric terminal_category label values must stay bounded to T2 categories plus ok",
+        );
+    }
+
+    #[test]
+    fn i1_fence_conflict_increments_fence_conflict_path_not_publish_path() {
+        let captured = capture_tracing(|| {
+            let _ = super::observe_operation(super::OperationTelemetry::append(4), || {
+                Err(BackendError::ConcurrencyConflict {
+                    source: boxed_source("wrong last sequence"),
+                })
+            });
+        });
+        let metric_lines: Vec<&str> = captured
+            .lines()
+            .filter(|line| line.contains("pardosa jetstream metric"))
+            .collect();
+        assert!(
+            metric_lines.iter().any(|line| {
+                line.contains("terminal_category=\"fence_conflict\"")
+                    && line.contains("metric_name=\"pardosa_jetstream_operation_terminal_total\"")
+            }),
+            "I1: ConcurrencyConflict must increment the terminal counter with \
+             terminal_category=fence_conflict; captured={metric_lines:?}",
+        );
+        assert!(
+            !metric_lines.iter().any(|line| {
+                line.contains("metric_name=\"pardosa_jetstream_operation_terminal_total\"")
+                    && line.contains("terminal_category=\"publish\"")
+            }),
+            "I1: ConcurrencyConflict must NOT increment the generic publish path; \
+             captured={metric_lines:?}",
+        );
+    }
+
+    #[test]
+    fn i2_conflict_unhandled_counter_fires_on_fence_conflict_surfaced_to_caller() {
+        let captured = capture_tracing(|| {
+            let _ = super::observe_operation(super::OperationTelemetry::append(4), || {
+                Err(BackendError::ConcurrencyConflict {
+                    source: boxed_source("wrong last sequence"),
+                })
+            });
+        });
+        assert!(
+            captured.contains("metric_name=\"pardosa_jetstream_occ_conflict_unhandled_total\""),
+            "I2: conflict_unhandled counter must fire when a fence conflict surfaces \
+             to the caller (adapter-boundary scope: this repo cannot observe whether \
+             the caller then performs a clean abort); captured={captured:?}",
+        );
+    }
+
+    #[test]
+    fn i2b_self_fence_counter_stays_zero_under_normal_operation() {
+        use crate::backend::journal::RehydrateableBackend;
+        let captured = capture_tracing(|| {
+            let handle = JetStreamBackend::open(detached_config("self-fence"));
+            let mut adapter = JetStreamBackendAdapter::new(handle);
+            let _ = adapter.append(b"normal-bytes");
+            let _ = adapter.sync();
+            let _ = adapter.fetch_durable_bytes();
+        });
+        assert!(
+            !captured.contains("pardosa_jetstream_occ_self_fence_total"),
+            "I2b: self_fence counter must stay at its healthy zero value under \
+             normal operation (Semaphore(1) makes self-fence structurally \
+             unreachable); captured={captured:?}",
+        );
+        assert!(
+            super::registered_metrics()
+                .iter()
+                .any(|metric| metric.name == "pardosa_jetstream_occ_self_fence_total"),
+            "I2b: self_fence counter must still be registered so its zero value \
+             is an observed invariant, not an absent signal",
+        );
+    }
+
+    #[test]
+    fn i5_bridge_duration_histogram_fires_for_sync_and_replay_not_only_append() {
+        use crate::backend::journal::RehydrateableBackend;
+        let captured = capture_tracing(|| {
+            let handle = JetStreamBackend::open(detached_config("bridge-duration"));
+            let mut adapter = JetStreamBackendAdapter::new(handle);
+            let _ = adapter.sync();
+            let _ = adapter.fetch_durable_bytes();
+        });
+        for op in ["sync", "replay"] {
+            let has_op_line = captured.lines().any(|line| {
+                line.contains("pardosa_jetstream_bridge_duration_seconds")
+                    && line.contains(&format!("op=\"{op}\""))
+            });
+            assert!(
+                has_op_line,
+                "I5: bridge_duration histogram must fire for `{op}`, not only append; \
+                 captured={captured:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn i5_ack_timeout_counter_fires_on_timeout_terminal_category() {
+        let captured = capture_tracing(|| {
+            let _ = super::observe_operation(super::OperationTelemetry::sync(), || {
+                Err(BackendError::Timeout {
+                    op: BackendOp::Sync,
+                    elapsed: Duration::from_secs(31),
+                    configured: Duration::from_secs(30),
+                })
+            });
+        });
+        assert!(
+            captured.contains("metric_name=\"pardosa_jetstream_ack_timeout_total\""),
+            "I5: ack_timeout counter must fire on a Timeout terminal category; \
+             captured={captured:?}",
         );
     }
     #[test]
