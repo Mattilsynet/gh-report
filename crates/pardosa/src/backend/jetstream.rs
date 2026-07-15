@@ -144,6 +144,10 @@ const ACK_TIMEOUT_COUNTER: MetricSpec = MetricSpec {
 /// the caller performs a clean abort afterward is not observable from
 /// here, so this counts conflict-surfaced-to-caller, not
 /// conflict-then-non-abort.
+///
+/// This is the GND-0010:R7 surfacing point in the adapter ring: a
+/// silent consistency violation must become an observable signal
+/// (COM-0019), and this counter is that signal for OCC fence conflicts.
 const OCC_CONFLICT_UNHANDLED_COUNTER: MetricSpec = MetricSpec {
     name: "pardosa_jetstream_occ_conflict_unhandled_total",
     kind: MetricKind::Counter,

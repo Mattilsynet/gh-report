@@ -128,6 +128,11 @@ impl JetStreamConfig {
     /// Whether publishes include the `Nats-Expected-Last-Subject-Sequence`
     /// append fence. Defaults to `false`; runtime adopters opt in when the
     /// subject is the authoritative single-writer surface.
+    ///
+    /// Detects rather than prevents concurrent writers (PGN-0016:R2, R5;
+    /// GND-0010:R5 — the PC/EC axiom's detect-not-prevent stance): a
+    /// conflicting write surfaces as `ConcurrencyConflict`, it is not
+    /// blocked ahead of time.
     #[must_use]
     pub const fn single_writer_fence_enabled(&self) -> bool {
         self.single_writer_fence_enabled
@@ -229,7 +234,8 @@ impl JetStreamConfigBuilder {
         self.operation_timeout = Some(timeout);
         self
     }
-    /// Enable or disable the append-path single-writer fence.
+    /// Enable or disable the append-path single-writer fence
+    /// (PGN-0016:R2, R5; GND-0010:R5 detect-not-prevent).
     #[must_use]
     pub const fn single_writer_fence_enabled(mut self, enabled: bool) -> Self {
         self.single_writer_fence_enabled = Some(enabled);

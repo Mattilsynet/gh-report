@@ -15,6 +15,12 @@
 //!
 //! Submodules: [`replay`], [`migrate`]. [`migrate::migrate_keep`]
 //! is the only public migration path until ADR-0019 lands.
+//!
+//! The façade is synchronous end to end (PGN-0010:R5, PGN-0015:R6);
+//! backends own their async runtime internally. This sync-over-async
+//! boundary is the PC/EC latency-cost stance GND-0010 makes explicit:
+//! the facade trades async concurrency for linearizable, observable
+//! consistency at the append point.
 /// Sealed marker trait identifying a substrate eligible to back
 /// an [`EventStore`] via `EventStore::<T>::open_with_backend`
 /// (ADR-0022 §D1, §D11, §D12).
