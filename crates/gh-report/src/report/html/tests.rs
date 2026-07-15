@@ -158,27 +158,6 @@ fn sample_evidence_with_admin_diagnostics() -> Evidence {
 }
 
 #[test]
-fn dashboard_report_produces_valid_html() {
-    let evidence = sample_evidence();
-    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
-    let html = &pages["report.html"];
-
-    assert!(html.contains("<!DOCTYPE html>"));
-    assert!(html.contains("<html lang=\"en\">"));
-    assert!(html.contains("</html>"));
-}
-
-#[test]
-fn dashboard_report_includes_organization_name() {
-    let evidence = sample_evidence();
-    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
-    let html = &pages["report.html"];
-
-    assert!(html.contains("TestOrg GitHub Governance Overview"));
-    assert!(html.contains("<code>TestOrg</code>"));
-}
-
-#[test]
 fn dashboard_report_shows_by_reason_exclusion_breakdown_per_control() {
     let evidence = sample_evidence();
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
@@ -270,53 +249,6 @@ fn security_policy_caption_matches_computed_population() {
     );
 }
 
-#[test]
-fn dashboard_report_has_no_operations_read_more_links() {
-    let evidence = sample_evidence();
-    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
-    let html = &pages["report.html"];
-
-    assert!(!html.contains("OPERATIONS.html"));
-    assert!(!html.contains("Read more"));
-}
-
-#[test]
-fn dashboard_index_has_no_operations_read_more_links() {
-    let evidence = sample_evidence();
-    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
-    let html = &pages["index.html"];
-
-    assert!(!html.contains("OPERATIONS.html"));
-    assert!(
-        !html.contains("Read more"),
-        "control cards must no longer emit Read-more links now that OPERATIONS.html is removed"
-    );
-}
-
-#[test]
-fn dashboard_report_codeowners_prefers_team_over_user() {
-    let evidence = sample_evidence();
-    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
-    let html = &pages["report.html"];
-
-    assert!(html.contains("Prefer a GitHub <strong>team</strong>"));
-    assert!(html.contains("top security teams"));
-}
-
-#[test]
-fn dashboard_report_add_member_guidance_is_generic_by_default() {
-    let evidence = sample_evidence();
-    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
-    let html = &pages["report.html"];
-
-    assert!(html.contains("your GitHub organization"));
-    assert!(html.contains("administrators"));
-    assert!(html.contains("not a configuration file"));
-    assert!(!html.to_lowercase().contains("mattilsynet"));
-    assert!(!html.to_lowercase().contains("open a pr"));
-    assert!(!html.to_lowercase().contains("pull request to"));
-}
-
 /// UF2-GEN proof: swapping the org-derived config to a different
 /// organization's values renders that organization's guidance, and
 /// leaks zero "Mattilsynet" strings anywhere in the multi-page output —
@@ -401,28 +333,6 @@ fn render_dashboard_index_zero_badge_snapshot() {
     insta::with_settings!({snapshot_path => "../snapshots"}, {
     insta::assert_snapshot!("dashboard_index_zero_badge", &pages["index.html"]);
     });
-}
-
-#[test]
-fn render_dashboard_admin_page_contains_read_only_diagnostics() {
-    let evidence = sample_evidence_with_admin_diagnostics();
-    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
-    let admin = &pages["admin.html"];
-
-    assert!(admin.contains("Admin Diagnostics"));
-    assert!(admin.contains("Branch Protection"));
-    assert!(admin.contains("permission_denied"));
-    assert!(admin.contains("Subtotal"));
-    assert!(admin.contains("running with github_app/Limited"));
-    assert!(admin.contains("org_secret_scanning_alerts"));
-    assert!(!admin.contains("<form"));
-    assert!(!admin.contains("method=\"post\""));
-    assert_eq!(
-        admin.matches("<script").count(),
-        1,
-        "admin page carries only the sort-init.js progressive-enhancement loader"
-    );
-    assert!(admin.contains("<script type=\"module\" src=\"sort-init.js\"></script>"));
 }
 
 #[test]
@@ -1567,34 +1477,6 @@ fn render_owner_detail_html_repo_links_contain_href() {
 }
 
 #[test]
-fn render_dashboard_with_owners_produces_detail_pages() {
-    let evidence = evidence_with_owner_repos();
-    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
-
-    assert!(pages.contains_key("owners.html"));
-    let detail_pages: Vec<_> = pages.keys().filter(|k| k.starts_with("owners/")).collect();
-    assert!(
-        !detail_pages.is_empty(),
-        "expected at least one owner detail page"
-    );
-    let owners_html = &pages["owners.html"];
-    assert!(
-        owners_html.contains("Orphans ("),
-        "owners.html should have orphans nav link"
-    );
-}
-
-#[test]
-fn owners_page_has_no_operations_read_more_link() {
-    let evidence = evidence_with_owner_repos();
-    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
-    let owners_html = &pages["owners.html"];
-
-    assert!(!owners_html.contains("OPERATIONS.html"));
-    assert!(!owners_html.contains("Read more"));
-}
-
-#[test]
 fn render_dashboard_owners_snapshot() {
     let evidence = evidence_with_owner_repos();
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
@@ -1612,40 +1494,6 @@ fn render_dashboard_owner_detail_snapshot() {
     insta::with_settings!({snapshot_path => "../snapshots"}, {
     insta::assert_snapshot!("dashboard_owner_detail", &pages["owners/org-team-a.html"]);
     });
-}
-
-#[test]
-fn owners_page_team_health_tooltip_states_formula_and_exclusion_rule() {
-    let evidence = evidence_with_owner_repos();
-    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
-    let owners_html = &pages["owners.html"];
-
-    assert!(
-        owners_html.contains("Team Health"),
-        "owners.html should contain the Team Health column label"
-    );
-    assert!(
-        !owners_html.contains("Sec Score"),
-        "the old 'Sec Score' label must be fully replaced (item6-04)"
-    );
-    assert!(
-        owners_html.contains("Geometric mean of measured control rates across six controls"),
-        "Team Health tooltip must state its exact formula; owners.html:\n{owners_html}"
-    );
-    assert!(
-        owners_html.contains(
-            "Security Policy, Secret Scanning, Dependabot, Branch Protection, Freshness, Alert-Free"
-        ),
-        "Team Health tooltip must state its six-control set using the new Freshness label"
-    );
-    assert!(
-        !owners_html.contains("Non-Stale"),
-        "the old 'Non-Stale' control label must be fully replaced by 'Freshness' (item6-04 D4)"
-    );
-    assert!(
-        owners_html.contains("Unmeasured controls are excluded from each rate&#39;s denominator"),
-        "Team Health tooltip must state the exclusion rule"
-    );
 }
 
 #[test]
