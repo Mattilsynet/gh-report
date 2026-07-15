@@ -1,3 +1,7 @@
+//! JetStream backend telemetry: emits `pardosa::jetstream::metrics`
+//! `info!` events consumed by a log-based-metric aggregation layer.
+//! Backend naming + SLO/alerting bands: `docs/pardosa/observability-slo.md`.
+
 use super::BackendSink;
 use super::sealed;
 use crate::authoritative::jetstream::JetStreamBackendAdapter;
