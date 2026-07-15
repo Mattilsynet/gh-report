@@ -11,6 +11,7 @@
 mod support;
 use pardosa_nats::{JetStreamBackend, JetStreamConfig, RuntimeHandle};
 use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use support::LiveNatsServer;
 use tokio::runtime::Runtime;
@@ -535,6 +536,48 @@ fn live_append_with_replay_tag_surfaces_tag_on_replay() {
         records[0].schema_tag.as_deref(),
         Some(replay_tag),
         "replay record surfaces the opaque per-message tag"
+    );
+    rt.block_on(teardown_stream(&server, &stream_name));
+}
+
+#[test]
+#[ignore = "requires nats-server matching tools/.nats-server-version on PATH (mission pardosa-nats-fence-resync-v2)"]
+fn live_same_handle_concurrent_appends_serialize_without_fencing() {
+    const APPEND_COUNT: usize = 20;
+    let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+    let rt = Runtime::new().expect("tokio runtime");
+    let tag = unique_stream_tag();
+    let stream_name = format!("PARDOSA_LIVE_{tag}");
+    let cfg = build_live_config(&tag, &rt, &server);
+    let handle = Arc::new(JetStreamBackend::open(cfg));
+    let threads: Vec<_> = (0..APPEND_COUNT)
+        .map(|i| {
+            let handle = Arc::clone(&handle);
+            thread::spawn(move || handle.append(format!("burst-{i}").as_bytes()))
+        })
+        .collect();
+    let mut acks = Vec::new();
+    for thread in threads {
+        let ack = thread
+            .join()
+            .expect("append thread joins")
+            .expect("same-handle concurrent append must not fence");
+        acks.push(ack);
+    }
+    acks.sort();
+    acks.dedup();
+    assert_eq!(
+        acks.len(),
+        APPEND_COUNT,
+        "every concurrent same-handle append succeeds with a distinct ack position"
+    );
+    let records = handle
+        .replay_all()
+        .expect("replay_all after concurrent burst");
+    assert_eq!(
+        records.len(),
+        APPEND_COUNT,
+        "subject tip advances exactly once per append; no append is silently dropped or duplicated"
     );
     rt.block_on(teardown_stream(&server, &stream_name));
 }
