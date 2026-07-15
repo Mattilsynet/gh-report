@@ -730,6 +730,10 @@ struct StatusDotsCase {
     expected: [(&'static str, &'static str); 4],
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive parametric case table (7 rows); length is inherent to row enumeration"
+)]
 fn status_dots_cases() -> [StatusDotsCase; 7] {
     [
         StatusDotsCase {
@@ -3322,6 +3326,10 @@ struct RepoScoreCase {
     expected_wc: Option<&'static str>,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive parametric case table (15 rows); length is inherent to row enumeration"
+)]
 fn repo_score_cases() -> [RepoScoreCase; 15] {
     [
         RepoScoreCase {
