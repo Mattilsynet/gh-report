@@ -41,6 +41,7 @@
         background: #475569;
       }
       .pipeline {
+        position: relative;
         display: flex;
         justify-content: space-between;
         gap: 0.4rem;
@@ -58,6 +59,8 @@
         font-weight: 600;
         text-align: center;
         color: #e2e8f0;
+        position: relative;
+        z-index: 1;
       }
       .stage-note {
         font-size: 0.6rem;
@@ -69,11 +72,21 @@
         background: #334155;
         border: 2px solid #64748b;
         border-radius: 0.35rem;
+        animation: work-pulse 1.6s ease-in-out infinite;
       }
       .stage-store {
         background: #1e3a5f;
         border: 2px solid #3b82f6;
         border-radius: 45% / 18%;
+      }
+      @keyframes work-pulse {
+        0%,
+        100% {
+          box-shadow: 0 0 0 rgba(100, 116, 139, 0);
+        }
+        50% {
+          box-shadow: 0 0 0.5rem rgba(100, 116, 139, 0.85);
+        }
       }
       .lane {
         position: relative;
@@ -82,6 +95,15 @@
         background: #1e293b;
         border-radius: 0.4rem;
         overflow: hidden;
+      }
+      .lane-transit {
+        position: absolute;
+        inset: 0;
+        background: transparent;
+        border-radius: 0;
+        overflow: visible;
+        pointer-events: none;
+        z-index: 2;
       }
       .packet {
         position: absolute;

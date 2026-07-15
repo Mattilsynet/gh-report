@@ -10,19 +10,19 @@
 //! Renders the 8-stage pipeline from adr-fmt-223sd: CREATE (work) ->
 //! QUEUE (store) -> WORKER (work) -> STREAM (store) -> PROJECTION
 //! (store) -> BUILD (work) -> COMPRESS (work) -> CACHE (store) ->
-//! served. Packets transit two CSS-animated lanes rather than
-//! teleporting: the arrival lane (CREATE -> QUEUE) and the pipeline
-//! lane (WORKER -> served, spanning the remaining six stages).
+//! served. Packets ride a single transit lane overlaid on the stage
+//! row so a packet visibly threads through the stage boxes left to
+//! right instead of teleporting between two disconnected lanes.
 
 use std::cell::RefCell;
 
 use any_spawner::Executor;
-use leptos::prelude::{Effect, Get, Owner, RwSignal, Update};
+use leptos::prelude::{Effect, Get, GetUntracked, Owner, RwSignal, Update};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::wasm_bindgen;
 use web_sys::{Document, Element};
 
-use crate::sim::{Compressor, EnqueueResult, JobOutcome, JobSource, Sim, SimConfig};
+use crate::sim::{EnqueueResult, JobOutcome, JobSource, Sim, SimConfig};
 
 #[derive(Clone, Copy)]
 struct Rates {
@@ -139,7 +139,7 @@ pub fn tick() {
         let Some(state) = borrowed.as_mut() else {
             return;
         };
-        let rates = state.rates.get();
+        let rates = state.rates.get_untracked();
         let batch_arrival = state
             .tick_count
             .is_multiple_of(u64::from(rates.batch_per_tick.max(1)));
@@ -203,15 +203,34 @@ fn render_gauges(document: &Document, sim: &Sim) {
         "arcswap-generation",
         &sim.arcswap_generation().to_string(),
     );
+    set_text(
+        document,
+        "stage-queue-fill",
+        &format!("{}/{}", sim.queue_depth(), sim.queue_capacity()),
+    );
+    set_text(
+        document,
+        "stage-stream-fill",
+        &sim.events_written().to_string(),
+    );
+    set_text(
+        document,
+        "stage-projection-fill",
+        &sim.repositories_captured().to_string(),
+    );
+    set_text(
+        document,
+        "stage-cache-fill",
+        &sim.served_pages().to_string(),
+    );
 }
 
 fn compression_ratio_display(sim: &Sim) -> String {
-    let raw = Compressor::page_size(sim.repositories_captured());
+    let raw = sim.raw_bytes_total();
     if raw == 0 {
         return "n/a".to_string();
     }
-    let compressed = sim.compressed_bytes_total();
-    let percent = (compressed * 100) / raw.max(1);
+    let percent = sim.compressed_bytes_total() * 100 / raw;
     format!("{percent}%")
 }
 
@@ -220,7 +239,7 @@ fn render_events(
     arrivals: &[(JobSource, EnqueueResult)],
     completions: &[(JobSource, JobOutcome)],
 ) {
-    let Some(arrival_lane) = document.get_element_by_id("arrival-lane") else {
+    let Some(transit_lane) = document.get_element_by_id("transit-lane") else {
         return;
     };
     for (source, result) in arrivals {
@@ -231,7 +250,7 @@ fn render_events(
         };
         spawn_transit_packet(
             document,
-            &arrival_lane,
+            &transit_lane,
             class,
             source_color(*source),
             "0%",
@@ -240,14 +259,11 @@ fn render_events(
         );
     }
 
-    let Some(pipeline_lane) = document.get_element_by_id("pipeline-lane") else {
-        return;
-    };
     for (source, outcome) in completions {
         match outcome {
             JobOutcome::Success => spawn_transit_packet(
                 document,
-                &pipeline_lane,
+                &transit_lane,
                 "packet packet-success",
                 source_color(*source),
                 PIPELINE_LANE_START,
@@ -256,7 +272,7 @@ fn render_events(
             ),
             JobOutcome::Failure => spawn_transit_packet(
                 document,
-                &pipeline_lane,
+                &transit_lane,
                 "packet packet-failure",
                 source_color(*source),
                 PIPELINE_LANE_START,
@@ -327,28 +343,23 @@ fn build_layout(document: &Document, root: &Element, rates: RwSignal<Rates>) {
   </div>
   <div class='pipeline'>
     <div class='stage stage-work'>CREATE<span class='stage-note'>timer + webhook</span></div>
-    <div class='stage stage-store'>QUEUE<span class='stage-note'>depth/cap</span></div>
+    <div class='stage stage-store'>QUEUE<span class='stage-note'>depth <span id='stage-queue-fill'>0/0</span></span></div>
     <div class='stage stage-work'>WORKER<span class='stage-note'>16x GitHub query</span></div>
-    <div class='stage stage-store'>STREAM<span class='stage-note'>events</span></div>
-    <div class='stage stage-store'>PROJECTION<span class='stage-note'>repos</span></div>
+    <div class='stage stage-store'>STREAM<span class='stage-note'>events <span id='stage-stream-fill'>0</span></span></div>
+    <div class='stage stage-store'>PROJECTION<span class='stage-note'>repos <span id='stage-projection-fill'>0</span></span></div>
     <div class='stage stage-work'>BUILD<span class='stage-note'>memo</span></div>
     <div class='stage stage-work'>COMPRESS<span class='stage-note'>zstd</span></div>
-    <div class='stage stage-store'>CACHE<span class='stage-note'>ArcSwap</span></div>
+    <div class='stage stage-store'>CACHE<span class='stage-note'>served <span id='stage-cache-fill'>0</span></span></div>
+    <div id='transit-lane' class='lane lane-transit'></div>
   </div>
   <div class='row'>
-    <div id='arrival-lane' class='lane lane-arrival'></div>
     <div class='gauge'>queue <span id='queue-depth'>0</span>/<span id='queue-capacity'>0</span></div>
-  </div>
-  <div class='row'>
     <div class='gauge'>in-flight <span id='in-flight'>0</span>/<span id='worker-count'>0</span></div>
     <div class='gauge'>QueueFull <span id='queue-full-count'>0</span></div>
     <div class='gauge'>Deduplicated <span id='deduplicated-count'>0</span></div>
   </div>
   <div class='row'>
-    <div id='pipeline-lane' class='lane lane-pipeline'></div>
     <div class='gauge'>served pages <span id='served-pages'>0</span></div>
-  </div>
-  <div class='row'>
     <div class='gauge'>batch remaining <span id='batch-remaining'>0</span></div>
     <div class='gauge'>failures <span id='failure-count'>0</span></div>
     <div class='gauge'>events written <span id='events-written'>0</span></div>

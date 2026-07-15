@@ -332,6 +332,7 @@ pub struct Metrics {
     pub memo_hits: u64,
     pub memo_rebuilds: u64,
     pub compressed_bytes_total: usize,
+    pub raw_bytes_total: usize,
     pub arcswap_generation: usize,
 }
 
@@ -474,6 +475,7 @@ impl Sim {
                     self.delivery.serve();
                     self.metrics.events_written += 1;
                     self.metrics.compressed_bytes_total += compressed_bytes;
+                    self.metrics.raw_bytes_total += page_size;
                     self.metrics.arcswap_generation = generation;
                     match build {
                         BuildResult::Rebuild => self.metrics.memo_rebuilds += 1,
@@ -557,6 +559,11 @@ impl Sim {
     #[must_use]
     pub fn compressed_bytes_total(&self) -> usize {
         self.metrics.compressed_bytes_total
+    }
+
+    #[must_use]
+    pub fn raw_bytes_total(&self) -> usize {
+        self.metrics.raw_bytes_total
     }
 
     #[must_use]
@@ -774,6 +781,25 @@ mod tests {
             sim.arcswap_generation() > 0,
             "at least one publish must have occurred over 300 ticks"
         );
+    }
+
+    #[test]
+    fn compression_ratio_stays_under_100_percent_over_cumulative_pages() {
+        let config = SimConfig {
+            queue_capacity: 8,
+            worker_count: 16,
+            service_ticks: 3,
+            domain_key_span: 500,
+        };
+        let mut sim = Sim::new(config, 1234);
+        for tick in 0..300u64 {
+            sim.step(tick % 2 == 0, tick % 3 == 0);
+        }
+        let m = sim.metrics();
+        assert!(m.raw_bytes_total > 0, "raw bytes must accumulate");
+        let percent = m.compressed_bytes_total * 100 / m.raw_bytes_total;
+        assert!(percent > 0, "compression percent must be positive");
+        assert!(percent < 100, "compression percent must stay under 100%");
     }
 
     #[test]
