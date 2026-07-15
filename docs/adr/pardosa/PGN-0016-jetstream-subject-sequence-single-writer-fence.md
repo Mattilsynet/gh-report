@@ -8,7 +8,7 @@ Crates: pardosa, pardosa-nats
 
 ## Related
 
-References: PGN-0010, PGN-0001, PGN-0008, PGN-0006, CHE-0061, CHE-0006, CHE-0024
+References: PGN-0010, PGN-0001, PGN-0008, PGN-0006, CHE-0061, CHE-0006, CHE-0024, CHE-0041
 
 ## Context
 
@@ -69,6 +69,21 @@ R10 [5]: Never resync expected-sequence from the subject tip and retry inside
   defeats R7. Intra-handle self-fencing (TOCTOU) is fixed by serializing a
   handle's own appends, not by tip-resync; a genuine cross-handle conflict must
   surface, not auto-retry.
+R11 [5]: Append is idempotent under this fence independent of the JetStream
+  dedup window: a re-append with a stale (already-advanced) expected-sequence
+  surfaces as err_code 10071/10164, mapped to `BackendError::ConcurrencyConflict`
+  and rejected per R2 before any authoritative append — so no double-append
+  occurs regardless of whether the `Nats-Msg-Id` dedup window (R5) is still
+  open. Composition is 4 layers, correctness flowing down and never depending
+  on a layer above surviving: (1) domain/command idempotency owned by
+  cherry-pit (CHE-0041, aggregate-as-authority, unbounded); (2) this OCC fence
+  (R1/R2, unbounded, the correctness floor for append-once); (3) the
+  `Nats-Msg-Id` dedup window (R5, bounded, `EXPIRES` after 2 minutes, a
+  best-effort transport optimization that suppresses exact retries while it
+  is open); (4) the `pardosa_jetstream_dedup_hit_total` counter
+  (observability only, `docs/pardosa/observability-slo.md` I8). A retry that
+  arrives after the dedup window expires falls through to layer 2 and is
+  still correctly fenced; dedup is never load-bearing for append-once.
 
 ## Consequences
 
@@ -78,6 +93,12 @@ R10 [5]: Never resync expected-sequence from the subject tip and retry inside
 + becomes easier: conflict recovery is neutral and matchable across the store
   boundary; fast-failover writers abort/replay per R2/R7 without
   string-parsing or multi-writer coordination.
++ becomes easier: dedup-window expiry is no longer a correctness risk to
+  reason about at call sites — R11 makes explicit that append-once holds via
+  the fence alone, so callers and CHE-0088 need not special-case a retry that
+  outlives the 2-minute dedup window; see `docs/pardosa/observability-slo.md`
+  I8 for how `dedup_hit` is read as an observability signal, not a
+  correctness residual, under this rule.
 − becomes harder: append callers must carry expected stream state, classify
   NATS conflicts by err_code, abort losing runs, and preserve replay paths for
   interim per-event publishing.

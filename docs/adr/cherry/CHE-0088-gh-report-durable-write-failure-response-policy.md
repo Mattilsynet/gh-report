@@ -28,7 +28,7 @@ R4 [5]: `WritePolicyCategory::Transient` (from `BackendInfrastructure`/`Infrastr
 
 R5 [5]: `WritePolicyCategory::Structural` (`DivergedFiber`) and `WritePolicyCategory::Unrecoverable` (`Poisoned`, `TornWriteRecovery`) map to `fatal`; these represent invariant violations or corrupted process state that must abort rather than retry or silently continue.
 
-R6 [5]: The webhook `remove_repo` persist-failure call site maps its resulting category to `HTTP-non-2xx` specifically at the HTTP-response layer — never a silent 200 — so GitHub redelivers the webhook; redelivery safety rests on the existing Nats-Msg-Id BLAKE3 dedup (PGN-0016:R5) as the idempotency backstop.
+R6 [5]: The webhook `remove_repo` persist-failure call site maps its resulting category to `HTTP-non-2xx` specifically at the HTTP-response layer — never a silent 200 — so GitHub redelivers the webhook; redelivery safety rests on the OCC fence and R3's unconditional Conflict→fatal mapping (PGN-0016:R2/R11), not on the bounded `Nats-Msg-Id` dedup window (PGN-0016:R5): that window only optimizes by suppressing exact retries while it is open and `EXPIRES` after 2 minutes, so it cannot serve as the idempotency backstop for redelivery that outlives it.
 
 R7 [5]: The response-dispatch match over `WritePolicyCategory` has no catch-all wildcard arm; adding a new category to the enum without adding its response arm fails to compile, making per-callsite silent-swallow un-writable rather than merely discouraged.
 

@@ -62,7 +62,7 @@ floor is a **correctness incident**, not a latency-budget burn.
 | `pardosa.occ.self_fence` (I2b) counter — intra-handle self-fence | **zero** (Semaphore(1) makes it impossible) | any non-zero | mis-built `append_gate` |
 | `pardosa.bridge.block_on.duration` (I5) histogram + `ack_timeout` counter | p99 under bridge budget | p99 breach / sustained ack-timeout | `block_on` stall → tail-latency cliff |
 | `pardosa.replay.lag` (I6) gauge | bounded, converging | monotonically growing | read-side staleness |
-| `pardosa.dedup.hit` + `pardosa.redelivery.observed` (I8) counters | **zero** redelivery; dedup-hits only from legitimate retries | any redelivery-driven append attempt; **any dedup-hit near the 2-min window boundary** | **duplicate-append** residual (F3) |
+| `pardosa.dedup.hit` + `pardosa.redelivery.observed` (I8) counters | **zero** redelivery; dedup-hits only from legitimate retries | any redelivery-driven append attempt; **any dedup-hit near/after the 2-min window boundary, co-moving with `fence.conflict` (I1)** | retries **escaping** the bounded dedup window and falling through to the OCC fence (PGN-0016:R11) — an observability signal, not a duplicate-append correctness residual: the fence, not dedup, prevents duplicate append |
 
 Note: v1's I2 "replay-retry storm → PC/EL livelock" alert is **retired** —
 the PGN-0016 amendment removed in-band retry, so intra-handle livelock is
@@ -117,7 +117,12 @@ in `crates/pardosa/src/backend/jetstream.rs`:
   fires whenever `TerminalCategory::Timeout` is observed.
 - **I8** (`dedup.hit` + `redelivery.observed`) — **dedup-hit implemented
   (Seq 2, bd adr-fmt-4omxc); `redelivery.observed` remains unobservable
-  by design.** `pardosa-nats::JetStreamHandle::append` /
+  by design.** Per PGN-0016:R11's 4-layer composition rule (domain
+  idempotency → OCC fence → bounded dedup window → this counter),
+  `dedup_hit` is an observability signal only: it detects retries that
+  fall through the bounded `Nats-Msg-Id` window, not a correctness
+  residual — the fence, not dedup, prevents duplicate append.
+  `pardosa-nats::JetStreamHandle::append` /
   `append_with_replay_tag` now return `JetStreamAppendAck { ack, duplicate }`
   — an additive return-type extension (not a `JetStreamAckPosition` shape
   change, preserving its `#[repr(transparent)]`) threading
