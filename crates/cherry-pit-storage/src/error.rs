@@ -33,6 +33,24 @@ pub enum PersistenceError {
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
 
+    /// Returned when the underlying store backend (e.g. NATS) is
+    /// unreachable or otherwise infrastructurally unavailable. Transient:
+    /// a retry may succeed once the backend recovers.
+    #[error("backend unavailable: {reason}")]
+    BackendUnavailable { reason: String },
+
+    /// Returned when a store-level invariant (one-fiber-per-key) is
+    /// violated. Structural: not retryable, indicates a bug or corrupted
+    /// state upstream of this conversion.
+    #[error("store invariant violated: {reason}")]
+    InvariantViolation { reason: String },
+
+    /// Returned when the underlying store's in-process mutex was
+    /// poisoned by a panicking holder. Unrecoverable: the process must
+    /// not continue operating on this store instance.
+    #[error("store state poisoned")]
+    PoisonedState,
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }

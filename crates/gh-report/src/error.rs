@@ -107,6 +107,9 @@ pub(crate) fn persist_error_variant(error: &PersistenceError) -> &'static str {
         PersistenceError::LoadFailed { .. } => "LoadFailed",
         PersistenceError::TornWriteRecovery { .. } => "TornWriteRecovery",
         PersistenceError::FencedConflict { .. } => "FencedConflict",
+        PersistenceError::BackendUnavailable { .. } => "BackendUnavailable",
+        PersistenceError::InvariantViolation { .. } => "InvariantViolation",
+        PersistenceError::PoisonedState => "PoisonedState",
         PersistenceError::Io(_) => "Io",
         _ => "other",
     }

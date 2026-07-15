@@ -823,6 +823,23 @@ fn native_store_persistence(error: crate::store::StoreError) -> PersistenceError
         crate::store::StoreError::TornWriteRecovery { source } => {
             PersistenceError::TornWriteRecovery { source }
         }
+        crate::store::StoreError::Infrastructure(_)
+        | crate::store::StoreError::BackendInfrastructure { .. } => {
+            log_error_chain("gh_report_persistence_load_failed", &error);
+            PersistenceError::BackendUnavailable {
+                reason: error.to_string(),
+            }
+        }
+        crate::store::StoreError::DivergedFiber { .. } => {
+            log_error_chain("gh_report_persistence_load_failed", &error);
+            PersistenceError::InvariantViolation {
+                reason: error.to_string(),
+            }
+        }
+        crate::store::StoreError::Poisoned => {
+            log_error_chain("gh_report_persistence_load_failed", &error);
+            PersistenceError::PoisonedState
+        }
         other => {
             log_error_chain("gh_report_persistence_load_failed", &other);
             PersistenceError::LoadFailed {
@@ -2062,8 +2079,8 @@ mod tests {
         let output = capture_events(|| {
             let persistence = native_store_persistence(err);
 
-            let PersistenceError::LoadFailed { reason } = persistence else {
-                panic!("backend infrastructure failure should flatten to LoadFailed");
+            let PersistenceError::BackendUnavailable { reason } = persistence else {
+                panic!("backend infrastructure failure should map to BackendUnavailable");
             };
             assert!(
                 reason.contains("authorization violation"),
