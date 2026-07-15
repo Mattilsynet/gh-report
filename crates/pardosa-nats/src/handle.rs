@@ -198,19 +198,51 @@ impl JetStreamHandle {
         let timeout = cfg.operation_timeout();
         let seq = run_op(&runtime, timeout, async {
             let js = ensure_state(&self.state, cfg).await?;
-            let expected_last_subject_sequence = expected_last_subject_sequence_for_publish(
-                cfg.single_writer_fence_enabled(),
-                current_last_ack_seq(&self.state),
-            );
-            publish_once(
-                &js,
-                cfg.subject(),
-                bytes,
-                &nats_msg_id,
-                replay_tag,
-                expected_last_subject_sequence,
-            )
-            .await
+            let fence_enabled = cfg.single_writer_fence_enabled();
+            let mut last_ack_seq = current_last_ack_seq(&self.state);
+            let mut attempts_used = 0u32;
+            loop {
+                let expected_last_subject_sequence =
+                    expected_last_subject_sequence_for_publish(fence_enabled, last_ack_seq);
+                let publish_result = publish_once(
+                    &js,
+                    cfg.subject(),
+                    bytes,
+                    &nats_msg_id,
+                    replay_tag,
+                    expected_last_subject_sequence,
+                )
+                .await;
+                match publish_result {
+                    Ok(seq) => break Ok(seq),
+                    Err(JetStreamRuntimeError::WrongLastSequence { source }) => {
+                        if !fence_enabled || attempts_used >= SINGLE_WRITER_FENCE_MAX_RETRIES {
+                            break Err(JetStreamRuntimeError::WrongLastSequence { source });
+                        }
+                        let resynced_tip = resync_last_ack_seq_from_subject_tip(
+                            &js,
+                            cfg.stream_name(),
+                            cfg.subject(),
+                        )
+                        .await?;
+                        match resync_retry_decision(
+                            fence_enabled,
+                            attempts_used,
+                            SINGLE_WRITER_FENCE_MAX_RETRIES,
+                            resynced_tip,
+                        ) {
+                            ConflictRecovery::RetryWithResyncedSeq(resynced_tip) => {
+                                attempts_used += 1;
+                                last_ack_seq = resynced_tip;
+                            }
+                            ConflictRecovery::SurfaceConflict => {
+                                break Err(JetStreamRuntimeError::WrongLastSequence { source });
+                            }
+                        }
+                    }
+                    Err(e) => break Err(e),
+                }
+            }
         })?;
         let mut guard = self.state_locked();
         if let Some(state) = guard.as_mut() {
@@ -532,6 +564,50 @@ fn expected_last_subject_sequence_for_publish(
     fence_enabled.then_some(last_ack_seq)
 }
 
+/// Bound on `WrongLastSequence` resync-and-retry attempts inside
+/// [`append_inner`] (PGN-0016:R2 mandates replay-then-retry; it sets
+/// no numeric bound — this is a FLO-0012 U-curve parameter). 4 sits
+/// mid-range of the ADR-suggested 3-5 window: high enough to absorb
+/// a burst of same-cycle interleaved appends (the observed prod
+/// failure was a handful of concurrent writers racing one subject
+/// tip), low enough that a genuinely stuck fence still surfaces
+/// `WrongLastSequence` to the caller within one `operation_timeout`
+/// budget rather than retrying indefinitely.
+const SINGLE_WRITER_FENCE_MAX_RETRIES: u32 = 4;
+
+/// Decision outcome of [`resync_retry_decision`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConflictRecovery {
+    /// Retry the publish with this resynced subject-tip as the new
+    /// expected-last-subject-sequence.
+    RetryWithResyncedSeq(u64),
+    /// Retry bound exhausted, or fence disabled; surface the
+    /// original `WrongLastSequence` to the caller unchanged.
+    SurfaceConflict,
+}
+
+/// Pure retry/resync decision seam for the `append_inner`
+/// `WrongLastSequence` recovery loop (PGN-0016:R2 / PGN-0016:R3 —
+/// the expect-header is the fence, this function is not; it only
+/// decides whether another expect-header-guarded attempt is
+/// warranted). Takes the number of retries already spent, the
+/// configured bound, and the subject tip observed by a fresh
+/// resync — never the stale `last_ack_seq` that caused the
+/// conflict. No I/O, no lock, no runtime: unit-testable without
+/// tokio or a live NATS server.
+fn resync_retry_decision(
+    fence_enabled: bool,
+    attempts_used: u32,
+    max_retries: u32,
+    resynced_tip: u64,
+) -> ConflictRecovery {
+    if fence_enabled && attempts_used < max_retries {
+        ConflictRecovery::RetryWithResyncedSeq(resynced_tip)
+    } else {
+        ConflictRecovery::SurfaceConflict
+    }
+}
+
 fn update_last_ack_seq(last_ack_seq: &mut u64, seq: u64) {
     if seq > *last_ack_seq {
         *last_ack_seq = seq;
@@ -555,6 +631,32 @@ fn build_publish_headers(
         );
     }
     headers
+}
+/// Read the current tip of `subject` directly from the server
+/// (subject-scoped, not stream-scoped — PGN-0016:R2 replay-then-
+/// retry). Used only on `WrongLastSequence` to recover the ground
+/// truth for the next fenced publish attempt; an empty subject
+/// (`NoMessageFound`) resyncs to `0`, matching the fresh-subject
+/// baseline `current_last_ack_seq` uses before any append.
+async fn resync_last_ack_seq_from_subject_tip(
+    js: &async_nats::jetstream::Context,
+    stream_name: &str,
+    subject: &str,
+) -> Result<u64, JetStreamRuntimeError> {
+    use async_nats::jetstream::stream::LastRawMessageErrorKind;
+    let stream =
+        js.get_stream_no_info(stream_name)
+            .await
+            .map_err(|e| JetStreamRuntimeError::Replay {
+                source: Box::new(e),
+            })?;
+    match stream.get_last_raw_message_by_subject(subject).await {
+        Ok(message) => Ok(message.sequence),
+        Err(e) if e.kind() == LastRawMessageErrorKind::NoMessageFound => Ok(0),
+        Err(e) => Err(JetStreamRuntimeError::Replay {
+            source: Box::new(e),
+        }),
+    }
 }
 async fn replay_once(
     js: &async_nats::jetstream::Context,
@@ -847,6 +949,69 @@ mod tests {
             header.to_string(),
             "7",
             "next append must expect acked seq N"
+        );
+    }
+    #[test]
+    fn resync_retry_uses_resynced_subject_tip_not_stale_seq_and_advances_by_one() {
+        let fence_enabled = true;
+        let max_retries = SINGLE_WRITER_FENCE_MAX_RETRIES;
+        let stale_last_ack_seq = 844;
+        let resynced_tip = 845;
+
+        let first_expected =
+            expected_last_subject_sequence_for_publish(fence_enabled, stale_last_ack_seq);
+        assert_eq!(
+            first_expected,
+            Some(844),
+            "first attempt expects the stale locally-cached seq"
+        );
+
+        let recovery = resync_retry_decision(fence_enabled, 0, max_retries, resynced_tip);
+        let ConflictRecovery::RetryWithResyncedSeq(recovered_seq) = recovery else {
+            panic!("expected a retry decision within the bound, got {recovery:?}");
+        };
+        assert_eq!(
+            recovered_seq, resynced_tip,
+            "recovery must carry the freshly-resynced subject tip (845), not the \
+             stale locally-cached value (844) that caused the conflict"
+        );
+
+        let retry_expected =
+            expected_last_subject_sequence_for_publish(fence_enabled, recovered_seq);
+        assert_eq!(
+            retry_expected,
+            Some(845),
+            "retried publish must expect the resynced tip, not the stale value"
+        );
+
+        let mut last_ack_seq = recovered_seq;
+        update_last_ack_seq(&mut last_ack_seq, 846);
+        assert_eq!(
+            last_ack_seq, 846,
+            "successful append after resync advances the expected seq by exactly 1"
+        );
+    }
+    #[test]
+    fn resync_retry_exhausts_after_configured_bound() {
+        let recovery = resync_retry_decision(
+            true,
+            SINGLE_WRITER_FENCE_MAX_RETRIES,
+            SINGLE_WRITER_FENCE_MAX_RETRIES,
+            900,
+        );
+        assert_eq!(
+            recovery,
+            ConflictRecovery::SurfaceConflict,
+            "attempts_used == max_retries must surface the conflict rather than retry indefinitely"
+        );
+    }
+    #[test]
+    fn resync_retry_never_engages_with_fence_disabled() {
+        let recovery = resync_retry_decision(false, 0, SINGLE_WRITER_FENCE_MAX_RETRIES, 900);
+        assert_eq!(
+            recovery,
+            ConflictRecovery::SurfaceConflict,
+            "disabled fence must never enter the resync/retry path (no expect header sent)"
         );
     }
     #[test]
