@@ -163,6 +163,18 @@ const OCC_SELF_FENCE_COUNTER: MetricSpec = MetricSpec {
     kind: MetricKind::Counter,
     labels: OP_ONLY_LABELS,
 };
+/// I8: dedup-hit signal. Fires whenever `PublishAck.duplicate` (async-nats
+/// 0.49.1, threaded across the crate boundary via
+/// [`pardosa_nats::JetStreamAppendAck::duplicate`]) reports the `JetStream`
+/// server's own `Nats-Msg-Id` dedup window collapsed a re-publish. Recorded
+/// here, in the pardosa adapter ring, not in `pardosa-nats`
+/// (substrate ring purity, COM-0019:R6). Healthy band: bounded, only from
+/// legitimate retries (`docs/pardosa/observability-slo.md`).
+const DEDUP_HIT_COUNTER: MetricSpec = MetricSpec {
+    name: "pardosa_jetstream_dedup_hit_total",
+    kind: MetricKind::Counter,
+    labels: OP_ONLY_LABELS,
+};
 const REGISTERED_METRICS: &[MetricSpec] = &[
     OPERATION_TERMINAL_COUNTER,
     APPEND_LATENCY_HISTOGRAM,
@@ -170,6 +182,7 @@ const REGISTERED_METRICS: &[MetricSpec] = &[
     ACK_TIMEOUT_COUNTER,
     OCC_CONFLICT_UNHANDLED_COUNTER,
     OCC_SELF_FENCE_COUNTER,
+    DEDUP_HIT_COUNTER,
 ];
 
 #[derive(Clone, Copy, Debug)]
@@ -269,6 +282,16 @@ fn record_op_only_metric(spec: MetricSpec, op: TelemetryOp, value: f64) {
 )]
 fn record_self_fence(op: TelemetryOp) {
     record_op_only_metric(OCC_SELF_FENCE_COUNTER, op, 1.0);
+}
+
+/// I8: emits the dedup-hit counter when the `JetStream` server reported
+/// `PublishAck.duplicate == true` for this operation. No-op otherwise, so
+/// the counter's healthy band (bounded, legitimate-retry-only) stays
+/// observable per `docs/pardosa/observability-slo.md`.
+fn record_append_outcome_metrics(op: TelemetryOp, duplicate: bool) {
+    if duplicate {
+        record_op_only_metric(DEDUP_HIT_COUNTER, op, 1.0);
+    }
 }
 
 fn record_operation_metrics(
@@ -438,12 +461,13 @@ impl sealed::Sealed for JetStreamBackendAdapter {}
 impl BackendSink for JetStreamBackendAdapter {
     fn append(&mut self, bytes: &[u8]) -> Result<AckPosition, BackendError> {
         observe_operation(OperationTelemetry::append(bytes.len()), || {
-            match self.schema_tag.as_deref() {
+            let outcome = match self.schema_tag.as_deref() {
                 Some(schema_tag) => self.handle.append_with_replay_tag(bytes, schema_tag),
                 None => self.handle.append(bytes),
             }
-            .map(map_position)
-            .map_err(|e| map_runtime_error(e, BackendOp::Append))
+            .map_err(|e| map_runtime_error(e, BackendOp::Append))?;
+            record_append_outcome_metrics(TelemetryOp::Append, outcome.duplicate);
+            Ok(map_position(outcome.ack))
         })
     }
     fn sync(&mut self) -> Result<AckPosition, BackendError> {
@@ -1018,6 +1042,34 @@ mod tests {
             "I2: conflict_unhandled counter must fire when a fence conflict surfaces \
              to the caller (adapter-boundary scope: this repo cannot observe whether \
              the caller then performs a clean abort); captured={captured:?}",
+        );
+    }
+
+    #[test]
+    fn i8_dedup_hit_counter_fires_when_publish_ack_reports_duplicate() {
+        let captured = capture_tracing(|| {
+            super::record_append_outcome_metrics(super::TelemetryOp::Append, true);
+        });
+        assert!(
+            captured.contains("metric_name=\"pardosa_jetstream_dedup_hit_total\""),
+            "I8: dedup_hit counter must fire when PublishAck.duplicate is true; \
+             captured={captured:?}",
+        );
+        assert!(
+            captured.contains("op=\"append\""),
+            "I8: dedup_hit counter must carry the op label; captured={captured:?}",
+        );
+    }
+
+    #[test]
+    fn i8_dedup_hit_counter_silent_when_publish_ack_reports_no_duplicate() {
+        let captured = capture_tracing(|| {
+            super::record_append_outcome_metrics(super::TelemetryOp::Append, false);
+        });
+        assert!(
+            !captured.contains("pardosa_jetstream_dedup_hit_total"),
+            "I8: dedup_hit counter must stay silent when PublishAck.duplicate is \
+             false (healthy band: bounded, legitimate-retry-only); captured={captured:?}",
         );
     }
 

@@ -27,5 +27,8 @@ pub use config::{
     OPERATION_TIMEOUT_ENV, Storage,
 };
 pub use error::{JetStreamConfigError, JetStreamRuntimeError};
-pub use handle::{JetStreamAckPosition, JetStreamBackend, JetStreamHandle, JetStreamReplayRecord};
+pub use handle::{
+    JetStreamAckPosition, JetStreamAppendAck, JetStreamBackend, JetStreamHandle,
+    JetStreamReplayRecord,
+};
 pub use runtime::RuntimeHandle;

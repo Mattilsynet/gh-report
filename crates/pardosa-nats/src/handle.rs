@@ -36,6 +36,25 @@ impl JetStreamAckPosition {
         self.0
     }
 }
+/// Outcome of a single [`JetStreamHandle::append`] /
+/// [`JetStreamHandle::append_with_replay_tag`] call: the substrate-opaque
+/// [`JetStreamAckPosition`] plus the `JetStream` server's own
+/// `Nats-Msg-Id`-window dedup signal (`PublishAck.duplicate`, async-nats
+/// 0.49.1). Additive return-type extension threading the dedup bit across
+/// the crate boundary without changing [`JetStreamAckPosition`]'s
+/// `#[repr(transparent)]` shape (I8, `docs/pardosa/observability-slo.md`).
+/// `#[non_exhaustive]` per ADR-0007.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub struct JetStreamAppendAck {
+    /// Substrate-opaque positional marker minted for this publish.
+    pub ack: JetStreamAckPosition,
+    /// `true` when the `JetStream` server's `Nats-Msg-Id` dedup window
+    /// determined this publish was a duplicate of a prior one; the
+    /// returned `ack` is then the position of the original, not a new
+    /// append.
+    pub duplicate: bool,
+}
 /// A single record observed by [`JetStreamHandle::replay_all`]: the
 /// substrate-opaque [`JetStreamAckPosition`] the record was
 /// published at, paired with the canonical payload bytes and opaque
@@ -155,7 +174,7 @@ impl JetStreamHandle {
     /// # Panics
     ///
     /// Panics if the state mutex is poisoned.
-    pub fn append(&self, bytes: &[u8]) -> Result<JetStreamAckPosition, JetStreamRuntimeError> {
+    pub fn append(&self, bytes: &[u8]) -> Result<JetStreamAppendAck, JetStreamRuntimeError> {
         self.append_inner(bytes, None)
     }
     /// Publish `bytes` with an opaque per-message replay tag supplied
@@ -183,14 +202,14 @@ impl JetStreamHandle {
         &self,
         bytes: &[u8],
         replay_tag: &str,
-    ) -> Result<JetStreamAckPosition, JetStreamRuntimeError> {
+    ) -> Result<JetStreamAppendAck, JetStreamRuntimeError> {
         self.append_inner(bytes, Some(replay_tag))
     }
     fn append_inner(
         &self,
         bytes: &[u8],
         replay_tag: Option<&str>,
-    ) -> Result<JetStreamAckPosition, JetStreamRuntimeError> {
+    ) -> Result<JetStreamAppendAck, JetStreamRuntimeError> {
         let runtime = self
             .config
             .runtime_handle()
@@ -200,7 +219,7 @@ impl JetStreamHandle {
         let cfg = &self.config;
         let nats_msg_id = blake3_hex(bytes);
         let timeout = cfg.operation_timeout();
-        let seq = run_op(&runtime, timeout, async {
+        let (seq, duplicate) = run_op(&runtime, timeout, async {
             let _permit = self
                 .append_gate
                 .acquire()
@@ -225,7 +244,10 @@ impl JetStreamHandle {
         if let Some(state) = guard.as_mut() {
             update_last_ack_seq(&mut state.last_ack_seq, seq);
         }
-        Ok(JetStreamAckPosition::from_u64(seq))
+        Ok(JetStreamAppendAck {
+            ack: JetStreamAckPosition::from_u64(seq),
+            duplicate,
+        })
     }
     /// Durability fence (ADR-0022 §D2). Under Phase 1.5 §2.1's
     /// `Storage: File` + `R ≥ 1` + `AckExplicit`, every successful
@@ -505,7 +527,7 @@ async fn publish_once(
     nats_msg_id: &str,
     replay_tag: Option<&str>,
     expected_last_subject_sequence: Option<u64>,
-) -> Result<u64, JetStreamRuntimeError> {
+) -> Result<(u64, bool), JetStreamRuntimeError> {
     let headers = build_publish_headers(nats_msg_id, replay_tag, expected_last_subject_sequence);
     let payload = bytes::Bytes::copy_from_slice(bytes);
     let publish_ack_future = js
@@ -517,7 +539,7 @@ async fn publish_once(
     let pub_ack = publish_ack_future
         .await
         .map_err(runtime_error_from_publish_ack)?;
-    Ok(pub_ack.sequence)
+    Ok((pub_ack.sequence, pub_ack.duplicate))
 }
 fn runtime_error_from_publish_ack(
     err: async_nats::jetstream::context::PublishError,

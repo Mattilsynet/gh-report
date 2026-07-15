@@ -385,7 +385,7 @@ fn jetstream_check_monotonic(ctx: &JetStreamIterContext, iter: usize, tally: &mu
         &format!("pardosa-soak-c-mono-{tag}"),
     );
     let a = match handle.append(b"a") {
-        Ok(p) => p.as_u64(),
+        Ok(p) => p.ack.as_u64(),
         Err(e) => {
             record_fail(
                 &mut tally.monotonic,
@@ -398,7 +398,7 @@ fn jetstream_check_monotonic(ctx: &JetStreamIterContext, iter: usize, tally: &mu
         }
     };
     let b = match handle.append(b"bb") {
-        Ok(p) => p.as_u64(),
+        Ok(p) => p.ack.as_u64(),
         Err(e) => {
             record_fail(
                 &mut tally.monotonic,
@@ -411,7 +411,7 @@ fn jetstream_check_monotonic(ctx: &JetStreamIterContext, iter: usize, tally: &mu
         }
     };
     let c = match handle.append(b"ccc") {
-        Ok(p) => p.as_u64(),
+        Ok(p) => p.ack.as_u64(),
         Err(e) => {
             record_fail(
                 &mut tally.monotonic,
@@ -501,7 +501,7 @@ fn jetstream_check_sync_floor(ctx: &JetStreamIterContext, iter: usize, tally: &m
         &format!("pardosa-soak-c-floor-{tag}"),
     );
     let appended = match handle.append(b"to-be-fenced") {
-        Ok(p) => p.as_u64(),
+        Ok(p) => p.ack.as_u64(),
         Err(e) => {
             record_fail(
                 &mut tally.sync_floor,

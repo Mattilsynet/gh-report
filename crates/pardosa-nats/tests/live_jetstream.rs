@@ -52,8 +52,8 @@ fn live_append_returns_monotonic_seq() {
     let a = handle.append(b"event-a").expect("append a");
     let b = handle.append(b"event-b").expect("append b");
     let c = handle.append(b"event-c").expect("append c");
-    assert!(a < b, "first seq < second");
-    assert!(b < c, "second seq < third");
+    assert!(a.ack < b.ack, "first seq < second");
+    assert!(b.ack < c.ack, "second seq < third");
     rt.block_on(teardown_stream(&server, &stream_name));
 }
 #[test]
@@ -75,7 +75,7 @@ fn live_append_carries_canonical_bytes_unchanged() {
         "bytes round-trip byte-identical through the handle-owned replay surface (ADR-0022 §D5)"
     );
     assert_eq!(
-        records[0].ack, ack,
+        records[0].ack, ack.ack,
         "replay record carries the ack-position minted by append"
     );
     rt.block_on(teardown_stream(&server, &stream_name));
@@ -93,14 +93,23 @@ fn live_duplicate_publish_collapses_via_nats_msg_id() {
     let first = handle.append(payload).expect("first publish");
     let dup = handle.append(payload).expect("second publish (duplicate)");
     assert_eq!(
-        first, dup,
+        first.ack, dup.ack,
         "byte-identical re-publish collapses to the same seq via Nats-Msg-Id dedup (Phase 1.5 §6.4)"
+    );
+    assert!(
+        !first.duplicate,
+        "the original publish is not itself a dedup hit"
+    );
+    assert!(
+        dup.duplicate,
+        "I8: re-publish of a byte-identical payload must surface \
+         PublishAck.duplicate=true as the dedup-hit signal"
     );
     let different = handle
         .append(b"a-different-payload")
         .expect("third publish");
     assert!(
-        different > first,
+        different.ack > first.ack,
         "distinct payload yields a fresh, later seq"
     );
     rt.block_on(teardown_stream(&server, &stream_name));
@@ -117,7 +126,7 @@ fn live_sync_is_idempotent_no_op_barrier() {
     let ack = handle.append(b"to-be-fenced").expect("append");
     let s1 = handle.sync().expect("first sync");
     let s2 = handle.sync().expect("second sync");
-    assert_eq!(s1, ack, "sync returns the most recent ack-position");
+    assert_eq!(s1, ack.ack, "sync returns the most recent ack-position");
     assert_eq!(s1, s2, "no-op sync is idempotent");
     rt.block_on(teardown_stream(&server, &stream_name));
 }
@@ -151,7 +160,7 @@ fn live_replay_all_returns_payloads_in_publish_order() {
     let mut ack_positions = Vec::new();
     for p in payloads {
         let ack = handle.append(p).expect("append");
-        ack_positions.push(ack);
+        ack_positions.push(ack.ack);
     }
     let records = handle.replay_all().expect("replay_all");
     assert_eq!(
@@ -223,7 +232,7 @@ fn live_replay_all_on_purged_stream_returns_empty_vec_promptly() {
         .append(b"purge-before-replay")
         .expect("append before purge");
     assert!(
-        ack.as_u64() > 0,
+        ack.ack.as_u64() > 0,
         "seed append establishes a non-zero JetStream last_sequence before purge"
     );
     rt.block_on(async {
@@ -240,7 +249,7 @@ fn live_replay_all_on_purged_stream_returns_empty_vec_promptly() {
             "purge leaves the stream logically empty for replay"
         );
         assert!(
-            info.state.last_sequence >= ack.as_u64(),
+            info.state.last_sequence >= ack.ack.as_u64(),
             "purge retains the prior sequence frontier that used to defeat the empty-stream guard"
         );
     });
@@ -348,7 +357,7 @@ fn live_replay_all_collapses_duplicate_publishes() {
     let first = handle.append(payload).expect("first publish");
     let dup = handle.append(payload).expect("duplicate publish");
     assert_eq!(
-        first, dup,
+        first.ack, dup.ack,
         "byte-identical re-publish collapses (Phase 1.5 §6.4)"
     );
     let records = handle.replay_all().expect("replay_all");
@@ -358,7 +367,7 @@ fn live_replay_all_collapses_duplicate_publishes() {
         "dedup-collapsed duplicate appears once in the replay (Phase 1.5 §6.4)"
     );
     assert_eq!(
-        records[0].ack, first,
+        records[0].ack, first.ack,
         "single record carries the original ack-position"
     );
     assert_eq!(
@@ -386,7 +395,7 @@ fn live_handle_recovers_prior_appends_after_drop_and_reopen() {
         let handle = JetStreamBackend::open(cfg);
         for p in payloads {
             let ack = handle.append(p).expect("append on writer handle");
-            original_acks.push(ack);
+            original_acks.push(ack.ack);
         }
         let _ = handle.sync().expect("durability fence on writer handle");
     }
@@ -526,7 +535,7 @@ fn live_append_with_replay_tag_surfaces_tag_on_replay() {
         .expect("append tagged payload");
     let records = handle.replay_all().expect("replay tagged payload");
     assert_eq!(records.len(), 1, "single tagged append yields one record");
-    assert_eq!(records[0].ack, ack, "tagged record keeps ack position");
+    assert_eq!(records[0].ack, ack.ack, "tagged record keeps ack position");
     assert_eq!(
         records[0].payload.as_ref(),
         payload,

@@ -115,28 +115,26 @@ in `crates/pardosa/src/backend/jetstream.rs`:
   for **every** op (append, sync, replay), closing the "only append"
   gap. A new `pardosa_jetstream_ack_timeout_total` op-labelled counter
   fires whenever `TerminalCategory::Timeout` is observed.
-- **I8** (`dedup.hit` + `redelivery.observed`) — **re-scoped, not
-  implemented as originally named.** Investigation
-  (`async-nats-0.49.1/src/jetstream/publish.rs::PublishAck.duplicate`)
-  found the JetStream server *does* expose a per-publish `duplicate:
-  bool` flag driven by its own `Nats-Msg-Id` dedup window — this is data
-  `pardosa-nats` could surface through `JetStreamAckPosition` (an
-  additive field, not a metrics call — allowed under this mission's
-  `out_of_scope` clause), but threading it through changes a
-  `#[repr(transparent)]` public type's shape across the crate boundary,
-  which did not fit this sub-mission's time budget. Per this mission's
-  `abort_if` I8 fallback ("if async-nats handles redelivery/dedup
-  transparently, re-scope to dedup-window-boundary only and document"):
-  **I8 is deferred to a follow-up sub-mission** that threads
-  `PublishAck.duplicate` through `JetStreamAckPosition` (or an
-  equivalent additive return-type extension) so `dedup.hit` and the
-  window-boundary signal can be emitted from the adapter ring without a
-  pardosa-nats metrics call. `redelivery.observed` is additionally
-  scoped down: the replay consumer uses `AckPolicy::None`
-  (`pardosa-nats/src/handle.rs:~637`), so there is no ack-driven
-  redelivery to observe on the current consumer path — that counter may
-  be vacuous by construction and needs a design decision before
-  emission, not just wiring.
+- **I8** (`dedup.hit` + `redelivery.observed`) — **dedup-hit implemented
+  (Seq 2, bd adr-fmt-4omxc); `redelivery.observed` remains unobservable
+  by design.** `pardosa-nats::JetStreamHandle::append` /
+  `append_with_replay_tag` now return `JetStreamAppendAck { ack, duplicate }`
+  — an additive return-type extension (not a `JetStreamAckPosition` shape
+  change, preserving its `#[repr(transparent)]`) threading
+  `PublishAck.duplicate` (async-nats 0.49.1) across the crate boundary.
+  `pardosa::backend::jetstream::JetStreamBackendAdapter::append` emits the
+  bounded `pardosa_jetstream_dedup_hit_total` counter (op-only label, 3
+  values) when `duplicate == true`, recorded in the pardosa adapter ring —
+  `pardosa-nats` itself gains no metrics call (COM-0019:R6 / substrate ring
+  purity preserved). `redelivery.observed` stays **scoped out, confirmed
+  unobservable, not just deferred**: the replay consumer uses
+  `AckPolicy::None` (`pardosa-nats/src/handle.rs`, `build_replay_pull_config`),
+  so there is no ack-driven redelivery event on the current consumer path —
+  emitting a counter here would be vacuous by construction. A genuine
+  redelivery signal would require an `AckExplicit` consumer design, out of
+  scope for this sub-mission. I8's healthy-band row above is therefore
+  read as dedup-hit only until such a design lands.
+
 - **I6** (`replay.lag`) remains out of scope for Seq 1 per the roadmap
   (unchanged from Seq 0 naming).
 
