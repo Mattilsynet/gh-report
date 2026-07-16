@@ -416,6 +416,243 @@ impl DeliveryTail {
     }
 }
 
+/// Mirrors `PardosaBackend` (config/runtime.rs:41-46): the operator-
+/// selectable durable-store backend behind `--pardosa-backend`. `Pgno`
+/// is the `#[default]` (bin/gh-report.rs:180-181); `Nats` is the
+/// selectable alternate (state.rs:569,591 `open_or_create_jetstream`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PardosaBackend {
+    #[default]
+    Pgno,
+    Nats,
+}
+
+/// Mirrors `JetStreamAckPosition` (pardosa-nats handle.rs:23,35): the
+/// sequence carried by a `PubAck.seq`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JetStreamAckPosition(pub u64);
+
+/// Mirrors `JetStreamAppendAck` (pardosa-nats handle.rs:49): the ack
+/// returned from `JetStreamHandle::append` (handle.rs:177) after
+/// `js.publish_with_headers` (handle.rs:534).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JetStreamAppendAck {
+    pub ack: JetStreamAckPosition,
+    pub duplicate: bool,
+}
+
+/// Mirrors `NativeStore`/`NativeOrgStore` (gh-report/src/store/mod.rs:
+/// 19,25) over pardosa's `PgnoBackend` (store/mod.rs:429,1755), backed
+/// by `events.pgno`/`org-events.pgno` (state.rs:562,584) — the DEFAULT
+/// durable-store write path.
+#[derive(Default)]
+pub struct NativeStore {
+    events_written: usize,
+}
+
+impl NativeStore {
+    fn append(&mut self) -> usize {
+        self.events_written += 1;
+        self.events_written
+    }
+}
+
+/// Mirrors `JetStreamBackend` (pardosa-nats handle.rs:352) over
+/// `JetStreamHandle` (handle.rs:120) — the ALTERNATE durable-store
+/// write path selected by `PardosaBackend::Nats`. `append` mirrors
+/// `JetStreamHandle::append` (handle.rs:177); the running sequence
+/// mirrors `PubAck.seq` (handle.rs:23,35).
+#[derive(Default)]
+pub struct JetStreamBackend {
+    sequence: u64,
+}
+
+impl JetStreamBackend {
+    fn append(&mut self) -> JetStreamAppendAck {
+        self.sequence += 1;
+        JetStreamAppendAck {
+            ack: JetStreamAckPosition(self.sequence),
+            duplicate: false,
+        }
+    }
+}
+
+/// The append result of [`DurableStore::append`], shaped per active
+/// [`PardosaBackend`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurableAppendResult {
+    Pgno(usize),
+    Nats(JetStreamAppendAck),
+}
+
+/// Mirrors the durable event-store write side switched by
+/// `--pardosa-backend` (bin/gh-report.rs:180-181): every write-side
+/// completion appends to whichever backend is active. `Pgno`
+/// ([`NativeStore`]) is the default; `Nats` ([`JetStreamBackend`]) is
+/// the operator-selectable alternate — never depicted as the default
+/// path.
+#[derive(Default)]
+pub struct DurableStore {
+    backend: PardosaBackend,
+    native: NativeStore,
+    jetstream: JetStreamBackend,
+}
+
+impl DurableStore {
+    #[must_use]
+    pub fn backend(&self) -> PardosaBackend {
+        self.backend
+    }
+
+    pub fn set_backend(&mut self, backend: PardosaBackend) {
+        self.backend = backend;
+    }
+
+    pub fn append(&mut self) -> DurableAppendResult {
+        match self.backend {
+            PardosaBackend::Pgno => DurableAppendResult::Pgno(self.native.append()),
+            PardosaBackend::Nats => DurableAppendResult::Nats(self.jetstream.append()),
+        }
+    }
+
+    #[must_use]
+    pub fn native_events_written(&self) -> usize {
+        self.native.events_written
+    }
+
+    #[must_use]
+    pub fn jetstream_sequence(&self) -> u64 {
+        self.jetstream.sequence
+    }
+}
+
+/// Mirrors the connect/refuse outcome of a `ws_session`'s
+/// `try_acquire_owned` against `ws_semaphore` (serve/runtime.rs:229,
+/// 252,669) — `Refused` is the 503 analogue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectResult {
+    Connected,
+    Refused,
+}
+
+/// Mirrors the anonymous web-client population on the `/ws` route
+/// (serve/runtime.rs:679,218): each connected client is a `ws_session`
+/// holding an `OwnedSemaphorePermit` off `ws_semaphore =
+/// Semaphore::new(ws_max_connections())` (runtime.rs:669, default 200,
+/// config.rs:243) plus a `broadcast::Receiver<PageUpdateEvent>`
+/// (`state.ws_broadcast().subscribe()`, runtime.rs:255). There is NO
+/// live connected-client count in production; [`Self::connected`] is a
+/// SIM-owned quantity only, never a real gh-report metric — prefer
+/// reading permits-in-use vs [`Self::max_connections`].
+pub struct ClientPool {
+    max_connections: usize,
+    connected: usize,
+}
+
+impl ClientPool {
+    #[must_use]
+    pub fn new(max_connections: usize) -> Self {
+        Self {
+            max_connections,
+            connected: 0,
+        }
+    }
+
+    pub fn connect(&mut self) -> ConnectResult {
+        if self.connected >= self.max_connections {
+            return ConnectResult::Refused;
+        }
+        self.connected += 1;
+        ConnectResult::Connected
+    }
+
+    pub fn disconnect(&mut self) {
+        self.connected = self.connected.saturating_sub(1);
+    }
+
+    #[must_use]
+    pub fn permits_in_use(&self) -> usize {
+        self.connected
+    }
+
+    #[must_use]
+    pub fn max_connections(&self) -> usize {
+        self.max_connections
+    }
+
+    /// Mirrors `AppState::send_page_update` (gh-report state.rs:323)
+    /// fanning a [`PageUpdateEvent`] out to every live
+    /// `broadcast::Receiver` (runtime.rs:288) on `commit_cached_pages`.
+    /// Returns the delivery count — the number of currently-subscribed
+    /// sim clients that received this push.
+    #[must_use]
+    pub fn broadcast(&self, _event: PageUpdateEvent) -> usize {
+        self.connected
+    }
+}
+
+/// Mirrors `RateLimitState` + `BudgetGate` (gh-report `github/`
+/// `rate_limit.rs`, `github/budget.rs`; acquired via `budget_gate.acquire`
+/// in `worker_pool.rs`) — the self-imposed call budget `worker_loop`
+/// must acquire before `LiveEvaluator::evaluate` (collect.rs:133)
+/// issues its `api.github.com` calls. Exhaustion halts further calls
+/// until [`Self::reset_epoch`].
+pub struct BudgetGate {
+    budget_per_epoch: u32,
+    used_this_epoch: u32,
+}
+
+impl BudgetGate {
+    #[must_use]
+    pub fn new(budget_per_epoch: u32) -> Self {
+        Self {
+            budget_per_epoch,
+            used_this_epoch: 0,
+        }
+    }
+
+    /// Attempts to acquire `calls` units of budget atomically — either
+    /// all `calls` are granted or none are, mirroring `tokio::join!`
+    /// issuing the six concurrent collector calls as one bounded unit
+    /// (collect.rs:143-149).
+    pub fn acquire(&mut self, calls: u32) -> bool {
+        if self.used_this_epoch + calls > self.budget_per_epoch {
+            return false;
+        }
+        self.used_this_epoch += calls;
+        true
+    }
+
+    pub fn reset_epoch(&mut self) {
+        self.used_this_epoch = 0;
+    }
+
+    /// Returns previously-acquired budget, e.g. when the acquiring
+    /// worker found no job left to dispatch after all.
+    pub fn release(&mut self, calls: u32) {
+        self.used_this_epoch = self.used_this_epoch.saturating_sub(calls);
+    }
+
+    #[must_use]
+    pub fn used(&self) -> u32 {
+        self.used_this_epoch
+    }
+
+    #[must_use]
+    pub fn budget(&self) -> u32 {
+        self.budget_per_epoch
+    }
+}
+
+/// The bounded set of concurrent `api.github.com` REST calls
+/// `LiveEvaluator::evaluate` issues per job after `repo_details`
+/// (collect.rs:133,143-149, client.rs:897): `security_policy::evaluate`,
+/// `ghas_scanning::evaluate`, `dependabot::evaluate`,
+/// `branch_protection::evaluate`, `codeowners::evaluate`,
+/// `last_commit::fetch_last_commit` — six calls, gated as one unit by
+/// [`BudgetGate`].
+pub const GITHUB_CALLS_PER_JOB: u32 = 6;
+
 struct WorkerSlot {
     job: Option<JobSpec>,
     remaining_ticks: u32,
@@ -436,6 +673,14 @@ pub struct SimConfig {
     pub worker_count: usize,
     pub service_ticks: u32,
     pub domain_key_span: u32,
+    /// Mirrors `ws_max_connections()` (serve/config.rs:243, default 200).
+    pub ws_max_connections: usize,
+    /// Per-epoch `BudgetGate` budget (github/budget.rs). Generous by
+    /// default so it does not bind ordinary sim runs; tests exercising
+    /// gate exhaustion set this explicitly.
+    pub github_budget_per_epoch: u32,
+    /// Ticks between `BudgetGate` epoch resets.
+    pub github_epoch_ticks: u64,
 }
 
 impl Default for SimConfig {
@@ -445,6 +690,9 @@ impl Default for SimConfig {
             worker_count: 16,
             service_ticks: 4,
             domain_key_span: 24,
+            ws_max_connections: 200,
+            github_budget_per_epoch: 10_000,
+            github_epoch_ticks: 1_000,
         }
     }
 }
@@ -463,6 +711,9 @@ pub struct Metrics {
     pub raw_bytes_total: usize,
     pub arcswap_generation: usize,
     pub worker_executions: u64,
+    pub ws_deliveries_total: u64,
+    pub ws_connects_refused: u64,
+    pub github_calls_stalled: u64,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -470,6 +721,10 @@ pub struct StepEvents {
     pub arrivals: Vec<(JobSource, EnqueueResult)>,
     pub completions: Vec<(JobSource, JobOutcome)>,
     pub page_updates: Vec<PageUpdateEvent>,
+    /// Per-`PageUpdateEvent` fan-out delivery count (parallel to
+    /// `page_updates`) — [`ClientPool::broadcast`] reaching every
+    /// currently-subscribed sim client.
+    pub ws_deliveries: Vec<usize>,
 }
 
 /// Discrete-event sim of the whole queue network. Owns one "current
@@ -495,6 +750,9 @@ pub struct Sim {
     tick: u64,
     rng_state: u64,
     next_external_id: u64,
+    durable_store: DurableStore,
+    client_pool: ClientPool,
+    github_gate: BudgetGate,
 }
 
 impl Sim {
@@ -514,6 +772,9 @@ impl Sim {
             tick: 0,
             rng_state: seed | 1,
             next_external_id: 0,
+            durable_store: DurableStore::default(),
+            client_pool: ClientPool::new(config.ws_max_connections),
+            github_gate: BudgetGate::new(config.github_budget_per_epoch),
             config,
         }
     }
@@ -629,6 +890,57 @@ impl Sim {
         self.sweep_phase
     }
 
+    #[must_use]
+    pub fn durable_backend(&self) -> PardosaBackend {
+        self.durable_store.backend()
+    }
+
+    pub fn set_durable_backend(&mut self, backend: PardosaBackend) {
+        self.durable_store.set_backend(backend);
+    }
+
+    #[must_use]
+    pub fn native_events_written(&self) -> usize {
+        self.durable_store.native_events_written()
+    }
+
+    #[must_use]
+    pub fn jetstream_sequence(&self) -> u64 {
+        self.durable_store.jetstream_sequence()
+    }
+
+    pub fn connect_client(&mut self) -> ConnectResult {
+        let result = self.client_pool.connect();
+        if result == ConnectResult::Refused {
+            self.metrics.ws_connects_refused += 1;
+        }
+        result
+    }
+
+    pub fn disconnect_client(&mut self) {
+        self.client_pool.disconnect();
+    }
+
+    #[must_use]
+    pub fn ws_permits_in_use(&self) -> usize {
+        self.client_pool.permits_in_use()
+    }
+
+    #[must_use]
+    pub fn ws_max_connections(&self) -> usize {
+        self.client_pool.max_connections()
+    }
+
+    #[must_use]
+    pub fn github_budget(&self) -> u32 {
+        self.github_gate.budget()
+    }
+
+    #[must_use]
+    pub fn github_calls_used(&self) -> u32 {
+        self.github_gate.used()
+    }
+
     pub fn step(&mut self, batch_arrival: bool, external_arrival: bool) -> StepEvents {
         let mut events = StepEvents::default();
 
@@ -645,13 +957,24 @@ impl Sim {
             events.arrivals.push((source, result));
         }
 
+        if self
+            .tick
+            .is_multiple_of(self.config.github_epoch_ticks.max(1))
+        {
+            self.github_gate.reset_epoch();
+        }
+
         for slot in &mut self.workers {
-            if slot.job.is_none()
-                && let Some(job) = self.queue.dequeue()
-            {
-                slot.job = Some(job);
-                slot.remaining_ticks = self.config.service_ticks.max(1);
-                self.metrics.worker_executions += 1;
+            if slot.job.is_none() && self.github_gate.acquire(GITHUB_CALLS_PER_JOB) {
+                if let Some(job) = self.queue.dequeue() {
+                    slot.job = Some(job);
+                    slot.remaining_ticks = self.config.service_ticks.max(1);
+                    self.metrics.worker_executions += 1;
+                } else {
+                    self.github_gate.release(GITHUB_CALLS_PER_JOB);
+                }
+            } else if slot.job.is_none() {
+                self.metrics.github_calls_stalled += 1;
             }
         }
 
@@ -678,6 +1001,7 @@ impl Sim {
             } else {
                 self.stream.write_event();
                 self.metrics.events_written += 1;
+                let _ = self.durable_store.append();
                 self.projection.fold(
                     job.domain_key,
                     EvidenceProjectionEvent::RepositoryStateCaptured,
@@ -691,13 +1015,19 @@ impl Sim {
                     {
                         self.sweep_phase = SweepPhase::BatchDrained;
                         let update = self.finalize_and_publish();
+                        let delivered = self.client_pool.broadcast(update);
+                        self.metrics.ws_deliveries_total += delivered as u64;
                         events.page_updates.push(update);
+                        events.ws_deliveries.push(delivered);
                         self.sweep_phase = SweepPhase::Completed;
                     }
                 }
                 JobSource::External { .. } => {
                     let update = self.finalize_and_publish();
+                    let delivered = self.client_pool.broadcast(update);
+                    self.metrics.ws_deliveries_total += delivered as u64;
                     events.page_updates.push(update);
+                    events.ws_deliveries.push(delivered);
                 }
                 JobSource::InitialLoad => {}
             }
@@ -794,8 +1124,9 @@ impl Sim {
 #[cfg(test)]
 mod tests {
     use super::{
-        BatchTracker, BuildResult, DomainKey, EnqueueResult, JobSource, JobSpec, MemoBuilder, Sim,
-        SimConfig, SweepPhase, WebhookKind, WorkQueue,
+        BatchTracker, BuildResult, ConnectResult, DomainKey, EnqueueResult, GITHUB_CALLS_PER_JOB,
+        JobSource, JobSpec, MemoBuilder, PardosaBackend, Sim, SimConfig, SweepPhase, WebhookKind,
+        WorkQueue,
     };
 
     fn job(key: u32, source: JobSource) -> JobSpec {
@@ -875,6 +1206,7 @@ mod tests {
             worker_count: 16,
             service_ticks: 2,
             domain_key_span: 64,
+            ..SimConfig::default()
         };
         let mut sim = Sim::new(config, 42);
         for _ in 0..8 {
@@ -897,6 +1229,7 @@ mod tests {
             worker_count: 16,
             service_ticks: 3,
             domain_key_span: 500,
+            ..SimConfig::default()
         };
         let mut sim = Sim::new(config, 1234);
         for tick in 0..300u64 {
@@ -925,6 +1258,7 @@ mod tests {
             worker_count: 16,
             service_ticks: 5,
             domain_key_span: 1000,
+            ..SimConfig::default()
         };
         let mut sim = Sim::new(config, 99);
         for tick in 0..500u64 {
@@ -945,6 +1279,7 @@ mod tests {
             worker_count: 16,
             service_ticks: 3,
             domain_key_span: 500,
+            ..SimConfig::default()
         };
         let mut sim = Sim::new(config, 1234);
         for tick in 0..300u64 {
@@ -991,6 +1326,7 @@ mod tests {
             worker_count: 16,
             service_ticks: 3,
             domain_key_span: 500,
+            ..SimConfig::default()
         };
         let mut sim = Sim::new(config, 1234);
         let mut last_generation = sim.arcswap_generation();
@@ -1016,6 +1352,7 @@ mod tests {
             worker_count: 16,
             service_ticks: 3,
             domain_key_span: 500,
+            ..SimConfig::default()
         };
         let mut sim = Sim::new(config, 1234);
         for tick in 0..300u64 {
@@ -1035,6 +1372,7 @@ mod tests {
             worker_count: 16,
             service_ticks: 5,
             domain_key_span: 1000,
+            ..SimConfig::default()
         };
         let mut sim = Sim::new(config, 99);
         for tick in 0..500u64 {
@@ -1057,6 +1395,7 @@ mod tests {
             worker_count: 4,
             service_ticks: 3,
             domain_key_span: 500,
+            ..SimConfig::default()
         };
         let mut sim = Sim::new(config, 7);
         for _ in 0..12 {
@@ -1103,6 +1442,7 @@ mod tests {
             worker_count: 4,
             service_ticks: 2,
             domain_key_span: 500,
+            ..SimConfig::default()
         };
         let mut sim = Sim::new(config, 11);
         assert_eq!(sim.batch_remaining(), 0);
@@ -1141,6 +1481,7 @@ mod tests {
             worker_count: 16,
             service_ticks: 2,
             domain_key_span: 500,
+            ..SimConfig::default()
         };
         let mut sim = Sim::new(config, 55);
         for _ in 0..20 {
@@ -1162,6 +1503,180 @@ mod tests {
             sim.arcswap_generation(),
             generation_before + 1,
             "one run of many jobs must bump the generation exactly once"
+        );
+    }
+
+    /// New component test (a): backend routing — `Nats` routes appends
+    /// to the `JetStream` store and increments its `JetStreamAckPosition`
+    /// / sequence; `Pgno` routes to the native store; default is `Pgno`.
+    #[test]
+    fn backend_routing_default_pgno_switch_nats_increments_sequence() {
+        let mut sim = Sim::new(SimConfig::default(), 21);
+        assert_eq!(
+            sim.durable_backend(),
+            PardosaBackend::Pgno,
+            "default is Pgno"
+        );
+        let _ignored = sim.submit_external();
+        for _ in 0..20 {
+            let events = sim.step(false, false);
+            if !events.completions.is_empty() {
+                break;
+            }
+        }
+        assert!(
+            sim.native_events_written() > 0,
+            "Pgno-routed append must land in the native store"
+        );
+        assert_eq!(
+            sim.jetstream_sequence(),
+            0,
+            "Nats store untouched while Pgno active"
+        );
+
+        sim.set_durable_backend(PardosaBackend::Nats);
+        assert_eq!(sim.durable_backend(), PardosaBackend::Nats);
+        let native_before = sim.native_events_written();
+        let _ignored = sim.submit_external();
+        for _ in 0..20 {
+            let events = sim.step(false, false);
+            if !events.completions.is_empty() {
+                break;
+            }
+        }
+        assert!(
+            sim.jetstream_sequence() > 0,
+            "Nats-routed append must increment JetStreamAckPosition/sequence"
+        );
+        assert_eq!(
+            sim.native_events_written(),
+            native_before,
+            "native store must not receive further appends once Nats is active"
+        );
+    }
+
+    /// New component test (b): `PageUpdateEvent` on `commit_cached_pages`
+    /// fans out to ALL currently-connected sim clients (N clients -> N
+    /// deliveries; 0 connected -> 0).
+    #[test]
+    fn page_update_fans_out_to_all_connected_clients() {
+        let mut sim = Sim::new(SimConfig::default(), 4);
+
+        let update = sim.warm_start();
+        let _ = update;
+        assert_eq!(sim.ws_permits_in_use(), 0);
+
+        for _ in 0..5 {
+            assert_eq!(sim.connect_client(), ConnectResult::Connected);
+        }
+        assert_eq!(sim.ws_permits_in_use(), 5);
+
+        let _ignored = sim.submit_external();
+        let mut deliveries = None;
+        for _ in 0..20 {
+            let events = sim.step(false, false);
+            if let Some(&count) = events.ws_deliveries.first() {
+                deliveries = Some(count);
+                break;
+            }
+        }
+        assert_eq!(
+            deliveries,
+            Some(5),
+            "5 connected clients must all receive the PageUpdateEvent push"
+        );
+
+        for _ in 0..5 {
+            sim.disconnect_client();
+        }
+        assert_eq!(sim.ws_permits_in_use(), 0);
+        let _ignored = sim.submit_external();
+        let mut deliveries_after_disconnect = None;
+        for _ in 0..20 {
+            let events = sim.step(false, false);
+            if let Some(&count) = events.ws_deliveries.first() {
+                deliveries_after_disconnect = Some(count);
+                break;
+            }
+        }
+        assert_eq!(
+            deliveries_after_disconnect,
+            Some(0),
+            "zero connected clients must receive zero deliveries"
+        );
+    }
+
+    /// New component test (c): client connect respects the
+    /// `ws_max_connections` cap (permits-in-use never exceeds cap;
+    /// connect beyond cap is refused — the 503 analogue).
+    #[test]
+    fn client_connect_respects_ws_max_connections_cap() {
+        let config = SimConfig {
+            ws_max_connections: 3,
+            ..SimConfig::default()
+        };
+        let mut sim = Sim::new(config, 8);
+        assert_eq!(sim.connect_client(), ConnectResult::Connected);
+        assert_eq!(sim.connect_client(), ConnectResult::Connected);
+        assert_eq!(sim.connect_client(), ConnectResult::Connected);
+        assert_eq!(sim.ws_permits_in_use(), 3);
+        assert_eq!(
+            sim.connect_client(),
+            ConnectResult::Refused,
+            "connect beyond cap must be refused (503 analogue)"
+        );
+        assert_eq!(
+            sim.ws_permits_in_use(),
+            3,
+            "permits-in-use must never exceed the cap"
+        );
+        sim.disconnect_client();
+        assert_eq!(
+            sim.connect_client(),
+            ConnectResult::Connected,
+            "freed permit allows a new connect"
+        );
+    }
+
+    /// New component test (d): worker GitHub calls respect the budget
+    /// gate — calls in an epoch never exceed the budget; exhaustion
+    /// halts further calls until reset.
+    #[test]
+    fn worker_github_calls_respect_budget_gate() {
+        let config = SimConfig {
+            queue_capacity: 64,
+            worker_count: 4,
+            service_ticks: 10,
+            domain_key_span: 500,
+            github_budget_per_epoch: GITHUB_CALLS_PER_JOB,
+            github_epoch_ticks: 5,
+            ..SimConfig::default()
+        };
+        let mut sim = Sim::new(config, 17);
+        for _ in 0..4 {
+            let _ignored = sim.submit(JobSource::ScheduledBatch);
+        }
+        sim.step(false, false);
+        assert!(
+            sim.github_calls_used() <= sim.github_budget(),
+            "used {} must never exceed budget {}",
+            sim.github_calls_used(),
+            sim.github_budget()
+        );
+        assert!(
+            sim.in_flight() <= 1,
+            "budget for one job must halt further dispatch until reset: in_flight {}",
+            sim.in_flight()
+        );
+
+        for _ in 0..200 {
+            sim.step(false, false);
+            assert!(sim.github_calls_used() <= sim.github_budget());
+        }
+        assert_eq!(
+            sim.metrics().completed,
+            4,
+            "all 4 jobs eventually complete once the gate resets across epochs"
         );
     }
 }

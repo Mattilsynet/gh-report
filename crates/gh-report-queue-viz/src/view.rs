@@ -23,7 +23,8 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use web_sys::{Document, Element};
 
 use crate::sim::{
-    EnqueueResult, JobOutcome, JobSource, PageUpdateEvent, Sim, SimConfig, SweepPhase,
+    EnqueueResult, JobOutcome, JobSource, PageUpdateEvent, PardosaBackend, Sim, SimConfig,
+    SweepPhase,
 };
 
 #[derive(Clone, Copy)]
@@ -54,6 +55,8 @@ struct AppState {
     rates: RwSignal<Rates>,
     tick_count: u64,
     warm_start_requested: bool,
+    backend_toggle_requested: bool,
+    last_worker_executions: u64,
 }
 
 thread_local! {
@@ -103,6 +106,22 @@ const PATH_WARMSTART_BYPASS: &str = "M180,445 C450,445 450,620 700,620 C820,620 
 const PATH_SERVE_BRANCH: &str = "M1200,415 C1200,460 1200,460 1200,505";
 /// `PageUpdateEvent` WS loop back from the serve branch.
 const PATH_SERVE_LOOP: &str = "M1270,540 C1279,480 1279,420 1265,415";
+/// `github.com` &rarr; `webhook_handler`: GitHub PUSHES webhook
+/// deliveries in.
+const PATH_GITHUB_PUSH: &str = "M75,195 C75,225 85,245 95,258";
+/// `worker_loop`/`LiveEvaluator::evaluate` &rarr; `github.com`: the
+/// worker PULLS `repo_details` + the six concurrent collector calls,
+/// gated by `RateLimitState`/`BudgetGate`.
+const PATH_GITHUB_PULL: &str = "M555,165 C400,90 200,90 75,150";
+/// `cache_fallback` &rarr; web clients: the per-request HTTP serve
+/// edge.
+const PATH_CLIENTS_HTTP: &str = "M1200,565 C1200,610 1200,650 1200,695";
+/// `commit_cached_pages` &rarr; web clients: the per-RUN
+/// `PageUpdateEvent` WS broadcast fan-out.
+const PATH_CLIENTS_WS: &str = "M1155,415 C1080,500 1080,620 1140,690";
+const GITHUB_PUSH_DURATION_MS: u32 = 900;
+const GITHUB_PULL_DURATION_MS: u32 = 1600;
+const CLIENT_WS_DURATION_MS: u32 = 1000;
 
 fn sweep_phase_label(phase: SweepPhase) -> &'static str {
     match phase {
@@ -145,10 +164,13 @@ pub fn start() {
             rates,
             tick_count: 0,
             warm_start_requested: false,
+            backend_toggle_requested: false,
+            last_worker_executions: 0,
         });
     });
 
     wire_warm_start_button(&document);
+    wire_backend_toggle_button(&document);
 
     Effect::new(move |_| {
         let current = rates.get();
@@ -206,6 +228,22 @@ pub fn tick() {
             render_read_pulse(&document, update, false);
         }
 
+        if state.backend_toggle_requested {
+            state.backend_toggle_requested = false;
+            let next = match state.sim.durable_backend() {
+                PardosaBackend::Pgno => PardosaBackend::Nats,
+                PardosaBackend::Nats => PardosaBackend::Pgno,
+            };
+            state.sim.set_durable_backend(next);
+        }
+
+        if state.tick_count.is_multiple_of(7) {
+            let _ = state.sim.connect_client();
+        }
+        if state.tick_count.is_multiple_of(11) && state.sim.ws_permits_in_use() > 0 {
+            state.sim.disconnect_client();
+        }
+
         let rates = state.rates.get_untracked();
         let batch_arrival = state
             .tick_count
@@ -218,10 +256,88 @@ pub fn tick() {
 
         render_gauges(&document, &state.sim);
         render_events(&document, &events.arrivals, &events.completions);
-        for update in &events.page_updates {
+        render_github_edges(
+            &document,
+            &events.arrivals,
+            &mut state.last_worker_executions,
+            state.sim.worker_executions(),
+        );
+        for (update, delivered) in events.page_updates.iter().zip(events.ws_deliveries.iter()) {
             render_read_pulse(&document, *update, true);
+            if *delivered > 0 {
+                render_ws_fanout(&document);
+            }
         }
     });
+}
+
+/// Pulses [`PATH_GITHUB_PUSH`] once per webhook arrival (`github.com`
+/// pushing the delivery `webhook_handler` receives, independent of the
+/// enqueue outcome) and [`PATH_GITHUB_PULL`] once per new worker
+/// dispatch (`worker_loop`/`LiveEvaluator::evaluate` pulling
+/// `repo_details` + the six concurrent collector calls, gated by
+/// `RateLimitState`/`BudgetGate`).
+fn render_github_edges(
+    document: &Document,
+    arrivals: &[(JobSource, EnqueueResult)],
+    last_worker_executions: &mut u64,
+    current_worker_executions: u64,
+) {
+    let Some(packet_layer) = document.get_element_by_id("packet-layer") else {
+        return;
+    };
+    if arrivals
+        .iter()
+        .any(|(source, _)| matches!(source, JobSource::External { .. }))
+    {
+        spawn_transit_packet(
+            document,
+            &packet_layer,
+            &PacketSpec {
+                class: "packet packet-github-push",
+                color: "#e2e8f0",
+                path_d: PATH_GITHUB_PUSH,
+                start: "0%",
+                end: "100%",
+                duration_ms: GITHUB_PUSH_DURATION_MS,
+            },
+        );
+    }
+    if current_worker_executions > *last_worker_executions {
+        spawn_transit_packet(
+            document,
+            &packet_layer,
+            &PacketSpec {
+                class: "packet packet-github-pull",
+                color: "#6366f1",
+                path_d: PATH_GITHUB_PULL,
+                start: "0%",
+                end: "100%",
+                duration_ms: GITHUB_PULL_DURATION_MS,
+            },
+        );
+    }
+    *last_worker_executions = current_worker_executions;
+}
+
+/// Pulses [`PATH_CLIENTS_WS`] once per `PageUpdateEvent` delivered to
+/// at least one connected sim client (`ClientPool::broadcast`).
+fn render_ws_fanout(document: &Document) {
+    let Some(packet_layer) = document.get_element_by_id("packet-layer") else {
+        return;
+    };
+    spawn_transit_packet(
+        document,
+        &packet_layer,
+        &PacketSpec {
+            class: "packet packet-ws-fanout",
+            color: "#f59e0b",
+            path_d: PATH_CLIENTS_WS,
+            start: "0%",
+            end: "100%",
+            duration_ms: CLIENT_WS_DURATION_MS,
+        },
+    );
 }
 
 fn render_gauges(document: &Document, sim: &Sim) {
@@ -308,6 +424,64 @@ fn render_gauges(document: &Document, sim: &Sim) {
         "worker-executions",
         &sim.worker_executions().to_string(),
     );
+    render_external_gauges(document, sim);
+}
+
+/// Component A/B gauges (durable-store backend, `ClientPool`,
+/// `BudgetGate`) — split out of [`render_gauges`] to stay under
+/// clippy's function-length bar.
+fn render_external_gauges(document: &Document, sim: &Sim) {
+    set_text(
+        document,
+        "backend-label",
+        backend_label(sim.durable_backend()),
+    );
+    set_text(
+        document,
+        "native-events-written",
+        &sim.native_events_written().to_string(),
+    );
+    set_text(
+        document,
+        "jetstream-sequence",
+        &sim.jetstream_sequence().to_string(),
+    );
+    toggle_jetstream_detail(document, sim.durable_backend());
+    set_text(
+        document,
+        "ws-permits",
+        &format!("{}/{}", sim.ws_permits_in_use(), sim.ws_max_connections()),
+    );
+    set_text(
+        document,
+        "github-budget",
+        &format!("{}/{}", sim.github_calls_used(), sim.github_budget()),
+    );
+}
+
+fn backend_label(backend: PardosaBackend) -> &'static str {
+    match backend {
+        PardosaBackend::Pgno => "Pgno",
+        PardosaBackend::Nats => "Nats",
+    }
+}
+
+/// Shows the JetStream-only nouns (subject/stream/append &rarr; `PubAck`
+/// seq) exclusively while `PardosaBackend::Nats` is active — `Pgno` is
+/// the default and must never be depicted with `JetStream` vocabulary.
+fn toggle_jetstream_detail(document: &Document, backend: PardosaBackend) {
+    let Some(element) = document.get_element_by_id("jetstream-detail") else {
+        return;
+    };
+    let class_list = element.class_list();
+    match backend {
+        PardosaBackend::Nats => {
+            class_list.remove_1("stage-hidden").ok();
+        }
+        PardosaBackend::Pgno => {
+            class_list.add_1("stage-hidden").ok();
+        }
+    }
 }
 
 fn compression_ratio_display(sim: &Sim) -> String {
@@ -458,6 +632,26 @@ fn wire_warm_start_button(document: &Document) {
     closure.forget();
 }
 
+/// Wires the `--pardosa-backend`-mirroring toggle: an operator
+/// selection between [`PardosaBackend::Pgno`] (default) and
+/// [`PardosaBackend::Nats`] (alternate), never an automatic sim
+/// behaviour.
+fn wire_backend_toggle_button(document: &Document) {
+    let Some(element) = document.get_element_by_id("backend-toggle-btn") else {
+        return;
+    };
+    let closure = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(move |_event| {
+        APP.with(|cell| {
+            if let Some(state) = cell.borrow_mut().as_mut() {
+                state.backend_toggle_requested = true;
+            }
+        });
+    });
+    let _ignored =
+        element.add_event_listener_with_callback("click", closure.as_ref().unchecked_ref());
+    closure.forget();
+}
+
 fn spawn_transit_packet(document: &Document, layer: &Element, spec: &PacketSpec<'_>) {
     let Ok(packet) = document.create_element("div") else {
         return;
@@ -527,7 +721,7 @@ fn graph_markup() -> String {
   </div>
 
   <div class='graph-canvas'>
-    <svg class='graph-svg' viewBox='0 0 1280 620' preserveAspectRatio='xMidYMid meet'>
+    <svg class='graph-svg' viewBox='0 0 1280 760' preserveAspectRatio='xMidYMid meet'>
       <defs>
         <marker id='arrow' viewBox='0 0 10 10' refX='9' refY='5' markerWidth='7' markerHeight='7' orient='auto-start-reverse'>
           <path d='M0,0 L10,5 L0,10 z' fill='#94a3b8' />
@@ -541,6 +735,10 @@ fn graph_markup() -> String {
       <path class='edge edge-warmstart' d='{PATH_WARMSTART_BYPASS}' marker-end='url(#arrow)' />
       <path class='edge edge-serve' d='{PATH_SERVE_BRANCH}' marker-end='url(#arrow)' />
       <path class='edge edge-serve-loop' d='{PATH_SERVE_LOOP}' marker-end='url(#arrow)' />
+      <path class='edge edge-github-push' d='{PATH_GITHUB_PUSH}' marker-end='url(#arrow)' />
+      <path class='edge edge-github-pull' d='{PATH_GITHUB_PULL}' marker-end='url(#arrow)' />
+      <path class='edge edge-clients-http' d='{PATH_CLIENTS_HTTP}' marker-end='url(#arrow)' />
+      <path class='edge edge-clients-ws' d='{PATH_CLIENTS_WS}' marker-end='url(#arrow)' />
     </svg>
     <div id='packet-layer' class='packet-layer'></div>
 {}
@@ -560,6 +758,13 @@ fn graph_markup() -> String {
     <div class='gauge'>memo rebuilds <span id='memo-rebuilds'>0</span></div>
     <div class='gauge'>compression <span id='compression-ratio'>n/a</span></div>
   </div>
+  <div class='row legend'>
+    <div class='gauge'>durable backend <span id='backend-label'>Pgno</span></div>
+    <div class='gauge'>native (.pgno) events <span id='native-events-written'>0</span></div>
+    <div class='gauge'>JetStream seq <span id='jetstream-sequence'>0</span></div>
+    <div class='gauge'>ws permits/cap <span id='ws-permits'>0/200</span></div>
+    <div class='gauge'>GitHub calls/epoch <span id='github-budget'>0/0</span></div>
+  </div>
 </section>
 ",
         graph_nodes_markup(),
@@ -571,6 +776,16 @@ fn graph_markup() -> String {
 /// function-length bar.
 fn graph_nodes_markup() -> &'static str {
     r"
+    <div class='node node-external node-github' style='left:75px;top:170px'>
+      github.com / api.github.com
+      <span class='stage-note'>push &rarr; webhook_handler</span>
+      <span class='stage-note'>pull: GitHubClient::repo_details</span>
+      <span class='stage-note'>6&times; security_policy/ghas_scanning/dependabot/
+        branch_protection/codeowners::evaluate + last_commit::fetch_last_commit</span>
+      <span class='stage-note'>RateLimitState + BudgetGate &rarr; ApiOutcome</span>
+      <span class='stage-note'>&rarr; RepositoryEvidence</span>
+    </div>
+
     <div class='node node-trigger node-scheduled' style='left:95px;top:95px'>
       spawn_collection_loop
       <span class='stage-note'>SweepPhase: <span id='sweep-phase'>Completed</span></span>
@@ -597,6 +812,12 @@ fn graph_nodes_markup() -> &'static str {
     <div class='node node-store node-eventstream' style='left:775px;top:180px'>
       EvidenceProjectionEvent stream
       <span class='stage-note'>events <span id='stage-stream-fill'>0</span></span>
+      <span class='stage-note'>durable: PardosaBackend::<span id='backend-label'>Pgno</span></span>
+      <span class='stage-note'>NativeStore events.pgno <span id='native-events-written'>0</span></span>
+      <span id='jetstream-detail' class='stage-note stage-hidden'>
+        JetStreamHandle::append &rarr; PubAck seq <span id='jetstream-sequence'>0</span>
+      </span>
+      <button id='backend-toggle-btn'>toggle Pgno/Nats</button>
     </div>
     <div class='node node-store node-projection' style='left:980px;top:180px'>
       EvidenceProjection
@@ -626,6 +847,12 @@ fn graph_nodes_markup() -> &'static str {
       <span class='stage-note'>gen <span id='cache-fallback-gen'>0</span></span>
       <span class='stage-note'>served <span id='served-pages'>0</span></span>
       <span class='stage-note stage-hidden'>cache fill <span id='stage-cache-fill'>0</span></span>
+    </div>
+
+    <div class='node node-clients node-webclients' style='left:1200px;top:700px'>
+      ws_session clients (anonymous)
+      <span class='stage-note'>OwnedSemaphorePermit + broadcast::Receiver&lt;PageUpdateEvent&gt;</span>
+      <span class='stage-note'>permits/cap <span id='ws-permits'>0/200</span> (sim quantity)</span>
     </div>
 "
 }

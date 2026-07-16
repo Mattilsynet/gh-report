@@ -32,7 +32,7 @@
       .graph-canvas {
         position: relative;
         width: 1280px;
-        height: 620px;
+        height: 760px;
         margin: 1rem 0;
       }
       .graph-svg {
@@ -70,6 +70,22 @@
         stroke: #22c55e;
         stroke-dasharray: 4 4;
         animation: serve-flow 2.4s linear infinite;
+      }
+      .edge-github-push {
+        stroke: #e2e8f0;
+        stroke-dasharray: 5 4;
+      }
+      .edge-github-pull {
+        stroke: #6366f1;
+        stroke-dasharray: 2 6;
+      }
+      .edge-clients-http {
+        stroke: #22c55e;
+        stroke-dasharray: 4 4;
+      }
+      .edge-clients-ws {
+        stroke: #f59e0b;
+        stroke-dasharray: 3 5;
       }
       @keyframes serve-flow {
         to {
@@ -132,6 +148,16 @@
       .node-serve {
         background: #14532d;
         border: 2px solid #22c55e;
+      }
+      .node-external {
+        background: #1e293b;
+        border: 2px dashed #94a3b8;
+        border-radius: 50%;
+        width: 11rem;
+      }
+      .node-clients {
+        background: #422006;
+        border: 2px solid #f59e0b;
       }
       @keyframes work-pulse {
         0%,
@@ -212,6 +238,18 @@
         width: 1.1rem;
         height: 1.1rem;
         margin: -0.55rem;
+      }
+      .packet-github-push {
+        outline: 2px dashed #e2e8f0;
+      }
+      .packet-github-pull {
+        outline: 2px dotted #6366f1;
+      }
+      .packet-ws-fanout {
+        outline: 2px solid #f59e0b;
+        width: 1rem;
+        height: 1rem;
+        margin: -0.5rem;
       }
       .gauge {
         font-variant-numeric: tabular-nums;
