@@ -138,6 +138,7 @@ impl BudgetGate {
     /// Returns `false` when `cancel` is cancelled while this caller is
     /// parked in the elected cooldown sleep; in that case the epoch is not
     /// reset and callers should exit rather than resume work.
+    #[must_use = "false means cancellation fired; caller must exit, not resume work"]
     pub async fn acquire(&self, cancel: &CancellationToken) -> bool {
         loop {
             let limit = self.limit.load(Ordering::Acquire);
@@ -251,7 +252,7 @@ mod tests {
         let gate2 = Arc::clone(&gate);
         let waiter_cancel = cancel.clone();
         let handle = tokio::spawn(async move {
-            gate2.acquire(&waiter_cancel).await;
+            let _ = gate2.acquire(&waiter_cancel).await;
         });
 
         tokio::time::advance(Duration::from_secs(61)).await;
@@ -272,7 +273,7 @@ mod tests {
             let g = Arc::clone(&gate);
             let worker_cancel = cancel.clone();
             handles.push(tokio::spawn(async move {
-                g.acquire(&worker_cancel).await;
+                let _ = g.acquire(&worker_cancel).await;
             }));
         }
 

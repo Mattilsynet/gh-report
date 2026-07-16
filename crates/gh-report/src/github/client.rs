@@ -556,7 +556,9 @@ impl GitHubClient {
             return ApiOutcome::failure(None, format!("credential refresh failed: {e}"), false);
         }
 
-        let _ = self.budget.acquire(&self.budget_cancel).await;
+        if !self.budget.acquire(&self.budget_cancel).await {
+            return ApiOutcome::failure(None, "budget acquire cancelled".to_string(), false);
+        }
 
         let mut stale_token_retried = false;
         let attempts = retries + 1;
@@ -766,8 +768,9 @@ impl GitHubClient {
                 break;
             }
 
-            if page_count > 1 {
-                let _ = self.budget.acquire(&self.budget_cancel).await;
+            if page_count > 1 && !self.budget.acquire(&self.budget_cancel).await {
+                truncated = true;
+                break;
             }
 
             let response = match self.send_paginated_request(&url, timeout_secs).await {
@@ -1016,7 +1019,9 @@ impl GitHubClient {
             return None;
         }
 
-        let _ = self.budget.acquire(&self.budget_cancel).await;
+        if !self.budget.acquire(&self.budget_cancel).await {
+            return None;
+        }
 
         let url = format!("{}{}", self.base_url, path);
         let auth = self.auth_header.load();
@@ -1635,6 +1640,60 @@ mod tests {
         let (budget, rate_limit) = test_budget_and_rate_limit();
         GitHubClient::new(credential, base_url, "test-org", None, budget, rate_limit)
             .expect("test client construction should succeed")
+    }
+
+    #[tokio::test]
+    async fn request_returns_failure_when_budget_acquire_cancelled() {
+        let pause = Arc::new(tokio::sync::Notify::new());
+        let budget = Arc::new(
+            BudgetGate::new(1, Duration::from_mins(1)).with_pause_notify(Arc::clone(&pause)),
+        );
+        let (_, rate_limit) = test_budget_and_rate_limit();
+        let credential = GitHubCredential {
+            mode: crate::domain::auth::AuthMode::Pat,
+            token: secrecy::SecretString::from("test-token"),
+            expires_at: None,
+        };
+        let client = Arc::new(
+            GitHubClient::new(
+                credential,
+                "https://api.github.invalid",
+                "test-org",
+                None,
+                Arc::clone(&budget),
+                rate_limit,
+            )
+            .expect("test client construction should succeed"),
+        );
+
+        let warmup_cancel = tokio_util::sync::CancellationToken::new();
+        assert!(budget.acquire(&warmup_cancel).await);
+
+        let requester_client = Arc::clone(&client);
+        let requester =
+            tokio::spawn(async move { requester_client.request("/test/path", false, 0, 5).await });
+
+        pause.notified().await;
+        client.budget_cancel.cancel();
+
+        let outcome = tokio::time::timeout(Duration::from_millis(200), requester)
+            .await
+            .expect("cancelled budget acquire should return promptly")
+            .expect("request task should not panic");
+
+        assert!(outcome.is_err());
+        match outcome {
+            ApiOutcome::Failure {
+                status_code,
+                error,
+                retryable,
+            } => {
+                assert_eq!(status_code, None);
+                assert_eq!(error, "budget acquire cancelled");
+                assert!(!retryable);
+            }
+            ApiOutcome::Success { .. } => panic!("expected Failure, got Success"),
+        }
     }
 
     #[tokio::test]
