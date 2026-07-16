@@ -27,7 +27,8 @@
 
     <p class="meta">{{ vm.owner_type_label }} · {{ vm.repo_rows.len() }} repositories{% if let Some(url) = vm.security_url %} · <a href="{{ url }}" target="_blank" rel="noopener noreferrer" title="Open GitHub's security overview for this team's non-archived repositories.">Security overview ↗</a>{% endif %}</p>
 
-    {% if let Some(roster) = vm.roster %}
+    {% match vm.roster %}
+    {% when crate::report::view_model::RosterSection::Team with (roster) %}
     <details>
         <summary>Team Members ({{ roster.member_count }})</summary>
         {% if !roster.is_complete %}
@@ -58,7 +59,16 @@
                 href="../report.html#add-a-team-member">How do I add or remove a member?</a></p>
         {% endif %}
     </details>
-    {% endif %}
+    {% when crate::report::view_model::RosterSection::NotApplicable %}
+    <p class="meta">Individual user — no team roster applies.</p>
+    {% when crate::report::view_model::RosterSection::Unresolved %}
+    <details>
+        <summary>Team Members (unresolved)</summary>
+        <p class="meta tier-warn">This owner is team-shaped, but no team roster could be resolved for this
+            run — classification is ambiguous, not a confirmed individual user.</p>
+    </details>
+    {% endmatch %}
+
 
     <div class="scorecard">
         {% for card in vm.summary_cards %}
@@ -145,7 +155,10 @@
     <p class="footer">Rows highlighted in pink have not been updated in over 2 years and may be abandoned.</p>
     {% endif %}
 
-    {% if !vm.orphan_repo_rows.is_empty() %}
+    {% if vm.orphan_unresolved %}
+    <p class="meta tier-warn">Orphan-repo attribution unresolved: no team roster was resolved for this
+        owner this run, so orphan repos cannot be attributed.</p>
+    {% else if !vm.orphan_repo_rows.is_empty() %}
     <details>
         <summary>Orphan repositories ({{ vm.orphan_repo_rows.len() }})</summary>
         <div class="table-wrapper">

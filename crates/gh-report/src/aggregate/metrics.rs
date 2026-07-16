@@ -722,11 +722,12 @@ pub fn build_owner_metrics(repositories: &[RepositoryEvidence]) -> Vec<OwnerMetr
         .map(|(canonical, (display_name, repos))| {
             let total_repos = count_as_u32(repos.len());
             let coverage = build_per_control_coverage(&repos);
-            let owner_type = if canonical.contains('/') {
-                OwnerType::Team
-            } else {
-                OwnerType::User
-            };
+            let owner_type =
+                match crate::domain::metrics::team_slug_from_canonical_owner(&canonical) {
+                    Some(_) => OwnerType::Team,
+                    None if canonical.contains('/') => OwnerType::AmbiguousTeamShaped,
+                    None => OwnerType::User,
+                };
 
             OwnerMetrics {
                 owner: canonical,
@@ -743,7 +744,8 @@ pub fn build_owner_metrics(repositories: &[RepositoryEvidence]) -> Vec<OwnerMetr
     result.sort_by(|a, b| {
         let type_rank = |t: &OwnerType| match t {
             OwnerType::Team => 0,
-            OwnerType::User => 1,
+            OwnerType::AmbiguousTeamShaped => 1,
+            OwnerType::User => 2,
         };
         type_rank(&a.owner_type)
             .cmp(&type_rank(&b.owner_type))
@@ -2399,6 +2401,38 @@ mod tests {
         let user = result.iter().find(|o| o.owner == "@individual").unwrap();
         assert_eq!(team.owner_type, OwnerType::Team);
         assert_eq!(user.owner_type, OwnerType::User);
+    }
+
+    /// CHE-0082:R9 — a team-shaped canonical owner (contains `/`) with no
+    /// extractable slug (e.g. a trailing-slash malformed reference)
+    /// classifies `AmbiguousTeamShaped`, never silently `User`.
+    #[test]
+    fn owner_metrics_malformed_team_shaped_owner_is_ambiguous_not_user() {
+        let repos = vec![make_repository_evidence(
+            "repo-1",
+            Visibility::Public,
+            false,
+            make_checks(
+                policy_pass_setting(),
+                secret_enabled_observable(false),
+                dependabot_enabled(),
+                branch_pass(),
+                codeowners_with_owners(&["@org/", "@genuine-user"]),
+            ),
+        )];
+        let result = build_owner_metrics(&repos);
+        let ambiguous = result.iter().find(|o| o.owner == "@org/").unwrap();
+        let user = result.iter().find(|o| o.owner == "@genuine-user").unwrap();
+        assert_eq!(
+            ambiguous.owner_type,
+            OwnerType::AmbiguousTeamShaped,
+            "a team-shaped owner with no extractable slug must never silently collapse to User"
+        );
+        assert_eq!(
+            user.owner_type,
+            OwnerType::User,
+            "a genuinely slash-less owner must classify unambiguously as User"
+        );
     }
 
     #[test]

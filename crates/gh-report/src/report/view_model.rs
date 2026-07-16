@@ -283,6 +283,30 @@ pub struct TeamRosterViewModel {
     pub member_count: u32,
 }
 
+/// The B1 team-roster section state for an owner's detail page
+/// (CHE-0082:R8).
+///
+/// Three distinct visible states, none of which collapse to a silent
+/// omission of the section:
+///
+/// - [`Self::Team`] — a team-type owner with roster data fetched
+///   (complete or degraded — see [`TeamRosterViewModel::is_complete`]).
+/// - [`Self::NotApplicable`] — a genuine individual-user owner; a team
+///   roster does not apply. Explicit, never a fabricated roster.
+/// - [`Self::Unresolved`] — a team-shaped or ambiguous-classification
+///   owner for which no roster data was resolved this run (e.g. no team
+///   slug could be extracted, or the roster fetch never ran for this
+///   owner). Distinct from a degraded-but-fetched roster.
+#[derive(Debug, Clone)]
+pub enum RosterSection {
+    /// Roster data is present for this team-type owner.
+    Team(TeamRosterViewModel),
+    /// This owner is an individual user; no team roster applies.
+    NotApplicable,
+    /// Team-shaped/ambiguous owner with no resolved roster this run.
+    Unresolved,
+}
+
 /// A control column header, pairing the display name with its tooltip copy.
 ///
 /// Pre-zipped for template iteration (Askama does not support array indexing).
@@ -324,10 +348,10 @@ pub struct OwnerDetailViewModel {
     /// for this owner — distinct from the org-level stale rate on the
     /// dashboard which measures archival coverage.
     pub stale_width_class: &'static str,
-    /// Team member roster (B1). `Some` only for team-type owners with a
-    /// fetched roster; `None` for user-type owners or when B1 has not
-    /// (yet) collected this team.
-    pub roster: Option<TeamRosterViewModel>,
+    /// Team member roster section (B1, CHE-0082:R8). Always one of three
+    /// distinct visible states — see [`RosterSection`] — never a silent
+    /// `None` omission.
+    pub roster: RosterSection,
     /// This owner's page on GitHub — an org team page for team-type
     /// owners, a user profile page for user-type owners (UF2-3). `None`
     /// only when the canonical owner string is malformed (no extractable
@@ -341,8 +365,16 @@ pub struct OwnerDetailViewModel {
     /// Orphan repos attributed to this owner via last-committer roster
     /// membership (B2), joined by canonical owner name; empty when this
     /// owner has no attributed orphans (item 7 — drives the collapsible
-    /// bottom-of-page section, omitted when empty).
+    /// bottom-of-page section, omitted when empty and `orphan_unresolved`
+    /// is `false`).
     pub orphan_repo_rows: Vec<OrphanedRepoRow>,
+    /// `true` when this is a team-shaped/ambiguous owner whose roster was
+    /// not resolved this run, meaning orphan attribution against this
+    /// owner could not be computed — distinct from genuinely zero
+    /// orphans (CHE-0082:R8). Always `false` for individual-user owners
+    /// (team-orphan attribution does not apply) and for a team owner
+    /// whose roster was resolved (complete or degraded-but-fetched).
+    pub orphan_unresolved: bool,
     /// Current org-membership state of this owner, meaningful only when
     /// `owner_type_label == "User"` (item9 Part B): `None` when the
     /// org-members list was unfetched/degraded or this is a team-type

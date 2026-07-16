@@ -26,8 +26,8 @@ use crate::error::ReportError;
 use crate::report::view_model::{
     ControlCell, ControlColumn, CoverageTier, DeletedRepoRow, DeletedTeamRow, DeletedViewModel,
     OrphanedRepoRow, OrphanedTeamGroup, OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow,
-    OwnerRepoRow, OwnersViewModel, ReportViewModel, StatusDot, SummaryCard, TeamMemberRow,
-    TeamRosterViewModel, TopNav, TopSecurityTeam, compute_health_score,
+    OwnerRepoRow, OwnersViewModel, ReportViewModel, RosterSection, StatusDot, SummaryCard,
+    TeamMemberRow, TeamRosterViewModel, TopNav, TopSecurityTeam, compute_health_score,
     coverage_control_column_tooltip, coverage_control_how_to_fix, format_exclusion, generate_slug,
     rate_to_width_class, strip_org_prefix,
 };
@@ -611,6 +611,7 @@ fn build_owner_github_url(
                 )
             })
         }
+        OwnerType::AmbiguousTeamShaped => None,
     }
 }
 
@@ -734,16 +735,24 @@ fn build_owner_detail_view_models(
             };
             let stale_width_class = rate_to_width_class(stale_pct);
 
-            let roster = team_rosters
-                .iter()
-                .find(|r| r.canonical_owner == m.owner)
-                .map(build_team_roster_view_model);
+            let roster_entry = team_rosters.iter().find(|r| r.canonical_owner == m.owner);
+            let roster = match m.owner_type {
+                OwnerType::User => RosterSection::NotApplicable,
+                OwnerType::Team | OwnerType::AmbiguousTeamShaped => match roster_entry {
+                    Some(r) => RosterSection::Team(build_team_roster_view_model(r)),
+                    None => RosterSection::Unresolved,
+                },
+            };
 
             let orphan_repo_rows: Vec<OrphanedRepoRow> = orphaned_by_team
                 .iter()
                 .find(|group| group.team == m.owner)
                 .map(|group| group.rows.clone())
                 .unwrap_or_default();
+            let orphan_unresolved = matches!(
+                m.owner_type,
+                OwnerType::Team | OwnerType::AmbiguousTeamShaped
+            ) && roster_entry.is_none();
 
             let detail = OwnerDetailViewModel {
                 owner: m.display_name.clone(),
@@ -761,6 +770,7 @@ fn build_owner_detail_view_models(
                 github_url,
                 security_url,
                 orphan_repo_rows,
+                orphan_unresolved,
                 owner_in_org: m.in_org,
             };
 

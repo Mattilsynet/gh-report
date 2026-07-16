@@ -1,5 +1,5 @@
 ---
-source: crates/gh-report/src/report/html.rs
+source: crates/gh-report/src/report/html/tests.rs
 expression: detail_page
 ---
 <!DOCTYPE html>
@@ -38,6 +38,13 @@ expression: detail_page
     <p class="meta">Team · 1 repositories · <a href="https://github.com/orgs/TestOrg/security/overview?query=archived%3Afalse%20tool%3Agithub%20team%3Ateam-empty" target="_blank" rel="noopener noreferrer" title="Open GitHub's security overview for this team's non-archived repositories.">Security overview ↗</a></p>
 
     
+    <details>
+        <summary>Team Members (unresolved)</summary>
+        <p class="meta tier-warn">This owner is team-shaped, but no team roster could be resolved for this
+            run — classification is ambiguous, not a confirmed individual user.</p>
+    </details>
+    
+
 
     <div class="scorecard">
         
@@ -154,6 +161,9 @@ expression: detail_page
 
     
 
+    
+    <p class="meta tier-warn">Orphan-repo attribution unresolved: no team roster was resolved for this
+        owner this run, so orphan repos cannot be attributed.</p>
     
 
 </body>

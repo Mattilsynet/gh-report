@@ -1592,16 +1592,24 @@ fn render_owner_detail_html_contains_orphan_repositories_section() {
     evidence.metrics = crate::aggregate::metrics::aggregate_metrics(&evidence.repositories);
     evidence.collection_statistics =
         crate::aggregate::metrics::build_collection_statistics(&evidence.repositories);
-    evidence.metrics.team_rosters = vec![TeamRoster {
-        canonical_owner: "@org/team-a".to_string(),
-        team_slug: "team-a".to_string(),
-        status: TeamRosterStatus::Complete,
-        members: vec![TeamMember {
-            login: "alice".to_string(),
-            role: TeamMemberRole::Maintainer,
-            in_org: None,
-        }],
-    }];
+    evidence.metrics.team_rosters = vec![
+        TeamRoster {
+            canonical_owner: "@org/team-a".to_string(),
+            team_slug: "team-a".to_string(),
+            status: TeamRosterStatus::Complete,
+            members: vec![TeamMember {
+                login: "alice".to_string(),
+                role: TeamMemberRole::Maintainer,
+                in_org: None,
+            }],
+        },
+        TeamRoster {
+            canonical_owner: "@org/team-b".to_string(),
+            team_slug: "team-b".to_string(),
+            status: TeamRosterStatus::Complete,
+            members: vec![],
+        },
+    ];
 
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
 
@@ -1625,8 +1633,14 @@ fn render_owner_detail_html_contains_orphan_repositories_section() {
 
     let unattributed_page = &pages["owners/org-team-b.html"];
     assert!(
-        !unattributed_page.contains("<details>"),
-        "team-b has zero attributed orphans; the section must be omitted entirely"
+        !unattributed_page.contains("Orphan repositories ("),
+        "team-b has a resolved roster with zero attributed orphans; the \
+             orphan-repositories collapsible must be omitted (genuinely zero, not unresolved)"
+    );
+    assert!(
+        !unattributed_page.contains("Orphan-repo attribution unresolved"),
+        "team-b's roster was resolved (Complete, empty); this is genuine \
+             zero-orphans, not the unresolved-attribution reasoned state"
     );
 }
 
@@ -1817,6 +1831,47 @@ fn render_owner_detail_html_no_departed_warning_when_present_or_degraded() {
     assert!(
         !detail_page.contains("No longer a member of this GitHub organisation."),
         "present (Some(true)) and unknown (None) members must never show the departed warning"
+    );
+}
+
+/// CHE-0082:R8 — a `Team`-classified owner with NO resolved roster this
+/// run (never fetched — `team_rosters` carries no matching entry) must
+/// still render a visible, reasoned Team Members section, not vanish.
+/// Distinct from the degraded-fetch case (which already carries a
+/// `TeamRoster` entry with a non-`Complete` status).
+#[test]
+fn render_owner_detail_html_unresolved_roster_never_vanishes() {
+    let evidence = evidence_with_owner_repos();
+
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let detail_page = &pages["owners/org-team-a.html"];
+
+    assert!(
+        detail_page.contains("Team Members (unresolved)"),
+        "a Team owner with no resolved roster must render an explicit \
+             unresolved reasoned state, not silently omit the section: {detail_page}"
+    );
+    assert!(
+        detail_page.contains("no team roster could be resolved"),
+        "the unresolved state must carry an explicit reason"
+    );
+}
+
+/// CHE-0082:R8 — the B2 orphan-attribution section on a `Team`-classified
+/// owner with no resolved roster must render an explicit "unresolved"
+/// reasoned state, distinguishable from a genuinely-zero-orphans team
+/// whose roster was actually resolved.
+#[test]
+fn render_owner_detail_html_unresolved_orphan_attribution_never_vanishes() {
+    let evidence = evidence_with_owner_repos();
+
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let detail_page = &pages["owners/org-team-a.html"];
+
+    assert!(
+        detail_page.contains("Orphan-repo attribution unresolved"),
+        "a Team owner with no resolved roster must render an explicit \
+             unresolved orphan-attribution state, not silently omit the section: {detail_page}"
     );
 }
 
