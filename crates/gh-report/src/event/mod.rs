@@ -37,6 +37,7 @@ pub mod limits {
     pub const MAX_ORG_ALERT_REPOS: usize = 1_000_000;
     pub const MAX_ALERT_BUCKET: usize = 128;
     pub const MAX_ALERT_BUCKETS: usize = 128;
+    pub const MAX_TEAM_MEMBERS: usize = 16_384;
 }
 
 use limits::{
@@ -44,8 +45,8 @@ use limits::{
     MAX_CODEOWNERS_ENTRIES, MAX_CODEOWNERS_OWNER, MAX_CODEOWNERS_OWNERS, MAX_CODEOWNERS_PATTERN,
     MAX_DESCRIPTION, MAX_DOMAIN_KEY, MAX_GITHUB_ID, MAX_LANGUAGE, MAX_LICENSE, MAX_LOGIN,
     MAX_NODE_ID, MAX_ORG_ALERT_REPOS, MAX_PATH, MAX_PERSON_NAME, MAX_REASON, MAX_REPO_NAME,
-    MAX_RUN_ID, MAX_SCHEMA_VERSION, MAX_SWEEP_TIMEOUT_ERROR, MAX_TIMESTAMP_TEXT, MAX_TOKEN_SCOPES,
-    MAX_TOPIC, MAX_TOPICS, MAX_UNAVAILABLE_CAPABILITIES, MAX_URL,
+    MAX_RUN_ID, MAX_SCHEMA_VERSION, MAX_SWEEP_TIMEOUT_ERROR, MAX_TEAM_MEMBERS, MAX_TIMESTAMP_TEXT,
+    MAX_TOKEN_SCOPES, MAX_TOPIC, MAX_TOPICS, MAX_UNAVAILABLE_CAPABILITIES, MAX_URL,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
@@ -466,6 +467,125 @@ impl HasEventSchemaSource for OrgStateCaptured {
     const EVENT_SCHEMA_SOURCE: Option<&'static str> = Some("gh-report/OrgEvent");
 }
 
+/// Durable per-team roster snapshot (CHE-0089:R1), routed on its own
+/// per-team fiber (CHE-0089:R2) — a standalone `GenomeSafe` struct mirroring
+/// the `OrgStateCaptured` precedent, not an arm of [`DomainEvent`]. Adds no
+/// field to [`RepositoryStateCaptured`] or [`OrgStateCaptured`]; both keep
+/// their existing `SCHEMA_HASH` unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+pub struct TeamStateCaptured {
+    pub org: NonEmptyEventString<MAX_LOGIN>,
+    pub team_slug: NonEmptyEventString<MAX_LOGIN>,
+    pub members: EventVec<TeamMemberEvent, MAX_TEAM_MEMBERS>,
+    pub orphan_attribution_inputs: OrphanAttributionInputs,
+    pub fetched_at: EventString<MAX_TIMESTAMP_TEXT>,
+    pub status: TeamRosterStatusEvent,
+}
+
+/// One team member's durable roster entry, mirroring
+/// [`crate::domain::metrics::TeamMember`].
+#[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
+pub struct TeamMemberEvent {
+    pub login: NonEmptyEventString<MAX_LOGIN>,
+    pub role: TeamMemberRoleEvent,
+    pub in_org: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[repr(u8)]
+pub enum TeamMemberRoleEvent {
+    Maintainer = 0,
+    Member = 1,
+}
+
+/// Fetch-completeness status of the underlying team roster fetch, mirroring
+/// [`crate::domain::metrics::TeamRosterStatus`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[repr(u8)]
+pub enum TeamRosterStatusEvent {
+    Complete = 0,
+    Deleted = 1,
+    PermissionDenied = 2,
+    TransientError = 3,
+}
+
+/// Durable inputs the render-time orphan-attribution join (kqavx CLASS B)
+/// depends on, without persisting the derived orphan decision itself: only
+/// whether the org-membership fetch that feeds each member's `in_org` flag
+/// completed or degraded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+pub struct OrphanAttributionInputs {
+    pub org_membership_fetch_status: OrgMembershipFetchStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
+#[repr(u8)]
+pub enum OrgMembershipFetchStatus {
+    Fetched = 0,
+    Degraded = 1,
+}
+
+impl TeamStateCaptured {
+    #[must_use]
+    pub fn event_type(&self) -> &'static str {
+        "TeamStateCaptured"
+    }
+}
+
+impl Validate for TeamStateCaptured {
+    type Error = std::convert::Infallible;
+
+    fn validate(&self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+impl HasEventSchemaSource for TeamStateCaptured {
+    const EVENT_SCHEMA_SOURCE: Option<&'static str> = Some("gh-report/TeamEvent");
+}
+
+/// Errors rejected by [`team_domain_key`] (CHE-0089:R2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum TeamDomainKeyError {
+    #[error("team_domain_key: org must not be empty")]
+    EmptyOrg,
+    #[error("team_domain_key: team_slug must not be empty")]
+    EmptyTeamSlug,
+}
+
+/// Derive the NATS-safe, injective `team_domain_key` token for `(org,
+/// team_slug)` (CHE-0089:R2, mirroring CHE-0072:R7/R8 and PGN-0010:R4):
+/// `"team_" + lower-hex(utf8(org) || 0x1F || utf8(team_slug))`. The 0x1F
+/// unit-separator byte cannot appear in a GitHub org name or team slug, so
+/// the concatenation is injective over the pair (CHE-0072:R8); hex-only
+/// output has no case folding or lossy replacement.
+///
+/// # Errors
+///
+/// Returns [`TeamDomainKeyError::EmptyOrg`] or
+/// [`TeamDomainKeyError::EmptyTeamSlug`] when either input is empty.
+pub fn team_domain_key(org: &str, team_slug: &str) -> Result<String, TeamDomainKeyError> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    if org.is_empty() {
+        return Err(TeamDomainKeyError::EmptyOrg);
+    }
+    if team_slug.is_empty() {
+        return Err(TeamDomainKeyError::EmptyTeamSlug);
+    }
+    let mut joined = Vec::with_capacity(org.len() + 1 + team_slug.len());
+    joined.extend_from_slice(org.as_bytes());
+    joined.push(0x1F);
+    joined.extend_from_slice(team_slug.as_bytes());
+    let mut token = String::with_capacity(5 + joined.len() * 2);
+    token.push_str("team_");
+    for byte in joined {
+        token.push(char::from(HEX[usize::from(byte >> 4)]));
+        token.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    Ok(token)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, GenomeSafe)]
 #[expect(
     clippy::large_enum_variant,
@@ -806,6 +926,124 @@ mod tests {
         assert_ne!(
             <OrgStateCaptured as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,
             <DomainEvent as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE
+        );
+    }
+
+    fn team_member(
+        login: &str,
+        role: TeamMemberRoleEvent,
+        in_org: Option<bool>,
+    ) -> TeamMemberEvent {
+        TeamMemberEvent {
+            login: nes(login),
+            role,
+            in_org,
+        }
+    }
+
+    fn team_members(items: Vec<TeamMemberEvent>) -> EventVec<TeamMemberEvent, MAX_TEAM_MEMBERS> {
+        EventVec::try_from(items).expect("fits MAX")
+    }
+
+    fn team_state_captured() -> TeamStateCaptured {
+        TeamStateCaptured {
+            org: nes("acme"),
+            team_slug: nes("platform"),
+            members: team_members(vec![
+                team_member("alice", TeamMemberRoleEvent::Maintainer, Some(true)),
+                team_member("bob", TeamMemberRoleEvent::Member, None),
+            ]),
+            orphan_attribution_inputs: OrphanAttributionInputs {
+                org_membership_fetch_status: OrgMembershipFetchStatus::Fetched,
+            },
+            fetched_at: es("2026-07-16T00:00:00Z"),
+            status: TeamRosterStatusEvent::Complete,
+        }
+    }
+
+    #[test]
+    fn native_team_state_round_trips() {
+        let event = team_state_captured();
+        let wire = to_vec(&event);
+        let decoded: TeamStateCaptured = from_bytes(&wire).expect("decode native team event");
+        assert_eq!(decoded, event);
+        assert_eq!(decoded.event_type(), "TeamStateCaptured");
+    }
+
+    #[test]
+    fn team_state_schema_identity_is_stable() {
+        assert_eq!(
+            <TeamStateCaptured as GenomeSafe>::SCHEMA_HASH,
+            183_613_944_288_693_483_085_779_945_989_704_975_171_u128
+        );
+        assert_eq!(
+            <TeamStateCaptured as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,
+            Some("gh-report/TeamEvent")
+        );
+        assert_ne!(
+            <TeamStateCaptured as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,
+            <DomainEvent as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE
+        );
+        assert_ne!(
+            <TeamStateCaptured as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,
+            <OrgStateCaptured as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE
+        );
+        assert_ne!(
+            <TeamStateCaptured as GenomeSafe>::SCHEMA_HASH,
+            <OrgStateCaptured as GenomeSafe>::SCHEMA_HASH
+        );
+        assert_ne!(
+            <TeamStateCaptured as GenomeSafe>::SCHEMA_HASH,
+            <DomainEvent as GenomeSafe>::SCHEMA_HASH
+        );
+    }
+
+    #[test]
+    fn repository_and_org_schema_hashes_are_byte_identical_to_prior_pins() {
+        assert_eq!(
+            <OrgStateCaptured as GenomeSafe>::SCHEMA_HASH,
+            220_908_143_069_358_905_578_364_172_905_019_209_814_u128
+        );
+        assert_eq!(
+            <DomainEvent as GenomeSafe>::SCHEMA_HASH,
+            275_195_719_777_709_701_441_897_251_379_147_148_878_u128
+        );
+    }
+
+    #[test]
+    fn team_domain_key_is_injective_over_org_and_team_slug_pair() {
+        let a = team_domain_key("ab", "c").expect("derives");
+        let b = team_domain_key("a", "bc").expect("derives");
+        assert_ne!(
+            a, b,
+            "0x1F unit separator must prevent (org,team_slug) collisions"
+        );
+        assert!(a.starts_with("team_"));
+        assert!(b.starts_with("team_"));
+    }
+
+    #[test]
+    fn team_domain_key_is_deterministic_and_hex_only() {
+        let first = team_domain_key("acme", "platform").expect("derives");
+        let second = team_domain_key("acme", "platform").expect("derives");
+        assert_eq!(first, second);
+        assert!(
+            first["team_".len()..]
+                .chars()
+                .all(|c| c.is_ascii_hexdigit()),
+            "token body must be lower-hex only (NATS-safe, PGN-0010:R4)"
+        );
+    }
+
+    #[test]
+    fn team_domain_key_rejects_empty_org_or_team_slug() {
+        assert_eq!(
+            team_domain_key("", "platform"),
+            Err(TeamDomainKeyError::EmptyOrg)
+        );
+        assert_eq!(
+            team_domain_key("acme", ""),
+            Err(TeamDomainKeyError::EmptyTeamSlug)
         );
     }
 
