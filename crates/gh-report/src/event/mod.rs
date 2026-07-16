@@ -977,6 +977,10 @@ mod tests {
             183_613_944_288_693_483_085_779_945_989_704_975_171_u128
         );
         assert_eq!(
+            pardosa::store::Event::<TeamStateCaptured>::ENVELOPE_HASH,
+            77_602_136_066_483_672_592_325_871_032_789_847_338_u128
+        );
+        assert_eq!(
             <TeamStateCaptured as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,
             Some("gh-report/TeamEvent")
         );
