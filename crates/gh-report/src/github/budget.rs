@@ -2,4 +2,4 @@
 //!
 //! Re-exports from `cherry-pit-wq`.
 
-pub use cherry_pit_wq::BudgetGate;
+pub(crate) use cherry_pit_wq::BudgetGate;

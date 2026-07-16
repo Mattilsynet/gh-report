@@ -5,9 +5,10 @@
 //! gh-report uses to drive worker-pool halts. Per CHE-0055 G5 these
 //! GitHub-shaped concerns live here, not in `cherry-pit-wq`.
 
+use cherry_pit_wq::RateLimitObservation;
 use http::HeaderMap;
 
-pub use cherry_pit_wq::{RateLimitObservation, RateLimitState};
+pub use cherry_pit_wq::RateLimitState;
 
 /// Hard halt threshold. Collection stops when `remaining` drops below this.
 pub const HALT_THRESHOLD: u32 = 50;
