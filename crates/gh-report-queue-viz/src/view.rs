@@ -7,12 +7,12 @@
 //! Raw `web-sys` + leptos reactive primitives only — no `view!` macro,
 //! mirrors `gh-report-web-client/src/dom.rs`.
 //!
-//! Renders the 8-stage pipeline from adr-fmt-223sd: CREATE (work) ->
-//! QUEUE (store) -> WORKER (work) -> STREAM (store) -> PROJECTION
-//! (store) -> BUILD (work) -> COMPRESS (work) -> CACHE (store) ->
-//! served. Packets ride a single transit lane overlaid on the stage
-//! row so a packet visibly threads through the stage boxes left to
-//! right instead of teleporting between two disconnected lanes.
+//! Renders gh-report's actual operational model (adr-fmt-223sd,
+//! adr-fmt-t63uo) as causality, not a single conveyor belt: three
+//! distinct trigger entry points (scheduled sweep, webhook, warm
+//! start) feed a per-packet WRITE side, joined by the `BatchTracker`
+//! barrier, gating a per-RUN READ side (`finalize_and_publish`), plus
+//! a continuous SERVE path off the current `ArcSwap` generation.
 
 use std::cell::RefCell;
 
@@ -22,7 +22,9 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::wasm_bindgen;
 use web_sys::{Document, Element};
 
-use crate::sim::{EnqueueResult, JobOutcome, JobSource, Sim, SimConfig};
+use crate::sim::{
+    EnqueueResult, JobOutcome, JobSource, PageUpdateEvent, Sim, SimConfig, SweepPhase,
+};
 
 #[derive(Clone, Copy)]
 struct Rates {
@@ -51,6 +53,7 @@ struct AppState {
     sim: Sim,
     rates: RwSignal<Rates>,
     tick_count: u64,
+    warm_start_requested: bool,
 }
 
 thread_local! {
@@ -65,14 +68,25 @@ fn source_color(source: JobSource) -> &'static str {
     }
 }
 
-const ARRIVAL_LANE_END: &str = "12.5%";
-const PIPELINE_LANE_START: &str = "25%";
-const PIPELINE_LANE_END: &str = "100%";
-const FAILURE_LANE_END: &str = "37.5%";
-const ARRIVAL_DURATION_MS: u32 = 700;
-const PIPELINE_DURATION_MS: u32 = 1800;
-const FAILURE_DURATION_MS: u32 = 900;
+const WRITE_LANE_END: &str = "100%";
+const WRITE_DURATION_MS: u32 = 1400;
+const FAILURE_LANE_END: &str = "45%";
+const FAILURE_DURATION_MS: u32 = 700;
+const READ_LANE_END: &str = "100%";
+const READ_PULSE_DURATION_MS: u32 = 900;
 const MAX_LANE_PACKETS: u32 = 40;
+
+fn sweep_phase_label(phase: SweepPhase) -> &'static str {
+    match phase {
+        SweepPhase::Init => "Init",
+        SweepPhase::Resumed => "Resumed",
+        SweepPhase::BaselineReused => "BaselineReused",
+        SweepPhase::AwaitingBatch => "AwaitingBatch",
+        SweepPhase::BatchDrained => "BatchDrained",
+        SweepPhase::Completed => "Completed",
+        SweepPhase::Failed { .. } => "Failed",
+    }
+}
 
 #[wasm_bindgen(start)]
 pub fn start() {
@@ -101,8 +115,11 @@ pub fn start() {
             sim,
             rates,
             tick_count: 0,
+            warm_start_requested: false,
         });
     });
+
+    wire_warm_start_button(&document);
 
     Effect::new(move |_| {
         let current = rates.get();
@@ -139,6 +156,13 @@ pub fn tick() {
         let Some(state) = borrowed.as_mut() else {
             return;
         };
+
+        if state.warm_start_requested {
+            state.warm_start_requested = false;
+            let update = state.sim.warm_start();
+            render_read_pulse(&document, update);
+        }
+
         let rates = state.rates.get_untracked();
         let batch_arrival = state
             .tick_count
@@ -151,6 +175,9 @@ pub fn tick() {
 
         render_gauges(&document, &state.sim);
         render_events(&document, &events.arrivals, &events.completions);
+        for update in &events.page_updates {
+            render_read_pulse(&document, *update);
+        }
     });
 }
 
@@ -223,6 +250,21 @@ fn render_gauges(document: &Document, sim: &Sim) {
         "stage-cache-fill",
         &sim.served_pages().to_string(),
     );
+    set_text(
+        document,
+        "sweep-phase",
+        sweep_phase_label(sim.sweep_phase()),
+    );
+    set_text(
+        document,
+        "cache-fallback-gen",
+        &sim.cache_fallback().to_string(),
+    );
+    set_text(
+        document,
+        "worker-executions",
+        &sim.worker_executions().to_string(),
+    );
 }
 
 fn compression_ratio_display(sim: &Sim) -> String {
@@ -239,7 +281,7 @@ fn render_events(
     arrivals: &[(JobSource, EnqueueResult)],
     completions: &[(JobSource, JobOutcome)],
 ) {
-    let Some(transit_lane) = document.get_element_by_id("transit-lane") else {
+    let Some(write_lane) = document.get_element_by_id("write-lane") else {
         return;
     };
     for (source, result) in arrivals {
@@ -250,12 +292,12 @@ fn render_events(
         };
         spawn_transit_packet(
             document,
-            &transit_lane,
+            &write_lane,
             class,
             source_color(*source),
             "0%",
-            ARRIVAL_LANE_END,
-            ARRIVAL_DURATION_MS,
+            "20%",
+            WRITE_DURATION_MS / 2,
         );
     }
 
@@ -263,24 +305,62 @@ fn render_events(
         match outcome {
             JobOutcome::Success => spawn_transit_packet(
                 document,
-                &transit_lane,
+                &write_lane,
                 "packet packet-success",
                 source_color(*source),
-                PIPELINE_LANE_START,
-                PIPELINE_LANE_END,
-                PIPELINE_DURATION_MS,
+                "20%",
+                WRITE_LANE_END,
+                WRITE_DURATION_MS,
             ),
             JobOutcome::Failure => spawn_transit_packet(
                 document,
-                &transit_lane,
+                &write_lane,
                 "packet packet-failure",
                 source_color(*source),
-                PIPELINE_LANE_START,
+                "20%",
                 FAILURE_LANE_END,
                 FAILURE_DURATION_MS,
             ),
         }
     }
+}
+
+/// Pulses the READ-side lane once per [`PageUpdateEvent`] —
+/// `finalize_and_publish` firing per RUN, never per packet.
+fn render_read_pulse(document: &Document, update: PageUpdateEvent) {
+    let Some(read_lane) = document.get_element_by_id("read-lane") else {
+        return;
+    };
+    spawn_transit_packet(
+        document,
+        &read_lane,
+        "packet packet-page-update",
+        "#f59e0b",
+        "0%",
+        READ_LANE_END,
+        READ_PULSE_DURATION_MS,
+    );
+    set_text(
+        document,
+        "arcswap-generation",
+        &update.generation.to_string(),
+    );
+}
+
+fn wire_warm_start_button(document: &Document) {
+    let Some(element) = document.get_element_by_id("warm-start-btn") else {
+        return;
+    };
+    let closure = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(move |_event| {
+        APP.with(|cell| {
+            if let Some(state) = cell.borrow_mut().as_mut() {
+                state.warm_start_requested = true;
+            }
+        });
+    });
+    let _ignored =
+        element.add_event_listener_with_callback("click", closure.as_ref().unchecked_ref());
+    closure.forget();
 }
 
 fn spawn_transit_packet(
@@ -327,49 +407,75 @@ fn build_layout(document: &Document, root: &Element, rates: RwSignal<Rates>) {
     root.set_inner_html(
         r"
 <section class='queue-viz'>
-  <h1>gh-report queue network</h1>
-  <div class='row sources'>
-    <div class='source scheduled'>ScheduledBatch</div>
-    <div class='source external'>External(webhook)</div>
-    <div class='source initial'>InitialLoad</div>
+  <h1>gh-report queue network — write &rarr; barrier &rarr; read, serve continuous</h1>
+  <div class='row triggers'>
+    <div class='trigger scheduled'>
+      TRIGGER 1: spawn_collection_loop
+      <span class='stage-note'>SweepPhase: <span id='sweep-phase'>Completed</span></span>
+      <span class='stage-note'>enqueue_batch &rarr; JobSource::ScheduledBatch</span>
+    </div>
+    <div class='trigger webhook'>
+      TRIGGER 2: webhook_handler
+      <span class='stage-note'>JobSource::External{id,kind}</span>
+    </div>
+    <div class='trigger warmstart'>
+      TRIGGER 3: warm_start_from_baseline
+      <span class='stage-note'>bypasses queue/workers</span>
+      <button id='warm-start-btn'>fire warm start</button>
+    </div>
   </div>
   <div class='row controls'>
     <button id='batch-rate-down'>batch rate -</button>
-    <span>batch every <span id='batch-rate-value'>1</span> ticks</span>
+    <span>ScheduledBatch every <span id='batch-rate-value'>1</span> ticks</span>
     <button id='batch-rate-up'>+</button>
     <button id='external-rate-down'>external rate -</button>
-    <span>external every <span id='external-rate-value'>1</span> ticks</span>
+    <span>External every <span id='external-rate-value'>1</span> ticks</span>
     <button id='external-rate-up'>+</button>
   </div>
+
+  <h2 class='split-label'>WRITE side (per packet)</h2>
   <div class='pipeline'>
-    <div class='stage stage-work'>CREATE<span class='stage-note'>timer + webhook</span></div>
-    <div class='stage stage-store'>QUEUE<span class='stage-note'>depth <span id='stage-queue-fill'>0/0</span></span></div>
-    <div class='stage stage-work'>WORKER<span class='stage-note'>16x GitHub query</span></div>
-    <div class='stage stage-store'>STREAM<span class='stage-note'>events <span id='stage-stream-fill'>0</span></span></div>
-    <div class='stage stage-store'>PROJECTION<span class='stage-note'>repos <span id='stage-projection-fill'>0</span></span></div>
-    <div class='stage stage-work'>BUILD<span class='stage-note'>memo</span></div>
-    <div class='stage stage-work'>COMPRESS<span class='stage-note'>zstd</span></div>
-    <div class='stage stage-store'>CACHE<span class='stage-note'>served <span id='stage-cache-fill'>0</span></span></div>
-    <div id='transit-lane' class='lane lane-transit'></div>
+    <div class='stage stage-store'>WorkQueue<span class='stage-note'>depth <span id='stage-queue-fill'>0/0</span></span></div>
+    <div class='stage stage-work'>worker_loop / LiveEvaluator::evaluate<span class='stage-note'>16x GitHub query</span></div>
+    <div class='stage stage-store'>EvidenceProjectionEvent stream<span class='stage-note'>record_repo events <span id='stage-stream-fill'>0</span></span></div>
+    <div class='stage stage-store'>EvidenceProjection<span class='stage-note'>repos captured <span id='stage-projection-fill'>0</span></span></div>
+    <div id='write-lane' class='lane lane-transit'></div>
   </div>
+
+  <h2 class='split-label'>BARRIER — BatchTracker (scheduled runs only)</h2>
   <div class='row'>
-    <div class='gauge'>queue <span id='queue-depth'>0</span>/<span id='queue-capacity'>0</span></div>
+    <div class='gauge'>BatchTracker remaining <span id='batch-remaining'>0</span></div>
+    <div class='gauge'>worker executions <span id='worker-executions'>0</span></div>
+  </div>
+
+  <h2 class='split-label'>READ side (per RUN, gated on BatchTracker == 0)</h2>
+  <div class='pipeline'>
+    <div class='stage stage-work'>finalize_and_publish<span class='stage-note'>fires once per run</span></div>
+    <div class='stage stage-work'>build_cached_pages<span class='stage-note'>memo</span></div>
+    <div class='stage stage-work'>commit_cached_pages<span class='stage-note'>ArcSwap swap + PageUpdateEvent</span></div>
+    <div id='read-lane' class='lane lane-transit'></div>
+  </div>
+
+  <h2 class='split-label'>SERVE (continuous, independent of runs)</h2>
+  <div class='row'>
+    <div class='gauge'>cache_fallback gen <span id='cache-fallback-gen'>0</span></div>
+    <div class='gauge'>ArcSwap gen <span id='arcswap-generation'>0</span></div>
+    <div class='gauge'>served pages (WS PageUpdateEvent) <span id='served-pages'>0</span></div>
+  </div>
+
+  <div class='row'>
+    <div class='gauge'>WorkQueue <span id='queue-depth'>0</span>/<span id='queue-capacity'>0</span></div>
     <div class='gauge'>in-flight <span id='in-flight'>0</span>/<span id='worker-count'>0</span></div>
     <div class='gauge'>QueueFull <span id='queue-full-count'>0</span></div>
     <div class='gauge'>Deduplicated <span id='deduplicated-count'>0</span></div>
   </div>
   <div class='row'>
-    <div class='gauge'>served pages <span id='served-pages'>0</span></div>
-    <div class='gauge'>batch remaining <span id='batch-remaining'>0</span></div>
     <div class='gauge'>failures <span id='failure-count'>0</span></div>
     <div class='gauge'>events written <span id='events-written'>0</span></div>
     <div class='gauge'>repos captured <span id='repos-captured'>0</span></div>
-  </div>
-  <div class='row'>
     <div class='gauge'>memo hits <span id='memo-hits'>0</span></div>
     <div class='gauge'>memo rebuilds <span id='memo-rebuilds'>0</span></div>
     <div class='gauge'>compression <span id='compression-ratio'>n/a</span></div>
-    <div class='gauge'>ArcSwap gen <span id='arcswap-generation'>0</span></div>
   </div>
 </section>
 ",
