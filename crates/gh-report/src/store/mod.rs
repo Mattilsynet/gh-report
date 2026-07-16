@@ -13,7 +13,7 @@ use pardosa::store::{Event, JetStreamBackend, RecoveryOutcome};
 use pardosa_fiber_store::FiberStore;
 pub use pardosa_fiber_store::FiberStoreError as StoreError;
 
-use crate::event::{DomainEvent, OrgStateCaptured};
+use crate::event::{DomainEvent, OrgStateCaptured, TeamStateCaptured, team_domain_key};
 
 /// Pardosa-native event store: one fiber per repository domain key.
 pub struct NativeStore {
@@ -24,6 +24,15 @@ pub struct NativeStore {
 /// Pardosa-native org event store: one fiber per org identity.
 pub struct NativeOrgStore {
     inner: FiberStore<OrgStateCaptured>,
+    backend_reachable: AtomicBool,
+}
+
+/// Pardosa-native team event store: one fiber per `(org, team_slug)` pair,
+/// keyed by [`team_domain_key`] (CHE-0089:R2). Team is not the repository
+/// aggregate; team-repo is many-to-many via CODEOWNERS, so this store is
+/// fully decoupled from [`NativeStore`] and [`NativeOrgStore`].
+pub struct NativeTeamStore {
+    inner: FiberStore<TeamStateCaptured>,
     backend_reachable: AtomicBool,
 }
 
@@ -306,6 +315,126 @@ impl NativeOrgStore {
     }
 }
 
+impl NativeTeamStore {
+    /// Create a fresh `.pgno`-backed team store, truncating any existing file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Infrastructure`] when pardosa cannot create
+    /// the backing container.
+    pub fn create_pgno(path: &Path) -> Result<Self, StoreError> {
+        let store = FiberStore::<TeamStateCaptured>::create_pgno(path)?;
+        Ok(Self::from_store(store))
+    }
+
+    /// Open an existing `.pgno`-backed team store, rehydrating its fibers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Infrastructure`] when pardosa cannot open or
+    /// fold the backing container.
+    pub fn open_pgno(path: &Path) -> Result<Self, StoreError> {
+        let store = FiberStore::<TeamStateCaptured>::open_pgno(path)?;
+        warn_pgno_recovery("teams", path, store.last_recovery());
+        Ok(Self::from_store(store))
+    }
+
+    /// Create a fresh JetStream-backed team store.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Infrastructure`] when pardosa cannot author
+    /// the canonical-empty container on the backend.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called from inside a Tokio `current_thread` runtime; see
+    /// [`NativeStore::create_jetstream`].
+    pub fn create_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
+        let store = FiberStore::<TeamStateCaptured>::create_jetstream(backend)?;
+        Ok(Self::from_store(store))
+    }
+
+    /// Open an existing JetStream-backed team store, rehydrating its fibers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Infrastructure`] when pardosa cannot fetch or
+    /// rehydrate the JetStream-authoritative line.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called from inside a Tokio `current_thread` runtime; see
+    /// [`NativeStore::create_jetstream`].
+    pub fn open_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
+        let store = FiberStore::<TeamStateCaptured>::open_jetstream(backend)?;
+        Ok(Self::from_store(store))
+    }
+
+    fn from_store(store: FiberStore<TeamStateCaptured>) -> Self {
+        Self {
+            inner: store,
+            backend_reachable: AtomicBool::new(true),
+        }
+    }
+
+    #[must_use]
+    #[expect(
+        dead_code,
+        reason = "consumed by the P3 writer / P4 status wiring (adr-fmt-ewc1i, adr-fmt-3of35), not yet landed"
+    )]
+    pub(crate) fn last_recovery(&self) -> Option<&RecoveryOutcome> {
+        self.inner.last_recovery()
+    }
+
+    #[must_use]
+    #[expect(
+        dead_code,
+        reason = "consumed by the P3 writer / P4 status wiring (adr-fmt-ewc1i, adr-fmt-3of35), not yet landed"
+    )]
+    pub(crate) fn backend_reachable(&self) -> bool {
+        self.backend_reachable.load(Ordering::Acquire)
+    }
+
+    fn observe_result<T>(&self, result: &Result<T, StoreError>) {
+        if matches!(result, Err(StoreError::BackendInfrastructure { .. })) {
+            self.backend_reachable.store(false, Ordering::Release);
+        } else if result.is_ok() {
+            self.backend_reachable.store(true, Ordering::Release);
+        }
+    }
+
+    /// Capture a team roster event onto the team's own fiber
+    /// (`team_domain_key`), then fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::DivergedFiber`] when the team key already maps
+    /// to more than one fiber, [`StoreError::Infrastructure`] on pardosa
+    /// append/sync failure, or [`StoreError::Poisoned`].
+    pub fn record(&self, team_key: &str, event: TeamStateCaptured) -> Result<(), StoreError> {
+        let result = self.inner.record(team_key, event, team_key_of);
+        self.observe_result(&result);
+        result
+    }
+
+    /// Fold every team event in committed line order without materialising
+    /// an owned vector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Poisoned`] when the store mutex is poisoned.
+    pub fn fold_events<R>(
+        &self,
+        init: R,
+        fold: impl FnMut(&mut R, &TeamStateCaptured),
+    ) -> Result<R, StoreError> {
+        let result = self.inner.fold_defined_events(init, fold);
+        self.observe_result(&result);
+        result
+    }
+}
+
 fn warn_pgno_recovery(store: &str, path: &Path, recovery: Option<&RecoveryOutcome>) {
     if let Some(recovery) = recovery {
         tracing::warn!(
@@ -339,6 +468,13 @@ fn org_key_of(event: &Event<OrgStateCaptured>) -> std::iter::Once<String> {
             .as_str()
             .to_string(),
     )
+}
+
+fn team_key_of(event: &Event<TeamStateCaptured>) -> std::iter::Once<String> {
+    let domain = event.domain_event();
+    let key = team_domain_key(domain.org.as_str(), domain.team_slug.as_str())
+        .expect("TeamStateCaptured.org/team_slug are NonEmptyEventString, never empty");
+    std::iter::once(key)
 }
 
 #[cfg(test)]
@@ -475,6 +611,70 @@ mod tests {
         assert_eq!(
             u64::try_from(store.events().expect("events").len()).expect("event count fits"),
             SYNTHETIC_RECOVERY_RECORDS
+        );
+    }
+
+    fn synthetic_team_state(org: &str, team_slug: &str) -> TeamStateCaptured {
+        use crate::event::{
+            OrgMembershipFetchStatus, OrphanAttributionInputs, TeamRosterStatusEvent,
+        };
+        use pardosa_schema::{EventVec, NonEmptyEventString};
+
+        TeamStateCaptured {
+            org: NonEmptyEventString::try_new(org).expect("org fits"),
+            team_slug: NonEmptyEventString::try_new(team_slug).expect("team_slug fits"),
+            members: EventVec::try_from(Vec::new()).expect("empty members fits"),
+            orphan_attribution_inputs: OrphanAttributionInputs {
+                org_membership_fetch_status: OrgMembershipFetchStatus::Fetched,
+            },
+            fetched_at: pardosa_schema::EventString::try_from("2026-07-16T00:00:00Z".to_string())
+                .expect("fetched_at fits"),
+            status: TeamRosterStatusEvent::Complete,
+        }
+    }
+
+    #[test]
+    fn team_store_records_and_routes_on_team_domain_key_fiber() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("teams.pgno");
+        let store = NativeTeamStore::create_pgno(&path).expect("create team store");
+
+        let key = team_domain_key("acme", "platform").expect("derives key");
+        store
+            .record(&key, synthetic_team_state("acme", "platform"))
+            .expect("record team event onto its own fiber");
+
+        let folded = store
+            .fold_events(Vec::new(), |acc, event| acc.push(event.clone()))
+            .expect("fold team events");
+        assert_eq!(folded.len(), 1);
+        assert_eq!(folded[0].org.as_str(), "acme");
+        assert_eq!(folded[0].team_slug.as_str(), "platform");
+    }
+
+    #[test]
+    fn team_store_is_decoupled_from_repo_and_org_streams() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo_path = dir.path().join("repos.pgno");
+        let team_path = dir.path().join("teams.pgno");
+
+        let repo_store = NativeStore::create_pgno(&repo_path).expect("create repo store");
+        repo_store
+            .record("domain-1", synthetic_domain_event(1))
+            .expect("record repo event");
+
+        let team_store = NativeTeamStore::create_pgno(&team_path).expect("create team store");
+        let key = team_domain_key("acme", "platform").expect("derives key");
+        team_store
+            .record(&key, synthetic_team_state("acme", "platform"))
+            .expect("record team event");
+
+        assert_eq!(repo_store.events().expect("repo events").len(), 1);
+        assert_eq!(
+            team_store
+                .fold_events(0_usize, |acc, _| *acc += 1)
+                .expect("team fold"),
+            1
         );
     }
 }
