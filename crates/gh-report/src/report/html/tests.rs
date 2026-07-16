@@ -1857,6 +1857,43 @@ fn render_owner_detail_html_unresolved_roster_never_vanishes() {
     );
 }
 
+/// Defect 2 (adr-fmt-7u2ub): a genuinely `Deleted` (404) team roster must
+/// render a reasoned "team no longer exists" state — distinct from both
+/// the generic degraded-fetch copy ("this list may be incomplete", which
+/// wrongly implies partial data for a team that has zero members by
+/// construction) and the ambiguous `Unresolved` state (which means no
+/// roster was ever resolved, not that GitHub confirmed the team is gone).
+#[test]
+fn render_owner_detail_html_deleted_roster_renders_reasoned_state() {
+    use crate::domain::metrics::{TeamRoster, TeamRosterStatus};
+
+    let mut evidence = evidence_with_owner_repos();
+    evidence.metrics.team_rosters = vec![TeamRoster {
+        canonical_owner: "@org/team-a".to_string(),
+        team_slug: "team-a".to_string(),
+        status: TeamRosterStatus::Deleted,
+        members: Vec::new(),
+    }];
+
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let detail_page = &pages["owners/org-team-a.html"];
+
+    assert!(
+        detail_page.contains("no longer exists on GitHub"),
+        "a Deleted roster must render an explicit 'no longer exists' \
+             reasoned state; got:\n{detail_page}"
+    );
+    assert!(
+        !detail_page.contains("this list may be incomplete"),
+        "Deleted must not reuse the generic degraded-fetch copy (misleading \
+             for a team with zero members by construction)"
+    );
+    assert!(
+        !detail_page.contains("Team Members (unresolved)"),
+        "a Deleted roster is resolved data, not the ambiguous Unresolved state"
+    );
+}
+
 /// CHE-0082:R8 — the B2 orphan-attribution section on a `Team`-classified
 /// owner with no resolved roster must render an explicit "unresolved"
 /// reasoned state, distinguishable from a genuinely-zero-orphans team

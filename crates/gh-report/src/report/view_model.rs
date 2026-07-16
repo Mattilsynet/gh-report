@@ -277,6 +277,12 @@ pub struct TeamRosterViewModel {
     pub is_complete: bool,
     /// Human-readable fetch status (e.g., `"Complete"`, `"Permission denied"`).
     pub status_label: &'static str,
+    /// Reasoned degraded-state copy for `!is_complete`, tailored to the
+    /// fetch status (CHE-0082:R8) — `None` when `is_complete`. A `Deleted`
+    /// roster gets a distinct "team no longer exists" sentence rather than
+    /// the generic "this list may be incomplete" copy, which would wrongly
+    /// imply partial data for a team that has zero members by construction.
+    pub degraded_notice: Option<&'static str>,
     /// Roster rows, sorted by login.
     pub members: Vec<TeamMemberRow>,
     /// `members.len()`, for the section heading.

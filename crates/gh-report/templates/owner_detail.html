@@ -31,8 +31,8 @@
     {% when crate::report::view_model::RosterSection::Team with (roster) %}
     <details>
         <summary>Team Members ({{ roster.member_count }})</summary>
-        {% if !roster.is_complete %}
-        <p class="meta tier-warn">Roster fetch: {{ roster.status_label }} — this list may be incomplete.</p>
+        {% if let Some(notice) = roster.degraded_notice %}
+        <p class="meta tier-warn">{{ notice }}</p>
         {% endif %}
         {% if roster.members.is_empty() %}
         <p class="meta">No members found for this team.</p>

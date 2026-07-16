@@ -561,16 +561,32 @@ fn build_team_roster_view_model(roster: &TeamRoster) -> TeamRosterViewModel {
     members.sort_by_cached_key(|m| m.login.to_lowercase());
     let member_count = u32::try_from(members.len()).unwrap_or(u32::MAX);
 
-    let (is_complete, status_label) = match roster.status {
-        TeamRosterStatus::Complete => (true, "Complete"),
-        TeamRosterStatus::Deleted => (false, "Deleted"),
-        TeamRosterStatus::PermissionDenied => (false, "Permission denied"),
-        TeamRosterStatus::TransientError => (false, "Temporarily unavailable"),
+    let (is_complete, status_label, degraded_notice) = match roster.status {
+        TeamRosterStatus::Complete => (true, "Complete", None),
+        TeamRosterStatus::Deleted => (
+            false,
+            "Deleted",
+            Some(
+                "This team no longer exists on GitHub — CODEOWNERS references a team \
+                 GitHub has deleted.",
+            ),
+        ),
+        TeamRosterStatus::PermissionDenied => (
+            false,
+            "Permission denied",
+            Some("Roster fetch: Permission denied — this list may be incomplete."),
+        ),
+        TeamRosterStatus::TransientError => (
+            false,
+            "Temporarily unavailable",
+            Some("Roster fetch: Temporarily unavailable — this list may be incomplete."),
+        ),
     };
 
     TeamRosterViewModel {
         is_complete,
         status_label,
+        degraded_notice,
         members,
         member_count,
     }
