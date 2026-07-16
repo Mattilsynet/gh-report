@@ -1,9 +1,9 @@
 # PGN-0020. Blocking Schema-Version Migration and Stream-Naming Convention
 
 Date: 2026-07-06
-Last-reviewed: 2026-07-06
+Last-reviewed: 2026-07-16
 Tier: B
-Status: Proposed
+Status: Accepted
 Crates: pardosa, pardosa-nats
 
 ## Related
@@ -60,9 +60,9 @@ R6 [5]: Invoke the blocking migration only as an explicit, operator-triggered
   `MigrationPolicy`/`open_with_migration` per-open slot (PGN-0008 R7) stays
   unshipped and out of this amendment's scope.
 R7 [5]: Route consumer cutover across the fresh-identity boundary through
-  re-scrape by default, per PGN-0019's Consequences, until a dedicated
-  cutover mechanism is ratified; a `LineCursor` sidecar from the old stream
-  stays rejected against the new stream per PGN-0009 R5.
+  re-scrape by default, per PGN-0019's Consequences, until the dedicated
+  cutover mechanism (PGN-0025) applies; a `LineCursor` sidecar from the old
+  stream stays rejected against the new stream per PGN-0009 R5.
 
 Open positions this amendment takes without fully closing every question: the
 stream-naming convention needs no `pardosa`/`pardosa-nats` code change (an
@@ -78,9 +78,11 @@ ADR records positions and defaults only — `MigrationPolicy`,
 `open_with_migration`, and any JetStream-backed `migrate_keep` extension
 remain unshipped future work.
 
-This ADR is a proposal. Ratification is the user's decision, not this
-amendment's own; until Accepted, no rule above is extracted by `--context`
-and no `pardosa` or `pardosa-nats` source changes are made.
+This ADR is ratified. Its rules are extracted by `--context`; the consumer
+cutover mechanism left open at R7 is closed by PGN-0025. Ratification records
+positions and defaults only — `MigrationPolicy`, `open_with_migration`, and any
+JetStream-backed `migrate_keep` extension remain unshipped future work, and no
+`pardosa`/`pardosa-nats` source changes ship with this ADR.
 
 ## Consequences
 
@@ -92,7 +94,7 @@ and no `pardosa` or `pardosa-nats` source changes are made.
   continuity or KV-registry auto-cutover must build cross-version
   correlation and consumer cutover themselves; consumer cutover stays open
   pending a dedicated ADR.
-risks/migration: Proposed status — no rule is extracted by `--context` and
-  no pardosa/pardosa-nats code changes ship with this ADR; ratification, any
-  JetStream-backed `migrate_keep` extension, and the consumer-cutover
-  mechanism remain follow-up work.
+risks/migration: Accepted status — rules are extracted by `--context`; no
+  pardosa/pardosa-nats code changes ship with this ADR. Any JetStream-backed
+  `migrate_keep` extension remains follow-up work; the consumer-cutover
+  mechanism is ratified separately by PGN-0025.
