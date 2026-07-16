@@ -110,6 +110,15 @@ pub const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1";
 /// the previous collection completes.
 pub const COLLECTION_INTERVAL_SECS: u64 = 900;
 
+/// Fixed interval between team-refresh collector ticks (seconds),
+/// deliberately decoupled from [`COLLECTION_INTERVAL_SECS`] (adr-fmt-ewc1i,
+/// roadmap adr-fmt-se2xh §E Phase 3 T1: decoupled/eventual default). This
+/// severs the repo-snapshot↔roster-fetch coupling that caused
+/// unresolved-by-timing raciness: the team-refresh writer persists
+/// `TeamStateCaptured` on its own cadence, independent of whether a repo
+/// collect cycle is in flight.
+pub const TEAM_REFRESH_INTERVAL_SECS: u64 = 1800;
+
 /// Fallback API budget ceiling used only before the first GitHub API
 /// response of a fresh process (`RateLimitState::load_remaining()` is
 /// `None`). Every subsequent run sizes its ceiling live from the

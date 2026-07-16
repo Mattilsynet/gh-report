@@ -410,6 +410,21 @@ impl NativeTeamStore {
         result
     }
 
+    /// Soft-delete a team's fiber (detach) for a team that no longer
+    /// exists or no longer owns any repository, then fence. A later
+    /// [`Self::record`] of the same team key rescues it back to live.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::DivergedFiber`], [`StoreError::Infrastructure`],
+    /// or [`StoreError::Poisoned`]. A no-op (key never seen / already
+    /// detached) returns `Ok(())`.
+    pub fn detach(&self, team_key: &str, event: TeamStateCaptured) -> Result<(), StoreError> {
+        let result = self.inner.detach(team_key, event, team_key_of);
+        self.observe_result(&result);
+        result
+    }
+
     /// Fold every team event in committed line order without materialising
     /// an owned vector.
     ///
