@@ -208,8 +208,9 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
         Arc::clone(&app_state),
         Arc::clone(&force_flag),
         Arc::clone(&force_refresh_flag),
-        collect_cancel_rx,
+        collect_cancel_rx.clone(),
     );
+    spawn_team_refresh_loop(Arc::clone(&app_state), collect_cancel_rx);
     let server_config = crate::server::served_dashboard_server_config();
 
     let server_result = cherry_pit_web::serve::start(
@@ -399,6 +400,53 @@ fn spawn_collection_loop(
 fn log_initial_collection_failure(error: &AppError) {
     log_error_chain("gh_report_initial_collection_failed", error);
     error!(error = %error, "initial collection failed — will retry");
+}
+
+/// Spawn the team-refresh collector loop: a periodic tick, decoupled
+/// from [`spawn_collection_loop`]'s repo collect-cycle timer, that
+/// persists `TeamStateCaptured` events on its own cadence
+/// ([`crate::config::TEAM_REFRESH_INTERVAL_SECS`]). This severs the
+/// repo-snapshot↔roster-fetch coupling that was the raciness root
+/// (adr-fmt-ewc1i, roadmap adr-fmt-se2xh §E Phase 3).
+///
+/// Reuses the same cooperative cancellation signal as the collection
+/// loop; a tick in flight is not interrupted (matching the collection
+/// loop's own drain semantics — see module docs), but the wait between
+/// ticks observes cancellation immediately.
+///
+/// Ticks before the GitHub client has been initialised by the first
+/// repo collection are skipped (logged at `info`) rather than treated
+/// as a failure — the client is created lazily on first repo collect.
+fn spawn_team_refresh_loop(
+    state: Arc<AppState>,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            match next_collection_tick(
+                &mut cancel,
+                Duration::from_secs(crate::config::TEAM_REFRESH_INTERVAL_SECS),
+            )
+            .await
+            {
+                NextTick::Cancel => {
+                    info!("team-refresh loop cancelled — exiting");
+                    return;
+                }
+                NextTick::Run => {}
+            }
+            let Some(client) = state.github_client() else {
+                info!("team-refresh tick skipped: GitHub client not yet initialised");
+                continue;
+            };
+            let fetched_at = jiff::Timestamp::now().to_string();
+            if let Err(error) =
+                crate::app::team_refresh::run_team_refresh_tick(&state, &client, &fetched_at).await
+            {
+                crate::app::team_refresh::log_tick_failure(&error);
+            }
+        }
+    })
 }
 
 /// Resolve the config for the daemon's initial collection run: consumes

@@ -37,7 +37,7 @@ use pardosa::store::JetStreamBackend as PardosaJetStreamBackend;
 use pardosa::store::RecoveryOutcome;
 use pardosa::store::diagnostics as nats_diagnostics;
 use pardosa_nats::{JetStreamBackend as SubstrateJetStreamBackend, JetStreamConfig, RuntimeHandle};
-use pardosa_schema::{NonEmptyEventString, Timestamp as EventTimestamp};
+use pardosa_schema::{EventString, EventVec, NonEmptyEventString, Timestamp as EventTimestamp};
 
 pub use cherry_pit_web::serve::{CachedPage, PageUpdateEvent};
 
@@ -61,7 +61,9 @@ use crate::domain::run::RunMetadata;
 use crate::error::PersistenceError;
 use crate::event::convert::EventConversionError;
 use crate::event::{
-    DomainEvent as NativeDomainEvent, OrgStateCaptured, TeamStateCaptured, team_domain_key,
+    DomainEvent as NativeDomainEvent, OrgMembershipFetchStatus, OrgStateCaptured,
+    OrphanAttributionInputs, TeamMemberEvent, TeamMemberRoleEvent, TeamRosterStatusEvent,
+    TeamStateCaptured, team_domain_key,
 };
 
 /// Embedded CSS stylesheet, compiled into the binary at build time.
@@ -577,14 +579,13 @@ impl AppState {
     }
 
     /// Snapshot of all team rosters materialised in `projection_state`,
-    /// keyed by `team_domain_key` in deterministic order.
+    /// keyed by `team_domain_key` in deterministic order. Consumed by the
+    /// P3 team-refresh writer ([`crate::app::team_refresh`]) to detect
+    /// previously-recorded teams no longer referenced by the current
+    /// repo snapshot, so they can be detached.
     ///
     /// Lock-and-release accessor; guard does not escape (D-CD-3).
     /// Panics on poisoned mutex to match [`Self::lock_projection`].
-    #[expect(
-        dead_code,
-        reason = "consumed by the P5 render cutover (adr-fmt-47ljf), not yet landed"
-    )]
     pub(crate) fn projection_team_rosters_snapshot(
         &self,
     ) -> Vec<(String, crate::domain::metrics::TeamRoster)> {
@@ -1094,6 +1095,83 @@ fn deleted_repo_event(
     })
 }
 
+fn bounded_string<const MAX: usize>(
+    field: &'static str,
+    value: &str,
+) -> Result<EventString<MAX>, PersistenceError> {
+    EventString::try_from(value.to_string())
+        .map_err(|_| conversion_persistence(&EventConversionError::TooLong { field }))
+}
+
+fn team_member_role_event(role: crate::domain::metrics::TeamMemberRole) -> TeamMemberRoleEvent {
+    match role {
+        crate::domain::metrics::TeamMemberRole::Maintainer => TeamMemberRoleEvent::Maintainer,
+        crate::domain::metrics::TeamMemberRole::Member => TeamMemberRoleEvent::Member,
+    }
+}
+
+fn team_roster_status_event(
+    status: crate::domain::metrics::TeamRosterStatus,
+) -> TeamRosterStatusEvent {
+    match status {
+        crate::domain::metrics::TeamRosterStatus::Complete => TeamRosterStatusEvent::Complete,
+        crate::domain::metrics::TeamRosterStatus::Deleted => TeamRosterStatusEvent::Deleted,
+        crate::domain::metrics::TeamRosterStatus::PermissionDenied => {
+            TeamRosterStatusEvent::PermissionDenied
+        }
+        crate::domain::metrics::TeamRosterStatus::TransientError => {
+            TeamRosterStatusEvent::TransientError
+        }
+    }
+}
+
+/// Build the durable [`TeamStateCaptured`] event from a freshly-fetched
+/// domain [`crate::domain::metrics::TeamRoster`] (adr-fmt-ewc1i, CHE-0089).
+///
+/// `org` is supplied separately: [`crate::domain::metrics::TeamRoster`]
+/// carries only the canonical `@org/team-slug` owner string and the bare
+/// `team_slug`, not the org login on its own.
+fn team_state_event(
+    org: &str,
+    roster: &crate::domain::metrics::TeamRoster,
+    fetched_at: &str,
+    org_membership_fetch_status: OrgMembershipFetchStatus,
+) -> Result<TeamStateCaptured, PersistenceError> {
+    let members = roster
+        .members
+        .iter()
+        .map(|member| {
+            Ok(TeamMemberEvent {
+                login: non_empty::<{ crate::event::limits::MAX_LOGIN }>(
+                    "member.login",
+                    &member.login,
+                )?,
+                role: team_member_role_event(member.role),
+                in_org: member.in_org,
+            })
+        })
+        .collect::<Result<Vec<_>, PersistenceError>>()?;
+    let members = EventVec::try_from(members).map_err(|_| {
+        conversion_persistence(&EventConversionError::TooMany { field: "members" })
+    })?;
+    Ok(TeamStateCaptured {
+        org: non_empty::<{ crate::event::limits::MAX_LOGIN }>("org", org)?,
+        team_slug: non_empty::<{ crate::event::limits::MAX_LOGIN }>(
+            "team_slug",
+            &roster.team_slug,
+        )?,
+        members,
+        orphan_attribution_inputs: OrphanAttributionInputs {
+            org_membership_fetch_status,
+        },
+        fetched_at: bounded_string::<{ crate::event::limits::MAX_TIMESTAMP_TEXT }>(
+            "fetched_at",
+            fetched_at,
+        )?,
+        status: team_roster_status_event(roster.status),
+    })
+}
+
 /// Per-construction unique tempdir plus native pardosa `.pgno` event store.
 #[cfg(test)]
 #[expect(
@@ -1310,16 +1388,83 @@ impl AppState {
     /// Fold one team roster event into the resident projection
     /// (CHE-0089:R4), keyed by `team_domain_key`. `detached = true`
     /// removes the roster (CHE-0073:R7 detached-remove); otherwise
-    /// upserts the latest snapshot (non-detached-upsert). Consumed by
-    /// the P3 team-refresh writer after `team_event_store.record`/
-    /// `detach` (adr-fmt-ewc1i).
-    #[expect(
-        dead_code,
-        reason = "consumed by the P3 team-refresh writer (adr-fmt-ewc1i), not yet landed"
-    )]
+    /// upserts the latest snapshot (non-detached-upsert). Called by
+    /// [`Self::record_team`] / [`Self::detach_team`] (P3, adr-fmt-ewc1i)
+    /// after the durable write lands, so the resident projection
+    /// reflects the write at runtime, not only on next restart.
     pub(crate) fn fold_team_event_into_projection(&self, detached: bool, event: TeamStateCaptured) {
         let mut guard = lock_projection_state(&self.projection_state);
         apply_projection_event(&mut *guard, team_projection_event(detached, event));
+    }
+
+    /// Record a freshly-fetched team roster on its own per-team fiber
+    /// (CHE-0089), keyed by `team_domain_key(org, team_slug)`. OCC fence
+    /// mirrors [`Self::record_org`] (PGN-0016:R1/R2/R10): a fence conflict
+    /// surfaces as [`PersistenceError::FencedConflict`] with no in-band
+    /// retry — the caller (the team-refresh writer, via
+    /// `write_with_policy`) treats it as fatal (CHE-0088). Persist-then-
+    /// publish (CHE-0024:R1): the projection is folded only after the
+    /// store append succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence error when native conversion or store append
+    /// fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `team_state_event` ever produces an empty `org` or
+    /// `team_slug` — unreachable, since `team_state_event` rejects both
+    /// as empty via [`non_empty`] before constructing the event.
+    pub fn record_team(
+        &self,
+        org: &str,
+        roster: &crate::domain::metrics::TeamRoster,
+        fetched_at: &str,
+        org_membership_fetch_status: OrgMembershipFetchStatus,
+    ) -> Result<(), PersistenceError> {
+        let event = team_state_event(org, roster, fetched_at, org_membership_fetch_status)?;
+        let team_key = team_domain_key(event.org.as_str(), event.team_slug.as_str())
+            .expect("team_state_event never produces empty org/team_slug");
+        self.team_event_store
+            .record(&team_key, event.clone())
+            .map_err(native_store_persistence)?;
+        self.fold_team_event_into_projection(false, event);
+        Ok(())
+    }
+
+    /// Soft-delete a team's fiber (detach) for a team that no longer
+    /// exists on GitHub, or no longer owns any repository via CODEOWNERS,
+    /// then fold the removal into the resident projection at runtime
+    /// (linus's P4 back-brief: detaching the store alone leaves the
+    /// projection stale until restart). Same OCC fence and
+    /// persist-then-publish ordering as [`Self::record_team`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence error when native conversion or store detach
+    /// fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `team_state_event` ever produces an empty `org` or
+    /// `team_slug` — unreachable, since `team_state_event` rejects both
+    /// as empty via [`non_empty`] before constructing the event.
+    pub fn detach_team(
+        &self,
+        org: &str,
+        roster: &crate::domain::metrics::TeamRoster,
+        fetched_at: &str,
+        org_membership_fetch_status: OrgMembershipFetchStatus,
+    ) -> Result<(), PersistenceError> {
+        let event = team_state_event(org, roster, fetched_at, org_membership_fetch_status)?;
+        let team_key = team_domain_key(event.org.as_str(), event.team_slug.as_str())
+            .expect("team_state_event never produces empty org/team_slug");
+        self.team_event_store
+            .detach(&team_key, event.clone())
+            .map_err(native_store_persistence)?;
+        self.fold_team_event_into_projection(true, event);
+        Ok(())
     }
 
     /// Record a live repository snapshot in the native store.
@@ -2449,6 +2594,145 @@ mod tests {
         assert!(
             deep > shallow_floor,
             "deep sample ({deep}) must exceed the shallow struct-size floor ({shallow_floor}) to prove heap-inclusive measurement"
+        );
+    }
+
+    fn team_roster_fixture(canonical_owner: &str, team_slug: &str) -> crate::domain::metrics::TeamRoster {
+        crate::domain::metrics::TeamRoster {
+            canonical_owner: canonical_owner.to_string(),
+            team_slug: team_slug.to_string(),
+            status: crate::domain::metrics::TeamRosterStatus::Complete,
+            members: vec![crate::domain::metrics::TeamMember {
+                login: "octocat".to_string(),
+                role: crate::domain::metrics::TeamMemberRole::Member,
+                in_org: Some(true),
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn record_team_persists_and_runtime_folds_projection_without_restart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let nats = NatsStoreConfig::for_org("TestOrg", crate::config::runtime::DEFAULT_NATS_URL)
+            .expect("nats config");
+        let state = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats)
+            .await
+            .expect("with stores");
+
+        let roster = team_roster_fixture("@TestOrg/platform", "platform");
+        state
+            .record_team(
+                "TestOrg",
+                &roster,
+                "2026-07-16T00:00:00Z",
+                OrgMembershipFetchStatus::Fetched,
+            )
+            .expect("record team roster");
+
+        let team_key = team_domain_key("TestOrg", "platform").expect("derive team key");
+        let folded = state
+            .lock_projection()
+            .team_rosters
+            .get(&team_key)
+            .cloned()
+            .expect("runtime fold must upsert team_rosters without a restart");
+        assert_eq!(folded.canonical_owner, "@TestOrg/platform");
+        assert_eq!(folded.members.len(), 1);
+        assert_eq!(folded.members[0].login, "octocat");
+    }
+
+    #[tokio::test]
+    async fn detach_team_runtime_removes_projection_entry_without_restart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let nats = NatsStoreConfig::for_org("TestOrg", crate::config::runtime::DEFAULT_NATS_URL)
+            .expect("nats config");
+        let state = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats)
+            .await
+            .expect("with stores");
+
+        let roster = team_roster_fixture("@TestOrg/platform", "platform");
+        state
+            .record_team(
+                "TestOrg",
+                &roster,
+                "2026-07-16T00:00:00Z",
+                OrgMembershipFetchStatus::Fetched,
+            )
+            .expect("record team roster");
+        let team_key = team_domain_key("TestOrg", "platform").expect("derive team key");
+        assert!(state.lock_projection().team_rosters.contains_key(&team_key));
+
+        state
+            .detach_team(
+                "TestOrg",
+                &roster,
+                "2026-07-16T01:00:00Z",
+                OrgMembershipFetchStatus::Fetched,
+            )
+            .expect("detach team roster");
+
+        assert!(
+            !state.lock_projection().team_rosters.contains_key(&team_key),
+            "runtime fold must remove the roster immediately on detach, not only on next restart"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconstruct_team_rosters_from_event_log_without_live_run() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let nats = NatsStoreConfig::for_org("TestOrg", crate::config::runtime::DEFAULT_NATS_URL)
+            .expect("nats config");
+        let state = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats.clone())
+            .await
+            .expect("with stores");
+        let roster = team_roster_fixture("@TestOrg/platform", "platform");
+        state
+            .record_team(
+                "TestOrg",
+                &roster,
+                "2026-07-16T00:00:00Z",
+                OrgMembershipFetchStatus::Fetched,
+            )
+            .expect("record team roster");
+        drop(state);
+
+        let restarted = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats)
+            .await
+            .expect("restart from team event log");
+        let team_key = team_domain_key("TestOrg", "platform").expect("derive team key");
+        let replayed = restarted
+            .lock_projection()
+            .team_rosters
+            .get(&team_key)
+            .cloned()
+            .expect("team roster must replay from the team event log");
+        assert_eq!(replayed.canonical_owner, "@TestOrg/platform");
+    }
+
+    #[test]
+    fn record_team_conflict_is_fatal_with_no_in_band_retry() {
+        let error = crate::store::StoreError::ConcurrencyConflict {
+            source: Box::new(pardosa::store::PardosaError::ConcurrencyConflict {
+                source: Box::new(std::io::Error::other("wrong last sequence")),
+            }),
+        };
+        let persistence_error = native_store_persistence(error);
+        assert!(
+            matches!(persistence_error, PersistenceError::FencedConflict { .. }),
+            "team fence conflicts must stay typed before Display flattening"
+        );
+        let failure = crate::app::write_policy::WriteFailure::classify(persistence_error);
+        assert_eq!(
+            failure.category,
+            crate::app::write_policy::WritePolicyCategory::Conflict
+        );
+        assert_eq!(
+            failure.response,
+            crate::app::write_policy::WriteResponse::Fatal,
+            "OCC conflict must abort the run, never retry in-band"
         );
     }
 

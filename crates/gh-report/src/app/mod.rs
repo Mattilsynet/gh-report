@@ -5,6 +5,7 @@ pub mod daemon;
 pub mod evidence_service;
 pub mod github_infra;
 pub mod state;
+pub mod team_refresh;
 pub mod webhook_context;
 pub mod work_queue;
 pub mod worker_pool;
