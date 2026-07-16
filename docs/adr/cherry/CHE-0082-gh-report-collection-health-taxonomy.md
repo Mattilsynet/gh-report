@@ -1,7 +1,7 @@
 # CHE-0082. gh-report Collection Health Taxonomy
 
 Date: 2026-06-17
-Last-reviewed: 2026-06-17
+Last-reviewed: 2026-07-16
 Tier: B
 Status: Accepted
 Crates: gh-report
@@ -26,7 +26,7 @@ R3 [5]: Store HTTP status as `Option<u16>` or an equivalent bounded enum, never 
 
 R4 [5]: Treat public branch-protection 404 with no controls as genuine absence; it may remain a governance Fail.
 
-R5 [5]: Treat private or internal branch-protection 404 without sufficient credential authority as Unknown with a permission-suspected reason.
+R5 [5]: Treat a private or internal branch-protection 404 with no controls as genuine absence per R4, a governance Fail counted in the coverage denominator; reserve Unknown with a permission-suspected reason for authority failures (403, denied, rate-limited, or transient), never for the plain absent-control 404.
 
 R6 [5]: Keep org-wide collection-health taxonomy counts in report-side aggregation, not on per-repository persisted payloads.
 
