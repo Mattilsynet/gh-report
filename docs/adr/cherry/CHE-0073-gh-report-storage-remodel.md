@@ -1,7 +1,7 @@
 # CHE-0073. gh-report Storage Remodel
 
 Date: 2026-06-10
-Last-reviewed: 2026-06-14 — refined — amended R1 for OrgStateCaptured org stream and recorded org fiber/render-consistency contracts (mission:naz3i)
+Last-reviewed: 2026-07-16 — amended — added R10 TeamStateCaptured as the third persisted current-state class (mirrors R8; specified by CHE-0089); recorded roster durability requirement and render-time orphan-attribution boundary (mission:fr44n)
 Tier: B
 Status: Accepted
 Crates: gh-report
@@ -37,6 +37,8 @@ R7 [5]: `EvidenceProjection` folds only `NativeStore::events()` in line order: n
 R8 [5]: Org-level state is captured as `OrgStateCaptured` on a dedicated pardosa fiber keyed by org identity (`org -> org_domain_key -> pardosa fiber`), one fiber per org, on its own stream/subject per PGN-0010:R6. The projection folds the latest `OrgStateCaptured` per org fiber into the org read-model part.
 
 R9 [5]: The org and repository read-model parts are folded independently and are eventually consistent; no cross-stream ordering or atomic-snapshot consistency is promised between them. The terminal render reflects the latest applied event of each stream; an org snapshot and a repo snapshot rendered together need not correspond to the same wall-clock instant.
+
+R10 [5]: Team-membership state is captured as `TeamStateCaptured` on a dedicated per-team pardosa fiber keyed `(org, team) -> team_domain_key -> fiber` (PGN-0010:R6) — a THIRD persisted current-state class mirroring the R8 `OrgStateCaptured` shape, not the R4 future-analytics bucket; CHE-0089 specifies variant, routing, and projection part. It is the read-side source of truth for the roster; orphan attribution stays a render-time derivation (kqavx CLASS B) adding no `RepositoryStateCaptured` field (R2 SCHEMA_HASH unaffected).
 
 ## Consequences
 
