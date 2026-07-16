@@ -418,6 +418,7 @@ mod tests {
             force_unlock: false,
             force_refresh: false,
             dashboard_config: DashboardConfig::default(),
+            team_roster_read_from_projection: true,
         };
 
         assert!(warm_start_from_baseline(&config, &state).await);
@@ -508,6 +509,7 @@ mod tests {
             force_unlock: false,
             force_refresh: false,
             dashboard_config: crate::config::dashboard::DashboardConfig::default(),
+            team_roster_read_from_projection: true,
         };
         let evidence = test_fixtures::make_full_evidence(
             test_fixtures::make_metadata(),

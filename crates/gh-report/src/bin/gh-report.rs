@@ -172,6 +172,13 @@ struct Cli {
     #[arg(long, env = "GH_REPORT_FORCE_REFRESH")]
     force_refresh: bool,
 
+    /// Rollback seam for the roster-eda render cutover (adr-fmt-47ljf):
+    /// force the render path back to the pre-cutover synchronous
+    /// `collect_team_rosters` live fetch instead of reading the persisted
+    /// projection. Default off — the projection read is the shipped path.
+    #[arg(long, env = "GH_REPORT_TEAM_ROSTER_LIVE_FETCH")]
+    team_roster_live_fetch: bool,
+
     /// Persistent store directory for baseline, checkpoints, and lock files.
     #[arg(long, default_value = "store")]
     store_dir: PathBuf,
@@ -279,6 +286,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.nats_url = cli.nats_url;
     config.nats_creds = cli.nats_creds;
     config.force_refresh = cli.force_refresh;
+    config.team_roster_read_from_projection = !cli.team_roster_live_fetch;
     let nats_creds_path = config
         .nats_creds
         .as_ref()

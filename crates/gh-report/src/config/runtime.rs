@@ -13,6 +13,10 @@ pub const DEFAULT_NATS_URL: &str = "nats://localhost:4222";
 
 /// Runtime configuration for a collection run.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors independent operator --flags 1:1 (see bin/gh-report.rs Cli); each bool is an independent runtime switch, not a state machine"
+)]
 pub struct RuntimeConfig {
     /// Target organization name.
     pub org_name: String,
@@ -35,6 +39,13 @@ pub struct RuntimeConfig {
     pub force_refresh: bool,
     /// Dashboard rendering configuration.
     pub dashboard_config: DashboardConfig,
+    /// `true` (default): render sources team rosters from the persisted
+    /// projection (`AppState::projection_team_rosters_snapshot`), fed by
+    /// the decoupled team-refresh writer (adr-fmt-ewc1i/adr-fmt-3of35).
+    /// `false`: rollback seam — render falls back to the pre-cutover
+    /// synchronous `collect_team_rosters` fetch inside the collect cycle
+    /// (adr-fmt-47ljf rollback plan).
+    pub team_roster_read_from_projection: bool,
 }
 
 /// Pardosa authoritative backend selected once at startup.
@@ -173,6 +184,7 @@ impl RuntimeConfig {
             force_unlock: false,
             force_refresh: false,
             dashboard_config: DashboardConfig::default(),
+            team_roster_read_from_projection: true,
         })
     }
 

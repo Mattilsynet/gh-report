@@ -1204,8 +1204,8 @@ async fn finalize_and_publish(
 
     let evidence_repos = state.projection_snapshot();
 
-    let team_slugs = crate::domain::metrics::team_owner_slugs(&evidence_repos);
-    let team_rosters = team_membership::collect_team_rosters(client, &team_slugs).await;
+    let (team_rosters, team_rosters_already_enriched) =
+        resolve_team_rosters(config, state, client, &evidence_repos).await;
     let org_members = team_membership::collect_org_members(client).await;
 
     let evidence = build_evidence(BuildEvidenceParams {
@@ -1224,6 +1224,7 @@ async fn finalize_and_publish(
         capabilities,
         rate_limit_warnings,
         team_rosters,
+        team_rosters_already_enriched,
         org_members,
     });
 
@@ -1245,6 +1246,49 @@ async fn finalize_and_publish(
     );
 
     Ok((pages, warm_start))
+}
+
+/// Select the render-time team-roster source for this collect cycle,
+/// gated by [`RuntimeConfig::team_roster_read_from_projection`]
+/// (adr-fmt-47ljf rollback seam).
+///
+/// `true`: reads the persisted projection, fed by the decoupled
+/// team-refresh writer (adr-fmt-ewc1i) — the P5 cutover path. A team not
+/// yet captured there simply carries no entry; render already renders
+/// that as a bounded-stale `RosterSection::Unresolved` (CHE-0082), never
+/// a silent vanish or a fetch-timing artifact (GND-0011:R1).
+///
+/// `false`: the pre-cutover path — a synchronous live fetch scoped to
+/// this tick's CODEOWNERS-derived team slugs.
+///
+/// Returns the roster list plus whether it is already org-membership
+/// enriched (see [`BuildEvidenceParams::team_rosters_already_enriched`]).
+async fn resolve_team_rosters(
+    config: &RuntimeConfig,
+    state: &Arc<AppState>,
+    client: &GitHubClient,
+    evidence_repos: &[RepositoryEvidence],
+) -> (Vec<crate::domain::metrics::TeamRoster>, bool) {
+    if config.team_roster_read_from_projection {
+        (team_rosters_from_projection(state), true)
+    } else {
+        let team_slugs = crate::domain::metrics::team_owner_slugs(evidence_repos);
+        (
+            team_membership::collect_team_rosters(client, &team_slugs).await,
+            false,
+        )
+    }
+}
+
+/// Flatten the projection's `(team_domain_key, TeamRoster)` snapshot into
+/// the render-facing roster list, discarding the domain key (render
+/// matches on `TeamRoster::canonical_owner`, not the fiber key).
+fn team_rosters_from_projection(state: &AppState) -> Vec<crate::domain::metrics::TeamRoster> {
+    state
+        .projection_team_rosters_snapshot()
+        .into_iter()
+        .map(|(_, roster)| roster)
+        .collect()
 }
 
 async fn prepare_collection(
@@ -1464,6 +1508,7 @@ pub(crate) async fn warm_start_from_baseline(
         capabilities: &CapabilitySet::default(),
         rate_limit_warnings: 0,
         team_rosters: Vec::new(),
+        team_rosters_already_enriched: true,
         org_members: None,
     });
 
@@ -1732,6 +1777,7 @@ fn spawn_partial_publisher_from_store(
                         capabilities: &pp.capabilities,
                         rate_limit_warnings: 0,
                         team_rosters: Vec::new(),
+                        team_rosters_already_enriched: true,
                         org_members: None,
                     });
 
@@ -1867,11 +1913,22 @@ struct BuildEvidenceParams<'a> {
     auth_metadata: &'a AuthMetadata,
     capabilities: &'a CapabilitySet,
     rate_limit_warnings: u32,
-    /// Team rosters fetched fresh this tick (B1). Empty at warm-start and
-    /// during mid-sweep partial publishes — see [`finalize_and_publish`],
-    /// the only call site with both a completed CODEOWNERS-derived team
-    /// list and a live `GitHubClient` to fetch with.
+    /// Team rosters sourced this tick (adr-fmt-47ljf): either the
+    /// persisted projection or a fresh live fetch, per
+    /// [`RuntimeConfig::team_roster_read_from_projection`] via
+    /// [`resolve_team_rosters`]. Empty at warm-start and during
+    /// mid-sweep partial publishes — see [`finalize_and_publish`], the
+    /// only call site with both a completed CODEOWNERS-derived team list
+    /// and a live `GitHubClient`/projection to source from.
     team_rosters: Vec<crate::domain::metrics::TeamRoster>,
+    /// `true` when `team_rosters` was sourced from the persisted
+    /// projection and is therefore already org-membership-enriched at
+    /// write time (adr-fmt-ewc1i); `build_evidence` must not re-enrich in
+    /// that case, or a degraded `org_members` fetch this tick would null
+    /// out an already-known `TeamMember::in_org`. `false` for the
+    /// pre-cutover live-fetch path, where re-enrichment with this tick's
+    /// `org_members` is the only enrichment that ever runs.
+    team_rosters_already_enriched: bool,
     /// Org-members login set fetched fresh this tick (item9 Part B).
     /// `None` at warm-start, during mid-sweep partial publishes, and
     /// whenever the fetch degraded — [`build_evidence`] treats `None`
@@ -1932,10 +1989,12 @@ fn build_evidence(params: BuildEvidenceParams<'_>) -> Evidence {
         params.org_members.as_ref(),
     );
     aggregated.team_rosters = params.team_rosters;
-    team_membership::enrich_team_rosters_with_org_membership(
-        &mut aggregated.team_rosters,
-        params.org_members.as_ref(),
-    );
+    if !params.team_rosters_already_enriched {
+        team_membership::enrich_team_rosters_with_org_membership(
+            &mut aggregated.team_rosters,
+            params.org_members.as_ref(),
+        );
+    }
     let alert_summary = params
         .org_state
         .as_ref()
@@ -2095,6 +2154,7 @@ mod tests {
             force_unlock: false,
             force_refresh: false,
             dashboard_config: DashboardConfig::default(),
+            team_roster_read_from_projection: true,
         }
     }
 
@@ -2176,6 +2236,7 @@ mod tests {
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
             team_rosters: Vec::new(),
+            team_rosters_already_enriched: true,
             org_members: None,
         });
 
@@ -2222,6 +2283,7 @@ mod tests {
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
             team_rosters: rosters.clone(),
+            team_rosters_already_enriched: false,
             org_members: None,
         });
 
@@ -2275,6 +2337,7 @@ mod tests {
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
             team_rosters: rosters,
+            team_rosters_already_enriched: false,
             org_members: Some(org_members),
         });
 
@@ -2327,12 +2390,150 @@ mod tests {
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
             team_rosters: rosters,
+            team_rosters_already_enriched: false,
             org_members: None,
         });
 
         assert_eq!(
             evidence.metrics.team_rosters[0].members[0].in_org, None,
             "degraded org-members fetch must not flag anyone"
+        );
+    }
+
+    /// adr-fmt-47ljf (P5 render cutover): a roster sourced from the
+    /// projection (`team_rosters_already_enriched: true`) was already
+    /// org-membership-enriched at write time by the P3 team-refresh
+    /// writer. `build_evidence` must not re-run
+    /// `enrich_team_rosters_with_org_membership` on it — doing so with
+    /// this tick's `org_members: None` (a degraded fetch, or simply no
+    /// fetch at all in the projection path) would null out an
+    /// already-known `in_org` flag, regressing visible data on every
+    /// tick the render-time org-members fetch degrades.
+    #[test]
+    fn build_evidence_preserves_projection_enriched_in_org_when_this_ticks_fetch_is_absent() {
+        use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRoster, TeamRosterStatus};
+
+        let repos = vec![sample_repo("repo-1")];
+        let config = sample_config();
+        let run_meta = RunMetadata::new(
+            "TestOrg".to_string(),
+            crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
+        );
+        let rosters = vec![TeamRoster {
+            canonical_owner: "@testorg/team-foo".to_string(),
+            team_slug: "team-foo".to_string(),
+            status: TeamRosterStatus::Complete,
+            members: vec![TeamMember {
+                login: "octocat".to_string(),
+                role: TeamMemberRole::Maintainer,
+                in_org: Some(true),
+            }],
+        }];
+
+        let evidence = build_evidence(BuildEvidenceParams {
+            repositories: repos,
+            deleted: vec![],
+            org_state: None,
+            config: &config,
+            run: &run_meta,
+            inventory_fetched_at: None,
+            org_alert_summary: None,
+            auth_metadata: &test_auth_metadata(),
+            capabilities: &test_capabilities(),
+            rate_limit_warnings: 0,
+            team_rosters: rosters,
+            team_rosters_already_enriched: true,
+            org_members: None,
+        });
+
+        assert_eq!(
+            evidence.metrics.team_rosters[0].members[0].in_org,
+            Some(true),
+            "projection-sourced roster's in_org must survive an absent this-tick org_members fetch"
+        );
+    }
+
+    /// adr-fmt-47ljf (P5 cutover, flag ON): with
+    /// `team_roster_read_from_projection: true`, `resolve_team_rosters`
+    /// reads a roster the P3 team-refresh writer already persisted and
+    /// folded into the projection — not a live fetch (the passed-in test
+    /// client has no live team-membership endpoint mocked; a live-fetch
+    /// path here would return a `Deleted`/`PermissionDenied` degraded
+    /// roster instead of the fixture's `Complete` one).
+    #[tokio::test]
+    async fn resolve_team_rosters_reads_projection_when_flag_on() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let nats = crate::config::runtime::NatsStoreConfig::for_org(
+            "TestOrg",
+            crate::config::runtime::DEFAULT_NATS_URL,
+        )
+        .expect("nats config");
+        let state = AppState::with_stores(
+            &events_dir,
+            crate::config::runtime::PardosaBackend::Pgno,
+            nats,
+        )
+        .await
+        .expect("with stores");
+        state
+            .record_team(
+                "TestOrg",
+                &crate::domain::metrics::TeamRoster {
+                    canonical_owner: "@testorg/platform".to_string(),
+                    team_slug: "platform".to_string(),
+                    status: crate::domain::metrics::TeamRosterStatus::Complete,
+                    members: vec![crate::domain::metrics::TeamMember {
+                        login: "octocat".to_string(),
+                        role: crate::domain::metrics::TeamMemberRole::Member,
+                        in_org: Some(true),
+                    }],
+                },
+                "2026-07-16T00:00:00Z",
+                crate::event::OrgMembershipFetchStatus::Fetched,
+            )
+            .expect("record team roster");
+
+        let config = RuntimeConfig {
+            team_roster_read_from_projection: true,
+            ..sample_config()
+        };
+        let client = test_github_client();
+        let (rosters, already_enriched) = resolve_team_rosters(&config, &state, &client, &[]).await;
+
+        assert_eq!(rosters.len(), 1, "must read the persisted, folded roster");
+        assert_eq!(rosters[0].canonical_owner, "@TestOrg/platform");
+        assert!(
+            already_enriched,
+            "projection-sourced rosters are already org-membership-enriched"
+        );
+    }
+
+    /// adr-fmt-47ljf (P5 cutover, flag OFF): with
+    /// `team_roster_read_from_projection: false`, `resolve_team_rosters`
+    /// falls back to the pre-cutover live-fetch path — the rollback seam.
+    /// Passing empty `evidence_repos` derives zero team slugs, so
+    /// `collect_team_rosters` makes no HTTP call and returns an empty
+    /// list; this proves the branch selection without needing a mocked
+    /// GitHub server.
+    #[tokio::test]
+    async fn resolve_team_rosters_falls_back_to_live_fetch_when_flag_off() {
+        let state = AppState::new_with_cache_capacity(10).await;
+        let config = RuntimeConfig {
+            team_roster_read_from_projection: false,
+            ..sample_config()
+        };
+        let client = test_github_client();
+
+        let (rosters, already_enriched) = resolve_team_rosters(&config, &state, &client, &[]).await;
+
+        assert!(
+            rosters.is_empty(),
+            "no CODEOWNERS-derived team slugs in an empty repo snapshot"
+        );
+        assert!(
+            !already_enriched,
+            "the live-fetch path is not pre-enriched; build_evidence must enrich it"
         );
     }
 
@@ -2359,6 +2560,7 @@ mod tests {
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
             team_rosters: Vec::new(),
+            team_rosters_already_enriched: true,
             org_members: None,
         });
 
@@ -2394,6 +2596,7 @@ mod tests {
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
             team_rosters: Vec::new(),
+            team_rosters_already_enriched: true,
             org_members: None,
         });
 
@@ -2424,6 +2627,7 @@ mod tests {
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
             team_rosters: Vec::new(),
+            team_rosters_already_enriched: true,
             org_members: None,
         });
 
@@ -2452,6 +2656,7 @@ mod tests {
             capabilities: &test_capabilities(),
             rate_limit_warnings: 0,
             team_rosters: Vec::new(),
+            team_rosters_already_enriched: true,
             org_members: None,
         });
 
