@@ -23,8 +23,8 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use web_sys::{Document, Element};
 
 use crate::sim::{
-    EnqueueResult, JobOutcome, JobSource, PageUpdateEvent, PardosaBackend, Sim, SimConfig,
-    SweepPhase,
+    EnqueueResult, InventoryOutcome, JobOutcome, JobSource, PageUpdateEvent, PardosaBackend, Sim,
+    SimConfig, SweepPhase, UpdatedAt,
 };
 
 #[derive(Clone, Copy)]
@@ -57,6 +57,7 @@ struct AppState {
     warm_start_requested: bool,
     backend_toggle_requested: bool,
     last_worker_executions: u64,
+    inventory_epoch: u64,
 }
 
 thread_local! {
@@ -85,42 +86,54 @@ const READ_PULSE_DURATION_MS: u32 = 900;
 const WARMSTART_DURATION_MS: u32 = 1100;
 const MAX_LANE_PACKETS: u32 = 40;
 
-/// Curve `spawn_collection_loop` &rarr; `WorkQueue` (fan-in leg one).
-const PATH_CONVERGE_SCHEDULED: &str = "M180,95 C300,95 300,180 280,180";
+/// Curve `spawn_collection_loop` &rarr; `WorkQueue` (fan-in leg one),
+/// via the inventory listing + `should_reuse` gate.
+const PATH_CONVERGE_SCHEDULED: &str = "M180,120 C300,120 300,180 280,180";
 /// Curve `webhook_handler` &rarr; `WorkQueue` (fan-in leg two).
-const PATH_CONVERGE_WEBHOOK: &str = "M180,265 C300,265 300,180 280,180";
+const PATH_CONVERGE_WEBHOOK: &str = "M180,300 C300,300 300,180 280,180";
 /// Shared write spine: `WorkQueue` &rarr; `worker_loop` &rarr;
 /// `EvidenceProjectionEvent` stream &rarr; `EvidenceProjection`.
 const PATH_WRITE_SPINE: &str = "M420,180 C450,140 500,140 555,180 \
      C610,220 660,220 690,180 C720,140 780,140 830,180 C860,210 890,210 910,180";
 /// `BatchTracker` gate segment: `EvidenceProjection` &rarr;
 /// `finalize_and_publish`.
-const PATH_GATE: &str = "M1050,180 C1000,220 950,260 925,330";
+const PATH_GATE: &str = "M1050,180 C1000,240 950,300 925,390";
 /// Read chain: `finalize_and_publish` &rarr; `build_cached_pages` &rarr;
 /// `commit_cached_pages`.
-const PATH_READ_CHAIN: &str = "M975,380 Q1000,340 1050,380 Q1100,420 1130,380";
+const PATH_READ_CHAIN: &str = "M975,440 Q1000,400 1050,440 Q1100,480 1130,440";
 /// `warm_start_from_baseline` bypass, routed around the write side and
 /// barrier straight into the read chain.
-const PATH_WARMSTART_BYPASS: &str = "M180,445 C450,445 450,620 700,620 C820,620 850,500 900,410";
+const PATH_WARMSTART_BYPASS: &str = "M180,470 C450,500 450,660 700,660 C820,660 850,540 900,470";
 /// Continuous serve branch off `commit_cached_pages` / `ArcSwap`.
-const PATH_SERVE_BRANCH: &str = "M1200,415 C1200,460 1200,460 1200,505";
+const PATH_SERVE_BRANCH: &str = "M1200,475 C1200,520 1200,520 1200,565";
 /// `PageUpdateEvent` WS loop back from the serve branch.
-const PATH_SERVE_LOOP: &str = "M1270,540 C1279,480 1279,420 1265,415";
-/// `github.com` &rarr; `webhook_handler`: GitHub PUSHES webhook
-/// deliveries in.
-const PATH_GITHUB_PUSH: &str = "M75,195 C75,225 85,245 95,258";
-/// `worker_loop`/`LiveEvaluator::evaluate` &rarr; `github.com`: the
-/// worker PULLS `repo_details` + the six concurrent collector calls,
-/// gated by `RateLimitState`/`BudgetGate`.
-const PATH_GITHUB_PULL: &str = "M555,165 C400,90 200,90 75,150";
+const PATH_SERVE_LOOP: &str = "M1270,600 C1279,540 1279,480 1265,475";
+/// `github.com` (ABOVE `worker_loop`) &rarr; `webhook_handler`: GitHub
+/// PUSHES webhook deliveries in.
+const PATH_GITHUB_PUSH: &str = "M480,70 C300,70 160,180 155,270";
+/// `github.com` &rarr; `spawn_collection_loop`: the inventory LISTING
+/// (`build_inventory_from_api`, `GET /orgs/{org}/repos?type=all`).
+const PATH_GITHUB_INVENTORY: &str = "M480,60 C300,40 160,60 130,100";
+/// `worker_loop`/`LiveEvaluator::evaluate` &rarr; `github.com` (directly
+/// above): the worker PULLS `repo_details` + the six concurrent
+/// collector calls, gated by `RateLimitState`/`BudgetGate`.
+const PATH_GITHUB_PULL: &str = "M555,155 C555,120 555,110 555,90";
 /// `cache_fallback` &rarr; web clients: the per-request HTTP serve
 /// edge.
-const PATH_CLIENTS_HTTP: &str = "M1200,565 C1200,610 1200,650 1200,695";
+const PATH_CLIENTS_HTTP: &str = "M1200,625 C1200,660 1200,690 1200,720";
 /// `commit_cached_pages` &rarr; web clients: the per-RUN
 /// `PageUpdateEvent` WS broadcast fan-out.
-const PATH_CLIENTS_WS: &str = "M1155,415 C1080,500 1080,620 1140,690";
+const PATH_CLIENTS_WS: &str = "M1155,475 C1080,560 1080,660 1140,715";
+/// `NativeStore::record` facade &rarr; local `.pgno` file store
+/// (`events.pgno`) — the DEFAULT active backend.
+const PATH_BACKEND_PGNO: &str = "M775,215 C740,260 700,290 690,320";
+/// `NativeStore::record` facade &rarr; `NATS` `JetStream`
+/// (`JetStreamHandle::append`) — the alternate backend, dimmed until
+/// `PardosaBackend::Nats` is selected.
+const PATH_BACKEND_NATS: &str = "M810,215 C850,260 880,290 890,320";
 const GITHUB_PUSH_DURATION_MS: u32 = 900;
 const GITHUB_PULL_DURATION_MS: u32 = 1600;
+const GITHUB_INVENTORY_DURATION_MS: u32 = 1300;
 const CLIENT_WS_DURATION_MS: u32 = 1000;
 
 fn sweep_phase_label(phase: SweepPhase) -> &'static str {
@@ -166,6 +179,7 @@ pub fn start() {
             warm_start_requested: false,
             backend_toggle_requested: false,
             last_worker_executions: 0,
+            inventory_epoch: 0,
         });
     });
 
@@ -245,19 +259,31 @@ pub fn tick() {
         }
 
         let rates = state.rates.get_untracked();
-        let batch_arrival = state
+        let sweep_due = state
             .tick_count
             .is_multiple_of(u64::from(rates.batch_per_tick.max(1)));
         let external_arrival = state
             .tick_count
             .is_multiple_of(u64::from(rates.external_per_tick.max(1)));
-        let events = state.sim.step(batch_arrival, external_arrival);
+
+        let mut inventory = None;
+        if sweep_due {
+            let repos = inventory_repos(state.inventory_epoch);
+            state.inventory_epoch += 1;
+            inventory = Some(state.sim.run_inventory_sweep(&repos, false));
+        }
+
+        let events = state.sim.step(false, external_arrival);
         state.tick_count += 1;
 
         render_gauges(&document, &state.sim);
         render_events(&document, &events.arrivals, &events.completions);
+        if let Some(outcome) = inventory {
+            render_inventory_sweep(&document, outcome);
+        }
         render_github_edges(
             &document,
+            sweep_due,
             &events.arrivals,
             &mut state.last_worker_executions,
             state.sim.worker_executions(),
@@ -271,14 +297,75 @@ pub fn tick() {
     });
 }
 
+/// A small rotating inventory of `(baseline_updated_at,
+/// current_updated_at)` pairs mirroring one `build_inventory_from_api`
+/// listing (inventory.rs:50). Roughly half the repos keep an unchanged
+/// `updated_at` (reused from the projection, no job) and half advance
+/// it (spawning a [`JobSource::ScheduledBatch`] job) so the
+/// `should_reuse` gate (baseline.rs:65) visibly splits every sweep.
+fn inventory_repos(epoch: u64) -> Vec<(UpdatedAt, UpdatedAt)> {
+    const REPO_COUNT: u64 = 8;
+    (0..REPO_COUNT)
+        .map(|i| {
+            let baseline = UpdatedAt(Some(i));
+            let current = if (i + epoch).is_multiple_of(2) {
+                UpdatedAt(Some(i))
+            } else {
+                UpdatedAt(Some(i + 100 + epoch))
+            };
+            (baseline, current)
+        })
+        .collect()
+}
+
+/// Pulses [`PATH_GITHUB_INVENTORY`] (the `build_inventory_from_api`
+/// listing arriving at the sweep) and updates the gauges reporting the
+/// `should_reuse` split: repos inventoried, repos reused unchanged (no
+/// job), and jobs spawned for changed repos.
+fn render_inventory_sweep(document: &Document, outcome: InventoryOutcome) {
+    set_text(
+        document,
+        "inventory-inventoried",
+        &outcome.inventoried.to_string(),
+    );
+    set_text(
+        document,
+        "inventory-reused",
+        &outcome.reused_unchanged.to_string(),
+    );
+    set_text(
+        document,
+        "inventory-spawned",
+        &outcome.jobs_spawned.to_string(),
+    );
+    let Some(packet_layer) = document.get_element_by_id("packet-layer") else {
+        return;
+    };
+    spawn_transit_packet(
+        document,
+        &packet_layer,
+        &PacketSpec {
+            class: "packet packet-inventory",
+            color: "#e2e8f0",
+            path_d: PATH_GITHUB_INVENTORY,
+            start: "0%",
+            end: "100%",
+            duration_ms: GITHUB_INVENTORY_DURATION_MS,
+        },
+    );
+}
+
 /// Pulses [`PATH_GITHUB_PUSH`] once per webhook arrival (`github.com`
 /// pushing the delivery `webhook_handler` receives, independent of the
-/// enqueue outcome) and [`PATH_GITHUB_PULL`] once per new worker
-/// dispatch (`worker_loop`/`LiveEvaluator::evaluate` pulling
-/// `repo_details` + the six concurrent collector calls, gated by
+/// enqueue outcome), [`PATH_GITHUB_INVENTORY`] once per scheduled sweep
+/// (`github.com` serving the `build_inventory_from_api` listing to the
+/// sweep), and [`PATH_GITHUB_PULL`] once per new worker dispatch
+/// (`worker_loop`/`LiveEvaluator::evaluate` pulling `repo_details` +
+/// the six concurrent collector calls, gated by
 /// `RateLimitState`/`BudgetGate`).
 fn render_github_edges(
     document: &Document,
+    inventory_listed: bool,
     arrivals: &[(JobSource, EnqueueResult)],
     last_worker_executions: &mut u64,
     current_worker_executions: u64,
@@ -286,6 +373,20 @@ fn render_github_edges(
     let Some(packet_layer) = document.get_element_by_id("packet-layer") else {
         return;
     };
+    if inventory_listed {
+        spawn_transit_packet(
+            document,
+            &packet_layer,
+            &PacketSpec {
+                class: "packet packet-github-inventory",
+                color: "#cbd5e1",
+                path_d: PATH_GITHUB_INVENTORY,
+                start: "0%",
+                end: "100%",
+                duration_ms: GITHUB_INVENTORY_DURATION_MS,
+            },
+        );
+    }
     if arrivals
         .iter()
         .any(|(source, _)| matches!(source, JobSource::External { .. }))
@@ -446,10 +547,15 @@ fn render_external_gauges(document: &Document, sim: &Sim) {
         "jetstream-sequence",
         &sim.jetstream_sequence().to_string(),
     );
-    toggle_jetstream_detail(document, sim.durable_backend());
+    toggle_backend_nodes(document, sim.durable_backend());
     set_text(
         document,
         "ws-permits",
+        &format!("{}/{}", sim.ws_permits_in_use(), sim.ws_max_connections()),
+    );
+    set_text(
+        document,
+        "ws-permits-legend",
         &format!("{}/{}", sim.ws_permits_in_use(), sim.ws_max_connections()),
     );
     set_text(
@@ -466,21 +572,21 @@ fn backend_label(backend: PardosaBackend) -> &'static str {
     }
 }
 
-/// Shows the JetStream-only nouns (subject/stream/append &rarr; `PubAck`
-/// seq) exclusively while `PardosaBackend::Nats` is active — `Pgno` is
-/// the default and must never be depicted with `JetStream` vocabulary.
-fn toggle_jetstream_detail(document: &Document, backend: PardosaBackend) {
-    let Some(element) = document.get_element_by_id("jetstream-detail") else {
-        return;
+/// Dims whichever durable-store backend node is inactive so the single
+/// `NativeStore::record` facade (store/mod.rs:132) visibly routes to
+/// exactly ONE backend selected by `PardosaBackend` (config/runtime.rs:
+/// 42-43) — the local `.pgno` store when `Pgno`, `NATS` `JetStream`
+/// when `Nats` — never a simultaneous fan-out to both.
+fn toggle_backend_nodes(document: &Document, backend: PardosaBackend) {
+    let (active_id, inactive_id) = match backend {
+        PardosaBackend::Pgno => ("backend-pgno", "backend-nats"),
+        PardosaBackend::Nats => ("backend-nats", "backend-pgno"),
     };
-    let class_list = element.class_list();
-    match backend {
-        PardosaBackend::Nats => {
-            class_list.remove_1("stage-hidden").ok();
-        }
-        PardosaBackend::Pgno => {
-            class_list.add_1("stage-hidden").ok();
-        }
+    if let Some(active) = document.get_element_by_id(active_id) {
+        active.class_list().remove_1("backend-dimmed").ok();
+    }
+    if let Some(inactive) = document.get_element_by_id(inactive_id) {
+        inactive.class_list().add_1("backend-dimmed").ok();
     }
 }
 
@@ -703,7 +809,7 @@ fn build_layout(document: &Document, root: &Element, rates: RwSignal<Rates>) {
 }
 
 /// The full branched flow-graph markup: SVG curved edges layer plus
-/// absolutely-positioned HTML node boxes, sharing the same 1280x620
+/// absolutely-positioned HTML node boxes, sharing the same 1280x800
 /// coordinate space so [`spawn_transit_packet`]'s `offset-path` lines
 /// up with the drawn edges.
 fn graph_markup() -> String {
@@ -721,7 +827,7 @@ fn graph_markup() -> String {
   </div>
 
   <div class='graph-canvas'>
-    <svg class='graph-svg' viewBox='0 0 1280 760' preserveAspectRatio='xMidYMid meet'>
+    <svg class='graph-svg' viewBox='0 0 1280 800' preserveAspectRatio='xMidYMid meet'>
       <defs>
         <marker id='arrow' viewBox='0 0 10 10' refX='9' refY='5' markerWidth='7' markerHeight='7' orient='auto-start-reverse'>
           <path d='M0,0 L10,5 L0,10 z' fill='#94a3b8' />
@@ -736,7 +842,10 @@ fn graph_markup() -> String {
       <path class='edge edge-serve' d='{PATH_SERVE_BRANCH}' marker-end='url(#arrow)' />
       <path class='edge edge-serve-loop' d='{PATH_SERVE_LOOP}' marker-end='url(#arrow)' />
       <path class='edge edge-github-push' d='{PATH_GITHUB_PUSH}' marker-end='url(#arrow)' />
+      <path class='edge edge-github-inventory' d='{PATH_GITHUB_INVENTORY}' marker-end='url(#arrow)' />
       <path class='edge edge-github-pull' d='{PATH_GITHUB_PULL}' marker-end='url(#arrow)' />
+      <path class='edge edge-backend' d='{PATH_BACKEND_PGNO}' marker-end='url(#arrow)' />
+      <path class='edge edge-backend' d='{PATH_BACKEND_NATS}' marker-end='url(#arrow)' />
       <path class='edge edge-clients-http' d='{PATH_CLIENTS_HTTP}' marker-end='url(#arrow)' />
       <path class='edge edge-clients-ws' d='{PATH_CLIENTS_WS}' marker-end='url(#arrow)' />
     </svg>
@@ -759,10 +868,7 @@ fn graph_markup() -> String {
     <div class='gauge'>compression <span id='compression-ratio'>n/a</span></div>
   </div>
   <div class='row legend'>
-    <div class='gauge'>durable backend <span id='backend-label'>Pgno</span></div>
-    <div class='gauge'>native (.pgno) events <span id='native-events-written'>0</span></div>
-    <div class='gauge'>JetStream seq <span id='jetstream-sequence'>0</span></div>
-    <div class='gauge'>ws permits/cap <span id='ws-permits'>0/200</span></div>
+    <div class='gauge'>ws permits/cap <span id='ws-permits-legend'>0/200</span></div>
     <div class='gauge'>GitHub calls/epoch <span id='github-budget'>0/0</span></div>
   </div>
 </section>
@@ -776,28 +882,31 @@ fn graph_markup() -> String {
 /// function-length bar.
 fn graph_nodes_markup() -> &'static str {
     r"
-    <div class='node node-external node-github' style='left:75px;top:170px'>
+    <div class='node node-external node-github' style='left:555px;top:55px'>
       github.com / api.github.com
       <span class='stage-note'>push &rarr; webhook_handler</span>
-      <span class='stage-note'>pull: GitHubClient::repo_details</span>
+      <span class='stage-note'>inventory listing &rarr; sweep: build_inventory_from_api
+        (GET /orgs/&lbrace;org&rbrace;/repos?type=all)</span>
+      <span class='stage-note'>pull &larr; worker: GitHubClient::repo_details</span>
       <span class='stage-note'>6&times; security_policy/ghas_scanning/dependabot/
         branch_protection/codeowners::evaluate + last_commit::fetch_last_commit</span>
-      <span class='stage-note'>RateLimitState + BudgetGate &rarr; ApiOutcome</span>
-      <span class='stage-note'>&rarr; RepositoryEvidence</span>
+      <span class='stage-note'>RateLimitState + BudgetGate &rarr; ApiOutcome &rarr; RepositoryEvidence</span>
     </div>
 
-    <div class='node node-trigger node-scheduled' style='left:95px;top:95px'>
-      spawn_collection_loop
+    <div class='node node-trigger node-scheduled' style='left:110px;top:120px'>
+      spawn_collection_loop / SweepSaga
       <span class='stage-note'>SweepPhase: <span id='sweep-phase'>Completed</span></span>
-      <span class='stage-note'>ScheduledBatch (burst)</span>
+      <span class='stage-note'>inventory listing (InventoryLoad): <span id='inventory-inventoried'>0</span> repos</span>
+      <span class='stage-note'>should_reuse: reused <span id='inventory-reused'>0</span> (no job)
+        | ScheduledBatch spawned <span id='inventory-spawned'>0</span> (updated_at changed)</span>
     </div>
-    <div class='node node-trigger node-webhook' style='left:95px;top:265px'>
+    <div class='node node-trigger node-webhook' style='left:110px;top:300px'>
       webhook_handler
-      <span class='stage-note'>JobSource::External&lbrace;id,kind&rbrace;</span>
+      <span class='stage-note'>execute_enqueue JobSource::External&lbrace;id,kind&rbrace;</span>
     </div>
-    <div class='node node-trigger node-warmstart' style='left:95px;top:445px'>
+    <div class='node node-trigger node-warmstart' style='left:110px;top:470px'>
       warm_start_from_baseline
-      <span class='stage-note'>bypass &rarr; read chain</span>
+      <span class='stage-note'>render-only bypass (NO enqueue)</span>
       <button id='warm-start-btn'>fire warm start</button>
     </div>
 
@@ -809,47 +918,53 @@ fn graph_nodes_markup() -> &'static str {
       worker_loop / LiveEvaluator::evaluate
       <span class='stage-note'>executions <span id='worker-executions'>0</span></span>
     </div>
-    <div class='node node-store node-eventstream' style='left:775px;top:180px'>
-      EvidenceProjectionEvent stream
-      <span class='stage-note'>events <span id='stage-stream-fill'>0</span></span>
-      <span class='stage-note'>durable: PardosaBackend::<span id='backend-label'>Pgno</span></span>
-      <span class='stage-note'>NativeStore events.pgno <span id='native-events-written'>0</span></span>
-      <span id='jetstream-detail' class='stage-note stage-hidden'>
-        JetStreamHandle::append &rarr; PubAck seq <span id='jetstream-sequence'>0</span>
-      </span>
+    <div class='node node-store node-eventstream' style='left:790px;top:180px'>
+      record_repo &rarr; NativeStore::record
+      <span class='stage-note'>events <span id='stage-stream-fill'>0</span> (events.pgno; org: org-events.pgno)</span>
+      <span class='stage-note'>active PardosaBackend::<span id='backend-label'>Pgno</span></span>
       <button id='backend-toggle-btn'>toggle Pgno/Nats</button>
     </div>
-    <div class='node node-store node-projection' style='left:980px;top:180px'>
+    <div id='backend-pgno' class='node node-store node-backend-pgno' style='left:690px;top:340px'>
+      local .pgno file store
+      <span class='stage-note'>events.pgno / org-events.pgno</span>
+      <span class='stage-note'>appended <span id='native-events-written'>0</span></span>
+    </div>
+    <div id='backend-nats' class='node node-store node-backend-nats' style='left:890px;top:340px'>
+      NATS JetStream
+      <span class='stage-note'>JetStreamHandle::append &rarr; PubAck seq</span>
+      <span class='stage-note'>seq <span id='jetstream-sequence'>0</span></span>
+    </div>
+    <div class='node node-store node-projection' style='left:1010px;top:180px'>
       EvidenceProjection
       <span class='stage-note'>repos <span id='stage-projection-fill'>0</span></span>
     </div>
 
-    <div id='gate-glyph' class='gate-glyph' style='left:950px;top:280px'>
+    <div id='gate-glyph' class='gate-glyph' style='left:955px;top:300px'>
       &#9670;
       <span class='stage-note'>BatchTracker rem <span id='batch-remaining'>0</span></span>
     </div>
 
-    <div class='node node-work node-finalize' style='left:900px;top:380px'>
+    <div class='node node-work node-finalize' style='left:900px;top:440px'>
       finalize_and_publish
       <span class='stage-note'>per RUN</span>
     </div>
-    <div class='node node-work node-buildcache' style='left:1050px;top:380px'>
+    <div class='node node-work node-buildcache' style='left:1050px;top:440px'>
       build_cached_pages
       <span class='stage-note'>memo</span>
     </div>
-    <div class='node node-work node-commit' style='left:1200px;top:380px'>
+    <div class='node node-work node-commit' style='left:1200px;top:440px'>
       commit_cached_pages
       <span class='stage-note'>ArcSwap gen <span id='arcswap-generation'>0</span></span>
     </div>
 
-    <div class='node node-serve node-served' style='left:1200px;top:540px'>
+    <div class='node node-serve node-served' style='left:1200px;top:600px'>
       cache_fallback &rarr; served pages
       <span class='stage-note'>gen <span id='cache-fallback-gen'>0</span></span>
       <span class='stage-note'>served <span id='served-pages'>0</span></span>
       <span class='stage-note stage-hidden'>cache fill <span id='stage-cache-fill'>0</span></span>
     </div>
 
-    <div class='node node-clients node-webclients' style='left:1200px;top:700px'>
+    <div class='node node-clients node-webclients' style='left:1200px;top:730px'>
       ws_session clients (anonymous)
       <span class='stage-note'>OwnedSemaphorePermit + broadcast::Receiver&lt;PageUpdateEvent&gt;</span>
       <span class='stage-note'>permits/cap <span id='ws-permits'>0/200</span> (sim quantity)</span>

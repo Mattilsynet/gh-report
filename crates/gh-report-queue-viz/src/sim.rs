@@ -416,6 +416,104 @@ impl DeliveryTail {
     }
 }
 
+/// Mirrors `Repository.updated_at` (domain/repository.rs:40): the
+/// GitHub-reported last-modified marker the sweep diffs against its
+/// projection baseline. `None` mirrors an absent value; two equal
+/// non-empty values mean "unchanged since last sweep".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdatedAt(pub Option<u64>);
+
+/// The per-repo decision `reuse_from_baseline` (collect.rs:1602)
+/// reaches by calling `baseline::should_reuse(baseline_updated_at,
+/// repo.updated_at)` (collect.rs:1633; infra/baseline.rs:65).
+/// `ReuseCached` mirrors `should_reuse == true` (both `updated_at`
+/// non-empty AND byte-equal, baseline.rs:70) — the cached evidence is
+/// reused and NO job is spawned. `SpawnJob` mirrors the fall-through:
+/// a differing or absent `updated_at` (or `force_refresh`,
+/// collect.rs:1609) enqueues a [`JobSource::ScheduledBatch`] job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaselineDecision {
+    ReuseCached,
+    SpawnJob,
+}
+
+/// Mirrors `baseline::should_reuse` (infra/baseline.rs:65,70): reuse
+/// iff both `updated_at` values are present AND byte-equal. Any
+/// difference, or either side absent, falls through to spawning a job.
+#[must_use]
+pub fn should_reuse(baseline: UpdatedAt, current: UpdatedAt) -> bool {
+    match (baseline.0, current.0) {
+        (Some(b), Some(c)) => b == c,
+        _ => false,
+    }
+}
+
+/// The outcome counts of one inventory sweep's per-repo `should_reuse`
+/// gate — mirrors the split the sweep makes between repos reused from
+/// the projection baseline (no job) and repos whose `updated_at`
+/// changed (a [`JobSource::ScheduledBatch`] job spawned). See
+/// `build_inventory_from_api` (inventory.rs:50),
+/// `reuse_from_baseline` (collect.rs:1602), and the pending-set build
+/// (collect.rs:859-866,1073-1091).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct InventoryOutcome {
+    pub inventoried: usize,
+    pub reused_unchanged: usize,
+    pub jobs_spawned: usize,
+}
+
+/// Mirrors `build_inventory_from_api` (inventory.rs:50) + the sweep's
+/// per-repo `reuse_from_baseline`/`should_reuse` gate
+/// (collect.rs:1602,1633; baseline.rs:65). A synchronous
+/// `api.github.com` listing (`GET /orgs/{org}/repos?type=all`,
+/// inventory.rs:56-61) returns an `InventoryLoad` of active repos
+/// (collect.rs:215,1328); each is diffed against its projection
+/// baseline `updated_at`. Unchanged repos are reused from the
+/// projection (no job); changed/absent (or `force_refresh`,
+/// collect.rs:1609) repos spawn a [`JobSource::ScheduledBatch`] job.
+/// This is a LISTING step inside the sweep, NOT a queued job.
+#[derive(Default)]
+pub struct InventoryGate {
+    last: InventoryOutcome,
+}
+
+impl InventoryGate {
+    /// Runs the `should_reuse` gate over an inventory of
+    /// `(baseline_updated_at, current_updated_at)` pairs. When
+    /// `force_refresh` is set (collect.rs:1609) the baseline is
+    /// skipped and every repo spawns a job. Returns the per-sweep
+    /// counts.
+    pub fn sweep(
+        &mut self,
+        repos: &[(UpdatedAt, UpdatedAt)],
+        force_refresh: bool,
+    ) -> InventoryOutcome {
+        let mut outcome = InventoryOutcome {
+            inventoried: repos.len(),
+            reused_unchanged: 0,
+            jobs_spawned: 0,
+        };
+        for &(baseline, current) in repos {
+            let decision = if !force_refresh && should_reuse(baseline, current) {
+                BaselineDecision::ReuseCached
+            } else {
+                BaselineDecision::SpawnJob
+            };
+            match decision {
+                BaselineDecision::ReuseCached => outcome.reused_unchanged += 1,
+                BaselineDecision::SpawnJob => outcome.jobs_spawned += 1,
+            }
+        }
+        self.last = outcome;
+        outcome
+    }
+
+    #[must_use]
+    pub fn last(&self) -> InventoryOutcome {
+        self.last
+    }
+}
+
 /// Mirrors `PardosaBackend` (config/runtime.rs:41-46): the operator-
 /// selectable durable-store backend behind `--pardosa-backend`. `Pgno`
 /// is the `#[default]` (bin/gh-report.rs:180-181); `Nats` is the
@@ -753,6 +851,7 @@ pub struct Sim {
     durable_store: DurableStore,
     client_pool: ClientPool,
     github_gate: BudgetGate,
+    inventory_gate: InventoryGate,
 }
 
 impl Sim {
@@ -775,6 +874,7 @@ impl Sim {
             durable_store: DurableStore::default(),
             client_pool: ClientPool::new(config.ws_max_connections),
             github_gate: BudgetGate::new(config.github_budget_per_epoch),
+            inventory_gate: InventoryGate::default(),
             config,
         }
     }
@@ -817,6 +917,32 @@ impl Sim {
             EnqueueResult::Deduplicated => self.metrics.deduplicated += 1,
         }
         result
+    }
+
+    /// Mirrors the sweep's inventory-listing + `should_reuse` gate
+    /// (`build_inventory_from_api` inventory.rs:50; `reuse_from_baseline`
+    /// collect.rs:1602,1633; baseline.rs:65): lists all `repos` as
+    /// `(baseline_updated_at, current_updated_at)` pairs, reuses cached
+    /// evidence for unchanged repos (no job), and enqueues a
+    /// [`JobSource::ScheduledBatch`] job for each changed/absent repo
+    /// (all repos when `force_refresh`, collect.rs:1609). Returns the
+    /// per-sweep counts; the spawned jobs enter the shared
+    /// [`WorkQueue`].
+    pub fn run_inventory_sweep(
+        &mut self,
+        repos: &[(UpdatedAt, UpdatedAt)],
+        force_refresh: bool,
+    ) -> InventoryOutcome {
+        let outcome = self.inventory_gate.sweep(repos, force_refresh);
+        for _ in 0..outcome.jobs_spawned {
+            let _ignored = self.submit(JobSource::ScheduledBatch);
+        }
+        outcome
+    }
+
+    #[must_use]
+    pub fn inventory_outcome(&self) -> InventoryOutcome {
+        self.inventory_gate.last()
     }
 
     pub fn submit_external(&mut self) -> EnqueueResult {
@@ -1125,8 +1251,8 @@ impl Sim {
 mod tests {
     use super::{
         BatchTracker, BuildResult, ConnectResult, DomainKey, EnqueueResult, GITHUB_CALLS_PER_JOB,
-        JobSource, JobSpec, MemoBuilder, PardosaBackend, Sim, SimConfig, SweepPhase, WebhookKind,
-        WorkQueue,
+        JobSource, JobSpec, MemoBuilder, PardosaBackend, Sim, SimConfig, SweepPhase, UpdatedAt,
+        WebhookKind, WorkQueue, should_reuse,
     };
 
     fn job(key: u32, source: JobSource) -> JobSpec {
@@ -1677,6 +1803,114 @@ mod tests {
             sim.metrics().completed,
             4,
             "all 4 jobs eventually complete once the gate resets across epochs"
+        );
+    }
+
+    /// New provenance test: `should_reuse` reuses cached evidence only
+    /// when both `updated_at` values are present and byte-equal
+    /// (baseline.rs:70).
+    #[test]
+    fn should_reuse_only_on_equal_present_updated_at() {
+        assert!(should_reuse(UpdatedAt(Some(5)), UpdatedAt(Some(5))));
+        assert!(!should_reuse(UpdatedAt(Some(5)), UpdatedAt(Some(6))));
+        assert!(!should_reuse(UpdatedAt(None), UpdatedAt(Some(5))));
+        assert!(!should_reuse(UpdatedAt(Some(5)), UpdatedAt(None)));
+        assert!(!should_reuse(UpdatedAt(None), UpdatedAt(None)));
+    }
+
+    /// New provenance test: only repos whose `updated_at` differs from
+    /// the baseline spawn jobs; unchanged repos spawn zero jobs and are
+    /// counted as reused; the spawned jobs enter the queue.
+    #[test]
+    fn only_updated_at_changed_repos_spawn_jobs() {
+        let mut sim = Sim::new(SimConfig::default(), 5);
+        let repos = [
+            (UpdatedAt(Some(1)), UpdatedAt(Some(1))),
+            (UpdatedAt(Some(2)), UpdatedAt(Some(9))),
+            (UpdatedAt(Some(3)), UpdatedAt(Some(3))),
+            (UpdatedAt(None), UpdatedAt(Some(4))),
+            (UpdatedAt(Some(5)), UpdatedAt(None)),
+        ];
+        let outcome = sim.run_inventory_sweep(&repos, false);
+        assert_eq!(outcome.inventoried, 5);
+        assert_eq!(
+            outcome.reused_unchanged, 2,
+            "two repos with equal updated_at are reused, no job"
+        );
+        assert_eq!(
+            outcome.jobs_spawned, 3,
+            "changed/absent updated_at repos spawn a ScheduledBatch job each"
+        );
+        assert_eq!(
+            outcome.reused_unchanged + outcome.jobs_spawned,
+            outcome.inventoried,
+            "every inventoried repo is either reused or spawns a job"
+        );
+        assert_eq!(
+            sim.queue_depth(),
+            3,
+            "only the three changed repos' jobs entered the queue"
+        );
+    }
+
+    /// New provenance test: `force_refresh` skips the baseline so every
+    /// inventoried repo spawns a job, even unchanged ones.
+    #[test]
+    fn force_refresh_spawns_jobs_for_all_repos() {
+        let mut sim = Sim::new(SimConfig::default(), 5);
+        let repos = [
+            (UpdatedAt(Some(1)), UpdatedAt(Some(1))),
+            (UpdatedAt(Some(2)), UpdatedAt(Some(2))),
+            (UpdatedAt(Some(3)), UpdatedAt(Some(3))),
+        ];
+        let outcome = sim.run_inventory_sweep(&repos, true);
+        assert_eq!(outcome.inventoried, 3);
+        assert_eq!(outcome.reused_unchanged, 0, "force_refresh reuses nothing");
+        assert_eq!(
+            outcome.jobs_spawned, 3,
+            "force_refresh spawns a job for every repo"
+        );
+        assert_eq!(sim.queue_depth(), 3);
+    }
+
+    /// New provenance test: a successful event write increments ONLY
+    /// the active backend's counter (the single `record()` facade
+    /// routes to one backend, never both). `Pgno` active: native store
+    /// grows, `JetStream` sequence stays 0. `Nats` active: `JetStream`
+    /// sequence grows, native store frozen.
+    #[test]
+    fn event_write_increments_only_the_active_backend() {
+        let mut sim = Sim::new(SimConfig::default(), 21);
+        assert_eq!(sim.durable_backend(), PardosaBackend::Pgno);
+        let _ignored = sim.submit_external();
+        for _ in 0..20 {
+            if !sim.step(false, false).completions.is_empty() {
+                break;
+            }
+        }
+        let native_after_pgno = sim.native_events_written();
+        assert!(native_after_pgno > 0, "Pgno write lands in native store");
+        assert_eq!(
+            sim.jetstream_sequence(),
+            0,
+            "JetStream untouched while Pgno active — no fan-out to both"
+        );
+
+        sim.set_durable_backend(PardosaBackend::Nats);
+        let _ignored = sim.submit_external();
+        for _ in 0..20 {
+            if !sim.step(false, false).completions.is_empty() {
+                break;
+            }
+        }
+        assert!(
+            sim.jetstream_sequence() > 0,
+            "Nats write increments JetStream sequence"
+        );
+        assert_eq!(
+            sim.native_events_written(),
+            native_after_pgno,
+            "native store frozen while Nats active — never both"
         );
     }
 }
