@@ -1151,9 +1151,8 @@ fn team_state_event(
             })
         })
         .collect::<Result<Vec<_>, PersistenceError>>()?;
-    let members = EventVec::try_from(members).map_err(|_| {
-        conversion_persistence(&EventConversionError::TooMany { field: "members" })
-    })?;
+    let members = EventVec::try_from(members)
+        .map_err(|_| conversion_persistence(&EventConversionError::TooMany { field: "members" }))?;
     Ok(TeamStateCaptured {
         org: non_empty::<{ crate::event::limits::MAX_LOGIN }>("org", org)?,
         team_slug: non_empty::<{ crate::event::limits::MAX_LOGIN }>(
@@ -2597,7 +2596,10 @@ mod tests {
         );
     }
 
-    fn team_roster_fixture(canonical_owner: &str, team_slug: &str) -> crate::domain::metrics::TeamRoster {
+    fn team_roster_fixture(
+        canonical_owner: &str,
+        team_slug: &str,
+    ) -> crate::domain::metrics::TeamRoster {
         crate::domain::metrics::TeamRoster {
             canonical_owner: canonical_owner.to_string(),
             team_slug: team_slug.to_string(),

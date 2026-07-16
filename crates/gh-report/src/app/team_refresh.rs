@@ -18,7 +18,7 @@ use tracing::{error, info, warn};
 use crate::app::state::AppState;
 use crate::app::write_policy::write_with_policy;
 use crate::collector::team_membership;
-use crate::domain::metrics::{team_owner_slugs, TeamRoster};
+use crate::domain::metrics::{TeamRoster, team_owner_slugs};
 use crate::error::{AppError, persist_error_variant};
 use crate::event::{OrgMembershipFetchStatus, team_domain_key};
 use crate::github::client::GitHubClient;
@@ -61,8 +61,15 @@ pub async fn run_team_refresh_tick(
     team_membership::enrich_team_rosters_with_org_membership(&mut rosters, org_members.as_ref());
 
     for roster in &rosters {
-        write_team_event(state, &org, roster, fetched_at, org_membership_fetch_status, false)
-            .await?;
+        write_team_event(
+            state,
+            &org,
+            roster,
+            fetched_at,
+            org_membership_fetch_status,
+            false,
+        )
+        .await?;
     }
 
     for (domain_key, stale_roster) in state.projection_team_rosters_snapshot() {
@@ -97,11 +104,15 @@ async fn write_team_event(
     detach: bool,
 ) -> Result<(), AppError> {
     let outcome = if detach {
-        write_with_policy(|| state.detach_team(org, roster, fetched_at, org_membership_fetch_status))
-            .await
+        write_with_policy(|| {
+            state.detach_team(org, roster, fetched_at, org_membership_fetch_status)
+        })
+        .await
     } else {
-        write_with_policy(|| state.record_team(org, roster, fetched_at, org_membership_fetch_status))
-            .await
+        write_with_policy(|| {
+            state.record_team(org, roster, fetched_at, org_membership_fetch_status)
+        })
+        .await
     };
     outcome.map_err(|write_failure| {
         error!(
