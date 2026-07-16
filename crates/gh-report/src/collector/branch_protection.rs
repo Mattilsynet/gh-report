@@ -340,7 +340,7 @@ fn build_protection_result(
 fn classify_failure_reason(
     rulesets_result: &crate::github::client::ApiOutcome,
     legacy_result: &crate::github::client::ApiOutcome,
-    visibility: Visibility,
+    _visibility: Visibility,
 ) -> Option<CollectionFailureReason> {
     if rulesets_result.status_code() == Some(403) || legacy_result.status_code() == Some(403) {
         return Some(CollectionFailureReason::PermissionDenied);
@@ -349,11 +349,7 @@ fn classify_failure_reason(
         return Some(CollectionFailureReason::RateLimited);
     }
     if rulesets_result.status_code() == Some(404) || legacy_result.status_code() == Some(404) {
-        return Some(if visibility == Visibility::Public {
-            CollectionFailureReason::NotFoundAbsent
-        } else {
-            CollectionFailureReason::PermissionSuspected
-        });
+        return Some(CollectionFailureReason::NotFoundAbsent);
     }
     if rulesets_result.is_retryable() || legacy_result.is_retryable() {
         return Some(CollectionFailureReason::Transient);
@@ -549,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn private_404_without_controls_is_unknown_not_fail() {
+    fn private_404_without_controls_is_genuine_absence() {
         let not_found =
             crate::github::client::ApiOutcome::failure(Some(404), "not found".to_string(), false);
 
@@ -562,18 +558,57 @@ mod tests {
             "2026-06-17T11:31:04Z",
         );
 
-        assert_eq!(result.status, BranchProtectionStatus::Unknown);
-        assert_eq!(
-            result.details.reason.as_deref(),
-            Some("permission_suspected")
-        );
+        assert_eq!(result.status, BranchProtectionStatus::Fail);
+        assert_eq!(result.details.reason.as_deref(), Some("not_found_absent"));
         assert_eq!(
             result.details.reason_kind,
-            Some(CollectionFailureReason::PermissionSuspected)
+            Some(CollectionFailureReason::NotFoundAbsent)
         );
         assert_eq!(result.details.http_status, Some(404));
         assert_eq!(result.details.force_push_blocked, None);
         assert_eq!(result.details.deletion_blocked, None);
+    }
+
+    #[test]
+    fn internal_404_without_controls_is_genuine_absence() {
+        let not_found =
+            crate::github::client::ApiOutcome::failure(Some(404), "not found".to_string(), false);
+
+        let result = build_protection_result(
+            None,
+            &not_found,
+            &not_found,
+            "main",
+            Visibility::Internal,
+            "2026-06-17T11:31:04Z",
+        );
+
+        assert_eq!(result.status, BranchProtectionStatus::Fail);
+        assert_eq!(
+            result.details.reason_kind,
+            Some(CollectionFailureReason::NotFoundAbsent)
+        );
+    }
+
+    #[test]
+    fn private_403_is_still_permission_denied() {
+        let denied =
+            crate::github::client::ApiOutcome::failure(Some(403), "forbidden".to_string(), false);
+
+        let result = build_protection_result(
+            None,
+            &denied,
+            &denied,
+            "main",
+            Visibility::Private,
+            "2026-06-17T11:31:04Z",
+        );
+
+        assert_eq!(result.status, BranchProtectionStatus::Unknown);
+        assert_eq!(
+            result.details.reason_kind,
+            Some(CollectionFailureReason::PermissionDenied)
+        );
     }
 
     #[test]

@@ -147,6 +147,133 @@ async fn warm_start_replay_preserves_archived_public_security_policy_in_aggregat
     );
 }
 
+/// CHE-0082:R5 (amended, commit c272237): a private/internal
+/// branch-protection 404 with no controls is genuine absence (a
+/// governance Fail, counted in the denominator) exactly like the
+/// public case, matching codeowners/dependabot's uniform 404-as-Absent
+/// treatment. Regression for the gap in `adr-fmt-vc97r` item 5: no test
+/// previously asserted `branch_protection_coverage.denominator` ==
+/// `codeowners_coverage.denominator` == dependabot's denominator when a
+/// private non-archived repo has a genuine (non-permission) absence.
+#[test]
+fn branch_protection_denominator_matches_codeowners_and_dependabot_for_private_404_absence() {
+    let repositories = private_404_absence_fixture();
+
+    let metrics = aggregate_metrics(&repositories);
+
+    assert_eq!(
+        metrics.branch_protection_coverage.denominator, 2,
+        "branch_protection_coverage denominator must count both non-archived \
+         repos, including the private one with a genuine (non-permission) \
+         404 absence; got {metrics:?}",
+    );
+    assert_eq!(
+        metrics.branch_protection_coverage.denominator, metrics.codeowners_coverage.denominator,
+        "branch_protection and codeowners denominators must match for the \
+         same all-non-archived population",
+    );
+    assert_eq!(
+        metrics.branch_protection_coverage.denominator,
+        metrics.dependabot_security_updates_coverage.denominator,
+        "branch_protection and dependabot denominators must match for the \
+         same all-non-archived population",
+    );
+}
+
+/// Builds a fixture where a private repo's branch-protection reason
+/// mirrors what `classify_failure_reason`
+/// (`collector::branch_protection`) emits for an absent-control 404
+/// after the CHE-0082:R5 amendment: `NotFoundAbsent`, same as the
+/// public case.
+fn private_404_absence_fixture() -> Vec<RepositoryEvidence> {
+    let ts = "2026-05-20T00:00:00Z";
+    [
+        (
+            "public-active",
+            Visibility::Public,
+            SecurityPolicyStatus::Pass,
+        ),
+        (
+            "private-active",
+            Visibility::Private,
+            SecurityPolicyStatus::NotApplicable,
+        ),
+    ]
+    .into_iter()
+    .map(
+        |(name, visibility, security_policy_status)| RepositoryEvidence {
+            repository: Repository {
+                id: format!("id-{name}"),
+                node_id: None,
+                name: name.to_string(),
+                visibility,
+                language: None,
+                default_branch: "main".to_string(),
+                archived: false,
+                has_issues: true,
+                inventory_key: format!("owner/{name}"),
+                updated_at: None,
+                pushed_at: None,
+                created_at: None,
+                description: None,
+                fork: false,
+                is_empty: false,
+                html_url: None,
+                topics: vec![],
+                license_spdx: None,
+            },
+            checks: RepositoryChecks {
+                security_policy: SecurityPolicyResult {
+                    status: security_policy_status,
+                    evidence: SecurityPolicyEvidence::Setting,
+                    path: None,
+                    timestamp: ts.to_string(),
+                },
+                secret_scanning: SecretScanningResult {
+                    status: SecretScanningStatus::Enabled,
+                    has_open_alerts: Some(false),
+                    alerts_observable: true,
+                    reason: None,
+                    timestamp: ts.to_string(),
+                },
+                dependabot_security_updates: DependabotResult {
+                    status: DependabotStatus::Enabled,
+                    reason: None,
+                    timestamp: ts.to_string(),
+                },
+                branch_protection: BranchProtectionResult {
+                    status: BranchProtectionStatus::Fail,
+                    details: BranchProtectionDetails {
+                        default_branch: "main".to_string(),
+                        has_pr: None,
+                        required_reviewers: None,
+                        has_status_checks: None,
+                        admin_equivalent: None,
+                        has_broad_bypass: None,
+                        reason: Some("not_found_absent".to_string()),
+                        reason_kind: Some(
+                            gh_report::domain::checks::CollectionFailureReason::NotFoundAbsent,
+                        ),
+                        http_status: Some(404),
+                        force_push_blocked: None,
+                        deletion_blocked: None,
+                    },
+                    timestamp: ts.to_string(),
+                },
+                codeowners: CodeownersResult {
+                    status: CodeownersStatus::Absent,
+                    path: None,
+                    timestamp: ts.to_string(),
+                    parsed: None,
+                    truncation: None,
+                },
+            },
+            last_commit: None,
+        },
+    )
+    .collect()
+}
+
 async fn seed_repo_evaluated_envelopes(events_dir: &std::path::Path) {
     let state = AppState::with_stores(
         events_dir,
