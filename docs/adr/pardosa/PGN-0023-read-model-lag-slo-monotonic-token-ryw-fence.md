@@ -1,7 +1,7 @@
 # PGN-0023. Read-Model Lag-SLO, Monotonic Token, and Per-Request RYW Fence
 
 Date: 2026-07-15
-Last-reviewed: 2026-07-15
+Last-reviewed: 2026-07-16
 Tier: B
 Status: Accepted
 Crates: pardosa, pardosa-nats
@@ -21,7 +21,7 @@ mechanism, scoped to the crates that hold the JetStream single-writer fence
 (PGN-0016) and the JetStream applied-sequence observability signal
 (PGN-0022).
 
-PGN-0022 already emits a structured signal at the point PGN-0016 R7's fence
+PGN-0022 emits a structured signal at the point PGN-0016 R7's fence
 detects an overlapping writer, keyed by owner id, and separately tracks a
 projection applied-sequence high-water mark for multi-process detection.
 CHE-0075 R2 already binds every typed read-side port to resolve queries from
@@ -94,7 +94,7 @@ R8 [5]: Leave CHE-0048's single-process projection-replay scope (its R1,
   the lag-SLO ceiling, the monotonic token, and the RYW opt-in are named,
   enforced mechanisms instead of implicit assumptions about projection
   timing.
-+ becomes easier: PGN-0022's existing applied-sequence signal gets a second,
++ becomes easier: PGN-0022's applied-sequence signal gets a second,
   explicitly-named consumer (lag enforcement) without inventing a parallel
   tracking primitive.
 + becomes easier: a command-feeding read gets a named causal floor (R3)
