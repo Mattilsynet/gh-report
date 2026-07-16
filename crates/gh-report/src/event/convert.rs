@@ -15,7 +15,8 @@ use super::{
     DependabotStatus, LastCommitInfo, OrgAlertSummary, OrgStateCaptured, ParsedCodeowners,
     RepoAlertSummary, RepoAlertSummaryEntry, Repository, RepositoryChecks, RepositoryEvidence,
     SecretScanningResult, SecretScanningStatus, SecurityPolicyEvidence, SecurityPolicyResult,
-    SecurityPolicyStatus, StringU64Entry, TokenTier, Visibility,
+    SecurityPolicyStatus, StringU64Entry, TeamMemberRoleEvent, TeamRosterStatusEvent,
+    TeamStateCaptured, TokenTier, Visibility,
 };
 use crate::domain::auth as sa;
 use crate::domain::checks as s;
@@ -661,6 +662,59 @@ impl From<OrgStateCaptured> for se::OrgStateSnapshot {
             archived_repos: v.archived_repos,
             assessment_metadata: v.assessment_metadata.into(),
             alert_summary: v.alert_summary.into(),
+        }
+    }
+}
+
+impl From<TeamMemberRoleEvent> for sm::TeamMemberRole {
+    fn from(v: TeamMemberRoleEvent) -> Self {
+        match v {
+            TeamMemberRoleEvent::Maintainer => Self::Maintainer,
+            TeamMemberRoleEvent::Member => Self::Member,
+        }
+    }
+}
+
+impl From<TeamRosterStatusEvent> for sm::TeamRosterStatus {
+    fn from(v: TeamRosterStatusEvent) -> Self {
+        match v {
+            TeamRosterStatusEvent::Complete => Self::Complete,
+            TeamRosterStatusEvent::Deleted => Self::Deleted,
+            TeamRosterStatusEvent::PermissionDenied => Self::PermissionDenied,
+            TeamRosterStatusEvent::TransientError => Self::TransientError,
+        }
+    }
+}
+
+/// Materialise the read-model [`sm::TeamRoster`] from the durable
+/// [`TeamStateCaptured`] event (CHE-0089:R4 projection fold arm).
+///
+/// `canonical_owner` is derived from `(org, team_slug)` as
+/// `"@{org}/{team_slug}"`, matching
+/// [`sm::team_slug_from_canonical_owner`]'s inverse. `fetched_at` and
+/// `orphan_attribution_inputs` are durable event fields with no home
+/// on [`sm::TeamRoster`] (render-time orphan attribution stays a pure
+/// CODEOWNERS join, kqavx CLASS B) and are intentionally dropped here.
+impl From<TeamStateCaptured> for sm::TeamRoster {
+    fn from(v: TeamStateCaptured) -> Self {
+        let org = v.org.as_str().to_string();
+        let team_slug = v.team_slug.as_str().to_string();
+        let canonical_owner = format!("@{org}/{team_slug}");
+        let members = v
+            .members
+            .into_inner()
+            .into_iter()
+            .map(|member| sm::TeamMember {
+                login: member.login.as_str().to_string(),
+                role: member.role.into(),
+                in_org: member.in_org,
+            })
+            .collect();
+        Self {
+            canonical_owner,
+            team_slug,
+            status: v.status.into(),
+            members,
         }
     }
 }

@@ -104,6 +104,22 @@ impl NatsStoreConfig {
             credentials_path: self.credentials_path.clone(),
         }
     }
+
+    /// Derive the distinct team-event `JetStream` names paired with this
+    /// repo stream (CHE-0089:R2), mirroring [`Self::org_events`].
+    #[must_use]
+    pub fn team_events(&self) -> Self {
+        Self {
+            nats_url: self.nats_url.clone(),
+            stream_name: format!("{}-team", self.stream_name),
+            subject: self.subject.strip_suffix(".events").map_or_else(
+                || format!("{}.team.events", self.subject),
+                |base| format!("{base}.team.events"),
+            ),
+            durable_consumer: format!("{}-team", self.durable_consumer),
+            credentials_path: self.credentials_path.clone(),
+        }
+    }
 }
 
 fn org_token(bytes: &[u8]) -> String {

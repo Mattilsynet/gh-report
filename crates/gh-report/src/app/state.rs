@@ -43,6 +43,7 @@ pub use cherry_pit_web::serve::{CachedPage, PageUpdateEvent};
 
 pub type EventStoreImpl = crate::store::NativeStore;
 pub type OrgEventStoreImpl = crate::store::NativeOrgStore;
+pub type TeamEventStoreImpl = crate::store::NativeTeamStore;
 pub(crate) type ProjectionState<P> = Arc<Mutex<P>>;
 pub(crate) type SchedulerEventStoreImpl =
     cherry_pit_gateway::MsgpackFileStore<cherry_pit_core::SchedulerEvent>;
@@ -59,7 +60,9 @@ use crate::domain::evidence::RepositoryEvidence;
 use crate::domain::run::RunMetadata;
 use crate::error::PersistenceError;
 use crate::event::convert::EventConversionError;
-use crate::event::{DomainEvent as NativeDomainEvent, OrgStateCaptured};
+use crate::event::{
+    DomainEvent as NativeDomainEvent, OrgStateCaptured, TeamStateCaptured, team_domain_key,
+};
 
 /// Embedded CSS stylesheet, compiled into the binary at build time.
 const STYLESHEET: &str = include_str!("../../templates/style.css");
@@ -172,6 +175,12 @@ pub struct AppState {
 
     /// Durable native pardosa org event store.
     pub org_event_store: Arc<OrgEventStoreImpl>,
+
+    /// Durable native pardosa team event store (CHE-0089:R2), one fiber
+    /// per `(org, team_slug)` pair. Consumed by the P3 team-refresh
+    /// writer (adr-fmt-ewc1i); folded into `projection_state` on boot
+    /// and via [`Self::fold_team_event_into_projection`].
+    pub team_event_store: Arc<TeamEventStoreImpl>,
 
     pub(crate) scheduler_event_store: Arc<SchedulerEventStoreImpl>,
     pub(crate) sweep_timeout_event_store: Arc<SweepTimeoutEventStoreImpl>,
@@ -543,6 +552,55 @@ impl AppState {
         })
     }
 
+    /// Look up the team roster for one `team_domain_key` in
+    /// `projection_state`, returning an owned clone.
+    ///
+    /// Lock-and-release accessor; guard does not escape (D-CD-3).
+    /// Panics on poisoned mutex to match [`Self::lock_projection`].
+    #[expect(
+        dead_code,
+        reason = "consumed by the P5 render cutover (adr-fmt-47ljf), not yet landed"
+    )]
+    pub(crate) fn projection_team_roster(
+        &self,
+        team_domain_key: &str,
+    ) -> Option<crate::domain::metrics::TeamRoster> {
+        resolve_projection(&self.projection_state, |projection| {
+            match crate::projection::EvidenceProjectionReadPort::resolve(
+                projection,
+                crate::projection::EvidenceProjectionQuery::TeamRoster(team_domain_key.to_string()),
+            ) {
+                crate::projection::EvidenceProjectionResponse::TeamRoster(roster) => *roster,
+                _ => None,
+            }
+        })
+    }
+
+    /// Snapshot of all team rosters materialised in `projection_state`,
+    /// keyed by `team_domain_key` in deterministic order.
+    ///
+    /// Lock-and-release accessor; guard does not escape (D-CD-3).
+    /// Panics on poisoned mutex to match [`Self::lock_projection`].
+    #[expect(
+        dead_code,
+        reason = "consumed by the P5 render cutover (adr-fmt-47ljf), not yet landed"
+    )]
+    pub(crate) fn projection_team_rosters_snapshot(
+        &self,
+    ) -> Vec<(String, crate::domain::metrics::TeamRoster)> {
+        resolve_projection(&self.projection_state, |projection| {
+            match crate::projection::EvidenceProjectionReadPort::resolve(
+                projection,
+                crate::projection::EvidenceProjectionQuery::TeamRostersSnapshot,
+            ) {
+                crate::projection::EvidenceProjectionResponse::TeamRostersSnapshot(rosters) => {
+                    rosters
+                }
+                _ => Vec::new(),
+            }
+        })
+    }
+
     /// Test-only accessor for the materialised `projection_state`.
     #[doc(hidden)]
     pub fn projection_state_for_test(&self) -> Arc<Mutex<crate::projection::EvidenceProjection>> {
@@ -594,6 +652,28 @@ fn open_org_event_store(
     }
 }
 
+fn open_team_event_store(
+    events_dir: &Path,
+    backend: crate::config::runtime::PardosaBackend,
+    nats: crate::config::runtime::NatsStoreConfig,
+    handle: tokio::runtime::Handle,
+) -> Result<TeamEventStoreImpl, std::io::Error> {
+    match backend {
+        crate::config::runtime::PardosaBackend::Pgno => {
+            std::fs::create_dir_all(events_dir)?;
+            let path = events_dir.join("team-events.pgno");
+            if path.exists() && path.metadata()?.len() > 0 {
+                TeamEventStoreImpl::open_pgno(&path).map_err(std::io::Error::other)
+            } else {
+                TeamEventStoreImpl::create_pgno(&path).map_err(std::io::Error::other)
+            }
+        }
+        crate::config::runtime::PardosaBackend::Nats => {
+            open_or_create_team_jetstream(nats, handle).map_err(std::io::Error::other)
+        }
+    }
+}
+
 fn scheduler_event_store(events_dir: &Path) -> SchedulerEventStoreImpl {
     SchedulerEventStoreImpl::new(events_dir.join("sweep-timeout-schedules"))
 }
@@ -626,10 +706,33 @@ fn open_or_create_org_jetstream(
     )
 }
 
+fn open_or_create_team_jetstream(
+    nats: crate::config::runtime::NatsStoreConfig,
+    handle: tokio::runtime::Handle,
+) -> Result<TeamEventStoreImpl, crate::store::StoreError> {
+    let open_nats = nats.clone();
+    let open_handle = handle.clone();
+    open_or_create_team_jetstream_with(
+        move || TeamEventStoreImpl::open_jetstream(jetstream_backend(open_nats, open_handle)?),
+        move || TeamEventStoreImpl::create_jetstream(jetstream_backend(nats, handle)?),
+    )
+}
+
 fn open_or_create_org_jetstream_with(
     open: impl FnOnce() -> Result<OrgEventStoreImpl, crate::store::StoreError>,
     create: impl FnOnce() -> Result<OrgEventStoreImpl, crate::store::StoreError>,
 ) -> Result<OrgEventStoreImpl, crate::store::StoreError> {
+    match open() {
+        Ok(store) => Ok(store),
+        Err(e @ crate::store::StoreError::BackendInfrastructure { .. }) => Err(e),
+        Err(_) => create(),
+    }
+}
+
+fn open_or_create_team_jetstream_with(
+    open: impl FnOnce() -> Result<TeamEventStoreImpl, crate::store::StoreError>,
+    create: impl FnOnce() -> Result<TeamEventStoreImpl, crate::store::StoreError>,
+) -> Result<TeamEventStoreImpl, crate::store::StoreError> {
     match open() {
         Ok(store) => Ok(store),
         Err(e @ crate::store::StoreError::BackendInfrastructure { .. }) => Err(e),
@@ -704,9 +807,21 @@ async fn open_org_event_store_blocking(
         .map_err(std::io::Error::other)?
 }
 
+async fn open_team_event_store_blocking(
+    events_dir: PathBuf,
+    backend: crate::config::runtime::PardosaBackend,
+    nats: crate::config::runtime::NatsStoreConfig,
+    handle: tokio::runtime::Handle,
+) -> Result<TeamEventStoreImpl, std::io::Error> {
+    tokio::task::spawn_blocking(move || open_team_event_store(&events_dir, backend, nats, handle))
+        .await
+        .map_err(std::io::Error::other)?
+}
+
 fn projection_from_stores(
     store: &EventStoreImpl,
     org_store: &OrgEventStoreImpl,
+    team_store: &TeamEventStoreImpl,
 ) -> Result<crate::projection::EvidenceProjection, std::io::Error> {
     let projection = store
         .fold_events(
@@ -716,9 +831,14 @@ fn projection_from_stores(
             },
         )
         .map_err(std::io::Error::other)?;
-    org_store
+    let projection = org_store
         .fold_events(projection, |projection, event| {
             fold_org_event(projection, event.clone());
+        })
+        .map_err(std::io::Error::other)?;
+    team_store
+        .fold_events(projection, |projection, event| {
+            fold_team_event(projection, event.clone());
         })
         .map_err(std::io::Error::other)
 }
@@ -813,6 +933,30 @@ fn fold_native_event(
 
 fn fold_org_event(projection: &mut crate::projection::EvidenceProjection, event: OrgStateCaptured) {
     apply_projection_event(projection, org_projection_event(event));
+}
+
+fn team_projection_event(
+    detached: bool,
+    event: TeamStateCaptured,
+) -> crate::projection::EvidenceProjectionEvent {
+    let domain_key = team_domain_key(event.org.as_str(), event.team_slug.as_str())
+        .expect("TeamStateCaptured.org/team_slug are NonEmptyEventString, never empty");
+    crate::projection::EvidenceProjectionEvent::TeamStateCaptured {
+        detached,
+        domain_key,
+        roster: if detached {
+            None
+        } else {
+            Some(Box::new(event.into()))
+        },
+    }
+}
+
+fn fold_team_event(
+    projection: &mut crate::projection::EvidenceProjection,
+    event: TeamStateCaptured,
+) {
+    apply_projection_event(projection, team_projection_event(false, event));
 }
 
 fn native_store_persistence(error: crate::store::StoreError) -> PersistenceError {
@@ -974,6 +1118,17 @@ async fn noop_org_event_store() -> Arc<OrgEventStoreImpl> {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::unused_async,
+    reason = "pardosa store facade is synchronous by PGN-0010:R5 / PGN-0015:R6; async fn preserves a uniform .await consumer seam across the sync-over-async backend boundary"
+)]
+async fn noop_team_event_store() -> Arc<TeamEventStoreImpl> {
+    let dir = tempfile::tempdir().expect("test tempdir");
+    let path = dir.keep().join("team-events.pgno");
+    Arc::new(TeamEventStoreImpl::create_pgno(&path).expect("create test pardosa team store"))
+}
+
+#[cfg(test)]
 fn noop_scheduler_event_store() -> Arc<SchedulerEventStoreImpl> {
     let dir = tempfile::tempdir().expect("test tempdir");
     Arc::new(scheduler_event_store(dir.keep().as_path()))
@@ -1006,6 +1161,7 @@ impl AppState {
     pub async fn new() -> Arc<Self> {
         let event_store = noop_event_store().await;
         let org_event_store = noop_org_event_store().await;
+        let team_event_store = noop_team_event_store().await;
         let scheduler_event_store = noop_scheduler_event_store();
         let sweep_timeout_event_store = noop_sweep_timeout_event_store();
         let projection_state =
@@ -1021,6 +1177,7 @@ impl AppState {
             worker_pool_cancel: WorkerShutdownToken::new(),
             event_store,
             org_event_store,
+            team_event_store,
             scheduler_event_store,
             sweep_timeout_event_store,
             projection_state,
@@ -1063,16 +1220,29 @@ impl AppState {
         let event_store =
             open_event_store_blocking(events_dir.clone(), backend, nats.clone(), handle.clone())
                 .await?;
-        let org_event_store =
-            open_org_event_store_blocking(events_dir.clone(), backend, nats.org_events(), handle)
+        let org_event_store = open_org_event_store_blocking(
+            events_dir.clone(),
+            backend,
+            nats.org_events(),
+            handle.clone(),
+        )
+        .await?;
+        let team_event_store =
+            open_team_event_store_blocking(events_dir.clone(), backend, nats.team_events(), handle)
                 .await?;
         let event_store = Arc::new(event_store);
         let org_event_store = Arc::new(org_event_store);
+        let team_event_store = Arc::new(team_event_store);
         let scheduler_event_store = Arc::new(scheduler_event_store(&events_dir));
         let sweep_timeout_event_store = Arc::new(sweep_timeout_event_store(&events_dir));
         let last_recovery = org_event_store
             .last_recovery()
             .map(|recovery| LastRecoveryStatus::from_outcome("orgs", recovery))
+            .or_else(|| {
+                team_event_store
+                    .last_recovery()
+                    .map(|recovery| LastRecoveryStatus::from_outcome("teams", recovery))
+            })
             .or_else(|| {
                 event_store
                     .last_recovery()
@@ -1081,6 +1251,7 @@ impl AppState {
         let projection_state = Arc::new(Mutex::new(projection_from_stores(
             event_store.as_ref(),
             org_event_store.as_ref(),
+            team_event_store.as_ref(),
         )?));
         Ok(Arc::new(Self {
             started_at: Timestamp::now(),
@@ -1093,6 +1264,7 @@ impl AppState {
             worker_pool_cancel: WorkerShutdownToken::new(),
             event_store,
             org_event_store,
+            team_event_store,
             scheduler_event_store,
             sweep_timeout_event_store,
             projection_state,
@@ -1116,8 +1288,11 @@ impl AppState {
     }
 
     fn refresh_projection(&self) -> Result<(), std::io::Error> {
-        let projection =
-            projection_from_stores(self.event_store.as_ref(), self.org_event_store.as_ref())?;
+        let projection = projection_from_stores(
+            self.event_store.as_ref(),
+            self.org_event_store.as_ref(),
+            self.team_event_store.as_ref(),
+        )?;
         replace_projection_state(&self.projection_state, projection);
         Ok(())
     }
@@ -1130,6 +1305,21 @@ impl AppState {
     fn fold_org_event_into_projection(&self, event: OrgStateCaptured) {
         let mut guard = lock_projection_state(&self.projection_state);
         fold_org_event(&mut guard, event);
+    }
+
+    /// Fold one team roster event into the resident projection
+    /// (CHE-0089:R4), keyed by `team_domain_key`. `detached = true`
+    /// removes the roster (CHE-0073:R7 detached-remove); otherwise
+    /// upserts the latest snapshot (non-detached-upsert). Consumed by
+    /// the P3 team-refresh writer after `team_event_store.record`/
+    /// `detach` (adr-fmt-ewc1i).
+    #[expect(
+        dead_code,
+        reason = "consumed by the P3 team-refresh writer (adr-fmt-ewc1i), not yet landed"
+    )]
+    pub(crate) fn fold_team_event_into_projection(&self, detached: bool, event: TeamStateCaptured) {
+        let mut guard = lock_projection_state(&self.projection_state);
+        apply_projection_event(&mut *guard, team_projection_event(detached, event));
     }
 
     /// Record a live repository snapshot in the native store.
@@ -1310,6 +1500,7 @@ impl AppStateBuilder {
         let webhook = WebhookState::with_secret(self.webhook_secret);
         let event_store = noop_event_store().await;
         let org_event_store = noop_org_event_store().await;
+        let team_event_store = noop_team_event_store().await;
         let scheduler_event_store = noop_scheduler_event_store();
         let sweep_timeout_event_store = noop_sweep_timeout_event_store();
         let projection_state =
@@ -1326,6 +1517,7 @@ impl AppStateBuilder {
             worker_pool_cancel: WorkerShutdownToken::new(),
             event_store,
             org_event_store,
+            team_event_store,
             scheduler_event_store,
             sweep_timeout_event_store,
             projection_state,
@@ -1538,6 +1730,7 @@ impl cherry_pit_web::serve::ServerState for AppState {
     fn is_ready(&self) -> bool {
         self.event_store.backend_reachable()
             && self.org_event_store.backend_reachable()
+            && self.team_event_store.backend_reachable()
             && (self.last_completed_run.load().is_some()
                 || self.evidence.html_cache.load().is_some()
                 || !self.lock_projection().is_empty())

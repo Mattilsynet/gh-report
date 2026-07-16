@@ -6,7 +6,7 @@ use cherry_pit_core::{DomainEvent, EventEnvelope, Projection, ReadPort};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::evidence::{AssessmentMetadata, OrgStateSnapshot, RepositoryEvidence};
-use crate::domain::metrics::OrgAlertSummary;
+use crate::domain::metrics::{OrgAlertSummary, TeamRoster};
 
 /// Org-level read-model part folded from the latest org event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +60,11 @@ pub struct EvidenceProjection {
 
     /// Last-known org-level state folded from the org event stream.
     pub org_state: Option<OrgReadModel>,
+
+    /// Latest-per-fiber team rosters folded from the team event stream
+    /// (CHE-0089:R4), keyed by `team_domain_key`. `BTreeMap` for the same
+    /// deterministic-iteration rationale as [`Self::repositories`].
+    pub team_rosters: BTreeMap<String, TeamRoster>,
 }
 
 /// Projection-input event consumed by the core [`cherry_pit_core::Projection`] impl.
@@ -85,6 +90,17 @@ pub enum EvidenceProjectionEvent {
     },
     /// Org-level read model observed from the gh-report native org store.
     OrgStateCaptured(Box<OrgStateSnapshot>),
+    /// Team roster state observed from the gh-report native team store
+    /// (CHE-0089:R4). `detached` mirrors the repository-side non-detached-
+    /// upsert / detached-remove pattern (CHE-0073:R7).
+    TeamStateCaptured {
+        /// Pardosa detached-envelope flag for team soft-delete replay.
+        detached: bool,
+        /// Team projection key (`team_domain_key`).
+        domain_key: String,
+        /// Team roster when the fiber is live.
+        roster: Option<Box<TeamRoster>>,
+    },
 }
 
 impl DomainEvent for EvidenceProjectionEvent {
@@ -95,6 +111,7 @@ impl DomainEvent for EvidenceProjectionEvent {
             }
             Self::RepositoryDeleted { .. } => "gh-report.projection.repository_deleted",
             Self::OrgStateCaptured(_) => "gh-report.projection.org_state_captured",
+            Self::TeamStateCaptured { .. } => "gh-report.projection.team_state_captured",
         }
     }
 }
@@ -134,6 +151,18 @@ impl Projection for EvidenceProjection {
             EvidenceProjectionEvent::OrgStateCaptured(snapshot) => {
                 self.apply_org_state(snapshot.as_ref().clone());
             }
+            EvidenceProjectionEvent::TeamStateCaptured {
+                detached,
+                domain_key,
+                roster,
+            } => {
+                if *detached {
+                    self.team_rosters.remove(domain_key);
+                } else if let Some(roster) = roster.as_ref() {
+                    self.team_rosters
+                        .insert(domain_key.clone(), roster.as_ref().clone());
+                }
+            }
         }
     }
 }
@@ -156,6 +185,10 @@ pub enum EvidenceProjectionQuery {
     KeyNameSnapshot,
     /// Return the latest org read-model part.
     OrgState,
+    /// Return the team roster for one `team_domain_key`.
+    TeamRoster(String),
+    /// Return all team rosters in `team_domain_key` order.
+    TeamRostersSnapshot,
 }
 
 /// Typed read response for the governance evidence projection.
@@ -175,6 +208,10 @@ pub enum EvidenceProjectionResponse {
     KeyNamePairs(Vec<(String, String)>),
     /// Optional org read-model result.
     OrgState(Box<Option<OrgReadModel>>),
+    /// Optional team roster result.
+    TeamRoster(Box<Option<TeamRoster>>),
+    /// Ordered `(team_domain_key, TeamRoster)` pairs.
+    TeamRostersSnapshot(Vec<(String, TeamRoster)>),
 }
 
 /// Static read port for [`EvidenceProjection`].
@@ -207,13 +244,39 @@ impl EvidenceProjection {
     /// True when no repositories are materialised. Pairs with [`Self::len`].
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.repositories.is_empty() && self.deleted.is_empty() && self.org_state.is_none()
+        self.repositories.is_empty()
+            && self.deleted.is_empty()
+            && self.org_state.is_none()
+            && self.team_rosters.is_empty()
     }
 
     /// Apply an org snapshot as latest-event-read state.
     pub fn apply_org_state(&mut self, snapshot: OrgStateSnapshot) {
         let org_state = OrgReadModel::from(snapshot);
         self.org_state = Some(org_state);
+    }
+
+    /// Look up the team roster for a single `team_domain_key`.
+    ///
+    /// Returns an owned clone, mirroring [`Self::get`]. Per CHE-0048:R2
+    /// this projection is the sole reader/writer pair of its read-model.
+    #[must_use]
+    pub fn team_roster(&self, team_domain_key: &str) -> Option<TeamRoster> {
+        self.team_rosters.get(team_domain_key).cloned()
+    }
+
+    /// Snapshot of all team rosters in `team_domain_key` order.
+    ///
+    /// Underlying storage is already a `BTreeMap<String, _>`, so
+    /// iteration order is deterministic without an explicit re-sort
+    /// (unlike [`Self::sorted_snapshot`], which re-sorts by
+    /// `(repository.id, repository.name)`).
+    #[must_use]
+    pub fn team_rosters_snapshot(&self) -> Vec<(String, TeamRoster)> {
+        self.team_rosters
+            .iter()
+            .map(|(key, roster)| (key.clone(), roster.clone()))
+            .collect()
     }
 
     /// Snapshot of all repositories, sorted by `(repository.id,
@@ -343,6 +406,12 @@ impl ReadPort for EvidenceProjectionReadPort {
             EvidenceProjectionQuery::OrgState => {
                 EvidenceProjectionResponse::OrgState(Box::new(projection.org_state.clone()))
             }
+            EvidenceProjectionQuery::TeamRoster(key) => {
+                EvidenceProjectionResponse::TeamRoster(Box::new(projection.team_roster(&key)))
+            }
+            EvidenceProjectionQuery::TeamRostersSnapshot => {
+                EvidenceProjectionResponse::TeamRostersSnapshot(projection.team_rosters_snapshot())
+            }
         }
     }
 }
@@ -357,6 +426,7 @@ mod tests {
         assert!(p.repositories.is_empty());
         assert!(p.deleted.is_empty());
         assert!(p.org_state.is_none());
+        assert!(p.team_rosters.is_empty());
     }
 
     #[test]
@@ -378,6 +448,86 @@ mod tests {
         let mut evidence = test_fixtures::all_passing_evidence(name);
         evidence.repository.inventory_key = domain_key.to_string();
         evidence
+    }
+
+    fn team_roster(canonical_owner: &str, team_slug: &str) -> TeamRoster {
+        use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRosterStatus};
+        TeamRoster {
+            canonical_owner: canonical_owner.to_string(),
+            team_slug: team_slug.to_string(),
+            status: TeamRosterStatus::Complete,
+            members: vec![TeamMember {
+                login: "octocat".to_string(),
+                role: TeamMemberRole::Member,
+                in_org: Some(true),
+            }],
+        }
+    }
+
+    fn apply_team_event(
+        projection: &mut EvidenceProjection,
+        detached: bool,
+        domain_key: &str,
+        roster: Option<TeamRoster>,
+    ) {
+        use cherry_pit_core::AggregateId;
+        use std::num::NonZeroU64;
+        let event = EvidenceProjectionEvent::TeamStateCaptured {
+            detached,
+            domain_key: domain_key.to_string(),
+            roster: roster.map(Box::new),
+        };
+        let envelope = EventEnvelope::new(
+            uuid::Uuid::now_v7(),
+            AggregateId::new(NonZeroU64::MIN),
+            NonZeroU64::MIN,
+            jiff::Timestamp::now(),
+            None,
+            None,
+            event,
+        )
+        .expect("test envelope invariant holds");
+        projection.apply(&envelope);
+    }
+
+    #[test]
+    fn team_state_captured_upserts_team_rosters() {
+        let mut p = EvidenceProjection::default();
+        assert!(p.team_roster("team_abc").is_none());
+        let roster = team_roster("@acme/platform", "platform");
+        apply_team_event(&mut p, false, "team_abc", Some(roster.clone()));
+        assert_eq!(p.team_roster("team_abc"), Some(roster));
+    }
+
+    #[test]
+    fn team_state_captured_detached_removes_team_roster() {
+        let mut p = EvidenceProjection::default();
+        let roster = team_roster("@acme/platform", "platform");
+        apply_team_event(&mut p, false, "team_abc", Some(roster));
+        assert!(p.team_roster("team_abc").is_some());
+        apply_team_event(&mut p, true, "team_abc", None);
+        assert!(p.team_roster("team_abc").is_none());
+    }
+
+    #[test]
+    fn team_state_captured_apply_is_idempotent_under_replay() {
+        let mut p = EvidenceProjection::default();
+        let roster = team_roster("@acme/platform", "platform");
+        apply_team_event(&mut p, false, "team_abc", Some(roster.clone()));
+        let first = p.team_rosters_snapshot();
+        apply_team_event(&mut p, false, "team_abc", Some(roster));
+        let second = p.team_rosters_snapshot();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn team_rosters_snapshot_orders_by_domain_key() {
+        let mut p = EvidenceProjection::default();
+        apply_team_event(&mut p, false, "team_b", Some(team_roster("@acme/b", "b")));
+        apply_team_event(&mut p, false, "team_a", Some(team_roster("@acme/a", "a")));
+        let snapshot = p.team_rosters_snapshot();
+        let keys: Vec<&str> = snapshot.iter().map(|(key, _)| key.as_str()).collect();
+        assert_eq!(keys, vec!["team_a", "team_b"]);
     }
 
     #[test]

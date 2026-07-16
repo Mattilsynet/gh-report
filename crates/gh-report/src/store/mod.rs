@@ -379,19 +379,11 @@ impl NativeTeamStore {
     }
 
     #[must_use]
-    #[expect(
-        dead_code,
-        reason = "consumed by the P3 writer / P4 status wiring (adr-fmt-ewc1i, adr-fmt-3of35), not yet landed"
-    )]
     pub(crate) fn last_recovery(&self) -> Option<&RecoveryOutcome> {
         self.inner.last_recovery()
     }
 
     #[must_use]
-    #[expect(
-        dead_code,
-        reason = "consumed by the P3 writer / P4 status wiring (adr-fmt-ewc1i, adr-fmt-3of35), not yet landed"
-    )]
     pub(crate) fn backend_reachable(&self) -> bool {
         self.backend_reachable.load(Ordering::Acquire)
     }
