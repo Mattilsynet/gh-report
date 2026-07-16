@@ -16,7 +16,7 @@
         padding: 1.5rem;
       }
       .queue-viz {
-        max-width: 900px;
+        width: 1280px;
         margin: 0 auto;
       }
       .row {
@@ -26,54 +26,76 @@
         margin: 0.75rem 0;
         flex-wrap: wrap;
       }
-      .trigger {
-        flex: 1;
-        min-width: 12rem;
-        padding: 0.5rem 0.8rem;
-        border-radius: 0.4rem;
+      .row.legend {
         font-size: 0.85rem;
-        display: flex;
-        flex-direction: column;
-        gap: 0.15rem;
       }
-      .trigger.scheduled {
-        background: #1d4ed8;
-      }
-      .trigger.webhook {
-        background: #15803d;
-      }
-      .trigger.warmstart {
-        background: #475569;
-      }
-      .split-label {
-        font-size: 0.8rem;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-        color: #94a3b8;
-        margin: 1.25rem 0 0.4rem;
-        border-bottom: 1px solid #334155;
-        padding-bottom: 0.2rem;
-      }
-      .pipeline {
+      .graph-canvas {
         position: relative;
-        display: flex;
-        justify-content: space-between;
-        gap: 0.4rem;
+        width: 1280px;
+        height: 620px;
         margin: 1rem 0;
       }
-      .stage {
-        flex: 1;
+      .graph-svg {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+      .edge {
+        fill: none;
+        stroke: #475569;
+        stroke-width: 2;
+      }
+      .edge-converge {
+        stroke: #3b82f6;
+      }
+      .edge-spine {
+        stroke: #3b82f6;
+        stroke-width: 3;
+      }
+      .edge-gate {
+        stroke: #94a3b8;
+        stroke-dasharray: 6 5;
+      }
+      .edge-read {
+        stroke: #f59e0b;
+      }
+      .edge-warmstart {
+        stroke: #64748b;
+        stroke-dasharray: 3 6;
+      }
+      .edge-serve,
+      .edge-serve-loop {
+        stroke: #22c55e;
+        stroke-dasharray: 4 4;
+        animation: serve-flow 2.4s linear infinite;
+      }
+      @keyframes serve-flow {
+        to {
+          stroke-dashoffset: -16;
+        }
+      }
+      .packet-layer {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        z-index: 2;
+      }
+      .node {
+        position: absolute;
+        transform: translate(-50%, -50%);
         display: flex;
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        min-height: 3.2rem;
-        padding: 0.4rem 0.3rem;
-        font-size: 0.75rem;
+        width: 9.5rem;
+        min-height: 3.4rem;
+        padding: 0.4rem 0.5rem;
+        font-size: 0.72rem;
         font-weight: 600;
         text-align: center;
-        color: #e2e8f0;
-        position: relative;
+        border-radius: 0.4rem;
         z-index: 1;
       }
       .stage-note {
@@ -82,16 +104,34 @@
         color: #94a3b8;
         margin-top: 0.15rem;
       }
-      .stage-work {
+      .stage-hidden {
+        display: none;
+      }
+      .node-trigger {
+        width: 10.5rem;
+      }
+      .node-scheduled {
+        background: #1d4ed8;
+      }
+      .node-webhook {
+        background: #15803d;
+      }
+      .node-warmstart {
+        background: #475569;
+      }
+      .node-work {
         background: #334155;
         border: 2px solid #64748b;
-        border-radius: 0.35rem;
         animation: work-pulse 1.6s ease-in-out infinite;
       }
-      .stage-store {
+      .node-store {
         background: #1e3a5f;
         border: 2px solid #3b82f6;
         border-radius: 45% / 18%;
+      }
+      .node-serve {
+        background: #14532d;
+        border: 2px solid #22c55e;
       }
       @keyframes work-pulse {
         0%,
@@ -102,42 +142,51 @@
           box-shadow: 0 0 0.5rem rgba(100, 116, 139, 0.85);
         }
       }
-      .lane {
-        position: relative;
-        flex: 1;
-        min-height: 2.5rem;
-        background: #1e293b;
-        border-radius: 0.4rem;
-        overflow: hidden;
-      }
-      .lane-transit {
+      .gate-glyph {
         position: absolute;
-        inset: 0;
-        background: transparent;
-        border-radius: 0;
-        overflow: visible;
-        pointer-events: none;
-        z-index: 2;
+        transform: translate(-50%, -50%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        font-size: 1.1rem;
+        color: #94a3b8;
+        z-index: 1;
+      }
+      @keyframes gate-flash {
+        0% {
+          color: #94a3b8;
+          text-shadow: none;
+        }
+        40% {
+          color: #f59e0b;
+          text-shadow: 0 0 0.6rem #f59e0b;
+        }
+        100% {
+          color: #94a3b8;
+          text-shadow: none;
+        }
       }
       .packet {
         position: absolute;
-        top: 50%;
-        left: var(--transit-start, 0%);
+        top: 0;
+        left: 0;
         width: 0.8rem;
         height: 0.8rem;
-        margin-top: -0.4rem;
+        margin: -0.4rem;
         border-radius: 999px;
+        offset-rotate: auto;
+        offset-distance: var(--transit-start, 0%);
         animation-name: transit-move;
         animation-timing-function: linear;
         animation-fill-mode: forwards;
       }
       @keyframes transit-move {
         from {
-          left: var(--transit-start, 0%);
+          offset-distance: var(--transit-start, 0%);
           opacity: 1;
         }
         to {
-          left: var(--transit-end, 100%);
+          offset-distance: var(--transit-end, 100%);
           opacity: 0.85;
         }
       }
@@ -155,11 +204,14 @@
       .packet-success {
         outline: 2px solid #22c55e33;
       }
+      .packet-warmstart {
+        outline: 2px dashed #94a3b8;
+      }
       .packet-page-update {
         outline: 2px solid #f59e0b;
         width: 1.1rem;
         height: 1.1rem;
-        margin-top: -0.55rem;
+        margin: -0.55rem;
       }
       .gauge {
         font-variant-numeric: tabular-nums;

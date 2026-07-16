@@ -58,6 +58,11 @@ struct AppState {
 
 thread_local! {
     static APP: RefCell<Option<AppState>> = const { RefCell::new(None) };
+    static DOC: RefCell<Option<Document>> = const { RefCell::new(None) };
+}
+
+fn cached_document() -> Option<Document> {
+    DOC.with(|cell| cell.borrow().clone())
 }
 
 fn source_color(source: JobSource) -> &'static str {
@@ -74,7 +79,30 @@ const FAILURE_LANE_END: &str = "45%";
 const FAILURE_DURATION_MS: u32 = 700;
 const READ_LANE_END: &str = "100%";
 const READ_PULSE_DURATION_MS: u32 = 900;
+const WARMSTART_DURATION_MS: u32 = 1100;
 const MAX_LANE_PACKETS: u32 = 40;
+
+/// Curve `spawn_collection_loop` &rarr; `WorkQueue` (fan-in leg one).
+const PATH_CONVERGE_SCHEDULED: &str = "M180,95 C300,95 300,180 280,180";
+/// Curve `webhook_handler` &rarr; `WorkQueue` (fan-in leg two).
+const PATH_CONVERGE_WEBHOOK: &str = "M180,265 C300,265 300,180 280,180";
+/// Shared write spine: `WorkQueue` &rarr; `worker_loop` &rarr;
+/// `EvidenceProjectionEvent` stream &rarr; `EvidenceProjection`.
+const PATH_WRITE_SPINE: &str = "M420,180 C450,140 500,140 555,180 \
+     C610,220 660,220 690,180 C720,140 780,140 830,180 C860,210 890,210 910,180";
+/// `BatchTracker` gate segment: `EvidenceProjection` &rarr;
+/// `finalize_and_publish`.
+const PATH_GATE: &str = "M1050,180 C1000,220 950,260 925,330";
+/// Read chain: `finalize_and_publish` &rarr; `build_cached_pages` &rarr;
+/// `commit_cached_pages`.
+const PATH_READ_CHAIN: &str = "M975,380 Q1000,340 1050,380 Q1100,420 1130,380";
+/// `warm_start_from_baseline` bypass, routed around the write side and
+/// barrier straight into the read chain.
+const PATH_WARMSTART_BYPASS: &str = "M180,445 C450,445 450,620 700,620 C820,620 850,500 900,410";
+/// Continuous serve branch off `commit_cached_pages` / `ArcSwap`.
+const PATH_SERVE_BRANCH: &str = "M1200,415 C1200,460 1200,460 1200,505";
+/// `PageUpdateEvent` WS loop back from the serve branch.
+const PATH_SERVE_LOOP: &str = "M1270,540 C1279,480 1279,420 1265,415";
 
 fn sweep_phase_label(phase: SweepPhase) -> &'static str {
     match phase {
@@ -101,6 +129,7 @@ pub fn start() {
     let Some(root) = document.get_element_by_id("app") else {
         return;
     };
+    DOC.with(|cell| *cell.borrow_mut() = Some(document.clone()));
 
     let rates = RwSignal::new(Rates {
         batch_per_tick: 1,
@@ -123,7 +152,7 @@ pub fn start() {
 
     Effect::new(move |_| {
         let current = rates.get();
-        if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+        if let Some(document) = cached_document() {
             set_text(
                 &document,
                 "batch-rate-value",
@@ -147,7 +176,7 @@ pub fn start() {
 /// features required).
 #[wasm_bindgen]
 pub fn tick() {
-    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+    let Some(document) = cached_document() else {
         return;
     };
 
@@ -160,7 +189,21 @@ pub fn tick() {
         if state.warm_start_requested {
             state.warm_start_requested = false;
             let update = state.sim.warm_start();
-            render_read_pulse(&document, update);
+            if let Some(packet_layer) = document.get_element_by_id("packet-layer") {
+                spawn_transit_packet(
+                    &document,
+                    &packet_layer,
+                    &PacketSpec {
+                        class: "packet packet-warmstart",
+                        color: source_color(JobSource::InitialLoad),
+                        path_d: PATH_WARMSTART_BYPASS,
+                        start: "0%",
+                        end: "100%",
+                        duration_ms: WARMSTART_DURATION_MS,
+                    },
+                );
+            }
+            render_read_pulse(&document, update, false);
         }
 
         let rates = state.rates.get_untracked();
@@ -176,7 +219,7 @@ pub fn tick() {
         render_gauges(&document, &state.sim);
         render_events(&document, &events.arrivals, &events.completions);
         for update in &events.page_updates {
-            render_read_pulse(&document, *update);
+            render_read_pulse(&document, *update, true);
         }
     });
 }
@@ -276,12 +319,23 @@ fn compression_ratio_display(sim: &Sim) -> String {
     format!("{percent}%")
 }
 
+/// Bundles a packet's visual + motion parameters so
+/// [`spawn_transit_packet`] stays under clippy's argument-count bar.
+struct PacketSpec<'a> {
+    class: &'a str,
+    color: &'a str,
+    path_d: &'a str,
+    start: &'a str,
+    end: &'a str,
+    duration_ms: u32,
+}
+
 fn render_events(
     document: &Document,
     arrivals: &[(JobSource, EnqueueResult)],
     completions: &[(JobSource, JobOutcome)],
 ) {
-    let Some(write_lane) = document.get_element_by_id("write-lane") else {
+    let Some(packet_layer) = document.get_element_by_id("packet-layer") else {
         return;
     };
     for (source, result) in arrivals {
@@ -292,59 +346,100 @@ fn render_events(
         };
         spawn_transit_packet(
             document,
-            &write_lane,
-            class,
-            source_color(*source),
-            "0%",
-            "20%",
-            WRITE_DURATION_MS / 2,
+            &packet_layer,
+            &PacketSpec {
+                class,
+                color: source_color(*source),
+                path_d: converge_path_for(*source),
+                start: "0%",
+                end: "100%",
+                duration_ms: WRITE_DURATION_MS / 2,
+            },
         );
     }
 
     for (source, outcome) in completions {
-        match outcome {
-            JobOutcome::Success => spawn_transit_packet(
-                document,
-                &write_lane,
-                "packet packet-success",
-                source_color(*source),
-                "20%",
-                WRITE_LANE_END,
-                WRITE_DURATION_MS,
-            ),
-            JobOutcome::Failure => spawn_transit_packet(
-                document,
-                &write_lane,
-                "packet packet-failure",
-                source_color(*source),
-                "20%",
-                FAILURE_LANE_END,
-                FAILURE_DURATION_MS,
-            ),
-        }
+        let spec = match outcome {
+            JobOutcome::Success => PacketSpec {
+                class: "packet packet-success",
+                color: source_color(*source),
+                path_d: PATH_WRITE_SPINE,
+                start: "0%",
+                end: WRITE_LANE_END,
+                duration_ms: WRITE_DURATION_MS,
+            },
+            JobOutcome::Failure => PacketSpec {
+                class: "packet packet-failure",
+                color: source_color(*source),
+                path_d: PATH_WRITE_SPINE,
+                start: "0%",
+                end: FAILURE_LANE_END,
+                duration_ms: FAILURE_DURATION_MS,
+            },
+        };
+        spawn_transit_packet(document, &packet_layer, &spec);
     }
 }
 
-/// Pulses the READ-side lane once per [`PageUpdateEvent`] —
-/// `finalize_and_publish` firing per RUN, never per packet.
-fn render_read_pulse(document: &Document, update: PageUpdateEvent) {
-    let Some(read_lane) = document.get_element_by_id("read-lane") else {
+/// The converge leg a [`JobSource`] fans into `WorkQueue` on.
+/// [`JobSource::InitialLoad`] never arrives via this fan-in (it rides
+/// [`PATH_WARMSTART_BYPASS`] instead); the scheduled leg is a harmless
+/// fallback for that unreachable-in-practice arrival case.
+const fn converge_path_for(source: JobSource) -> &'static str {
+    match source {
+        JobSource::External { .. } => PATH_CONVERGE_WEBHOOK,
+        JobSource::ScheduledBatch | JobSource::InitialLoad => PATH_CONVERGE_SCHEDULED,
+    }
+}
+
+/// Pulses the READ chain once per [`PageUpdateEvent`] —
+/// `finalize_and_publish` firing per RUN, never per packet. `gated`
+/// flashes the `BatchTracker` gate glyph: true for the scheduled-run
+/// path (gate already enforced `remaining == 0` upstream in
+/// [`crate::sim::Sim::step`]), false for the warm-start bypass, which
+/// never touches the gate.
+fn render_read_pulse(document: &Document, update: PageUpdateEvent, gated: bool) {
+    let Some(packet_layer) = document.get_element_by_id("packet-layer") else {
         return;
     };
     spawn_transit_packet(
         document,
-        &read_lane,
-        "packet packet-page-update",
-        "#f59e0b",
-        "0%",
-        READ_LANE_END,
-        READ_PULSE_DURATION_MS,
+        &packet_layer,
+        &PacketSpec {
+            class: "packet packet-page-update",
+            color: "#f59e0b",
+            path_d: PATH_READ_CHAIN,
+            start: "0%",
+            end: READ_LANE_END,
+            duration_ms: READ_PULSE_DURATION_MS,
+        },
     );
+    if gated {
+        flash_gate(document);
+    }
     set_text(
         document,
         "arcswap-generation",
         &update.generation.to_string(),
     );
+}
+
+/// Restarts the `gate-flash` CSS animation on the `BatchTracker` glyph
+/// by clearing then re-applying it, forcing a reflow in between so the
+/// keyframes restart even when the previous flash is still fading.
+fn flash_gate(document: &Document) {
+    let Some(element) = document.get_element_by_id("gate-glyph") else {
+        return;
+    };
+    let Ok(html_element) = element.dyn_into::<web_sys::HtmlElement>() else {
+        return;
+    };
+    let style = html_element.style();
+    style.set_property("animation", "none").ok();
+    let _forced_reflow = html_element.offset_width();
+    style
+        .set_property("animation", "gate-flash 900ms ease-out")
+        .ok();
 }
 
 fn wire_warm_start_button(document: &Document) {
@@ -363,30 +458,25 @@ fn wire_warm_start_button(document: &Document) {
     closure.forget();
 }
 
-fn spawn_transit_packet(
-    document: &Document,
-    lane: &Element,
-    class: &str,
-    color: &str,
-    start: &str,
-    end: &str,
-    duration_ms: u32,
-) {
+fn spawn_transit_packet(document: &Document, layer: &Element, spec: &PacketSpec<'_>) {
     let Ok(packet) = document.create_element("div") else {
         return;
     };
-    packet.set_attribute("class", class).ok();
+    packet.set_attribute("class", spec.class).ok();
     if let Ok(html_packet) = packet.clone().dyn_into::<web_sys::HtmlElement>() {
         let style = html_packet.style();
-        style.set_property("background-color", color).ok();
-        style.set_property("--transit-start", start).ok();
-        style.set_property("--transit-end", end).ok();
+        style.set_property("background-color", spec.color).ok();
         style
-            .set_property("animation-duration", &format!("{duration_ms}ms"))
+            .set_property("offset-path", &format!("path('{}')", spec.path_d))
+            .ok();
+        style.set_property("--transit-start", spec.start).ok();
+        style.set_property("--transit-end", spec.end).ok();
+        style
+            .set_property("animation-duration", &format!("{}ms", spec.duration_ms))
             .ok();
     }
-    lane.append_child(&packet).ok();
-    prune_lane(lane);
+    layer.append_child(&packet).ok();
+    prune_lane(layer);
 }
 
 fn prune_lane(lane: &Element) {
@@ -404,82 +494,7 @@ fn set_text(document: &Document, id: &str, value: &str) {
 }
 
 fn build_layout(document: &Document, root: &Element, rates: RwSignal<Rates>) {
-    root.set_inner_html(
-        r"
-<section class='queue-viz'>
-  <h1>gh-report queue network — write &rarr; barrier &rarr; read, serve continuous</h1>
-  <div class='row triggers'>
-    <div class='trigger scheduled'>
-      TRIGGER 1: spawn_collection_loop
-      <span class='stage-note'>SweepPhase: <span id='sweep-phase'>Completed</span></span>
-      <span class='stage-note'>enqueue_batch &rarr; JobSource::ScheduledBatch</span>
-    </div>
-    <div class='trigger webhook'>
-      TRIGGER 2: webhook_handler
-      <span class='stage-note'>JobSource::External{id,kind}</span>
-    </div>
-    <div class='trigger warmstart'>
-      TRIGGER 3: warm_start_from_baseline
-      <span class='stage-note'>bypasses queue/workers</span>
-      <button id='warm-start-btn'>fire warm start</button>
-    </div>
-  </div>
-  <div class='row controls'>
-    <button id='batch-rate-down'>batch rate -</button>
-    <span>ScheduledBatch every <span id='batch-rate-value'>1</span> ticks</span>
-    <button id='batch-rate-up'>+</button>
-    <button id='external-rate-down'>external rate -</button>
-    <span>External every <span id='external-rate-value'>1</span> ticks</span>
-    <button id='external-rate-up'>+</button>
-  </div>
-
-  <h2 class='split-label'>WRITE side (per packet)</h2>
-  <div class='pipeline'>
-    <div class='stage stage-store'>WorkQueue<span class='stage-note'>depth <span id='stage-queue-fill'>0/0</span></span></div>
-    <div class='stage stage-work'>worker_loop / LiveEvaluator::evaluate<span class='stage-note'>16x GitHub query</span></div>
-    <div class='stage stage-store'>EvidenceProjectionEvent stream<span class='stage-note'>record_repo events <span id='stage-stream-fill'>0</span></span></div>
-    <div class='stage stage-store'>EvidenceProjection<span class='stage-note'>repos captured <span id='stage-projection-fill'>0</span></span></div>
-    <div id='write-lane' class='lane lane-transit'></div>
-  </div>
-
-  <h2 class='split-label'>BARRIER — BatchTracker (scheduled runs only)</h2>
-  <div class='row'>
-    <div class='gauge'>BatchTracker remaining <span id='batch-remaining'>0</span></div>
-    <div class='gauge'>worker executions <span id='worker-executions'>0</span></div>
-  </div>
-
-  <h2 class='split-label'>READ side (per RUN, gated on BatchTracker == 0)</h2>
-  <div class='pipeline'>
-    <div class='stage stage-work'>finalize_and_publish<span class='stage-note'>fires once per run</span></div>
-    <div class='stage stage-work'>build_cached_pages<span class='stage-note'>memo</span></div>
-    <div class='stage stage-work'>commit_cached_pages<span class='stage-note'>ArcSwap swap + PageUpdateEvent</span></div>
-    <div id='read-lane' class='lane lane-transit'></div>
-  </div>
-
-  <h2 class='split-label'>SERVE (continuous, independent of runs)</h2>
-  <div class='row'>
-    <div class='gauge'>cache_fallback gen <span id='cache-fallback-gen'>0</span></div>
-    <div class='gauge'>ArcSwap gen <span id='arcswap-generation'>0</span></div>
-    <div class='gauge'>served pages (WS PageUpdateEvent) <span id='served-pages'>0</span></div>
-  </div>
-
-  <div class='row'>
-    <div class='gauge'>WorkQueue <span id='queue-depth'>0</span>/<span id='queue-capacity'>0</span></div>
-    <div class='gauge'>in-flight <span id='in-flight'>0</span>/<span id='worker-count'>0</span></div>
-    <div class='gauge'>QueueFull <span id='queue-full-count'>0</span></div>
-    <div class='gauge'>Deduplicated <span id='deduplicated-count'>0</span></div>
-  </div>
-  <div class='row'>
-    <div class='gauge'>failures <span id='failure-count'>0</span></div>
-    <div class='gauge'>events written <span id='events-written'>0</span></div>
-    <div class='gauge'>repos captured <span id='repos-captured'>0</span></div>
-    <div class='gauge'>memo hits <span id='memo-hits'>0</span></div>
-    <div class='gauge'>memo rebuilds <span id='memo-rebuilds'>0</span></div>
-    <div class='gauge'>compression <span id='compression-ratio'>n/a</span></div>
-  </div>
-</section>
-",
-    );
+    root.set_inner_html(&graph_markup());
 
     wire_rate_button(document, "batch-rate-down", rates, RateField::Batch, -1);
     wire_rate_button(document, "batch-rate-up", rates, RateField::Batch, 1);
@@ -491,6 +506,128 @@ fn build_layout(document: &Document, root: &Element, rates: RwSignal<Rates>) {
         -1,
     );
     wire_rate_button(document, "external-rate-up", rates, RateField::External, 1);
+}
+
+/// The full branched flow-graph markup: SVG curved edges layer plus
+/// absolutely-positioned HTML node boxes, sharing the same 1280x620
+/// coordinate space so [`spawn_transit_packet`]'s `offset-path` lines
+/// up with the drawn edges.
+fn graph_markup() -> String {
+    format!(
+        r"
+<section class='queue-viz'>
+  <h1>gh-report queue network &mdash; branched causal flow graph</h1>
+  <div class='row controls'>
+    <button id='batch-rate-down'>batch rate -</button>
+    <span>ScheduledBatch every <span id='batch-rate-value'>1</span> ticks</span>
+    <button id='batch-rate-up'>+</button>
+    <button id='external-rate-down'>external rate -</button>
+    <span>External every <span id='external-rate-value'>1</span> ticks</span>
+    <button id='external-rate-up'>+</button>
+  </div>
+
+  <div class='graph-canvas'>
+    <svg class='graph-svg' viewBox='0 0 1280 620' preserveAspectRatio='xMidYMid meet'>
+      <defs>
+        <marker id='arrow' viewBox='0 0 10 10' refX='9' refY='5' markerWidth='7' markerHeight='7' orient='auto-start-reverse'>
+          <path d='M0,0 L10,5 L0,10 z' fill='#94a3b8' />
+        </marker>
+      </defs>
+      <path class='edge edge-converge' d='{PATH_CONVERGE_SCHEDULED}' marker-end='url(#arrow)' />
+      <path class='edge edge-converge' d='{PATH_CONVERGE_WEBHOOK}' marker-end='url(#arrow)' />
+      <path class='edge edge-spine' d='{PATH_WRITE_SPINE}' marker-end='url(#arrow)' />
+      <path class='edge edge-gate' d='{PATH_GATE}' marker-end='url(#arrow)' />
+      <path class='edge edge-read' d='{PATH_READ_CHAIN}' marker-end='url(#arrow)' />
+      <path class='edge edge-warmstart' d='{PATH_WARMSTART_BYPASS}' marker-end='url(#arrow)' />
+      <path class='edge edge-serve' d='{PATH_SERVE_BRANCH}' marker-end='url(#arrow)' />
+      <path class='edge edge-serve-loop' d='{PATH_SERVE_LOOP}' marker-end='url(#arrow)' />
+    </svg>
+    <div id='packet-layer' class='packet-layer'></div>
+{}
+  </div>
+
+  <div class='row legend'>
+    <div class='gauge'>WorkQueue <span id='queue-depth'>0</span>/<span id='queue-capacity'>0</span></div>
+    <div class='gauge'>in-flight <span id='in-flight'>0</span>/<span id='worker-count'>0</span></div>
+    <div class='gauge'>QueueFull <span id='queue-full-count'>0</span></div>
+    <div class='gauge'>Deduplicated <span id='deduplicated-count'>0</span></div>
+    <div class='gauge'>failures <span id='failure-count'>0</span></div>
+  </div>
+  <div class='row legend'>
+    <div class='gauge'>events written <span id='events-written'>0</span></div>
+    <div class='gauge'>repos captured <span id='repos-captured'>0</span></div>
+    <div class='gauge'>memo hits <span id='memo-hits'>0</span></div>
+    <div class='gauge'>memo rebuilds <span id='memo-rebuilds'>0</span></div>
+    <div class='gauge'>compression <span id='compression-ratio'>n/a</span></div>
+  </div>
+</section>
+",
+        graph_nodes_markup(),
+    )
+}
+
+/// Node boxes only (triggers, write spine, gate, read chain, serve),
+/// split out of [`graph_markup`] purely to stay under clippy's
+/// function-length bar.
+fn graph_nodes_markup() -> &'static str {
+    r"
+    <div class='node node-trigger node-scheduled' style='left:95px;top:95px'>
+      spawn_collection_loop
+      <span class='stage-note'>SweepPhase: <span id='sweep-phase'>Completed</span></span>
+      <span class='stage-note'>ScheduledBatch (burst)</span>
+    </div>
+    <div class='node node-trigger node-webhook' style='left:95px;top:265px'>
+      webhook_handler
+      <span class='stage-note'>JobSource::External&lbrace;id,kind&rbrace;</span>
+    </div>
+    <div class='node node-trigger node-warmstart' style='left:95px;top:445px'>
+      warm_start_from_baseline
+      <span class='stage-note'>bypass &rarr; read chain</span>
+      <button id='warm-start-btn'>fire warm start</button>
+    </div>
+
+    <div class='node node-store node-queue' style='left:350px;top:180px'>
+      WorkQueue
+      <span class='stage-note'>depth <span id='stage-queue-fill'>0/0</span></span>
+    </div>
+    <div class='node node-work node-worker' style='left:555px;top:180px'>
+      worker_loop / LiveEvaluator::evaluate
+      <span class='stage-note'>executions <span id='worker-executions'>0</span></span>
+    </div>
+    <div class='node node-store node-eventstream' style='left:775px;top:180px'>
+      EvidenceProjectionEvent stream
+      <span class='stage-note'>events <span id='stage-stream-fill'>0</span></span>
+    </div>
+    <div class='node node-store node-projection' style='left:980px;top:180px'>
+      EvidenceProjection
+      <span class='stage-note'>repos <span id='stage-projection-fill'>0</span></span>
+    </div>
+
+    <div id='gate-glyph' class='gate-glyph' style='left:950px;top:280px'>
+      &#9670;
+      <span class='stage-note'>BatchTracker rem <span id='batch-remaining'>0</span></span>
+    </div>
+
+    <div class='node node-work node-finalize' style='left:900px;top:380px'>
+      finalize_and_publish
+      <span class='stage-note'>per RUN</span>
+    </div>
+    <div class='node node-work node-buildcache' style='left:1050px;top:380px'>
+      build_cached_pages
+      <span class='stage-note'>memo</span>
+    </div>
+    <div class='node node-work node-commit' style='left:1200px;top:380px'>
+      commit_cached_pages
+      <span class='stage-note'>ArcSwap gen <span id='arcswap-generation'>0</span></span>
+    </div>
+
+    <div class='node node-serve node-served' style='left:1200px;top:540px'>
+      cache_fallback &rarr; served pages
+      <span class='stage-note'>gen <span id='cache-fallback-gen'>0</span></span>
+      <span class='stage-note'>served <span id='served-pages'>0</span></span>
+      <span class='stage-note stage-hidden'>cache fill <span id='stage-cache-fill'>0</span></span>
+    </div>
+"
 }
 
 #[derive(Clone, Copy)]
