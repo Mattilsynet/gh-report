@@ -414,8 +414,12 @@ pub struct TeamRoster {
 
 /// Extract the GitHub team slug from a canonical CODEOWNERS owner string.
 ///
-/// Returns `None` for user-type owners (no `/`) or malformed input. The
-/// canonical form is `@org/team-slug` (already lowercased by
+/// Returns `None` for user-type owners (no `/`), malformed input, or a
+/// slug containing glob metacharacters (`* ? [ ] !`). A CODEOWNERS entry
+/// like `* @org/*` is a wildcard-shaped owner, not a real GitHub team —
+/// GitHub team slugs cannot contain glob metacharacters, so such a slug
+/// is invalid by construction and must never reach a team-roster fetch.
+/// The canonical form is `@org/team-slug` (already lowercased by
 /// [`build_owner_repo_map`]'s dedup key); the API path needs only the
 /// `team-slug` segment, since the org is supplied separately.
 ///
@@ -427,12 +431,13 @@ pub struct TeamRoster {
 ///     Some("team-foo")
 /// );
 /// assert_eq!(team_slug_from_canonical_owner("@individual-user"), None);
+/// assert_eq!(team_slug_from_canonical_owner("@mattilsynet/*"), None);
 /// ```
 #[must_use]
 pub fn team_slug_from_canonical_owner(canonical_owner: &str) -> Option<&str> {
     let stripped = canonical_owner.strip_prefix('@')?;
     let (_, slug) = stripped.split_once('/')?;
-    (!slug.is_empty()).then_some(slug)
+    (!slug.is_empty() && !slug.contains(['*', '?', '[', ']', '!'])).then_some(slug)
 }
 
 /// Collection statistics for the run.
@@ -602,5 +607,58 @@ mod tests {
     fn rate_metric_rounds_to_one_decimal() {
         let metric = RateMetric::new(1, 3);
         assert_eq!(metric.rate, Some(33.3));
+    }
+
+    #[test]
+    fn team_slug_from_canonical_owner_rejects_wildcard_shaped_owner() {
+        assert_eq!(team_slug_from_canonical_owner("@mattilsynet/*"), None);
+    }
+
+    #[test]
+    fn team_slug_from_canonical_owner_rejects_glob_metachars_in_slug() {
+        assert_eq!(team_slug_from_canonical_owner("@org/team-?"), None);
+        assert_eq!(team_slug_from_canonical_owner("@org/team-[a]"), None);
+        assert_eq!(team_slug_from_canonical_owner("@org/team!"), None);
+    }
+
+    #[test]
+    fn team_slug_from_canonical_owner_keeps_valid_team_slug() {
+        assert_eq!(
+            team_slug_from_canonical_owner("@mattilsynet/real-team"),
+            Some("real-team")
+        );
+    }
+
+    #[test]
+    fn team_owner_slugs_drops_wildcard_shaped_owner_but_keeps_real_team() {
+        use crate::domain::repository::Visibility;
+        use crate::test_fixtures::{
+            branch_pass, codeowners_with_owners, dependabot_enabled, make_checks,
+            make_repository_evidence, policy_pass_setting, secret_enabled_observable,
+        };
+
+        let repos = vec![make_repository_evidence(
+            "repo-a",
+            Visibility::Public,
+            false,
+            make_checks(
+                policy_pass_setting(),
+                secret_enabled_observable(false),
+                dependabot_enabled(),
+                branch_pass(),
+                codeowners_with_owners(&["@mattilsynet/*", "@mattilsynet/real-team"]),
+            ),
+        )];
+
+        let pairs = team_owner_slugs(&repos);
+
+        assert_eq!(
+            pairs,
+            vec![(
+                "@mattilsynet/real-team".to_string(),
+                "real-team".to_string()
+            )],
+            "wildcard-shaped owner @mattilsynet/* must be dropped; real-team must be kept"
+        );
     }
 }
