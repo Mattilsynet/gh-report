@@ -1,9 +1,9 @@
 # PGN-0022. Multi-Process Detection Observability
 
 Date: 2026-07-15
-Last-reviewed: 2026-07-15
+Last-reviewed: 2026-07-17
 Tier: B
-Status: Proposed
+Status: Accepted
 Crates: pardosa, pardosa-nats
 
 ## Related
@@ -52,11 +52,6 @@ R6 [6]: Treat a detected overlap as a surfacing mechanism, not a silent
 − becomes harder: every fence-detection code path must carry owner id and
   correlation context through to the emission point, adding instrumentation
   surface beyond the bare conflict-reject logic.
-risks/migration: Proposed status — no rule is extracted by `--context` and
-  no pardosa/pardosa-nats code changes ship with this ADR; a dedicated
-  multi-process writer-coordination ADR (referenced by CHE-0048) remains
-  separate future work this ADR does not attempt.
-
-This ADR is a proposal; ratification is the user's decision. Until Accepted,
-no rule above is extracted by `--context` and no pardosa or pardosa-nats
-source changes are made.
+risks/migration: no pardosa/pardosa-nats code changes ship with this ADR;
+  a dedicated multi-process writer-coordination ADR (referenced by CHE-0048)
+  remains separate future work this ADR does not attempt.
