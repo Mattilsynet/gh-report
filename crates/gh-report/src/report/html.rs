@@ -20,17 +20,18 @@ use crate::domain::checks::{
 use crate::domain::evidence::{Evidence, RepositoryEvidence};
 use crate::domain::metrics::{
     CollectionHealthCheckKind, OwnerType, ScoreExclusionCount, TeamRoster, TeamRosterStatus,
+    is_wildcard_owner,
 };
 use crate::domain::time::{is_repo_stale, parse_iso8601};
 use crate::error::ReportError;
 use crate::report::view_model::{
     BprBandGroup, BprRepoRow, BranchProtectionRegimeViewModel, ControlCell, ControlColumn,
-    CoverageTier, DeletedRepoRow, DeletedTeamRow, DeletedViewModel, OrphanedRepoRow,
+    CoverageTier, DeletedRepoRow, DeletedViewModel, GhostTeamRow, OrphanedRepoRow,
     OrphanedTeamGroup, OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow, OwnerRepoRow,
     OwnersViewModel, ReportViewModel, RosterSection, StatusDot, SummaryCard, TeamMemberRow,
-    TeamRosterViewModel, TopNav, TopSecurityTeam, bpr_band_metadata, compute_health_score,
-    coverage_control_column_tooltip, coverage_control_how_to_fix, format_exclusion, generate_slug,
-    rate_to_width_class, strip_org_prefix,
+    TeamRosterViewModel, TopNav, TopSecurityTeam, WildcardOwnerRow, bpr_band_metadata,
+    compute_health_score, coverage_control_column_tooltip, coverage_control_how_to_fix,
+    format_exclusion, generate_slug, rate_to_width_class, strip_org_prefix,
 };
 
 /// Askama template for the security posture report.
@@ -1143,18 +1144,22 @@ fn build_orphaned_by_team(rows: &[OrphanedRepoRow]) -> Vec<OrphanedTeamGroup> {
     groups
 }
 
-/// Build the deleted-repositories-and-teams page view model.
+/// Build the deleted-repositories-and-acknowledged-owner-anomalies page
+/// view model (CHE-0093:R5).
 ///
 /// `rows` (deleted repos) comes from the persisted, event-sourced
-/// [`crate::projection::DeletedRepoRecord`] set. `deleted_teams` is the
-/// opposite: render-time-only (oracle adr-fmt-kqavx), rebuilt fresh every
-/// call from `team_rosters` and `repositories` — never persisted. A
-/// CODEOWNERS-referenced team whose roster fetch classified `Deleted` (404)
-/// is joined to its referencing repos via
-/// [`crate::domain::metrics::build_owner_repo_map`], keyed by the team's
-/// full lowercased canonical owner (`@org/slug`), not its bare GitHub API
-/// slug — the two are different strings and only the canonical form is a
-/// valid map key.
+/// [`crate::projection::DeletedRepoRecord`] set. `ghost_teams` and
+/// `wildcard_owners` are the opposite: render-time-only (oracle
+/// adr-fmt-kqavx), rebuilt fresh every call from `team_rosters` and
+/// `repositories` — never persisted. A CODEOWNERS-referenced team whose
+/// roster fetch classified `Deleted` (404) is a `GhostTeam` anomaly, joined
+/// to its referencing repos via [`crate::domain::metrics::build_owner_repo_map`],
+/// keyed by the team's full lowercased canonical owner (`@org/slug`), not its
+/// bare GitHub API slug — the two are different strings and only the
+/// canonical form is a valid map key. A glob-shaped CODEOWNERS owner (e.g.
+/// `@org/*`) is a `WildcardOwner` anomaly, detected directly from
+/// `owner_repo_map` without needing a team-roster entry (it never derives a
+/// fiber, CHE-0093:R4).
 fn build_deleted_view_model(
     deleted: &[crate::projection::DeletedRepoRecord],
     organization: &str,
@@ -1173,7 +1178,7 @@ fn build_deleted_view_model(
 
     let org_encoded = utf8_percent_encode(organization, PATH_SEGMENT).to_string();
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(repositories);
-    let mut deleted_teams: Vec<DeletedTeamRow> = team_rosters
+    let mut ghost_teams: Vec<GhostTeamRow> = team_rosters
         .iter()
         .filter(|roster| roster.status == TeamRosterStatus::Deleted)
         .map(|roster| {
@@ -1185,20 +1190,36 @@ fn build_deleted_view_model(
             let team_url =
                 build_owner_github_url(OwnerType::Team, &roster.canonical_owner, &org_encoded)
                     .unwrap_or_default();
-            DeletedTeamRow {
+            GhostTeamRow {
                 team_slug: roster.team_slug.clone(),
                 team_url,
                 referencing_repos,
             }
         })
         .collect();
-    deleted_teams.sort_by_cached_key(|row| row.team_slug.to_lowercase());
+    ghost_teams.sort_by_cached_key(|row| row.team_slug.to_lowercase());
+
+    let mut wildcard_owners: Vec<WildcardOwnerRow> = owner_repo_map
+        .iter()
+        .filter(|(canonical, _)| is_wildcard_owner(canonical))
+        .map(|(_, (display_name, repos))| {
+            let mut referencing_repos: Vec<String> =
+                repos.iter().map(|r| r.repository.name.clone()).collect();
+            referencing_repos.sort_by_cached_key(|name| name.to_lowercase());
+            WildcardOwnerRow {
+                owner: display_name.clone(),
+                referencing_repos,
+            }
+        })
+        .collect();
+    wildcard_owners.sort_by_cached_key(|row| row.owner.to_lowercase());
 
     DeletedViewModel {
         rows,
         organization: organization.to_string(),
         deleted_count,
-        deleted_teams,
+        ghost_teams,
+        wildcard_owners,
     }
 }
 

@@ -445,6 +445,19 @@ pub fn team_slug_from_canonical_owner(canonical_owner: &str) -> Option<&str> {
     (!slug.is_empty() && !slug.contains(['*', '?', '[', ']', '!'])).then_some(slug)
 }
 
+/// True when a canonical CODEOWNERS owner is a `WildcardOwner` acknowledged
+/// owner anomaly (CHE-0093:R1/R4): team-shaped (contains `/`, already
+/// `OwnerType::AmbiguousTeamShaped`) but its slug is not a valid GitHub team
+/// slug — a glob-shaped catch-all construct such as `@org/*`, not a
+/// resolvable team. Report-side derivation only; does not change
+/// `OwnerType` classification (CHE-0093:R2).
+#[must_use]
+pub fn is_wildcard_owner(canonical_owner: &str) -> bool {
+    canonical_owner.starts_with('@')
+        && canonical_owner.contains('/')
+        && team_slug_from_canonical_owner(canonical_owner).is_none()
+}
+
 /// Collection statistics for the run.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CollectionStatistics {
@@ -632,6 +645,21 @@ mod tests {
             team_slug_from_canonical_owner("@mattilsynet/real-team"),
             Some("real-team")
         );
+    }
+
+    #[test]
+    fn is_wildcard_owner_true_for_glob_shaped_owner() {
+        assert!(is_wildcard_owner("@org/*"));
+    }
+
+    #[test]
+    fn is_wildcard_owner_false_for_real_team_owner() {
+        assert!(!is_wildcard_owner("@org/real-team"));
+    }
+
+    #[test]
+    fn is_wildcard_owner_false_for_user_owner() {
+        assert!(!is_wildcard_owner("@individual-user"));
     }
 
     #[test]

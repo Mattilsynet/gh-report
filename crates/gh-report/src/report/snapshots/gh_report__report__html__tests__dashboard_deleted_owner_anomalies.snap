@@ -1,0 +1,101 @@
+---
+source: crates/gh-report/src/report/html/tests.rs
+assertion_line: 3510
+expression: "&pages[\"deleted.html\"]"
+---
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Deleted Repositories and Teams — TestOrg</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="ws.js" defer></script>
+    <script type="module" src="sort-init.js"></script>
+    
+</head>
+
+<body>
+
+    <nav class="top-nav">
+    <a href="index.html">Dashboard</a>
+    <a href="owners.html">Owners</a>
+    <a href="orphans.html">Orphans (0)</a>
+    <a href="report.html" class="nav-right">Report</a>
+    <a href="deleted.html">Deleted (0)</a>
+    <a href="admin.html" class="admin-link">Admin</a>
+</nav>
+
+    <h1>Deleted Repositories</h1>
+
+    <ul class="breadcrumb">
+        <li><a href="index.html">Dashboard</a></li>
+        <li>Deleted</li>
+    </ul>
+
+    <p class="meta">Repositories absent from a successful inventory sweep in <code>TestOrg</code>.</p>
+
+    
+    <p class="meta">No deleted repositories detected.</p>
+    
+
+    
+    <h2>Acknowledged owner anomalies</h2>
+
+    <p class="meta">CODEOWNERS-referenced owners in <code>TestOrg</code> that are not a resolvable GitHub team — acknowledged and surfaced, not deleted or hidden.</p>
+
+    
+    <h3>Wildcard owners</h3>
+
+    <p class="meta">Glob-shaped CODEOWNERS owners (e.g. <code>@org/*</code>) — a catch-all/default-owner construct, not a configured team.</p>
+
+    <div class="table-wrapper">
+        <table class="data-table" data-sortable>
+            <thead>
+                <tr>
+                    <th data-sort-type="text">Owner <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="CODEOWNERS owner token that is glob-shaped, not a resolvable GitHub team.">ⓘ</span></th>
+                    <th data-nosort>Referencing Repositories <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Repositories whose CODEOWNERS file names this wildcard owner.">ⓘ</span></th>
+                </tr>
+            </thead>
+            <tbody>
+                
+                <tr>
+                    <td>@TestOrg/*</td>
+                    <td>beta-repo</td>
+                </tr>
+                
+            </tbody>
+        </table>
+    </div>
+    
+
+    
+    <h3>Ghost teams</h3>
+
+    <p class="meta">GitHub teams referenced by CODEOWNERS in <code>TestOrg</code> that GitHub no longer has.</p>
+
+    <div class="table-wrapper">
+        <table class="data-table" data-sortable>
+            <thead>
+                <tr>
+                    <th data-sort-type="text">Team <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="GitHub team slug that a CODEOWNERS file still references, but GitHub has deleted (404 on roster fetch).">ⓘ</span></th>
+                    <th data-nosort>Referencing Repositories <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Repositories whose CODEOWNERS file still names this deleted team.">ⓘ</span></th>
+                </tr>
+            </thead>
+            <tbody>
+                
+                <tr>
+                    <td><a href="https://github.com/orgs/TestOrg/teams/team-a" target="_blank" rel="noopener noreferrer">team-a</a></td>
+                    <td>alpha-repo, beta-repo</td>
+                </tr>
+                
+            </tbody>
+        </table>
+    </div>
+    
+    
+
+</body>
+
+</html>

@@ -48,8 +48,38 @@
     </div>
     {% endif %}
 
-    {% if !vm.deleted_teams.is_empty() %}
-    <h2>Deleted Teams</h2>
+    {% if vm.has_owner_anomalies() %}
+    <h2>Acknowledged owner anomalies</h2>
+
+    <p class="meta">CODEOWNERS-referenced owners in <code>{{ vm.organization }}</code> that are not a resolvable GitHub team — acknowledged and surfaced, not deleted or hidden.</p>
+
+    {% if !vm.wildcard_owners.is_empty() %}
+    <h3>Wildcard owners</h3>
+
+    <p class="meta">Glob-shaped CODEOWNERS owners (e.g. <code>@org/*</code>) — a catch-all/default-owner construct, not a configured team.</p>
+
+    <div class="table-wrapper">
+        <table class="data-table" data-sortable>
+            <thead>
+                <tr>
+                    <th data-sort-type="text">{% call tooltip::header("Owner", "CODEOWNERS owner token that is glob-shaped, not a resolvable GitHub team.") %}{% endcall %}</th>
+                    <th data-nosort>{% call tooltip::header("Referencing Repositories", "Repositories whose CODEOWNERS file names this wildcard owner.") %}{% endcall %}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for owner in vm.wildcard_owners %}
+                <tr>
+                    <td>{{ owner.owner }}</td>
+                    <td>{{ owner.referencing_repos.join(", ") }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    {% if !vm.ghost_teams.is_empty() %}
+    <h3>Ghost teams</h3>
 
     <p class="meta">GitHub teams referenced by CODEOWNERS in <code>{{ vm.organization }}</code> that GitHub no longer has.</p>
 
@@ -62,7 +92,7 @@
                 </tr>
             </thead>
             <tbody>
-                {% for team in vm.deleted_teams %}
+                {% for team in vm.ghost_teams %}
                 <tr>
                     <td><a href="{{ team.team_url }}" target="_blank" rel="noopener noreferrer">{{ team.team_slug }}</a></td>
                     <td>{{ team.referencing_repos.join(", ") }}</td>
@@ -71,6 +101,7 @@
             </tbody>
         </table>
     </div>
+    {% endif %}
     {% endif %}
 
 </body>

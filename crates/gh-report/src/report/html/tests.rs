@@ -3326,7 +3326,7 @@ fn render_dashboard_deleted_page_shows_pruned_deleted_repos() {
 /// (`dead-team`) that the roster itself also carries. Keying on the
 /// bare slug returns no match and this test fails.
 #[test]
-fn build_deleted_view_model_includes_deleted_team_with_referencing_repos() {
+fn build_deleted_view_model_includes_ghost_team_with_referencing_repos() {
     let repos = vec![test_fixtures::make_repository_evidence(
         "codeowners-repo",
         Visibility::Public,
@@ -3348,12 +3348,8 @@ fn build_deleted_view_model_includes_deleted_team_with_referencing_repos() {
 
     let vm = build_deleted_view_model(&[], "TestOrg", &repos, &team_rosters);
 
-    assert_eq!(
-        vm.deleted_teams.len(),
-        1,
-        "expected exactly one deleted team"
-    );
-    let row = &vm.deleted_teams[0];
+    assert_eq!(vm.ghost_teams.len(), 1, "expected exactly one ghost team");
+    let row = &vm.ghost_teams[0];
     assert_eq!(row.team_slug, "dead-team");
     assert!(
         row.referencing_repos
@@ -3370,7 +3366,7 @@ fn build_deleted_view_model_includes_deleted_team_with_referencing_repos() {
 }
 
 #[test]
-fn build_deleted_view_model_omits_deleted_teams_when_none_are_deleted() {
+fn build_deleted_view_model_omits_ghost_teams_when_none_are_deleted() {
     let repos = vec![test_fixtures::make_repository_evidence(
         "codeowners-repo",
         Visibility::Public,
@@ -3392,24 +3388,60 @@ fn build_deleted_view_model_omits_deleted_teams_when_none_are_deleted() {
 
     let vm = build_deleted_view_model(&[], "TestOrg", &repos, &team_rosters);
 
-    assert!(vm.deleted_teams.is_empty());
+    assert!(vm.ghost_teams.is_empty());
+    assert!(!vm.has_owner_anomalies());
 }
 
 #[test]
-fn render_dashboard_deleted_page_omits_deleted_teams_section_when_none() {
+fn build_deleted_view_model_includes_wildcard_owner_with_referencing_repos() {
+    let repos = vec![test_fixtures::make_repository_evidence(
+        "codeowners-repo",
+        Visibility::Public,
+        false,
+        test_fixtures::make_checks(
+            test_fixtures::policy_pass_setting(),
+            test_fixtures::secret_enabled_observable(false),
+            test_fixtures::dependabot_enabled(),
+            test_fixtures::branch_pass(),
+            test_fixtures::codeowners_with_owners(&["@org/*"]),
+        ),
+    )];
+
+    let vm = build_deleted_view_model(&[], "TestOrg", &repos, &[]);
+
+    assert_eq!(
+        vm.wildcard_owners.len(),
+        1,
+        "expected exactly one wildcard owner"
+    );
+    let row = &vm.wildcard_owners[0];
+    assert_eq!(row.owner, "@org/*");
+    assert!(
+        row.referencing_repos
+            .contains(&"codeowners-repo".to_string())
+    );
+    assert!(vm.has_owner_anomalies());
+    assert!(
+        vm.ghost_teams.is_empty(),
+        "a WildcardOwner never derives a team fiber, so ghost_teams stays empty (CHE-0093:R4)"
+    );
+}
+
+#[test]
+fn render_dashboard_deleted_page_omits_owner_anomalies_section_when_none() {
     let evidence = sample_evidence();
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
     let deleted = &pages["deleted.html"];
 
     assert!(
-        !deleted.contains("Deleted Teams"),
-        "expected the Deleted Teams section to be omitted entirely when \
-             there are no deleted teams; got:\n{deleted}"
+        !deleted.contains("Acknowledged owner anomalies"),
+        "expected the acknowledged owner anomalies section to be omitted \
+             entirely when there are none; got:\n{deleted}"
     );
 }
 
 #[test]
-fn render_dashboard_deleted_page_lists_deleted_team_with_referencing_repo() {
+fn render_dashboard_deleted_page_lists_ghost_team_with_referencing_repo() {
     let mut evidence = evidence_with_owner_repos();
     evidence.metrics.team_rosters = vec![TeamRoster {
         canonical_owner: "@org/team-a".to_string(),
@@ -3422,8 +3454,12 @@ fn render_dashboard_deleted_page_lists_deleted_team_with_referencing_repo() {
     let deleted = &pages["deleted.html"];
 
     assert!(
-        deleted.contains("Deleted Teams"),
-        "expected the Deleted Teams section to render; got:\n{deleted}"
+        deleted.contains("Acknowledged owner anomalies"),
+        "expected the acknowledged owner anomalies section to render; got:\n{deleted}"
+    );
+    assert!(
+        deleted.contains("Ghost teams"),
+        "expected the Ghost teams sub-section to render; got:\n{deleted}"
     );
     assert!(deleted.contains("team-a"));
     assert!(deleted.contains("beta-repo"));
@@ -3432,6 +3468,47 @@ fn render_dashboard_deleted_page_lists_deleted_team_with_referencing_repo() {
         deleted.contains("https://github.com/orgs/TestOrg/teams/team-a"),
         "expected the team row to link to the GitHub team page; got:\n{deleted}"
     );
+}
+
+#[test]
+fn render_dashboard_deleted_page_lists_wildcard_owner() {
+    let mut evidence = sample_evidence();
+    evidence.repositories[0].checks.codeowners =
+        test_fixtures::codeowners_with_owners(&["@TestOrg/*"]);
+
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let deleted = &pages["deleted.html"];
+
+    assert!(
+        deleted.contains("Acknowledged owner anomalies"),
+        "expected the acknowledged owner anomalies section to render; got:\n{deleted}"
+    );
+    assert!(
+        deleted.contains("Wildcard owners"),
+        "expected the Wildcard owners sub-section to render; got:\n{deleted}"
+    );
+    assert!(deleted.contains("@TestOrg/*"));
+}
+
+/// Snapshot for the reframed "Acknowledged owner anomalies" render
+/// (CHE-0093:R5, COM-0024:R3), covering both sub-kinds in one page.
+#[test]
+fn render_dashboard_deleted_page_owner_anomalies_snapshot() {
+    let mut evidence = evidence_with_owner_repos();
+    evidence.repositories[0].checks.codeowners =
+        test_fixtures::codeowners_with_owners(&["@org/team-a", "@TestOrg/*"]);
+    evidence.metrics.team_rosters = vec![TeamRoster {
+        canonical_owner: "@org/team-a".to_string(),
+        team_slug: "team-a".to_string(),
+        status: TeamRosterStatus::Deleted,
+        members: Vec::new(),
+    }];
+
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+    insta::with_settings!({snapshot_path => "../snapshots"}, {
+    insta::assert_snapshot!("dashboard_deleted_owner_anomalies", &pages["deleted.html"]);
+    });
 }
 
 #[test]

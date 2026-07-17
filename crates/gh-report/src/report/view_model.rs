@@ -617,19 +617,35 @@ pub struct DeletedRepoRow {
     pub detected_at: String,
 }
 
-/// A row in the deleted teams table.
+/// A row in the ghost-team acknowledged-owner-anomaly table (CHE-0093:R1),
+/// rendered for a [`GhostTeamRow`] entry.
 ///
 /// Render-time-only (oracle adr-fmt-kqavx): built fresh on every render from
 /// [`crate::domain::metrics::TeamRoster`] entries whose fetch 404'd, joined
 /// to their CODEOWNERS-referencing repos. Never persisted; a team drops off
 /// automatically once no live CODEOWNERS references it or it exists again.
 #[derive(Debug, Clone)]
-pub struct DeletedTeamRow {
+pub struct GhostTeamRow {
     /// Bare GitHub team slug (e.g. `team-foo`).
     pub team_slug: String,
     /// GitHub-hosted team page URL.
     pub team_url: String,
     /// Names of repositories whose CODEOWNERS still reference this team.
+    pub referencing_repos: Vec<String>,
+}
+
+/// A row in the wildcard-owner acknowledged-owner-anomaly table
+/// (CHE-0093:R1), rendered for a [`WildcardOwnerRow`] entry.
+///
+/// Render-time-only, derived from [`crate::domain::metrics::is_wildcard_owner`]
+/// over CODEOWNERS-referenced owners: a glob-shaped owner (e.g. `@org/*`)
+/// that already classifies `OwnerType::AmbiguousTeamShaped` and is filtered
+/// pre-API (commit `48ea545`) — no fiber, no GitHub call, no `TeamRosterStatus`.
+#[derive(Debug, Clone)]
+pub struct WildcardOwnerRow {
+    /// Canonical CODEOWNERS owner string (e.g. `@org/*`).
+    pub owner: String,
+    /// Names of repositories whose CODEOWNERS reference this owner.
     pub referencing_repos: Vec<String>,
 }
 
@@ -642,9 +658,21 @@ pub struct DeletedViewModel {
     pub organization: String,
     /// Total count of deleted repos.
     pub deleted_count: u32,
-    /// Deleted (404) CODEOWNERS-referenced teams, sorted by team slug.
-    /// Render-time-only (oracle adr-fmt-kqavx); see [`DeletedTeamRow`].
-    pub deleted_teams: Vec<DeletedTeamRow>,
+    /// `GhostTeam` acknowledged owner anomalies (CHE-0093:R5 — migrated from
+    /// the "Deleted Teams" framing), sorted by team slug.
+    pub ghost_teams: Vec<GhostTeamRow>,
+    /// `WildcardOwner` acknowledged owner anomalies (CHE-0093:R5), sorted by
+    /// owner name.
+    pub wildcard_owners: Vec<WildcardOwnerRow>,
+}
+
+impl DeletedViewModel {
+    /// True when either acknowledged-owner-anomaly sub-kind has rows
+    /// (CHE-0093:R5 — the reframed section renders only when non-empty).
+    #[must_use]
+    pub fn has_owner_anomalies(&self) -> bool {
+        !self.ghost_teams.is_empty() || !self.wildcard_owners.is_empty()
+    }
 }
 
 /// Operator-facing diagnostics for collection health and credentials.
