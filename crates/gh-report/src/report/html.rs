@@ -773,7 +773,9 @@ fn build_owner_detail_view_models(
             };
             let stale_width_class = rate_to_width_class(stale_pct);
 
-            let roster_entry = team_rosters.iter().find(|r| r.canonical_owner == m.owner);
+            let roster_entry = team_rosters
+                .iter()
+                .find(|r| r.canonical_owner.eq_ignore_ascii_case(&m.owner));
             let roster = match m.owner_type {
                 OwnerType::User => RosterSection::NotApplicable,
                 OwnerType::Team | OwnerType::AmbiguousTeamShaped => match roster_entry {

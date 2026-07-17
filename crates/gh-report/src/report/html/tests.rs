@@ -1809,6 +1809,39 @@ fn render_owner_detail_html_contains_team_roster() {
     );
 }
 
+/// adr-fmt-tuq8n SM1: a roster whose `canonical_owner` was derived from a
+/// mixed-case configured org (`@Org/team-a`) must still resolve against a
+/// CODEOWNERS-derived owner key that is always lowercase (`@org/team-a`,
+/// per `build_owner_repo_map`/`build_owner_metrics`) — case must not
+/// determine whether a healthy roster renders as `Team` or `Unresolved`.
+#[test]
+fn render_owner_detail_html_roster_match_is_case_insensitive() {
+    use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRoster, TeamRosterStatus};
+
+    let mut evidence = evidence_with_owner_repos();
+    evidence.metrics.team_rosters = vec![TeamRoster {
+        canonical_owner: "@Org/team-a".to_string(),
+        team_slug: "team-a".to_string(),
+        status: TeamRosterStatus::Complete,
+        members: vec![TeamMember {
+            login: "alice".to_string(),
+            role: TeamMemberRole::Maintainer,
+            in_org: Some(true),
+        }],
+    }];
+
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let detail_page = &pages["owners/org-team-a.html"];
+
+    assert!(
+        detail_page.contains("Team Members") && !detail_page.contains("Team Members (unresolved)"),
+        "a Complete roster whose canonical_owner differs only by org case \
+             from the lowercase CODEOWNERS owner key must resolve to \
+             RosterSection::Team, not Unresolved: {detail_page}"
+    );
+    assert!(detail_page.contains("alice"), "expected maintainer login");
+}
+
 /// item9 Part B test (b)/(c) render-level: a member confirmed present
 /// (`Some(true)`) shows no warning; a member with `in_org` unknown
 /// (`None`, degraded fetch) also shows no warning — never flag on
