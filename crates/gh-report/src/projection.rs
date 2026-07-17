@@ -6,7 +6,7 @@ use cherry_pit_core::{DomainEvent, EventEnvelope, Projection, ReadPort};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::evidence::{AssessmentMetadata, OrgStateSnapshot, RepositoryEvidence};
-use crate::domain::metrics::{OrgAlertSummary, TeamRoster};
+use crate::domain::metrics::{OrgAlertSummary, TeamRoster, TeamRosterStatus};
 
 /// Org-level read-model part folded from the latest org event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,8 +159,15 @@ impl Projection for EvidenceProjection {
                 if *detached {
                     self.team_rosters.remove(domain_key);
                 } else if let Some(roster) = roster.as_ref() {
-                    self.team_rosters
-                        .insert(domain_key.clone(), roster.as_ref().clone());
+                    let existing_is_complete = self
+                        .team_rosters
+                        .get(domain_key)
+                        .is_some_and(|existing| existing.status == TeamRosterStatus::Complete);
+                    let incoming_is_complete = roster.status == TeamRosterStatus::Complete;
+                    if !existing_is_complete || incoming_is_complete {
+                        self.team_rosters
+                            .insert(domain_key.clone(), roster.as_ref().clone());
+                    }
                 }
             }
         }
@@ -507,6 +514,111 @@ mod tests {
         assert!(p.team_roster("team_abc").is_some());
         apply_team_event(&mut p, true, "team_abc", None);
         assert!(p.team_roster("team_abc").is_none());
+    }
+
+    fn degraded_team_roster(
+        canonical_owner: &str,
+        team_slug: &str,
+        status: crate::domain::metrics::TeamRosterStatus,
+    ) -> TeamRoster {
+        use crate::domain::metrics::{TeamMember, TeamMemberRole};
+        TeamRoster {
+            canonical_owner: canonical_owner.to_string(),
+            team_slug: team_slug.to_string(),
+            status,
+            members: vec![TeamMember {
+                login: "octocat".to_string(),
+                role: TeamMemberRole::Member,
+                in_org: Some(true),
+            }],
+        }
+    }
+
+    #[test]
+    fn team_state_captured_transient_does_not_downgrade_complete_roster() {
+        use crate::domain::metrics::TeamRosterStatus;
+        let mut p = EvidenceProjection::default();
+        let complete = team_roster("@acme/platform", "platform");
+        apply_team_event(&mut p, false, "team_abc", Some(complete.clone()));
+        assert_eq!(p.team_roster("team_abc"), Some(complete.clone()));
+
+        let transient = degraded_team_roster(
+            "@acme/platform",
+            "platform",
+            TeamRosterStatus::TransientError,
+        );
+        apply_team_event(&mut p, false, "team_abc", Some(transient));
+        assert_eq!(
+            p.team_roster("team_abc"),
+            Some(complete.clone()),
+            "a transient-error roster must not overwrite an existing Complete roster"
+        );
+
+        let denied = degraded_team_roster(
+            "@acme/platform",
+            "platform",
+            TeamRosterStatus::PermissionDenied,
+        );
+        apply_team_event(&mut p, false, "team_abc", Some(denied));
+        assert_eq!(
+            p.team_roster("team_abc"),
+            Some(complete),
+            "a permission-denied roster must not overwrite an existing Complete roster"
+        );
+    }
+
+    #[test]
+    fn team_state_captured_deleted_does_not_downgrade_complete_roster() {
+        use crate::domain::metrics::TeamRosterStatus;
+        let mut p = EvidenceProjection::default();
+        let complete = team_roster("@acme/platform", "platform");
+        apply_team_event(&mut p, false, "team_abc", Some(complete.clone()));
+        assert_eq!(p.team_roster("team_abc"), Some(complete.clone()));
+
+        let deleted_status =
+            degraded_team_roster("@acme/platform", "platform", TeamRosterStatus::Deleted);
+        apply_team_event(&mut p, false, "team_abc", Some(deleted_status));
+        assert_eq!(
+            p.team_roster("team_abc"),
+            Some(complete),
+            "a non-detached Deleted-status roster (synthesized from a bare 404) must not \
+             overwrite an existing Complete roster; only the envelope `detached` flag removes"
+        );
+    }
+
+    #[test]
+    fn team_state_captured_detached_still_removes_after_complete() {
+        let mut p = EvidenceProjection::default();
+        let complete = team_roster("@acme/platform", "platform");
+        apply_team_event(&mut p, false, "team_abc", Some(complete));
+        assert!(p.team_roster("team_abc").is_some());
+
+        apply_team_event(&mut p, true, "team_abc", None);
+        assert!(
+            p.team_roster("team_abc").is_none(),
+            "detached must remain the sole removal signal (CHE-0089:R4) even after a Complete roster"
+        );
+    }
+
+    #[test]
+    fn team_state_captured_fresh_complete_overwrites_existing_complete() {
+        use crate::domain::metrics::{TeamMember, TeamMemberRole};
+        let mut p = EvidenceProjection::default();
+        let first = team_roster("@acme/platform", "platform");
+        apply_team_event(&mut p, false, "team_abc", Some(first));
+
+        let mut second = team_roster("@acme/platform", "platform");
+        second.members = vec![TeamMember {
+            login: "hubot".to_string(),
+            role: TeamMemberRole::Maintainer,
+            in_org: Some(true),
+        }];
+        apply_team_event(&mut p, false, "team_abc", Some(second.clone()));
+        assert_eq!(
+            p.team_roster("team_abc"),
+            Some(second),
+            "a fresh Complete roster must still overwrite the prior Complete roster"
+        );
     }
 
     #[test]
