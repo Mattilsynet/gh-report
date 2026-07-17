@@ -1,0 +1,28 @@
+[package]
+name = "pardosa-read"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Read-only prod-NATS pardosa event reader CLI (RON output)"
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "pardosa-read"
+path = "src/main.rs"
+
+[dependencies]
+pardosa = { path = "../pardosa" }
+pardosa-nats = { path = "../pardosa-nats" }
+pardosa-wire = { path = "../pardosa-wire" }
+ron = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+serde = { workspace = true }
+
+[dev-dependencies]
+pardosa = { path = "../pardosa", features = ["test-support"] }

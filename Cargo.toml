@@ -20,6 +20,7 @@ members = [
     "crates/pardosa-derive",
     "crates/pardosa-file",
     "crates/pardosa-nats",
+    "crates/pardosa-read",
     "crates/pardosa-schema",
     "crates/pardosa-wire",
     "crates/comment-free",
@@ -50,6 +51,7 @@ default-members = [
     "crates/pardosa-derive",
     "crates/pardosa-file",
     "crates/pardosa-nats",
+    "crates/pardosa-read",
     "crates/pardosa-schema",
     "crates/pardosa-wire",
     "crates/comment-free",
@@ -149,6 +151,10 @@ rustix = { version = "1.1.4", default-features = false, features = ["process", "
 # disabling defaults removes std/color/help/usage/error-context/suggestions,
 # which would alter CLI UX; defer F6 until post-MC-P0.
 clap = { version = "4", features = ["derive"] }
+# ron: RON (Rusty Object Notation) render for pardosa-read's agent-facing
+# CLI output (mission pardosa-read-cli-1752739200). default-features per
+# RST-0004 (no non-default features needed for ser::to_string_pretty).
+ron = "0.12"
 
 # === Internal ===
 cherry-pit-core = { path = "crates/cherry-pit-core", version = "0.1.0" }
