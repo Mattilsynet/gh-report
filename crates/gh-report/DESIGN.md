@@ -1,12 +1,19 @@
 # gh-report — Design
 
 Status: Accepted (WU-6 v2 charter, A7'; post-M2 cutover rewrite; W1
-truth-alignment corrigendum for §4, §5, §12).
+truth-alignment corrigendum for §4, §5, §12; W2 truth-alignment
+corrigendum for §3, §4, §12 service/bus layer).
 Produced: grill-me design interview (v1, A4); WU-6 v2 charter rewrite (A7');
 M2.e post-cutover rewrite reconciling §3, §4, §10, §12 with CHE-0054
 (Accepted), CHE-0024, COM-0019; W1 truth-alignment corrigendum reconciling
 §4, §5, §12 with the shipped CHE-0073 (gh-report Storage Remodel, Accepted)
-+ CHE-0074 (gh-report Native Pardosa Store Port, Accepted) storage substrate.
++ CHE-0074 (gh-report Native Pardosa Store Port, Accepted) storage substrate;
+W2 truth-alignment corrigendum (wave2-ci-hardening SM3, bd adr-fmt-jptkl)
+reconciling §3, §4, §12 with the shipped direct-fold write path — the
+`RunService`/`RepoService`/`WebhookService` ApplicationServices,
+`publish_or_trace`, and the `DomainEvent`-carrying `InProcessEventBus`
+described below never shipped in this form; `crates/gh-report/src` has
+zero occurrences of `publish_or_trace` or the three named services.
 Governs: WU-6 v2 rewrite of `crates/gh-report/` onto cherry-pit primitives,
 projection-migrating `evidence_store` per CHE-0048 + CHE-0054.
 Companion docs: `OPERATIONS.md` (operator runbook), `README.md` (DoD-4).
@@ -15,14 +22,14 @@ Companion docs: `OPERATIONS.md` (operator runbook), `README.md` (DoD-4).
 > + M2 cutover).** §1, §2, §6, §9 are verbatim from v1. §3 + §4 + §10 + §12
 > reflect the M2 post-cutover architecture: `EvidenceProjection` is the
 > production read-model (CHE-0054:R10 read path; CHE-0048:R2 sole
-> writer/reader), three ApplicationServices (`RunService`, `RepoService`,
-> `WebhookService`) own per-aggregate write coordination per CHE-0054:R4,
-> and bus-publish failures are structured per-envelope `tracing::error!`
-> emissions (CHE-0024:R1 + R3 + COM-0019:R1/R4/R7). §7 is
+> writer/reader). §7 is
 > retitled (no v1 deployments exist; nothing to migrate). §8 / §11 are
 > updated. The v1 §3a corrigendum and the v1 A9 projection-port narrative
 > remain **withdrawn**: AggregateStore is *deleted* at B9' (not ported),
-> per locked posture S5.b + Tension-2.
+> per locked posture S5.b + Tension-2. The CHE-0054:R4 ApplicationServices
+> plan and the CHE-0024/COM-0019 bus-publish-failure design quoted in this
+> paragraph in earlier revisions never shipped this way — see the W2
+> truth-alignment corrigendum below.
 >
 > **W1 truth-alignment corrigendum.** §4, §5, §12 below are further updated
 > for the CHE-0073 (gh-report Storage Remodel, Accepted) + CHE-0074
@@ -45,6 +52,23 @@ Companion docs: `OPERATIONS.md` (operator runbook), `README.md` (DoD-4).
 > from the source tree (M3 PACKAGE COMPLETE). The bare type name no
 > longer appears in `crates/gh-report/`; subsequent paragraphs describe
 > the M3-completed state in past tense.
+>
+> **W2 truth-alignment corrigendum.** §3, §4, §12 below are further
+> updated: the three ApplicationServices (`RunService`, `RepoService`,
+> `WebhookService`), the `publish_or_trace` bus-publish-failure helper,
+> and a `DomainEvent`-carrying `cherry_pit_app::InProcessEventBus`
+> described in earlier revisions never shipped in this form. Writes go
+> through direct `AppState` methods (`record_repo`, `remove_repo`,
+> `mark_repo_deleted`, `record_org`, `record_team`,
+> `crates/gh-report/src/app/state.rs:1473-1537`) that append to the
+> relevant native fiber store and then fold the event directly into the
+> resident projection (`AppState::fold_repository_event_into_projection`
+> / `::fold_org_event_into_projection` / `::fold_team_event_into_projection`,
+> `src/app/state.rs:1374-1394`) — no event bus, no registered handler, no
+> per-envelope publish step in this path.
+> `cherry_pit_app::InProcessEventBus` remains wired, but only for
+> `SweepTimeoutEvent` (`src/app/collect.rs:27,584-638`), a scheduler
+> concern unrelated to `EvidenceProjection` or `DomainEvent` durability.
 
 ## 1. Scope
 
@@ -100,29 +124,31 @@ the production read-model post-M2 cutover.
   - **`WebhookDelivery`** (CHE-0054:R3) — degenerate write-once
     aggregate. Owns one `WebhookReceived` per instance. Keyed by
     `X-GitHub-Delivery` header.
-- **ApplicationServices (CHE-0054:R4).** `RunService`, `RepoService`,
-  `WebhookService` — each owns the
-  load → handle → append → publish triad against
-  `cherry-pit-core::EventStore` + `cherry-pit-core::EventBus`. Wired
-  on `AppState` (`src/app/state.rs:239-246`). No `CommandGateway`,
-  no `cherry-pit-app::App<…>` consumption (CHE-0054:R8 + R10).
+- **Write path (W2 truth-alignment; withdrawn — see corrigendum above).**
+  No `RunService`/`RepoService`/`WebhookService` ApplicationServices and
+  no `cherry-pit-core::EventBus` publish step exist in
+  `crates/gh-report/src`. Direct `AppState` methods (`record_repo`,
+  `remove_repo`, `mark_repo_deleted`, `record_org`, `record_team`,
+  `src/app/state.rs:1473-1537`) append the event to the relevant native
+  fiber store, then fold it directly into the resident projection
+  (`src/app/state.rs:1374-1394`).
 - **Projection (CHE-0048:R2 + CHE-0054:R10 read path).**
   `EvidenceProjection` (`src/projection.rs`) is the **sole writer and
   sole reader** of the gh-report read-model. `Projection::apply` is
   synchronous (CHE-0018:R1), infallible (CHE-0009), and idempotent
-  over the same envelope sequence (CHE-0048:R3 + BC-v2-6). Bus-driven
-  writes flow through `apply`; reads are served via the
+  over the same envelope sequence (CHE-0048:R3 + BC-v2-6). Writes flow
+  through the direct-fold methods named above (W2 truth-alignment);
+  reads are served via the
   `EvidenceProjection` inherent API (`get`, `len`, `sorted_snapshot`)
   documented in §12. All production read sites hold the
   `Arc<Mutex<EvidenceProjection>>` via the `AppState::lock_projection`
   helper (`src/app/state.rs:311-317`).
-- **Domain-key → AggregateId resolution (CHE-0054:R5).** Held in
-  `AppState` as three in-memory indices (`run_index`, `repo_index`,
-  `delivery_index` — `src/app/state.rs:273-277`), populated lazily on
-  first reference and consulted by ApplicationServices before issuing
-  `EventStore::load`. Indices are process-local; on restart the
-  EventStore is the source of truth and indices repopulate as services
-  are exercised.
+- **Domain-key resolution (W2 truth-alignment; withdrawn).** No
+  `run_index`/`repo_index`/`delivery_index` in-memory indices exist in
+  `AppState`. `domain_key` values are deterministic string keys derived
+  directly from `(org, repo)` or equivalent identity at each call site
+  (e.g. `src/app/state.rs:1049-1055`), not resolved through a lookup
+  index.
 - **`OrgGovernance` marker (historical, narrowing).** The v1
   Tension-2 single-aggregate posture is now refined: `OrgGovernance`
   persists as a zero-sized **documentary marker** in `src/projection.rs`
@@ -195,9 +221,9 @@ gh-report v2 conforms to `cherry-pit-app::App::run` (BC-9; CHE-0051
 rolled forward from v1).
 
 - `gh-report::app::daemon::run(config)` becomes a thin wrapper that
-  constructs the cherry-pit `App`, registers the bus, wires the
-  EventStore, registers sub-aggregates, and delegates
-  to `App::run`.
+  constructs `AppState::with_stores` (native fiber stores), runs
+  `AppState::snapshot_fast_path_init` to fold the projection, and
+  starts the collect/serve loop.
 - **Wires** (per BC-v2-1, BC-v2-4..BC-v2-11, CHE-0051:R2/R5; storage
   substrate per the W1 corrigendum above, CHE-0073 + CHE-0074):
   - `crate::store::NativeStore` (`pardosa_fiber_store::FiberStore<DomainEvent>`)
@@ -213,16 +239,17 @@ rolled forward from v1).
     sweep-timeout event classes (`SchedulerEventStoreImpl`,
     `SweepTimeoutEventStoreImpl`, `src/app/state.rs:48-51`) — these are
     not part of the `DomainEvent` durability contract CHE-0073/74 govern.
-  - `cherry_pit_app::InProcessEventBus<DomainEvent>` as the in-process
-    bus (CHE-0051:R2).
+  - `cherry_pit_app::InProcessEventBus<SweepTimeoutEvent>` (W2
+    truth-alignment) is wired for the scheduler's sweep-timeout event
+    class only (`src/app/collect.rs:27,584-638`); it does not carry
+    `DomainEvent` and does not drive `EvidenceProjection`.
   - No `ProjectionDriver` / `FileProjectionStore` is wired
     (W1 truth-alignment; withdrawn — see §12). `EvidenceProjection` is
     rebuilt in memory on every process start by folding
     `NativeStore::events()` (CHE-0073:R7); there is no
     snapshot-fast-path load.
-- **`AppState` sub-aggregates and services.** Sub-aggregates retain
-  their v1 shape for composition; ApplicationServices land per
-  CHE-0054:R4:
+- **`AppState` sub-aggregates and state.** Sub-aggregates retain
+  their v1 shape for composition:
   - `WebhookState` — webhook secret, replay protection, debounce.
   - `GithubState` — budget gate, rate limit, API client,
     repo detail cache.
@@ -233,37 +260,36 @@ rolled forward from v1).
     production readers/writers post-M2.cd.) The read-model is served
     from `AppState::projection_state` via `lock_projection()`
     (`src/app/state.rs:311-317`).
-  - `RunService`, `RepoService`, `WebhookService` — three
-    ApplicationServices per CHE-0054:R4, wired on `AppState`
-    (`src/app/state.rs:239-246`) and constructed in
-    `build_services(...)`.
+  - **W2 truth-alignment (withdrawn).** No `RunService`, `RepoService`,
+    or `WebhookService` ApplicationServices, and no `build_services`
+    constructor, exist in `crates/gh-report/src`. Writes go through
+    direct `AppState` methods — see the corrigendum above and §12.
 - **`projection_state` field (M2 cutover).** `AppState` carries
   `projection_state: Arc<Mutex<EvidenceProjection>>`
   (`src/app/state.rs:210`) initialised to
   `EvidenceProjection::default()` and populated by
-  `app::projection_runtime::snapshot_fast_path_startup` after
-  `with_stores` and before warm-start (CHE-0048:R2 — snapshot is the
+  `AppState::snapshot_fast_path_init` (`src/app/state.rs:1359-1362`,
+  W2 truth-alignment — supersedes the `app::projection_runtime::
+  snapshot_fast_path_startup` name in earlier revisions) after
+  `with_stores` and before warm-start (CHE-0048:R2 — the fold is the
   source of truth at boot). Read sites acquire the lock via
-  `AppState::lock_projection()`; the bus handler is the sole writer
-  via `Projection::apply` (CHE-0048:R2).
+  `AppState::lock_projection()`; the direct-fold methods named in the
+  W2 corrigendum above are the sole writer (CHE-0048:R2).
 - **Cross-cutting fields** stay directly on `AppState`: run metadata,
-  work queue, worker pool guard, event bus, the three domain-key
-  indices (`run_index`, `repo_index`, `delivery_index`).
-- **Persist-then-publish discipline (CHE-0024:R1 + BC-v2-1).**
-  ApplicationServices do, in this order:
-  1. construct `EventEnvelope`s for the new domain events;
-  2. `event_store.append(envelopes, correlation).await?`;
-  3. `bus.publish(&envelopes).await` via the `publish_or_trace`
-     helper (`src/app/services/shared.rs:234-255`) — synchronous
-     in-process delivery drives `EvidenceProjection::apply` via
-     the registered bus handler; per CHE-0024:R1 publication
-     failure is non-fatal because events are already durable; per
-     CHE-0024:R3 + COM-0019:R1/R4/R7 a structured per-envelope
-     `tracing::error!` emission carries `event_id`,
-     `correlation_id`, `causation_id`, `aggregate_id`,
-     `event` label, and `error` so tracking consumers can reconcile
-     via checkpointed replay (§12).
-  Reversal of (2) and (3) is forbidden.
+  work queue, worker pool guard, the sweep-timeout event bus.
+- **Persist-then-fold discipline (W2 truth-alignment; CHE-0024:R1 +
+  BC-v2-1).** The direct `AppState` write methods (`record_repo`,
+  `remove_repo`, `mark_repo_deleted`, `record_org`, `record_team`) do,
+  in this order:
+  1. append/detach the event on the relevant native fiber store
+     (`self.event_store...`);
+  2. fold the same event directly into the resident projection
+     (`Self::fold_repository_event_into_projection` /
+     `::fold_org_event_into_projection` /
+     `::fold_team_event_into_projection`, `src/app/state.rs:1374-1394`).
+  Reversal of (1) and (2) is forbidden — the fold only runs after the
+  durable append succeeds. There is no publish step and no
+  `publish_or_trace` helper in this path (see §12).
 - Work queue + worker pool come from `cherry-pit-runtime` (CHE-0052,
   v1 BC-1..BC-3).
 - Rate limit + budget + pagination come from `cherry-pit-runtime`
@@ -463,17 +489,18 @@ Defaults that hold absent ADR override:
 - No behavioural change to collectors — wire-rewrite only.
 - No `cargo publish` in WU-6 v2.
 - No edits to `OPERATIONS.md` beyond the storage-layout section (C2').
-- **Aggregate impls present, `CommandGateway` absent** (CHE-0054:R4
-  + R10). `Run`, `Repo`, `WebhookDelivery` are full DDD aggregates
-  with dedicated ApplicationServices that own the
-  load → handle → append → publish triad directly against
-  `cherry-pit-core::EventStore` + `EventBus`. gh-report does **not**
-  implement `cherry-pit-core::CommandGateway` and does **not**
-  consume `cherry-pit-app::App<…>` at v0.1 (CHE-0054:R8 + R10).
-  Cross-aggregate reactions (e.g. `Run` → `Repo`) are dispatched at
-  the call-site by ApplicationService methods invoking the downstream
-  service directly, deferring `Policy::react`-driven choreography to
-  a future ADR when a saga-class workflow appears.
+- **Aggregate impls present, `CommandGateway` absent — W2
+  truth-alignment: partially withdrawn** (CHE-0054:R4 + R10 design
+  intent). `Run`, `Repo`, `WebhookDelivery` remain the domain-event
+  partition (§3), but no dedicated ApplicationServices were built to
+  own a load → handle → append → publish triad; direct `AppState`
+  methods append then fold instead (see the W2 corrigendum and §12).
+  gh-report does **not** implement `cherry-pit-core::CommandGateway`
+  and does **not** consume `cherry-pit-app::App<…>` at v0.1 (this part
+  held). Cross-aggregate reactions (e.g. `Run` → `Repo`), where they
+  exist, are ordinary function calls at the write-method call site,
+  not ApplicationService-to-ApplicationService dispatch; no
+  `Policy::react`-driven choreography exists.
 - **Three-aggregate decomposition** per CHE-0054:R1+R2+R3 supersedes
   the v1 Tension-2 single-aggregate posture. `OrgGovernance` persists
   only as a documentary marker pinning the singleton snapshot id
@@ -529,12 +556,14 @@ fixes their contract with gh-report code post-M2 cutover.
   `src/app/state.rs:48-51`); the `create` / `append` / `load` semantics
   described for those two classes (CHE-0013, CHE-0016, CHE-0019) are
   unaffected by this corrigendum.
-- **ApplicationServices (CHE-0054:R4).** `RunService`, `RepoService`,
-  `WebhookService` are the sole entry points to
-  `EventStore::append` + `EventBus::publish` in production code paths
-  (CHE-0054:R7 + R10). Each service owns its aggregate's
-  load → handle → append → publish triad and threads caller-tracked
-  CAS sequence numbers per CHE-0054:R6 + CHE-0042:R3.
+- **Write entry points — W2 truth-alignment: withdrawn.** No
+  `RunService`/`RepoService`/`WebhookService` ApplicationServices and
+  no `EventBus::publish` step exist in production code paths. The sole
+  entry points to `EventStore::append`/`detach` are the direct
+  `AppState` methods (`record_repo`, `remove_repo`, `mark_repo_deleted`,
+  `record_org`, `record_team`, `src/app/state.rs:1473-1537`), each of
+  which threads its own CAS/fence handling per PGN-0016:R1/R2/R10
+  rather than a shared CHE-0054:R6-style sequence-number contract.
 - **Projection impl (production read-model).** `EvidenceProjection`
   implements `cherry_pit_core::Projection<Event = DomainEvent>`
   (`src/projection.rs`).
@@ -560,8 +589,9 @@ fixes their contract with gh-report code post-M2 cutover.
     `load_baseline(&mut self, entries: Vec<RepositoryEvidence>)` and
     `load_resumed_checkpoint(&mut self, entries: Vec<RepositoryEvidence>)`
     are startup-only direct mutations, authorised by CHE-0048:R2's
-    sole-writer posture *only* before `build_services` returns and
-    before the bus is observable (M2 parent brief D2 + pre-mortem #7).
+    sole-writer posture *only* before `AppState::snapshot_fast_path_init`
+    returns and before any write method above is observable (M2 parent
+    brief D2 + pre-mortem #7).
     Merge semantics: last-writer-wins on `inventory_key` collision
     via `BTreeMap::extend`; the two methods are body-identical at
     v0.1 — the distinction is documentary so saga warm-load
@@ -578,64 +608,52 @@ fixes their contract with gh-report code post-M2 cutover.
   (CHE-0073:R9). The `load_baseline` / `load_resumed_checkpoint`
   bulk-load API above remains the mechanism for this startup fold; it
   is driven directly, not through a `ProjectionDriver`.
-- **Bus (W1 truth-alignment).** `cherry_pit_app::InProcessEventBus<DomainEvent>`
-  per CHE-0051:R2 remains wired for the non-persisted-by-CHE-0074 event
-  classes (`crates/gh-report/src/app/collect.rs`). It no longer drives
-  `EvidenceProjection::apply` — there is no `ProjectionDriverExt` /
-  `apply_one` handler. ApplicationServices instead fold the durable
-  write directly into the resident projection after the append lands
+- **Bus (W1 + W2 truth-alignment).** `cherry_pit_app::InProcessEventBus`
+  per CHE-0051:R2 remains wired only for `SweepTimeoutEvent`
+  (`crates/gh-report/src/app/collect.rs:27,584-638`), not for
+  `DomainEvent`. It never drives `EvidenceProjection::apply` — there is
+  no `ProjectionDriverExt` / `apply_one` handler, and no
+  `DomainEvent`-carrying bus instance exists. The direct `AppState`
+  write methods instead fold the durable write directly into the
+  resident projection after the append lands
   (`AppState::fold_repository_event_into_projection`,
-  `::fold_org_event_into_projection`, `src/app/state.rs:1398-1406`),
+  `::fold_org_event_into_projection`, `src/app/state.rs:1374-1394`),
   runtime-fresh per CHE-0073:R7 detached-remove /
   non-detached-upsert — same fold rule as the boot-time rebuild, just
   applied incrementally instead of replayed from sequence 1.
-- **Persist-then-publish ordering.** ApplicationServices call
-  `event_store.append(envelopes, correlation)` first, then
-  `publish_or_trace(&bus, &envelopes, event_label)`. No exception
-  (CHE-0024:R1, BC-v2-1).
-- **Bus-publish failure handling — `publish_or_trace`
-  (CHE-0024:R1+R3 + COM-0019:R1/R4/R7).**
-  `crates/gh-report/src/app/services/shared.rs:234-255` is the single
-  absorb point. On `EventBus::publish` error the helper emits **one
-  structured `tracing::error!` per envelope** under target
-  `gh_report.eda` with fields:
-  - `event_id` — `EventEnvelope::event_id()`
-  - `correlation_id` — `EventEnvelope::correlation_id()` (COM-0019:R4
-    correlation propagation across the observability boundary)
-  - `causation_id` — `EventEnvelope::causation_id()`
-  - `aggregate_id` — `EventEnvelope::aggregate_id()`
-  - `event` — static event label (`"SweepStarted"`, `"RepoEvaluated"`,
-    …)
-  - `error` — `Debug` of the underlying `EventBus` error
-  Fields are **structured `tracing` kv pairs**, never string-interpolated
-  into the message (COM-0019:R1 + R4). `error!` severity is mandatory
-  per COM-0019:R7 (EventBus retry-absorb telemetry — failures are
-  operator-actionable). Per CHE-0024:R1 publication failure is
-  non-fatal because events are already durable on the EventStore;
-  per CHE-0024:R3 tracking consumers reconcile via checkpointed
-  replay from `EventStore::load`. The persisted event sequence is
-  the system's source of truth — `publish` is notification, not
-  commit (CHE-0024).
+- **Persist-then-fold ordering (W2 truth-alignment).** Each direct
+  write method calls `event_store.append`/`detach` first, then folds
+  the same event into the resident projection. No exception. There is
+  no publish step and no `publish_or_trace` helper: that helper and
+  the bus-publish-failure `tracing::error!` contract it described
+  (`event_id`/`correlation_id`/`causation_id`/`aggregate_id`/`event`/
+  `error` fields under `gh_report.eda`) never shipped for the
+  `DomainEvent` write path. Because the fold happens in-process in the
+  same call as the append, there is no publish failure to absorb or
+  trace for this path.
 - **Dead-letter sink (reserved for future use).**
   `cherry_pit_app::DeadLetterSink` (CHE-0051:R7) is **not wired**
   in gh-report at v0.1; CHE-0054:R10 reserves the surface for future
-  use. The publish-or-trace pattern above is the v0.1 contract:
-  bus-publish failures emit structured tracing and rely on
-  EventStore-replay reconciliation (CHE-0024:R3). The
-  `DeadLetterSink` integration becomes relevant when (a) policy
-  outputs that fail bounded retry per CHE-0024:R5 are introduced,
-  or (b) tracking consumers grow beyond a single in-process
-  projection. Neither holds at v0.1.
-- **Per-aggregate lock degeneration.** CHE-0048:R7's per-aggregate
-  in-process lock is satisfied at v0.1 by per-aggregate
-  ApplicationService method serialisation and by the singleton
-  snapshot id (BC-v2-10). RunLock provides the process-fencing
-  half (BC-v2-18).
+  use. Given W2 truth-alignment (no publish step exists for
+  `DomainEvent` writes), there is no bus-publish failure to trace or
+  dead-letter in this path at all. The `DeadLetterSink` integration
+  becomes relevant if a future ADR reintroduces a publish/subscribe
+  write path; neither holds at v0.1.
+- **Per-aggregate lock degeneration (W2 truth-alignment).** CHE-0048:R7's
+  per-aggregate in-process lock is satisfied at v0.1 by the
+  `projection_state` mutex (`AppState::lock_projection`) serialising
+  folds, not by ApplicationService method serialisation, and by the
+  singleton snapshot id (BC-v2-10). RunLock provides the
+  process-fencing half (BC-v2-18).
 - **Correlation.** `CorrelationContext` is an explicit parameter on
-  `EventStore::{create, append}` per CHE-0039 + BC-v2-19.
-  ApplicationServices that lack a meaningful correlation context use
-  `CorrelationContext::root_for_collect_cycle()` (or equivalent) —
-  not `CorrelationContext::none()` post-WU-6.
+  `EventStore::{create, append}` per CHE-0039 + BC-v2-19; see e.g.
+  `Run::correlation_context()` (`src/domain/run.rs:101`) for a
+  non-`none()` construction. Some call sites still use
+  `CorrelationContext::none()` (e.g. `src/webhook/mod.rs:245`,
+  `src/app/state.rs:3317`) — the "not `::none()` post-WU-6" universal
+  claim in earlier revisions does not hold everywhere; this is noted
+  here rather than corrected further, as a full correlation-context
+  audit is outside this corrigendum's scope.
 - **Rebuild (W1 truth-alignment).** There is no snapshot/checkpoint
   artefact to delete: `EvidenceProjection` is always rebuilt from
   scratch, every boot, by folding `NativeStore::events()` (and the
