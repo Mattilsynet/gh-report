@@ -32,13 +32,13 @@ pub const INVENTORY_SCHEMA_VERSION: &str = "1.0";
 /// new output. OPERATIONS.md § Scoring Contract → Stability and § Schema
 /// Versions → When to bump are the prose authority for this rule; this
 /// constant is the value authority — keep both in sync (COM-0027).
-pub const EVIDENCE_SCHEMA_VERSION: &str = "17.0";
+pub const EVIDENCE_SCHEMA_VERSION: &str = "18.0";
 
 /// Schema-major token embedded in `JetStream` stream identity so a
 /// schema bump provisions fresh, coexisting streams and leaves prior
 /// streams untouched. Must equal `"v" + major(EVIDENCE_SCHEMA_VERSION)`;
 /// a unit test enforces that relationship.
-pub const EVIDENCE_SCHEMA_MAJOR: &str = "v17";
+pub const EVIDENCE_SCHEMA_MAJOR: &str = "v18";
 
 /// Default page size for GitHub API list endpoints.
 pub const DEFAULT_PAGE_SIZE: u32 = 100;
