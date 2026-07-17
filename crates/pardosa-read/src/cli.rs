@@ -1,8 +1,8 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-/// Read-only RON reader for pardosa events stored in `JetStream`
-/// (mission `pardosa-read-cli-1752739200`). Constructs only
+/// Read-only RON reader for pardosa events stored in `JetStream`.
+/// Constructs only
 /// [`pardosa_nats::JetStreamHandle::replay_readonly`] reads: never
 /// appends, provisions, or mutates a stream/consumer/message.
 #[derive(Parser, Debug)]
