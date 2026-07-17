@@ -554,30 +554,6 @@ impl AppState {
         })
     }
 
-    /// Look up the team roster for one `team_domain_key` in
-    /// `projection_state`, returning an owned clone.
-    ///
-    /// Lock-and-release accessor; guard does not escape (D-CD-3).
-    /// Panics on poisoned mutex to match [`Self::lock_projection`].
-    #[expect(
-        dead_code,
-        reason = "consumed by the P5 render cutover (adr-fmt-47ljf), not yet landed"
-    )]
-    pub(crate) fn projection_team_roster(
-        &self,
-        team_domain_key: &str,
-    ) -> Option<crate::domain::metrics::TeamRoster> {
-        resolve_projection(&self.projection_state, |projection| {
-            match crate::projection::EvidenceProjectionReadPort::resolve(
-                projection,
-                crate::projection::EvidenceProjectionQuery::TeamRoster(team_domain_key.to_string()),
-            ) {
-                crate::projection::EvidenceProjectionResponse::TeamRoster(roster) => *roster,
-                _ => None,
-            }
-        })
-    }
-
     /// Snapshot of all team rosters materialised in `projection_state`,
     /// keyed by `team_domain_key` in deterministic order. Consumed by the
     /// P3 team-refresh writer ([`crate::app::team_refresh`]) to detect
