@@ -41,6 +41,25 @@ pub struct RepositoryEvidence {
     pub last_commit: Option<LastCommitInfo>,
 }
 
+impl RepositoryEvidence {
+    /// True when every check resolved to a definite status (own-scope
+    /// completeness concept for the repository fold, CHE-0092:R1/R4 —
+    /// a fresh `Unknown`-free observation is this fold's analogue of
+    /// team's `TeamRosterStatus::Complete`).
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        use super::checks::{
+            BranchProtectionStatus, CodeownersStatus, DependabotStatus, SecretScanningStatus,
+            SecurityPolicyStatus,
+        };
+        self.checks.security_policy.status != SecurityPolicyStatus::Unknown
+            && self.checks.secret_scanning.status != SecretScanningStatus::Unknown
+            && self.checks.dependabot_security_updates.status != DependabotStatus::Unknown
+            && self.checks.branch_protection.status != BranchProtectionStatus::Unknown
+            && self.checks.codeowners.status != CodeownersStatus::Unknown
+    }
+}
+
 /// Assessment metadata for a collection run.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AssessmentMetadata {

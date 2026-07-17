@@ -38,6 +38,17 @@ impl From<OrgStateSnapshot> for OrgReadModel {
     }
 }
 
+impl OrgReadModel {
+    /// True when the org-level alert collection that produced this
+    /// snapshot succeeded (own-scope completeness concept for the org
+    /// fold, CHE-0092:R1/R4 — this fold's analogue of team's
+    /// `TeamRosterStatus::Complete`).
+    #[must_use]
+    fn is_complete(&self) -> bool {
+        self.alert_summary.collection_status == crate::domain::status::CollectionStatus::Success
+    }
+}
+
 /// Read-side projection materialising governance evidence from
 /// native pardosa events.
 ///
@@ -129,9 +140,16 @@ impl Projection for EvidenceProjection {
                 if *detached {
                     self.repositories.remove(domain_key);
                 } else if let Some(evidence) = evidence.as_ref() {
-                    self.deleted.remove(domain_key);
-                    self.repositories
-                        .insert(domain_key.clone(), evidence.as_ref().clone());
+                    let existing_is_complete = self
+                        .repositories
+                        .get(domain_key)
+                        .is_some_and(RepositoryEvidence::is_complete);
+                    let incoming_is_complete = evidence.is_complete();
+                    if !existing_is_complete || incoming_is_complete {
+                        self.deleted.remove(domain_key);
+                        self.repositories
+                            .insert(domain_key.clone(), evidence.as_ref().clone());
+                    }
                 }
             }
             EvidenceProjectionEvent::RepositoryDeleted {
@@ -258,9 +276,20 @@ impl EvidenceProjection {
     }
 
     /// Apply an org snapshot as latest-event-read state.
+    ///
+    /// Anti-downgrade guarded (CHE-0092:R1): a degraded/transient
+    /// observation does not overwrite an existing complete org
+    /// snapshot; a fresh complete observation always overwrites.
     pub fn apply_org_state(&mut self, snapshot: OrgStateSnapshot) {
-        let org_state = OrgReadModel::from(snapshot);
-        self.org_state = Some(org_state);
+        let incoming = OrgReadModel::from(snapshot);
+        let existing_is_complete = self
+            .org_state
+            .as_ref()
+            .is_some_and(OrgReadModel::is_complete);
+        let incoming_is_complete = incoming.is_complete();
+        if !existing_is_complete || incoming_is_complete {
+            self.org_state = Some(incoming);
+        }
     }
 
     /// Look up the team roster for a single `team_domain_key`.
@@ -729,5 +758,140 @@ mod tests {
         p1.load_baseline(entries.clone());
         p2.load_resumed_checkpoint(entries);
         assert_eq!(p1.sorted_snapshot(), p2.sorted_snapshot());
+    }
+
+    fn apply_repo_event(
+        projection: &mut EvidenceProjection,
+        detached: bool,
+        domain_key: &str,
+        evidence: Option<RepositoryEvidence>,
+    ) {
+        use cherry_pit_core::AggregateId;
+        use std::num::NonZeroU64;
+        let event = EvidenceProjectionEvent::RepositoryStateCaptured {
+            detached,
+            domain_key: domain_key.to_string(),
+            evidence: evidence.map(Box::new),
+        };
+        let envelope = EventEnvelope::new(
+            uuid::Uuid::now_v7(),
+            AggregateId::new(NonZeroU64::MIN),
+            NonZeroU64::MIN,
+            jiff::Timestamp::now(),
+            None,
+            None,
+            event,
+        )
+        .expect("test envelope invariant holds");
+        projection.apply(&envelope);
+    }
+
+    fn degraded_evidence(name: &str) -> RepositoryEvidence {
+        use crate::domain::checks::SecurityPolicyStatus;
+        let mut evidence = test_fixtures_all_passing(name);
+        evidence.checks.security_policy.status = SecurityPolicyStatus::Unknown;
+        evidence
+    }
+
+    fn test_fixtures_all_passing(name: &str) -> RepositoryEvidence {
+        use crate::test_fixtures;
+        test_fixtures::all_passing_evidence(name)
+    }
+
+    #[test]
+    fn repository_state_captured_degraded_does_not_downgrade_complete_evidence() {
+        let mut p = EvidenceProjection::default();
+        let complete = test_fixtures_all_passing("repo-x");
+        apply_repo_event(&mut p, false, "id-repo-x", Some(complete.clone()));
+        assert_eq!(p.get("id-repo-x"), Some(complete.clone()));
+
+        let mut degraded = degraded_evidence("repo-x");
+        degraded.repository.inventory_key = "id-repo-x".to_string();
+        apply_repo_event(&mut p, false, "id-repo-x", Some(degraded));
+        assert_eq!(
+            p.get("id-repo-x"),
+            Some(complete),
+            "a degraded (Unknown-status) observation must not overwrite existing complete evidence"
+        );
+    }
+
+    #[test]
+    fn repository_state_captured_fresh_complete_overwrites_existing_complete() {
+        use crate::domain::checks::SecurityPolicyStatus;
+        let mut p = EvidenceProjection::default();
+        let first = test_fixtures_all_passing("repo-y");
+        apply_repo_event(&mut p, false, "id-repo-y", Some(first));
+
+        let mut second = test_fixtures_all_passing("repo-y");
+        second.checks.security_policy.status = SecurityPolicyStatus::Fail;
+        apply_repo_event(&mut p, false, "id-repo-y", Some(second.clone()));
+        assert_eq!(
+            p.get("id-repo-y"),
+            Some(second),
+            "a fresh complete observation must still overwrite the prior complete evidence"
+        );
+    }
+
+    fn org_snapshot(
+        collection_status: crate::domain::status::CollectionStatus,
+    ) -> OrgStateSnapshot {
+        use crate::domain::metrics::OrgAlertSummary;
+        use crate::test_fixtures;
+        use std::collections::HashMap;
+        OrgStateSnapshot {
+            archived_repos: 0,
+            assessment_metadata: test_fixtures::make_metadata(),
+            alert_summary: OrgAlertSummary {
+                collection_status,
+                collection_reason: None,
+                per_repo: HashMap::new(),
+                open_secret_alert_age_buckets: HashMap::new(),
+                total_open_secret_alerts: 0,
+                oldest_open_secret_alert_created_at: None,
+                newest_open_secret_alert_created_at: None,
+            },
+        }
+    }
+
+    #[test]
+    fn org_state_captured_degraded_does_not_downgrade_complete_org_state() {
+        use crate::domain::status::CollectionStatus;
+        let mut p = EvidenceProjection::default();
+        p.apply_org_state(org_snapshot(CollectionStatus::Success));
+        let complete_reason = p
+            .org_state
+            .clone()
+            .expect("applied")
+            .alert_summary
+            .collection_status;
+        assert_eq!(complete_reason, CollectionStatus::Success);
+
+        p.apply_org_state(org_snapshot(CollectionStatus::TransientError));
+        assert_eq!(
+            p.org_state
+                .expect("still present")
+                .alert_summary
+                .collection_status,
+            CollectionStatus::Success,
+            "a transient-error org observation must not overwrite an existing complete org state"
+        );
+    }
+
+    #[test]
+    fn org_state_captured_fresh_complete_overwrites_existing_complete() {
+        use crate::domain::status::CollectionStatus;
+        let mut p = EvidenceProjection::default();
+        let mut first = org_snapshot(CollectionStatus::Success);
+        first.archived_repos = 3;
+        p.apply_org_state(first);
+
+        let mut second = org_snapshot(CollectionStatus::Success);
+        second.archived_repos = 7;
+        p.apply_org_state(second);
+        assert_eq!(
+            p.org_state.expect("present").archived_repos,
+            7,
+            "a fresh complete org observation must still overwrite the prior complete org state"
+        );
     }
 }
