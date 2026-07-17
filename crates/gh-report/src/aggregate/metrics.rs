@@ -87,8 +87,16 @@ fn count_by_visibility(active: &[&RepositoryEvidence], visibility: Visibility) -
 ///   public repos (archived + active).
 /// - **Secret scanning**: same **all public** population as security
 ///   policy.
-/// - **Dependabot, branch protection, CODEOWNERS**: counted over **all**
-///   non-archived repos; denominator is total active repos.
+/// - **Dependabot, CODEOWNERS**: counted over the observable subset of
+///   non-archived repos (pass + fail); repos excluded for a
+///   measurement-failure reason feed the health-score floor, not this
+///   denominator.
+/// - **Branch protection**: counted over **all** non-archived repos;
+///   denominator is total active repos, so repos the token cannot read
+///   (`permission_denied`/`unknown`) count as not-covered rather than
+///   being dropped. This is the ratified population (bd `adr-fmt-tm7ms`);
+///   branch protection is uniquely affected because a large private-repo
+///   fraction returns `permission_denied`.
 /// - **Open secret alert prevalence**: denominator is repos where secret
 ///   scanning is enabled AND alerts are observable.
 #[must_use]
@@ -210,6 +218,17 @@ impl ExclusionTally {
         self.permission_denied > 0 || self.unknown > 0 || self.other > 0
     }
 
+    /// Count of repos excluded for a measurement-failure reason
+    /// (`PermissionDenied`/`Unknown`/`Other`), excluding `NotApplicable`.
+    /// Branch protection folds this into its coverage denominator so a repo
+    /// the token cannot read counts as not-covered rather than being dropped
+    /// (bd `adr-fmt-tm7ms`).
+    fn measurement_failure_count(&self) -> u32 {
+        self.permission_denied
+            .saturating_add(self.unknown)
+            .saturating_add(self.other)
+    }
+
     fn record(&mut self, reason: ExclusionReason) {
         match reason {
             ExclusionReason::PermissionDenied => {
@@ -262,6 +281,25 @@ fn coverage_metric(pass: u32, fail: u32, tally: &ExclusionTally) -> RateMetric {
     } else {
         RateMetric::new(pass, denominator)
     }
+}
+
+/// Build the branch-protection coverage `RateMetric` over the full active
+/// population.
+///
+/// Unlike [`coverage_metric`], the denominator counts every non-archived
+/// repo — including those excluded for a measurement-failure reason
+/// (`permission_denied`/`unknown`/`other`) — so a repo the token cannot read
+/// counts as not-covered rather than being dropped. This is the ratified
+/// population matrix for branch protection (bd `adr-fmt-tm7ms`); branch
+/// protection is uniquely affected because a large private-repo fraction
+/// returns `permission_denied`. `pass` is the numerator; `fail` is the
+/// observable non-pass count; `measurement_failures` is the excluded count
+/// folded into the denominator.
+fn branch_protection_metric(pass: u32, fail: u32, measurement_failures: u32) -> RateMetric {
+    let denominator = pass
+        .saturating_add(fail)
+        .saturating_add(measurement_failures);
+    RateMetric::new(pass, denominator)
 }
 
 fn exclusion_tally_from_policy(counts: &PolicyCounts) -> ExclusionTally {
@@ -389,18 +427,22 @@ fn branch_protection_coverage(input: CoverageInputs<'_>) -> RateMetric {
         .partial
         .saturating_add(input.branch_counts.fail);
     let observable = input.branch_counts.pass.saturating_add(non_pass);
-    coverage_metric(input.branch_counts.pass, non_pass, input.branch_tally)
-        .with_extra("insufficient", non_pass)
-        .with_extra("unknown", input.branch_counts.unknown)
-        .with_extra("observable_repositories", observable)
-        .with_extra(
-            "collection_health_branch_protection_permission_suspected",
-            input.taxonomy.branch_protection_permission_suspected,
-        )
-        .with_extra(
-            "collection_health_branch_protection_not_found_absent",
-            input.taxonomy.branch_protection_not_found_absent,
-        )
+    branch_protection_metric(
+        input.branch_counts.pass,
+        non_pass,
+        input.branch_tally.measurement_failure_count(),
+    )
+    .with_extra("insufficient", non_pass)
+    .with_extra("unknown", input.branch_counts.unknown)
+    .with_extra("observable_repositories", observable)
+    .with_extra(
+        "collection_health_branch_protection_permission_suspected",
+        input.taxonomy.branch_protection_permission_suspected,
+    )
+    .with_extra(
+        "collection_health_branch_protection_not_found_absent",
+        input.taxonomy.branch_protection_not_found_absent,
+    )
 }
 
 fn codeowners_coverage(input: CoverageInputs<'_>) -> RateMetric {
@@ -976,7 +1018,7 @@ fn build_per_control_coverage(repos: &[&RepositoryEvidence]) -> OwnerControlCove
     );
     per_control_coverage.insert(
         "branch_protection".to_string(),
-        coverage_metric(bp_pass, bp_fail, &bp_tally),
+        branch_protection_metric(bp_pass, bp_fail, bp_tally.measurement_failure_count()),
     );
     per_control_coverage.insert(
         "codeowners".to_string(),
@@ -1281,16 +1323,17 @@ mod tests {
     }
 
     #[test]
-    fn branch_protection_excluded_repo_leaves_denominator_and_counted_by_reason() {
+    fn branch_protection_excluded_repo_counts_in_denominator_and_by_reason() {
         let repos = three_pass_two_fail_one_excluded_branch_protection();
         let metrics = aggregate_metrics(&repos);
 
         assert_eq!(metrics.branch_protection_coverage.numerator, 3);
         assert_eq!(
-            metrics.branch_protection_coverage.denominator, 5,
-            "pcoqb: the excluded repo must leave the denominator (5, not 6 folded into fail)"
+            metrics.branch_protection_coverage.denominator, 6,
+            "adr-fmt-tm7ms: the permission_denied repo counts in the denominator \
+             as not-covered (6 = all non-archived), not dropped to the observable 5"
         );
-        assert_eq!(metrics.branch_protection_coverage.rate, Some(60.0));
+        assert_eq!(metrics.branch_protection_coverage.rate, Some(50.0));
         assert_eq!(metrics.branch_protection_counts.fail, 1);
         assert_eq!(metrics.branch_protection_counts.unknown, 1);
 
@@ -1400,6 +1443,28 @@ mod tests {
         );
     }
 
+    /// adr-fmt-tm7ms regression: the user-reported symptom was a Branch
+    /// Protection dashboard reading `0.0% (0/36)` when 544 of 580 active repos
+    /// returned `permission_denied`. Those repos must count in the denominator
+    /// as not-covered — an all-permission-denied population yields `0/N`, not
+    /// the observable-only `0/1` floor.
+    #[test]
+    fn branch_protection_all_permission_denied_counts_full_population_in_denominator() {
+        let repos = vec![
+            repo_with_branch_protection_reason(CollectionFailureReason::PermissionDenied),
+            repo_with_branch_protection_reason(CollectionFailureReason::PermissionDenied),
+            repo_with_branch_protection_reason(CollectionFailureReason::PermissionDenied),
+        ];
+        let metrics = aggregate_metrics(&repos);
+
+        assert_eq!(metrics.branch_protection_coverage.numerator, 0);
+        assert_eq!(
+            metrics.branch_protection_coverage.denominator, 3,
+            "all permission_denied repos count in the denominator (0/3), not 0/1"
+        );
+        assert_eq!(metrics.branch_protection_coverage.rate, Some(0.0));
+    }
+
     #[test]
     fn score_exclusion_counts_by_reason_breakdown_sums_to_excluded_total() {
         let repos = vec![
@@ -1409,7 +1474,11 @@ mod tests {
         ];
         let metrics = aggregate_metrics(&repos);
 
-        assert_eq!(metrics.branch_protection_coverage.denominator, 1);
+        assert_eq!(
+            metrics.branch_protection_coverage.denominator, 3,
+            "adr-fmt-tm7ms: all 3 excluded repos count in the denominator as \
+             not-covered (0/3), not floored to the observable-empty 0/1"
+        );
         assert_eq!(metrics.branch_protection_coverage.rate, Some(0.0));
 
         let branch_protection_exclusions: Vec<_> = metrics
@@ -1704,11 +1773,12 @@ mod tests {
         assert_eq!(metrics.branch_protection_counts.unknown, 1);
 
         assert_eq!(metrics.branch_protection_coverage.numerator, 2);
-        assert_eq!(metrics.branch_protection_coverage.denominator, 4);
+        assert_eq!(metrics.branch_protection_coverage.denominator, 5);
         assert_eq!(
             metrics.branch_protection_coverage.rate,
-            Some(50.0),
-            "excluding the 1 unmeasured repo raises the rate from 40.0% (2/5) to 50.0% (2/4)"
+            Some(40.0),
+            "adr-fmt-tm7ms: the 1 unmeasured repo counts in the denominator as \
+             not-covered (2/5 = 40.0%), not dropped to the observable 2/4"
         );
     }
 
@@ -2565,11 +2635,14 @@ mod tests {
         );
     }
 
-    /// adr-fmt-voxg6 item1: a control where every repo is `Excluded` for a
-    /// measurement-failure reason (`Unknown`/`PermissionDenied`/`Other`) must
-    /// floor to a genuine failure (`Some(0.0)`), not vanish to `None` — an
-    /// all-unmeasured control silently inflating Team Health to a vacuous
-    /// 100% (adr-fmt-doyc8/e861p) is the bug this guards against.
+    /// adr-fmt-voxg6 item1 / adr-fmt-tm7ms: a branch-protection control where
+    /// every repo is `Excluded` for a measurement-failure reason
+    /// (`Unknown`/`PermissionDenied`/`Other`) must score as a genuine failure
+    /// (`Some(0.0)`), not vanish to `None` — an all-unmeasured control silently
+    /// inflating Team Health to a vacuous 100% (adr-fmt-doyc8/e861p) is the bug
+    /// this guards against. Under the ratified population matrix branch
+    /// protection counts these repos in the denominator (0/2), so the
+    /// `Some(0.0)` arises directly rather than via the denom==0 floor.
     #[test]
     fn owner_control_coverage_all_measurement_failure_floors_to_zero_rate() {
         let repos = vec![
@@ -2602,7 +2675,7 @@ mod tests {
         let team = &result[0];
         let branch_protection = team.per_control_coverage.get("branch_protection").unwrap();
         assert_eq!(branch_protection.numerator, 0);
-        assert_eq!(branch_protection.denominator, 1);
+        assert_eq!(branch_protection.denominator, 2);
         assert_eq!(branch_protection.rate, Some(0.0));
     }
 
@@ -2651,13 +2724,12 @@ mod tests {
         assert_eq!(security_policy.rate, None);
     }
 
-    /// adr-fmt-voxg6 item1 REGRESSION GUARD: a mixed team (pass + fail +
-    /// excluded) must keep excluding the excluded repo from the denominator
-    /// and compute the rate over the measured population only — denom > 0,
-    /// so `coverage_metric`'s reason-aware floor never engages. Matches the
-    /// pre-change value.
+    /// adr-fmt-tm7ms: a mixed branch-protection team (pass + fail + excluded)
+    /// counts the excluded (measurement-failure) repo in the denominator as
+    /// not-covered — the ratified population is all non-archived repos, so a
+    /// repo the token cannot read lowers the rate rather than being dropped.
     #[test]
-    fn owner_control_coverage_mixed_team_excludes_not_floors() {
+    fn owner_control_coverage_mixed_team_counts_excluded_in_denominator() {
         let repos = vec![
             make_repository_evidence(
                 "pass-1",
@@ -2701,10 +2773,11 @@ mod tests {
         let branch_protection = team.per_control_coverage.get("branch_protection").unwrap();
         assert_eq!(branch_protection.numerator, 1);
         assert_eq!(
-            branch_protection.denominator, 2,
-            "excluded repo must leave the denominator (2), not be floored/counted"
+            branch_protection.denominator, 3,
+            "excluded repo counts in the denominator (3) as not-covered per the \
+             ratified population matrix"
         );
-        assert_eq!(branch_protection.rate, Some(50.0));
+        assert_eq!(branch_protection.rate, Some(33.3));
     }
 
     /// adr-fmt-voxg6 item1 CRITICAL GUARD: `secret_scanning` filters non-public
@@ -3166,7 +3239,7 @@ mod tests {
     }
 
     #[test]
-    fn owner_branch_protection_excluded_tier_leaves_denominator() {
+    fn owner_branch_protection_excluded_tier_counts_in_denominator() {
         let repo = |name: &str, branch: BranchProtectionResult| {
             make_repository_evidence(
                 name,
@@ -3200,11 +3273,11 @@ mod tests {
             .unwrap();
         assert_eq!(branch_protection.numerator, 3);
         assert_eq!(
-            branch_protection.denominator, 5,
-            "pcoqb-equivalent at owner scope: the excluded repo must leave the \
-             denominator (5, not 6 folded into fail)"
+            branch_protection.denominator, 6,
+            "adr-fmt-tm7ms at owner scope: the permission_denied repo counts in \
+             the denominator as not-covered (6 = all non-archived), not dropped to 5"
         );
-        assert_eq!(branch_protection.rate, Some(60.0));
+        assert_eq!(branch_protection.rate, Some(50.0));
 
         assert!(
             owners[0]
@@ -3247,8 +3320,9 @@ mod tests {
             .get("branch_protection")
             .unwrap();
         assert_eq!(
-            branch_protection.denominator, 1,
-            "all 3 repos excluded for measurement failure floors to 0.0, not None"
+            branch_protection.denominator, 3,
+            "adr-fmt-tm7ms: all 3 excluded repos count in the denominator as \
+             not-covered (0/3), not floored to the observable-empty 0/1"
         );
         assert_eq!(branch_protection.rate, Some(0.0));
 
