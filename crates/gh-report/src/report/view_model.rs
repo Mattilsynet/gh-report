@@ -13,7 +13,9 @@ use crate::config;
 use crate::config::dashboard::CoverageTiers;
 use crate::config::org::{HelpLink, TeamAccessGuidance};
 use crate::domain::auth::{AuthMode, Capability, TokenTier};
-use crate::domain::checks::{CollectionFailureReason, SecretScanningStatus};
+use crate::domain::checks::{
+    BranchProtectionRegime, CollectionFailureReason, SecretScanningStatus,
+};
 use crate::domain::evidence::{AssessmentMetadata, Evidence, RepositoryEvidence};
 use crate::domain::metrics::{
     AggregatedMetrics, CollectionHealthCheckKind, CollectionHealthCount, OwnerType,
@@ -499,6 +501,111 @@ pub struct OrphanedViewModel {
     /// Orphan repos grouped by attributed team (B2), sorted by team name.
     /// Only teams with at least one attributed orphan appear.
     pub by_team: Vec<OrphanedTeamGroup>,
+}
+
+/// A row in a Branch Protection Regime (BPR) group table.
+#[derive(Debug, Clone)]
+pub struct BprRepoRow {
+    /// Repository name.
+    pub repo_name: String,
+    /// URL to the repository on GitHub.
+    pub repo_url: String,
+    /// Repository visibility label (`"Public"`, `"Internal"`, or `"Private"`).
+    pub visibility: String,
+    /// Whether pull requests are required before merging.
+    pub has_pr: StatusDot,
+    /// Minimum number of required approving reviews, formatted (`"2"` or `"—"`).
+    pub required_reviewers_formatted: String,
+    /// Whether required status checks are configured.
+    pub has_status_checks: StatusDot,
+    /// Whether administrators are subject to the branch protection rules.
+    pub admin_equivalent: StatusDot,
+    /// Whether a broad bypass actor weakens the protection guarantees.
+    pub has_broad_bypass: StatusDot,
+    /// Whether force pushes are blocked on the protected branch.
+    pub force_push_blocked: StatusDot,
+    /// Whether branch deletion is blocked on the protected branch.
+    pub deletion_blocked: StatusDot,
+}
+
+/// One Branch Protection Regime band and its member repos.
+#[derive(Debug, Clone)]
+pub struct BprBandGroup {
+    /// Short band id (e.g. `"BPR0"`).
+    pub id: &'static str,
+    /// Human-readable band name (e.g. `"Unmeasured"`).
+    pub name: &'static str,
+    /// One-line description of what the band means.
+    pub description: &'static str,
+    /// CSS class for the band's section heading/badge.
+    pub css_class: &'static str,
+    /// Repos in this band, sorted by name.
+    pub repos: Vec<BprRepoRow>,
+}
+
+/// View model for the Branch Protection Regime drill-down page.
+///
+/// Report-side only (CHE-0083:R7): built fresh from
+/// [`crate::domain::checks::BranchProtectionResult::regime`] on every
+/// render, never persisted.
+#[derive(Debug, Clone)]
+pub struct BranchProtectionRegimeViewModel {
+    /// Organization name (for the page title).
+    pub organization: String,
+    /// Bands in BPR0..BPR5 order; every band appears even when empty, so the
+    /// page is a visible exhaustive partition, not a filtered subset.
+    pub bands: Vec<BprBandGroup>,
+    /// Total repos classified across all bands.
+    pub total_repos: u32,
+}
+
+/// Display metadata for a [`BranchProtectionRegime`] band: `(id, name,
+/// description, css_class)`.
+///
+/// Presentation-layer mapping, kept separate from the domain enum
+/// (COM-0009:R2 — mirrors [`CoverageTier`]'s own presentation split).
+#[must_use]
+pub fn bpr_band_metadata(
+    regime: BranchProtectionRegime,
+) -> (&'static str, &'static str, &'static str, &'static str) {
+    match regime {
+        BranchProtectionRegime::Unmeasured => (
+            "BPR0",
+            "Unmeasured",
+            "Protection status could not be read (permission-denied, transient, or unknown).",
+            "tier-na",
+        ),
+        BranchProtectionRegime::Unprotected => (
+            "BPR1",
+            "Unprotected",
+            "No effective baseline protection: unprotected, or force-push/deletion integrity not held.",
+            "tier-fail",
+        ),
+        BranchProtectionRegime::IntegrityOnly => (
+            "BPR2",
+            "Integrity Only",
+            "Force-push and deletion blocked, but no PR/review gate.",
+            "tier-warn",
+        ),
+        BranchProtectionRegime::ReviewedWithBypass => (
+            "BPR3",
+            "Reviewed, Bypassable",
+            "PR and review required, integrity held, but a broad bypass actor can skip the gate.",
+            "tier-warn",
+        ),
+        BranchProtectionRegime::ReviewedGated => (
+            "BPR4",
+            "Reviewed, Gated",
+            "PR and review required, integrity held, no bypass — but no required status checks.",
+            "tier-pass",
+        ),
+        BranchProtectionRegime::Hardened => (
+            "BPR5",
+            "Hardened",
+            "PR, review, integrity, and required status checks all held, with no broad bypass.",
+            "tier-pass",
+        ),
+    }
 }
 
 /// A row in the deleted repositories table.

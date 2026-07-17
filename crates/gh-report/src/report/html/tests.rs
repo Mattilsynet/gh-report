@@ -316,6 +316,16 @@ fn render_dashboard_admin_snapshot() {
 }
 
 #[test]
+fn render_dashboard_branch_protection_snapshot() {
+    let evidence = sample_evidence();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+    insta::with_settings!({snapshot_path => "../snapshots"}, {
+    insta::assert_snapshot!("dashboard_branch_protection", &pages["branch_protection.html"]);
+    });
+}
+
+#[test]
 fn render_dashboard_index_badge_snapshot() {
     let evidence = sample_evidence_with_admin_diagnostics();
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
@@ -413,8 +423,9 @@ fn render_dashboard_produces_all_pages() {
     assert!(pages.contains_key("sort-init.js"));
     assert!(pages.contains_key("orphans.html"));
     assert!(pages.contains_key("deleted.html"));
+    assert!(pages.contains_key("branch_protection.html"));
     assert!(!pages.contains_key("OPERATIONS.html"));
-    assert_eq!(pages.len(), 10);
+    assert_eq!(pages.len(), 11);
 }
 
 #[test]

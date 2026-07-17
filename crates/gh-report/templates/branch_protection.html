@@ -1,0 +1,76 @@
+{%- import "partials/tooltip.html" as tooltip -%}
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Branch Protection Regimes — {{ vm.organization }}</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="ws.js" defer></script>
+    <script type="module" src="sort-init.js"></script>
+    {% if warm_start %}<meta http-equiv="refresh" content="5">{% endif %}
+</head>
+
+<body>
+
+    {% include "partials/nav.html" %}
+
+    <h1>Branch Protection Regimes</h1>
+
+    <ul class="breadcrumb">
+        <li><a href="index.html">Dashboard</a></li>
+        <li>Branch Protection</li>
+    </ul>
+
+    <p class="meta">Every non-archived repository in <code>{{ vm.organization }}</code>, grouped into an ordered,
+        exhaustive regime (BPR0..BPR5) by branch-protection control combination — the bypassable-vs-gated
+        distinction the coverage percentage hides. {{ vm.total_repos }} repositories classified.</p>
+
+    {% for band in vm.bands %}
+    <section class="card {{ band.css_class }}">
+        <h2>{{ band.id }} &middot; {{ band.name }} ({{ band.repos.len() }})</h2>
+        <p class="meta">{{ band.description }}</p>
+        {% if band.repos.is_empty() %}
+        <p class="meta">No repositories in this band.</p>
+        {% else %}
+        <div class="table-wrapper">
+            <table class="data-table" data-sortable>
+                <thead>
+                    <tr>
+                        <th data-sort-type="text">{% call tooltip::header("Repository", "Repository name; links to it on GitHub when a URL is known.") %}{% endcall %}</th>
+                        <th data-sort-type="text">{% call tooltip::header("Visibility", "The repository's GitHub visibility: Public, Internal, or Private.") %}{% endcall %}</th>
+                        <th class="text-center" data-nosort>{% call tooltip::header("PR Required", "Whether pull requests are required before merging.") %}{% endcall %}</th>
+                        <th class="text-center" data-sort-type="numeric">{% call tooltip::header("Reviewers", "Minimum number of required approving reviews, or — when not configured.") %}{% endcall %}</th>
+                        <th class="text-center" data-nosort>{% call tooltip::header("Status Checks", "Whether required status checks are configured.") %}{% endcall %}</th>
+                        <th class="text-center" data-nosort>{% call tooltip::header("Admin Equivalent", "Whether administrators are subject to the branch protection rules.") %}{% endcall %}</th>
+                        <th class="text-center" data-nosort>{% call tooltip::header("Broad Bypass", "Whether a broad bypass actor (e.g. org admin) can skip the protection rules.") %}{% endcall %}</th>
+                        <th class="text-center" data-nosort>{% call tooltip::header("Force-Push Blocked", "Whether force pushes are blocked on the protected branch.") %}{% endcall %}</th>
+                        <th class="text-center" data-nosort>{% call tooltip::header("Deletion Blocked", "Whether branch deletion is blocked on the protected branch.") %}{% endcall %}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in band.repos %}
+                    <tr>
+                        <td>{% if row.repo_url.is_empty() %}{{ row.repo_name }}{% else %}<a href="{{ row.repo_url }}"
+                                target="_blank" rel="noopener noreferrer">{{ row.repo_name }}</a>{% endif %}</td>
+                        <td>{{ row.visibility }}</td>
+                        <td class="text-center"><span class="status-dot {{ row.has_pr.css_class }}" title="{{ row.has_pr.label }}"></span></td>
+                        <td class="text-center">{{ row.required_reviewers_formatted }}</td>
+                        <td class="text-center"><span class="status-dot {{ row.has_status_checks.css_class }}" title="{{ row.has_status_checks.label }}"></span></td>
+                        <td class="text-center"><span class="status-dot {{ row.admin_equivalent.css_class }}" title="{{ row.admin_equivalent.label }}"></span></td>
+                        <td class="text-center"><span class="status-dot {{ row.has_broad_bypass.css_class }}" title="{{ row.has_broad_bypass.label }}"></span></td>
+                        <td class="text-center"><span class="status-dot {{ row.force_push_blocked.css_class }}" title="{{ row.force_push_blocked.label }}"></span></td>
+                        <td class="text-center"><span class="status-dot {{ row.deletion_blocked.css_class }}" title="{{ row.deletion_blocked.label }}"></span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+    </section>
+    {% endfor %}
+
+</body>
+
+</html>

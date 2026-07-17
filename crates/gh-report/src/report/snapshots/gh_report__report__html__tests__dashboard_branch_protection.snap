@@ -1,0 +1,124 @@
+---
+source: crates/gh-report/src/report/html/tests.rs
+expression: "&pages[\"branch_protection.html\"]"
+---
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Branch Protection Regimes — TestOrg</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="ws.js" defer></script>
+    <script type="module" src="sort-init.js"></script>
+    
+</head>
+
+<body>
+
+    <nav class="top-nav">
+    <a href="index.html">Dashboard</a>
+    
+    <a href="orphans.html">Orphans (0)</a>
+    <a href="report.html" class="nav-right">Report</a>
+    <a href="deleted.html">Deleted (0)</a>
+    <a href="admin.html" class="admin-link">Admin</a>
+</nav>
+
+    <h1>Branch Protection Regimes</h1>
+
+    <ul class="breadcrumb">
+        <li><a href="index.html">Dashboard</a></li>
+        <li>Branch Protection</li>
+    </ul>
+
+    <p class="meta">Every non-archived repository in <code>TestOrg</code>, grouped into an ordered,
+        exhaustive regime (BPR0..BPR5) by branch-protection control combination — the bypassable-vs-gated
+        distinction the coverage percentage hides. 1 repositories classified.</p>
+
+    
+    <section class="card tier-na">
+        <h2>BPR0 &middot; Unmeasured (0)</h2>
+        <p class="meta">Protection status could not be read (permission-denied, transient, or unknown).</p>
+        
+        <p class="meta">No repositories in this band.</p>
+        
+    </section>
+    
+    <section class="card tier-fail">
+        <h2>BPR1 &middot; Unprotected (0)</h2>
+        <p class="meta">No effective baseline protection: unprotected, or force-push/deletion integrity not held.</p>
+        
+        <p class="meta">No repositories in this band.</p>
+        
+    </section>
+    
+    <section class="card tier-warn">
+        <h2>BPR2 &middot; Integrity Only (0)</h2>
+        <p class="meta">Force-push and deletion blocked, but no PR/review gate.</p>
+        
+        <p class="meta">No repositories in this band.</p>
+        
+    </section>
+    
+    <section class="card tier-warn">
+        <h2>BPR3 &middot; Reviewed, Bypassable (0)</h2>
+        <p class="meta">PR and review required, integrity held, but a broad bypass actor can skip the gate.</p>
+        
+        <p class="meta">No repositories in this band.</p>
+        
+    </section>
+    
+    <section class="card tier-pass">
+        <h2>BPR4 &middot; Reviewed, Gated (0)</h2>
+        <p class="meta">PR and review required, integrity held, no bypass — but no required status checks.</p>
+        
+        <p class="meta">No repositories in this band.</p>
+        
+    </section>
+    
+    <section class="card tier-pass">
+        <h2>BPR5 &middot; Hardened (1)</h2>
+        <p class="meta">PR, review, integrity, and required status checks all held, with no broad bypass.</p>
+        
+        <div class="table-wrapper">
+            <table class="data-table" data-sortable>
+                <thead>
+                    <tr>
+                        <th data-sort-type="text">Repository <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Repository name; links to it on GitHub when a URL is known.">ⓘ</span></th>
+                        <th data-sort-type="text">Visibility <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="The repository&#39;s GitHub visibility: Public, Internal, or Private.">ⓘ</span></th>
+                        <th class="text-center" data-nosort>PR Required <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Whether pull requests are required before merging.">ⓘ</span></th>
+                        <th class="text-center" data-sort-type="numeric">Reviewers <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Minimum number of required approving reviews, or — when not configured.">ⓘ</span></th>
+                        <th class="text-center" data-nosort>Status Checks <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Whether required status checks are configured.">ⓘ</span></th>
+                        <th class="text-center" data-nosort>Admin Equivalent <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Whether administrators are subject to the branch protection rules.">ⓘ</span></th>
+                        <th class="text-center" data-nosort>Broad Bypass <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Whether a broad bypass actor (e.g. org admin) can skip the protection rules.">ⓘ</span></th>
+                        <th class="text-center" data-nosort>Force-Push Blocked <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Whether force pushes are blocked on the protected branch.">ⓘ</span></th>
+                        <th class="text-center" data-nosort>Deletion Blocked <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Whether branch deletion is blocked on the protected branch.">ⓘ</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    
+                    <tr>
+                        <td><a href="https://github.com/TestOrg/repo-1"
+                                target="_blank" rel="noopener noreferrer">repo-1</a></td>
+                        <td>Public</td>
+                        <td class="text-center"><span class="status-dot status-pass" title="yes"></span></td>
+                        <td class="text-center">1</td>
+                        <td class="text-center"><span class="status-dot status-pass" title="yes"></span></td>
+                        <td class="text-center"><span class="status-dot status-pass" title="yes"></span></td>
+                        <td class="text-center"><span class="status-dot status-fail" title="no"></span></td>
+                        <td class="text-center"><span class="status-dot status-pass" title="yes"></span></td>
+                        <td class="text-center"><span class="status-dot status-pass" title="yes"></span></td>
+                    </tr>
+                    
+                </tbody>
+            </table>
+        </div>
+        
+    </section>
+    
+
+</body>
+
+</html>

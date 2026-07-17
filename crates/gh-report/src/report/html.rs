@@ -14,8 +14,8 @@ use tracing::debug;
 use crate::config;
 use crate::config::dashboard::{CoverageTiers, DashboardConfig};
 use crate::domain::checks::{
-    BranchProtectionStatus, CodeownersStatus, DependabotStatus, ScoreCategory,
-    SecretScanningStatus, SecurityPolicyStatus,
+    BranchProtectionRegime, BranchProtectionStatus, CodeownersStatus, DependabotStatus,
+    ScoreCategory, SecretScanningStatus, SecurityPolicyStatus,
 };
 use crate::domain::evidence::{Evidence, RepositoryEvidence};
 use crate::domain::metrics::{
@@ -24,10 +24,11 @@ use crate::domain::metrics::{
 use crate::domain::time::{is_repo_stale, parse_iso8601};
 use crate::error::ReportError;
 use crate::report::view_model::{
-    ControlCell, ControlColumn, CoverageTier, DeletedRepoRow, DeletedTeamRow, DeletedViewModel,
-    OrphanedRepoRow, OrphanedTeamGroup, OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow,
-    OwnerRepoRow, OwnersViewModel, ReportViewModel, RosterSection, StatusDot, SummaryCard,
-    TeamMemberRow, TeamRosterViewModel, TopNav, TopSecurityTeam, compute_health_score,
+    BprBandGroup, BprRepoRow, BranchProtectionRegimeViewModel, ControlCell, ControlColumn,
+    CoverageTier, DeletedRepoRow, DeletedTeamRow, DeletedViewModel, OrphanedRepoRow,
+    OrphanedTeamGroup, OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow, OwnerRepoRow,
+    OwnersViewModel, ReportViewModel, RosterSection, StatusDot, SummaryCard, TeamMemberRow,
+    TeamRosterViewModel, TopNav, TopSecurityTeam, bpr_band_metadata, compute_health_score,
     coverage_control_column_tooltip, coverage_control_how_to_fix, format_exclusion, generate_slug,
     rate_to_width_class, strip_org_prefix,
 };
@@ -106,6 +107,16 @@ struct OrphansTemplate {
 #[template(path = "deleted.html")]
 struct DeletedTemplate {
     vm: DeletedViewModel,
+    nav: TopNav,
+    /// When `true`, emits a `<meta http-equiv="refresh">` tag.
+    warm_start: bool,
+}
+
+/// Askama template for the Branch Protection Regime drill-down page.
+#[derive(Template)]
+#[template(path = "branch_protection.html")]
+struct BranchProtectionTemplate {
+    vm: BranchProtectionRegimeViewModel,
     nav: TopNav,
     /// When `true`, emits a `<meta http-equiv="refresh">` tag.
     warm_start: bool,
@@ -350,6 +361,17 @@ pub fn render_dashboard_streaming(
         warm_start,
     })?;
     sink("deleted.html".to_string(), deleted_html);
+
+    let bpr_vm = build_bpr_view_model(
+        &evidence.repositories,
+        &evidence.assessment_metadata.organization,
+    );
+    let bpr_html = render_template(&BranchProtectionTemplate {
+        vm: bpr_vm,
+        nav,
+        warm_start,
+    })?;
+    sink("branch_protection.html".to_string(), bpr_html);
 
     Ok(())
 }
@@ -1300,6 +1322,96 @@ fn build_status_dots(checks: &crate::domain::checks::RepositoryChecks) -> Vec<St
     };
 
     vec![policy_dot, secret_dot, dependabot_dot, branch_dot]
+}
+
+/// Map an `Option<bool>` signal to a status dot: `Some(true)` pass,
+/// `Some(false)` fail, `None` unknown.
+fn option_bool_dot(value: Option<bool>) -> StatusDot {
+    match value {
+        Some(true) => StatusDot {
+            css_class: "status-pass",
+            label: "yes",
+        },
+        Some(false) => StatusDot {
+            css_class: "status-fail",
+            label: "no",
+        },
+        None => StatusDot {
+            css_class: "status-unknown",
+            label: "unknown",
+        },
+    }
+}
+
+/// Build the Branch Protection Regime drill-down view model (BPR0..BPR5).
+///
+/// Report-side only (CHE-0083:R7): [`BranchProtectionRegime`] is computed
+/// fresh from each repo's [`crate::domain::checks::BranchProtectionResult::regime`]
+/// on every call, never read from a persisted field. Page-local view-model
+/// (COM-0027:R3/R4) — no `domain::metrics`/`aggregate::metrics` sibling.
+fn build_bpr_view_model(
+    repositories: &[RepositoryEvidence],
+    organization: &str,
+) -> BranchProtectionRegimeViewModel {
+    let org_encoded = utf8_percent_encode(organization, PATH_SEGMENT).to_string();
+
+    let mut by_regime: HashMap<BranchProtectionRegime, Vec<BprRepoRow>> = HashMap::new();
+    for repo in repositories.iter().filter(|r| !r.repository.archived) {
+        let name_encoded = utf8_percent_encode(&repo.repository.name, PATH_SEGMENT);
+        let (repo_name, repo_url) = build_repo_display(repo, &org_encoded, &name_encoded);
+        let details = &repo.checks.branch_protection.details;
+        let regime = repo.checks.branch_protection.regime();
+
+        let row = BprRepoRow {
+            repo_name,
+            repo_url,
+            visibility: repo.repository.visibility.to_string(),
+            has_pr: option_bool_dot(details.has_pr),
+            required_reviewers_formatted: details
+                .required_reviewers
+                .map_or_else(|| EM_DASH.to_string(), |count| count.to_string()),
+            has_status_checks: option_bool_dot(details.has_status_checks),
+            admin_equivalent: option_bool_dot(details.admin_equivalent),
+            has_broad_bypass: option_bool_dot(details.has_broad_bypass),
+            force_push_blocked: option_bool_dot(details.force_push_blocked),
+            deletion_blocked: option_bool_dot(details.deletion_blocked),
+        };
+
+        by_regime.entry(regime).or_default().push(row);
+    }
+
+    let all_regimes = [
+        BranchProtectionRegime::Unmeasured,
+        BranchProtectionRegime::Unprotected,
+        BranchProtectionRegime::IntegrityOnly,
+        BranchProtectionRegime::ReviewedWithBypass,
+        BranchProtectionRegime::ReviewedGated,
+        BranchProtectionRegime::Hardened,
+    ];
+
+    let mut total_repos: u32 = 0;
+    let bands: Vec<BprBandGroup> = all_regimes
+        .into_iter()
+        .map(|regime| {
+            let (id, name, description, css_class) = bpr_band_metadata(regime);
+            let mut repos = by_regime.remove(&regime).unwrap_or_default();
+            repos.sort_by_key(|r| r.repo_name.to_lowercase());
+            total_repos += u32::try_from(repos.len()).unwrap_or(u32::MAX);
+            BprBandGroup {
+                id,
+                name,
+                description,
+                css_class,
+                repos,
+            }
+        })
+        .collect();
+
+    BranchProtectionRegimeViewModel {
+        organization: organization.to_string(),
+        bands,
+        total_repos,
+    }
 }
 
 #[cfg(test)]
