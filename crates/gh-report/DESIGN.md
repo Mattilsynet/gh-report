@@ -407,6 +407,20 @@ first run beyond pointing `--store-dir` at a writable path.
 - Full verify suite plus `adr-fmt --lint` gates each
   sub-mission.
 
+### Performance stance
+
+No committed latency benchmark is maintained, and this is deliberate. The
+performance posture is **memory-bounded-by-design**: working-set bounds are a
+structural property of the projection model rather than a tuned target. Live
+memory is observed via a runtime `rss_kb` gauge, and heap behaviour is
+inspected on demand through a feature-gated `dhat` harness. There is no
+serve-path latency SLO — the daemon's work is batch collection, not
+low-latency request serving — so there is no latency contract to regression-
+gate, and therefore no committed latency bench. Should a serve-path SLO ever
+be introduced, a bench guarding it would follow; until then a bench would
+assert against an invented target and add maintenance cost without protecting
+a real contract.
+
 ## 9. README (DoD-4)
 
 `crates/gh-report/README.md` is created in C-phase with 9 sections:
