@@ -902,7 +902,10 @@ mod tests {
              a read"
         );
         assert!(
-            matches!(cfg.ack_policy, async_nats::jetstream::consumer::AckPolicy::None),
+            matches!(
+                cfg.ack_policy,
+                async_nats::jetstream::consumer::AckPolicy::None
+            ),
             "replay_readonly's underlying pull config must never ack, so a \
              read can never advance stream state"
         );
