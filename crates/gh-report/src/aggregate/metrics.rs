@@ -12,7 +12,7 @@ use tracing::warn;
 
 use crate::config;
 use crate::domain::checks::{
-    BranchProtectionTier, CodeownersStatus, CollectionFailureReason, DependabotStatus,
+    BranchProtectionRegime, CodeownersStatus, CollectionFailureReason, DependabotStatus,
     ExclusionReason, ScoreCategory, SecretScanningStatus, SecurityPolicyEvidence,
     SecurityPolicyStatus,
 };
@@ -662,16 +662,27 @@ fn count_collection_health_reasons(
 }
 
 /// Count branch protection statuses across active repos.
+///
+/// Pass bar is BPR2 (`IntegrityOnly`) or higher (CHE-0083 amended, CHE-0090).
+/// `partial` is unused under this predicate — every non-excluded,
+/// non-`Unprotected` regime now counts as `pass` — and stays zero rather
+/// than being removed, so the population matrix in
+/// [`branch_protection_coverage`] (`non_pass = partial + fail`) keeps a
+/// single stable arithmetic shape across pass-bar changes.
 fn count_branch_protection_statuses(active: &[&RepositoryEvidence]) -> BranchProtectionCounts {
     count_statuses(
         active,
-        |repo, counts: &mut BranchProtectionCounts| match repo.checks.branch_protection.tier() {
-            BranchProtectionTier::AcceptBar | BranchProtectionTier::Bonus => {
+        |repo, counts: &mut BranchProtectionCounts| match repo.checks.branch_protection.regime() {
+            BranchProtectionRegime::IntegrityOnly
+            | BranchProtectionRegime::ReviewedWithBypass
+            | BranchProtectionRegime::ReviewedGated
+            | BranchProtectionRegime::Hardened => {
                 counts.pass = counts.pass.saturating_add(1);
             }
-            BranchProtectionTier::Minimal => counts.partial = counts.partial.saturating_add(1),
-            BranchProtectionTier::BelowBaseline => counts.fail = counts.fail.saturating_add(1),
-            BranchProtectionTier::Excluded => counts.unknown = counts.unknown.saturating_add(1),
+            BranchProtectionRegime::Unprotected => counts.fail = counts.fail.saturating_add(1),
+            BranchProtectionRegime::Unmeasured => {
+                counts.unknown = counts.unknown.saturating_add(1);
+            }
         },
     )
 }
@@ -1327,13 +1338,17 @@ mod tests {
         let repos = three_pass_two_fail_one_excluded_branch_protection();
         let metrics = aggregate_metrics(&repos);
 
-        assert_eq!(metrics.branch_protection_coverage.numerator, 3);
+        assert_eq!(
+            metrics.branch_protection_coverage.numerator, 4,
+            "BPR2+ pass bar: the fixture's one BPR2 (IntegrityOnly) repo now \
+             counts as pass alongside the 3 already-passing repos"
+        );
         assert_eq!(
             metrics.branch_protection_coverage.denominator, 6,
             "adr-fmt-tm7ms: the permission_denied repo counts in the denominator \
              as not-covered (6 = all non-archived), not dropped to the observable 5"
         );
-        assert_eq!(metrics.branch_protection_coverage.rate, Some(50.0));
+        assert_eq!(metrics.branch_protection_coverage.rate, Some(66.7));
         assert_eq!(metrics.branch_protection_counts.fail, 1);
         assert_eq!(metrics.branch_protection_counts.unknown, 1);
 
@@ -1763,8 +1778,12 @@ mod tests {
         let repos = sample_repos();
         let metrics = aggregate_metrics(&repos);
 
-        assert_eq!(metrics.branch_protection_counts.pass, 2);
-        assert_eq!(metrics.branch_protection_counts.partial, 1);
+        assert_eq!(
+            metrics.branch_protection_counts.pass, 3,
+            "BPR2+ pass bar: sample_repos' 1 BPR2 (IntegrityOnly) repo moves \
+             from partial into pass, alongside the 2 already-passing repos"
+        );
+        assert_eq!(metrics.branch_protection_counts.partial, 0);
         assert_eq!(
             metrics.branch_protection_counts.fail, 1,
             "pcoqb fix: public-3's excluded tier routes to .unknown, not folded into .fail \
@@ -1772,13 +1791,13 @@ mod tests {
         );
         assert_eq!(metrics.branch_protection_counts.unknown, 1);
 
-        assert_eq!(metrics.branch_protection_coverage.numerator, 2);
+        assert_eq!(metrics.branch_protection_coverage.numerator, 3);
         assert_eq!(metrics.branch_protection_coverage.denominator, 5);
         assert_eq!(
             metrics.branch_protection_coverage.rate,
-            Some(40.0),
+            Some(60.0),
             "adr-fmt-tm7ms: the 1 unmeasured repo counts in the denominator as \
-             not-covered (2/5 = 40.0%), not dropped to the observable 2/4"
+             not-covered (3/5 = 60.0%), not dropped to the observable 3/4"
         );
     }
 
@@ -2295,9 +2314,9 @@ mod tests {
 
         assert_eq!(
             metrics.branch_protection_coverage.extra.get("insufficient"),
-            Some(&serde_json::json!(2)),
-            "insufficient = partial(1) + fail(1); public-3's excluded tier no longer folds \
-             into fail (pcoqb fix), so this drops from 3 to 2"
+            Some(&serde_json::json!(1)),
+            "insufficient = partial(0) + fail(1); BPR2+ pass bar moves the 1 BPR2 \
+             (IntegrityOnly) repo out of partial into pass, so this drops from 2 to 1"
         );
         assert_eq!(
             metrics

@@ -131,11 +131,16 @@ pub struct DependabotCounts {
 /// Counts for branch protection status buckets.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BranchProtectionCounts {
-    /// Repos at branch-protection T2 or higher.
+    /// Repos at branch-protection regime BPR2 (`IntegrityOnly`) or higher
+    /// (CHE-0083 amended, CHE-0090).
     pub pass: u32,
-    /// Repos at T1 minimal baseline.
+    /// Unused under the BPR2+ pass bar — always zero. Retained so
+    /// [`AggregatedMetrics::branch_protection_coverage`]'s
+    /// `non_pass = partial + fail` arithmetic keeps a stable shape across
+    /// pass-bar changes.
     pub partial: u32,
-    /// Repos at T0 below baseline.
+    /// Repos at branch-protection regime BPR1 (`Unprotected`) — below the
+    /// pass bar.
     pub fail: u32,
     /// Repos where branch protection is `Excluded` from scoring — status
     /// indeterminate or not applicable (`BranchProtectionTier::Excluded`) —
