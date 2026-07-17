@@ -45,6 +45,11 @@ expression: "&pages[\"owners/org-team-a.html\"]"
     </details>
     
 
+    
+    <p class="meta tier-warn">Orphan-repo attribution unresolved: no team roster was resolved for this
+        owner this run, so orphan repos cannot be attributed.</p>
+    
+
 
     <div class="scorecard">
         
@@ -202,11 +207,6 @@ expression: "&pages[\"owners/org-team-a.html\"]"
     </div>
     
 
-    
-
-    
-    <p class="meta tier-warn">Orphan-repo attribution unresolved: no team roster was resolved for this
-        owner this run, so orphan repos cannot be attributed.</p>
     
 
 </body>

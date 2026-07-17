@@ -45,6 +45,11 @@ expression: detail_page
     </details>
     
 
+    
+    <p class="meta tier-warn">Orphan-repo attribution unresolved: no team roster was resolved for this
+        owner this run, so orphan repos cannot be attributed.</p>
+    
+
 
     <div class="scorecard">
         
@@ -167,11 +172,6 @@ expression: detail_page
     </div>
     
 
-    
-
-    
-    <p class="meta tier-warn">Orphan-repo attribution unresolved: no team roster was resolved for this
-        owner this run, so orphan repos cannot be attributed.</p>
     
 
 </body>
