@@ -63,6 +63,8 @@ jobs:
           file: crates/gh-report/Dockerfile
           platforms: linux/amd64
           push: true
+          provenance: true
+          sbom: true
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.ref_name }}
