@@ -336,6 +336,38 @@ impl JetStreamHandle {
             read_stream_description_once(&js, cfg.stream_name()).await
         })
     }
+    /// Read every currently-durable record in `PubAck.seq` order without
+    /// provisioning or mutating the stream (PGN-0008:R8 — open-rehydrate-only;
+    /// this is the structurally read-only sibling of [`Self::replay_all`]).
+    ///
+    /// Unlike [`Self::replay_all`], this method never calls
+    /// `get_or_create_stream` or `update_stream`: a missing stream surfaces
+    /// as a typed error instead of being implicitly created. It also never
+    /// touches the handle's cached connection or `last_ack_seq` fence — each
+    /// call opens a fresh, unshared `JetStream` context.
+    ///
+    /// # Errors
+    ///
+    /// * [`JetStreamRuntimeError::Detached`] — detached test handle.
+    /// * [`JetStreamRuntimeError::Connect`] — connection failed.
+    /// * [`JetStreamRuntimeError::Replay`] — the stream does not exist, or
+    ///   per-message fetch errored, or the read-only fetch terminated
+    ///   abnormally.
+    /// * [`JetStreamRuntimeError::Timeout`] — the read did not complete
+    ///   within the configured operation timeout.
+    pub fn replay_readonly(&self) -> Result<Vec<JetStreamReplayRecord>, JetStreamRuntimeError> {
+        let runtime = self
+            .config
+            .runtime_handle()
+            .as_tokio()
+            .ok_or(JetStreamRuntimeError::Detached)?
+            .clone();
+        let cfg = &self.config;
+        run_op(&runtime, cfg.operation_timeout(), async {
+            let js = connect_only(cfg).await?;
+            replay_once(&js, cfg.stream_name(), cfg.subject()).await
+        })
+    }
     fn state_locked(&self) -> MutexGuard<'_, Option<LiveState>> {
         lock_state(&self.state)
     }
@@ -390,6 +422,14 @@ where
         }),
     }
 }
+async fn connect_only(
+    cfg: &JetStreamConfig,
+) -> Result<async_nats::jetstream::Context, JetStreamRuntimeError> {
+    let url = cfg.nats_url().to_owned();
+    let decision = connect_decision(&url, cfg.credentials_path());
+    let client = connect_client(&url, &decision).await?;
+    Ok(async_nats::jetstream::new(client))
+}
 async fn ensure_state(
     state: &Mutex<Option<LiveState>>,
     cfg: &JetStreamConfig,
@@ -400,10 +440,7 @@ async fn ensure_state(
             return Ok(s.js.clone());
         }
     }
-    let url = cfg.nats_url().to_owned();
-    let decision = connect_decision(&url, cfg.credentials_path());
-    let client = connect_client(&url, &decision).await?;
-    let js = async_nats::jetstream::new(client);
+    let js = connect_only(cfg).await?;
     provision_stream(&js, cfg).await?;
     let mut guard = lock_state(state);
     let resolved = if let Some(s) = guard.as_ref() {
@@ -844,6 +881,31 @@ mod tests {
             .expect_err("detached test handle cannot read live stream info");
 
         assert!(matches!(err, JetStreamRuntimeError::Detached));
+    }
+    #[test]
+    fn detached_handle_replay_readonly_returns_detached() {
+        let handle = JetStreamBackend::open(minimal_config());
+
+        let err = handle
+            .replay_readonly()
+            .expect_err("detached test handle cannot read a live stream");
+
+        assert!(matches!(err, JetStreamRuntimeError::Detached));
+    }
+    #[test]
+    fn replay_readonly_reuses_the_read_only_replay_pull_config() {
+        let cfg = build_replay_pull_config("pardosa.test.subject");
+        assert!(
+            cfg.durable_name.is_none(),
+            "replay_readonly's underlying pull config must stay ephemeral \
+             (PGN-0008:R8 open-rehydrate-only) — no consumer state survives \
+             a read"
+        );
+        assert!(
+            matches!(cfg.ack_policy, async_nats::jetstream::consumer::AckPolicy::None),
+            "replay_readonly's underlying pull config must never ack, so a \
+             read can never advance stream state"
+        );
     }
     #[test]
     fn wrong_last_sequence_ack_error_maps_to_neutral_variant() {
