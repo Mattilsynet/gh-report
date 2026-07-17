@@ -121,6 +121,7 @@ crates = [
     "pardosa-nats",
     "pardosa-mint-private-tests",
     "pardosa-test-support-harness",
+    "pardosa-read",
 ]
 
 [[domains]]
