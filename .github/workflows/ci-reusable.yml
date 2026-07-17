@@ -25,18 +25,18 @@ jobs:
           components: clippy, rustfmt
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - run: cargo build --workspace --all-features
+      - run: cargo build --workspace --all-features --locked
       # CHE-0087 R5/R6: the Leptos CSR client is wasm32-only and excluded from
       # the default build set. Its committed .wasm/.js artefacts are embedded
       # into gh-report via include_bytes!/include_str!; this step compiles the
       # crate for its real target every CI run so source drift from the
       # committed artefact cannot pass unnoticed.
-      - run: cargo build -p gh-report-web-client --target wasm32-unknown-unknown --release
+      - run: cargo build -p gh-report-web-client --target wasm32-unknown-unknown --release --locked
       # Lint the wasm-only crate on its real target so dom.rs (cfg(wasm32))
       # is clippy-checked, not merely compiled (CHE-0087 R6).
-      - run: cargo clippy -p gh-report-web-client --target wasm32-unknown-unknown --all-targets -- -D warnings
+      - run: cargo clippy -p gh-report-web-client --target wasm32-unknown-unknown --all-targets --locked -- -D warnings
         if: always()
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
         if: always()
       - run: cargo fmt --check
         if: always()
@@ -76,7 +76,7 @@ jobs:
           tar -xzf "${asset}.tar.gz"
           install -m 0755 "${asset}/nats-server" /usr/local/bin/nats-server
           nats-server --version | grep -F "v${version}"
-      - run: cargo test --workspace --all-features
+      - run: cargo test --workspace --all-features --locked
         if: always()
 
   # Tripwire: pin the `projection_state` mutex chokepoint in gh-report.

@@ -47,7 +47,7 @@ ARG APP_VERSION
 # The final binary is copied out so the cache mount is not in the image.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
-    APP_VERSION="$APP_VERSION" cargo build --release -p gh-report \
+    APP_VERSION="$APP_VERSION" cargo build --release --locked -p gh-report \
  && cp target/release/gh-report /usr/local/bin/gh-report
 
 # ── Stage 2: Runtime ────────────────────────────────────────────
