@@ -1125,6 +1125,27 @@ fn team_roster_status_event(
     }
 }
 
+/// Build the minimal detach-tombstone roster from a live roster
+/// (CHE-0091:R1): the `DomainEvent` body of a detach event must not
+/// clone the full live roster — this strips `members` while keeping
+/// just enough identity (`canonical_owner`, `team_slug`, `status`) for
+/// [`team_state_event`] to construct a valid event. Mirrors
+/// `remove_repo`'s null-body pattern (`state.rs` repo path passes
+/// `evidence: None`); team's event shape has no `Option` wrapper to
+/// null out, so minimality is achieved by dropping the member list
+/// instead, without changing the persisted `TeamStateCaptured` wire
+/// shape (no `SCHEMA_HASH` move).
+fn detach_tombstone_roster(
+    roster: &crate::domain::metrics::TeamRoster,
+) -> crate::domain::metrics::TeamRoster {
+    crate::domain::metrics::TeamRoster {
+        canonical_owner: roster.canonical_owner.clone(),
+        team_slug: roster.team_slug.clone(),
+        status: roster.status,
+        members: Vec::new(),
+    }
+}
+
 /// Build the durable [`TeamStateCaptured`] event from a freshly-fetched
 /// domain [`crate::domain::metrics::TeamRoster`] (adr-fmt-ewc1i, CHE-0089).
 ///
@@ -1456,7 +1477,8 @@ impl AppState {
         fetched_at: &str,
         org_membership_fetch_status: OrgMembershipFetchStatus,
     ) -> Result<(), PersistenceError> {
-        let event = team_state_event(org, roster, fetched_at, org_membership_fetch_status)?;
+        let tombstone = detach_tombstone_roster(roster);
+        let event = team_state_event(org, &tombstone, fetched_at, org_membership_fetch_status)?;
         let team_key = team_domain_key(event.org.as_str(), event.team_slug.as_str())
             .expect("team_state_event never produces empty org/team_slug");
         self.team_event_store
@@ -2678,6 +2700,51 @@ mod tests {
         assert!(
             !state.lock_projection().team_rosters.contains_key(&team_key),
             "runtime fold must remove the roster immediately on detach, not only on next restart"
+        );
+    }
+
+    #[test]
+    fn detach_team_event_carries_minimal_tombstone_not_full_roster() {
+        let roster = team_roster_fixture("@TestOrg/platform", "platform");
+        assert_eq!(
+            roster.members.len(),
+            1,
+            "fixture must carry a live member to prove the tombstone strips it"
+        );
+
+        let event = team_state_event(
+            "TestOrg",
+            &roster,
+            "2026-07-17T00:00:00Z",
+            OrgMembershipFetchStatus::Fetched,
+        )
+        .expect("team_state_event constructs");
+        assert_eq!(
+            event.members.as_slice().len(),
+            1,
+            "team_state_event with the live roster still carries the full member list \
+             (this is the pre-fix baseline the detach path must not use directly)"
+        );
+
+        let tombstone = detach_tombstone_roster(&roster);
+        assert_eq!(tombstone.canonical_owner, roster.canonical_owner);
+        assert_eq!(tombstone.team_slug, roster.team_slug);
+        assert_eq!(tombstone.status, roster.status);
+        assert!(
+            tombstone.members.is_empty(),
+            "CHE-0091:R1 detach tombstone body must be minimal, not a full roster clone"
+        );
+
+        let tombstone_event = team_state_event(
+            "TestOrg",
+            &tombstone,
+            "2026-07-17T00:00:00Z",
+            OrgMembershipFetchStatus::Fetched,
+        )
+        .expect("team_state_event constructs from tombstone");
+        assert!(
+            tombstone_event.members.as_slice().is_empty(),
+            "the persisted detach event body must carry no members (minimal tombstone, CHE-0091:R1)"
         );
     }
 
