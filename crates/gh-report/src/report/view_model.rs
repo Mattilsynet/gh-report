@@ -786,6 +786,16 @@ impl Severity {
             Self::Medium => "status-unknown",
         }
     }
+
+    /// Human-readable severity name for the non-colour accessible cue.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Critical => "Critical",
+            Self::High => "High",
+            Self::Medium => "Medium",
+        }
+    }
 }
 
 /// Routing axis for a derived red flag: who is best placed to act on it.
@@ -2651,6 +2661,13 @@ mod tests {
     fn max_red_flag_severity_only_medium_present() {
         let diagnostics = diagnostics_with_flags(vec![flag_with_severity(Severity::Medium)]);
         assert_eq!(diagnostics.max_red_flag_severity(), Some(Severity::Medium));
+    }
+
+    #[test]
+    fn severity_label_is_human_readable() {
+        assert_eq!(Severity::Critical.label(), "Critical");
+        assert_eq!(Severity::High.label(), "High");
+        assert_eq!(Severity::Medium.label(), "Medium");
     }
 
     #[test]

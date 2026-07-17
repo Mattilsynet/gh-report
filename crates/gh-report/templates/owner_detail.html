@@ -41,8 +41,8 @@
             <table class="data-table" data-sortable>
                 <thead>
                     <tr>
-                        <th data-sort-type="text">{% call tooltip::header("Member", "GitHub login of the team member; links to their profile.") %}{% endcall %}</th>
-                        <th data-sort-type="text">{% call tooltip::header("Role", "The member's role on this GitHub team: Maintainer or Member.") %}{% endcall %}</th>
+                        <th scope="col" data-sort-type="text">{% call tooltip::header("Member", "GitHub login of the team member; links to their profile.") %}{% endcall %}</th>
+                        <th scope="col" data-sort-type="text">{% call tooltip::header("Role", "The member's role on this GitHub team: Maintainer or Member.") %}{% endcall %}</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -113,20 +113,20 @@
         <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th data-sort-type="text">{% call tooltip::header("Repository", "Repository name; links to it on GitHub when a URL is known.") %}{% endcall %}</th>
-                    <th data-sort-type="text">{% call tooltip::header("Visibility", "The repository's GitHub visibility: Public, Internal, or Private.") %}{% endcall %}</th>
-                    <th class="text-center" data-sort-type="numeric">{% call tooltip::header("Repo Posture", "Arithmetic mean: 100 × passing / measured controls, across five controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS. Unmeasured controls (unknown, permission-denied, or not-applicable) are excluded from the denominator. Unlike the owner-level Team Health score, this includes CODEOWNERS. N/A when none are scorable.") %}{% endcall %}</th>
+                    <th scope="col" data-sort-type="text">{% call tooltip::header("Repository", "Repository name; links to it on GitHub when a URL is known.") %}{% endcall %}</th>
+                    <th scope="col" data-sort-type="text">{% call tooltip::header("Visibility", "The repository's GitHub visibility: Public, Internal, or Private.") %}{% endcall %}</th>
+                    <th scope="col" class="text-center" data-sort-type="numeric">{% call tooltip::header("Repo Posture", "Arithmetic mean: 100 × passing / measured controls, across five controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS. Unmeasured controls (unknown, permission-denied, or not-applicable) are excluded from the denominator. Unlike the owner-level Team Health score, this includes CODEOWNERS. N/A when none are scorable.") %}{% endcall %}</th>
                     {% for column in vm.control_columns %}
-                    <th class="text-center" data-nosort>{% call tooltip::header(column.name, column.tooltip) %}{% endcall %}</th>
+                    <th scope="col" class="text-center" data-nosort>{% call tooltip::header(column.name, column.tooltip) %}{% endcall %}</th>
                     {% endfor %}
-                    <th data-nosort>{% call tooltip::header("Description", "Repository description from GitHub, or — when none is set.") %}{% endcall %}</th>
-                    <th data-sort-type="text">{% call tooltip::header("Language", "Primary language GitHub detected for the repository, or — when none is set.") %}{% endcall %}</th>
-                    <th class="text-center" data-sort-type="text">{% call tooltip::header("Fork", "Yes if this repository is a fork of another repository.") %}{% endcall %}</th>
-                    <th data-sort-type="text">{% call tooltip::header("License", "SPDX license identifier detected for the repository, or — when none is set.") %}{% endcall %}</th>
-                    <th data-sort-type="date">{% call tooltip::header("Last Push", "Timestamp of the repository's most recent git push, from the GitHub API's repository record — distinct from Last Commit below, which is scoped to the default branch.") %}{% endcall %}</th>
-                    <th data-sort-type="date">{% call tooltip::header("Created", "Timestamp of when the repository was created on GitHub.") %}{% endcall %}</th>
-                    <th data-sort-type="text">{% call tooltip::header("Last Committer", "GitHub login of the author of the most recent commit on the default branch; links to their profile when known.") %}{% endcall %}</th>
-                    <th data-sort-type="date">{% call tooltip::header("Last Commit", "Date of the most recent commit on the repository's default branch.") %}{% endcall %}</th>
+                    <th scope="col" data-nosort>{% call tooltip::header("Description", "Repository description from GitHub, or — when none is set.") %}{% endcall %}</th>
+                    <th scope="col" data-sort-type="text">{% call tooltip::header("Language", "Primary language GitHub detected for the repository, or — when none is set.") %}{% endcall %}</th>
+                    <th scope="col" class="text-center" data-sort-type="text">{% call tooltip::header("Fork", "Yes if this repository is a fork of another repository.") %}{% endcall %}</th>
+                    <th scope="col" data-sort-type="text">{% call tooltip::header("License", "SPDX license identifier detected for the repository, or — when none is set.") %}{% endcall %}</th>
+                    <th scope="col" data-sort-type="date">{% call tooltip::header("Last Push", "Timestamp of the repository's most recent git push, from the GitHub API's repository record — distinct from Last Commit below, which is scoped to the default branch.") %}{% endcall %}</th>
+                    <th scope="col" data-sort-type="date">{% call tooltip::header("Created", "Timestamp of when the repository was created on GitHub.") %}{% endcall %}</th>
+                    <th scope="col" data-sort-type="text">{% call tooltip::header("Last Committer", "GitHub login of the author of the most recent commit on the default branch; links to their profile when known.") %}{% endcall %}</th>
+                    <th scope="col" data-sort-type="date">{% call tooltip::header("Last Commit", "Date of the most recent commit on the repository's default branch.") %}{% endcall %}</th>
                 </tr>
             </thead>
             <tbody>
@@ -144,7 +144,7 @@
                         </div>
                     </td>
                     {% for dot in row.controls %}
-                    <td class="text-center"><span class="status-dot {{ dot.css_class }}" title="{{ dot.label }}"></span>
+                    <td class="text-center"><span class="status-dot {{ dot.css_class }}" title="{{ dot.label }}"><span class="sr-only">{{ dot.label }}</span></span>
                     </td>
                     {% endfor %}
                     <td class="cell-truncate" title="{{ row.description }}">{{ row.description }}</td>
@@ -178,10 +178,10 @@
             <table class="data-table" data-sortable>
                 <thead>
                     <tr>
-                        <th data-sort-type="text">{% call tooltip::header("Repository", "Repository name; links to it on GitHub when a URL is known.") %}{% endcall %}</th>
-                        <th data-sort-type="text">{% call tooltip::header("Visibility", "The repository's GitHub visibility: Public, Internal, or Private.") %}{% endcall %}</th>
-                        <th data-sort-type="text">{% call tooltip::header("Last Committer", "GitHub login of the author of the most recent commit on the default branch; links to their profile when known.") %}{% endcall %}</th>
-                        <th data-sort-type="date">{% call tooltip::header("Last Commit", "Date of the most recent commit on the repository's default branch.") %}{% endcall %}</th>
+                        <th scope="col" data-sort-type="text">{% call tooltip::header("Repository", "Repository name; links to it on GitHub when a URL is known.") %}{% endcall %}</th>
+                        <th scope="col" data-sort-type="text">{% call tooltip::header("Visibility", "The repository's GitHub visibility: Public, Internal, or Private.") %}{% endcall %}</th>
+                        <th scope="col" data-sort-type="text">{% call tooltip::header("Last Committer", "GitHub login of the author of the most recent commit on the default branch; links to their profile when known.") %}{% endcall %}</th>
+                        <th scope="col" data-sort-type="date">{% call tooltip::header("Last Commit", "Date of the most recent commit on the repository's default branch.") %}{% endcall %}</th>
                     </tr>
                 </thead>
                 <tbody>

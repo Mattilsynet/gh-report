@@ -1,5 +1,5 @@
 ---
-source: crates/gh-report/src/report/html.rs
+source: crates/gh-report/src/report/html/tests.rs
 expression: "&pages[\"admin.html\"]"
 ---
 <!DOCTYPE html>
@@ -42,7 +42,7 @@ expression: "&pages[\"admin.html\"]"
     
     <div class="red-flag-card severity-high">
         <p class="red-flag-header">
-            <span class="status-dot status-warn"></span>
+            <span class="status-dot status-warn"><span class="sr-only">High</span></span>
             <span class="red-flag-category">Credential</span>
             <strong>Org-level secret scanning alerts capability unavailable</strong>
         </p>
@@ -55,7 +55,7 @@ expression: "&pages[\"admin.html\"]"
     
     <div class="red-flag-card severity-high">
         <p class="red-flag-header">
-            <span class="status-dot status-warn"></span>
+            <span class="status-dot status-warn"><span class="sr-only">High</span></span>
             <span class="red-flag-category">Credential</span>
             <strong>Private/internal branch-protection reads capability unavailable</strong>
         </p>
@@ -68,7 +68,7 @@ expression: "&pages[\"admin.html\"]"
     
     <div class="red-flag-card severity-high">
         <p class="red-flag-header">
-            <span class="status-dot status-warn"></span>
+            <span class="status-dot status-warn"><span class="sr-only">High</span></span>
             <span class="red-flag-category">Integrity</span>
             <strong>Collection requests were rate-limited</strong>
         </p>
@@ -81,7 +81,7 @@ expression: "&pages[\"admin.html\"]"
     
     <div class="red-flag-card severity-high">
         <p class="red-flag-header">
-            <span class="status-dot status-warn"></span>
+            <span class="status-dot status-warn"><span class="sr-only">High</span></span>
             <span class="red-flag-category">Integrity</span>
             <strong>Collection run is stale</strong>
         </p>
@@ -94,7 +94,7 @@ expression: "&pages[\"admin.html\"]"
     
     <div class="red-flag-card severity-medium">
         <p class="red-flag-header">
-            <span class="status-dot status-unknown"></span>
+            <span class="status-dot status-unknown"><span class="sr-only">Medium</span></span>
             <span class="red-flag-category">Credential</span>
             <strong>Branch protection reads suspected permission-denied</strong>
         </p>
@@ -107,7 +107,7 @@ expression: "&pages[\"admin.html\"]"
     
     <div class="red-flag-card severity-medium">
         <p class="red-flag-header">
-            <span class="status-dot status-unknown"></span>
+            <span class="status-dot status-unknown"><span class="sr-only">Medium</span></span>
             <span class="red-flag-category">Credential</span>
             <strong>Branch protection reads denied by permissions</strong>
         </p>
@@ -129,8 +129,8 @@ expression: "&pages[\"admin.html\"]"
         <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th data-sort-type="text">Reason <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error.">ⓘ</span></th>
-                    <th class="text-right" data-sort-type="numeric">Count <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Number of repositories or checks that failed for this reason during this run.">ⓘ</span></th>
+                    <th scope="col" data-sort-type="text">Reason <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error.">ⓘ<span class="sr-only">Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error.</span></span></th>
+                    <th scope="col" class="text-right" data-sort-type="numeric">Count <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Number of repositories or checks that failed for this reason during this run.">ⓘ<span class="sr-only">Number of repositories or checks that failed for this reason during this run.</span></span></th>
                 </tr>
             </thead>
             <tbody>
@@ -158,8 +158,8 @@ expression: "&pages[\"admin.html\"]"
         <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th data-sort-type="text">Reason <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error.">ⓘ</span></th>
-                    <th class="text-right" data-sort-type="numeric">Count <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Number of repositories or checks that failed for this reason during this run.">ⓘ</span></th>
+                    <th scope="col" data-sort-type="text">Reason <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error.">ⓘ<span class="sr-only">Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error.</span></span></th>
+                    <th scope="col" class="text-right" data-sort-type="numeric">Count <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Number of repositories or checks that failed for this reason during this run.">ⓘ<span class="sr-only">Number of repositories or checks that failed for this reason during this run.</span></span></th>
                 </tr>
             </thead>
             <tbody>

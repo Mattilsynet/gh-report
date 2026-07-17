@@ -999,3 +999,27 @@ details>*:not(summary) {
       -webkit-print-color-adjust: exact;
    }
 }
+
+/* ── Screen-reader-only text ────────────────────────────────────── */
+
+.sr-only {
+   position: absolute;
+   width: 1px;
+   height: 1px;
+   padding: 0;
+   margin: -1px;
+   overflow: hidden;
+   clip: rect(0, 0, 0, 0);
+   white-space: nowrap;
+   border: 0;
+}
+
+/* ── Reduced motion ─────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+   * {
+      transition: none !important;
+      animation: none !important;
+      scroll-behavior: auto !important;
+   }
+}

@@ -34,7 +34,7 @@
     {% for flag in vm.admin_diagnostics.red_flags %}
     <div class="red-flag-card {{ flag.severity.css_class() }}">
         <p class="red-flag-header">
-            <span class="status-dot {{ flag.severity.status_dot_class() }}"></span>
+            <span class="status-dot {{ flag.severity.status_dot_class() }}"><span class="sr-only">{{ flag.severity.label() }}</span></span>
             <span class="red-flag-category">{{ flag.category.label() }}</span>
             <strong>{{ flag.title }}</strong>
         </p>
@@ -70,8 +70,8 @@
         <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th data-sort-type="text">{% call tooltip::header("Reason", "Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error.") %}{% endcall %}</th>
-                    <th class="text-right" data-sort-type="numeric">{% call tooltip::header("Count", "Number of repositories or checks that failed for this reason during this run.") %}{% endcall %}</th>
+                    <th scope="col" data-sort-type="text">{% call tooltip::header("Reason", "Collection-failure taxonomy reason for this check kind — e.g. rate limited, permission denied, transient error.") %}{% endcall %}</th>
+                    <th scope="col" class="text-right" data-sort-type="numeric">{% call tooltip::header("Count", "Number of repositories or checks that failed for this reason during this run.") %}{% endcall %}</th>
                 </tr>
             </thead>
             <tbody>

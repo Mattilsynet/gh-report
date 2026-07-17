@@ -86,15 +86,15 @@ expression: "&pages[\"branch_protection.html\"]"
             <table class="data-table" data-sortable>
                 <thead>
                     <tr>
-                        <th data-sort-type="text">Repository <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Repository name; links to it on GitHub when a URL is known.">ⓘ</span></th>
-                        <th data-sort-type="text">Visibility <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="The repository&#39;s GitHub visibility: Public, Internal, or Private.">ⓘ</span></th>
-                        <th class="text-center" data-nosort>PR Required <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Whether pull requests are required before merging.">ⓘ</span></th>
-                        <th class="text-center" data-sort-type="numeric">Reviewers <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Minimum number of required approving reviews, or — when not configured.">ⓘ</span></th>
-                        <th class="text-center" data-nosort>Status Checks <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Whether required status checks are configured.">ⓘ</span></th>
-                        <th class="text-center" data-nosort>Admin Equivalent <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Whether administrators are subject to the branch protection rules.">ⓘ</span></th>
-                        <th class="text-center" data-nosort>Broad Bypass <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Whether a broad bypass actor (e.g. org admin) can skip the protection rules.">ⓘ</span></th>
-                        <th class="text-center" data-nosort>Force-Push Blocked <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Whether force pushes are blocked on the protected branch.">ⓘ</span></th>
-                        <th class="text-center" data-nosort>Deletion Blocked <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Whether branch deletion is blocked on the protected branch.">ⓘ</span></th>
+                        <th scope="col" data-sort-type="text">Repository <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Repository name; links to it on GitHub when a URL is known.">ⓘ<span class="sr-only">Repository name; links to it on GitHub when a URL is known.</span></span></th>
+                        <th scope="col" data-sort-type="text">Visibility <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="The repository&#39;s GitHub visibility: Public, Internal, or Private.">ⓘ<span class="sr-only">The repository&#39;s GitHub visibility: Public, Internal, or Private.</span></span></th>
+                        <th scope="col" class="text-center" data-nosort>PR Required <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Whether pull requests are required before merging.">ⓘ<span class="sr-only">Whether pull requests are required before merging.</span></span></th>
+                        <th scope="col" class="text-center" data-sort-type="numeric">Reviewers <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Minimum number of required approving reviews, or — when not configured.">ⓘ<span class="sr-only">Minimum number of required approving reviews, or — when not configured.</span></span></th>
+                        <th scope="col" class="text-center" data-nosort>Status Checks <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Whether required status checks are configured.">ⓘ<span class="sr-only">Whether required status checks are configured.</span></span></th>
+                        <th scope="col" class="text-center" data-nosort>Admin Equivalent <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Whether administrators are subject to the branch protection rules.">ⓘ<span class="sr-only">Whether administrators are subject to the branch protection rules.</span></span></th>
+                        <th scope="col" class="text-center" data-nosort>Broad Bypass <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Whether a broad bypass actor (e.g. org admin) can skip the protection rules.">ⓘ<span class="sr-only">Whether a broad bypass actor (e.g. org admin) can skip the protection rules.</span></span></th>
+                        <th scope="col" class="text-center" data-nosort>Force-Push Blocked <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Whether force pushes are blocked on the protected branch.">ⓘ<span class="sr-only">Whether force pushes are blocked on the protected branch.</span></span></th>
+                        <th scope="col" class="text-center" data-nosort>Deletion Blocked <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Whether branch deletion is blocked on the protected branch.">ⓘ<span class="sr-only">Whether branch deletion is blocked on the protected branch.</span></span></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -103,13 +103,13 @@ expression: "&pages[\"branch_protection.html\"]"
                         <td><a href="https://github.com/TestOrg/repo-1"
                                 target="_blank" rel="noopener noreferrer">repo-1</a></td>
                         <td>Public</td>
-                        <td class="text-center"><span class="status-dot status-pass" title="yes"></span></td>
+                        <td class="text-center"><span class="status-dot status-pass" title="yes"><span class="sr-only">yes</span></span></td>
                         <td class="text-center">1</td>
-                        <td class="text-center"><span class="status-dot status-pass" title="yes"></span></td>
-                        <td class="text-center"><span class="status-dot status-pass" title="yes"></span></td>
-                        <td class="text-center"><span class="status-dot status-fail" title="no"></span></td>
-                        <td class="text-center"><span class="status-dot status-pass" title="yes"></span></td>
-                        <td class="text-center"><span class="status-dot status-pass" title="yes"></span></td>
+                        <td class="text-center"><span class="status-dot status-pass" title="yes"><span class="sr-only">yes</span></span></td>
+                        <td class="text-center"><span class="status-dot status-pass" title="yes"><span class="sr-only">yes</span></span></td>
+                        <td class="text-center"><span class="status-dot status-fail" title="no"><span class="sr-only">no</span></span></td>
+                        <td class="text-center"><span class="status-dot status-pass" title="yes"><span class="sr-only">yes</span></span></td>
+                        <td class="text-center"><span class="status-dot status-pass" title="yes"><span class="sr-only">yes</span></span></td>
                     </tr>
                     
                 </tbody>

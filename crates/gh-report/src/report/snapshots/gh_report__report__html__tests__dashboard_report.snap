@@ -74,8 +74,8 @@ expression: "&pages[\"report.html\"]"
         <table class="data-table">
             <thead>
                 <tr>
-                    <th>Metric <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Name of the measurement or breakdown category this row reports; see the row itself for its exact definition.">ⓘ</span></th>
-                    <th class="text-right">Value <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="The measured count or percentage for this collection run.">ⓘ</span></th>
+                    <th scope="col">Metric <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Name of the measurement or breakdown category this row reports; see the row itself for its exact definition.">ⓘ<span class="sr-only">Name of the measurement or breakdown category this row reports; see the row itself for its exact definition.</span></span></th>
+                    <th scope="col" class="text-right">Value <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="The measured count or percentage for this collection run.">ⓘ<span class="sr-only">The measured count or percentage for this collection run.</span></span></th>
                 </tr>
             </thead>
             <tbody>
@@ -112,8 +112,8 @@ expression: "&pages[\"report.html\"]"
         <table class="data-table">
             <thead>
                 <tr>
-                    <th>Metric <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Name of the measurement or breakdown category this row reports; see the row itself for its exact definition.">ⓘ</span></th>
-                    <th class="text-right">Value <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="The measured count or percentage for this collection run.">ⓘ</span></th>
+                    <th scope="col">Metric <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Name of the measurement or breakdown category this row reports; see the row itself for its exact definition.">ⓘ<span class="sr-only">Name of the measurement or breakdown category this row reports; see the row itself for its exact definition.</span></span></th>
+                    <th scope="col" class="text-right">Value <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="The measured count or percentage for this collection run.">ⓘ<span class="sr-only">The measured count or percentage for this collection run.</span></span></th>
                 </tr>
             </thead>
             <tbody>
@@ -150,8 +150,8 @@ expression: "&pages[\"report.html\"]"
         <table class="data-table">
             <thead>
                 <tr>
-                    <th>Metric <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Name of the measurement or breakdown category this row reports; see the row itself for its exact definition.">ⓘ</span></th>
-                    <th class="text-right">Value <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="The measured count or percentage for this collection run.">ⓘ</span></th>
+                    <th scope="col">Metric <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Name of the measurement or breakdown category this row reports; see the row itself for its exact definition.">ⓘ<span class="sr-only">Name of the measurement or breakdown category this row reports; see the row itself for its exact definition.</span></span></th>
+                    <th scope="col" class="text-right">Value <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="The measured count or percentage for this collection run.">ⓘ<span class="sr-only">The measured count or percentage for this collection run.</span></span></th>
                 </tr>
             </thead>
             <tbody>
@@ -188,8 +188,8 @@ expression: "&pages[\"report.html\"]"
         <table class="data-table">
             <thead>
                 <tr>
-                    <th>Metric <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Name of the measurement or breakdown category this row reports; see the row itself for its exact definition.">ⓘ</span></th>
-                    <th class="text-right">Value <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="The measured count or percentage for this collection run.">ⓘ</span></th>
+                    <th scope="col">Metric <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Name of the measurement or breakdown category this row reports; see the row itself for its exact definition.">ⓘ<span class="sr-only">Name of the measurement or breakdown category this row reports; see the row itself for its exact definition.</span></span></th>
+                    <th scope="col" class="text-right">Value <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="The measured count or percentage for this collection run.">ⓘ<span class="sr-only">The measured count or percentage for this collection run.</span></span></th>
                 </tr>
             </thead>
             <tbody>
@@ -222,8 +222,8 @@ expression: "&pages[\"report.html\"]"
         <table class="data-table">
             <thead>
                 <tr>
-                    <th>Metric <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Name of the measurement or breakdown category this row reports; see the row itself for its exact definition.">ⓘ</span></th>
-                    <th class="text-right">Value <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="The measured count or percentage for this collection run.">ⓘ</span></th>
+                    <th scope="col">Metric <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Name of the measurement or breakdown category this row reports; see the row itself for its exact definition.">ⓘ<span class="sr-only">Name of the measurement or breakdown category this row reports; see the row itself for its exact definition.</span></span></th>
+                    <th scope="col" class="text-right">Value <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="The measured count or percentage for this collection run.">ⓘ<span class="sr-only">The measured count or percentage for this collection run.</span></span></th>
                 </tr>
             </thead>
             <tbody>
@@ -271,8 +271,8 @@ expression: "&pages[\"report.html\"]"
     <table class="data-table" data-sortable>
         <thead>
             <tr>
-                <th data-sort-type="text">Field <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Name of the metadata item this row reports.">ⓘ</span></th>
-                <th class="text-right" data-nosort>Value <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="The measured count or percentage for this collection run.">ⓘ</span></th>
+                <th scope="col" data-sort-type="text">Field <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Name of the metadata item this row reports.">ⓘ<span class="sr-only">Name of the metadata item this row reports.</span></span></th>
+                <th scope="col" class="text-right" data-nosort>Value <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="The measured count or percentage for this collection run.">ⓘ<span class="sr-only">The measured count or percentage for this collection run.</span></span></th>
             </tr>
         </thead>
         <tbody>

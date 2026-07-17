@@ -38,14 +38,14 @@ expression: "&pages[\"index.html\"]"
             </div>
         </div>
         <div class="card tier-warn" title="Percentage of public repos with a SECURITY.md or GitHub security-policy setting enabled.">
-            <p class="card-label">Security Policy <span class="tooltip-trigger" tabindex="0" data-tooltip="Add a SECURITY.md file to the repo root, .github/, or docs/ — or use the Security tab&#39;s Reporting → Security policy → Start setup for a guided pull request.">ⓘ</span></p>
+            <p class="card-label">Security Policy <span class="tooltip-trigger" tabindex="0" data-tooltip="Add a SECURITY.md file to the repo root, .github/, or docs/ — or use the Security tab&#39;s Reporting → Security policy → Start setup for a guided pull request.">ⓘ<span class="sr-only">Add a SECURITY.md file to the repo root, .github/, or docs/ — or use the Security tab&#39;s Reporting → Security policy → Start setup for a guided pull request.</span></span></p>
             <p class="card-value">66.7% (2/3)</p>
             <div class="progress-bar">
                 <div class="progress-fill tier-warn w-65"></div>
             </div>
         </div>
         <div class="card tier-warn" title="Percentage of repos with Dependabot security updates enabled (auto-PRs for vulnerable dependencies).">
-            <p class="card-label">Dependabot Status <span class="tooltip-trigger" tabindex="0" data-tooltip="Enable it under Settings → Security → Advanced Security: click Enable next to Dependabot alerts (this also governs Dependabot security updates), or apply it org-wide via a security configuration.">ⓘ</span></p>
+            <p class="card-label">Dependabot Status <span class="tooltip-trigger" tabindex="0" data-tooltip="Enable it under Settings → Security → Advanced Security: click Enable next to Dependabot alerts (this also governs Dependabot security updates), or apply it org-wide via a security configuration.">ⓘ<span class="sr-only">Enable it under Settings → Security → Advanced Security: click Enable next to Dependabot alerts (this also governs Dependabot security updates), or apply it org-wide via a security configuration.</span></span></p>
             <p class="card-value">60.0% (3/5)</p>
             <div class="progress-bar">
                 <div class="progress-fill tier-warn w-60"></div>
@@ -53,7 +53,7 @@ expression: "&pages[\"index.html\"]"
             <p class="card-detail">1 unmeasured (1 unknown)</p>
         </div>
         <div class="card tier-pass" title="Percentage of public repos with GitHub secret scanning enabled to detect leaked credentials.">
-            <p class="card-label">Secret Scanning <span class="tooltip-trigger" tabindex="0" data-tooltip="Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together). Counts public repositories only, mirroring the organisation-wide Secret Scanning figure.">ⓘ</span></p>
+            <p class="card-label">Secret Scanning <span class="tooltip-trigger" tabindex="0" data-tooltip="Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together). Counts public repositories only, mirroring the organisation-wide Secret Scanning figure.">ⓘ<span class="sr-only">Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together). Counts public repositories only, mirroring the organisation-wide Secret Scanning figure.</span></span></p>
             <p class="card-value">80.0% (4/5)</p>
             <p class="card-detail">0 open org alerts · success</p>
             <div class="progress-bar">
@@ -63,7 +63,7 @@ expression: "&pages[\"index.html\"]"
             </div>
         </div>
         <a href="branch_protection.html" class="card tier-warn" title="Percentage of observable repos at branch-protection BPR2 (IntegrityOnly) or higher. Unreadable or permission-suspected repos are excluded from this percentage (see the unmeasured breakdown below), not classified as below-bar. Click through for the BPR0..BPR5 regime drill-down.">
-            <p class="card-label">Branch Protection <span class="tooltip-trigger" tabindex="0" data-tooltip="Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: require PR review, disallow force-push and deletion, and disable bypass so admins can&#39;t skip it.">ⓘ</span></p>
+            <p class="card-label">Branch Protection <span class="tooltip-trigger" tabindex="0" data-tooltip="Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: require PR review, disallow force-push and deletion, and disable bypass so admins can&#39;t skip it.">ⓘ<span class="sr-only">Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: require PR review, disallow force-push and deletion, and disable bypass so admins can&#39;t skip it.</span></span></p>
             <p class="card-value">60.0% (3/5)</p>
             <p class="card-detail">BPR1 0 · 1 unmeasured (1 unknown)</p>
             <div class="progress-bar">
@@ -73,7 +73,7 @@ expression: "&pages[\"index.html\"]"
             </div>
         </a>
         <div class="card tier-pass" title="Percentage of repos with a CODEOWNERS file identifying responsible teams or individuals.">
-            <p class="card-label">CODEOWNERS <span class="tooltip-trigger" tabindex="0" data-tooltip="Add .github/CODEOWNERS naming a GitHub team (not an individual) with write access to the repo, e.g. `*   @your-org/team-slug` — teams survive membership changes.">ⓘ</span></p>
+            <p class="card-label">CODEOWNERS <span class="tooltip-trigger" tabindex="0" data-tooltip="Add .github/CODEOWNERS naming a GitHub team (not an individual) with write access to the repo, e.g. `*   @your-org/team-slug` — teams survive membership changes.">ⓘ<span class="sr-only">Add .github/CODEOWNERS naming a GitHub team (not an individual) with write access to the repo, e.g. `*   @your-org/team-slug` — teams survive membership changes.</span></span></p>
             <p class="card-value">80.0% (4/5)</p>
             <div class="progress-bar">
                 <div class="progress-fill tier-pass w-80"></div>

@@ -1,5 +1,5 @@
 ---
-source: crates/gh-report/src/report/html.rs
+source: crates/gh-report/src/report/html/tests.rs
 expression: "&pages[\"orphans.html\"]"
 ---
 <!DOCTYPE html>
@@ -41,12 +41,12 @@ expression: "&pages[\"orphans.html\"]"
         <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th data-sort-type="text">Repository <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Repository name; links to it on GitHub when a URL is known.">ⓘ</span></th>
-                    <th data-sort-type="text">Visibility <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="The repository&#39;s GitHub visibility: Public, Internal, or Private.">ⓘ</span></th>
-                    <th data-sort-type="text">Last Committer <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="GitHub login of the author of the most recent commit on the default branch; links to their profile when known.">ⓘ</span></th>
-                    <th data-sort-type="date">Last Commit <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Date of the most recent commit on the repository&#39;s default branch.">ⓘ</span></th>
-                    <th data-sort-type="text">Language <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Primary language GitHub detected for the repository, or — when none is set.">ⓘ</span></th>
-                    <th data-nosort>Description <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Repository description from GitHub, or — when none is set.">ⓘ</span></th>
+                    <th scope="col" data-sort-type="text">Repository <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Repository name; links to it on GitHub when a URL is known.">ⓘ<span class="sr-only">Repository name; links to it on GitHub when a URL is known.</span></span></th>
+                    <th scope="col" data-sort-type="text">Visibility <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="The repository&#39;s GitHub visibility: Public, Internal, or Private.">ⓘ<span class="sr-only">The repository&#39;s GitHub visibility: Public, Internal, or Private.</span></span></th>
+                    <th scope="col" data-sort-type="text">Last Committer <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="GitHub login of the author of the most recent commit on the default branch; links to their profile when known.">ⓘ<span class="sr-only">GitHub login of the author of the most recent commit on the default branch; links to their profile when known.</span></span></th>
+                    <th scope="col" data-sort-type="date">Last Commit <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Date of the most recent commit on the repository&#39;s default branch.">ⓘ<span class="sr-only">Date of the most recent commit on the repository&#39;s default branch.</span></span></th>
+                    <th scope="col" data-sort-type="text">Language <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Primary language GitHub detected for the repository, or — when none is set.">ⓘ<span class="sr-only">Primary language GitHub detected for the repository, or — when none is set.</span></span></th>
+                    <th scope="col" data-nosort>Description <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Repository description from GitHub, or — when none is set.">ⓘ<span class="sr-only">Repository description from GitHub, or — when none is set.</span></span></th>
                 </tr>
             </thead>
             <tbody>

@@ -1,6 +1,5 @@
 ---
 source: crates/gh-report/src/report/html/tests.rs
-assertion_line: 3510
 expression: "&pages[\"deleted.html\"]"
 ---
 <!DOCTYPE html>
@@ -54,8 +53,8 @@ expression: "&pages[\"deleted.html\"]"
         <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th data-sort-type="text">Owner <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="CODEOWNERS owner token that is glob-shaped, not a resolvable GitHub team.">ⓘ</span></th>
-                    <th data-nosort>Referencing Repositories <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Repositories whose CODEOWNERS file names this wildcard owner.">ⓘ</span></th>
+                    <th scope="col" data-sort-type="text">Owner <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="CODEOWNERS owner token that is glob-shaped, not a resolvable GitHub team.">ⓘ<span class="sr-only">CODEOWNERS owner token that is glob-shaped, not a resolvable GitHub team.</span></span></th>
+                    <th scope="col" data-nosort>Referencing Repositories <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Repositories whose CODEOWNERS file names this wildcard owner.">ⓘ<span class="sr-only">Repositories whose CODEOWNERS file names this wildcard owner.</span></span></th>
                 </tr>
             </thead>
             <tbody>
@@ -79,8 +78,8 @@ expression: "&pages[\"deleted.html\"]"
         <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th data-sort-type="text">Team <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="GitHub team slug that a CODEOWNERS file still references, but GitHub has deleted (404 on roster fetch).">ⓘ</span></th>
-                    <th data-nosort>Referencing Repositories <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Repositories whose CODEOWNERS file still names this deleted team.">ⓘ</span></th>
+                    <th scope="col" data-sort-type="text">Team <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="GitHub team slug that a CODEOWNERS file still references, but GitHub has deleted (404 on roster fetch).">ⓘ<span class="sr-only">GitHub team slug that a CODEOWNERS file still references, but GitHub has deleted (404 on roster fetch).</span></span></th>
+                    <th scope="col" data-nosort>Referencing Repositories <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Repositories whose CODEOWNERS file still names this deleted team.">ⓘ<span class="sr-only">Repositories whose CODEOWNERS file still names this deleted team.</span></span></th>
                 </tr>
             </thead>
             <tbody>

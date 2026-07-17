@@ -32,8 +32,8 @@
         <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th data-sort-type="text">{% call tooltip::header("Repository", "Name of the repository no longer found in a successful inventory sweep.") %}{% endcall %}</th>
-                    <th data-sort-type="date">{% call tooltip::header("Detected At", "Timestamp when this repository was first observed missing from inventory.") %}{% endcall %}</th>
+                    <th scope="col" data-sort-type="text">{% call tooltip::header("Repository", "Name of the repository no longer found in a successful inventory sweep.") %}{% endcall %}</th>
+                    <th scope="col" data-sort-type="date">{% call tooltip::header("Detected At", "Timestamp when this repository was first observed missing from inventory.") %}{% endcall %}</th>
                 </tr>
             </thead>
             <tbody>
@@ -62,8 +62,8 @@
         <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th data-sort-type="text">{% call tooltip::header("Owner", "CODEOWNERS owner token that is glob-shaped, not a resolvable GitHub team.") %}{% endcall %}</th>
-                    <th data-nosort>{% call tooltip::header("Referencing Repositories", "Repositories whose CODEOWNERS file names this wildcard owner.") %}{% endcall %}</th>
+                    <th scope="col" data-sort-type="text">{% call tooltip::header("Owner", "CODEOWNERS owner token that is glob-shaped, not a resolvable GitHub team.") %}{% endcall %}</th>
+                    <th scope="col" data-nosort>{% call tooltip::header("Referencing Repositories", "Repositories whose CODEOWNERS file names this wildcard owner.") %}{% endcall %}</th>
                 </tr>
             </thead>
             <tbody>
@@ -87,8 +87,8 @@
         <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th data-sort-type="text">{% call tooltip::header("Team", "GitHub team slug that a CODEOWNERS file still references, but GitHub has deleted (404 on roster fetch).") %}{% endcall %}</th>
-                    <th data-nosort>{% call tooltip::header("Referencing Repositories", "Repositories whose CODEOWNERS file still names this deleted team.") %}{% endcall %}</th>
+                    <th scope="col" data-sort-type="text">{% call tooltip::header("Team", "GitHub team slug that a CODEOWNERS file still references, but GitHub has deleted (404 on roster fetch).") %}{% endcall %}</th>
+                    <th scope="col" data-nosort>{% call tooltip::header("Referencing Repositories", "Repositories whose CODEOWNERS file still names this deleted team.") %}{% endcall %}</th>
                 </tr>
             </thead>
             <tbody>

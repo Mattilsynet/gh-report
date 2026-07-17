@@ -326,6 +326,21 @@ fn render_dashboard_branch_protection_snapshot() {
 }
 
 #[test]
+fn render_dashboard_branch_protection_status_dots_have_non_colour_cue() {
+    let evidence = sample_evidence();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let page = &pages["branch_protection.html"];
+
+    let dot_count = page.matches("class=\"status-dot").count();
+    assert!(dot_count > 0, "expected at least one status-dot span");
+    let sr_only_count = page.matches("class=\"sr-only\"").count();
+    assert!(
+        sr_only_count >= dot_count,
+        "every status-dot span should be paired with a sr-only accessible-name span"
+    );
+}
+
+#[test]
 fn render_dashboard_index_badge_snapshot() {
     let evidence = sample_evidence_with_admin_diagnostics();
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
@@ -502,6 +517,67 @@ fn render_dashboard_includes_stylesheet() {
     assert!(css.contains(":root"));
     assert!(css.contains(".scorecard"));
     assert!(css.contains(".card"));
+}
+
+#[test]
+fn render_dashboard_stylesheet_has_sr_only_class() {
+    let evidence = sample_evidence();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let css = &pages["style.css"];
+
+    assert!(css.contains(".sr-only"));
+}
+
+#[test]
+fn render_dashboard_stylesheet_has_reduced_motion_media_query() {
+    let evidence = sample_evidence();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let css = &pages["style.css"];
+
+    assert!(css.contains("@media (prefers-reduced-motion: reduce)"));
+    assert!(css.contains("transition: none"));
+}
+
+#[test]
+fn render_dashboard_report_column_headers_have_scope_col() {
+    let evidence = sample_evidence();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let report = &pages["report.html"];
+
+    let th_count = report.matches("<th").count() - report.matches("<thead").count();
+    let scoped_th_count = report.matches("<th scope=\"col\"").count();
+    assert!(th_count > 0, "expected at least one <th> in report.html");
+    assert_eq!(
+        th_count, scoped_th_count,
+        "every <th> in report.html must carry scope=\"col\""
+    );
+}
+
+#[test]
+fn render_dashboard_owners_column_headers_have_scope_col() {
+    let evidence = evidence_with_owner_repos();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let owners = &pages["owners.html"];
+
+    let th_count = owners.matches("<th").count() - owners.matches("<thead").count();
+    let scoped_th_count = owners.matches("<th scope=\"col\"").count();
+    assert!(th_count > 0, "expected at least one <th> in owners.html");
+    assert_eq!(
+        th_count, scoped_th_count,
+        "every <th> in owners.html must carry scope=\"col\""
+    );
+}
+
+#[test]
+fn render_dashboard_index_tooltip_text_is_sr_only_readable() {
+    let evidence = sample_evidence();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let index = &pages["index.html"];
+
+    assert!(
+        index.contains("class=\"sr-only\""),
+        "tooltip macro output should include an sr-only span with the AT-readable text"
+    );
 }
 
 #[test]
@@ -2123,7 +2199,7 @@ fn render_owner_detail_html_has_data_driven_table_headers() {
         .1;
 
     assert!(detail_page.contains(
-            "<th class=\"text-center\" data-nosort>Security Policy <span class=\"tooltip-trigger tooltip-trigger-header\" tabindex=\"0\" data-tooltip=\""
+            "<th scope=\"col\" class=\"text-center\" data-nosort>Security Policy <span class=\"tooltip-trigger tooltip-trigger-header\" tabindex=\"0\" data-tooltip=\""
         ));
     assert!(detail_page.contains(">Dependabot Status <span class=\"tooltip-trigger"));
 }
@@ -2539,7 +2615,7 @@ fn render_owner_detail_html_contains_metadata_headers() {
     assert!(detail_page.contains(">Description <span class=\"tooltip-trigger"));
     assert!(detail_page.contains(">Language <span class=\"tooltip-trigger"));
     assert!(detail_page.contains(
-            "<th class=\"text-center\" data-sort-type=\"text\">Fork <span class=\"tooltip-trigger tooltip-trigger-header\" tabindex=\"0\" data-tooltip=\"Yes if this repository is a fork of another repository.\">ⓘ</span></th>"
+            "<th scope=\"col\" class=\"text-center\" data-sort-type=\"text\">Fork <span class=\"tooltip-trigger tooltip-trigger-header\" tabindex=\"0\" data-tooltip=\"Yes if this repository is a fork of another repository.\">ⓘ<span class=\"sr-only\">Yes if this repository is a fork of another repository.</span></span></th>"
         ));
     assert!(detail_page.contains(">License <span class=\"tooltip-trigger"));
     assert!(detail_page.contains(">Last Push <span class=\"tooltip-trigger"));

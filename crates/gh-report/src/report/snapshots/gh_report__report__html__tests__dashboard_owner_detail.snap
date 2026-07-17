@@ -50,7 +50,7 @@ expression: "&pages[\"owners/org-team-a.html\"]"
         
         
         <div class="card tier-warn">
-            <p class="card-label">Security Policy <span class="tooltip-trigger" tabindex="0" data-tooltip="Add a SECURITY.md file to the repo root, .github/, or docs/ — or use the Security tab&#39;s Reporting → Security policy → Start setup for a guided pull request.">ⓘ</span></p>
+            <p class="card-label">Security Policy <span class="tooltip-trigger" tabindex="0" data-tooltip="Add a SECURITY.md file to the repo root, .github/, or docs/ — or use the Security tab&#39;s Reporting → Security policy → Start setup for a guided pull request.">ⓘ<span class="sr-only">Add a SECURITY.md file to the repo root, .github/, or docs/ — or use the Security tab&#39;s Reporting → Security policy → Start setup for a guided pull request.</span></span></p>
             <p class="card-value">50.0% (1/2)</p>
             <div class="progress-bar">
                 <div class="progress-fill tier-warn w-50"></div>
@@ -60,7 +60,7 @@ expression: "&pages[\"owners/org-team-a.html\"]"
         
         
         <div class="card tier-pass">
-            <p class="card-label">Secret Scanning <span class="tooltip-trigger" tabindex="0" data-tooltip="Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together). Counts public repositories only, mirroring the organisation-wide Secret Scanning figure.">ⓘ</span></p>
+            <p class="card-label">Secret Scanning <span class="tooltip-trigger" tabindex="0" data-tooltip="Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together). Counts public repositories only, mirroring the organisation-wide Secret Scanning figure.">ⓘ<span class="sr-only">Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together). Counts public repositories only, mirroring the organisation-wide Secret Scanning figure.</span></span></p>
             <p class="card-value">100.0% (1/1)</p>
             <div class="progress-bar">
                 <div class="progress-fill tier-pass w-100"></div>
@@ -70,7 +70,7 @@ expression: "&pages[\"owners/org-team-a.html\"]"
         
         
         <div class="card tier-warn">
-            <p class="card-label">Dependabot Status <span class="tooltip-trigger" tabindex="0" data-tooltip="Enable it under Settings → Security → Advanced Security: click Enable next to Dependabot alerts (this also governs Dependabot security updates), or apply it org-wide via a security configuration.">ⓘ</span></p>
+            <p class="card-label">Dependabot Status <span class="tooltip-trigger" tabindex="0" data-tooltip="Enable it under Settings → Security → Advanced Security: click Enable next to Dependabot alerts (this also governs Dependabot security updates), or apply it org-wide via a security configuration.">ⓘ<span class="sr-only">Enable it under Settings → Security → Advanced Security: click Enable next to Dependabot alerts (this also governs Dependabot security updates), or apply it org-wide via a security configuration.</span></span></p>
             <p class="card-value">50.0% (1/2)</p>
             <div class="progress-bar">
                 <div class="progress-fill tier-warn w-50"></div>
@@ -80,7 +80,7 @@ expression: "&pages[\"owners/org-team-a.html\"]"
         
         
         <a href="../branch_protection.html" class="card tier-warn">
-            <p class="card-label">Branch Protection <span class="tooltip-trigger" tabindex="0" data-tooltip="Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: require PR review, disallow force-push and deletion, and disable bypass so admins can&#39;t skip it.">ⓘ</span></p>
+            <p class="card-label">Branch Protection <span class="tooltip-trigger" tabindex="0" data-tooltip="Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: require PR review, disallow force-push and deletion, and disable bypass so admins can&#39;t skip it.">ⓘ<span class="sr-only">Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: require PR review, disallow force-push and deletion, and disable bypass so admins can&#39;t skip it.</span></span></p>
             <p class="card-value">50.0% (1/2)</p>
             <div class="progress-bar">
                 <div class="progress-fill tier-warn w-50"></div>
@@ -89,7 +89,7 @@ expression: "&pages[\"owners/org-team-a.html\"]"
         
         
         <div class="card">
-            <p class="card-label">Stale Repos <span class="tooltip-trigger" tabindex="0" data-tooltip="Repos not updated in 2+ years, out of this owner&#39;s total. The complement (total - stale) / total is this owner&#39;s Freshness rate, one of six controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.">ⓘ</span></p>
+            <p class="card-label">Stale Repos <span class="tooltip-trigger" tabindex="0" data-tooltip="Repos not updated in 2+ years, out of this owner&#39;s total. The complement (total - stale) / total is this owner&#39;s Freshness rate, one of six controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.">ⓘ<span class="sr-only">Repos not updated in 2+ years, out of this owner&#39;s total. The complement (total - stale) / total is this owner&#39;s Freshness rate, one of six controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.</span></span></p>
             <p class="card-value">0 / 2</p>
             <div class="progress-bar">
                 <div class="progress-fill w-0"></div>
@@ -103,26 +103,26 @@ expression: "&pages[\"owners/org-team-a.html\"]"
         <table class="data-table" data-sortable>
             <thead>
                 <tr>
-                    <th data-sort-type="text">Repository <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Repository name; links to it on GitHub when a URL is known.">ⓘ</span></th>
-                    <th data-sort-type="text">Visibility <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="The repository&#39;s GitHub visibility: Public, Internal, or Private.">ⓘ</span></th>
-                    <th class="text-center" data-sort-type="numeric">Repo Posture <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Arithmetic mean: 100 × passing / measured controls, across five controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS. Unmeasured controls (unknown, permission-denied, or not-applicable) are excluded from the denominator. Unlike the owner-level Team Health score, this includes CODEOWNERS. N/A when none are scorable.">ⓘ</span></th>
+                    <th scope="col" data-sort-type="text">Repository <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Repository name; links to it on GitHub when a URL is known.">ⓘ<span class="sr-only">Repository name; links to it on GitHub when a URL is known.</span></span></th>
+                    <th scope="col" data-sort-type="text">Visibility <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="The repository&#39;s GitHub visibility: Public, Internal, or Private.">ⓘ<span class="sr-only">The repository&#39;s GitHub visibility: Public, Internal, or Private.</span></span></th>
+                    <th scope="col" class="text-center" data-sort-type="numeric">Repo Posture <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Arithmetic mean: 100 × passing / measured controls, across five controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS. Unmeasured controls (unknown, permission-denied, or not-applicable) are excluded from the denominator. Unlike the owner-level Team Health score, this includes CODEOWNERS. N/A when none are scorable.">ⓘ<span class="sr-only">Arithmetic mean: 100 × passing / measured controls, across five controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS. Unmeasured controls (unknown, permission-denied, or not-applicable) are excluded from the denominator. Unlike the owner-level Team Health score, this includes CODEOWNERS. N/A when none are scorable.</span></span></th>
                     
-                    <th class="text-center" data-nosort>Security Policy <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Security policy presence — a SECURITY.md file (repo root, .github/, or docs/) or GitHub&#39;s security-policy setting enabled. Same per-repo check behind both this column and the org-wide Security Policy Coverage metric (non-public repos excluded as not applicable).">ⓘ</span></th>
+                    <th scope="col" class="text-center" data-nosort>Security Policy <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Security policy presence — a SECURITY.md file (repo root, .github/, or docs/) or GitHub&#39;s security-policy setting enabled. Same per-repo check behind both this column and the org-wide Security Policy Coverage metric (non-public repos excluded as not applicable).">ⓘ<span class="sr-only">Security policy presence — a SECURITY.md file (repo root, .github/, or docs/) or GitHub&#39;s security-policy setting enabled. Same per-repo check behind both this column and the org-wide Security Policy Coverage metric (non-public repos excluded as not applicable).</span></span></th>
                     
-                    <th class="text-center" data-nosort>Secret Scanning <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="GitHub secret scanning presence — catches leaked credentials pushed to the repo. Same per-repo check behind both this column and the org-wide Secret Scanning Coverage metric (that metric&#39;s rate counts public repos only; the check itself runs regardless of visibility).">ⓘ</span></th>
+                    <th scope="col" class="text-center" data-nosort>Secret Scanning <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="GitHub secret scanning presence — catches leaked credentials pushed to the repo. Same per-repo check behind both this column and the org-wide Secret Scanning Coverage metric (that metric&#39;s rate counts public repos only; the check itself runs regardless of visibility).">ⓘ<span class="sr-only">GitHub secret scanning presence — catches leaked credentials pushed to the repo. Same per-repo check behind both this column and the org-wide Secret Scanning Coverage metric (that metric&#39;s rate counts public repos only; the check itself runs regardless of visibility).</span></span></th>
                     
-                    <th class="text-center" data-nosort>Dependabot Status <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Dependabot security updates presence — when enabled, GitHub opens automatic pull requests for vulnerable dependencies. Same per-repo check behind both this column and the org-wide Dependabot Status metric.">ⓘ</span></th>
+                    <th scope="col" class="text-center" data-nosort>Dependabot Status <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Dependabot security updates presence — when enabled, GitHub opens automatic pull requests for vulnerable dependencies. Same per-repo check behind both this column and the org-wide Dependabot Status metric.">ⓘ<span class="sr-only">Dependabot security updates presence — when enabled, GitHub opens automatic pull requests for vulnerable dependencies. Same per-repo check behind both this column and the org-wide Dependabot Status metric.</span></span></th>
                     
-                    <th class="text-center" data-nosort>Branch Protection <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Branch protection at the T2 accept-bar or better — pull request review required, on top of T1&#39;s force-push and deletion blocking. Same per-repo check behind both this column and the org-wide Branch Protection metric.">ⓘ</span></th>
+                    <th scope="col" class="text-center" data-nosort>Branch Protection <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Branch protection at the T2 accept-bar or better — pull request review required, on top of T1&#39;s force-push and deletion blocking. Same per-repo check behind both this column and the org-wide Branch Protection metric.">ⓘ<span class="sr-only">Branch protection at the T2 accept-bar or better — pull request review required, on top of T1&#39;s force-push and deletion blocking. Same per-repo check behind both this column and the org-wide Branch Protection metric.</span></span></th>
                     
-                    <th data-nosort>Description <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Repository description from GitHub, or — when none is set.">ⓘ</span></th>
-                    <th data-sort-type="text">Language <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Primary language GitHub detected for the repository, or — when none is set.">ⓘ</span></th>
-                    <th class="text-center" data-sort-type="text">Fork <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Yes if this repository is a fork of another repository.">ⓘ</span></th>
-                    <th data-sort-type="text">License <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="SPDX license identifier detected for the repository, or — when none is set.">ⓘ</span></th>
-                    <th data-sort-type="date">Last Push <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Timestamp of the repository&#39;s most recent git push, from the GitHub API&#39;s repository record — distinct from Last Commit below, which is scoped to the default branch.">ⓘ</span></th>
-                    <th data-sort-type="date">Created <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Timestamp of when the repository was created on GitHub.">ⓘ</span></th>
-                    <th data-sort-type="text">Last Committer <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="GitHub login of the author of the most recent commit on the default branch; links to their profile when known.">ⓘ</span></th>
-                    <th data-sort-type="date">Last Commit <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Date of the most recent commit on the repository&#39;s default branch.">ⓘ</span></th>
+                    <th scope="col" data-nosort>Description <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Repository description from GitHub, or — when none is set.">ⓘ<span class="sr-only">Repository description from GitHub, or — when none is set.</span></span></th>
+                    <th scope="col" data-sort-type="text">Language <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Primary language GitHub detected for the repository, or — when none is set.">ⓘ<span class="sr-only">Primary language GitHub detected for the repository, or — when none is set.</span></span></th>
+                    <th scope="col" class="text-center" data-sort-type="text">Fork <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Yes if this repository is a fork of another repository.">ⓘ<span class="sr-only">Yes if this repository is a fork of another repository.</span></span></th>
+                    <th scope="col" data-sort-type="text">License <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="SPDX license identifier detected for the repository, or — when none is set.">ⓘ<span class="sr-only">SPDX license identifier detected for the repository, or — when none is set.</span></span></th>
+                    <th scope="col" data-sort-type="date">Last Push <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Timestamp of the repository&#39;s most recent git push, from the GitHub API&#39;s repository record — distinct from Last Commit below, which is scoped to the default branch.">ⓘ<span class="sr-only">Timestamp of the repository&#39;s most recent git push, from the GitHub API&#39;s repository record — distinct from Last Commit below, which is scoped to the default branch.</span></span></th>
+                    <th scope="col" data-sort-type="date">Created <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Timestamp of when the repository was created on GitHub.">ⓘ<span class="sr-only">Timestamp of when the repository was created on GitHub.</span></span></th>
+                    <th scope="col" data-sort-type="text">Last Committer <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="GitHub login of the author of the most recent commit on the default branch; links to their profile when known.">ⓘ<span class="sr-only">GitHub login of the author of the most recent commit on the default branch; links to their profile when known.</span></span></th>
+                    <th scope="col" data-sort-type="date">Last Commit <span class="tooltip-trigger tooltip-trigger-header" tabindex="0" data-tooltip="Date of the most recent commit on the repository&#39;s default branch.">ⓘ<span class="sr-only">Date of the most recent commit on the repository&#39;s default branch.</span></span></th>
                 </tr>
             </thead>
             <tbody>
@@ -140,16 +140,16 @@ expression: "&pages[\"owners/org-team-a.html\"]"
                         </div>
                     </td>
                     
-                    <td class="text-center"><span class="status-dot status-fail" title="fail"></span>
+                    <td class="text-center"><span class="status-dot status-fail" title="fail"><span class="sr-only">fail</span></span>
                     </td>
                     
-                    <td class="text-center"><span class="status-dot status-fail" title="disabled"></span>
+                    <td class="text-center"><span class="status-dot status-fail" title="disabled"><span class="sr-only">disabled</span></span>
                     </td>
                     
-                    <td class="text-center"><span class="status-dot status-fail" title="disabled"></span>
+                    <td class="text-center"><span class="status-dot status-fail" title="disabled"><span class="sr-only">disabled</span></span>
                     </td>
                     
-                    <td class="text-center"><span class="status-dot status-fail" title="fail"></span>
+                    <td class="text-center"><span class="status-dot status-fail" title="fail"><span class="sr-only">fail</span></span>
                     </td>
                     
                     <td class="cell-truncate" title="—">—</td>
@@ -175,16 +175,16 @@ expression: "&pages[\"owners/org-team-a.html\"]"
                         </div>
                     </td>
                     
-                    <td class="text-center"><span class="status-dot status-pass" title="pass"></span>
+                    <td class="text-center"><span class="status-dot status-pass" title="pass"><span class="sr-only">pass</span></span>
                     </td>
                     
-                    <td class="text-center"><span class="status-dot status-pass" title="enabled"></span>
+                    <td class="text-center"><span class="status-dot status-pass" title="enabled"><span class="sr-only">enabled</span></span>
                     </td>
                     
-                    <td class="text-center"><span class="status-dot status-pass" title="enabled"></span>
+                    <td class="text-center"><span class="status-dot status-pass" title="enabled"><span class="sr-only">enabled</span></span>
                     </td>
                     
-                    <td class="text-center"><span class="status-dot status-pass" title="pass"></span>
+                    <td class="text-center"><span class="status-dot status-pass" title="pass"><span class="sr-only">pass</span></span>
                     </td>
                     
                     <td class="cell-truncate" title="—">—</td>
