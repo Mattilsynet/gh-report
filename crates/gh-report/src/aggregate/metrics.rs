@@ -2492,7 +2492,7 @@ mod tests {
         assert_eq!(user.owner_type, OwnerType::User);
     }
 
-    /// CHE-0082:R9 — a team-shaped canonical owner (contains `/`) with no
+    /// CHE-0089:R4 — a team-shaped canonical owner (contains `/`) with no
     /// extractable slug (e.g. a trailing-slash malformed reference)
     /// classifies `AmbiguousTeamShaped`, never silently `User`.
     #[test]

@@ -312,13 +312,13 @@ pub struct OwnerMetrics {
 
 /// Owner type classification.
 ///
-/// Three-valued (CHE-0082:R9): a canonical CODEOWNERS owner string is
+/// Three-valued (CHE-0082:R5 + CHE-0089:R4): a canonical CODEOWNERS owner string is
 /// classified `Team` only when a team slug can actually be extracted
 /// from it (`@org/team-slug`); `AmbiguousTeamShaped` when the string
 /// contains `/` (team-shaped) but no usable slug could be extracted
 /// (e.g. a trailing-slash or empty-segment malformed reference); `User`
 /// only for a genuinely slash-less owner. A team-shaped owner never
-/// silently collapses to `User` (CHE-0082:R9).
+/// silently collapses to `User` (CHE-0082:R5 + CHE-0089:R4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OwnerType {

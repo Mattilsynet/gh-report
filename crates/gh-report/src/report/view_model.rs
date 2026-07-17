@@ -280,7 +280,7 @@ pub struct TeamRosterViewModel {
     /// Human-readable fetch status (e.g., `"Complete"`, `"Permission denied"`).
     pub status_label: &'static str,
     /// Reasoned degraded-state copy for `!is_complete`, tailored to the
-    /// fetch status (CHE-0082:R8) — `None` when `is_complete`. A `Deleted`
+    /// fetch status (CHE-0082:R5) — `None` when `is_complete`. A `Deleted`
     /// roster gets a distinct "team no longer exists" sentence rather than
     /// the generic "this list may be incomplete" copy, which would wrongly
     /// imply partial data for a team that has zero members by construction.
@@ -292,7 +292,7 @@ pub struct TeamRosterViewModel {
 }
 
 /// The B1 team-roster section state for an owner's detail page
-/// (CHE-0082:R8).
+/// (CHE-0082:R5).
 ///
 /// Three distinct visible states, none of which collapse to a silent
 /// omission of the section:
@@ -356,7 +356,7 @@ pub struct OwnerDetailViewModel {
     /// for this owner — distinct from the org-level stale rate on the
     /// dashboard which measures archival coverage.
     pub stale_width_class: &'static str,
-    /// Team member roster section (B1, CHE-0082:R8). Always one of three
+    /// Team member roster section (B1, CHE-0082:R5). Always one of three
     /// distinct visible states — see [`RosterSection`] — never a silent
     /// `None` omission.
     pub roster: RosterSection,
@@ -379,7 +379,7 @@ pub struct OwnerDetailViewModel {
     /// `true` when this is a team-shaped/ambiguous owner whose roster was
     /// not resolved this run, meaning orphan attribution against this
     /// owner could not be computed — distinct from genuinely zero
-    /// orphans (CHE-0082:R8). Always `false` for individual-user owners
+    /// orphans (CHE-0082:R5). Always `false` for individual-user owners
     /// (team-orphan attribution does not apply) and for a team owner
     /// whose roster was resolved (complete or degraded-but-fetched).
     pub orphan_unresolved: bool,
