@@ -1,9 +1,12 @@
 # gh-report — Design
 
-Status: Accepted (WU-6 v2 charter, A7'; post-M2 cutover rewrite).
+Status: Accepted (WU-6 v2 charter, A7'; post-M2 cutover rewrite; W1
+truth-alignment corrigendum for §4, §5, §12).
 Produced: grill-me design interview (v1, A4); WU-6 v2 charter rewrite (A7');
 M2.e post-cutover rewrite reconciling §3, §4, §10, §12 with CHE-0054
-(Accepted), CHE-0024, COM-0019.
+(Accepted), CHE-0024, COM-0019; W1 truth-alignment corrigendum reconciling
+§4, §5, §12 with the shipped CHE-0073 (gh-report Storage Remodel, Accepted)
++ CHE-0074 (gh-report Native Pardosa Store Port, Accepted) storage substrate.
 Governs: WU-6 v2 rewrite of `crates/gh-report/` onto cherry-pit primitives,
 projection-migrating `evidence_store` per CHE-0048 + CHE-0054.
 Companion docs: `OPERATIONS.md` (operator runbook), `README.md` (DoD-4).
@@ -15,11 +18,22 @@ Companion docs: `OPERATIONS.md` (operator runbook), `README.md` (DoD-4).
 > writer/reader), three ApplicationServices (`RunService`, `RepoService`,
 > `WebhookService`) own per-aggregate write coordination per CHE-0054:R4,
 > and bus-publish failures are structured per-envelope `tracing::error!`
-> emissions (CHE-0024:R1 + R3 + COM-0019:R1/R4/R7). §5 is unchanged. §7 is
+> emissions (CHE-0024:R1 + R3 + COM-0019:R1/R4/R7). §7 is
 > retitled (no v1 deployments exist; nothing to migrate). §8 / §11 are
 > updated. The v1 §3a corrigendum and the v1 A9 projection-port narrative
 > remain **withdrawn**: AggregateStore is *deleted* at B9' (not ported),
 > per locked posture S5.b + Tension-2.
+>
+> **W1 truth-alignment corrigendum.** §4, §5, §12 below are further updated
+> for the CHE-0073 (gh-report Storage Remodel, Accepted) + CHE-0074
+> (gh-report Native Pardosa Store Port, Accepted) storage substrate that
+> shipped after the M2 cutover text above was written: the durable
+> `DomainEvent` EventStore is `crate::store::NativeStore`
+> (`pardosa_fiber_store::FiberStore<DomainEvent>`, one pardosa fiber per
+> repository domain key, `.pgno` container or NATS JetStream backend
+> per CHE-0072), not `cherry_pit_gateway::MsgpackFileStore`.
+> `MsgpackFileStore` is retained only for the non-persisted-by-CHE-0074
+> scheduler and sweep-timeout event classes (`src/app/state.rs:48-51`).
 >
 > The legacy per-repo evidence cache (v1's mutable evidence store) was
 > retained on disk (`src/app/evidence_store.rs`, held as a compile-only
@@ -182,22 +196,30 @@ rolled forward from v1).
 
 - `gh-report::app::daemon::run(config)` becomes a thin wrapper that
   constructs the cherry-pit `App`, registers the bus, wires the
-  EventStore + ProjectionDriver, registers sub-aggregates, and delegates
+  EventStore, registers sub-aggregates, and delegates
   to `App::run`.
-- **Wires** (per BC-v2-1, BC-v2-4..BC-v2-11, CHE-0051:R2/R5):
-  - `cherry_pit_gateway::MsgpackFileStore` as the durable
-    `EventStore<Aggregate = OrgGovernance>` (Gap-2 = option (i),
-    locked posture).
-  - `cherry_pit_projection::FileProjectionStore<EvidenceProjection>` as
-    the durable projection-snapshot store.
+- **Wires** (per BC-v2-1, BC-v2-4..BC-v2-11, CHE-0051:R2/R5; storage
+  substrate per the W1 corrigendum above, CHE-0073 + CHE-0074):
+  - `crate::store::NativeStore` (`pardosa_fiber_store::FiberStore<DomainEvent>`)
+    as the durable `DomainEvent` EventStore, one pardosa fiber per
+    repository domain key (CHE-0074:R4), backed by a `.pgno` container
+    or NATS JetStream (backend selection per CHE-0072). This supersedes
+    the retired `cherry_pit_gateway::MsgpackFileStore<OrgGovernance>` /
+    `PardosaEventStore` byte-adapter wiring (CHE-0074:R8). Companion
+    `crate::store::NativeOrgStore` and `crate::store::NativeTeamStore`
+    provide the org-fiber (CHE-0073:R8) and per-team-fiber (CHE-0073:R10,
+    CHE-0089) current-state classes. `cherry_pit_gateway::MsgpackFileStore`
+    remains wired only for the non-persisted-by-CHE-0074 scheduler and
+    sweep-timeout event classes (`SchedulerEventStoreImpl`,
+    `SweepTimeoutEventStoreImpl`, `src/app/state.rs:48-51`) — these are
+    not part of the `DomainEvent` durability contract CHE-0073/74 govern.
   - `cherry_pit_app::InProcessEventBus<DomainEvent>` as the in-process
     bus (CHE-0051:R2).
-  - `cherry_pit_projection::ProjectionDriver<EvidenceProjection,
-    FileProjectionStore<…>>` composed with
-    `cherry_pit_app::ProjectionDriverExt` for the snapshot-fast-path
-    startup pattern (S4.H4.b per CHE-0051:R5): on process start, load
-    snapshot + checkpoint, then replay only events whose
-    `sequence > checkpoint.last_applied_sequence`.
+  - No `ProjectionDriver` / `FileProjectionStore` is wired
+    (W1 truth-alignment; withdrawn — see §12). `EvidenceProjection` is
+    rebuilt in memory on every process start by folding
+    `NativeStore::events()` (CHE-0073:R7); there is no
+    snapshot-fast-path load.
 - **`AppState` sub-aggregates and services.** Sub-aggregates retain
   their v1 shape for composition; ApplicationServices land per
   CHE-0054:R4:
@@ -253,85 +275,64 @@ requires daemon restart.
 
 ## 5. Storage layout
 
-v2 lays out `<store_dir>` (default `./store/`) as three subtrees: the
-EventStore (CHE-0036:R1, file-per-stream), the projection snapshots
-(CHE-0048:R1, file-per-(aggregate, projection) tuple), and the process
-fence (CHE-0043).
+**W1 truth-alignment note:** the layout below described the M2 cutover's
+`cherry-pit-gateway` byte-adapter substrate. It is superseded for
+`DomainEvent` durability by CHE-0073 + CHE-0074: `<store_dir>` (default
+`./store/`) lays out one `.pgno` container per current-state class under
+`events/`, plus the process fence (CHE-0043); there is no separate
+projection-snapshot subtree — `EvidenceProjection` is not persisted to
+disk at all. It is rebuilt in memory on every boot by folding
+`NativeStore::events()` in line order (CHE-0073:R7); the sole writer to
+`projection_state` is this event-fold rebuild
+(`src/app/state.rs:404-406`), not a snapshot load.
 
 ```
 <store_dir>/
   events/
-    <org>/
-      1.msgpack                       # CHE-0036:R1 + CHE-0050; full
-                                      # rewrite on append; written by
-                                      # MsgpackFileStore. Per-org
-                                      # subtree (one dir per org); the
-                                      # `1.msgpack` filename is owned
-                                      # by cherry-pit-gateway and pins
-                                      # the singleton aggregate id
-                                      # `ORG_GOVERNANCE_AGGREGATE_ID =
-                                      # NonZeroU64::new(1)` (Tension-2
-                                      # single-aggregate; org scoping
-                                      # comes from the parent dir, not
-                                      # the id).
-  projections/
-    <org>/
-      <aggregate_id>-<projection_name>.snapshot.msgpack
-                                      # CHE-0048:R1 + BC-v2-4; one
-                                      # snapshot per (aggregate,
-                                      # projection) tuple. cpp
-                                      # composes the filename
-                                      # (`<aggregate_id>-<sanitized_name>.snapshot.msgpack`)
-                                      # — the format is owned by
-                                      # cherry-pit-projection's
-                                      # FileProjectionStore and is
-                                      # not configurable. With the
-                                      # singleton aggregate id
-                                      # `ORG_GOVERNANCE_AGGREGATE_ID`
-                                      # (= 1) and projection_name
-                                      # "evidence" the artefact is
-                                      # `1-evidence.snapshot.msgpack`.
-                                      # Per-org subtree mirrors
-                                      # events/<org>/ (BC-v2-13).
-      <aggregate_id>-<projection_name>.checkpoint.msgpack
-                                      # CHE-0048:R2 + BC-v2-5;
-                                      # sibling checkpoint, written
-                                      # strictly after the snapshot.
-                                      # cpp persists the
-                                      # ProjectionCheckpoint as
-                                      # MessagePack (hence the
-                                      # `.checkpoint.msgpack`
-                                      # extension, not bare
-                                      # `.checkpoint`).
+    events.pgno                        # crate::store::NativeStore —
+                                        # FiberStore<DomainEvent>, one
+                                        # pardosa fiber per repository
+                                        # domain key (CHE-0074:R4);
+                                        # `.pgno` container (default
+                                        # backend) or NATS JetStream
+                                        # per CHE-0072 backend
+                                        # selection.
+    org-events.pgno                    # crate::store::NativeOrgStore —
+                                        # FiberStore<OrgStateCaptured>,
+                                        # one fiber per org identity
+                                        # (CHE-0073:R8).
+    team-events.pgno                   # crate::store::NativeTeamStore —
+                                        # FiberStore<TeamStateCaptured>,
+                                        # one fiber per (org, team_slug)
+                                        # pair (CHE-0073:R10, CHE-0089).
+    sweep-timeout-schedules/           # SchedulerEventStoreImpl —
+                                        # cherry_pit_gateway::MsgpackFileStore,
+                                        # non-persisted-by-CHE-0074 class
+                                        # (`src/app/state.rs:48-51`).
+    sweep-timeouts/                    # SweepTimeoutEventStoreImpl —
+                                        # cherry_pit_gateway::MsgpackFileStore,
+                                        # same non-persisted-by-CHE-0074
+                                        # class.
   locks/
     <filename>.lock                   # CHE-0043 process-level fencing
-                                      # (RunLock, BC-v2-18).
+                                       # (RunLock, BC-v2-18).
 ```
 
-The two file-per-X conventions stack disjointly per BC-v2-13: the
-EventStore subtree (`events/`) and projection subtree (`projections/`)
-never share files, never bundle.
+Removal of a repository, org, or team fiber is a soft delete via
+pardosa's `detach` (CHE-0073:R2/R6); the pardosa envelope `detached` flag
+is the sole soft-delete signal folded by the projection (CHE-0073:R7). A
+returning identity is rescued via `rescue_detached`, not re-created.
 
-**No `baseline/` and no `<YYYY-MM-DD>.checkpoint`.** The v1 baseline file
-and date-scoped checkpoint are gone. Per locked posture S1.H1.c, the
-projection snapshot under `projections/` *is* the baseline post-v2 — no
-separate baseline artefact exists, and no auto-migration code path runs.
+All fiber-store writes go through pardosa's own atomic-append substrate;
+`MsgpackFileStore` writes for the scheduler/sweep-timeout classes remain
+atomic temp-then-rename per CHE-0032. The process-wide RunLock at
+`<store_dir>/locks/...` fences the entire store (BC-v2-18).
 
-All writes are atomic temp-then-rename per CHE-0032: the projection
-snapshot uses `cherry-pit-projection`'s `write_atomic`; any auxiliary
-writes use `cherry-pit-storage::atomic_write`. The
-process-wide RunLock at `<store_dir>/locks/...` fences the entire store,
-including the `events/` and `projections/` subtrees (BC-v2-18). The
-per-aggregate in-process lock prescribed by CHE-0048:R7 degenerates to a
-no-op for the v0.1 single-aggregate scope (BC-v2-10).
-
-**Known cherry-pit-projection v0.1 advisory gap (BC-v2-17):**
-`write_atomic` implements CHE-0032:R1 + R3 but not R4 (no startup
-orphan-scan). After a power-failure crash, operators may observe
-`<aggregate_id>-<projection_name>.snapshot.tmp` or `…checkpoint.tmp`
-files under `projections/<org>/` (cpp's `path.with_extension("tmp")`
-replaces the final extension) and clear them manually. Not a
-gh-report bug; tracked as a future cherry-pit-projection improvement.
+**No `baseline/`, no `<YYYY-MM-DD>.checkpoint`, no projection-snapshot
+files.** The v1 baseline file, the M2-cutover `FileProjectionStore`
+snapshot/checkpoint pair, and any auto-migration code path are gone.
+Rebuild is: replay the fiber(s) from the start, per CHE-0073:R7 fold
+semantics — there is no separate snapshot artefact to delete.
 
 ## 6. Server (HTTP) shape
 
@@ -501,20 +502,33 @@ Captured here so moltke can absorb them without re-running the interview:
 This section names the concrete cherry-pit consumers wired in §4 and
 fixes their contract with gh-report code post-M2 cutover.
 
-- **EventStore impl.** `cherry_pit_gateway::MsgpackFileStore<DomainEvent>`,
-  one instance per process, constructed at
-  `<store_dir>/events/<org>/`. The on-disk artefact is
-  `<store_dir>/events/<org>/1.msgpack` per CHE-0036:R1 (full rewrite on
-  append). The `1.msgpack` filename is owned by cherry-pit-gateway
-  (`format!("{}.msgpack", id.get())`) and pins the singleton snapshot
-  id `ORG_GOVERNANCE_AGGREGATE_ID = NonZeroU64::new(1)` exposed from
-  `gh_report::projection`. Per CHE-0054 the three *write-side*
-  aggregates (`Run`, `Repo`, `WebhookDelivery`) share this single
-  on-disk stream; aggregate boundaries are enforced by the
-  ApplicationServices and by per-envelope `aggregate_id` discrimination,
-  not by stream partitioning at v0.1. `create` / `append` / `load`
-  semantics per CHE-0013, CHE-0016, CHE-0019. `validate_stream` is
-  invoked post-load by `ProjectionDriver` per CHE-0048:R8 + BC-v2-11.
+- **EventStore impl (W1 truth-alignment; CHE-0073 + CHE-0074).**
+  `crate::store::NativeStore` — `pardosa_fiber_store::FiberStore<DomainEvent>`
+  over `pardosa::store::EventStore<DomainEvent>` — one instance per
+  process, backed by a `.pgno` container (default) or NATS JetStream
+  (CHE-0072 backend selection), constructed at
+  `<store_dir>/events/events.pgno`. One pardosa fiber per repository
+  domain key (CHE-0074:R4); first observation of a key begins a fiber,
+  subsequent observations append to it. On boot, `FiberIndex<domain_key>`
+  is rebuilt from the log and `resume_defined` appends to an existing
+  Defined fiber (CHE-0074:R5). This supersedes the retired
+  `cherry_pit_gateway::MsgpackFileStore<DomainEvent>` /
+  `PardosaEventStore` byte-adapter contract in its entirety — no
+  `EventEnvelope`-as-bytes payload, no adapter-owned logical-stream
+  reconstruction (CHE-0074:R8). Removal appends a `RepositoryStateCaptured`
+  and detaches the fiber (`pardosa::StoreWriter::detach`); the envelope
+  `detached` flag is the sole soft-delete signal, and a returning
+  repository is rescued via `rescue_detached` (CHE-0073:R2/R6,
+  CHE-0074:R6). Companion `crate::store::NativeOrgStore` /
+  `crate::store::NativeTeamStore` provide the org-fiber (CHE-0073:R8) and
+  per-team-fiber (CHE-0073:R10) current-state classes at
+  `<store_dir>/events/org-events.pgno` and `…/team-events.pgno`.
+  `cherry_pit_gateway::MsgpackFileStore` remains wired only for the
+  non-persisted-by-CHE-0074 scheduler and sweep-timeout event classes
+  (`SchedulerEventStoreImpl`, `SweepTimeoutEventStoreImpl`,
+  `src/app/state.rs:48-51`); the `create` / `append` / `load` semantics
+  described for those two classes (CHE-0013, CHE-0016, CHE-0019) are
+  unaffected by this corrigendum.
 - **ApplicationServices (CHE-0054:R4).** `RunService`, `RepoService`,
   `WebhookService` are the sole entry points to
   `EventStore::append` + `EventBus::publish` in production code paths
@@ -529,10 +543,10 @@ fixes their contract with gh-report code post-M2 cutover.
     **idempotent** over the same envelope sequence (CHE-0048:R3 +
     BC-v2-6).
   - **Sole writer and sole reader** of the gh-report read-model per
-    CHE-0048:R2 + CHE-0054:R10. Reads are served through the
+    CHE-0073:R7. Reads are served through the
     inherent API documented below; production read sites acquire
     the lock via `AppState::lock_projection`
-    (`src/app/state.rs:311-317`).
+    (`src/app/state.rs:407`).
   - **Inherent read API** (`src/projection.rs:138-180`):
     - `get(&self, key: &str) -> Option<RepositoryEvidence>` — per-repo
       lookup by `domain_key`.
@@ -552,21 +566,29 @@ fixes their contract with gh-report code post-M2 cutover.
     via `BTreeMap::extend`; the two methods are body-identical at
     v0.1 — the distinction is documentary so saga warm-load
     (W4-then-W3) call-sites stay intent-visible.
-- **ProjectionStore impl.** `cherry_pit_projection::FileProjectionStore<EvidenceProjection>`
-  at `<store_dir>/projections/<org>/` with `projection_name = "evidence"`,
-  yielding `1-evidence.snapshot.msgpack` plus sibling
-  `1-evidence.checkpoint.msgpack` per CHE-0048:R1/R2 + BC-v2-4/BC-v2-5.
-- **Driver.** `cherry_pit_projection::ProjectionDriver<EvidenceProjection,
-  FileProjectionStore<…>>` composed with
-  `cherry_pit_app::ProjectionDriverExt` per CHE-0051:R5 for the
-  snapshot-fast-path startup pattern: on process start, load
-  snapshot + checkpoint, replay only events with
-  `sequence > checkpoint.last_applied_sequence`.
-- **Bus.** `cherry_pit_app::InProcessEventBus<DomainEvent>` per
-  CHE-0051:R2. ApplicationServices publish through this bus via
-  `publish_or_trace`; `ProjectionDriverExt::apply_one` is registered
-  as a handler so `EvidenceProjection::apply` runs synchronously
-  inside the publish path.
+- **ProjectionStore / Driver — W1 truth-alignment: withdrawn.**
+  `cherry_pit_projection::FileProjectionStore<EvidenceProjection>` and
+  `cherry_pit_projection::ProjectionDriver` are no longer wired; no
+  occurrence remains in `crates/gh-report/src`. There is no persisted
+  projection snapshot or checkpoint. `EvidenceProjection` is rebuilt
+  from scratch on every process start by folding
+  `NativeStore::events()` in line order — non-detached snapshots
+  upsert, `detached == true` removes (CHE-0073:R7) — with the org and
+  team folds applied independently and eventually consistent
+  (CHE-0073:R9). The `load_baseline` / `load_resumed_checkpoint`
+  bulk-load API above remains the mechanism for this startup fold; it
+  is driven directly, not through a `ProjectionDriver`.
+- **Bus (W1 truth-alignment).** `cherry_pit_app::InProcessEventBus<DomainEvent>`
+  per CHE-0051:R2 remains wired for the non-persisted-by-CHE-0074 event
+  classes (`crates/gh-report/src/app/collect.rs`). It no longer drives
+  `EvidenceProjection::apply` — there is no `ProjectionDriverExt` /
+  `apply_one` handler. ApplicationServices instead fold the durable
+  write directly into the resident projection after the append lands
+  (`AppState::fold_repository_event_into_projection`,
+  `::fold_org_event_into_projection`, `src/app/state.rs:1398-1406`),
+  runtime-fresh per CHE-0073:R7 detached-remove /
+  non-detached-upsert — same fold rule as the boot-time rebuild, just
+  applied incrementally instead of replayed from sequence 1.
 - **Persist-then-publish ordering.** ApplicationServices call
   `event_store.append(envelopes, correlation)` first, then
   `publish_or_trace(&bus, &envelopes, event_label)`. No exception
@@ -614,7 +636,10 @@ fixes their contract with gh-report code post-M2 cutover.
   ApplicationServices that lack a meaningful correlation context use
   `CorrelationContext::root_for_collect_cycle()` (or equivalent) —
   not `CorrelationContext::none()` post-WU-6.
-- **Rebuild.** Delete the snapshot + checkpoint, replay from
-  sequence 1 per CHE-0048:R4. Implemented in cherry-pit-projection
-  at `lib.rs:585-595` (`rebuild_file`); gh-report consumes, does not
-  reimplement. Documented in `OPERATIONS.md` storage section (C2').
+- **Rebuild (W1 truth-alignment).** There is no snapshot/checkpoint
+  artefact to delete: `EvidenceProjection` is always rebuilt from
+  scratch, every boot, by folding `NativeStore::events()` (and the
+  companion org/team fibers) per CHE-0073:R7. Rebuild-on-corruption is
+  therefore the ordinary startup path, not a distinct operator
+  procedure; the prior `cherry-pit-projection::rebuild_file` reference
+  is withdrawn along with the FileProjectionStore wiring it served.
