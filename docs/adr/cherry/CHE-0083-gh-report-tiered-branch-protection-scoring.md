@@ -1,14 +1,14 @@
-# CHE-0083. gh-report Tiered Branch Protection Scoring
+# CHE-0083. gh-report Branch Protection Scoring
 
 Date: 2026-06-17
-Last-reviewed: 2026-06-17
+Last-reviewed: 2026-07-17
 Tier: B
 Status: Accepted
 Crates: gh-report
 
 ## Related
 
-References: CHE-0082, PGN-0013, COM-0019
+References: CHE-0082, CHE-0090, PGN-0013, COM-0019
 
 ## Context
 
@@ -16,17 +16,17 @@ gh-report branch-protection scoring used an AND-of-five gate: pull requests, one
 
 ## Decision
 
-Replace the branch-protection gate with a report-side tier model. Persist only raw per-repository signals; derive tiers and org-wide distributions in aggregation and rendering.
+Replace the branch-protection gate with a report-side Branch Protection Regime (BPR) model, per the BPR partition ratified in CHE-0090. Persist only raw per-repository signals; derive regimes and org-wide distributions in aggregation and rendering.
 
-R1 [5]: Score T0 below-baseline when branch protection is absent, unreadable as genuine absence, force pushes are not blocked, or deletion is not blocked.
+R1 [5]: Score BPR1 Unprotected (CHE-0090's below-baseline band) when branch protection is absent, unreadable as genuine absence, force pushes are not blocked, or deletion is not blocked.
 
-R2 [5]: Score T1 minimal when the default branch is protected and force-push plus deletion blocking are observed.
+R2 [5]: Score BPR2 IntegrityOnly when the default branch is protected and force-push plus deletion blocking are observed (CHE-0090's tier consistency map: BPR1<->BelowBaseline, BPR2<->Minimal — the BPR index does not track the old T-number by offset).
 
-R3 [5]: Score T2 accept bar when T1 also requires pull requests with at least one approving review.
+R3 [5]: Score BPR3 ReviewedWithBypass or BPR4 ReviewedGated (CHE-0090's split of the old accept bar) when BPR2 also requires pull requests with at least one approving review. Widened dashboard pass bar: branch-protection coverage counts a repository as PASS when its regime is BPR2 IntegrityOnly or higher — pass := regime in {BPR2, BPR3, BPR4, BPR5}; denominator remains all non-archived repos per adr-fmt-tm7ms.
 
-R4 [5]: Treat required status checks, stale-review dismissal, and admin-equivalent enforcement as additive bonuses that raise a T2 repository to T3+ when present; absence never blocks T1 or T2.
+R4 [5]: Treat required status checks, stale-review dismissal, and admin-equivalent enforcement as additive bonuses that raise a BPR3/BPR4 repository to BPR5 Hardened when present; absence never blocks BPR1 or BPR2.
 
-R5 [5]: Treat broad or undocumented bypass actors as downgrades that cap the bonus tier, not as an outright scoring failure.
+R5 [5]: Treat broad or undocumented bypass actors as downgrades that cap the regime at BPR3 ReviewedWithBypass, not as an outright scoring failure.
 
 R6 [5]: Append `force_push_blocked: Option<bool>` and `deletion_blocked: Option<bool>` to branch-protection details; `None` means unreadable or not observed and must not be fabricated as `Some(false)` for permission-suspected 404s.
 
