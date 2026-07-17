@@ -4,7 +4,7 @@ Enabling constraints for agent-first development
 
 Cherry-pit is a library family primarily for coding agents. It constrains compositions that could quietly break how the system fits together. The rules it enforces live in a sizable ADR corpus of ~190 active documents under docs/adr/, each averaging about 5 rules.
 
-A Rust workspace (edition 2024, MSRV 1.96) shipping binaries
+A Rust workspace (edition 2024, MSRV 1.97) shipping binaries
 (`adr-fmt`, `adr-srv`, `gh-report`, `comment-free`) plus their
 supporting library crates and a governed ADR corpus.
 

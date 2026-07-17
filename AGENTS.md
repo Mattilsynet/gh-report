@@ -6,7 +6,7 @@ global `~/.config/opencode/AGENTS.md` (auto-loaded) — not repeated here.
 
 ## What this repo is
 
-Rust workspace (edition 2024, MSRV 1.96, resolver 3, 20 crates) shipping three
+Rust workspace (edition 2024, MSRV 1.97, resolver 3, 20 crates) shipping three
 binaries plus an ADR-governed library family and a large ADR corpus.
 
 - Binaries (real entrypoints): `adr-fmt` (ADR validator, read-only),
@@ -42,7 +42,7 @@ binaries plus an ADR-governed library family and a large ADR corpus.
   pass pedantic with zero warnings.
 - `rustfmt` runs on **stable defaults only** (RST-0003:R3); there is no custom
   `rustfmt.toml` style. Don't add format config.
-- `rust-toolchain.toml` pins channel 1.96 (clippy+rustfmt). Use it; don't bump.
+- `rust-toolchain.toml` pins channel 1.97 (clippy+rustfmt). Use it; don't bump.
 
 ## Live-NATS tests need a pinned `nats-server` (common CI/local gotcha)
 

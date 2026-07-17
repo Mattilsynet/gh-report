@@ -783,7 +783,7 @@ cargo test
 ### Toolchain
 
 - Rust edition: 2024
-- Minimum supported Rust version (MSRV): 1.96
+- Minimum supported Rust version (MSRV): 1.97
 - Toolchain pinned via `rust-toolchain.toml`
 - `#![forbid(unsafe_code)]` enforced
 - Release profile: LTO enabled, symbols stripped, single codegen unit
