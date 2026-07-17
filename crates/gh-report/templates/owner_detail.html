@@ -72,6 +72,18 @@
 
     <div class="scorecard">
         {% for card in vm.summary_cards %}
+        {% if card.key == "branch_protection" %}
+        <a href="../branch_protection.html" class="card {{ card.cell.tier.css_class() }}">
+            <p class="card-label">{{ card.label }} {% call tooltip::tooltip(card.how_to_fix) %}{% endcall %}</p>
+            <p class="card-value">{{ card.cell.rate_formatted }}</p>
+            <div class="progress-bar">
+                <div class="progress-fill {{ card.cell.tier.css_class() }} {{ card.cell.width_class }}"></div>
+            </div>
+            {%- if card.cell.excluded_total > 0 %}
+            <p class="card-detail">{{ card.cell.excluded_formatted }}</p>
+            {%- endif %}
+        </a>
+        {% else %}
         <div class="card {{ card.cell.tier.css_class() }}">
             <p class="card-label">{{ card.label }} {% call tooltip::tooltip(card.how_to_fix) %}{% endcall %}</p>
             <p class="card-value">{{ card.cell.rate_formatted }}</p>
@@ -82,6 +94,7 @@
             <p class="card-detail">{{ card.cell.excluded_formatted }}</p>
             {%- endif %}
         </div>
+        {% endif %}
         {% endfor %}
         <div class="card{% if vm.stale_repo_count > 0 %} tier-warn{% endif %}">
             <p class="card-label">Stale Repos {% call tooltip::tooltip("Repos not updated in 2+ years, out of this owner's total. The complement (total - stale) / total is this owner's Freshness rate, one of six controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.") %}{% endcall %}</p>

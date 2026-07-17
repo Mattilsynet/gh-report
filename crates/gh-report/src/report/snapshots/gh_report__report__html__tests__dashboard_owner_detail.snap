@@ -48,6 +48,7 @@ expression: "&pages[\"owners/org-team-a.html\"]"
 
     <div class="scorecard">
         
+        
         <div class="card tier-warn">
             <p class="card-label">Security Policy <span class="tooltip-trigger" tabindex="0" data-tooltip="Add a SECURITY.md file to the repo root, .github/, or docs/ — or use the Security tab&#39;s Reporting → Security policy → Start setup for a guided pull request.">ⓘ</span></p>
             <p class="card-value">50.0% (1/2)</p>
@@ -55,6 +56,8 @@ expression: "&pages[\"owners/org-team-a.html\"]"
                 <div class="progress-fill tier-warn w-50"></div>
             </div>
         </div>
+        
+        
         
         <div class="card tier-pass">
             <p class="card-label">Secret Scanning <span class="tooltip-trigger" tabindex="0" data-tooltip="Enable it under Settings → Security → Advanced Security: click Enable → Enable Secret Protection next to Secret Protection (turns on scanning and push protection together). Counts public repositories only, mirroring the organisation-wide Secret Scanning figure.">ⓘ</span></p>
@@ -64,6 +67,8 @@ expression: "&pages[\"owners/org-team-a.html\"]"
             </div>
         </div>
         
+        
+        
         <div class="card tier-warn">
             <p class="card-label">Dependabot Status <span class="tooltip-trigger" tabindex="0" data-tooltip="Enable it under Settings → Security → Advanced Security: click Enable next to Dependabot alerts (this also governs Dependabot security updates), or apply it org-wide via a security configuration.">ⓘ</span></p>
             <p class="card-value">50.0% (1/2)</p>
@@ -72,13 +77,16 @@ expression: "&pages[\"owners/org-team-a.html\"]"
             </div>
         </div>
         
-        <div class="card tier-warn">
+        
+        
+        <a href="../branch_protection.html" class="card tier-warn">
             <p class="card-label">Branch Protection <span class="tooltip-trigger" tabindex="0" data-tooltip="Add a branch protection rule (Settings → Branches) or ruleset (Settings → Rules → Rulesets) on the default branch: require PR review, disallow force-push and deletion, and disable bypass so admins can&#39;t skip it.">ⓘ</span></p>
             <p class="card-value">50.0% (1/2)</p>
             <div class="progress-bar">
                 <div class="progress-fill tier-warn w-50"></div>
             </div>
-        </div>
+        </a>
+        
         
         <div class="card">
             <p class="card-label">Stale Repos <span class="tooltip-trigger" tabindex="0" data-tooltip="Repos not updated in 2+ years, out of this owner&#39;s total. The complement (total - stale) / total is this owner&#39;s Freshness rate, one of six controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.">ⓘ</span></p>
