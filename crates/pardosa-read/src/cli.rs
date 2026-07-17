@@ -11,10 +11,10 @@ use std::path::PathBuf;
     about = "Read-only RON reader for pardosa JetStream events"
 )]
 pub struct Args {
-    #[arg(long)]
+    #[arg(long, env = "PARDOSA_READ_NATS_URL")]
     pub nats_url: String,
 
-    #[arg(long)]
+    #[arg(long, env = "PARDOSA_READ_NATS_CREDS")]
     pub creds: Option<PathBuf>,
 
     #[arg(long)]
@@ -25,4 +25,7 @@ pub struct Args {
 
     #[arg(long, default_value = "pardosa-read-ro")]
     pub durable_consumer: String,
+
+    #[arg(long, default_value_t = false)]
+    pub allow_plaintext: bool,
 }

@@ -20,7 +20,7 @@ pardosa = { path = "../pardosa" }
 pardosa-nats = { path = "../pardosa-nats" }
 pardosa-wire = { path = "../pardosa-wire" }
 ron = { workspace = true }
-clap = { workspace = true }
+clap = { workspace = true, features = ["env"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 serde = { workspace = true }
 
