@@ -8,7 +8,10 @@ use leptos::prelude::{Effect, Get, Owner, RwSignal, Update};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::wasm_bindgen;
-use web_sys::{Event, HtmlElement, HtmlTableElement, HtmlTableRowElement, HtmlTableSectionElement};
+use web_sys::{
+    Event, HtmlElement, HtmlTableElement, HtmlTableRowElement, HtmlTableSectionElement,
+    KeyboardEvent,
+};
 
 use crate::sort::{SortDirection, SortType, compare_cells, detect_sort_type, parse_sort_type};
 
@@ -63,9 +66,11 @@ fn wire_table(table: &HtmlTableElement) {
     let sort_state: RwSignal<Option<SortState>> = RwSignal::new(None);
     let effect_table = table.clone();
     Effect::new(move |_| {
-        if let Some(state) = sort_state.get() {
+        let state = sort_state.get();
+        if let Some(state) = state {
             apply_sort(&effect_table, &state);
         }
+        reflect_aria_sort(&effect_table, state);
     });
 
     let header_cells = header_row.cells();
@@ -84,28 +89,81 @@ fn wire_table(table: &HtmlTableElement) {
     }
 }
 
+fn toggle_sort_state(sort_state: RwSignal<Option<SortState>>, column: u32, sort_type: SortType) {
+    sort_state.update(|current| {
+        let direction = match current {
+            Some(state) if state.column == column => state.direction.toggled(),
+            _ => SortDirection::Ascending,
+        };
+        *current = Some(SortState {
+            column,
+            direction,
+            sort_type,
+        });
+    });
+}
+
 fn attach_click_handler(
     th: &HtmlElement,
     column: u32,
     sort_type: SortType,
     sort_state: RwSignal<Option<SortState>>,
 ) {
-    let closure = Closure::<dyn FnMut(Event)>::new(move |_event: Event| {
-        sort_state.update(|current| {
-            let direction = match current {
-                Some(state) if state.column == column => state.direction.toggled(),
-                _ => SortDirection::Ascending,
-            };
-            *current = Some(SortState {
-                column,
-                direction,
-                sort_type,
-            });
-        });
+    let click_closure = Closure::<dyn FnMut(Event)>::new(move |_event: Event| {
+        toggle_sort_state(sort_state, column, sort_type);
     });
-    let _ignored = th.add_event_listener_with_callback("click", closure.as_ref().unchecked_ref());
-    closure.forget();
+    let _ignored =
+        th.add_event_listener_with_callback("click", click_closure.as_ref().unchecked_ref());
+    click_closure.forget();
+
+    let keydown_closure = Closure::<dyn FnMut(KeyboardEvent)>::new(move |event: KeyboardEvent| {
+        if event.key() == "Enter" || event.key() == " " {
+            event.prevent_default();
+            toggle_sort_state(sort_state, column, sort_type);
+        }
+    });
+    let _ignored =
+        th.add_event_listener_with_callback("keydown", keydown_closure.as_ref().unchecked_ref());
+    keydown_closure.forget();
+
+    let _ignored = th.set_attribute("tabindex", "0");
     let _ignored = th.style().set_property("cursor", "ns-resize");
+}
+
+/// Sets `aria-sort` on every sortable header cell in `table`'s header row,
+/// mirroring `state` (the resting value is `"none"`). Cells carrying
+/// `data-nosort` are skipped, matching [`wire_table`]'s click-wiring pass.
+fn reflect_aria_sort(table: &HtmlTableElement, state: Option<SortState>) {
+    let Some(thead) = table.t_head() else {
+        return;
+    };
+    let Some(header_row) = thead
+        .rows()
+        .item(0)
+        .and_then(|node| node.dyn_into::<HtmlTableRowElement>().ok())
+    else {
+        return;
+    };
+    let header_cells = header_row.cells();
+    for i in 0..header_cells.length() {
+        let Some(node) = header_cells.item(i) else {
+            continue;
+        };
+        let Ok(th) = node.dyn_into::<HtmlElement>() else {
+            continue;
+        };
+        if th.has_attribute("data-nosort") {
+            continue;
+        }
+        let value = match state {
+            Some(s) if s.column == i => match s.direction {
+                SortDirection::Ascending => "ascending",
+                SortDirection::Descending => "descending",
+            },
+            _ => "none",
+        };
+        let _ignored = th.set_attribute("aria-sort", value);
+    }
 }
 
 /// Resolve a column's [`SortType`] from its header's `data-sort-type`
@@ -228,6 +286,10 @@ mod tests {
             .unwrap()
             .dyn_into()
             .unwrap();
+
+        yield_to_microtasks().await;
+        assert_eq!(header.get_attribute("aria-sort").as_deref(), Some("none"));
+
         let click = Event::new("click").unwrap();
         header.dispatch_event(&click).unwrap();
 
@@ -240,5 +302,59 @@ mod tests {
             .dyn_into()
             .unwrap();
         assert_eq!(row_names(&tbody), vec!["Alpha", "Zeta"]);
+        assert_eq!(
+            header.get_attribute("aria-sort").as_deref(),
+            Some("ascending")
+        );
+
+        header
+            .dispatch_event(&Event::new("click").unwrap())
+            .unwrap();
+        yield_to_microtasks().await;
+        assert_eq!(row_names(&tbody), vec!["Zeta", "Alpha"]);
+        assert_eq!(
+            header.get_attribute("aria-sort").as_deref(),
+            Some("descending")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn keydown_enter_on_header_reorders_rows() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let table: Element = document.create_element("table").unwrap();
+        table.set_attribute("data-sortable", "").unwrap();
+        table.set_inner_html(
+            "<thead><tr><th data-sort-type=\"text\">Name</th></tr></thead>\
+             <tbody><tr><td>Zeta</td></tr><tr><td>Alpha</td></tr></tbody>",
+        );
+        document.body().unwrap().append_child(&table).unwrap();
+
+        start();
+
+        let header: HtmlElement = document
+            .query_selector("th")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert_eq!(header.get_attribute("tabindex").as_deref(), Some("0"));
+
+        let keydown = web_sys::KeyboardEvent::new("keydown").unwrap();
+        js_sys::Reflect::set(&keydown, &"key".into(), &"Enter".into()).unwrap();
+        header.dispatch_event(&keydown).unwrap();
+
+        yield_to_microtasks().await;
+
+        let tbody: HtmlTableSectionElement = document
+            .query_selector("tbody")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert_eq!(row_names(&tbody), vec!["Alpha", "Zeta"]);
+        assert_eq!(
+            header.get_attribute("aria-sort").as_deref(),
+            Some("ascending")
+        );
     }
 }
