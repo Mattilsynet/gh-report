@@ -397,55 +397,17 @@ struct BranchTierSignals {
     deletion_blocked: Option<bool>,
 }
 
-fn classify_branch_tier(signals: BranchTierSignals) -> BranchProtectionTier {
-    if signals.status == BranchProtectionStatus::Unknown
-        || matches!(
-            signals.reason_kind,
-            Some(
-                CollectionFailureReason::PermissionDenied
-                    | CollectionFailureReason::PermissionSuspected
-                    | CollectionFailureReason::Transient
-                    | CollectionFailureReason::RateLimited
-                    | CollectionFailureReason::Invalid
-            )
-        )
-    {
-        return BranchProtectionTier::Excluded;
-    }
-
-    let protected = signals.has_pr == Some(true)
-        || signals.required_reviewers.is_some_and(|count| count > 0)
-        || signals.has_status_checks == Some(true)
-        || signals.admin_equivalent == Some(true)
-        || signals.force_push_blocked == Some(true)
-        || signals.deletion_blocked == Some(true);
-
-    if !protected
-        || signals.force_push_blocked == Some(false)
-        || signals.deletion_blocked == Some(false)
-    {
-        return BranchProtectionTier::BelowBaseline;
-    }
-
-    let integrity_blocked =
-        signals.force_push_blocked == Some(true) && signals.deletion_blocked == Some(true);
-
-    if !integrity_blocked {
-        return BranchProtectionTier::BelowBaseline;
-    }
-
-    if signals.has_pr != Some(true) || signals.required_reviewers.unwrap_or(0) == 0 {
-        return BranchProtectionTier::Minimal;
-    }
-
-    if signals.has_broad_bypass == Some(true) {
-        return BranchProtectionTier::AcceptBar;
-    }
-
-    if signals.has_status_checks == Some(true) {
-        BranchProtectionTier::Bonus
-    } else {
-        BranchProtectionTier::AcceptBar
+impl From<BranchProtectionRegime> for BranchProtectionTier {
+    fn from(regime: BranchProtectionRegime) -> Self {
+        match regime {
+            BranchProtectionRegime::Unmeasured => Self::Excluded,
+            BranchProtectionRegime::Unprotected => Self::BelowBaseline,
+            BranchProtectionRegime::IntegrityOnly => Self::Minimal,
+            BranchProtectionRegime::ReviewedWithBypass | BranchProtectionRegime::ReviewedGated => {
+                Self::AcceptBar
+            }
+            BranchProtectionRegime::Hardened => Self::Bonus,
+        }
     }
 }
 
@@ -500,19 +462,13 @@ fn classify_branch_protection_regime(signals: BranchTierSignals) -> BranchProtec
 
 impl BranchProtectionResult {
     /// Compute the report-side branch-protection tier from raw details.
+    ///
+    /// Derived from [`Self::regime`] per COM-0027:R3 — the regime cascade is
+    /// the single canonical classifier; the tier is a total, lossy view over
+    /// it (see `impl From<BranchProtectionRegime> for BranchProtectionTier`).
     #[must_use]
     pub fn tier(&self) -> BranchProtectionTier {
-        classify_branch_tier(BranchTierSignals {
-            status: self.status,
-            reason_kind: self.details.reason_kind,
-            has_pr: self.details.has_pr,
-            required_reviewers: self.details.required_reviewers,
-            has_status_checks: self.details.has_status_checks,
-            admin_equivalent: self.details.admin_equivalent,
-            has_broad_bypass: self.details.has_broad_bypass,
-            force_push_blocked: self.details.force_push_blocked,
-            deletion_blocked: self.details.deletion_blocked,
-        })
+        BranchProtectionTier::from(self.regime())
     }
 
     /// Compute the report-side branch-protection regime (BPR0..BPR5) from
@@ -694,7 +650,7 @@ impl BranchControls {
     /// Compute the report-side branch-protection tier from merged controls.
     #[must_use]
     pub fn tier(&self) -> BranchProtectionTier {
-        classify_branch_tier(BranchTierSignals {
+        BranchProtectionTier::from(classify_branch_protection_regime(BranchTierSignals {
             status: BranchProtectionStatus::Partial,
             reason_kind: None,
             has_pr: Some(self.has_pr()),
@@ -704,7 +660,7 @@ impl BranchControls {
             has_broad_bypass: Some(self.has_broad_bypass()),
             force_push_blocked: self.force_push_blocked(),
             deletion_blocked: self.deletion_blocked(),
-        })
+        }))
     }
 
     /// Merge multiple control sets, taking the strongest signal for each field.
@@ -1796,83 +1752,35 @@ mod tests {
     }
 
     #[test]
-    fn bpr_consistency_map_matches_tier_for_non_split_bands() {
-        type BprConsistencyCase = (
-            Option<bool>,
-            Option<u32>,
-            Option<bool>,
-            Option<bool>,
-            Option<bool>,
-            Option<bool>,
-            Option<bool>,
-        );
-        let cases: &[BprConsistencyCase] = &[
-            (None, None, None, None, None, None, None),
+    fn tier_from_regime_derivation_is_total_over_all_bands() {
+        let cases = [
             (
-                Some(false),
-                Some(0),
-                Some(false),
-                Some(false),
-                Some(false),
-                Some(true),
-                Some(true),
+                BranchProtectionRegime::Unmeasured,
+                BranchProtectionTier::Excluded,
             ),
             (
-                Some(true),
-                Some(0),
-                Some(false),
-                Some(false),
-                Some(false),
-                Some(true),
-                Some(true),
+                BranchProtectionRegime::Unprotected,
+                BranchProtectionTier::BelowBaseline,
             ),
             (
-                Some(true),
-                Some(2),
-                Some(true),
-                Some(true),
-                Some(false),
-                Some(true),
-                Some(true),
+                BranchProtectionRegime::IntegrityOnly,
+                BranchProtectionTier::Minimal,
+            ),
+            (
+                BranchProtectionRegime::ReviewedWithBypass,
+                BranchProtectionTier::AcceptBar,
+            ),
+            (
+                BranchProtectionRegime::ReviewedGated,
+                BranchProtectionTier::AcceptBar,
+            ),
+            (
+                BranchProtectionRegime::Hardened,
+                BranchProtectionTier::Bonus,
             ),
         ];
-        for &(
-            has_pr,
-            required_reviewers,
-            has_status_checks,
-            admin_equivalent,
-            has_broad_bypass,
-            force_push_blocked,
-            deletion_blocked,
-        ) in cases
-        {
-            let signals = bpr_signals(
-                BranchProtectionStatus::Partial,
-                None,
-                has_pr,
-                required_reviewers,
-                has_status_checks,
-                admin_equivalent,
-                has_broad_bypass,
-                force_push_blocked,
-                deletion_blocked,
-            );
-            let tier = classify_branch_tier(signals);
-            let regime = classify_branch_protection_regime(signals);
-            let expected = match tier {
-                BranchProtectionTier::Excluded => BranchProtectionRegime::Unmeasured,
-                BranchProtectionTier::BelowBaseline => BranchProtectionRegime::Unprotected,
-                BranchProtectionTier::Minimal => BranchProtectionRegime::IntegrityOnly,
-                BranchProtectionTier::AcceptBar => {
-                    if has_broad_bypass == Some(true) {
-                        BranchProtectionRegime::ReviewedWithBypass
-                    } else {
-                        BranchProtectionRegime::ReviewedGated
-                    }
-                }
-                BranchProtectionTier::Bonus => BranchProtectionRegime::Hardened,
-            };
-            assert_eq!(regime, expected);
+        for (regime, expected_tier) in cases {
+            assert_eq!(BranchProtectionTier::from(regime), expected_tier);
         }
     }
 
