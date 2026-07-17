@@ -20,9 +20,9 @@ pub use checked::{CheckedEventStream, stream_checked};
 pub use error::{
     CheckedReplayKind, Error, RehydrateInvariant, UnpersistableKind, ValidatedReplayError,
 };
-pub(crate) use rehydrate::{
-    persist_with_source, persist_with_source_append, rehydrate_unchecked, rehydrate_validated,
-};
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use rehydrate::persist_with_source_append;
+pub(crate) use rehydrate::{persist_with_source, rehydrate_unchecked, rehydrate_validated};
 pub use validated::{ValidatedEventStream, stream_validated};
 #[cfg(test)]
 mod tests;

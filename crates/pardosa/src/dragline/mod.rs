@@ -12,7 +12,9 @@ mod tests;
 pub(crate) mod view;
 mod write;
 pub(crate) use runtime::Dragline;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use state::AppendResult;
 #[cfg(test)]
 pub(crate) use state::DEFAULT_ANCHOR_BUFFER_CAP;
-pub(crate) use state::{AppendResult, Line};
+pub(crate) use state::Line;
 pub(crate) use view::DraglineView;

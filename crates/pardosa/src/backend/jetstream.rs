@@ -503,6 +503,7 @@ impl JetStreamBackendAdapter {
             .collect())
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn latest_payload<I>(payloads: I) -> Vec<u8>
 where
     I: IntoIterator,
@@ -514,6 +515,7 @@ where
     }
     last.map(|p| p.as_ref().to_vec()).unwrap_or_default()
 }
+#[cfg(any(test, feature = "test-support"))]
 impl super::journal::RehydrateableBackend for JetStreamBackendAdapter {
     fn fetch_durable_bytes(&mut self) -> Result<Vec<u8>, BackendError> {
         let frames = self.fetch_durable_frames()?;

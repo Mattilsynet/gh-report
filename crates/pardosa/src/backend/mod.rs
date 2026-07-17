@@ -166,6 +166,7 @@ pub(crate) mod jetstream;
 /// `tests/ui/no_generic_sink_on_event_store.rs` /
 /// `no_external_backend_sink_impl.rs` /
 /// `no_external_authoritative_backend_impl.rs` keep the surface closed.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod journal;
 /// Adopter-test wrapper exposing a JetStream-authoritative recovery
 /// journal without widening `BackendDragline` or

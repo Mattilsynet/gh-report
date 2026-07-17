@@ -39,6 +39,7 @@ pub(crate) mod persist;
 pub mod prelude;
 pub mod store;
 pub(crate) mod typed;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) use dragline::AppendResult;
 pub(crate) use error::PardosaError;
 pub(crate) use event::{Event, EventId, FiberId, Index};

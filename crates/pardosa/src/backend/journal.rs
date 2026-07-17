@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use super::BackendSink;
 use crate::dragline::Line;
 use crate::durability::AckPosition;
@@ -102,15 +101,6 @@ impl<T, B: BackendSink> BackendDragline<T, B> {
             schema_source: None,
         }
     }
-    /// Attach a schema-source descriptor that will be embedded
-    /// in the `.pgno` container header on the next
-    /// [`Self::sync`]. Mirrors the
-    /// [`crate::dragline::Dragline::sync_data_with_source`]
-    /// shape.
-    pub(crate) fn with_schema_source(mut self, source: Option<&'static str>) -> Self {
-        self.schema_source = source;
-        self
-    }
     /// Borrow the underlying [`Line`] for inspection
     /// (in-tree test harness use only).
     pub(crate) fn line(&self) -> &Line<T> {
@@ -120,6 +110,7 @@ impl<T, B: BackendSink> BackendDragline<T, B> {
     /// in-tree tests can observe the bytes the substrate
     /// received (e.g.
     /// [`crate::authoritative::fake::InMemoryBackend::bytes`]).
+    #[cfg(test)]
     pub(crate) fn into_backend(self) -> B {
         self.backend
     }
@@ -198,6 +189,7 @@ where
     ///
     /// [`RehydrateError::Persist`] forwarding the
     /// [`PersistError`] taxonomy.
+    #[cfg(test)]
     pub(crate) fn rehydrate(backend: B) -> Result<Self, RehydrateError>
     where
         B: ReadableBackend,
@@ -225,6 +217,7 @@ where
 /// substrate has not acknowledged as durable.
 ///
 /// Sealed via [`super::sealed`]; in-crate impls only.
+#[cfg(test)]
 pub(crate) trait ReadableBackend: super::sealed::Sealed {
     /// Borrow the bytes the substrate has fenced via
     /// [`BackendSink::sync`] — the post-`sync` durable
@@ -239,7 +232,7 @@ pub(crate) trait ReadableBackend: super::sealed::Sealed {
     /// durable.
     fn durable_bytes(&self) -> &[u8];
 }
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 impl ReadableBackend for crate::authoritative::fake::InMemoryBackend {
     fn durable_bytes(&self) -> &[u8] {
         let end = usize::try_from(self.synced_to).expect("64-bit target enforced at crate root");

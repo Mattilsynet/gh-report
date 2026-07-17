@@ -211,6 +211,7 @@ where
 ///
 /// [`Error::File`] for framing/encoding errors; [`Error::Io`]
 /// propagated from the underlying sink.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn persist_with_source_append<T, W>(
     dragline: &Line<T>,
     sink: &mut W,

@@ -135,9 +135,36 @@ jobs:
             exit 1
           fi
 
+  # Tripwire: ban crate/module-level inner `dead_code` suppression in library
+  # and binary source (`crates/*/src/**`). A blanket `#![allow(dead_code)]` (or
+  # `#![expect(dead_code)]`, or a `cfg_attr`-wrapped inner form) silences the
+  # unused-code lint for an entire module and masks genuinely dead code — the
+  # exact failure that hid an entire test-only journal module behind one inner
+  # allow. Targeted OUTER item-level suppressions (`#[allow(dead_code, reason
+  # = "...")]`, `#[expect(dead_code, ...)]`, `#[cfg_attr(..., allow(dead_code,
+  # ...))]`) remain permitted: they are item-local and reasoned. Scope is
+  # `src/` only — integration `tests/**` type-witness files legitimately use
+  # file-level suppression and are out of scope.
+  dead-code-inner-suppression-tripwire:
+    name: ban module-level dead_code suppression (crates/*/src)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: ban inner #![allow/expect(dead_code)] in crate src
+        run: |
+          set -euo pipefail
+          offenders=$(grep -RIn --include='*.rs' -E \
+            '#!\[.*(allow|expect)\(.*\bdead_code\b' \
+            crates/*/src || true)
+          if [ -n "$offenders" ]; then
+            echo "::error::crate/module-level inner dead_code suppression is banned in crates/*/src"
+            echo "::error::use a targeted OUTER item-level #[expect(dead_code, reason=\"...\")] instead, or delete/cfg-gate the dead item"
+            echo "$offenders"
+            exit 1
+          fi
+
   supply-chain:
     name: supply-chain (audit + deny)
-    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
