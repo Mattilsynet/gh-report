@@ -1655,6 +1655,67 @@ fn render_owner_detail_html_contains_orphan_repositories_section() {
     );
 }
 
+/// adr-fmt-mobzr: an orphan-repo attribution join must be case-insensitive
+/// on team name, mirroring the roster-match fix in 845d958. `group.team`
+/// carries the roster's raw-case `canonical_owner` (e.g. `@Org/team-a`),
+/// while `m.owner` is always lowercased at construction
+/// (`domain/metrics.rs:550`); an uppercase-configured org must still see
+/// its attributed orphan repos on its own detail page.
+#[test]
+fn render_owner_detail_html_orphan_team_match_is_case_insensitive() {
+    use crate::domain::evidence::LastCommitInfo;
+    use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRoster, TeamRosterStatus};
+
+    let mut evidence = evidence_with_owner_repos();
+
+    let mut orphan = test_fixtures::make_repository_evidence(
+        "orphan-repo",
+        Visibility::Public,
+        false,
+        test_fixtures::make_checks(
+            test_fixtures::policy_pass_setting(),
+            test_fixtures::secret_enabled_observable(false),
+            test_fixtures::dependabot_enabled(),
+            test_fixtures::branch_pass(),
+            test_fixtures::codeowners_absent(),
+        ),
+    );
+    orphan.last_commit = Some(LastCommitInfo {
+        committer_login: Some("alice".to_string()),
+        committer_name: None,
+        commit_date: Some("2026-04-01T00:00:00Z".to_string()),
+    });
+    evidence.repositories.push(orphan);
+
+    evidence.metrics = crate::aggregate::metrics::aggregate_metrics(&evidence.repositories);
+    evidence.collection_statistics =
+        crate::aggregate::metrics::build_collection_statistics(&evidence.repositories);
+    evidence.metrics.team_rosters = vec![TeamRoster {
+        canonical_owner: "@Org/team-a".to_string(),
+        team_slug: "team-a".to_string(),
+        status: TeamRosterStatus::Complete,
+        members: vec![TeamMember {
+            login: "alice".to_string(),
+            role: TeamMemberRole::Maintainer,
+            in_org: None,
+        }],
+    }];
+
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let attributed_page = &pages["owners/org-team-a.html"];
+
+    assert!(
+        attributed_page.contains("Orphan repositories (1)"),
+        "team-a's canonical_owner differs only by org case (@Org/team-a) \
+             from the lowercase CODEOWNERS owner key (@org/team-a); the \
+             attributed orphan repo must still render: {attributed_page}"
+    );
+    assert!(
+        attributed_page.contains("orphan-repo"),
+        "expected the attributed orphan repo row to render"
+    );
+}
+
 /// UF2-3 rendering test: the owner-detail heading renders the team
 /// handle as a hyperlink to its GitHub team page, with the link base
 /// derived from the already-generic `DEFAULT_GITHUB_WEB_BASE_URL` seam

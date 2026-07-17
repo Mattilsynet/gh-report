@@ -786,7 +786,7 @@ fn build_owner_detail_view_models(
 
             let orphan_repo_rows: Vec<OrphanedRepoRow> = orphaned_by_team
                 .iter()
-                .find(|group| group.team == m.owner)
+                .find(|group| group.team.eq_ignore_ascii_case(&m.owner))
                 .map(|group| group.rows.clone())
                 .unwrap_or_default();
             let orphan_unresolved = matches!(
