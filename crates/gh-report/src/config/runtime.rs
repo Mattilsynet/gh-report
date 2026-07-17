@@ -237,6 +237,31 @@ mod tests {
     }
 
     #[test]
+    fn schema_major_isolates_stream_identity_across_majors() {
+        let cfg = NatsStoreConfig::for_org("acme", "nats://localhost").unwrap();
+        let major = config::EVIDENCE_SCHEMA_MAJOR;
+
+        assert!(cfg.stream_name.contains(major));
+        assert!(cfg.subject.contains(major));
+        assert!(cfg.durable_consumer.contains(major));
+
+        let token = org_token("acme".as_bytes());
+        let next_major = "v18";
+        assert_ne!(major, next_major, "counterfactual major must differ");
+
+        let this_stream = cfg.stream_name.clone();
+        let next_stream = format!("gh-report-{token}-{next_major}");
+        let this_subject = cfg.subject.clone();
+        let next_subject = format!("gh-report.{token}.{next_major}.events");
+        let this_durable = cfg.durable_consumer.clone();
+        let next_durable = format!("gh-report-{token}-{next_major}");
+
+        assert_ne!(this_stream, next_stream);
+        assert_ne!(this_subject, next_subject);
+        assert_ne!(this_durable, next_durable);
+    }
+
+    #[test]
     fn runtime_config_clamps_workers() {
         let cfg = RuntimeConfig::new("org", false, 0, PathBuf::from("s")).unwrap();
         assert_eq!(cfg.max_workers, config::MIN_WORKERS);

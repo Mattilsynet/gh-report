@@ -464,6 +464,10 @@ Set `--force-refresh` (or `GH_REPORT_FORCE_REFRESH=true`) to bypass baseline reu
 
 Both constants live in `crates/gh-report/src/config/mod.rs`.
 
+### MINOR vs MAJOR: what "validated against on load" means
+
+The "No" in the table above refers to the cosmetic **minor** string stamped on payloads — that string is informational and is never read back to gate a load. The load-bearing safety property is at the **major** boundary and is enforced structurally, not by string comparison: `EVIDENCE_SCHEMA_MAJOR` (e.g. `v17`) is woven into every derived JetStream identity — the stream name, subject, and durable-consumer name (`gh-report-<token>-v17`, `gh-report.<token>.v17.events`). A binary compiled against major N addresses the `-vN` stream by name, so a binary meeting a store written under a newer major N+1 reads an absent or empty `-v(N+1)` stream — it never mis-reads or corrupts the older data. Major migration therefore **fails closed** by stream isolation: cross-major mixing is structurally impossible, not merely discouraged. This is characterized by `schema_major_isolates_stream_identity_across_majors` in `config/runtime.rs`.
+
 ### When to bump
 
 **`INVENTORY_SCHEMA_VERSION`** — bump on any breaking change to `InventoryPayload` shape that downstream consumers (other tooling, exports, archived snapshots) would not tolerate. The daemon itself never invalidates anything based on this value; bumping it is purely a contract signal to external readers.
