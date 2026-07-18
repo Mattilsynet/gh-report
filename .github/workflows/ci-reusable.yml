@@ -32,6 +32,40 @@ jobs:
       # crate for its real target every CI run so source drift from the
       # committed artefact cannot pass unnoticed.
       - run: cargo build -p gh-report-web-client --target wasm32-unknown-unknown --release --locked
+      # Regen-diff gate (adr-fmt-p5tnh / adr-fmt-xgcnn): the committed
+      # gh-report-web-client.js/_bg.wasm pair must be regenerable from the
+      # crate's own wasm32 build with matching import keys, or Leptos never
+      # mounts client-side (WebAssembly.instantiate throws, silent — no
+      # server error, no CSP violation). This does NOT byte-diff the
+      # _bg.wasm: wasm-bindgen's emitted wasm bytes are not reproducible
+      # across build hosts even at an identical pinned wasm-bindgen version,
+      # so a wasm byte-diff here would false-positive on every CI run. The
+      # .js glue IS deterministic text, so a text diff on it is a robust
+      # drift detector; the import-key invariant assertion below is the
+      # part that actually proves the *committed* pair links, independent
+      # of any host-specific wasm bytes.
+      - name: gh-report-web-client wasm/js regen-diff gate
+        if: always()
+        run: |
+          set -euo pipefail
+          cargo install wasm-bindgen-cli --version 0.2.126 --locked
+          regen_dir="$(mktemp -d)/regen"
+          wasm-bindgen --target web --out-name gh-report-web-client \
+            --out-dir "$regen_dir" \
+            target/wasm32-unknown-unknown/release/gh_report_web_client.wasm
+          committed_js=crates/gh-report/templates/gh-report-web-client.js
+          committed_wasm=crates/gh-report/templates/gh-report-web-client_bg.wasm
+          if ! git diff --no-index --exit-code "$committed_js" "$regen_dir/gh-report-web-client.js"; then
+            echo "::error::committed $committed_js is stale relative to the crate's own wasm32 build. Regenerate with: cargo build --release --target wasm32-unknown-unknown -p gh-report-web-client --locked && wasm-bindgen --target web --out-name gh-report-web-client --out-dir crates/gh-report/templates target/wasm32-unknown-unknown/release/gh_report_web_client.wasm"
+            exit 1
+          fi
+          js_key=$(grep -o '"\./gh-report-web-client_bg\.js"' "$committed_js" | head -1)
+          wasm_import=$(strings "$committed_wasm" | grep -o '^\./gh-report-web-client_bg\.js$' | head -1)
+          if [ -z "$js_key" ] || [ -z "$wasm_import" ] || [ "$js_key" != "\"$wasm_import\"" ]; then
+            echo "::error::import-key mismatch: committed $committed_js provides import key ${js_key:-<none found>} but committed $committed_wasm expects import module ${wasm_import:-<none found>}. WebAssembly.instantiate() will throw and Leptos never mounts (adr-fmt-xgcnn). Regenerate the pair as a matched set with: cargo build --release --target wasm32-unknown-unknown -p gh-report-web-client --locked && wasm-bindgen --target web --out-name gh-report-web-client --out-dir crates/gh-report/templates target/wasm32-unknown-unknown/release/gh_report_web_client.wasm"
+            exit 1
+          fi
+          echo "regen-diff gate: js glue matches fresh regen; import key ${js_key} matches wasm's expected import module ${wasm_import}"
       # Lint the wasm-only crate on its real target so dom.rs (cfg(wasm32))
       # is clippy-checked, not merely compiled (CHE-0087 R6).
       - run: cargo clippy -p gh-report-web-client --target wasm32-unknown-unknown --all-targets --locked -- -D warnings
