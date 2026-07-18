@@ -23,7 +23,8 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use web_sys::{Document, Element};
 
 use crate::binding::QueueStockBinding;
-use crate::components::QueueStockComponent;
+use crate::components::StockTemplate;
+use crate::layout::{self, StockKind};
 use crate::sim::{
     EnqueueResult, InventoryOutcome, JobOutcome, JobSource, PageUpdateEvent, PardosaBackend, Sim,
     SimConfig, SweepPhase, UpdatedAt,
@@ -55,7 +56,7 @@ impl Rates {
 struct AppState {
     sim: Sim,
     queue_binding: QueueStockBinding,
-    queue_component: Option<QueueStockComponent>,
+    queue_component: Option<StockTemplate>,
     rates: RwSignal<Rates>,
     tick_count: u64,
     warm_start_requested: bool,
@@ -178,7 +179,7 @@ pub fn start() {
     let queue_binding = QueueStockBinding::new(&sim);
     let queue_component = document
         .get_element_by_id("queue-stock-mount")
-        .and_then(|container| QueueStockComponent::mount(&container));
+        .and_then(|container| StockTemplate::mount(&container, "WorkQueue", StockKind::Standard));
     APP.with(|cell| {
         *cell.borrow_mut() = Some(AppState {
             sim,
@@ -211,6 +212,31 @@ pub fn start() {
             );
         }
     });
+}
+
+/// Adapts the app-specific `WorkQueue` binding + running [`Sim`] onto
+/// the generic [`StockTemplate`]'s per-field `update_*` calls — the
+/// composition [`crate::components::QueueStockComponent`] used to do
+/// inline before the stock template generalized (CHE-0094,
+/// adr-fmt-odlad SM-2). Lives here, not in `components.rs`, so the
+/// template itself stays free of any `Sim`/`QueueStockBinding`
+/// knowledge (kind 1 is reusable for stocks with no such binding).
+fn update_work_queue_stock(component: &StockTemplate, binding: &QueueStockBinding, sim: &Sim) {
+    let ticks_elapsed = component.tick();
+    component.update_level(
+        binding.level_history(),
+        &layout::format_bounded_level(sim.queue_depth(), sim.queue_capacity()),
+    );
+    component.update_flows(binding.inflow(), Some(binding.outflow()));
+    let colors: Vec<&str> = sim
+        .queue_jobs()
+        .iter()
+        .map(|job| crate::components::job_dot_color(job.source))
+        .collect();
+    component.update_dots(&colors);
+    component.update_utilization(binding.utilization().value());
+    component.update_residence(binding.mean_residence_ticks(ticks_elapsed));
+    component.update_polarity(binding.backpressure_polarity());
 }
 
 /// Advance the simulation by one tick and re-render gauges + packets.
@@ -287,7 +313,7 @@ pub fn tick() {
         state.tick_count += 1;
         state.queue_binding.advance(&events, &state.sim);
         if let Some(component) = &state.queue_component {
-            component.update(&state.queue_binding, &state.sim);
+            update_work_queue_stock(component, &state.queue_binding, &state.sim);
         }
 
         render_gauges(&document, &state.sim);

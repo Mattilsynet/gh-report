@@ -29,6 +29,6 @@ pub mod sim;
 pub mod sparkline;
 
 #[cfg(target_arch = "wasm32")]
-mod components;
+pub mod components;
 #[cfg(target_arch = "wasm32")]
 mod view;
