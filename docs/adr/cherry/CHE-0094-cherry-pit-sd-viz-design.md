@@ -147,4 +147,48 @@ The correct severance authority is CHE-0029 (acyclic DAG + core dependency
 budget) and CHE-0084:R5 (explicit prohibition on introducing a
 cherry-pit→pardosa edge). CHE-0010 is cited here only contextually, per the
 oracle correction (adr-fmt-zh20j).
+
+## Amendment 2026-07-18 (SD connection grammar)
+
+Per the l.125-129 deferral above, the systems-dynamics modelling layer's
+design lands here rather than as a new ADR: oracle review (adr-fmt-sxlt8)
+ruled the grammar amends CHE-0094 in place, since CHE-0086's materiality
+bar is cleared but the l.128-129 clause already pre-commits deferred SD
+work to "its own ADR amendment" — not a freestanding ADR. Source grammar:
+adr-fmt-qaavg (directed-connection matrix + 8 invariants, Stock/Flow/
+Converter/Cloud vocabulary per adr-fmt-0pe95).
+
+R11 [4]: the following connection invariants are BINDING for
+`cherry-pit-sd-viz`'s systems-dynamics layer (CHE-0086:R3 sibling-surface
+per R6 above), enforced by the type layer — compile-time endpoint-kind
+typing plus a validated builder that rejects illegal edges at
+construction, not merely by convention:
+
+1. A flow's material endpoints are drawn from `{Stock, Cloud}` only, on
+   both ends; never a Converter.
+2. Connectors carry information only; material moves exclusively through
+   flows.
+3. A stock's value changes only via its attached flows; nothing else may
+   write to a stock.
+4. A connector's HEAD may point only into a Flow's rate equation or a
+   Converter's equation — never into a Stock or a Cloud.
+5. A connector's TAIL may originate only from a Stock, a Flow, or a
+   Converter — never from a Cloud (clouds carry no readable value).
+6. Cloud is a flow-endpoint only; it is never a connector endpoint (head
+   or tail).
+7. A converter can never sit in a flow's material path — it informs a
+   flow's rate equation via connector, but holds no pipe of its own.
+
+R12 [3]: invariant 8 (every feedback loop must pass through at least one
+Stock; a stock-free loop is a degenerate algebraic loop) is ADVISORY and
+documented only this iteration, not type-layer-enforced. adr-fmt-qaavg
+flags this as its weakest-sourced claim — no primary Vensim/Sterman
+citation was reached for it, only structural inference. Active loop-path
+enforcement (graph traversal proving every cycle threads a Stock) is
+deferred to a follow-up mission; until then a stock-free loop is a
+lint-level warning at most, not a build-time rejection.
+
+R13 [5]: the SD-layer's error type, `SdConnectionError`, MUST be
+`#[non_exhaustive]` from v0.1 (CHE-0021, CHE-0094:R9) — additive variants
+for new invariant violations are non-breaking.
 </content>
