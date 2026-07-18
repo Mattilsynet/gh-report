@@ -209,6 +209,7 @@ impl Placement {
 /// adding a node is one `Model::add_*` call plus one placement entry.
 pub struct Scene {
     model: Model,
+    grid: GridParams,
     nodes: Vec<PlacedNode>,
     belts: Vec<Belt>,
 }
@@ -293,6 +294,7 @@ impl Scene {
 
         Ok(Self {
             model,
+            grid,
             nodes,
             belts,
         })
@@ -311,6 +313,43 @@ impl Scene {
     #[must_use]
     pub fn belts(&self) -> &[Belt] {
         &self.belts
+    }
+
+    /// The shared [`GridParams`] every node box and belt anchor in
+    /// this scene was derived from — the renderer's only source for a
+    /// node box's px width/height (it must never hard-code its own).
+    #[must_use]
+    pub fn grid(&self) -> GridParams {
+        self.grid
+    }
+
+    /// The top-left `(x, y)` px origin of `node`'s box — the
+    /// renderer's only source for a node's position; it must never
+    /// compute a position itself.
+    #[must_use]
+    pub fn node_origin(&self, node: &PlacedNode) -> (f64, f64) {
+        layout::grid_slot_origin(node.slot.row, node.slot.col, self.grid)
+    }
+
+    /// The `(width, height)` px viewBox this scene's nodes fit inside,
+    /// derived from the highest occupied row/col among the placed
+    /// nodes — the renderer's only source for its SVG `viewBox`; it
+    /// must never compute its own bound.
+    #[must_use]
+    pub fn viewbox_dimensions(&self) -> (f64, f64) {
+        let max_row = self
+            .nodes
+            .iter()
+            .map(|node| node.slot.row)
+            .max()
+            .unwrap_or(0);
+        let max_col = self
+            .nodes
+            .iter()
+            .map(|node| node.slot.col)
+            .max()
+            .unwrap_or(0);
+        layout::grid_dimensions(max_row + 1, max_col + 1, self.grid)
     }
 }
 
@@ -933,6 +972,35 @@ mod tests {
         let early = log.position_of(&item, 1, 1.0, 10.0);
         let later = log.position_of(&item, 5, 1.0, 10.0);
         assert!(later > early);
+    }
+
+    #[test]
+    fn node_origin_matches_layout_grid_slot_origin_for_the_nodes_slot() {
+        let (model, placement) = tiny_model_and_placement();
+        let scene = Scene::assemble(model, &placement).expect("assembles");
+        for node in scene.nodes() {
+            let expected = layout::grid_slot_origin(node.slot.row, node.slot.col, GRID);
+            assert_eq!(scene.node_origin(node), expected);
+        }
+    }
+
+    #[test]
+    fn grid_returns_the_params_assemble_was_built_with() {
+        let (model, placement) = tiny_model_and_placement();
+        let scene = Scene::assemble(model, &placement).expect("assembles");
+        assert_eq!(scene.grid(), GRID);
+    }
+
+    #[test]
+    fn viewbox_dimensions_bounds_every_placed_node_box() {
+        let scene = gh_report_scene().expect("scene builds");
+        let (width, height) = scene.viewbox_dimensions();
+        let grid = scene.grid();
+        for node in scene.nodes() {
+            let (x, y) = scene.node_origin(node);
+            assert!(x + grid.box_width <= width, "node exceeds viewbox width");
+            assert!(y + grid.box_height <= height, "node exceeds viewbox height");
+        }
     }
 
     #[test]

@@ -16,8 +16,69 @@
         padding: 1.5rem;
       }
       .queue-viz {
-        width: 1285px;
+        width: 100%;
+        max-width: 1400px;
         margin: 0 auto;
+      }
+      .scene-viz {
+        width: 100%;
+        margin: 1rem 0;
+      }
+      .scene-svg {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+      .scene-belt {
+        fill: none;
+        stroke: #475569;
+        stroke-width: 2;
+      }
+      .scene-node {
+        box-sizing: border-box;
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: 0.4rem;
+        font-family: system-ui, sans-serif;
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #e2e8f0;
+        border-radius: 0.4rem;
+      }
+      .scene-node-stock.scene-node-standard {
+        background: #334155;
+        border: 2px solid #64748b;
+      }
+      .scene-node-stock.scene-node-bounded {
+        background: #1e3a5f;
+        border: 2px solid #3b82f6;
+      }
+      .scene-node-stock.scene-node-accumulator {
+        background: #1e293b;
+        border: 2px solid #94a3b8;
+      }
+      .scene-node-stock.scene-node-monotonic {
+        background: #14532d;
+        border: 2px solid #22c55e;
+      }
+      .scene-node-converter {
+        background: #422006;
+        border: 2px solid #f59e0b;
+      }
+      .scene-node-cloud {
+        background: #1e293b;
+        border: 2px dashed #94a3b8;
+        border-radius: 50%;
+      }
+      .scene-node-cloud.scene-node-source {
+        border-color: #22c55e;
+      }
+      .scene-node-cloud.scene-node-sink {
+        border-color: #6366f1;
       }
       .row {
         display: flex;
@@ -28,256 +89,6 @@
       }
       .row.legend {
         font-size: 0.85rem;
-      }
-      .graph-canvas {
-        position: relative;
-        width: 1285px;
-        height: 972px;
-        margin: 1rem 0;
-      }
-      .graph-svg {
-        position: absolute;
-        inset: 0;
-        width: 100%;
-        height: 100%;
-        pointer-events: none;
-      }
-      .edge {
-        fill: none;
-        stroke: #475569;
-        stroke-width: 2;
-      }
-      .edge-converge {
-        stroke: #3b82f6;
-      }
-      .edge-spine {
-        stroke: #3b82f6;
-        stroke-width: 3;
-      }
-      .edge-gate {
-        stroke: #94a3b8;
-        stroke-dasharray: 6 5;
-      }
-      .edge-read {
-        stroke: #f59e0b;
-      }
-      .edge-warmstart {
-        stroke: #64748b;
-        stroke-dasharray: 3 6;
-      }
-      .edge-serve,
-      .edge-serve-loop {
-        stroke: #22c55e;
-        stroke-dasharray: 4 4;
-        animation: serve-flow 2.4s linear infinite;
-      }
-      .edge-github-push {
-        stroke: #e2e8f0;
-        stroke-dasharray: 5 4;
-      }
-      .edge-github-pull {
-        stroke: #6366f1;
-        stroke-dasharray: 2 6;
-      }
-      .edge-github-inventory {
-        stroke: #cbd5e1;
-        stroke-dasharray: 8 4;
-      }
-      .edge-backend {
-        stroke: #3b82f6;
-        stroke-dasharray: 5 4;
-      }
-      .edge-clients-http {
-        stroke: #22c55e;
-        stroke-dasharray: 4 4;
-      }
-      .edge-clients-ws {
-        stroke: #f59e0b;
-        stroke-dasharray: 3 5;
-      }
-      @keyframes serve-flow {
-        to {
-          stroke-dashoffset: -16;
-        }
-      }
-      .packet-layer {
-        position: absolute;
-        inset: 0;
-        pointer-events: none;
-        z-index: 2;
-      }
-      .node {
-        position: absolute;
-        transform: translate(-50%, -50%);
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        width: 9.5rem;
-        min-height: 3.4rem;
-        padding: 0.4rem 0.5rem;
-        font-size: 0.72rem;
-        font-weight: 600;
-        text-align: center;
-        border-radius: 0.4rem;
-        z-index: 1;
-      }
-      .stage-note {
-        font-size: 0.6rem;
-        font-weight: 400;
-        color: #94a3b8;
-        margin-top: 0.15rem;
-      }
-      .stage-hidden {
-        display: none;
-      }
-      .node-trigger {
-        width: 10.5rem;
-      }
-      .node-scheduled {
-        background: #1d4ed8;
-      }
-      .node-webhook {
-        background: #15803d;
-      }
-      .node-warmstart {
-        background: #475569;
-      }
-      .node-work {
-        background: #334155;
-        border: 2px solid #64748b;
-        animation: work-pulse 1.6s ease-in-out infinite;
-      }
-      .node-store {
-        background: #1e3a5f;
-        border: 2px solid #3b82f6;
-        border-radius: 45% / 18%;
-      }
-      .node-serve {
-        background: #14532d;
-        border: 2px solid #22c55e;
-      }
-      .node-external {
-        background: #1e293b;
-        border: 2px dashed #94a3b8;
-        border-radius: 50%;
-        width: 11rem;
-      }
-      .node-clients {
-        background: #422006;
-        border: 2px solid #f59e0b;
-      }
-      .node-backend-pgno {
-        background: #1e3a5f;
-        border: 2px solid #3b82f6;
-        border-radius: 45% / 18%;
-        width: 8.5rem;
-      }
-      .node-backend-nats {
-        background: #3b2f1e;
-        border: 2px solid #f59e0b;
-        border-radius: 45% / 18%;
-        width: 8.5rem;
-      }
-      .backend-dimmed {
-        opacity: 0.32;
-        filter: grayscale(0.6);
-      }
-      @keyframes work-pulse {
-        0%,
-        100% {
-          box-shadow: 0 0 0 rgba(100, 116, 139, 0);
-        }
-        50% {
-          box-shadow: 0 0 0.5rem rgba(100, 116, 139, 0.85);
-        }
-      }
-      .gate-glyph {
-        position: absolute;
-        transform: translate(-50%, -50%);
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        font-size: 1.1rem;
-        color: #94a3b8;
-        z-index: 1;
-      }
-      @keyframes gate-flash {
-        0% {
-          color: #94a3b8;
-          text-shadow: none;
-        }
-        40% {
-          color: #f59e0b;
-          text-shadow: 0 0 0.6rem #f59e0b;
-        }
-        100% {
-          color: #94a3b8;
-          text-shadow: none;
-        }
-      }
-      .packet {
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 0.8rem;
-        height: 0.8rem;
-        margin: -0.4rem;
-        border-radius: 999px;
-        offset-rotate: auto;
-        offset-distance: var(--transit-start, 0%);
-        animation-name: transit-move;
-        animation-timing-function: linear;
-        animation-fill-mode: forwards;
-      }
-      @keyframes transit-move {
-        from {
-          offset-distance: var(--transit-start, 0%);
-          opacity: 1;
-        }
-        to {
-          offset-distance: var(--transit-end, 100%);
-          opacity: 0.85;
-        }
-      }
-      .packet-dropped {
-        opacity: 0.35;
-        outline: 2px solid #ef4444;
-      }
-      .packet-deduplicated {
-        opacity: 0.35;
-        outline: 2px dashed #f59e0b;
-      }
-      .packet-failure {
-        outline: 2px solid #ef4444;
-      }
-      .packet-success {
-        outline: 2px solid #22c55e33;
-      }
-      .packet-warmstart {
-        outline: 2px dashed #94a3b8;
-      }
-      .packet-page-update {
-        outline: 2px solid #f59e0b;
-        width: 1.1rem;
-        height: 1.1rem;
-        margin: -0.55rem;
-      }
-      .packet-github-push {
-        outline: 2px dashed #e2e8f0;
-      }
-      .packet-github-pull {
-        outline: 2px dotted #6366f1;
-      }
-      .packet-github-inventory,
-      .packet-inventory {
-        outline: 2px dashed #cbd5e1;
-      }
-      .packet-ws-fanout {
-        outline: 2px solid #f59e0b;
-        width: 1rem;
-        height: 1rem;
-        margin: -0.5rem;
       }
       .gauge {
         font-variant-numeric: tabular-nums;
@@ -297,69 +108,6 @@
       button:hover {
         background: #475569;
       }
-      .node-sd-stock {
-        width: 15rem;
-        min-height: 8rem;
-        padding: 0.5rem;
-        gap: 0.15rem;
-      }
-      .sdt-title {
-        font-size: 0.75rem;
-      }
-      .sdt-sparkline {
-        width: 100%;
-        height: 2.6rem;
-      }
-      .sdt-dots {
-        width: 100%;
-        height: 1rem;
-      }
-      .sdt-metrics {
-        display: flex;
-        flex-wrap: wrap;
-        justify-content: center;
-        gap: 0.3rem;
-        font-size: 0.6rem;
-        font-weight: 400;
-        color: #cbd5e1;
-      }
-      .node-sd-mount {
-        position: relative;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        width: 8.5rem;
-        min-height: 2.4rem;
-        padding: 0.3rem 0.4rem;
-        margin-top: 0.3rem;
-        background: #1e293b;
-        border: 1px solid #475569;
-        border-radius: 0.3rem;
-        font-size: 0.68rem;
-        font-weight: 600;
-        text-align: center;
-      }
-      .phase-overlay {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        margin-top: 0.2rem;
-        padding: 0.15rem 0.3rem;
-        background: #451a03;
-        border: 1px dashed #f59e0b;
-        border-radius: 0.3rem;
-        font-size: 0.62rem;
-        font-weight: 400;
-      }
-      .phase-overlay-title {
-        color: #fbbf24;
-        font-size: 0.55rem;
-      }
-      .phase-overlay-label {
-        color: #fde68a;
-        font-weight: 600;
-      }
     </style>
   </head>
   <body>
@@ -367,3 +115,4 @@
     <script type="module" src="./bootstrap.js"></script>
   </body>
 </html>
+
