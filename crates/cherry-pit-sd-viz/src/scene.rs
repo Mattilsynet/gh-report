@@ -40,7 +40,9 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::layout::{self, GridParams, Side};
-use crate::sd::{CloudId, ConverterId, FlowId, FlowTerminal, Model, SdConnectionError, StockId};
+use crate::sd::{
+    CloudId, ConverterId, Flow, FlowId, FlowTerminal, Model, SdConnectionError, StockId,
+};
 use crate::sim::JobSource;
 
 /// A zero-indexed `(row, col)` position in the presentation grid —
@@ -110,6 +112,7 @@ pub struct Belt {
     pub to: (f64, f64),
     pub path: String,
     pub length: f64,
+    pub kind: Flow,
 }
 
 impl Belt {
@@ -289,6 +292,7 @@ impl Scene {
                 to,
                 path,
                 length,
+                kind: view.kind,
             });
         }
 
@@ -598,6 +602,52 @@ pub fn belt_item_phase(k: usize, t: f64, speed: f64, length: f64, spacing: f64) 
     raw.rem_euclid(1.0)
 }
 
+/// A [`crate::sim::WorkQueue`]-style bounded stock's fill ratio
+/// (`0.0..=1.0`) for a queue-accumulation gauge: `level / capacity`,
+/// clamped to `[0.0, 1.0]`. `0.0` when `capacity` is non-positive (no
+/// meaningful ratio to divide by).
+#[must_use]
+pub fn fill_fraction(level: f64, capacity: f64) -> f64 {
+    if capacity <= 0.0 {
+        return 0.0;
+    }
+    (level / capacity).clamp(0.0, 1.0)
+}
+
+/// A bottom-anchored fill-rect's `(y, height)` in scene coordinate
+/// space for a fraction-filled gauge (e.g. [`fill_fraction`]'s
+/// output): `origin.1 + (box_height - fill_height)` and
+/// `box_height * fraction`. The renderer's only source for the fill
+/// rect's position and size; it must never derive them itself —
+/// mirrors [`Scene::node_origin`]'s pass-through pattern.
+#[must_use]
+pub fn fill_rect_geometry(origin: (f64, f64), box_height: f64, fraction: f64) -> (f64, f64) {
+    let fill_height = box_height * fraction;
+    (origin.1 + (box_height - fill_height), fill_height)
+}
+
+/// One tick's update to a belt's live "activity" speed signal (feeds
+/// [`belt_item_phase`]'s `speed` parameter): jumps to `boost` the tick
+/// a matching sim event fires, otherwise decays `previous` toward
+/// `floor` by `decay` (`0.0..1.0`) per tick — an EWMA-style falloff so
+/// a belt visibly speeds up right after an arrival/dequeue and eases
+/// back to its idle rate, rather than snapping. `floor` bounds the
+/// decay so a belt never fully stalls.
+#[must_use]
+pub fn belt_activity_step(
+    previous: f64,
+    event_fired: bool,
+    boost: f64,
+    decay: f64,
+    floor: f64,
+) -> f64 {
+    if event_fired {
+        boost
+    } else {
+        (previous * decay).max(floor)
+    }
+}
+
 /// One discrete pulse item carried by a [`BeltItemLog`]: the tick it
 /// was spawned and the [`JobSource`] identity/color a stateless
 /// [`belt_item_phase`] pattern cannot carry.
@@ -706,7 +756,8 @@ impl Default for BeltItemLog {
 mod tests {
     use super::{
         BeltItem, BeltItemLog, CloudRole, GhReportSceneError, GridSlot, NodeGeometry, Placement,
-        Scene, ScenePlacementError, belt_item_count, belt_item_phase, gh_report_scene,
+        Scene, ScenePlacementError, belt_activity_step, belt_item_count, belt_item_phase,
+        fill_fraction, fill_rect_geometry, gh_report_scene,
     };
     use crate::layout::{self, GridParams, StockKind};
     use crate::sd::{Flow, Model, Stock, Terminal};
@@ -1012,5 +1063,77 @@ mod tests {
         let end = belt.point_at(1.0);
         assert!((start.0 - belt.from.0).abs() < f64::EPSILON);
         assert!((end.0 - belt.to.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn belt_kind_matches_the_model_flows_registered_kind() {
+        let (model, placement) = tiny_model_and_placement();
+        let scene = Scene::assemble(model, &placement).expect("assembles");
+        assert_eq!(scene.belts()[0].kind, Flow::Uniflow(1.0));
+    }
+
+    #[test]
+    fn fill_fraction_is_level_over_capacity_clamped() {
+        assert!((fill_fraction(8.0, 32.0) - 0.25).abs() < 1e-9);
+        assert!(
+            (fill_fraction(40.0, 32.0) - 1.0).abs() < 1e-9,
+            "overfull clamps to 1.0"
+        );
+        assert!(
+            fill_fraction(-5.0, 32.0).abs() < 1e-9,
+            "negative level clamps to 0.0"
+        );
+    }
+
+    #[test]
+    fn fill_fraction_zero_when_capacity_non_positive() {
+        assert!(fill_fraction(5.0, 0.0).abs() < 1e-9);
+        assert!(fill_fraction(5.0, -1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fill_rect_geometry_full_fraction_anchors_to_origin_top() {
+        let (fill_y, fill_height) = fill_rect_geometry((10.0, 20.0), 92.0, 1.0);
+        assert!(
+            (fill_y - 20.0).abs() < 1e-9,
+            "fraction=1.0 anchors to origin.1"
+        );
+        assert!((fill_height - 92.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fill_rect_geometry_zero_fraction_anchors_below_the_box() {
+        let (fill_y, fill_height) = fill_rect_geometry((10.0, 20.0), 92.0, 0.0);
+        assert!(
+            (fill_y - (20.0 + 92.0)).abs() < 1e-9,
+            "fraction=0.0 anchors to origin.1 + box_height"
+        );
+        assert!(fill_height.abs() < 1e-9);
+    }
+
+    #[test]
+    fn fill_rect_geometry_half_fraction_is_bottom_anchored_midpoint() {
+        let (fill_y, fill_height) = fill_rect_geometry((10.0, 20.0), 92.0, 0.5);
+        assert!((fill_height - 46.0).abs() < 1e-9);
+        assert!((fill_y - (20.0 + 46.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn belt_activity_step_jumps_to_boost_when_event_fires() {
+        let next = belt_activity_step(2.0, true, 40.0, 0.85, 6.0);
+        assert!((next - 40.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn belt_activity_step_decays_toward_floor_without_an_event() {
+        let after_one = belt_activity_step(40.0, false, 40.0, 0.5, 6.0);
+        assert!((after_one - 20.0).abs() < 1e-9);
+        let after_many = (0..20).fold(40.0, |value, _| {
+            belt_activity_step(value, false, 40.0, 0.5, 6.0)
+        });
+        assert!(
+            (after_many - 6.0).abs() < 1e-9,
+            "decay never drops below floor"
+        );
     }
 }
