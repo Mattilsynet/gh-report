@@ -24,13 +24,26 @@ use web_sys::{Document, Element};
 
 use crate::binding::{QueueStockBinding, ReadoutStock};
 use crate::components::{CloudBoundaryMarkerTemplate, ConverterReadoutTemplate, StockTemplate};
-use crate::layout::{self, StockKind};
+use crate::layout::{self, GridParams, Side, StockKind};
 use crate::overlay::SweepPhaseBadge;
 use crate::sd::Terminal;
 use crate::sim::{
     EnqueueResult, InventoryOutcome, JobOutcome, JobSource, PageUpdateEvent, PardosaBackend, Sim,
     SimConfig, SweepPhase, UpdatedAt,
 };
+
+/// Grid params driving the computed flow-graph layout (adr-fmt-izwyo):
+/// even gutters over a 5-row, max-6-col grid, tall enough per-row
+/// pitch to carry each node's `stage-note` prose.
+const GRID: GridParams = GridParams {
+    margin: 40.0,
+    col_pitch: 205.0,
+    row_pitch: 200.0,
+    box_width: 180.0,
+    box_height: 92.0,
+};
+const GRID_ROWS: usize = 5;
+const GRID_MAX_COLS: usize = 6;
 
 #[derive(Clone, Copy)]
 struct Rates {
@@ -111,51 +124,103 @@ const READ_PULSE_DURATION_MS: u32 = 900;
 const WARMSTART_DURATION_MS: u32 = 1100;
 const MAX_LANE_PACKETS: u32 = 40;
 
-/// Curve `spawn_collection_loop` &rarr; `WorkQueue` (fan-in leg one),
-/// via the inventory listing + `should_reuse` gate.
-const PATH_CONVERGE_SCHEDULED: &str = "M180,120 C300,120 300,180 280,180";
-/// Curve `webhook_handler` &rarr; `WorkQueue` (fan-in leg two).
-const PATH_CONVERGE_WEBHOOK: &str = "M180,300 C300,300 300,180 280,180";
-/// Shared write spine: `WorkQueue` &rarr; `worker_loop` &rarr;
-/// `EvidenceProjectionEvent` stream &rarr; `EvidenceProjection`.
-const PATH_WRITE_SPINE: &str = "M420,180 C450,140 500,140 555,180 \
-     C610,220 660,220 690,180 C720,140 780,140 830,180 C860,210 890,210 910,180";
-/// `BatchTracker` gate segment: `EvidenceProjection` &rarr;
-/// `finalize_and_publish`.
-const PATH_GATE: &str = "M1050,180 C1000,240 950,300 925,390";
-/// Read chain: `finalize_and_publish` &rarr; `build_cached_pages` &rarr;
-/// `commit_cached_pages`.
-const PATH_READ_CHAIN: &str = "M975,440 Q1000,400 1050,440 Q1100,480 1130,440";
-/// `warm_start_from_baseline` bypass, routed around the write side and
-/// barrier straight into the read chain.
-const PATH_WARMSTART_BYPASS: &str = "M180,470 C450,500 450,660 700,660 C820,660 850,540 900,470";
-/// Continuous serve branch off `commit_cached_pages` / `ArcSwap`.
-const PATH_SERVE_BRANCH: &str = "M1200,475 C1200,520 1200,520 1200,565";
-/// `PageUpdateEvent` WS loop back from the serve branch.
-const PATH_SERVE_LOOP: &str = "M1270,600 C1279,540 1279,480 1265,475";
-/// `github.com` (ABOVE `worker_loop`) &rarr; `webhook_handler`: GitHub
-/// PUSHES webhook deliveries in.
-const PATH_GITHUB_PUSH: &str = "M480,70 C300,70 160,180 155,270";
-/// `github.com` &rarr; `spawn_collection_loop`: the inventory LISTING
-/// (`build_inventory_from_api`, `GET /orgs/{org}/repos?type=all`).
-const PATH_GITHUB_INVENTORY: &str = "M480,60 C300,40 160,60 130,100";
-/// `worker_loop`/`LiveEvaluator::evaluate` &rarr; `github.com` (directly
-/// above): the worker PULLS `repo_details` + the six concurrent
-/// collector calls, gated by `RateLimitState`/`BudgetGate`.
-const PATH_GITHUB_PULL: &str = "M555,155 C555,120 555,110 555,90";
-/// `cache_fallback` &rarr; web clients: the per-request HTTP serve
-/// edge.
-const PATH_CLIENTS_HTTP: &str = "M1200,625 C1200,660 1200,690 1200,720";
-/// `commit_cached_pages` &rarr; web clients: the per-RUN
-/// `PageUpdateEvent` WS broadcast fan-out.
-const PATH_CLIENTS_WS: &str = "M1155,475 C1080,560 1080,660 1140,715";
-/// `NativeStore::record` facade &rarr; local `.pgno` file store
-/// (`events.pgno`) — the DEFAULT active backend.
-const PATH_BACKEND_PGNO: &str = "M775,215 C740,260 700,290 690,320";
-/// `NativeStore::record` facade &rarr; `NATS` `JetStream`
-/// (`JetStreamHandle::append`) — the alternate backend, dimmed until
-/// `PardosaBackend::Nats` is selected.
-const PATH_BACKEND_NATS: &str = "M810,215 C850,260 880,290 890,320";
+/// The px top-left origin of the box at zero-indexed `(row, col)`
+/// under the shared [`GRID`] params.
+fn slot(row: usize, col: usize) -> (f64, f64) {
+    layout::grid_slot_origin(row, col, GRID)
+}
+
+/// The px anchor point on the given [`Side`] of the box at
+/// `(row, col)` under the shared [`GRID`] params.
+fn anchor(row: usize, col: usize, side: Side) -> (f64, f64) {
+    layout::slot_anchor(row, col, side, GRID)
+}
+
+/// A single bezier edge `d` string between two anchors.
+fn edge(from: (f64, f64), to: (f64, f64)) -> String {
+    layout::bezier_edge_path(from, to)
+}
+
+/// Chains bezier segments through `waypoints` into one `d` string —
+/// each subsequent segment's `M{x},{y}` prefix is dropped since the
+/// path is already at that point, giving a smooth multi-hop curve
+/// (`write_spine`, `read_chain`) matching the hand-authored chained-
+/// `C`-curve style this replaces.
+fn chain(waypoints: &[(f64, f64)]) -> String {
+    let mut out = String::new();
+    for pair in waypoints.windows(2) {
+        let segment = edge(pair[0], pair[1]);
+        if out.is_empty() {
+            out.push_str(&segment);
+        } else if let Some(curve_start) = segment.find(" C") {
+            out.push(' ');
+            out.push_str(&segment[curve_start + 1..]);
+        }
+    }
+    out
+}
+
+/// The 15 flow-graph edges (adr-fmt-izwyo), each derived from the
+/// [`GRID`]-computed slot anchors of its endpoints rather than
+/// hand-placed coordinates, so the drawn edges can never drift out of
+/// sync with the node boxes [`graph_nodes_markup`] places.
+struct GraphPaths {
+    converge_scheduled: String,
+    converge_webhook: String,
+    write_spine: String,
+    gate: String,
+    read_chain: String,
+    warmstart_bypass: String,
+    serve_branch: String,
+    serve_loop: String,
+    github_push: String,
+    github_inventory: String,
+    github_pull: String,
+    backend_pgno: String,
+    backend_nats: String,
+    clients_http: String,
+    clients_ws: String,
+}
+
+fn graph_paths() -> GraphPaths {
+    GraphPaths {
+        converge_scheduled: edge(anchor(0, 1, Side::Bottom), anchor(1, 0, Side::Top)),
+        converge_webhook: edge(anchor(0, 2, Side::Bottom), anchor(1, 0, Side::Top)),
+        write_spine: chain(&[
+            anchor(1, 0, Side::Right),
+            anchor(1, 1, Side::Right),
+            anchor(1, 3, Side::Left),
+            anchor(2, 3, Side::Top),
+        ]),
+        gate: edge(anchor(2, 3, Side::Bottom), anchor(3, 0, Side::Top)),
+        read_chain: chain(&[
+            anchor(3, 0, Side::Right),
+            anchor(3, 1, Side::Right),
+            anchor(3, 3, Side::Left),
+        ]),
+        warmstart_bypass: edge(anchor(0, 3, Side::Bottom), anchor(3, 0, Side::Top)),
+        serve_branch: edge(anchor(3, 3, Side::Bottom), anchor(4, 0, Side::Top)),
+        serve_loop: edge(anchor(4, 2, Side::Top), anchor(4, 0, Side::Top)),
+        github_push: edge(anchor(0, 0, Side::Right), anchor(0, 2, Side::Left)),
+        github_inventory: edge(anchor(0, 0, Side::Right), anchor(0, 1, Side::Left)),
+        github_pull: edge(anchor(1, 1, Side::Top), anchor(0, 0, Side::Bottom)),
+        backend_pgno: edge(anchor(1, 3, Side::Bottom), anchor(2, 0, Side::Top)),
+        backend_nats: edge(anchor(1, 3, Side::Bottom), anchor(2, 1, Side::Top)),
+        clients_http: edge(anchor(4, 0, Side::Right), anchor(4, 2, Side::Left)),
+        clients_ws: edge(anchor(3, 3, Side::Bottom), anchor(4, 2, Side::Top)),
+    }
+}
+
+/// The `(x, y)` px position of the `#gate-glyph` annotation, adjacent
+/// to the barrier group (`batch-stock-mount` at `(2, 4)`,
+/// `batch-drained-mount` at `(2, 5)`) — not itself a grid slot
+/// (adr-fmt-izwyo: barrier condition is an annotation/overlay, not a
+/// wired node, per adr-fmt-vrycy).
+fn gate_glyph_position() -> (f64, f64) {
+    let (batch_x, batch_y) = slot(2, 4);
+    (batch_x + GRID.box_width + 10.0, batch_y - 10.0)
+}
+
 const GITHUB_PUSH_DURATION_MS: u32 = 900;
 const GITHUB_PULL_DURATION_MS: u32 = 1600;
 const GITHUB_INVENTORY_DURATION_MS: u32 = 1300;
@@ -421,13 +486,14 @@ pub fn tick() {
             state.warm_start_requested = false;
             let update = state.sim.warm_start();
             if let Some(packet_layer) = document.get_element_by_id("packet-layer") {
+                let warmstart_bypass = graph_paths().warmstart_bypass;
                 spawn_transit_packet(
                     &document,
                     &packet_layer,
                     &PacketSpec {
                         class: "packet packet-warmstart",
                         color: source_color(JobSource::InitialLoad),
-                        path_d: PATH_WARMSTART_BYPASS,
+                        path_d: &warmstart_bypass,
                         start: "0%",
                         end: "100%",
                         duration_ms: WARMSTART_DURATION_MS,
@@ -615,7 +681,7 @@ fn inventory_repos(epoch: u64) -> Vec<(UpdatedAt, UpdatedAt)> {
         .collect()
 }
 
-/// Pulses [`PATH_GITHUB_INVENTORY`] (the `build_inventory_from_api`
+/// Pulses the `github_inventory` edge (the `build_inventory_from_api`
 /// listing arriving at the sweep) and updates the gauges reporting the
 /// `should_reuse` split: repos inventoried, repos reused unchanged (no
 /// job), and jobs spawned for changed repos.
@@ -638,13 +704,14 @@ fn render_inventory_sweep(document: &Document, outcome: InventoryOutcome) {
     let Some(packet_layer) = document.get_element_by_id("packet-layer") else {
         return;
     };
+    let github_inventory = graph_paths().github_inventory;
     spawn_transit_packet(
         document,
         &packet_layer,
         &PacketSpec {
             class: "packet packet-inventory",
             color: "#e2e8f0",
-            path_d: PATH_GITHUB_INVENTORY,
+            path_d: &github_inventory,
             start: "0%",
             end: "100%",
             duration_ms: GITHUB_INVENTORY_DURATION_MS,
@@ -652,11 +719,11 @@ fn render_inventory_sweep(document: &Document, outcome: InventoryOutcome) {
     );
 }
 
-/// Pulses [`PATH_GITHUB_PUSH`] once per webhook arrival (`github.com`
+/// Pulses the `github_push` edge once per webhook arrival (`github.com`
 /// pushing the delivery `webhook_handler` receives, independent of the
-/// enqueue outcome), [`PATH_GITHUB_INVENTORY`] once per scheduled sweep
+/// enqueue outcome), the `github_inventory` edge once per scheduled sweep
 /// (`github.com` serving the `build_inventory_from_api` listing to the
-/// sweep), and [`PATH_GITHUB_PULL`] once per new worker dispatch
+/// sweep), and the `github_pull` edge once per new worker dispatch
 /// (`worker_loop`/`LiveEvaluator::evaluate` pulling `repo_details` +
 /// the six concurrent collector calls, gated by
 /// `RateLimitState`/`BudgetGate`).
@@ -670,6 +737,7 @@ fn render_github_edges(
     let Some(packet_layer) = document.get_element_by_id("packet-layer") else {
         return;
     };
+    let paths = graph_paths();
     if inventory_listed {
         spawn_transit_packet(
             document,
@@ -677,7 +745,7 @@ fn render_github_edges(
             &PacketSpec {
                 class: "packet packet-github-inventory",
                 color: "#cbd5e1",
-                path_d: PATH_GITHUB_INVENTORY,
+                path_d: &paths.github_inventory,
                 start: "0%",
                 end: "100%",
                 duration_ms: GITHUB_INVENTORY_DURATION_MS,
@@ -694,7 +762,7 @@ fn render_github_edges(
             &PacketSpec {
                 class: "packet packet-github-push",
                 color: "#e2e8f0",
-                path_d: PATH_GITHUB_PUSH,
+                path_d: &paths.github_push,
                 start: "0%",
                 end: "100%",
                 duration_ms: GITHUB_PUSH_DURATION_MS,
@@ -708,7 +776,7 @@ fn render_github_edges(
             &PacketSpec {
                 class: "packet packet-github-pull",
                 color: "#6366f1",
-                path_d: PATH_GITHUB_PULL,
+                path_d: &paths.github_pull,
                 start: "0%",
                 end: "100%",
                 duration_ms: GITHUB_PULL_DURATION_MS,
@@ -718,19 +786,20 @@ fn render_github_edges(
     *last_worker_executions = current_worker_executions;
 }
 
-/// Pulses [`PATH_CLIENTS_WS`] once per `PageUpdateEvent` delivered to
+/// Pulses the `clients_ws` edge once per `PageUpdateEvent` delivered to
 /// at least one connected sim client (`ClientPool::broadcast`).
 fn render_ws_fanout(document: &Document) {
     let Some(packet_layer) = document.get_element_by_id("packet-layer") else {
         return;
     };
+    let clients_ws = graph_paths().clients_ws;
     spawn_transit_packet(
         document,
         &packet_layer,
         &PacketSpec {
             class: "packet packet-ws-fanout",
             color: "#f59e0b",
-            path_d: PATH_CLIENTS_WS,
+            path_d: &clients_ws,
             start: "0%",
             end: "100%",
             duration_ms: CLIENT_WS_DURATION_MS,
@@ -858,6 +927,7 @@ fn render_events(
     let Some(packet_layer) = document.get_element_by_id("packet-layer") else {
         return;
     };
+    let paths = graph_paths();
     for (source, result) in arrivals {
         let class = match result {
             EnqueueResult::Accepted => "packet packet-accepted",
@@ -870,7 +940,7 @@ fn render_events(
             &PacketSpec {
                 class,
                 color: source_color(*source),
-                path_d: converge_path_for(*source),
+                path_d: converge_path_for(*source, &paths),
                 start: "0%",
                 end: "100%",
                 duration_ms: WRITE_DURATION_MS / 2,
@@ -883,7 +953,7 @@ fn render_events(
             JobOutcome::Success => PacketSpec {
                 class: "packet packet-success",
                 color: source_color(*source),
-                path_d: PATH_WRITE_SPINE,
+                path_d: &paths.write_spine,
                 start: "0%",
                 end: WRITE_LANE_END,
                 duration_ms: WRITE_DURATION_MS,
@@ -891,7 +961,7 @@ fn render_events(
             JobOutcome::Failure => PacketSpec {
                 class: "packet packet-failure",
                 color: source_color(*source),
-                path_d: PATH_WRITE_SPINE,
+                path_d: &paths.write_spine,
                 start: "0%",
                 end: FAILURE_LANE_END,
                 duration_ms: FAILURE_DURATION_MS,
@@ -903,12 +973,12 @@ fn render_events(
 
 /// The converge leg a [`JobSource`] fans into `WorkQueue` on.
 /// [`JobSource::InitialLoad`] never arrives via this fan-in (it rides
-/// [`PATH_WARMSTART_BYPASS`] instead); the scheduled leg is a harmless
+/// `warmstart_bypass` instead); the scheduled leg is a harmless
 /// fallback for that unreachable-in-practice arrival case.
-const fn converge_path_for(source: JobSource) -> &'static str {
+fn converge_path_for(source: JobSource, paths: &GraphPaths) -> &str {
     match source {
-        JobSource::External { .. } => PATH_CONVERGE_WEBHOOK,
-        JobSource::ScheduledBatch | JobSource::InitialLoad => PATH_CONVERGE_SCHEDULED,
+        JobSource::External { .. } => &paths.converge_webhook,
+        JobSource::ScheduledBatch | JobSource::InitialLoad => &paths.converge_scheduled,
     }
 }
 
@@ -925,13 +995,14 @@ fn render_read_pulse(document: &Document, _update: PageUpdateEvent, gated: bool)
     let Some(packet_layer) = document.get_element_by_id("packet-layer") else {
         return;
     };
+    let read_chain = graph_paths().read_chain;
     spawn_transit_packet(
         document,
         &packet_layer,
         &PacketSpec {
             class: "packet packet-page-update",
             color: "#f59e0b",
-            path_d: PATH_READ_CHAIN,
+            path_d: &read_chain,
             start: "0%",
             end: READ_LANE_END,
             duration_ms: READ_PULSE_DURATION_MS,
@@ -1047,10 +1118,13 @@ fn build_layout(document: &Document, root: &Element, rates: RwSignal<Rates>) {
 }
 
 /// The full branched flow-graph markup: SVG curved edges layer plus
-/// absolutely-positioned HTML node boxes, sharing the same 1280x800
-/// coordinate space so [`spawn_transit_packet`]'s `offset-path` lines
-/// up with the drawn edges.
+/// computed-grid HTML node boxes, sharing the same
+/// [`layout::grid_dimensions`] coordinate space so
+/// [`spawn_transit_packet`]'s `offset-path` lines up with the drawn
+/// edges (adr-fmt-izwyo).
 fn graph_markup() -> String {
+    let paths = graph_paths();
+    let (width, height) = layout::grid_dimensions(GRID_ROWS, GRID_MAX_COLS, GRID);
     format!(
         r"
 <section class='queue-viz'>
@@ -1065,27 +1139,27 @@ fn graph_markup() -> String {
   </div>
 
   <div class='graph-canvas'>
-    <svg class='graph-svg' viewBox='0 0 1280 800' preserveAspectRatio='xMidYMid meet'>
+    <svg class='graph-svg' viewBox='0 0 {width} {height}' preserveAspectRatio='xMidYMid meet'>
       <defs>
         <marker id='arrow' viewBox='0 0 10 10' refX='9' refY='5' markerWidth='7' markerHeight='7' orient='auto-start-reverse'>
           <path d='M0,0 L10,5 L0,10 z' fill='#94a3b8' />
         </marker>
       </defs>
-      <path class='edge edge-converge' d='{PATH_CONVERGE_SCHEDULED}' marker-end='url(#arrow)' />
-      <path class='edge edge-converge' d='{PATH_CONVERGE_WEBHOOK}' marker-end='url(#arrow)' />
-      <path class='edge edge-spine' d='{PATH_WRITE_SPINE}' marker-end='url(#arrow)' />
-      <path class='edge edge-gate' d='{PATH_GATE}' marker-end='url(#arrow)' />
-      <path class='edge edge-read' d='{PATH_READ_CHAIN}' marker-end='url(#arrow)' />
-      <path class='edge edge-warmstart' d='{PATH_WARMSTART_BYPASS}' marker-end='url(#arrow)' />
-      <path class='edge edge-serve' d='{PATH_SERVE_BRANCH}' marker-end='url(#arrow)' />
-      <path class='edge edge-serve-loop' d='{PATH_SERVE_LOOP}' marker-end='url(#arrow)' />
-      <path class='edge edge-github-push' d='{PATH_GITHUB_PUSH}' marker-end='url(#arrow)' />
-      <path class='edge edge-github-inventory' d='{PATH_GITHUB_INVENTORY}' marker-end='url(#arrow)' />
-      <path class='edge edge-github-pull' d='{PATH_GITHUB_PULL}' marker-end='url(#arrow)' />
-      <path class='edge edge-backend' d='{PATH_BACKEND_PGNO}' marker-end='url(#arrow)' />
-      <path class='edge edge-backend' d='{PATH_BACKEND_NATS}' marker-end='url(#arrow)' />
-      <path class='edge edge-clients-http' d='{PATH_CLIENTS_HTTP}' marker-end='url(#arrow)' />
-      <path class='edge edge-clients-ws' d='{PATH_CLIENTS_WS}' marker-end='url(#arrow)' />
+      <path class='edge edge-converge' d='{}' marker-end='url(#arrow)' />
+      <path class='edge edge-converge' d='{}' marker-end='url(#arrow)' />
+      <path class='edge edge-spine' d='{}' marker-end='url(#arrow)' />
+      <path class='edge edge-gate' d='{}' marker-end='url(#arrow)' />
+      <path class='edge edge-read' d='{}' marker-end='url(#arrow)' />
+      <path class='edge edge-warmstart' d='{}' marker-end='url(#arrow)' />
+      <path class='edge edge-serve' d='{}' marker-end='url(#arrow)' />
+      <path class='edge edge-serve-loop' d='{}' marker-end='url(#arrow)' />
+      <path class='edge edge-github-push' d='{}' marker-end='url(#arrow)' />
+      <path class='edge edge-github-inventory' d='{}' marker-end='url(#arrow)' />
+      <path class='edge edge-github-pull' d='{}' marker-end='url(#arrow)' />
+      <path class='edge edge-backend' d='{}' marker-end='url(#arrow)' />
+      <path class='edge edge-backend' d='{}' marker-end='url(#arrow)' />
+      <path class='edge edge-clients-http' d='{}' marker-end='url(#arrow)' />
+      <path class='edge edge-clients-ws' d='{}' marker-end='url(#arrow)' />
     </svg>
     <div id='packet-layer' class='packet-layer'></div>
 {}
@@ -1106,8 +1180,83 @@ fn graph_markup() -> String {
   </div>
 </section>
 ",
+        paths.converge_scheduled,
+        paths.converge_webhook,
+        paths.write_spine,
+        paths.gate,
+        paths.read_chain,
+        paths.warmstart_bypass,
+        paths.serve_branch,
+        paths.serve_loop,
+        paths.github_push,
+        paths.github_inventory,
+        paths.github_pull,
+        paths.backend_pgno,
+        paths.backend_nats,
+        paths.clients_http,
+        paths.clients_ws,
         graph_nodes_markup(),
     )
+}
+
+/// Every node box's computed `(x, y)` px origin under the epic's ROW
+/// PLAN (adr-fmt-izwyo) row/col assignment, split out of
+/// [`graph_nodes_markup`] purely to stay under clippy's
+/// function-length bar.
+struct NodeSlots {
+    github: (f64, f64),
+    scheduled: (f64, f64),
+    webhook: (f64, f64),
+    warmstart: (f64, f64),
+    queue: (f64, f64),
+    worker: (f64, f64),
+    in_flight: (f64, f64),
+    eventstream: (f64, f64),
+    events_written: (f64, f64),
+    backend_pgno: (f64, f64),
+    backend_nats: (f64, f64),
+    durable_cloud: (f64, f64),
+    projection: (f64, f64),
+    batch: (f64, f64),
+    batch_drained: (f64, f64),
+    gate: (f64, f64),
+    finalize: (f64, f64),
+    buildcache: (f64, f64),
+    compression: (f64, f64),
+    commit: (f64, f64),
+    generation: (f64, f64),
+    served: (f64, f64),
+    served_pages: (f64, f64),
+    webclients: (f64, f64),
+}
+
+fn node_slots() -> NodeSlots {
+    NodeSlots {
+        github: slot(0, 0),
+        scheduled: slot(0, 1),
+        webhook: slot(0, 2),
+        warmstart: slot(0, 3),
+        queue: slot(1, 0),
+        worker: slot(1, 1),
+        in_flight: slot(1, 2),
+        eventstream: slot(1, 3),
+        events_written: slot(1, 4),
+        backend_pgno: slot(2, 0),
+        backend_nats: slot(2, 1),
+        durable_cloud: slot(2, 2),
+        projection: slot(2, 3),
+        batch: slot(2, 4),
+        batch_drained: slot(2, 5),
+        gate: gate_glyph_position(),
+        finalize: slot(3, 0),
+        buildcache: slot(3, 1),
+        compression: slot(3, 2),
+        commit: slot(3, 3),
+        generation: slot(3, 4),
+        served: slot(4, 0),
+        served_pages: slot(4, 1),
+        webclients: slot(4, 2),
+    }
 }
 
 /// Node boxes only (triggers, write spine, gate, read chain, serve),
@@ -1119,9 +1268,33 @@ fn graph_markup() -> String {
 /// [`start`](self::start) time; the surrounding wrapper prose (repo
 /// listing counts, backend-selection controls) stays ad-hoc where it
 /// documents a Tier-2/3 process rather than a Tier-1 SD element.
-fn graph_nodes_markup() -> &'static str {
-    r"
-    <div class='node node-external node-github' style='left:555px;top:55px'>
+/// Every box's `left`/`top` comes from [`node_slots`] under the
+/// row/col assignment in the epic's ROW PLAN (adr-fmt-izwyo): row 0
+/// sources, row 4 clients, rows packed &le; 6 cols. `#gate-glyph` is
+/// positioned via [`gate_glyph_position`] instead — an annotation
+/// adjacent to the barrier group, not a grid slot. Split across
+/// [`graph_nodes_markup_rows_0_1`] and [`graph_nodes_markup_rows_2_4`]
+/// to stay under clippy's function-length bar.
+fn graph_nodes_markup() -> String {
+    let slots = node_slots();
+    graph_nodes_markup_rows_0_1(&slots) + &graph_nodes_markup_rows_2_4(&slots)
+}
+
+/// Rows 0-1 (sources + write spine) of [`graph_nodes_markup`].
+fn graph_nodes_markup_rows_0_1(slots: &NodeSlots) -> String {
+    let (github_x, github_y) = slots.github;
+    let (scheduled_x, scheduled_y) = slots.scheduled;
+    let (webhook_x, webhook_y) = slots.webhook;
+    let (warmstart_x, warmstart_y) = slots.warmstart;
+    let (queue_x, queue_y) = slots.queue;
+    let (worker_x, worker_y) = slots.worker;
+    let (in_flight_x, in_flight_y) = slots.in_flight;
+    let (eventstream_x, eventstream_y) = slots.eventstream;
+    let (events_written_x, events_written_y) = slots.events_written;
+
+    format!(
+        r"
+    <div class='node node-external node-github' style='left:{github_x}px;top:{github_y}px'>
       <span class='stage-note'>push &rarr; webhook_handler</span>
       <span class='stage-note'>inventory listing &rarr; sweep: build_inventory_from_api
         (GET /orgs/&lbrace;org&rbrace;/repos?type=all)</span>
@@ -1132,80 +1305,106 @@ fn graph_nodes_markup() -> &'static str {
       <div id='github-cloud-mount' class='node-sd-mount'></div>
     </div>
 
-    <div class='node node-trigger node-scheduled' style='left:110px;top:120px'>
+    <div class='node node-trigger node-scheduled' style='left:{scheduled_x}px;top:{scheduled_y}px'>
       spawn_collection_loop / SweepSaga
       <div id='sweep-phase-overlay-mount' class='phase-overlay'></div>
       <span class='stage-note'>inventory listing (InventoryLoad): <span id='inventory-inventoried'>0</span> repos</span>
       <span class='stage-note'>should_reuse: reused <span id='inventory-reused'>0</span> (no job)
         | ScheduledBatch spawned <span id='inventory-spawned'>0</span> (updated_at changed)</span>
     </div>
-    <div class='node node-trigger node-webhook' style='left:110px;top:300px'>
+    <div class='node node-trigger node-webhook' style='left:{webhook_x}px;top:{webhook_y}px'>
       webhook_handler
       <span class='stage-note'>execute_enqueue JobSource::External&lbrace;id,kind&rbrace;</span>
     </div>
-    <div class='node node-trigger node-warmstart' style='left:110px;top:470px'>
+    <div class='node node-trigger node-warmstart' style='left:{warmstart_x}px;top:{warmstart_y}px'>
       warm_start_from_baseline
       <span class='stage-note'>render-only bypass (NO enqueue)</span>
       <button id='warm-start-btn'>fire warm start</button>
     </div>
 
-    <div id='queue-stock-mount' class='node node-store node-queue node-sd-stock' style='left:350px;top:180px'></div>
-    <div id='in-flight-stock-mount' class='node node-store node-sd-stock' style='left:555px;top:180px'></div>
-    <div class='node node-work node-worker' style='left:555px;top:275px'>
+    <div id='queue-stock-mount' class='node node-store node-queue node-sd-stock' style='left:{queue_x}px;top:{queue_y}px'></div>
+    <div id='in-flight-stock-mount' class='node node-store node-sd-stock' style='left:{in_flight_x}px;top:{in_flight_y}px'></div>
+    <div class='node node-work node-worker' style='left:{worker_x}px;top:{worker_y}px'>
       worker_loop / LiveEvaluator::evaluate
       <span class='stage-note'>executions <span id='worker-executions'>0</span></span>
     </div>
-    <div class='node node-store node-eventstream' style='left:790px;top:180px'>
+    <div class='node node-store node-eventstream' style='left:{eventstream_x}px;top:{eventstream_y}px'>
       record_repo &rarr; NativeStore::record
       <span class='stage-note'>active PardosaBackend::<span id='backend-label'>Pgno</span></span>
       <button id='backend-toggle-btn'>toggle Pgno/Nats</button>
     </div>
-    <div id='events-written-stock-mount' class='node node-store node-sd-stock' style='left:790px;top:275px'></div>
-    <div id='backend-pgno' class='node node-store node-backend-pgno' style='left:690px;top:340px'>
+    <div id='events-written-stock-mount' class='node node-store node-sd-stock' style='left:{events_written_x}px;top:{events_written_y}px'></div>
+"
+    )
+}
+
+/// Rows 2-4 (substrate/projection/barrier, read side, serve+clients)
+/// of [`graph_nodes_markup`].
+fn graph_nodes_markup_rows_2_4(slots: &NodeSlots) -> String {
+    let (backend_pgno_x, backend_pgno_y) = slots.backend_pgno;
+    let (backend_nats_x, backend_nats_y) = slots.backend_nats;
+    let (durable_cloud_x, durable_cloud_y) = slots.durable_cloud;
+    let (projection_x, projection_y) = slots.projection;
+    let (batch_x, batch_y) = slots.batch;
+    let (batch_drained_x, batch_drained_y) = slots.batch_drained;
+    let (gate_x, gate_y) = slots.gate;
+    let (finalize_x, finalize_y) = slots.finalize;
+    let (buildcache_x, buildcache_y) = slots.buildcache;
+    let (compression_x, compression_y) = slots.compression;
+    let (commit_x, commit_y) = slots.commit;
+    let (generation_x, generation_y) = slots.generation;
+    let (served_x, served_y) = slots.served;
+    let (served_pages_x, served_pages_y) = slots.served_pages;
+    let (webclients_x, webclients_y) = slots.webclients;
+
+    format!(
+        r"
+    <div id='backend-pgno' class='node node-store node-backend-pgno' style='left:{backend_pgno_x}px;top:{backend_pgno_y}px'>
       local .pgno file store
       <span class='stage-note'>events.pgno / org-events.pgno</span>
       <span class='stage-note'>appended <span id='native-events-written'>0</span></span>
     </div>
-    <div id='backend-nats' class='node node-store node-backend-nats' style='left:890px;top:340px'>
+    <div id='backend-nats' class='node node-store node-backend-nats' style='left:{backend_nats_x}px;top:{backend_nats_y}px'>
       NATS JetStream
       <span class='stage-note'>JetStreamHandle::append &rarr; PubAck seq</span>
       <span class='stage-note'>seq <span id='jetstream-sequence'>0</span></span>
     </div>
-    <div id='projection-stock-mount' class='node node-store node-sd-stock' style='left:1010px;top:180px'></div>
-    <div id='durable-cloud-mount' class='node node-store node-sd-mount' style='left:1010px;top:275px'></div>
+    <div id='projection-stock-mount' class='node node-store node-sd-stock' style='left:{projection_x}px;top:{projection_y}px'></div>
+    <div id='durable-cloud-mount' class='node node-store node-sd-mount' style='left:{durable_cloud_x}px;top:{durable_cloud_y}px'></div>
 
-    <div id='gate-glyph' class='gate-glyph' style='left:955px;top:230px'>
+    <div id='gate-glyph' class='gate-glyph' style='left:{gate_x}px;top:{gate_y}px'>
       &#9670;
     </div>
-    <div id='batch-stock-mount' class='node node-store node-sd-stock' style='left:955px;top:300px'></div>
-    <div id='batch-drained-mount' class='node node-work node-sd-mount' style='left:955px;top:390px'></div>
+    <div id='batch-stock-mount' class='node node-store node-sd-stock' style='left:{batch_x}px;top:{batch_y}px'></div>
+    <div id='batch-drained-mount' class='node node-work node-sd-mount' style='left:{batch_drained_x}px;top:{batch_drained_y}px'></div>
 
-    <div class='node node-work node-finalize' style='left:900px;top:440px'>
+    <div class='node node-work node-finalize' style='left:{finalize_x}px;top:{finalize_y}px'>
       finalize_and_publish
       <span class='stage-note'>per RUN</span>
     </div>
-    <div class='node node-work node-buildcache' style='left:1050px;top:440px'>
+    <div class='node node-work node-buildcache' style='left:{buildcache_x}px;top:{buildcache_y}px'>
       build_cached_pages
       <span class='stage-note'>memo</span>
     </div>
-    <div id='compression-converter-mount' class='node node-work node-sd-mount' style='left:1050px;top:520px'></div>
-    <div class='node node-work node-commit' style='left:1200px;top:440px'>
+    <div id='compression-converter-mount' class='node node-work node-sd-mount' style='left:{compression_x}px;top:{compression_y}px'></div>
+    <div class='node node-work node-commit' style='left:{commit_x}px;top:{commit_y}px'>
       commit_cached_pages
     </div>
-    <div id='generation-stock-mount' class='node node-store node-sd-stock' style='left:1200px;top:530px'></div>
+    <div id='generation-stock-mount' class='node node-store node-sd-stock' style='left:{generation_x}px;top:{generation_y}px'></div>
 
-    <div class='node node-serve node-served' style='left:1200px;top:640px'>
+    <div class='node node-serve node-served' style='left:{served_x}px;top:{served_y}px'>
       cache_fallback &rarr; served pages
     </div>
-    <div id='served-pages-stock-mount' class='node node-store node-sd-stock' style='left:1050px;top:640px'></div>
+    <div id='served-pages-stock-mount' class='node node-store node-sd-stock' style='left:{served_pages_x}px;top:{served_pages_y}px'></div>
 
-    <div class='node node-clients node-webclients' style='left:1200px;top:730px'>
+    <div class='node node-clients node-webclients' style='left:{webclients_x}px;top:{webclients_y}px'>
       ws_session clients (anonymous)
       <span class='stage-note'>OwnedSemaphorePermit + broadcast::Receiver&lt;PageUpdateEvent&gt;</span>
       <span class='stage-note'>permits/cap <span id='ws-permits'>0/200</span> (sim quantity)</span>
       <div id='web-clients-cloud-mount' class='node-sd-mount'></div>
     </div>
 "
+    )
 }
 
 #[derive(Clone, Copy)]

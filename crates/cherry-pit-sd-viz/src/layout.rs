@@ -261,15 +261,24 @@ pub fn slot_anchor(row: usize, col: usize, side: Side, params: GridParams) -> (f
 
 /// Builds an SVG cubic-bezier `d` string from one anchor to another,
 /// bowing the curve through control points offset a third of the way
-/// along the dominant axis — the same smooth-`C`-curve style as the
-/// hand-authored `PATH_*` consts in `view.rs`. Deterministic: the
+/// along the travel's dominant axis and held flat on the other —
+/// vertical edges (`|dy| >= |dx|`, the common source-to-client flow)
+/// bow via the x control offset, horizontal edges (`|dx| > |dy|`,
+/// e.g. `github_pull`, `backend_pgno`/`backend_nats`, `clients_http`)
+/// bow via the y control offset instead, so a horizontal edge doesn't
+/// degenerate to a near-straight line. Same smooth-`C`-curve style as
+/// the hand-authored `PATH_*` consts in `view.rs`. Deterministic: the
 /// same `(from, to)` pair always yields the same string.
 #[must_use]
 pub fn bezier_edge_path(from: (f64, f64), to: (f64, f64)) -> String {
     let (fx, fy) = from;
     let (tx, ty) = to;
-    let (c1x, c1y) = (fx + (tx - fx) / 3.0, fy);
-    let (c2x, c2y) = (fx + (tx - fx) * 2.0 / 3.0, ty);
+    let (dx, dy) = (tx - fx, ty - fy);
+    let ((c1x, c1y), (c2x, c2y)) = if dy.abs() >= dx.abs() {
+        ((fx + dx / 3.0, fy), (fx + dx * 2.0 / 3.0, ty))
+    } else {
+        ((fx, fy + dy / 3.0), (tx, fy + dy * 2.0 / 3.0))
+    };
     format!("M{fx},{fy} C{c1x},{c1y} {c2x},{c2y} {tx},{ty}")
 }
 
@@ -396,6 +405,15 @@ mod tests {
     fn bezier_edge_path_starts_and_ends_at_anchors() {
         let from = slot_anchor(0, 0, Side::Bottom, GRID);
         let to = slot_anchor(1, 0, Side::Top, GRID);
+        let d = bezier_edge_path(from, to);
+        assert!(d.starts_with(&format!("M{},{}", from.0, from.1)));
+        assert!(d.ends_with(&format!("{},{}", to.0, to.1)));
+    }
+
+    #[test]
+    fn bezier_edge_path_horizontal_edge_starts_and_ends_at_anchors() {
+        let from = slot_anchor(1, 0, Side::Right, GRID);
+        let to = slot_anchor(1, 2, Side::Left, GRID);
         let d = bezier_edge_path(from, to);
         assert!(d.starts_with(&format!("M{},{}", from.0, from.1)));
         assert!(d.ends_with(&format!("{},{}", to.0, to.1)));
