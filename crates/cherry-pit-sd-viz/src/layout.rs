@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn format_rate_keeps_one_decimal() {
         assert_eq!(format_rate(3.0), "3.0");
-        assert_eq!(format_rate(3.14159), "3.1");
+        assert_eq!(format_rate(3.14042), "3.1");
     }
 
     #[test]
