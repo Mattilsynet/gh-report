@@ -91,9 +91,9 @@ impl StockTemplate {
             level_text: container.query_selector(".sdt-level").ok()??,
             inflow_text: container.query_selector(".sdt-inflow").ok()??,
             outflow_text: optional_element(container, kind.shows_outflow(), ".sdt-outflow"),
-            utilization_text: optional_element(container, kind.shows_outflow(), ".sdt-util"),
+            utilization_text: optional_element(container, kind.shows_utilization(), ".sdt-util"),
             residence_text: optional_element(container, kind.shows_residence(), ".sdt-residence"),
-            polarity_text: optional_element(container, kind.shows_outflow(), ".sdt-polarity"),
+            polarity_text: optional_element(container, kind.shows_polarity(), ".sdt-polarity"),
             ticks_elapsed: Cell::new(0),
         })
     }
@@ -285,7 +285,10 @@ fn set_content(element: &Element, value: &str) {
 fn create_dot(document: &Document, index: usize, count: usize, color: &str) -> Option<Element> {
     let circle = document.create_element_ns(Some(SVG_NS), "circle").ok()?;
     circle
-        .set_attribute("cx", &layout::dot_x(index, count, SPARKLINE_WIDTH).to_string())
+        .set_attribute(
+            "cx",
+            &layout::dot_x(index, count, SPARKLINE_WIDTH).to_string(),
+        )
         .ok()?;
     circle
         .set_attribute("cy", &(DOTS_HEIGHT / 2.0).to_string())
@@ -316,9 +319,17 @@ fn stock_skeleton_markup(title: &str, kind: StockKind) -> String {
         ""
     };
     let outflow_field = if kind.shows_outflow() {
-        r#"<span>out <span class="sdt-outflow">0.0</span></span>
-  <span>util <span class="sdt-util">0%</span></span>
-  <span>loop <span class="sdt-polarity">B</span></span>"#
+        r#"<span>out <span class="sdt-outflow">0.0</span></span>"#
+    } else {
+        ""
+    };
+    let utilization_field = if kind.shows_utilization() {
+        r#"<span>util <span class="sdt-util">0%</span></span>"#
+    } else {
+        ""
+    };
+    let polarity_field = if kind.shows_polarity() {
+        r#"<span>loop <span class="sdt-polarity">B</span></span>"#
     } else {
         ""
     };
@@ -338,6 +349,8 @@ fn stock_skeleton_markup(title: &str, kind: StockKind) -> String {
   <span>level <span class="sdt-level">0</span></span>
   <span>in <span class="sdt-inflow">0.0</span></span>
   {outflow_field}
+  {utilization_field}
+  {polarity_field}
   {residence_field}
 </div>
 "##

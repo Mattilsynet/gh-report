@@ -31,4 +31,6 @@ pub mod sparkline;
 #[cfg(target_arch = "wasm32")]
 pub mod components;
 #[cfg(target_arch = "wasm32")]
+mod overlay;
+#[cfg(target_arch = "wasm32")]
 mod view;

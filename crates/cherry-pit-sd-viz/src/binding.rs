@@ -19,6 +19,7 @@
 //! divided by the effective (accepted) arrival rate. See
 //! [`QueueStockBinding::mean_residence_ticks`].
 
+use crate::layout;
 use crate::sd::{
     Connector, Flow, LevelHistory, LoopPolarity, Model, SdConnectionError, Stock, Terminal,
 };
@@ -152,6 +153,49 @@ impl QueueStockBinding {
         }
         let lambda = self.cumulative_accepted as f64 / ticks_elapsed as f64;
         Some(self.stock.level() / lambda)
+    }
+}
+
+/// A generic per-tick readout binding for any Tier-1 stock that has
+/// only a bare level accessor to drive from (`in_flight`,
+/// `BatchTracker` remaining, `EvidenceProjection`,
+/// [`crate::layout::StockKind::Monotonic`] accumulators) — unlike
+/// [`QueueStockBinding`], which has explicit accepted/dequeued counts
+/// available from [`StepEvents`], these stocks only expose
+/// `level() -> usize` each tick, so [`Self::advance`] derives
+/// `(inflow, outflow)` from the raw level delta via
+/// [`layout::level_delta_flows`] rather than a dedicated event count.
+pub struct ReadoutStock {
+    history: LevelHistory,
+    last_level: f64,
+}
+
+impl ReadoutStock {
+    /// Seeds from `initial_level`; the level history starts empty
+    /// (mirrors [`QueueStockBinding::new`]'s convention — one sample
+    /// per [`Self::advance`] call, not a pre-seeded first sample).
+    #[must_use]
+    pub fn new(initial_level: f64) -> Self {
+        Self {
+            history: LevelHistory::new(LEVEL_HISTORY_CAPACITY),
+            last_level: initial_level,
+        }
+    }
+
+    /// Advances to `new_level`, recording it into the history and
+    /// returning the `(inflow, outflow)` pair
+    /// [`layout::level_delta_flows`] derives from the delta since the
+    /// last call.
+    pub fn advance(&mut self, new_level: f64) -> (Flow, Flow) {
+        let (inflow, outflow) = layout::level_delta_flows(self.last_level, new_level);
+        self.last_level = new_level;
+        self.history.push(new_level);
+        (Flow::Uniflow(inflow), Flow::Uniflow(outflow))
+    }
+
+    #[must_use]
+    pub fn level_history(&self) -> &LevelHistory {
+        &self.history
     }
 }
 
@@ -464,5 +508,31 @@ mod tests {
             super::tier1_backpressure_polarity(),
             LoopPolarity::Balancing
         );
+    }
+
+    #[test]
+    fn readout_stock_advance_rising_level_reports_inflow_only() {
+        let mut readout = super::ReadoutStock::new(0.0);
+        let (inflow, outflow) = readout.advance(5.0);
+        assert!((inflow.rate() - 5.0).abs() < f64::EPSILON);
+        assert!((outflow.rate() - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn readout_stock_advance_falling_level_reports_outflow_only() {
+        let mut readout = super::ReadoutStock::new(10.0);
+        let (inflow, outflow) = readout.advance(3.0);
+        assert!((inflow.rate() - 0.0).abs() < f64::EPSILON);
+        assert!((outflow.rate() - 7.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn readout_stock_history_records_one_sample_per_advance() {
+        let mut readout = super::ReadoutStock::new(0.0);
+        readout.advance(1.0);
+        readout.advance(2.0);
+        readout.advance(3.0);
+        assert_eq!(readout.level_history().len(), 3);
+        assert_eq!(readout.level_history().latest(), Some(3.0));
     }
 }

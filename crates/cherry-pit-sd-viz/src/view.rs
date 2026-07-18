@@ -22,9 +22,11 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::wasm_bindgen;
 use web_sys::{Document, Element};
 
-use crate::binding::QueueStockBinding;
-use crate::components::StockTemplate;
+use crate::binding::{QueueStockBinding, ReadoutStock};
+use crate::components::{CloudBoundaryMarkerTemplate, ConverterReadoutTemplate, StockTemplate};
 use crate::layout::{self, StockKind};
+use crate::overlay::SweepPhaseBadge;
+use crate::sd::Terminal;
 use crate::sim::{
     EnqueueResult, InventoryOutcome, JobOutcome, JobSource, PageUpdateEvent, PardosaBackend, Sim,
     SimConfig, SweepPhase, UpdatedAt,
@@ -57,6 +59,24 @@ struct AppState {
     sim: Sim,
     queue_binding: QueueStockBinding,
     queue_component: Option<StockTemplate>,
+    in_flight_component: Option<StockTemplate>,
+    in_flight_readout: ReadoutStock,
+    batch_component: Option<StockTemplate>,
+    batch_readout: ReadoutStock,
+    batch_drained_component: Option<ConverterReadoutTemplate>,
+    projection_component: Option<StockTemplate>,
+    projection_readout: ReadoutStock,
+    generation_component: Option<StockTemplate>,
+    generation_readout: ReadoutStock,
+    served_pages_component: Option<StockTemplate>,
+    served_pages_readout: ReadoutStock,
+    events_written_component: Option<StockTemplate>,
+    events_written_readout: ReadoutStock,
+    compression_component: Option<ConverterReadoutTemplate>,
+    github_cloud: Option<CloudBoundaryMarkerTemplate>,
+    web_clients_cloud: Option<CloudBoundaryMarkerTemplate>,
+    durable_cloud: Option<CloudBoundaryMarkerTemplate>,
+    sweep_phase_overlay: Option<SweepPhaseBadge>,
     rates: RwSignal<Rates>,
     tick_count: u64,
     warm_start_requested: bool,
@@ -153,6 +173,143 @@ fn sweep_phase_label(phase: SweepPhase) -> &'static str {
     }
 }
 
+fn mount_stock(
+    document: &Document,
+    mount_id: &str,
+    title: &str,
+    kind: StockKind,
+) -> Option<StockTemplate> {
+    document
+        .get_element_by_id(mount_id)
+        .and_then(|container| StockTemplate::mount(&container, title, kind))
+}
+
+fn mount_converter(
+    document: &Document,
+    mount_id: &str,
+    label: &str,
+) -> Option<ConverterReadoutTemplate> {
+    document
+        .get_element_by_id(mount_id)
+        .and_then(|container| ConverterReadoutTemplate::mount(&container, label))
+}
+
+fn mount_cloud(
+    document: &Document,
+    mount_id: &str,
+    label: &str,
+    terminal: Terminal,
+) -> Option<CloudBoundaryMarkerTemplate> {
+    document
+        .get_element_by_id(mount_id)
+        .and_then(|container| CloudBoundaryMarkerTemplate::mount(&container, label, terminal))
+}
+
+/// Mounts every SD component + the non-SD `SweepPhase` overlay and
+/// builds the initial [`AppState`] — split out of [`start`] purely to
+/// stay under clippy's function-length bar.
+fn mount_app_state(document: &Document, rates: RwSignal<Rates>) -> AppState {
+    let sim = Sim::new(SimConfig::default(), 7);
+    let queue_binding = QueueStockBinding::new(&sim);
+    let queue_component = mount_stock(
+        document,
+        "queue-stock-mount",
+        "WorkQueue",
+        StockKind::Standard,
+    );
+    let in_flight_component = mount_stock(
+        document,
+        "in-flight-stock-mount",
+        "in_flight",
+        StockKind::Bounded,
+    );
+    let batch_component = mount_stock(
+        document,
+        "batch-stock-mount",
+        "BatchTracker",
+        StockKind::Accumulator,
+    );
+    let batch_drained_component =
+        mount_converter(document, "batch-drained-mount", "barrier_drained");
+    let projection_component = mount_stock(
+        document,
+        "projection-stock-mount",
+        "EvidenceProjection",
+        StockKind::Accumulator,
+    );
+    let generation_component = mount_stock(
+        document,
+        "generation-stock-mount",
+        "ArcSwap generation",
+        StockKind::Monotonic,
+    );
+    let served_pages_component = mount_stock(
+        document,
+        "served-pages-stock-mount",
+        "served_pages",
+        StockKind::Monotonic,
+    );
+    let events_written_component = mount_stock(
+        document,
+        "events-written-stock-mount",
+        "events_written",
+        StockKind::Monotonic,
+    );
+    let compression_component =
+        mount_converter(document, "compression-converter-mount", "compression ratio");
+    let github_cloud = mount_cloud(
+        document,
+        "github-cloud-mount",
+        "github.com / api.github.com",
+        Terminal::Source,
+    );
+    let web_clients_cloud = mount_cloud(
+        document,
+        "web-clients-cloud-mount",
+        "web clients",
+        Terminal::Sink,
+    );
+    let durable_cloud = mount_cloud(
+        document,
+        "durable-cloud-mount",
+        "durable substrate",
+        Terminal::Sink,
+    );
+    let sweep_phase_overlay = document
+        .get_element_by_id("sweep-phase-overlay-mount")
+        .and_then(|container| SweepPhaseBadge::mount(&container));
+
+    AppState {
+        sim,
+        queue_binding,
+        queue_component,
+        in_flight_component,
+        in_flight_readout: ReadoutStock::new(0.0),
+        batch_component,
+        batch_readout: ReadoutStock::new(0.0),
+        batch_drained_component,
+        projection_component,
+        projection_readout: ReadoutStock::new(0.0),
+        generation_component,
+        generation_readout: ReadoutStock::new(0.0),
+        served_pages_component,
+        served_pages_readout: ReadoutStock::new(0.0),
+        events_written_component,
+        events_written_readout: ReadoutStock::new(0.0),
+        compression_component,
+        github_cloud,
+        web_clients_cloud,
+        durable_cloud,
+        sweep_phase_overlay,
+        rates,
+        tick_count: 0,
+        warm_start_requested: false,
+        backend_toggle_requested: false,
+        last_worker_executions: 0,
+        inventory_epoch: 0,
+    }
+}
+
 #[wasm_bindgen(start)]
 pub fn start() {
     let _ = Executor::init_wasm_bindgen();
@@ -175,24 +332,8 @@ pub fn start() {
 
     build_layout(&document, &root, rates);
 
-    let sim = Sim::new(SimConfig::default(), 7);
-    let queue_binding = QueueStockBinding::new(&sim);
-    let queue_component = document
-        .get_element_by_id("queue-stock-mount")
-        .and_then(|container| StockTemplate::mount(&container, "WorkQueue", StockKind::Standard));
-    APP.with(|cell| {
-        *cell.borrow_mut() = Some(AppState {
-            sim,
-            queue_binding,
-            queue_component,
-            rates,
-            tick_count: 0,
-            warm_start_requested: false,
-            backend_toggle_requested: false,
-            last_worker_executions: 0,
-            inventory_epoch: 0,
-        });
-    });
+    let state = mount_app_state(&document, rates);
+    APP.with(|cell| *cell.borrow_mut() = Some(state));
 
     wire_warm_start_button(&document);
     wire_backend_toggle_button(&document);
@@ -237,6 +378,24 @@ fn update_work_queue_stock(component: &StockTemplate, binding: &QueueStockBindin
     component.update_utilization(binding.utilization().value());
     component.update_residence(binding.mean_residence_ticks(ticks_elapsed));
     component.update_polarity(binding.backpressure_polarity());
+}
+
+/// Advances a non-`WorkQueue` Tier-1 stock mount from a bare level
+/// readout via [`ReadoutStock::advance`] — the shared adapter every
+/// migrated stock in this module (`in_flight`, `BatchTracker`,
+/// `EvidenceProjection`, and the three monotonic accumulators) uses in
+/// place of [`update_work_queue_stock`]'s richer `QueueStockBinding`
+/// wiring, which only `WorkQueue` has (accepted/dequeued event
+/// counts).
+fn update_readout_stock(
+    component: &StockTemplate,
+    readout: &mut ReadoutStock,
+    new_level: f64,
+    level_display: &str,
+) {
+    let (inflow, outflow) = readout.advance(new_level);
+    component.update_level(readout.level_history(), level_display);
+    component.update_flows(inflow, Some(outflow));
 }
 
 /// Advance the simulation by one tick and re-render gauges + packets.
@@ -315,6 +474,7 @@ pub fn tick() {
         if let Some(component) = &state.queue_component {
             update_work_queue_stock(component, &state.queue_binding, &state.sim);
         }
+        update_sd_components(state);
 
         render_gauges(&document, &state.sim);
         render_events(&document, &events.arrivals, &events.completions);
@@ -335,6 +495,103 @@ pub fn tick() {
             }
         }
     });
+}
+
+/// Re-renders every migrated SD component mount (Tier-1 stocks, the
+/// `barrier_drained`/compression-ratio converters, the boundary
+/// clouds, and the non-SD `SweepPhase` overlay) from the current
+/// [`Sim`] state — split out of [`tick`] to stay under clippy's
+/// function-length bar.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "sim counters (in_flight, batch_remaining, repos captured, generation, served pages, events written) are bounded well under 2^52 for any realistic sim run"
+)]
+fn update_sd_components(state: &mut AppState) {
+    let sim = &state.sim;
+
+    if let Some(component) = &state.in_flight_component {
+        update_readout_stock(
+            component,
+            &mut state.in_flight_readout,
+            sim.in_flight() as f64,
+            &layout::format_bounded_level(sim.in_flight(), sim.worker_count()),
+        );
+        let utilization = if sim.worker_count() > 0 {
+            sim.in_flight() as f64 / sim.worker_count() as f64
+        } else {
+            0.0
+        };
+        component.update_utilization(utilization);
+    }
+
+    if let Some(component) = &state.batch_component {
+        update_readout_stock(
+            component,
+            &mut state.batch_readout,
+            sim.batch_remaining() as f64,
+            &sim.batch_remaining().to_string(),
+        );
+    }
+    if let Some(component) = &state.batch_drained_component {
+        let drained = if sim.batch_remaining() == 0 {
+            "yes"
+        } else {
+            "no"
+        };
+        component.update(drained);
+    }
+
+    if let Some(component) = &state.projection_component {
+        update_readout_stock(
+            component,
+            &mut state.projection_readout,
+            sim.repositories_captured() as f64,
+            &sim.repositories_captured().to_string(),
+        );
+    }
+
+    if let Some(component) = &state.generation_component {
+        update_readout_stock(
+            component,
+            &mut state.generation_readout,
+            sim.arcswap_generation() as f64,
+            &sim.arcswap_generation().to_string(),
+        );
+    }
+    if let Some(component) = &state.served_pages_component {
+        update_readout_stock(
+            component,
+            &mut state.served_pages_readout,
+            sim.served_pages() as f64,
+            &sim.served_pages().to_string(),
+        );
+    }
+    if let Some(component) = &state.events_written_component {
+        update_readout_stock(
+            component,
+            &mut state.events_written_readout,
+            sim.events_written() as f64,
+            &sim.events_written().to_string(),
+        );
+    }
+
+    if let Some(component) = &state.compression_component {
+        component.update(&compression_ratio_display(sim));
+    }
+
+    if let Some(cloud) = &state.github_cloud {
+        cloud.update(u64::from(sim.github_calls_used()));
+    }
+    if let Some(cloud) = &state.web_clients_cloud {
+        cloud.update(sim.served_pages() as u64);
+    }
+    if let Some(cloud) = &state.durable_cloud {
+        cloud.update(sim.events_written() as u64);
+    }
+
+    if let Some(overlay) = &state.sweep_phase_overlay {
+        overlay.update(sweep_phase_label(sim.sweep_phase()));
+    }
 }
 
 /// A small rotating inventory of `(baseline_updated_at,
@@ -481,15 +738,14 @@ fn render_ws_fanout(document: &Document) {
     );
 }
 
+/// Residual (not-yet-migrated) gauges only — Tier-1 stocks, converters,
+/// and clouds render through their mounted SD components
+/// ([`update_sd_components`]) instead. `memo-hits`/`memo-rebuilds` are
+/// Tier-3 incidental (adr-fmt-vrycy); `queue-full`/`deduplicated`/
+/// `failure` are `WorkQueue` outcome counters with no template mapped
+/// this increment; `worker-executions` labels the `worker_loop`
+/// process node, not a Stock.
 fn render_gauges(document: &Document, sim: &Sim) {
-    set_text(document, "in-flight", &sim.in_flight().to_string());
-    set_text(document, "worker-count", &sim.worker_count().to_string());
-    set_text(
-        document,
-        "batch-remaining",
-        &sim.batch_remaining().to_string(),
-    );
-    set_text(document, "served-pages", &sim.served_pages().to_string());
     let metrics = sim.metrics();
     set_text(
         document,
@@ -502,53 +758,8 @@ fn render_gauges(document: &Document, sim: &Sim) {
         &metrics.deduplicated.to_string(),
     );
     set_text(document, "failure-count", &metrics.failures.to_string());
-    set_text(
-        document,
-        "events-written",
-        &sim.events_written().to_string(),
-    );
-    set_text(
-        document,
-        "repos-captured",
-        &sim.repositories_captured().to_string(),
-    );
     set_text(document, "memo-hits", &sim.memo_hits().to_string());
     set_text(document, "memo-rebuilds", &sim.memo_rebuilds().to_string());
-    set_text(
-        document,
-        "compression-ratio",
-        &compression_ratio_display(sim),
-    );
-    set_text(
-        document,
-        "arcswap-generation",
-        &sim.arcswap_generation().to_string(),
-    );
-    set_text(
-        document,
-        "stage-stream-fill",
-        &sim.events_written().to_string(),
-    );
-    set_text(
-        document,
-        "stage-projection-fill",
-        &sim.repositories_captured().to_string(),
-    );
-    set_text(
-        document,
-        "stage-cache-fill",
-        &sim.served_pages().to_string(),
-    );
-    set_text(
-        document,
-        "sweep-phase",
-        sweep_phase_label(sim.sweep_phase()),
-    );
-    set_text(
-        document,
-        "cache-fallback-gen",
-        &sim.cache_fallback().to_string(),
-    );
     set_text(
         document,
         "worker-executions",
@@ -706,8 +917,11 @@ const fn converge_path_for(source: JobSource) -> &'static str {
 /// flashes the `BatchTracker` gate glyph: true for the scheduled-run
 /// path (gate already enforced `remaining == 0` upstream in
 /// [`crate::sim::Sim::step`]), false for the warm-start bypass, which
-/// never touches the gate.
-fn render_read_pulse(document: &Document, update: PageUpdateEvent, gated: bool) {
+/// never touches the gate. The event's `generation` is not
+/// re-rendered here — [`update_sd_components`] already synced the
+/// `generation` stock mount from the current [`Sim`] state earlier
+/// this tick.
+fn render_read_pulse(document: &Document, _update: PageUpdateEvent, gated: bool) {
     let Some(packet_layer) = document.get_element_by_id("packet-layer") else {
         return;
     };
@@ -726,11 +940,6 @@ fn render_read_pulse(document: &Document, update: PageUpdateEvent, gated: bool) 
     if gated {
         flash_gate(document);
     }
-    set_text(
-        document,
-        "arcswap-generation",
-        &update.generation.to_string(),
-    );
 }
 
 /// Restarts the `gate-flash` CSS animation on the `BatchTracker` glyph
@@ -883,17 +1092,13 @@ fn graph_markup() -> String {
   </div>
 
   <div class='row legend'>
-    <div class='gauge'>in-flight <span id='in-flight'>0</span>/<span id='worker-count'>0</span></div>
     <div class='gauge'>QueueFull <span id='queue-full-count'>0</span></div>
     <div class='gauge'>Deduplicated <span id='deduplicated-count'>0</span></div>
     <div class='gauge'>failures <span id='failure-count'>0</span></div>
   </div>
   <div class='row legend'>
-    <div class='gauge'>events written <span id='events-written'>0</span></div>
-    <div class='gauge'>repos captured <span id='repos-captured'>0</span></div>
     <div class='gauge'>memo hits <span id='memo-hits'>0</span></div>
     <div class='gauge'>memo rebuilds <span id='memo-rebuilds'>0</span></div>
-    <div class='gauge'>compression <span id='compression-ratio'>n/a</span></div>
   </div>
   <div class='row legend'>
     <div class='gauge'>ws permits/cap <span id='ws-permits-legend'>0/200</span></div>
@@ -907,11 +1112,16 @@ fn graph_markup() -> String {
 
 /// Node boxes only (triggers, write spine, gate, read chain, serve),
 /// split out of [`graph_markup`] purely to stay under clippy's
-/// function-length bar.
+/// function-length bar. Standardized SD components (Tier-1 stocks,
+/// the `barrier_drained`/compression-ratio converters, boundary
+/// clouds, and the non-SD `SweepPhase` overlay) are bare mount `div`s
+/// filled in by [`crate::components`]/[`crate::overlay`] at
+/// [`start`](self::start) time; the surrounding wrapper prose (repo
+/// listing counts, backend-selection controls) stays ad-hoc where it
+/// documents a Tier-2/3 process rather than a Tier-1 SD element.
 fn graph_nodes_markup() -> &'static str {
     r"
     <div class='node node-external node-github' style='left:555px;top:55px'>
-      github.com / api.github.com
       <span class='stage-note'>push &rarr; webhook_handler</span>
       <span class='stage-note'>inventory listing &rarr; sweep: build_inventory_from_api
         (GET /orgs/&lbrace;org&rbrace;/repos?type=all)</span>
@@ -919,11 +1129,12 @@ fn graph_nodes_markup() -> &'static str {
       <span class='stage-note'>6&times; security_policy/ghas_scanning/dependabot/
         branch_protection/codeowners::evaluate + last_commit::fetch_last_commit</span>
       <span class='stage-note'>RateLimitState + BudgetGate &rarr; ApiOutcome &rarr; RepositoryEvidence</span>
+      <div id='github-cloud-mount' class='node-sd-mount'></div>
     </div>
 
     <div class='node node-trigger node-scheduled' style='left:110px;top:120px'>
       spawn_collection_loop / SweepSaga
-      <span class='stage-note'>SweepPhase: <span id='sweep-phase'>Completed</span></span>
+      <div id='sweep-phase-overlay-mount' class='phase-overlay'></div>
       <span class='stage-note'>inventory listing (InventoryLoad): <span id='inventory-inventoried'>0</span> repos</span>
       <span class='stage-note'>should_reuse: reused <span id='inventory-reused'>0</span> (no job)
         | ScheduledBatch spawned <span id='inventory-spawned'>0</span> (updated_at changed)</span>
@@ -938,17 +1149,18 @@ fn graph_nodes_markup() -> &'static str {
       <button id='warm-start-btn'>fire warm start</button>
     </div>
 
-    <div id='queue-stock-mount' class='node node-store node-queue node-queue-stock' style='left:350px;top:180px'></div>
-    <div class='node node-work node-worker' style='left:555px;top:180px'>
+    <div id='queue-stock-mount' class='node node-store node-queue node-sd-stock' style='left:350px;top:180px'></div>
+    <div id='in-flight-stock-mount' class='node node-store node-sd-stock' style='left:555px;top:180px'></div>
+    <div class='node node-work node-worker' style='left:555px;top:275px'>
       worker_loop / LiveEvaluator::evaluate
       <span class='stage-note'>executions <span id='worker-executions'>0</span></span>
     </div>
     <div class='node node-store node-eventstream' style='left:790px;top:180px'>
       record_repo &rarr; NativeStore::record
-      <span class='stage-note'>events <span id='stage-stream-fill'>0</span> (events.pgno; org: org-events.pgno)</span>
       <span class='stage-note'>active PardosaBackend::<span id='backend-label'>Pgno</span></span>
       <button id='backend-toggle-btn'>toggle Pgno/Nats</button>
     </div>
+    <div id='events-written-stock-mount' class='node node-store node-sd-stock' style='left:790px;top:275px'></div>
     <div id='backend-pgno' class='node node-store node-backend-pgno' style='left:690px;top:340px'>
       local .pgno file store
       <span class='stage-note'>events.pgno / org-events.pgno</span>
@@ -959,15 +1171,14 @@ fn graph_nodes_markup() -> &'static str {
       <span class='stage-note'>JetStreamHandle::append &rarr; PubAck seq</span>
       <span class='stage-note'>seq <span id='jetstream-sequence'>0</span></span>
     </div>
-    <div class='node node-store node-projection' style='left:1010px;top:180px'>
-      EvidenceProjection
-      <span class='stage-note'>repos <span id='stage-projection-fill'>0</span></span>
-    </div>
+    <div id='projection-stock-mount' class='node node-store node-sd-stock' style='left:1010px;top:180px'></div>
+    <div id='durable-cloud-mount' class='node node-store node-sd-mount' style='left:1010px;top:275px'></div>
 
-    <div id='gate-glyph' class='gate-glyph' style='left:955px;top:300px'>
+    <div id='gate-glyph' class='gate-glyph' style='left:955px;top:230px'>
       &#9670;
-      <span class='stage-note'>BatchTracker rem <span id='batch-remaining'>0</span></span>
     </div>
+    <div id='batch-stock-mount' class='node node-store node-sd-stock' style='left:955px;top:300px'></div>
+    <div id='batch-drained-mount' class='node node-work node-sd-mount' style='left:955px;top:390px'></div>
 
     <div class='node node-work node-finalize' style='left:900px;top:440px'>
       finalize_and_publish
@@ -977,22 +1188,22 @@ fn graph_nodes_markup() -> &'static str {
       build_cached_pages
       <span class='stage-note'>memo</span>
     </div>
+    <div id='compression-converter-mount' class='node node-work node-sd-mount' style='left:1050px;top:520px'></div>
     <div class='node node-work node-commit' style='left:1200px;top:440px'>
       commit_cached_pages
-      <span class='stage-note'>ArcSwap gen <span id='arcswap-generation'>0</span></span>
     </div>
+    <div id='generation-stock-mount' class='node node-store node-sd-stock' style='left:1200px;top:530px'></div>
 
-    <div class='node node-serve node-served' style='left:1200px;top:600px'>
+    <div class='node node-serve node-served' style='left:1200px;top:640px'>
       cache_fallback &rarr; served pages
-      <span class='stage-note'>gen <span id='cache-fallback-gen'>0</span></span>
-      <span class='stage-note'>served <span id='served-pages'>0</span></span>
-      <span class='stage-note stage-hidden'>cache fill <span id='stage-cache-fill'>0</span></span>
     </div>
+    <div id='served-pages-stock-mount' class='node node-store node-sd-stock' style='left:1050px;top:640px'></div>
 
     <div class='node node-clients node-webclients' style='left:1200px;top:730px'>
       ws_session clients (anonymous)
       <span class='stage-note'>OwnedSemaphorePermit + broadcast::Receiver&lt;PageUpdateEvent&gt;</span>
       <span class='stage-note'>permits/cap <span id='ws-permits'>0/200</span> (sim quantity)</span>
+      <div id='web-clients-cloud-mount' class='node-sd-mount'></div>
     </div>
 "
 }

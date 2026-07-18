@@ -13,42 +13,83 @@
 
 use crate::sd::LoopPolarity;
 
-/// Distinguishes a standard stock (dots, outflow, residence time all
-/// meaningful — e.g. `WorkQueue`, `in_flight`, `BatchTracker`,
-/// `EvidenceProjection`) from a monotonic readout accumulator whose
-/// outflow is always `0` and whose residence time is undefined
-/// (`generation`, `served_pages`, `events_written`; adr-fmt-vrycy
-/// hotspot (d)). Two kinds only — this is a rendering-suppression
-/// switch, not a modelling taxonomy; see [`crate::sd::Stock`] for the
-/// single underlying SD type both kinds wrap.
+/// Distinguishes four stock-box rendering shapes, decoupled per-field
+/// (dots / outflow / utilization / residence) rather than one
+/// all-or-nothing switch, so each Tier-1 stock (adr-fmt-vrycy CORE
+/// TEACHING MODEL) gets only the fields it has real data for:
+///
+/// - [`StockKind::Standard`] — `WorkQueue`: capacity-bounded, live
+///   "now" dots, outflow, utilization, and Little's-Law residence all
+///   meaningful.
+/// - [`StockKind::Bounded`] — `in_flight` (worker-pool WIP,
+///   0..`worker_count`): outflow and utilization
+///   (`in_flight`/`worker_count`) meaningful; no per-job dots layer
+///   wired, no residence tracking (no cumulative-arrivals counter for
+///   this stock).
+/// - [`StockKind::Accumulator`] — `BatchTracker` remaining,
+///   `EvidenceProjection`: real inflow AND outflow (both legitimately
+///   non-zero — these are not monotonic), but no capacity ceiling to
+///   express as utilization and no dots/residence data.
+/// - [`StockKind::Monotonic`] — readout accumulator whose outflow is
+///   always `0` and whose residence time is undefined (`generation`,
+///   `served_pages`, `events_written`; adr-fmt-vrycy hotspot (d)).
+///
+/// This is a rendering-suppression switch, not a modelling taxonomy —
+/// see [`crate::sd::Stock`] for the single underlying SD type all four
+/// kinds wrap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StockKind {
     Standard,
+    Bounded,
+    Accumulator,
     Monotonic,
 }
 
 impl StockKind {
     /// Whether this kind's stock box renders live "now" dots (one per
-    /// in-flight unit). `Monotonic` stocks have no queued units to
-    /// dot — they only ever grow.
+    /// in-flight unit). Only [`StockKind::Standard`] (`WorkQueue`) has
+    /// a caller-supplied per-unit color list to dot.
     #[must_use]
     pub fn shows_dots(self) -> bool {
         matches!(self, StockKind::Standard)
     }
 
     /// Whether this kind's stock box renders an outflow readout.
-    /// `Monotonic` stocks are inflow-only by definition (adr-fmt-vrycy
-    /// hotspot (d)) — an outflow field would always read `0.0`.
+    /// [`StockKind::Monotonic`] stocks are inflow-only by definition
+    /// (adr-fmt-vrycy hotspot (d)) — an outflow field would always
+    /// read `0.0`. Every other kind has a real, sometimes-nonzero
+    /// outflow.
     #[must_use]
     pub fn shows_outflow(self) -> bool {
-        matches!(self, StockKind::Standard)
+        !matches!(self, StockKind::Monotonic)
+    }
+
+    /// Whether this kind's stock box renders a utilization readout.
+    /// Only kinds with a meaningful capacity ceiling
+    /// ([`StockKind::Standard`]'s queue capacity,
+    /// [`StockKind::Bounded`]'s worker count) have one;
+    /// [`StockKind::Accumulator`] stocks (`BatchTracker`,
+    /// `EvidenceProjection`) have no capacity concept to divide by.
+    #[must_use]
+    pub fn shows_utilization(self) -> bool {
+        matches!(self, StockKind::Standard | StockKind::Bounded)
     }
 
     /// Whether this kind's stock box renders a Little's-Law mean
-    /// residence time. Residence time is undefined for a stock with no
-    /// outflow (nothing ever leaves to measure a residence against).
+    /// residence time. Only [`StockKind::Standard`] (`WorkQueue`)
+    /// tracks the cumulative-accepted-arrivals counter Little's Law
+    /// needs; other kinds would show a residence figure with no
+    /// backing arrival-rate data.
     #[must_use]
     pub fn shows_residence(self) -> bool {
+        matches!(self, StockKind::Standard)
+    }
+
+    /// Whether this kind's stock box renders a loop-polarity badge.
+    /// Only [`StockKind::Standard`] (`WorkQueue`) is the stock the B1
+    /// backpressure loop (adr-fmt-vrycy CORE TEACHING MODEL) reads.
+    #[must_use]
+    pub fn shows_polarity(self) -> bool {
         matches!(self, StockKind::Standard)
     }
 }
@@ -125,6 +166,24 @@ pub fn cloud_direction_glyph(terminal: crate::sd::Terminal) -> &'static str {
     }
 }
 
+/// Splits a raw level delta (`current - previous`) into an
+/// `(inflow, outflow)` non-negative pair — the same bookkeeping
+/// [`crate::binding::QueueStockBinding::advance`] does with explicit
+/// accepted/dequeued counts, generalized to any stock whose per-tick
+/// level readout is all a caller has (`in_flight`, `BatchTracker`
+/// remaining, `EvidenceProjection`, and the monotonic accumulators,
+/// which always take the `outflow == 0.0` branch since their levels
+/// never fall).
+#[must_use]
+pub fn level_delta_flows(previous: f64, current: f64) -> (f64, f64) {
+    let delta = current - previous;
+    if delta >= 0.0 {
+        (delta, 0.0)
+    } else {
+        (0.0, -delta)
+    }
+}
+
 /// The compression ratio readout (`compressed / raw` as a whole
 /// percent), or `None` when `raw_bytes` is `0` (nothing compressed
 /// yet — division would be meaningless, not a `0%` ratio).
@@ -144,22 +203,59 @@ pub fn compression_ratio_percent(raw_bytes: usize, compressed_bytes: usize) -> O
 mod tests {
     use super::{
         StockKind, cloud_direction_glyph, compression_ratio_percent, dot_x, format_bounded_level,
-        format_percent, format_rate, format_residence, polarity_badge_label,
+        format_percent, format_rate, format_residence, level_delta_flows, polarity_badge_label,
     };
     use crate::sd::{LoopPolarity, Terminal};
 
     #[test]
-    fn standard_kind_shows_dots_outflow_and_residence() {
+    fn standard_kind_shows_dots_outflow_utilization_residence_and_polarity() {
         assert!(StockKind::Standard.shows_dots());
         assert!(StockKind::Standard.shows_outflow());
+        assert!(StockKind::Standard.shows_utilization());
         assert!(StockKind::Standard.shows_residence());
+        assert!(StockKind::Standard.shows_polarity());
     }
 
     #[test]
-    fn monotonic_kind_suppresses_dots_outflow_and_residence() {
+    fn bounded_kind_shows_outflow_and_utilization_only() {
+        assert!(!StockKind::Bounded.shows_dots());
+        assert!(StockKind::Bounded.shows_outflow());
+        assert!(StockKind::Bounded.shows_utilization());
+        assert!(!StockKind::Bounded.shows_residence());
+        assert!(!StockKind::Bounded.shows_polarity());
+    }
+
+    #[test]
+    fn accumulator_kind_shows_outflow_only() {
+        assert!(!StockKind::Accumulator.shows_dots());
+        assert!(StockKind::Accumulator.shows_outflow());
+        assert!(!StockKind::Accumulator.shows_utilization());
+        assert!(!StockKind::Accumulator.shows_residence());
+        assert!(!StockKind::Accumulator.shows_polarity());
+    }
+
+    #[test]
+    fn monotonic_kind_suppresses_everything_but_level_and_inflow() {
         assert!(!StockKind::Monotonic.shows_dots());
         assert!(!StockKind::Monotonic.shows_outflow());
+        assert!(!StockKind::Monotonic.shows_utilization());
         assert!(!StockKind::Monotonic.shows_residence());
+        assert!(!StockKind::Monotonic.shows_polarity());
+    }
+
+    #[test]
+    fn level_delta_flows_rising_level_is_pure_inflow() {
+        assert_eq!(level_delta_flows(3.0, 7.0), (4.0, 0.0));
+    }
+
+    #[test]
+    fn level_delta_flows_falling_level_is_pure_outflow() {
+        assert_eq!(level_delta_flows(7.0, 3.0), (0.0, 4.0));
+    }
+
+    #[test]
+    fn level_delta_flows_unchanged_level_is_zero_both() {
+        assert_eq!(level_delta_flows(5.0, 5.0), (0.0, 0.0));
     }
 
     #[test]
