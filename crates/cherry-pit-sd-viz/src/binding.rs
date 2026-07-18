@@ -156,7 +156,7 @@ impl QueueStockBinding {
 #[cfg(test)]
 mod tests {
     use super::QueueStockBinding;
-    use crate::sd::{Flow, LoopPolarity};
+    use crate::sd::{Flow, LoopPolarity, Model, Stock, Terminal};
     use crate::sim::{Sim, SimConfig};
 
     fn config() -> SimConfig {
@@ -167,6 +167,21 @@ mod tests {
             domain_key_span: 500,
             ..SimConfig::default()
         }
+    }
+
+    #[test]
+    fn queue_model_wiring_builds_ok_under_enforced_grammar() {
+        let mut model = Model::new();
+        let stock = model.add_stock(Stock::new(0.0));
+        let source = model.add_cloud(Terminal::Source);
+        let sink = model.add_cloud(Terminal::Sink);
+        model.connect_flow(source, stock, Flow::Uniflow(0.0));
+        model.connect_flow(stock, sink, Flow::Uniflow(0.0));
+        let utilization_aux = model.add_converter(|| 0.0);
+        model.connect_info(stock, utilization_aux);
+        model
+            .build()
+            .expect("queue model wiring must be legal under the enforced SD grammar");
     }
 
     #[test]
