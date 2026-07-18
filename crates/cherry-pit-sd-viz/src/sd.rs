@@ -236,6 +236,17 @@ pub struct StockId(usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FlowId(usize);
 
+impl FlowId {
+    /// Test-only constructor for exercising an out-of-range/unrouted
+    /// [`FlowId`] against a [`Model`]/`Scene` that never registered
+    /// it — every non-test caller derives a [`FlowId`] from
+    /// [`Model::flows`] or a `Scene`'s already-routed belts.
+    #[cfg(test)]
+    pub(crate) fn from_raw(raw: usize) -> Self {
+        Self(raw)
+    }
+}
+
 /// Opaque handle to a [`Converter`] owned by a [`Model`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConverterId(usize);
@@ -586,6 +597,19 @@ impl Model {
         })
     }
 
+    /// Overwrites the rate of the [`Flow`] already registered at `id`,
+    /// leaving its material endpoints untouched — the live-rate
+    /// wiring path (adr-fmt-sra3p `svs-05`) a per-tick caller uses to
+    /// replace a flow's placeholder rate with one derived from the
+    /// running sim's measured per-tick activity. A no-op when `id`
+    /// does not name a flow this model registered (defensive; every
+    /// caller in this crate derives `id` from [`Self::flows`]).
+    pub fn set_flow_rate(&mut self, id: FlowId, flow: Flow) {
+        if let Some(edge) = self.flows.get_mut(id.0) {
+            edge.flow = flow;
+        }
+    }
+
     /// Read-only iterator over every registered stock's handle, in
     /// insertion order, for keying a placement layer.
     pub fn stock_ids(&self) -> impl Iterator<Item = StockId> + '_ {
@@ -644,6 +668,37 @@ mod tests {
                 "flow kind must be Uniflow or Biflow"
             );
         }
+    }
+
+    #[test]
+    fn set_flow_rate_overwrites_only_the_targeted_flows_kind() {
+        let mut model = Model::new();
+        let cloud = model.add_cloud(Terminal::Source);
+        let stock = model.add_stock(Stock::new(0.0));
+        let other_stock = model.add_stock(Stock::new(0.0));
+        let target = model.connect_flow(cloud, stock, Flow::Uniflow(0.0));
+        let untouched = model.connect_flow(cloud, other_stock, Flow::Uniflow(2.0));
+
+        model.set_flow_rate(target, Flow::Uniflow(9.0));
+
+        let views: Vec<_> = model.flows().collect();
+        assert_eq!(views[target.0].kind, Flow::Uniflow(9.0));
+        assert_eq!(views[untouched.0].kind, Flow::Uniflow(2.0));
+    }
+
+    #[test]
+    fn set_flow_rate_on_an_unregistered_id_is_a_no_op() {
+        let mut model = Model::new();
+        let cloud = model.add_cloud(Terminal::Source);
+        let stock = model.add_stock(Stock::new(0.0));
+        model.connect_flow(cloud, stock, Flow::Uniflow(1.0));
+        let bogus = super::FlowId::from_raw(41);
+
+        model.set_flow_rate(bogus, Flow::Uniflow(99.0));
+
+        let views: Vec<_> = model.flows().collect();
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].kind, Flow::Uniflow(1.0));
     }
 
     #[test]

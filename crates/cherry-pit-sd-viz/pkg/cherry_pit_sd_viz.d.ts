@@ -1,51 +1,15 @@
 /* tslint:disable */
 /* eslint-disable */
-/**
- * The `ReadableStreamType` enum.
- *
- * *This API requires the following crate features to be activated: `ReadableStreamType`*
- */
-
-export type ReadableStreamType = "bytes";
-
-export class IntoUnderlyingByteSource {
-    private constructor();
-    free(): void;
-    [Symbol.dispose](): void;
-    cancel(): void;
-    pull(controller: ReadableByteStreamController): Promise<any>;
-    start(controller: ReadableByteStreamController): void;
-    readonly autoAllocateChunkSize: number;
-    readonly type: ReadableStreamType;
-}
-
-export class IntoUnderlyingSink {
-    private constructor();
-    free(): void;
-    [Symbol.dispose](): void;
-    abort(reason: any): Promise<any>;
-    close(): Promise<any>;
-    write(chunk: any): Promise<any>;
-}
-
-export class IntoUnderlyingSource {
-    private constructor();
-    free(): void;
-    [Symbol.dispose](): void;
-    cancel(): void;
-    pull(controller: ReadableStreamDefaultController): Promise<any>;
-}
 
 export function start(): void;
 
 /**
- * Advance the simulation by one tick and re-render gauges + packets.
+ * Advances the simulation clock by one tick, re-renders `#scene-mount`
+ * (belts/items/`WorkQueue` fill gauge/nodes/sparklines/`SweepPhase`
+ * annotation) and refreshes every targeted readout in `#controls-hud`.
  *
- * Invoked from `bootstrap.js` on a `setInterval` cadence — the
- * animation clock lives in JS, keeping this crate's `web-sys`
- * dependency limited to the DOM-manipulation surface already declared
- * for `gh-report-web-client` (no `requestAnimationFrame`/`Performance`
- * features required).
+ * Invoked from `bootstrap.js` on a `setInterval` cadence, preserved
+ * unchanged from the pre-`svs-05` renderer.
  */
 export function tick(): void;
 
@@ -55,30 +19,11 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly start: () => void;
     readonly tick: () => void;
-    readonly __wbg_intounderlyingbytesource_free: (a: number, b: number) => void;
-    readonly __wbg_intounderlyingsink_free: (a: number, b: number) => void;
-    readonly intounderlyingbytesource_autoAllocateChunkSize: (a: number) => number;
-    readonly intounderlyingbytesource_cancel: (a: number) => void;
-    readonly intounderlyingbytesource_pull: (a: number, b: any) => any;
-    readonly intounderlyingbytesource_start: (a: number, b: any) => void;
-    readonly intounderlyingbytesource_type: (a: number) => number;
-    readonly intounderlyingsink_abort: (a: number, b: any) => any;
-    readonly intounderlyingsink_close: (a: number) => any;
-    readonly intounderlyingsink_write: (a: number, b: any) => any;
-    readonly __wbg_intounderlyingsource_free: (a: number, b: number) => void;
-    readonly intounderlyingsource_cancel: (a: number) => void;
-    readonly intounderlyingsource_pull: (a: number, b: any) => any;
-    readonly wasm_bindgen_e37463f78dd12fd3___convert__closures_____invoke___wasm_bindgen_e37463f78dd12fd3___JsValue__core_9b3796e30d99ddb7___result__Result_____wasm_bindgen_e37463f78dd12fd3___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_e37463f78dd12fd3___convert__closures_____invoke___js_sys_539a17adb0323e36___Function_fn_wasm_bindgen_e37463f78dd12fd3___JsValue_____wasm_bindgen_e37463f78dd12fd3___sys__Undefined___js_sys_539a17adb0323e36___Function_fn_wasm_bindgen_e37463f78dd12fd3___JsValue_____wasm_bindgen_e37463f78dd12fd3___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen_e37463f78dd12fd3___convert__closures_____invoke___web_sys_f696f210aa502a7f___features__gen_Event__Event______true_: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_e37463f78dd12fd3___convert__closures_____invoke___bool__true_: (a: number, b: number) => number;
-    readonly __wbindgen_malloc: (a: number, b: number) => number;
-    readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+    readonly wasm_bindgen_e37463f78dd12fd3___convert__closures_____invoke_______true_: (a: number, b: number) => void;
     readonly __wbindgen_exn_store: (a: number) => void;
     readonly __externref_table_alloc: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_destroy_closure: (a: number, b: number) => void;
-    readonly __externref_table_dealloc: (a: number) => void;
     readonly __wbindgen_start: () => void;
 }
 

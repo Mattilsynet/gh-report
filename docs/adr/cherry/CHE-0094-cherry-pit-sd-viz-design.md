@@ -203,4 +203,128 @@ sibling templates plus one non-SD overlay (`overlay.rs::SweepPhaseBadge`),
 kept flat per R6, with host-pure layout math in `layout.rs`.
 `SweepPhaseBadge` is scoped explicitly as an annotation-only overlay — it
 is not an `sd::Model` node and carries no `sdt-*` styling.
+
+## Amendment 2026-07-18 (declarative Scene model + thin interpreter)
+
+Per the l.125-129 deferral (still binding: further SD/viz modelling work
+amends this ADR in place rather than landing as a freestanding ADR) and
+oracle review adr-fmt-5agci: a from-scratch redesign of the wasm32 view
+(mission sd-viz-scene-redesign, epic adr-fmt-sra3p) replaces the
+component-template-family/overlay-mount approach the 2026-07-18 NOTE
+above recorded with a single declarative, host-pure `Scene` model
+(`scene.rs`) that the wasm32 interpreter (`view.rs`) walks read-only.
+This clears the CHE-0086 materiality bar (a new canonical viz
+architecture, not a provenance-only instantiation) and introduces
+binding contracts the prior NOTE explicitly disclaimed — R14-R16 below
+are therefore new rules, not a second NOTE.
+
+R14 [4]: the `Scene` model (`scene.rs`) is THE canonical presentation
+layer for `cherry-pit-sd-viz`'s systems-dynamics visual — every node the
+wasm32 view renders and every belt it animates is derived from a
+`Scene`, never hand-assembled DOM state. A `Scene` is `sd::Model` (R6/R11
+above, unchanged) plus a `Placement` overlay: one `GridSlot` + label per
+model-registered `StockId`/`CloudId`/`ConverterId`, keyed on the model's
+own handles. Belts are never hand-declared: every `Belt` is derived from
+one of the model's own `FlowView`s (`Model::flows()`) routed through the
+placement overlay's slot lookup, so a belt naming an undeclared or
+dangling endpoint cannot occur (structural, not a runtime check). `Scene`
+and `Placement` are host-pure, `wasm`-dep-free, and live outside the
+`#[cfg(target_arch = "wasm32")]` gate (R5 boundary, restated for this new
+module) — identical posture to `sd.rs`/`layout.rs`, so `Scene` is
+host-testable without a `wasm32` target.
+
+R15 [4]: INTERPRETER PURITY — the wasm32 view (`view.rs`, R5-gated)
+walks a `Scene` and emits DOM+SVG; it holds NO layout, placement, motion,
+or arc-length math of its own. Every coordinate, dimension, or belt-item
+position the view renders is either read directly from a `Scene`
+accessor (`Scene::node_origin`, `Scene::grid`,
+`Scene::viewbox_dimensions`, a `Belt`'s already-computed `path`/`length`)
+or produced by a host-pure, unit-tested function in `scene.rs`/
+`layout.rs`/`sparkline.rs` (e.g. `belt_item_count`, `belt_item_phase`,
+`fill_fraction`, `polyline_points`) that the view calls with values it
+read from the `Scene`/running sim — the view supplies inputs, never
+derives geometry itself. A geometry or motion need the view cannot
+satisfy this way is a `scene.rs`/`layout.rs` addition, not a `view.rs`
+one. Interactive DOM controls (buttons, toggles) are exempt from this
+rule — they are event wiring, not layout/motion math, and MAY be mounted
+and updated imperatively by the view (per R7's app-vocabulary boundary,
+unchanged).
+
+R16 [3]: the `Scene`/`layout.rs` boundary: `layout.rs` owns placement-
+and motion-MATH primitives with no notion of a `Scene`, an `sd::Model`,
+or any node/flow vocabulary (grid geometry, anchor/bezier/arc-length
+functions, generic formatting helpers) — app- and model-agnostic per the
+existing `sparkline.rs` "app-agnostic" convention. `scene.rs` owns the
+`Scene`/`Placement`/`Belt` TYPES and the one gh-report-specific
+constructor (`gh_report_scene`) that composes `binding::tier1_model()`
+with a hand-authored `Placement`; it calls into `layout.rs` for every
+placement/motion computation rather than duplicating it. A math
+primitive with no `Scene`/model awareness belongs in `layout.rs`; a type
+or composition that names `Scene`, `Placement`, `Belt`, or a `tier1_model`
+handle belongs in `scene.rs`. This is CHE-0086:R3's sibling-surface
+discipline applied one level deeper, inside the SD-layer's own module
+split.
+
+R17 [4]: this amendment SUPERSEDES the 2026-07-18 NOTE's component-
+template family: `components.rs` (`StockTemplate`,
+`FlowIndicatorTemplate`, `ConverterReadoutTemplate`,
+`CloudBoundaryMarkerTemplate`, `LoopPolarityBadgeTemplate`) and
+`overlay.rs` (`SweepPhaseBadge`) are DELETED, not grandfathered — their
+imperative mount-then-`update()` pattern (a persisted `web_sys::Element`
+handle mutated in place) is structurally incompatible with R15's "the
+view holds no state of its own beyond what one tick's `Scene` walk
+produces" posture; keeping both patterns side by side would mean two
+divergent rendering strategies in one crate. Every live `ConverterReadoutTemplate`/control/overlay metric the deleted
+modules rendered is re-attached Scene-driven or `Sim`-driven in
+`view.rs`: per-`Stock` sparkline + inline metric (reads a per-tick
+`LevelHistory` via `sparkline::polyline_points`, embedded in that
+stock's placed node markup); warm-start button, backend Pgno/Nats
+toggle, batch/external rate +/- controls (persistent DOM in a
+`#controls-hud` region wired ONCE at `start()`, so a full per-tick
+`Scene` re-render of the SVG region never detaches their listeners);
+inventory/`should_reuse`, ws-permits, github-budget, compression-ratio
+(`Sim::compressed_bytes_total`/`Sim::raw_bytes_total`), memo hit/rebuild
+(`Sim::memo_hits`/`Sim::memo_rebuilds`), and batch-drained
+(`Sim::batch_remaining`) readouts (targeted `set_text_content` updates
+against that same persistent region). `CloudBoundaryMarkerTemplate`'s
+three cumulative boundary-crossing counters (github.com, web-clients,
+durable-substrate) have no direct cumulative-count replacement — the
+windowed ws-permits/github-budget readouts above overlap in spirit but
+are budget views, not the same running-total semantic; this is a named
+Tier-2 follow-up (adr-fmt-hli8g), not a silent drop, matching R18's
+tiering of the 5 deferred boundary flows below. The
+`SweepPhase` control-state (adr-fmt-vrycy hotspot (c) — still NOT an
+`sd::Model` node; R11/R14 above are unchanged by this) renders as a plain
+annotation badge positioned at the `BatchRemaining` stock's
+already-placed `Scene` origin, sharing no `scene-node-*` class with the
+wired SD nodes it sits beside — same annotation-only scoping the 2026-
+07-18 NOTE gave `SweepPhaseBadge`, carried forward under R15 rather than
+as a persisted-element mount.
+
+R18 [3]: live per-tick flow-rate wiring — `binding::tier1_model()`'s 11
+flows start as placeholder `Flow::Uniflow(0.0)` edges (unchanged
+structurally by this amendment). `Scene::set_flow_rate` (a `Scene`
+method, not a view responsibility per R15) overwrites a routed `Belt`'s
+`kind` and the underlying `Model`'s flow in one call, keyed on the
+`FlowId` `Model::flows()` already exposes. `view.rs`'s `tick` uses this
+every tick to replace the Tier-1 SPINE flows' rates (the three
+`WorkQueue` arrivals, dequeue, completion, finalize — 6 of 11) with the
+sim's actual measured per-tick activity, reusing
+`binding::QueueStockBinding`'s `inflow`/`outflow` for the `WorkQueue`
+edges rather than a parallel ad-hoc signal. The remaining 5 boundary
+flows (github-consume, `served_pages`→clients,
+`evidence_projection`→durable/`events_written`) have no per-tick measured
+signal in this crate yet and stay on the placeholder — a Tier-2 follow-
+up, not a regression, per adr-fmt-vrycy's own core/peripheral tiering.
+Belt-item ANIMATION speed is a separate, still view-local smoothing
+signal (`BeltActivity`, an EWMA-style decay) rather than a raw per-tick
+rate fed directly into `belt_item_phase`'s `speed` parameter — R15's
+"view supplies inputs it read, never derives geometry" is unaffected,
+since `BeltActivity` computes no position/geometry, only the scalar
+`speed` argument `belt_item_phase` (a `scene.rs` function) already
+accepted before this amendment; feeding it a raw 0/1 per-tick rate
+instead would visibly teleport belt items between ticks rather than
+ease, which this amendment's own commander intent ("no functional
+regression") forecloses.
+
 </content>

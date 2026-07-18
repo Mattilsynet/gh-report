@@ -327,6 +327,26 @@ impl Scene {
         self.grid
     }
 
+    /// Overwrites the rate of the model [`Flow`] `id` names, on both
+    /// the underlying [`Model`] (so any future reader of
+    /// `model().flows()` sees the live value) and the corresponding
+    /// [`Belt::kind`] this scene already routed (so the renderer's
+    /// existing `belt.kind.rate()` read picks it up with no further
+    /// plumbing). The live per-tick flow-rate wiring path (adr-fmt-
+    /// sra3p `svs-05`, folded in from the `svs-04` back-brief): a
+    /// caller derives `flow` from the running sim's measured per-tick
+    /// activity (e.g. [`crate::binding::QueueStockBinding`]'s
+    /// `inflow`/`outflow`) rather than leaving `tier1_model`'s
+    /// placeholder `Flow::Uniflow(0.0)` in place. A no-op when `id`
+    /// names no belt this scene routed (defensive; every caller
+    /// derives `id` from this scene's own [`Self::belts`]).
+    pub fn set_flow_rate(&mut self, id: FlowId, flow: Flow) {
+        self.model.set_flow_rate(id, flow);
+        if let Some(belt) = self.belts.iter_mut().find(|belt| belt.id == id) {
+            belt.kind = flow;
+        }
+    }
+
     /// The top-left `(x, y)` px origin of `node`'s box — the
     /// renderer's only source for a node's position; it must never
     /// compute a position itself.
@@ -1069,6 +1089,32 @@ mod tests {
     fn belt_kind_matches_the_model_flows_registered_kind() {
         let (model, placement) = tiny_model_and_placement();
         let scene = Scene::assemble(model, &placement).expect("assembles");
+        assert_eq!(scene.belts()[0].kind, Flow::Uniflow(1.0));
+    }
+
+    #[test]
+    fn set_flow_rate_updates_both_the_belt_kind_and_the_model_flow_view() {
+        let (model, placement) = tiny_model_and_placement();
+        let mut scene = Scene::assemble(model, &placement).expect("assembles");
+        let id = scene.belts()[0].id;
+
+        scene.set_flow_rate(id, Flow::Uniflow(7.0));
+
+        assert_eq!(scene.belts()[0].kind, Flow::Uniflow(7.0));
+        assert_eq!(
+            scene.model().flows().next().expect("one flow").kind,
+            Flow::Uniflow(7.0)
+        );
+    }
+
+    #[test]
+    fn set_flow_rate_on_an_unrouted_flow_id_is_a_no_op() {
+        let (model, placement) = tiny_model_and_placement();
+        let mut scene = Scene::assemble(model, &placement).expect("assembles");
+        let bogus = crate::sd::FlowId::from_raw(41);
+
+        scene.set_flow_rate(bogus, Flow::Uniflow(7.0));
+
         assert_eq!(scene.belts()[0].kind, Flow::Uniflow(1.0));
     }
 
