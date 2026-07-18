@@ -19,7 +19,9 @@
 //! divided by the effective (accepted) arrival rate. See
 //! [`QueueStockBinding::mean_residence_ticks`].
 
-use crate::sd::{Connector, Flow, LevelHistory, LoopPolarity, Stock};
+use crate::sd::{
+    Connector, Flow, LevelHistory, LoopPolarity, Model, SdConnectionError, Stock, Terminal,
+};
 use crate::sim::{EnqueueResult, Sim, StepEvents};
 
 /// Sample capacity for [`QueueStockBinding`]'s recorded level history:
@@ -151,6 +153,110 @@ impl QueueStockBinding {
         let lambda = self.cumulative_accepted as f64 / ticks_elapsed as f64;
         Some(self.stock.level() / lambda)
     }
+}
+
+/// Builds the full gh-report Tier-1 SD spine (per adr-fmt-vrycy's
+/// core-teaching-model ranking) as ONE legal [`Model`], wired through
+/// the existing enforced grammar (adr-fmt-qaavg) with no new grammar
+/// primitives and no new invariants. Per CHE-0094:R7, gh-report
+/// vocabulary appears only as doc comments and local identifiers here
+/// (`sd.rs` stays app-agnostic); this constructor carries no `Sim`
+/// reference and no live values (structure only — live level readout
+/// stays [`QueueStockBinding`]'s job, unchanged, once per tick).
+///
+/// Element inventory (adr-fmt-vrycy CORE TEACHING MODEL):
+///
+/// - `work_queue` [`Stock`] — [`crate::sim::Sim::queue_depth`].
+/// - `in_flight` [`Stock`] — worker-pool WIP,
+///   [`crate::sim::Sim::in_flight`].
+/// - `batch_remaining` [`Stock`] — `BatchTracker` join barrier,
+///   [`crate::sim::Sim::batch_remaining`].
+/// - `evidence_projection` [`Stock`] — repositories captured,
+///   [`crate::sim::Sim::repositories_captured`].
+/// - `generation`, `served_pages`, `events_written` [`Stock`]s —
+///   monotonic readout accumulators (inflow-only; adr-fmt-vrycy
+///   ambiguity hotspot (d)), tracking
+///   [`crate::sim::Sim::arcswap_generation`],
+///   [`crate::sim::Sim::served_pages`], and
+///   [`crate::sim::Sim::events_written`] respectively.
+/// - `timer_source`, `github_source` [`Terminal::Source`] clouds —
+///   the ScheduledBatch/External/InitialLoad boundary triggers.
+/// - `github_sink`, `web_clients_sink`, `durable_sink`
+///   [`Terminal::Sink`] clouds — collector-call consumption, served
+///   pages/broadcasts, and the durable substrate (write-only per
+///   adr-fmt-vrycy hotspot (a): nothing reads the durable count back,
+///   so it is a Cloud, never a Stock, in this model).
+/// - `utilization` [`crate::sd::Converter`] — reads `work_queue`,
+///   feeds back into all three arrival flows via [`Model::connect_info`],
+///   closing the B1 backpressure loop.
+/// - `barrier_drained` converter — reads `batch_remaining`, gates
+///   `finalize` via connector (adr-fmt-vrycy hotspot (c): the barrier
+///   itself is Stock+Converter; the discrete `SweepPhase` label is not
+///   an SD element and appears nowhere in this construction).
+/// - `read_side` converter — reads `evidence_projection`'s LEVEL,
+///   models `build_cached_pages`; feeds `finalize` via connector
+///   (adr-fmt-vrycy hotspot (b): the read side is a converter chain,
+///   not a second material stock-and-flow pipeline).
+///
+/// # Errors
+///
+/// Returns [`SdConnectionError`] if the wiring is graph-globally
+/// illegal (e.g. a degenerate cloud-to-cloud flow) — expected to be
+/// `Ok` for this construction; the `Err` path exists so callers (and
+/// this module's own tests) can assert legality rather than assume it.
+pub fn tier1_model() -> Result<Model, SdConnectionError> {
+    let mut model = Model::new();
+
+    let work_queue = model.add_stock(Stock::new(0.0));
+    let in_flight = model.add_stock(Stock::new(0.0));
+    let batch_remaining = model.add_stock(Stock::new(0.0));
+    let evidence_projection = model.add_stock(Stock::new(0.0));
+    let generation = model.add_stock(Stock::new(0.0));
+    let served_pages = model.add_stock(Stock::new(0.0));
+    let events_written = model.add_stock(Stock::new(0.0));
+
+    let timer_source = model.add_cloud(Terminal::Source);
+    let github_source = model.add_cloud(Terminal::Source);
+    let github_sink = model.add_cloud(Terminal::Sink);
+    let web_clients_sink = model.add_cloud(Terminal::Sink);
+    let durable_sink = model.add_cloud(Terminal::Sink);
+
+    let scheduled_batch = model.connect_flow(timer_source, work_queue, Flow::Uniflow(0.0));
+    let external = model.connect_flow(github_source, work_queue, Flow::Uniflow(0.0));
+    let initial_load = model.connect_flow(timer_source, work_queue, Flow::Uniflow(0.0));
+    model.connect_flow(work_queue, in_flight, Flow::Uniflow(0.0));
+    model.connect_flow(in_flight, evidence_projection, Flow::Uniflow(0.0));
+    model.connect_flow(in_flight, github_sink, Flow::Uniflow(0.0));
+    let finalize = model.connect_flow(timer_source, generation, Flow::Uniflow(0.0));
+    model.connect_flow(generation, served_pages, Flow::Uniflow(0.0));
+    model.connect_flow(served_pages, web_clients_sink, Flow::Uniflow(0.0));
+    model.connect_flow(evidence_projection, durable_sink, Flow::Uniflow(0.0));
+    model.connect_flow(evidence_projection, events_written, Flow::Uniflow(0.0));
+
+    let utilization = model.add_converter(|| 0.0);
+    let barrier_drained = model.add_converter(|| 0.0);
+    let read_side = model.add_converter(|| 0.0);
+
+    model.connect_info(work_queue, utilization);
+    model.connect_info(utilization, scheduled_batch);
+    model.connect_info(utilization, external);
+    model.connect_info(utilization, initial_load);
+    model.connect_info(batch_remaining, barrier_drained);
+    model.connect_info(barrier_drained, finalize);
+    model.connect_info(evidence_projection, read_side);
+    model.connect_info(read_side, finalize);
+
+    model.build()
+}
+
+/// The Tier-1 spine's single feedback loop (adr-fmt-vrycy CORE
+/// TEACHING MODEL, B1): `work_queue` depth feeds [`Connector`] into
+/// `utilization`, which feeds back into the arrival flows, throttling
+/// effective inflow as capacity is approached — always Balancing,
+/// mirroring [`QueueStockBinding::backpressure_polarity`].
+#[must_use]
+pub fn tier1_backpressure_polarity() -> LoopPolarity {
+    LoopPolarity::Balancing
 }
 
 #[cfg(test)]
@@ -293,6 +399,70 @@ mod tests {
         assert!(
             (binding.level_history().latest().expect("samples recorded") - binding.level()).abs()
                 < f64::EPSILON
+        );
+    }
+
+    #[test]
+    fn tier1_model_builds_ok_under_enforced_grammar() {
+        assert!(
+            super::tier1_model().is_ok(),
+            "Tier-1 gh-report spine must be legal under the adr-fmt-qaavg enforced grammar"
+        );
+    }
+
+    #[test]
+    fn tier1_model_element_counts_match_core_teaching_model_inventory() {
+        let model = super::tier1_model().expect("Tier-1 spine must build");
+        assert_eq!(
+            model.stock_count(),
+            7,
+            "work_queue, in_flight, batch_remaining, evidence_projection, generation, served_pages, events_written"
+        );
+        assert_eq!(
+            model.cloud_count(),
+            5,
+            "timer_source, github_source, github_sink, web_clients_sink, durable_sink"
+        );
+        assert_eq!(
+            model.converter_count(),
+            3,
+            "utilization, barrier_drained, read_side"
+        );
+        assert_eq!(
+            model.flow_count(),
+            11,
+            "3 arrivals + dequeue + completion + github-consume + finalize + serve-counter + broadcast + durable-append + events-written"
+        );
+        assert_eq!(
+            model.connector_count(),
+            8,
+            "work_queue->utilization, utilization->three arrivals, batch_remaining->barrier_drained->finalize, evidence_projection->read_side->finalize"
+        );
+    }
+
+    #[test]
+    fn tier1_model_element_count_invariant_structurally_excludes_sweep_phase() {
+        let model = super::tier1_model().expect("Tier-1 spine must build");
+        assert_eq!(
+            (
+                model.stock_count(),
+                model.cloud_count(),
+                model.converter_count(),
+                model.flow_count(),
+                model.connector_count()
+            ),
+            (7, 5, 3, 11, 8),
+            "SweepPhase is control-flow (adr-fmt-vrycy hotspot (c)), never an sd::Model node; \
+             any node representing it would perturb this exact tuple, which this constructor \
+             never does — no add_stock/add_converter call anywhere maps to SweepPhase"
+        );
+    }
+
+    #[test]
+    fn tier1_backpressure_loop_is_balancing() {
+        assert_eq!(
+            super::tier1_backpressure_polarity(),
+            LoopPolarity::Balancing
         );
     }
 }
