@@ -191,4 +191,16 @@ lint-level warning at most, not a build-time rejection.
 R13 [5]: the SD-layer's error type, `SdConnectionError`, MUST be
 `#[non_exhaustive]` from v0.1 (CHE-0021, CHE-0094:R9) — additive variants
 for new invariant violations are non-breaking.
+
+NOTE (2026-07-18, provenance only — not a new rule): mission
+sd-ghreport-reconcile (epic adr-fmt-odlad), oracle ruling adr-fmt-7kdrt
+(NOTE-ONLY). `binding.rs::tier1_model()` (source adr-fmt-vrycy) is the
+first canonical full gh-report Tier-1 model instance built via the R11
+grammar above — 7 stocks / 5 clouds / 3 converters / 11 flows / 8
+connectors, legal under the validated builder. The wasm32 view (R5)
+gained a reusable SD-element component-template family: 5 concrete
+sibling templates plus one non-SD overlay (`overlay.rs::SweepPhaseBadge`),
+kept flat per R6, with host-pure layout math in `layout.rs`.
+`SweepPhaseBadge` is scoped explicitly as an annotation-only overlay — it
+is not an `sd::Model` node and carries no `sdt-*` styling.
 </content>
