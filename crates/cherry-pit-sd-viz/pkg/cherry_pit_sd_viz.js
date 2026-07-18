@@ -1,4 +1,4 @@
-/* @ts-self-types="./gh_report_queue_viz.d.ts" */
+/* @ts-self-types="./cherry_pit_sd_viz.d.ts" */
 
 export class IntoUnderlyingByteSource {
     __destroy_into_raw() {
@@ -384,7 +384,7 @@ function __wbg_get_imports() {
     };
     return {
         __proto__: null,
-        "./gh_report_queue_viz_bg.js": import0,
+        "./cherry_pit_sd_viz_bg.js": import0,
     };
 }
 
@@ -712,7 +712,7 @@ async function __wbg_init(module_or_path) {
     }
 
     if (module_or_path === undefined) {
-        module_or_path = new URL('gh_report_queue_viz_bg.wasm', import.meta.url);
+        module_or_path = new URL('cherry_pit_sd_viz_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 

@@ -53,13 +53,27 @@ jobs:
           set -euo pipefail
           fail=0
           for c in cherry-pit-core cherry-pit-gateway cherry-pit-web cherry-pit-agent \
-                   cherry-pit-projection cherry-pit-wq cherry-pit-storage; do
+                   cherry-pit-projection cherry-pit-wq cherry-pit-storage cherry-pit-sd-viz; do
             if cargo tree -p "$c" -e features 2>&1 | grep -q async-trait; then
               echo "::error::$c transitively depends on async-trait (CHE-0025/CHE-0029:R4)"
               fail=1
             fi
           done
           exit $fail
+      # Tripwire: cherry-pit-sd-viz must carry zero pardosa* Cargo dependency
+      # (CHE-0029 acyclic DAG + CHE-0084:R5 "MUST NOT introduce any
+      # cherry-pit->pardosa dependency edge"). The crate shape-mirrors
+      # pardosa-nats types in doc comments only; a real Cargo dependency edge
+      # would violate the standing severance. Mirrors the async-trait
+      # tripwire shape above (CHE-0094:R8).
+      - name: deny pardosa deps in cherry-pit-sd-viz
+        if: always()
+        run: |
+          set -euo pipefail
+          if cargo tree -p cherry-pit-sd-viz 2>&1 | grep -q pardosa; then
+            echo "::error::cherry-pit-sd-viz depends on a pardosa* crate (CHE-0029/CHE-0084:R5)"
+            exit 1
+          fi
       # The pardosa-nats live-test harness (crates/pardosa-nats/src/test_support.rs)
       # spawns a real `nats-server` and asserts its --version matches the pin in
       # tools/.nats-server-version. Install exactly that version, checksum-verified

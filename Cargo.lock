@@ -827,6 +827,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cherry-pit-sd-viz"
+version = "0.0.0"
+dependencies = [
+ "any_spawner",
+ "js-sys",
+ "leptos",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "cherry-pit-storage"
 version = "0.1.0"
 dependencies = [
@@ -1857,17 +1868,6 @@ dependencies = [
  "uuid",
  "wiremock",
  "zeroize",
-]
-
-[[package]]
-name = "gh-report-queue-viz"
-version = "0.0.0"
-dependencies = [
- "any_spawner",
- "js-sys",
- "leptos",
- "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]

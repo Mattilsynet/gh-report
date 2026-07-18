@@ -1,9 +1,9 @@
 [package]
-name = "gh-report-queue-viz"
+name = "cherry-pit-sd-viz"
 version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "Standalone animated discrete-event simulation of gh-report's queue network (educational, no gh-report dependency)"
+description = "Standalone animated discrete-event + systems-dynamics simulation and browser viz, generic cherry-pit substrate (educational, zero pardosa dependency)"
 license = "MIT"
 publish = false
 

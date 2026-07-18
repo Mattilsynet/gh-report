@@ -1,4 +1,4 @@
-# gh-report-queue-viz
+# cherry-pit-sd-viz
 
 Standalone, client-side, animated discrete-event simulation of gh-report's
 runtime queue network (mission adr-fmt-t63uo; topology grounded in
@@ -40,7 +40,7 @@ generation the `ArcSwap` currently holds, independent of any run completing.
   `EvidenceProjectionEvent`, `WorkQueue`, `BatchTracker`, `EvidenceProjection`,
   `CachedPage`/`CachedBody`, `PageUpdateEvent`, `ArcSwap` generation) so a
   future live feed could deserialize real events into the same types. Run its
-  invariant tests with `cargo test -p gh-report-queue-viz`.
+  invariant tests with `cargo test -p cherry-pit-sd-viz`.
 - `src/view.rs` (`wasm32`-only) — raw `web-sys` + leptos reactive-primitive
   DOM wiring (no `view!` macro) that renders the three triggers, the
   write/barrier/read/serve split, animates packets colored by `JobSource`, and
@@ -49,7 +49,7 @@ generation the `ArcSwap` currently holds, independent of any run completing.
 ## Run it in a browser
 
 ```sh
-cd crates/gh-report-queue-viz
+cd crates/cherry-pit-sd-viz
 wasm-pack build --target web --out-dir pkg --dev
 python3 -m http.server 8787
 # open http://localhost:8787/index.html
@@ -59,10 +59,10 @@ Equivalent `wasm-bindgen-cli` form (no `wasm-pack` install required, matches
 the exact CI-verified build command):
 
 ```sh
-cd crates/gh-report-queue-viz
+cd crates/cherry-pit-sd-viz
 cargo build --target wasm32-unknown-unknown
 wasm-bindgen --target web --out-dir pkg \
-  ../../target/wasm32-unknown-unknown/debug/gh_report_queue_viz.wasm
+  ../../target/wasm32-unknown-unknown/debug/cherry_pit_sd_viz.wasm
 python3 -m http.server 8787
 # open http://localhost:8787/index.html
 ```

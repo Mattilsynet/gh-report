@@ -1,4 +1,4 @@
-import init, { tick } from "./pkg/gh_report_queue_viz.js";
+import init, { tick } from "./pkg/cherry_pit_sd_viz.js";
 
 async function main() {
   await init();

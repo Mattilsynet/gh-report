@@ -12,7 +12,7 @@
 //!
 //! Run in a browser:
 //! ```text
-//! cd crates/gh-report-queue-viz
+//! cd crates/cherry-pit-sd-viz
 //! wasm-pack build --target web --out-dir pkg --dev
 //! python3 -m http.server 8787
 //! # open http://localhost:8787/index.html
@@ -20,7 +20,7 @@
 //! See `README.md` for the exact commands (wasm-pack and
 //! wasm-bindgen-cli variants).
 
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 pub mod sim;
 
