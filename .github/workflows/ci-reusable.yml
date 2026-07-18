@@ -32,25 +32,41 @@ jobs:
       # crate for its real target every CI run so source drift from the
       # committed artefact cannot pass unnoticed.
       - run: cargo build -p gh-report-web-client --target wasm32-unknown-unknown --release --locked
-      # Tripwire: regenerate the committed wasm/js artefact pair from source
-      # and diff against what's checked in. Catches artefact drift where the
-      # committed glue/wasm pair no longer matches a clean regen (e.g. the
-      # hyphen/underscore import-key mismatch fixed by bd adr-fmt-p5tnh, root
-      # cause bd adr-fmt-xgcnn). wasm-bindgen-cli is pinned to the exact
-      # version the workspace's wasm-bindgen dep resolves to, keeping output
-      # byte-stable across environments.
-      - name: install pinned wasm-bindgen-cli
-        run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
-      - name: regen-diff gh-report-web-client artefacts
+      # Tripwire: assert the committed glue/wasm artefact pair still agrees on
+      # the import-key contract (glue's import-object key == the wasm
+      # module's expected import module == "./gh-report-web-client_bg.js").
+      # This is NOT a byte-diff: wasm32 release builds are not
+      # byte-reproducible across hosts (LLVM codegen nondeterminism,
+      # build-path embedding), so a regen-and-diff gate false-positives on
+      # every host that isn't bit-identical to the original build machine
+      # (blocked v0.1.39 and v0.1.40, both tagged, both CI-red — bd
+      # adr-fmt-2es67). The prior hyphen/underscore import-key mismatch this
+      # tripwire actually guards against is bd adr-fmt-xgcnn.
+      - name: install wasm-tools
+        run: cargo install wasm-tools --locked
+      - name: import-key invariant (gh-report-web-client wasm/glue)
         if: always()
         run: |
           set -euo pipefail
-          cargo build --release --target wasm32-unknown-unknown -p gh-report-web-client --locked
-          wasm-bindgen --target web --out-name gh-report-web-client --out-dir crates/gh-report/templates target/wasm32-unknown-unknown/release/gh_report_web_client.wasm
-          rm -f crates/gh-report/templates/gh-report-web-client_bg.wasm.d.ts
-          if ! git diff --exit-code -- crates/gh-report/templates/gh-report-web-client.js crates/gh-report/templates/gh-report-web-client_bg.wasm; then
-            echo "::error::committed gh-report-web-client.js/_bg.wasm artefacts are stale or hand-edited"
-            echo "::error::regenerate with: cargo build --release --target wasm32-unknown-unknown -p gh-report-web-client --locked && wasm-bindgen --target web --out-name gh-report-web-client --out-dir crates/gh-report/templates target/wasm32-unknown-unknown/release/gh_report_web_client.wasm"
+          EXPECTED="./gh-report-web-client_bg.js"
+          GLUE=crates/gh-report/templates/gh-report-web-client.js
+          WASM=crates/gh-report/templates/gh-report-web-client_bg.wasm
+          glue_key="$(grep -oE '"\./gh-report-web-client_bg\.js":' "$GLUE" | head -n1 | sed 's/:$//; s/^"//; s/"$//')"
+          wasm_mod="$(wasm-tools print "$WASM" \
+            | grep -oE '\(import "[^"]+"' \
+            | sed -E 's/^\(import "//; s/"$//' \
+            | sort -u)"
+          if [ "$glue_key" != "$EXPECTED" ]; then
+            echo "::error::glue import key [$glue_key] != expected [$EXPECTED] (see bd adr-fmt-xgcnn, adr-fmt-2es67)"
+            exit 1
+          fi
+          if [ "$wasm_mod" != "$EXPECTED" ]; then
+            echo "::error::wasm import module [$wasm_mod] != expected [$EXPECTED] (see bd adr-fmt-xgcnn, adr-fmt-2es67)"
+            exit 1
+          fi
+          n=$(printf '%s\n' "$wasm_mod" | grep -c .)
+          if [ "$n" -ne 1 ]; then
+            echo "::error::wasm has $n distinct import modules, expected exactly 1 (see bd adr-fmt-xgcnn, adr-fmt-2es67)"
             exit 1
           fi
       # Lint the wasm-only crate on its real target so dom.rs (cfg(wasm32))
