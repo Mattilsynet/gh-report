@@ -23,6 +23,7 @@
 #![forbid(unsafe_code)]
 
 pub mod binding;
+pub mod layout;
 pub mod sd;
 pub mod sim;
 pub mod sparkline;
