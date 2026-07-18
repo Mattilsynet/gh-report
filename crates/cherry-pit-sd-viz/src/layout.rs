@@ -273,13 +273,76 @@ pub fn slot_anchor(row: usize, col: usize, side: Side, params: GridParams) -> (f
 pub fn bezier_edge_path(from: (f64, f64), to: (f64, f64)) -> String {
     let (fx, fy) = from;
     let (tx, ty) = to;
+    let ((c1x, c1y), (c2x, c2y)) = bezier_control_points(from, to);
+    format!("M{fx},{fy} C{c1x},{c1y} {c2x},{c2y} {tx},{ty}")
+}
+
+/// The same two cubic-bezier control points [`bezier_edge_path`]
+/// bakes into its `d` string, exposed standalone so a belt-motion
+/// evaluator ([`cubic_point_at`], [`cubic_arc_length`]) can sample the
+/// identical curve a rendered edge draws, rather than re-deriving
+/// control-point placement from scratch.
+#[must_use]
+pub fn bezier_control_points(from: (f64, f64), to: (f64, f64)) -> ((f64, f64), (f64, f64)) {
+    let (fx, fy) = from;
+    let (tx, ty) = to;
     let (dx, dy) = (tx - fx, ty - fy);
-    let ((c1x, c1y), (c2x, c2y)) = if dy.abs() >= dx.abs() {
+    if dy.abs() >= dx.abs() {
         ((fx + dx / 3.0, fy), (fx + dx * 2.0 / 3.0, ty))
     } else {
         ((fx, fy + dy / 3.0), (tx, fy + dy * 2.0 / 3.0))
-    };
-    format!("M{fx},{fy} C{c1x},{c1y} {c2x},{c2y} {tx},{ty}")
+    }
+}
+
+/// Evaluates the cubic bezier `(from, c1, c2, to)` at parameter
+/// `t` (clamped to `0.0..=1.0`) via De Casteljau's algorithm, giving
+/// the `(x, y)` point a belt item at fraction `t` along the curve
+/// should render at.
+#[must_use]
+pub fn cubic_point_at(
+    from: (f64, f64),
+    control: ((f64, f64), (f64, f64)),
+    to: (f64, f64),
+    t: f64,
+) -> (f64, f64) {
+    let t = t.clamp(0.0, 1.0);
+    let (c1, c2) = control;
+    let lerp = |a: (f64, f64), b: (f64, f64)| (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+    let ab = lerp(from, c1);
+    let bc = lerp(c1, c2);
+    let cd = lerp(c2, to);
+    let abc = lerp(ab, bc);
+    let bcd = lerp(bc, cd);
+    lerp(abc, bcd)
+}
+
+/// Approximates the arc length of the cubic bezier `(from, c1, c2,
+/// to)` by summing `steps` straight-line chords sampled via
+/// [`cubic_point_at`]. `steps` of `0` is clamped to `1` (a single
+/// straight-line chord from `from` to `to`, the coarsest possible but
+/// still non-degenerate estimate).
+#[must_use]
+pub fn cubic_arc_length(
+    from: (f64, f64),
+    control: ((f64, f64), (f64, f64)),
+    to: (f64, f64),
+    steps: usize,
+) -> f64 {
+    let steps = steps.max(1);
+    let mut total = 0.0;
+    let mut previous = from;
+    for step in 1..=steps {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "arc-length sample counts are bounded well under 2^52 for any realistic belt"
+        )]
+        let t = step as f64 / steps as f64;
+        let current = cubic_point_at(from, control, to, t);
+        let (dx, dy) = (current.0 - previous.0, current.1 - previous.1);
+        total += dx.hypot(dy);
+        previous = current;
+    }
+    total
 }
 
 /// The total `(width, height)` in px a grid of `max_rows` by
@@ -306,10 +369,10 @@ pub fn grid_dimensions(max_rows: usize, max_cols: usize, params: GridParams) -> 
 #[cfg(test)]
 mod tests {
     use super::{
-        GridParams, Side, StockKind, bezier_edge_path, cloud_direction_glyph,
-        compression_ratio_percent, dot_x, format_bounded_level, format_percent, format_rate,
-        format_residence, grid_dimensions, grid_slot_origin, level_delta_flows,
-        polarity_badge_label, slot_anchor,
+        GridParams, Side, StockKind, bezier_control_points, bezier_edge_path,
+        cloud_direction_glyph, compression_ratio_percent, cubic_arc_length, cubic_point_at, dot_x,
+        format_bounded_level, format_percent, format_rate, format_residence, grid_dimensions,
+        grid_slot_origin, level_delta_flows, polarity_badge_label, slot_anchor,
     };
     use crate::sd::{LoopPolarity, Terminal};
 
@@ -546,5 +609,76 @@ mod tests {
     fn compression_ratio_some_when_raw_bytes_present() {
         let ratio = compression_ratio_percent(100, 40).expect("raw bytes present");
         assert!((ratio - 40.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn cubic_point_at_zero_and_one_lands_on_endpoints() {
+        let from = (0.0, 0.0);
+        let to = (100.0, 200.0);
+        let control = bezier_control_points(from, to);
+        let start = cubic_point_at(from, control, to, 0.0);
+        let end = cubic_point_at(from, control, to, 1.0);
+        assert!((start.0 - from.0).abs() < f64::EPSILON && (start.1 - from.1).abs() < f64::EPSILON);
+        assert!((end.0 - to.0).abs() < f64::EPSILON && (end.1 - to.1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn cubic_point_at_clamps_out_of_range_t() {
+        let from = (0.0, 0.0);
+        let to = (10.0, 10.0);
+        let control = bezier_control_points(from, to);
+        let below = cubic_point_at(from, control, to, -5.0);
+        let above = cubic_point_at(from, control, to, 5.0);
+        assert!((below.0 - from.0).abs() < f64::EPSILON);
+        assert!((above.0 - to.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn cubic_point_at_matches_bezier_edge_path_control_points() {
+        let from = slot_anchor(0, 0, Side::Bottom, GRID);
+        let to = slot_anchor(1, 0, Side::Top, GRID);
+        let control = bezier_control_points(from, to);
+        let mid = cubic_point_at(from, control, to, 0.5);
+        assert!(
+            mid.1 > from.1 && mid.1 < to.1,
+            "midpoint must sit strictly between endpoints on a vertical edge"
+        );
+    }
+
+    #[test]
+    fn cubic_arc_length_straight_vertical_line_matches_euclidean_distance() {
+        let from = (0.0, 0.0);
+        let to = (0.0, 100.0);
+        let control = ((0.0, 33.0), (0.0, 66.0));
+        let length = cubic_arc_length(from, control, to, 64);
+        assert!(
+            (length - 100.0).abs() < 0.01,
+            "collinear control points yield a straight line, length {length}"
+        );
+    }
+
+    #[test]
+    fn cubic_arc_length_zero_steps_clamps_to_one_chord() {
+        let from = (0.0, 0.0);
+        let to = (3.0, 4.0);
+        let control = bezier_control_points(from, to);
+        let length = cubic_arc_length(from, control, to, 0);
+        assert!(
+            length > 0.0,
+            "zero steps must clamp to a single non-degenerate chord"
+        );
+    }
+
+    #[test]
+    fn cubic_arc_length_increases_with_curve_distance() {
+        let short_from = (0.0, 0.0);
+        let short_to = (10.0, 0.0);
+        let long_from = (0.0, 0.0);
+        let long_to = (500.0, 0.0);
+        let short_control = bezier_control_points(short_from, short_to);
+        let long_control = bezier_control_points(long_from, long_to);
+        let short_length = cubic_arc_length(short_from, short_control, short_to, 32);
+        let long_length = cubic_arc_length(long_from, long_control, long_to, 32);
+        assert!(long_length > short_length);
     }
 }

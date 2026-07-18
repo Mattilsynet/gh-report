@@ -24,6 +24,7 @@
 
 pub mod binding;
 pub mod layout;
+pub mod scene;
 pub mod sd;
 pub mod sim;
 pub mod sparkline;
