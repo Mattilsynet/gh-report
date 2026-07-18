@@ -225,10 +225,359 @@ pub fn loop_polarity(negative_links: usize) -> LoopPolarity {
     }
 }
 
+/// Opaque handle to a [`Stock`] owned by a [`Model`]. Distinct from
+/// [`FlowId`], [`ConverterId`], and [`CloudId`] at the type level so
+/// the sealed endpoint-kind traits below can admit or reject a handle
+/// per invariants 1, 3, 4, 5 of adr-fmt-qaavg without any runtime tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StockId(usize);
+
+/// Opaque handle to a [`Flow`] edge owned by a [`Model`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FlowId(usize);
+
+/// Opaque handle to a [`Converter`] owned by a [`Model`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ConverterId(usize);
+
+/// Opaque handle to a [`Terminal`] (cloud) owned by a [`Model`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CloudId(usize);
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// A flow's material endpoint identity, per adr-fmt-qaavg invariant 1:
+/// a flow's two material endpoints are drawn from {Stock, Cloud}
+/// exclusively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlowTerminal {
+    Stock(StockId),
+    Cloud(CloudId),
+}
+
+/// A connector edge's node identity, per adr-fmt-qaavg invariants 3-6:
+/// connector tails read Stock/Flow/Converter (never Cloud, invariant
+/// 5); connector heads write into Flow/Converter only (never Stock —
+/// invariant 3, never Cloud — invariant 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectorNode {
+    Stock(StockId),
+    Flow(FlowId),
+    Converter(ConverterId),
+}
+
+/// Sealed marker for types legal as a [`Flow`]'s material endpoint.
+/// Implemented only for [`StockId`] and [`CloudId`] (adr-fmt-qaavg
+/// invariant 1) — [`ConverterId`] and connector identities intentionally
+/// have no impl, so passing one to [`Model::connect_flow`] fails to
+/// type-check rather than failing at runtime (invariants 1 and 7).
+pub trait FlowEndpoint: sealed::Sealed {
+    #[doc(hidden)]
+    fn into_flow_terminal(self) -> FlowTerminal;
+}
+
+impl sealed::Sealed for StockId {}
+impl FlowEndpoint for StockId {
+    fn into_flow_terminal(self) -> FlowTerminal {
+        FlowTerminal::Stock(self)
+    }
+}
+
+impl sealed::Sealed for CloudId {}
+impl FlowEndpoint for CloudId {
+    fn into_flow_terminal(self) -> FlowTerminal {
+        FlowTerminal::Cloud(self)
+    }
+}
+
+/// Sealed marker for types legal as a [`Connector`]'s tail (read
+/// side). Implemented for [`StockId`], [`FlowId`], [`ConverterId`] —
+/// deliberately NOT for [`CloudId`] (adr-fmt-qaavg invariant 5: clouds
+/// carry no readable state).
+pub trait ConnectorTail: sealed::Sealed {
+    #[doc(hidden)]
+    fn into_connector_node(self) -> ConnectorNode;
+}
+
+/// Sealed marker for types legal as a [`Connector`]'s head (write
+/// side). Implemented only for [`FlowId`] and [`ConverterId`] —
+/// deliberately NOT for [`StockId`] (adr-fmt-qaavg invariant 3: a
+/// stock changes only via its attached flows) and NOT for [`CloudId`]
+/// (invariant 6: clouds are never a connector endpoint).
+pub trait ConnectorHead: sealed::Sealed {
+    #[doc(hidden)]
+    fn into_connector_node(self) -> ConnectorNode;
+}
+
+impl ConnectorTail for StockId {
+    fn into_connector_node(self) -> ConnectorNode {
+        ConnectorNode::Stock(self)
+    }
+}
+
+impl ConnectorTail for FlowId {
+    fn into_connector_node(self) -> ConnectorNode {
+        ConnectorNode::Flow(self)
+    }
+}
+impl sealed::Sealed for FlowId {}
+
+impl ConnectorHead for FlowId {
+    fn into_connector_node(self) -> ConnectorNode {
+        ConnectorNode::Flow(self)
+    }
+}
+
+impl ConnectorTail for ConverterId {
+    fn into_connector_node(self) -> ConnectorNode {
+        ConnectorNode::Converter(self)
+    }
+}
+impl sealed::Sealed for ConverterId {}
+
+impl ConnectorHead for ConverterId {
+    fn into_connector_node(self) -> ConnectorNode {
+        ConnectorNode::Converter(self)
+    }
+}
+
+/// A stored material edge: an ordered pair of [`FlowTerminal`]s plus
+/// the [`Flow`] rate mode connecting them.
+struct FlowEdge {
+    from: FlowTerminal,
+    to: FlowTerminal,
+    #[expect(
+        dead_code,
+        reason = "stored for a future rate-consistency check; not yet consumed by Model::build"
+    )]
+    flow: Flow,
+}
+
+/// A stored information edge: an ordered pair of [`ConnectorNode`]s.
+/// Carries no material value — only node identity — so it structurally
+/// cannot move material (adr-fmt-qaavg invariant 2).
+struct ConnectorEdge {
+    #[expect(
+        dead_code,
+        reason = "stored for the invariant-8 advisory follow-up (stock-free loop detection); not yet consumed"
+    )]
+    tail: ConnectorNode,
+    #[expect(
+        dead_code,
+        reason = "stored for the invariant-8 advisory follow-up (stock-free loop detection); not yet consumed"
+    )]
+    head: ConnectorNode,
+}
+
+/// Errors rejected only at [`Model::build`], i.e. rules that need
+/// graph-global information a single [`Model::connect_flow`] or
+/// [`Model::connect_info`] call cannot see. Marked `#[non_exhaustive]`
+/// per CHE-0021:R1 / CHE-0094:R13 — new graph-global rules may add
+/// variants without that being a breaking change.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SdConnectionError {
+    /// Both of a flow's material endpoints are the same or different
+    /// clouds: the edge has no effect on any tracked stock and is
+    /// degenerate per the adr-fmt-qaavg connection matrix (cloud->cloud
+    /// is listed forbidden as a no-op).
+    DegenerateCloudToCloudFlow {
+        /// Index of the offending flow edge, in insertion order.
+        flow_index: usize,
+    },
+}
+
+/// A system-dynamics model under construction: a non-generic builder
+/// over [`StockId`], [`FlowId`], [`ConverterId`], [`CloudId`] handles.
+/// Endpoint-kind legality for flows (invariants 1, 7) and connectors
+/// (invariants 3, 4, 5, 6) is enforced at compile time via the sealed
+/// [`FlowEndpoint`], [`ConnectorTail`], [`ConnectorHead`] traits — an
+/// illegal edge simply does not type-check. Graph-global rules that a
+/// single edge can't see (this iteration: cloud-to-cloud degenerate
+/// flows) are checked once at [`Model::build`].
+///
+/// Invariant 8 of adr-fmt-qaavg (a genuine feedback loop passes
+/// through at least one Stock) is ADVISORY ONLY this iteration: it is
+/// the matrix's weakest-sourced/inferred claim, and enforcing it needs
+/// cycle detection over the connector+flow graph, which this builder
+/// does not implement. A model may legally construct a stock-free
+/// algebraic loop (Converter/Connector cycle with no Stock); such a
+/// loop is a known, intentionally-unrejected follow-up, not silently
+/// assumed absent.
+///
+/// Converters are stored behind `Box<dyn Fn() -> f64>` rather than the
+/// generic [`Converter<F>`] so `Model` itself carries no type
+/// parameter — a deliberate design choice so this builder does not
+/// infect `binding.rs` or `view.rs` public signatures with a generic
+/// or lifetime parameter (mission `sd-ci-02-api` abort condition).
+///
+/// # Compile-fail evidence for the sealed endpoint-kind rules
+///
+/// Invariant 1 / 7 — a converter is never a flow's material endpoint:
+///
+/// ```compile_fail
+/// let mut model = cherry_pit_sd_viz::sd::Model::new();
+/// let stock = model.add_stock(cherry_pit_sd_viz::sd::Stock::new(0.0));
+/// let converter = model.add_converter(|| 1.0);
+/// model.connect_flow(converter, stock, cherry_pit_sd_viz::sd::Flow::Uniflow(1.0));
+/// ```
+///
+/// Invariant 3 — a connector head is never a stock:
+///
+/// ```compile_fail
+/// let mut model = cherry_pit_sd_viz::sd::Model::new();
+/// let stock = model.add_stock(cherry_pit_sd_viz::sd::Stock::new(0.0));
+/// let cloud = model.add_cloud(cherry_pit_sd_viz::sd::Terminal::Source);
+/// let flow = model.connect_flow(cloud, stock, cherry_pit_sd_viz::sd::Flow::Uniflow(1.0));
+/// model.connect_info(flow, stock);
+/// ```
+///
+/// Invariant 4 / 6 — a connector head is never a cloud:
+///
+/// ```compile_fail
+/// let mut model = cherry_pit_sd_viz::sd::Model::new();
+/// let stock = model.add_stock(cherry_pit_sd_viz::sd::Stock::new(0.0));
+/// let cloud = model.add_cloud(cherry_pit_sd_viz::sd::Terminal::Sink);
+/// model.connect_info(stock, cloud);
+/// ```
+///
+/// Invariant 5 / 6 — a connector tail is never a cloud:
+///
+/// ```compile_fail
+/// let mut model = cherry_pit_sd_viz::sd::Model::new();
+/// let stock = model.add_stock(cherry_pit_sd_viz::sd::Stock::new(0.0));
+/// let cloud = model.add_cloud(cherry_pit_sd_viz::sd::Terminal::Source);
+/// let flow = model.connect_flow(cloud, stock, cherry_pit_sd_viz::sd::Flow::Uniflow(1.0));
+/// model.connect_info(cloud, flow);
+/// ```
+#[derive(Default)]
+pub struct Model {
+    stocks: Vec<Stock>,
+    clouds: Vec<Terminal>,
+    converters: Vec<Box<dyn Fn() -> f64>>,
+    flows: Vec<FlowEdge>,
+    connectors: Vec<ConnectorEdge>,
+}
+
+impl Model {
+    /// Creates an empty model.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers a [`Stock`], returning its handle.
+    pub fn add_stock(&mut self, stock: Stock) -> StockId {
+        self.stocks.push(stock);
+        StockId(self.stocks.len() - 1)
+    }
+
+    /// Registers a [`Terminal`] (cloud), returning its handle.
+    pub fn add_cloud(&mut self, cloud: Terminal) -> CloudId {
+        self.clouds.push(cloud);
+        CloudId(self.clouds.len() - 1)
+    }
+
+    /// Registers a converter's algebraic function, returning its
+    /// handle. `compute` is boxed internally so `Model` stays
+    /// non-generic regardless of how many distinct converter closures
+    /// a caller registers.
+    pub fn add_converter<F>(&mut self, compute: F) -> ConverterId
+    where
+        F: Fn() -> f64 + 'static,
+    {
+        self.converters.push(Box::new(compute));
+        ConverterId(self.converters.len() - 1)
+    }
+
+    /// Connects a material [`Flow`] between two endpoints. Both `from`
+    /// and `to` must implement [`FlowEndpoint`] — only [`StockId`] and
+    /// [`CloudId`] do, per adr-fmt-qaavg invariant 1, so passing a
+    /// [`ConverterId`] here does not compile (invariant 7 falls out
+    /// for free: a converter can never sit in a flow's material path).
+    pub fn connect_flow(
+        &mut self,
+        from: impl FlowEndpoint,
+        to: impl FlowEndpoint,
+        flow: Flow,
+    ) -> FlowId {
+        self.flows.push(FlowEdge {
+            from: from.into_flow_terminal(),
+            to: to.into_flow_terminal(),
+            flow,
+        });
+        FlowId(self.flows.len() - 1)
+    }
+
+    /// Connects an information-only [`Connector`] edge from `tail`
+    /// (read side) to `head` (write side). `tail` must implement
+    /// [`ConnectorTail`] (Stock, Flow, or Converter — never Cloud, per
+    /// invariant 5); `head` must implement [`ConnectorHead`] (Flow or
+    /// Converter — never Stock, invariant 3/4; never Cloud, invariant
+    /// 6). Illegal combinations do not compile. Stores only node
+    /// identity, never a value or a handle capable of mutating a
+    /// stock, so no material can move through the returned edge
+    /// (invariant 2).
+    pub fn connect_info(&mut self, tail: impl ConnectorTail, head: impl ConnectorHead) {
+        self.connectors.push(ConnectorEdge {
+            tail: tail.into_connector_node(),
+            head: head.into_connector_node(),
+        });
+    }
+
+    /// Finalizes the model, running the graph-global checks that a
+    /// single [`Model::connect_flow`] call cannot see on its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SdConnectionError::DegenerateCloudToCloudFlow`] when
+    /// any registered flow has both material endpoints as clouds — an
+    /// edge with no effect on any tracked stock, forbidden as a no-op
+    /// per the adr-fmt-qaavg connection matrix.
+    pub fn build(self) -> Result<Self, SdConnectionError> {
+        for (flow_index, edge) in self.flows.iter().enumerate() {
+            if matches!(
+                (&edge.from, &edge.to),
+                (FlowTerminal::Cloud(_), FlowTerminal::Cloud(_))
+            ) {
+                return Err(SdConnectionError::DegenerateCloudToCloudFlow { flow_index });
+            }
+        }
+        Ok(self)
+    }
+
+    /// Number of stocks registered so far.
+    #[must_use]
+    pub fn stock_count(&self) -> usize {
+        self.stocks.len()
+    }
+
+    /// Number of flow edges registered so far.
+    #[must_use]
+    pub fn flow_count(&self) -> usize {
+        self.flows.len()
+    }
+
+    /// Number of connector edges registered so far.
+    #[must_use]
+    pub fn connector_count(&self) -> usize {
+        self.connectors.len()
+    }
+
+    /// Number of converters registered so far.
+    #[must_use]
+    pub fn converter_count(&self) -> usize {
+        self.converters.len()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        Connector, Converter, Flow, LevelHistory, LoopPolarity, Stock, Terminal, loop_polarity,
+        Connector, Converter, Flow, LevelHistory, LoopPolarity, Model, SdConnectionError, Stock,
+        Terminal, loop_polarity,
     };
 
     #[test]
@@ -361,5 +710,98 @@ mod tests {
         assert_eq!(history.latest(), Some(7.0));
         history.push(9.0);
         assert_eq!(history.latest(), Some(9.0));
+    }
+
+    #[test]
+    fn flow_endpoint_stock_to_cloud_is_legal() {
+        let mut model = Model::new();
+        let stock = model.add_stock(Stock::new(50.0));
+        let cloud = model.add_cloud(Terminal::Sink);
+        model.connect_flow(stock, cloud, Flow::Uniflow(2.0));
+        assert_eq!(model.flow_count(), 1);
+    }
+
+    #[test]
+    fn connector_edge_stores_identity_not_material_value() {
+        let mut model = Model::new();
+        let stock = model.add_stock(Stock::new(100.0));
+        let cloud = model.add_cloud(Terminal::Sink);
+        let flow = model.connect_flow(stock, cloud, Flow::Uniflow(1.0));
+        model.connect_info(stock, flow);
+        assert_eq!(model.connector_count(), 1);
+        assert!((model.stocks[0].level() - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn connector_tail_stock_into_flow_is_legal() {
+        let mut model = Model::new();
+        let stock = model.add_stock(Stock::new(10.0));
+        let cloud = model.add_cloud(Terminal::Sink);
+        let flow = model.connect_flow(stock, cloud, Flow::Uniflow(1.0));
+        model.connect_info(stock, flow);
+        assert_eq!(model.connector_count(), 1);
+    }
+
+    #[test]
+    fn connector_head_into_converter_is_legal() {
+        let mut model = Model::new();
+        let stock = model.add_stock(Stock::new(3.0));
+        let converter = model.add_converter(|| 42.0);
+        model.connect_info(stock, converter);
+        assert_eq!(model.connector_count(), 1);
+        assert_eq!(model.converter_count(), 1);
+    }
+
+    #[test]
+    fn connector_tail_converter_into_flow_is_legal() {
+        let mut model = Model::new();
+        let stock = model.add_stock(Stock::new(0.0));
+        let cloud = model.add_cloud(Terminal::Source);
+        let converter = model.add_converter(|| 5.0);
+        let flow = model.connect_flow(cloud, stock, Flow::Uniflow(1.0));
+        model.connect_info(converter, flow);
+        assert_eq!(model.connector_count(), 1);
+    }
+
+    #[test]
+    fn flow_endpoint_cloud_to_stock_is_legal() {
+        let mut model = Model::new();
+        let stock = model.add_stock(Stock::new(0.0));
+        let cloud = model.add_cloud(Terminal::Source);
+        model.connect_flow(cloud, stock, Flow::Uniflow(4.0));
+        assert_eq!(model.flow_count(), 1);
+    }
+
+    #[test]
+    fn converter_feeds_flow_via_connector_is_legal() {
+        let mut model = Model::new();
+        let stock = model.add_stock(Stock::new(0.0));
+        let cloud = model.add_cloud(Terminal::Source);
+        let converter = model.add_converter(|| 9.0);
+        let flow = model.connect_flow(cloud, stock, Flow::Uniflow(1.0));
+        model.connect_info(converter, flow);
+        assert_eq!(model.connector_count(), 1);
+        assert_eq!(model.flow_count(), 1);
+    }
+
+    #[test]
+    fn cloud_to_cloud_flow_builds_err_degenerate_cloud_to_cloud() {
+        let mut model = Model::new();
+        let source = model.add_cloud(Terminal::Source);
+        let sink = model.add_cloud(Terminal::Sink);
+        model.connect_flow(source, sink, Flow::Uniflow(1.0));
+        assert!(matches!(
+            model.build(),
+            Err(SdConnectionError::DegenerateCloudToCloudFlow { flow_index: 0 })
+        ));
+    }
+
+    #[test]
+    fn stock_to_cloud_flow_builds_successfully() {
+        let mut model = Model::new();
+        let stock = model.add_stock(Stock::new(1.0));
+        let cloud = model.add_cloud(Terminal::Sink);
+        model.connect_flow(stock, cloud, Flow::Uniflow(1.0));
+        assert!(model.build().is_ok());
     }
 }
