@@ -6,10 +6,29 @@
 //! exhaustive match with no wildcard arm (CHE-0088:R7). This makes
 //! per-callsite silent-swallow of a durable-write failure
 //! non-representable rather than merely discouraged.
+//!
+//! ## Logging (SEC-0007:R1/R2)
+//!
+//! [`log_write_failure`] and [`source_chain`] are the shared surface for
+//! logging a write failure with full diagnostic detail. Every level of
+//! the `std::error::Error::source()` chain is bounded via
+//! [`truncate_error_body`] before it reaches a tracing macro, extending
+//! the same redaction control [`crate::github::client`] already applies
+//! to GitHub API error bodies to the unbounded free-text `reason: String`
+//! fields on `PersistenceError::LockFailed` / `AtomicWriteFailed` /
+//! `LoadFailed`. `SecretString`-wrapped credentials are never unwrapped
+//! near a tracing macro in this module. GitHub team-member login handles
+//! are kept out of every write-failure log record (status quo:
+//! redaction-by-omission, not yet a documented ADR rule per COM-0013
+//! defer-don't-build).
 
 use std::time::Duration;
 
 use cherry_pit_storage::PersistenceError;
+use tracing::{error, warn};
+
+use crate::error::persist_error_variant;
+use crate::github::client::truncate_error_body;
 
 /// Bounded retry attempt count for [`WriteResponse::BoundedRetry`]
 /// (CHE-0046: retry is explicit and bounded, never unbounded).
@@ -103,6 +122,82 @@ impl WriteFailure {
             response: category.response(),
             error,
         }
+    }
+}
+
+/// Caller-supplied aggregate context for [`log_write_failure`]. Every
+/// field is optional because callers differ in what identity they hold
+/// at the failure site (a team-refresh writer knows `team_slug` but not
+/// `domain_key`; a collect-cycle writer knows `writer_id` but not
+/// `team_slug`).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WriteFailureContext<'a> {
+    pub org: Option<&'a str>,
+    pub team_slug: Option<&'a str>,
+    pub domain_key: Option<&'a str>,
+    pub writer_id: Option<&'a str>,
+}
+
+/// Render the full `std::error::Error::source()` chain of `error` as a
+/// single string, one level's `Display` per `<- ` separator, each level
+/// bounded via [`truncate_error_body`] (SEC-0007:R1 — an unbounded
+/// lower-layer `reason: String` must not reach a log record whole).
+///
+/// Walking `source()` explicitly (rather than relying on the top-level
+/// `Display` impl to interpolate `{source}`) is deliberate: `thiserror`
+/// nesting silently stops the moment any intermediate layer's `Display`
+/// omits `{source}`, so a caller reading only `error.to_string()` can
+/// lose detail without any signal that it happened.
+pub(crate) fn source_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut chain = truncate_error_body(&error.to_string());
+    let mut current = error.source();
+    while let Some(source) = current {
+        chain.push_str(" <- ");
+        chain.push_str(&truncate_error_body(&source.to_string()));
+        current = source.source();
+    }
+    chain
+}
+
+/// Log a classified [`WriteFailure`] with the full diagnostic detail an
+/// agent needs for high-certainty root-cause: the `PersistenceError`
+/// variant name, its policy category and ratified response, the caller's
+/// aggregate context, and the full `source()` chain (via
+/// [`source_chain`]) rather than only the top-level `Display`.
+///
+/// Severity follows [`WriteResponse`]: `Fatal` logs at `error!`;
+/// `BoundedRetry` and `HttpNon2xx` log at `warn!` (the write may yet
+/// succeed on retry, or the caller has a transport-level recovery path).
+///
+/// This is the ONE shared call site for write-failure logging (S1); do
+/// not hand-roll an ad-hoc field set at a new call site — call this
+/// instead.
+pub fn log_write_failure(failure: &WriteFailure, context: WriteFailureContext<'_>) {
+    let persist_error_variant = persist_error_variant(&failure.error);
+    let source_chain = source_chain(&failure.error);
+    match failure.response {
+        WriteResponse::Fatal => error!(
+            persist_error_variant,
+            category = ?failure.category,
+            response = ?failure.response,
+            org = context.org,
+            team_slug = context.team_slug,
+            domain_key = context.domain_key,
+            writer_id = context.writer_id,
+            source_chain = source_chain.as_str(),
+            "durable write failed"
+        ),
+        WriteResponse::BoundedRetry | WriteResponse::HttpNon2xx => warn!(
+            persist_error_variant,
+            category = ?failure.category,
+            response = ?failure.response,
+            org = context.org,
+            team_slug = context.team_slug,
+            domain_key = context.domain_key,
+            writer_id = context.writer_id,
+            source_chain = source_chain.as_str(),
+            "durable write failed"
+        ),
     }
 }
 
@@ -415,5 +510,100 @@ mod tests {
         });
         assert!(result.is_ok());
         assert_eq!(calls, 2);
+    }
+
+    #[derive(Debug)]
+    struct Innermost;
+
+    impl std::fmt::Display for Innermost {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "innermost cause: bespoke-marker-9f3a")
+        }
+    }
+
+    impl std::error::Error for Innermost {}
+
+    #[derive(Debug)]
+    struct MiddleLayer(Innermost);
+
+    impl std::fmt::Display for MiddleLayer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "middle layer failure")
+        }
+    }
+
+    impl std::error::Error for MiddleLayer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    /// Guards the "logs label, drops source" gap (adr-fmt-i1t4w Deliverable
+    /// B) from silently returning: the innermost cause text is two
+    /// `source()` hops below the top-level `PersistenceError::Display`
+    /// (which reads only "single-writer fence conflict: middle layer
+    /// failure" — it never mentions `bespoke-marker-9f3a`), so this only
+    /// passes if [`log_write_failure`] walks the full chain rather than
+    /// relying on the top-level `Display`.
+    #[test]
+    fn log_write_failure_emits_full_source_chain_not_just_top_level_display() {
+        use std::sync::{Arc, Mutex};
+
+        use tracing::field::{Field, Visit};
+        use tracing_subscriber::layer::{Context, SubscriberExt};
+
+        struct CaptureLayer(Arc<Mutex<String>>);
+
+        struct FieldVisitor<'a>(&'a mut String);
+
+        impl Visit for FieldVisitor<'_> {
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                use std::fmt::Write as _;
+                let _ = write!(self.0, "{}={value:?} ", field.name());
+            }
+
+            fn record_str(&mut self, field: &Field, value: &str) {
+                use std::fmt::Write as _;
+                let _ = write!(self.0, "{}={value} ", field.name());
+            }
+        }
+
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
+            fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+                let mut captured = self.0.lock().expect("capture buffer lock");
+                let mut visitor = FieldVisitor(&mut captured);
+                event.record(&mut visitor);
+            }
+        }
+
+        let captured = Arc::new(Mutex::new(String::new()));
+        let layer = CaptureLayer(Arc::clone(&captured));
+        let subscriber = tracing_subscriber::Registry::default().with(layer);
+
+        let failure = WriteFailure::classify(PersistenceError::FencedConflict {
+            source: Box::new(MiddleLayer(Innermost)),
+        });
+
+        tracing::subscriber::with_default(subscriber, || {
+            log_write_failure(
+                &failure,
+                WriteFailureContext {
+                    org: Some("acme"),
+                    team_slug: None,
+                    domain_key: None,
+                    writer_id: Some("writer-1"),
+                },
+            );
+        });
+
+        let output = captured.lock().expect("capture buffer lock");
+        assert!(
+            !failure.error.to_string().contains("bespoke-marker-9f3a"),
+            "test invariant: top-level Display must NOT already carry the innermost cause"
+        );
+        assert!(
+            output.contains("bespoke-marker-9f3a"),
+            "expected full source chain (innermost cause) in the emitted log record, got: {output}"
+        );
     }
 }

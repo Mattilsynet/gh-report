@@ -38,8 +38,11 @@ use crate::github::pagination;
 use crate::github::rate_limit::RateLimitState;
 
 /// Maximum length of error response body to include in error messages.
-/// Prevents potential token echoing in logs.
-const MAX_ERROR_BODY_LEN: usize = 1024;
+/// Prevents potential token echoing in logs. Reused by
+/// [`crate::app::write_policy`] to bound the unrelated but structurally
+/// similar unbounded free-text `reason` fields on `PersistenceError`
+/// (SEC-0007:R1) before they reach a tracing macro.
+pub(crate) const MAX_ERROR_BODY_LEN: usize = 1024;
 
 /// Result of a single GitHub API request.
 ///
@@ -53,7 +56,7 @@ pub use crate::api_outcome::ApiOutcome;
 ///
 /// Uses `floor_char_boundary` to ensure we never split a multi-byte UTF-8
 /// character, which would cause a panic.
-fn truncate_error_body(body: &str) -> String {
+pub(crate) fn truncate_error_body(body: &str) -> String {
     if body.len() <= MAX_ERROR_BODY_LEN {
         body.to_string()
     } else {

@@ -31,7 +31,7 @@ use crate::app::collect;
 use crate::app::state::{AppState, log_error_chain, read_rss_kb};
 use crate::app::work_queue::JobSource;
 use crate::app::worker_pool::JobOutcome;
-use crate::app::write_policy::write_with_policy_sync;
+use crate::app::write_policy::{WriteFailure, source_chain, write_with_policy_sync};
 use crate::config;
 use crate::config::runtime::RuntimeConfig;
 use crate::domain::evidence::RepositoryEvidence;
@@ -350,10 +350,22 @@ fn spawn_collection_loop(
                     info!("initial collection aborted on shutdown — no report published");
                 }
                 Ok(collect::CollectionOutcome::FencedConflict) => {
-                    warn!(owner_id = %state.owner_id, "initial collection fenced by another writer — schedule re-armed");
+                    warn!(
+                        owner_id = %state.owner_id,
+                        expected = "rollover",
+                        "initial collection fenced by active single-writer guard — expected Cloud-Run-rollover OCC churn (PGN-0016:R7); schedule re-armed"
+                    );
                 }
-                Err(AppError::Persistence(PersistenceError::LockFailed { ref reason })) => {
-                    error!(reason = %reason, "initial collection skipped: lock held");
+                Err(AppError::Persistence(error @ PersistenceError::LockFailed { .. })) => {
+                    let failure = WriteFailure::classify(error);
+                    error!(
+                        persist_error_variant = persist_error_variant(&failure.error),
+                        category = ?failure.category,
+                        response = ?failure.response,
+                        owner_id = %state.owner_id,
+                        source_chain = source_chain(&failure.error).as_str(),
+                        "initial collection skipped: lock held"
+                    );
                 }
                 Err(e) => log_initial_collection_failure(&e),
             }
@@ -386,10 +398,22 @@ fn spawn_collection_loop(
                     info!("scheduled collection aborted on shutdown — no report published");
                 }
                 Ok(collect::CollectionOutcome::FencedConflict) => {
-                    warn!(owner_id = %state.owner_id, "scheduled collection fenced by another writer — schedule re-armed");
+                    warn!(
+                        owner_id = %state.owner_id,
+                        expected = "rollover",
+                        "scheduled collection fenced by active single-writer guard — expected Cloud-Run-rollover OCC churn (PGN-0016:R7); schedule re-armed"
+                    );
                 }
-                Err(AppError::Persistence(PersistenceError::LockFailed { ref reason })) => {
-                    warn!(reason = %reason, "collection skipped: lock held");
+                Err(AppError::Persistence(error @ PersistenceError::LockFailed { .. })) => {
+                    let failure = WriteFailure::classify(error);
+                    warn!(
+                        persist_error_variant = persist_error_variant(&failure.error),
+                        category = ?failure.category,
+                        response = ?failure.response,
+                        owner_id = %state.owner_id,
+                        source_chain = source_chain(&failure.error).as_str(),
+                        "collection skipped: lock held"
+                    );
                 }
                 Err(e) => error!(error = %e, "scheduled collection failed"),
             }
@@ -598,7 +622,7 @@ fn handle_success_outcome(
                 persist_error_variant = persist_error_variant(&failure.error),
                 category = ?failure.category,
                 response = ?failure.response,
-                error = ?failure.error,
+                source_chain = source_chain(&failure.error).as_str(),
                 "job outcome downgraded to failed: durable record write did not succeed"
             );
         }
@@ -630,7 +654,7 @@ fn handle_failure_outcome(
                 persist_error_variant = persist_error_variant(&write_failure.error),
                 category = ?write_failure.category,
                 response = ?write_failure.response,
-                error = ?write_failure.error,
+                source_chain = source_chain(&write_failure.error).as_str(),
                 "repository failure state record failed"
             );
         }

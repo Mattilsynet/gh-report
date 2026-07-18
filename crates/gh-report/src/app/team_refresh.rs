@@ -13,13 +13,13 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::app::state::AppState;
-use crate::app::write_policy::write_with_policy;
+use crate::app::write_policy::{WriteFailureContext, log_write_failure, write_with_policy};
 use crate::collector::team_membership;
 use crate::domain::metrics::{TeamRoster, team_owner_slugs};
-use crate::error::{AppError, persist_error_variant};
+use crate::error::AppError;
 use crate::event::{OrgMembershipFetchStatus, team_domain_key};
 use crate::github::client::GitHubClient;
 
@@ -115,13 +115,14 @@ async fn write_team_event(
         .await
     };
     outcome.map_err(|write_failure| {
-        error!(
-            persist_error_variant = persist_error_variant(&write_failure.error),
-            category = ?write_failure.category,
-            response = ?write_failure.response,
-            team_slug = roster.team_slug.as_str(),
-            detach,
-            "team roster write failed"
+        log_write_failure(
+            &write_failure,
+            WriteFailureContext {
+                org: Some(org),
+                team_slug: Some(roster.team_slug.as_str()),
+                domain_key: None,
+                writer_id: None,
+            },
         );
         AppError::Persistence(write_failure.error)
     })

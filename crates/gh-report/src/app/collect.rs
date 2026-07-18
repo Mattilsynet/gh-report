@@ -37,7 +37,7 @@ use crate::app::state::{
     AppState, CACHED_SORT_CLIENT_JS, CACHED_SORT_CLIENT_WASM, CACHED_SORT_INIT_JS,
     CACHED_STYLESHEET, CACHED_WS_JS, CachedPage,
 };
-use crate::app::write_policy::write_with_policy;
+use crate::app::write_policy::{source_chain, write_with_policy};
 use crate::collector::ghas_scanning;
 use crate::collector::team_membership;
 use crate::collector::{branch_protection, codeowners, dependabot, inventory, security_policy};
@@ -55,7 +55,7 @@ use crate::domain::run::RunMetadata;
 use crate::error::{AppError, GitHubApiError, PersistenceError, persist_error_variant};
 use crate::event::SweepTimeoutEvent;
 use crate::github::auth::{AuthMetadata, CapabilitySet, GitHubAppConfig, GitHubCredential};
-use crate::github::client::GitHubClient;
+use crate::github::client::{GitHubClient, truncate_error_body};
 use crate::infra::{baseline, lock};
 use crate::report::html;
 
@@ -404,7 +404,11 @@ where
         match result {
             Ok(()) => {}
             Err(AppError::Persistence(PersistenceError::FencedConflict { source })) => {
-                warn!(error = %source, "collection fenced by active single-writer guard");
+                warn!(
+                    expected = "rollover",
+                    source_chain = source_chain(source.as_ref()).as_str(),
+                    "collection fenced by active single-writer guard — expected Cloud-Run-rollover OCC churn (PGN-0016:R7)"
+                );
                 return Ok(CollectionOutcome::FencedConflict);
             }
             Err(e) => return Err(e),
@@ -1197,6 +1201,7 @@ async fn finalize_and_publish(
                 persist_error_variant = persist_error_variant(&write_failure.error),
                 category = ?write_failure.category,
                 response = ?write_failure.response,
+                source_chain = source_chain(&write_failure.error).as_str(),
                 "org state record failed"
             );
             AppError::Persistence(write_failure.error)
@@ -1310,7 +1315,7 @@ async fn prepare_collection(
         if let AppError::Persistence(PersistenceError::LockFailed { ref reason }) = e {
             let lock_file = lock::lock_path(&config.store_dir);
             error!(
-                reason = %reason,
+                reason = truncate_error_body(reason).as_str(),
                 lock_file = %lock_file.display(),
                 "collection already in progress; remove lock manually or re-run with --force-unlock"
             );
@@ -1413,6 +1418,8 @@ async fn reconcile_deleted_repositories(
                     persist_error_variant = persist_error_variant(&write_failure.error),
                     category = ?write_failure.category,
                     response = ?write_failure.response,
+                    domain_key = %domain_key,
+                    source_chain = source_chain(&write_failure.error).as_str(),
                     "repository deletion record failed"
                 );
                 write_failure.error
