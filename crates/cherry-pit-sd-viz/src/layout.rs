@@ -199,13 +199,224 @@ pub fn compression_ratio_percent(raw_bytes: usize, compressed_bytes: usize) -> O
     Some(compressed_bytes as f64 / raw_bytes as f64 * 100.0)
 }
 
+/// Fixed spacing/sizing parameters for the computed grid layout
+/// (adr-fmt-izwyo): margin from the viewBox edge, per-column and
+/// per-row pitch (box size plus gutter), and the box's own
+/// dimensions. One set of params drives [`grid_slot_origin`],
+/// [`slot_anchor`], and [`grid_dimensions`] so node placement and
+/// viewBox sizing can never drift apart.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GridParams {
+    pub margin: f64,
+    pub col_pitch: f64,
+    pub row_pitch: f64,
+    pub box_width: f64,
+    pub box_height: f64,
+}
+
+/// Which edge midpoint of a slot's box an edge-path anchor attaches
+/// to: [`Side::Top`]/[`Side::Bottom`] for vertical flow (sources
+/// above, clients below), [`Side::Left`]/[`Side::Right`] for
+/// same-row or backward-referencing edges (e.g. `github_pull`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+/// The top-left `(x, y)` px of the box at zero-indexed `(row, col)`,
+/// packing columns left-to-right and rows top-to-bottom so row 0
+/// (sources) sits above every later row and the highest-`col` box of
+/// the last row sits at the maximum x (adr-fmt-izwyo: sources
+/// top-left, clients bottom-right).
+#[must_use]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "grid row/col indices are bounded well under 2^52 (row plan caps at 6 cols)"
+)]
+pub fn grid_slot_origin(row: usize, col: usize, params: GridParams) -> (f64, f64) {
+    let x = params.margin + col as f64 * params.col_pitch;
+    let y = params.margin + row as f64 * params.row_pitch;
+    (x, y)
+}
+
+/// The px anchor point on the given [`Side`] of the box at
+/// `(row, col)`, for edge-path routing: [`Side::Top`]/
+/// [`Side::Bottom`] return the horizontal midpoint of that edge,
+/// [`Side::Left`]/[`Side::Right`] the vertical midpoint.
+#[must_use]
+pub fn slot_anchor(row: usize, col: usize, side: Side, params: GridParams) -> (f64, f64) {
+    let (x, y) = grid_slot_origin(row, col, params);
+    let half_w = params.box_width / 2.0;
+    let half_h = params.box_height / 2.0;
+    match side {
+        Side::Top => (x + half_w, y),
+        Side::Bottom => (x + half_w, y + params.box_height),
+        Side::Left => (x, y + half_h),
+        Side::Right => (x + params.box_width, y + half_h),
+    }
+}
+
+/// Builds an SVG cubic-bezier `d` string from one anchor to another,
+/// bowing the curve through control points offset a third of the way
+/// along the dominant axis — the same smooth-`C`-curve style as the
+/// hand-authored `PATH_*` consts in `view.rs`. Deterministic: the
+/// same `(from, to)` pair always yields the same string.
+#[must_use]
+pub fn bezier_edge_path(from: (f64, f64), to: (f64, f64)) -> String {
+    let (fx, fy) = from;
+    let (tx, ty) = to;
+    let (c1x, c1y) = (fx + (tx - fx) / 3.0, fy);
+    let (c2x, c2y) = (fx + (tx - fx) * 2.0 / 3.0, ty);
+    format!("M{fx},{fy} C{c1x},{c1y} {c2x},{c2y} {tx},{ty}")
+}
+
+/// The total `(width, height)` in px a grid of `max_rows` by
+/// `max_cols` boxes needs, so `view.rs`'s SVG `viewBox` and
+/// `index.html`'s `.graph-canvas` can both be sized from the same
+/// formula (adr-fmt-izwyo 1:1 requirement).
+#[must_use]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "grid row/col counts are bounded well under 2^52 (row plan caps at 6 cols, 5 rows)"
+)]
+pub fn grid_dimensions(max_rows: usize, max_cols: usize, params: GridParams) -> (f64, f64) {
+    let width = 2.0f64.mul_add(
+        params.margin,
+        (max_cols as f64 - 1.0).mul_add(params.col_pitch, params.box_width),
+    );
+    let height = 2.0f64.mul_add(
+        params.margin,
+        (max_rows as f64 - 1.0).mul_add(params.row_pitch, params.box_height),
+    );
+    (width, height)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        StockKind, cloud_direction_glyph, compression_ratio_percent, dot_x, format_bounded_level,
-        format_percent, format_rate, format_residence, level_delta_flows, polarity_badge_label,
+        GridParams, Side, StockKind, bezier_edge_path, cloud_direction_glyph,
+        compression_ratio_percent, dot_x, format_bounded_level, format_percent, format_rate,
+        format_residence, grid_dimensions, grid_slot_origin, level_delta_flows,
+        polarity_badge_label, slot_anchor,
     };
     use crate::sd::{LoopPolarity, Terminal};
+
+    const ROW_PLAN: [usize; 5] = [4, 5, 6, 5, 3];
+
+    const GRID: GridParams = GridParams {
+        margin: 40.0,
+        col_pitch: 205.0,
+        row_pitch: 200.0,
+        box_width: 180.0,
+        box_height: 92.0,
+    };
+
+    fn all_slots() -> Vec<(usize, usize)> {
+        ROW_PLAN
+            .iter()
+            .enumerate()
+            .flat_map(|(row, &cols)| (0..cols).map(move |col| (row, col)))
+            .collect()
+    }
+
+    #[test]
+    fn no_row_exceeds_six_columns() {
+        assert!(ROW_PLAN.iter().all(|&cols| cols <= 6));
+    }
+
+    #[test]
+    fn no_two_slots_overlap() {
+        let slots = all_slots();
+        for (i, &(row_a, col_a)) in slots.iter().enumerate() {
+            let (xa, ya) = grid_slot_origin(row_a, col_a, GRID);
+            for &(row_b, col_b) in &slots[i + 1..] {
+                let (xb, yb) = grid_slot_origin(row_b, col_b, GRID);
+                let x_overlap = xa < xb + GRID.box_width && xb < xa + GRID.box_width;
+                let y_overlap = ya < yb + GRID.box_height && yb < ya + GRID.box_height;
+                assert!(
+                    !(x_overlap && y_overlap),
+                    "slots ({row_a},{col_a}) and ({row_b},{col_b}) overlap"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn source_row_is_topmost_and_client_row_is_bottommost_rightmost() {
+        let (_, source_y) = grid_slot_origin(0, 0, GRID);
+        let last_row = ROW_PLAN.len() - 1;
+        let last_row_cols = ROW_PLAN[last_row];
+
+        for (row, &cols) in ROW_PLAN.iter().enumerate().skip(1) {
+            for col in 0..cols {
+                let (_, y) = grid_slot_origin(row, col, GRID);
+                assert!(y > source_y, "row {row} must sit below source row 0");
+            }
+        }
+
+        let (_, client_y) = grid_slot_origin(last_row, 0, GRID);
+        for (row, &cols) in ROW_PLAN.iter().enumerate().take(last_row) {
+            for col in 0..cols {
+                let (_, y) = grid_slot_origin(row, col, GRID);
+                assert!(client_y > y, "client row must sit below row {row}");
+            }
+        }
+
+        let (client_max_x, _) = grid_slot_origin(last_row, last_row_cols - 1, GRID);
+        for col in 0..last_row_cols {
+            let (x, _) = grid_slot_origin(last_row, col, GRID);
+            assert!(
+                client_max_x >= x,
+                "client row rightmost slot must be max x among clients"
+            );
+        }
+    }
+
+    #[test]
+    fn horizontal_and_vertical_gutters_are_even() {
+        let (x0, _) = grid_slot_origin(2, 0, GRID);
+        let (x1, _) = grid_slot_origin(2, 1, GRID);
+        let (x2, _) = grid_slot_origin(2, 2, GRID);
+        let gap_a = x1 - x0 - GRID.box_width;
+        let gap_b = x2 - x1 - GRID.box_width;
+        assert!((gap_a - gap_b).abs() < f64::EPSILON);
+
+        let (_, y0) = grid_slot_origin(0, 0, GRID);
+        let (_, y1) = grid_slot_origin(1, 0, GRID);
+        let (_, y2) = grid_slot_origin(2, 0, GRID);
+        let row_gap_a = y1 - y0 - GRID.box_height;
+        let row_gap_b = y2 - y1 - GRID.box_height;
+        assert!((row_gap_a - row_gap_b).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn bezier_edge_path_starts_and_ends_at_anchors() {
+        let from = slot_anchor(0, 0, Side::Bottom, GRID);
+        let to = slot_anchor(1, 0, Side::Top, GRID);
+        let d = bezier_edge_path(from, to);
+        assert!(d.starts_with(&format!("M{},{}", from.0, from.1)));
+        assert!(d.ends_with(&format!("{},{}", to.0, to.1)));
+    }
+
+    #[test]
+    fn grid_dimensions_bound_every_slot_rect() {
+        let max_cols = *ROW_PLAN.iter().max().expect("row plan is non-empty");
+        let (width, height) = grid_dimensions(ROW_PLAN.len(), max_cols, GRID);
+        for &(row, col) in &all_slots() {
+            let (x, y) = grid_slot_origin(row, col, GRID);
+            assert!(
+                x + GRID.box_width <= width,
+                "slot ({row},{col}) exceeds width"
+            );
+            assert!(
+                y + GRID.box_height <= height,
+                "slot ({row},{col}) exceeds height"
+            );
+        }
+    }
 
     #[test]
     fn standard_kind_shows_dots_outflow_utilization_residence_and_polarity() {
