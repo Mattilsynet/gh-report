@@ -19,6 +19,10 @@
 //!   from, so it structurally cannot mutate material state.
 //! - [`Terminal`] — model-boundary cloud terminals (Source/Sink); no
 //!   state, excluded from conservation checks.
+//! - [`LevelHistory`] — a bounded ring buffer recording recent samples
+//!   of any one stock's level, oldest to newest, for "last N ticks"
+//!   sparkline rendering. App-agnostic: it stores `f64` samples, not
+//!   any particular stock's identity.
 //!
 //! Loop polarity (adr-fmt-0pe95 sect 2): [`loop_polarity`] classifies
 //! a causal loop as reinforcing (R, even negative links) or balancing
@@ -47,6 +51,73 @@ impl Stock {
     /// precomputed `inflow - outflow` for this step.
     pub fn step(&mut self, dt: f64, net_flow: f64) {
         self.level += dt * net_flow;
+    }
+}
+
+/// A bounded ring buffer of `f64` samples, oldest to newest, sized for
+/// "last N ticks" sparkline rendering of a recorded level over time.
+/// App-agnostic: it has no notion of which stock (or anything else)
+/// a sample came from — callers own that mapping.
+///
+/// Capacity zero is not a meaningful window, so [`LevelHistory::new`]
+/// clamps it to one: the most reversible choice, since a
+/// single-capacity history still behaves correctly (always holds
+/// exactly the latest sample) rather than panicking or silently
+/// discarding every push.
+#[derive(Debug, Clone)]
+pub struct LevelHistory {
+    samples: std::collections::VecDeque<f64>,
+    capacity: usize,
+}
+
+impl LevelHistory {
+    /// Creates an empty history with room for `capacity` samples.
+    /// `capacity` of `0` is clamped to `1`.
+    #[must_use]
+    pub fn new(capacity: usize) -> Self {
+        let capacity = capacity.max(1);
+        Self {
+            samples: std::collections::VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    /// Records `level` as the newest sample. When already at capacity,
+    /// the oldest retained sample is evicted first.
+    pub fn push(&mut self, level: f64) {
+        if self.samples.len() == self.capacity {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(level);
+    }
+
+    /// Iterates retained samples oldest to newest.
+    pub fn iter(&self) -> impl Iterator<Item = f64> + '_ {
+        self.samples.iter().copied()
+    }
+
+    /// Number of samples currently retained (never exceeds [`Self::capacity`]).
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    /// True when no samples have been recorded yet.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
+    }
+
+    /// The maximum number of samples this history retains.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// The most recently pushed sample, or `None` if empty.
+    #[must_use]
+    pub fn latest(&self) -> Option<f64> {
+        self.samples.back().copied()
     }
 }
 
@@ -156,7 +227,9 @@ pub fn loop_polarity(negative_links: usize) -> LoopPolarity {
 
 #[cfg(test)]
 mod tests {
-    use super::{Connector, Converter, Flow, LoopPolarity, Stock, Terminal, loop_polarity};
+    use super::{
+        Connector, Converter, Flow, LevelHistory, LoopPolarity, Stock, Terminal, loop_polarity,
+    };
 
     #[test]
     fn euler_integration_under_constant_net_flow() {
@@ -228,5 +301,65 @@ mod tests {
     fn loop_polarity_odd_negatives_is_balancing() {
         assert_eq!(loop_polarity(1), LoopPolarity::Balancing);
         assert_eq!(loop_polarity(3), LoopPolarity::Balancing);
+    }
+
+    #[test]
+    fn level_history_empty_on_construction() {
+        let history = LevelHistory::new(3);
+        assert_eq!(history.len(), 0);
+        assert!(history.is_empty());
+        assert_eq!(history.capacity(), 3);
+        assert_eq!(history.latest(), None);
+        assert_eq!(history.iter().collect::<Vec<_>>(), Vec::<f64>::new());
+    }
+
+    #[test]
+    fn level_history_capacity_zero_clamps_to_one() {
+        let mut history = LevelHistory::new(0);
+        assert_eq!(history.capacity(), 1);
+        history.push(1.0);
+        history.push(2.0);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history.latest(), Some(2.0));
+    }
+
+    #[test]
+    fn level_history_push_beyond_capacity_evicts_oldest() {
+        let mut history = LevelHistory::new(3);
+        history.push(1.0);
+        history.push(2.0);
+        history.push(3.0);
+        history.push(4.0);
+        assert_eq!(history.len(), 3);
+        assert_eq!(history.iter().collect::<Vec<_>>(), vec![2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn level_history_iter_order_is_oldest_to_newest() {
+        let mut history = LevelHistory::new(5);
+        for sample in [10.0, 20.0, 30.0] {
+            history.push(sample);
+        }
+        assert_eq!(history.iter().collect::<Vec<_>>(), vec![10.0, 20.0, 30.0]);
+    }
+
+    #[test]
+    fn level_history_len_bounded_by_capacity() {
+        let mut history = LevelHistory::new(2);
+        for sample in [1.0, 2.0, 3.0, 4.0, 5.0] {
+            history.push(sample);
+            assert!(history.len() <= history.capacity());
+        }
+        assert_eq!(history.len(), 2);
+    }
+
+    #[test]
+    fn level_history_latest_tracks_most_recent_push() {
+        let mut history = LevelHistory::new(4);
+        assert_eq!(history.latest(), None);
+        history.push(7.0);
+        assert_eq!(history.latest(), Some(7.0));
+        history.push(9.0);
+        assert_eq!(history.latest(), Some(9.0));
     }
 }
