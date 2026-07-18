@@ -571,6 +571,12 @@ impl Model {
     pub fn converter_count(&self) -> usize {
         self.converters.len()
     }
+
+    /// Number of cloud terminals registered so far.
+    #[must_use]
+    pub fn cloud_count(&self) -> usize {
+        self.clouds.len()
+    }
 }
 
 #[cfg(test)]
@@ -803,5 +809,14 @@ mod tests {
         let cloud = model.add_cloud(Terminal::Sink);
         model.connect_flow(stock, cloud, Flow::Uniflow(1.0));
         assert!(model.build().is_ok());
+    }
+
+    #[test]
+    fn cloud_count_tracks_registered_clouds() {
+        let mut model = Model::new();
+        assert_eq!(model.cloud_count(), 0);
+        model.add_cloud(Terminal::Source);
+        model.add_cloud(Terminal::Sink);
+        assert_eq!(model.cloud_count(), 2);
     }
 }
