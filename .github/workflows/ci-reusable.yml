@@ -32,6 +32,27 @@ jobs:
       # crate for its real target every CI run so source drift from the
       # committed artefact cannot pass unnoticed.
       - run: cargo build -p gh-report-web-client --target wasm32-unknown-unknown --release --locked
+      # Tripwire: regenerate the committed wasm/js artefact pair from source
+      # and diff against what's checked in. Catches artefact drift where the
+      # committed glue/wasm pair no longer matches a clean regen (e.g. the
+      # hyphen/underscore import-key mismatch fixed by bd adr-fmt-p5tnh, root
+      # cause bd adr-fmt-xgcnn). wasm-bindgen-cli is pinned to the exact
+      # version the workspace's wasm-bindgen dep resolves to, keeping output
+      # byte-stable across environments.
+      - name: install pinned wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
+      - name: regen-diff gh-report-web-client artefacts
+        if: always()
+        run: |
+          set -euo pipefail
+          cargo build --release --target wasm32-unknown-unknown -p gh-report-web-client --locked
+          wasm-bindgen --target web --out-name gh-report-web-client --out-dir crates/gh-report/templates target/wasm32-unknown-unknown/release/gh_report_web_client.wasm
+          rm -f crates/gh-report/templates/gh-report-web-client_bg.wasm.d.ts
+          if ! git diff --exit-code -- crates/gh-report/templates/gh-report-web-client.js crates/gh-report/templates/gh-report-web-client_bg.wasm; then
+            echo "::error::committed gh-report-web-client.js/_bg.wasm artefacts are stale or hand-edited"
+            echo "::error::regenerate with: cargo build --release --target wasm32-unknown-unknown -p gh-report-web-client --locked && wasm-bindgen --target web --out-name gh-report-web-client --out-dir crates/gh-report/templates target/wasm32-unknown-unknown/release/gh_report_web_client.wasm"
+            exit 1
+          fi
       # Lint the wasm-only crate on its real target so dom.rs (cfg(wasm32))
       # is clippy-checked, not merely compiled (CHE-0087 R6).
       - run: cargo clippy -p gh-report-web-client --target wasm32-unknown-unknown --all-targets --locked -- -D warnings
