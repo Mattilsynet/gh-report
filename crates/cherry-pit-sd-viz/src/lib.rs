@@ -22,6 +22,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod sd;
 pub mod sim;
 
 #[cfg(target_arch = "wasm32")]
