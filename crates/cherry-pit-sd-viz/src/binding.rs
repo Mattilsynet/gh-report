@@ -19,8 +19,14 @@
 //! divided by the effective (accepted) arrival rate. See
 //! [`QueueStockBinding::mean_residence_ticks`].
 
-use crate::sd::{Connector, Flow, LoopPolarity, Stock};
+use crate::sd::{Connector, Flow, LevelHistory, LoopPolarity, Stock};
 use crate::sim::{EnqueueResult, Sim, StepEvents};
+
+/// Sample capacity for [`QueueStockBinding`]'s recorded level history:
+/// 180 samples, matching a 1 sample/tick cadence at the "3 min at 1Hz"
+/// end of the brief's stated 2-5 minute sparkline window
+/// (`bootstrap.js`'s `setInterval` drives one [`Sim::step`] per tick).
+const LEVEL_HISTORY_CAPACITY: usize = 180;
 
 /// The macro SD view of [`crate::sim::WorkQueue`]: a [`Stock`] whose
 /// level tracks `WorkQueue::depth()` exactly, advanced one Euler step
@@ -32,10 +38,16 @@ pub struct QueueStockBinding {
     cumulative_accepted: u64,
     last_inflow: Flow,
     last_outflow: Flow,
+    level_history: LevelHistory,
 }
 
 impl QueueStockBinding {
-    /// Seeds the macro Stock from the queue's current depth.
+    /// Seeds the macro Stock from the queue's current depth. The level
+    /// history starts empty (not seeded with this initial level): each
+    /// [`Self::advance`] call records exactly one sample, so after `N`
+    /// calls the history holds `min(N, capacity)` samples — the
+    /// simplest, least-surprising accounting for a caller counting
+    /// ticks against the history it observes.
     #[must_use]
     #[expect(
         clippy::cast_precision_loss,
@@ -48,13 +60,15 @@ impl QueueStockBinding {
             cumulative_accepted: 0,
             last_inflow: Flow::Uniflow(0.0),
             last_outflow: Flow::Uniflow(0.0),
+            level_history: LevelHistory::new(LEVEL_HISTORY_CAPACITY),
         }
     }
 
     /// Advances the macro Stock by one Euler step, deriving inflow from
     /// accepted arrivals in `events` and outflow from the depth delta the
     /// queue cannot otherwise account for (depth changes only via an
-    /// accepted enqueue or a dequeue into a worker slot).
+    /// accepted enqueue or a dequeue into a worker slot). Records the
+    /// post-step level into [`Self::level_history`].
     #[expect(
         clippy::cast_precision_loss,
         reason = "per-tick accepted counts and queue depth are bounded well under 2^52"
@@ -73,11 +87,19 @@ impl QueueStockBinding {
         self.last_outflow = Flow::Uniflow(dequeued);
         let net_flow = self.last_inflow.rate() - self.last_outflow.rate();
         self.stock.step(1.0, net_flow);
+        self.level_history.push(self.stock.level());
     }
 
     #[must_use]
     pub fn level(&self) -> f64 {
         self.stock.level()
+    }
+
+    /// Read-only access to the recorded "last N ticks" level history
+    /// for sparkline rendering, oldest to newest.
+    #[must_use]
+    pub fn level_history(&self) -> &LevelHistory {
+        &self.level_history
     }
 
     #[must_use]
@@ -213,5 +235,45 @@ mod tests {
         binding.advance(&events, &sim);
         assert!(matches!(binding.inflow(), Flow::Uniflow(_)));
         assert!(matches!(binding.outflow(), Flow::Uniflow(_)));
+    }
+
+    #[test]
+    fn level_history_starts_empty() {
+        let sim = Sim::new(config(), 1);
+        let binding = QueueStockBinding::new(&sim);
+        assert_eq!(binding.level_history().len(), 0);
+        assert_eq!(binding.level_history().latest(), None);
+    }
+
+    #[test]
+    fn level_history_holds_min_of_ticks_and_capacity_ending_at_current_level() {
+        let mut sim = Sim::new(config(), 5);
+        let mut binding = QueueStockBinding::new(&sim);
+        for tick in 0..20u64 {
+            let events = sim.step(tick % 2 == 0, tick % 3 == 0);
+            binding.advance(&events, &sim);
+        }
+        assert_eq!(binding.level_history().len(), 20);
+        assert!(
+            (binding.level_history().latest().expect("20 samples recorded") - binding.level())
+                .abs()
+                < f64::EPSILON
+        );
+    }
+
+    #[test]
+    fn level_history_len_bounded_by_capacity_over_many_ticks() {
+        let mut sim = Sim::new(config(), 6);
+        let mut binding = QueueStockBinding::new(&sim);
+        let capacity = binding.level_history().capacity();
+        for tick in 0..(capacity as u64 + 50) {
+            let events = sim.step(tick % 2 == 0, tick % 3 == 0);
+            binding.advance(&events, &sim);
+        }
+        assert_eq!(binding.level_history().len(), capacity);
+        assert!(
+            (binding.level_history().latest().expect("samples recorded") - binding.level()).abs()
+                < f64::EPSILON
+        );
     }
 }

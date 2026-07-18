@@ -177,6 +177,15 @@ impl WorkQueue {
     pub fn capacity(&self) -> usize {
         self.capacity
     }
+
+    /// Read-only value-snapshot iterator over queued jobs, oldest
+    /// (front of the FIFO) to newest. Copies each [`JobSpec`] out;
+    /// never exposes a handle back into `self.jobs`, so it structurally
+    /// cannot mutate queue depth (mirrors [`crate::sd::Connector`]'s
+    /// "copied value, never a handle" discipline).
+    pub fn jobs(&self) -> impl Iterator<Item = JobSpec> + '_ {
+        self.jobs.iter().copied()
+    }
 }
 
 /// Mirrors `BatchTracker` (wq:263, `AtomicUsize` + `Notify` in the real
@@ -1173,6 +1182,15 @@ impl Sim {
         self.queue.capacity()
     }
 
+    /// Read-only value-snapshot enumeration of in-queue jobs, FIFO
+    /// order (oldest enqueued first), for a live "now" dots view.
+    /// Copies each [`JobSpec`] out via [`WorkQueue::jobs`] — takes
+    /// `&self`, never mutates queue depth.
+    #[must_use]
+    pub fn queue_jobs(&self) -> Vec<JobSpec> {
+        self.queue.jobs().collect()
+    }
+
     #[must_use]
     pub fn in_flight(&self) -> usize {
         self.workers
@@ -1278,6 +1296,39 @@ mod tests {
             queue.enqueue(job(3, JobSource::ScheduledBatch)),
             EnqueueResult::QueueFull
         );
+    }
+
+    #[test]
+    fn work_queue_jobs_enumerates_fifo_order_without_mutating_depth() {
+        let mut queue = WorkQueue::new(4);
+        queue.enqueue(job(1, JobSource::ScheduledBatch));
+        queue.enqueue(job(2, JobSource::ScheduledBatch));
+        queue.enqueue(job(3, JobSource::ScheduledBatch));
+        let depth_before = queue.depth();
+        let keys: Vec<u32> = queue.jobs().map(|spec| spec.domain_key.0).collect();
+        assert_eq!(keys, vec![1, 2, 3], "enumeration must be FIFO oldest->newest");
+        assert_eq!(queue.depth(), depth_before, "enumeration must not mutate depth");
+    }
+
+    #[test]
+    fn sim_queue_jobs_count_matches_depth_and_is_unaffected_by_enumeration() {
+        let config = SimConfig {
+            queue_capacity: 8,
+            worker_count: 0,
+            service_ticks: 3,
+            domain_key_span: 500,
+            ..SimConfig::default()
+        };
+        let mut sim = Sim::new(config, 99);
+        for _ in 0..5 {
+            let _ignored = sim.submit(JobSource::ScheduledBatch);
+        }
+        let depth_before = sim.queue_depth();
+        let jobs = sim.queue_jobs();
+        assert_eq!(jobs.len(), depth_before);
+        assert_eq!(sim.queue_depth(), depth_before, "enumeration must not change depth");
+        let _ignored = sim.queue_jobs();
+        assert_eq!(sim.queue_depth(), depth_before, "a second enumeration is still a no-op on depth");
     }
 
     #[test]
