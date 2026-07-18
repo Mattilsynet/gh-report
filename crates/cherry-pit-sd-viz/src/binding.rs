@@ -255,8 +255,12 @@ mod tests {
         }
         assert_eq!(binding.level_history().len(), 20);
         assert!(
-            (binding.level_history().latest().expect("20 samples recorded") - binding.level())
-                .abs()
+            (binding
+                .level_history()
+                .latest()
+                .expect("20 samples recorded")
+                - binding.level())
+            .abs()
                 < f64::EPSILON
         );
     }

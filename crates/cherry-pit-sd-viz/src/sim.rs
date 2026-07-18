@@ -1306,8 +1306,16 @@ mod tests {
         queue.enqueue(job(3, JobSource::ScheduledBatch));
         let depth_before = queue.depth();
         let keys: Vec<u32> = queue.jobs().map(|spec| spec.domain_key.0).collect();
-        assert_eq!(keys, vec![1, 2, 3], "enumeration must be FIFO oldest->newest");
-        assert_eq!(queue.depth(), depth_before, "enumeration must not mutate depth");
+        assert_eq!(
+            keys,
+            vec![1, 2, 3],
+            "enumeration must be FIFO oldest->newest"
+        );
+        assert_eq!(
+            queue.depth(),
+            depth_before,
+            "enumeration must not mutate depth"
+        );
     }
 
     #[test]
@@ -1326,9 +1334,17 @@ mod tests {
         let depth_before = sim.queue_depth();
         let jobs = sim.queue_jobs();
         assert_eq!(jobs.len(), depth_before);
-        assert_eq!(sim.queue_depth(), depth_before, "enumeration must not change depth");
+        assert_eq!(
+            sim.queue_depth(),
+            depth_before,
+            "enumeration must not change depth"
+        );
         let _ignored = sim.queue_jobs();
-        assert_eq!(sim.queue_depth(), depth_before, "a second enumeration is still a no-op on depth");
+        assert_eq!(
+            sim.queue_depth(),
+            depth_before,
+            "a second enumeration is still a no-op on depth"
+        );
     }
 
     #[test]
