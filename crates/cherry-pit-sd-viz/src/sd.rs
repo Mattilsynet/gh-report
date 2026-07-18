@@ -348,10 +348,6 @@ impl ConnectorHead for ConverterId {
 struct FlowEdge {
     from: FlowTerminal,
     to: FlowTerminal,
-    #[expect(
-        dead_code,
-        reason = "stored for a future rate-consistency check; not yet consumed by Model::build"
-    )]
     flow: Flow,
 }
 
@@ -577,14 +573,86 @@ impl Model {
     pub fn cloud_count(&self) -> usize {
         self.clouds.len()
     }
+
+    /// Read-only view of every registered flow edge, in insertion
+    /// order, as a [`FlowView`] — sufficient to derive a scene graph's
+    /// belts without exposing [`FlowEdge`] internals.
+    pub fn flows(&self) -> impl Iterator<Item = FlowView> + '_ {
+        self.flows.iter().enumerate().map(|(index, edge)| FlowView {
+            id: FlowId(index),
+            tail: edge.from,
+            head: edge.to,
+            kind: edge.flow,
+        })
+    }
+
+    /// Read-only iterator over every registered stock's handle, in
+    /// insertion order, for keying a placement layer.
+    pub fn stock_ids(&self) -> impl Iterator<Item = StockId> + '_ {
+        (0..self.stocks.len()).map(StockId)
+    }
+
+    /// Read-only iterator over every registered cloud terminal's
+    /// handle, in insertion order, for keying a placement layer.
+    pub fn cloud_ids(&self) -> impl Iterator<Item = CloudId> + '_ {
+        (0..self.clouds.len()).map(CloudId)
+    }
+
+    /// Read-only iterator over every registered converter's handle, in
+    /// insertion order, for keying a placement layer.
+    pub fn converter_ids(&self) -> impl Iterator<Item = ConverterId> + '_ {
+        (0..self.converters.len()).map(ConverterId)
+    }
+}
+
+/// A read-only, dependency-free view of one registered flow edge:
+/// its [`FlowId`], its material tail and head [`FlowTerminal`]s, and
+/// its rate [`Flow`] kind (Uniflow/Biflow) — everything a caller needs
+/// to derive a scene graph's belts from a [`Model`] without depending
+/// on the private [`FlowEdge`] representation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FlowView {
+    pub id: FlowId,
+    pub tail: FlowTerminal,
+    pub head: FlowTerminal,
+    pub kind: Flow,
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Connector, Converter, Flow, LevelHistory, LoopPolarity, Model, SdConnectionError, Stock,
-        Terminal, loop_polarity,
+        Connector, Converter, Flow, FlowTerminal, LevelHistory, LoopPolarity, Model,
+        SdConnectionError, Stock, Terminal, loop_polarity,
     };
+
+    #[test]
+    fn tier1_model_flows_enumerate_all_eleven_with_stock_or_cloud_endpoints() {
+        let model = crate::binding::tier1_model().expect("Tier-1 spine must build");
+        let views: Vec<_> = model.flows().collect();
+        assert_eq!(views.len(), 11, "Tier-1 spine has 11 material flow edges");
+        for view in &views {
+            assert!(
+                matches!(view.tail, FlowTerminal::Stock(_) | FlowTerminal::Cloud(_)),
+                "flow tail must be a Stock or Cloud terminal"
+            );
+            assert!(
+                matches!(view.head, FlowTerminal::Stock(_) | FlowTerminal::Cloud(_)),
+                "flow head must be a Stock or Cloud terminal"
+            );
+            assert!(
+                matches!(view.kind, Flow::Uniflow(_) | Flow::Biflow(_)),
+                "flow kind must be Uniflow or Biflow"
+            );
+        }
+    }
+
+    #[test]
+    fn tier1_model_id_enumerations_match_registered_counts() {
+        let model = crate::binding::tier1_model().expect("Tier-1 spine must build");
+        assert_eq!(model.stock_ids().count(), model.stock_count());
+        assert_eq!(model.cloud_ids().count(), model.cloud_count());
+        assert_eq!(model.converter_ids().count(), model.converter_count());
+    }
 
     #[test]
     fn euler_integration_under_constant_net_flow() {
