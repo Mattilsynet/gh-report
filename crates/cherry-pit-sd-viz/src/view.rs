@@ -22,6 +22,8 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::wasm_bindgen;
 use web_sys::{Document, Element};
 
+use crate::binding::QueueStockBinding;
+use crate::components::QueueStockComponent;
 use crate::sim::{
     EnqueueResult, InventoryOutcome, JobOutcome, JobSource, PageUpdateEvent, PardosaBackend, Sim,
     SimConfig, SweepPhase, UpdatedAt,
@@ -52,6 +54,8 @@ impl Rates {
 
 struct AppState {
     sim: Sim,
+    queue_binding: QueueStockBinding,
+    queue_component: Option<QueueStockComponent>,
     rates: RwSignal<Rates>,
     tick_count: u64,
     warm_start_requested: bool,
@@ -69,7 +73,7 @@ fn cached_document() -> Option<Document> {
     DOC.with(|cell| cell.borrow().clone())
 }
 
-fn source_color(source: JobSource) -> &'static str {
+pub(crate) fn source_color(source: JobSource) -> &'static str {
     match source {
         JobSource::ScheduledBatch => "#3b82f6",
         JobSource::External { .. } => "#22c55e",
@@ -171,9 +175,15 @@ pub fn start() {
     build_layout(&document, &root, rates);
 
     let sim = Sim::new(SimConfig::default(), 7);
+    let queue_binding = QueueStockBinding::new(&sim);
+    let queue_component = document
+        .get_element_by_id("queue-stock-mount")
+        .and_then(|container| QueueStockComponent::mount(&container));
     APP.with(|cell| {
         *cell.borrow_mut() = Some(AppState {
             sim,
+            queue_binding,
+            queue_component,
             rates,
             tick_count: 0,
             warm_start_requested: false,
@@ -275,6 +285,10 @@ pub fn tick() {
 
         let events = state.sim.step(false, external_arrival);
         state.tick_count += 1;
+        state.queue_binding.advance(&events, &state.sim);
+        if let Some(component) = &state.queue_component {
+            component.update(&state.queue_binding, &state.sim);
+        }
 
         render_gauges(&document, &state.sim);
         render_events(&document, &events.arrivals, &events.completions);
@@ -442,12 +456,6 @@ fn render_ws_fanout(document: &Document) {
 }
 
 fn render_gauges(document: &Document, sim: &Sim) {
-    set_text(document, "queue-depth", &sim.queue_depth().to_string());
-    set_text(
-        document,
-        "queue-capacity",
-        &sim.queue_capacity().to_string(),
-    );
     set_text(document, "in-flight", &sim.in_flight().to_string());
     set_text(document, "worker-count", &sim.worker_count().to_string());
     set_text(
@@ -489,11 +497,6 @@ fn render_gauges(document: &Document, sim: &Sim) {
         document,
         "arcswap-generation",
         &sim.arcswap_generation().to_string(),
-    );
-    set_text(
-        document,
-        "stage-queue-fill",
-        &format!("{}/{}", sim.queue_depth(), sim.queue_capacity()),
     );
     set_text(
         document,
@@ -854,7 +857,6 @@ fn graph_markup() -> String {
   </div>
 
   <div class='row legend'>
-    <div class='gauge'>WorkQueue <span id='queue-depth'>0</span>/<span id='queue-capacity'>0</span></div>
     <div class='gauge'>in-flight <span id='in-flight'>0</span>/<span id='worker-count'>0</span></div>
     <div class='gauge'>QueueFull <span id='queue-full-count'>0</span></div>
     <div class='gauge'>Deduplicated <span id='deduplicated-count'>0</span></div>
@@ -910,10 +912,7 @@ fn graph_nodes_markup() -> &'static str {
       <button id='warm-start-btn'>fire warm start</button>
     </div>
 
-    <div class='node node-store node-queue' style='left:350px;top:180px'>
-      WorkQueue
-      <span class='stage-note'>depth <span id='stage-queue-fill'>0/0</span></span>
-    </div>
+    <div id='queue-stock-mount' class='node node-store node-queue node-queue-stock' style='left:350px;top:180px'></div>
     <div class='node node-work node-worker' style='left:555px;top:180px'>
       worker_loop / LiveEvaluator::evaluate
       <span class='stage-note'>executions <span id='worker-executions'>0</span></span>
