@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Review — Design vs Code | Architecture Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<script type="module" src="../assets/mermaid-init.js"></script>
+</head>
+<body>
+<nav class="site-nav">
+  <div class="site-nav__inner">
+    <span class="site-nav__title">Architecture Docs</span>
+    <a href="../index.html">Home</a>
+    <a href="../design/index.html">Design (top-down)</a>
+    <a href="../c4/level3-components.html">C4 L3 — Components</a>
+    <a href="../c4/level2-containers.html">C4 L2 — Containers</a>
+    <a href="../c4/level1-context.html">C4 L1 — Context</a>
+    <a href="./index.html" aria-current="page">Review</a>
+  </div>
+</nav>
+
+<main class="page">
+  <h1>Review — Intended Design vs Code-Derived Architecture</h1>
+  <p class="subtitle">
+    Phase E: the reconciliation payoff. This is the only page that reads
+    <strong>both</strong> derivations and compares them — top-down
+    <span class="cite">bd-adr-fmt-kgfyz</span> (prose digest) +
+    <span class="cite">adr-fmt-16ja3</span> (oracle binding-ADR summary) +
+    <a href="../design/index.html">Design</a>, against bottom-up
+    <span class="cite">bd-adr-fmt-wlikf</span> (C4 code survey) +
+    <a href="../c4/level1-context.html">C4 L1</a> and
+    <a href="../c4/level2-containers.html">L2</a> invariant checks.
+  </p>
+
+  <h2 id="verdict-vocabulary">Verdict vocabulary</h2>
+  <table>
+    <caption>Verdict vocabulary</caption>
+    <thead><tr><th>Verdict</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="verdict verdict--match">MATCH</span></td>
+        <td>Intended and actual agree, code-confirmed.</td>
+      </tr>
+      <tr>
+        <td><span class="verdict verdict--drift">DRIFT</span></td>
+        <td>Intended and actual differ in detail — documented but code diverges, or vice-versa.</td>
+      </tr>
+      <tr>
+        <td><span class="verdict verdict--undocumented">UNDOCUMENTED</span></td>
+        <td>Exists in code but not asserted in prose/ADR.</td>
+      </tr>
+      <tr>
+        <td><span class="verdict verdict--aspirational">ASPIRATIONAL</span></td>
+        <td>Asserted in prose/DESIGN but not present or enforced in code.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 id="evidence-table">Evidence table</h2>
+  <table>
+    <caption>Design vs code — claim-by-claim comparison</caption>
+    <thead>
+      <tr><th>#</th><th>Claim</th><th>Source (design side)</th><th>Code evidence (C4 side)</th><th>Verdict</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td>Synchronous public facade — no <code>async fn</code> on <code>pardosa::store</code>/<code>prelude</code> surface; sync-over-async bridge lives in <code>pardosa-nats</code>, not on the facade.</td>
+        <td><cite>PGN-0010:R5</cite>, <cite>PGN-0008</cite>, <cite>PGN-0015:R6</cite> — AGENTS.md §Architecture invariants; pardosa README ("sole-interface seal", drift pinned by <code>tests/ui_pass/prelude_usable.rs</code>).</td>
+        <td><code>crates/pardosa/src/store.rs</code> pub fn signatures at lines 145,170,194,201,224,231 — none <code>pub async fn</code>. <code>crates/pardosa-nats/src/handle.rs:411</code> <code>fn run_op&lt;F,T&gt;</code>, <code>:417</code> <code>rt.block_on(async move { … })</code> confirms the bridge is isolated to pardosa-nats.</td>
+        <td><span class="verdict verdict--match">MATCH</span></td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td>cherry-pit does not depend on pardosa (the "CHE-0010 sever"), enforced bidirectionally.</td>
+        <td><cite>CHE-0029:R4/R6</cite> (acyclic DAG + CI tree assertion), <cite>CHE-0084</cite>/<cite>CHE-0086</cite> (adapter placement, no cherry-pit&rarr;pardosa edge), CI async-trait/pardosa tripwires — AGENTS.md §What this repo is. Note: <cite>CHE-0010</cite> itself is the <code>DomainEvent</code> supertrait-bounds ADR, not the sever rule; the sever is enforced by CHE-0029/0084/0086 plus CI, cited here per the oracle summary's naming correction.</td>
+        <td>grep across all 9 <code>cherry-pit-*/Cargo.toml</code> for "pardosa": zero real dependency lines (only a code comment in <code>cherry-pit-core/Cargo.toml</code> noting pardosa-encoding was removed, and a description string in <code>cherry-pit-sd-viz/Cargo.toml</code>); grep across all <code>pardosa*/Cargo.toml</code> for "cherry": zero matches.</td>
+        <td><span class="verdict verdict--match">MATCH</span></td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>Single-writer-per-aggregate enforced via an OCC fence (detection, not prevention).</td>
+        <td><cite>PGN-0016:R1/R2/R7</cite> (JetStream Nats-Expected-Last-Subject-Sequence fence, abort+replay, no in-band retry), <cite>GND-0010:R4/R5</cite> (consistency via single-writer not consensus, OCC detection) — oracle binding-ADR summary.</td>
+        <td><code>crates/pardosa-nats/src/handle.rs</code>: <code>fn append_with_replay_tag</code> (~:201) computes <code>expected_last_subject_sequence</code> (:231-239) via <code>expected_last_subject_sequence_for_publish</code> (:596); on conflict <code>PublishErrorKind::WrongLastSequence</code> (:585) maps to <code>JetStreamRuntimeError::WrongLastSequence</code> (:586, also declared <code>crates/pardosa-nats/src/error.rs:109</code>).</td>
+        <td><span class="verdict verdict--match">MATCH</span></td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td>pardosa-nats ring purity — depends only on tokio, async-nats, bytes, blake3, futures-util (+ tempfile behind an optional test feature); no cherry-pit-* or pardosa adapter-ring edges.</td>
+        <td><cite>PGN-0001:R2</cite> (substrate no thiserror/tokio/async-trait/runtime-ring beyond the sanctioned set), <cite>PGN-0015</cite> (instrumentation stays in adapter ring) — AGENTS.md §Architecture invariants; reinforced in <code>docs/pardosa/observability-slo.md</code>.</td>
+        <td><code>crates/pardosa-nats/Cargo.toml</code> [dependencies]: tokio(rt,sync,time), async-nats, bytes, blake3, futures-util (0.3 direct, not workspace), tempfile (optional) — no cherry-pit-* or pardosa edge present.</td>
+        <td><span class="verdict verdict--match">MATCH</span></td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td><code>#[non_exhaustive]</code> mandated on every public error enum (adding variants non-breaking; not for serde DTOs).</td>
+        <td><cite>PGN-0006:R1..R7</cite>, <cite>CHE-0021</cite> (+ <cite>RST-0006:R1</cite>) — AGENTS.md §Architecture invariants; scoped to error types, not serde DTOs.</td>
+        <td><code>crates/pardosa/src/error.rs</code>: 12 occurrences (lines 9,25,33,41,58,186,237,431,470,496,526,649). <code>crates/cherry-pit-core/src/error.rs</code>: 4 occurrences (32,66,138,240,282). <code>crates/cherry-pit-storage/src/error.rs</code>: 1 occurrence (line 7). <code>crates/cherry-pit-gateway/src/lib.rs</code>: 0 occurrences — gateway's error enum location/non_exhaustive status is <strong>unconfirmed</strong> by this grep (may live in <code>event_store/mod.rs</code>, not scanned).</td>
+        <td><span class="verdict verdict--drift">DRIFT (partially unconfirmed)</span></td>
+      </tr>
+      <tr>
+        <td>6</td>
+        <td>gh-report is the sole cross-substrate consumer, depending on both pardosa and cherry-pit directly.</td>
+        <td>Not asserted as an explicit named invariant in the prose digest or oracle summary — the digest documents gh-report's dependency <em>list</em> (README "Status" section) but does not frame "sole cross-substrate consumer" as a load-bearing architectural claim.</td>
+        <td><code>crates/gh-report/Cargo.toml</code> [dependencies]: BOTH pardosa family (pardosa, pardosa-fiber-store, pardosa-file, pardosa-schema, pardosa-nats) AND cherry-pit family (cherry-pit-wq, cherry-pit-storage, cherry-pit-gateway, cherry-pit-app, cherry-pit-core, cherry-pit-web) — confirmed at <a href="../c4/level1-context.html#cross-substrate">C4 L1 §Cross-substrate dependency</a>.</td>
+        <td><span class="verdict verdict--undocumented">UNDOCUMENTED</span></td>
+      </tr>
+      <tr>
+        <td>7</td>
+        <td>cherry-pit-merger is the command-side single-task serialiser, an alternative/complement to cherry-pit-app for command dispatch.</td>
+        <td>ADR tree: <cite>CHE-0069</cite> "cherry-pit-merger — Command-Side Single-Task Serialiser" [B] Accepted (References CHE-0017, CHE-0029, CHE-0030, CHE-0024, CHE-0042, CHE-0073), <cite>CHE-0085</cite> "Merger/App Command-Side Choice Model" — no README found for the crate itself (gap noted in the prose digest).</td>
+        <td><code>crates/cherry-pit-merger/Cargo.toml</code> [dependencies] &rarr; cherry-pit-core only — but <strong>no in-scope crate depends on cherry-pit-merger</strong> (not wired into cherry-pit-app's deps, nor gh-report's, nor any other in-scope <code>Cargo.toml</code>). Confirmed graph-orphan at <a href="../c4/level2-containers.html">C4 L2 discrepancies</a>.</td>
+        <td><span class="verdict verdict--drift">DRIFT (designed role, orphaned wiring)</span></td>
+      </tr>
+      <tr>
+        <td>8</td>
+        <td>Deployment topology: gh-report runs on Cloud Run (or an equivalent container platform).</td>
+        <td>gh-report DESIGN.md/OPERATIONS.md reference deployment/storage layout in operational terms (per the prose digest's per-family notes on storage layout and OPERATIONS.md), implying a containerised deployment target consistent with the "Cloud Run" framing in the mission brief.</td>
+        <td><code>find . -maxdepth 1 -iname 'Dockerfile*'</code> returned no matches at survey time — no Dockerfile or Cloud Run manifest found in repo root; deployment topology is <strong>not code-observable</strong>. Confirmed at <a href="../c4/level1-context.html#l1-discrepancies">C4 L1 discrepancies</a>.</td>
+        <td><span class="verdict verdict--aspirational">ASPIRATIONAL</span></td>
+      </tr>
+      <tr>
+        <td>9</td>
+        <td>gh-report's runtime topology conforms to <code>cherry-pit-app::App::run</code>, with RunService/RepoService/WebhookService ApplicationServices, <code>publish_or_trace</code>, and a DomainEvent-carrying InProcessEventBus.</td>
+        <td>gh-report DESIGN.md §4 (<cite>BC-9</cite>; <cite>CHE-0051</cite>) — but DESIGN.md's <strong>own corrigenda</strong> (W1/W2 truth-alignment notes) state several of these components "never shipped in this form": a self-documented intended-vs-actual gap in the prose itself, prior to any code check.</td>
+        <td>Code-derived C4 L3 lists gh-report's actual <code>app/</code> module set as <code>state, daemon, collect, evidence_service, github_infra, team_refresh, webhook_context, work_queue, worker_pool, write_policy</code> (<code>crates/gh-report/src/app/*.rs</code>) — the named ApplicationServices/<code>publish_or_trace</code>/InProcessEventBus abstractions from DESIGN.md §4 do not appear in this module inventory.</td>
+        <td><span class="verdict verdict--drift">DRIFT (self-admitted in prose)</span></td>
+      </tr>
+      <tr>
+        <td>10</td>
+        <td>cherry-pit-sd-viz has "zero pardosa dependency" and stands as a standalone, wasm-only viz tool narratively documenting gh-report's intended runtime queue topology (triggers &rarr; write side &rarr; barrier &rarr; read side &rarr; serve path).</td>
+        <td>cherry-pit-sd-viz README: "standalone, client-side, animated discrete-event simulation of gh-report's runtime queue network... No dependency on running gh-report; no trace capture; wasm/browser-only" — prose digest, per-family notes.</td>
+        <td><code>crates/cherry-pit-sd-viz/Cargo.toml</code>: no in-scope <code>[dependencies]</code> observed, "zero pardosa dependency" self-declared in its description string; dependency-graph-isolated — no in-scope crate depends on it and it depends on none in-scope. Confirmed at <a href="../c4/level1-context.html#l1-discrepancies">C4 L1 discrepancies</a>.</td>
+        <td><span class="verdict verdict--match">MATCH</span></td>
+      </tr>
+      <tr>
+        <td>11</td>
+        <td>cherry-pit-web and cherry-pit-projection are sibling adapter crates, both depending only on cherry-pit-core, neither stacking on cherry-pit-gateway.</td>
+        <td>cherry-pit-web README, cherry-pit-projection README — prose digest §Cross-family intended dependency boundaries.</td>
+        <td><code>crates/cherry-pit-web/Cargo.toml</code> &rarr; cherry-pit-core; <code>crates/cherry-pit-projection/Cargo.toml</code> &rarr; cherry-pit-core; neither depends on cherry-pit-gateway — confirmed in the C4 L2 dependency-edge table.</td>
+        <td><span class="verdict verdict--match">MATCH</span></td>
+      </tr>
+      <tr>
+        <td>12</td>
+        <td>cherry-pit-app is the only cherry-pit crate sanctioned to depend on every other cherry-pit crate.</td>
+        <td><cite>CHE-0029</cite> acyclic-DAG rule; cherry-pit-app README — prose digest.</td>
+        <td><code>crates/cherry-pit-app/Cargo.toml</code> [dependencies] &rarr; cherry-pit-core, cherry-pit-gateway, cherry-pit-projection, cherry-pit-web — but <strong>not</strong> cherry-pit-merger or cherry-pit-storage, both of which are graph leaves reached only via gh-report directly (or, for cherry-pit-merger, unreached entirely). "Every other cherry-pit crate" is broader than the observed edge set.</td>
+        <td><span class="verdict verdict--drift">DRIFT (narrower wiring than "every other crate")</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 id="headline-findings">Headline findings</h2>
+  <ul>
+    <li>
+      <strong>The three spot-check invariants hold as MATCH, code-confirmed:</strong>
+      sync public facade (row 1), the cherry-pit &perp; pardosa sever (row 2), and the
+      single-writer OCC fence (row 3) all show intended-vs-actual agreement with a
+      precise code citation. This is the strongest Solon "illegal-is-uncompilable"
+      evidence in the corpus: none of these three invariants rely on developer
+      discipline alone — they are structurally enforced (sync signatures, empty
+      dependency edges, a typed error variant on sequence conflict).
+    </li>
+    <li>
+      <strong>pardosa-nats ring purity (row 4) also holds exactly as specified</strong> —
+      the dependency list in <code>Cargo.toml</code> matches the prose enumeration
+      dependency-for-dependency, including the optional-feature carve-out for
+      <code>tempfile</code>.
+    </li>
+    <li>
+      <strong>#[non_exhaustive] (row 5) holds where checked, but cherry-pit-gateway is
+      an open gap, not a violation</strong> — the C4 survey grepped <code>lib.rs</code>
+      rather than <code>event_store/mod.rs</code>, where the gateway's error type
+      most likely lives. This is a survey-scope gap, distinct from the other DRIFT
+      rows which reflect genuine documented-vs-shipped divergence.
+    </li>
+    <li>
+      <strong>gh-report as sole cross-substrate consumer (row 6) is UNDOCUMENTED</strong> —
+      real and load-bearing in code (it is the only crate depending on both
+      substrates) but never asserted as an explicit architectural claim in the
+      prose sources surveyed. A DESIGN.md or ADR update naming this as an intended
+      invariant would close the gap.
+    </li>
+    <li>
+      <strong>cherry-pit-merger is the sharpest divergence (row 7)</strong>: two ADRs
+      (CHE-0069, CHE-0085) describe a designed command-side serialiser role, but no
+      in-scope crate wires it in. Whether this is dead/staged code or wired via a
+      mechanism outside <code>Cargo.toml</code> (dynamic dispatch, feature flag,
+      future integration) cannot be resolved from the dependency graph alone.
+    </li>
+    <li>
+      <strong>Deployment topology (row 8) is asserted operationally but absent from
+      the repo</strong> — no Dockerfile, no Cloud Run manifest. This is squarely
+      ASPIRATIONAL: intended in ops prose, not yet code-observable.
+    </li>
+    <li>
+      <strong>DESIGN.md's own W1/W2 corrigenda (row 9) are the strongest evidence the
+      prose sources are self-aware of drift</strong> — the document names its own gap
+      (ApplicationServices/publish_or_trace/InProcessEventBus never shipped) before
+      any code comparison occurs. The C4 module inventory for gh-report's
+      <code>app/</code> confirms the admission: none of those names appear.
+    </li>
+    <li>
+      <strong>cherry-pit-sd-viz (row 10) is a clean MATCH</strong> for a
+      deliberately-isolated tooling crate — its "standalone, zero pardosa
+      dependency" self-description matches its actual graph isolation exactly.
+    </li>
+    <li>
+      <strong>Sibling-adapter symmetry (row 11) holds</strong>: cherry-pit-web and
+      cherry-pit-projection both depend on core alone, as designed.
+    </li>
+    <li>
+      <strong>"cherry-pit-app depends on every other crate" (row 12) is narrower in
+      practice</strong> — cherry-pit-merger and cherry-pit-storage sit outside that
+      edge set. Combined with row 7, this suggests cherry-pit-merger's integration
+      story is the single largest unresolved architectural question surfaced by
+      this review.
+    </li>
+    <li>
+      <strong>Framed against the Solon thesis:</strong> the repo's bet is that a
+      small set of enabling constraints, enforced where the type system and build
+      graph can enforce them, collapses the space of possible mistakes. Rows 1-4
+      and 10-11 are exactly that promise redeemed — compile-time/dependency-graph
+      facts that agree with the documented invariant, no runtime discipline
+      required. Rows 7, 8, 9, and 12 are the counter-evidence: places where intent
+      outran shipped code, or where wiring diverged from the stated rule. Neither
+      set contradicts the thesis — a subtractive architecture still needs its
+      unshipped or partially-wired components named honestly, which DESIGN.md's own
+      W1/W2 notes already do for row 9.
+    </li>
+    <li>
+      <strong>Net verdict distribution</strong> (12 rows): 6 MATCH, 4 DRIFT,
+      1 UNDOCUMENTED, 1 ASPIRATIONAL — the review corpus is majority-confirming,
+      with the DRIFT/gap rows concentrated in exactly the areas the source beads
+      already flagged as gaps (cherry-pit-gateway non_exhaustive location,
+      cherry-pit-merger wiring, DESIGN.md's self-admitted W1/W2 corrigenda,
+      deployment topology).
+    </li>
+  </ul>
+
+  <footer class="page-footer">
+    Mission <code>arch-docs</code> · bd epic <code>adr-fmt-qsyv9</code> ·
+    Phase E — Review, reconciling <code>bd-adr-fmt-kgfyz</code> +
+    <code>adr-fmt-16ja3</code> (top-down) against <code>bd-adr-fmt-wlikf</code>
+    (bottom-up), the only phase that reads both derivations.
+  </footer>
+</main>
+</body>
+</html>

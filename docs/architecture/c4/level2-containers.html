@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>C4 L2 — Containers | Architecture Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<script type="module" src="../assets/mermaid-init.js"></script>
+</head>
+<body>
+<nav class="site-nav">
+  <div class="site-nav__inner">
+    <span class="site-nav__title">Architecture Docs</span>
+    <a href="../index.html">Home</a>
+    <a href="../design/index.html">Design (top-down)</a>
+    <a href="./level3-components.html">C4 L3 — Components</a>
+    <a href="./level2-containers.html" aria-current="page">C4 L2 — Containers</a>
+    <a href="./level1-context.html">C4 L1 — Context</a>
+    <a href="../review/index.html">Review</a>
+  </div>
+</nav>
+
+<main class="page">
+  <h1>C4 Level 2 — Containers</h1>
+  <p class="subtitle">
+    Derived from <a href="./level3-components.html">L3</a> by folding
+    components up to their deployable/buildable unit (the crate). All 20
+    in-scope crates, grouped by family, with dependency edges cited to each
+    crate's <code>Cargo.toml</code>. Source:
+    <span class="cite">bd-adr-fmt-wlikf</span> — code-derived, independent
+    of Design (Phase A).
+  </p>
+
+  <h2 id="container-table">Container table</h2>
+  <table>
+    <caption>All 20 in-scope crates — classification + key L3 components</caption>
+    <thead><tr><th>Container</th><th>Classification</th><th>Key components (ref L3)</th></tr></thead>
+    <tbody>
+      <tr><td>gh-report</td><td>runnable (bin <code>gh-report</code>)</td><td>daemon, collect, collector::*, github::client, store, server, report::*</td></tr>
+      <tr><td>gh-report-web-client</td><td>runnable (wasm cdylib, Leptos CSR)</td><td>dom, sort, lib entry</td></tr>
+      <tr><td>pardosa</td><td>substrate lib (sync facade)</td><td>store, backend::*, dragline::*, event::*, persist::*, error</td></tr>
+      <tr><td>pardosa-derive</td><td>proc-macro</td><td>codec, generics, hash, path_resolution, reject, schema</td></tr>
+      <tr><td>pardosa-fiber-store</td><td>adapter lib</td><td>lib.rs (single file)</td></tr>
+      <tr><td>pardosa-file</td><td>substrate lib</td><td>append/writer/reader, manifest::*, error</td></tr>
+      <tr><td>pardosa-nats</td><td>substrate lib (ring)</td><td>config, runtime, handle (run_op bridge, OCC fence), error</td></tr>
+      <tr><td>pardosa-read</td><td>runnable (bin <code>pardosa-read</code>)</td><td>cli, creds_perms, opaque, render, tls_policy</td></tr>
+      <tr><td>pardosa-schema</td><td>substrate lib</td><td>bounded, char_scalar, genome_safe, guide, floats::*, error</td></tr>
+      <tr><td>pardosa-wire</td><td>substrate lib</td><td>decoder, sealed, traits, try_encode, validate, error</td></tr>
+      <tr><td>pardosa-mint-private-tests</td><td><span class="badge badge--test-support">test-support</span></td><td>lib.rs (single file)</td></tr>
+      <tr><td>pardosa-test-support-harness</td><td><span class="badge badge--test-support">test-support</span></td><td>lib.rs (single file)</td></tr>
+      <tr><td>cherry-pit-app</td><td>runnable composition lib (no bin; wired by gh-report)</td><td>app, dispatch, event_bus, projection_source, scheduler, dead_letter</td></tr>
+      <tr><td>cherry-pit-core</td><td>substrate lib (DDD/EDA kernel)</td><td>aggregate, bus, command, event, gateway, store, projection, error (non_exhaustive)</td></tr>
+      <tr><td>cherry-pit-gateway</td><td>adapter lib</td><td>event_store::{mod,msgpack_file} (write_atomic), recovery</td></tr>
+      <tr><td>cherry-pit-merger</td><td>adapter lib</td><td>arm, command, handle, merger, shared</td></tr>
+      <tr><td>cherry-pit-projection</td><td>adapter lib</td><td>lib.rs (single file)</td></tr>
+      <tr><td>cherry-pit-storage</td><td>adapter lib</td><td>fs, lock, signature, error (non_exhaustive)</td></tr>
+      <tr><td>cherry-pit-web</td><td>adapter lib (axum, HAS server bind)</td><td>router, middleware::*, projection::*, serve::runtime (bind_serving_port, start, build_router, axum::serve)</td></tr>
+      <tr><td>cherry-pit-wq</td><td>adapter lib</td><td>budget, rate_limit, work_queue, worker_pool</td></tr>
+      <tr><td>cherry-pit-sd-viz</td><td><span class="badge badge--tooling">tooling</span> (wasm cdylib)</td><td>binding, layout, scene, sd, sim, sparkline, view</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="dep-edges">Dependency edges (cited to Cargo.toml)</h2>
+  <table>
+    <caption>In-scope dependency edges</caption>
+    <thead><tr><th>Container</th><th>&rarr; depends on (in-scope)</th><th>Citation</th></tr></thead>
+    <tbody>
+      <tr><td>gh-report</td><td>cherry-pit-wq, cherry-pit-storage, cherry-pit-gateway, cherry-pit-app, cherry-pit-core, cherry-pit-web, pardosa, pardosa-fiber-store, pardosa-file, pardosa-schema, pardosa-nats</td><td><code>crates/gh-report/Cargo.toml</code> [dependencies]</td></tr>
+      <tr><td>gh-report-web-client</td><td>none (all deps external, target-gated: leptos, wasm-bindgen, web-sys, js-sys)</td><td><code>crates/gh-report-web-client/Cargo.toml</code></td></tr>
+      <tr><td>pardosa</td><td>pardosa-wire, pardosa-schema, pardosa-file, pardosa-nats</td><td><code>crates/pardosa/Cargo.toml</code> [dependencies]</td></tr>
+      <tr><td>pardosa-derive</td><td>none in-scope (proc-macro2/quote/syn/proc-macro-crate all external)</td><td><code>crates/pardosa-derive/Cargo.toml</code></td></tr>
+      <tr><td>pardosa-fiber-store</td><td>pardosa</td><td><code>crates/pardosa-fiber-store/Cargo.toml</code></td></tr>
+      <tr><td>pardosa-file</td><td>none in-scope (blake3/xxhash-rust/zstd external)</td><td><code>crates/pardosa-file/Cargo.toml</code></td></tr>
+      <tr><td>pardosa-nats</td><td>none in-scope (tokio/async-nats/bytes/blake3/futures-util/tempfile[opt] only)</td><td><code>crates/pardosa-nats/Cargo.toml</code></td></tr>
+      <tr><td>pardosa-read</td><td>pardosa, pardosa-nats, pardosa-wire</td><td><code>crates/pardosa-read/Cargo.toml</code></td></tr>
+      <tr><td>pardosa-schema</td><td>pardosa-derive (optional), pardosa-wire</td><td><code>crates/pardosa-schema/Cargo.toml</code></td></tr>
+      <tr><td>pardosa-wire</td><td>none in-scope</td><td><code>crates/pardosa-wire/Cargo.toml</code></td></tr>
+      <tr><td>pardosa-mint-private-tests</td><td>none listed</td><td><code>crates/pardosa-mint-private-tests/Cargo.toml</code></td></tr>
+      <tr><td>pardosa-test-support-harness</td><td>none listed</td><td><code>crates/pardosa-test-support-harness/Cargo.toml</code></td></tr>
+      <tr><td>cherry-pit-app</td><td>cherry-pit-core, cherry-pit-gateway, cherry-pit-projection, cherry-pit-web</td><td><code>crates/cherry-pit-app/Cargo.toml</code></td></tr>
+      <tr><td>cherry-pit-core</td><td>none in-scope (serde/uuid/jiff external only; pardosa dep explicitly REMOVED per comment "Pardosa-encoding has been removed from the workspace")</td><td><code>crates/cherry-pit-core/Cargo.toml</code></td></tr>
+      <tr><td>cherry-pit-gateway</td><td>cherry-pit-core</td><td><code>crates/cherry-pit-gateway/Cargo.toml</code></td></tr>
+      <tr><td>cherry-pit-merger</td><td>cherry-pit-core</td><td><code>crates/cherry-pit-merger/Cargo.toml</code></td></tr>
+      <tr><td>cherry-pit-projection</td><td>cherry-pit-core</td><td><code>crates/cherry-pit-projection/Cargo.toml</code></td></tr>
+      <tr><td>cherry-pit-storage</td><td>none in-scope (thiserror/tempfile/tracing/serde/sha2/jiff/gethostname/rustix external)</td><td><code>crates/cherry-pit-storage/Cargo.toml</code></td></tr>
+      <tr><td>cherry-pit-web</td><td>cherry-pit-core</td><td><code>crates/cherry-pit-web/Cargo.toml</code></td></tr>
+      <tr><td>cherry-pit-wq</td><td>cherry-pit-core</td><td><code>crates/cherry-pit-wq/Cargo.toml</code></td></tr>
+      <tr><td>cherry-pit-sd-viz</td><td>none in-scope listed in [dependencies] block observed as empty/absent at survey time</td><td><code>crates/cherry-pit-sd-viz/Cargo.toml</code> (description self-declares "zero pardosa dependency")</td></tr>
+    </tbody>
+  </table>
+  <p>
+    <strong>Note:</strong> cherry-pit-merger and cherry-pit-storage appear
+    NOT wired into cherry-pit-app's deps (cherry-pit-app &rarr;
+    core,gateway,projection,web only) — cherry-pit-merger and
+    cherry-pit-storage are dependency-graph leaves reached only via
+    gh-report directly (gh-report depends on cherry-pit-storage directly;
+    cherry-pit-merger has no in-scope crate depending on it in the observed
+    <code>Cargo.toml</code> set — see Discrepancies below).
+  </p>
+
+  <div class="mermaid">
+flowchart TB
+  subgraph GHR["gh-report family"]
+    ghreport["gh-report<br/>(runnable, bin gh-report)"]
+    ghwebclient["gh-report-web-client<br/>(runnable, wasm cdylib)"]
+  end
+
+  subgraph PGN["pardosa substrate family"]
+    pardosa["pardosa<br/>(substrate lib)"]
+    pderive["pardosa-derive<br/>(proc-macro)"]
+    pfiberstore["pardosa-fiber-store<br/>(adapter lib)"]
+    pfile["pardosa-file<br/>(substrate lib)"]
+    pnats["pardosa-nats<br/>(substrate lib, ring)"]
+    pread["pardosa-read<br/>(runnable, bin pardosa-read)"]
+    pschema["pardosa-schema<br/>(substrate lib)"]
+    pwire["pardosa-wire<br/>(substrate lib)"]
+    pmint["pardosa-mint-private-tests"]:::testsupport
+    pharness["pardosa-test-support-harness"]:::testsupport
+  end
+
+  subgraph CHE["cherry-pit substrate family"]
+    ccore["cherry-pit-core<br/>(substrate lib, kernel)"]
+    capp["cherry-pit-app<br/>(runnable composition lib)"]
+    cgateway["cherry-pit-gateway<br/>(adapter lib)"]
+    cmerger["cherry-pit-merger<br/>(adapter lib, graph-orphan)"]
+    cprojection["cherry-pit-projection<br/>(adapter lib)"]
+    cstorage["cherry-pit-storage<br/>(adapter lib)"]
+    cweb["cherry-pit-web<br/>(adapter lib, axum)"]
+    cwq["cherry-pit-wq<br/>(adapter lib)"]
+    csdviz["cherry-pit-sd-viz"]:::tooling
+  end
+
+  ghreport -->|"Cargo.toml"| cwq
+  ghreport -->|"Cargo.toml"| cstorage
+  ghreport -->|"Cargo.toml"| cgateway
+  ghreport -->|"Cargo.toml"| capp
+  ghreport -->|"Cargo.toml"| ccore
+  ghreport -->|"Cargo.toml"| cweb
+  ghreport -->|"Cargo.toml"| pardosa
+  ghreport -->|"Cargo.toml"| pfiberstore
+  ghreport -->|"Cargo.toml"| pfile
+  ghreport -->|"Cargo.toml"| pschema
+  ghreport -->|"Cargo.toml"| pnats
+
+  pardosa -->|"Cargo.toml"| pwire
+  pardosa -->|"Cargo.toml"| pschema
+  pardosa -->|"Cargo.toml"| pfile
+  pardosa -->|"Cargo.toml"| pnats
+  pfiberstore -->|"Cargo.toml"| pardosa
+  pread -->|"Cargo.toml"| pardosa
+  pread -->|"Cargo.toml"| pnats
+  pread -->|"Cargo.toml"| pwire
+  pschema -->|"Cargo.toml (optional)"| pderive
+  pschema -->|"Cargo.toml"| pwire
+
+  capp -->|"Cargo.toml"| ccore
+  capp -->|"Cargo.toml"| cgateway
+  capp -->|"Cargo.toml"| cprojection
+  capp -->|"Cargo.toml"| cweb
+  cgateway -->|"Cargo.toml"| ccore
+  cmerger -->|"Cargo.toml"| ccore
+  cprojection -->|"Cargo.toml"| ccore
+  cweb -->|"Cargo.toml"| ccore
+  cwq -->|"Cargo.toml"| ccore
+
+  classDef testsupport fill:#eaf2ea,stroke:#33633a,color:#33633a;
+  classDef tooling fill:#eef0f8,stroke:#38408a,color:#38408a;
+  </div>
+
+  <h2 id="invariant-checks">Invariant checks</h2>
+  <table>
+    <caption>Code-grounded invariant verdicts (bd-adr-fmt-wlikf)</caption>
+    <thead><tr><th>Invariant</th><th>Code evidence</th><th>Verdict</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>1. pardosa-nats ring purity</td>
+        <td><code>crates/pardosa-nats/Cargo.toml</code> [dependencies]: tokio(rt,sync,time), async-nats, bytes, blake3, futures-util(0.3 direct not workspace), tempfile(optional)</td>
+        <td>HOLDS — no cherry-pit-* or pardosa edge present.</td>
+      </tr>
+      <tr>
+        <td>2. cherry-pit &perp; pardosa</td>
+        <td>grep across all 9 cherry-pit-*/Cargo.toml for "pardosa": zero real dependency lines found (only a code comment in cherry-pit-core/Cargo.toml noting pardosa-encoding was REMOVED, and a description string in cherry-pit-sd-viz/Cargo.toml). grep across all pardosa*/Cargo.toml for "cherry": zero matches.</td>
+        <td>HOLDS both directions.</td>
+      </tr>
+      <tr>
+        <td>3. sync public facade</td>
+        <td><code>crates/pardosa/src/store.rs</code>: pub fn signatures at lines 145, 170, 194, 201, 224, 231 — none are pub async fn. <code>crates/pardosa-nats/src/handle.rs:411</code> fn run_op&lt;F,T&gt;(rt:&amp;Handle,...) at :417 calls <code>rt.block_on(async move { tokio::time::timeout(timeout, fut).await })</code> — confirms the sync-over-async bridge lives in pardosa-nats, not on pardosa's public facade.</td>
+        <td>HOLDS.</td>
+      </tr>
+      <tr>
+        <td>4. single-writer-per-aggregate / OCC fence</td>
+        <td><code>crates/pardosa-nats/src/handle.rs</code>: fn append_with_replay_tag (~:201) computes expected_last_subject_sequence (:231-239) via expected_last_subject_sequence_for_publish (:596); on conflict, PublishErrorKind::WrongLastSequence (:585) is mapped to JetStreamRuntimeError::WrongLastSequence (:586, also declared <code>crates/pardosa-nats/src/error.rs:109</code>).</td>
+        <td>HOLDS — fence implemented as expected-last-sequence header on NATS publish, surfaced as a typed error variant.</td>
+      </tr>
+      <tr>
+        <td>5. #[non_exhaustive] on error enums</td>
+        <td><code>crates/pardosa/src/error.rs</code>: 8 occurrences (lines 9,25,33,41,58,186,237,431,470,496,526,649 — 12 total incl. doc mentions). <code>crates/cherry-pit-core/src/error.rs</code>: 4 occurrences (32,66,138,240,282). <code>crates/cherry-pit-storage/src/error.rs</code>: 1 occurrence (line 7). <code>crates/cherry-pit-gateway/src/lib.rs</code>: 0 occurrences (gateway's error type, if any, not found via this grep).</td>
+        <td>HOLDS for pardosa, cherry-pit-core, cherry-pit-storage; <strong>cherry-pit-gateway UNCONFIRMED</strong> — error location not confirmed by this grep (may live elsewhere in event_store/mod.rs — unobserved).</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 id="discrepancies">Discrepancies</h2>
+  <ul>
+    <li>
+      <strong>cherry-pit-merger graph-orphaned:</strong> cherry-pit-merger
+      has no in-scope crate consumer in the observed <code>Cargo.toml</code>
+      set (not depended on by cherry-pit-app, cherry-pit-web, gh-report, or
+      any other in-scope crate's [dependencies]) — it may be a
+      standalone/optionally-wired component or wired via a mechanism not
+      visible in <code>Cargo.toml</code> (e.g. dynamic dispatch, feature
+      flag, or future integration). Flagged as a graph orphan pending
+      confirmation.
+    </li>
+    <li>
+      <strong>cherry-pit-gateway error enum location unconfirmed:</strong>
+      non_exhaustive status unconfirmed (grep targeted <code>lib.rs</code>,
+      not <code>event_store/mod.rs</code> where the type likely lives) —
+      gap, not a violation.
+    </li>
+  </ul>
+
+  <footer class="page-footer">
+    Mission <code>arch-docs</code> · bd epic <code>adr-fmt-qsyv9</code> ·
+    Phase C — L2 (this page) derived from L3, both authored strictly from
+    <code>bd-adr-fmt-wlikf</code>, code-derived, independent of Design
+    (Phase A).
+  </footer>
+</main>
+</body>
+</html>

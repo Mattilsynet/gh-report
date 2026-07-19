@@ -1,0 +1,365 @@
+/* Shared stylesheet for docs/architecture/** (arch-docs mission, mission:arch-docs).
+   Light theme, readable serif body / sans headings, max-width column,
+   styled tables, citation styling, nav header. Reused by every page in
+   this doc set: index.html, design/index.html, c4/level{1,2,3}-*.html,
+   review/index.html. */
+
+:root {
+  --color-bg: #fbfaf7;
+  --color-bg-alt: #f1efe9;
+  --color-text: #24211c;
+  --color-muted: #6b6558;
+  --color-border: #d8d3c6;
+  --color-accent: #7a3b1e;
+  --color-accent-bg: #f4e7db;
+  --color-link: #1f5f8b;
+  --color-code-bg: #2b2b26;
+  --color-code-text: #e8e3d6;
+  --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --font-sans: "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --max-width: 62rem;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-serif);
+  font-size: 17px;
+  line-height: 1.6;
+}
+
+.page {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 0 1.5rem 4rem;
+}
+
+/* --- Nav header, shared across all pages --- */
+
+.site-nav {
+  background: var(--color-bg-alt);
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: 2.5rem;
+}
+
+.site-nav__inner {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 0.9rem 1.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem 1.1rem;
+  font-family: var(--font-sans);
+}
+
+.site-nav__title {
+  font-weight: 700;
+  color: var(--color-accent);
+  margin-right: 0.6rem;
+  letter-spacing: 0.02em;
+}
+
+.site-nav a {
+  color: var(--color-text);
+  text-decoration: none;
+  font-size: 0.92rem;
+  padding: 0.15rem 0.1rem;
+  border-bottom: 2px solid transparent;
+}
+
+.site-nav a:hover,
+.site-nav a:focus {
+  border-bottom-color: var(--color-accent);
+}
+
+.site-nav a[aria-current="page"] {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+}
+
+/* --- Headings --- */
+
+h1, h2, h3, h4 {
+  font-family: var(--font-sans);
+  color: var(--color-text);
+  line-height: 1.25;
+}
+
+h1 {
+  font-size: 2.1rem;
+  margin: 0 0 0.4rem;
+  border-bottom: 3px solid var(--color-accent);
+  padding-bottom: 0.5rem;
+}
+
+h2 {
+  font-size: 1.5rem;
+  margin-top: 2.6rem;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 0.3rem;
+}
+
+h3 {
+  font-size: 1.2rem;
+  margin-top: 1.8rem;
+  color: var(--color-accent);
+}
+
+h4 {
+  font-size: 1.02rem;
+  margin-top: 1.3rem;
+}
+
+.subtitle {
+  font-family: var(--font-sans);
+  color: var(--color-muted);
+  font-size: 1.05rem;
+  margin: 0 0 1.8rem;
+}
+
+/* --- Body text elements --- */
+
+p {
+  margin: 0.85rem 0;
+}
+
+ul, ol {
+  padding-left: 1.4rem;
+}
+
+li {
+  margin: 0.3rem 0;
+}
+
+a {
+  color: var(--color-link);
+}
+
+strong {
+  color: var(--color-accent);
+}
+
+/* --- Citations --- */
+
+cite, .cite {
+  font-style: normal;
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  background: var(--color-accent-bg);
+  color: var(--color-accent);
+  padding: 0.05rem 0.4rem;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.cite-src {
+  font-style: italic;
+  font-family: var(--font-sans);
+  color: var(--color-muted);
+  font-size: 0.86rem;
+}
+
+/* --- Code / mono --- */
+
+code {
+  font-family: var(--font-mono);
+  background: var(--color-bg-alt);
+  padding: 0.05rem 0.35rem;
+  border-radius: 3px;
+  font-size: 0.88em;
+}
+
+pre {
+  background: var(--color-code-bg);
+  color: var(--color-code-text);
+  padding: 1rem 1.2rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.86rem;
+}
+
+pre code {
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+
+/* --- Tables --- */
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1.2rem 0;
+  font-family: var(--font-sans);
+  font-size: 0.92rem;
+}
+
+caption {
+  text-align: left;
+  font-family: var(--font-sans);
+  color: var(--color-muted);
+  margin-bottom: 0.4rem;
+  font-size: 0.88rem;
+}
+
+th, td {
+  border: 1px solid var(--color-border);
+  padding: 0.5rem 0.7rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  background: var(--color-bg-alt);
+  font-weight: 700;
+}
+
+tr:nth-child(even) td {
+  background: rgba(0, 0, 0, 0.015);
+}
+
+/* --- Cards / view grid (used on landing page) --- */
+
+.view-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0 2.5rem;
+}
+
+.view-card {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 1.1rem 1.2rem;
+  background: var(--color-bg-alt);
+}
+
+.view-card h3 {
+  margin-top: 0;
+}
+
+.view-card a.card-link {
+  display: inline-block;
+  margin-top: 0.5rem;
+  font-family: var(--font-sans);
+  font-weight: 600;
+}
+
+/* --- Badges (test-support / tooling markers) --- */
+
+.badge {
+  display: inline-block;
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  color: var(--color-muted);
+  margin-left: 0.4rem;
+  vertical-align: middle;
+}
+
+.badge--test-support {
+  background: #eaf2ea;
+  border-color: #a9c9a9;
+  color: #33633a;
+}
+
+.badge--tooling {
+  background: #eef0f8;
+  border-color: #aab3d8;
+  color: #38408a;
+}
+
+.badge--gap {
+  background: #f8ecec;
+  border-color: #d8a9a9;
+  color: #8a3838;
+}
+
+/* --- Verdict badges (review page: MATCH / DRIFT / UNDOCUMENTED / ASPIRATIONAL) --- */
+
+.verdict {
+  display: inline-block;
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.15rem 0.55rem;
+  border-radius: 4px;
+  border: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.verdict--match {
+  background: #eaf6ec;
+  border-color: #7fb98a;
+  color: #1e5c2a;
+}
+
+.verdict--drift {
+  background: #fdf3e0;
+  border-color: #d9ad5a;
+  color: #85560b;
+}
+
+.verdict--undocumented {
+  background: #eef0f8;
+  border-color: #aab3d8;
+  color: #38408a;
+}
+
+.verdict--aspirational {
+  background: #f8ecec;
+  border-color: #d8a9a9;
+  color: #8a3838;
+}
+
+/* --- Mermaid diagram containers --- */
+
+.mermaid {
+  background: #ffffff;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 1rem;
+  margin: 1.2rem 0;
+  overflow-x: auto;
+}
+
+/* --- Footnotes / source list --- */
+
+.sources {
+  margin-top: 3rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--color-border);
+  font-family: var(--font-sans);
+  font-size: 0.86rem;
+  color: var(--color-muted);
+}
+
+.sources li {
+  margin: 0.25rem 0;
+}
+
+footer.page-footer {
+  margin-top: 3rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--color-border);
+  font-family: var(--font-sans);
+  font-size: 0.8rem;
+  color: var(--color-muted);
+}

@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Design — Intended Architecture | Architecture Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<script type="module" src="../assets/mermaid-init.js"></script>
+</head>
+<body>
+<nav class="site-nav">
+  <div class="site-nav__inner">
+    <span class="site-nav__title">Architecture Docs</span>
+    <a href="../index.html">Home</a>
+    <a href="../design/index.html" aria-current="page">Design (top-down)</a>
+    <a href="../c4/level3-components.html">C4 L3 — Components</a>
+    <a href="../c4/level2-containers.html">C4 L2 — Containers</a>
+    <a href="../c4/level1-context.html">C4 L1 — Context</a>
+    <a href="../review/index.html">Review</a>
+  </div>
+</nav>
+
+<main class="page">
+  <h1>Design — Intended Architecture</h1>
+  <p class="subtitle">
+    Phase A: top-down, synthesized <strong>strictly from prose</strong> —
+    ADRs, READMEs, DESIGN.md/OPERATIONS.md, AGENTS.md. No <code>.rs</code>
+    source, no <code>Cargo.toml</code>, no dependency graph was read to
+    produce this page. Sources:
+    <span class="cite">bd-adr-fmt-kgfyz</span> (prose digest),
+    <span class="cite">adr-fmt-16ja3</span> (oracle binding-ADR summary).
+  </p>
+
+  <h2 id="solon-stance">Solon stance — why this repo exists</h2>
+  <p>
+    The repo styles itself "Solon": a small set of ratified, enabling
+    constraints for agent-first development, after Solon the lawgiver.
+    <span class="cite-src">(AGENTS.md §Intent)</span>
+  </p>
+  <p>
+    The bet is <strong>subtractive</strong>: "remove enough degrees of
+    freedom that the remaining moves are obviously correct. When the type
+    system rejects illegal architectures, the search space an agent must
+    explore collapses."
+    <span class="cite-src">(AGENTS.md §Intent)</span>
+  </p>
+  <p>
+    "The libraries are the product; the binaries are evidence they work."
+    <code>cherry-pit-*</code> is the EDA+DDD+hexagonal substrate, engineered
+    so illegal compositions — multiple writers per aggregate, async in the
+    domain, leaky identity — do not type-check. <code>pardosa*</code> is the
+    durable event-store substrate. <code>adr-fmt</code>/<code>adr-srv</code>
+    are the governance plane (out of scope here).
+    <code>gh-report</code> is the first non-trivial consumer: load-bearing
+    proof the substrate carries real work.
+    <span class="cite-src">(AGENTS.md §Intent)</span>
+  </p>
+  <p>
+    <strong>Niche</strong> (where to play): high-complexity, durable,
+    intra-org workloads that do <em>not</em> need arbitrary horizontal
+    scale-out. Single writer per aggregate; sync domain, async edges;
+    linearizable per aggregate; sub-PB, single-region; crash-fail with
+    recovery. "Webscale is a different game and is not played here."
+    <span class="cite-src">(AGENTS.md §Intent)</span>
+  </p>
+  <p>
+    <strong>Non-goals</strong> (recorded so they aren't rediscovered):
+    multi-region/multi-tenant webscale; frameworks/scaffolding/starter-kits
+    (the constraints <em>are</em> the guidance); runtime-pluggable
+    architectures — composition is compile-time <cite>CHE-0005:R1</cite>;
+    schema evolution as a runtime feature; public-API surface freeze before
+    v0.3. <span class="cite-src">(AGENTS.md §Intent)</span>
+  </p>
+
+  <h2 id="per-family">Per-family intended decomposition</h2>
+
+  <h3 id="family-gh-report">gh-report family</h3>
+  <p>
+    <strong>gh-report</strong> — "GitHub organisation-evidence collector and
+    HTML reporter built on the cherry-pit event-sourcing substrate."
+    Alpha status. Persists to a native pardosa event store
+    (<code>crate::store::NativeStore</code>) over
+    pardosa/pardosa-schema/pardosa-nats. Binds a curated subset of
+    cherry-pit's public surface per <cite>CHE-0073</cite>/<cite>CHE-0074</cite>:
+    cherry-pit-wq (work-queue, worker-pool, budget, rate-limit),
+    cherry-pit-storage (atomic writes, RunLock, snapshot signatures),
+    cherry-pit-core (correlation context), cherry-pit-web
+    (projection/serve). Default backend: embedded <code>.pgno</code>;
+    NATS/JetStream selectable.
+  </p>
+  <ul>
+    <li>
+      <strong>Intended domain model</strong> <span class="cite">CHE-0054</span>:
+      three DDD aggregates — Run (sweep lifecycle, <cite>CHE-0054:R1</cite>),
+      Repo (repository evaluation lifecycle, <cite>CHE-0054:R2</cite>),
+      WebhookDelivery (write-once, <cite>CHE-0054:R3</cite>). Read side: one
+      <cite>CHE-0048</cite> projection, <code>EvidenceProjection</code>, sole
+      writer+reader of the read-model
+      (<cite>CHE-0048:R2</cite>, <cite>CHE-0073:R7</cite>).
+      <span class="cite-src">(gh-report DESIGN.md §3)</span>
+    </li>
+    <li>
+      <strong>Runtime topology</strong> conforms to
+      <code>cherry-pit-app::App::run</code>
+      <span class="cite-src">(gh-report DESIGN.md §4; BC-9; CHE-0051)</span> —
+      <strong>flagged divergence:</strong> DESIGN.md's own corrigenda
+      (W1/W2 truth-alignment notes) state several of these components
+      (RunService/RepoService/WebhookService ApplicationServices,
+      <code>publish_or_trace</code>, a DomainEvent-carrying
+      InProcessEventBus) "never shipped in this form" — an
+      intended-vs-actual divergence already self-documented in the prose.
+      This is exactly the class of gap the later Review phase is built to
+      surface systematically.
+    </li>
+    <li>
+      <strong>Storage layout</strong>
+      <span class="cite-src">(gh-report DESIGN.md §5, OPERATIONS.md)</span>:
+      <code>&lt;store_dir&gt;/events/events.pgno</code> (NativeStore, one
+      fiber per repo domain key, <cite>CHE-0074:R4</cite>),
+      <code>org-events.pgno</code>, <code>team-events.pgno</code>,
+      <code>locks/</code> (process fencing, <cite>CHE-0043</cite>).
+      Production persistence: NATS JetStream; local default:
+      <code>.pgno</code>.
+    </li>
+    <li>
+      <strong>Server</strong>: HTTP served via
+      <code>cherry-pit-web::serve</code> generic pipeline; gh-report
+      implements <code>ServerState</code> via <code>AppState</code>; extra
+      route <code>/api/v1/status</code>.
+    </li>
+    <li>
+      <strong>Scoring contract</strong>
+      <span class="cite-src">(OPERATIONS.md)</span>: Repo Posture
+      (arithmetic mean), Team Health (geometric mean, owner-level), Org
+      Governance (geometric mean, org-level) computed from five shared
+      controls (security policy, secret scanning, dependabot, branch
+      protection, codeowners) plus lifecycle-derived rates (freshness,
+      alert-free, archival coverage). Excluded status removed from the
+      denominator, not counted as a fail.
+    </li>
+    <li>
+      <strong>Auth model</strong>: GitHub App &gt; <code>GITHUB_TOKEN</code>
+      &gt; <code>gh auth token</code> fallback (local dev only). No
+      offline/fixture mode — always reaches the GitHub API.
+    </li>
+    <li>
+      Governing ADRs: <cite>CHE-0073</cite> (storage remodel),
+      <cite>CHE-0074</cite> (native pardosa store port),
+      <cite>CHE-0022</cite> (schema evolution),
+      <cite>CHE-0039</cite> (correlation propagation),
+      <cite>CHE-0030</cite> (flat public API),
+      <cite>CHE-0054</cite> (three-aggregate decomposition),
+      <cite>CHE-0048</cite> (projection design),
+      <cite>CHE-0051</cite> (cherry-pit-app design),
+      <cite>CHE-0018</cite> (sync domain/async infra),
+      <cite>CHE-0072</cite> (storage-backend selector),
+      <cite>CHE-0068</cite> (projection freshness/coalescing),
+      <cite>CHE-0092</cite> (fold-side freshness),
+      <cite>CHE-0088</cite> (closed write-policy dispatch),
+      <cite>CHE-0086</cite> (generic read-serve), <cite>CHE-0062</cite>
+      (LayerLimits).
+    </li>
+  </ul>
+  <p>
+    <strong>gh-report-web-client</strong> — no README found within scope
+    (gap). Referenced from the cherry-pit-sd-viz README as declaring the
+    <code>web-sys</code> feature surface reused by the wasm viz crate; no
+    further intended-architecture prose located within scope.
+    <span class="cite-src">(bd-adr-fmt-kgfyz gaps)</span>
+  </p>
+
+  <div class="mermaid">
+flowchart LR
+  subgraph GHR["gh-report family"]
+    ghreport["gh-report<br/>(collector + reporter)"]
+    ghwebclient["gh-report-web-client<br/>(web-sys surface)"]
+  end
+  ghreport -->|"curated subset<br/>CHE-0073/CHE-0074"| cpwq["cherry-pit-wq"]
+  ghreport --> cpstorage["cherry-pit-storage"]
+  ghreport --> cpcore["cherry-pit-core"]
+  ghreport --> cpweb["cherry-pit-web"]
+  ghreport -->|"native store<br/>CHE-0074"| pardosa["pardosa"]
+  ghreport --> pschema["pardosa-schema"]
+  ghreport --> pnats["pardosa-nats"]
+  ghreport -.->|"wasm viz reuses<br/>feature surface"| ghwebclient
+  </div>
+
+  <h3 id="family-pardosa">pardosa family (durable event-store substrate)</h3>
+  <ul>
+    <li>
+      <strong>pardosa</strong> — "EDA storage layer implementing fiber
+      semantics... runtime ring of the workspace — composes the substrate
+      crates (pardosa-wire, pardosa-schema, pardosa-file) into a single
+      adopter-facing appliance, <code>pardosa::store::EventStore</code>."
+      Fiber = unit of identity (a strand of related events through which
+      causality flows, <cite>PGN-0002</cite>). Event carries FiberId +
+      EventId, both monotonic within scope; Dragline owns a dragline-local
+      <code>next_fiber_id</code> allocator. Sole-interface seal per
+      <cite>PGN-0008</cite>. <code>StoreReader</code> is <code>!Send</code>,
+      <code>StoreWriter</code> is <code>Send</code>
+      (<cite>PGN-0007</cite>). Governing ADRs: <cite>PGN-0002</cite>,
+      <cite>PGN-0008</cite>, <cite>PGN-0004</cite>, <cite>PGN-0003</cite>.
+    </li>
+    <li>
+      <strong>pardosa-derive</strong> — proc-macro ring.
+      <code>#[derive(GenomeSafe)]</code> walks struct/enum shape, emits
+      <code>pardosa_wire::sealed::Sealed</code> +
+      <code>pardosa_schema::EventSafe</code> +
+      <code>pardosa_schema::GenomeSafe</code>
+      (<code>SCHEMA_HASH: u128</code>) + Encode/Decode impls. Rejects serde
+      attributes at type/variant/field level once derived; enums must be
+      <code>#[repr(u8)]</code> with explicit discriminants; unions rejected
+      (EVT-001). Governing ADR: <cite>PGN-0003</cite>.
+    </li>
+    <li>
+      <strong>pardosa-fiber-store</strong> — no dedicated README located
+      within scope; referenced by gh-report DESIGN.md as
+      <code>pardosa_fiber_store::FiberStore&lt;DomainEvent&gt;</code>, the
+      native EventStore adapter gh-report wires. Extraction ruled by
+      <cite>CHE-0084:R7</cite>. <span class="badge badge--gap">gap</span>
+    </li>
+    <li>
+      <strong>pardosa-file</strong> — "Payload-opaque .pgno file container:
+      writer, reader, format constants, and the Syncable durability seam."
+      On-disk substrate ring; defines the byte-level <code>.pgno</code>
+      format; verified on <code>Reader::open</code> (magic,
+      <code>FORMAT_VERSION</code>, footer checksum, ascending offsets,
+      per-message xxh64 checksums). Payload-opaque: carries
+      <code>schema_hash: u128</code> in the header but never names the
+      payload type (typing lives one ring up, in
+      pardosa-schema/pardosa::store). Three writer flavours: Writer,
+      AppendWriter, PageClass. "Drop is not a durability boundary" — callers
+      must fence via <code>sync_data</code>. Governing ADRs:
+      <cite>PGN-0004</cite>, <cite>PGN-0003</cite>.
+    </li>
+    <li>
+      <strong>pardosa-nats</strong> — no dedicated README found (gap). The
+      ring-purity invariant (only tokio/async-nats/bytes/blake3/futures-util
+      deps) is the primary intended-architecture claim available in prose;
+      see Invariant 3 below. <span class="badge badge--gap">gap</span>
+    </li>
+    <li>
+      <strong>pardosa-read</strong> — "Read-only RON reader for pardosa
+      events stored in JetStream. Built for agent-driven debugging against
+      production NATS." Structural read-only guarantee: constructs only
+      <code>JetStreamHandle::replay_readonly</code> reads; never calls
+      append/sync/get_or_create_stream/update_stream; a missing stream
+      surfaces as a typed error rather than being provisioned
+      (<cite>PGN-0008:R8</cite> rehydrate-only-errors-on-never-created). CLI
+      tool, not library-consumed by other in-scope crates per this prose
+      survey.
+    </li>
+    <li>
+      <strong>pardosa-schema</strong> — "Typed-payload vocabulary for
+      pardosa events: GenomeSafe marker, bounded string/byte/vec wrappers,
+      total-order float wrappers, CharScalar." Sits one ring above
+      pardosa-wire: builds payload-typed vocabulary atop wire's
+      payload-opaque codec traits. Every type is Send+Sync (asserted by
+      test). Bounded wrappers (<code>EventString</code> etc.) — the
+      <code>MAX</code> const is part of schema identity; changing it is a
+      schema migration (<cite>PGN-0003</cite> + <cite>PGN-0009</cite>). The
+      <code>derive</code> feature re-exports
+      <code>pardosa_derive::GenomeSafe</code>. Governing ADRs:
+      <cite>PGN-0003</cite>, <cite>PGN-0009</cite>.
+    </li>
+    <li>
+      <strong>pardosa-wire</strong> — "In-house canonical encoding format
+      for pardosa events (<cite>PGN-0003</cite>)... substrate-purity layer:
+      a <code>#![no_std]</code> + <code>extern crate alloc</code> codec."
+      Encode/Decode traits + <code>to_vec</code>/<code>from_bytes</code>/
+      <code>from_bytes_with_cap</code> helpers; bounded decode
+      (<code>DEFAULT_DECODE_CAP</code>) so adversarial input can't force
+      unbounded allocation ("PGN-0003 cap discipline"). EventSafe marker +
+      a sealed module gate participation; downstream crates
+      (pardosa-schema, pardosa-derive) extend the sealed graph rather than
+      opening it. Dependency-free by default; uuid/blake3 behind features.
+    </li>
+    <li>
+      <strong>pardosa-mint-private-tests</strong>
+      <span class="badge badge--test-support">test-support</span> — no
+      README found within scope glob; not documented in prose sources
+      searched. <span class="badge badge--gap">gap</span>
+    </li>
+    <li>
+      <strong>pardosa-test-support-harness</strong>
+      <span class="badge badge--test-support">test-support</span> — no
+      README found within scope glob. <span class="badge badge--gap">gap</span>
+    </li>
+  </ul>
+
+  <div class="mermaid">
+flowchart BT
+  wire["pardosa-wire<br/>(no_std codec, PGN-0003)"]
+  schema["pardosa-schema<br/>(typed vocabulary, PGN-0003/0009)"]
+  derive["pardosa-derive<br/>(proc-macro ring)"]
+  file["pardosa-file<br/>(.pgno container, PGN-0004)"]
+  pardosa["pardosa<br/>(adopter-facing appliance,<br/>PGN-0002/0008)"]
+  nats["pardosa-nats<br/>(NATS/JetStream backend,<br/>ring-purity isolated)"]
+  read["pardosa-read<br/>(read-only CLI, PGN-0008:R8)"]
+  fiberstore["pardosa-fiber-store<br/>(FiberStore adapter, CHE-0084:R7)"]
+  mint["pardosa-mint-private-tests" ]:::testsupport
+  harness["pardosa-test-support-harness"]:::testsupport
+
+  wire --> schema
+  derive -.->|"extends sealed graph"| schema
+  wire --> file
+  schema --> pardosa
+  file --> pardosa
+  pardosa --> nats
+  pardosa --> fiberstore
+  nats --> read
+
+  classDef testsupport fill:#eaf2ea,stroke:#33633a,color:#33633a;
+  </div>
+
+  <h3 id="family-cherry-pit">cherry-pit family (EDA+DDD+hexagonal substrate)</h3>
+  <ul>
+    <li>
+      <strong>cherry-pit-core</strong> — "Foundational traits for
+      cherry-pit: aggregates, commands, events, ports." Every infra port
+      (EventStore, EventBus, CommandBus, CommandGateway) is bound to a
+      single aggregate type via associated types — "the compiler enforces
+      end-to-end type safety from command dispatch through event
+      persistence and publication." Domain traits are sync (Aggregate,
+      HandleCommand, DomainEvent, Command, Policy, Projection); port traits
+      are async RPITIT, no dynamic dispatch. Dependencies: only serde,
+      uuid, jiff — no async runtime, no framework deps. Status:
+      implemented, stable for v0.1.
+    </li>
+    <li>
+      <strong>cherry-pit-app</strong> — "Root composition crate wiring
+      Aggregate/Policy/Projection against
+      EventStore/EventBus/CommandGateway." The only crate sanctioned to
+      depend on every other cherry-pit crate (<cite>CHE-0029</cite>
+      acyclic-DAG rule). Flat public API via crate-root pub use
+      (<cite>CHE-0030:R1</cite>). Central type:
+      <code>App&lt;G,S,B,P,D&gt;</code> (five type params, no
+      <code>Box</code> over infra ports, <cite>CHE-0005:R1</cite>).
+      Dead-letter contract: terminal-category policy errors →
+      <code>DeadLetterRecord</code> → <code>DeadLetterSink::record</code>;
+      the publish loop does not abort on one bad envelope
+      (<cite>CHE-0051:R7</cite> + <cite>CHE-0046:R2</cite>). One App per
+      aggregate (<cite>CHE-0051:R9</cite>). <code>App::run</code> requires
+      a multi-thread tokio runtime (the sync bus callback bridges via
+      <code>Handle::block_on</code>). Governing ADRs:
+      <cite>CHE-0005</cite>, <cite>CHE-0017</cite>, <cite>CHE-0024</cite>,
+      <cite>CHE-0030</cite>, <cite>CHE-0038</cite>, <cite>CHE-0039</cite>,
+      <cite>CHE-0040</cite>, <cite>CHE-0046</cite>, <cite>CHE-0048</cite>,
+      <cite>CHE-0051</cite> (primary design ADR).
+    </li>
+    <li>
+      <strong>cherry-pit-gateway</strong> — "Infrastructure implementations
+      for cherry-pit: event stores." Provides <code>MsgpackFileStore</code>
+      — a file-based MessagePack event store with atomic writes
+      (<cite>CHE-0032</cite>), process-level fencing
+      (<cite>CHE-0043</cite>), optimistic concurrency
+      (<cite>CHE-0006</cite>, <cite>CHE-0035</cite>). One
+      <code>.msgpack</code> file per aggregate, rewritten on every append
+      (<cite>CHE-0036:R1/R2</cite>). Advisory file lock for single-process
+      ownership. RUNBOOKS.md documents operational recovery: R1 orphan
+      temp-file recovery, R2 corrupt-data classification, R3
+      quarantine-before-repair, R4 dead-letter schema, R5 stale-lock
+      recovery, R6 migration recovery (<cite>CHE-0047</cite>). Status
+      v0.1.0: sole event-store implementation; object_store-backed stores
+      planned (<cite>CHE-0044</cite>).
+    </li>
+    <li>
+      <strong>cherry-pit-merger</strong> — no README found within scope
+      (gap). ADR tree shows <cite>CHE-0069</cite> "cherry-pit-merger —
+      Command-Side Single-Task Serialiser" [B] Accepted (references
+      <cite>CHE-0017</cite>, <cite>CHE-0029</cite>, <cite>CHE-0030</cite>,
+      <cite>CHE-0024</cite>, <cite>CHE-0042</cite>, <cite>CHE-0073</cite>)
+      and <cite>CHE-0085</cite> "Merger/App Command-Side Choice Model" —
+      intended role per ADR title: a command-side single-task serialiser,
+      an alternative/complement to cherry-pit-app for command dispatch.
+      <span class="badge badge--gap">gap</span>
+    </li>
+    <li>
+      <strong>cherry-pit-projection</strong> — "Projection drivers and
+      storage backends for cherry-pit read models... realises
+      <cite>CHE-0048</cite>." Read-side adapter layer: folds durable event
+      streams into query-optimized projection state, persists checkpointed
+      snapshots for restart/rebuild. Sibling adapter crate to
+      cherry-pit-gateway; depends on cherry-pit-core only, does not stack
+      on the gateway implementation. Key types:
+      <code>ProjectionDriver&lt;P,S&gt;</code>,
+      <code>InMemoryProjection</code>, <code>FileProjectionStore</code>
+      (snapshot-then-checkpoint write order — a crash between the two means
+      "rebuild", not "trust snapshot", <cite>CHE-0048:R2</cite>),
+      <code>ProjectionCheckpoint</code>, <code>ProjectionError</code>
+      (<code>#[non_exhaustive]</code>).
+    </li>
+    <li>
+      <strong>cherry-pit-storage</strong> — "Synchronous filesystem
+      primitives — atomic writes, run-locks, content-addressable
+      signatures — for cherry-pit consumers." Per <cite>CHE-0053</cite>
+      absorbs error/fs/lock/signature modules from the donor
+      quics-memoization crate. Flat public API over private modules
+      (<cite>CHE-0053:R3</cite>). Status: implemented v0.1.
+    </li>
+    <li>
+      <strong>cherry-pit-web</strong> — "HTTP adapter exposing the
+      cherry-pit CommandGateway over axum... realises
+      <cite>CHE-0049</cite> (design) ... and <cite>CHE-0050</cite>
+      (CommandRouter port)." Role: HTTP-edge adapter for command-side
+      traffic — owns status mapping, correlation echo, idempotency-key
+      threading, versioned <code>/v1/</code> DTO contract; explicitly does
+      <em>not</em> own auth, WebSocket surfaces (default build), or
+      static-content caching (consumer-attached via
+      <code>extra_routes</code>). Sibling adapter crate to
+      cherry-pit-projection, depends on cherry-pit-core only.
+      <code>AppState&lt;G,S,R&gt;</code> is generic typed state, no
+      <code>Box</code>. Optional <code>projection</code> feature adds a
+      second read-side router (<code>build_projection_router</code>) — HTTP
+      snapshot fetch + narrowed WS push for deltas, structurally sealed
+      against <code>dyn</code> use (<code>ProjectionSource</code>,
+      <cite>CHE-0049:R12</cite> + <cite>CHE-0005:R1</cite>). Out of scope
+      v0.1: auth, transports beyond HTTP/1.1+JSON on the command surface
+      (WS only on the projection feature), static content caching,
+      idempotency persistence.
+    </li>
+    <li>
+      <strong>cherry-pit-wq</strong> — "Domain-agnostic concurrency and
+      resource-pacing primitives for cherry-pit consumers." Per
+      <cite>CHE-0055</cite> (supersedes <cite>CHE-0052</cite>) absorbs
+      <code>work_queue</code>, <code>worker_pool</code>, <code>budget</code>,
+      <code>rate_limit</code> from the donor quics-aggregate crate;
+      pagination explicitly not in this crate (relocated to
+      <code>gh-report::github::pagination</code>,
+      <cite>CHE-0055:R7</cite>). Status implemented v0.1, flat re-export
+      surface (<cite>CHE-0055:R10</cite>).
+    </li>
+    <li>
+      <strong>cherry-pit-sd-viz</strong>
+      <span class="badge badge--tooling">tooling</span> — "standalone,
+      client-side, animated discrete-event simulation of gh-report's
+      runtime queue network." No dependency on a running gh-report; no
+      trace capture; wasm/browser-only. Documents the intended gh-report
+      runtime topology narratively: three triggers (scheduled sweep via
+      SweepSaga/SweepPhase; webhook via <code>webhook_handler</code>
+      enqueuing <code>JobSource::External</code>; warm start via
+      <code>warm_start_from_baseline</code> bypassing the queue) feeding a
+      per-packet WRITE side (WorkQueue → worker_loop/
+      LiveEvaluator::evaluate → JobOutcome → delivery_loop → record_repo
+      folds EvidenceProjectionEvent), joined by a BARRIER
+      (<code>BatchTracker</code> — a sweep run blocks until all
+      ScheduledBatch jobs of that run drain; webhook jobs never gate), then
+      a per-RUN READ side (<code>finalize_and_publish</code> →
+      <code>build_cached_pages</code> →
+      <code>commit_cached_pages</code> via atomic <code>ArcSwap</code>
+      swap+generation++ → <code>PageUpdateEvent</code> broadcast once per
+      run finalize), plus a continuous SERVE path (<code>cache_fallback</code>
+      reads the current ArcSwap generation independent of run completion).
+      Strong prose-derived architecture claim for gh-report's dataflow.
+    </li>
+  </ul>
+
+  <div class="mermaid">
+flowchart TB
+  core["cherry-pit-core<br/>(traits: Aggregate, ports,<br/>CHE-0025 RPITIT only)"]
+  app["cherry-pit-app<br/>(root composition,<br/>App&lt;G,S,B,P,D&gt;,<br/>only crate deps on all)"]
+  gateway["cherry-pit-gateway<br/>(MsgpackFileStore,<br/>CHE-0032/0043)"]
+  storage["cherry-pit-storage<br/>(fs primitives,<br/>zero cherry-pit-* deps)"]
+  projection["cherry-pit-projection<br/>(read-side adapter,<br/>CHE-0048)"]
+  web["cherry-pit-web<br/>(HTTP command adapter,<br/>CHE-0049/0050)"]
+  wq["cherry-pit-wq<br/>(queue/pool/budget/<br/>rate-limit, CHE-0055)"]
+  merger["cherry-pit-merger<br/>(single-task serialiser,<br/>CHE-0069/0085)"]
+  sdviz["cherry-pit-sd-viz"]:::tooling
+
+  core --> app
+  core --> gateway
+  core --> projection
+  core --> web
+  app --> gateway
+  app --> projection
+  app --> web
+  app --> wq
+  app --> storage
+  app --> merger
+  gateway --> storage
+  merger --> core
+
+  classDef tooling fill:#eef0f8,stroke:#38408a,color:#38408a;
+  </div>
+
+  <h2 id="cross-family-boundaries">Cross-family intended dependency boundaries</h2>
+  <ul>
+    <li>
+      gh-report depends on: cherry-pit-wq, cherry-pit-storage,
+      cherry-pit-core, cherry-pit-web (curated subset per
+      <cite>CHE-0073</cite>/<cite>CHE-0074</cite>), plus
+      pardosa/pardosa-schema/pardosa-nats (native store).
+      <span class="cite-src">(gh-report README "Status" section)</span>
+    </li>
+    <li>
+      cherry-pit-app is the <strong>only</strong> cherry-pit crate
+      sanctioned to depend on every other cherry-pit crate
+      (<cite>CHE-0029</cite> acyclic-DAG rule).
+      <span class="cite-src">(cherry-pit-app README)</span>
+    </li>
+    <li>
+      cherry-pit-web and cherry-pit-projection are <strong>sibling</strong>
+      adapter crates, both depending only on cherry-pit-core, neither
+      stacking on cherry-pit-gateway.
+      <span class="cite-src">(cherry-pit-projection README, cherry-pit-web README)</span>
+    </li>
+    <li>
+      cherry-pit does <strong>not</strong> depend on pardosa — gh-report is
+      the point where both substrates are consumed together, not via a
+      cherry-pit → pardosa edge. See Invariant 4 below for the precise
+      enforcement chain.
+    </li>
+    <li>
+      pardosa-wire (no_std, dependency-free core codec) &lt; pardosa-schema
+      (adds payload-typed vocabulary) &lt; pardosa (adopter-facing
+      appliance composing pardosa-wire + pardosa-schema + pardosa-file) —
+      ring ordering per pardosa-schema/pardosa-wire READMEs ("sits one ring
+      above").
+    </li>
+    <li>
+      pardosa-derive is a proc-macro ring parallel to/consumed-by
+      pardosa-schema (extends the sealed graph pardosa-wire opens).
+    </li>
+    <li>
+      pardosa-nats is architecturally isolated (ring-purity invariant) from
+      cherry-pit-* and the pardosa adapter ring — see Invariant 3.
+    </li>
+  </ul>
+
+  <h2 id="invariants">Intended Invariants</h2>
+  <p>
+    The ten invariants below are the load-bearing set a later Review phase
+    verifies against code. Each cites the exact ADR id(s) confirmed
+    verbatim via <code>adr-fmt --context</code>/<code>--refs</code>
+    <span class="cite-src">(adr-fmt-16ja3)</span>.
+  </p>
+
+  <h4>1. Synchronous public facade</h4>
+  <p>
+    No <code>async fn</code> on the public surface of
+    <code>pardosa::store</code>/<code>prelude</code>
+    (<cite>PGN-0010:R5</cite>, <cite>PGN-0008</cite>,
+    <cite>PGN-0015:R6</cite>). Rationale: backends own async internals;
+    adopters get a synchronous appliance. The sync-over-async bridge is
+    <code>pardosa-nats/src/handle.rs::run_op</code> (<code>block_on</code>);
+    <code>std::sync::Mutex</code> behind the facade is deliberate — not to
+    be "fixed" to <code>tokio::sync::Mutex</code> (would break
+    single-writer linearizability).
+  </p>
+
+  <h4>1b. Store module = sole public surface</h4>
+  <p>
+    <code>pardosa::store</code> (+ prelude) is the sole-interface seal
+    (<cite>PGN-0008:R1</cite>, <cite>PGN-0004</cite>): adopters reach the
+    journal exclusively through <code>pardosa::store::EventStore</code> and
+    <code>pardosa::prelude</code>. Internal substrate types are never named
+    in adopter code; drift is pinned by
+    <code>tests/ui_pass/prelude_usable.rs</code>.
+  </p>
+
+  <h4>2. run_op block_on bridge</h4>
+  <p>
+    <cite>PGN-0010:R5</cite> — the sync-over-async bridge is a single named
+    mechanism (<code>run_op</code>), not an ad-hoc pattern scattered across
+    call sites. Rationale: one audited crossing point between the sync
+    facade and the async NATS backend keeps the bridge's correctness
+    provable in one place.
+  </p>
+
+  <h4>3. Substrate ring purity</h4>
+  <p>
+    <cite>PGN-0001:R2</cite> — pardosa-nats depends only on tokio,
+    async-nats, bytes, blake3, futures-util (+ tempfile behind an optional
+    test feature): no cherry-pit-* or pardosa adapter-ring edges;
+    instrumentation/metrics belong in the pardosa adapter ring, never in
+    pardosa-nats. High-cardinality ids (event_id, ack, stream) go on
+    spans/logs, never metric labels (<cite>COM-0019:R6</cite>). Rationale:
+    substrate crates that stay dependency-minimal are easier to audit for
+    the compile-time guarantees the rest of the design leans on.
+  </p>
+
+  <h4>4. cherry-pit ⊥ pardosa sever</h4>
+  <p>
+    cherry-pit does not depend on pardosa. <strong>Naming note</strong>
+    (per the oracle summary): "CHE-0010 sever" as used in casual
+    conversation about this repo is imprecise — <cite>CHE-0010</cite>
+    ("DomainEvent Supertrait Bounds") is the contract governing what bounds
+    a <code>DomainEvent</code> must satisfy
+    (<code>Clone+Send+Sync+'static+Serialize+DeserializeOwned</code>,
+    <cite>CHE-0010:R1..R3</cite>), not the non-dependency rule itself. The
+    actual cherry-pit → pardosa non-dependency is enforced by
+    <cite>CHE-0029:R4/R6</cite> (core deps limited to serde/uuid/jiff; CI
+    cargo-tree purity assertion), <cite>CHE-0084:R5</cite>, and
+    <cite>CHE-0086:R7</cite>, plus the async-trait/pardosa CI tripwires
+    (see also AGENTS.md's <code>async-trait-tripwire</code> and
+    <code>gh-report-projection-lock-tripwire</code> jobs). Rationale: the
+    substrates model genuinely separate concerns (domain events vs. durable
+    storage bytes); gh-report is the single point where both are consumed
+    together, never via an inter-substrate edge.
+  </p>
+
+  <h4>5. Single-writer-per-aggregate/stream</h4>
+  <p>
+    "Single-writer-per-stream eliminates concurrent mutation at the
+    architectural level, not through runtime locks"
+    (<cite>SEC-0006:R2</cite>, foundation-level, applies to all crates).
+    <cite>COM-0018</cite> "Single-Writer Concurrency as Foundational
+    Invariant" references <cite>PGN-0010</cite>, <cite>CHE-0006</cite>.
+    <cite>CHE-0006</cite> "Single-Writer Assumption Per Aggregate."
+    <cite>PGN-0016:R1/R2/R7</cite> — JetStream subject-sequence OCC fence:
+    detection-not-prevention, abort+replay, no in-band retry. Rationale:
+    consistency is achieved via the fence, not consensus — cheaper and
+    matches the sub-PB single-region niche.
+  </p>
+
+  <h4>6. #[non_exhaustive] on error/domain enums</h4>
+  <p>
+    Mandated on error enums (<cite>PGN-0006:R1..R7</cite>,
+    <cite>CHE-0021</cite> scoped to error types, <cite>RST-0006:R1</cite>)
+    — adding variants is non-breaking, removing them is; not for serde
+    DTOs. <strong>Sharpened by the oracle summary:</strong> the rule
+    inverts for cherry-pit <em>domain event</em> enums —
+    <cite>CHE-0022:R5</cite> requires domain event enums are <em>not</em>
+    <code>#[non_exhaustive]</code> (exhaustive match is forced so a new
+    event variant cannot be silently unhandled), and gh-report's
+    <code>WritePolicyCategory</code> dispatch enum is likewise deliberately
+    closed (<cite>CHE-0088:R1</cite>, no catch-all arm). Rationale: errors
+    grow forward-compatibly; domain events and closed dispatch enums must
+    be exhaustively handled so new variants can't be silently dropped.
+  </p>
+
+  <h4>7. RPITIT-only / no async-trait</h4>
+  <p>
+    All async port traits use return-position <code>impl Trait</code> in
+    traits (RPITIT), never <code>async-trait</code>, never
+    <code>Box&lt;dyn Trait&gt;</code>
+    (<cite>CHE-0025:R1/R2</cite>, enforced by the
+    <code>async-trait-tripwire</code> CI job). Applies to
+    EventStore/EventBus/CommandBus/CommandGateway
+    (<cite>CHE-0070</cite>/<cite>CHE-0076</cite> listable/history
+    extensions likewise forbid trait objects) and to cherry-pit-web's
+    read-serve adapters (<cite>CHE-0086:R6</cite>). Rationale: static
+    dispatch keeps the compile-time type-safety chain (CHE-0002 "Make
+    Illegal States Unrepresentable") intact end-to-end; a boxed trait
+    object would reintroduce a runtime escape hatch the design is built to
+    close.
+  </p>
+
+  <h4>8. gh-report projection-lock discipline</h4>
+  <p>
+    Checkpoint written strictly after snapshot (<cite>CHE-0048:R2</cite>) —
+    a crash between the two means "rebuild", never "trust snapshot." The
+    lock chokepoint is <code>AppState::lock_projection()</code>; raw
+    <code>.projection_state.lock(</code> calls outside
+    <code>crates/gh-report/src/app/state.rs</code> are banned and enforced
+    by the <code>gh-report-projection-lock-tripwire</code> CI job.
+    Rationale: a single audited lock acquisition point makes the
+    single-writer discipline on the read-model provable by grep, not just
+    by convention.
+  </p>
+
+  <h4>9. Atomic-write protocol</h4>
+  <p>
+    <cite>CHE-0032:R1..R4</cite> — temp file → <code>File::sync_all</code>
+    → rename → parent-directory fsync. Applies wherever cherry-pit-storage
+    or cherry-pit-gateway persist to the filesystem (gateway's
+    <code>MsgpackFileStore</code>, gh-report's RunLock/snapshot signatures).
+    Rationale: survives a crash between write and rename without leaving a
+    torn or partially-visible file; matches the "crash-fail with recovery"
+    niche stance.
+  </p>
+
+  <h4>10. Cross-cutting foundation invariants</h4>
+  <p>
+    Binding on <em>all three</em> families, not family-specific:
+    <cite>GND-0010:R1..R7</cite> (PC/EC PACELC — consistency via
+    single-writer per <cite>COM-0018</cite>, not consensus; OCC detection;
+    sync domain / async edges only; silent consistency violation must
+    surface); <cite>GND-0011:R1..R7</cite> (read-model
+    bounded-stale/monotonic/causal-floor/read-your-writes; no derived view
+    may author truth — that would be a second writer, defeating the
+    fence); <cite>RST-0001..0006</cite> (pinned toolchain/MSRV, workspace
+    lints as the pedantic standing bar, workspace deps + cargo audit/deny,
+    <code>#![forbid(unsafe_code)]</code> every crate, the
+    <code>non-exhaustive-check</code> tool as sole enforcement for
+    <cite>RST-0006:R1</cite>).
+  </p>
+
+  <h2 id="self-documented-gaps">Self-documented intended-vs-shipped gaps</h2>
+  <p>
+    gh-report's own <code>DESIGN.md</code> carries W1/W2 truth-alignment
+    corrigenda stating that several designed components — the
+    RunService/RepoService/WebhookService ApplicationServices, the
+    <code>publish_or_trace</code> function, and a DomainEvent-carrying
+    InProcessEventBus — "never shipped in this form." These are recorded
+    here verbatim because they are exactly the class of divergence the
+    later Review phase (Design vs. C4, independently derived) is designed
+    to surface systematically across all three families rather than only
+    where an author happened to leave a corrigendum. Any reader of this
+    Design doc should treat the runtime-topology description above
+    (§gh-report family) as <em>as-designed narrative</em>, not a claim
+    about what ships today.
+  </p>
+
+  <h2 id="adr-domain-hierarchy">Governing ADR domain hierarchy (excerpt)</h2>
+  <table>
+    <caption>ADR domain roots relevant to this scope, per <code>adr-fmt --tree</code></caption>
+    <thead>
+      <tr><th>Domain</th><th>Root / key nodes</th><th>Scope</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>GND</td><td><cite>GND-0010</cite>, <cite>GND-0011</cite></td><td>Foundation — applies repo-wide</td></tr>
+      <tr><td>COM</td><td><cite>COM-0018</cite>, <cite>COM-0019</cite></td><td>Foundation — applies repo-wide</td></tr>
+      <tr><td>RST</td><td><cite>RST-0001..0006</cite></td><td>Toolchain/lints — applies repo-wide</td></tr>
+      <tr><td>SEC</td><td><cite>SEC-0004</cite>, <cite>SEC-0006</cite></td><td>Foundation — applies repo-wide</td></tr>
+      <tr><td>CHE</td><td>CHE-0001 → CHE-0002 → CHE-0003 → {CHE-0051, CHE-0053, CHE-0055}; CHE-0004 (EDA+DDD+hexagonal root) → CHE-0008/0009/0010/0018/0022 → CHE-0082..0093 (gh-report scoring); CHE-0005 → CHE-0057 → CHE-0069</td><td>cherry-pit family</td></tr>
+      <tr><td>PGN</td><td>PGN-0001 (rings root, not read directly — cited by pardosa READMEs) → PGN-0002/0003/0004/0006/0007/0008/0009/0010/0015/0016</td><td>pardosa family</td></tr>
+    </tbody>
+  </table>
+  <p>
+    <code>adr-fmt</code>/<code>adr-srv</code> domains (AFM) are explicitly
+    out of scope for this mission's documentation target, per caller
+    instructions, though they govern the ADR corpus itself.
+  </p>
+
+  <div class="sources">
+    <strong>Sources for this page</strong>
+    <ul>
+      <li><code>bd-adr-fmt-kgfyz</code> — prose-derived intended-architecture digest (Solon stance, per-family decomposition, invariants, citations).</li>
+      <li><code>adr-fmt-16ja3</code> — oracle binding-ADR summary (invariant→ADR-id map, per-family binding sets, CHE-0010 naming-note tension resolution).</li>
+      <li>Root: <code>AGENTS.md</code> §What this repo is, §Architecture invariants, §Intent; <code>README.md</code>.</li>
+      <li>Per-crate: <code>crates/{gh-report,cherry-pit-*,pardosa*}/README.md</code>, <code>crates/gh-report/{DESIGN.md,OPERATIONS.md}</code>, <code>crates/cherry-pit-gateway/RUNBOOKS.md</code>, <code>docs/pardosa/observability-slo.md</code>.</li>
+      <li>ADR corpus via <code>adr-fmt --tree</code> and <code>adr-fmt --context</code> (gh-report, pardosa-nats, cherry-pit-core).</li>
+      <li>Known gaps (no README under scope): pardosa-nats, gh-report-web-client, cherry-pit-merger, pardosa-fiber-store, pardosa-mint-private-tests, pardosa-test-support-harness.</li>
+    </ul>
+  </div>
+
+  <footer class="page-footer">
+    Mission <code>arch-docs</code> · bd epic <code>adr-fmt-qsyv9</code> ·
+    This page reads no <code>.rs</code> source, no <code>Cargo.toml</code>,
+    and no <code>graphify-out/graph.json</code> — prose only, per phase-A
+    constraint.
+  </footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>gh-report substrate — Architecture Documentation</title>
+<link rel="stylesheet" href="./assets/style.css" />
+<script type="module" src="./assets/mermaid-init.js"></script>
+</head>
+<body>
+<nav class="site-nav">
+  <div class="site-nav__inner">
+    <span class="site-nav__title">Architecture Docs</span>
+    <a href="./index.html" aria-current="page">Home</a>
+    <a href="./design/index.html">Design (top-down)</a>
+    <a href="./c4/level3-components.html">C4 L3 — Components</a>
+    <a href="./c4/level2-containers.html">C4 L2 — Containers</a>
+    <a href="./c4/level1-context.html">C4 L1 — Context</a>
+    <a href="./review/index.html">Review</a>
+  </div>
+</nav>
+
+<main class="page">
+  <h1>Architecture Documentation</h1>
+  <p class="subtitle">
+    Three independently-derived views of the same 20-crate scope, compared
+    only after each is complete — so the comparison itself carries evidential
+    weight instead of being a foregone conclusion.
+  </p>
+
+  <h2>Scope</h2>
+  <p>
+    Exactly 20 crates across three families: <strong>gh-report</strong>
+    (gh-report, gh-report-web-client), <strong>pardosa</strong> (pardosa,
+    pardosa-derive, pardosa-fiber-store, pardosa-file, pardosa-nats,
+    pardosa-read, pardosa-schema, pardosa-wire, plus the two test-support
+    crates pardosa-mint-private-tests and pardosa-test-support-harness), and
+    <strong>cherry-pit</strong> (cherry-pit-app, cherry-pit-core,
+    cherry-pit-gateway, cherry-pit-merger, cherry-pit-projection,
+    cherry-pit-storage, cherry-pit-web, cherry-pit-wq, plus the tooling crate
+    cherry-pit-sd-viz). <code>adr-fmt</code>, <code>adr-srv</code>,
+    <code>architect</code>, <code>comment-free</code>, and
+    <code>non-exhaustive-check</code> are out of scope for this doc set —
+    they are the governance/tooling plane, not the substrate under review.
+  </p>
+
+  <h2>The three views</h2>
+  <div class="view-grid">
+    <div class="view-card">
+      <h3>1. Design <span class="badge">top-down</span></h3>
+      <p>
+        The <em>intended</em> architecture, synthesized strictly from prose:
+        READMEs, DESIGN.md/OPERATIONS.md, AGENTS.md, and ADR text. No source
+        code, no <code>Cargo.toml</code>, no dependency graph is read for
+        this view — it captures what the architecture was designed to be,
+        independent of what shipped.
+      </p>
+      <a class="card-link" href="./design/index.html">Open Design →</a>
+    </div>
+    <div class="view-card">
+      <h3>2. C4 Level 3 <span class="badge">bottom-up</span></h3>
+      <p>
+        Components: derived from the actual crate/module structure and
+        public-item surface, read directly from source and
+        <code>Cargo.toml</code> dependency edges. No prose or ADR text
+        consulted while deriving this view — it is what the code says about
+        itself.
+      </p>
+      <a class="card-link" href="./c4/level3-components.html">Open L3 →</a>
+    </div>
+    <div class="view-card">
+      <h3>3. C4 Level 2 <span class="badge">bottom-up</span></h3>
+      <p>
+        Containers: the L3 component graph folded up to deployable/buildable
+        units (the 20 crates themselves, grouped by family), again derived
+        from code-observed facts, not prose.
+      </p>
+      <a class="card-link" href="./c4/level2-containers.html">Open L2 →</a>
+    </div>
+    <div class="view-card">
+      <h3>4. C4 Level 1 <span class="badge">bottom-up</span></h3>
+      <p>
+        Context: the system boundary — external actors (GitHub API, NATS
+        JetStream, operators/agents) and the system-as-a-whole, folded up
+        one level further from L2, still code-derived.
+      </p>
+      <a class="card-link" href="./c4/level1-context.html">Open L1 →</a>
+    </div>
+    <div class="view-card">
+      <h3>5. Review <span class="badge--gap badge">comparison</span></h3>
+      <p>
+        Design vs. C4 diffed side by side: where intended and observed
+        architecture agree, where they diverge (e.g. gh-report DESIGN.md's
+        own self-documented W1/W2 truth-alignment gaps), and what that
+        implies for either the docs or the code.
+      </p>
+      <a class="card-link" href="./review/index.html">Open Review →</a>
+    </div>
+  </div>
+
+  <h2>Why phase separation matters</h2>
+  <p>
+    The Design view (top-down) and the C4 views (bottom-up) are produced by
+    <strong>independent derivations</strong> from disjoint input sets: Design
+    reads only prose (ADRs, READMEs, design docs) and is explicitly
+    forbidden from reading source, <code>Cargo.toml</code>, or the
+    dependency graph; the C4 phases read only source, manifests, and the
+    generated dependency graph, and are explicitly forbidden from reading
+    ADR prose or design docs while deriving structure. Each view is a
+    self-consistent artifact on its own terms before either one is compared
+    to the other.
+  </p>
+  <p>
+    This separation exists because a single author working from all sources
+    at once tends to <em>reconcile</em> discrepancies silently while writing
+    — filling in "what the code actually does" wherever the prose is vague,
+    or reading intent into code that has drifted. That reconciliation
+    destroys the signal a comparison is supposed to produce. By deriving
+    Design and C4 independently and only then diffing them in the Review
+    phase, every discrepancy the diff surfaces is real evidence of drift
+    (or of documentation debt) — not an artifact of the authoring process
+    papering over the gap. gh-report's own <code>DESIGN.md</code> already
+    self-documents several such gaps (its W1/W2 truth-alignment corrigenda);
+    those are exactly the class of finding this methodology is built to
+    surface systematically, across all three families, rather than
+    incidentally in one file.
+  </p>
+  <p>
+    Read order: Design → C4 (L3 then L2 then L1, or top-down L1→L2→L3
+    depending on preference) → Review. The Review phase is only meaningful
+    once both independent derivations exist; reading it first will just be a
+    diff with nothing yet to anchor it.
+  </p>
+
+  <footer class="page-footer">
+    Mission <code>arch-docs</code> · bd epic <code>adr-fmt-qsyv9</code> ·
+    Phase A (this page + Design) authored from bd-adr-fmt-kgfyz
+    (prose-derived intended-architecture digest) and adr-fmt-16ja3 (oracle
+    binding-ADR summary) only.
+  </footer>
+</main>
+</body>
+</html>

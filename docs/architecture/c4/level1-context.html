@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>C4 L1 — Context | Architecture Docs</title>
+<link rel="stylesheet" href="../assets/style.css" />
+<script type="module" src="../assets/mermaid-init.js"></script>
+</head>
+<body>
+<nav class="site-nav">
+  <div class="site-nav__inner">
+    <span class="site-nav__title">Architecture Docs</span>
+    <a href="../index.html">Home</a>
+    <a href="../design/index.html">Design (top-down)</a>
+    <a href="./level3-components.html">C4 L3 — Components</a>
+    <a href="./level2-containers.html">C4 L2 — Containers</a>
+    <a href="./level1-context.html" aria-current="page">C4 L1 — Context</a>
+    <a href="../review/index.html">Review</a>
+  </div>
+</nav>
+
+<main class="page">
+  <h1>C4 Level 1 — System Context</h1>
+  <p class="subtitle">
+    Derived from <a href="./level2-containers.html">L2</a> by folding the
+    20 containers up one level further to the three families plus external
+    actors. Source: <span class="cite">bd-adr-fmt-wlikf</span> —
+    code-derived, independent of Design (Phase A).
+  </p>
+
+  <h2 id="families">The three families</h2>
+
+  <h3 id="gh-report-family">gh-report family</h3>
+  <table>
+    <caption>gh-report family</caption>
+    <thead><tr><th>Field</th><th>Value</th><th>Citation</th></tr></thead>
+    <tbody>
+      <tr><td>Members</td><td>gh-report, gh-report-web-client</td><td>&mdash;</td></tr>
+      <tr>
+        <td>Substrate deps</td>
+        <td>BOTH pardosa (pardosa, pardosa-fiber-store, pardosa-file, pardosa-schema, pardosa-nats) AND cherry-pit (cherry-pit-wq, cherry-pit-storage, cherry-pit-gateway, cherry-pit-app, cherry-pit-core, cherry-pit-web) — confirms gh-report is the single consumer bridging both substrates.</td>
+        <td><code>crates/gh-report/Cargo.toml</code> [dependencies]</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3 id="pardosa-family">pardosa substrate family</h3>
+  <table>
+    <caption>pardosa substrate family</caption>
+    <thead><tr><th>Field</th><th>Value</th><th>Citation</th></tr></thead>
+    <tbody>
+      <tr><td>Members</td><td>pardosa, pardosa-derive, pardosa-fiber-store, pardosa-file, pardosa-nats, pardosa-read, pardosa-schema, pardosa-wire, pardosa-mint-private-tests <span class="badge badge--test-support">test-support</span>, pardosa-test-support-harness <span class="badge badge--test-support">test-support</span></td><td>&mdash;</td></tr>
+      <tr><td>Substrate deps</td><td>internal only (pardosa &rarr; wire,schema,file,nats; schema &rarr; derive,wire; fiber-store &rarr; pardosa; read &rarr; pardosa,nats,wire)</td><td>see L2 dependency table</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="cherry-pit-family">cherry-pit substrate family</h3>
+  <table>
+    <caption>cherry-pit substrate family</caption>
+    <thead><tr><th>Field</th><th>Value</th><th>Citation</th></tr></thead>
+    <tbody>
+      <tr><td>Members</td><td>cherry-pit-app, cherry-pit-core, cherry-pit-gateway, cherry-pit-merger, cherry-pit-projection, cherry-pit-storage, cherry-pit-web, cherry-pit-wq, cherry-pit-sd-viz <span class="badge badge--tooling">tooling</span></td><td>&mdash;</td></tr>
+      <tr><td>Substrate deps</td><td>internal only, hub-and-spoke on cherry-pit-core (gateway, merger, projection, web, wq all &rarr; core; app &rarr; core,gateway,projection,web); zero pardosa edges (confirmed by Invariant 2, L2 page)</td><td>see L2 dependency table</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="cross-substrate">Cross-substrate dependency</h2>
+  <p>
+    <strong>gh-report is the sole cross-substrate consumer</strong> — it
+    depends on BOTH pardosa and cherry-pit
+    (<code>crates/gh-report/Cargo.toml</code> [dependencies]). The two
+    substrates do not depend on each other in either direction: zero
+    "pardosa" dependency lines across all 9 <code>cherry-pit-*/Cargo.toml</code>
+    files (only a code comment in cherry-pit-core's noting pardosa-encoding
+    was removed, and a self-description string in cherry-pit-sd-viz's), and
+    zero "cherry" matches across all <code>pardosa*/Cargo.toml</code> files.
+  </p>
+
+  <h2 id="external-actors">External actors / integration points</h2>
+
+  <h3 id="ext-gh-report">gh-report family</h3>
+  <table>
+    <caption>gh-report family external integration points</caption>
+    <thead><tr><th>External actor</th><th>Integration point</th><th>Citation</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>GitHub REST API</td>
+        <td><code>validate_api_base_url("https://api.github.com")</code>; reqwest workspace dep</td>
+        <td><code>crates/gh-report/src/github/client.rs:1504</code>; <code>crates/gh-report/Cargo.toml</code></td>
+      </tr>
+      <tr>
+        <td>HTTP consumers (browsers, API clients)</td>
+        <td>Axum HTTP server — <code>Router::new()</code>, <code>TcpListener::bind</code>, <code>axum::serve</code>; built via <code>served_dashboard_server_config() -&gt; cherry_pit_web::serve::ValidatedConfig</code></td>
+        <td><code>crates/gh-report/src/server.rs:60,135,139,34</code></td>
+      </tr>
+      <tr>
+        <td>Wasm browser client</td>
+        <td>gh-report-web-client crate-type=["cdylib","rlib"] gated <code>cfg(target_arch="wasm32")</code>, deps: leptos, wasm-bindgen, web-sys, js-sys</td>
+        <td><code>crates/gh-report-web-client/Cargo.toml:14-18</code></td>
+      </tr>
+      <tr>
+        <td>NATS/JetStream (dev/test only at gh-report level)</td>
+        <td>async-nats appears only in [dev-dependencies] of gh-report; production NATS integration is via the pardosa-nats crate, not directly in gh-report</td>
+        <td><code>crates/gh-report/Cargo.toml</code> [dev-dependencies]</td>
+      </tr>
+      <tr>
+        <td>Deployment/Cloud Run</td>
+        <td>No Dockerfile or Cloud Run manifest found in repo root at survey time (<code>find . -maxdepth 1 -iname 'Dockerfile*'</code> returned no matches) — <strong>deployment topology NOT code-observable</strong>; GAP.</td>
+        <td>repo root, negative-result citation</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3 id="ext-pardosa">pardosa substrate family</h3>
+  <table>
+    <caption>pardosa substrate family external integration points</caption>
+    <thead><tr><th>External actor</th><th>Integration point</th><th>Citation</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>NATS/JetStream</td>
+        <td>async_nats usage throughout (e.g. info.state.last_sequence; async_nats::jetstream::context::PublishErrorKind::WrongLastSequence)</td>
+        <td><code>crates/pardosa-nats/src/handle.rs:645,917</code></td>
+      </tr>
+      <tr>
+        <td>Local filesystem durable log</td>
+        <td>file-based backend, no network integration point</td>
+        <td><code>crates/pardosa-file/src/{append,writer,reader,manifest}.rs</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3 id="ext-cherry-pit">cherry-pit substrate family</h3>
+  <table>
+    <caption>cherry-pit substrate family external integration points</caption>
+    <thead><tr><th>External actor</th><th>Integration point</th><th>Citation</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Axum HTTP server (generic, reusable by gh-report)</td>
+        <td><code>bind_serving_port</code>, <code>start</code>, <code>axum::serve(listener, app)</code>, <code>build_router</code></td>
+        <td><code>crates/cherry-pit-web/src/serve/runtime.rs:553,587,629,663</code></td>
+      </tr>
+      <tr>
+        <td>Filesystem event store (MessagePack)</td>
+        <td><code>write_atomic</code>; per repo AGENTS.md CHE-0032 protocol — not re-verified here, code-only citation is the path</td>
+        <td><code>crates/cherry-pit-gateway/src/event_store/msgpack_file.rs</code></td>
+      </tr>
+      <tr>
+        <td>Standalone wasm viz consumer (not wired to gh-report/pardosa)</td>
+        <td>cherry-pit-sd-viz — crate-type cdylib+rlib per its Cargo.toml, "zero pardosa dependency" self-declared in its Cargo.toml description; not otherwise wired to gh-report or pardosa in the dependency graph observed</td>
+        <td><code>crates/cherry-pit-sd-viz/Cargo.toml</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="mermaid">
+flowchart LR
+  github(["GitHub REST API"])
+  httpclients(["HTTP consumers"])
+  browser(["Browser (wasm client)"])
+  nats(["NATS / JetStream"])
+  fs(["Local filesystem"])
+  clouddeploy(["Cloud Run / deployment<br/>(NOT code-observable)"])
+
+  subgraph GHR["gh-report family"]
+    ghreport["gh-report"]
+    ghwebclient["gh-report-web-client"]
+  end
+
+  subgraph PGN["pardosa substrate family"]
+    pardosa["pardosa* (8 libs)"]
+  end
+
+  subgraph CHE["cherry-pit substrate family"]
+    cherrypit["cherry-pit-* (9 libs)"]
+  end
+
+  ghreport -->|"client.rs:1504"| github
+  ghreport -->|"server.rs:60,135,139"| httpclients
+  ghwebclient -->|"Cargo.toml:14-18"| browser
+  ghreport -.->|"dev-deps only"| nats
+  ghreport --> pardosa
+  ghreport --> cherrypit
+  pardosa -->|"handle.rs:645,917"| nats
+  pardosa -->|"append/writer/reader.rs"| fs
+  cherrypit -->|"runtime.rs:553,587,629,663"| httpclients
+  cherrypit -->|"msgpack_file.rs"| fs
+  ghreport -.->|"GAP: no Dockerfile found"| clouddeploy
+  </div>
+
+  <h2 id="l1-discrepancies">L1 discrepancies</h2>
+  <ul>
+    <li>
+      <strong>Deployment topology not code-observable:</strong> Cloud Run /
+      container deployment topology is not observable from code (no
+      Dockerfile in repo root); cannot confirm or deny at L1 from code
+      alone.
+    </li>
+    <li>
+      <strong>cherry-pit-sd-viz is dependency-graph-isolated:</strong> its
+      relationship to the rest of the cherry-pit family is asserted only by
+      its own <code>Cargo.toml</code> description string, not by any actual
+      dependency edge — no in-scope crate depends on it, and it depends on
+      none in-scope observed.
+    </li>
+    <li>
+      <strong>cherry-pit-merger orphan propagates to L1:</strong> per the
+      L2 discrepancy, unclear whether cherry-pit-merger is an active member
+      of the cherry-pit context or dead/staged code from code evidence
+      alone.
+    </li>
+  </ul>
+
+  <footer class="page-footer">
+    Mission <code>arch-docs</code> · bd epic <code>adr-fmt-qsyv9</code> ·
+    Phase D — L1 (this page) derived from L2, all three C4 levels authored
+    strictly from <code>bd-adr-fmt-wlikf</code>, code-derived, independent
+    of Design (Phase A).
+  </footer>
+</main>
+</body>
+</html>
