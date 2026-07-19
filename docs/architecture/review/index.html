@@ -115,10 +115,10 @@
       </tr>
       <tr>
         <td>8</td>
-        <td>Deployment topology: gh-report runs on Cloud Run (or an equivalent container platform).</td>
-        <td>gh-report DESIGN.md/OPERATIONS.md reference deployment/storage layout in operational terms (per the prose digest's per-family notes on storage layout and OPERATIONS.md), implying a containerised deployment target consistent with the "Cloud Run" framing in the mission brief.</td>
-        <td><code>find . -maxdepth 1 -iname 'Dockerfile*'</code> returned no matches at survey time — no Dockerfile or Cloud Run manifest found in repo root; deployment topology is <strong>not code-observable</strong>. Confirmed at <a href="../c4/level1-context.html#l1-discrepancies">C4 L1 discrepancies</a>.</td>
-        <td><span class="verdict verdict--aspirational">ASPIRATIONAL</span></td>
+        <td>Deployment topology: gh-report runs on Cloud Run, single always-on instance, fronted by an IAP-gated external load balancer; production event store is NATS JetStream.</td>
+        <td>gh-report DESIGN.md/OPERATIONS.md describe the deployment in operational terms; the design doc's "production: NATS JetStream, local default <code>.pgno</code>" framing is the intended stance.</td>
+        <td>Manifests live in the companion <code>gh-report-ops</code> repo, not the gh-report tree: <code>cloudrun/ghreport/main.tf</code> declares a Cloud Run service (<code>ghreport-d302</code>, <code>europe-north1</code>, <code>minScale=maxScale=1</code>) via <code>Mattilsynet/map-tf-cloudrun@v0.19.0</code>, <code>allow_unauthenticated=false</code> behind a dedicated LB with IAP; <code>GH_REPORT_PARDOSA_BACKEND=nats</code> and a NATS creds secret volume confirm the production backend. The earlier "not code-observable" reading was a scope error — the gh-report root has no Dockerfile because the image is built in gh-report CI and deployed from the sibling ops repo.</td>
+        <td><span class="verdict verdict--match">MATCH (ops repo)</span></td>
       </tr>
       <tr>
         <td>9</td>
@@ -190,9 +190,15 @@
       future integration) cannot be resolved from the dependency graph alone.
     </li>
     <li>
-      <strong>Deployment topology (row 8) is asserted operationally but absent from
-      the repo</strong> — no Dockerfile, no Cloud Run manifest. This is squarely
-      ASPIRATIONAL: intended in ops prose, not yet code-observable.
+      <strong>Deployment topology (row 8) is code-observable — in the companion
+      ops repo</strong>. The gh-report tree carries no Dockerfile or manifest, but
+      <code>gh-report-ops/cloudrun/ghreport/</code> holds applied Terraform: a
+      single-instance Cloud Run service behind an IAP-gated load balancer, with
+      <code>GH_REPORT_PARDOSA_BACKEND=nats</code> wired to the MAP JetStream
+      cluster. The design doc's intended topology and production-backend stance
+      both hold; the only correction is that the evidence sits one repo over. The
+      standing lesson: an infra claim is not "aspirational" until the sibling
+      <code>&lt;repo&gt;-ops</code> tree has also been checked.
     </li>
     <li>
       <strong>DESIGN.md's own W1/W2 corrigenda (row 9) are the strongest evidence the
@@ -223,19 +229,20 @@
       graph can enforce them, collapses the space of possible mistakes. Rows 1-4
       and 10-11 are exactly that promise redeemed — compile-time/dependency-graph
       facts that agree with the documented invariant, no runtime discipline
-      required. Rows 7, 8, 9, and 12 are the counter-evidence: places where intent
+      required. Rows 7, 9, and 12 are the counter-evidence: places where intent
       outran shipped code, or where wiring diverged from the stated rule. Neither
       set contradicts the thesis — a subtractive architecture still needs its
       unshipped or partially-wired components named honestly, which DESIGN.md's own
       W1/W2 notes already do for row 9.
     </li>
     <li>
-      <strong>Net verdict distribution</strong> (12 rows): 6 MATCH, 4 DRIFT,
-      1 UNDOCUMENTED, 1 ASPIRATIONAL — the review corpus is majority-confirming,
+      <strong>Net verdict distribution</strong> (12 rows): 7 MATCH, 4 DRIFT,
+      1 UNDOCUMENTED — the review corpus is majority-confirming,
       with the DRIFT/gap rows concentrated in exactly the areas the source beads
       already flagged as gaps (cherry-pit-gateway non_exhaustive location,
-      cherry-pit-merger wiring, DESIGN.md's self-admitted W1/W2 corrigenda,
-      deployment topology).
+      cherry-pit-merger wiring, DESIGN.md's self-admitted W1/W2 corrigenda). The
+      one prior ASPIRATIONAL row (deployment) resolved to MATCH once the companion
+      ops repo was brought into scope.
     </li>
   </ul>
 

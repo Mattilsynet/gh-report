@@ -85,19 +85,24 @@
     cherry-pit-wq (work-queue, worker-pool, budget, rate-limit),
     cherry-pit-storage (atomic writes, RunLock, snapshot signatures),
     cherry-pit-core (correlation context), cherry-pit-web
-    (projection/serve). Default backend: embedded <code>.pgno</code>;
+    (projection/serve), plus cherry-pit-gateway and cherry-pit-app (event-store
+    adapter and root composition). Default backend: embedded <code>.pgno</code>;
     NATS/JetStream selectable.
   </p>
   <ul>
     <li>
-      <strong>Intended domain model</strong> <span class="cite">CHE-0054</span>:
-      three DDD aggregates — Run (sweep lifecycle, <cite>CHE-0054:R1</cite>),
-      Repo (repository evaluation lifecycle, <cite>CHE-0054:R2</cite>),
-      WebhookDelivery (write-once, <cite>CHE-0054:R3</cite>). Read side: one
-      <cite>CHE-0048</cite> projection, <code>EvidenceProjection</code>, sole
-      writer+reader of the read-model
+      <strong>Intended domain model</strong> <span class="cite">CHE-0054</span>
+      (<strong>superseded by <cite>CHE-0073</cite></strong>, retained here as the
+      as-designed reference): three DDD aggregates — Run (sweep lifecycle,
+      <cite>CHE-0054:R1</cite>), Repo (repository evaluation lifecycle,
+      <cite>CHE-0054:R2</cite>), WebhookDelivery (write-once,
+      <cite>CHE-0054:R3</cite>). CHE-0073's storage remodel replaced the
+      three-aggregate durable model with a single Repo logical stream, so the
+      triad describes the original decomposition, not the shipped store layout.
+      Read side: one <cite>CHE-0048</cite> projection,
+      <code>EvidenceProjection</code>, sole writer+reader of the read-model
       (<cite>CHE-0048:R2</cite>, <cite>CHE-0073:R7</cite>).
-      <span class="cite-src">(gh-report DESIGN.md §3)</span>
+      <span class="cite-src">(gh-report DESIGN.md §3; CHE-0054 stale, CHE-0073 live)</span>
     </li>
     <li>
       <strong>Runtime topology</strong> conforms to
@@ -149,7 +154,7 @@
       <cite>CHE-0022</cite> (schema evolution),
       <cite>CHE-0039</cite> (correlation propagation),
       <cite>CHE-0030</cite> (flat public API),
-      <cite>CHE-0054</cite> (three-aggregate decomposition),
+      <cite>CHE-0054</cite> (three-aggregate decomposition, superseded by CHE-0073),
       <cite>CHE-0048</cite> (projection design),
       <cite>CHE-0051</cite> (cherry-pit-app design),
       <cite>CHE-0018</cite> (sync domain/async infra),
@@ -177,9 +182,13 @@ flowchart LR
   end
   ghreport -->|"curated subset<br/>CHE-0073/CHE-0074"| cpwq["cherry-pit-wq"]
   ghreport --> cpstorage["cherry-pit-storage"]
+  ghreport --> cpgateway["cherry-pit-gateway"]
+  ghreport --> cpapp["cherry-pit-app"]
   ghreport --> cpcore["cherry-pit-core"]
   ghreport --> cpweb["cherry-pit-web"]
   ghreport -->|"native store<br/>CHE-0074"| pardosa["pardosa"]
+  ghreport --> pfiberstore["pardosa-fiber-store"]
+  ghreport --> pfile["pardosa-file"]
   ghreport --> pschema["pardosa-schema"]
   ghreport --> pnats["pardosa-nats"]
   ghreport -.->|"wasm viz reuses<br/>feature surface"| ghwebclient
@@ -486,11 +495,13 @@ flowchart TB
   <h2 id="cross-family-boundaries">Cross-family intended dependency boundaries</h2>
   <ul>
     <li>
-      gh-report depends on: cherry-pit-wq, cherry-pit-storage,
-      cherry-pit-core, cherry-pit-web (curated subset per
-      <cite>CHE-0073</cite>/<cite>CHE-0074</cite>), plus
-      pardosa/pardosa-schema/pardosa-nats (native store).
-      <span class="cite-src">(gh-report README "Status" section)</span>
+      gh-report depends on the curated cherry-pit subset per
+      <cite>CHE-0073</cite>/<cite>CHE-0074</cite> — cherry-pit-wq,
+      cherry-pit-storage, cherry-pit-gateway, cherry-pit-app, cherry-pit-core,
+      cherry-pit-web — plus the native-store pardosa set: pardosa,
+      pardosa-fiber-store, pardosa-file, pardosa-schema, pardosa-nats.
+      <span class="cite-src">(gh-report README "Status" section; full edge list
+      cross-checked against the C4 L2 dependency table)</span>
     </li>
     <li>
       cherry-pit-app is the <strong>only</strong> cherry-pit crate

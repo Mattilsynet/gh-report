@@ -105,9 +105,9 @@
         <td><code>crates/gh-report/Cargo.toml</code> [dev-dependencies]</td>
       </tr>
       <tr>
-        <td>Deployment/Cloud Run</td>
-        <td>No Dockerfile or Cloud Run manifest found in repo root at survey time (<code>find . -maxdepth 1 -iname 'Dockerfile*'</code> returned no matches) — <strong>deployment topology NOT code-observable</strong>; GAP.</td>
-        <td>repo root, negative-result citation</td>
+        <td>Deployment / Cloud Run + IAP</td>
+        <td>No Dockerfile in the gh-report tree — the image is built in gh-report CI and deployed from the companion <code>gh-report-ops</code> repo. Applied Terraform there declares a single-instance Cloud Run service (project <code>ghreport-d302</code>, <code>europe-north1</code>) behind an IAP-gated external load balancer at <code>dashboard.ghreport.mattilsynet.io</code>; <code>GH_REPORT_PARDOSA_BACKEND=nats</code> selects the JetStream backend at deploy time.</td>
+        <td><code>gh-report-ops/cloudrun/ghreport/main.tf</code>, <code>README.md</code> (out-of-tree, sibling repo)</td>
       </tr>
     </tbody>
   </table>
@@ -160,7 +160,7 @@ flowchart LR
   browser(["Browser (wasm client)"])
   nats(["NATS / JetStream"])
   fs(["Local filesystem"])
-  clouddeploy(["Cloud Run / deployment<br/>(NOT code-observable)"])
+  clouddeploy(["Cloud Run + IAP<br/>(gh-report-ops repo)"])
 
   subgraph GHR["gh-report family"]
     ghreport["gh-report"]
@@ -185,16 +185,19 @@ flowchart LR
   pardosa -->|"append/writer/reader.rs"| fs
   cherrypit -->|"runtime.rs:553,587,629,663"| httpclients
   cherrypit -->|"msgpack_file.rs"| fs
-  ghreport -.->|"GAP: no Dockerfile found"| clouddeploy
+  ghreport -->|"gh-report-ops/main.tf"| clouddeploy
   </div>
 
   <h2 id="l1-discrepancies">L1 discrepancies</h2>
   <ul>
     <li>
-      <strong>Deployment topology not code-observable:</strong> Cloud Run /
-      container deployment topology is not observable from code (no
-      Dockerfile in repo root); cannot confirm or deny at L1 from code
-      alone.
+      <strong>Deployment topology lives out-of-tree:</strong> not observable
+      from the gh-report repo alone (no Dockerfile at root), but fully declared
+      in the companion <code>gh-report-ops</code> repo — Cloud Run + IAP +
+      NATS JetStream via applied Terraform
+      (<code>gh-report-ops/cloudrun/ghreport/main.tf</code>). A code-only survey
+      scoped to the single repo mis-reads this as a gap; the C4 boundary for a
+      deployed service must include its sibling ops repo.
     </li>
     <li>
       <strong>cherry-pit-sd-viz is dependency-graph-isolated:</strong> its
