@@ -1,7 +1,7 @@
 # CHE-0057. Extension-Trait Composition Policy for EventStore Capabilities
 
 Date: 2026-05-14
-Last-reviewed: 2026-05-14
+Last-reviewed: 2026-07-19
 Tier: A
 Status: Accepted
 
@@ -13,7 +13,8 @@ References: CHE-0005, CHE-0029, CHE-0030
 
 Pardosa-as-second-`EventStore` (Track 2.1) surfaces two capabilities the
 existing file-store cannot offer: physical purge / id reuse (PAR-0001
-fiber state machine) and per-stream hash-chain integrity (PAR-0021).
+fiber state machine) and per-stream hash-chain integrity (surfaced as
+`HashChainedEventStore`).
 Forcing those methods onto the core `EventStore` trait either bloats
 every implementation with `unimplemented!`-style stubs or fragments the
 trait surface. Cherry-pit already binds infrastructure ports to a
@@ -49,8 +50,8 @@ R2 [4]: Extension traits MUST be named `<Capability>EventStore` (e.g.
 R3 [4]: Implementations that cannot satisfy an extension trait MUST
   NOT implement it; returning `Err(NotImplemented)` from required
   methods is forbidden. Always-failing stubs are permitted only for
-  in-progress rollout (e.g. PAR-0021 hash-chain pending), MUST be
-  documented in the impl block, and MUST be removed on completion.
+  an in-progress rollout, MUST be documented in the impl block, and
+  MUST be removed on completion.
 
 R4 [4]: Downstream code requiring an extension capability MUST bound
   on the extension trait, not on `EventStore`. Trait objects

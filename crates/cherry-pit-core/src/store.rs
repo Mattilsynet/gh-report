@@ -283,30 +283,24 @@ pub trait PurgeableEventStore: EventStore {
     ) -> impl Future<Output = Result<Vec<EventEnvelope<Self::Event>>, StoreError>> + Send;
 }
 
-/// Optional [`EventStore`] capability: the substrate maintains a
-/// per-stream BLAKE3 hash chain (PGN-0005 `precursor_hash` plus
-/// `Dragline::frontier`) for cryptographic tamper evidence beyond
-/// CHE-0016's structural envelope.
+/// Optional [`EventStore`] capability for substrates that maintain a
+/// per-stream BLAKE3 hash chain (PGN-0005 `precursor_hash` plus the
+/// `Dragline::frontier` frontier hash), for cryptographic tamper
+/// evidence beyond CHE-0016's structural envelope. Already implemented
+/// in pardosa; no rollout stub is pending.
 ///
-/// `PardosaEventStore` MAY implement this trait as an always-failing
-/// rollout stub returning [`StoreError::Infrastructure`] from both
-/// methods until PGN-0005 lands in pardosa source — this is the named
-/// CHE-0057:R3 / CHE-0060:R3 carve-out. The stub MUST be documented
-/// in the `impl` block and MUST be removed when PAR-0021 lands.
-/// **No trait-level default impl** is permitted: a default would hide
-/// the stub from review and silently survive PAR-0021's arrival.
+/// **No trait-level default impl** is permitted: capability opt-in
+/// happens per CHE-0057:R1/R2 by implementing this extension trait.
 ///
-/// Governing ADR: CHE-0060. Citations: CHE-0016 (structural envelope
-/// baseline), PGN-0005 (substrate origin), SEC-0011 (deferred non-
-/// repudiation consumer).
+/// Governing ADR: CHE-0057 (extension-trait composition policy).
+/// Citations: CHE-0016 (structural envelope baseline), PGN-0005
+/// (substrate origin), SEC-0011 (tamper-evidence consumer).
 pub trait HashChainedEventStore: EventStore {
     /// 32-byte BLAKE3 frontier hash over all committed events in
-    /// append order (PGN-0005:R3 + CHE-0060:R2).
+    /// append order (PGN-0005:R3).
     ///
     /// Returns the hash unconditionally (no `Result`): the substrate
-    /// MUST be able to surface its current frontier. Rollout-stub
-    /// implementations per CHE-0060:R3 surface failure through
-    /// [`verify_chain`](Self::verify_chain) instead.
+    /// MUST be able to surface its current frontier.
     fn frontier_hash(&self) -> [u8; 32];
 
     /// Verify the precursor-hash chain over the entire stream. Per
