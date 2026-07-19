@@ -135,8 +135,32 @@
         and not unplanned DRIFT.</td>
         <td><span class="verdict verdict--match">MATCH</span> (append-only) /
         <span class="verdict verdict--aspirational">ASPIRATIONAL</span>
-        (hash-chain tamper-evidence — SEC-0011 intent unrealised end-to-end:
-        orphaned capability port, retired ADRs, no boot-load verification)</td>
+        (hash-chain tamper-evidence — SEC-0011 intent unrealised end-to-end).
+        <strong>2026-07-19 re-investigation (two corrections):</strong>
+        <strong>(i) remedy mis-framed.</strong> SEC-0011:R3 mandates verification
+        <em>on-read</em>, not a boot-load whole-stream verify — the earlier
+        "no boot-load verification" framing overreaches R3 and would risk a
+        PGN-0005:R6 anchor-seam smell. The true defect is narrower: gh-report
+        never routes reads through the checked seam, and in fact
+        <em>no precursor-hash-verifying open/rehydrate constructor exists</em>
+        (<code>stream_checked</code>, <code>persist/checked.rs:208</code>, is the
+        sole precursor-hash site and is wired into zero ctors;
+        <code>open_validated</code>, <code>lifecycle.rs:1601</code>, validates
+        envelope+payload only — a naming trap, not a chain check).
+        <strong>(ii) cross-backend divergence (new, load-bearing).</strong> The
+        precursor-hash chain is implemented for the <code>.pgno</code> arm only.
+        The NATS/JetStream rehydrate arm
+        (<code>rehydrate_event_frames</code>, <code>lifecycle.rs:608</code>) rolls
+        the frontier and checks <code>event_id==position</code> but performs
+        <strong>no <code>precursor_hash</code> verification</strong>;
+        <code>crates/pardosa-nats/src</code> carries zero precursor logic. Since
+        gh-report runs the NATS backend in production
+        (<code>GH_REPORT_PARDOSA_BACKEND=nats</code>), the deployed backend is the
+        unverified one. Ratified remedy (roadmap <code>adr-fmt-i8j15</code>, amend
+        PGN-0010 R8): lift the six on-read invariants into one backend-agnostic
+        stage above the adapter seam so <code>.pgno</code>, NATS, and any future
+        adapter inherit identical mandatory verification; apps only handle the
+        typed error.</td>
       </tr>
       <tr>
         <td>cherry-pit-merger is the command-side single-task serialiser, an alternative/complement to cherry-pit-app for command dispatch.</td>
@@ -191,6 +215,28 @@
       ASPIRATIONAL per the mission's anti-fabrication constraint: the direction
       is abandoned/superseded, not pending, so neither a plain MATCH nor DRIFT.
       A separate SEC-0011:R3 boot-load conformance row is a candidate follow-up.
+      <br><strong>2026-07-19 update — two corrections + a new backend-parity
+      finding.</strong> (1) The "boot-load verification" candidate follow-up is
+      itself mis-framed: SEC-0011:R3 mandates verification <em>on-read</em>, not a
+      boot whole-stream pass; a literal boot verify exceeds R3 and risks a
+      PGN-0005:R6 anchor-seam smell. (2) The narrower true defect: no
+      precursor-hash-verifying open/rehydrate constructor exists at all —
+      <code>stream_checked</code> (<code>persist/checked.rs:208</code>) is the sole
+      precursor-hash site and is wired into zero ctors, and
+      <code>open_validated</code> (<code>lifecycle.rs:1601</code>) is a naming trap
+      (envelope+payload validation, not chain). (3) <strong>New, load-bearing:</strong>
+      the precursor-hash chain is <code>.pgno</code>-only — the NATS/JetStream
+      rehydrate arm (<code>rehydrate_event_frames</code>,
+      <code>lifecycle.rs:608</code>) verifies contiguity + frontier but
+      <em>not</em> precursor hashes, and <code>pardosa-nats/src</code> holds zero
+      precursor logic, so the production backend
+      (<code>GH_REPORT_PARDOSA_BACKEND=nats</code>) is the unverified one. The
+      user has since ratified a mandatory-verification stance: no unchecked public
+      read path on any backend; apps handle only the typed error. Roadmap
+      <code>adr-fmt-i8j15</code> (amend PGN-0010 with a new rule R8) lifts the six
+      on-read invariants into one backend-agnostic stage above the storage-adapter
+      seam, so <code>.pgno</code>, NATS, and a future Kafka adapter inherit
+      identical behavior and the divergence closes by construction.
     </li>
     <li>
       <strong>cherry-pit-merger is the sharpest divergence (row 11)</strong>: two ADRs
@@ -267,6 +313,15 @@
       boot-load verification that SEC-0011:R3 requires but the live open path
       does not perform — not a "staged rollout pending PGN-0005", which is
       Accepted and already implemented in the substrate.
+      <strong>2026-07-19 further correction:</strong> re-investigation retracted
+      the "boot-load verification" half of that rationale (SEC-0011:R3 is an
+      on-read, not boot-load, requirement) and surfaced a new load-bearing
+      finding — the precursor-hash chain is implemented on the <code>.pgno</code>
+      arm only, while the production NATS/JetStream arm does not verify it. The
+      ASPIRATIONAL verdict stands, but its cause is now backend-parity divergence
+      plus the absence of any verifying read constructor, addressed by ratified
+      roadmap <code>adr-fmt-i8j15</code> (lift invariants above the adapter seam;
+      amend PGN-0010 R8).
     </li>
   </ul>
 </main>
