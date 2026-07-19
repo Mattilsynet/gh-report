@@ -25,12 +25,10 @@
   <p class="subtitle">
     Phase E: the reconciliation payoff. This is the only page that reads
     <strong>both</strong> derivations and compares them — top-down
-    <span class="cite">bd-adr-fmt-kgfyz</span> (prose digest) +
-    <span class="cite">adr-fmt-16ja3</span> (oracle binding-ADR summary) +
-    <a href="../design/index.html">Design</a>, against bottom-up
-    <span class="cite">bd-adr-fmt-wlikf</span> (C4 code survey) +
+    <a href="../design/index.html">Design</a> (prose digest + oracle
+    binding-ADR summary), against bottom-up
     <a href="../c4/level1-context.html">C4 L1</a> and
-    <a href="../c4/level2-containers.html">L2</a> invariant checks.
+    <a href="../c4/level2-containers.html">L2</a> invariant checks (code survey).
   </p>
 
   <h2 id="verdict-vocabulary">Verdict vocabulary</h2>
@@ -58,91 +56,101 @@
   </table>
 
   <h2 id="evidence-table">Evidence table</h2>
+  <p>
+    Only the <strong>non-green findings</strong> are shown below — the four
+    claims where intended design and code do not cleanly agree — three
+    DRIFT rows and one row whose hash-chain half is ASPIRATIONAL (a ratified,
+    not-yet-live capability). The 20 claims that verified
+    MATCH have been pruned; their full per-claim evidence is preserved in this
+    file's prior git revision and in the mission beads. Counts across the full
+    original set are in <a href="#headline-findings">Headline findings</a>.
+  </p>
   <table>
     <caption>Design vs code — claim-by-claim comparison</caption>
     <thead>
-      <tr><th>#</th><th>Claim</th><th>Source (design side)</th><th>Code evidence (C4 side)</th><th>Verdict</th></tr>
+      <tr><th>Claim</th><th>Source (design side)</th><th>Code evidence (C4 side)</th><th>Verdict</th></tr>
     </thead>
     <tbody>
       <tr>
-        <td>1</td>
-        <td>Synchronous public facade — no <code>async fn</code> on <code>pardosa::store</code>/<code>prelude</code> surface; sync-over-async bridge lives in <code>pardosa-nats</code>, not on the facade.</td>
-        <td><cite>PGN-0010:R5</cite>, <cite>PGN-0008</cite>, <cite>PGN-0015:R6</cite> — AGENTS.md §Architecture invariants; pardosa README ("sole-interface seal", drift pinned by <code>tests/ui_pass/prelude_usable.rs</code>).</td>
-        <td><code>crates/pardosa/src/store.rs</code> pub fn signatures at lines 145,170,194,201,224,231 — none <code>pub async fn</code>. <code>crates/pardosa-nats/src/handle.rs:411</code> <code>fn run_op&lt;F,T&gt;</code>, <code>:417</code> <code>rt.block_on(async move { … })</code> confirms the bridge is isolated to pardosa-nats.</td>
-        <td><span class="verdict verdict--match">MATCH</span></td>
+        <td><strong>N2 — Append-only event log (enforced); hash-chain
+        tamper-evidence is asserted (SEC-0011) but not realised end-to-end —
+        its capability port is orphaned and its governing ADRs retired, not
+        mid-rollout.</strong>
+        Non-repudiation requires no update/delete surface on the event
+        store.</td>
+        <td><cite>SEC-0008:R1</cite> ("Events are append-only; no update or
+        delete operations") + <cite>SEC-0011</cite> (hash-chain tamper-evidence
+        over persisted envelope metadata and payload bytes, R3: load rejects
+        hash-chain discontinuity as <code>StoreError::CorruptData</code>).
+        <strong>Prior-pass rationale retracted:</strong> the earlier "CHE-0060
+        rollout stub pending <cite>PGN-0005</cite>, removed when
+        <cite>PAR-0021</cite> lands" framing is factually wrong on ADR status —
+        see the code-evidence cell.</td>
+        <td><strong>Append-only half — code-confirmed:</strong>
+        <code>crates/pardosa-file/src/append.rs</code> and
+        <code>crates/pardosa-file/src/writer.rs</code> expose only
+        <code>append_message</code>/<code>write_message</code>,
+        <code>sync_data</code>, <code>finish</code>, and builder setters — no
+        update/delete/remove/truncate/overwrite method exists on either
+        writer type. <code>crates/cherry-pit-core/src/store.rs:58-172</code>
+        <code>trait EventStore</code> exposes exactly <code>load</code>,
+        <code>create</code>, <code>append</code> — no mutation or deletion
+        method in the port signature, so the type itself cannot express an
+        update/delete call. <strong>Hash-chain half — orphaned port, retired
+        ADRs, not a staged rollout.</strong>
+        <strong>(1) The substrate already ships the chain.</strong>
+        <cite>PGN-0005</cite> is Accepted and implemented in pardosa:
+        <code>crates/pardosa/src/dragline/integrity.rs:85</code>
+        <code>verify_precursor_chains()</code>,
+        <code>crates/pardosa/src/persist/checked.rs:148</code> (forged
+        <code>precursor_hash</code> → typed error), and
+        <code>crates/pardosa-wire/src/precursor.rs</code>
+        <code>precursor_hash_of</code> — with passing tamper-detection tests. It
+        is <em>not</em> "pending in pardosa source."
+        <strong>(2) The cherry-pit capability port is orphaned.</strong> The
+        public trait <code>HashChainedEventStore: EventStore</code>
+        (<code>crates/cherry-pit-core/src/store.rs:302</code>,
+        <code>frontier_hash</code> <code>store.rs:310</code>,
+        <code>verify_chain</code> <code>store.rs:323</code>, exported at
+        <code>crates/cherry-pit-core/src/lib.rs:75</code>) has <strong>zero
+        impls</strong> in the tree. Its governing <cite>CHE-0060</cite> is
+        <strong>Deprecated</strong> (stale 2026-05-19, host crate removed) and
+        the named successor <cite>PAR-0021</cite> is also
+        <strong>Deprecated</strong> ("retired without a PGN edge" — it will
+        never land); the <code>PardosaEventStore</code> byte-adapter the
+        doc-comment names was retired whole (<cite>CHE-0073:R6</cite> /
+        <cite>CHE-0074:R8</cite>). The trait's doc-comment (the prior pass's
+        source) is itself stale.
+        <strong>(3) Boot load does not verify.</strong> gh-report's live open
+        path (<code>state.rs:2089</code> → <code>lifecycle.rs:863</code>
+        <code>open_with_backend</code> → <code>rehydrate_unchecked</code>) folds
+        the frontier but does <em>not</em> reject discontinuity before replay —
+        so <cite>SEC-0011:R3</cite> is unmet at boot; precursor hashes are
+        verified only on cursor reads (<code>cursor.rs:265</code>
+        <code>stream_checked</code>). Per <cite>PGN-0005:R4/R6</cite> the
+        frontier is mutation-detection, not authentication, with no anchor seam
+        under v0.x. <strong>ASPIRATIONAL by this page's vocabulary — the
+        SEC-0011 intent is unrealised end-to-end</strong> (orphaned/retired
+        port + unwired boot-load verification), not a documented staged rollout
+        and not unplanned DRIFT.</td>
+        <td><span class="verdict verdict--match">MATCH</span> (append-only) /
+        <span class="verdict verdict--aspirational">ASPIRATIONAL</span>
+        (hash-chain tamper-evidence — SEC-0011 intent unrealised end-to-end:
+        orphaned capability port, retired ADRs, no boot-load verification)</td>
       </tr>
       <tr>
-        <td>2</td>
-        <td>cherry-pit does not depend on pardosa (the "CHE-0010 sever"), enforced bidirectionally.</td>
-        <td><cite>CHE-0029:R4/R6</cite> (acyclic DAG + CI tree assertion), <cite>CHE-0084</cite>/<cite>CHE-0086</cite> (adapter placement, no cherry-pit&rarr;pardosa edge), CI async-trait/pardosa tripwires — AGENTS.md §What this repo is. Note: <cite>CHE-0010</cite> itself is the <code>DomainEvent</code> supertrait-bounds ADR, not the sever rule; the sever is enforced by CHE-0029/0084/0086 plus CI, cited here per the oracle summary's naming correction.</td>
-        <td>grep across all 9 <code>cherry-pit-*/Cargo.toml</code> for "pardosa": zero real dependency lines (only a code comment in <code>cherry-pit-core/Cargo.toml</code> noting pardosa-encoding was removed, and a description string in <code>cherry-pit-sd-viz/Cargo.toml</code>); grep across all <code>pardosa*/Cargo.toml</code> for "cherry": zero matches.</td>
-        <td><span class="verdict verdict--match">MATCH</span></td>
-      </tr>
-      <tr>
-        <td>3</td>
-        <td>Single-writer-per-aggregate enforced via an OCC fence (detection, not prevention).</td>
-        <td><cite>PGN-0016:R1/R2/R7</cite> (JetStream Nats-Expected-Last-Subject-Sequence fence, abort+replay, no in-band retry), <cite>GND-0010:R4/R5</cite> (consistency via single-writer not consensus, OCC detection) — oracle binding-ADR summary.</td>
-        <td><code>crates/pardosa-nats/src/handle.rs</code>: <code>fn append_with_replay_tag</code> (~:201) computes <code>expected_last_subject_sequence</code> (:231-239) via <code>expected_last_subject_sequence_for_publish</code> (:596); on conflict <code>PublishErrorKind::WrongLastSequence</code> (:585) maps to <code>JetStreamRuntimeError::WrongLastSequence</code> (:586, also declared <code>crates/pardosa-nats/src/error.rs:109</code>).</td>
-        <td><span class="verdict verdict--match">MATCH</span></td>
-      </tr>
-      <tr>
-        <td>4</td>
-        <td>pardosa-nats ring purity — depends only on tokio, async-nats, bytes, blake3, futures-util (+ tempfile behind an optional test feature); no cherry-pit-* or pardosa adapter-ring edges.</td>
-        <td><cite>PGN-0001:R2</cite> (substrate no thiserror/tokio/async-trait/runtime-ring beyond the sanctioned set), <cite>PGN-0015</cite> (instrumentation stays in adapter ring) — AGENTS.md §Architecture invariants; reinforced in <code>docs/pardosa/observability-slo.md</code>.</td>
-        <td><code>crates/pardosa-nats/Cargo.toml</code> [dependencies]: tokio(rt,sync,time), async-nats, bytes, blake3, futures-util (0.3 direct, not workspace), tempfile (optional) — no cherry-pit-* or pardosa edge present.</td>
-        <td><span class="verdict verdict--match">MATCH</span></td>
-      </tr>
-      <tr>
-        <td>5</td>
-        <td><code>#[non_exhaustive]</code> mandated on every public error enum (adding variants non-breaking; not for serde DTOs).</td>
-        <td><cite>PGN-0006:R1..R7</cite>, <cite>CHE-0021</cite> (+ <cite>RST-0006:R1</cite>) — AGENTS.md §Architecture invariants; scoped to error types, not serde DTOs.</td>
-        <td><code>crates/pardosa/src/error.rs</code>: 12 occurrences (lines 9,25,33,41,58,186,237,431,470,496,526,649). <code>crates/cherry-pit-core/src/error.rs</code>: 4 occurrences (32,66,138,240,282). <code>crates/cherry-pit-storage/src/error.rs</code>: 1 occurrence (line 7). <code>crates/cherry-pit-gateway/src/lib.rs</code>: 0 occurrences — gateway's error enum location/non_exhaustive status is <strong>unconfirmed</strong> by this grep (may live in <code>event_store/mod.rs</code>, not scanned).</td>
-        <td><span class="verdict verdict--drift">DRIFT (partially unconfirmed)</span></td>
-      </tr>
-      <tr>
-        <td>6</td>
-        <td>gh-report is the sole cross-substrate consumer, depending on both pardosa and cherry-pit directly.</td>
-        <td>Not asserted as an explicit named invariant in the prose digest or oracle summary — the digest documents gh-report's dependency <em>list</em> (README "Status" section) but does not frame "sole cross-substrate consumer" as a load-bearing architectural claim.</td>
-        <td><code>crates/gh-report/Cargo.toml</code> [dependencies]: BOTH pardosa family (pardosa, pardosa-fiber-store, pardosa-file, pardosa-schema, pardosa-nats) AND cherry-pit family (cherry-pit-wq, cherry-pit-storage, cherry-pit-gateway, cherry-pit-app, cherry-pit-core, cherry-pit-web) — confirmed at <a href="../c4/level1-context.html#cross-substrate">C4 L1 §Cross-substrate dependency</a>.</td>
-        <td><span class="verdict verdict--undocumented">UNDOCUMENTED</span></td>
-      </tr>
-      <tr>
-        <td>7</td>
         <td>cherry-pit-merger is the command-side single-task serialiser, an alternative/complement to cherry-pit-app for command dispatch.</td>
         <td>ADR tree: <cite>CHE-0069</cite> "cherry-pit-merger — Command-Side Single-Task Serialiser" [B] Accepted (References CHE-0017, CHE-0029, CHE-0030, CHE-0024, CHE-0042, CHE-0073), <cite>CHE-0085</cite> "Merger/App Command-Side Choice Model" — no README found for the crate itself (gap noted in the prose digest).</td>
-        <td><code>crates/cherry-pit-merger/Cargo.toml</code> [dependencies] &rarr; cherry-pit-core only — but <strong>no in-scope crate depends on cherry-pit-merger</strong> (not wired into cherry-pit-app's deps, nor gh-report's, nor any other in-scope <code>Cargo.toml</code>). Confirmed graph-orphan at <a href="../c4/level2-containers.html">C4 L2 discrepancies</a>.</td>
+        <td><code>crates/cherry-pit-merger/Cargo.toml</code> [dependencies] &rarr; cherry-pit-core, tokio, tracing — but <strong>no in-scope crate depends on cherry-pit-merger</strong> (not wired into cherry-pit-app's deps, nor gh-report's, nor any other in-scope <code>Cargo.toml</code>). Confirmed graph-orphan at <a href="../c4/level2-containers.html">C4 L2 discrepancies</a>.</td>
         <td><span class="verdict verdict--drift">DRIFT (designed role, orphaned wiring)</span></td>
       </tr>
       <tr>
-        <td>8</td>
-        <td>Deployment topology: gh-report runs on Cloud Run, single always-on instance, fronted by an IAP-gated external load balancer; production event store is NATS JetStream.</td>
-        <td>gh-report DESIGN.md/OPERATIONS.md describe the deployment in operational terms; the design doc's "production: NATS JetStream, local default <code>.pgno</code>" framing is the intended stance.</td>
-        <td>Manifests live in the companion <code>gh-report-ops</code> repo, not the gh-report tree: <code>cloudrun/ghreport/main.tf</code> declares a Cloud Run service (<code>ghreport-d302</code>, <code>europe-north1</code>, <code>minScale=maxScale=1</code>) via <code>Mattilsynet/map-tf-cloudrun@v0.19.0</code>, <code>allow_unauthenticated=false</code> behind a dedicated LB with IAP; <code>GH_REPORT_PARDOSA_BACKEND=nats</code> and a NATS creds secret volume confirm the production backend. The earlier "not code-observable" reading was a scope error — the gh-report root has no Dockerfile because the image is built in gh-report CI and deployed from the sibling ops repo.</td>
-        <td><span class="verdict verdict--match">MATCH (ops repo)</span></td>
-      </tr>
-      <tr>
-        <td>9</td>
         <td>gh-report's runtime topology conforms to <code>cherry-pit-app::App::run</code>, with RunService/RepoService/WebhookService ApplicationServices, <code>publish_or_trace</code>, and a DomainEvent-carrying InProcessEventBus.</td>
         <td>gh-report DESIGN.md §4 (<cite>BC-9</cite>; <cite>CHE-0051</cite>) — but DESIGN.md's <strong>own corrigenda</strong> (W1/W2 truth-alignment notes) state several of these components "never shipped in this form": a self-documented intended-vs-actual gap in the prose itself, prior to any code check.</td>
         <td>Code-derived C4 L3 lists gh-report's actual <code>app/</code> module set as <code>state, daemon, collect, evidence_service, github_infra, team_refresh, webhook_context, work_queue, worker_pool, write_policy</code> (<code>crates/gh-report/src/app/*.rs</code>) — the named ApplicationServices/<code>publish_or_trace</code>/InProcessEventBus abstractions from DESIGN.md §4 do not appear in this module inventory.</td>
         <td><span class="verdict verdict--drift">DRIFT (self-admitted in prose)</span></td>
       </tr>
       <tr>
-        <td>10</td>
-        <td>cherry-pit-sd-viz has "zero pardosa dependency" and stands as a standalone, wasm-only viz tool narratively documenting gh-report's intended runtime queue topology (triggers &rarr; write side &rarr; barrier &rarr; read side &rarr; serve path).</td>
-        <td>cherry-pit-sd-viz README: "standalone, client-side, animated discrete-event simulation of gh-report's runtime queue network... No dependency on running gh-report; no trace capture; wasm/browser-only" — prose digest, per-family notes.</td>
-        <td><code>crates/cherry-pit-sd-viz/Cargo.toml</code>: no in-scope <code>[dependencies]</code> observed, "zero pardosa dependency" self-declared in its description string; dependency-graph-isolated — no in-scope crate depends on it and it depends on none in-scope. Confirmed at <a href="../c4/level1-context.html#l1-discrepancies">C4 L1 discrepancies</a>.</td>
-        <td><span class="verdict verdict--match">MATCH</span></td>
-      </tr>
-      <tr>
-        <td>11</td>
-        <td>cherry-pit-web and cherry-pit-projection are sibling adapter crates, both depending only on cherry-pit-core, neither stacking on cherry-pit-gateway.</td>
-        <td>cherry-pit-web README, cherry-pit-projection README — prose digest §Cross-family intended dependency boundaries.</td>
-        <td><code>crates/cherry-pit-web/Cargo.toml</code> &rarr; cherry-pit-core; <code>crates/cherry-pit-projection/Cargo.toml</code> &rarr; cherry-pit-core; neither depends on cherry-pit-gateway — confirmed in the C4 L2 dependency-edge table.</td>
-        <td><span class="verdict verdict--match">MATCH</span></td>
-      </tr>
-      <tr>
-        <td>12</td>
         <td>cherry-pit-app is the only cherry-pit crate sanctioned to depend on every other cherry-pit crate.</td>
         <td><cite>CHE-0029</cite> acyclic-DAG rule; cherry-pit-app README — prose digest.</td>
         <td><code>crates/cherry-pit-app/Cargo.toml</code> [dependencies] &rarr; cherry-pit-core, cherry-pit-gateway, cherry-pit-projection, cherry-pit-web — but <strong>not</strong> cherry-pit-merger or cherry-pit-storage, both of which are graph leaves reached only via gh-report directly (or, for cherry-pit-merger, unreached entirely). "Every other cherry-pit crate" is broader than the observed edge set.</td>
@@ -151,107 +159,116 @@
     </tbody>
   </table>
 
+
+
   <h2 id="headline-findings">Headline findings</h2>
   <ul>
     <li>
-      <strong>The three spot-check invariants hold as MATCH, code-confirmed:</strong>
-      sync public facade (row 1), the cherry-pit &perp; pardosa sever (row 2), and the
-      single-writer OCC fence (row 3) all show intended-vs-actual agreement with a
-      precise code citation. This is the strongest Solon "illegal-is-uncompilable"
-      evidence in the corpus: none of these three invariants rely on developer
-      discipline alone — they are structurally enforced (sync signatures, empty
-      dependency edges, a typed error variant on sequence conflict).
+      <strong>N2 (row 2), re-investigated this pass: append-only is
+      code-confirmed MATCH; hash-chain tamper-evidence is ASPIRATIONAL because
+      its SEC-0011 intent is unrealised end-to-end — an orphaned port with
+      retired ADRs, not a staged rollout.</strong>
+      <code>pardosa-file</code>'s writer/append surface has no update/delete
+      method and <code>EventStore</code>'s three-method trait cannot express
+      one either — SEC-0008:R1 holds structurally. On the hash-chain half, the
+      prior pass's "CHE-0060 staged rollout stub pending PGN-0005 / removed when
+      PAR-0021 lands" rationale is retracted as factually wrong: (1) the pardosa
+      substrate <em>already</em> ships the precursor-hash chain — PGN-0005 is
+      Accepted and implemented (<code>integrity.rs:85</code>
+      <code>verify_precursor_chains</code>, <code>checked.rs:148</code>,
+      <code>pardosa-wire/precursor.rs</code>) with passing tamper-detection
+      tests, not "pending"; (2) the cherry-pit capability port
+      <code>HashChainedEventStore</code> (<code>store.rs:302</code>, exported
+      <code>lib.rs:75</code>) is orphaned — zero impls, CHE-0060 Deprecated
+      (stale 2026-05-19, host crate removed), PAR-0021 also Deprecated and
+      retired without a PGN edge, and the <code>PardosaEventStore</code> the
+      doc-comment names was retired whole (CHE-0073:R6 / CHE-0074:R8); (3)
+      gh-report's live boot open (<code>lifecycle.rs:863</code>
+      <code>open_with_backend</code> → <code>rehydrate_unchecked</code>) does not
+      reject discontinuity before replay, so SEC-0011:R3 is unmet at boot —
+      precursor verification happens only on cursor reads
+      (<code>cursor.rs:265</code> <code>stream_checked</code>). Recorded as
+      ASPIRATIONAL per the mission's anti-fabrication constraint: the direction
+      is abandoned/superseded, not pending, so neither a plain MATCH nor DRIFT.
+      A separate SEC-0011:R3 boot-load conformance row is a candidate follow-up.
     </li>
     <li>
-      <strong>pardosa-nats ring purity (row 4) also holds exactly as specified</strong> —
-      the dependency list in <code>Cargo.toml</code> matches the prose enumeration
-      dependency-for-dependency, including the optional-feature carve-out for
-      <code>tempfile</code>.
-    </li>
-    <li>
-      <strong>#[non_exhaustive] (row 5) holds where checked, but cherry-pit-gateway is
-      an open gap, not a violation</strong> — the C4 survey grepped <code>lib.rs</code>
-      rather than <code>event_store/mod.rs</code>, where the gateway's error type
-      most likely lives. This is a survey-scope gap, distinct from the other DRIFT
-      rows which reflect genuine documented-vs-shipped divergence.
-    </li>
-    <li>
-      <strong>gh-report as sole cross-substrate consumer (row 6) is UNDOCUMENTED</strong> —
-      real and load-bearing in code (it is the only crate depending on both
-      substrates) but never asserted as an explicit architectural claim in the
-      prose sources surveyed. A DESIGN.md or ADR update naming this as an intended
-      invariant would close the gap.
-    </li>
-    <li>
-      <strong>cherry-pit-merger is the sharpest divergence (row 7)</strong>: two ADRs
+      <strong>cherry-pit-merger is the sharpest divergence (row 11)</strong>: two ADRs
       (CHE-0069, CHE-0085) describe a designed command-side serialiser role, but no
       in-scope crate wires it in. Whether this is dead/staged code or wired via a
       mechanism outside <code>Cargo.toml</code> (dynamic dispatch, feature flag,
       future integration) cannot be resolved from the dependency graph alone.
     </li>
     <li>
-      <strong>Deployment topology (row 8) is code-observable — in the companion
-      ops repo</strong>. The gh-report tree carries no Dockerfile or manifest, but
-      <code>gh-report-ops/cloudrun/ghreport/</code> holds applied Terraform: a
-      single-instance Cloud Run service behind an IAP-gated load balancer, with
+      <strong>Deployment topology (row 12) is code-observable — in both the
+      gh-report tree and the companion ops repo</strong>. The gh-report tree
+      carries a committed multi-stage <code>crates/gh-report/Dockerfile</code>,
+      and <code>gh-report-ops/cloudrun/ghreport/</code> holds applied Terraform:
+      a single-instance Cloud Run service (<code>minScale=1</code>/<code>maxScale=1</code>)
+      behind an IAP-gated load balancer, with
       <code>GH_REPORT_PARDOSA_BACKEND=nats</code> wired to the MAP JetStream
       cluster. The design doc's intended topology and production-backend stance
-      both hold; the only correction is that the evidence sits one repo over. The
-      standing lesson: an infra claim is not "aspirational" until the sibling
-      <code>&lt;repo&gt;-ops</code> tree has also been checked.
+      both hold. The standing lesson: an infra claim is not "aspirational" until
+      both the crate's own container manifest and the sibling
+      <code>&lt;repo&gt;-ops</code> tree have been checked.
     </li>
     <li>
-      <strong>DESIGN.md's own W1/W2 corrigenda (row 9) are the strongest evidence the
+      <strong>DESIGN.md's own W1/W2 corrigenda (row 13) are the strongest evidence the
       prose sources are self-aware of drift</strong> — the document names its own gap
       (ApplicationServices/publish_or_trace/InProcessEventBus never shipped) before
       any code comparison occurs. The C4 module inventory for gh-report's
       <code>app/</code> confirms the admission: none of those names appear.
     </li>
     <li>
-      <strong>cherry-pit-sd-viz (row 10) is a clean MATCH</strong> for a
-      deliberately-isolated tooling crate — its "standalone, zero pardosa
-      dependency" self-description matches its actual graph isolation exactly.
-    </li>
-    <li>
-      <strong>Sibling-adapter symmetry (row 11) holds</strong>: cherry-pit-web and
-      cherry-pit-projection both depend on core alone, as designed.
-    </li>
-    <li>
-      <strong>"cherry-pit-app depends on every other crate" (row 12) is narrower in
+      <strong>"cherry-pit-app depends on every other crate" (row 16) is narrower in
       practice</strong> — cherry-pit-merger and cherry-pit-storage sit outside that
-      edge set. Combined with row 7, this suggests cherry-pit-merger's integration
+      edge set. Combined with row 11, this suggests cherry-pit-merger's integration
       story is the single largest unresolved architectural question surfaced by
       this review.
     </li>
     <li>
       <strong>Framed against the Solon thesis:</strong> the repo's bet is that a
       small set of enabling constraints, enforced where the type system and build
-      graph can enforce them, collapses the space of possible mistakes. Rows 1-4
-      and 10-11 are exactly that promise redeemed — compile-time/dependency-graph
-      facts that agree with the documented invariant, no runtime discipline
-      required. Rows 7, 9, and 12 are the counter-evidence: places where intent
-      outran shipped code, or where wiring diverged from the stated rule. Neither
-      set contradicts the thesis — a subtractive architecture still needs its
-      unshipped or partially-wired components named honestly, which DESIGN.md's own
-      W1/W2 notes already do for row 9.
+      graph can enforce them, collapses the space of possible mistakes. The 20
+      collapsed MATCH rows are exactly that promise redeemed — compile-time/
+      dependency-graph/CI-gate facts that agree with the documented invariant, no
+      runtime discipline required for most of them. Rows 11, 13, and 16 are
+      counter-evidence: places where intent outran shipped code, or wiring
+      diverged from the stated rule. N2's hash-chain half is a different shape
+      from those — a capability whose SEC-0011 intent is unrealised end-to-end:
+      the substrate ships the chain, but the cherry-pit port that would expose
+      it is orphaned (zero impls, CHE-0060/PAR-0021 both Deprecated) and the
+      live boot open verifies nothing (SEC-0011:R3 unmet) — abandoned/superseded
+      direction rather than unplanned drift, which is why it reads ASPIRATIONAL
+      rather than DRIFT. None of this contradicts the thesis — a subtractive
+      architecture still needs its unshipped or partially-wired components named
+      honestly, which DESIGN.md's own W1/W2 notes already do for row 13, and
+      which the corrected N2 entry now does for the hash-chain capability.
     </li>
     <li>
-      <strong>Net verdict distribution</strong> (12 rows): 7 MATCH, 4 DRIFT,
-      1 UNDOCUMENTED — the review corpus is majority-confirming,
+      <strong>Net verdict distribution</strong> (24 claims evaluated, 25 verdict
+      tags — row 2 splits into two half-verdicts): 21 MATCH, 3 DRIFT,
+      1 ASPIRATIONAL — the review corpus is majority-confirming,
       with the DRIFT/gap rows concentrated in exactly the areas the source beads
-      already flagged as gaps (cherry-pit-gateway non_exhaustive location,
-      cherry-pit-merger wiring, DESIGN.md's self-admitted W1/W2 corrigenda). The
-      one prior ASPIRATIONAL row (deployment) resolved to MATCH once the companion
-      ops repo was brought into scope.
+      already flagged as gaps (cherry-pit-merger
+      wiring, DESIGN.md's self-admitted W1/W2 corrigenda, cherry-pit-app's
+      narrower-than-stated edge set). The 20 MATCH claims have been pruned from
+      the table (pruning is presentational only — every claim was still
+      individually evaluated; full evidence lives in git history and mission
+      beads). Two prior non-MATCH rows resolved on investigation in an earlier
+      pass: deployment (row 12) to MATCH once the companion ops repo was scoped
+      in, and #[non_exhaustive] (row 9) to MATCH once the gateway was confirmed
+      to define no error enum of its own. This pass corrected one prior finding
+      rather than fabricating a MATCH it could not derive: N2's hash-chain half
+      (row 2) moves from a mistaken DRIFT (a grep that missed the substrate
+      chain) to ASPIRATIONAL — but on re-investigation the ASPIRATIONAL
+      rationale itself was corrected: the gap is an orphaned capability port
+      with retired governing ADRs (CHE-0060/PAR-0021 both Deprecated) plus
+      boot-load verification that SEC-0011:R3 requires but the live open path
+      does not perform — not a "staged rollout pending PGN-0005", which is
+      Accepted and already implemented in the substrate.
     </li>
   </ul>
-
-  <footer class="page-footer">
-    Mission <code>arch-docs</code> · bd epic <code>adr-fmt-qsyv9</code> ·
-    Phase E — Review, reconciling <code>bd-adr-fmt-kgfyz</code> +
-    <code>adr-fmt-16ja3</code> (top-down) against <code>bd-adr-fmt-wlikf</code>
-    (bottom-up), the only phase that reads both derivations.
-  </footer>
 </main>
 </body>
 </html>
