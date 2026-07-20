@@ -612,6 +612,7 @@ where
     T: Decode + GenomeSafe,
 {
     let mut events: Vec<Event<T>> = Vec::new();
+    let mut raw_bytes: Vec<Vec<u8>> = Vec::new();
     let mut frontier = Frontier::GENESIS;
     for frame in frames {
         gate_replay_schema_tag::<T>(frame.schema_tag.as_deref())?;
@@ -621,8 +622,9 @@ where
             .map_err(crate::persist::Error::Decode)
             .map_err(persist_error_to_cursor_read)?;
         events.push(event);
+        raw_bytes.push(bytes.to_vec());
     }
-    crate::persist::rebuild_dragline_with_frontier(events, frontier)
+    crate::persist::rebuild_dragline_with_frontier(events, frontier, Some(&raw_bytes))
 }
 impl<T> EventStore<T, std::fs::File>
 where
@@ -1515,6 +1517,243 @@ mod tests {
             line.read_line()[0].domain_event(),
             &TaggedPayload(11),
             "absent tag falls through to the current decode path"
+        );
+    }
+
+    use crate::event::{Index, Precursor};
+
+    const OBSERVE_MODE_PAYLOAD_MARKER: u64 = 0x5EC_0007;
+
+    fn genesis_event(value: u64) -> Event<TaggedPayload> {
+        Event::new_unchecked(
+            crate::EventId::from_decoded(0),
+            crate::FiberId::from_decoded(0),
+            false,
+            Precursor::Genesis,
+            [0u8; 32],
+            TaggedPayload(value),
+        )
+    }
+
+    fn clean_successor_event(genesis_bytes: &[u8]) -> Event<TaggedPayload> {
+        Event::new_unchecked(
+            crate::EventId::from_decoded(1),
+            crate::FiberId::from_decoded(0),
+            false,
+            Precursor::Of(Index::new(0)),
+            pardosa_wire::precursor_hash_of(genesis_bytes),
+            TaggedPayload(OBSERVE_MODE_PAYLOAD_MARKER),
+        )
+    }
+
+    fn out_of_bounds_successor_event(genesis_bytes: &[u8]) -> Event<TaggedPayload> {
+        Event::new_unchecked(
+            crate::EventId::from_decoded(1),
+            crate::FiberId::from_decoded(0),
+            false,
+            Precursor::Of(Index::new(5)),
+            pardosa_wire::precursor_hash_of(genesis_bytes),
+            TaggedPayload(OBSERVE_MODE_PAYLOAD_MARKER),
+        )
+    }
+
+    fn fiber_mismatch_successor_event(genesis_bytes: &[u8]) -> Event<TaggedPayload> {
+        Event::new_unchecked(
+            crate::EventId::from_decoded(1),
+            crate::FiberId::from_decoded(1),
+            false,
+            Precursor::Of(Index::new(0)),
+            pardosa_wire::precursor_hash_of(genesis_bytes),
+            TaggedPayload(OBSERVE_MODE_PAYLOAD_MARKER),
+        )
+    }
+
+    fn hash_mismatch_successor_event() -> Event<TaggedPayload> {
+        Event::new_unchecked(
+            crate::EventId::from_decoded(1),
+            crate::FiberId::from_decoded(0),
+            false,
+            Precursor::Of(Index::new(0)),
+            [0xffu8; 32],
+            TaggedPayload(OBSERVE_MODE_PAYLOAD_MARKER),
+        )
+    }
+
+    fn write_pgno_bytes(events: &[Event<TaggedPayload>]) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut writer = pardosa_file::Writer::new(&mut buf, Event::<TaggedPayload>::ENVELOPE_HASH);
+        for event in events {
+            writer
+                .write_message(&pardosa_wire::to_vec(event))
+                .expect("write_message");
+        }
+        writer.finish().expect("finish");
+        buf
+    }
+
+    fn jetstream_frames(events: &[Event<TaggedPayload>]) -> Vec<JetStreamDurableFrame> {
+        events
+            .iter()
+            .map(|event| legacy_jetstream_frame(pardosa_wire::to_vec(event)))
+            .collect()
+    }
+
+    fn assert_no_leak(captured: &str) {
+        assert!(
+            !captured.contains(&OBSERVE_MODE_PAYLOAD_MARKER.to_string()),
+            "captured trace must never carry the domain payload: {captured}"
+        );
+    }
+
+    #[test]
+    fn precursor_out_of_bounds_warns_on_pgno_arm_and_does_not_reject() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, out_of_bounds_successor_event(&genesis_bytes)];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let (result, captured) = capture_tracing(|| {
+            crate::persist::rehydrate_unchecked::<TaggedPayload, _>(Cursor::new(pgno_bytes))
+        });
+        result.expect("observe-only mode must not reject a precursor-bounds violation");
+        assert!(
+            captured.contains("precursor_check_would_fail"),
+            "expected a would-fail warn, got: {captured}"
+        );
+        assert!(
+            captured.contains("PrecursorOutOfBounds"),
+            "expected check_kind=PrecursorOutOfBounds, got: {captured}"
+        );
+        assert_no_leak(&captured);
+    }
+
+    #[test]
+    fn precursor_out_of_bounds_warns_on_nats_arm_and_does_not_reject() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, out_of_bounds_successor_event(&genesis_bytes)];
+        let frames = jetstream_frames(&events);
+        let (result, captured) =
+            capture_tracing(|| rehydrate_event_frames::<TaggedPayload>(&frames));
+        result.expect("observe-only mode must not reject a precursor-bounds violation");
+        assert!(
+            captured.contains("precursor_check_would_fail"),
+            "expected a would-fail warn, got: {captured}"
+        );
+        assert!(
+            captured.contains("PrecursorOutOfBounds"),
+            "expected check_kind=PrecursorOutOfBounds, got: {captured}"
+        );
+        assert_no_leak(&captured);
+    }
+
+    #[test]
+    fn precursor_fiber_mismatch_warns_on_pgno_arm_and_does_not_reject() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, fiber_mismatch_successor_event(&genesis_bytes)];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let (result, captured) = capture_tracing(|| {
+            crate::persist::rehydrate_unchecked::<TaggedPayload, _>(Cursor::new(pgno_bytes))
+        });
+        result.expect("observe-only mode must not reject a same-fiber precursor violation");
+        assert!(
+            captured.contains("precursor_check_would_fail"),
+            "expected a would-fail warn, got: {captured}"
+        );
+        assert!(
+            captured.contains("PrecursorFiberMismatch"),
+            "expected check_kind=PrecursorFiberMismatch, got: {captured}"
+        );
+        assert_no_leak(&captured);
+    }
+
+    #[test]
+    fn precursor_fiber_mismatch_warns_on_nats_arm_and_does_not_reject() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, fiber_mismatch_successor_event(&genesis_bytes)];
+        let frames = jetstream_frames(&events);
+        let (result, captured) =
+            capture_tracing(|| rehydrate_event_frames::<TaggedPayload>(&frames));
+        result.expect("observe-only mode must not reject a same-fiber precursor violation");
+        assert!(
+            captured.contains("precursor_check_would_fail"),
+            "expected a would-fail warn, got: {captured}"
+        );
+        assert!(
+            captured.contains("PrecursorFiberMismatch"),
+            "expected check_kind=PrecursorFiberMismatch, got: {captured}"
+        );
+        assert_no_leak(&captured);
+    }
+
+    #[test]
+    fn precursor_hash_mismatch_warns_on_pgno_arm_and_does_not_reject() {
+        let genesis = genesis_event(1);
+        let events = [genesis, hash_mismatch_successor_event()];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let (result, captured) = capture_tracing(|| {
+            crate::persist::rehydrate_unchecked::<TaggedPayload, _>(Cursor::new(pgno_bytes))
+        });
+        result.expect("observe-only mode must not reject a precursor-hash violation");
+        assert!(
+            captured.contains("precursor_check_would_fail"),
+            "expected a would-fail warn, got: {captured}"
+        );
+        assert!(
+            captured.contains("PrecursorHashMismatch"),
+            "expected check_kind=PrecursorHashMismatch, got: {captured}"
+        );
+        assert_no_leak(&captured);
+    }
+
+    #[test]
+    fn precursor_hash_mismatch_warns_on_nats_arm_and_does_not_reject() {
+        let genesis = genesis_event(1);
+        let events = [genesis, hash_mismatch_successor_event()];
+        let frames = jetstream_frames(&events);
+        let (result, captured) =
+            capture_tracing(|| rehydrate_event_frames::<TaggedPayload>(&frames));
+        result.expect("observe-only mode must not reject a precursor-hash violation");
+        assert!(
+            captured.contains("precursor_check_would_fail"),
+            "expected a would-fail warn, got: {captured}"
+        );
+        assert!(
+            captured.contains("PrecursorHashMismatch"),
+            "expected check_kind=PrecursorHashMismatch, got: {captured}"
+        );
+        assert_no_leak(&captured);
+    }
+
+    #[test]
+    fn clean_log_emits_no_precursor_warn_on_pgno_arm() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, clean_successor_event(&genesis_bytes)];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let (result, captured) = capture_tracing(|| {
+            crate::persist::rehydrate_unchecked::<TaggedPayload, _>(Cursor::new(pgno_bytes))
+        });
+        result.expect("a clean chain must rehydrate");
+        assert!(
+            !captured.contains("precursor_check_would_fail"),
+            "clean log must not emit a precursor warn, got: {captured}"
+        );
+    }
+
+    #[test]
+    fn clean_log_emits_no_precursor_warn_on_nats_arm() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, clean_successor_event(&genesis_bytes)];
+        let frames = jetstream_frames(&events);
+        let (result, captured) =
+            capture_tracing(|| rehydrate_event_frames::<TaggedPayload>(&frames));
+        result.expect("a clean chain must rehydrate");
+        assert!(
+            !captured.contains("precursor_check_would_fail"),
+            "clean log must not emit a precursor warn, got: {captured}"
         );
     }
 }

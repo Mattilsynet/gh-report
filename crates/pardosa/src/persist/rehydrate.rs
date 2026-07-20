@@ -1,13 +1,85 @@
-use super::error::{Error, RehydrateInvariant, ValidatedReplayError};
+use super::error::{CheckedReplayKind, Error, RehydrateInvariant, ValidatedReplayError};
 use super::validated::stream_validated;
 use crate::dragline::Line;
 use crate::frontier::Frontier;
 use crate::{Event, Fiber, FiberId, FiberState, PardosaError};
 use pardosa_file::{Reader, Syncable, Writer};
 use pardosa_schema::GenomeSafe;
-use pardosa_wire::{Decode, Encode, Validate, from_bytes, to_vec};
+use pardosa_wire::{Decode, Encode, Validate, from_bytes, precursor_hash_of, to_vec};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek};
+/// Precursor-check enforcement mode consulted by
+/// [`rebuild_dragline_with_frontier`] (roadmap `adr-fmt-t7t4v` P2a/P2b,
+/// D2b). `ObserveOnly` computes the three precursor checks and emits a
+/// non-blocking warn per would-fail; `Enforce` is wired for P2b to
+/// reject instead. `PRECURSOR_CHECK_MODE` pins P2a to `ObserveOnly`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrecursorCheckMode {
+    ObserveOnly,
+    #[expect(
+        dead_code,
+        reason = "P2b (adr-fmt-o1kd3) constructs this variant when the enforce flip lands; P2a keeps PRECURSOR_CHECK_MODE pinned to ObserveOnly"
+    )]
+    Enforce,
+}
+const PRECURSOR_CHECK_MODE: PrecursorCheckMode = PrecursorCheckMode::ObserveOnly;
+fn check_kind_name(kind: &CheckedReplayKind) -> &'static str {
+    match kind {
+        CheckedReplayKind::EventIdPositionMismatch { .. } => "EventIdPositionMismatch",
+        CheckedReplayKind::PrecursorOutOfBounds { .. } => "PrecursorOutOfBounds",
+        CheckedReplayKind::PrecursorFiberMismatch { .. } => "PrecursorFiberMismatch",
+        CheckedReplayKind::PrecursorHashMismatch { .. } => "PrecursorHashMismatch",
+    }
+}
+fn precursor_would_fail<T>(
+    events: &[Event<T>],
+    raw_bytes: &[Vec<u8>],
+    position: usize,
+) -> Option<CheckedReplayKind> {
+    let event = &events[position];
+    let precursor_idx = event.precursor().as_index()?;
+    let position_u64 = u64::try_from(position).expect("line position fits u64");
+    let pidx = match usize::try_from(precursor_idx) {
+        Ok(pidx) if pidx < position => pidx,
+        Ok(_) | Err(_) => {
+            return Some(CheckedReplayKind::PrecursorOutOfBounds {
+                event_id: event.event_id().value(),
+                position: position_u64,
+                precursor_index: precursor_idx.value(),
+            });
+        }
+    };
+    let prior_event = &events[pidx];
+    if prior_event.fiber_id() != event.fiber_id() {
+        return Some(CheckedReplayKind::PrecursorFiberMismatch {
+            event_id: event.event_id().value(),
+            precursor_index: precursor_idx.value(),
+            expected_fiber: event.fiber_id(),
+            actual_fiber: prior_event.fiber_id(),
+        });
+    }
+    let prior_hash = precursor_hash_of(&raw_bytes[pidx]);
+    if event.precursor_hash() != prior_hash {
+        return Some(CheckedReplayKind::PrecursorHashMismatch {
+            event_id: event.event_id().value(),
+            precursor_index: precursor_idx.value(),
+            expected: prior_hash,
+            actual: event.precursor_hash(),
+        });
+    }
+    None
+}
+fn warn_precursor_would_fail<T>(event: &Event<T>, kind: &CheckedReplayKind, position: usize) {
+    let check_kind = check_kind_name(kind);
+    let position_u64 = u64::try_from(position).unwrap_or(u64::MAX);
+    tracing::warn!(
+        check_kind,
+        fiber_id = event.fiber_id().value(),
+        event_id = event.event_id().value(),
+        position = position_u64,
+        "precursor_check_would_fail"
+    );
+}
 /// Write a `Line`'s full event line to `sink` as a `.pgno`
 /// container, optionally embedding `schema_source` in the footer.
 ///
@@ -67,14 +139,16 @@ where
     }
     let n = reader.index().len();
     let mut events: Vec<Event<T>> = Vec::with_capacity(n);
+    let mut raw_bytes: Vec<Vec<u8>> = Vec::with_capacity(n);
     let mut frontier = Frontier::GENESIS;
     for i in 0..n {
         let bytes = reader.read_message(i).map_err(Error::File)?;
         frontier = frontier.roll(&bytes);
         let event: Event<T> = from_bytes(&bytes).map_err(Error::Decode)?;
         events.push(event);
+        raw_bytes.push(bytes);
     }
-    rebuild_dragline_with_frontier(events, frontier)
+    rebuild_dragline_with_frontier(events, frontier, Some(&raw_bytes))
         .map_err(|e| Error::InvariantViolation(RehydrateInvariant::from(e)))
 }
 /// Drain a fallible `Event<T>` stream into the supplied pre-sized
@@ -95,6 +169,7 @@ where
 pub(crate) fn rebuild_dragline_with_frontier<T>(
     events: Vec<Event<T>>,
     frontier: Frontier,
+    raw_bytes: Option<&[Vec<u8>]>,
 ) -> Result<Line<T>, PardosaError> {
     let mut lookup: HashMap<FiberId, (Fiber, FiberState)> = HashMap::new();
     let purged_ids: HashSet<FiberId> = HashSet::new();
@@ -111,6 +186,14 @@ pub(crate) fn rebuild_dragline_with_frontier<T>(
                     },
                 ),
             ));
+        }
+        if let Some(raw) = raw_bytes
+            && let Some(kind) = precursor_would_fail(&events, raw, i)
+        {
+            match PRECURSOR_CHECK_MODE {
+                PrecursorCheckMode::ObserveOnly => warn_precursor_would_fail(event, &kind, i),
+                PrecursorCheckMode::Enforce => {}
+            }
         }
         let idx = crate::Index::from_decoded(position_u64);
         let did = event.fiber_id();
@@ -182,7 +265,7 @@ where
     let events: Vec<Event<T>> = Vec::with_capacity(cap);
     let events = stream_fold_line(&mut stream, events)?;
     let frontier = stream.inner.frontier();
-    rebuild_dragline_with_frontier(events, frontier)
+    rebuild_dragline_with_frontier(events, frontier, None)
         .map_err(|e| ValidatedReplayError::Replay(Error::InvariantViolation(e.into())))
 }
 /// Append-shape sibling of [`persist_with_source`] (roadmap IO-PG-1).
