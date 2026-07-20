@@ -92,21 +92,6 @@ where
     }
     Ok(dst)
 }
-/// Backend-agnostic on-read verify + structural rebuild stage
-/// (PGN-0010:R8), shared by both dispatch arms above the sealed
-/// adapter seam: the `.pgno` unchecked path
-/// ([`rehydrate_unchecked`]) and the `JetStream` frame path
-/// (`rehydrate_event_frames`, `crate::store::inner::lifecycle`).
-/// Trusts the supplied `frontier` (rolled from raw persisted bytes
-/// by the caller) and walks the line to derive the canonical
-/// `(lookup, next_id, next_event_id)` set, enforcing contiguity
-/// (`event_id == position`) with the same algorithm
-/// `verify_supplied_against_canonical` enforces.
-///
-/// Skips precursor-hash validation by construction — the "unchecked"
-/// rehydrate path contract; the checked/validated streams perform
-/// per-event precursor-hash checks on raw bytes before this is
-/// reached on the validated path.
 pub(crate) fn rebuild_dragline_with_frontier<T>(
     events: Vec<Event<T>>,
     frontier: Frontier,

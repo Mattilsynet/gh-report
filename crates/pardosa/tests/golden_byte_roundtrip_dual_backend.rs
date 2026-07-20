@@ -96,6 +96,12 @@ async fn publish_frames(server: &LiveNatsServer, stream_name: &str, subject: &st
     let _ = tag;
 }
 
+fn fold_expected_frontier(raw_bytes: &[Vec<u8>]) -> Frontier {
+    raw_bytes
+        .iter()
+        .fold(Frontier::GENESIS, |frontier, bytes| frontier.roll(bytes))
+}
+
 async fn teardown_stream(server: &LiveNatsServer, stream_name: &str) {
     let Ok(client) = async_nats::connect(server.url()).await else {
         return;
@@ -109,18 +115,8 @@ fn pgno_and_jetstream_rehydrate_fold_identical_frontier_for_same_log() {
     let raw_bytes = canonical_event_bytes(5);
     assert_eq!(raw_bytes.len(), 5, "fixture log carries 5 events");
 
-    // Independently-derived expected frontier: pure fold over the
-    // captured raw bytes, computed outside either rehydrate arm.
-    let mut expected = Frontier::GENESIS;
-    for bytes in &raw_bytes {
-        expected = expected.roll(bytes);
-    }
+    let expected = fold_expected_frontier(&raw_bytes);
 
-    // .pgno arm: rewrite the SAME captured bytes into a fresh .pgno
-    // container built directly through the normal write path (the
-    // write path is not under test — only the rehydrate arms are),
-    // then open through open_with_backend(PgnoBackend) — the P1
-    // shared-stage .pgno arm.
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("golden_replay.pgno");
     {
@@ -138,10 +134,6 @@ fn pgno_and_jetstream_rehydrate_fold_identical_frontier_for_same_log() {
         EventStore::<Ledger>::open_with_backend(pgno_backend).expect("open_with_backend(pgno)");
     let pgno_frontier = pgno_store.reader().frontier();
 
-    // JetStream arm: publish the identical captured raw bytes as
-    // individual frames, then open through
-    // open_with_backend(JetStreamBackend) — the P1 shared-stage
-    // JetStream arm.
     let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
     let rt = Runtime::new().expect("tokio runtime");
     let tag = unique_tag();

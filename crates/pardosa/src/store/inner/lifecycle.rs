@@ -605,15 +605,6 @@ where
     }
     Ok(frames)
 }
-/// `JetStream` frame arm of the backend-agnostic on-read verify stage
-/// (PGN-0010:R8): decodes per-frame raw canonical bytes (gating the
-/// NATS-only schema tag per frame — `gate_stream_marker` is the
-/// stream-level counterpart, run once by the caller before frame
-/// assembly, outside this stage), then delegates contiguity
-/// enforcement and structural rebuild to the SAME shared stage the
-/// `.pgno` arm uses
-/// ([`crate::persist::rebuild_dragline_with_frontier`]), so both
-/// dispatch arms produce identical results for identical raw bytes.
 fn rehydrate_event_frames<T>(
     frames: &[JetStreamDurableFrame],
 ) -> Result<crate::dragline::Line<T>, PardosaError>
