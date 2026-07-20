@@ -605,13 +605,21 @@ where
     }
     Ok(frames)
 }
+/// `JetStream` frame arm of the backend-agnostic on-read verify stage
+/// (PGN-0010:R8): decodes per-frame raw canonical bytes (gating the
+/// NATS-only schema tag per frame — `gate_stream_marker` is the
+/// stream-level counterpart, run once by the caller before frame
+/// assembly, outside this stage), then delegates contiguity
+/// enforcement and structural rebuild to the SAME shared stage the
+/// `.pgno` arm uses
+/// ([`crate::persist::rebuild_dragline_with_frontier`]), so both
+/// dispatch arms produce identical results for identical raw bytes.
 fn rehydrate_event_frames<T>(
     frames: &[JetStreamDurableFrame],
 ) -> Result<crate::dragline::Line<T>, PardosaError>
 where
     T: Decode + GenomeSafe,
 {
-    use std::collections::{HashMap, HashSet};
     let mut events: Vec<Event<T>> = Vec::new();
     let mut frontier = Frontier::GENESIS;
     for frame in frames {
@@ -623,67 +631,7 @@ where
             .map_err(persist_error_to_cursor_read)?;
         events.push(event);
     }
-    let mut lookup: HashMap<crate::FiberId, (crate::Fiber, crate::FiberState)> = HashMap::new();
-    let purged_ids: HashSet<crate::FiberId> = HashSet::new();
-    let mut max_fiber_id: Option<crate::FiberId> = None;
-    let mut next_event_id: u64 = 0;
-    for (i, event) in events.iter().enumerate() {
-        let position_u64 = u64::try_from(i).expect("line position fits u64");
-        if event.event_id().value() != position_u64 {
-            return Err(PardosaError::FiberInvariant(
-                crate::error::FiberInvariantKind::Integrity(
-                    crate::error::IntegrityKind::EventIdPositionMismatch {
-                        event_id: event.event_id().value(),
-                        position: position_u64,
-                    },
-                ),
-            ));
-        }
-        let idx = crate::Index::from_decoded(position_u64);
-        let fiber_id = event.fiber_id();
-        max_fiber_id = Some(match max_fiber_id {
-            None => fiber_id,
-            Some(prev) if fiber_id.value() > prev.value() => fiber_id,
-            Some(prev) => prev,
-        });
-        match lookup.get_mut(&fiber_id) {
-            None => {
-                let fiber = crate::Fiber::new(idx, 1, idx)?;
-                let state = if event.detached() {
-                    crate::FiberState::Detached
-                } else {
-                    crate::FiberState::Defined
-                };
-                lookup.insert(fiber_id, (fiber, state));
-            }
-            Some((fiber, state)) => {
-                fiber.advance(idx)?;
-                if event.detached() {
-                    *state = crate::FiberState::Detached;
-                } else {
-                    *state = crate::FiberState::Defined;
-                }
-            }
-        }
-        next_event_id = event
-            .event_id()
-            .value()
-            .checked_add(1)
-            .ok_or(PardosaError::IndexOverflow)?;
-    }
-    let next_id = match max_fiber_id {
-        None => crate::FiberId::from_decoded(0),
-        Some(m) => m.checked_next()?,
-    };
-    Ok(crate::dragline::Line::from_parts_no_verify(
-        events,
-        lookup,
-        purged_ids,
-        next_id,
-        crate::EventId::from_decoded(next_event_id),
-        false,
-        frontier,
-    ))
+    crate::persist::rebuild_dragline_with_frontier(events, frontier)
 }
 impl<T> EventStore<T, std::fs::File>
 where

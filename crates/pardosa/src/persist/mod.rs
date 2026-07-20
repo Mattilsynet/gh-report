@@ -22,7 +22,9 @@ pub use error::{
 };
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use rehydrate::persist_with_source_append;
-pub(crate) use rehydrate::{persist_with_source, rehydrate_unchecked, rehydrate_validated};
+pub(crate) use rehydrate::{
+    persist_with_source, rebuild_dragline_with_frontier, rehydrate_unchecked, rehydrate_validated,
+};
 pub use validated::{ValidatedEventStream, stream_validated};
 #[cfg(test)]
 mod tests;
