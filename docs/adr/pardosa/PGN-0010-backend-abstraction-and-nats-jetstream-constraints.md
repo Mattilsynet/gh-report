@@ -8,11 +8,23 @@ Crates: pardosa, pardosa-nats
 
 ## Related
 
-References: PGN-0001, PGN-0003, PGN-0008, PGN-0016
+References: PGN-0001, PGN-0003, PGN-0005, PGN-0008, PGN-0016, SEC-0011
 
 ## Context
 
 Sources rescue ADR-0022 (app-configurable authoritative storage backends) and compatible Solon PAR-0004 (single-writer per stream). `EventStore<T>` admits authoritative storage backends through a sealed typed handle, not a `PathBuf`. Path constructors stay on the public surface as convenience wrappers that internally construct `PgnoBackend`. The append-shaped backend trait carries `AckPosition` as a backend-opaque ordering primitive; `EventId` is Pardosa-minted and never derived from `AckPosition`. Per the 2026-06-06 amendment, the substrate now occupies the `crates/pardosa-nats/` slot directly; the empty adapter skeleton was retired.
+
+An on-read integrity survey found no ADR mandating the same on-read chain across `AuthoritativeBackend` adapters; the two production arms (`.pgno`, JetStream) had drifted to schema-hash + contiguity only, skipping three precursor checks that the `.pgno`-only `open_validated` (PGN-0008:R5) does run. R8 closes the gap: the stage exists universally above the sealed seam (R1). The authoritative check set — ratified here as the corpus's single enumeration — is five checks over raw canonical bytes each adapter delivers byte-identical per R4 (subjects/headers/`AckPosition` never feed the CRH):
+
+- `CheckedReplayKind::EventIdPositionMismatch` — contiguity.
+- `CheckedReplayKind::PrecursorOutOfBounds` — precursor index bounds.
+- `CheckedReplayKind::PrecursorFiberMismatch` — precursor same-fiber linkage.
+- `CheckedReplayKind::PrecursorHashMismatch` — precursor hash continuity.
+- `Error::SchemaHashMismatch` — container schema hash (not a `CheckedReplayKind`; gates the header, not per-event replay).
+
+Frontier-roll (raw-byte BLAKE3 fold) is bookkeeping, not a check — no error path, excluded. The precursor checks are additive over `Fiber::new`/`advance`'s intra-fiber ordering (`FiberInvariantKind`) — a disjoint class inspecting no `Precursor`; no double-enforcement.
+
+pardosa's own read-path error is `persist::Error::CheckedReplay { kind }`, surfacing as `PardosaError` (`#[non_exhaustive]`, matchable, PGN-0016). `StoreError::CorruptData` is not a pardosa type; it is SEC-0011:R3's required-surface vocabulary, owned by the downstream consumer that maps `CheckedReplay` to it. R8 mandates stage location and enumeration only, not that mapping.
 
 ## Decision
 
@@ -45,18 +57,32 @@ R6 [5]: Single-writer per authoritative-storage instance is the v0 stance;
 R7 [4]: Backend traits MUST NOT fuse codec and sealing axes; per-operation
   codec bounds remain `T: Encode + GenomeSafe` on write paths and
   `T: Decode + GenomeSafe` on read paths (PGN-0003).
+R8 [4]: An on-read verify stage exists universally above the sealed seam
+  (R1), running the ratified check set (Context) over raw canonical bytes
+  each adapter delivers byte-identical (R4); it hashes raw bytes, never
+  re-encodes, keeping the read-path bound `Decode + GenomeSafe` (R7,
+  PGN-0008:R2/R5). Each adapter declares whether it surfaces hash-chain
+  verification: true runs the full precursor chain; false skips the
+  enforcing hash check (SEC-0011:R3 opt-in preserved). Default true;
+  opt-out requires an ADR-cited reason. This mandates stage location and
+  enumeration only — not SEC-0011:R3's surfacing obligation (deferred to a
+  future ADR) — and is mutation detection, not authentication (PGN-0005:R4).
 
 ## Consequences
 
 + becomes easier: adopters can configure JetStream as authoritative storage
   without forking the runtime; replica/fan-out adapters remain available;
   the `.pgno` backend and an in-memory test backend coexist behind one
-  trait.
+  trait; cross-adapter on-read parity is now legislated once, above the
+  seam, not re-derived per adapter.
 − becomes harder: out-of-tree backend impls (the sealed trait + in-`pardosa`
   adapter shim is the only path); cross-backend live migration (PGN-0009
-  per-backend stance binding); transports masquerading as substrates.
+  per-backend stance binding); transports masquerading as substrates; an
+  adapter opting out of hash-chain surfacing needs an ADR-cited reason.
 risks/migration: PGN-0016 supplies `Nats-Expected-Last-Subject-Sequence`
   fencing as the JetStream implementation of R6's single-writer enforcement.
   PAR-0004 remains retired; the enforcement gap is closed for JetStream. The
   `crates/pardosa-nats/` slot now hosts the substrate; any future outbound
-  NATS transport adapter lands in a new crate.
+  NATS transport adapter lands in a new crate. R8 legislates stage location
+  only; closing the per-adapter precursor-check gaps is follow-on
+  implementation work, not this ADR change.
