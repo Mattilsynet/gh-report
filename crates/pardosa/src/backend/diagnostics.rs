@@ -174,7 +174,7 @@ fn classify_backend_error(error: &BackendError) -> NatsFailureClass {
         BackendError::Timeout { .. } => NatsFailureClass::ConnectionRefused,
         BackendError::Connect { source, .. }
         | BackendError::Publish { source, .. }
-        | BackendError::ConcurrencyConflict { source }
+        | BackendError::ConcurrencyConflict { source, .. }
         | BackendError::Replay { source, .. } => classify_nats_failure(source.as_ref()),
         BackendError::RuntimeFailure { .. } | BackendError::PublisherBacklog { .. } => {
             NatsFailureClass::Unknown
@@ -194,8 +194,10 @@ fn classify_jetstream_runtime_error(error: &JetStreamRuntimeError) -> NatsFailur
         JetStreamRuntimeError::Timeout { .. } => NatsFailureClass::ConnectionRefused,
         JetStreamRuntimeError::Connect { source }
         | JetStreamRuntimeError::Publish { source }
-        | JetStreamRuntimeError::WrongLastSequence { source }
         | JetStreamRuntimeError::Replay { source } => classify_nats_failure(source.as_ref()),
+        JetStreamRuntimeError::WrongLastSequence { source, .. } => {
+            classify_nats_failure(source.as_ref())
+        }
         JetStreamRuntimeError::Detached | _ => NatsFailureClass::Unknown,
     }
 }

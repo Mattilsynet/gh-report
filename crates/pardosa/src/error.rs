@@ -550,6 +550,13 @@ pub enum BackendError {
     /// Backend detected a stale single-writer append conflict.
     #[error("backend concurrency conflict: {source}")]
     ConcurrencyConflict {
+        /// Sequence the caller expected; threaded from the substrate
+        /// fence (`pardosa_nats::JetStreamRuntimeError::WrongLastSequence`).
+        /// `None` when the substrate fence did not populate it.
+        expected_seq: Option<u64>,
+        /// Broker-observed current sequence; threaded from the substrate
+        /// fence. `None` when the substrate fence could not extract it.
+        actual_seq: Option<u64>,
         #[source]
         source: Box<dyn core::error::Error + Send + Sync + 'static>,
     },
@@ -611,10 +618,14 @@ mod backend_error_tests {
     #[test]
     fn concurrency_conflict_carries_source_chain() {
         let inner: Box<dyn core::error::Error + Send + Sync + 'static> =
-            Box::new(std::io::Error::other("wrong last sequence"));
-        let err = BackendError::ConcurrencyConflict { source: inner };
+            Box::new(std::io::Error::other("downstream link reset"));
+        let err = BackendError::ConcurrencyConflict {
+            expected_seq: Some(3),
+            actual_seq: Some(5),
+            source: inner,
+        };
         let src = core::error::Error::source(&err).expect("source attached");
-        assert!(src.to_string().contains("wrong last sequence"));
+        assert!(src.to_string().contains("downstream link reset"));
     }
     #[test]
     fn publisher_backlog_display_names_kind() {

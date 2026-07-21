@@ -586,6 +586,8 @@ mod tests {
     #[test]
     fn backend_concurrency_conflict_maps_to_typed_pardosa_error() {
         let err = crate::error::BackendError::ConcurrencyConflict {
+            expected_seq: None,
+            actual_seq: None,
             source: backend_source("wrong last sequence"),
         };
         match backend_error_to_cursor_read("context should not flatten", err) {

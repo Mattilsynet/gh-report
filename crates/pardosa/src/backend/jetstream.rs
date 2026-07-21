@@ -445,9 +445,15 @@ fn map_runtime_error(err: JetStreamRuntimeError, op: BackendOp) -> BackendError 
             elapsed,
             configured,
         },
-        JetStreamRuntimeError::WrongLastSequence { source } => {
-            BackendError::ConcurrencyConflict { source }
-        }
+        JetStreamRuntimeError::WrongLastSequence {
+            expected_seq,
+            actual_seq,
+            source,
+        } => BackendError::ConcurrencyConflict {
+            expected_seq,
+            actual_seq,
+            source,
+        },
         JetStreamRuntimeError::Publish { source } => BackendError::Publish { op, source },
         JetStreamRuntimeError::Connect { source } => BackendError::Connect { op, source },
         JetStreamRuntimeError::Replay { source } => BackendError::Replay { op, source },
@@ -650,12 +656,28 @@ mod tests {
     fn wrong_last_sequence_maps_to_backend_concurrency_conflict() {
         let mapped = map_runtime_error(
             JetStreamRuntimeError::WrongLastSequence {
+                expected_seq: Some(3),
+                actual_seq: Some(5),
                 source: boxed_source("stale writer"),
             },
             BackendOp::Append,
         );
         match mapped {
-            BackendError::ConcurrencyConflict { source } => {
+            BackendError::ConcurrencyConflict {
+                expected_seq,
+                actual_seq,
+                source,
+            } => {
+                assert_eq!(
+                    expected_seq,
+                    Some(3),
+                    "expected_seq must survive the substrate->adapter hop as a typed field"
+                );
+                assert_eq!(
+                    actual_seq,
+                    Some(5),
+                    "actual_seq must survive the substrate->adapter hop as a typed field"
+                );
                 assert!(
                     source.to_string().contains("stale writer"),
                     "conflict source preserved: {source}"
@@ -958,6 +980,8 @@ mod tests {
             source: boxed_source("replay"),
         };
         let conflict = BackendError::ConcurrencyConflict {
+            expected_seq: None,
+            actual_seq: None,
             source: boxed_source("wrong last sequence"),
         };
         let observed = [
@@ -1004,6 +1028,8 @@ mod tests {
         let captured = capture_tracing(|| {
             let _ = super::observe_operation(super::OperationTelemetry::append(4), || {
                 Err(BackendError::ConcurrencyConflict {
+                    expected_seq: None,
+                    actual_seq: None,
                     source: boxed_source("wrong last sequence"),
                 })
             });
@@ -1035,6 +1061,8 @@ mod tests {
         let captured = capture_tracing(|| {
             let _ = super::observe_operation(super::OperationTelemetry::append(4), || {
                 Err(BackendError::ConcurrencyConflict {
+                    expected_seq: None,
+                    actual_seq: None,
                     source: boxed_source("wrong last sequence"),
                 })
             });

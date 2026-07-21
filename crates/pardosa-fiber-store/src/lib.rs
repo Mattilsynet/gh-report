@@ -650,6 +650,8 @@ mod tests {
     fn persisted_backend_concurrency_conflict_wraps_existing_pardosa_variant() {
         let error = FiberStoreError::from_replay_error(pardosa::store::replay::Error::Io(
             std::io::Error::other(BackendError::ConcurrencyConflict {
+                expected_seq: None,
+                actual_seq: None,
                 source: Box::new(std::io::Error::other("wrong last sequence")),
             }),
         ));

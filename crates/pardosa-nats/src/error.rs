@@ -107,6 +107,16 @@ pub enum JetStreamRuntimeError {
     /// `JetStream` rejected a publish because the caller's expected
     /// last sequence was stale.
     WrongLastSequence {
+        /// Sequence the caller expected for the subject (the value
+        /// sent via `Nats-Expected-Last-Subject-Sequence`). `None`
+        /// when fencing was disabled for the publish.
+        expected_seq: Option<u64>,
+        /// Broker-observed current sequence, parsed once at this
+        /// substrate fence from the `JetStream` API error text
+        /// (`PGN-0022` §R2) since async-nats exposes no typed accessor
+        /// for it. `None` when the server response carried no source
+        /// detail.
+        actual_seq: Option<u64>,
         /// Underlying client error.
         source: Box<dyn Error + Send + Sync + 'static>,
     },
@@ -139,7 +149,12 @@ impl fmt::Display for JetStreamRuntimeError {
             }
             Self::Connect { source } => write!(f, "connect / provision failed: {source}"),
             Self::Publish { source } => write!(f, "publish failed: {source}"),
-            Self::WrongLastSequence { source } => write!(f, "wrong last sequence: {source}"),
+            Self::WrongLastSequence {
+                actual_seq, source, ..
+            } => match actual_seq {
+                Some(actual) => write!(f, "wrong last sequence: {actual}"),
+                None => write!(f, "wrong last sequence: {source}"),
+            },
             Self::Timeout {
                 elapsed,
                 configured,
@@ -156,8 +171,8 @@ impl Error for JetStreamRuntimeError {
             Self::Detached | Self::Timeout { .. } => None,
             Self::Connect { source }
             | Self::Publish { source }
-            | Self::WrongLastSequence { source }
-            | Self::Replay { source } => Some(source.as_ref()),
+            | Self::Replay { source }
+            | Self::WrongLastSequence { source, .. } => Some(source.as_ref()),
         }
     }
 }
@@ -206,15 +221,49 @@ mod tests {
     #[test]
     fn wrong_last_sequence_is_matchable_and_preserves_source() {
         let err = JetStreamRuntimeError::WrongLastSequence {
+            expected_seq: Some(3),
+            actual_seq: Some(5),
             source: boxed_io("stale expected sequence"),
         };
         match err {
-            JetStreamRuntimeError::WrongLastSequence { source } => assert!(
-                source.to_string().contains("stale expected sequence"),
-                "neutral conflict source should remain inspectable: {source}"
-            ),
+            JetStreamRuntimeError::WrongLastSequence {
+                expected_seq,
+                actual_seq,
+                source,
+            } => {
+                assert_eq!(
+                    expected_seq,
+                    Some(3),
+                    "expected_seq must be matchable, not string-flattened"
+                );
+                assert_eq!(
+                    actual_seq,
+                    Some(5),
+                    "actual_seq must be matchable, not string-flattened"
+                );
+                assert!(
+                    source.to_string().contains("stale expected sequence"),
+                    "neutral conflict source should remain inspectable: {source}"
+                );
+            }
             other => panic!("expected WrongLastSequence, got {other:?}"),
         }
+    }
+    #[test]
+    fn wrong_last_sequence_display_renders_actual_seq_once_no_doubled_prefix() {
+        let err = JetStreamRuntimeError::WrongLastSequence {
+            expected_seq: Some(3),
+            actual_seq: Some(5),
+            source: boxed_io(
+                "wrong last sequence: wrong last sequence: 5 (code 400, error code 10071)",
+            ),
+        };
+        let rendered = err.to_string();
+        assert_eq!(
+            rendered, "wrong last sequence: 5",
+            "Display must render a single 'wrong last sequence: N' — not the doubled \
+             async-nats-sourced prefix (got: {rendered:?})"
+        );
     }
     #[test]
     fn detached_and_timeout_have_no_inner_source() {

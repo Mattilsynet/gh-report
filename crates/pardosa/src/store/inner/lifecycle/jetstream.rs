@@ -13,7 +13,7 @@ pub(super) fn backend_error_to_cursor_read(
     e: crate::error::BackendError,
 ) -> PardosaError {
     match e {
-        crate::error::BackendError::ConcurrencyConflict { source } => {
+        crate::error::BackendError::ConcurrencyConflict { source, .. } => {
             PardosaError::ConcurrencyConflict { source }
         }
         other => io_error_to_cursor_read(std::io::Error::other(format!("{context}: {other}"))),

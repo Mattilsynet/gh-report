@@ -575,15 +575,21 @@ async fn publish_once(
         })?;
     let pub_ack = publish_ack_future
         .await
-        .map_err(runtime_error_from_publish_ack)?;
+        .map_err(|e| runtime_error_from_publish_ack(e, expected_last_subject_sequence))?;
     Ok((pub_ack.sequence, pub_ack.duplicate))
 }
 fn runtime_error_from_publish_ack(
     err: async_nats::jetstream::context::PublishError,
+    expected_seq: Option<u64>,
 ) -> JetStreamRuntimeError {
     use async_nats::jetstream::context::PublishErrorKind;
     if err.kind() == PublishErrorKind::WrongLastSequence {
+        let actual_seq = std::error::Error::source(&err)
+            .and_then(|source| source.downcast_ref::<async_nats::jetstream::Error>())
+            .and_then(|api_err| parse_broker_actual_seq(&api_err.to_string()));
         JetStreamRuntimeError::WrongLastSequence {
+            expected_seq,
+            actual_seq,
             source: Box::new(err),
         }
     } else {
@@ -591,6 +597,22 @@ fn runtime_error_from_publish_ack(
             source: Box::new(err),
         }
     }
+}
+/// Extracts the broker-observed sequence from a `JetStream` API error's
+/// rendered text (e.g. `"wrong last sequence: 5 (code 400, error code
+/// 10071)"` → `Some(5)`). async-nats exposes no typed accessor for this
+/// value (probed against 0.49.1: `jetstream::errors::Error`'s
+/// `description` field is private, reachable only via `Display`), so
+/// this parses once at the substrate fence that owns the NATS text
+/// (PGN-0022 §R2), rather than re-deriving classification downstream.
+fn parse_broker_actual_seq(api_err_display: &str) -> Option<u64> {
+    let description = api_err_display
+        .split_once(" (code ")
+        .map_or(api_err_display, |(desc, _)| desc);
+    description
+        .rsplit(|c: char| !c.is_ascii_digit())
+        .find(|token| !token.is_empty())
+        .and_then(|digits| digits.parse().ok())
 }
 
 fn expected_last_subject_sequence_for_publish(
@@ -912,12 +934,27 @@ mod tests {
     }
     #[test]
     fn wrong_last_sequence_ack_error_maps_to_neutral_variant() {
-        let err =
-            runtime_error_from_publish_ack(async_nats::jetstream::context::PublishError::new(
+        let err = runtime_error_from_publish_ack(
+            async_nats::jetstream::context::PublishError::new(
                 async_nats::jetstream::context::PublishErrorKind::WrongLastSequence,
-            ));
+            ),
+            Some(3),
+        );
         match err {
-            JetStreamRuntimeError::WrongLastSequence { source } => {
+            JetStreamRuntimeError::WrongLastSequence {
+                expected_seq,
+                actual_seq,
+                source,
+            } => {
+                assert_eq!(
+                    expected_seq,
+                    Some(3),
+                    "expected_seq must thread through from the publish call"
+                );
+                assert_eq!(
+                    actual_seq, None,
+                    "actual_seq is None when the ack error carries no source detail"
+                );
                 assert!(
                     source.to_string().contains("wrong last sequence"),
                     "source preserved for operator diagnosis: {source}"
@@ -925,6 +962,18 @@ mod tests {
             }
             other => panic!("expected WrongLastSequence, got {other:?}"),
         }
+    }
+    #[test]
+    fn parse_broker_actual_seq_extracts_trailing_sequence_number() {
+        assert_eq!(
+            parse_broker_actual_seq("wrong last sequence: 5 (code 400, error code 10071)"),
+            Some(5),
+            "must extract the broker-observed sequence, not the trailing err_code"
+        );
+    }
+    #[test]
+    fn parse_broker_actual_seq_returns_none_when_no_digits_present() {
+        assert_eq!(parse_broker_actual_seq("unknown"), None);
     }
     #[test]
     fn enabled_fence_uses_updated_last_ack_seq_on_next_publish() {
@@ -975,10 +1024,12 @@ mod tests {
     }
     #[test]
     fn non_conflict_ack_error_stays_publish() {
-        let err =
-            runtime_error_from_publish_ack(async_nats::jetstream::context::PublishError::new(
+        let err = runtime_error_from_publish_ack(
+            async_nats::jetstream::context::PublishError::new(
                 async_nats::jetstream::context::PublishErrorKind::Other,
-            ));
+            ),
+            None,
+        );
         match err {
             JetStreamRuntimeError::Publish { source } => {
                 assert!(
