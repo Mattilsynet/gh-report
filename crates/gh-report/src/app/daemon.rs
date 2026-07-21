@@ -464,10 +464,10 @@ fn spawn_team_refresh_loop(
                 continue;
             };
             let fetched_at = jiff::Timestamp::now().to_string();
-            if let Err(error) =
+            if let Err(failure) =
                 crate::app::team_refresh::run_team_refresh_tick(&state, &client, &fetched_at).await
             {
-                crate::app::team_refresh::log_tick_failure(&error);
+                crate::app::team_refresh::log_tick_failure(&failure.error, &failure.context);
             }
         }
     })

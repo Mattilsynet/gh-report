@@ -138,6 +138,30 @@ pub struct WriteFailureContext<'a> {
     pub writer_id: Option<&'a str>,
 }
 
+/// Owned counterpart of [`WriteFailureContext`] for callers that must
+/// carry the context across an `async fn` return boundary (the borrowed
+/// `&str` fields cannot outlive the frame that produced them). Used by
+/// `team_refresh::log_tick_failure`, which logs one frame above the
+/// `write_team_event` call that observed the original context.
+#[derive(Debug, Default, Clone)]
+pub struct WriteFailureContextOwned {
+    pub org: Option<String>,
+    pub team_slug: Option<String>,
+    pub domain_key: Option<String>,
+    pub writer_id: Option<String>,
+}
+
+impl From<WriteFailureContext<'_>> for WriteFailureContextOwned {
+    fn from(context: WriteFailureContext<'_>) -> Self {
+        Self {
+            org: context.org.map(str::to_string),
+            team_slug: context.team_slug.map(str::to_string),
+            domain_key: context.domain_key.map(str::to_string),
+            writer_id: context.writer_id.map(str::to_string),
+        }
+    }
+}
+
 /// Render the full `std::error::Error::source()` chain of `error` as a
 /// single string, one level's `Display` per `<- ` separator, each level
 /// bounded via [`truncate_error_body`] (SEC-0007:R1 — an unbounded
@@ -184,6 +208,7 @@ pub fn log_write_failure(failure: &WriteFailure, context: WriteFailureContext<'_
             team_slug = context.team_slug,
             domain_key = context.domain_key,
             writer_id = context.writer_id,
+            error = %failure.error,
             source_chain = source_chain.as_str(),
             "durable write failed"
         ),
@@ -195,6 +220,7 @@ pub fn log_write_failure(failure: &WriteFailure, context: WriteFailureContext<'_
             team_slug = context.team_slug,
             domain_key = context.domain_key,
             writer_id = context.writer_id,
+            error = %failure.error,
             source_chain = source_chain.as_str(),
             "durable write failed"
         ),
@@ -281,9 +307,56 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
 
     fn io_error() -> PersistenceError {
         PersistenceError::Io(std::io::Error::other("boom"))
+    }
+
+    #[derive(Clone, Default)]
+    struct VecWriter {
+        buf: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl VecWriter {
+        fn snapshot(&self) -> String {
+            String::from_utf8(self.buf.lock().expect("buffer mutex").clone()).expect("utf-8")
+        }
+    }
+
+    impl Write for VecWriter {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.buf
+                .lock()
+                .expect("buffer mutex")
+                .extend_from_slice(data);
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for VecWriter {
+        type Writer = VecWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture_tracing(f: impl FnOnce()) -> String {
+        let writer = VecWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_writer(writer.clone())
+            .with_ansi(false)
+            .with_target(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        writer.snapshot()
     }
 
     #[test]
@@ -359,6 +432,37 @@ mod tests {
         assert_eq!(
             WritePolicyCategory::classify(&io_error()),
             WritePolicyCategory::Unrecoverable
+        );
+    }
+
+    #[test]
+    fn log_write_failure_populates_named_error_field() {
+        let failure = WriteFailure::classify(PersistenceError::FencedConflict {
+            source: Box::new(std::io::Error::other("wrong last sequence")),
+        });
+        let json = capture_tracing(|| {
+            log_write_failure(
+                &failure,
+                WriteFailureContext {
+                    org: Some("acme"),
+                    team_slug: Some("platform"),
+                    domain_key: None,
+                    writer_id: None,
+                },
+            );
+        });
+        let parsed: serde_json::Value =
+            serde_json::from_str(json.lines().next().expect("one log line")).expect("valid json");
+        let error_field = parsed["fields"]["error"]
+            .as_str()
+            .expect("a field literally named 'error' must be populated");
+        assert!(
+            !error_field.is_empty(),
+            "error field must not be empty: {parsed}"
+        );
+        assert!(
+            parsed["fields"]["source_chain"].as_str().is_some(),
+            "source_chain fallback must remain present alongside error: {parsed}"
         );
     }
 
