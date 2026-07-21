@@ -106,3 +106,10 @@ the per-adapter hash-chain-surfacing opt-out (SEC-0011:R3 axis,
 unchanged, still deferred); it does not commit to an `Enforce`-by-default
 runtime mode, which is a separate future decision this amendment does
 not make.
+
+The `PrecursorCheckMode` selector is now runtime-selectable per store-open
+via `PARDOSA_PRECURSOR_CHECK_MODE=enforce|observe` (mission `adr-fmt-qkq9l`
+Part A); unset, empty, `observe`, or any unrecognised value still resolves
+to `ObserveOnly`. This refines the P2b selector's mechanism (compile-time
+constant → runtime env read), not the default: the shipped default remains
+`ObserveOnly`, unchanged from this amendment's original text above.

@@ -628,7 +628,7 @@ where
         events,
         frontier,
         Some(&raw_bytes),
-        crate::persist::PRECURSOR_CHECK_MODE,
+        crate::persist::precursor_check_mode(),
     )
 }
 impl<T> EventStore<T, std::fs::File>
@@ -1970,6 +1970,96 @@ mod tests {
             crate::persist::PrecursorCheckMode::Enforce,
         )
         .expect("a clean chain must rehydrate under enforce");
+    }
+
+    fn run_isolated_worker(worker_name: &str) {
+        let exe = std::env::current_exe().expect("current test binary path");
+        let output = std::process::Command::new(exe)
+            .arg(worker_name)
+            .arg("--exact")
+            .arg("--ignored")
+            .env(crate::persist::PRECURSOR_CHECK_MODE_ENV, "enforce")
+            .output()
+            .expect("spawn isolated worker subprocess");
+        assert!(
+            output.status.success(),
+            "worker {worker_name} failed under env {}=enforce: stdout={} stderr={}",
+            crate::persist::PRECURSOR_CHECK_MODE_ENV,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn precursor_check_mode_defaults_to_observe_only_when_env_unset() {
+        assert_eq!(
+            crate::persist::precursor_check_mode(),
+            crate::persist::PrecursorCheckMode::ObserveOnly,
+            "env unset must fail safe to ObserveOnly"
+        );
+    }
+
+    #[test]
+    fn precursor_check_mode_env_enforce_rejects_on_pgno_arm_via_rehydrate_unchecked() {
+        run_isolated_worker(
+            "precursor_check_mode_env_enforce_worker_pgno_rejects_via_rehydrate_unchecked",
+        );
+    }
+
+    #[test]
+    fn precursor_check_mode_env_enforce_rejects_on_nats_arm_via_rehydrate_event_frames() {
+        run_isolated_worker(
+            "precursor_check_mode_env_enforce_worker_nats_rejects_via_rehydrate_event_frames",
+        );
+    }
+
+    #[test]
+    #[ignore = "isolated worker spawned as a subprocess by precursor_check_mode_env_enforce_rejects_on_pgno_arm_via_rehydrate_unchecked with PARDOSA_PRECURSOR_CHECK_MODE=enforce set on the child process only; never runs under a plain `cargo test`"]
+    fn precursor_check_mode_env_enforce_worker_pgno_rejects_via_rehydrate_unchecked() {
+        assert_eq!(
+            crate::persist::precursor_check_mode(),
+            crate::persist::PrecursorCheckMode::Enforce,
+            "env=enforce must select Enforce inside the worker subprocess"
+        );
+        let genesis = genesis_event(1);
+        let events = [genesis, hash_mismatch_successor_event()];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let err = crate::persist::rehydrate_unchecked::<TaggedPayload, _>(Cursor::new(pgno_bytes))
+            .expect_err(
+                "env-selected Enforce must reach the pgno rehydrate arm and reject a forged precursor-hash chain",
+            );
+        assert!(
+            matches!(
+                err,
+                crate::persist::Error::CheckedReplay {
+                    kind: crate::persist::CheckedReplayKind::PrecursorHashMismatch { .. }
+                }
+            ),
+            "expected PrecursorHashMismatch rejection via the env-selected Enforce path, got: {err:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "isolated worker spawned as a subprocess by precursor_check_mode_env_enforce_rejects_on_nats_arm_via_rehydrate_event_frames with PARDOSA_PRECURSOR_CHECK_MODE=enforce set on the child process only; never runs under a plain `cargo test`"]
+    fn precursor_check_mode_env_enforce_worker_nats_rejects_via_rehydrate_event_frames() {
+        assert_eq!(
+            crate::persist::precursor_check_mode(),
+            crate::persist::PrecursorCheckMode::Enforce,
+            "env=enforce must select Enforce inside the worker subprocess"
+        );
+        let genesis = genesis_event(1);
+        let events = [genesis, hash_mismatch_successor_event()];
+        let frames = jetstream_frames(&events);
+        let err = rehydrate_event_frames::<TaggedPayload>(&frames).expect_err(
+            "env-selected Enforce must reach the nats rehydrate arm and reject a forged precursor-hash chain",
+        );
+        assert!(
+            matches!(
+                expect_checked_replay_rejection(err),
+                crate::persist::CheckedReplayKind::PrecursorHashMismatch { .. }
+            ),
+            "expected PrecursorHashMismatch rejection via the env-selected Enforce path"
+        );
     }
 }
 impl<T> EventStore<T, std::fs::File>

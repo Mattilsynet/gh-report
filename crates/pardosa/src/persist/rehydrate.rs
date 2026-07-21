@@ -11,21 +11,40 @@ use std::io::{Read, Seek};
 /// Precursor-check enforcement mode consulted by
 /// [`rebuild_dragline_with_frontier`] (roadmap `adr-fmt-t7t4v` P2a/P2b,
 /// D2b). `ObserveOnly` computes the three precursor checks and emits a
-/// non-blocking warn per would-fail; `Enforce` is wired for P2b to
-/// reject instead. `PRECURSOR_CHECK_MODE` pins P2a to `ObserveOnly`.
+/// non-blocking warn per would-fail; `Enforce` rejects instead.
+/// [`precursor_check_mode`] resolves the runtime-selectable mode
+/// (mission `adr-fmt-qkq9l` Part A, PGN-0010 P2b amendment); the
+/// shipped default (env unset or unrecognised) stays `ObserveOnly`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PrecursorCheckMode {
     ObserveOnly,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "P2b (adr-fmt-o1kd3) wires and tests the Enforce reject path (see lifecycle.rs enforce-mode tests); PRECURSOR_CHECK_MODE ships pinned to ObserveOnly pending NATS-arm baseline validation + prod soak (roadmap adr-fmt-t7t4v P2b enforce-default decision)"
-        )
-    )]
     Enforce,
 }
-pub(crate) const PRECURSOR_CHECK_MODE: PrecursorCheckMode = PrecursorCheckMode::ObserveOnly;
+/// Environment variable that runtime-selects [`PrecursorCheckMode`]
+/// per store-open (mission `adr-fmt-qkq9l` Part A). `enforce`
+/// (case-insensitive) selects [`PrecursorCheckMode::Enforce`]; `observe`,
+/// unset, empty, or any unrecognised value fails safe to
+/// [`PrecursorCheckMode::ObserveOnly`] — the shipped default is
+/// unchanged.
+pub(crate) const PRECURSOR_CHECK_MODE_ENV: &str = "PARDOSA_PRECURSOR_CHECK_MODE";
+/// Pure resolution of `raw` (the [`PRECURSOR_CHECK_MODE_ENV`] value, if
+/// any) to a [`PrecursorCheckMode`], with no environment access —
+/// separated from [`precursor_check_mode`] so the fail-safe-default
+/// and unrecognised-value cases are unit-testable without mutating
+/// process state.
+fn resolve_precursor_check_mode(raw: Option<&str>) -> PrecursorCheckMode {
+    match raw {
+        Some(value) if value.eq_ignore_ascii_case("enforce") => PrecursorCheckMode::Enforce,
+        Some(_) | None => PrecursorCheckMode::ObserveOnly,
+    }
+}
+/// Resolve the runtime-selectable [`PrecursorCheckMode`] by reading
+/// [`PRECURSOR_CHECK_MODE_ENV`] at the call site (per store-open, not
+/// cached behind a process-global) so tests toggling the variable
+/// stay order-independent.
+pub(crate) fn precursor_check_mode() -> PrecursorCheckMode {
+    resolve_precursor_check_mode(std::env::var(PRECURSOR_CHECK_MODE_ENV).ok().as_deref())
+}
 fn check_kind_name(kind: &CheckedReplayKind) -> &'static str {
     match kind {
         CheckedReplayKind::EventIdPositionMismatch { .. } => "EventIdPositionMismatch",
@@ -151,7 +170,7 @@ where
         events.push(event);
         raw_bytes.push(bytes);
     }
-    rebuild_dragline_with_frontier(events, frontier, Some(&raw_bytes), PRECURSOR_CHECK_MODE)
+    rebuild_dragline_with_frontier(events, frontier, Some(&raw_bytes), precursor_check_mode())
         .map_err(|e| match e {
             PardosaError::CursorRead { source } => *source,
             other => Error::InvariantViolation(RehydrateInvariant::from(other)),
@@ -276,7 +295,7 @@ where
     let events: Vec<Event<T>> = Vec::with_capacity(cap);
     let events = stream_fold_line(&mut stream, events)?;
     let frontier = stream.inner.frontier();
-    rebuild_dragline_with_frontier(events, frontier, None, PRECURSOR_CHECK_MODE)
+    rebuild_dragline_with_frontier(events, frontier, None, precursor_check_mode())
         .map_err(|e| ValidatedReplayError::Replay(Error::InvariantViolation(e.into())))
 }
 /// Append-shape sibling of [`persist_with_source`] (roadmap IO-PG-1).
@@ -318,4 +337,52 @@ where
     }
     writer.finish()?;
     Ok(())
+}
+#[cfg(test)]
+mod precursor_check_mode_tests {
+    use super::{PrecursorCheckMode, resolve_precursor_check_mode};
+
+    #[test]
+    fn env_unset_resolves_to_observe_only() {
+        assert_eq!(
+            resolve_precursor_check_mode(None),
+            PrecursorCheckMode::ObserveOnly
+        );
+    }
+
+    #[test]
+    fn env_empty_resolves_to_observe_only() {
+        assert_eq!(
+            resolve_precursor_check_mode(Some("")),
+            PrecursorCheckMode::ObserveOnly
+        );
+    }
+
+    #[test]
+    fn env_unrecognised_value_resolves_to_observe_only() {
+        assert_eq!(
+            resolve_precursor_check_mode(Some("not-a-real-mode")),
+            PrecursorCheckMode::ObserveOnly
+        );
+    }
+
+    #[test]
+    fn env_observe_resolves_to_observe_only() {
+        assert_eq!(
+            resolve_precursor_check_mode(Some("observe")),
+            PrecursorCheckMode::ObserveOnly
+        );
+    }
+
+    #[test]
+    fn env_enforce_case_insensitive_resolves_to_enforce() {
+        assert_eq!(
+            resolve_precursor_check_mode(Some("ENFORCE")),
+            PrecursorCheckMode::Enforce
+        );
+        assert_eq!(
+            resolve_precursor_check_mode(Some("enforce")),
+            PrecursorCheckMode::Enforce
+        );
+    }
 }
