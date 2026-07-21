@@ -154,6 +154,8 @@ mod tests {
     #[test]
     fn persist_error_variant_names_fenced_conflict() {
         let error = PersistenceError::FencedConflict {
+            expected_seq: None,
+            actual_seq: None,
             source: Box::new(std::io::Error::other("x")),
         };
         assert_eq!(persist_error_variant(&error), "FencedConflict");

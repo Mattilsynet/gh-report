@@ -29,6 +29,14 @@ pub enum PersistenceError {
 
     #[error("single-writer fence conflict: {source}")]
     FencedConflict {
+        /// Sequence the caller expected; threaded from the
+        /// `pardosa-fiber-store` concurrency-conflict variant. `None` when
+        /// the lower ring did not populate it.
+        expected_seq: Option<u64>,
+        /// Broker-observed current sequence; threaded from the
+        /// `pardosa-fiber-store` concurrency-conflict variant. `None` when
+        /// the lower ring could not extract it.
+        actual_seq: Option<u64>,
         #[source]
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },

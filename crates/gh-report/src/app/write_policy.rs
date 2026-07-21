@@ -362,6 +362,8 @@ mod tests {
     #[test]
     fn conflict_maps_to_fatal() {
         let error = PersistenceError::FencedConflict {
+            expected_seq: None,
+            actual_seq: None,
             source: Box::new(std::io::Error::other("x")),
         };
         assert_eq!(
@@ -438,6 +440,8 @@ mod tests {
     #[test]
     fn log_write_failure_populates_named_error_field() {
         let failure = WriteFailure::classify(PersistenceError::FencedConflict {
+            expected_seq: None,
+            actual_seq: None,
             source: Box::new(std::io::Error::other("wrong last sequence")),
         });
         let json = capture_tracing(|| {
@@ -478,6 +482,8 @@ mod tests {
         let result = write_with_policy(|| {
             calls += 1;
             Err(PersistenceError::FencedConflict {
+                expected_seq: None,
+                actual_seq: None,
                 source: Box::new(std::io::Error::other("x")),
             })
         })
@@ -589,6 +595,8 @@ mod tests {
     #[test]
     fn conflict_category_is_never_swallowed() {
         let failure = WriteFailure::classify(PersistenceError::FencedConflict {
+            expected_seq: None,
+            actual_seq: None,
             source: Box::new(std::io::Error::other("fence")),
         });
         assert_eq!(failure.category, WritePolicyCategory::Conflict);
@@ -685,6 +693,8 @@ mod tests {
         let subscriber = tracing_subscriber::Registry::default().with(layer);
 
         let failure = WriteFailure::classify(PersistenceError::FencedConflict {
+            expected_seq: None,
+            actual_seq: None,
             source: Box::new(MiddleLayer(Innermost)),
         });
 

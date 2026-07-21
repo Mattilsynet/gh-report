@@ -938,9 +938,15 @@ fn fold_team_event(
 
 fn native_store_persistence(error: crate::store::StoreError) -> PersistenceError {
     match error {
-        crate::store::StoreError::ConcurrencyConflict { source } => {
-            PersistenceError::FencedConflict { source }
-        }
+        crate::store::StoreError::ConcurrencyConflict {
+            expected_seq,
+            actual_seq,
+            source,
+        } => PersistenceError::FencedConflict {
+            expected_seq,
+            actual_seq,
+            source,
+        },
         crate::store::StoreError::TornWriteRecovery { source } => {
             PersistenceError::TornWriteRecovery { source }
         }
@@ -2361,7 +2367,11 @@ mod tests {
     #[test]
     fn native_store_persistence_preserves_fenced_conflict_variant() {
         let err = crate::store::StoreError::ConcurrencyConflict {
+            expected_seq: Some(1),
+            actual_seq: Some(2),
             source: Box::new(pardosa::store::PardosaError::ConcurrencyConflict {
+                expected_seq: Some(1),
+                actual_seq: Some(2),
                 source: Box::new(std::io::Error::other("wrong last sequence")),
             }),
         };
@@ -2373,6 +2383,26 @@ mod tests {
             ),
             "fence conflicts must stay typed before Display flattening"
         );
+    }
+
+    #[test]
+    fn native_store_persistence_carries_seq_fields_into_fenced_conflict() {
+        let err = crate::store::StoreError::ConcurrencyConflict {
+            expected_seq: Some(42),
+            actual_seq: Some(44),
+            source: Box::new(std::io::Error::other("wrong last sequence")),
+        };
+        match native_store_persistence(err) {
+            PersistenceError::FencedConflict {
+                expected_seq,
+                actual_seq,
+                ..
+            } => {
+                assert_eq!(expected_seq, Some(42));
+                assert_eq!(actual_seq, Some(44));
+            }
+            other => panic!("expected FencedConflict, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2760,7 +2790,11 @@ mod tests {
     #[test]
     fn record_team_conflict_is_fatal_with_no_in_band_retry() {
         let error = crate::store::StoreError::ConcurrencyConflict {
+            expected_seq: None,
+            actual_seq: None,
             source: Box::new(pardosa::store::PardosaError::ConcurrencyConflict {
+                expected_seq: None,
+                actual_seq: None,
                 source: Box::new(std::io::Error::other("wrong last sequence")),
             }),
         };

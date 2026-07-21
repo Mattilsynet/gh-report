@@ -403,7 +403,7 @@ where
         result = pipeline => {
         match result {
             Ok(()) => {}
-            Err(AppError::Persistence(PersistenceError::FencedConflict { source })) => {
+            Err(AppError::Persistence(PersistenceError::FencedConflict { source, .. })) => {
                 warn!(
                     expected = "rollover",
                     source_chain = source_chain(source.as_ref()).as_str(),
@@ -3153,6 +3153,8 @@ mod tests {
 
         let outcome = run_collection_inner_with_pipeline(&cancel, async {
             Err(AppError::Persistence(PersistenceError::FencedConflict {
+                expected_seq: None,
+                actual_seq: None,
                 source: Box::new(std::io::Error::other("wrong last sequence")),
             }))
         })

@@ -128,7 +128,7 @@ fn append_is_idempotent_under_fence_single_writer_stale_expected_sequence() {
             "retry computed against the pre-append expected-sequence must be fenced, \
                  not silently re-appended (PGN-0016:R2/R11)",
         );
-        let StoreError::ConcurrencyConflict { source } = &retry_error else {
+        let StoreError::ConcurrencyConflict { source, .. } = &retry_error else {
             panic!(
                 "retry rejection must be the typed StoreError::ConcurrencyConflict variant, \
                  got {retry_error:?}"

@@ -37,6 +37,14 @@ pub enum FiberStoreError {
     },
     #[error("pardosa fiber store concurrency conflict: {source}")]
     ConcurrencyConflict {
+        /// Sequence the caller expected; threaded from
+        /// [`PardosaError::ConcurrencyConflict`]. `None` when the lower
+        /// ring did not populate it.
+        expected_seq: Option<u64>,
+        /// Broker-observed current sequence; threaded from
+        /// [`PardosaError::ConcurrencyConflict`]. `None` when the lower
+        /// ring could not extract it.
+        actual_seq: Option<u64>,
         #[source]
         source: Box<dyn Error + Send + Sync + 'static>,
     },
@@ -50,7 +58,18 @@ impl FiberStoreError {
     /// Classify a public pardosa store error into the fiber-store taxonomy.
     #[must_use]
     pub fn from_pardosa_error(error: PardosaError) -> Self {
-        classify_infrastructure_error(error)
+        match error {
+            PardosaError::ConcurrencyConflict {
+                expected_seq,
+                actual_seq,
+                source,
+            } => FiberStoreError::ConcurrencyConflict {
+                expected_seq,
+                actual_seq,
+                source,
+            },
+            other => classify_infrastructure_error(other),
+        }
     }
 
     /// Classify a public pardosa replay error into the fiber-store taxonomy.
@@ -77,7 +96,7 @@ where
     /// Returns [`FiberStoreError::Infrastructure`] when pardosa cannot create
     /// the backing container.
     pub fn create_pgno(path: &Path) -> Result<Self, FiberStoreError> {
-        let store = PardosaStore::<E>::create(path).map_err(classify_infrastructure_error)?;
+        let store = PardosaStore::<E>::create(path).map_err(FiberStoreError::from_pardosa_error)?;
         Ok(Self::from_store(store, false, None))
     }
 
@@ -95,7 +114,7 @@ where
     /// `tokio::task::block_in_place`, which requires a multi-thread runtime.
     pub fn create_jetstream(backend: JetStreamBackend) -> Result<Self, FiberStoreError> {
         let store = PardosaStore::<E>::create_with_backend(backend)
-            .map_err(classify_infrastructure_error)?;
+            .map_err(FiberStoreError::from_pardosa_error)?;
         Ok(Self::from_store(store, true, None))
     }
 }
@@ -112,7 +131,7 @@ where
     /// fold the backing container.
     pub fn open_pgno(path: &Path) -> Result<Self, FiberStoreError> {
         let store = PardosaStore::<E>::open_with_backend(PgnoBackend::open(path))
-            .map_err(classify_infrastructure_error)?;
+            .map_err(FiberStoreError::from_pardosa_error)?;
         let last_recovery = store.last_recovery().cloned();
         Ok(Self::from_store(store, false, last_recovery))
     }
@@ -130,8 +149,8 @@ where
     /// `current_thread` runtime; the sync bridge uses
     /// `tokio::task::block_in_place`, which requires a multi-thread runtime.
     pub fn open_jetstream(backend: JetStreamBackend) -> Result<Self, FiberStoreError> {
-        let store =
-            PardosaStore::<E>::open_with_backend(backend).map_err(classify_infrastructure_error)?;
+        let store = PardosaStore::<E>::open_with_backend(backend)
+            .map_err(FiberStoreError::from_pardosa_error)?;
         Ok(Self::from_store(store, true, None))
     }
 }
@@ -221,7 +240,7 @@ where
                     Resolved::Defined(fid) => {
                         match inner.store.writer().resume_defined(fid, event.clone()) {
                             Ok(receipt) => receipt.fiber(),
-                            Err(error) => return Err(classify_infrastructure_error(error)),
+                            Err(error) => return Err(FiberStoreError::from_pardosa_error(error)),
                         }
                     }
                     Resolved::Detached(_) | Resolved::Absent => return Ok(()),
@@ -231,7 +250,7 @@ where
                 .store
                 .writer()
                 .detach(fiber, event)
-                .map_err(classify_infrastructure_error)?;
+                .map_err(FiberStoreError::from_pardosa_error)?;
             let _position = inner
                 .store
                 .writer()
@@ -404,17 +423,13 @@ fn has_torn_write_recovery(error: &(dyn Error + 'static)) -> bool {
 
 fn classify_infrastructure_error<E: InfrastructureError>(error: E) -> FiberStoreError {
     let source = &error as &dyn Error;
-    if matches!(
-        source.downcast_ref::<PardosaError>(),
-        Some(PardosaError::ConcurrencyConflict { .. })
-    ) {
-        return FiberStoreError::ConcurrencyConflict {
-            source: Box::new(error),
-        };
-    }
     if has_pardosa_concurrency_conflict(source) {
         return FiberStoreError::ConcurrencyConflict {
+            expected_seq: None,
+            actual_seq: None,
             source: Box::new(PardosaError::ConcurrencyConflict {
+                expected_seq: None,
+                actual_seq: None,
                 source: Box::new(error),
             }),
         };
@@ -452,7 +467,7 @@ fn record_defined<E: Clone + Encode + GenomeSafe>(
                 Resolved::Absent => inner.store.writer().begin(event),
             }
         }
-        .map_err(classify_infrastructure_error)?;
+        .map_err(FiberStoreError::from_pardosa_error)?;
         inner.live.insert(domain_key.to_string(), receipt.fiber());
         let _position = inner
             .store
@@ -637,13 +652,24 @@ mod tests {
     #[test]
     fn pardosa_concurrency_conflict_is_typed_at_store_boundary() {
         let error = FiberStoreError::from_pardosa_error(PardosaError::ConcurrencyConflict {
+            expected_seq: Some(11),
+            actual_seq: Some(13),
             source: Box::new(std::io::Error::other("wrong last sequence")),
         });
 
-        assert!(
-            matches!(error, FiberStoreError::ConcurrencyConflict { .. }),
-            "typed PardosaError::ConcurrencyConflict must not be flattened to Infrastructure"
-        );
+        match error {
+            FiberStoreError::ConcurrencyConflict {
+                expected_seq,
+                actual_seq,
+                ..
+            } => {
+                assert_eq!(expected_seq, Some(11));
+                assert_eq!(actual_seq, Some(13));
+            }
+            other => panic!(
+                "typed PardosaError::ConcurrencyConflict must not be flattened to Infrastructure, got {other:?}"
+            ),
+        }
     }
 
     #[test]
@@ -656,13 +682,94 @@ mod tests {
             }),
         ));
 
-        let FiberStoreError::ConcurrencyConflict { source } = error else {
+        let FiberStoreError::ConcurrencyConflict {
+            source,
+            expected_seq,
+            actual_seq,
+        } = error
+        else {
             panic!("expected FiberStoreError::ConcurrencyConflict");
         };
         assert!(
             source.to_string().contains("concurrency conflict"),
             "wrapped persist error must expose a concurrency conflict in the source chain"
         );
+        assert_eq!(
+            expected_seq, None,
+            "nested-classifier path does not extract seq fields (not routed through it)"
+        );
+        assert_eq!(actual_seq, None);
+    }
+
+    #[test]
+    fn classify_infrastructure_error_never_extracts_seq_via_downcast() {
+        let top_level_conflict = PardosaError::ConcurrencyConflict {
+            expected_seq: Some(21),
+            actual_seq: Some(23),
+            source: Box::new(std::io::Error::other("wrong last sequence")),
+        };
+
+        let error = classify_infrastructure_error(top_level_conflict);
+
+        let FiberStoreError::ConcurrencyConflict {
+            expected_seq,
+            actual_seq,
+            ..
+        } = error
+        else {
+            panic!("expected FiberStoreError::ConcurrencyConflict");
+        };
+        assert_eq!(
+            expected_seq, None,
+            "classify_infrastructure_error must never extract seq fields via downcast \
+             (CHE-0027 R1 / oracle adr-fmt-btim1 Q2); retrieval belongs to the \
+             match-based from_pardosa_error path"
+        );
+        assert_eq!(actual_seq, None);
+    }
+
+    #[test]
+    fn create_pgno_style_call_sites_thread_seq_via_match_not_downcast() {
+        let via_classify = classify_infrastructure_error(PardosaError::ConcurrencyConflict {
+            expected_seq: Some(31),
+            actual_seq: Some(33),
+            source: Box::new(std::io::Error::other("wrong last sequence")),
+        });
+        let via_from_pardosa_error =
+            FiberStoreError::from_pardosa_error(PardosaError::ConcurrencyConflict {
+                expected_seq: Some(31),
+                actual_seq: Some(33),
+                source: Box::new(std::io::Error::other("wrong last sequence")),
+            });
+
+        match via_classify {
+            FiberStoreError::ConcurrencyConflict {
+                expected_seq,
+                actual_seq,
+                ..
+            } => {
+                assert_eq!(expected_seq, None);
+                assert_eq!(actual_seq, None);
+            }
+            other => panic!("expected ConcurrencyConflict, got {other:?}"),
+        }
+        match via_from_pardosa_error {
+            FiberStoreError::ConcurrencyConflict {
+                expected_seq,
+                actual_seq,
+                ..
+            } => {
+                assert_eq!(
+                    expected_seq,
+                    Some(31),
+                    "the six PardosaError-typed call sites (create_pgno, create_jetstream, \
+                     open_pgno, open_jetstream, record_defined, detach) now route through \
+                     from_pardosa_error's match arm, not classify_infrastructure_error's downcast"
+                );
+                assert_eq!(actual_seq, Some(33));
+            }
+            other => panic!("expected ConcurrencyConflict, got {other:?}"),
+        }
     }
 
     #[test]

@@ -159,7 +159,7 @@ fn is_pardosa_conflict(error: &(dyn Error + 'static)) -> bool {
 }
 
 fn assert_typed_fenced_conflict(error: &PersistenceError) {
-    let PersistenceError::FencedConflict { source } = error else {
+    let PersistenceError::FencedConflict { source, .. } = error else {
         panic!("expected typed PersistenceError::FencedConflict, got {error:?}");
     };
     assert!(

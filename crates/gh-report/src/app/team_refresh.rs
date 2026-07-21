@@ -247,6 +247,8 @@ mod tests {
             writer_id: None,
         };
         let error = AppError::Persistence(cherry_pit_storage::PersistenceError::FencedConflict {
+            expected_seq: None,
+            actual_seq: None,
             source: Box::new(std::io::Error::other("wrong last sequence")),
         });
         let json = capture_tracing(|| log_tick_failure(&error, &context));

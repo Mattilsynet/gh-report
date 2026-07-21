@@ -337,6 +337,14 @@ pub enum PardosaError {
     /// Backend detected a stale single-writer append conflict.
     #[error("concurrency conflict: {source}")]
     ConcurrencyConflict {
+        /// Sequence the caller expected; threaded from
+        /// [`BackendError::ConcurrencyConflict`]. `None` when the backend
+        /// did not populate it.
+        expected_seq: Option<u64>,
+        /// Broker-observed current sequence; threaded from
+        /// [`BackendError::ConcurrencyConflict`]. `None` when the backend
+        /// could not extract it.
+        actual_seq: Option<u64>,
         #[source]
         source: Box<dyn core::error::Error + Send + Sync + 'static>,
     },
@@ -417,9 +425,35 @@ mod pardosa_error_tests {
     fn concurrency_conflict_carries_source_chain() {
         let inner: Box<dyn core::error::Error + Send + Sync + 'static> =
             Box::new(std::io::Error::other("backend conflict"));
-        let err = PardosaError::ConcurrencyConflict { source: inner };
+        let err = PardosaError::ConcurrencyConflict {
+            expected_seq: None,
+            actual_seq: None,
+            source: inner,
+        };
         let src = core::error::Error::source(&err).expect("source attached");
         assert!(src.to_string().contains("backend conflict"));
+    }
+
+    #[test]
+    fn concurrency_conflict_carries_typed_seq_fields() {
+        let inner: Box<dyn core::error::Error + Send + Sync + 'static> =
+            Box::new(std::io::Error::other("backend conflict"));
+        let err = PardosaError::ConcurrencyConflict {
+            expected_seq: Some(7),
+            actual_seq: Some(9),
+            source: inner,
+        };
+        match err {
+            PardosaError::ConcurrencyConflict {
+                expected_seq,
+                actual_seq,
+                ..
+            } => {
+                assert_eq!(expected_seq, Some(7));
+                assert_eq!(actual_seq, Some(9));
+            }
+            other => panic!("expected ConcurrencyConflict, got {other:?}"),
+        }
     }
 }
 /// Operation tag carried by [`BackendError::Timeout`] (ADR-0022

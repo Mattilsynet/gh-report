@@ -586,15 +586,23 @@ mod tests {
     #[test]
     fn backend_concurrency_conflict_maps_to_typed_pardosa_error() {
         let err = crate::error::BackendError::ConcurrencyConflict {
-            expected_seq: None,
-            actual_seq: None,
+            expected_seq: Some(3),
+            actual_seq: Some(5),
             source: backend_source("wrong last sequence"),
         };
         match backend_error_to_cursor_read("context should not flatten", err) {
-            PardosaError::ConcurrencyConflict { source } => assert!(
-                source.to_string().contains("wrong last sequence"),
-                "typed conflict source preserved: {source}"
-            ),
+            PardosaError::ConcurrencyConflict {
+                expected_seq,
+                actual_seq,
+                source,
+            } => {
+                assert!(
+                    source.to_string().contains("wrong last sequence"),
+                    "typed conflict source preserved: {source}"
+                );
+                assert_eq!(expected_seq, Some(3));
+                assert_eq!(actual_seq, Some(5));
+            }
             other => panic!("expected PardosaError::ConcurrencyConflict, got {other:?}"),
         }
     }

@@ -184,7 +184,7 @@ fn classify_backend_error(error: &BackendError) -> NatsFailureClass {
 
 fn classify_pardosa_error(error: &PardosaError) -> NatsFailureClass {
     match error {
-        PardosaError::ConcurrencyConflict { source } => classify_nats_failure(source.as_ref()),
+        PardosaError::ConcurrencyConflict { source, .. } => classify_nats_failure(source.as_ref()),
         _ => NatsFailureClass::Unknown,
     }
 }
