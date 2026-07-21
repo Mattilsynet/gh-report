@@ -79,10 +79,30 @@ R8 [4]: An on-read verify stage exists universally above the sealed seam
   adapter shim is the only path); cross-backend live migration (PGN-0009
   per-backend stance binding); transports masquerading as substrates; an
   adapter opting out of hash-chain surfacing needs an ADR-cited reason.
-risks/migration: PGN-0016 supplies `Nats-Expected-Last-Subject-Sequence`
-  fencing as the JetStream implementation of R6's single-writer enforcement.
-  PAR-0004 remains retired; the enforcement gap is closed for JetStream. The
-  `crates/pardosa-nats/` slot now hosts the substrate; any future outbound
-  NATS transport adapter lands in a new crate. R8 legislates stage location
-  only; closing the per-adapter precursor-check gaps is follow-on
-  implementation work, not this ADR change.
+ risks/migration: PGN-0016 supplies `Nats-Expected-Last-Subject-Sequence`
+   fencing as the JetStream implementation of R6's single-writer enforcement.
+   PAR-0004 remains retired; the enforcement gap is closed for JetStream. The
+   `crates/pardosa-nats/` slot now hosts the substrate; any future outbound
+   NATS transport adapter lands in a new crate. R8 legislates stage location
+   only; closing the per-adapter precursor-check gaps is follow-on
+   implementation work, not this ADR change.
+
+## Amendment 2026-07-21 (P2b enforce-capability, default stays ObserveOnly)
+
+R8's ratified check set now runs uniformly across both backend arms via
+the shared stage's `PrecursorCheckMode` switch (`Enforce` /
+`ObserveOnly`), closing the per-adapter gap noted above as follow-on
+work. The stage can reject on any of the three precursor checks
+(bounds/same-fiber/hash) when `Enforce`, surfacing
+`persist::Error::CheckedReplay { kind }` per adapter, matchable and
+`#[non_exhaustive]` (PGN-0016:R9) — mutation detection, not
+authentication (PGN-0005:R4). This is capability-now-exists, not a
+default flip: the shipped default is `ObserveOnly` (checks run,
+violations logged, no rejection), pending a NATS-baseline replay soak
+that has not yet run against a live JetStream stream (the `.pgno`
+baseline — a 771-repo captured sweep — already opens clean under
+`Enforce` with zero rejections). R8's "default true" language describes
+the per-adapter hash-chain-surfacing opt-out (SEC-0011:R3 axis,
+unchanged, still deferred); it does not commit to an `Enforce`-by-default
+runtime mode, which is a separate future decision this amendment does
+not make.
