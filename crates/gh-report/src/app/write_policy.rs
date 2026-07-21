@@ -199,6 +199,7 @@ pub(crate) fn source_chain(error: &(dyn std::error::Error + 'static)) -> String 
 pub fn log_write_failure(failure: &WriteFailure, context: WriteFailureContext<'_>) {
     let persist_error_variant = persist_error_variant(&failure.error);
     let source_chain = source_chain(&failure.error);
+    let (expected_seq, actual_seq) = conflict_seq_fields(&failure.error);
     match failure.response {
         WriteResponse::Fatal => error!(
             persist_error_variant,
@@ -208,6 +209,8 @@ pub fn log_write_failure(failure: &WriteFailure, context: WriteFailureContext<'_
             team_slug = context.team_slug,
             domain_key = context.domain_key,
             writer_id = context.writer_id,
+            expected_seq,
+            actual_seq,
             error = %failure.error,
             source_chain = source_chain.as_str(),
             "durable write failed"
@@ -220,10 +223,23 @@ pub fn log_write_failure(failure: &WriteFailure, context: WriteFailureContext<'_
             team_slug = context.team_slug,
             domain_key = context.domain_key,
             writer_id = context.writer_id,
+            expected_seq,
+            actual_seq,
             error = %failure.error,
             source_chain = source_chain.as_str(),
             "durable write failed"
         ),
+    }
+}
+
+fn conflict_seq_fields(error: &PersistenceError) -> (Option<u64>, Option<u64>) {
+    match error {
+        PersistenceError::FencedConflict {
+            expected_seq,
+            actual_seq,
+            ..
+        } => (*expected_seq, *actual_seq),
+        _ => (None, None),
     }
 }
 
@@ -434,6 +450,67 @@ mod tests {
         assert_eq!(
             WritePolicyCategory::classify(&io_error()),
             WritePolicyCategory::Unrecoverable
+        );
+    }
+
+    #[test]
+    fn log_write_failure_emits_discrete_seq_and_domain_key_fields_for_conflict() {
+        let failure = WriteFailure::classify(PersistenceError::FencedConflict {
+            expected_seq: Some(41),
+            actual_seq: Some(43),
+            source: Box::new(std::io::Error::other("wrong last sequence")),
+        });
+        let json = capture_tracing(|| {
+            log_write_failure(
+                &failure,
+                WriteFailureContext {
+                    org: Some("acme"),
+                    team_slug: None,
+                    domain_key: Some("acme/widgets"),
+                    writer_id: None,
+                },
+            );
+        });
+        let parsed: serde_json::Value =
+            serde_json::from_str(json.lines().next().expect("one log line")).expect("valid json");
+        assert_eq!(
+            parsed["fields"]["expected_seq"].as_u64(),
+            Some(41),
+            "expected_seq must ride as a discrete typed field: {parsed}"
+        );
+        assert_eq!(
+            parsed["fields"]["actual_seq"].as_u64(),
+            Some(43),
+            "actual_seq must ride as a discrete typed field: {parsed}"
+        );
+        assert_eq!(
+            parsed["fields"]["domain_key"].as_str(),
+            Some("acme/widgets"),
+            "domain_key must ride under its own name, never aggregate_id: {parsed}"
+        );
+        assert!(
+            parsed["fields"].get("aggregate_id").is_none(),
+            "must never invent an aggregate_id key: {parsed}"
+        );
+    }
+
+    #[test]
+    fn log_write_failure_emits_none_seq_fields_for_non_conflict_category() {
+        let failure = WriteFailure::classify(PersistenceError::BackendUnavailable {
+            reason: "nats down".to_string(),
+        });
+        let json = capture_tracing(|| {
+            log_write_failure(&failure, WriteFailureContext::default());
+        });
+        let parsed: serde_json::Value =
+            serde_json::from_str(json.lines().next().expect("one log line")).expect("valid json");
+        assert!(
+            parsed["fields"]["expected_seq"].is_null(),
+            "non-conflict category must not fabricate a seq value: {parsed}"
+        );
+        assert!(
+            parsed["fields"]["actual_seq"].is_null(),
+            "non-conflict category must not fabricate a seq value: {parsed}"
         );
     }
 

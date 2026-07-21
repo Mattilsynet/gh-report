@@ -147,14 +147,28 @@ async fn write_team_event(
 /// daemon or the next repo collection, it is retried on the next
 /// scheduled team-refresh tick.
 pub fn log_tick_failure(error: &AppError, context: &WriteFailureContextOwned) {
+    let (expected_seq, actual_seq) = conflict_seq_fields(error);
     warn!(
         error = %error,
         org = context.org.as_deref(),
         team_slug = context.team_slug.as_deref(),
         domain_key = context.domain_key.as_deref(),
         writer_id = context.writer_id.as_deref(),
+        expected_seq,
+        actual_seq,
         "team-refresh tick failed; will retry on the next scheduled tick"
     );
+}
+
+fn conflict_seq_fields(error: &AppError) -> (Option<u64>, Option<u64>) {
+    match error {
+        AppError::Persistence(cherry_pit_storage::PersistenceError::FencedConflict {
+            expected_seq,
+            actual_seq,
+            ..
+        }) => (*expected_seq, *actual_seq),
+        _ => (None, None),
+    }
 }
 
 #[cfg(test)]
@@ -256,5 +270,47 @@ mod tests {
             serde_json::from_str(json.lines().next().expect("one log line")).expect("valid json");
         assert_eq!(parsed["fields"]["org"].as_str(), Some("acme"));
         assert_eq!(parsed["fields"]["team_slug"].as_str(), Some("platform"));
+    }
+
+    #[test]
+    fn log_tick_failure_surfaces_discrete_seq_fields_for_conflict() {
+        let context = WriteFailureContextOwned::default();
+        let error = AppError::Persistence(cherry_pit_storage::PersistenceError::FencedConflict {
+            expected_seq: Some(7),
+            actual_seq: Some(9),
+            source: Box::new(std::io::Error::other("wrong last sequence")),
+        });
+        let json = capture_tracing(|| log_tick_failure(&error, &context));
+        let parsed: serde_json::Value =
+            serde_json::from_str(json.lines().next().expect("one log line")).expect("valid json");
+        assert_eq!(
+            parsed["fields"]["expected_seq"].as_u64(),
+            Some(7),
+            "expected_seq must ride as a discrete typed field: {parsed}"
+        );
+        assert_eq!(
+            parsed["fields"]["actual_seq"].as_u64(),
+            Some(9),
+            "actual_seq must ride as a discrete typed field: {parsed}"
+        );
+    }
+
+    #[test]
+    fn log_tick_failure_emits_none_seq_fields_for_non_conflict_error() {
+        let context = WriteFailureContextOwned::default();
+        let error = AppError::Persistence(cherry_pit_storage::PersistenceError::BackendUnavailable {
+            reason: "nats down".to_string(),
+        });
+        let json = capture_tracing(|| log_tick_failure(&error, &context));
+        let parsed: serde_json::Value =
+            serde_json::from_str(json.lines().next().expect("one log line")).expect("valid json");
+        assert!(
+            parsed["fields"]["expected_seq"].is_null(),
+            "non-conflict error must not fabricate a seq value: {parsed}"
+        );
+        assert!(
+            parsed["fields"]["actual_seq"].is_null(),
+            "non-conflict error must not fabricate a seq value: {parsed}"
+        );
     }
 }
