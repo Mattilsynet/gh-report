@@ -1,5 +1,5 @@
 use crate::dragline::Line;
-use crate::persist::{Error, rehydrate_unchecked};
+use crate::persist::{Error, PrecursorCheckMode, rehydrate_unchecked};
 #[cfg(test)]
 use crate::persist::{ValidatedReplayError, rehydrate_validated};
 use pardosa_schema::GenomeSafe;
@@ -14,17 +14,21 @@ use std::io::Cursor;
 /// [`std::io::Cursor`] — framing, schema-hash, and contiguity
 /// checks match the `.pgno`/`File` open path. No filesystem
 /// access. Per-event precursor-hash and payload [`Validate`]
-/// checks live on [`from_pgno_bytes_validated`].
+/// checks live on [`from_pgno_bytes_validated`]. `mode` is
+/// resolved once by the caller at its own open boundary.
 ///
 /// # Errors
 ///
 /// Propagates [`crate::persist::Error`] verbatim.
-pub(crate) fn from_pgno_bytes_unchecked<T>(bytes: &[u8]) -> Result<Line<T>, Error>
+pub(crate) fn from_pgno_bytes_unchecked<T>(
+    bytes: &[u8],
+    mode: PrecursorCheckMode,
+) -> Result<Line<T>, Error>
 where
     T: Decode + GenomeSafe,
 {
     let source = Cursor::new(bytes);
-    rehydrate_unchecked::<T, _>(source)
+    rehydrate_unchecked::<T, _>(source, mode)
 }
 /// Validated counterpart to [`from_pgno_bytes_unchecked`]
 /// (ADR-0020 reader bound + payload [`Validate`]).
@@ -41,10 +45,11 @@ where
 #[cfg(test)]
 pub(crate) fn from_pgno_bytes_validated<T>(
     bytes: &[u8],
+    mode: PrecursorCheckMode,
 ) -> Result<Line<T>, ValidatedReplayError<<T as Validate>::Error>>
 where
     T: Decode + GenomeSafe + Validate,
 {
     let source = Cursor::new(bytes);
-    rehydrate_validated::<T, _>(source)
+    rehydrate_validated::<T, _>(source, mode)
 }

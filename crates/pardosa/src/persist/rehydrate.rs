@@ -148,7 +148,10 @@ where
 /// [`Error::File`] / [`Error::SchemaHashMismatch`] on container
 /// header errors; [`Error::Decode`] on per-event decode failure;
 /// [`Error::InvariantViolation`] on structural rebuild failure.
-pub(crate) fn rehydrate_unchecked<T, R>(source: R) -> Result<Line<T>, Error>
+pub(crate) fn rehydrate_unchecked<T, R>(
+    source: R,
+    mode: PrecursorCheckMode,
+) -> Result<Line<T>, Error>
 where
     T: Decode + GenomeSafe,
     R: Read + Seek,
@@ -170,11 +173,10 @@ where
         events.push(event);
         raw_bytes.push(bytes);
     }
-    rebuild_dragline_with_frontier(events, frontier, Some(&raw_bytes), precursor_check_mode())
-        .map_err(|e| match e {
-            PardosaError::CursorRead { source } => *source,
-            other => Error::InvariantViolation(RehydrateInvariant::from(other)),
-        })
+    rebuild_dragline_with_frontier(events, frontier, Some(&raw_bytes), mode).map_err(|e| match e {
+        PardosaError::CursorRead { source } => *source,
+        other => Error::InvariantViolation(RehydrateInvariant::from(other)),
+    })
 }
 /// Drain a fallible `Event<T>` stream into the supplied pre-sized
 /// destination Vec, surfacing the first per-item `Err` and short-
@@ -285,6 +287,7 @@ pub(crate) fn rebuild_dragline_with_frontier<T>(
 /// [`Error::InvariantViolation`].
 pub(crate) fn rehydrate_validated<T, R>(
     source: R,
+    mode: PrecursorCheckMode,
 ) -> Result<Line<T>, ValidatedReplayError<<T as Validate>::Error>>
 where
     T: Decode + GenomeSafe + Validate,
@@ -295,7 +298,7 @@ where
     let events: Vec<Event<T>> = Vec::with_capacity(cap);
     let events = stream_fold_line(&mut stream, events)?;
     let frontier = stream.inner.frontier();
-    rebuild_dragline_with_frontier(events, frontier, None, precursor_check_mode())
+    rebuild_dragline_with_frontier(events, frontier, None, mode)
         .map_err(|e| ValidatedReplayError::Replay(Error::InvariantViolation(e.into())))
 }
 /// Append-shape sibling of [`persist_with_source`] (roadmap IO-PG-1).

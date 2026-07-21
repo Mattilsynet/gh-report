@@ -1228,9 +1228,11 @@ mod tests {
              to the canonical .pgno blob the writer last sync-fenced (ADR-0022 \
              §D5 canonical bytes verbatim)",
         );
-        let rehydrated: Line<u64> =
-            crate::backend::rehydrate::from_pgno_bytes_unchecked::<u64>(&rehydrate_bytes)
-                .expect("rehydrate via approved byte seam");
+        let rehydrated: Line<u64> = crate::backend::rehydrate::from_pgno_bytes_unchecked::<u64>(
+            &rehydrate_bytes,
+            crate::persist::PrecursorCheckMode::ObserveOnly,
+        )
+        .expect("rehydrate via approved byte seam");
         let recovered_line: Vec<u64> = rehydrated
             .read_line()
             .iter()
@@ -1244,9 +1246,11 @@ mod tests {
              reopen (mission event-storage-dual-backend-04 success_criteria #2 \
              byte/state parity vs .pgno for the same canonical event sequence)",
         );
-        let pgno_reopened: Line<u64> =
-            crate::backend::rehydrate::from_pgno_bytes_unchecked::<u64>(&canonical_pgno_bytes)
-                .expect("rehydrate the canonical .pgno blob directly");
+        let pgno_reopened: Line<u64> = crate::backend::rehydrate::from_pgno_bytes_unchecked::<u64>(
+            &canonical_pgno_bytes,
+            crate::persist::PrecursorCheckMode::ObserveOnly,
+        )
+        .expect("rehydrate the canonical .pgno blob directly");
         let pgno_reopened_line: Vec<u64> = pgno_reopened
             .read_line()
             .iter()
@@ -1304,11 +1308,17 @@ mod tests {
              not on substrate sequence position",
         );
         let rehydrated_from_seq_3: Line<u64> =
-            crate::backend::rehydrate::from_pgno_bytes_unchecked::<u64>(&bytes_from_seq_3)
-                .expect("rehydrate from seq-3 selection");
+            crate::backend::rehydrate::from_pgno_bytes_unchecked::<u64>(
+                &bytes_from_seq_3,
+                crate::persist::PrecursorCheckMode::ObserveOnly,
+            )
+            .expect("rehydrate from seq-3 selection");
         let rehydrated_from_seq_10: Line<u64> =
-            crate::backend::rehydrate::from_pgno_bytes_unchecked::<u64>(&bytes_from_seq_10)
-                .expect("rehydrate from seq-10 selection");
+            crate::backend::rehydrate::from_pgno_bytes_unchecked::<u64>(
+                &bytes_from_seq_10,
+                crate::persist::PrecursorCheckMode::ObserveOnly,
+            )
+            .expect("rehydrate from seq-10 selection");
         let ids_from_seq_3: Vec<EventId> = rehydrated_from_seq_3
             .read_line()
             .iter()

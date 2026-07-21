@@ -195,7 +195,8 @@ where
         B: ReadableBackend,
     {
         let bytes = backend.durable_bytes();
-        let line = super::rehydrate::from_pgno_bytes_unchecked::<T>(bytes)?;
+        let mode = crate::persist::precursor_check_mode();
+        let line = super::rehydrate::from_pgno_bytes_unchecked::<T>(bytes, mode)?;
         Ok(Self {
             line,
             backend,
@@ -305,7 +306,10 @@ where
                 op: BackendOp::Open,
                 source,
             })?;
-        let line = super::rehydrate::from_pgno_bytes_unchecked::<T>(&bytes)?;
+        let line = super::rehydrate::from_pgno_bytes_unchecked::<T>(
+            &bytes,
+            crate::persist::precursor_check_mode(),
+        )?;
         Ok(Self {
             line,
             backend,

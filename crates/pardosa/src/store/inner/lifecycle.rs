@@ -307,7 +307,10 @@ type OpenValidated<T> = (
     Option<RecoveryOutcome>,
 );
 
-fn open_rw_seek_and_rehydrate_unchecked<T>(path: &Path) -> Result<OpenUnchecked<T>, PardosaError>
+fn open_rw_seek_and_rehydrate_unchecked<T>(
+    path: &Path,
+    mode: crate::persist::PrecursorCheckMode,
+) -> Result<OpenUnchecked<T>, PardosaError>
 where
     T: Decode + GenomeSafe,
 {
@@ -324,7 +327,7 @@ where
             source: Box::new(crate::persist::Error::Io(e)),
         })?;
     let (dragline, recovered_prefix, manifest_already_synced, recovery_outcome) =
-        match crate::persist::rehydrate_unchecked::<T, _>(&mut file) {
+        match crate::persist::rehydrate_unchecked::<T, _>(&mut file, mode) {
             Ok(dragline) => {
                 let (recovered_prefix, manifest_already_synced) = clean_recovered_prefix(path)
                     .map_err(|e| PardosaError::CursorRead {
@@ -345,11 +348,9 @@ where
                     .map_err(|e| PardosaError::CursorRead {
                         source: Box::new(crate::persist::Error::Io(e)),
                     })?;
-                let dragline =
-                    crate::persist::rehydrate_unchecked::<T, _>(&mut file).map_err(|e| {
-                        PardosaError::CursorRead {
-                            source: Box::new(e),
-                        }
+                let dragline = crate::persist::rehydrate_unchecked::<T, _>(&mut file, mode)
+                    .map_err(|e| PardosaError::CursorRead {
+                        source: Box::new(e),
                     })?;
                 (dragline, recovered_prefix, true, Some(recovery_outcome))
             }
@@ -373,6 +374,7 @@ where
 }
 fn open_rw_seek_and_rehydrate_validated<T>(
     path: &Path,
+    mode: crate::persist::PrecursorCheckMode,
 ) -> Result<OpenValidated<T>, ValidatedReplayError<<T as Validate>::Error>>
 where
     T: Decode + GenomeSafe + Validate,
@@ -385,23 +387,24 @@ where
         .map_err(|e| ValidatedReplayError::Replay(crate::persist::Error::Io(e)))?;
     file.seek(SeekFrom::Start(0))
         .map_err(|e| ValidatedReplayError::Replay(crate::persist::Error::Io(e)))?;
-    let (dragline, last_recovery) = match crate::persist::rehydrate_validated::<T, _>(&mut file) {
-        Ok(dragline) => (dragline, None),
-        Err(ValidatedReplayError::Replay(crate::persist::Error::File(open_error)))
-            if can_attempt_manifest_recovery(&open_error) =>
-        {
-            let (_, recovery_outcome) =
-                attempt_manifest_recovery_after_open_error(path, open_error)
-                    .map_err(ValidatedReplayError::Replay)?;
-            file.seek(SeekFrom::Start(0))
-                .map_err(|e| ValidatedReplayError::Replay(crate::persist::Error::Io(e)))?;
-            (
-                crate::persist::rehydrate_validated::<T, _>(&mut file)?,
-                Some(recovery_outcome),
-            )
-        }
-        Err(e) => return Err(e),
-    };
+    let (dragline, last_recovery) =
+        match crate::persist::rehydrate_validated::<T, _>(&mut file, mode) {
+            Ok(dragline) => (dragline, None),
+            Err(ValidatedReplayError::Replay(crate::persist::Error::File(open_error)))
+                if can_attempt_manifest_recovery(&open_error) =>
+            {
+                let (_, recovery_outcome) =
+                    attempt_manifest_recovery_after_open_error(path, open_error)
+                        .map_err(ValidatedReplayError::Replay)?;
+                file.seek(SeekFrom::Start(0))
+                    .map_err(|e| ValidatedReplayError::Replay(crate::persist::Error::Io(e)))?;
+                (
+                    crate::persist::rehydrate_validated::<T, _>(&mut file, mode)?,
+                    Some(recovery_outcome),
+                )
+            }
+            Err(e) => return Err(e),
+        };
     file.seek(SeekFrom::Start(0))
         .map_err(|e| ValidatedReplayError::Replay(crate::persist::Error::Io(e)))?;
     Ok((file, dragline, last_recovery))
@@ -453,6 +456,7 @@ where
 
 fn rehydrate_jetstream_frames<T>(
     frames: &[JetStreamDurableFrame],
+    mode: crate::persist::PrecursorCheckMode,
 ) -> Result<(crate::dragline::Line<T>, usize), PardosaError>
 where
     T: Decode + GenomeSafe,
@@ -462,7 +466,7 @@ where
     }
     if let Some((pgno_idx, event_frames)) = event_frames_from_latest_pgno::<T>(frames)? {
         if pgno_idx + 1 == frames.len() {
-            let line = from_pgno_bytes_unchecked::<T>(&frames[pgno_idx].payload)
+            let line = from_pgno_bytes_unchecked::<T>(&frames[pgno_idx].payload, mode)
                 .map_err(persist_error_to_cursor_read)?;
             let synced_events = line.read_line().len();
             return Ok((line, synced_events));
@@ -472,11 +476,11 @@ where
             .map(legacy_jetstream_frame)
             .collect();
         replay_frames.extend(frames[pgno_idx + 1..].iter().cloned());
-        let line = rehydrate_event_frames::<T>(&replay_frames)?;
+        let line = rehydrate_event_frames::<T>(&replay_frames, mode)?;
         let synced_events = line.read_line().len();
         return Ok((line, synced_events));
     }
-    let line = rehydrate_event_frames::<T>(frames)?;
+    let line = rehydrate_event_frames::<T>(frames, mode)?;
     let synced_events = line.read_line().len();
     Ok((line, synced_events))
 }
@@ -607,6 +611,7 @@ where
 }
 fn rehydrate_event_frames<T>(
     frames: &[JetStreamDurableFrame],
+    mode: crate::persist::PrecursorCheckMode,
 ) -> Result<crate::dragline::Line<T>, PardosaError>
 where
     T: Decode + GenomeSafe,
@@ -624,12 +629,7 @@ where
         events.push(event);
         raw_bytes.push(bytes.to_vec());
     }
-    crate::persist::rebuild_dragline_with_frontier(
-        events,
-        frontier,
-        Some(&raw_bytes),
-        crate::persist::precursor_check_mode(),
-    )
+    crate::persist::rebuild_dragline_with_frontier(events, frontier, Some(&raw_bytes), mode)
 }
 impl<T> EventStore<T, std::fs::File>
 where
@@ -699,8 +699,9 @@ where
             BackendDispatch::JetStream(boxed_adapter) => {
                 let mut adapter = *boxed_adapter;
                 let marker = schema_tag::<T>();
+                let mode = crate::persist::precursor_check_mode();
                 let frames = fetch_gated_jetstream_frames::<T>(&mut adapter, &marker)?;
-                let (dragline, synced_events) = rehydrate_jetstream_frames::<T>(&frames)?;
+                let (dragline, synced_events) = rehydrate_jetstream_frames::<T>(&frames, mode)?;
                 let scratch =
                     tempfile::tempfile().map_err(|e| PardosaError::CursorJournalOpen {
                         source: Box::new(e),
@@ -759,8 +760,10 @@ where
                   the rehydrate pipeline has a single in-crate entry shape"
     )]
     pub(crate) fn open(path: &Path) -> Result<Self, PardosaError> {
-        let (file, dragline, _, _, last_recovery) =
-            open_rw_seek_and_rehydrate_unchecked::<T>(path)?;
+        let (file, dragline, _, _, last_recovery) = open_rw_seek_and_rehydrate_unchecked::<T>(
+            path,
+            crate::persist::precursor_check_mode(),
+        )?;
         let inner = Dragline::from_line_for_open(dragline, file);
         Ok(Self {
             inner,
@@ -778,8 +781,10 @@ where
     /// under the gate.
     #[cfg(any(test, feature = "test-support"))]
     pub fn open(path: &Path) -> Result<Self, PardosaError> {
-        let (file, dragline, _, _, last_recovery) =
-            open_rw_seek_and_rehydrate_unchecked::<T>(path)?;
+        let (file, dragline, _, _, last_recovery) = open_rw_seek_and_rehydrate_unchecked::<T>(
+            path,
+            crate::persist::precursor_check_mode(),
+        )?;
         let inner = Dragline::from_line_for_open(dragline, file);
         Ok(Self {
             inner,
@@ -807,10 +812,11 @@ where
     /// path (surfacing as [`PardosaError::CursorRead`] /
     /// [`PardosaError::CursorJournalOpen`]).
     pub fn open_with_backend<B: AuthoritativeBackend>(backend: B) -> Result<Self, PardosaError> {
+        let mode = crate::persist::precursor_check_mode();
         match admit_into_dispatch(backend) {
             BackendDispatch::Pgno(p) => {
                 let (file, dragline, recovered_prefix, manifest_already_synced, last_recovery) =
-                    open_rw_seek_and_rehydrate_unchecked::<T>(p.path())?;
+                    open_rw_seek_and_rehydrate_unchecked::<T>(p.path(), mode)?;
                 let inner = Dragline::from_backend_for_open(
                     dragline,
                     file,
@@ -829,7 +835,7 @@ where
                 let mut adapter = *boxed_adapter;
                 let marker = schema_tag::<T>();
                 let frames = fetch_gated_jetstream_frames::<T>(&mut adapter, &marker)?;
-                let (dragline, synced_events) = rehydrate_jetstream_frames::<T>(&frames)?;
+                let (dragline, synced_events) = rehydrate_jetstream_frames::<T>(&frames, mode)?;
                 let scratch =
                     tempfile::tempfile().map_err(|e| PardosaError::CursorJournalOpen {
                         source: Box::new(e),
@@ -883,8 +889,10 @@ where
         anchor_interval: u64,
         publisher: Box<dyn FrontierPublisher>,
     ) -> Result<Self, PardosaError> {
-        let (file, dragline, _, _, last_recovery) =
-            open_rw_seek_and_rehydrate_unchecked::<T>(path)?;
+        let (file, dragline, _, _, last_recovery) = open_rw_seek_and_rehydrate_unchecked::<T>(
+            path,
+            crate::persist::precursor_check_mode(),
+        )?;
         let inner = Dragline::with_line_and_publisher_path(
             dragline,
             file,
@@ -1292,8 +1300,11 @@ mod tests {
         manifest_os.push(".pgix");
         let manifest_path = std::path::PathBuf::from(manifest_os);
         std::fs::write(&manifest_path, b"not a manifest").expect("write manifest bytes");
-        let err = open_rw_seek_and_rehydrate_unchecked::<TaggedPayload>(&path)
-            .expect_err("bad footerless recovery must fail");
+        let err = open_rw_seek_and_rehydrate_unchecked::<TaggedPayload>(
+            &path,
+            crate::persist::PrecursorCheckMode::ObserveOnly,
+        )
+        .expect_err("bad footerless recovery must fail");
         match err {
             PardosaError::CursorRead { source } => match *source {
                 crate::persist::Error::File(FileError::TornWriteRecovery { .. }) => {}
@@ -1489,8 +1500,11 @@ mod tests {
             payload: frame(7),
             schema_tag: Some("fedcba9876543210fedcba9876543210".to_string()),
         }];
-        let err = rehydrate_event_frames::<TaggedPayload>(&frames)
-            .expect_err("foreign replay tag must reject before decode");
+        let err = rehydrate_event_frames::<TaggedPayload>(
+            &frames,
+            crate::persist::PrecursorCheckMode::ObserveOnly,
+        )
+        .expect_err("foreign replay tag must reject before decode");
         match err {
             PardosaError::CursorRead { source } => match *source {
                 crate::persist::Error::SchemaHashMismatch { expected, found } => {
@@ -1516,8 +1530,11 @@ mod tests {
             payload: frame(11),
             schema_tag: None,
         }];
-        let line = rehydrate_event_frames::<TaggedPayload>(&frames)
-            .expect("legacy frames without replay tags still decode");
+        let line = rehydrate_event_frames::<TaggedPayload>(
+            &frames,
+            crate::persist::PrecursorCheckMode::ObserveOnly,
+        )
+        .expect("legacy frames without replay tags still decode");
         assert_eq!(
             line.read_line()[0].domain_event(),
             &TaggedPayload(11),
@@ -1659,7 +1676,10 @@ mod tests {
         let events = [genesis, out_of_bounds_successor_event(&genesis_bytes)];
         let pgno_bytes = write_pgno_bytes(&events);
         let (result, captured) = capture_tracing(|| {
-            crate::persist::rehydrate_unchecked::<TaggedPayload, _>(Cursor::new(pgno_bytes))
+            crate::persist::rehydrate_unchecked::<TaggedPayload, _>(
+                Cursor::new(pgno_bytes),
+                crate::persist::PrecursorCheckMode::ObserveOnly,
+            )
         });
         result.expect("observe-only mode must not reject a precursor-bounds violation");
         assert!(
@@ -1679,8 +1699,12 @@ mod tests {
         let genesis_bytes = pardosa_wire::to_vec(&genesis);
         let events = [genesis, out_of_bounds_successor_event(&genesis_bytes)];
         let frames = jetstream_frames(&events);
-        let (result, captured) =
-            capture_tracing(|| rehydrate_event_frames::<TaggedPayload>(&frames));
+        let (result, captured) = capture_tracing(|| {
+            rehydrate_event_frames::<TaggedPayload>(
+                &frames,
+                crate::persist::PrecursorCheckMode::ObserveOnly,
+            )
+        });
         result.expect("observe-only mode must not reject a precursor-bounds violation");
         assert!(
             captured.contains("precursor_check_would_fail"),
@@ -1700,7 +1724,10 @@ mod tests {
         let events = [genesis, fiber_mismatch_successor_event(&genesis_bytes)];
         let pgno_bytes = write_pgno_bytes(&events);
         let (result, captured) = capture_tracing(|| {
-            crate::persist::rehydrate_unchecked::<TaggedPayload, _>(Cursor::new(pgno_bytes))
+            crate::persist::rehydrate_unchecked::<TaggedPayload, _>(
+                Cursor::new(pgno_bytes),
+                crate::persist::PrecursorCheckMode::ObserveOnly,
+            )
         });
         result.expect("observe-only mode must not reject a same-fiber precursor violation");
         assert!(
@@ -1720,8 +1747,12 @@ mod tests {
         let genesis_bytes = pardosa_wire::to_vec(&genesis);
         let events = [genesis, fiber_mismatch_successor_event(&genesis_bytes)];
         let frames = jetstream_frames(&events);
-        let (result, captured) =
-            capture_tracing(|| rehydrate_event_frames::<TaggedPayload>(&frames));
+        let (result, captured) = capture_tracing(|| {
+            rehydrate_event_frames::<TaggedPayload>(
+                &frames,
+                crate::persist::PrecursorCheckMode::ObserveOnly,
+            )
+        });
         result.expect("observe-only mode must not reject a same-fiber precursor violation");
         assert!(
             captured.contains("precursor_check_would_fail"),
@@ -1740,7 +1771,10 @@ mod tests {
         let events = [genesis, hash_mismatch_successor_event()];
         let pgno_bytes = write_pgno_bytes(&events);
         let (result, captured) = capture_tracing(|| {
-            crate::persist::rehydrate_unchecked::<TaggedPayload, _>(Cursor::new(pgno_bytes))
+            crate::persist::rehydrate_unchecked::<TaggedPayload, _>(
+                Cursor::new(pgno_bytes),
+                crate::persist::PrecursorCheckMode::ObserveOnly,
+            )
         });
         result.expect("observe-only mode must not reject a precursor-hash violation");
         assert!(
@@ -1759,8 +1793,12 @@ mod tests {
         let genesis = genesis_event(1);
         let events = [genesis, hash_mismatch_successor_event()];
         let frames = jetstream_frames(&events);
-        let (result, captured) =
-            capture_tracing(|| rehydrate_event_frames::<TaggedPayload>(&frames));
+        let (result, captured) = capture_tracing(|| {
+            rehydrate_event_frames::<TaggedPayload>(
+                &frames,
+                crate::persist::PrecursorCheckMode::ObserveOnly,
+            )
+        });
         result.expect("observe-only mode must not reject a precursor-hash violation");
         assert!(
             captured.contains("precursor_check_would_fail"),
@@ -1780,7 +1818,10 @@ mod tests {
         let events = [genesis, clean_successor_event(&genesis_bytes)];
         let pgno_bytes = write_pgno_bytes(&events);
         let (result, captured) = capture_tracing(|| {
-            crate::persist::rehydrate_unchecked::<TaggedPayload, _>(Cursor::new(pgno_bytes))
+            crate::persist::rehydrate_unchecked::<TaggedPayload, _>(
+                Cursor::new(pgno_bytes),
+                crate::persist::PrecursorCheckMode::ObserveOnly,
+            )
         });
         result.expect("a clean chain must rehydrate");
         assert!(
@@ -1795,8 +1836,12 @@ mod tests {
         let genesis_bytes = pardosa_wire::to_vec(&genesis);
         let events = [genesis, clean_successor_event(&genesis_bytes)];
         let frames = jetstream_frames(&events);
-        let (result, captured) =
-            capture_tracing(|| rehydrate_event_frames::<TaggedPayload>(&frames));
+        let (result, captured) = capture_tracing(|| {
+            rehydrate_event_frames::<TaggedPayload>(
+                &frames,
+                crate::persist::PrecursorCheckMode::ObserveOnly,
+            )
+        });
         result.expect("a clean chain must rehydrate");
         assert!(
             !captured.contains("precursor_check_would_fail"),
@@ -2024,7 +2069,10 @@ mod tests {
         let genesis = genesis_event(1);
         let events = [genesis, hash_mismatch_successor_event()];
         let pgno_bytes = write_pgno_bytes(&events);
-        let err = crate::persist::rehydrate_unchecked::<TaggedPayload, _>(Cursor::new(pgno_bytes))
+        let err = crate::persist::rehydrate_unchecked::<TaggedPayload, _>(
+                Cursor::new(pgno_bytes),
+                crate::persist::precursor_check_mode(),
+            )
             .expect_err(
                 "env-selected Enforce must reach the pgno rehydrate arm and reject a forged precursor-hash chain",
             );
@@ -2050,7 +2098,7 @@ mod tests {
         let genesis = genesis_event(1);
         let events = [genesis, hash_mismatch_successor_event()];
         let frames = jetstream_frames(&events);
-        let err = rehydrate_event_frames::<TaggedPayload>(&frames).expect_err(
+        let err = rehydrate_event_frames::<TaggedPayload>(&frames, crate::persist::precursor_check_mode()).expect_err(
             "env-selected Enforce must reach the nats rehydrate arm and reject a forged precursor-hash chain",
         );
         assert!(
@@ -2084,7 +2132,10 @@ where
     pub fn open_validated(
         path: &Path,
     ) -> Result<Self, ValidatedReplayError<<T as Validate>::Error>> {
-        let (file, dragline, last_recovery) = open_rw_seek_and_rehydrate_validated::<T>(path)?;
+        let (file, dragline, last_recovery) = open_rw_seek_and_rehydrate_validated::<T>(
+            path,
+            crate::persist::precursor_check_mode(),
+        )?;
         let inner = Dragline::from_line_for_open(dragline, file);
         Ok(Self {
             inner,
