@@ -111,6 +111,13 @@ pub struct WriteFailure {
     pub category: WritePolicyCategory,
     pub response: WriteResponse,
     pub error: PersistenceError,
+    /// 1-based count of write attempts made before this failure was
+    /// returned (COM-0019:R4/R7 correlation): `1` for an immediate
+    /// non-retried failure, up to `1 + BOUNDED_RETRY_ATTEMPTS` once
+    /// bounded retry is exhausted. Populated by [`write_with_policy`]
+    /// and [`write_with_policy_sync`]; direct [`WriteFailure::classify`]
+    /// callers (tests) get `1`.
+    pub attempt: u8,
 }
 
 impl WriteFailure {
@@ -121,6 +128,7 @@ impl WriteFailure {
             category,
             response: category.response(),
             error,
+            attempt: 1,
         }
     }
 }
@@ -211,6 +219,7 @@ pub fn log_write_failure(failure: &WriteFailure, context: WriteFailureContext<'_
             writer_id = context.writer_id,
             expected_seq,
             actual_seq,
+            attempt = failure.attempt,
             error = %failure.error,
             source_chain = source_chain.as_str(),
             "durable write failed"
@@ -225,6 +234,7 @@ pub fn log_write_failure(failure: &WriteFailure, context: WriteFailureContext<'_
             writer_id = context.writer_id,
             expected_seq,
             actual_seq,
+            attempt = failure.attempt,
             error = %failure.error,
             source_chain = source_chain.as_str(),
             "durable write failed"
@@ -276,12 +286,13 @@ where
         return Err(failure);
     }
 
-    for _ in 0..BOUNDED_RETRY_ATTEMPTS {
+    for retry in 0..BOUNDED_RETRY_ATTEMPTS {
         tokio::time::sleep(BOUNDED_RETRY_DELAY).await;
         match op() {
             Ok(()) => return Ok(()),
             Err(error) => failure = WriteFailure::classify(error),
         }
+        failure.attempt = retry + 2;
     }
     Err(failure)
 }
@@ -310,12 +321,13 @@ where
         return Err(failure);
     }
 
-    for _ in 0..BOUNDED_RETRY_ATTEMPTS {
+    for retry in 0..BOUNDED_RETRY_ATTEMPTS {
         std::thread::sleep(BOUNDED_RETRY_DELAY);
         match op() {
             Ok(()) => return Ok(()),
             Err(error) => failure = WriteFailure::classify(error),
         }
+        failure.attempt = retry + 2;
     }
     Err(failure)
 }
@@ -491,6 +503,44 @@ mod tests {
         assert!(
             parsed["fields"].get("aggregate_id").is_none(),
             "must never invent an aggregate_id key: {parsed}"
+        );
+    }
+
+    #[test]
+    fn log_write_failure_emits_discrete_attempt_field() {
+        let failure = WriteFailure::classify(PersistenceError::FencedConflict {
+            expected_seq: Some(41),
+            actual_seq: Some(43),
+            source: Box::new(std::io::Error::other("wrong last sequence")),
+        });
+        let json = capture_tracing(|| {
+            log_write_failure(&failure, WriteFailureContext::default());
+        });
+        let parsed: serde_json::Value =
+            serde_json::from_str(json.lines().next().expect("one log line")).expect("valid json");
+        assert_eq!(
+            parsed["fields"]["attempt"].as_u64(),
+            Some(1),
+            "attempt must ride as a discrete field, 1 for an immediate non-retried failure: {parsed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_with_policy_exhausted_retry_reports_cumulative_attempt_count() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let calls_clone = std::sync::Arc::clone(&calls);
+        let result = write_with_policy(move || {
+            calls_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(PersistenceError::BackendUnavailable {
+                reason: "nats down".to_string(),
+            })
+        })
+        .await;
+        let failure = result.expect_err("must fail after exhausting retries");
+        assert_eq!(
+            failure.attempt,
+            1 + BOUNDED_RETRY_ATTEMPTS,
+            "attempt must count every op() invocation, initial plus every retry"
         );
     }
 

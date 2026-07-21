@@ -8,10 +8,29 @@
 //! dependency tree).
 
 use std::io::Write;
+use std::sync::OnceLock;
 
 use tracing::Level;
 use tracing::field::{Field, Visit};
 use tracing_subscriber::layer::Context;
+
+/// Per-process correlation id (COM-0019:R4/R7, PGN-0022:R1/R4/R5),
+/// generated once and reused for every log line this process emits.
+static RUN_ID: OnceLock<String> = OnceLock::new();
+
+/// Per-instance correlation id: the Cloud Run revision (`K_REVISION`) when
+/// running on Cloud Run, else a process-local generated fallback.
+static INSTANCE_ID: OnceLock<String> = OnceLock::new();
+
+fn run_id() -> &'static str {
+    RUN_ID.get_or_init(|| uuid::Uuid::now_v7().to_string())
+}
+
+fn instance_id() -> &'static str {
+    INSTANCE_ID.get_or_init(|| {
+        std::env::var("K_REVISION").unwrap_or_else(|_| uuid::Uuid::now_v7().to_string())
+    })
+}
 
 /// A [`tracing_subscriber::Layer`] that writes Cloud Logging–compatible JSON
 /// to stdout.
@@ -21,7 +40,14 @@ use tracing_subscriber::layer::Context;
 /// - `message` — the event message
 /// - `time` — RFC 3339 UTC timestamp
 /// - `target` — the module path of the event origin
-/// - all structured fields as top-level keys
+/// - `run_id` — a process-lifetime correlation id, generated once and
+///   reused for every line this process emits (COM-0019:R4/R7,
+///   PGN-0022:R1/R4/R5)
+/// - `instance_id` — the Cloud Run revision (`K_REVISION`) when present,
+///   else a process-local generated fallback
+/// - every event field the caller attached, forwarded generically as a
+///   discrete top-level key (no hardcoded subset; nothing is folded into
+///   `message` except the field literally named `message`)
 ///
 /// No `sourceLocation` field is emitted.
 pub struct CloudLoggingLayer;
@@ -65,6 +91,8 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CloudLoggingLayer 
         );
         json.insert("time".to_string(), serde_json::json!(timestamp));
         json.insert("target".to_string(), serde_json::json!(target));
+        json.insert("run_id".to_string(), serde_json::json!(run_id()));
+        json.insert("instance_id".to_string(), serde_json::json!(instance_id()));
 
         for (k, v) in visitor.fields {
             json.insert(k, v);
@@ -217,6 +245,8 @@ mod tests {
             );
             json.insert("time".to_string(), serde_json::json!(timestamp));
             json.insert("target".to_string(), serde_json::json!(target));
+            json.insert("run_id".to_string(), serde_json::json!(run_id()));
+            json.insert("instance_id".to_string(), serde_json::json!(instance_id()));
             for (k, v) in visitor.fields {
                 json.insert(k, v);
             }
@@ -387,5 +417,80 @@ mod tests {
         assert_eq!(json["severity"], "WARNING");
         assert_ne!(json["message"], "");
         assert_eq!(json["message"], json["target"]);
+    }
+
+    #[test]
+    fn conflict_event_carries_discrete_seq_keys_and_correlation_fields() {
+        let output = capture_stdout(|| {
+            tracing::error!(
+                persist_error_variant = "FencedConflict",
+                category = "Conflict",
+                response = "Fatal",
+                domain_key = "acme/widgets",
+                expected_seq = 41_u64,
+                actual_seq = 43_u64,
+                error = "fenced conflict",
+                "durable write failed"
+            );
+        });
+
+        let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+
+        assert_eq!(json["severity"], "ERROR");
+        assert_eq!(
+            json["expected_seq"].as_u64(),
+            Some(41),
+            "expected_seq must be a discrete top-level u64 key: {json}"
+        );
+        assert_eq!(
+            json["actual_seq"].as_u64(),
+            Some(43),
+            "actual_seq must be a discrete top-level u64 key, separate from expected_seq: {json}"
+        );
+        assert_ne!(
+            json["expected_seq"], json["actual_seq"],
+            "expected_seq and actual_seq must not collapse to the same value"
+        );
+        assert!(
+            !json["message"].as_str().unwrap().contains("expected_seq"),
+            "seq fields must not be folded into the message string: {json}"
+        );
+
+        assert!(
+            json["run_id"].as_str().is_some_and(|s| !s.is_empty()),
+            "run_id must be present as a discrete correlation key: {json}"
+        );
+        assert!(
+            json["instance_id"].as_str().is_some_and(|s| !s.is_empty()),
+            "instance_id must be present as a discrete correlation key: {json}"
+        );
+
+        assert_eq!(json["domain_key"], "acme/widgets");
+        assert_eq!(json["category"], "Conflict");
+        assert_eq!(json["response"], "Fatal");
+        assert_eq!(json["persist_error_variant"], "FencedConflict");
+        assert_eq!(json["error"], "fenced conflict");
+    }
+
+    #[test]
+    fn run_id_is_stable_across_multiple_events_in_same_process() {
+        let first = capture_stdout(|| {
+            tracing::info!("first event");
+        });
+        let second = capture_stdout(|| {
+            tracing::info!("second event");
+        });
+
+        let first_json: serde_json::Value = serde_json::from_str(first.trim()).unwrap();
+        let second_json: serde_json::Value = serde_json::from_str(second.trim()).unwrap();
+
+        assert_eq!(
+            first_json["run_id"], second_json["run_id"],
+            "run_id must be stable across events within the same process"
+        );
+        assert_eq!(
+            first_json["instance_id"], second_json["instance_id"],
+            "instance_id must be stable across events within the same process"
+        );
     }
 }
