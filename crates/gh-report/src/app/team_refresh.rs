@@ -298,9 +298,10 @@ mod tests {
     #[test]
     fn log_tick_failure_emits_none_seq_fields_for_non_conflict_error() {
         let context = WriteFailureContextOwned::default();
-        let error = AppError::Persistence(cherry_pit_storage::PersistenceError::BackendUnavailable {
-            reason: "nats down".to_string(),
-        });
+        let error =
+            AppError::Persistence(cherry_pit_storage::PersistenceError::BackendUnavailable {
+                reason: "nats down".to_string(),
+            });
         let json = capture_tracing(|| log_tick_failure(&error, &context));
         let parsed: serde_json::Value =
             serde_json::from_str(json.lines().next().expect("one log line")).expect("valid json");
