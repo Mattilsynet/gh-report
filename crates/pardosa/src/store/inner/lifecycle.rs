@@ -624,7 +624,12 @@ where
         events.push(event);
         raw_bytes.push(bytes.to_vec());
     }
-    crate::persist::rebuild_dragline_with_frontier(events, frontier, Some(&raw_bytes))
+    crate::persist::rebuild_dragline_with_frontier(
+        events,
+        frontier,
+        Some(&raw_bytes),
+        crate::persist::PRECURSOR_CHECK_MODE,
+    )
 }
 impl<T> EventStore<T, std::fs::File>
 where
@@ -1605,6 +1610,48 @@ mod tests {
         );
     }
 
+    fn decode_pgno_events(bytes: Vec<u8>) -> (Vec<Event<TaggedPayload>>, Vec<Vec<u8>>, Frontier) {
+        let mut reader = Reader::open(Cursor::new(bytes)).expect("reader open");
+        let n = reader.index().len();
+        let mut events = Vec::with_capacity(n);
+        let mut raw_bytes = Vec::with_capacity(n);
+        let mut frontier = Frontier::GENESIS;
+        for i in 0..n {
+            let raw = reader.read_message(i).expect("read_message");
+            frontier = frontier.roll(&raw);
+            let event: Event<TaggedPayload> = from_bytes(&raw).expect("decode");
+            events.push(event);
+            raw_bytes.push(raw);
+        }
+        (events, raw_bytes, frontier)
+    }
+
+    fn decode_frame_events(
+        frames: &[JetStreamDurableFrame],
+    ) -> (Vec<Event<TaggedPayload>>, Vec<Vec<u8>>, Frontier) {
+        let mut events = Vec::with_capacity(frames.len());
+        let mut raw_bytes = Vec::with_capacity(frames.len());
+        let mut frontier = Frontier::GENESIS;
+        for frame in frames {
+            let bytes = frame.as_ref();
+            frontier = frontier.roll(bytes);
+            let event: Event<TaggedPayload> = from_bytes(bytes).expect("decode");
+            events.push(event);
+            raw_bytes.push(bytes.to_vec());
+        }
+        (events, raw_bytes, frontier)
+    }
+
+    fn expect_checked_replay_rejection(err: PardosaError) -> crate::persist::CheckedReplayKind {
+        match err {
+            PardosaError::CursorRead { source } => match *source {
+                crate::persist::Error::CheckedReplay { kind } => kind,
+                other => panic!("expected CheckedReplay, got: {other:?}"),
+            },
+            other => panic!("expected CursorRead, got: {other:?}"),
+        }
+    }
+
     #[test]
     fn precursor_out_of_bounds_warns_on_pgno_arm_and_does_not_reject() {
         let genesis = genesis_event(1);
@@ -1755,6 +1802,174 @@ mod tests {
             !captured.contains("precursor_check_would_fail"),
             "clean log must not emit a precursor warn, got: {captured}"
         );
+    }
+
+    #[test]
+    fn precursor_out_of_bounds_rejects_on_pgno_arm_under_enforce() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, out_of_bounds_successor_event(&genesis_bytes)];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let (decoded, raw, frontier) = decode_pgno_events(pgno_bytes);
+        let err = crate::persist::rebuild_dragline_with_frontier(
+            decoded,
+            frontier,
+            Some(&raw),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect_err("enforce mode must reject a precursor-bounds violation");
+        assert!(
+            matches!(
+                expect_checked_replay_rejection(err),
+                crate::persist::CheckedReplayKind::PrecursorOutOfBounds { .. }
+            ),
+            "expected PrecursorOutOfBounds rejection"
+        );
+    }
+
+    #[test]
+    fn precursor_out_of_bounds_rejects_on_nats_arm_under_enforce() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, out_of_bounds_successor_event(&genesis_bytes)];
+        let frames = jetstream_frames(&events);
+        let (decoded, raw, frontier) = decode_frame_events(&frames);
+        let err = crate::persist::rebuild_dragline_with_frontier(
+            decoded,
+            frontier,
+            Some(&raw),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect_err("enforce mode must reject a precursor-bounds violation");
+        assert!(
+            matches!(
+                expect_checked_replay_rejection(err),
+                crate::persist::CheckedReplayKind::PrecursorOutOfBounds { .. }
+            ),
+            "expected PrecursorOutOfBounds rejection"
+        );
+    }
+
+    #[test]
+    fn precursor_fiber_mismatch_rejects_on_pgno_arm_under_enforce() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, fiber_mismatch_successor_event(&genesis_bytes)];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let (decoded, raw, frontier) = decode_pgno_events(pgno_bytes);
+        let err = crate::persist::rebuild_dragline_with_frontier(
+            decoded,
+            frontier,
+            Some(&raw),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect_err("enforce mode must reject a same-fiber precursor violation");
+        assert!(
+            matches!(
+                expect_checked_replay_rejection(err),
+                crate::persist::CheckedReplayKind::PrecursorFiberMismatch { .. }
+            ),
+            "expected PrecursorFiberMismatch rejection"
+        );
+    }
+
+    #[test]
+    fn precursor_fiber_mismatch_rejects_on_nats_arm_under_enforce() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, fiber_mismatch_successor_event(&genesis_bytes)];
+        let frames = jetstream_frames(&events);
+        let (decoded, raw, frontier) = decode_frame_events(&frames);
+        let err = crate::persist::rebuild_dragline_with_frontier(
+            decoded,
+            frontier,
+            Some(&raw),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect_err("enforce mode must reject a same-fiber precursor violation");
+        assert!(
+            matches!(
+                expect_checked_replay_rejection(err),
+                crate::persist::CheckedReplayKind::PrecursorFiberMismatch { .. }
+            ),
+            "expected PrecursorFiberMismatch rejection"
+        );
+    }
+
+    #[test]
+    fn precursor_hash_mismatch_rejects_on_pgno_arm_under_enforce() {
+        let genesis = genesis_event(1);
+        let events = [genesis, hash_mismatch_successor_event()];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let (decoded, raw, frontier) = decode_pgno_events(pgno_bytes);
+        let err = crate::persist::rebuild_dragline_with_frontier(
+            decoded,
+            frontier,
+            Some(&raw),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect_err("enforce mode must reject a precursor-hash violation");
+        assert!(
+            matches!(
+                expect_checked_replay_rejection(err),
+                crate::persist::CheckedReplayKind::PrecursorHashMismatch { .. }
+            ),
+            "expected PrecursorHashMismatch rejection"
+        );
+    }
+
+    #[test]
+    fn precursor_hash_mismatch_rejects_on_nats_arm_under_enforce() {
+        let genesis = genesis_event(1);
+        let events = [genesis, hash_mismatch_successor_event()];
+        let frames = jetstream_frames(&events);
+        let (decoded, raw, frontier) = decode_frame_events(&frames);
+        let err = crate::persist::rebuild_dragline_with_frontier(
+            decoded,
+            frontier,
+            Some(&raw),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect_err("enforce mode must reject a precursor-hash violation");
+        assert!(
+            matches!(
+                expect_checked_replay_rejection(err),
+                crate::persist::CheckedReplayKind::PrecursorHashMismatch { .. }
+            ),
+            "expected PrecursorHashMismatch rejection"
+        );
+    }
+
+    #[test]
+    fn clean_log_rehydrates_on_pgno_arm_under_enforce() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, clean_successor_event(&genesis_bytes)];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let (decoded, raw, frontier) = decode_pgno_events(pgno_bytes);
+        crate::persist::rebuild_dragline_with_frontier(
+            decoded,
+            frontier,
+            Some(&raw),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect("a clean chain must rehydrate under enforce");
+    }
+
+    #[test]
+    fn clean_log_rehydrates_on_nats_arm_under_enforce() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, clean_successor_event(&genesis_bytes)];
+        let frames = jetstream_frames(&events);
+        let (decoded, raw, frontier) = decode_frame_events(&frames);
+        crate::persist::rebuild_dragline_with_frontier(
+            decoded,
+            frontier,
+            Some(&raw),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect("a clean chain must rehydrate under enforce");
     }
 }
 impl<T> EventStore<T, std::fs::File>

@@ -16,13 +16,16 @@ use std::io::{Read, Seek};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PrecursorCheckMode {
     ObserveOnly,
-    #[expect(
-        dead_code,
-        reason = "P2b (adr-fmt-o1kd3) constructs this variant when the enforce flip lands; P2a keeps PRECURSOR_CHECK_MODE pinned to ObserveOnly"
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "P2b (adr-fmt-o1kd3) wires and tests the Enforce reject path (see lifecycle.rs enforce-mode tests); PRECURSOR_CHECK_MODE ships pinned to ObserveOnly pending NATS-arm baseline validation + prod soak (roadmap adr-fmt-t7t4v P2b enforce-default decision)"
+        )
     )]
     Enforce,
 }
-const PRECURSOR_CHECK_MODE: PrecursorCheckMode = PrecursorCheckMode::ObserveOnly;
+pub(crate) const PRECURSOR_CHECK_MODE: PrecursorCheckMode = PrecursorCheckMode::ObserveOnly;
 fn check_kind_name(kind: &CheckedReplayKind) -> &'static str {
     match kind {
         CheckedReplayKind::EventIdPositionMismatch { .. } => "EventIdPositionMismatch",
@@ -148,8 +151,11 @@ where
         events.push(event);
         raw_bytes.push(bytes);
     }
-    rebuild_dragline_with_frontier(events, frontier, Some(&raw_bytes))
-        .map_err(|e| Error::InvariantViolation(RehydrateInvariant::from(e)))
+    rebuild_dragline_with_frontier(events, frontier, Some(&raw_bytes), PRECURSOR_CHECK_MODE)
+        .map_err(|e| match e {
+            PardosaError::CursorRead { source } => *source,
+            other => Error::InvariantViolation(RehydrateInvariant::from(other)),
+        })
 }
 /// Drain a fallible `Event<T>` stream into the supplied pre-sized
 /// destination Vec, surfacing the first per-item `Err` and short-
@@ -170,6 +176,7 @@ pub(crate) fn rebuild_dragline_with_frontier<T>(
     events: Vec<Event<T>>,
     frontier: Frontier,
     raw_bytes: Option<&[Vec<u8>]>,
+    mode: PrecursorCheckMode,
 ) -> Result<Line<T>, PardosaError> {
     let mut lookup: HashMap<FiberId, (Fiber, FiberState)> = HashMap::new();
     let purged_ids: HashSet<FiberId> = HashSet::new();
@@ -190,9 +197,13 @@ pub(crate) fn rebuild_dragline_with_frontier<T>(
         if let Some(raw) = raw_bytes
             && let Some(kind) = precursor_would_fail(&events, raw, i)
         {
-            match PRECURSOR_CHECK_MODE {
+            match mode {
                 PrecursorCheckMode::ObserveOnly => warn_precursor_would_fail(event, &kind, i),
-                PrecursorCheckMode::Enforce => {}
+                PrecursorCheckMode::Enforce => {
+                    return Err(PardosaError::CursorRead {
+                        source: Box::new(Error::CheckedReplay { kind }),
+                    });
+                }
             }
         }
         let idx = crate::Index::from_decoded(position_u64);
@@ -265,7 +276,7 @@ where
     let events: Vec<Event<T>> = Vec::with_capacity(cap);
     let events = stream_fold_line(&mut stream, events)?;
     let frontier = stream.inner.frontier();
-    rebuild_dragline_with_frontier(events, frontier, None)
+    rebuild_dragline_with_frontier(events, frontier, None, PRECURSOR_CHECK_MODE)
         .map_err(|e| ValidatedReplayError::Replay(Error::InvariantViolation(e.into())))
 }
 /// Append-shape sibling of [`persist_with_source`] (roadmap IO-PG-1).
