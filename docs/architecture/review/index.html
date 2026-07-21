@@ -32,7 +32,7 @@
     <br><strong>Re-evaluated 2026-07-21:</strong> N2 (hash-chain tamper-evidence)
     moved from DRIFT to MATCH after end-to-end remediation shipped in
     <code>v0.1.43</code> and was flipped to <code>Enforce</code> in production —
-    two open DRIFT rows remain.
+    one open DRIFT row remains.
   </p>
 
   <h2 id="evidence-table">Evidence table</h2>
@@ -41,8 +41,8 @@
     where intended design and code did not cleanly agree. The set was three DRIFT
     rows; <strong>N2 (hash-chain tamper-evidence) was remediated end-to-end and
     resolved 2026-07-21</strong> (see its row, now MATCH), leaving
-    <strong>two open DRIFT rows</strong>: cherry-pit-merger orphaned wiring, and
-    gh-report topology self-admitted in prose. N2 is retained on this page as a
+    <strong>one open DRIFT row</strong>: cherry-pit-merger orphaned wiring. N2 is
+    retained on this page as a
     resolved row for the audit trail. A fourth row on first pass —
     cherry-pit-app dependency breadth — was re-verified to agree with the code
     (the Cargo.toml
@@ -136,11 +136,6 @@
         <td>cherry-pit-merger is the command-side single-task serialiser, an alternative/complement to cherry-pit-app for command dispatch.</td>
         <td>ADR tree: <cite>CHE-0069</cite> "cherry-pit-merger — Command-Side Single-Task Serialiser" [B] Accepted (References CHE-0017, CHE-0029, CHE-0030, CHE-0024, CHE-0042, CHE-0073), <cite>CHE-0085</cite> "Merger/App Command-Side Choice Model" — no README found for the crate itself (gap noted in the prose digest).</td>
         <td><code>crates/cherry-pit-merger/Cargo.toml</code> [dependencies] &rarr; cherry-pit-core, tokio, tracing — but <strong>no in-scope crate depends on cherry-pit-merger</strong> (not wired into cherry-pit-app's deps, nor gh-report's, nor any other in-scope <code>Cargo.toml</code>). Confirmed graph-orphan at <a href="../c4/level2-containers.html">C4 L2 discrepancies</a>. <strong>2026-07-20 correction:</strong> the orphan is <strong>anticipated by-design, not oversight</strong> — <cite>CHE-0085:R3</cite> states "an absent family consumer of merger is <em>expected state</em> rather than architecture drift". Merger and App are siblings selected per aggregate concurrency profile (<cite>CHE-0085:R1/R2</cite>), so the missing edge is the ratified steady state until a consumer with a single-flight create-or-append profile wires it.</td>
-      </tr>
-      <tr>
-        <td>gh-report's runtime topology conforms to <code>cherry-pit-app::App::run</code>, with RunService/RepoService/WebhookService ApplicationServices, <code>publish_or_trace</code>, and a DomainEvent-carrying InProcessEventBus.</td>
-        <td>gh-report DESIGN.md §4 (<cite>BC-9</cite>; <cite>CHE-0051</cite>) — but DESIGN.md's <strong>own corrigenda</strong> (W1/W2 truth-alignment notes) state several of these components "never shipped in this form": a self-documented intended-vs-actual gap in the prose itself, prior to any code check.</td>
-        <td>Code-derived C4 L3 lists gh-report's actual <code>app/</code> module set as <code>state, daemon, collect, evidence_service, github_infra, team_refresh, webhook_context, work_queue, worker_pool, write_policy</code> (<code>crates/gh-report/src/app/*.rs</code>) — the named ApplicationServices and <code>publish_or_trace</code> abstractions from DESIGN.md §4 do not appear at all, and the designed <em>DomainEvent-carrying</em> InProcessEventBus is likewise absent: the <code>cherry_pit_app::InProcessEventBus</code> type <em>is</em> wired (<code>collect.rs:27,588–642</code>) but only as <code>InProcessEventBus::&lt;SweepTimeoutEvent&gt;</code>, a scheduler sweep-timeout concern, never a <code>DomainEvent</code> bus — exactly the intended-vs-actual gap DESIGN.md §4's own W2 corrigendum records.</td>
       </tr>
     </tbody>
   </table>
@@ -238,17 +233,10 @@
       first-hand apply log.)
     </li>
     <li>
-      <strong>DESIGN.md's own W1/W2 corrigenda (row 13) are the strongest evidence the
-      prose sources are self-aware of drift</strong> — the document names its own gap
-      (ApplicationServices/publish_or_trace/InProcessEventBus never shipped) before
-      any code comparison occurs. The C4 module inventory for gh-report's
-      <code>app/</code> confirms the admission: none of those names appear.
-    </li>
-    <li>
       <strong>Framed against the Solon thesis:</strong> the repo's bet is that a
       small set of enabling constraints, enforced where the type system and build
-      graph can enforce them, collapses the space of possible mistakes. Rows 11
-      and 13 remain counter-evidence: places where intent outran shipped code, or
+      graph can enforce them, collapses the space of possible mistakes. Row 11
+      remains counter-evidence: a place where intent outran shipped code, or
       wiring diverged from the stated rule.
       N2 was the same shape at root — a capability whose SEC-0011 intent was
       unrealised end-to-end, with the precursor chain running on one backend arm
@@ -260,15 +248,14 @@
       remaining honesty is the tracked residual: production runs <code>Enforce</code>
       via env while the shipped code default stays <code>ObserveOnly</code>, and
       SEC-0011 (b) is held as an unratified proposal until that default flips — named
-      openly rather than papered over, exactly as DESIGN.md's own W1/W2 notes do for
-      row 13.
+      openly rather than papered over.
     </li>
     <li>
       <strong>Deviation summary</strong>: this page reports only the non-green
-      findings. <strong>Result: 2 open DRIFT rows + 1 resolved (N2).</strong> The
-      claims that verified cleanly are out of scope here; the open deviations
-      concentrate in exactly the areas the source beads already flagged as gaps
-      (cherry-pit-merger wiring, DESIGN.md's self-admitted W1/W2 corrigenda).
+      findings. <strong>Result: 1 open DRIFT row + 1 resolved (N2).</strong> The
+      claims that verified cleanly are out of scope here; the open deviation
+      concentrates in exactly the area the source beads already flagged as a gap
+      (cherry-pit-merger wiring).
       <strong>N2 (hash-chain tamper-evidence) closed this pass</strong>: the
       backend-parity DRIFT — precursor-hash verification on the <code>.pgno</code>
       arm but not the production NATS arm — was remediated end-to-end by roadmap
