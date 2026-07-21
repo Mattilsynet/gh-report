@@ -2236,8 +2236,7 @@ mod tests {
     }
 
     #[test]
-    fn precursor_hash_mismatch_on_validated_path_rejects_via_upstream_stream_checked_not_dropped()
-    {
+    fn precursor_hash_mismatch_on_validated_path_rejects_via_upstream_stream_checked_not_dropped() {
         // Guards against the double-run/drop failure mode named in
         // the mission brief: raw_bytes=None must not silently skip
         // the precursor-hash check just because
