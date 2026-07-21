@@ -9,22 +9,12 @@ use std::io::{Read, Seek};
 use std::iter::FusedIterator;
 use std::marker::PhantomData;
 /// Pure contiguity predicate shared by the streaming verify chain
-/// (`CheckedEventStream`) and the dragline rebuild path
-/// (`rebuild_dragline_with_frontier`), so the comparison itself has
-/// exactly one implementation. Each caller wraps the boolean result
-/// in its own error surface: `CheckedReplayKind` here (verify stage),
-/// `IntegrityKind` in the rebuild path (unrelated builder-invariant
-/// consumers at `dragline::state`/`dragline::integrity` keep
-/// `IntegrityKind` unaffected) — the ratified reconciliation recorded
-/// against adr-fmt-lutpd finding #2 / adr-fmt-ibi23.
+/// and the dragline rebuild path.
 pub(crate) fn event_id_matches_position(event_id: u64, position: u64) -> bool {
     event_id == position
 }
 /// Pure precursor-bounds check shared by the streaming verify chain
-/// and the batch rebuild path (adr-fmt-lutpd finding #2). Returns
-/// `Ok(None)` when the event carries no precursor, `Ok(Some(pidx))`
-/// for a valid strictly-earlier line position, or the
-/// `PrecursorOutOfBounds` violation otherwise.
+/// and the batch rebuild path.
 pub(crate) fn precursor_bounds<T>(
     event: &Event<T>,
     position: usize,
@@ -48,12 +38,7 @@ pub(crate) fn precursor_bounds<T>(
     }
 }
 /// Pure same-fiber + precursor-hash check shared by the streaming
-/// verify chain and the batch rebuild path (adr-fmt-lutpd finding
-/// #2), given the already-located prior event's fiber id and
-/// canonical-byte hash — the two call sites differ only in how they
-/// obtain those two values (`Reader::read_message` re-read here,
-/// `raw_bytes` index in the rebuild path; ADR-fmt-ibi23 diff #2,
-/// intentionally preserved).
+/// verify chain and the batch rebuild path.
 pub(crate) fn precursor_matches<T>(
     event: &Event<T>,
     precursor_index: u64,
@@ -78,9 +63,8 @@ pub(crate) fn precursor_matches<T>(
     }
     Ok(())
 }
-/// Emit the non-blocking `precursor_check_would_fail` warn shared by
-/// both `ObserveOnly` call sites (the streaming verify chain and the
-/// batch rebuild path). Never logs the domain payload.
+/// Emit the non-blocking `precursor_check_would_fail` warn. Never
+/// logs the domain payload.
 pub(crate) fn warn_precursor_would_fail<T>(
     event: &Event<T>,
     kind: &CheckedReplayKind,
@@ -234,9 +218,7 @@ where
         }
         Ok(())
     }
-    /// Dispatch a precursor-check violation per [`Self::mode`]:
-    /// `Enforce` surfaces the typed error as today; `ObserveOnly`
-    /// emits the non-blocking warn and lets the stream continue.
+    /// Dispatch a precursor-check violation per [`Self::mode`].
     fn handle_precursor_violation(
         &self,
         event: &Event<T>,
@@ -327,11 +309,9 @@ where
 {
     stream_checked_with_mode(source, resume_after, PrecursorCheckMode::Enforce)
 }
-/// Mode-aware sibling of [`stream_checked`] (adr-fmt-lutpd finding
-/// #2 / adr-fmt-ibi23): the ratified home for
-/// [`PrecursorCheckMode`] on the streaming verify chain. Crate-
-/// internal — external callers get [`PrecursorCheckMode::Enforce`]
-/// via the public [`stream_checked`].
+/// Mode-aware sibling of [`stream_checked`]. Crate-internal —
+/// external callers get [`PrecursorCheckMode::Enforce`] via the
+/// public [`stream_checked`].
 ///
 /// # Errors
 ///

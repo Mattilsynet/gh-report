@@ -2124,15 +2124,6 @@ mod tests {
         );
     }
 
-    // ---- adr-fmt-lutpd finding #2 equivalence gate (adr-fmt-apicu
-    // increment #2): the streaming verify chain (`checked.rs`) and
-    // the batch rebuild path (`rehydrate.rs`) shared five per-event
-    // check shapes with two independent implementations. These
-    // tests pin the post-unify contract: the same crafted violation
-    // shape classifies identically on both arms (pgno, JetStream),
-    // under both modes where applicable, and precisely once on the
-    // validated (`stream_validated` -> `stream_checked`) path.
-
     #[test]
     fn contiguity_mismatch_rejects_on_pgno_arm_as_checked_replay_kind() {
         let genesis = genesis_event(1);
@@ -2183,10 +2174,6 @@ mod tests {
 
     #[test]
     fn contiguity_mismatch_rejects_on_pgno_arm_even_under_observe_only_mode() {
-        // Diff #3 (adr-fmt-apicu SOURCE-VERIFIED CONTEXT): contiguity
-        // is unconditional in both pre-merge implementations — unlike
-        // the precursor bounds/fiber/hash triad, `PrecursorCheckMode`
-        // does not gate it. This must survive the unify.
         let genesis = genesis_event(1);
         let genesis_bytes = pardosa_wire::to_vec(&genesis);
         let events = [genesis, contiguity_mismatch_successor_event(&genesis_bytes)];
@@ -2209,12 +2196,6 @@ mod tests {
 
     #[test]
     fn contiguity_mismatch_on_validated_path_rejects_via_upstream_stream_checked() {
-        // raw_bytes=None arm: the validated path relies on
-        // `stream_validated` -> `stream_checked` to enforce
-        // contiguity upstream, before `rebuild_dragline_with_frontier`
-        // ever sees the event. Confirms enforcement fires exactly
-        // once (via the streaming chain), not zero times, and not a
-        // second time via the builder's own IntegrityKind path.
         let genesis = genesis_event(1);
         let genesis_bytes = pardosa_wire::to_vec(&genesis);
         let events = [genesis, contiguity_mismatch_successor_event(&genesis_bytes)];
@@ -2237,12 +2218,6 @@ mod tests {
 
     #[test]
     fn precursor_hash_mismatch_on_validated_path_rejects_via_upstream_stream_checked_not_dropped() {
-        // Guards against the double-run/drop failure mode named in
-        // the mission brief: raw_bytes=None must not silently skip
-        // the precursor-hash check just because
-        // `rebuild_dragline_with_frontier` itself only gates
-        // precursor checks on `raw_bytes.is_some()`. The check must
-        // still fire once, via `stream_validated` -> `stream_checked`.
         let genesis = genesis_event(1);
         let events = [genesis, hash_mismatch_successor_event()];
         let pgno_bytes = write_pgno_bytes(&events);

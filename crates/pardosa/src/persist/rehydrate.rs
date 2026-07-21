@@ -178,20 +178,10 @@ pub(crate) fn rebuild_dragline_with_frontier<T>(
                 position: position_u64,
             };
             return Err(if raw_bytes.is_some() {
-                // Verify-stage arms (pgno/JetStream, raw_bytes Some):
-                // unified onto the same `CheckedReplayKind` surface as
-                // the streaming verify chain (adr-fmt-ibi23).
                 PardosaError::CursorRead {
                     source: Box::new(Error::CheckedReplay { kind }),
                 }
             } else {
-                // Validated arm (raw_bytes None): contiguity was
-                // already enforced upstream by
-                // `stream_validated`/`stream_checked`; this is
-                // builder-only defense-in-depth and keeps the
-                // pre-existing `IntegrityKind` surface so
-                // `RehydrateInvariant::from(PardosaError)` (which has
-                // no `CursorRead` arm) is never asked to convert it.
                 PardosaError::FiberInvariant(crate::error::FiberInvariantKind::Integrity(
                     crate::error::IntegrityKind::EventIdPositionMismatch {
                         event_id: event.event_id().value(),
