@@ -21,9 +21,11 @@ fn backend_rehydrate_from_pgno_bytes_round_trips_without_opening_a_file() {
         !pgno_bytes.is_empty(),
         "preflight: persist_with_source must produce a non-empty .pgno blob",
     );
-    let rehydrated: Line<u64> =
-        crate::backend::rehydrate::from_pgno_bytes_unchecked::<u64>(&pgno_bytes)
-            .expect("backend rehydrate from pgno bytes");
+    let rehydrated: Line<u64> = crate::backend::rehydrate::from_pgno_bytes_unchecked::<u64>(
+        &pgno_bytes,
+        crate::persist::PrecursorCheckMode::ObserveOnly,
+    )
+    .expect("backend rehydrate from pgno bytes");
     let recovered_line: Vec<u64> = rehydrated
         .read_line()
         .iter()
@@ -73,9 +75,11 @@ fn backend_rehydrate_validated_from_pgno_bytes_round_trips_without_opening_a_fil
     let mut sink: Cursor<Vec<u8>> = Cursor::new(Vec::new());
     persist_with_source(&line, &mut sink, None).expect("persist to in-memory sink (validated arm)");
     let pgno_bytes: Vec<u8> = sink.into_inner();
-    let rehydrated: Line<Marker> =
-        crate::backend::rehydrate::from_pgno_bytes_validated::<Marker>(&pgno_bytes)
-            .expect("backend rehydrate validated from pgno bytes");
+    let rehydrated: Line<Marker> = crate::backend::rehydrate::from_pgno_bytes_validated::<Marker>(
+        &pgno_bytes,
+        crate::persist::PrecursorCheckMode::ObserveOnly,
+    )
+    .expect("backend rehydrate validated from pgno bytes");
     let recovered_line: Vec<u64> = rehydrated
         .read_line()
         .iter()

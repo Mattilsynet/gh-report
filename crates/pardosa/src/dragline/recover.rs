@@ -95,7 +95,11 @@ mod tests {
     #[test]
     fn reconstruct_matches_live_oracle_with_no_watermark() {
         let (bytes, live_anchors) = live_fixture("recover", 5);
-        let mut rehydrated: Line<u64> = rehydrate(Cursor::new(bytes)).expect("rehydrate");
+        let mut rehydrated: Line<u64> = rehydrate(
+            Cursor::new(bytes),
+            crate::persist::PrecursorCheckMode::ObserveOnly,
+        )
+        .expect("rehydrate");
         rehydrated.set_recover_config_for_test("recover".to_owned(), 1);
         let recovered = reconstruct_unpublished_anchors(&rehydrated, None);
         let recovered_pairs: Vec<(String, [u8; 32])> = recovered
@@ -110,7 +114,11 @@ mod tests {
     #[test]
     fn watermark_covers_entire_line_emits_nothing() {
         let (bytes, _) = live_fixture("covered", 3);
-        let mut d: Line<u64> = rehydrate(Cursor::new(bytes)).expect("rehydrate");
+        let mut d: Line<u64> = rehydrate(
+            Cursor::new(bytes),
+            crate::persist::PrecursorCheckMode::ObserveOnly,
+        )
+        .expect("rehydrate");
         d.set_recover_config_for_test("covered".to_owned(), 1);
         let last = EventId::new(2);
         let recovered = reconstruct_unpublished_anchors(&d, Some(last));
@@ -122,7 +130,11 @@ mod tests {
     #[test]
     fn watermark_below_last_anchor_emits_tail_only() {
         let (bytes, _) = live_fixture("tail", 5);
-        let mut d: Line<u64> = rehydrate(Cursor::new(bytes)).expect("rehydrate");
+        let mut d: Line<u64> = rehydrate(
+            Cursor::new(bytes),
+            crate::persist::PrecursorCheckMode::ObserveOnly,
+        )
+        .expect("rehydrate");
         d.set_recover_config_for_test("tail".to_owned(), 1);
         let recovered = reconstruct_unpublished_anchors(&d, Some(EventId::new(2)));
         assert_eq!(recovered.len(), 2, "tail-only emission above watermark");

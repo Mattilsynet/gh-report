@@ -1,13 +1,74 @@
-use super::error::{Error, RehydrateInvariant, ValidatedReplayError};
+use super::error::{CheckedReplayKind, Error, RehydrateInvariant, ValidatedReplayError};
 use super::validated::stream_validated;
 use crate::dragline::Line;
 use crate::frontier::Frontier;
 use crate::{Event, Fiber, FiberId, FiberState, PardosaError};
 use pardosa_file::{Reader, Syncable, Writer};
 use pardosa_schema::GenomeSafe;
-use pardosa_wire::{Decode, Encode, Validate, from_bytes, to_vec};
+use pardosa_wire::{Decode, Encode, Validate, from_bytes, precursor_hash_of, to_vec};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek};
+/// Precursor-check enforcement mode consulted by
+/// [`rebuild_dragline_with_frontier`] (roadmap `adr-fmt-t7t4v` P2a/P2b,
+/// D2b). `ObserveOnly` computes the three precursor checks and emits a
+/// non-blocking warn per would-fail; `Enforce` rejects instead.
+/// [`precursor_check_mode`] resolves the runtime-selectable mode
+/// (mission `adr-fmt-qkq9l` Part A, PGN-0010 P2b amendment); the
+/// shipped default (env unset or unrecognised) stays `ObserveOnly`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrecursorCheckMode {
+    ObserveOnly,
+    Enforce,
+}
+/// Environment variable that runtime-selects [`PrecursorCheckMode`]
+/// per store-open (mission `adr-fmt-qkq9l` Part A). `enforce`
+/// (case-insensitive) selects [`PrecursorCheckMode::Enforce`]; `observe`,
+/// unset, empty, or any unrecognised value fails safe to
+/// [`PrecursorCheckMode::ObserveOnly`] — the shipped default is
+/// unchanged.
+pub(crate) const PRECURSOR_CHECK_MODE_ENV: &str = "PARDOSA_PRECURSOR_CHECK_MODE";
+/// Pure resolution of `raw` (the [`PRECURSOR_CHECK_MODE_ENV`] value, if
+/// any) to a [`PrecursorCheckMode`], with no environment access —
+/// separated from [`precursor_check_mode`] so the fail-safe-default
+/// and unrecognised-value cases are unit-testable without mutating
+/// process state.
+fn resolve_precursor_check_mode(raw: Option<&str>) -> PrecursorCheckMode {
+    match raw {
+        Some(value) if value.eq_ignore_ascii_case("enforce") => PrecursorCheckMode::Enforce,
+        Some(_) | None => PrecursorCheckMode::ObserveOnly,
+    }
+}
+/// Resolve the runtime-selectable [`PrecursorCheckMode`] by reading
+/// [`PRECURSOR_CHECK_MODE_ENV`] at the call site (per store-open, not
+/// cached behind a process-global) so tests toggling the variable
+/// stay order-independent.
+pub(crate) fn precursor_check_mode() -> PrecursorCheckMode {
+    resolve_precursor_check_mode(std::env::var(PRECURSOR_CHECK_MODE_ENV).ok().as_deref())
+}
+/// Precursor bounds/fiber/hash check for the batch rebuild path,
+/// delegating to the pure functions shared with the streaming verify
+/// chain in [`super::checked`] (adr-fmt-lutpd finding #2 /
+/// adr-fmt-ibi23) — this replaces the former standalone
+/// `precursor_would_fail` duplicate.
+fn rebuild_precursor_check<T>(
+    events: &[Event<T>],
+    raw_bytes: &[Vec<u8>],
+    position: usize,
+    position_u64: u64,
+) -> Result<(), CheckedReplayKind> {
+    let event = &events[position];
+    let Some(pidx) = super::checked::precursor_bounds(event, position, position_u64)? else {
+        return Ok(());
+    };
+    let prior_event = &events[pidx];
+    let prior_hash = precursor_hash_of(&raw_bytes[pidx]);
+    let precursor_index = event
+        .precursor()
+        .as_index()
+        .expect("precursor_bounds confirmed a precursor index")
+        .value();
+    super::checked::precursor_matches(event, precursor_index, prior_event.fiber_id(), prior_hash)
+}
 /// Write a `Line`'s full event line to `sink` as a `.pgno`
 /// container, optionally embedding `schema_source` in the footer.
 ///
@@ -54,7 +115,10 @@ where
 /// [`Error::File`] / [`Error::SchemaHashMismatch`] on container
 /// header errors; [`Error::Decode`] on per-event decode failure;
 /// [`Error::InvariantViolation`] on structural rebuild failure.
-pub(crate) fn rehydrate_unchecked<T, R>(source: R) -> Result<Line<T>, Error>
+pub(crate) fn rehydrate_unchecked<T, R>(
+    source: R,
+    mode: PrecursorCheckMode,
+) -> Result<Line<T>, Error>
 where
     T: Decode + GenomeSafe,
     R: Read + Seek,
@@ -67,15 +131,19 @@ where
     }
     let n = reader.index().len();
     let mut events: Vec<Event<T>> = Vec::with_capacity(n);
+    let mut raw_bytes: Vec<Vec<u8>> = Vec::with_capacity(n);
     let mut frontier = Frontier::GENESIS;
     for i in 0..n {
         let bytes = reader.read_message(i).map_err(Error::File)?;
         frontier = frontier.roll(&bytes);
         let event: Event<T> = from_bytes(&bytes).map_err(Error::Decode)?;
         events.push(event);
+        raw_bytes.push(bytes);
     }
-    rebuild_dragline_with_frontier(events, frontier)
-        .map_err(|e| Error::InvariantViolation(RehydrateInvariant::from(e)))
+    rebuild_dragline_with_frontier(events, frontier, Some(&raw_bytes), mode).map_err(|e| match e {
+        PardosaError::CursorRead { source } => *source,
+        other => Error::InvariantViolation(RehydrateInvariant::from(other)),
+    })
 }
 /// Drain a fallible `Event<T>` stream into the supplied pre-sized
 /// destination Vec, surfacing the first per-item `Err` and short-
@@ -92,19 +160,11 @@ where
     }
     Ok(dst)
 }
-/// Bound-free structural rebuild used by both rehydrate paths
-/// (ADR-0020 reader bound). Trusts the supplied `frontier` (rolled
-/// from raw persisted bytes by the caller) and walks the line to
-/// derive the canonical `(lookup, next_id, next_event_id)` set with
-/// the same algorithm `verify_supplied_against_canonical` enforces.
-///
-/// Skips precursor-hash validation by construction — the "unchecked"
-/// rehydrate path contract; the checked/validated streams perform
-/// per-event precursor-hash checks on raw bytes before this is
-/// reached on the validated path.
-fn rebuild_dragline_with_frontier<T>(
+pub(crate) fn rebuild_dragline_with_frontier<T>(
     events: Vec<Event<T>>,
     frontier: Frontier,
+    raw_bytes: Option<&[Vec<u8>]>,
+    mode: PrecursorCheckMode,
 ) -> Result<Line<T>, PardosaError> {
     let mut lookup: HashMap<FiberId, (Fiber, FiberState)> = HashMap::new();
     let purged_ids: HashSet<FiberId> = HashSet::new();
@@ -112,15 +172,38 @@ fn rebuild_dragline_with_frontier<T>(
     let mut next_event_id: u64 = 0;
     for (i, event) in events.iter().enumerate() {
         let position_u64 = u64::try_from(i).expect("line position fits u64");
-        if event.event_id().value() != position_u64 {
-            return Err(PardosaError::FiberInvariant(
-                crate::error::FiberInvariantKind::Integrity(
+        if !super::checked::event_id_matches_position(event.event_id().value(), position_u64) {
+            let kind = CheckedReplayKind::EventIdPositionMismatch {
+                event_id: event.event_id().value(),
+                position: position_u64,
+            };
+            return Err(if raw_bytes.is_some() {
+                PardosaError::CursorRead {
+                    source: Box::new(Error::CheckedReplay { kind }),
+                }
+            } else {
+                PardosaError::FiberInvariant(crate::error::FiberInvariantKind::Integrity(
                     crate::error::IntegrityKind::EventIdPositionMismatch {
                         event_id: event.event_id().value(),
                         position: position_u64,
                     },
-                ),
-            ));
+                ))
+            });
+        }
+        if let Some(raw) = raw_bytes {
+            match rebuild_precursor_check(&events, raw, i, position_u64) {
+                Ok(()) => {}
+                Err(kind) => match mode {
+                    PrecursorCheckMode::ObserveOnly => {
+                        super::checked::warn_precursor_would_fail(event, &kind, i);
+                    }
+                    PrecursorCheckMode::Enforce => {
+                        return Err(PardosaError::CursorRead {
+                            source: Box::new(Error::CheckedReplay { kind }),
+                        });
+                    }
+                },
+            }
         }
         let idx = crate::Index::from_decoded(position_u64);
         let did = event.fiber_id();
@@ -182,6 +265,7 @@ fn rebuild_dragline_with_frontier<T>(
 /// [`Error::InvariantViolation`].
 pub(crate) fn rehydrate_validated<T, R>(
     source: R,
+    mode: PrecursorCheckMode,
 ) -> Result<Line<T>, ValidatedReplayError<<T as Validate>::Error>>
 where
     T: Decode + GenomeSafe + Validate,
@@ -192,7 +276,7 @@ where
     let events: Vec<Event<T>> = Vec::with_capacity(cap);
     let events = stream_fold_line(&mut stream, events)?;
     let frontier = stream.inner.frontier();
-    rebuild_dragline_with_frontier(events, frontier)
+    rebuild_dragline_with_frontier(events, frontier, None, mode)
         .map_err(|e| ValidatedReplayError::Replay(Error::InvariantViolation(e.into())))
 }
 /// Append-shape sibling of [`persist_with_source`] (roadmap IO-PG-1).
@@ -234,4 +318,52 @@ where
     }
     writer.finish()?;
     Ok(())
+}
+#[cfg(test)]
+mod precursor_check_mode_tests {
+    use super::{PrecursorCheckMode, resolve_precursor_check_mode};
+
+    #[test]
+    fn env_unset_resolves_to_observe_only() {
+        assert_eq!(
+            resolve_precursor_check_mode(None),
+            PrecursorCheckMode::ObserveOnly
+        );
+    }
+
+    #[test]
+    fn env_empty_resolves_to_observe_only() {
+        assert_eq!(
+            resolve_precursor_check_mode(Some("")),
+            PrecursorCheckMode::ObserveOnly
+        );
+    }
+
+    #[test]
+    fn env_unrecognised_value_resolves_to_observe_only() {
+        assert_eq!(
+            resolve_precursor_check_mode(Some("not-a-real-mode")),
+            PrecursorCheckMode::ObserveOnly
+        );
+    }
+
+    #[test]
+    fn env_observe_resolves_to_observe_only() {
+        assert_eq!(
+            resolve_precursor_check_mode(Some("observe")),
+            PrecursorCheckMode::ObserveOnly
+        );
+    }
+
+    #[test]
+    fn env_enforce_case_insensitive_resolves_to_enforce() {
+        assert_eq!(
+            resolve_precursor_check_mode(Some("ENFORCE")),
+            PrecursorCheckMode::Enforce
+        );
+        assert_eq!(
+            resolve_precursor_check_mode(Some("enforce")),
+            PrecursorCheckMode::Enforce
+        );
+    }
 }

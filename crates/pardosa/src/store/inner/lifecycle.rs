@@ -3,687 +3,21 @@ use super::{
     ValidatedReplayError,
 };
 use crate::authoritative::{AuthoritativeBackend, BackendDispatch, admit_into_dispatch};
-use crate::backend::jetstream::JetStreamDurableFrame;
-use crate::backend::rehydrate::from_pgno_bytes_unchecked;
 use crate::dragline::Dragline;
-use crate::event::Event;
-use crate::frontier::Frontier;
-use pardosa_file::manifest::{
-    ManifestRecord, RecoveredPrefix, RecoveryError, RecoveryOutcome, RecoveryReaderErrorKind,
-    finalize_recovered_prefix, recover_footerless_prefix,
+
+mod jetstream;
+mod pgno;
+
+use jetstream::{fetch_gated_jetstream_frames, rehydrate_jetstream_frames, schema_tag};
+pub use pgno::{
+    OfflineRecoveryPlan, OfflineRecoveryStatus, plan_offline_pgno_recovery, recover_offline_pgno,
 };
-use pardosa_file::{FileError, Reader, Syncable};
-use pardosa_wire::from_bytes;
-use std::io::{Cursor, Seek};
-fn pgno_manifest_path(path: &Path) -> PathBuf {
-    let mut os = path.as_os_str().to_os_string();
-    os.push(".pgix");
-    PathBuf::from(os)
-}
-fn clean_recovered_prefix(path: &Path) -> Result<(RecoveredPrefix, bool), crate::persist::Error> {
-    let manifest_path = pgno_manifest_path(path);
-    if manifest_path.exists()
-        && let Ok(pgno_bytes) = std::fs::read(path)
-        && let Ok(manifest_bytes) = std::fs::read(&manifest_path)
-        && let Ok(recovered) = recover_footerless_prefix(&pgno_bytes, &manifest_bytes)
-    {
-        return Ok((recovered, true));
-    }
-    let file = std::fs::File::open(path).map_err(crate::persist::Error::Io)?;
-    let reader = Reader::open(file).map_err(crate::persist::Error::File)?;
-    let records: Vec<ManifestRecord> = reader
-        .index()
-        .iter()
-        .map(|entry| ManifestRecord {
-            offset: entry.offset(),
-            size: entry.size(),
-            checksum: entry.checksum(),
-        })
-        .collect();
-    let data_end = records.iter().try_fold(
-        pardosa_file::format::messages_offset(reader.schema_size()) as u64,
-        |_, record| {
-            record
-                .offset
-                .checked_add(u64::from(record.size))
-                .ok_or(FileError::IndexOverflow)
-        },
-    )?;
-    Ok((
-        RecoveredPrefix {
-            schema_hash: reader.schema_hash(),
-            page_class: reader.page_class(),
-            schema_size: reader.schema_size(),
-            schema_source: reader.schema_source().map(str::to_owned),
-            records,
-            data_end,
-            frontier: None,
-        },
-        false,
-    ))
-}
-fn recover_footerless_pgno_at_path(
-    path: &Path,
-) -> Result<(RecoveredPrefix, u64), crate::persist::Error> {
-    let manifest_path = pgno_manifest_path(path);
-    if !manifest_path.exists() {
-        return Err(crate::persist::Error::File(FileError::InvalidIndex));
-    }
-    let pgno_bytes = std::fs::read(path).map_err(crate::persist::Error::Io)?;
-    let original_file_len = pgno_bytes.len() as u64;
-    let manifest_bytes = std::fs::read(&manifest_path).map_err(crate::persist::Error::Io)?;
-    let recovered = recover_footerless_prefix(&pgno_bytes, &manifest_bytes).map_err(|source| {
-        crate::persist::Error::File(FileError::TornWriteRecovery {
-            source: Box::new(source),
-        })
-    })?;
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)
-        .map_err(crate::persist::Error::Io)?;
-    finalize_recovered_prefix(&recovered, &mut file).map_err(crate::persist::Error::File)?;
-    <std::fs::File as Syncable>::sync_data(&mut file).map_err(crate::persist::Error::Io)?;
-    Ok((recovered, original_file_len))
-}
+use pgno::{open_rw_seek_and_rehydrate_unchecked, open_rw_seek_and_rehydrate_validated};
 
-/// Read-only plan for an offline `.pgno` recovery attempt.
-///
-/// The plan is produced by the same manifest recovery core used by
-/// [`recover_offline_pgno`]. It does not open the `.pgno` for writing
-/// and does not finalize or truncate the file.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct OfflineRecoveryPlan {
-    pub schema_hash: u128,
-    pub manifest_message_count: u64,
-    pub records_preserved: u64,
-    pub data_end: u64,
-    pub file_len: u64,
-    pub truncated_bytes: u64,
-    pub footer_valid: bool,
-    pub status: OfflineRecoveryStatus,
-}
-
-/// Footer/read status observed before offline recovery is attempted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum OfflineRecoveryStatus {
-    Recoverable {
-        reader_error: RecoveryReaderErrorKind,
-    },
-    AlreadySealed,
-}
-
-fn recovery_declined(source: RecoveryError) -> PardosaError {
-    PardosaError::CursorRead {
-        source: Box::new(crate::persist::Error::File(FileError::TornWriteRecovery {
-            source: Box::new(source),
-        })),
-    }
-}
-
-fn reader_recovery_status(pgno_bytes: &[u8]) -> Result<OfflineRecoveryStatus, PardosaError> {
-    match Reader::open(Cursor::new(pgno_bytes)) {
-        Ok(_) => Ok(OfflineRecoveryStatus::AlreadySealed),
-        Err(err) => RecoveryReaderErrorKind::from_file_error(&err)
-            .map(|reader_error| OfflineRecoveryStatus::Recoverable { reader_error })
-            .ok_or_else(|| {
-                persist_error_to_cursor_read(crate::persist::Error::File(
-                    FileError::TornWriteRecovery {
-                        source: Box::new(RecoveryError::Manifest(err)),
-                    },
-                ))
-            }),
-    }
-}
-
-/// Compute the offline `.pgno` recovery plan without mutating `path`.
-///
-/// # Errors
-///
-/// Returns [`PardosaError::CursorRead`] when the companion `.pgix`
-/// manifest is absent or when the existing recovery core declines the
-/// prefix, including durable-region body checksum mismatches and
-/// manifest frontier mismatches.
-pub fn plan_offline_pgno_recovery(path: &Path) -> Result<OfflineRecoveryPlan, PardosaError> {
-    let manifest_path = pgno_manifest_path(path);
-    if !manifest_path.exists() {
-        return Err(persist_error_to_cursor_read(crate::persist::Error::File(
-            FileError::TornWriteRecovery {
-                source: Box::new(RecoveryError::Manifest(FileError::InvalidIndex)),
-            },
-        )));
-    }
-    let pgno_bytes = std::fs::read(path).map_err(|source| PardosaError::CursorJournalOpen {
-        source: Box::new(source),
-    })?;
-    let file_len = pgno_bytes.len() as u64;
-    let status = reader_recovery_status(&pgno_bytes)?;
-    let manifest_bytes = std::fs::read(manifest_path)
-        .map_err(|source| persist_error_to_cursor_read(crate::persist::Error::Io(source)))?;
-    let recovered =
-        recover_footerless_prefix(&pgno_bytes, &manifest_bytes).map_err(recovery_declined)?;
-    let records_preserved = u64::try_from(recovered.records.len()).map_err(|_| {
-        persist_error_to_cursor_read(crate::persist::Error::File(FileError::InvalidIndex))
-    })?;
-    Ok(OfflineRecoveryPlan {
-        schema_hash: recovered.schema_hash,
-        manifest_message_count: records_preserved,
-        records_preserved,
-        data_end: recovered.data_end,
-        file_len,
-        truncated_bytes: file_len.saturating_sub(recovered.data_end),
-        footer_valid: matches!(status, OfflineRecoveryStatus::AlreadySealed),
-        status,
-    })
-}
-
-/// Destructively truncate and re-seal an offline `.pgno` via the recovery core.
-///
-/// # Errors
-///
-/// Returns [`PardosaError::CursorRead`] when `path` is already sealed,
-/// when its companion manifest is absent, or when the manifest recovery
-/// core declines the prefix. Declines preserve the original `.pgno`
-/// bytes and include durable-region checksum failures and frontier
-/// mismatches.
-pub fn recover_offline_pgno(path: &Path) -> Result<RecoveryOutcome, PardosaError> {
-    let plan = plan_offline_pgno_recovery(path)?;
-    let OfflineRecoveryStatus::Recoverable { reader_error } = plan.status else {
-        return Err(persist_error_to_cursor_read(crate::persist::Error::File(
-            FileError::TornWriteRecovery {
-                source: Box::new(RecoveryError::Manifest(FileError::InvalidIndex)),
-            },
-        )));
-    };
-    let (recovered, original_file_len) =
-        recover_footerless_pgno_at_path(path).map_err(persist_error_to_cursor_read)?;
-    let recovered_records = u64::try_from(recovered.records.len()).map_err(|_| {
-        persist_error_to_cursor_read(crate::persist::Error::File(FileError::InvalidIndex))
-    })?;
-    Ok(RecoveryOutcome::new(
-        reader_error,
-        recovered_records,
-        original_file_len.saturating_sub(recovered.data_end),
-        recovered.data_end,
-        plan.manifest_message_count,
-    ))
-}
-
-fn recovery_outcome(
-    open_error: &FileError,
-    recovered: &RecoveredPrefix,
-    original_file_len: u64,
-) -> Result<RecoveryOutcome, crate::persist::Error> {
-    let reader_error = RecoveryReaderErrorKind::from_file_error(open_error)
-        .ok_or(crate::persist::Error::File(FileError::InvalidIndex))?;
-    let recovered_records = u64::try_from(recovered.records.len())
-        .map_err(|_| crate::persist::Error::File(FileError::InvalidIndex))?;
-    let truncated_bytes = original_file_len.saturating_sub(recovered.data_end);
-    Ok(RecoveryOutcome::new(
-        reader_error,
-        recovered_records,
-        truncated_bytes,
-        recovered.data_end,
-        recovered_records,
-    ))
-}
-
-fn warn_recovered(path: &Path, outcome: &RecoveryOutcome) {
-    tracing::warn!(
-        event = "pgno_torn_tail_recovered",
-        path = %path.display(),
-        reader_error = outcome.reader_error.as_str(),
-        recovered_records = outcome.recovered_records,
-        truncated_bytes = outcome.truncated_bytes,
-        last_durable_offset = outcome.last_durable_offset,
-        manifest_message_count = outcome.manifest_message_count,
-        "pgno torn-tail recovered"
-    );
-}
-
-fn warn_declined(path: &Path, open_error: &FileError, cause: &crate::persist::Error) {
-    let reader_error = RecoveryReaderErrorKind::from_file_error(open_error)
-        .map_or("other", RecoveryReaderErrorKind::as_str);
-    tracing::warn!(
-        event = "pgno_recovery_declined",
-        path = %path.display(),
-        reader_error,
-        cause = %cause,
-        "pgno recovery declined"
-    );
-}
-
-fn can_attempt_manifest_recovery(open_error: &FileError) -> bool {
-    matches!(
-        open_error,
-        FileError::InvalidMagic
-            | FileError::InvalidIndex
-            | FileError::InvalidChecksum
-            | FileError::InvalidReserved
-    )
-}
-fn attempt_manifest_recovery_after_open_error(
-    path: &Path,
-    open_error: FileError,
-) -> Result<(RecoveredPrefix, RecoveryOutcome), crate::persist::Error> {
-    if !can_attempt_manifest_recovery(&open_error) {
-        return Err(crate::persist::Error::File(open_error));
-    }
-    match recover_footerless_pgno_at_path(path) {
-        Ok((recovered, original_file_len)) => {
-            let outcome = recovery_outcome(&open_error, &recovered, original_file_len)?;
-            warn_recovered(path, &outcome);
-            Ok((recovered, outcome))
-        }
-        Err(cause) => {
-            warn_declined(path, &open_error, &cause);
-            Err(crate::persist::Error::File(FileError::TornWriteRecovery {
-                source: Box::new(match cause {
-                    crate::persist::Error::File(FileError::TornWriteRecovery { source }) => *source,
-                    crate::persist::Error::File(e) => {
-                        pardosa_file::manifest::RecoveryError::Manifest(e)
-                    }
-                    crate::persist::Error::Io(e) => pardosa_file::manifest::RecoveryError::Io(e),
-                    _ => pardosa_file::manifest::RecoveryError::Manifest(FileError::InvalidIndex),
-                }),
-            }))
-        }
-    }
-}
-
-type OpenUnchecked<T> = (
-    std::fs::File,
-    crate::dragline::Line<T>,
-    RecoveredPrefix,
-    bool,
-    Option<RecoveryOutcome>,
-);
-
-type OpenValidated<T> = (
-    std::fs::File,
-    crate::dragline::Line<T>,
-    Option<RecoveryOutcome>,
-);
-
-fn open_rw_seek_and_rehydrate_unchecked<T>(path: &Path) -> Result<OpenUnchecked<T>, PardosaError>
-where
-    T: Decode + GenomeSafe,
-{
-    use std::io::SeekFrom;
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)
-        .map_err(|e| PardosaError::CursorJournalOpen {
-            source: Box::new(e),
-        })?;
-    file.seek(SeekFrom::Start(0))
-        .map_err(|e| PardosaError::CursorRead {
-            source: Box::new(crate::persist::Error::Io(e)),
-        })?;
-    let (dragline, recovered_prefix, manifest_already_synced, recovery_outcome) =
-        match crate::persist::rehydrate_unchecked::<T, _>(&mut file) {
-            Ok(dragline) => {
-                let (recovered_prefix, manifest_already_synced) = clean_recovered_prefix(path)
-                    .map_err(|e| PardosaError::CursorRead {
-                        source: Box::new(e),
-                    })?;
-                (dragline, recovered_prefix, manifest_already_synced, None)
-            }
-            Err(crate::persist::Error::File(open_error))
-                if can_attempt_manifest_recovery(&open_error) =>
-            {
-                let (recovered_prefix, recovery_outcome) =
-                    attempt_manifest_recovery_after_open_error(path, open_error).map_err(|e| {
-                        PardosaError::CursorRead {
-                            source: Box::new(e),
-                        }
-                    })?;
-                file.seek(SeekFrom::Start(0))
-                    .map_err(|e| PardosaError::CursorRead {
-                        source: Box::new(crate::persist::Error::Io(e)),
-                    })?;
-                let dragline =
-                    crate::persist::rehydrate_unchecked::<T, _>(&mut file).map_err(|e| {
-                        PardosaError::CursorRead {
-                            source: Box::new(e),
-                        }
-                    })?;
-                (dragline, recovered_prefix, true, Some(recovery_outcome))
-            }
-            Err(e) => {
-                return Err(PardosaError::CursorRead {
-                    source: Box::new(e),
-                });
-            }
-        };
-    file.seek(SeekFrom::Start(0))
-        .map_err(|e| PardosaError::CursorRead {
-            source: Box::new(crate::persist::Error::Io(e)),
-        })?;
-    Ok((
-        file,
-        dragline,
-        recovered_prefix,
-        manifest_already_synced,
-        recovery_outcome,
-    ))
-}
-fn open_rw_seek_and_rehydrate_validated<T>(
-    path: &Path,
-) -> Result<OpenValidated<T>, ValidatedReplayError<<T as Validate>::Error>>
-where
-    T: Decode + GenomeSafe + Validate,
-{
-    use std::io::SeekFrom;
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)
-        .map_err(|e| ValidatedReplayError::Replay(crate::persist::Error::Io(e)))?;
-    file.seek(SeekFrom::Start(0))
-        .map_err(|e| ValidatedReplayError::Replay(crate::persist::Error::Io(e)))?;
-    let (dragline, last_recovery) = match crate::persist::rehydrate_validated::<T, _>(&mut file) {
-        Ok(dragline) => (dragline, None),
-        Err(ValidatedReplayError::Replay(crate::persist::Error::File(open_error)))
-            if can_attempt_manifest_recovery(&open_error) =>
-        {
-            let (_, recovery_outcome) =
-                attempt_manifest_recovery_after_open_error(path, open_error)
-                    .map_err(ValidatedReplayError::Replay)?;
-            file.seek(SeekFrom::Start(0))
-                .map_err(|e| ValidatedReplayError::Replay(crate::persist::Error::Io(e)))?;
-            (
-                crate::persist::rehydrate_validated::<T, _>(&mut file)?,
-                Some(recovery_outcome),
-            )
-        }
-        Err(e) => return Err(e),
-    };
-    file.seek(SeekFrom::Start(0))
-        .map_err(|e| ValidatedReplayError::Replay(crate::persist::Error::Io(e)))?;
-    Ok((file, dragline, last_recovery))
-}
 fn persist_error_to_cursor_read(e: crate::persist::Error) -> PardosaError {
     PardosaError::CursorRead {
         source: Box::new(e),
     }
-}
-fn io_error_to_cursor_read(e: std::io::Error) -> PardosaError {
-    persist_error_to_cursor_read(crate::persist::Error::Io(e))
-}
-fn backend_error_to_cursor_read(
-    context: &'static str,
-    e: crate::error::BackendError,
-) -> PardosaError {
-    match e {
-        crate::error::BackendError::ConcurrencyConflict { source } => {
-            PardosaError::ConcurrencyConflict { source }
-        }
-        other => io_error_to_cursor_read(std::io::Error::other(format!("{context}: {other}"))),
-    }
-}
-fn fetch_jetstream_frames(
-    adapter: &mut crate::authoritative::jetstream::JetStreamBackendAdapter,
-) -> Result<Vec<JetStreamDurableFrame>, PardosaError> {
-    adapter
-        .fetch_durable_frames()
-        .map_err(|e| backend_error_to_cursor_read("JetStream rehydrate fetch failed", e))
-}
-
-fn fetch_gated_jetstream_frames<T>(
-    adapter: &mut crate::authoritative::jetstream::JetStreamBackendAdapter,
-    expected_marker: &str,
-) -> Result<Vec<JetStreamDurableFrame>, PardosaError>
-where
-    T: GenomeSafe,
-{
-    adapter
-        .set_schema_tag(expected_marker.to_owned())
-        .map_err(io_error_to_cursor_read)?;
-    let frames = fetch_jetstream_frames(adapter)?;
-    let marker = adapter
-        .read_stream_description()
-        .map_err(|e| backend_error_to_cursor_read("JetStream stream marker read failed", e))?;
-    gate_stream_marker::<T>(marker.as_deref(), frames.is_empty())?;
-    Ok(frames)
-}
-
-fn rehydrate_jetstream_frames<T>(
-    frames: &[JetStreamDurableFrame],
-) -> Result<(crate::dragline::Line<T>, usize), PardosaError>
-where
-    T: Decode + GenomeSafe,
-{
-    if frames.is_empty() {
-        return Ok((crate::dragline::Line::new(), 0));
-    }
-    if let Some((pgno_idx, event_frames)) = event_frames_from_latest_pgno::<T>(frames)? {
-        if pgno_idx + 1 == frames.len() {
-            let line = from_pgno_bytes_unchecked::<T>(&frames[pgno_idx].payload)
-                .map_err(persist_error_to_cursor_read)?;
-            let synced_events = line.read_line().len();
-            return Ok((line, synced_events));
-        }
-        let mut replay_frames: Vec<JetStreamDurableFrame> = event_frames
-            .into_iter()
-            .map(legacy_jetstream_frame)
-            .collect();
-        replay_frames.extend(frames[pgno_idx + 1..].iter().cloned());
-        let line = rehydrate_event_frames::<T>(&replay_frames)?;
-        let synced_events = line.read_line().len();
-        return Ok((line, synced_events));
-    }
-    let line = rehydrate_event_frames::<T>(frames)?;
-    let synced_events = line.read_line().len();
-    Ok((line, synced_events))
-}
-
-type PgnoFrameMatch = Option<(usize, Vec<Vec<u8>>)>;
-
-fn event_frames_from_latest_pgno<T>(
-    frames: &[JetStreamDurableFrame],
-) -> Result<PgnoFrameMatch, PardosaError>
-where
-    T: Decode + GenomeSafe,
-{
-    for (idx, frame) in frames.iter().enumerate().rev() {
-        match event_frames_from_pgno::<T>(&frame.payload) {
-            Ok(frames) => return Ok(Some((idx, frames))),
-            Err(err) if is_schema_hash_mismatch(&err) => return Err(err),
-            Err(_) => {}
-        }
-    }
-    Ok(None)
-}
-
-fn is_schema_hash_mismatch(err: &PardosaError) -> bool {
-    matches!(
-        err,
-        PardosaError::CursorRead { source }
-            if matches!(source.as_ref(), crate::persist::Error::SchemaHashMismatch { .. })
-    )
-}
-
-fn legacy_jetstream_frame(payload: Vec<u8>) -> JetStreamDurableFrame {
-    JetStreamDurableFrame {
-        payload,
-        schema_tag: None,
-    }
-}
-
-fn schema_tag<T>() -> String
-where
-    T: GenomeSafe,
-{
-    format!("{:032x}", Event::<T>::ENVELOPE_HASH)
-}
-
-fn mismatch_sentinel(expected: u128) -> u128 {
-    u128::from(expected == 0)
-}
-
-fn parse_schema_tag(tag: &str) -> Option<u128> {
-    let hex = tag
-        .strip_prefix("0x")
-        .or_else(|| tag.strip_prefix("0X"))
-        .unwrap_or(tag);
-    u128::from_str_radix(hex, 16).ok()
-}
-
-fn schema_marker_mismatch(expected: u128, found: u128) -> PardosaError {
-    persist_error_to_cursor_read(crate::persist::Error::SchemaHashMismatch { expected, found })
-}
-
-fn gate_stream_marker<T>(marker: Option<&str>, stream_is_empty: bool) -> Result<(), PardosaError>
-where
-    T: GenomeSafe,
-{
-    let expected = Event::<T>::ENVELOPE_HASH;
-    let Some(marker) = marker else {
-        return if stream_is_empty {
-            Ok(())
-        } else {
-            let expected_marker = format!("{expected:032x}");
-            tracing::warn!(
-                event = "schema_marker_absent_populated_stream",
-                expected_schema_marker = %expected_marker,
-                recovery = "stream may have been recreated out-of-band; bounce the revision to re-provision it; see crates/gh-report/OPERATIONS.md",
-                "schema marker absent on populated JetStream stream"
-            );
-            Err(persist_error_to_cursor_read(
-                crate::persist::Error::SchemaMarkerAbsent { expected },
-            ))
-        };
-    };
-    let found = parse_schema_tag(marker).unwrap_or_else(|| mismatch_sentinel(expected));
-    if found == expected {
-        return Ok(());
-    }
-    Err(schema_marker_mismatch(expected, found))
-}
-
-fn gate_replay_schema_tag<T>(tag: Option<&str>) -> Result<(), PardosaError>
-where
-    T: GenomeSafe,
-{
-    let Some(tag) = tag else {
-        return Ok(());
-    };
-    let expected = Event::<T>::ENVELOPE_HASH;
-    let found = parse_schema_tag(tag).unwrap_or_else(|| mismatch_sentinel(expected));
-    if found == expected {
-        return Ok(());
-    }
-    Err(schema_marker_mismatch(expected, found))
-}
-fn event_frames_from_pgno<T>(bytes: &[u8]) -> Result<Vec<Vec<u8>>, PardosaError>
-where
-    T: Decode + GenomeSafe,
-{
-    let mut reader = Reader::open(std::io::Cursor::new(bytes))
-        .map_err(crate::persist::Error::File)
-        .map_err(persist_error_to_cursor_read)?;
-    let found = reader.schema_hash();
-    let expected = Event::<T>::ENVELOPE_HASH;
-    if found != expected {
-        return Err(persist_error_to_cursor_read(
-            crate::persist::Error::SchemaHashMismatch { expected, found },
-        ));
-    }
-    let n = reader.index().len();
-    let mut frames: Vec<Vec<u8>> = Vec::with_capacity(n);
-    for i in 0..n {
-        frames.push(
-            reader
-                .read_message(i)
-                .map_err(crate::persist::Error::File)
-                .map_err(persist_error_to_cursor_read)?,
-        );
-    }
-    Ok(frames)
-}
-fn rehydrate_event_frames<T>(
-    frames: &[JetStreamDurableFrame],
-) -> Result<crate::dragline::Line<T>, PardosaError>
-where
-    T: Decode + GenomeSafe,
-{
-    use std::collections::{HashMap, HashSet};
-    let mut events: Vec<Event<T>> = Vec::new();
-    let mut frontier = Frontier::GENESIS;
-    for frame in frames {
-        gate_replay_schema_tag::<T>(frame.schema_tag.as_deref())?;
-        let bytes = frame.as_ref();
-        frontier = frontier.roll(bytes);
-        let event: Event<T> = from_bytes(bytes)
-            .map_err(crate::persist::Error::Decode)
-            .map_err(persist_error_to_cursor_read)?;
-        events.push(event);
-    }
-    let mut lookup: HashMap<crate::FiberId, (crate::Fiber, crate::FiberState)> = HashMap::new();
-    let purged_ids: HashSet<crate::FiberId> = HashSet::new();
-    let mut max_fiber_id: Option<crate::FiberId> = None;
-    let mut next_event_id: u64 = 0;
-    for (i, event) in events.iter().enumerate() {
-        let position_u64 = u64::try_from(i).expect("line position fits u64");
-        if event.event_id().value() != position_u64 {
-            return Err(PardosaError::FiberInvariant(
-                crate::error::FiberInvariantKind::Integrity(
-                    crate::error::IntegrityKind::EventIdPositionMismatch {
-                        event_id: event.event_id().value(),
-                        position: position_u64,
-                    },
-                ),
-            ));
-        }
-        let idx = crate::Index::from_decoded(position_u64);
-        let fiber_id = event.fiber_id();
-        max_fiber_id = Some(match max_fiber_id {
-            None => fiber_id,
-            Some(prev) if fiber_id.value() > prev.value() => fiber_id,
-            Some(prev) => prev,
-        });
-        match lookup.get_mut(&fiber_id) {
-            None => {
-                let fiber = crate::Fiber::new(idx, 1, idx)?;
-                let state = if event.detached() {
-                    crate::FiberState::Detached
-                } else {
-                    crate::FiberState::Defined
-                };
-                lookup.insert(fiber_id, (fiber, state));
-            }
-            Some((fiber, state)) => {
-                fiber.advance(idx)?;
-                if event.detached() {
-                    *state = crate::FiberState::Detached;
-                } else {
-                    *state = crate::FiberState::Defined;
-                }
-            }
-        }
-        next_event_id = event
-            .event_id()
-            .value()
-            .checked_add(1)
-            .ok_or(PardosaError::IndexOverflow)?;
-    }
-    let next_id = match max_fiber_id {
-        None => crate::FiberId::from_decoded(0),
-        Some(m) => m.checked_next()?,
-    };
-    Ok(crate::dragline::Line::from_parts_no_verify(
-        events,
-        lookup,
-        purged_ids,
-        next_id,
-        crate::EventId::from_decoded(next_event_id),
-        false,
-        frontier,
-    ))
 }
 impl<T> EventStore<T, std::fs::File>
 where
@@ -753,8 +87,9 @@ where
             BackendDispatch::JetStream(boxed_adapter) => {
                 let mut adapter = *boxed_adapter;
                 let marker = schema_tag::<T>();
+                let mode = crate::persist::precursor_check_mode();
                 let frames = fetch_gated_jetstream_frames::<T>(&mut adapter, &marker)?;
-                let (dragline, synced_events) = rehydrate_jetstream_frames::<T>(&frames)?;
+                let (dragline, synced_events) = rehydrate_jetstream_frames::<T>(&frames, mode)?;
                 let scratch =
                     tempfile::tempfile().map_err(|e| PardosaError::CursorJournalOpen {
                         source: Box::new(e),
@@ -813,8 +148,10 @@ where
                   the rehydrate pipeline has a single in-crate entry shape"
     )]
     pub(crate) fn open(path: &Path) -> Result<Self, PardosaError> {
-        let (file, dragline, _, _, last_recovery) =
-            open_rw_seek_and_rehydrate_unchecked::<T>(path)?;
+        let (file, dragline, _, _, last_recovery) = open_rw_seek_and_rehydrate_unchecked::<T>(
+            path,
+            crate::persist::precursor_check_mode(),
+        )?;
         let inner = Dragline::from_line_for_open(dragline, file);
         Ok(Self {
             inner,
@@ -832,8 +169,10 @@ where
     /// under the gate.
     #[cfg(any(test, feature = "test-support"))]
     pub fn open(path: &Path) -> Result<Self, PardosaError> {
-        let (file, dragline, _, _, last_recovery) =
-            open_rw_seek_and_rehydrate_unchecked::<T>(path)?;
+        let (file, dragline, _, _, last_recovery) = open_rw_seek_and_rehydrate_unchecked::<T>(
+            path,
+            crate::persist::precursor_check_mode(),
+        )?;
         let inner = Dragline::from_line_for_open(dragline, file);
         Ok(Self {
             inner,
@@ -861,10 +200,11 @@ where
     /// path (surfacing as [`PardosaError::CursorRead`] /
     /// [`PardosaError::CursorJournalOpen`]).
     pub fn open_with_backend<B: AuthoritativeBackend>(backend: B) -> Result<Self, PardosaError> {
+        let mode = crate::persist::precursor_check_mode();
         match admit_into_dispatch(backend) {
             BackendDispatch::Pgno(p) => {
                 let (file, dragline, recovered_prefix, manifest_already_synced, last_recovery) =
-                    open_rw_seek_and_rehydrate_unchecked::<T>(p.path())?;
+                    open_rw_seek_and_rehydrate_unchecked::<T>(p.path(), mode)?;
                 let inner = Dragline::from_backend_for_open(
                     dragline,
                     file,
@@ -883,7 +223,7 @@ where
                 let mut adapter = *boxed_adapter;
                 let marker = schema_tag::<T>();
                 let frames = fetch_gated_jetstream_frames::<T>(&mut adapter, &marker)?;
-                let (dragline, synced_events) = rehydrate_jetstream_frames::<T>(&frames)?;
+                let (dragline, synced_events) = rehydrate_jetstream_frames::<T>(&frames, mode)?;
                 let scratch =
                     tempfile::tempfile().map_err(|e| PardosaError::CursorJournalOpen {
                         source: Box::new(e),
@@ -937,8 +277,10 @@ where
         anchor_interval: u64,
         publisher: Box<dyn FrontierPublisher>,
     ) -> Result<Self, PardosaError> {
-        let (file, dragline, _, _, last_recovery) =
-            open_rw_seek_and_rehydrate_unchecked::<T>(path)?;
+        let (file, dragline, _, _, last_recovery) = open_rw_seek_and_rehydrate_unchecked::<T>(
+            path,
+            crate::persist::precursor_check_mode(),
+        )?;
         let inner = Dragline::with_line_and_publisher_path(
             dragline,
             file,
@@ -959,9 +301,19 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::jetstream::JetStreamDurableFrame;
+    use crate::event::Event;
+    use crate::frontier::Frontier;
+    use jetstream::{
+        backend_error_to_cursor_read, gate_stream_marker, legacy_jetstream_frame,
+        rehydrate_event_frames,
+    };
+    use pardosa_file::{FileError, Reader};
     use pardosa_schema::schema_hash_bytes;
     use pardosa_wire::Validate;
+    use pardosa_wire::from_bytes;
     use pardosa_wire::{Decode, DecodeError, Decoder, Encode, EventSafe};
+    use std::io::Cursor;
     use std::io::Write;
     use std::sync::{Arc, Mutex};
     use tracing_subscriber::fmt::MakeWriter;
@@ -1346,8 +698,11 @@ mod tests {
         manifest_os.push(".pgix");
         let manifest_path = std::path::PathBuf::from(manifest_os);
         std::fs::write(&manifest_path, b"not a manifest").expect("write manifest bytes");
-        let err = open_rw_seek_and_rehydrate_unchecked::<TaggedPayload>(&path)
-            .expect_err("bad footerless recovery must fail");
+        let err = open_rw_seek_and_rehydrate_unchecked::<TaggedPayload>(
+            &path,
+            crate::persist::PrecursorCheckMode::ObserveOnly,
+        )
+        .expect_err("bad footerless recovery must fail");
         match err {
             PardosaError::CursorRead { source } => match *source {
                 crate::persist::Error::File(FileError::TornWriteRecovery { .. }) => {}
@@ -1543,8 +898,11 @@ mod tests {
             payload: frame(7),
             schema_tag: Some("fedcba9876543210fedcba9876543210".to_string()),
         }];
-        let err = rehydrate_event_frames::<TaggedPayload>(&frames)
-            .expect_err("foreign replay tag must reject before decode");
+        let err = rehydrate_event_frames::<TaggedPayload>(
+            &frames,
+            crate::persist::PrecursorCheckMode::ObserveOnly,
+        )
+        .expect_err("foreign replay tag must reject before decode");
         match err {
             PardosaError::CursorRead { source } => match *source {
                 crate::persist::Error::SchemaHashMismatch { expected, found } => {
@@ -1570,13 +928,724 @@ mod tests {
             payload: frame(11),
             schema_tag: None,
         }];
-        let line = rehydrate_event_frames::<TaggedPayload>(&frames)
-            .expect("legacy frames without replay tags still decode");
+        let line = rehydrate_event_frames::<TaggedPayload>(
+            &frames,
+            crate::persist::PrecursorCheckMode::ObserveOnly,
+        )
+        .expect("legacy frames without replay tags still decode");
         assert_eq!(
             line.read_line()[0].domain_event(),
             &TaggedPayload(11),
             "absent tag falls through to the current decode path"
         );
+    }
+
+    use crate::event::{Index, Precursor};
+
+    const OBSERVE_MODE_PAYLOAD_MARKER: u64 = 0x5EC_0007;
+
+    fn genesis_event(value: u64) -> Event<TaggedPayload> {
+        Event::new_unchecked(
+            crate::EventId::from_decoded(0),
+            crate::FiberId::from_decoded(0),
+            false,
+            Precursor::Genesis,
+            [0u8; 32],
+            TaggedPayload(value),
+        )
+    }
+
+    fn clean_successor_event(genesis_bytes: &[u8]) -> Event<TaggedPayload> {
+        Event::new_unchecked(
+            crate::EventId::from_decoded(1),
+            crate::FiberId::from_decoded(0),
+            false,
+            Precursor::Of(Index::new(0)),
+            pardosa_wire::precursor_hash_of(genesis_bytes),
+            TaggedPayload(OBSERVE_MODE_PAYLOAD_MARKER),
+        )
+    }
+
+    fn out_of_bounds_successor_event(genesis_bytes: &[u8]) -> Event<TaggedPayload> {
+        Event::new_unchecked(
+            crate::EventId::from_decoded(1),
+            crate::FiberId::from_decoded(0),
+            false,
+            Precursor::Of(Index::new(5)),
+            pardosa_wire::precursor_hash_of(genesis_bytes),
+            TaggedPayload(OBSERVE_MODE_PAYLOAD_MARKER),
+        )
+    }
+
+    fn fiber_mismatch_successor_event(genesis_bytes: &[u8]) -> Event<TaggedPayload> {
+        Event::new_unchecked(
+            crate::EventId::from_decoded(1),
+            crate::FiberId::from_decoded(1),
+            false,
+            Precursor::Of(Index::new(0)),
+            pardosa_wire::precursor_hash_of(genesis_bytes),
+            TaggedPayload(OBSERVE_MODE_PAYLOAD_MARKER),
+        )
+    }
+
+    fn hash_mismatch_successor_event() -> Event<TaggedPayload> {
+        Event::new_unchecked(
+            crate::EventId::from_decoded(1),
+            crate::FiberId::from_decoded(0),
+            false,
+            Precursor::Of(Index::new(0)),
+            [0xffu8; 32],
+            TaggedPayload(OBSERVE_MODE_PAYLOAD_MARKER),
+        )
+    }
+
+    /// Contiguity-violating successor: `event_id` (2) does not match
+    /// its physical line position (1) — the fifth check-set shape
+    /// (adr-fmt-lutpd finding #2 equivalence gate).
+    fn contiguity_mismatch_successor_event(genesis_bytes: &[u8]) -> Event<TaggedPayload> {
+        Event::new_unchecked(
+            crate::EventId::from_decoded(2),
+            crate::FiberId::from_decoded(0),
+            false,
+            Precursor::Of(Index::new(0)),
+            pardosa_wire::precursor_hash_of(genesis_bytes),
+            TaggedPayload(OBSERVE_MODE_PAYLOAD_MARKER),
+        )
+    }
+
+    fn write_pgno_bytes(events: &[Event<TaggedPayload>]) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut writer = pardosa_file::Writer::new(&mut buf, Event::<TaggedPayload>::ENVELOPE_HASH);
+        for event in events {
+            writer
+                .write_message(&pardosa_wire::to_vec(event))
+                .expect("write_message");
+        }
+        writer.finish().expect("finish");
+        buf
+    }
+
+    fn jetstream_frames(events: &[Event<TaggedPayload>]) -> Vec<JetStreamDurableFrame> {
+        events
+            .iter()
+            .map(|event| legacy_jetstream_frame(pardosa_wire::to_vec(event)))
+            .collect()
+    }
+
+    fn assert_no_leak(captured: &str) {
+        assert!(
+            !captured.contains(&OBSERVE_MODE_PAYLOAD_MARKER.to_string()),
+            "captured trace must never carry the domain payload: {captured}"
+        );
+    }
+
+    fn decode_pgno_events(bytes: Vec<u8>) -> (Vec<Event<TaggedPayload>>, Vec<Vec<u8>>, Frontier) {
+        let mut reader = Reader::open(Cursor::new(bytes)).expect("reader open");
+        let n = reader.index().len();
+        let mut events = Vec::with_capacity(n);
+        let mut raw_bytes = Vec::with_capacity(n);
+        let mut frontier = Frontier::GENESIS;
+        for i in 0..n {
+            let raw = reader.read_message(i).expect("read_message");
+            frontier = frontier.roll(&raw);
+            let event: Event<TaggedPayload> = from_bytes(&raw).expect("decode");
+            events.push(event);
+            raw_bytes.push(raw);
+        }
+        (events, raw_bytes, frontier)
+    }
+
+    fn decode_frame_events(
+        frames: &[JetStreamDurableFrame],
+    ) -> (Vec<Event<TaggedPayload>>, Vec<Vec<u8>>, Frontier) {
+        let mut events = Vec::with_capacity(frames.len());
+        let mut raw_bytes = Vec::with_capacity(frames.len());
+        let mut frontier = Frontier::GENESIS;
+        for frame in frames {
+            let bytes = frame.as_ref();
+            frontier = frontier.roll(bytes);
+            let event: Event<TaggedPayload> = from_bytes(bytes).expect("decode");
+            events.push(event);
+            raw_bytes.push(bytes.to_vec());
+        }
+        (events, raw_bytes, frontier)
+    }
+
+    fn expect_checked_replay_rejection(err: PardosaError) -> crate::persist::CheckedReplayKind {
+        match err {
+            PardosaError::CursorRead { source } => match *source {
+                crate::persist::Error::CheckedReplay { kind } => kind,
+                other => panic!("expected CheckedReplay, got: {other:?}"),
+            },
+            other => panic!("expected CursorRead, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn precursor_out_of_bounds_warns_on_pgno_arm_and_does_not_reject() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, out_of_bounds_successor_event(&genesis_bytes)];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let (result, captured) = capture_tracing(|| {
+            crate::persist::rehydrate_unchecked::<TaggedPayload, _>(
+                Cursor::new(pgno_bytes),
+                crate::persist::PrecursorCheckMode::ObserveOnly,
+            )
+        });
+        result.expect("observe-only mode must not reject a precursor-bounds violation");
+        assert!(
+            captured.contains("precursor_check_would_fail"),
+            "expected a would-fail warn, got: {captured}"
+        );
+        assert!(
+            captured.contains("PrecursorOutOfBounds"),
+            "expected check_kind=PrecursorOutOfBounds, got: {captured}"
+        );
+        assert_no_leak(&captured);
+    }
+
+    #[test]
+    fn precursor_out_of_bounds_warns_on_nats_arm_and_does_not_reject() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, out_of_bounds_successor_event(&genesis_bytes)];
+        let frames = jetstream_frames(&events);
+        let (result, captured) = capture_tracing(|| {
+            rehydrate_event_frames::<TaggedPayload>(
+                &frames,
+                crate::persist::PrecursorCheckMode::ObserveOnly,
+            )
+        });
+        result.expect("observe-only mode must not reject a precursor-bounds violation");
+        assert!(
+            captured.contains("precursor_check_would_fail"),
+            "expected a would-fail warn, got: {captured}"
+        );
+        assert!(
+            captured.contains("PrecursorOutOfBounds"),
+            "expected check_kind=PrecursorOutOfBounds, got: {captured}"
+        );
+        assert_no_leak(&captured);
+    }
+
+    #[test]
+    fn precursor_fiber_mismatch_warns_on_pgno_arm_and_does_not_reject() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, fiber_mismatch_successor_event(&genesis_bytes)];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let (result, captured) = capture_tracing(|| {
+            crate::persist::rehydrate_unchecked::<TaggedPayload, _>(
+                Cursor::new(pgno_bytes),
+                crate::persist::PrecursorCheckMode::ObserveOnly,
+            )
+        });
+        result.expect("observe-only mode must not reject a same-fiber precursor violation");
+        assert!(
+            captured.contains("precursor_check_would_fail"),
+            "expected a would-fail warn, got: {captured}"
+        );
+        assert!(
+            captured.contains("PrecursorFiberMismatch"),
+            "expected check_kind=PrecursorFiberMismatch, got: {captured}"
+        );
+        assert_no_leak(&captured);
+    }
+
+    #[test]
+    fn precursor_fiber_mismatch_warns_on_nats_arm_and_does_not_reject() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, fiber_mismatch_successor_event(&genesis_bytes)];
+        let frames = jetstream_frames(&events);
+        let (result, captured) = capture_tracing(|| {
+            rehydrate_event_frames::<TaggedPayload>(
+                &frames,
+                crate::persist::PrecursorCheckMode::ObserveOnly,
+            )
+        });
+        result.expect("observe-only mode must not reject a same-fiber precursor violation");
+        assert!(
+            captured.contains("precursor_check_would_fail"),
+            "expected a would-fail warn, got: {captured}"
+        );
+        assert!(
+            captured.contains("PrecursorFiberMismatch"),
+            "expected check_kind=PrecursorFiberMismatch, got: {captured}"
+        );
+        assert_no_leak(&captured);
+    }
+
+    #[test]
+    fn precursor_hash_mismatch_warns_on_pgno_arm_and_does_not_reject() {
+        let genesis = genesis_event(1);
+        let events = [genesis, hash_mismatch_successor_event()];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let (result, captured) = capture_tracing(|| {
+            crate::persist::rehydrate_unchecked::<TaggedPayload, _>(
+                Cursor::new(pgno_bytes),
+                crate::persist::PrecursorCheckMode::ObserveOnly,
+            )
+        });
+        result.expect("observe-only mode must not reject a precursor-hash violation");
+        assert!(
+            captured.contains("precursor_check_would_fail"),
+            "expected a would-fail warn, got: {captured}"
+        );
+        assert!(
+            captured.contains("PrecursorHashMismatch"),
+            "expected check_kind=PrecursorHashMismatch, got: {captured}"
+        );
+        assert_no_leak(&captured);
+    }
+
+    #[test]
+    fn precursor_hash_mismatch_warns_on_nats_arm_and_does_not_reject() {
+        let genesis = genesis_event(1);
+        let events = [genesis, hash_mismatch_successor_event()];
+        let frames = jetstream_frames(&events);
+        let (result, captured) = capture_tracing(|| {
+            rehydrate_event_frames::<TaggedPayload>(
+                &frames,
+                crate::persist::PrecursorCheckMode::ObserveOnly,
+            )
+        });
+        result.expect("observe-only mode must not reject a precursor-hash violation");
+        assert!(
+            captured.contains("precursor_check_would_fail"),
+            "expected a would-fail warn, got: {captured}"
+        );
+        assert!(
+            captured.contains("PrecursorHashMismatch"),
+            "expected check_kind=PrecursorHashMismatch, got: {captured}"
+        );
+        assert_no_leak(&captured);
+    }
+
+    #[test]
+    fn clean_log_emits_no_precursor_warn_on_pgno_arm() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, clean_successor_event(&genesis_bytes)];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let (result, captured) = capture_tracing(|| {
+            crate::persist::rehydrate_unchecked::<TaggedPayload, _>(
+                Cursor::new(pgno_bytes),
+                crate::persist::PrecursorCheckMode::ObserveOnly,
+            )
+        });
+        result.expect("a clean chain must rehydrate");
+        assert!(
+            !captured.contains("precursor_check_would_fail"),
+            "clean log must not emit a precursor warn, got: {captured}"
+        );
+    }
+
+    #[test]
+    fn clean_log_emits_no_precursor_warn_on_nats_arm() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, clean_successor_event(&genesis_bytes)];
+        let frames = jetstream_frames(&events);
+        let (result, captured) = capture_tracing(|| {
+            rehydrate_event_frames::<TaggedPayload>(
+                &frames,
+                crate::persist::PrecursorCheckMode::ObserveOnly,
+            )
+        });
+        result.expect("a clean chain must rehydrate");
+        assert!(
+            !captured.contains("precursor_check_would_fail"),
+            "clean log must not emit a precursor warn, got: {captured}"
+        );
+    }
+
+    #[test]
+    fn precursor_out_of_bounds_rejects_on_pgno_arm_under_enforce() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, out_of_bounds_successor_event(&genesis_bytes)];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let (decoded, raw, frontier) = decode_pgno_events(pgno_bytes);
+        let err = crate::persist::rebuild_dragline_with_frontier(
+            decoded,
+            frontier,
+            Some(&raw),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect_err("enforce mode must reject a precursor-bounds violation");
+        assert!(
+            matches!(
+                expect_checked_replay_rejection(err),
+                crate::persist::CheckedReplayKind::PrecursorOutOfBounds { .. }
+            ),
+            "expected PrecursorOutOfBounds rejection"
+        );
+    }
+
+    #[test]
+    fn precursor_out_of_bounds_rejects_on_nats_arm_under_enforce() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, out_of_bounds_successor_event(&genesis_bytes)];
+        let frames = jetstream_frames(&events);
+        let (decoded, raw, frontier) = decode_frame_events(&frames);
+        let err = crate::persist::rebuild_dragline_with_frontier(
+            decoded,
+            frontier,
+            Some(&raw),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect_err("enforce mode must reject a precursor-bounds violation");
+        assert!(
+            matches!(
+                expect_checked_replay_rejection(err),
+                crate::persist::CheckedReplayKind::PrecursorOutOfBounds { .. }
+            ),
+            "expected PrecursorOutOfBounds rejection"
+        );
+    }
+
+    #[test]
+    fn precursor_fiber_mismatch_rejects_on_pgno_arm_under_enforce() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, fiber_mismatch_successor_event(&genesis_bytes)];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let (decoded, raw, frontier) = decode_pgno_events(pgno_bytes);
+        let err = crate::persist::rebuild_dragline_with_frontier(
+            decoded,
+            frontier,
+            Some(&raw),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect_err("enforce mode must reject a same-fiber precursor violation");
+        assert!(
+            matches!(
+                expect_checked_replay_rejection(err),
+                crate::persist::CheckedReplayKind::PrecursorFiberMismatch { .. }
+            ),
+            "expected PrecursorFiberMismatch rejection"
+        );
+    }
+
+    #[test]
+    fn precursor_fiber_mismatch_rejects_on_nats_arm_under_enforce() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, fiber_mismatch_successor_event(&genesis_bytes)];
+        let frames = jetstream_frames(&events);
+        let (decoded, raw, frontier) = decode_frame_events(&frames);
+        let err = crate::persist::rebuild_dragline_with_frontier(
+            decoded,
+            frontier,
+            Some(&raw),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect_err("enforce mode must reject a same-fiber precursor violation");
+        assert!(
+            matches!(
+                expect_checked_replay_rejection(err),
+                crate::persist::CheckedReplayKind::PrecursorFiberMismatch { .. }
+            ),
+            "expected PrecursorFiberMismatch rejection"
+        );
+    }
+
+    #[test]
+    fn precursor_hash_mismatch_rejects_on_pgno_arm_under_enforce() {
+        let genesis = genesis_event(1);
+        let events = [genesis, hash_mismatch_successor_event()];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let (decoded, raw, frontier) = decode_pgno_events(pgno_bytes);
+        let err = crate::persist::rebuild_dragline_with_frontier(
+            decoded,
+            frontier,
+            Some(&raw),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect_err("enforce mode must reject a precursor-hash violation");
+        assert!(
+            matches!(
+                expect_checked_replay_rejection(err),
+                crate::persist::CheckedReplayKind::PrecursorHashMismatch { .. }
+            ),
+            "expected PrecursorHashMismatch rejection"
+        );
+    }
+
+    #[test]
+    fn precursor_hash_mismatch_rejects_on_nats_arm_under_enforce() {
+        let genesis = genesis_event(1);
+        let events = [genesis, hash_mismatch_successor_event()];
+        let frames = jetstream_frames(&events);
+        let (decoded, raw, frontier) = decode_frame_events(&frames);
+        let err = crate::persist::rebuild_dragline_with_frontier(
+            decoded,
+            frontier,
+            Some(&raw),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect_err("enforce mode must reject a precursor-hash violation");
+        assert!(
+            matches!(
+                expect_checked_replay_rejection(err),
+                crate::persist::CheckedReplayKind::PrecursorHashMismatch { .. }
+            ),
+            "expected PrecursorHashMismatch rejection"
+        );
+    }
+
+    #[test]
+    fn clean_log_rehydrates_on_pgno_arm_under_enforce() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, clean_successor_event(&genesis_bytes)];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let (decoded, raw, frontier) = decode_pgno_events(pgno_bytes);
+        crate::persist::rebuild_dragline_with_frontier(
+            decoded,
+            frontier,
+            Some(&raw),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect("a clean chain must rehydrate under enforce");
+    }
+
+    #[test]
+    fn clean_log_rehydrates_on_nats_arm_under_enforce() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, clean_successor_event(&genesis_bytes)];
+        let frames = jetstream_frames(&events);
+        let (decoded, raw, frontier) = decode_frame_events(&frames);
+        crate::persist::rebuild_dragline_with_frontier(
+            decoded,
+            frontier,
+            Some(&raw),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect("a clean chain must rehydrate under enforce");
+    }
+
+    fn run_isolated_worker(worker_name: &str) {
+        let exe = std::env::current_exe().expect("current test binary path");
+        let output = std::process::Command::new(exe)
+            .arg(worker_name)
+            .arg("--exact")
+            .arg("--ignored")
+            .env(crate::persist::PRECURSOR_CHECK_MODE_ENV, "enforce")
+            .output()
+            .expect("spawn isolated worker subprocess");
+        assert!(
+            output.status.success(),
+            "worker {worker_name} failed under env {}=enforce: stdout={} stderr={}",
+            crate::persist::PRECURSOR_CHECK_MODE_ENV,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn precursor_check_mode_defaults_to_observe_only_when_env_unset() {
+        assert_eq!(
+            crate::persist::precursor_check_mode(),
+            crate::persist::PrecursorCheckMode::ObserveOnly,
+            "env unset must fail safe to ObserveOnly"
+        );
+    }
+
+    #[test]
+    fn precursor_check_mode_env_enforce_rejects_on_pgno_arm_via_rehydrate_unchecked() {
+        run_isolated_worker(
+            "precursor_check_mode_env_enforce_worker_pgno_rejects_via_rehydrate_unchecked",
+        );
+    }
+
+    #[test]
+    fn precursor_check_mode_env_enforce_rejects_on_nats_arm_via_rehydrate_event_frames() {
+        run_isolated_worker(
+            "precursor_check_mode_env_enforce_worker_nats_rejects_via_rehydrate_event_frames",
+        );
+    }
+
+    #[test]
+    #[ignore = "isolated worker spawned as a subprocess by precursor_check_mode_env_enforce_rejects_on_pgno_arm_via_rehydrate_unchecked with PARDOSA_PRECURSOR_CHECK_MODE=enforce set on the child process only; never runs under a plain `cargo test`"]
+    fn precursor_check_mode_env_enforce_worker_pgno_rejects_via_rehydrate_unchecked() {
+        assert_eq!(
+            crate::persist::precursor_check_mode(),
+            crate::persist::PrecursorCheckMode::Enforce,
+            "env=enforce must select Enforce inside the worker subprocess"
+        );
+        let genesis = genesis_event(1);
+        let events = [genesis, hash_mismatch_successor_event()];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let err = crate::persist::rehydrate_unchecked::<TaggedPayload, _>(
+                Cursor::new(pgno_bytes),
+                crate::persist::precursor_check_mode(),
+            )
+            .expect_err(
+                "env-selected Enforce must reach the pgno rehydrate arm and reject a forged precursor-hash chain",
+            );
+        assert!(
+            matches!(
+                err,
+                crate::persist::Error::CheckedReplay {
+                    kind: crate::persist::CheckedReplayKind::PrecursorHashMismatch { .. }
+                }
+            ),
+            "expected PrecursorHashMismatch rejection via the env-selected Enforce path, got: {err:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "isolated worker spawned as a subprocess by precursor_check_mode_env_enforce_rejects_on_nats_arm_via_rehydrate_event_frames with PARDOSA_PRECURSOR_CHECK_MODE=enforce set on the child process only; never runs under a plain `cargo test`"]
+    fn precursor_check_mode_env_enforce_worker_nats_rejects_via_rehydrate_event_frames() {
+        assert_eq!(
+            crate::persist::precursor_check_mode(),
+            crate::persist::PrecursorCheckMode::Enforce,
+            "env=enforce must select Enforce inside the worker subprocess"
+        );
+        let genesis = genesis_event(1);
+        let events = [genesis, hash_mismatch_successor_event()];
+        let frames = jetstream_frames(&events);
+        let err = rehydrate_event_frames::<TaggedPayload>(&frames, crate::persist::precursor_check_mode()).expect_err(
+            "env-selected Enforce must reach the nats rehydrate arm and reject a forged precursor-hash chain",
+        );
+        assert!(
+            matches!(
+                expect_checked_replay_rejection(err),
+                crate::persist::CheckedReplayKind::PrecursorHashMismatch { .. }
+            ),
+            "expected PrecursorHashMismatch rejection via the env-selected Enforce path"
+        );
+    }
+
+    #[test]
+    fn contiguity_mismatch_rejects_on_pgno_arm_as_checked_replay_kind() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, contiguity_mismatch_successor_event(&genesis_bytes)];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let (decoded, raw, frontier) = decode_pgno_events(pgno_bytes);
+        let err = crate::persist::rebuild_dragline_with_frontier(
+            decoded,
+            frontier,
+            Some(&raw),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect_err("a contiguity violation must reject on the pgno arm");
+        assert!(
+            matches!(
+                expect_checked_replay_rejection(err),
+                crate::persist::CheckedReplayKind::EventIdPositionMismatch { .. }
+            ),
+            "post-unify contract: pgno-arm contiguity violations surface as CheckedReplayKind \
+             (the verify-stage surface), not the dragline-builder IntegrityKind"
+        );
+    }
+
+    #[test]
+    fn contiguity_mismatch_rejects_on_nats_arm_as_checked_replay_kind() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, contiguity_mismatch_successor_event(&genesis_bytes)];
+        let frames = jetstream_frames(&events);
+        let (decoded, raw, frontier) = decode_frame_events(&frames);
+        let err = crate::persist::rebuild_dragline_with_frontier(
+            decoded,
+            frontier,
+            Some(&raw),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect_err("a contiguity violation must reject on the nats arm");
+        assert!(
+            matches!(
+                expect_checked_replay_rejection(err),
+                crate::persist::CheckedReplayKind::EventIdPositionMismatch { .. }
+            ),
+            "post-unify contract: nats-arm contiguity violations surface as CheckedReplayKind \
+             (the verify-stage surface), not the dragline-builder IntegrityKind"
+        );
+    }
+
+    #[test]
+    fn contiguity_mismatch_rejects_on_pgno_arm_even_under_observe_only_mode() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, contiguity_mismatch_successor_event(&genesis_bytes)];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let err = crate::persist::rehydrate_unchecked::<TaggedPayload, _>(
+            Cursor::new(pgno_bytes),
+            crate::persist::PrecursorCheckMode::ObserveOnly,
+        )
+        .expect_err("contiguity violations must reject even in ObserveOnly mode");
+        assert!(
+            matches!(
+                err,
+                crate::persist::Error::CheckedReplay {
+                    kind: crate::persist::CheckedReplayKind::EventIdPositionMismatch { .. }
+                }
+            ),
+            "ObserveOnly must not downgrade a contiguity violation to a warn, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn contiguity_mismatch_on_validated_path_rejects_via_upstream_stream_checked() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, contiguity_mismatch_successor_event(&genesis_bytes)];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let err = crate::persist::rehydrate_validated::<TaggedPayload, _>(
+            Cursor::new(pgno_bytes),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect_err("a contiguity violation must reject on the validated path");
+        match err {
+            ValidatedReplayError::Replay(crate::persist::Error::CheckedReplay {
+                kind: crate::persist::CheckedReplayKind::EventIdPositionMismatch { .. },
+            }) => {}
+            other => panic!(
+                "expected the validated path to reject via upstream stream_checked's \
+                 CheckedReplayKind::EventIdPositionMismatch, got: {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn precursor_hash_mismatch_on_validated_path_rejects_via_upstream_stream_checked_not_dropped() {
+        let genesis = genesis_event(1);
+        let events = [genesis, hash_mismatch_successor_event()];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let err = crate::persist::rehydrate_validated::<TaggedPayload, _>(
+            Cursor::new(pgno_bytes),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect_err("a precursor-hash violation must reject on the validated path");
+        match err {
+            ValidatedReplayError::Replay(crate::persist::Error::CheckedReplay {
+                kind: crate::persist::CheckedReplayKind::PrecursorHashMismatch { .. },
+            }) => {}
+            other => panic!(
+                "expected the validated path to reject via upstream stream_checked's \
+                 CheckedReplayKind::PrecursorHashMismatch (checked exactly once), got: {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn clean_log_validated_path_rehydrates_with_full_chain_enforced_once() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, clean_successor_event(&genesis_bytes)];
+        let pgno_bytes = write_pgno_bytes(&events);
+        crate::persist::rehydrate_validated::<TaggedPayload, _>(
+            Cursor::new(pgno_bytes),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect("a clean chain must rehydrate on the validated path");
     }
 }
 impl<T> EventStore<T, std::fs::File>
@@ -1601,7 +1670,10 @@ where
     pub fn open_validated(
         path: &Path,
     ) -> Result<Self, ValidatedReplayError<<T as Validate>::Error>> {
-        let (file, dragline, last_recovery) = open_rw_seek_and_rehydrate_validated::<T>(path)?;
+        let (file, dragline, last_recovery) = open_rw_seek_and_rehydrate_validated::<T>(
+            path,
+            crate::persist::precursor_check_mode(),
+        )?;
         let inner = Dragline::from_line_for_open(dragline, file);
         Ok(Self {
             inner,
