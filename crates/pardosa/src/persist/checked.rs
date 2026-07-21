@@ -1,12 +1,109 @@
 use super::error::{CheckedReplayKind, Error};
+use super::rehydrate::PrecursorCheckMode;
 use crate::frontier::Frontier;
-use crate::{Event, EventId};
+use crate::{Event, EventId, FiberId};
 use pardosa_file::Reader;
 use pardosa_schema::GenomeSafe;
 use pardosa_wire::{Decode, from_bytes};
 use std::io::{Read, Seek};
 use std::iter::FusedIterator;
 use std::marker::PhantomData;
+/// Pure contiguity predicate shared by the streaming verify chain
+/// (`CheckedEventStream`) and the dragline rebuild path
+/// (`rebuild_dragline_with_frontier`), so the comparison itself has
+/// exactly one implementation. Each caller wraps the boolean result
+/// in its own error surface: `CheckedReplayKind` here (verify stage),
+/// `IntegrityKind` in the rebuild path (unrelated builder-invariant
+/// consumers at `dragline::state`/`dragline::integrity` keep
+/// `IntegrityKind` unaffected) — the ratified reconciliation recorded
+/// against adr-fmt-lutpd finding #2 / adr-fmt-ibi23.
+pub(crate) fn event_id_matches_position(event_id: u64, position: u64) -> bool {
+    event_id == position
+}
+/// Pure precursor-bounds check shared by the streaming verify chain
+/// and the batch rebuild path (adr-fmt-lutpd finding #2). Returns
+/// `Ok(None)` when the event carries no precursor, `Ok(Some(pidx))`
+/// for a valid strictly-earlier line position, or the
+/// `PrecursorOutOfBounds` violation otherwise.
+pub(crate) fn precursor_bounds<T>(
+    event: &Event<T>,
+    position: usize,
+    position_u64: u64,
+) -> Result<Option<usize>, CheckedReplayKind> {
+    let Some(precursor_idx) = event.precursor().as_index() else {
+        return Ok(None);
+    };
+    match usize::try_from(precursor_idx) {
+        Ok(pidx) if pidx < position => Ok(Some(pidx)),
+        Ok(_) => Err(CheckedReplayKind::PrecursorOutOfBounds {
+            event_id: event.event_id().value(),
+            position: position_u64,
+            precursor_index: precursor_idx.value(),
+        }),
+        Err(e) => Err(CheckedReplayKind::PrecursorOutOfBounds {
+            event_id: event.event_id().value(),
+            position: position_u64,
+            precursor_index: e.0,
+        }),
+    }
+}
+/// Pure same-fiber + precursor-hash check shared by the streaming
+/// verify chain and the batch rebuild path (adr-fmt-lutpd finding
+/// #2), given the already-located prior event's fiber id and
+/// canonical-byte hash — the two call sites differ only in how they
+/// obtain those two values (`Reader::read_message` re-read here,
+/// `raw_bytes` index in the rebuild path; ADR-fmt-ibi23 diff #2,
+/// intentionally preserved).
+pub(crate) fn precursor_matches<T>(
+    event: &Event<T>,
+    precursor_index: u64,
+    prior_fiber: FiberId,
+    prior_hash: [u8; 32],
+) -> Result<(), CheckedReplayKind> {
+    if prior_fiber != event.fiber_id() {
+        return Err(CheckedReplayKind::PrecursorFiberMismatch {
+            event_id: event.event_id().value(),
+            precursor_index,
+            expected_fiber: event.fiber_id(),
+            actual_fiber: prior_fiber,
+        });
+    }
+    if event.precursor_hash() != prior_hash {
+        return Err(CheckedReplayKind::PrecursorHashMismatch {
+            event_id: event.event_id().value(),
+            precursor_index,
+            expected: prior_hash,
+            actual: event.precursor_hash(),
+        });
+    }
+    Ok(())
+}
+/// Emit the non-blocking `precursor_check_would_fail` warn shared by
+/// both `ObserveOnly` call sites (the streaming verify chain and the
+/// batch rebuild path). Never logs the domain payload.
+pub(crate) fn warn_precursor_would_fail<T>(
+    event: &Event<T>,
+    kind: &CheckedReplayKind,
+    position: usize,
+) {
+    let check_kind = check_kind_name(kind);
+    let position_u64 = u64::try_from(position).unwrap_or(u64::MAX);
+    tracing::warn!(
+        check_kind,
+        fiber_id = event.fiber_id().value(),
+        event_id = event.event_id().value(),
+        position = position_u64,
+        "precursor_check_would_fail"
+    );
+}
+fn check_kind_name(kind: &CheckedReplayKind) -> &'static str {
+    match kind {
+        CheckedReplayKind::EventIdPositionMismatch { .. } => "EventIdPositionMismatch",
+        CheckedReplayKind::PrecursorOutOfBounds { .. } => "PrecursorOutOfBounds",
+        CheckedReplayKind::PrecursorFiberMismatch { .. } => "PrecursorFiberMismatch",
+        CheckedReplayKind::PrecursorHashMismatch { .. } => "PrecursorHashMismatch",
+    }
+}
 /// Checked-replay event stream (M3).
 ///
 /// Returned by [`stream_checked`]. Walks every message — including
@@ -38,6 +135,12 @@ pub struct CheckedEventStream<R: Read + Seek, T> {
     /// re-encoding decoded events to roll the frontier would
     /// reintroduce a writer-side `Encode` bound.
     frontier: Frontier,
+    /// Precursor-check enforcement mode (adr-fmt-lutpd finding #2 /
+    /// adr-fmt-ibi23). Governs only the three precursor checks
+    /// (bounds, same-fiber, hash) inside [`Self::verify_precursor`];
+    /// contiguity (`check_position`) stays unconditional in both
+    /// modes, matching the dragline rebuild path.
+    mode: PrecursorCheckMode,
     _t: PhantomData<fn() -> T>,
 }
 impl<R: Read + Seek, T> Iterator for CheckedEventStream<R, T>
@@ -112,54 +215,45 @@ where
         position: usize,
         position_u64: u64,
     ) -> Result<(), Error> {
-        let Some(precursor_idx) = event.precursor().as_index() else {
-            return Ok(());
+        let pidx = match precursor_bounds(event, position, position_u64) {
+            Ok(None) => return Ok(()),
+            Ok(Some(pidx)) => pidx,
+            Err(kind) => return self.handle_precursor_violation(event, kind, position),
         };
-        let pidx = usize::try_from(precursor_idx).map_err(|e| Error::CheckedReplay {
-            kind: CheckedReplayKind::PrecursorOutOfBounds {
-                event_id: event.event_id().value(),
-                position: position_u64,
-                precursor_index: e.0,
-            },
-        })?;
-        if pidx >= position {
-            return Err(Error::CheckedReplay {
-                kind: CheckedReplayKind::PrecursorOutOfBounds {
-                    event_id: event.event_id().value(),
-                    position: position_u64,
-                    precursor_index: precursor_idx.value(),
-                },
-            });
-        }
         let prior_bytes = self.reader.read_message(pidx).map_err(Error::File)?;
         let prior_event: Event<T> = from_bytes(&prior_bytes).map_err(Error::Decode)?;
         let prior_fid = prior_event.fiber_id();
         let prior_hash = pardosa_wire::precursor_hash_of(&prior_bytes);
-        if prior_fid != event.fiber_id() {
-            return Err(Error::CheckedReplay {
-                kind: CheckedReplayKind::PrecursorFiberMismatch {
-                    event_id: event.event_id().value(),
-                    precursor_index: precursor_idx.value(),
-                    expected_fiber: event.fiber_id(),
-                    actual_fiber: prior_fid,
-                },
-            });
-        }
-        if event.precursor_hash() != prior_hash {
-            return Err(Error::CheckedReplay {
-                kind: CheckedReplayKind::PrecursorHashMismatch {
-                    event_id: event.event_id().value(),
-                    precursor_index: precursor_idx.value(),
-                    expected: prior_hash,
-                    actual: event.precursor_hash(),
-                },
-            });
+        let precursor_index = event
+            .precursor()
+            .as_index()
+            .expect("bounds check above confirmed a precursor index")
+            .value();
+        if let Err(kind) = precursor_matches(event, precursor_index, prior_fid, prior_hash) {
+            return self.handle_precursor_violation(event, kind, position);
         }
         Ok(())
     }
+    /// Dispatch a precursor-check violation per [`Self::mode`]:
+    /// `Enforce` surfaces the typed error as today; `ObserveOnly`
+    /// emits the non-blocking warn and lets the stream continue.
+    fn handle_precursor_violation(
+        &self,
+        event: &Event<T>,
+        kind: CheckedReplayKind,
+        position: usize,
+    ) -> Result<(), Error> {
+        match self.mode {
+            PrecursorCheckMode::Enforce => Err(Error::CheckedReplay { kind }),
+            PrecursorCheckMode::ObserveOnly => {
+                warn_precursor_would_fail(event, &kind, position);
+                Ok(())
+            }
+        }
+    }
 }
 fn check_position<T>(event: &Event<T>, position_u64: u64) -> Result<(), Error> {
-    if event.event_id().value() == position_u64 {
+    if event_id_matches_position(event.event_id().value(), position_u64) {
         Ok(())
     } else {
         Err(Error::CheckedReplay {
@@ -205,9 +299,47 @@ impl<R: Read + Seek, T> CheckedEventStream<R, T> {
 ///
 /// [`Error::CheckedReplay`] and per-event errors surface as `Err`
 /// items on the iterator.
+/// Open a `.pgno` source and return a [`CheckedEventStream<R, T>`]
+/// (M3), always in [`PrecursorCheckMode::Enforce`] — the existing,
+/// unconditional-reject contract used by `cursor.rs` and
+/// `stream_validated`. Crate-internal callers that need
+/// `ObserveOnly` use [`stream_checked_with_mode`] instead.
+///
+/// Performs container-header validation and exclusive `resume_after`,
+/// plus four structural checks per event (see [`CheckedEventStream`]).
+/// The prefix skipped by `resume_after` is validated before any tail
+/// event is yielded.
+///
+/// # Errors
+///
+/// - [`Error::File`] from [`Reader::open`].
+/// - [`Error::SchemaHashMismatch`] for header mismatch.
+///
+/// [`Error::CheckedReplay`] and per-event errors surface as `Err`
+/// items on the iterator.
 pub fn stream_checked<R, T>(
     source: R,
     resume_after: Option<EventId>,
+) -> Result<CheckedEventStream<R, T>, Error>
+where
+    R: Read + Seek,
+    T: Decode + GenomeSafe,
+{
+    stream_checked_with_mode(source, resume_after, PrecursorCheckMode::Enforce)
+}
+/// Mode-aware sibling of [`stream_checked`] (adr-fmt-lutpd finding
+/// #2 / adr-fmt-ibi23): the ratified home for
+/// [`PrecursorCheckMode`] on the streaming verify chain. Crate-
+/// internal — external callers get [`PrecursorCheckMode::Enforce`]
+/// via the public [`stream_checked`].
+///
+/// # Errors
+///
+/// Same as [`stream_checked`].
+pub(crate) fn stream_checked_with_mode<R, T>(
+    source: R,
+    resume_after: Option<EventId>,
+    mode: PrecursorCheckMode,
 ) -> Result<CheckedEventStream<R, T>, Error>
 where
     R: Read + Seek,
@@ -225,6 +357,7 @@ where
         skip_until: resume_after,
         poisoned: false,
         frontier: Frontier::GENESIS,
+        mode,
         _t: PhantomData,
     })
 }

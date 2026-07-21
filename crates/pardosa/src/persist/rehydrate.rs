@@ -45,62 +45,29 @@ fn resolve_precursor_check_mode(raw: Option<&str>) -> PrecursorCheckMode {
 pub(crate) fn precursor_check_mode() -> PrecursorCheckMode {
     resolve_precursor_check_mode(std::env::var(PRECURSOR_CHECK_MODE_ENV).ok().as_deref())
 }
-fn check_kind_name(kind: &CheckedReplayKind) -> &'static str {
-    match kind {
-        CheckedReplayKind::EventIdPositionMismatch { .. } => "EventIdPositionMismatch",
-        CheckedReplayKind::PrecursorOutOfBounds { .. } => "PrecursorOutOfBounds",
-        CheckedReplayKind::PrecursorFiberMismatch { .. } => "PrecursorFiberMismatch",
-        CheckedReplayKind::PrecursorHashMismatch { .. } => "PrecursorHashMismatch",
-    }
-}
-fn precursor_would_fail<T>(
+/// Precursor bounds/fiber/hash check for the batch rebuild path,
+/// delegating to the pure functions shared with the streaming verify
+/// chain in [`super::checked`] (adr-fmt-lutpd finding #2 /
+/// adr-fmt-ibi23) — this replaces the former standalone
+/// `precursor_would_fail` duplicate.
+fn rebuild_precursor_check<T>(
     events: &[Event<T>],
     raw_bytes: &[Vec<u8>],
     position: usize,
-) -> Option<CheckedReplayKind> {
+    position_u64: u64,
+) -> Result<(), CheckedReplayKind> {
     let event = &events[position];
-    let precursor_idx = event.precursor().as_index()?;
-    let position_u64 = u64::try_from(position).expect("line position fits u64");
-    let pidx = match usize::try_from(precursor_idx) {
-        Ok(pidx) if pidx < position => pidx,
-        Ok(_) | Err(_) => {
-            return Some(CheckedReplayKind::PrecursorOutOfBounds {
-                event_id: event.event_id().value(),
-                position: position_u64,
-                precursor_index: precursor_idx.value(),
-            });
-        }
+    let Some(pidx) = super::checked::precursor_bounds(event, position, position_u64)? else {
+        return Ok(());
     };
     let prior_event = &events[pidx];
-    if prior_event.fiber_id() != event.fiber_id() {
-        return Some(CheckedReplayKind::PrecursorFiberMismatch {
-            event_id: event.event_id().value(),
-            precursor_index: precursor_idx.value(),
-            expected_fiber: event.fiber_id(),
-            actual_fiber: prior_event.fiber_id(),
-        });
-    }
     let prior_hash = precursor_hash_of(&raw_bytes[pidx]);
-    if event.precursor_hash() != prior_hash {
-        return Some(CheckedReplayKind::PrecursorHashMismatch {
-            event_id: event.event_id().value(),
-            precursor_index: precursor_idx.value(),
-            expected: prior_hash,
-            actual: event.precursor_hash(),
-        });
-    }
-    None
-}
-fn warn_precursor_would_fail<T>(event: &Event<T>, kind: &CheckedReplayKind, position: usize) {
-    let check_kind = check_kind_name(kind);
-    let position_u64 = u64::try_from(position).unwrap_or(u64::MAX);
-    tracing::warn!(
-        check_kind,
-        fiber_id = event.fiber_id().value(),
-        event_id = event.event_id().value(),
-        position = position_u64,
-        "precursor_check_would_fail"
-    );
+    let precursor_index = event
+        .precursor()
+        .as_index()
+        .expect("precursor_bounds confirmed a precursor index")
+        .value();
+    super::checked::precursor_matches(event, precursor_index, prior_event.fiber_id(), prior_hash)
 }
 /// Write a `Line`'s full event line to `sink` as a `.pgno`
 /// container, optionally embedding `schema_source` in the footer.
@@ -205,26 +172,47 @@ pub(crate) fn rebuild_dragline_with_frontier<T>(
     let mut next_event_id: u64 = 0;
     for (i, event) in events.iter().enumerate() {
         let position_u64 = u64::try_from(i).expect("line position fits u64");
-        if event.event_id().value() != position_u64 {
-            return Err(PardosaError::FiberInvariant(
-                crate::error::FiberInvariantKind::Integrity(
+        if !super::checked::event_id_matches_position(event.event_id().value(), position_u64) {
+            let kind = CheckedReplayKind::EventIdPositionMismatch {
+                event_id: event.event_id().value(),
+                position: position_u64,
+            };
+            return Err(if raw_bytes.is_some() {
+                // Verify-stage arms (pgno/JetStream, raw_bytes Some):
+                // unified onto the same `CheckedReplayKind` surface as
+                // the streaming verify chain (adr-fmt-ibi23).
+                PardosaError::CursorRead {
+                    source: Box::new(Error::CheckedReplay { kind }),
+                }
+            } else {
+                // Validated arm (raw_bytes None): contiguity was
+                // already enforced upstream by
+                // `stream_validated`/`stream_checked`; this is
+                // builder-only defense-in-depth and keeps the
+                // pre-existing `IntegrityKind` surface so
+                // `RehydrateInvariant::from(PardosaError)` (which has
+                // no `CursorRead` arm) is never asked to convert it.
+                PardosaError::FiberInvariant(crate::error::FiberInvariantKind::Integrity(
                     crate::error::IntegrityKind::EventIdPositionMismatch {
                         event_id: event.event_id().value(),
                         position: position_u64,
                     },
-                ),
-            ));
+                ))
+            });
         }
-        if let Some(raw) = raw_bytes
-            && let Some(kind) = precursor_would_fail(&events, raw, i)
-        {
-            match mode {
-                PrecursorCheckMode::ObserveOnly => warn_precursor_would_fail(event, &kind, i),
-                PrecursorCheckMode::Enforce => {
-                    return Err(PardosaError::CursorRead {
-                        source: Box::new(Error::CheckedReplay { kind }),
-                    });
-                }
+        if let Some(raw) = raw_bytes {
+            match rebuild_precursor_check(&events, raw, i, position_u64) {
+                Ok(()) => {}
+                Err(kind) => match mode {
+                    PrecursorCheckMode::ObserveOnly => {
+                        super::checked::warn_precursor_would_fail(event, &kind, i);
+                    }
+                    PrecursorCheckMode::Enforce => {
+                        return Err(PardosaError::CursorRead {
+                            source: Box::new(Error::CheckedReplay { kind }),
+                        });
+                    }
+                },
             }
         }
         let idx = crate::Index::from_decoded(position_u64);
