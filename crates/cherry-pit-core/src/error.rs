@@ -547,4 +547,53 @@ mod tests {
         let inner = err.into_inner();
         assert_eq!(inner.to_string(), "timeout");
     }
+
+    /// PGN-0016 R9 / CHE-0027: `ConcurrencyConflict`'s `source()` is `None`
+    /// (see `dispatch_error_source` above), so the ratified retrieval path
+    /// is variant-matching, not a `std::error::Error` source-chain
+    /// downcast. This proves a caller can match the non-exhaustive variant
+    /// and read all three typed fields as discrete values on both
+    /// `DispatchError` and `StoreError`, without `Display` parsing.
+    #[test]
+    fn concurrency_conflict_fields_readable_by_variant_match() {
+        let id = AggregateId::new(NonZeroU64::new(7).unwrap());
+        let expected = NonZeroU64::new(3).unwrap();
+        let actual = 5u64;
+
+        let dispatch_err: DispatchError<TestDomainError> = DispatchError::ConcurrencyConflict {
+            aggregate_id: id,
+            expected_sequence: expected,
+            actual_sequence: actual,
+        };
+        match dispatch_err {
+            DispatchError::ConcurrencyConflict {
+                aggregate_id,
+                expected_sequence,
+                actual_sequence,
+            } => {
+                assert_eq!(aggregate_id, id);
+                assert_eq!(expected_sequence, expected);
+                assert_eq!(actual_sequence, actual);
+            }
+            _ => panic!("expected ConcurrencyConflict variant"),
+        }
+
+        let store_err = StoreError::ConcurrencyConflict {
+            aggregate_id: id,
+            expected_sequence: expected,
+            actual_sequence: actual,
+        };
+        match store_err {
+            StoreError::ConcurrencyConflict {
+                aggregate_id,
+                expected_sequence,
+                actual_sequence,
+            } => {
+                assert_eq!(aggregate_id, id);
+                assert_eq!(expected_sequence, expected);
+                assert_eq!(actual_sequence, actual);
+            }
+            _ => panic!("expected ConcurrencyConflict variant"),
+        }
+    }
 }
