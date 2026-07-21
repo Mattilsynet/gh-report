@@ -1601,6 +1601,20 @@ mod tests {
         )
     }
 
+    /// Contiguity-violating successor: `event_id` (2) does not match
+    /// its physical line position (1) — the fifth check-set shape
+    /// (adr-fmt-lutpd finding #2 equivalence gate).
+    fn contiguity_mismatch_successor_event(genesis_bytes: &[u8]) -> Event<TaggedPayload> {
+        Event::new_unchecked(
+            crate::EventId::from_decoded(2),
+            crate::FiberId::from_decoded(0),
+            false,
+            Precursor::Of(Index::new(0)),
+            pardosa_wire::precursor_hash_of(genesis_bytes),
+            TaggedPayload(OBSERVE_MODE_PAYLOAD_MARKER),
+        )
+    }
+
     fn write_pgno_bytes(events: &[Event<TaggedPayload>]) -> Vec<u8> {
         let mut buf: Vec<u8> = Vec::new();
         let mut writer = pardosa_file::Writer::new(&mut buf, Event::<TaggedPayload>::ENVELOPE_HASH);
@@ -2108,6 +2122,158 @@ mod tests {
             ),
             "expected PrecursorHashMismatch rejection via the env-selected Enforce path"
         );
+    }
+
+    // ---- adr-fmt-lutpd finding #2 equivalence gate (adr-fmt-apicu
+    // increment #2): the streaming verify chain (`checked.rs`) and
+    // the batch rebuild path (`rehydrate.rs`) shared five per-event
+    // check shapes with two independent implementations. These
+    // tests pin the post-unify contract: the same crafted violation
+    // shape classifies identically on both arms (pgno, JetStream),
+    // under both modes where applicable, and precisely once on the
+    // validated (`stream_validated` -> `stream_checked`) path.
+
+    #[test]
+    fn contiguity_mismatch_rejects_on_pgno_arm_as_checked_replay_kind() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, contiguity_mismatch_successor_event(&genesis_bytes)];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let (decoded, raw, frontier) = decode_pgno_events(pgno_bytes);
+        let err = crate::persist::rebuild_dragline_with_frontier(
+            decoded,
+            frontier,
+            Some(&raw),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect_err("a contiguity violation must reject on the pgno arm");
+        assert!(
+            matches!(
+                expect_checked_replay_rejection(err),
+                crate::persist::CheckedReplayKind::EventIdPositionMismatch { .. }
+            ),
+            "post-unify contract: pgno-arm contiguity violations surface as CheckedReplayKind \
+             (the verify-stage surface), not the dragline-builder IntegrityKind"
+        );
+    }
+
+    #[test]
+    fn contiguity_mismatch_rejects_on_nats_arm_as_checked_replay_kind() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, contiguity_mismatch_successor_event(&genesis_bytes)];
+        let frames = jetstream_frames(&events);
+        let (decoded, raw, frontier) = decode_frame_events(&frames);
+        let err = crate::persist::rebuild_dragline_with_frontier(
+            decoded,
+            frontier,
+            Some(&raw),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect_err("a contiguity violation must reject on the nats arm");
+        assert!(
+            matches!(
+                expect_checked_replay_rejection(err),
+                crate::persist::CheckedReplayKind::EventIdPositionMismatch { .. }
+            ),
+            "post-unify contract: nats-arm contiguity violations surface as CheckedReplayKind \
+             (the verify-stage surface), not the dragline-builder IntegrityKind"
+        );
+    }
+
+    #[test]
+    fn contiguity_mismatch_rejects_on_pgno_arm_even_under_observe_only_mode() {
+        // Diff #3 (adr-fmt-apicu SOURCE-VERIFIED CONTEXT): contiguity
+        // is unconditional in both pre-merge implementations — unlike
+        // the precursor bounds/fiber/hash triad, `PrecursorCheckMode`
+        // does not gate it. This must survive the unify.
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, contiguity_mismatch_successor_event(&genesis_bytes)];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let err = crate::persist::rehydrate_unchecked::<TaggedPayload, _>(
+            Cursor::new(pgno_bytes),
+            crate::persist::PrecursorCheckMode::ObserveOnly,
+        )
+        .expect_err("contiguity violations must reject even in ObserveOnly mode");
+        assert!(
+            matches!(
+                err,
+                crate::persist::Error::CheckedReplay {
+                    kind: crate::persist::CheckedReplayKind::EventIdPositionMismatch { .. }
+                }
+            ),
+            "ObserveOnly must not downgrade a contiguity violation to a warn, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn contiguity_mismatch_on_validated_path_rejects_via_upstream_stream_checked() {
+        // raw_bytes=None arm: the validated path relies on
+        // `stream_validated` -> `stream_checked` to enforce
+        // contiguity upstream, before `rebuild_dragline_with_frontier`
+        // ever sees the event. Confirms enforcement fires exactly
+        // once (via the streaming chain), not zero times, and not a
+        // second time via the builder's own IntegrityKind path.
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, contiguity_mismatch_successor_event(&genesis_bytes)];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let err = crate::persist::rehydrate_validated::<TaggedPayload, _>(
+            Cursor::new(pgno_bytes),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect_err("a contiguity violation must reject on the validated path");
+        match err {
+            ValidatedReplayError::Replay(crate::persist::Error::CheckedReplay {
+                kind: crate::persist::CheckedReplayKind::EventIdPositionMismatch { .. },
+            }) => {}
+            other => panic!(
+                "expected the validated path to reject via upstream stream_checked's \
+                 CheckedReplayKind::EventIdPositionMismatch, got: {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn precursor_hash_mismatch_on_validated_path_rejects_via_upstream_stream_checked_not_dropped()
+    {
+        // Guards against the double-run/drop failure mode named in
+        // the mission brief: raw_bytes=None must not silently skip
+        // the precursor-hash check just because
+        // `rebuild_dragline_with_frontier` itself only gates
+        // precursor checks on `raw_bytes.is_some()`. The check must
+        // still fire once, via `stream_validated` -> `stream_checked`.
+        let genesis = genesis_event(1);
+        let events = [genesis, hash_mismatch_successor_event()];
+        let pgno_bytes = write_pgno_bytes(&events);
+        let err = crate::persist::rehydrate_validated::<TaggedPayload, _>(
+            Cursor::new(pgno_bytes),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect_err("a precursor-hash violation must reject on the validated path");
+        match err {
+            ValidatedReplayError::Replay(crate::persist::Error::CheckedReplay {
+                kind: crate::persist::CheckedReplayKind::PrecursorHashMismatch { .. },
+            }) => {}
+            other => panic!(
+                "expected the validated path to reject via upstream stream_checked's \
+                 CheckedReplayKind::PrecursorHashMismatch (checked exactly once), got: {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn clean_log_validated_path_rehydrates_with_full_chain_enforced_once() {
+        let genesis = genesis_event(1);
+        let genesis_bytes = pardosa_wire::to_vec(&genesis);
+        let events = [genesis, clean_successor_event(&genesis_bytes)];
+        let pgno_bytes = write_pgno_bytes(&events);
+        crate::persist::rehydrate_validated::<TaggedPayload, _>(
+            Cursor::new(pgno_bytes),
+            crate::persist::PrecursorCheckMode::Enforce,
+        )
+        .expect("a clean chain must rehydrate on the validated path");
     }
 }
 impl<T> EventStore<T, std::fs::File>
