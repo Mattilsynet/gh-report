@@ -22,7 +22,9 @@
 //! the initial run (skip run-lock / bypass baseline reuse). Later runs
 //! behave normally.
 
+use std::future::Future;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -329,6 +331,147 @@ async fn drain_shutdown_with_timeout(
     }
 }
 
+/// Bounded re-arm policy applied after `CollectionOutcome::FencedConflict`.
+///
+/// Design-Y consumer-owned re-arm (adr-fmt-9a2z7): on a typed fence
+/// conflict the daemon forces a fresh authoritative read (re-seeding the
+/// long-lived store handle via [`AppState::resync_event_store`]) before
+/// retrying the run, instead of the prior non-converging warn-and-wait
+/// loop that resent the same stale cached sequence every tick forever.
+/// Bounded by `max_attempts`; exhausting the cap surfaces a typed
+/// [`RearmError`] rather than looping forever.
+struct RearmPolicy {
+    max_attempts: u32,
+    backoff_base: Duration,
+}
+
+impl RearmPolicy {
+    const DEFAULT: Self = Self {
+        max_attempts: 3,
+        backoff_base: Duration::from_secs(2),
+    };
+}
+
+/// Terminal give-up surface for [`rearm_after_fenced_conflict`].
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+enum RearmError {
+    #[error("fence-conflict re-arm exhausted after {attempts} attempt(s): resync failed: {source}")]
+    ResyncFailed {
+        attempts: u32,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("fence-conflict re-arm exhausted after {attempts} attempt(s): still fenced")]
+    StillFenced { attempts: u32 },
+    #[error("fence-conflict re-arm exhausted after {attempts} attempt(s): run failed: {source}")]
+    RunFailed {
+        attempts: u32,
+        #[source]
+        source: AppError,
+    },
+}
+
+/// Re-arm a fenced collection run: force a fresh authoritative read via
+/// `resync`, then retry via `run`, bounded by `policy`.
+///
+/// Does NOT patch a cached sequence and redrive the same append
+/// (R10-forbidden) — `resync` re-owns/re-reads a fresh authoritative view
+/// before each retry, so a superseded writer identity cannot win an
+/// append against stale state.
+async fn rearm_after_fenced_conflict<Resync, ResyncFut, Run, RunFut>(
+    policy: &RearmPolicy,
+    mut resync: Resync,
+    mut run: Run,
+) -> Result<collect::CollectionOutcome, RearmError>
+where
+    Resync: FnMut() -> ResyncFut,
+    ResyncFut: Future<Output = Result<(), std::io::Error>>,
+    Run: FnMut() -> RunFut,
+    RunFut: Future<Output = Result<collect::CollectionOutcome, AppError>>,
+{
+    for attempt in 1..=policy.max_attempts {
+        if let Err(source) = resync().await {
+            if attempt == policy.max_attempts {
+                return Err(RearmError::ResyncFailed {
+                    attempts: attempt,
+                    source,
+                });
+            }
+            tokio::time::sleep(policy.backoff_base * attempt).await;
+            continue;
+        }
+        match run().await {
+            Ok(
+                outcome @ (collect::CollectionOutcome::Completed
+                | collect::CollectionOutcome::Cancelled),
+            ) => return Ok(outcome),
+            Ok(collect::CollectionOutcome::FencedConflict) => {
+                if attempt == policy.max_attempts {
+                    return Err(RearmError::StillFenced { attempts: attempt });
+                }
+                tokio::time::sleep(policy.backoff_base * attempt).await;
+            }
+            Err(source) => {
+                if attempt == policy.max_attempts {
+                    return Err(RearmError::RunFailed {
+                        attempts: attempt,
+                        source,
+                    });
+                }
+                tokio::time::sleep(policy.backoff_base * attempt).await;
+            }
+        }
+    }
+    Err(RearmError::StillFenced {
+        attempts: policy.max_attempts,
+    })
+}
+
+/// Drive [`rearm_after_fenced_conflict`] for one fenced collection tick,
+/// logging the terminal outcome. `run_cfg` builds a fresh
+/// [`RuntimeConfig`] for each retry (mirrors the caller's
+/// `initial_run_config` / `scheduled_run_config` choice).
+async fn rearm_fenced_run(
+    events_dir: &Path,
+    backend: crate::config::runtime::PardosaBackend,
+    nats: Result<&crate::config::runtime::NatsStoreConfig, &ConfigError>,
+    state: &Arc<AppState>,
+    mut run_cfg: impl FnMut() -> RuntimeConfig,
+) {
+    let Ok(nats) = nats else {
+        error!(
+            owner_id = %state.owner_id,
+            "fence-conflict re-arm skipped: NATS store config invalid — falling back to next scheduled tick"
+        );
+        return;
+    };
+    let outcome = rearm_after_fenced_conflict(
+        &RearmPolicy::DEFAULT,
+        || state.resync_event_store(events_dir, backend, nats.clone()),
+        || collect::run_with_outcome(run_cfg(), Arc::clone(state)),
+    )
+    .await;
+    match outcome {
+        Ok(collect::CollectionOutcome::Completed) => {
+            info!(owner_id = %state.owner_id, "fence-conflict re-arm converged");
+        }
+        Ok(collect::CollectionOutcome::Cancelled) => {
+            info!(owner_id = %state.owner_id, "fence-conflict re-arm aborted on shutdown");
+        }
+        Ok(collect::CollectionOutcome::FencedConflict) => {
+            unreachable!("rearm_after_fenced_conflict never returns Ok(FencedConflict)")
+        }
+        Err(error) => {
+            error!(
+                owner_id = %state.owner_id,
+                error = %error,
+                "fence-conflict re-arm exhausted — reverting to next scheduled tick"
+            );
+        }
+    }
+}
+
 /// Spawn the background collection task: one initial run with the
 /// caller-supplied `force_unlock` flag, then a scheduled loop that
 /// honours a cooperative cancellation signal between iterations. The
@@ -341,6 +484,8 @@ fn spawn_collection_loop(
     force_refresh_flag: Arc<OneShotFlag>,
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
+    let events_dir = config.store_dir.join("events").join(&config.org_name);
+    let nats = config.nats_store_config();
     tokio::spawn(async move {
         {
             let cfg = initial_run_config(&config, &force_flag, &force_refresh_flag);
@@ -353,8 +498,16 @@ fn spawn_collection_loop(
                     warn!(
                         owner_id = %state.owner_id,
                         expected = "rollover",
-                        "initial collection fenced by active single-writer guard — expected Cloud-Run-rollover OCC churn (PGN-0016:R7); schedule re-armed"
+                        "initial collection fenced by active single-writer guard — expected Cloud-Run-rollover OCC churn (PGN-0016:R7); re-arming with fresh authoritative read"
                     );
+                    rearm_fenced_run(
+                        &events_dir,
+                        config.pardosa_backend,
+                        nats.as_ref(),
+                        &state,
+                        || initial_run_config(&config, &force_flag, &force_refresh_flag),
+                    )
+                    .await;
                 }
                 Err(AppError::Persistence(error @ PersistenceError::LockFailed { .. })) => {
                     let failure = WriteFailure::classify(error);
@@ -401,8 +554,16 @@ fn spawn_collection_loop(
                     warn!(
                         owner_id = %state.owner_id,
                         expected = "rollover",
-                        "scheduled collection fenced by active single-writer guard — expected Cloud-Run-rollover OCC churn (PGN-0016:R7); schedule re-armed"
+                        "scheduled collection fenced by active single-writer guard — expected Cloud-Run-rollover OCC churn (PGN-0016:R7); re-arming with fresh authoritative read"
                     );
+                    rearm_fenced_run(
+                        &events_dir,
+                        config.pardosa_backend,
+                        nats.as_ref(),
+                        &state,
+                        || scheduled_run_config(&config, &force_flag, &force_refresh_flag),
+                    )
+                    .await;
                 }
                 Err(AppError::Persistence(error @ PersistenceError::LockFailed { .. })) => {
                     let failure = WriteFailure::classify(error);
@@ -1205,5 +1366,137 @@ mod tests {
             elapsed <= timeout + Duration::from_millis(1),
             "shutdown drain must use one shared timeout budget; elapsed={elapsed:?}, budget={timeout:?}"
         );
+    }
+
+    fn test_policy(max_attempts: u32) -> RearmPolicy {
+        RearmPolicy {
+            max_attempts,
+            backoff_base: Duration::from_millis(1),
+        }
+    }
+
+    fn fenced_conflict() -> AppError {
+        AppError::Persistence(PersistenceError::FencedConflict {
+            expected_seq: Some(1),
+            actual_seq: Some(2),
+            source: Box::new(std::io::Error::other("wrong last sequence")),
+        })
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rearm_converges_after_one_resync_when_second_attempt_succeeds() {
+        let resync_calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let run_calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+        let resync_calls_c = Arc::clone(&resync_calls);
+        let run_calls_c = Arc::clone(&run_calls);
+        let outcome = rearm_after_fenced_conflict(
+            &test_policy(3),
+            || {
+                resync_calls_c.fetch_add(1, Ordering::SeqCst);
+                async { Ok(()) }
+            },
+            || {
+                let attempt = run_calls_c.fetch_add(1, Ordering::SeqCst) + 1;
+                async move {
+                    if attempt == 1 {
+                        Ok(collect::CollectionOutcome::FencedConflict)
+                    } else {
+                        Ok(collect::CollectionOutcome::Completed)
+                    }
+                }
+            },
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, Ok(collect::CollectionOutcome::Completed)),
+            "must converge to Completed on the second attempt, got {outcome:?}"
+        );
+        assert_eq!(
+            run_calls.load(Ordering::SeqCst),
+            2,
+            "converges on second run"
+        );
+        assert_eq!(
+            resync_calls.load(Ordering::SeqCst),
+            2,
+            "R10 guard: a fresh resync (re-read) must precede every retry — \
+             the mechanism re-owns rather than blind-redriving the same op"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rearm_never_redrives_without_a_preceding_resync_r10_guard() {
+        let resync_calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let run_calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+        let resync_calls_c = Arc::clone(&resync_calls);
+        let run_calls_c = Arc::clone(&run_calls);
+        let _ = rearm_after_fenced_conflict(
+            &test_policy(3),
+            || {
+                resync_calls_c.fetch_add(1, Ordering::SeqCst);
+                async { Ok(()) }
+            },
+            || {
+                run_calls_c.fetch_add(1, Ordering::SeqCst);
+                async { Ok(collect::CollectionOutcome::FencedConflict) }
+            },
+        )
+        .await;
+
+        assert!(
+            resync_calls.load(Ordering::SeqCst) >= run_calls.load(Ordering::SeqCst),
+            "resync ({}) must never trail run ({}) — a blind redrive would let \
+             run outpace resync",
+            resync_calls.load(Ordering::SeqCst),
+            run_calls.load(Ordering::SeqCst)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rearm_gives_up_with_typed_error_after_cap_exhausted_still_fenced() {
+        let outcome = rearm_after_fenced_conflict(
+            &test_policy(3),
+            || async { Ok(()) },
+            || async { Ok(collect::CollectionOutcome::FencedConflict) },
+        )
+        .await;
+
+        match outcome {
+            Err(RearmError::StillFenced { attempts }) => assert_eq!(attempts, 3),
+            other => panic!("expected StillFenced give-up, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rearm_gives_up_with_typed_error_when_resync_itself_fails() {
+        let outcome = rearm_after_fenced_conflict(
+            &test_policy(2),
+            || async { Err(std::io::Error::other("backend unreachable")) },
+            || async { unreachable!("run must not be attempted without a successful resync") },
+        )
+        .await;
+
+        match outcome {
+            Err(RearmError::ResyncFailed { attempts, .. }) => assert_eq!(attempts, 2),
+            other => panic!("expected ResyncFailed give-up, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rearm_surfaces_run_failure_as_typed_error_after_cap() {
+        let outcome = rearm_after_fenced_conflict(
+            &test_policy(1),
+            || async { Ok(()) },
+            || async { Err(fenced_conflict()) },
+        )
+        .await;
+
+        match outcome {
+            Err(RearmError::RunFailed { attempts, .. }) => assert_eq!(attempts, 1),
+            other => panic!("expected RunFailed give-up, got {other:?}"),
+        }
     }
 }

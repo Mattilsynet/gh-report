@@ -1317,16 +1317,16 @@ impl AppState {
         let sweep_timeout_event_store = Arc::new(sweep_timeout_event_store(&events_dir));
         let last_recovery = org_event_store
             .last_recovery()
-            .map(|recovery| LastRecoveryStatus::from_outcome("orgs", recovery))
+            .map(|recovery| LastRecoveryStatus::from_outcome("orgs", &recovery))
             .or_else(|| {
                 team_event_store
                     .last_recovery()
-                    .map(|recovery| LastRecoveryStatus::from_outcome("teams", recovery))
+                    .map(|recovery| LastRecoveryStatus::from_outcome("teams", &recovery))
             })
             .or_else(|| {
                 event_store
                     .last_recovery()
-                    .map(|recovery| LastRecoveryStatus::from_outcome("repositories", recovery))
+                    .map(|recovery| LastRecoveryStatus::from_outcome("repositories", &recovery))
             });
         let projection_state = Arc::new(Mutex::new(projection_from_stores(
             event_store.as_ref(),
@@ -1353,6 +1353,83 @@ impl AppState {
             evidence: EvidenceState::new(),
             sweep_lock: Arc::new(tokio::sync::Mutex::new(())),
         }))
+    }
+}
+
+impl AppState {
+    /// Re-seed [`Self::event_store`], [`Self::org_event_store`], and
+    /// [`Self::team_event_store`] from a fresh authoritative read,
+    /// discarding each store's stale in-memory fence-sequence cache in
+    /// place.
+    ///
+    /// Design-Y consumer-owned re-arm (adr-fmt-9a2z7): `PersistenceError::FencedConflict`
+    /// can originate from any of the three long-lived native stores —
+    /// `record_repo`/`remove_repo`, `record_org`, and `record_team` all map
+    /// through the same generic catch-all (`native_store_persistence`) —
+    /// so the daemon must re-seed all three before re-arming the collection
+    /// run, not just the repositories store. Resyncing a store that did not
+    /// actually fence is a harmless no-op fresh read; the alternative
+    /// (resyncing only one store) would leave the *other* two stores stale,
+    /// relocating rather than eliminating the R10-forbidden
+    /// patch-cached-seq-and-redrive shape.
+    ///
+    /// Reconstructs each store with the exact same open/create logic
+    /// [`Self::with_stores`] uses at boot, then atomically swaps it into the
+    /// corresponding long-lived native-store handle via
+    /// [`crate::store::NativeStore::resync_pgno_from_authoritative`] /
+    /// [`crate::store::NativeStore::resync_jetstream_from_authoritative`]
+    /// (and the equivalent methods on
+    /// [`crate::store::NativeOrgStore`]/[`crate::store::NativeTeamStore`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`std::io::Error`] when any of the three backends cannot be
+    /// re-opened (mirrors [`Self::with_stores`]'s error surface for the
+    /// same backend); the first failure aborts the remaining resyncs.
+    pub(crate) async fn resync_event_store(
+        &self,
+        events_dir: &Path,
+        backend: crate::config::runtime::PardosaBackend,
+        nats: crate::config::runtime::NatsStoreConfig,
+    ) -> Result<(), std::io::Error> {
+        let events_dir = events_dir.to_path_buf();
+        match backend {
+            crate::config::runtime::PardosaBackend::Pgno => {
+                let repo_path = events_dir.join("events.pgno");
+                let org_path = events_dir.join("org-events.pgno");
+                let team_path = events_dir.join("team-events.pgno");
+                let event_store = Arc::clone(&self.event_store);
+                let org_event_store = Arc::clone(&self.org_event_store);
+                let team_event_store = Arc::clone(&self.team_event_store);
+                tokio::task::spawn_blocking(move || {
+                    event_store.resync_pgno_from_authoritative(&repo_path)?;
+                    org_event_store.resync_pgno_from_authoritative(&org_path)?;
+                    team_event_store.resync_pgno_from_authoritative(&team_path)
+                })
+                .await
+                .map_err(std::io::Error::other)?
+                .map_err(std::io::Error::other)
+            }
+            crate::config::runtime::PardosaBackend::Nats => {
+                let handle = tokio::runtime::Handle::current();
+                let org_nats = nats.org_events();
+                let team_nats = nats.team_events();
+                let event_store = Arc::clone(&self.event_store);
+                let org_event_store = Arc::clone(&self.org_event_store);
+                let team_event_store = Arc::clone(&self.team_event_store);
+                tokio::task::spawn_blocking(move || {
+                    let repo_backend = jetstream_backend(nats, handle.clone())?;
+                    event_store.resync_jetstream_from_authoritative(repo_backend)?;
+                    let org_backend = jetstream_backend(org_nats, handle.clone())?;
+                    org_event_store.resync_jetstream_from_authoritative(org_backend)?;
+                    let team_backend = jetstream_backend(team_nats, handle)?;
+                    team_event_store.resync_jetstream_from_authoritative(team_backend)
+                })
+                .await
+                .map_err(std::io::Error::other)?
+                .map_err(std::io::Error::other)
+            }
+        }
     }
 }
 
@@ -2812,6 +2889,85 @@ mod tests {
             failure.response,
             crate::app::write_policy::WriteResponse::Fatal,
             "OCC conflict must abort the run, never retry in-band"
+        );
+    }
+
+    #[tokio::test]
+    async fn resync_event_store_re_seeds_org_and_team_stores_not_just_repos() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let nats = NatsStoreConfig::for_org("TestOrg", crate::config::runtime::DEFAULT_NATS_URL)
+            .expect("nats config");
+        let state = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats.clone())
+            .await
+            .expect("with stores");
+        let seed_repo = crate::test_fixtures::all_passing_evidence("seed-repo");
+        state
+            .record_repo(
+                &seed_repo.repository.inventory_key.clone(),
+                seed_repo.clone(),
+                &seed_repo.repository.name.clone(),
+                "2026-06-11T00:00:00Z",
+            )
+            .expect("seed repo store so its pgno file is non-empty before the second handle opens");
+
+        {
+            let other_writer =
+                AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats.clone())
+                    .await
+                    .expect("second handle opens against the same events_dir");
+            let mut metadata = crate::test_fixtures::make_metadata();
+            metadata.organization = "TestOrg".to_string();
+            other_writer
+                .record_org(crate::domain::evidence::OrgStateSnapshot {
+                    archived_repos: 3,
+                    assessment_metadata: metadata,
+                    alert_summary: empty_org_summary(),
+                })
+                .expect("record org via second handle");
+            let roster = team_roster_fixture("@TestOrg/platform", "platform");
+            other_writer
+                .record_team(
+                    "TestOrg",
+                    &roster,
+                    "2026-07-16T00:00:00Z",
+                    OrgMembershipFetchStatus::Fetched,
+                )
+                .expect("record team via second handle");
+        }
+
+        let org_count_before = state
+            .org_event_store
+            .fold_events(0_usize, |acc, _| *acc += 1)
+            .expect("fold org events before resync");
+        let team_count_before = state
+            .team_event_store
+            .fold_events(0_usize, |acc, _| *acc += 1)
+            .expect("fold team events before resync");
+        assert_eq!(
+            (org_count_before, team_count_before),
+            (0, 0),
+            "long-lived handles must not see the externally-durable org/team writes before resync"
+        );
+
+        state
+            .resync_event_store(&events_dir, PardosaBackend::Pgno, nats)
+            .await
+            .expect("resync all three stores");
+
+        let org_count_after = state
+            .org_event_store
+            .fold_events(0_usize, |acc, _| *acc += 1)
+            .expect("fold org events after resync");
+        let team_count_after = state
+            .team_event_store
+            .fold_events(0_usize, |acc, _| *acc += 1)
+            .expect("fold team events after resync");
+        assert_eq!(
+            (org_count_after, team_count_after),
+            (1, 1),
+            "resync_event_store must re-seed org and team stores, not just repos — \
+             an org/team-origin FencedConflict converges through the same catch-all"
         );
     }
 
