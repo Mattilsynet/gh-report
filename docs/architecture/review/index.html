@@ -29,15 +29,21 @@
     binding-ADR summary), against bottom-up
     <a href="../c4/level1-context.html">C4 L1</a> and
     <a href="../c4/level2-containers.html">L2</a> invariant checks (code survey).
+    <br><strong>Re-evaluated 2026-07-21:</strong> N2 (hash-chain tamper-evidence)
+    moved from DRIFT to MATCH after end-to-end remediation shipped in
+    <code>v0.1.43</code> and was flipped to <code>Enforce</code> in production —
+    two open DRIFT rows remain.
   </p>
 
   <h2 id="evidence-table">Evidence table</h2>
   <p>
     Only the <strong>non-green findings</strong> are shown below — the claims
-    where intended design and code did not cleanly agree. The set is
-    <strong>three DRIFT rows</strong>: hash-chain tamper-evidence (N2),
-    cherry-pit-merger orphaned wiring, and gh-report topology self-admitted in
-    prose. A fourth row on first pass —
+    where intended design and code did not cleanly agree. The set was three DRIFT
+    rows; <strong>N2 (hash-chain tamper-evidence) was remediated end-to-end and
+    resolved 2026-07-21</strong> (see its row, now MATCH), leaving
+    <strong>two open DRIFT rows</strong>: cherry-pit-merger orphaned wiring, and
+    gh-report topology self-admitted in prose. N2 is retained on this page as a
+    resolved row for the audit trail. A fourth row on first pass —
     cherry-pit-app dependency breadth — was re-verified to agree with the code
     (the Cargo.toml
     edges conform to the specific exclusion rules CHE-0053:R8 / CHE-0085:R3) and
@@ -57,82 +63,74 @@
     </thead>
     <tbody>
       <tr>
-        <td><strong>N2 — Hash-chain tamper-evidence is asserted (SEC-0011) but
-        not realised end-to-end — its capability port is orphaned and its
-        governing ADRs retired, not mid-rollout.</strong></td>
-        <td><cite>SEC-0011</cite> (hash-chain tamper-evidence
-        over persisted envelope metadata and payload bytes, R3: load rejects
-        hash-chain discontinuity as <code>StoreError::CorruptData</code>).
-        <strong>Prior-pass rationale retracted:</strong> the earlier "CHE-0060
-        rollout stub pending <cite>PGN-0005</cite>, removed when
-        <cite>PAR-0021</cite> lands" framing is factually wrong on ADR status —
-        see the code-evidence cell.</td>
-        <td><strong>Orphaned port, retired ADRs, not a staged rollout.</strong>
-        <strong>(1) The substrate already ships the chain.</strong>
-        <cite>PGN-0005</cite> is Accepted and implemented in pardosa:
-        <code>crates/pardosa/src/dragline/integrity.rs:85</code>
-        <code>verify_precursor_chains()</code>,
-        <code>crates/pardosa/src/persist/checked.rs:148</code> (forged
-        <code>precursor_hash</code> → typed error), and
-        <code>crates/pardosa-wire/src/precursor.rs</code>
-        <code>precursor_hash_of</code> — with passing tamper-detection tests. It
-        is <em>not</em> "pending in pardosa source."
-        <strong>(2) The cherry-pit capability port is orphaned.</strong> The
-        public trait <code>HashChainedEventStore: EventStore</code>
-        (<code>crates/cherry-pit-core/src/store.rs:298</code>,
-        <code>frontier_hash</code> <code>store.rs:304</code>,
-        <code>verify_chain</code> <code>store.rs:317</code>, exported at
-        <code>crates/cherry-pit-core/src/lib.rs:75</code>) has <strong>zero
-        impls</strong> in the tree. Its governing <cite>CHE-0060</cite> is
-        <strong>Deprecated</strong> (stale 2026-05-19, host crate removed) and
-        the named successor <cite>PAR-0021</cite> is also
-        <strong>Deprecated</strong> ("retired without a PGN edge" — it will
-        never land); the <code>PardosaEventStore</code> byte-adapter the
-        doc-comment names was retired whole (<cite>CHE-0073:R6</cite> /
-        <cite>CHE-0074:R8</cite>). The trait's doc-comment (the prior pass's
-        source) is itself stale.
-        <strong>(3) Boot load does not verify.</strong> gh-report's live open
-        path (<code>state.rs:2089</code> → <code>lifecycle.rs:863</code>
-        <code>open_with_backend</code> → <code>rehydrate_unchecked</code>) folds
-        the frontier but does <em>not</em> reject discontinuity before replay —
-        so <cite>SEC-0011:R3</cite> is unmet at boot; precursor hashes are
-        verified only on cursor reads (<code>cursor.rs:265</code>
-        <code>stream_checked</code>). Per <cite>PGN-0005:R4/R6</cite> the
-        frontier is mutation-detection, not authentication, with no anchor seam
-        under v0.x. <strong>DRIFT — the
-        SEC-0011 intent is unrealised end-to-end</strong> (orphaned/retired
-        port + unwired boot-load verification): documented but the code diverges.
-        <strong>2026-07-19 re-investigation (two corrections):</strong>
-        <strong>(i) remedy mis-framed.</strong> SEC-0011:R3 mandates verification
-        <em>on-read</em>, not a boot-load whole-stream verify — the earlier
-        "no boot-load verification" framing overreaches R3 and would risk a
-        PGN-0005:R6 anchor-seam smell. The true defect is narrower: gh-report
-        never routes reads through the checked seam, and in fact
-        <em>no precursor-hash-verifying open/rehydrate constructor is wired
-        into gh-report's boot path</em>
-        (<code>stream_checked</code>, <code>persist/checked.rs:208</code>, is the
-        sole precursor-hash site; it <em>is</em> reachable via
-        <code>open_validated</code>, <code>lifecycle.rs:1601</code> →
-        <code>rehydrate_validated</code> → <code>stream_validated</code>
-        (<code>validated.rs:79</code>) → <code>stream_checked</code>, so
-        <code>open_validated</code> genuinely runs the chain check — but
-        gh-report's live open never calls it, routing through
-        <code>open_with_backend</code>/<code>rehydrate_unchecked</code>
-        instead).
-        <strong>(ii) cross-backend divergence (new, load-bearing).</strong> The
-        precursor-hash chain is implemented for the <code>.pgno</code> arm only.
-        The NATS/JetStream rehydrate arm
-        (<code>rehydrate_event_frames</code>, <code>lifecycle.rs:608</code>) rolls
-        the frontier and checks <code>event_id==position</code> but performs
-        <strong>no <code>precursor_hash</code> verification</strong>;
-        <code>crates/pardosa-nats/src</code> carries zero precursor logic. Since
-        gh-report runs the NATS backend in production
-        (<code>GH_REPORT_PARDOSA_BACKEND=nats</code>), the deployed backend is the
-        unverified one. Ratified remedy (roadmap <code>adr-fmt-i8j15</code>, amend
-        PGN-0010 R8): lift the six on-read invariants into one backend-agnostic
-        stage above the adapter seam so <code>.pgno</code>, NATS, and any future
-        adapter inherit identical mandatory verification; apps only handle the
-        typed error.</td>
+        <td><strong>N2 — Hash-chain tamper-evidence (SEC-0011 / PGN-0005):
+        backend-parity gap between <code>.pgno</code> and NATS on-read
+        verification. <span style="color:#1a7f37">RESOLVED 2026-07-21</span> —
+        unified backend-agnostic verify stage shipped (v0.1.43) and running in
+        production under <code>Enforce</code>.</strong></td>
+        <td><cite>SEC-0011</cite> (hash-chain tamper-evidence over persisted
+        envelope metadata and payload bytes; R3: checked reads reject hash-chain
+        discontinuity as <code>StoreError::CorruptData</code>) +
+        <cite>PGN-0005</cite> (frontier integrity, Accepted) +
+        <cite>PGN-0010:R8</cite> (universal on-read verify stage above the sealed
+        adapter seam — <strong>ratified and implemented</strong> this pass, commit
+        <code>9d2cff0</code>).
+        <strong>Prior framings (all superseded):</strong> the original "CHE-0060
+        staged rollout pending PGN-0005 / removed when PAR-0021 lands" was
+        retracted (2026-07-18) as factually wrong; the follow-up "no boot-load
+        verification" framing was itself corrected (2026-07-19) — SEC-0011:R3 is
+        an <em>on-read</em> requirement, not a boot-load whole-stream pass. The
+        load-bearing defect that survived investigation was backend parity: the
+        precursor-hash chain ran on the <code>.pgno</code> arm only.</td>
+        <td><strong>Remediated end-to-end; deployed to production.</strong> The
+        ratified remedy (roadmap <code>adr-fmt-t7t4v</code>, superseding the
+        earlier <code>adr-fmt-i8j15</code> sketch) was executed in full across P0–P4:
+        <strong>(1) One backend-agnostic verify stage above the seam.</strong>
+        Both rehydrate arms now route through the shared post-seam stage
+        <code>rebuild_dragline_with_frontier</code> (<code>persist/rehydrate.rs</code>
+        for the <code>.pgno</code> arm; <code>store/inner/lifecycle.rs</code>
+        <code>rehydrate_event_frames</code> for the NATS arm), which runs the full
+        precursor check-set over the raw canonical bytes every adapter delivers
+        byte-identically (<cite>PGN-0010:R4</cite>), hashing raw bytes without
+        re-encoding (reader bound stays <code>Decode + GenomeSafe</code>, no
+        <code>Encode</code> — <cite>PGN-0008:R2</cite>). The
+        <code>.pgno</code>/NATS divergence closes by construction — both arms
+        traverse the single verifying path.
+        <strong>(2) The duplicated check-set was unified.</strong> The on-read
+        chain was previously implemented twice (streaming <code>stream_checked</code>
+        in <code>persist/checked.rs</code> vs. a batch copy in <code>rehydrate.rs</code>);
+        a hexagonal re-review (bead <code>adr-fmt-lutpd</code>) flagged the
+        latent-drift hazard, and the duplicate <code>precursor_would_fail</code> was
+        <strong>deleted</strong> — the ratified 4-check set (contiguity,
+        precursor-bounds, same-fiber, precursor-hash) plus the container schema-hash
+        now exists once, guarded by a permanent differential equivalence test.
+        <strong>(3) Mandatory verification is enforced on the production backend.</strong>
+        A runtime-selectable mode (<code>PARDOSA_PRECURSOR_CHECK_MODE</code>,
+        <code>persist/rehydrate.rs</code>; shipped code default
+        <code>ObserveOnly</code>) gates the precursor checks. Production
+        (<code>GH_REPORT_PARDOSA_BACKEND=nats</code>) now runs
+        <code>Enforce</code> (Cloud Run env var, applied via
+        <code>gh-report-ops</code> terraform; revision
+        <code>ghreport-00061-z96</code>): the live v18 NATS stream rehydrates
+        through the full precursor chain on every boot and re-append, rejecting
+        discontinuity as a typed <code>CheckedReplay</code> error (mapped to the
+        SEC-0011 <code>StoreError::CorruptData</code> surface downstream). The
+        flip was gated on a clean observe soak (3 cycles, zero
+        <code>precursor_check_would_fail</code> warnings) and confirmed by a clean
+        enforce boot; an adversarial tamper counter-test
+        (<code>precursor_tamper_real_boot_{pgno,nats}.rs</code>) proves the
+        <code>Enforce</code> path rejects a corrupted stream on both backends at
+        the real open path.
+        <strong>Residual (tracked, not drift):</strong> the shipped <em>code</em>
+        default remains <code>ObserveOnly</code> — production runs
+        <code>Enforce</code> via env override, not the compiled default.
+        <cite>SEC-0011</cite> reconciliation (b) (obligatory surfacing, no
+        opt-out) is drafted but deliberately <strong>not ratified</strong> (bead
+        <code>adr-fmt-i50g4</code>): its gate requires the <em>shipped default</em>
+        to be flipped and soaked, which is a separate future decision. Per
+        <cite>PGN-0005:R4/R6</cite> the unkeyed frontier remains mutation-detection,
+        not authentication — no security claim beyond a trusted anchor.
+        <strong>MATCH — SEC-0011 intent realised end-to-end on both backends.</strong></td>
       </tr>
       <tr>
         <td>cherry-pit-merger is the command-side single-task serialiser, an alternative/complement to cherry-pit-app for command dispatch.</td>
@@ -152,55 +150,49 @@
   <h2 id="headline-findings">Headline findings</h2>
   <ul>
     <li>
-      <strong>N2 (row 2), re-investigated this pass: hash-chain
-      tamper-evidence is DRIFT because
-      its SEC-0011 intent is unrealised end-to-end — an orphaned port with
-      retired ADRs, not a staged rollout.</strong>
-      The
-      prior pass's "CHE-0060 staged rollout stub pending PGN-0005 / removed when
-      PAR-0021 lands" rationale is retracted as factually wrong: (1) the pardosa
-      substrate <em>already</em> ships the precursor-hash chain — PGN-0005 is
-      Accepted and implemented (<code>integrity.rs:85</code>
-      <code>verify_precursor_chains</code>, <code>checked.rs:148</code>,
-      <code>pardosa-wire/precursor.rs</code>) with passing tamper-detection
-      tests, not "pending"; (2) the cherry-pit capability port
-      <code>HashChainedEventStore</code> (<code>store.rs:298</code>, exported
-      <code>lib.rs:75</code>) is orphaned — zero impls, CHE-0060 Deprecated
-      (stale 2026-05-19, host crate removed), PAR-0021 also Deprecated and
-      retired without a PGN edge, and the <code>PardosaEventStore</code> the
-      doc-comment names was retired whole (CHE-0073:R6 / CHE-0074:R8); (3)
-      gh-report's live boot open (<code>lifecycle.rs:863</code>
-      <code>open_with_backend</code> → <code>rehydrate_unchecked</code>) does not
-      reject discontinuity before replay, so SEC-0011:R3 is unmet at boot —
-      precursor verification happens only on cursor reads
-      (<code>cursor.rs:265</code> <code>stream_checked</code>). The direction
-      is abandoned/superseded, not pending — documented but the code diverges.
-      <br><strong>2026-07-19 update — two corrections + a new backend-parity
-      finding.</strong> (1) The "boot-load verification" candidate follow-up is
-      itself mis-framed: SEC-0011:R3 mandates verification <em>on-read</em>, not a
-      boot whole-stream pass; a literal boot verify exceeds R3 and risks a
-      PGN-0005:R6 anchor-seam smell. (2) The narrower true defect: no
-      precursor-hash-verifying open/rehydrate constructor is wired into
-      gh-report's boot path — <code>stream_checked</code>
-      (<code>persist/checked.rs:208</code>) is the sole precursor-hash site;
-      it <em>is</em> reachable via <code>open_validated</code>
-      (<code>lifecycle.rs:1601</code> → <code>rehydrate_validated</code> →
-      <code>stream_validated</code>, <code>validated.rs:87</code> →
-      <code>stream_checked</code>), so <code>open_validated</code> does run the
-      chain check — but gh-report's live open never calls it (routing through
-      <code>open_with_backend</code>/<code>rehydrate_unchecked</code>). (3) <strong>New, load-bearing:</strong>
-      the precursor-hash chain is <code>.pgno</code>-only — the NATS/JetStream
-      rehydrate arm (<code>rehydrate_event_frames</code>,
-      <code>lifecycle.rs:608</code>) verifies contiguity + frontier but
-      <em>not</em> precursor hashes, and <code>pardosa-nats/src</code> holds zero
-      precursor logic, so the production backend
-      (<code>GH_REPORT_PARDOSA_BACKEND=nats</code>) is the unverified one. The
-      user has since ratified a mandatory-verification stance: no unchecked public
-      read path on any backend; apps handle only the typed error. Roadmap
-      <code>adr-fmt-i8j15</code> (amend PGN-0010 with a new rule R8) lifts the six
-      on-read invariants into one backend-agnostic stage above the storage-adapter
-      seam, so <code>.pgno</code>, NATS, and a future Kafka adapter inherit
-      identical behavior and the divergence closes by construction.
+      <strong>N2 (hash-chain tamper-evidence): <span style="color:#1a7f37">RESOLVED
+      2026-07-21</span> — the SEC-0011 intent is now realised end-to-end on both
+      backends and running in production under <code>Enforce</code>.</strong>
+      The investigation history is retained for the audit trail: the original
+      "CHE-0060 staged rollout pending PGN-0005 / removed when PAR-0021 lands"
+      framing was retracted (2026-07-18) as factually wrong; the follow-up
+      "no boot-load verification" framing was corrected (2026-07-19) — SEC-0011:R3
+      is an <em>on-read</em>, not boot-load, requirement. The load-bearing defect
+      that survived was <strong>backend parity</strong>: the precursor-hash chain
+      ran on the <code>.pgno</code> arm only, while the production NATS/JetStream
+      arm (<code>rehydrate_event_frames</code>) verified contiguity + frontier but
+      not precursor hashes — so the deployed backend
+      (<code>GH_REPORT_PARDOSA_BACKEND=nats</code>) was the unverified one.
+      <br><strong>Remediation (roadmap <code>adr-fmt-t7t4v</code>, executed P0–P4,
+      shipped in <code>v0.1.43</code>, commits <code>9d2cff0</code>…<code>b1c82dc</code>):</strong>
+      (1) <cite>PGN-0010:R8</cite> was ratified and a single backend-agnostic
+      verify stage (<code>rebuild_dragline_with_frontier</code>) was lifted above
+      the sealed adapter seam; <em>both</em> the <code>.pgno</code> and NATS arms
+      now route through it, hashing the raw canonical bytes each adapter delivers
+      byte-identically (<cite>PGN-0010:R4</cite>) with no re-encode
+      (<cite>PGN-0008:R2</cite>) — the divergence closes by construction.
+      (2) A hexagonal re-review (bead <code>adr-fmt-lutpd</code>) found the
+      on-read check-set was implemented twice (<code>stream_checked</code> vs. a
+      <code>rehydrate.rs</code> copy); the duplicate <code>precursor_would_fail</code>
+      was deleted and the ratified 4-check set now exists once, guarded by a
+      differential equivalence test — the latent-drift hazard is closed structurally,
+      the same subtractive move the roadmap made at the backend seam applied one
+      seam inward. (3) A runtime-selectable mode
+      (<code>PARDOSA_PRECURSOR_CHECK_MODE</code>) gates the precursor checks;
+      production now runs <code>Enforce</code> (revision <code>ghreport-00061-z96</code>),
+      rejecting discontinuity as a typed <code>CheckedReplay</code> error. The flip
+      was gated on a clean observe soak (3 collection cycles, zero would-fail
+      warnings) and confirmed by a clean enforce boot; an adversarial
+      real-boot tamper counter-test on both backends
+      (<code>precursor_tamper_real_boot_{pgno,nats}.rs</code>) proves the reject
+      path fires on a corrupted stream.
+      <br><strong>Residual (tracked, not drift):</strong> the shipped <em>code</em>
+      default is still <code>ObserveOnly</code> — production runs <code>Enforce</code>
+      via env override. <cite>SEC-0011</cite> reconciliation (b) (remove the
+      per-adapter opt-out) is drafted but deliberately <strong>not ratified</strong>
+      (bead <code>adr-fmt-i50g4</code>): its gate requires the shipped default to be
+      flipped and soaked — a separate future decision. Per <cite>PGN-0005:R4/R6</cite>
+      the unkeyed frontier remains mutation-detection, not authentication.
     </li>
     <li>
       <strong>cherry-pit-merger is the sharpest divergence (row 11)</strong>: two ADRs
@@ -256,52 +248,46 @@
       <strong>Framed against the Solon thesis:</strong> the repo's bet is that a
       small set of enabling constraints, enforced where the type system and build
       graph can enforce them, collapses the space of possible mistakes. Rows 11
-      and 13 are
-      counter-evidence: places where intent outran shipped code, or wiring
-      diverged from the stated rule.
-      N2 is the same shape at root — a capability whose SEC-0011 intent is
-      unrealised end-to-end:
-      the substrate ships the chain, but the cherry-pit port that would expose
-      it is orphaned (zero impls, CHE-0060/PAR-0021 both Deprecated) and the
-      live boot open verifies nothing (SEC-0011:R3 unmet) — an
-      abandoned/superseded direction where documentation and code diverge, which
-      is why it reads DRIFT. None of this contradicts the thesis — a subtractive
-      architecture still needs its unshipped or partially-wired components named
-      honestly, which DESIGN.md's own W1/W2 notes already do for row 13, and
-      which the corrected N2 entry now does for the hash-chain capability.
+      and 13 remain counter-evidence: places where intent outran shipped code, or
+      wiring diverged from the stated rule.
+      N2 was the same shape at root — a capability whose SEC-0011 intent was
+      unrealised end-to-end, with the precursor chain running on one backend arm
+      but not the deployed one. It is now the thesis's <em>positive</em> case: the
+      gap was closed <em>subtractively</em> — one verify stage lifted above the
+      adapter seam so both backends inherit identical mandatory verification by
+      construction (<cite>PGN-0010:R8</cite>), and the duplicated check-set collapsed
+      to a single implementation so the drift surface itself no longer exists. The
+      remaining honesty is the tracked residual: production runs <code>Enforce</code>
+      via env while the shipped code default stays <code>ObserveOnly</code>, and
+      SEC-0011 (b) is held as an unratified proposal until that default flips — named
+      openly rather than papered over, exactly as DESIGN.md's own W1/W2 notes do for
+      row 13.
     </li>
     <li>
       <strong>Deviation summary</strong>: this page reports only the non-green
-      findings. <strong>Result: 3 DRIFT rows</strong>. The claims that
-      verified cleanly are out of scope here; the deviations concentrate in
-      exactly the areas the source beads
-      already flagged as gaps (cherry-pit-merger
-      wiring, DESIGN.md's self-admitted W1/W2 corrigenda, and N2's unrealised
-      hash-chain capability). <strong>Three prior non-agreeing rows resolved on
-      investigation</strong> — deployment (row 12) once the companion
-      ops repo was scoped in and re-confirmed present on 2026-07-20,
-      #[non_exhaustive] (row 9) once the gateway was confirmed
-      to define no error enum of its own, and cherry-pit-app dep breadth
-      once CHE-0053:R8 / CHE-0085:R3 confirmed the exclusions are ADR-mandated —
-      and are therefore out of scope for
-      this page (the dep-breadth row has been removed outright). This pass corrected findings
-      rather than fabricating agreement it could not derive: N2's hash-chain
-      verdict
-      moves from a mistaken clean read (a grep that missed the substrate
-      chain) to DRIFT — the gap is an orphaned capability port
-      with retired governing ADRs (CHE-0060/PAR-0021 both Deprecated) plus
-      boot-load verification that SEC-0011:R3 requires but the live open path
-      does not perform — not a "staged rollout pending PGN-0005", which is
-      Accepted and already implemented in the substrate.
-      <strong>2026-07-19 further correction:</strong> re-investigation retracted
-      the "boot-load verification" half of that rationale (SEC-0011:R3 is an
-      on-read, not boot-load, requirement) and surfaced a new load-bearing
-      finding — the precursor-hash chain is implemented on the <code>.pgno</code>
-      arm only, while the production NATS/JetStream arm does not verify it. The
-      DRIFT verdict stands, but its cause is now backend-parity divergence
-      plus the absence of any verifying read constructor, addressed by ratified
-      roadmap <code>adr-fmt-i8j15</code> (lift invariants above the adapter seam;
-      amend PGN-0010 R8).
+      findings. <strong>Result: 2 open DRIFT rows + 1 resolved (N2).</strong> The
+      claims that verified cleanly are out of scope here; the open deviations
+      concentrate in exactly the areas the source beads already flagged as gaps
+      (cherry-pit-merger wiring, DESIGN.md's self-admitted W1/W2 corrigenda).
+      <strong>N2 (hash-chain tamper-evidence) closed this pass</strong>: the
+      backend-parity DRIFT — precursor-hash verification on the <code>.pgno</code>
+      arm but not the production NATS arm — was remediated end-to-end by roadmap
+      <code>adr-fmt-t7t4v</code> (lift one verify stage above the adapter seam per
+      <cite>PGN-0010:R8</cite>, unify the duplicated check-set, ship a
+      runtime-selectable enforce mode), shipped in <code>v0.1.43</code> and flipped
+      to <code>Enforce</code> in production after a clean observe soak. N2 now reads
+      <strong>MATCH</strong> with one tracked residual (shipped code default remains
+      <code>ObserveOnly</code>; SEC-0011 (b) held as an unratified proposal until
+      that flips). <strong>Three earlier non-agreeing rows were also resolved on
+      investigation</strong> — deployment (row 12) once the companion ops repo was
+      scoped in and re-confirmed present, #[non_exhaustive] (row 9) once the gateway
+      was confirmed to define no error enum of its own, and cherry-pit-app dep
+      breadth once CHE-0053:R8 / CHE-0085:R3 confirmed the exclusions are
+      ADR-mandated (that row removed outright). This review's history shows the
+      value of correcting rather than fabricating agreement: N2 moved from a mistaken
+      clean read (a grep that missed the substrate chain) → DRIFT (backend-parity
+      gap) → RESOLVED (unified verify stage, enforced in production) across
+      successive honest passes.
     </li>
   </ul>
 </main>
