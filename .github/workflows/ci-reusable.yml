@@ -163,6 +163,45 @@ jobs:
             exit 1
           fi
 
+  # Signature (chosen over a raw FencedConflict-match ban): FencedConflict
+  # is legitimately classified/matched at many sites — a store-error
+  # conversion chokepoint (write_policy.rs), a CollectionOutcome variant
+  # (collect.rs), tests. Banning the raw match there would be noisy and
+  # miss the actual bug shape. Instead this asserts the SANCTIONED marker
+  # (a call into the converge sink's driver wrapper, rearm_fenced_run /
+  # rearm_fenced_team_refresh_tick) is present in every production
+  # loop-body function that detects a FencedConflict tick failure. This
+  # is exactly the shape that would have caught the original bug: team-
+  # refresh warned-and-returned on FencedConflict without re-arming.
+  fence-converge-tripwire:
+    name: gh-report FencedConflict converge-sink chokepoint (CHE-0088 amendment)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: every FencedConflict-detecting loop body routes through the sanctioned converge sink
+        run: |
+          set -euo pipefail
+          FILE=crates/gh-report/src/app/daemon.rs
+          check_window() {
+            from=$1; to=$2; label=$3
+            body=$(sed -n "${from},${to}p" "$FILE")
+            if ! printf '%s\n' "$body" | grep -q 'FencedConflict'; then
+              echo "::error::$label ($from-$to) no longer detects FencedConflict — tripwire assumption stale, re-check CHE-0088 amendment"
+              exit 1
+            fi
+            if ! printf '%s\n' "$body" | grep -q -E 'rearm_fenced_run\(|rearm_fenced_team_refresh_tick\('; then
+              echo "::error::$label ($from-$to) detects FencedConflict without routing through the sanctioned converge sink"
+              echo "::error::use rearm_fenced_run(...)/rearm_fenced_team_refresh_tick(...) -> converge_on_fence; CHE-0088 amendment (adr-fmt-3jptm)"
+              exit 1
+            fi
+          }
+          start1=$(grep -n '^fn spawn_collection_loop' "$FILE" | cut -d: -f1)
+          end1=$(awk -v s="$start1" 'NR>s && /^(async )?fn /{print NR; exit}' "$FILE")
+          start2=$(grep -n '^fn spawn_team_refresh_loop' "$FILE" | cut -d: -f1)
+          end2=$(awk -v s="$start2" 'NR>s && /^(async )?fn /{print NR; exit}' "$FILE")
+          check_window "$start1" "$end1" "spawn_collection_loop"
+          check_window "$start2" "$end2" "spawn_team_refresh_loop"
+
   # Hard gate: every public library `pub enum` deriving `thiserror::Error`
   # must carry `#[non_exhaustive]` (PGN-0006, CHE-0021), enforced by the
   # `non-exhaustive-check` crate (RST-0006). The tool is deliberately
