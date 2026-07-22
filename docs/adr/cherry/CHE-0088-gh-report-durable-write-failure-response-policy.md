@@ -1,14 +1,17 @@
 # CHE-0088. gh-report Durable-Write-Failure Response Policy
 
 Date: 2026-07-15
-Last-reviewed: 2026-07-15
+Last-reviewed: 2026-07-22
 Tier: B
 Status: Accepted
-Crates: gh-report
+Crates: gh-report (CHE-0095 governs the substrate convergence-combinator
+boundary this policy's R9 cites; this ADR's content — fixed backoff,
+`WritePolicyCategory` taxonomy — remains gh-report tuning, not substrate
+truth)
 
 ## Related
 
-References: CHE-0024, CHE-0046, PGN-0016, COM-0025 | Supersedes: none
+References: CHE-0024, CHE-0046, PGN-0016, COM-0025, CHE-0095 | Supersedes: none
 
 ## Context
 
@@ -34,7 +37,7 @@ R7 [5]: The response-dispatch match over `WritePolicyCategory` has no catch-all 
 
 R8 [5]: The three-value response vocabulary (`fatal`, `bounded-retry`, `HTTP-non-2xx`) is closed for this ADR; dead-letter is explicitly excluded as a response option here and tracked separately (see Consequences).
 
-R9 [5]: A durable write that observes `WritePolicyCategory::Conflict` (R3) MUST converge via the single sanctioned resync+bounded-retry sink (`converge_on_fence`, `crates/gh-report/src/app/daemon.rs`) — no per-call-site hand-rolled re-arm. This extends R3's no-swallow rule and R7's no-wildcard-dispatch guarantee from the enum-dispatch chokepoint to the converge-sink chokepoint: both the collection loop and team-refresh route the same `FencedConflict` tick failure through the identical sink, so a fix to the re-arm/resync policy lands once, not per call site. Consumer-side converge is the PGN-0016:R2-sanctioned cross-run re-establish-ownership path, never the R10-forbidden in-append resync (amended 2026-07-22, adr-fmt-3jptm; PGN-0016 remains the authoritative boundary — see References).
+R9 [5]: A durable write that observes `WritePolicyCategory::Conflict` (R3) MUST converge via the single sanctioned resync+bounded-retry sink (`converge_on_fence`, `crates/gh-report/src/app/daemon.rs`) — no per-call-site hand-rolled re-arm. This extends R3's no-swallow rule and R7's no-wildcard-dispatch guarantee from the enum-dispatch chokepoint to the converge-sink chokepoint: both the collection loop and team-refresh route the same `FencedConflict` tick failure through the identical sink, so a fix to the re-arm/resync policy lands once, not per call site. Consumer-side converge is the PGN-0016:R2-sanctioned cross-run re-establish-ownership path, never the R10-forbidden in-append resync (amended 2026-07-22, adr-fmt-3jptm; PGN-0016 remains the authoritative boundary — see References). CHE-0095 governs the substrate-level boundary this sink's shape must obey if ever lifted out of gh-report; until CHE-0095's deferral trigger fires, `converge_on_fence` stays the gh-report-owned instance and this rule its citing policy.
 
 R10 [5]: CI enforces R9 with a build-time tripwire (`fence-converge-tripwire`, `.github/workflows/ci-reusable.yml`, mirroring `projection-lock-tripwire` ← CHE-0048:R2 and the async-trait tripwire ← CHE-0025:R1/CHE-0029:R4): every production loop-body function in `daemon.rs` that detects a `FencedConflict` tick failure must, in the same function body, call the sanctioned sink's driver wrapper (`rearm_fenced_run`/`rearm_fenced_team_refresh_tick`); absence of that call fails the build (amended 2026-07-22). This is the mechanism that would have caught the original bug — team-refresh warned-and-returned on `FencedConflict` without re-arming.
 
