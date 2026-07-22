@@ -15,6 +15,9 @@ use pardosa::store::{
 };
 use tokio::runtime::{Handle, RuntimeFlavor};
 
+mod observed;
+pub use observed::ObservedFiberStore;
+
 /// Extracts the domain key from a pardosa envelope.
 pub type KeyFn<E> = fn(&Event<E>) -> std::iter::Once<String>;
 

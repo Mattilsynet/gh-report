@@ -15,7 +15,17 @@ workspace = true
 name = "pardosa_fiber_store"
 path = "src/lib.rs"
 
+[features]
+# Cross-crate test seam (CHE-0058 carve-out over CHE-0030:R1's bare-pub-item
+# ban): `mark_backend_unreachable_for_test` is gated
+# `#[cfg(any(test, feature = "testing"))]` so it exists for this crate's own
+# tests, and for downstream crates (gh-report) that activate `testing` under
+# `[dev-dependencies]` — without permanently widening the production public
+# API. Mirrors the existing `cherry-pit-core` `testing` feature precedent.
+testing = []
+
 [dependencies]
+arc-swap = { workspace = true }
 pardosa = { path = "../pardosa", version = "=0.4.0" }
 thiserror = { workspace = true }
 tokio = { workspace = true }

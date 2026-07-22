@@ -7,53 +7,41 @@
 //! Removal is a soft delete via fiber detach; a returning repo is rescued.
 
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
-use arc_swap::ArcSwap;
 use pardosa::store::{Event, JetStreamBackend, RecoveryOutcome};
-use pardosa_fiber_store::FiberStore;
 pub use pardosa_fiber_store::FiberStoreError as StoreError;
+use pardosa_fiber_store::ObservedFiberStore;
 
 use crate::event::{DomainEvent, OrgStateCaptured, TeamStateCaptured, team_domain_key};
 
 /// Pardosa-native event store: one fiber per repository domain key.
 ///
-/// `inner` is swappable (not a plain field) so [`Self::resync_pgno_from_authoritative`]
-/// / [`Self::resync_jetstream_from_authoritative`] can atomically replace the
-/// whole fiber-store instance with a freshly re-opened one — the
-/// consumer-owned Design-Y re-seed on `FencedConflict` (mission
-/// adr-fmt-9a2z7). All existing read/write methods below load the current
-/// snapshot before delegating; no caller-visible signature changes.
-pub struct NativeStore {
-    inner: ArcSwap<FiberStore<DomainEvent>>,
-    backend_reachable: AtomicBool,
-}
+/// Thin newtype over [`ObservedFiberStore`], which owns the swappable
+/// snapshot and backend-reachability tracking. Swappability backs
+/// [`Self::resync_pgno_from_authoritative`] /
+/// [`Self::resync_jetstream_from_authoritative`] — the consumer-owned
+/// Design-Y re-seed on `FencedConflict` (mission adr-fmt-9a2z7).
+pub struct NativeStore(ObservedFiberStore<DomainEvent>);
 
 /// Pardosa-native org event store: one fiber per org identity.
 ///
-/// `inner` is swappable for the same Design-Y re-seed reason as
-/// [`NativeStore::inner`] (mission adr-fmt-9a2z7): `record_org` can raise
-/// the identical `PersistenceError::FencedConflict` the repos store can,
-/// through the same generic catch-all — this store needs the same
-/// atomic re-seed capability, not just the repos store.
-pub struct NativeOrgStore {
-    inner: ArcSwap<FiberStore<OrgStateCaptured>>,
-    backend_reachable: AtomicBool,
-}
+/// Thin newtype over [`ObservedFiberStore`]; swappable for the same
+/// Design-Y re-seed reason as [`NativeStore`] (mission adr-fmt-9a2z7):
+/// `record` can raise the identical `PersistenceError::FencedConflict`
+/// the repos store can, through the same generic catch-all — this store
+/// needs the same atomic re-seed capability, not just the repos store.
+pub struct NativeOrgStore(ObservedFiberStore<OrgStateCaptured>);
 
 /// Pardosa-native team event store: one fiber per `(org, team_slug)` pair,
 /// keyed by [`team_domain_key`] (CHE-0089:R2). Team is not the repository
 /// aggregate; team-repo is many-to-many via CODEOWNERS, so this store is
 /// fully decoupled from [`NativeStore`] and [`NativeOrgStore`].
 ///
-/// `inner` is swappable for the same Design-Y re-seed reason as
-/// [`NativeStore::inner`] (mission adr-fmt-9a2z7): `record_team` can raise
-/// the identical `PersistenceError::FencedConflict` the repos store can.
-pub struct NativeTeamStore {
-    inner: ArcSwap<FiberStore<TeamStateCaptured>>,
-    backend_reachable: AtomicBool,
-}
+/// Thin newtype over [`ObservedFiberStore`]; swappable for the same
+/// Design-Y re-seed reason as [`NativeStore`] (mission adr-fmt-9a2z7):
+/// `record` can raise the identical `PersistenceError::FencedConflict`
+/// the repos store can.
+pub struct NativeTeamStore(ObservedFiberStore<TeamStateCaptured>);
 
 impl NativeStore {
     /// Create a fresh `.pgno`-backed store, truncating any existing file.
@@ -63,8 +51,7 @@ impl NativeStore {
     /// Returns [`StoreError::Infrastructure`] when pardosa cannot create
     /// the backing container.
     pub fn create_pgno(path: &Path) -> Result<Self, StoreError> {
-        let store = FiberStore::<DomainEvent>::create_pgno(path)?;
-        Ok(Self::from_store(store))
+        Ok(Self(ObservedFiberStore::create_pgno(path)?))
     }
 
     /// Open an existing `.pgno`-backed store, rehydrating its fibers.
@@ -74,9 +61,9 @@ impl NativeStore {
     /// Returns [`StoreError::Infrastructure`] when pardosa cannot open or
     /// fold the backing container.
     pub fn open_pgno(path: &Path) -> Result<Self, StoreError> {
-        let store = FiberStore::<DomainEvent>::open_pgno(path)?;
-        warn_pgno_recovery("repositories", path, store.last_recovery());
-        Ok(Self::from_store(store))
+        let store = Self(ObservedFiberStore::open_pgno(path)?);
+        warn_pgno_recovery("repositories", path, store.last_recovery().as_ref());
+        Ok(store)
     }
 
     /// Create a fresh JetStream-backed store.
@@ -92,8 +79,7 @@ impl NativeStore {
     /// JetStream-backed pardosa calls are bridged with
     /// `tokio::task::block_in_place`, which requires a multi-thread runtime.
     pub fn create_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
-        let store = FiberStore::<DomainEvent>::create_jetstream(backend)?;
-        Ok(Self::from_store(store))
+        Ok(Self(ObservedFiberStore::create_jetstream(backend)?))
     }
 
     /// Open an existing JetStream-backed store, rehydrating its fibers.
@@ -108,15 +94,7 @@ impl NativeStore {
     /// Panics when called from inside a Tokio `current_thread` runtime; see
     /// [`Self::create_jetstream`].
     pub fn open_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
-        let store = FiberStore::<DomainEvent>::open_jetstream(backend)?;
-        Ok(Self::from_store(store))
-    }
-
-    fn from_store(store: FiberStore<DomainEvent>) -> Self {
-        Self {
-            inner: ArcSwap::new(Arc::new(store)),
-            backend_reachable: AtomicBool::new(true),
-        }
+        Ok(Self(ObservedFiberStore::open_jetstream(backend)?))
     }
 
     /// Re-seed from a fresh authoritative read of the same `.pgno` backing
@@ -133,10 +111,8 @@ impl NativeStore {
     /// Returns [`StoreError::Infrastructure`] when pardosa cannot re-open
     /// the backing container.
     pub fn resync_pgno_from_authoritative(&self, path: &Path) -> Result<(), StoreError> {
-        let fresh = FiberStore::<DomainEvent>::open_pgno(path)?;
-        warn_pgno_recovery("repositories", path, fresh.last_recovery());
-        self.inner.store(Arc::new(fresh));
-        self.backend_reachable.store(true, Ordering::Release);
+        self.0.resync_pgno_from_authoritative(path)?;
+        warn_pgno_recovery("repositories", path, self.0.last_recovery().as_ref());
         Ok(())
     }
 
@@ -161,40 +137,22 @@ impl NativeStore {
         &self,
         backend: JetStreamBackend,
     ) -> Result<(), StoreError> {
-        let fresh = FiberStore::<DomainEvent>::open_jetstream(backend)?;
-        self.inner.store(Arc::new(fresh));
-        self.backend_reachable.store(true, Ordering::Release);
-        Ok(())
+        self.0.resync_jetstream_from_authoritative(backend)
     }
 
     #[must_use]
     pub(crate) fn last_recovery(&self) -> Option<RecoveryOutcome> {
-        self.inner.load().last_recovery().cloned()
+        self.0.last_recovery()
     }
 
     #[must_use]
     pub(crate) fn backend_reachable(&self) -> bool {
-        self.backend_reachable.load(Ordering::Acquire)
-    }
-
-    fn observe_result<T>(&self, result: &Result<T, StoreError>) {
-        if matches!(result, Err(StoreError::BackendInfrastructure { .. })) {
-            self.backend_reachable.store(false, Ordering::Release);
-        } else if result.is_ok() {
-            self.backend_reachable.store(true, Ordering::Release);
-        }
+        self.0.backend_reachable()
     }
 
     #[cfg(test)]
     pub(crate) fn mark_backend_connect_failure_for_test(&self) {
-        let result: Result<(), StoreError> = Err(StoreError::BackendInfrastructure {
-            op: pardosa::store::BackendOp::Sync,
-            source: Box::new(pardosa::store::BackendError::Connect {
-                op: pardosa::store::BackendOp::Sync,
-                source: Box::new(std::io::Error::other("nats down")),
-            }),
-        });
-        self.observe_result(&result);
+        self.0.mark_backend_unreachable_for_test();
     }
 
     /// Capture a repository state event onto the repo's fiber, growing it
@@ -206,9 +164,7 @@ impl NativeStore {
     /// maps to more than one fiber, [`StoreError::Infrastructure`] on
     /// pardosa append/sync failure, or [`StoreError::Poisoned`].
     pub fn record(&self, domain_key: &str, event: DomainEvent) -> Result<(), StoreError> {
-        let result = self.inner.load().record(domain_key, event, key_of);
-        self.observe_result(&result);
-        result
+        self.0.record(domain_key, event, key_of)
     }
 
     /// Soft-delete a repository's fiber (detach), then fence. A later
@@ -220,9 +176,7 @@ impl NativeStore {
     /// or [`StoreError::Poisoned`]. A no-op (key never seen / already
     /// detached) returns `Ok(())`.
     pub fn detach(&self, domain_key: &str, event: DomainEvent) -> Result<(), StoreError> {
-        let result = self.inner.load().detach(domain_key, event, key_of);
-        self.observe_result(&result);
-        result
+        self.0.detach(domain_key, event, key_of)
     }
 
     /// The latest event of every live (`Defined`) fiber, paired with its
@@ -233,7 +187,7 @@ impl NativeStore {
     /// Returns [`StoreError::Infrastructure`] on pardosa read failure or
     /// [`StoreError::Poisoned`].
     pub fn latest_per_repo(&self) -> Result<Vec<(String, DomainEvent)>, StoreError> {
-        self.inner.load().latest_defined(key_of)
+        self.0.latest_defined(key_of)
     }
 
     /// Every event in the store, in committed line order — the same
@@ -250,9 +204,7 @@ impl NativeStore {
     /// Returns [`StoreError::Infrastructure`] on pardosa read failure or
     /// [`StoreError::Poisoned`].
     pub fn events(&self) -> Result<Vec<(bool, DomainEvent)>, StoreError> {
-        let result = self.inner.load().all_events();
-        self.observe_result(&result);
-        result
+        self.0.all_events()
     }
 
     /// Fold every event in committed line order without materialising an
@@ -266,9 +218,7 @@ impl NativeStore {
         init: R,
         fold: impl FnMut(&mut R, bool, &DomainEvent),
     ) -> Result<R, StoreError> {
-        let result = self.inner.load().fold_events(init, fold);
-        self.observe_result(&result);
-        result
+        self.0.fold_events(init, fold)
     }
 }
 
@@ -280,8 +230,7 @@ impl NativeOrgStore {
     /// Returns [`StoreError::Infrastructure`] when pardosa cannot create
     /// the backing container.
     pub fn create_pgno(path: &Path) -> Result<Self, StoreError> {
-        let store = FiberStore::<OrgStateCaptured>::create_pgno(path)?;
-        Ok(Self::from_store(store))
+        Ok(Self(ObservedFiberStore::create_pgno(path)?))
     }
 
     /// Open an existing `.pgno`-backed org store, rehydrating its fibers.
@@ -291,9 +240,9 @@ impl NativeOrgStore {
     /// Returns [`StoreError::Infrastructure`] when pardosa cannot open or
     /// fold the backing container.
     pub fn open_pgno(path: &Path) -> Result<Self, StoreError> {
-        let store = FiberStore::<OrgStateCaptured>::open_pgno(path)?;
-        warn_pgno_recovery("orgs", path, store.last_recovery());
-        Ok(Self::from_store(store))
+        let store = Self(ObservedFiberStore::open_pgno(path)?);
+        warn_pgno_recovery("orgs", path, store.last_recovery().as_ref());
+        Ok(store)
     }
 
     /// Create a fresh JetStream-backed org store.
@@ -308,8 +257,7 @@ impl NativeOrgStore {
     /// Panics when called from inside a Tokio `current_thread` runtime; see
     /// [`NativeStore::create_jetstream`].
     pub fn create_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
-        let store = FiberStore::<OrgStateCaptured>::create_jetstream(backend)?;
-        Ok(Self::from_store(store))
+        Ok(Self(ObservedFiberStore::create_jetstream(backend)?))
     }
 
     /// Open an existing JetStream-backed org store, rehydrating its fibers.
@@ -324,15 +272,7 @@ impl NativeOrgStore {
     /// Panics when called from inside a Tokio `current_thread` runtime; see
     /// [`NativeStore::create_jetstream`].
     pub fn open_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
-        let store = FiberStore::<OrgStateCaptured>::open_jetstream(backend)?;
-        Ok(Self::from_store(store))
-    }
-
-    fn from_store(store: FiberStore<OrgStateCaptured>) -> Self {
-        Self {
-            inner: ArcSwap::new(Arc::new(store)),
-            backend_reachable: AtomicBool::new(true),
-        }
+        Ok(Self(ObservedFiberStore::open_jetstream(backend)?))
     }
 
     /// Re-seed from a fresh authoritative read of the same `.pgno` backing
@@ -344,10 +284,8 @@ impl NativeOrgStore {
     /// Returns [`StoreError::Infrastructure`] when pardosa cannot re-open
     /// the backing container.
     pub fn resync_pgno_from_authoritative(&self, path: &Path) -> Result<(), StoreError> {
-        let fresh = FiberStore::<OrgStateCaptured>::open_pgno(path)?;
-        warn_pgno_recovery("orgs", path, fresh.last_recovery());
-        self.inner.store(Arc::new(fresh));
-        self.backend_reachable.store(true, Ordering::Release);
+        self.0.resync_pgno_from_authoritative(path)?;
+        warn_pgno_recovery("orgs", path, self.0.last_recovery().as_ref());
         Ok(())
     }
 
@@ -368,28 +306,17 @@ impl NativeOrgStore {
         &self,
         backend: JetStreamBackend,
     ) -> Result<(), StoreError> {
-        let fresh = FiberStore::<OrgStateCaptured>::open_jetstream(backend)?;
-        self.inner.store(Arc::new(fresh));
-        self.backend_reachable.store(true, Ordering::Release);
-        Ok(())
+        self.0.resync_jetstream_from_authoritative(backend)
     }
 
     #[must_use]
     pub(crate) fn last_recovery(&self) -> Option<RecoveryOutcome> {
-        self.inner.load().last_recovery().cloned()
+        self.0.last_recovery()
     }
 
     #[must_use]
     pub(crate) fn backend_reachable(&self) -> bool {
-        self.backend_reachable.load(Ordering::Acquire)
-    }
-
-    fn observe_result<T>(&self, result: &Result<T, StoreError>) {
-        if matches!(result, Err(StoreError::BackendInfrastructure { .. })) {
-            self.backend_reachable.store(false, Ordering::Release);
-        } else if result.is_ok() {
-            self.backend_reachable.store(true, Ordering::Release);
-        }
+        self.0.backend_reachable()
     }
 
     /// Capture an org state event onto the org fiber, then fence.
@@ -400,9 +327,7 @@ impl NativeOrgStore {
     /// to more than one fiber, [`StoreError::Infrastructure`] on pardosa
     /// append/sync failure, or [`StoreError::Poisoned`].
     pub fn record(&self, org_key: &str, event: OrgStateCaptured) -> Result<(), StoreError> {
-        let result = self.inner.load().record(org_key, event, org_key_of);
-        self.observe_result(&result);
-        result
+        self.0.record(org_key, event, org_key_of)
     }
 
     /// Fold every org event in committed line order without materialising an owned vector.
@@ -415,9 +340,7 @@ impl NativeOrgStore {
         init: R,
         fold: impl FnMut(&mut R, &OrgStateCaptured),
     ) -> Result<R, StoreError> {
-        let result = self.inner.load().fold_defined_events(init, fold);
-        self.observe_result(&result);
-        result
+        self.0.fold_defined_events(init, fold)
     }
 }
 
@@ -429,8 +352,7 @@ impl NativeTeamStore {
     /// Returns [`StoreError::Infrastructure`] when pardosa cannot create
     /// the backing container.
     pub fn create_pgno(path: &Path) -> Result<Self, StoreError> {
-        let store = FiberStore::<TeamStateCaptured>::create_pgno(path)?;
-        Ok(Self::from_store(store))
+        Ok(Self(ObservedFiberStore::create_pgno(path)?))
     }
 
     /// Open an existing `.pgno`-backed team store, rehydrating its fibers.
@@ -440,9 +362,9 @@ impl NativeTeamStore {
     /// Returns [`StoreError::Infrastructure`] when pardosa cannot open or
     /// fold the backing container.
     pub fn open_pgno(path: &Path) -> Result<Self, StoreError> {
-        let store = FiberStore::<TeamStateCaptured>::open_pgno(path)?;
-        warn_pgno_recovery("teams", path, store.last_recovery());
-        Ok(Self::from_store(store))
+        let store = Self(ObservedFiberStore::open_pgno(path)?);
+        warn_pgno_recovery("teams", path, store.last_recovery().as_ref());
+        Ok(store)
     }
 
     /// Create a fresh JetStream-backed team store.
@@ -457,8 +379,7 @@ impl NativeTeamStore {
     /// Panics when called from inside a Tokio `current_thread` runtime; see
     /// [`NativeStore::create_jetstream`].
     pub fn create_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
-        let store = FiberStore::<TeamStateCaptured>::create_jetstream(backend)?;
-        Ok(Self::from_store(store))
+        Ok(Self(ObservedFiberStore::create_jetstream(backend)?))
     }
 
     /// Open an existing JetStream-backed team store, rehydrating its fibers.
@@ -473,15 +394,7 @@ impl NativeTeamStore {
     /// Panics when called from inside a Tokio `current_thread` runtime; see
     /// [`NativeStore::create_jetstream`].
     pub fn open_jetstream(backend: JetStreamBackend) -> Result<Self, StoreError> {
-        let store = FiberStore::<TeamStateCaptured>::open_jetstream(backend)?;
-        Ok(Self::from_store(store))
-    }
-
-    fn from_store(store: FiberStore<TeamStateCaptured>) -> Self {
-        Self {
-            inner: ArcSwap::new(Arc::new(store)),
-            backend_reachable: AtomicBool::new(true),
-        }
+        Ok(Self(ObservedFiberStore::open_jetstream(backend)?))
     }
 
     /// Re-seed from a fresh authoritative read of the same `.pgno` backing
@@ -493,10 +406,8 @@ impl NativeTeamStore {
     /// Returns [`StoreError::Infrastructure`] when pardosa cannot re-open
     /// the backing container.
     pub fn resync_pgno_from_authoritative(&self, path: &Path) -> Result<(), StoreError> {
-        let fresh = FiberStore::<TeamStateCaptured>::open_pgno(path)?;
-        warn_pgno_recovery("teams", path, fresh.last_recovery());
-        self.inner.store(Arc::new(fresh));
-        self.backend_reachable.store(true, Ordering::Release);
+        self.0.resync_pgno_from_authoritative(path)?;
+        warn_pgno_recovery("teams", path, self.0.last_recovery().as_ref());
         Ok(())
     }
 
@@ -517,28 +428,17 @@ impl NativeTeamStore {
         &self,
         backend: JetStreamBackend,
     ) -> Result<(), StoreError> {
-        let fresh = FiberStore::<TeamStateCaptured>::open_jetstream(backend)?;
-        self.inner.store(Arc::new(fresh));
-        self.backend_reachable.store(true, Ordering::Release);
-        Ok(())
+        self.0.resync_jetstream_from_authoritative(backend)
     }
 
     #[must_use]
     pub(crate) fn last_recovery(&self) -> Option<RecoveryOutcome> {
-        self.inner.load().last_recovery().cloned()
+        self.0.last_recovery()
     }
 
     #[must_use]
     pub(crate) fn backend_reachable(&self) -> bool {
-        self.backend_reachable.load(Ordering::Acquire)
-    }
-
-    fn observe_result<T>(&self, result: &Result<T, StoreError>) {
-        if matches!(result, Err(StoreError::BackendInfrastructure { .. })) {
-            self.backend_reachable.store(false, Ordering::Release);
-        } else if result.is_ok() {
-            self.backend_reachable.store(true, Ordering::Release);
-        }
+        self.0.backend_reachable()
     }
 
     /// Capture a team roster event onto the team's own fiber
@@ -550,9 +450,7 @@ impl NativeTeamStore {
     /// to more than one fiber, [`StoreError::Infrastructure`] on pardosa
     /// append/sync failure, or [`StoreError::Poisoned`].
     pub fn record(&self, team_key: &str, event: TeamStateCaptured) -> Result<(), StoreError> {
-        let result = self.inner.load().record(team_key, event, team_key_of);
-        self.observe_result(&result);
-        result
+        self.0.record(team_key, event, team_key_of)
     }
 
     /// Soft-delete a team's fiber (detach) for a team that no longer
@@ -565,9 +463,7 @@ impl NativeTeamStore {
     /// or [`StoreError::Poisoned`]. A no-op (key never seen / already
     /// detached) returns `Ok(())`.
     pub fn detach(&self, team_key: &str, event: TeamStateCaptured) -> Result<(), StoreError> {
-        let result = self.inner.load().detach(team_key, event, team_key_of);
-        self.observe_result(&result);
-        result
+        self.0.detach(team_key, event, team_key_of)
     }
 
     /// Fold every team event in committed line order without materialising
@@ -581,9 +477,7 @@ impl NativeTeamStore {
         init: R,
         fold: impl FnMut(&mut R, &TeamStateCaptured),
     ) -> Result<R, StoreError> {
-        let result = self.inner.load().fold_defined_events(init, fold);
-        self.observe_result(&result);
-        result
+        self.0.fold_defined_events(init, fold)
     }
 }
 
