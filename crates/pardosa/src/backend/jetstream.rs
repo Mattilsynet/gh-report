@@ -573,7 +573,12 @@ mod tests {
         }
     }
 
+    static CAPTURE_SERIALIZATION_GUARD: Mutex<()> = Mutex::new(());
+
     fn capture_tracing(f: impl FnOnce()) -> String {
+        let _guard = CAPTURE_SERIALIZATION_GUARD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let writer = VecWriter::default();
         let subscriber = tracing_subscriber::fmt()
             .with_writer(writer.clone())
@@ -581,7 +586,11 @@ mod tests {
             .with_target(false)
             .with_level(false)
             .finish();
-        tracing::subscriber::with_default(subscriber, f);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::callsite::rebuild_interest_cache();
+            f();
+            tracing::callsite::rebuild_interest_cache();
+        });
         writer.snapshot()
     }
     fn detached_config(tag: &str) -> JetStreamConfig {
