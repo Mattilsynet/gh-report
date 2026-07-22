@@ -44,7 +44,10 @@ pub enum EventConversionError {
 
 type Conv<T> = Result<T, EventConversionError>;
 
-fn to_es<const MAX: usize>(field: &'static str, value: String) -> Conv<EventString<MAX>> {
+pub(crate) fn to_es<const MAX: usize>(
+    field: &'static str,
+    value: String,
+) -> Conv<EventString<MAX>> {
     EventString::try_from(value).map_err(|_| EventConversionError::TooLong { field })
 }
 
@@ -64,7 +67,10 @@ fn to_event_vec<T, U, const MAX: usize>(
     EventVec::try_from(converted).map_err(|_| EventConversionError::TooMany { field })
 }
 
-fn to_nes<const MAX: usize>(field: &'static str, value: &str) -> Conv<NonEmptyEventString<MAX>> {
+pub(crate) fn to_nes<const MAX: usize>(
+    field: &'static str,
+    value: &str,
+) -> Conv<NonEmptyEventString<MAX>> {
     NonEmptyEventString::try_new(value).map_err(|_| {
         if value.is_empty() {
             EventConversionError::Empty { field }
@@ -74,7 +80,7 @@ fn to_nes<const MAX: usize>(field: &'static str, value: &str) -> Conv<NonEmptyEv
     })
 }
 
-fn ts_required(field: &'static str, value: &str) -> Conv<Timestamp> {
+pub(crate) fn ts_required(field: &'static str, value: &str) -> Conv<Timestamp> {
     let parsed = parse_iso8601(value).ok_or_else(|| EventConversionError::BadTimestamp {
         field,
         value: value.to_string(),
@@ -97,7 +103,7 @@ fn ts_opt(field: &'static str, value: Option<&str>) -> Conv<Option<Timestamp>> {
     }
 }
 
-fn ts_to_string(ts: Timestamp) -> String {
+pub(crate) fn ts_to_string(ts: Timestamp) -> String {
     JiffTimestamp::from_nanosecond(i128::from(ts.as_nanos()))
         .map_or_else(|_| String::new(), |t| t.to_string())
 }

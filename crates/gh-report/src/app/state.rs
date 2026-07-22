@@ -1016,39 +1016,15 @@ fn non_empty<const MAX: usize>(
     field: &'static str,
     value: &str,
 ) -> Result<NonEmptyEventString<MAX>, PersistenceError> {
-    NonEmptyEventString::try_new(value).map_err(|_| {
-        conversion_persistence(&if value.is_empty() {
-            EventConversionError::Empty { field }
-        } else {
-            EventConversionError::TooLong { field }
-        })
-    })
+    crate::event::convert::to_nes(field, value).map_err(|error| conversion_persistence(&error))
 }
 
 fn event_timestamp(field: &'static str, value: &str) -> Result<EventTimestamp, PersistenceError> {
-    let parsed = crate::domain::time::parse_iso8601(value).ok_or_else(|| {
-        conversion_persistence(&EventConversionError::BadTimestamp {
-            field,
-            value: value.to_string(),
-        })
-    })?;
-    let nanos = u64::try_from(parsed.as_nanosecond()).map_err(|_| {
-        conversion_persistence(&EventConversionError::BadTimestamp {
-            field,
-            value: value.to_string(),
-        })
-    })?;
-    EventTimestamp::from_nanos(nanos).ok_or_else(|| {
-        conversion_persistence(&EventConversionError::BadTimestamp {
-            field,
-            value: value.to_string(),
-        })
-    })
+    crate::event::convert::ts_required(field, value).map_err(|error| conversion_persistence(&error))
 }
 
 fn event_timestamp_string(timestamp: EventTimestamp) -> String {
-    jiff::Timestamp::from_nanosecond(i128::from(timestamp.as_nanos()))
-        .map_or_else(|_| String::new(), |value| value.to_string())
+    crate::event::convert::ts_to_string(timestamp)
 }
 
 fn repo_event(
@@ -1081,8 +1057,8 @@ fn bounded_string<const MAX: usize>(
     field: &'static str,
     value: &str,
 ) -> Result<EventString<MAX>, PersistenceError> {
-    EventString::try_from(value.to_string())
-        .map_err(|_| conversion_persistence(&EventConversionError::TooLong { field }))
+    crate::event::convert::to_es(field, value.to_string())
+        .map_err(|error| conversion_persistence(&error))
 }
 
 fn team_member_role_event(role: crate::domain::metrics::TeamMemberRole) -> TeamMemberRoleEvent {
