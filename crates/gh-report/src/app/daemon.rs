@@ -212,7 +212,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
         Arc::clone(&force_refresh_flag),
         collect_cancel_rx.clone(),
     );
-    spawn_team_refresh_loop(Arc::clone(&app_state), collect_cancel_rx);
+    spawn_team_refresh_loop(&config, Arc::clone(&app_state), collect_cancel_rx);
     let server_config = crate::server::served_dashboard_server_config();
 
     let server_result = cherry_pit_web::serve::start(
@@ -513,6 +513,119 @@ async fn rearm_fenced_run(
     }
 }
 
+/// Zero-sized give-up marker for [`rearm_after_fenced_team_refresh`]'s
+/// non-fence run failures. The real [`team_refresh::TickFailure`]
+/// (error and logging context) is returned alongside the
+/// [`RearmError`] outcome rather than carried as its generic source,
+/// since `TickFailure` is not itself a `std::error::Error` impl and the
+/// caller needs the failure for exactly one terminal
+/// [`team_refresh::log_tick_failure`] call, not for error-chain
+/// rendering.
+#[derive(Debug, thiserror::Error)]
+#[error("team-refresh tick failed (see logged context)")]
+struct TeamRefreshFailureLogged;
+
+/// Converge a team-refresh tick after a `FencedConflict`: force a fresh
+/// authoritative read via `resync`, then retry via `run`, bounded by
+/// `policy` — the team-refresh analogue of
+/// [`rearm_after_fenced_conflict`], routed through the same shared
+/// [`converge_on_fence`] sink (adr-fmt-3jptm) rather than hand-rolling a
+/// second converge dance. Returns the terminal [`RearmError`] outcome
+/// alongside the last observed [`team_refresh::TickFailure`] (if any run
+/// attempt failed), so the caller can log it exactly once via
+/// [`team_refresh::log_tick_failure`] on give-up.
+async fn rearm_after_fenced_team_refresh<Resync, ResyncFut, Run, RunFut>(
+    policy: &RearmPolicy,
+    resync: Resync,
+    mut run: Run,
+) -> (
+    Result<(), RearmError<TeamRefreshFailureLogged>>,
+    Option<crate::app::team_refresh::TickFailure>,
+)
+where
+    Resync: FnMut() -> ResyncFut,
+    ResyncFut: Future<Output = Result<(), std::io::Error>>,
+    Run: FnMut() -> RunFut,
+    RunFut: Future<Output = Result<(), crate::app::team_refresh::TickFailure>>,
+{
+    let last_failure = Arc::new(Mutex::new(None));
+    let last_failure_ref = Arc::clone(&last_failure);
+    let outcome = converge_on_fence(policy, resync, move || {
+        let fut = Box::pin(run());
+        let last_failure_ref = Arc::clone(&last_failure_ref);
+        async move {
+            match fut.await {
+                Ok(()) => ConvergeStep::Converged(()),
+                Err(failure) => {
+                    let is_fenced = matches!(
+                        failure.error,
+                        AppError::Persistence(PersistenceError::FencedConflict { .. })
+                    );
+                    *last_failure_ref
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(failure);
+                    if is_fenced {
+                        ConvergeStep::Fenced
+                    } else {
+                        ConvergeStep::Failed(TeamRefreshFailureLogged)
+                    }
+                }
+            }
+        }
+    })
+    .await;
+    let last_failure = Arc::try_unwrap(last_failure).map_or(None, |mutex| {
+        mutex
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    });
+    (outcome, last_failure)
+}
+
+/// Drive [`rearm_after_fenced_team_refresh`] for one fenced team-refresh
+/// tick, logging the terminal outcome. Mirrors [`rearm_fenced_run`]'s
+/// shape: on give-up, logs the last observed failure's typed context via
+/// [`team_refresh::log_tick_failure`] exactly once (not on every
+/// intermediate retry), then a terminal `error!` matching
+/// `rearm_fenced_run`'s own give-up log.
+async fn rearm_fenced_team_refresh_tick(
+    events_dir: &Path,
+    backend: crate::config::runtime::PardosaBackend,
+    nats: Result<&crate::config::runtime::NatsStoreConfig, &ConfigError>,
+    state: &Arc<AppState>,
+    client: &crate::github::client::GitHubClient,
+    fetched_at: &str,
+) {
+    let Ok(nats) = nats else {
+        error!(
+            owner_id = %state.owner_id,
+            "team-refresh fence-conflict re-arm skipped: NATS store config invalid — falling back to next scheduled tick"
+        );
+        return;
+    };
+    let (outcome, last_failure) = rearm_after_fenced_team_refresh(
+        &RearmPolicy::DEFAULT,
+        || state.resync_event_store(events_dir, backend, nats.clone()),
+        || crate::app::team_refresh::run_team_refresh_tick(state, client, fetched_at),
+    )
+    .await;
+    match outcome {
+        Ok(()) => {
+            info!(owner_id = %state.owner_id, "team-refresh fence-conflict re-arm converged");
+        }
+        Err(error) => {
+            if let Some(failure) = last_failure {
+                crate::app::team_refresh::log_tick_failure(&failure.error, &failure.context);
+            }
+            error!(
+                owner_id = %state.owner_id,
+                error = %error,
+                "team-refresh fence-conflict re-arm exhausted — reverting to next scheduled tick"
+            );
+        }
+    }
+}
+
 /// Spawn the background collection task: one initial run with the
 /// caller-supplied `force_unlock` flag, then a scheduled loop that
 /// honours a cooperative cancellation signal between iterations. The
@@ -644,9 +757,13 @@ fn log_initial_collection_failure(error: &AppError) {
 /// repo collection are skipped (logged at `info`) rather than treated
 /// as a failure — the client is created lazily on first repo collect.
 fn spawn_team_refresh_loop(
+    config: &RuntimeConfig,
     state: Arc<AppState>,
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
+    let events_dir = config.store_dir.join("events").join(&config.org_name);
+    let nats = config.nats_store_config();
+    let backend = config.pardosa_backend;
     tokio::spawn(async move {
         loop {
             match next_collection_tick(
@@ -669,7 +786,27 @@ fn spawn_team_refresh_loop(
             if let Err(failure) =
                 crate::app::team_refresh::run_team_refresh_tick(&state, &client, &fetched_at).await
             {
-                crate::app::team_refresh::log_tick_failure(&failure.error, &failure.context);
+                if matches!(
+                    failure.error,
+                    AppError::Persistence(PersistenceError::FencedConflict { .. })
+                ) {
+                    warn!(
+                        owner_id = %state.owner_id,
+                        expected = "rollover",
+                        "team-refresh tick fenced by active single-writer guard — expected Cloud-Run-rollover OCC churn (PGN-0016:R7); re-arming with fresh authoritative read"
+                    );
+                    rearm_fenced_team_refresh_tick(
+                        &events_dir,
+                        backend,
+                        nats.as_ref(),
+                        &state,
+                        &client,
+                        &fetched_at,
+                    )
+                    .await;
+                } else {
+                    crate::app::team_refresh::log_tick_failure(&failure.error, &failure.context);
+                }
             }
         }
     })
@@ -1539,5 +1676,180 @@ mod tests {
             Err(RearmError::RunFailed { attempts, .. }) => assert_eq!(attempts, 1),
             other => panic!("expected RunFailed give-up, got {other:?}"),
         }
+    }
+
+    fn team_tick_fenced_conflict() -> crate::app::team_refresh::TickFailure {
+        crate::app::team_refresh::TickFailure {
+            error: fenced_conflict(),
+            context: crate::app::write_policy::WriteFailureContextOwned {
+                org: Some("acme".to_string()),
+                team_slug: Some("platform".to_string()),
+                domain_key: None,
+                writer_id: None,
+            },
+        }
+    }
+
+    /// Team-refresh converges through the SAME shared sink used by the
+    /// collection loop (adr-fmt-3jptm): a `FencedConflict` tick failure
+    /// re-arms with a fresh read and converges within the bounded cap,
+    /// rather than the prior warn-and-wait-forever shape.
+    #[tokio::test(start_paused = true)]
+    async fn team_refresh_converges_after_one_resync_when_second_attempt_succeeds() {
+        let resync_calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let run_calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+        let resync_calls_c = Arc::clone(&resync_calls);
+        let run_calls_c = Arc::clone(&run_calls);
+        let (outcome, last_failure) = rearm_after_fenced_team_refresh(
+            &test_policy(3),
+            || {
+                resync_calls_c.fetch_add(1, Ordering::SeqCst);
+                async { Ok(()) }
+            },
+            || {
+                let attempt = run_calls_c.fetch_add(1, Ordering::SeqCst) + 1;
+                async move {
+                    if attempt == 1 {
+                        Err(team_tick_fenced_conflict())
+                    } else {
+                        Ok(())
+                    }
+                }
+            },
+        )
+        .await;
+
+        assert!(
+            outcome.is_ok(),
+            "must converge on the second attempt, got {outcome:?}"
+        );
+        assert_eq!(
+            run_calls.load(Ordering::SeqCst),
+            2,
+            "converges on second run"
+        );
+        assert_eq!(
+            resync_calls.load(Ordering::SeqCst),
+            2,
+            "R10 guard: a fresh resync (re-read) must precede every retry"
+        );
+        assert!(
+            last_failure.is_some(),
+            "the fenced first attempt must still be observable for logging"
+        );
+    }
+
+    /// R10 GUARD (adr-fmt-3jptm): a stale/drained writer that would
+    /// patch-and-redrive the SAME op MUST LOSE — the shared combinator
+    /// re-owns/fresh-reads between every retry via `resync`, never a
+    /// blind in-append redrive of the cached sequence.
+    #[tokio::test(start_paused = true)]
+    async fn team_refresh_never_redrives_without_a_preceding_resync_r10_guard() {
+        let resync_calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let run_calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+        let resync_calls_c = Arc::clone(&resync_calls);
+        let run_calls_c = Arc::clone(&run_calls);
+        let _ = rearm_after_fenced_team_refresh(
+            &test_policy(3),
+            || {
+                resync_calls_c.fetch_add(1, Ordering::SeqCst);
+                async { Ok(()) }
+            },
+            || {
+                run_calls_c.fetch_add(1, Ordering::SeqCst);
+                async { Err(team_tick_fenced_conflict()) }
+            },
+        )
+        .await;
+
+        assert!(
+            resync_calls.load(Ordering::SeqCst) >= run_calls.load(Ordering::SeqCst),
+            "resync ({}) must never trail run ({}) — a blind redrive would let \
+             run outpace resync",
+            resync_calls.load(Ordering::SeqCst),
+            run_calls.load(Ordering::SeqCst)
+        );
+    }
+
+    /// Give-up after the bounded cap is exhausted still fenced: the
+    /// terminal failure (with its typed context) must be surfaced for
+    /// exactly one `log_tick_failure` call, not lost by the Fenced
+    /// classification carrying no payload through the shared combinator.
+    #[tokio::test(start_paused = true)]
+    async fn team_refresh_gives_up_with_last_failure_preserved_after_cap_exhausted_still_fenced() {
+        let (outcome, last_failure) = rearm_after_fenced_team_refresh(
+            &test_policy(3),
+            || async { Ok(()) },
+            || async { Err(team_tick_fenced_conflict()) },
+        )
+        .await;
+
+        match outcome {
+            Err(RearmError::StillFenced { attempts }) => assert_eq!(attempts, 3),
+            other => panic!("expected StillFenced give-up, got {other:?}"),
+        }
+        let failure = last_failure.expect("last fenced failure must be preserved for logging");
+        assert_eq!(failure.context.team_slug.as_deref(), Some("platform"));
+    }
+
+    /// Idempotency (CHE-0041 aggregate-owned): a converged retry after
+    /// resync must not double-apply — the run closure is invoked exactly
+    /// once per attempt, never re-invoked for the same attempt number.
+    #[tokio::test(start_paused = true)]
+    async fn team_refresh_convergence_does_not_double_invoke_run_per_attempt() {
+        let run_calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let run_calls_c = Arc::clone(&run_calls);
+        let (outcome, _) = rearm_after_fenced_team_refresh(
+            &test_policy(3),
+            || async { Ok(()) },
+            move || {
+                let n = run_calls_c.fetch_add(1, Ordering::SeqCst) + 1;
+                async move {
+                    if n == 1 {
+                        Err(team_tick_fenced_conflict())
+                    } else {
+                        Ok(())
+                    }
+                }
+            },
+        )
+        .await;
+
+        assert!(outcome.is_ok());
+        assert_eq!(
+            run_calls.load(Ordering::SeqCst),
+            2,
+            "exactly one run invocation per attempt — no double-apply replay"
+        );
+    }
+
+    /// Non-fence run failures still terminate promptly (not misclassified
+    /// as a converge-worthy fence) — regression guard on the
+    /// `is_fenced` classification split.
+    #[tokio::test(start_paused = true)]
+    async fn team_refresh_non_fence_failure_gives_up_as_run_failed_not_still_fenced() {
+        let (outcome, last_failure) = rearm_after_fenced_team_refresh(
+            &test_policy(2),
+            || async { Ok(()) },
+            || async {
+                Err(crate::app::team_refresh::TickFailure {
+                    error: AppError::Persistence(
+                        cherry_pit_storage::PersistenceError::BackendUnavailable {
+                            reason: "nats down".to_string(),
+                        },
+                    ),
+                    context: crate::app::write_policy::WriteFailureContextOwned::default(),
+                })
+            },
+        )
+        .await;
+
+        match outcome {
+            Err(RearmError::RunFailed { attempts, .. }) => assert_eq!(attempts, 2),
+            other => panic!("expected RunFailed give-up for a non-fence error, got {other:?}"),
+        }
+        assert!(last_failure.is_some());
     }
 }
