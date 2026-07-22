@@ -109,7 +109,7 @@ flowchart TB
     <caption>Components — pardosa</caption>
     <thead><tr><th>Component</th><th>Kind</th><th>Citation</th></tr></thead>
     <tbody>
-      <tr><td>store / store::inner::{causal,history,lifecycle}</td><td>module</td><td><code>crates/pardosa/src/store.rs</code>, <code>store/inner*.rs</code></td></tr>
+      <tr><td>store / store::inner::{causal,history,lifecycle::{pgno,jetstream}}</td><td>module</td><td><code>crates/pardosa/src/store.rs</code>, <code>store/inner/*.rs</code>, <code>store/inner/lifecycle/{pgno,jetstream}.rs</code></td></tr>
       <tr><td>backend::{diagnostics,fake,jetstream,journal,rehydrate}</td><td>module</td><td><code>crates/pardosa/src/backend/*.rs</code></td></tr>
       <tr><td>dragline::{accessors,commit,fold,integrity,linevec,read,recover,runtime,state,view,write}</td><td>module</td><td><code>crates/pardosa/src/dragline/*.rs</code></td></tr>
       <tr><td>cursor, frontier, fiber, fiber_index, fiber_state, typed, migrate, durability, authoritative</td><td>modules</td><td><code>crates/pardosa/src/*.rs</code></td></tr>
@@ -123,7 +123,7 @@ flowchart TB
   <div class="mermaid">
 flowchart TB
   prelude["prelude<br/>prelude.rs"]
-  store["store + inner::{causal,history,lifecycle}<br/>store.rs, store/inner*.rs"]
+  store["store + inner::{causal,history,lifecycle::{pgno,jetstream}}<br/>store.rs, store/inner/*.rs"]
   backend["backend::{diagnostics,fake,jetstream,journal,rehydrate}<br/>backend/*.rs"]
   dragline["dragline::{commit,fold,integrity,read,recover,runtime,write}<br/>dragline/*.rs"]
   event["event::{envelope,event_id,fiber_id,index,precursor}<br/>event/*.rs"]
@@ -148,12 +148,13 @@ flowchart TB
     </tbody>
   </table>
 
-  <h3 id="pardosa-fiber-store">pardosa-fiber-store (adapter lib, single file)</h3>
+  <h3 id="pardosa-fiber-store">pardosa-fiber-store (adapter lib)</h3>
   <table>
     <caption>Components — pardosa-fiber-store</caption>
     <thead><tr><th>Component</th><th>Kind</th><th>Citation</th></tr></thead>
     <tbody>
-      <tr><td>lib.rs (depends on pardosa)</td><td>crate root</td><td><code>crates/pardosa-fiber-store/src/lib.rs</code></td></tr>
+      <tr><td>lib.rs (FiberStore, KeyFn; depends on pardosa)</td><td>crate root</td><td><code>crates/pardosa-fiber-store/src/lib.rs</code></td></tr>
+      <tr><td>observed (ObservedFiberStore)</td><td>module</td><td><code>crates/pardosa-fiber-store/src/observed.rs</code></td></tr>
     </tbody>
   </table>
 

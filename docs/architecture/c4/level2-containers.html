@@ -24,7 +24,7 @@
   <h1>C4 Level 2 — Containers</h1>
   <p class="subtitle">
     Derived from <a href="./level3-components.html">L3</a> by folding
-    components up to their deployable/buildable unit (the crate). All 20
+    components up to their deployable/buildable unit (the crate). All 21
     in-scope crates, grouped by family, with dependency edges cited to each
     crate's <code>Cargo.toml</code>. Source:
     <span class="cite">bd-adr-fmt-wlikf</span> — code-derived, independent
@@ -33,14 +33,14 @@
 
   <h2 id="container-table">Container table</h2>
   <table>
-    <caption>All 20 in-scope crates — classification + key L3 components</caption>
+    <caption>All 21 in-scope crates — classification + key L3 components</caption>
     <thead><tr><th>Container</th><th>Classification</th><th>Key components (ref L3)</th></tr></thead>
     <tbody>
       <tr><td>gh-report</td><td>runnable (bin <code>gh-report</code>)</td><td>daemon, collect, collector::*, github::client, store, server, report::*</td></tr>
       <tr><td>gh-report-web-client</td><td>runnable (wasm cdylib, Leptos CSR)</td><td>dom, sort, lib entry</td></tr>
       <tr><td>pardosa</td><td>substrate lib (sync facade)</td><td>store, backend::*, dragline::*, event::*, persist::*, error</td></tr>
       <tr><td>pardosa-derive</td><td>proc-macro</td><td>codec, generics, hash, path_resolution, reject, schema</td></tr>
-      <tr><td>pardosa-fiber-store</td><td>adapter lib</td><td>lib.rs (single file)</td></tr>
+      <tr><td>pardosa-fiber-store</td><td>adapter lib</td><td>lib.rs (FiberStore), observed (ObservedFiberStore)</td></tr>
       <tr><td>pardosa-file</td><td>substrate lib</td><td>append/writer/reader, manifest::*, error</td></tr>
       <tr><td>pardosa-nats</td><td>substrate lib (ring)</td><td>config, runtime, handle (run_op bridge, OCC fence), error</td></tr>
       <tr><td>pardosa-read</td><td>runnable (bin <code>pardosa-read</code>)</td><td>cli, creds_perms, opaque, render, tls_policy</td></tr>
