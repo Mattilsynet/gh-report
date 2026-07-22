@@ -62,3 +62,127 @@ pub enum PersistenceError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
+
+/// Storage-native retry guidance for [`PersistenceError`].
+///
+/// Two-way classification, mirroring the intent of
+/// `cherry_pit_core::ErrorCategory` and `DispatchError::category()`
+/// without depending on `cherry-pit-core` (CHE-0053:R1/R8 forbid a
+/// cherry-pit-core dependency in this crate).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RetryClass {
+    /// Repeating the operation may succeed after backoff or backend
+    /// recovery.
+    Retryable,
+
+    /// Repeating the same operation against the same state is expected
+    /// to fail until the underlying condition is repaired. Includes
+    /// `FencedConflict`: the substrate cannot itself resync a fenced
+    /// writer, so in-append retry is not offered here — convergence is
+    /// the consumer's responsibility (CHE-0088; PGN-0016:R10).
+    Terminal,
+}
+
+impl RetryClass {
+    /// Returns true for classes where retry is a valid first response.
+    #[must_use]
+    pub const fn is_retryable(self) -> bool {
+        matches!(self, Self::Retryable)
+    }
+
+    /// Returns true for classes requiring caller/operator action before
+    /// retry.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Terminal)
+    }
+}
+
+impl PersistenceError {
+    /// Classify the persistence failure as retryable or terminal.
+    #[must_use]
+    pub const fn retry_class(&self) -> RetryClass {
+        match self {
+            Self::BackendUnavailable { .. } => RetryClass::Retryable,
+            Self::LockFailed { .. }
+            | Self::AtomicWriteFailed { .. }
+            | Self::LoadFailed { .. }
+            | Self::TornWriteRecovery { .. }
+            | Self::FencedConflict { .. }
+            | Self::InvariantViolation { .. }
+            | Self::PoisonedState
+            | Self::Io(_) => RetryClass::Terminal,
+        }
+    }
+}
+
+#[cfg(test)]
+mod retry_class_tests {
+    use super::{PersistenceError, RetryClass};
+
+    #[test]
+    fn retry_class_covers_all_eight_variants() {
+        assert_eq!(
+            PersistenceError::BackendUnavailable {
+                reason: "down".to_string()
+            }
+            .retry_class(),
+            RetryClass::Retryable
+        );
+
+        assert_eq!(
+            PersistenceError::LockFailed {
+                reason: "held".to_string()
+            }
+            .retry_class(),
+            RetryClass::Terminal
+        );
+        assert_eq!(
+            PersistenceError::AtomicWriteFailed {
+                reason: "rename failed".to_string()
+            }
+            .retry_class(),
+            RetryClass::Terminal
+        );
+        assert_eq!(
+            PersistenceError::LoadFailed {
+                reason: "bad schema".to_string()
+            }
+            .retry_class(),
+            RetryClass::Terminal
+        );
+        assert_eq!(
+            PersistenceError::TornWriteRecovery {
+                source: "torn".into(),
+            }
+            .retry_class(),
+            RetryClass::Terminal
+        );
+        assert_eq!(
+            PersistenceError::FencedConflict {
+                expected_seq: Some(1),
+                actual_seq: Some(2),
+                source: "fenced".into(),
+            }
+            .retry_class(),
+            RetryClass::Terminal,
+            "FencedConflict must map Terminal per PGN-0016:R10 — the substrate must not offer in-append retry"
+        );
+        assert_eq!(
+            PersistenceError::InvariantViolation {
+                reason: "bug".to_string()
+            }
+            .retry_class(),
+            RetryClass::Terminal
+        );
+        assert_eq!(
+            PersistenceError::PoisonedState.retry_class(),
+            RetryClass::Terminal
+        );
+        assert_eq!(
+            PersistenceError::Io(std::io::Error::other("io")).retry_class(),
+            RetryClass::Terminal
+        );
+    }
+}
