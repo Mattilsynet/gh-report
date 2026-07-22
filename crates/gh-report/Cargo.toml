@@ -54,7 +54,7 @@ cherry-pit-web = { workspace = true }
 
 # TLS crypto provider — pinned to the single rustls in the tree so the process
 # default provider is installed unambiguously before any TLS use (MAP NATS).
-rustls = { version = "=0.23.41", default-features = false, features = ["ring"] }
+rustls = { version = "=0.23.42", default-features = false, features = ["ring"] }
 
 # CLI
 clap = { workspace = true, features = ["env"] }
