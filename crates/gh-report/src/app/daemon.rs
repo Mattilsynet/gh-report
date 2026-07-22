@@ -352,10 +352,10 @@ impl RearmPolicy {
     };
 }
 
-/// Terminal give-up surface for [`rearm_after_fenced_conflict`].
+/// Terminal give-up surface for [`converge_on_fence`] / [`rearm_after_fenced_conflict`].
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-enum RearmError {
+enum RearmError<E: std::error::Error + 'static> {
     #[error("fence-conflict re-arm exhausted after {attempts} attempt(s): resync failed: {source}")]
     ResyncFailed {
         attempts: u32,
@@ -368,27 +368,40 @@ enum RearmError {
     RunFailed {
         attempts: u32,
         #[source]
-        source: AppError,
+        source: E,
     },
 }
 
-/// Re-arm a fenced collection run: force a fresh authoritative read via
-/// `resync`, then retry via `run`, bounded by `policy`.
+/// One resync+run attempt's classification, fed to [`converge_on_fence`]
+/// by each sanctioned-sink caller (collection loop, team-refresh loop).
+enum ConvergeStep<T, E> {
+    Converged(T),
+    Fenced,
+    Failed(E),
+}
+
+/// The single sanctioned resync+bounded-retry converge sink
+/// (adr-fmt-3jptm, CHE-0088 amendment): force a fresh authoritative read
+/// via `resync`, then retry via `run`, bounded by `policy`. Both
+/// gh-report durable-write loops (collection, team-refresh) route
+/// through this combinator rather than hand-rolling their own converge
+/// dance per call site.
 ///
 /// Does NOT patch a cached sequence and redrive the same append
 /// (R10-forbidden) — `resync` re-owns/re-reads a fresh authoritative view
 /// before each retry, so a superseded writer identity cannot win an
 /// append against stale state.
-async fn rearm_after_fenced_conflict<Resync, ResyncFut, Run, RunFut>(
+async fn converge_on_fence<Resync, ResyncFut, Run, RunFut, T, E>(
     policy: &RearmPolicy,
     mut resync: Resync,
     mut run: Run,
-) -> Result<collect::CollectionOutcome, RearmError>
+) -> Result<T, RearmError<E>>
 where
     Resync: FnMut() -> ResyncFut,
     ResyncFut: Future<Output = Result<(), std::io::Error>>,
     Run: FnMut() -> RunFut,
-    RunFut: Future<Output = Result<collect::CollectionOutcome, AppError>>,
+    RunFut: Future<Output = ConvergeStep<T, E>>,
+    E: std::error::Error + 'static,
 {
     for attempt in 1..=policy.max_attempts {
         if let Err(source) = resync().await {
@@ -402,17 +415,14 @@ where
             continue;
         }
         match run().await {
-            Ok(
-                outcome @ (collect::CollectionOutcome::Completed
-                | collect::CollectionOutcome::Cancelled),
-            ) => return Ok(outcome),
-            Ok(collect::CollectionOutcome::FencedConflict) => {
+            ConvergeStep::Converged(value) => return Ok(value),
+            ConvergeStep::Fenced => {
                 if attempt == policy.max_attempts {
                     return Err(RearmError::StillFenced { attempts: attempt });
                 }
                 tokio::time::sleep(policy.backoff_base * attempt).await;
             }
-            Err(source) => {
+            ConvergeStep::Failed(source) => {
                 if attempt == policy.max_attempts {
                     return Err(RearmError::RunFailed {
                         attempts: attempt,
@@ -426,6 +436,37 @@ where
     Err(RearmError::StillFenced {
         attempts: policy.max_attempts,
     })
+}
+
+/// Re-arm a fenced collection run: force a fresh authoritative read via
+/// `resync`, then retry via `run`, bounded by `policy`. Thin
+/// [`collect::CollectionOutcome`]-shaped wrapper over the shared
+/// [`converge_on_fence`] sink.
+async fn rearm_after_fenced_conflict<Resync, ResyncFut, Run, RunFut>(
+    policy: &RearmPolicy,
+    resync: Resync,
+    mut run: Run,
+) -> Result<collect::CollectionOutcome, RearmError<AppError>>
+where
+    Resync: FnMut() -> ResyncFut,
+    ResyncFut: Future<Output = Result<(), std::io::Error>>,
+    Run: FnMut() -> RunFut,
+    RunFut: Future<Output = Result<collect::CollectionOutcome, AppError>>,
+{
+    converge_on_fence(policy, resync, move || {
+        let fut = Box::pin(run());
+        async move {
+            match fut.await {
+                Ok(
+                    outcome @ (collect::CollectionOutcome::Completed
+                    | collect::CollectionOutcome::Cancelled),
+                ) => ConvergeStep::Converged(outcome),
+                Ok(collect::CollectionOutcome::FencedConflict) => ConvergeStep::Fenced,
+                Err(source) => ConvergeStep::Failed(source),
+            }
+        }
+    })
+    .await
 }
 
 /// Drive [`rearm_after_fenced_conflict`] for one fenced collection tick,
