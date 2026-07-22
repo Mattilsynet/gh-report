@@ -167,11 +167,47 @@ fn load_inner_typed(marker_dir: &Path) -> Result<Config, LoadError> {
 ///
 /// # Errors
 ///
-/// Returns an error when `corpus.root` fails containment validation,
-/// canonicalization, or descendant checks.
-pub fn resolve_corpus_root(marker_dir: &Path, corpus: &CorpusConfig) -> Result<PathBuf, String> {
-    crate::containment::contained_join(marker_dir, &corpus.root)
-        .map_err(|e| format!("[corpus] root: {e}"))
+/// Returns [`ResolveCorpusError::Containment`] when `corpus.root` fails
+/// containment validation, canonicalization, or descendant checks.
+pub fn resolve_corpus_root(
+    marker_dir: &Path,
+    corpus: &CorpusConfig,
+) -> Result<PathBuf, ResolveCorpusError> {
+    crate::containment::contained_join(marker_dir, &corpus.root).map_err(ResolveCorpusError::from)
+}
+
+/// Failure resolving `[corpus] root` from the marker directory.
+///
+/// `resolve_corpus_root` fails only via
+/// [`crate::containment::contained_join`], so this taxonomy wraps
+/// [`crate::containment::ContainmentError`] rather than re-deriving its
+/// variants.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ResolveCorpusError {
+    Containment(crate::containment::ContainmentError),
+}
+
+impl core::fmt::Display for ResolveCorpusError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Containment(e) => write!(f, "[corpus] root: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ResolveCorpusError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Containment(e) => Some(e),
+        }
+    }
+}
+
+impl From<crate::containment::ContainmentError> for ResolveCorpusError {
+    fn from(e: crate::containment::ContainmentError) -> Self {
+        Self::Containment(e)
+    }
 }
 
 /// Emit deprecation warnings if config contains legacy full rule declarations.
@@ -468,7 +504,13 @@ crates = []
             root: "/etc".to_owned(),
         };
         let err = resolve_corpus_root(dir.path(), &corpus).unwrap_err();
-        assert!(err.contains("absolute"), "got: {err}");
+        assert!(
+            matches!(
+                err,
+                ResolveCorpusError::Containment(crate::containment::ContainmentError::Absolute(_))
+            ),
+            "got: {err:?}"
+        );
     }
 
     #[test]
@@ -478,6 +520,14 @@ crates = []
             root: "../escape".to_owned(),
         };
         let err = resolve_corpus_root(dir.path(), &corpus).unwrap_err();
-        assert!(err.contains("parent-traversal"), "got: {err}");
+        assert!(
+            matches!(
+                err,
+                ResolveCorpusError::Containment(
+                    crate::containment::ContainmentError::ParentTraversal(_)
+                )
+            ),
+            "got: {err:?}"
+        );
     }
 }

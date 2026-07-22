@@ -30,7 +30,9 @@ pub mod scrape;
 
 use std::path::{Path, PathBuf};
 
-pub use adr_fmt::{AdrRecord, Config, LoadError, load_quiet, resolve_corpus_root};
+pub use adr_fmt::{
+    AdrRecord, Config, LoadError, ResolveCorpusError, load_quiet, resolve_corpus_root,
+};
 
 pub use domain::{
     AdrDate, AdrDateError, AdrDocument, AdrFrontmatter, AdrId, AdrIdError, AdrIngested, BodyHash,
@@ -52,13 +54,50 @@ pub use graphql::{AdrGql, AdrRef, AdrSchema, Query, build_schema};
 /// `adr-fmt.toml`.
 ///
 /// # Errors
-/// Returns `Err` with a human-readable reason if either the config load
-/// or corpus-root resolution fails. The error type is `String` because
-/// the two underlying errors (`LoadError` and the resolve `String`) are
-/// merged for caller convenience at the skeleton stage.
-pub fn surface_probe(marker_dir: &Path) -> Result<PathBuf, String> {
-    let config: Config = load_quiet(marker_dir).map_err(|e| e.to_string())?;
-    let root: PathBuf = resolve_corpus_root(marker_dir, &config.corpus)
-        .map_err(|e| format!("resolve_corpus_root failed: {e}"))?;
+/// Returns [`SurfaceProbeError::Load`] if `adr-fmt.toml` cannot be
+/// loaded, or [`SurfaceProbeError::Resolve`] if the corpus root cannot
+/// be resolved from the marker.
+pub fn surface_probe(marker_dir: &Path) -> Result<PathBuf, SurfaceProbeError> {
+    let config: Config = load_quiet(marker_dir)?;
+    let root: PathBuf = resolve_corpus_root(marker_dir, &config.corpus)?;
     Ok(root)
+}
+
+/// Failure from [`surface_probe`]: either the config load or the
+/// corpus-root resolve step of the AFM-0026:R1 surface probe failed.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum SurfaceProbeError {
+    Load(LoadError),
+    Resolve(ResolveCorpusError),
+}
+
+impl core::fmt::Display for SurfaceProbeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Load(e) => write!(f, "{e}"),
+            Self::Resolve(e) => write!(f, "resolve_corpus_root failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for SurfaceProbeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Load(e) => Some(e),
+            Self::Resolve(e) => Some(e),
+        }
+    }
+}
+
+impl From<LoadError> for SurfaceProbeError {
+    fn from(e: LoadError) -> Self {
+        Self::Load(e)
+    }
+}
+
+impl From<ResolveCorpusError> for SurfaceProbeError {
+    fn from(e: ResolveCorpusError) -> Self {
+        Self::Resolve(e)
+    }
 }

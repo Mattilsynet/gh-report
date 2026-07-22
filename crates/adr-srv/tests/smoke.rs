@@ -50,3 +50,13 @@ fn resolve_corpus_root_is_callable_from_external_crate() {
         resolved.display()
     );
 }
+
+#[test]
+fn surface_probe_error_matches_load_variant() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let err = adr_srv::surface_probe(dir.path()).expect_err("no adr-fmt.toml in empty dir");
+    assert!(
+        matches!(err, adr_srv::SurfaceProbeError::Load(_)),
+        "expected Load variant, got: {err:?}"
+    );
+}

@@ -40,10 +40,10 @@ mod refs;
 mod report;
 mod rules;
 
-pub use config::{Config, LoadError, load_quiet, resolve_corpus_root};
+pub use config::{Config, LoadError, ResolveCorpusError, load_quiet, resolve_corpus_root};
 pub use containment::{ContainmentError, contained_join, contained_join_optional};
 pub use model::{AdrId, AdrRecord, DomainDir, RelVerb, Relationship, Status, Tier, parse_adr_id};
-pub use parser::{ParseOutcome, parse_domain, parse_stale};
+pub use parser::{ParseError, ParseOutcome, parse_domain, parse_stale};
 pub use report::{Diagnostic, Severity};
 
 use std::ffi::OsString;
@@ -228,7 +228,7 @@ fn scan_corpus(
     let mut diagnostics = Vec::new();
 
     for dir in domain_dirs {
-        let outcome = parser::parse_domain(dir)?;
+        let outcome = parser::parse_domain(dir).map_err(|e| e.to_string())?;
         records.extend(outcome.records);
         diagnostics.extend(outcome.diagnostics);
     }
@@ -238,7 +238,7 @@ fn scan_corpus(
     if let Some(stale_dir) = stale_dir
         && stale_dir.is_dir()
     {
-        let outcome = parser::parse_stale(&stale_dir, config)?;
+        let outcome = parser::parse_stale(&stale_dir, config).map_err(|e| e.to_string())?;
         records.extend(outcome.records);
         diagnostics.extend(outcome.diagnostics);
     }

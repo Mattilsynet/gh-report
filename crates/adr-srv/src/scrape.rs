@@ -18,8 +18,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use adr_fmt::{
-    AdrRecord, Config, DomainDir, LoadError, RelVerb, Status as AdrFmtStatus, Tier as AdrFmtTier,
-    load_quiet, parse_domain, parse_stale, resolve_corpus_root,
+    AdrRecord, Config, DomainDir, LoadError, ParseError, RelVerb, ResolveCorpusError,
+    Status as AdrFmtStatus, Tier as AdrFmtTier, load_quiet, parse_domain, parse_stale,
+    resolve_corpus_root,
 };
 
 use crate::app::{AdrService, IngestOutcome};
@@ -53,10 +54,10 @@ pub enum ScrapeError {
     /// `adr-fmt.toml` could not be loaded.
     Config(LoadError),
     /// Corpus root could not be resolved from the marker.
-    ResolveCorpus(String),
+    ResolveCorpus(ResolveCorpusError),
     /// `parse_domain` / `parse_stale` returned `Err` (infrastructure
     /// failure: unreadable directory).
-    Parse(String),
+    Parse(ParseError),
     /// `AdrService::ingest_if_changed` surfaced a `StoreError`.
     Store(cherry_pit_core::StoreError),
     /// `fs::read` on an ADR file failed (computed `body_hash` requires
@@ -68,8 +69,8 @@ impl core::fmt::Display for ScrapeError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Config(e) => write!(f, "scrape: config load failed: {e}"),
-            Self::ResolveCorpus(s) => write!(f, "scrape: resolve corpus root failed: {s}"),
-            Self::Parse(s) => write!(f, "scrape: parse failed: {s}"),
+            Self::ResolveCorpus(e) => write!(f, "scrape: resolve corpus root failed: {e}"),
+            Self::Parse(e) => write!(f, "scrape: parse failed: {e}"),
             Self::Store(e) => write!(f, "scrape: store error: {e}"),
             Self::Io(e) => write!(f, "scrape: io error: {e}"),
         }
@@ -81,6 +82,18 @@ impl std::error::Error for ScrapeError {}
 impl From<LoadError> for ScrapeError {
     fn from(e: LoadError) -> Self {
         Self::Config(e)
+    }
+}
+
+impl From<ResolveCorpusError> for ScrapeError {
+    fn from(e: ResolveCorpusError) -> Self {
+        Self::ResolveCorpus(e)
+    }
+}
+
+impl From<ParseError> for ScrapeError {
+    fn from(e: ParseError) -> Self {
+        Self::Parse(e)
     }
 }
 
@@ -111,8 +124,7 @@ pub async fn scrape_corpus(
     corpus: &Arc<Mutex<AdrCorpus>>,
 ) -> Result<ScrapeReport, ScrapeError> {
     let config: Config = load_quiet(marker_dir)?;
-    let corpus_root =
-        resolve_corpus_root(marker_dir, &config.corpus).map_err(ScrapeError::ResolveCorpus)?;
+    let corpus_root = resolve_corpus_root(marker_dir, &config.corpus)?;
 
     let mut report = ScrapeReport::default();
 
@@ -130,7 +142,7 @@ pub async fn scrape_corpus(
             ));
             continue;
         }
-        let outcome = parse_domain(&dir).map_err(ScrapeError::Parse)?;
+        let outcome = parse_domain(&dir)?;
         for record in outcome.records {
             ingest_record(service, &record, &mut report, corpus).await?;
         }
@@ -141,7 +153,7 @@ pub async fn scrape_corpus(
 
     let stale_dir = corpus_root.join(&config.stale.directory);
     if stale_dir.is_dir() {
-        let outcome = parse_stale(&stale_dir, &config).map_err(ScrapeError::Parse)?;
+        let outcome = parse_stale(&stale_dir, &config)?;
         for record in outcome.records {
             ingest_record(service, &record, &mut report, corpus).await?;
         }

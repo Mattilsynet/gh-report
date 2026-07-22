@@ -47,10 +47,13 @@ pub struct RefsReport {
 ///
 /// # Errors
 ///
-/// Returns `Err` when `target` is not present in the parsed corpus.
-pub fn find_refs(target: &AdrId, records: &[AdrRecord]) -> Result<RefsReport, String> {
+/// Returns [`RefsError::TargetNotFound`] when `target` is not present
+/// in the parsed corpus.
+pub fn find_refs(target: &AdrId, records: &[AdrRecord]) -> Result<RefsReport, RefsError> {
     let Some(target_record) = records.iter().find(|r| r.id == *target) else {
-        return Err(format!("ADR {target} not found"));
+        return Err(RefsError::TargetNotFound {
+            target: target.clone(),
+        });
     };
 
     let children = nav::compute_children(records);
@@ -112,6 +115,24 @@ fn verb_sort_key(verb: RelVerb) -> u8 {
         _ => 255,
     }
 }
+
+/// Failure from [`find_refs`]. The only `Err` path is an unknown
+/// target ADR ID (not present in the parsed corpus).
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum RefsError {
+    TargetNotFound { target: AdrId },
+}
+
+impl core::fmt::Display for RefsError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::TargetNotFound { target } => write!(f, "ADR {target} not found"),
+        }
+    }
+}
+
+impl std::error::Error for RefsError {}
 
 #[cfg(test)]
 mod tests {
@@ -280,11 +301,11 @@ mod tests {
             1,
             vec![(RelVerb::Root, make_id("CHE", 1))],
         )];
-        let result = find_refs(&make_id("CHE", 99), &records);
-        match result {
-            Err(e) => assert!(e.contains("not found"), "unexpected error: {e}"),
-            Ok(_) => panic!("expected Err for unknown target"),
-        }
+        let err = find_refs(&make_id("CHE", 99), &records).unwrap_err();
+        assert!(
+            matches!(&err, RefsError::TargetNotFound { target } if *target == make_id("CHE", 99)),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[test]

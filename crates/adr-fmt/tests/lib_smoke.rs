@@ -43,14 +43,17 @@ fn lib_api_modules_resolve() {
     let _: Result<Option<PathBuf>, adr_fmt::ContainmentError> =
         adr_fmt::contained_join_optional(Path::new("/tmp"), "x");
 
-    let parse_domain_fn: fn(&adr_fmt::DomainDir) -> Result<adr_fmt::ParseOutcome, String> =
-        adr_fmt::parse_domain;
+    let parse_domain_fn: fn(
+        &adr_fmt::DomainDir,
+    ) -> Result<adr_fmt::ParseOutcome, adr_fmt::ParseError> = adr_fmt::parse_domain;
     assert!(std::ptr::fn_addr_eq(
         parse_domain_fn,
         adr_fmt::parse_domain as fn(_) -> _
     ));
-    let parse_stale_fn: fn(&Path, &adr_fmt::Config) -> Result<adr_fmt::ParseOutcome, String> =
-        adr_fmt::parse_stale;
+    let parse_stale_fn: fn(
+        &Path,
+        &adr_fmt::Config,
+    ) -> Result<adr_fmt::ParseOutcome, adr_fmt::ParseError> = adr_fmt::parse_stale;
     assert!(std::ptr::fn_addr_eq(
         parse_stale_fn,
         adr_fmt::parse_stale as fn(_, _) -> _,

@@ -10,12 +10,12 @@
 //!
 //! Infrastructure failures (unreadable domain directory after
 //! containment passes, e.g. permission denied on a canonicalized
-//! path) bubble as `Err(String)` for `eprintln!` + `process::exit(1)`
+//! path) bubble as [`ParseError`] for `eprintln!` + `process::exit(1)`
 //! per AFM-0003 R1.
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -32,11 +32,49 @@ use crate::report::Diagnostic;
 /// `diagnostics` carries per-file `P###` warnings (per AFM-0017) for
 /// files whose filenames matched the prefix pattern but whose contents
 /// could not be parsed. Infrastructure failures (unreadable directory)
-/// surface as `Err(String)` from the calling parser entrypoints.
+/// surface as [`ParseError`] from the calling parser entrypoints.
 #[derive(Debug, Default)]
 pub struct ParseOutcome {
     pub records: Vec<AdrRecord>,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Infrastructure failure from [`parse_domain`] or [`parse_stale`].
+///
+/// Both entrypoints have exactly one `Err` path: the target directory
+/// itself could not be read via `fs::read_dir`. Per-file failures are
+/// reported as `P001` diagnostics on the returned `ParseOutcome`
+/// instead.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ParseError {
+    ReadDir {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+}
+
+impl core::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::ReadDir { path, source } => {
+                write!(
+                    f,
+                    "cannot read domain/stale directory {}: {}",
+                    path.display().to_string().escape_debug(),
+                    source.to_string().escape_debug()
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ParseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ReadDir { source, .. } => Some(source),
+        }
+    }
 }
 
 /// Parse all ADR files in a domain directory.
@@ -47,20 +85,17 @@ pub struct ParseOutcome {
 ///
 /// # Errors
 ///
-/// Returns an error when `dir.path` cannot be read.
+/// Returns [`ParseError::ReadDir`] when `dir.path` cannot be read.
 ///
 /// # Panics
 ///
 /// Panics only if the internally-constructed filename regex is invalid.
-pub fn parse_domain(dir: &DomainDir) -> Result<ParseOutcome, String> {
+pub fn parse_domain(dir: &DomainDir) -> Result<ParseOutcome, ParseError> {
     let mut outcome = ParseOutcome::default();
 
-    let entries = fs::read_dir(&dir.path).map_err(|e| {
-        format!(
-            "cannot read domain directory {}: {}",
-            dir.path.display().to_string().escape_debug(),
-            e.to_string().escape_debug()
-        )
+    let entries = fs::read_dir(&dir.path).map_err(|e| ParseError::ReadDir {
+        path: dir.path.clone(),
+        source: e,
     })?;
 
     let filename_re = Regex::new(&format!(
@@ -107,20 +142,17 @@ pub fn parse_domain(dir: &DomainDir) -> Result<ParseOutcome, String> {
 ///
 /// # Errors
 ///
-/// Returns an error when `stale_dir` cannot be read.
+/// Returns [`ParseError::ReadDir`] when `stale_dir` cannot be read.
 ///
 /// # Panics
 ///
 /// Panics only if an internally-constructed domain filename regex is invalid.
-pub fn parse_stale(stale_dir: &Path, config: &Config) -> Result<ParseOutcome, String> {
+pub fn parse_stale(stale_dir: &Path, config: &Config) -> Result<ParseOutcome, ParseError> {
     let mut outcome = ParseOutcome::default();
 
-    let entries = fs::read_dir(stale_dir).map_err(|e| {
-        format!(
-            "cannot read stale directory {}: {}",
-            stale_dir.display().to_string().escape_debug(),
-            e.to_string().escape_debug()
-        )
+    let entries = fs::read_dir(stale_dir).map_err(|e| ParseError::ReadDir {
+        path: stale_dir.to_path_buf(),
+        source: e,
     })?;
 
     let prefixes: Vec<(&str, Regex)> = config
@@ -1324,10 +1356,12 @@ mod tests {
             outcome.is_err(),
             "unreadable domain directory should bubble as Err per AFM-0017 R4"
         );
-        let msg = outcome.unwrap_err();
+        let err = outcome.unwrap_err();
+        assert!(matches!(err, ParseError::ReadDir { .. }), "got: {err:?}");
         assert!(
-            msg.contains("cannot read domain directory"),
-            "error should describe the failure: {msg}"
+            err.to_string()
+                .contains("cannot read domain/stale directory"),
+            "error should describe the failure: {err}"
         );
     }
 
