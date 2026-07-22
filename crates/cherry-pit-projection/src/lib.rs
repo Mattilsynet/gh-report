@@ -116,6 +116,9 @@ pub type ProjectionResult<T> = Result<T, ProjectionError>;
 /// crate owns the file-backend storage that consumes it.
 pub use cherry_pit_core::ProjectionCheckpoint;
 
+mod write_cell;
+pub use write_cell::WriteCell;
+
 /// `MessagePack` file backend for projection snapshots and checkpoints.
 ///
 /// Writes one snapshot and one sibling checkpoint file per
