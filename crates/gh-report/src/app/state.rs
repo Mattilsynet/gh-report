@@ -2671,6 +2671,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn record_repo_replay_does_not_double_apply_domain_keyed_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let state = AppState::with_stores(
+            &events_dir,
+            PardosaBackend::Pgno,
+            NatsStoreConfig::for_org("org", crate::config::runtime::DEFAULT_NATS_URL).unwrap(),
+        )
+        .await
+        .expect("with_stores");
+        let mut evidence = crate::test_fixtures::all_passing_evidence("rearm-replay-repo");
+        let domain_key = evidence.repository.inventory_key.clone();
+        let repo_name = evidence.repository.name.clone();
+
+        state
+            .record_repo(
+                &domain_key,
+                evidence.clone(),
+                &repo_name,
+                "2026-06-11T00:00:00Z",
+            )
+            .expect("first apply, standing in for the tick that hit FencedConflict");
+
+        evidence.repository.archived = true;
+        state
+            .record_repo(
+                &domain_key,
+                evidence.clone(),
+                &repo_name,
+                "2026-06-11T00:05:00Z",
+            )
+            .expect("replay apply, standing in for the re-armed retry's fresh authoritative read");
+
+        let latest = state
+            .event_store
+            .latest_per_repo()
+            .expect("latest per repo");
+        assert_eq!(
+            latest.len(),
+            1,
+            "a re-armed replay of the same domain_key must fold onto one fiber, not fan out \
+             into two live repo records"
+        );
+
+        let projection = state.lock_projection();
+        assert_eq!(
+            projection.repositories.len(),
+            1,
+            "snapshot-overwrite projection must hold exactly one entry for domain_key after replay"
+        );
+        assert!(
+            projection
+                .repositories
+                .get(&domain_key)
+                .expect("domain_key present in projection")
+                .repository
+                .archived,
+            "replay must leave the LATEST application in place, not stack on the stale first one"
+        );
+    }
+
+    #[tokio::test]
     async fn projection_bytes_deep_is_heap_inclusive() {
         let state = AppState::new().await;
 
