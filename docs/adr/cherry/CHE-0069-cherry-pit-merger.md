@@ -40,4 +40,4 @@ R8 [5]: A regression-pin proptest in `cherry-pit-merger/tests/i1_toctou_pin.rs` 
 
 − becomes harder: a fourth persist shape requires a superseding ADR; `Box<dyn MergerArm>` is forbidden because the trait is bound to `A: Aggregate` per CHE-0005:R1, so per-aggregate `Merger` instances expand the type-parameter list as `App<G,S,B,P>` does per CHE-0051:R9.
 
-risks/migration: Mission H (bd `adr-fmt-cq7vb.11`) migrates gh-report onto this primitive; until then the crate has no production consumer and its tests are the sole conformance gate. `MergerArm::missing_key_error` defaults to `StoreError::CorruptData`; richer shapes (e.g. `RunError::RoutingMiss`) override the method.
+risks/migration: `missing_key_error` defaults to `StoreError::CorruptData`; richer shapes override it. Mission H (bd `adr-fmt-cq7vb.11`) is obsolete — gh-report closed I1 TOCTOU at the pardosa fiber substrate instead (record/detach fence, `WriterFence`, `FiberIndex`; PGN-0014). Reverse-migration retired; R8's tests remain the gate per CHE-0085:R3.

@@ -31,8 +31,11 @@
     <a href="../c4/level2-containers.html">L2</a> invariant checks (code survey).
     <br><strong>Re-evaluated 2026-07-21:</strong> N2 (hash-chain tamper-evidence)
     moved from DRIFT to MATCH after end-to-end remediation shipped in
-    <code>v0.1.43</code> and was flipped to <code>Enforce</code> in production —
-    one open DRIFT row remains.
+    <code>v0.1.43</code> and was flipped to <code>Enforce</code> in production.
+    <br><strong>Re-evaluated 2026-07-22:</strong> cherry-pit-merger (row 11) moved
+    from DRIFT to MATCH — <cite>CHE-0085:R3</cite> ratifies the unwired state as
+    steady state, and <cite>CHE-0069</cite> now records that Mission H (the
+    intended reverse-migration consumer) is obsolete. No open DRIFT row remains.
   </p>
 
   <h2 id="evidence-table">Evidence table</h2>
@@ -40,10 +43,11 @@
     Only the <strong>non-green findings</strong> are shown below — the claims
     where intended design and code did not cleanly agree. The set was three DRIFT
     rows; <strong>N2 (hash-chain tamper-evidence) was remediated end-to-end and
-    resolved 2026-07-21</strong> (see its row, now MATCH), leaving
-    <strong>one open DRIFT row</strong>: cherry-pit-merger orphaned wiring. N2 is
-    retained on this page as a
-    resolved row for the audit trail. A fourth row on first pass —
+    resolved 2026-07-21</strong> (see its row, now MATCH), and
+    <strong>cherry-pit-merger orphaned wiring was reconciled 2026-07-22</strong>
+    (see its row, now MATCH) — <strong>no open DRIFT row remains</strong>. Both rows are
+    retained on this page as
+    resolved rows for the audit trail. A fourth row on first pass —
     cherry-pit-app dependency breadth — was re-verified to agree with the code
     (the Cargo.toml
     edges conform to the specific exclusion rules CHE-0053:R8 / CHE-0085:R3) and
@@ -135,7 +139,7 @@
       <tr>
         <td>cherry-pit-merger is the command-side single-task serialiser, an alternative/complement to cherry-pit-app for command dispatch.</td>
         <td>ADR tree: <cite>CHE-0069</cite> "cherry-pit-merger — Command-Side Single-Task Serialiser" [B] Accepted (References CHE-0017, CHE-0029, CHE-0030, CHE-0024, CHE-0042, CHE-0073), <cite>CHE-0085</cite> "Merger/App Command-Side Choice Model" — no README found for the crate itself (gap noted in the prose digest).</td>
-        <td><code>crates/cherry-pit-merger/Cargo.toml</code> [dependencies] &rarr; cherry-pit-core, tokio, tracing — but <strong>no in-scope crate depends on cherry-pit-merger</strong> (not wired into cherry-pit-app's deps, nor gh-report's, nor any other in-scope <code>Cargo.toml</code>). Confirmed graph-orphan at <a href="../c4/level2-containers.html">C4 L2 discrepancies</a>. <strong>2026-07-20 correction:</strong> the orphan is <strong>anticipated by-design, not oversight</strong> — <cite>CHE-0085:R3</cite> states "an absent family consumer of merger is <em>expected state</em> rather than architecture drift". Merger and App are siblings selected per aggregate concurrency profile (<cite>CHE-0085:R1/R2</cite>), so the missing edge is the ratified steady state until a consumer with a single-flight create-or-append profile wires it.</td>
+        <td><code>crates/cherry-pit-merger/Cargo.toml</code> [dependencies] &rarr; cherry-pit-core, tokio, tracing — but <strong>no in-scope crate depends on cherry-pit-merger</strong> (not wired into cherry-pit-app's deps, nor gh-report's, nor any other in-scope <code>Cargo.toml</code>). Confirmed graph-orphan at <a href="../c4/level2-containers.html">C4 L2 discrepancies</a>. <strong>2026-07-20 correction:</strong> the orphan is <strong>anticipated by-design, not oversight</strong> — <cite>CHE-0085:R3</cite> states "an absent family consumer of merger is <em>expected state</em> rather than architecture drift". Merger and App are siblings selected per aggregate concurrency profile (<cite>CHE-0085:R1/R2</cite>), so the missing edge is the ratified steady state until a consumer with a single-flight create-or-append profile wires it. <strong>2026-07-22 reconciliation — verdict flips to MATCH:</strong> <cite>CHE-0069</cite>'s risks/migration clause now records that Mission H (the reverse-migration consumer this row's DRIFT verdict was implicitly waiting on) is obsolete — gh-report closed I1 TOCTOU at the pardosa fiber substrate instead (PGN-0014); the crate's own conformance tests (R8) remain the gate per <cite>CHE-0085:R3</cite>.</td>
       </tr>
     </tbody>
   </table>
@@ -198,8 +202,13 @@
       architecture drift". Merger and App are siblings chosen per aggregate
       concurrency profile (<cite>CHE-0085:R1/R2</cite>); the missing edge is the
       designed steady state until a consumer with a single-flight
-      create-or-append profile appears. The verdict stays DRIFT (designed role,
-      unwired) but the wiring gap is by-design-pending-adapter, not an oversight.
+      create-or-append profile appears. <strong>2026-07-22 reconciliation —
+      verdict flips to MATCH:</strong> <cite>CHE-0069</cite> now records that
+      Mission H, the intended reverse-migration consumer, is obsolete —
+      gh-report closed I1 TOCTOU at the pardosa fiber substrate instead
+      (PGN-0014); the crate's own tests (R8) remain the gate per
+      <cite>CHE-0085:R3</cite>. The wiring gap is ratified steady state,
+      not drift.
     </li>
     <li>
       <strong>Deployment topology (row 12) is code-observable — in both the
@@ -236,8 +245,11 @@
       <strong>Framed against the Solon thesis:</strong> the repo's bet is that a
       small set of enabling constraints, enforced where the type system and build
       graph can enforce them, collapses the space of possible mistakes. Row 11
-      remains counter-evidence: a place where intent outran shipped code, or
-      wiring diverged from the stated rule.
+      was the sharpest apparent counter-evidence — a place where intent seemed
+      to outrun shipped code. On reconciliation it turned out to be the ratified
+      steady state, not drift: <cite>CHE-0085:R3</cite> anticipates the unwired
+      state, and <cite>CHE-0069</cite> now records that the intended future
+      consumer (Mission H) is obsolete.
       N2 was the same shape at root — a capability whose SEC-0011 intent was
       unrealised end-to-end, with the precursor chain running on one backend arm
       but not the deployed one. It is now the thesis's <em>positive</em> case: the
@@ -252,10 +264,11 @@
     </li>
     <li>
       <strong>Deviation summary</strong>: this page reports only the non-green
-      findings. <strong>Result: 1 open DRIFT row + 1 resolved (N2).</strong> The
-      claims that verified cleanly are out of scope here; the open deviation
-      concentrates in exactly the area the source beads already flagged as a gap
-      (cherry-pit-merger wiring).
+      findings. <strong>Result: no open DRIFT rows remain — N2 and
+      cherry-pit-merger both resolved (N2 on 2026-07-21, cherry-pit-merger on
+      2026-07-22).</strong> The
+      claims that verified cleanly are out of scope here; both resolved rows are
+      retained for the audit trail rather than deleted.
       <strong>N2 (hash-chain tamper-evidence) closed this pass</strong>: the
       backend-parity DRIFT — precursor-hash verification on the <code>.pgno</code>
       arm but not the production NATS arm — was remediated end-to-end by roadmap
