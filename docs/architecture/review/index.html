@@ -26,48 +26,29 @@
     A pattern-by-pattern audit of how well the cherry-pit crate family
     (<code>cherry-pit-core</code>, <code>-app</code>, <code>-gateway</code>,
     <code>-merger</code>, <code>-projection</code>, <code>-storage</code>,
-    <code>-wq</code>) realises the tactical and strategic patterns of
-    Domain-Driven Design. Every verdict is decided by <strong>source
-    evidence</strong> (type/trait names + <code>file:line</code>), cross-read
-    against the binding ADRs (<cite>CHE-0004</cite> EDA+DDD+hexagonal,
-    <cite>CHE-0005</cite> single-aggregate). Compiled 2026-07-23.
+    <code>-wq</code>) realises DDD's tactical and strategic patterns. Every
+    verdict is decided by <strong>source evidence</strong> (type/trait names +
+    <code>file:line</code>), cross-read against the binding ADRs
+    (<cite>CHE-0004</cite> EDA+DDD+hexagonal, <cite>CHE-0005</cite>
+    single-aggregate). Compiled 2026-07-23.
     <br>
-    <strong>Depth pass (2026-07-23):</strong> the "well represented" verdicts below
-    are decided on the trait/type <em>surface</em>. A second, adversarial
-    <em>implementation-body</em> review (Rust-specialist, full file:line evidence in
-    bd bead <code>adr-fmt-t8k35</code>) then asked whether the <em>deep</em>
-    semantics of each surface-solid pattern actually hold in code — no
-    happy-path-only shells, no dropped invariants, no bypass paths. Findings are in
-    the new <a href="#depth">Depth review</a> section; two
-    <span class="verdict verdict--drift">Partial</span> downgrades and several
-    tracked gaps result. Surface verdicts are retained (the <em>abstraction</em> is
-    genuinely first-class) but annotated where the <em>realisation</em> is thinner
-    than the name implies.
-    <br>
-    <strong>Language pass (2026-07-23):</strong> for the three depth-Solid patterns,
-    a <a href="#language">ubiquitous-language consistency</a> check compares the
-    code doc-comments against the governing ADRs term-by-term. Result: strongly
-    consistent coined vocabulary, four minor drifts (L1–L4), no contradictions.
-    L1–L4 were then individually re-verified against source; the L4 finding was
-    <strong>corrected</strong> (it is a phantom-adapter-roster drift, not the
-    "pardosa removed" claim of the first draft — pardosa is alive and is
-    gh-report's production backend). <strong>Remediation (2026-07-23):</strong> L1,
-    L2, L3, and L4 have since all been <strong>fixed in source</strong> (CHE-0042:R3
-    accessor list completed, CHE-0042 <code>envelope.rs</code>→<code>event.rs</code>
-    path corrected, CHE-0041:R5 citation added to <code>idempotency.rs</code>); the
-    <a href="#l4-rootcause">L4 root cause</a> was traced to a delete-then-reintroduce
-    name collision; its store.rs:18 phantom-roster comment has been fixed
-    (commit <code>9ef607f</code>, <cite>CHE-0004</cite>). The lower-blast-radius
-    <code>Cargo.toml</code>/test-doc copies of the same stale wording, left
-    unfixed as of that pass, have since also been fixed (commit
-    <code>bd594d7</code>; see <a href="#l4-rootcause">L4 root cause</a>
-    residual table).
+    Three passes ran in sequence and are folded into one matrix below: a
+    <strong>surface</strong> pass (does the named abstraction exist, is it
+    type-enforced), an adversarial <strong>depth</strong> pass on the
+    surface-<span class="verdict verdict--match">Well</span> patterns (full
+    file:line evidence in bd bead <code>adr-fmt-t8k35</code>, extended by a D2
+    coverage pass in bd bead <code>adr-fmt-vie4a</code>) checking the <a href="#depth">Depth</a>
+    column, and a doc-comment-vs-ADR <a href="#language">Language</a>
+    consistency pass on the depth-Solid/Governed/Mixed patterns. Four minor
+    language drifts (L1–L4) and five depth gaps (G1–G5) were found; all have
+    since been fixed, governed-ratified, or remain tracked open — see the
+    <a href="#spine">pattern verdict matrix</a>'s Status column.
     <br>
     <strong>Framing:</strong> cherry-pit is a <em>subtractive</em> substrate —
     illegal compositions must fail to type-check (AGENTS.md, the Solon stance).
-    Several DDD patterns are therefore <em>deliberately absent</em>, not missing;
-    the report distinguishes "lacking by omission" from "lacking by ratified
-    deferral" wherever an ADR records the choice.
+    Several DDD patterns are therefore <em>deliberately absent</em>, not
+    missing; the matrix distinguishes "lacking by omission" from "lacking by
+    ratified deferral" wherever an ADR records the choice.
   </p>
 
   <h2 id="legend">Verdict legend</h2>
@@ -85,42 +66,35 @@
     this dimension was not examined for this pattern in the passes run so far.
   </p>
 
-  <h2 id="consolidated">Consolidated verdict matrix</h2>
+  <h2 id="spine">Pattern verdict matrix</h2>
   <p>
-    One row per DDD pattern, three review dimensions. <strong>Surface</strong> = does
-    the named abstraction exist and is it type-enforced (tactical/strategic pass).
-    <strong>Depth</strong> = do the deep semantics hold at the implementation body
-    (adversarial pass — run only on the eight surface-<span class="verdict verdict--match">Well</span>
-    patterns). <strong>Language</strong> = is the ubiquitous language consistent
-    between doc-comments and ADRs (run only on the three depth-<span class="verdict verdict--match">Solid</span>
-    patterns). Where a dimension was not examined for a pattern the cell is
-    <span class="verdict verdict--unknown">Unknown</span>; the <em>Status</em> column
-    records the residual state (open gaps, fixes shipped, or ratified non-goals).
-    <br>
-    <strong>Coverage extension (2026-07-23, D2 — bd bead
-    <code>adr-fmt-vie4a</code>):</strong> a follow-up audit filled the
-    previously-<span class="verdict verdict--unknown">Unknown</span> Depth
-    cells for Bounded Context, Ubiquitous Language, and Invariant enforcement
-    (all scored <span class="verdict verdict--match">Solid</span>), and
-    extended the Language pass to Aggregate, Command, Policy, Projection, and
-    Single-writer. One genuine drift surfaced in that pass — a doc-comment at
-    <code>merger.rs:78</code> mis-citing CHE-0005 instead of CHE-0006 for the
-    single-writer convention — and has since been <strong>fixed</strong>
-    (commit <code>bd594d7</code>), alongside three same-class mis-cites at
-    <code>app.rs:331</code>, <code>app.rs:371</code> (CHE-0046:R2→R7) and the
-    L4 residual at <code>Cargo.toml:32</code> /
-    <code>tests/adt_obligations.rs:17</code> (see below). The Surface
-    verdicts for the ratified-absent patterns (Entity/Factory/Domain
-    Service/Specification, CHE-0020:R5) and the governed merger dispatch
-    (CHE-0085:R8) were re-confirmed unchanged.
+    How to read: one row per DDD pattern, three review dimensions plus a
+    Status column carrying the full anomaly/drift/open-item detail.
+    <strong>Surface</strong> = does the named abstraction exist and is it
+    type-enforced (tactical/strategic pass, full evidence formerly tabulated
+    separately — surface verdicts are unchanged, only the row detail moved
+    here). <strong>Depth</strong> = do the deep semantics hold at the
+    implementation body (adversarial pass, run only on the eight
+    surface-<span class="verdict verdict--match">Well</span> patterns):
+    <span class="verdict verdict--match">Solid</span> deep semantics hold,
+    <span class="verdict verdict--drift">Governed</span>/<span class="verdict verdict--drift">Mixed</span>
+    trait-level solid but a ratified specialization or a real realisation gap
+    exists. <strong>Language</strong> = is the doc-comment vocabulary
+    consistent with the governing ADRs (run only on the depth-scored
+    patterns). Where a dimension was never in scope the cell is
+    <span class="verdict verdict--unknown">Unknown</span> — 21 cells stay
+    Unknown by honest not-run scoping, not silently upgraded. Green,
+    never-anomalous rows collapse their Status to a dash or one word; every
+    row that carries a gap id, drift, open item, watch-item, or ADR/commit
+    cite keeps the full detail below, unabridged.
   </p>
   <table>
     <thead>
       <tr>
         <th>Pattern</th>
         <th>Surface</th>
-        <th>Depth</th>
-        <th>Language</th>
+        <th id="depth">Depth</th>
+        <th id="language">Language</th>
         <th>Status</th>
       </tr>
     </thead>
@@ -130,21 +104,21 @@
         <td><span class="verdict verdict--match">Well</span></td>
         <td><span class="verdict verdict--match">Solid</span></td>
         <td><span class="verdict verdict--match">Consistent</span></td>
-        <td>L1 + L2 (ADR staleness) <strong>fixed</strong>. Minor: no explicit duplicate-<code>event_id</code> check in <code>validate_stream</code> (open, unreachable via normal construction).</td>
+        <td>L1 (CHE-0042:R3 accessor list completed to all 7) + L2 (CHE-0042 path <code>envelope.rs</code>→<code>event.rs</code> corrected) <strong>fixed</strong>. Minor: no explicit duplicate-<code>event_id</code> check in <code>validate_stream</code> (open, unreachable via normal construction). Fields private, single validated ctor, no bypass constructor; <code>correlation_id</code>/<code>causation_id</code> genuinely stamped, never dropped.</td>
       </tr>
       <tr>
         <td><strong>Value Objects</strong></td>
         <td><span class="verdict verdict--match">Well</span></td>
         <td><span class="verdict verdict--match">Solid</span></td>
         <td><span class="verdict verdict--match">Consistent</span></td>
-        <td>L3 (missing CHE-0041:R5 citation) <strong>fixed</strong>. No open gaps.</td>
+        <td>L3 (missing CHE-0041:R5 citation) <strong>fixed</strong>. No open gaps — no bypass constructor, all immutable, no setters.</td>
       </tr>
       <tr>
         <td><strong>Repository</strong> (EventStore)</td>
         <td><span class="verdict verdict--match">Well</span></td>
         <td><span class="verdict verdict--match">Solid</span></td>
         <td><span class="verdict verdict--match">Fixed (L4)</span></td>
-        <td>L4 phantom adapter roster (<code>store.rs:18</code>) <strong>fixed</strong> (<code>9ef607f</code>, <cite>CHE-0004</cite>); root cause (pardosa name collision) traced, misleading comments corrected. Depth gap <strong>G4</strong> (no "stream exists" rejection in <code>create</code>) <strong>fixed</strong> (<code>bc1ecc3</code>, <cite>CHE-0019</cite>/<cite>CHE-0032</cite>).</td>
+        <td>L4 phantom adapter roster (<code>store.rs:18</code>) <strong>fixed</strong> (<code>9ef607f</code>, <cite>CHE-0004</cite>); root cause (pardosa name collision) traced, misleading comments corrected — see the lesson below. Depth gap <strong>G4</strong> (no "stream exists" rejection in <code>create</code>) <strong>fixed</strong> (<code>bc1ecc3</code>, <cite>CHE-0019</cite>/<cite>CHE-0032</cite>). TOCTOU on <code>append</code> closed by a per-aggregate mutex (5-writer race test: 1 success + 4 conflicts).</td>
       </tr>
       <tr>
         <td><strong>Aggregate</strong> (consistency boundary)</td>
@@ -165,7 +139,7 @@
         <td><span class="verdict verdict--match">Well</span></td>
         <td><span class="verdict verdict--match">Solid</span></td>
         <td><span class="verdict verdict--match">Consistent</span></td>
-        <td>Depth gap <strong>G2 (High)</strong> <strong>fixed</strong> — <cite>CHE-0046:R7</cite> now scopes Retryable retry away from the terminal dead-letter sink, and the doc claim in <code>App::run</code> was corrected to match shipped behaviour (<code>a8b63d8</code>). Language (D2, <code>adr-fmt-vie4a</code>): <code>policy.rs:3-16</code> doc (CHE-0017:R1 static Output, CHE-0041:R2 idempotent react) verified structurally true, no drift.</td>
+        <td>Depth gap <strong>G2 (High)</strong> <strong>fixed</strong> — <cite>CHE-0046:R7</cite> now scopes Retryable retry away from the terminal dead-letter sink, and the doc claim in <code>App::run</code> was corrected to match shipped behaviour (<code>a8b63d8</code>); residual stale cites at <code>app.rs:331,371</code> (CHE-0046:R2→R7) also <strong>fixed</strong> (<code>bd594d7</code>). Language (D2, <code>adr-fmt-vie4a</code>): <code>policy.rs:3-16</code> doc (CHE-0017:R1 static Output, CHE-0041:R2 idempotent react) verified structurally true, no drift.</td>
       </tr>
       <tr>
         <td><strong>Projection / CQRS</strong></td>
@@ -179,28 +153,28 @@
         <td><span class="verdict verdict--match">Well</span></td>
         <td><span class="verdict verdict--drift">Mixed</span></td>
         <td><span class="verdict verdict--match">Fixed (D2/D3)</span></td>
-        <td>Depth gap <strong>G5 (Medium)</strong> <strong>partially addressed</strong> — a convention doc plus two regression tests landed (<code>5e51285</code>, <cite>CHE-0006</cite>), but the own-store-token seal is <strong>deferred</strong>: a second <code>Arc&lt;S&gt;</code> store clone still bypasses the queue today. Not sealed; still open — tracked under epic <code>adr-fmt-1freh</code> (mission:ddd-adherence). Language (D2, <code>adr-fmt-vie4a</code>): <strong>genuine drift found</strong> — <code>merger.rs:78</code> doc-comment header cited "CHE-0005" (single-aggregate-design) instead of the actual governing ADR CHE-0006 (single-writer/one-process-per-aggregate). <strong>Fixed</strong> in commit <code>bd594d7</code>.</td>
+        <td>Depth gap <strong>G5 (Medium)</strong> <strong>partially addressed</strong> — a convention doc plus two regression tests landed (<code>5e51285</code>, <cite>CHE-0006</cite>), but the own-store-token seal is <strong>deferred</strong>: a second <code>Arc&lt;S&gt;</code> store clone still bypasses the queue today. Not sealed; still open — tracked under epic <code>adr-fmt-1freh</code> (mission:ddd-adherence); see the still-open list below. Language (D2, <code>adr-fmt-vie4a</code>): <strong>genuine drift found</strong> — <code>merger.rs:78</code> doc-comment header cited "CHE-0005" (single-aggregate-design) instead of the actual governing ADR CHE-0006 (single-writer/one-process-per-aggregate). <strong>Fixed</strong> in commit <code>bd594d7</code>.</td>
       </tr>
       <tr>
         <td><strong>Bounded Context</strong></td>
         <td><span class="verdict verdict--match">Well</span></td>
         <td><span class="verdict verdict--match">Solid</span></td>
         <td><span class="verdict verdict--unknown">Unknown</span></td>
-        <td>Depth (D2, <code>adr-fmt-vie4a</code>) <strong>Solid</strong> — <code>cherry-pit-core/src/lib.rs:14-16,26-30</code> doc, enforced by generic per-aggregate port binding (<cite>CHE-0005:R1</cite>); the only shared identity crossing contexts is the opaque <code>AggregateId</code> VO (<code>msgpack_file.rs:9-10,124,233,249,348,361,388,467-492</code>, <code>arm.rs:26</code>), never concrete state. <code>cargo tree -p cherry-pit-merger</code> / <code>-p cherry-pit-app</code> (exit 0) confirm no merger↔app edge (<cite>CHE-0085:R3</cite>) at the dependency-graph level — a compiler-enforced boundary, not convention. Language not run (own-pattern n/a).</td>
+        <td>Depth (D2, <code>adr-fmt-vie4a</code>) <strong>Solid</strong> — enforced by generic per-aggregate port binding (<cite>CHE-0005:R1</cite>); the only shared identity crossing contexts is the opaque <code>AggregateId</code> VO, never concrete state. <code>cargo tree -p cherry-pit-merger</code> / <code>-p cherry-pit-app</code> (exit 0) confirm no merger↔app edge (<cite>CHE-0085:R3</cite>) — a compiler-enforced boundary. Language not run (own-pattern n/a).</td>
       </tr>
       <tr>
         <td><strong>Ubiquitous Language</strong> (as a pattern)</td>
         <td><span class="verdict verdict--match">Well</span></td>
         <td><span class="verdict verdict--match">Solid</span></td>
         <td><span class="verdict verdict--unknown">Unknown</span></td>
-        <td>Depth (D2, <code>adr-fmt-vie4a</code>) <strong>Solid</strong> — verb consistency confirmed at call-sites, not just trait defs: <code>apply</code> (<code>aggregate.rs:65</code>, <code>projection.rs:49</code>), <code>handle</code> (<code>aggregate.rs:133</code>, <code>arm.rs:109</code>), <code>react</code> (<code>policy.rs:54</code>), <code>publish</code>/publish-step (<code>arm.rs:111-115</code>, merger dispatch) — same verbs, same meaning, no bleed across crates. Type names (<code>Aggregate</code>, <code>HandleCommand</code>, <code>Policy</code>, <code>Projection</code>, <code>EventStore</code>) keep their exact lexicon meaning at every checked call site. (The <em>language-consistency</em> pass elsewhere audits three patterns' vocabulary; this row scores the pattern's own depth.)</td>
+        <td>Depth (D2, <code>adr-fmt-vie4a</code>) <strong>Solid</strong> — verb consistency confirmed at call-sites, not just trait defs (<code>apply</code>/<code>handle</code>/<code>react</code>/<code>publish</code> keep exact meaning across crates, no bleed). (The <em>language-consistency</em> pass elsewhere audits three patterns' vocabulary; this row scores the pattern's own depth.)</td>
       </tr>
       <tr>
         <td><strong>Invariant enforcement</strong></td>
         <td><span class="verdict verdict--match">Well</span></td>
         <td><span class="verdict verdict--match">Solid</span></td>
         <td><span class="verdict verdict--unknown">Unknown</span></td>
-        <td>Depth (D2, <code>adr-fmt-vie4a</code>) <strong>Solid</strong> — single write-side gate confirmed: <code>HandleCommand::handle -&gt; Result&lt;Vec&lt;Event&gt;, Error&gt;</code> (<code>aggregate.rs:119-133</code>) is the only path that can reject a command; <code>apply</code> (<code>aggregate.rs:65</code>) is infallible by signature, closing off any post-hoc invariant check. Reinforced structurally by <code>NonZeroU64</code> sequence/id types, validated <code>EventEnvelope::new</code> (<code>event.rs:145</code>), and <code>pub(crate)</code>-sealed <code>IdempotencyKey::new_unchecked</code> (<code>idempotency.rs:47</code>) — construction-time enforcement, not convention.</td>
+        <td>Depth (D2, <code>adr-fmt-vie4a</code>) <strong>Solid</strong> — single write-side gate confirmed: <code>HandleCommand::handle</code> (<code>aggregate.rs:119-133</code>) is the only path that can reject a command; <code>apply</code> is infallible by signature. Construction-time enforcement (<code>NonZeroU64</code>, validated <code>EventEnvelope::new</code>, sealed <code>IdempotencyKey::new_unchecked</code>), not convention.</td>
       </tr>
       <tr>
         <td><strong>Entity</strong> (identity equality)</td>
@@ -228,7 +202,7 @@
         <td><span class="verdict verdict--drift">Partial</span></td>
         <td><span class="verdict verdict--unknown">Unknown</span></td>
         <td><span class="verdict verdict--unknown">Unknown</span></td>
-        <td>Present as hexagonal port/adapter seams; no named context map. Depth/language not run.</td>
+        <td>Present as hexagonal port/adapter seams — adapter crate <code>cherry-pit-gateway</code> adapts substrate to core ports; <code>ReadPort</code>/<code>ProjectionSource</code> adapt the read side. The port/adapter seam <em>is</em> the ACL in hexagonal form (<cite>CHE-0004:R2</cite>); no named context-map document, no dedicated translation type between two contexts — consistent with the substrate today hosting effectively one production consumer (<code>gh-report</code>). Depth/language not run.</td>
       </tr>
       <tr>
         <td><strong>Process Manager</strong> (stateful)</td>
@@ -253,689 +227,38 @@
       </tr>
     </tbody>
   </table>
-  <p class="subtitle">
-    Reading the matrix: the three originally fully-audited patterns (Domain
-    Event/Envelope, Value Objects, Repository) plus, after the D2 coverage
-    extension (<code>adr-fmt-vie4a</code>), Bounded Context, Ubiquitous
-    Language, and Invariant enforcement now carry a scored Depth verdict, and
-    Aggregate, Command, Policy, Projection, and Single-writer now carry a
-    scored Language verdict. The remaining <span class="verdict verdict--unknown">Unknown</span>
-    cells are the eight ratified-absent / partial strategic-only rows below
-    Single-writer, whose Depth/Language dimensions were never in scope
-    (surface ≠ <span class="verdict verdict--match">Well</span>, or the
-    pattern is its own language row with no separate language dimension).
-    The detailed per-dimension evidence follows in the sections below.
-  </p>
 
-  <h2 id="depth">Depth review — do the deep semantics hold?</h2>
-  <p>
-    Every pattern in the tactical/strategic tables that scored
-    <span class="verdict verdict--match">Well represented</span> was re-examined at
-    the <em>implementation body</em>, adversarially: looking for the panic, the
-    non-determinism, the dropped field, the missing check, the bypass path. The
-    question is not "does the abstraction exist" (it does) but "is the DDD
-    <em>invariant</em> the abstraction promises actually enforced, or only the
-    happy-path shell." Depth verdicts:
-    <span class="verdict verdict--match">Solid</span> deep semantics hold;
-    <span class="verdict verdict--drift">Mixed</span> trait-level solid but a real
-    realisation gap exists;
-    <span class="verdict verdict--aspirational">Shallow</span> happy-path only.
-    Full file:line evidence in bd bead <code>adr-fmt-t8k35</code>. The three
-    strategic/tactical rows below Single-writer (Bounded Context, Ubiquitous
-    Language, Invariant enforcement) were added in a D2 coverage extension —
-    full evidence in bd bead <code>adr-fmt-vie4a</code>.
-  </p>
-  <table>
-    <thead>
-      <tr><th>Pattern</th><th>Surface</th><th>Depth</th><th>What the implementation actually does — and the gap</th></tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td><strong>Domain Event / Envelope</strong></td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td><span class="verdict verdict--match">Solid</span></td>
-        <td>Fields private, single validated ctor, no <code>&amp;mut</code> accessors — genuinely immutable post-construction (<code>event.rs:76-312</code>). <code>validate_stream</code> (<code>event.rs:197-224</code>) really catches gaps, out-of-order, and cross-stream mixing; sequence starts at 1 by type (<code>NonZeroU64</code>) + <code>build_envelopes</code> (<code>gateway/…/msgpack_file.rs:248-286</code>). <code>correlation_id</code>/<code>causation_id</code> are genuinely stamped onto every envelope, not accepted-and-dropped (round-trip tests confirm). <em>Minor:</em> <code>validate_stream</code> has no explicit duplicate-<code>event_id</code> check (unreachable via normal construction, but not asserted).</td>
-      </tr>
-      <tr>
-        <td><strong>Value Objects</strong></td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td><span class="verdict verdict--match">Solid</span></td>
-        <td>No bypass constructor found. <code>IdempotencyKey::new_unchecked</code> is genuinely <code>pub(crate)</code>-sealed (<code>idempotency.rs:47</code>); the only public path trims + rejects empty/whitespace (never synthesizes — <cite>CHE-0046:R3</cite> structurally enforced, not just documented). <code>CorrelationContext</code> deliberately has no <code>Default</code> (<cite>CHE-0039:R2</cite>). All immutable, no setters.</td>
-      </tr>
-      <tr>
-        <td><strong>Repository</strong> (EventStore)</td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td><span class="verdict verdict--match">Solid</span></td>
-        <td>Deep semantics verified in <code>MsgpackFileStore</code>: <code>load</code> returns <code>Ok(empty)</code> not error for missing aggregates (<cite>CHE-0019</cite>, <code>msgpack_file.rs:348</code>). <code>append</code>'s <code>expected_sequence</code> TOCTOU window is <em>closed</em> by a per-aggregate mutex held across the read-check-write section — a 5-writer race test yields exactly 1 success + 4 conflicts (<code>msgpack_file.rs:397-441,1034</code>). <code>create</code> assigns ids race-free via <code>AtomicU64::fetch_update</code>. <em>Tracked gap G4:</em> <code>create</code> has no explicit "stream already exists" rejection — safety rests solely on the counter's uniqueness, no defense-in-depth at the atomic-rename step.</td>
-      </tr>
-      <tr>
-        <td><strong>Aggregate</strong> (consistency boundary)</td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td><span class="verdict verdict--drift">Governed</span></td>
-        <td>Trait-level solid: <code>apply</code> infallible by signature; <code>handle(&amp;self)</code> is compiler-enforced non-mutating, so invariants are necessarily checked <em>before</em> emit — no "emit-then-hope" path exists (<code>aggregate.rs:65,133</code>). The one concrete replay (<code>SchedulerState::from_history</code>, <code>scheduler.rs:226</code>) is a deterministic <code>BTreeMap</code>/<code>BTreeSet</code> fold, no panic, no time-of-replay. <em>Gap G1 (High), now governed:</em> the production write path — <code>cherry-pit-merger</code> — defines a <em>parallel</em> <code>MergerArm::handle</code> (<code>merger/src/arm.rs:109</code>) that never bounds <code>A: HandleCommand</code> nor calls through <code>Aggregate::handle</code>. <cite>CHE-0085:R8</cite> (<code>1e79a4d</code>) now ratifies this as a deliberate governed specialization rather than an unexamined bypass — a doc-plane classification: <code>arm.rs:78</code> itself is unchanged and remains structurally unbounded. Watch-item <code>adr-fmt-nyzzy</code> tracks re-audit of the first production <code>MergerArm</code> impl against this ratification.</td>
-      </tr>
-      <tr>
-        <td><strong>Command</strong> (+ handle/apply split)</td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td><span class="verdict verdict--drift">Governed</span></td>
-        <td>Within <code>cherry-pit-core</code> the split is real and per-command <code>Error</code> is a genuine associated type (<cite>CHE-0015</cite>, <code>aggregate.rs:119</code>). <em>Two realisation facts, now governed:</em> (a) <code>EventStore</code> takes raw <code>Vec&lt;Event&gt;</code> with no provenance — appending events <code>handle</code> would never emit is unprevented (inherent to event sourcing; enforcement is discipline via gateway/merger, not types); (b) <code>MergerArm::Err</code> is one error type <em>per arm</em> (typically per-aggregate), diluting <cite>CHE-0015</cite>'s per-command granularity at the merger boundary (<code>arm.rs:90</code>). Same structural shape as G1, covered by the same <cite>CHE-0085:R8</cite> (<code>1e79a4d</code>) governed-specialization ratification — a doc-plane classification, code unchanged.</td>
-      </tr>
-      <tr>
-        <td><strong>Policy</strong> (choreography)</td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td><span class="verdict verdict--match">Solid</span></td>
-        <td>Terminal-vs-Retryable classification and dead-lettering are correctly implemented and tested: Terminal → <code>DeadLetterRecord</code> to sink (sink failure logged, not swallowed), Retryable returned to caller (<code>app/src/dispatch.rs:167-204</code>). Purity of <code>react</code> is convention-only (<code>&amp;self</code> + no async, but nothing type-forbids I/O — inherent Rust limitation). <em>Gap G2 (High), fixed:</em> <cite>CHE-0046:R7</cite> (<code>a8b63d8</code>) scopes Retryable-error retry away from the terminal dead-letter sink and corrects the prior doc claim that <code>run_dispatch_consumer</code> re-queued via CommandGateway. The residual stale cites at <code>app/src/app.rs:331,371</code> (CHE-0046:R2→R7) are now <strong>fixed</strong> (<code>bd594d7</code>).</td>
-      </tr>
-      <tr>
-        <td><strong>Projection / CQRS</strong></td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td><span class="verdict verdict--match">Solid</span></td>
-        <td>Read side is structurally write-free: <code>ReadPort::resolve</code> takes the projection by <code>&amp;</code> only, no append path expressible (<code>projection.rs:75</code>); <code>Projection::apply</code> infallible like aggregate apply. <em>Gap G3 (Medium), fixed:</em> the anti-downgrade invariant, re-scoped from the withdrawn <cite>CHE-0092</cite> into new <cite>CHE-0097</cite>, is now implemented: <code>FileProjectionStore::persist_inner</code> (<code>cherry-pit-projection/src/lib.rs:458-488</code>) compares against the on-disk checkpoint before writing (<code>b465a7d</code>) and a regression test (<code>persist_rejects_checkpoint_sequence_regression</code>, <code>3de340a</code>) asserts a lower-sequence <code>persist</code> is rejected rather than silently downgrading the checkpoint.</td>
-      </tr>
-      <tr>
-        <td><strong>Single-writer / aggregate boundary</strong></td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td><span class="verdict verdict--drift">Mixed</span></td>
-        <td>The merger genuinely serialises everything through <em>its own</em> mpsc + single-task loop — <code>Merger::run</code> fully <code>.await</code>s each load→handle→persist→publish before dequeuing the next (<code>merger.rs:108</code>); TOCTOU closed. <em>Gap G5 (Medium), partially addressed:</em> a composition-root convention doc plus two regression tests landed (<code>single_writer_through_merger_handle_is_the_only_write_path</code>, <code>validate_stream_rejects_duplicate_event_id</code>, <code>5e51285</code>, <cite>CHE-0006</cite> — the doc-comment's ADR cite was corrected from CHE-0005 to CHE-0006 in <code>bd594d7</code>, per the D2 language-drift finding). <strong>The own-store-token seal itself remains deferred</strong> — <code>Merger::spawn</code> still takes <code>Arc&lt;S&gt;</code>; nothing consumes or seals the caller's clone, so a composition root can retain a second <code>Arc</code> and call <code>store.append()</code> directly, bypassing the queue. This is documented and tested-against-regression, but structurally still open, not sealed — tracked under epic <code>adr-fmt-1freh</code> (mission:ddd-adherence). <code>SingleWriterEventStore</code> is a zero-method marker (advisory, exactly as documented); <code>MsgpackFileStore</code> instead relies on a real per-aggregate lock + directory flock (stronger, but single-process only).</td>
-      </tr>
-      <tr>
-        <td><strong>Bounded Context</strong></td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td><span class="verdict verdict--match">Solid</span></td>
-        <td>Every infra port is generic over one <code>Aggregate</code>/<code>Event</code> type (<cite>CHE-0005:R1</cite>, <code>cherry-pit-core/src/lib.rs:26-30</code> doc). <code>AggregateId</code> (<code>aggregate_id.rs</code>) is the one shared identity VO used verbatim and unchanged across <code>cherry-pit-gateway</code> (<code>msgpack_file.rs:9-10,124,233,249,348,361,388,467-492</code>) and <code>cherry-pit-merger</code> (<code>arm.rs:26</code>) — intentional identity-sharing at the infra layer, not leaky cross-context identity: no aggregate ever reaches into another aggregate's concrete state type, only the opaque id crosses. <code>cargo tree -p cherry-pit-merger -e normal</code> / <code>-p cherry-pit-app -e normal</code> (exit 0) confirm no merger↔app edge, holding <cite>CHE-0085:R3</cite> at the dependency-graph level. Verdict: the seam is compiler-enforced (generic binding forces separate monomorphized ports per aggregate type) — a compile-time bounded-context boundary, not a convention.</td>
-      </tr>
-      <tr>
-        <td><strong>Ubiquitous Language</strong> (as a pattern)</td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td><span class="verdict verdict--match">Solid</span></td>
-        <td>Verb consistency confirmed at call-sites, not just trait defs: <code>apply</code> (<code>aggregate.rs:65</code>, <code>projection.rs:49</code>), <code>handle</code> (<code>aggregate.rs:133</code>, <code>arm.rs:109</code>), <code>react</code> (<code>policy.rs:54</code>), <code>publish_label</code>/publish step (<code>arm.rs:111-115</code>, merger dispatch). Same verbs recur across <code>cherry-pit-core</code>, <code>-merger</code>, <code>-app</code> with the same meaning — no bleed (e.g. <code>handle</code> never means "publish" anywhere checked). Type names load-bearing and undiluted: <code>Aggregate</code>, <code>HandleCommand</code>, <code>Policy</code>, <code>Projection</code>, <code>EventStore</code> all keep their exact DDD-lexicon meaning at every use site checked.</td>
-      </tr>
-      <tr>
-        <td><strong>Invariant enforcement</strong></td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td><span class="verdict verdict--match">Solid</span></td>
-        <td>Single write-side gate confirmed: <code>HandleCommand::handle -&gt; Result&lt;Vec&lt;Event&gt;, Error&gt;</code> (<code>aggregate.rs:119-133</code>) is the only path that can reject a command; <code>apply</code> (<code>aggregate.rs:65</code>) is infallible by signature, closing off any post-hoc invariant check — consistent with, not new observation beyond, the evidence already scored in the Aggregate/Repository/Value-Object depth rows above. Structural reinforcement: <code>NonZeroU64</code> sequence/id types, validated <code>EventEnvelope::new</code> ctor (<code>event.rs:145</code>), <code>pub(crate)</code>-sealed <code>IdempotencyKey::new_unchecked</code> (<code>idempotency.rs:47</code>) — construction-time enforcement, not convention.</td>
-      </tr>
-    </tbody>
-  </table>
-
-  <h3 id="depth-gaps">Tracked gaps from the depth pass</h3>
-  <table>
-    <thead>
-      <tr><th>Id</th><th>Severity</th><th>Gap</th><th>Location</th><th>Status</th></tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td><strong>G1</strong></td>
-        <td><span class="verdict verdict--aspirational">High</span></td>
-        <td><code>cherry-pit-merger</code>'s <code>MergerArm::handle</code> is a parallel command-handling contract that bypasses the compile-time-verified <code>HandleCommand</code> dispatch <cite>CHE-0008</cite> promises — in the production write path.</td>
-        <td><code>merger/src/arm.rs:109</code></td>
-        <td><span class="verdict verdict--drift">Governed</span> — ratified as a deliberate specialization (<cite>CHE-0085:R8</cite>, <code>1e79a4d</code>); doc-plane only, <code>arm.rs:78</code> code unchanged.</td>
-      </tr>
-      <tr>
-        <td><strong>G2</strong></td>
-        <td><span class="verdict verdict--aspirational">High</span></td>
-        <td>Doc claims Retryable policy-dispatch errors are retried via CommandGateway (<cite>CHE-0046:R1</cite>); no retry mechanism exists — the envelope is logged and dropped.</td>
-        <td><code>app/src/app.rs:333-354</code></td>
-        <td><span class="verdict verdict--match">Fixed</span> — <cite>CHE-0046:R7</cite> (<code>a8b63d8</code>) scopes retry away from the terminal sink and corrects the doc; residual stale cites at <code>app.rs:331,371</code> now also <strong>fixed</strong> (<code>bd594d7</code>).</td>
-      </tr>
-      <tr>
-        <td><strong>G3</strong></td>
-        <td><span class="verdict verdict--drift">Medium</span></td>
-        <td>Checkpoint anti-downgrade invariant <cite>CHE-0092</cite> is documented but not implemented; checkpoints are written unconditionally, so a lower sequence silently downgrades.</td>
-        <td><code>cherry-pit-projection/src/lib.rs:458-488</code></td>
-        <td><span class="verdict verdict--match">Fixed</span> — <cite>CHE-0092</cite> re-scoped to new <cite>CHE-0097</cite>; <code>persist_inner</code> guard + rejection test (<code>b465a7d</code>, <code>3de340a</code>).</td>
-      </tr>
-      <tr>
-        <td><strong>G4</strong></td>
-        <td><span class="verdict verdict--drift">Medium</span></td>
-        <td><code>EventStore::create</code> has no explicit "stream already exists" rejection; a counter-invariant violation would silently overwrite a whole stream — no defense-in-depth at the persistence layer.</td>
-        <td><code>gateway/…/msgpack_file.rs:357-395</code></td>
-        <td><span class="verdict verdict--match">Fixed</span> — explicit rejection guard + <code>create_rejects_when_stream_file_already_exists</code> test (<code>bc1ecc3</code>, <cite>CHE-0019</cite>/<cite>CHE-0032</cite>).</td>
-      </tr>
-      <tr>
-        <td><strong>G5</strong></td>
-        <td><span class="verdict verdict--drift">Medium</span></td>
-        <td>Single-writer serialisation is bypassable by retaining a second <code>Arc&lt;S&gt;</code> store clone; the guarantee is composition-root convention, not a structural (type/ownership) seal.</td>
-        <td><code>merger/src/merger.rs:78-96</code></td>
-        <td><span class="verdict verdict--drift">Partially addressed</span> — convention doc + 2 regression tests (<code>5e51285</code>, <cite>CHE-0006</cite> — cite corrected from CHE-0005 in <code>bd594d7</code>); own-store-token seal itself <strong>deferred</strong>, still open/bypassable — tracked under epic <code>adr-fmt-1freh</code> (mission:ddd-adherence).</td>
-      </tr>
-    </tbody>
-  </table>
-  <p class="subtitle">
-    None of G1–G5 was a correctness bug on the happy path; each was a
-    <em>defense-in-depth or contract-fidelity</em> gap where the DDD invariant the
-    surface abstraction advertises was weaker in realisation than the name implies.
-    G2 and G3 (documentation/implementation mismatches) are now fixed in source and
-    docs (<code>a8b63d8</code>; <code>b465a7d</code>, <code>3de340a</code>). G4 is
-    fixed in source (<code>bc1ecc3</code>). G1 is reclassified as a ratified governed
-    specialization (<cite>CHE-0085:R8</cite>, doc-plane only, code unchanged). G5 is
-    partially addressed — convention doc and tests landed, but the structural seal
-    remains deferred and the bypass is still possible today.
-  </p>
-
-  <h2 id="language">Ubiquitous-language consistency</h2>
-  <p>
-    A pattern is only truly "well represented" in DDD terms if the
-    <em>ubiquitous language</em> is stable across its expressions — the code
-    doc-comments and the governing ADRs must say the same thing in the same words.
-    For the three patterns that scored <span class="verdict verdict--match">Solid</span>
-    on depth (Domain Event/Envelope, Value Objects, Repository) this section
-    compares the two prose surfaces directly. Overall the language is
-    <strong>strongly consistent</strong> — the same coined terms recur verbatim on
-    both sides — with a small set of <em>staleness</em> drifts (never contradictions,
-    always the ADR lagging a shipped change).
-    <br>
-    <strong>Coverage extension (2026-07-23, D2 — bd bead
-    <code>adr-fmt-vie4a</code>):</strong> the pass was extended to the five
-    remaining depth-scored patterns — Aggregate, Command, Policy, Projection,
-    Single-writer (Governed/Mixed depth, not just Solid) — since a language
-    check does not require depth-Solid to be meaningful. Four of the five are
-    <span class="verdict verdict--match">Consistent</span>, no drift. The
-    fifth (Single-writer) surfaced one genuine drift, since fixed; see
-    <a href="#lang-singlewriter">below</a>.
-  </p>
-
-  <h3 id="lang-event">Domain Event / Envelope — consistent, two stale spots</h3>
-  <table>
-    <thead>
-      <tr><th>Term / claim</th><th>Doc comment</th><th>ADR</th><th>Verdict</th></tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>Store "stamps" metadata; "callers never construct envelopes directly"</td>
-        <td><code>event.rs:57-58</code>, <code>store.rs:21</code> — "the store stamps on metadata"</td>
-        <td><cite>CHE-0016:R1-R2</cite> — "the store creates EventEnvelope by stamping all metadata"; "callers never construct… directly"</td>
-        <td><span class="verdict verdict--match">Match</span> — identical verb ("stamp"), identical prohibition.</td>
-      </tr>
-      <tr>
-        <td>Stream invariant: "ordered, gap-free, duplicate-free", contiguous <code>1..=N</code></td>
-        <td><code>store.rs:14,81</code>; <code>event.rs:188-190</code></td>
-        <td><cite>CHE-0042:R4</cite> — "sequences… exactly contiguous from 1..=N"; <cite>CHE-0019</cite></td>
-        <td><span class="verdict verdict--match">Match</span> — same phrasing verbatim.</td>
-      </tr>
-      <tr>
-        <td>"defense-in-depth" for post-deserialization <code>validate_stream</code></td>
-        <td><code>event.rs:170</code> — "Defense-in-depth: call after deserializing"</td>
-        <td><cite>CHE-0042</cite> consequences — "Serde bypass is defense-in-depth"</td>
-        <td><span class="verdict verdict--match">Match</span> — the coined phrase is shared.</td>
-      </tr>
-      <tr>
-        <td>Accessor set enumerated by the ADR</td>
-        <td>Code exposes 7 accessors incl. <code>correlation_id()</code>, <code>causation_id()</code> (<code>event.rs:285,297</code>)</td>
-        <td><cite>CHE-0042:R3</cite> lists only <code>(event_id, aggregate_id, sequence, timestamp, payload)</code> — omits the two tracing accessors</td>
-        <td><span class="verdict verdict--drift">Stale (L1) — fixed</span> — the R3 rule enumeration was incomplete vs shipped code (the ADR's own §Accessor-methods block already listed all seven, so it was an internal ADR inconsistency, not a code gap). CHE-0042:R3 now lists all seven accessors.</td>
-      </tr>
-      <tr>
-        <td>File path cited for the implementation</td>
-        <td>Implementation lives in <code>event.rs</code></td>
-        <td><cite>CHE-0042</cite> §Validated-constructor cites <code>cherry-pit-core/src/envelope.rs</code></td>
-        <td><span class="verdict verdict--drift">Stale (L2) — fixed</span> — the file was renamed <code>envelope.rs</code> → <code>event.rs</code>; the ADR path was the sole such stale reference in the corpus and now points at <code>event.rs</code>.</td>
-      </tr>
-    </tbody>
-  </table>
-
-  <h3 id="lang-vo">Value Objects — consistent, one layered-citation smell</h3>
-  <table>
-    <thead>
-      <tr><th>Term / claim</th><th>Doc comment</th><th>ADR</th><th>Verdict</th></tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td><code>IdempotencyKey</code> "never synthesised"; <code>new_unchecked</code> is <code>pub(crate)</code></td>
-        <td><code>idempotency.rs:3-10,42-49</code> — "keys are <em>never</em> synthesised by the framework"</td>
-        <td><cite>CHE-0041:R5</cite> — "<code>new_unchecked</code> is <code>pub(crate)</code> so cherry-pit-web cannot synthesize a key — the never-synthesize invariant… type-system-enforced"</td>
-        <td><span class="verdict verdict--match">Match</span> — the invariant name ("never synthesise") and the mechanism (<code>pub(crate)</code> seal) are word-for-word.</td>
-      </tr>
-      <tr>
-        <td>Source-of-authority ADR for the type-level seal</td>
-        <td><code>idempotency.rs</code> cites only <strong>CHE-0046:R3 + CHE-0049:R6</strong> (the two <em>behavioural</em> rules)</td>
-        <td>But the <strong>carrier-type + <code>pub(crate)</code> seal decision itself</strong> is ratified in <cite>CHE-0041:R5</cite> — which the code doc-comment never cites</td>
-        <td><span class="verdict verdict--drift">Smell (L3) — fixed</span> — sharper than a diffuse "home". CHE-0046:R3 is actually about <em>commands carrying stable keys across boundaries</em>, and CHE-0049:R6 about the <em>web layer not auto-generating</em>; neither ratifies the <em>type-level mechanism</em> (<code>pub(crate) new_unchecked</code>) that <code>idempotency.rs</code> implements. The ADR that <em>does</em> ratify that mechanism — CHE-0041:R5 — was the missing citation. <code>idempotency.rs</code> now cites CHE-0041:R5 for the seal (mechanism) and retains CHE-0046:R3 + CHE-0049:R6 for the invariant it upholds.</td>
-      </tr>
-      <tr>
-        <td><code>CorrelationContext</code>: no <code>Default</code>; "conscious omission, not an accidental default"</td>
-        <td><code>correlation.rs:11-15</code> — "forgetting correlation is a conscious omission"</td>
-        <td><cite>CHE-0039:R2</cite> — "no <code>Default</code> impl"</td>
-        <td><span class="verdict verdict--match">Match</span> — code even amplifies the ADR's intent in the same register.</td>
-      </tr>
-      <tr>
-        <td><code>AggregateId</code>: "stream partition key", "infrastructure-owned", <code>NonZeroU64</code> niche</td>
-        <td><code>aggregate_id.rs:6,12-24</code></td>
-        <td><cite>CHE-0011</cite> (type + niche), <cite>CHE-0020</cite> (infrastructure-owned), <cite>CHE-0006</cite> (single-writer safety)</td>
-        <td><span class="verdict verdict--match">Match</span> — three ADRs, one coherent vocabulary, all echoed in the doc comment with correct citations.</td>
-      </tr>
-    </tbody>
-  </table>
-
-  <h3 id="lang-repo">Repository (EventStore) — consistent contract, one phantom-implementation drift</h3>
-  <table>
-    <thead>
-      <tr><th>Term / claim</th><th>Doc comment</th><th>ADR</th><th>Verdict</th></tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>"Single source of truth for aggregate state"</td>
-        <td><code>store.rs:13</code></td>
-        <td><cite>CHE-0004</cite> — "Events are the source of truth"</td>
-        <td><span class="verdict verdict--match">Match</span>.</td>
-      </tr>
-      <tr>
-        <td><code>load</code> returns empty-not-error; <code>append</code> to never-created → Infrastructure</td>
-        <td><code>store.rs:64-65,148</code></td>
-        <td><cite>CHE-0019:R1,R3</cite> verbatim</td>
-        <td><span class="verdict verdict--match">Match</span> — the semantic-boundary language (store = stream, bus = NotFound) is preserved exactly.</td>
-      </tr>
-      <tr>
-        <td><code>expected_sequence</code> is "defense-in-depth, not the primary guard"</td>
-        <td><code>store.rs:23-25</code></td>
-        <td><cite>CHE-0006</cite>, <cite>CHE-0041:R3</cite></td>
-        <td><span class="verdict verdict--match">Match</span> — single-writer-primary / optimistic-concurrency-secondary framing identical.</td>
-      </tr>
-      <tr>
-        <td>Enumerated concrete store implementations</td>
-        <td><code>store.rs:18</code> names "in-memory, <strong>Pardosa-backed</strong>, <strong>PostgreSQL-backed</strong>" implementations "in infrastructure crates"</td>
-        <td>Only concrete <code>EventStore</code> impl in the tree is <code>MsgpackFileStore</code> (<code>gateway/…/msgpack_file.rs</code>); no PostgreSQL impl exists anywhere; <code>pardosa</code> does <strong>not</strong> depend on <code>cherry-pit</code> (severed per <cite>CHE-0010</cite>) so it does not implement this port</td>
-        <td><span class="verdict verdict--match">Fixed (L4)</span> — <strong>store.rs:18 corrected (<code>9ef607f</code>, <cite>CHE-0004</cite>):</strong> this was a <em>phantom-implementation</em> drift, not "pardosa was removed". PostgreSQL-backed never existed. "Pardosa-backed" was misleading in a subtler way: pardosa is alive (10 crates) and is gh-report's production backend via <cite>CHE-0074</cite>, but through gh-report's own native store port — not by implementing <code>cherry-pit-core::EventStore</code> (the <cite>CHE-0010</cite> severance forbids that edge). The port doc-comment has been reworded to name only the concrete adapter roster that actually exists.</td>
-      </tr>
-      <tr>
-        <td>Capability-trait examples cite pardosa / PGN-000x as substrate origins</td>
-        <td><code>store.rs:232-343</code> — <code>PurgeableEventStore</code>, <code>HashChainedEventStore</code>, <code>SingleWriterEventStore</code>, <code>ListableEventStore</code> all cite "pardosa's PGN-0002/0005/0010" as the motivating substrate</td>
-        <td>Accurate as <em>architectural motivation</em>: these capabilities were shaped by pardosa's substrate (PGN ADRs are live), even though pardosa reaches cherry-pit only through an adapter, not by implementing the port directly</td>
-        <td><span class="verdict verdict--match">Match (nuanced)</span> — unlike line 18, these citations are correct: they name pardosa as the <em>design origin</em> of a capability shape, which it genuinely is. Not drift. Flagged here only to distinguish from L4 proper.</td>
-      </tr>
-    </tbody>
-  </table>
-
-  <h3 id="lang-aggregate">Aggregate — consistent</h3>
-  <table>
-    <thead>
-      <tr><th>Term / claim</th><th>Doc comment</th><th>ADR</th><th>Verdict</th></tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>Governing ADR set for the trait (EDA+DDD+hexagonal, zero-state, no <code>id()</code>, no serde bound, single-writer)</td>
-        <td><code>aggregate.rs:6-24</code> doc cites CHE-0004, CHE-0012, CHE-0020, CHE-0037, CHE-0006</td>
-        <td>CHE-0020:R1 — "Aggregate trait has no <code>id()</code> method…" matches the doc verbatim</td>
-        <td><span class="verdict verdict--match">Consistent</span> — no drift (D2, <code>adr-fmt-vie4a</code>).</td>
-      </tr>
-    </tbody>
-  </table>
-
-  <h3 id="lang-command">Command (+ handle/apply split) — consistent</h3>
-  <table>
-    <thead>
-      <tr><th>Term / claim</th><th>Doc comment</th><th>ADR</th><th>Verdict</th></tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>Pure command handling, per-command <code>Error</code> assoc type</td>
-        <td><code>aggregate.rs:68-82</code> doc cites CHE-0008 (pure, non-mutating <code>handle(&amp;self)</code>), CHE-0015:R1</td>
-        <td>Matches trait shape exactly (<code>aggregate.rs:119-133</code>)</td>
-        <td><span class="verdict verdict--match">Consistent</span> — no drift (D2, <code>adr-fmt-vie4a</code>).</td>
-      </tr>
-      <tr>
-        <td><code>MergerArm::handle</code> does not claim <code>HandleCommand</code>-equivalence</td>
-        <td><code>arm.rs:1-24</code> doc cites CHE-0069:R2/R5 only, explicitly not CHE-0008/CHE-0015 — "because the merger cannot know any consumer's command type at compile time" (<code>arm.rs:10-14</code>)</td>
-        <td>Consistent with <cite>CHE-0085:R8</cite>'s framing of this as a governed specialization, not a mislabeled Command</td>
-        <td><span class="verdict verdict--match">Consistent</span> — no drift (D2, <code>adr-fmt-vie4a</code>).</td>
-      </tr>
-    </tbody>
-  </table>
-
-  <h3 id="lang-policy">Policy — consistent</h3>
-  <table>
-    <thead>
-      <tr><th>Term / claim</th><th>Doc comment</th><th>ADR</th><th>Verdict</th></tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>Static <code>Output</code> assoc type (not <code>Box</code>); idempotent <code>react</code> under at-least-once delivery</td>
-        <td><code>policy.rs:3-16</code> doc cites CHE-0017:R1, CHE-0041:R2</td>
-        <td>Verified structurally true at the trait definition (<code>policy.rs:41-54</code>: <code>type Output: Send + Sync + 'static</code>, doc-mandated idempotence)</td>
-        <td><span class="verdict verdict--match">Consistent</span> — no drift (D2, <code>adr-fmt-vie4a</code>).</td>
-      </tr>
-    </tbody>
-  </table>
-
-  <h3 id="lang-projection">Projection — consistent</h3>
-  <table>
-    <thead>
-      <tr><th>Term / claim</th><th>Doc comment</th><th>ADR</th><th>Verdict</th></tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>Infallible <code>apply</code>, Default-rebuildable</td>
-        <td><code>projection.rs:3-17</code> doc cites CHE-0009</td>
-        <td><code>cherry-pit-projection/src/lib.rs:55,68,112</code> correctly cite CHE-0097:R1/R3 for the checkpoint-regression guard, matching the review's G3-fixed claim</td>
-        <td><span class="verdict verdict--match">Consistent</span> — no drift (D2, <code>adr-fmt-vie4a</code>).</td>
-      </tr>
-    </tbody>
-  </table>
-
-  <h3 id="lang-singlewriter">Single-writer — drift found, now fixed</h3>
-  <table>
-    <thead>
-      <tr><th>Term / claim</th><th>Doc comment</th><th>ADR</th><th>Verdict</th></tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>Marker trait's governing-ADR cite</td>
-        <td><code>store.rs:320-333</code> (<code>SingleWriterEventStore</code> doc) cites CHE-0061 (governing ADR) and CHE-0006 (single-writer architectural assumption)</td>
-        <td>Correct — CHE-0006 is the single-writer/one-process-per-aggregate ADR</td>
-        <td><span class="verdict verdict--match">Consistent</span>.</td>
-      </tr>
-      <tr>
-        <td>Single-writer-through-merger convention header cite</td>
-        <td><code>merger.rs:78</code> doc-comment header read "Single-writer-through-merger convention (CHE-0005)"</td>
-        <td>CHE-0005 is single-aggregate-design (port-per-aggregate-type binding, bounded contexts, event-subscription cross-context comms — <code>docs/adr/cherry/CHE-0005-single-aggregate-design.md</code> R1-R3), <strong>not</strong> the single-writer ADR. The correct ADR is CHE-0006 (<code>docs/adr/cherry/CHE-0006*.md</code> R1: "Each aggregate instance owned by exactly one OS process"; R2: optimistic concurrency as defense-in-depth)</td>
-        <td><span class="verdict verdict--match">Fixed</span> — genuine citation drift found in D2 (<code>adr-fmt-vie4a</code>): doc-comment named the wrong ADR for the concept it documents. Low blast radius (doc-only, no enforcement change). <strong>Fixed</strong> in commit <code>bd594d7</code> (one-line change, "CHE-0005" → "CHE-0006").</td>
-      </tr>
-    </tbody>
-  </table>
-
-  <h3 id="lang-summary">Consistency verdict</h3>
+  <h2 id="still-open">Still-open / watch items</h2>
   <ul>
-    <li>
-      <strong>Directionally excellent.</strong> Across all three Solid patterns the
-      <em>coined vocabulary</em> — "stamp", "gap-free / duplicate-free", "defense-in-depth",
-      "never synthesise", "conscious omission", "stream partition key", "source of
-      truth", "single-writer / defense-in-depth" — appears verbatim on both the code
-      and ADR surfaces, with correct back-citations in the doc comments. This is the
-      strongest possible evidence that the ubiquitous language is real and not
-      retrofitted.
-    </li>
-    <li>
-      <strong>Every drift is staleness or citation hygiene, never contradiction.</strong>
-      L1 (CHE-0042:R3's normative accessor list names 5 of the 7 shipped accessors —
-      and disagrees with the ADR's <em>own</em> §Accessor-methods block, which lists
-      all 7: an intra-ADR inconsistency, not a code gap), L2 (CHE-0042 cites the
-      long-renamed <code>envelope.rs</code>; the sole such reference in the corpus),
-      and L4 (a phantom adapter roster, now fixed at <code>store.rs:18</code>,
-      <code>9ef607f</code>) were ADRs/docs lagging reality. L3 (the code cites the
-      behavioural rules it upholds but omits CHE-0041:R5, the ADR that ratifies the
-      very <code>pub(crate)</code> seal it implements) is citation hygiene. None of
-      the four changed the <em>meaning</em> a reader derives.
-    </li>
-    <li>
-      <strong>L4 was the one worth acting on — now fixed.</strong> The prior pass
-      mis-stated it as "pardosa removed from the workspace" — that was wrong:
-      pardosa is alive (10 crates) and is gh-report's production backend
-      (<cite>CHE-0074</cite>). The real drift was narrower and sharper:
-      <code>store.rs:18</code> advertised "Pardosa-backed, PostgreSQL-backed"
-      <em>implementations of this port</em>, but no PostgreSQL store exists and
-      pardosa is barred from implementing <code>cherry-pit-core::EventStore</code> by
-      the <cite>CHE-0010</cite> severance — it reaches cherry-pit only through
-      gh-report's own adapter. <code>store.rs:18</code> is now corrected
-      (<code>9ef607f</code>) to name only the adapter roster the tree actually has.
-      The capability-trait PGN citations (<code>store.rs:232-343</code>) were
-      <em>not</em> part of this drift — they correctly name pardosa as design
-      origin. Separately, <cite>CHE-0017</cite> now discloses that
-      <code>Policy::react</code> purity is convention-not-type parity with
-      <cite>CHE-0008</cite> (<code>76ca2de</code>) — the same "advertised guarantee is
-      weaker than the trait name implies" pattern, disclosed honestly rather than
-      silently. L1/L2/L3 were one-line ADR/doc fixes; L4 and the react-purity
-      disclosure are landed. All are reported and now reconciled with shipped
-      source by this pass.
-    </li>
+    <li id="lang-singlewriter"><strong>G5 — single-writer own-store-token seal: STILL OPEN, not sealed.</strong> <code>Merger::spawn</code> takes <code>Arc&lt;S&gt;</code>; nothing consumes or seals the caller's clone, so a composition root can retain a second <code>Arc</code> and call <code>store.append()</code> directly, bypassing the queue. Documented and tested-against-regression, but structurally still bypassable today — tracked under epic <code>adr-fmt-1freh</code> (mission:ddd-adherence).</li>
+    <li><strong>G1/Command — governed specialization, watch-item <code>adr-fmt-nyzzy</code>.</strong> <cite>CHE-0085:R8</cite> (<code>1e79a4d</code>) ratifies <code>MergerArm::handle</code> bypassing <code>HandleCommand</code> as deliberate — a doc-plane classification, not a code fix: <code>arm.rs:78</code> remains structurally unbounded. Watch-item tracks re-audit of the first production <code>MergerArm</code> impl against this ratification.</li>
+    <li><strong>ACL / Context Mapping — Partial, unchanged.</strong> The hexagonal port/adapter seam (<code>cherry-pit-gateway</code>, <code>ReadPort</code>) <em>is</em> the ACL; there is still no named context-map document, and only one production consumer (<code>gh-report</code>) exists today.</li>
   </ul>
 
-  <h3 id="l4-rootcause">Root cause of the L4 confusion — a delete-then-reintroduce name collision</h3>
+  <h3 id="l4-rootcause">L4 lesson: name reuse across a delete-and-reintroduce boundary</h3>
   <p>
-    The first draft's wrong "pardosa was removed from the workspace" claim was not
-    careless reading — it was <strong>induced by stale and ambiguous
-    documentation</strong>. Git history shows two <em>different</em> crate families
-    shared the name "pardosa" across a deletion boundary:
+    L4's root cause: git history shows two <em>different</em> crate families
+    shared the name "pardosa" across a deletion boundary — legacy
+    <code>pardosa-encoding</code> (a binary serialization substrate) was
+    physically deleted (<code>36f0d74</code>), then ~2.5 weeks later the
+    current <code>.pgno</code>/NATS pardosa substrate was imported
+    (<code>050e08d</code>), reusing the name for an unrelated codebase. Doc
+    comments written against the first tenant of the name silently became
+    lies about the second — the <code>store.rs:18</code> phantom-adapter
+    roster (fixed <code>9ef607f</code>) is that disease. <strong>Lesson:</strong>
+    never let a removal comment name a bare identifier a future crate might
+    re-occupy; scope it to the exact artefact removed. (The C4 docs'
+    "pardosa dep explicitly REMOVED" wording at <code>c4/level2-containers.html</code>
+    / <code>level1-context.html</code> is technically correct — no
+    <code>cherry-pit-core</code> dependency — but is left as-is, noted as a
+    contributing amplifier when skimmed out of scope.)
   </p>
-  <ul>
-    <li>
-      <strong>Legacy pardosa</strong> (<code>pardosa-encoding</code> — a binary
-      <code>Encode</code>/<code>Decode</code> "GenomeSafe" serialization substrate)
-      existed 2026-05-15 → 05-21, then was <strong>physically deleted</strong>
-      (commit <code>36f0d74</code>, "S5: physically delete pardosa-* crates from
-      workspace"). <code>DomainEvent</code> was swapped off its <code>Encode</code>
-      bound onto serde the same day (<code>193093e</code>).
-    </li>
-    <li>
-      <strong>Current pardosa</strong> (the <code>.pgno</code> / NATS
-      "EDA storage layer implementing fiber semantics", the PGN-ADR substrate,
-      gh-report's <cite>CHE-0074</cite> backend) was <strong>imported ~2.5 weeks
-      later</strong> (commit <code>050e08d</code>, 2026-06-08, "Import Pardosa
-      workspace crates"), reusing the name for an unrelated codebase.
-    </li>
-  </ul>
-  <p>
-    So the doc comments were <em>true when written</em> and became misleading only
-    when a new pardosa was grafted onto the same name. Three stale/ambiguous
-    artefacts propagated the confusion into the review:
-  </p>
-  <table>
-    <thead>
-      <tr><th>Misleading artefact</th><th>Why it misled</th><th>Status</th></tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td><code>event.rs:320-323</code> — "…removed <strong>alongside the pardosa crates</strong>"</td>
-        <td>The smoking gun: literally asserts "the pardosa crates" were deleted. True for legacy pardosa, plainly false against a tree with 10 live <code>pardosa-*</code> crates.</td>
-        <td><span class="verdict verdict--match">Fixed</span> — reworded to scope the removal to the legacy <code>pardosa-encoding</code> crate and explicitly note the current substrate is live and unrelated.</td>
-      </tr>
-      <tr>
-        <td><code>event.rs:16</code>, <code>Cargo.toml:32</code>, <code>tests/adt_obligations.rs:17</code> — "<strong>Pardosa-encoding</strong> has been removed from the workspace"</td>
-        <td>Ambiguous capitalisation/parse: "Pardosa-encoding" (one legacy crate) skims as "Pardosa, encoding" → "pardosa is gone". The <code>Cargo.toml</code>/test copies compound it by repetition.</td>
-        <td><span class="verdict verdict--match">Fixed</span> — <code>event.rs:16</code> reworded ("the legacy <code>pardosa-encoding</code> crate… unrelated to the current <code>pardosa</code> substrate"). The <code>Cargo.toml:32</code> and <code>tests/adt_obligations.rs:17</code> copies, previously left unfixed (marked "Partly fixed" in the prior pass), are now also <strong>fixed</strong> — stale "ADR cleanup deferred" governance-debt phrasing corrected to reflect the removal is complete (commit <code>bd594d7</code>).</td>
-      </tr>
-      <tr>
-        <td>C4 docs — <code>c4/level2-containers.html:81,182</code>, <code>level1-context.html:75</code> — "pardosa dep explicitly REMOVED"</td>
-        <td>Accurate but easy to over-generalise: these correctly say <em>cherry-pit-core</em> has no pardosa dep (CHE-0010 holds), yet the bare word "REMOVED" reinforces the "pardosa is gone" reading when skimmed out of scope.</td>
-        <td><span class="verdict verdict--drift">Left as-is</span> — technically correct for the crate they describe; not a defect, but noted as a contributing amplifier. Could be tightened to "no pardosa <em>dependency</em> (severance, not deletion)".</td>
-      </tr>
-    </tbody>
-  </table>
-  <p>
-    <strong>Lesson.</strong> The reusable trap is <em>name reuse across a
-    delete-and-reintroduce boundary</em>: comments written against the first tenant
-    of a name silently become lies about the second. The durable fix is not just
-    rewording — it is never letting a removal comment name a bare identifier
-    (<code>pardosa</code>) that a future crate might re-occupy; scope it to the exact
-    artefact removed (<code>pardosa-encoding</code>) and its reason. The
-    <code>store.rs:18</code> phantom-roster drift (L4 proper) is the same disease one
-    step removed: the doc names implementations by substrate rather than by the one
-    concrete adapter that actually exists.
-  </p>
-
-  <h2 id="tactical">Tactical patterns</h2>
-  <table>
-    <thead>
-      <tr><th>Pattern</th><th>Verdict</th><th>Source evidence</th><th>Note</th></tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td><strong>Aggregate</strong> (root / consistency boundary)</td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td><code>cherry-pit-core/src/aggregate.rs:55</code> — <code>trait Aggregate: Default + Send + Sync + 'static</code>; reconstruction-by-replay via total <code>apply(&amp;mut self, &amp;Self::Event)</code> (<code>:65</code>).</td>
-        <td>Consistency boundary named verbatim in doc. Zero-state start via <code>Default</code> (<cite>CHE-0012</cite>). Command handling deliberately split off (see below).</td>
-      </tr>
-      <tr>
-        <td><strong>Domain Event</strong></td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td><code>event.rs:43</code> — <code>trait DomainEvent: Clone + Send + Sync + 'static + Serialize + DeserializeOwned</code>, <code>event_type() -&gt; &amp;'static str</code>. Concrete: <code>SchedulerEvent</code> (<code>scheduler.rs:45</code>).</td>
-        <td>"Events are immutable facts" (doc). Source of truth per <cite>CHE-0004:R1</cite>.</td>
-      </tr>
-      <tr>
-        <td><strong>Event Envelope</strong> (metadata carrier)</td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td><code>event.rs:76</code> — <code>EventEnvelope&lt;E&gt;</code>: private <code>event_id</code> (UUID v7), <code>aggregate_id</code>, <code>sequence: NonZeroU64</code>, <code>timestamp</code>, <code>correlation_id</code>, <code>causation_id</code>, <code>payload</code>. Validated ctor <code>new</code> (<code>:145</code>), <code>validate_stream</code> gap/dup/cross-stream check (<code>:197</code>).</td>
-        <td>Immutable post-construction; accessors only. The substrate for causal replay (<cite>CHE-0076</cite>) and correlation (<cite>CHE-0039</cite>).</td>
-      </tr>
-      <tr>
-        <td><strong>Command</strong> (+ handle/apply split)</td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td>Marker <code>command.rs:25</code> — <code>trait Command: Send + Sync + 'static {}</code>. Handler split into <code>trait HandleCommand&lt;C&gt;</code> (<code>aggregate.rs:119</code>): <code>handle(&amp;self, cmd: C) -&gt; Result&lt;Vec&lt;Event&gt;, Error&gt;</code> — pure, returns events, per-command <code>Error</code>.</td>
-        <td>The <code>handle</code>/<code>apply</code> split is textbook event-sourced DDD: <code>handle</code> decides (pure, invariant-checking), <code>apply</code> folds. Commands non-serializable by design (<cite>CHE-0014</cite>).</td>
-      </tr>
-      <tr>
-        <td><strong>Repository</strong> (event-sourced form)</td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td><code>store.rs:58</code> — <code>trait EventStore</code>: <code>load</code> (replay), <code>create</code> (assigns id), <code>append</code> (optimistic <code>expected_sequence</code>). "Single source of truth for aggregate state" (doc). Impl <code>MsgpackFileStore</code> (<code>gateway/src/lib.rs:31</code>); write handle <code>MergerHandle::dispatch</code> (<code>merger/src/handle.rs:29</code>).</td>
-        <td>Load-by-replay + persist-by-append is the event-sourced repository. Capability traits (<code>EventHistory…</code>, <code>Purgeable…</code>, <code>HashChained…</code>, <code>SingleWriter…</code>, <code>Listable…</code>) compose per <cite>CHE-0057</cite>.</td>
-      </tr>
-      <tr>
-        <td><strong>Value Object</strong></td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td>Several: <code>AggregateId</code> (<code>aggregate_id.rs:37</code>, <code>Copy + Eq + Hash</code> over <code>NonZeroU64</code>), <code>CorrelationContext</code> (<code>correlation.rs:42</code>), <code>IdempotencyKey</code> (<code>idempotency.rs:38</code>), <code>ProjectionCheckpoint</code> (<code>checkpoint.rs:46</code>), <code>ScheduleId</code> (<code>scheduler.rs:9</code>).</td>
-        <td>All immutable newtypes, equality-by-value, private fields, constructor-validated. Idiomatic VO discipline throughout.</td>
-      </tr>
-      <tr>
-        <td><strong>Policy</strong> (choreography reaction)</td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td><code>policy.rs:41</code> — <code>trait Policy</code>: <code>react(&amp;self, &amp;EventEnvelope&lt;Event&gt;) -&gt; Vec&lt;Output&gt;</code>. Static <code>Output</code> enum (<cite>CHE-0017</cite>). Dispatch: <code>ErasedPolicyDispatcher</code> (<code>app/src/dispatch.rs:64</code>) → <code>CommandGateway</code>, dead-letters <code>Terminal</code> errors.</td>
-        <td>Choreography-style coordination — reacts to one event, emits commands to other aggregates. This is DDD's Policy / event-reaction, not a stateful process manager.</td>
-      </tr>
-      <tr>
-        <td><strong>Invariant enforcement</strong></td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td>Business: <code>HandleCommand::handle -&gt; Result&lt;_, Error&gt;</code> is the <em>sole</em> invariant gate (<code>aggregate.rs:133</code>, per-command error <cite>CHE-0015</cite>). Structural: <code>NonZeroU64</code> ids/sequence, validated <code>EventEnvelope</code> ctors, <code>IdempotencyKey</code> never synthesized. Concurrency: optimistic <code>expected_sequence</code> (<code>store.rs:167</code>).</td>
-        <td>Invariants concentrated at one write-side chokepoint + pushed into the type system (illegal-states-unrepresentable, <cite>CHE-0002</cite>).</td>
-      </tr>
-      <tr>
-        <td><strong>Entity</strong> (identity equality)</td>
-        <td><span class="verdict verdict--undocumented">By design absent</span></td>
-        <td>No general <code>Entity</code> trait. Identity-by-equality exists only at the id-type level: <code>AggregateId</code> (<code>aggregate_id.rs:38</code>, <code>Eq + Hash</code> over the wrapped id). Aggregate <em>state</em> struct has no <code>id()</code> and no identity-equality contract.</td>
-        <td>By design absent — ratified (<cite>CHE-0020:R5</cite>, <code>8636c0b</code>): identity is infrastructure-owned, aggregate is a pure state machine. A domain "entity within an aggregate" would be a plain field, not a framework abstraction — acceptable for a single-aggregate substrate.</td>
-      </tr>
-      <tr>
-        <td><strong>Factory</strong></td>
-        <td><span class="verdict verdict--undocumented">By design absent</span></td>
-        <td>No <code>Factory</code> trait. Creation responsibility lives in <code>EventStore::create</code> (<code>store.rs:125</code>, assigns id + builds envelopes) and validated ctor <code>EventEnvelope::new</code> (<code>event.rs:145</code>). Create-path selection via <code>PersistMode::Create</code> (<code>merger/src/arm.rs:55</code>).</td>
-        <td>By design absent — ratified (<cite>CHE-0020:R5</cite>, <code>8636c0b</code>): Factory <em>responsibility</em> (validated construction, id assignment) is present and centralised; infrastructure-owned identity makes a named domain factory redundant.</td>
-      </tr>
-      <tr>
-        <td><strong>Domain Service</strong></td>
-        <td><span class="verdict verdict--undocumented">By design absent</span></td>
-        <td>No <code>DomainService</code> trait or type. Stateless domain logic lives inside <code>HandleCommand::handle</code> and <code>Policy::react</code> — both pure functions.</td>
-        <td>By design absent — ratified (<cite>CHE-0020:R5</cite>, <code>8636c0b</code>): the single-aggregate model (<cite>CHE-0005</cite>) means multi-entity coordination that would justify a Domain Service is instead expressed as a Policy across aggregates.</td>
-      </tr>
-      <tr>
-        <td><strong>Process Manager</strong> (stateful)</td>
-        <td><span class="verdict verdict--undocumented">By design absent</span></td>
-        <td>No stateful process-manager type. <code>Policy</code> is stateless (reacts per-envelope). No step-tracking or completion state machine anywhere in the audited crates.</td>
-        <td>Ratified deferral: <cite>CHE-0040:R1</cite> — "no saga orchestrator exists pre-1.0"; choreography via <code>Policy::react</code> only. Where durable multi-step state is genuinely needed it is modelled as an <em>aggregate</em> (e.g. the scheduler, <cite>CHE-0081</cite>), not a framework process-manager.</td>
-      </tr>
-      <tr>
-        <td><strong>Saga</strong> (orchestration + compensation)</td>
-        <td><span class="verdict verdict--undocumented">By design absent</span></td>
-        <td>No <code>Saga</code> trait/type. Only substrate + prose: <code>causation_id</code>/<code>correlation_id</code> on the envelope, <code>CorrelationContext</code>, and an <code>#[expect]</code> "future saga/outbox hooks" note (<code>app/src/app.rs:105</code>).</td>
-        <td>Ratified deferral <cite>CHE-0040</cite>: compensation is modelled as domain failure events reacted to by policies (<code>R2</code>), timeouts as explicit domain events (<code>R5</code>), failed outputs as dead-letters (<code>R3</code>). The correlation/causation plumbing is exactly the substrate a saga would sit on — the orchestrator is deliberately not built.</td>
-      </tr>
-      <tr>
-        <td><strong>Specification</strong></td>
-        <td><span class="verdict verdict--undocumented">By design absent</span></td>
-        <td>No <code>Specification</code> trait, no <code>is_satisfied_by</code>/<code>satisfied_by</code>. The only textual hit ("job specification", <code>wq/src/work_queue.rs:53</code>) is unrelated.</td>
-        <td>By design absent — ratified (<cite>CHE-0020:R5</cite>, <code>8636c0b</code>): predicate/selection logic lives inline in <code>handle</code> and query resolvers; the earlier "one unratified gap" framing no longer holds.</td>
-      </tr>
-    </tbody>
-  </table>
-
-  <h2 id="strategic">Strategic patterns</h2>
-  <table>
-    <thead>
-      <tr><th>Pattern</th><th>Verdict</th><th>Source evidence</th><th>Note</th></tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td><strong>Bounded Context</strong></td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td><code>core/src/lib.rs:12-16</code>: "multiple aggregates compose as separate bounded contexts; cross-context communication uses event subscriptions, not shared stores." Enforced structurally — each port binds one <code>type Aggregate</code>/<code>type Event</code> (<cite>CHE-0005:R1</cite>).</td>
-        <td>The single-aggregate binding <em>makes</em> the bounded context a compile-time construct: cross-aggregate confusion is a type error, not a runtime downcast.</td>
-      </tr>
-      <tr>
-        <td><strong>CQRS / Read model separation</strong></td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td>Write: <code>Aggregate</code> + <code>HandleCommand</code> + <code>EventStore</code>. Read: <code>Projection</code> (<code>projection.rs:41</code>, replay-rebuildable, infallible) + query port <code>ReadPort</code> (<code>:64</code>, no write path). Durable offset <code>ProjectionCheckpoint</code> (<code>checkpoint.rs:47</code>). Typed read-side port <cite>CHE-0075</cite>.</td>
-        <td>"Projections are the read side of CQRS" (doc). Eventually consistent by design (<cite>CHE-0004</cite> consequences).</td>
-      </tr>
-      <tr>
-        <td><strong>Single-writer / aggregate boundary</strong></td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td>Marker <code>SingleWriterEventStore</code> (<code>store.rs:333</code>, <cite>CHE-0061</cite>). <code>cherry-pit-merger</code> holds "the sole EventStore write handle for one aggregate substrate" (<code>merger/src/lib.rs:4</code>), serialising same-key callers at an mpsc front door. Optimistic <code>expected_sequence</code> as defense-in-depth.</td>
-        <td>Single-writer-per-aggregate is the load-bearing niche constraint (<cite>CHE-0006</cite>, AGENTS.md "where to play"). Sequential ids are safe <em>because</em> of it (<cite>CHE-0020</cite>).</td>
-      </tr>
-      <tr>
-        <td><strong>Ubiquitous Language</strong></td>
-        <td><span class="verdict verdict--match">Well</span></td>
-        <td>Trait/type names are the DDD lexicon verbatim: <code>Aggregate</code>, <code>DomainEvent</code>, <code>Command</code>, <code>HandleCommand</code>, <code>Policy</code>, <code>Projection</code>, <code>EventStore</code>, <code>CorrelationContext</code>. Consistent verbs <code>apply</code>/<code>handle</code>/<code>react</code>/<code>publish</code> across crates.</td>
-        <td>The lexicon is enforced by the type system rather than by convention — the strongest form of ubiquitous language.</td>
-      </tr>
-      <tr>
-        <td><strong>Anti-Corruption Layer / Context Mapping</strong></td>
-        <td><span class="verdict verdict--drift">Partial</span></td>
-        <td>No type named ACL. Hexagonal ports are the translation seam: adapter crate <code>cherry-pit-gateway</code> ("infrastructure implementations for cherry-pit port traits", <code>lib.rs:3</code>) adapts substrate to core ports; <code>ReadPort</code>/<code>ProjectionSource</code> (<code>cherry-pit-web/src/projection/port.rs:27</code>) adapt the read side. Cross-context integration is event-subscription-based.</td>
-        <td>The port/adapter seam <em>is</em> the ACL in hexagonal form (<cite>CHE-0004:R2</cite>). There is no explicit context map document, and no dedicated translation type between two contexts — consistent with the substrate today hosting effectively one production consumer (<code>gh-report</code>).</td>
-      </tr>
-    </tbody>
-  </table>
 
   <h2 id="headline">Headline findings</h2>
   <ul>
-    <li>
-      <strong>Surface abstractions are first-class; the depth pass is where the
-      nuance lives.</strong> All eight "well represented" patterns carry the DDD
-      term verbatim and are type-enforced at the trait boundary. Under adversarial
-      implementation-body review, five now hold end-to-end
-      (<span class="verdict verdict--match">Solid</span>: Domain Event/Envelope,
-      Value Objects, Repository, Policy, Projection/CQRS), two are ratified
-      <span class="verdict verdict--drift">Governed</span> specializations
-      (Aggregate, Command — <cite>CHE-0085:R8</cite>, doc-plane, code unchanged),
-      and one remains <span class="verdict verdict--drift">Mixed</span>
-      (Single-writer — convention doc + tests landed, structural seal deferred;
-      see <a href="#depth">Depth review</a>, gaps G1–G5).
-    </li>
-    <li>
-      <strong>"Partial" here mostly means "folded, not missing" — now ratified.</strong>
-      Entity, Factory, and Domain Service have their <em>responsibilities</em>
-      present (identity via <code>AggregateId</code>, validated construction via
-      <code>EventStore::create</code>, pure logic in <code>handle</code>/<code>react</code>)
-      but no dedicated trait — <cite>CHE-0020:R5</cite> (<code>8636c0b</code>) now
-      ratifies this as a deliberate design choice rather than an undocumented gap.
-      The ACL is present in hexagonal port form rather than as a named context-map layer.
-    </li>
-    <li>
-      <strong>The genuinely absent orchestration patterns are ratified, not
-      overlooked.</strong> Saga and Process Manager are deliberately deferred by
-      <cite>CHE-0040</cite>: compensation is domain-event-driven, timeouts are
-      explicit domain events, failed policy outputs are dead-lettered. The
-      correlation/causation envelope fields are the substrate a saga would use — the
-      orchestrator is a conscious non-goal pre-1.0, re-affirmed after
-      <code>cherry-pit-app</code> shipped. Durable multi-step state, when needed, is
-      modelled as an aggregate (the scheduler, <cite>CHE-0081</cite>), not a framework
-      process manager.
-    </li>
-    <li>
-      <strong>Specification is no longer an unratified gap.</strong> It remains
-      absent from source, but <cite>CHE-0020:R5</cite> (<code>8636c0b</code>) now
-      ratifies the absence explicitly. Impact is low today (predicate logic lives
-      inline in <code>handle</code> and query resolvers); if reusable business
-      predicates emerge — especially on the read side — a new ADR + a small
-      <code>Specification</code> trait remains the natural future candidate, but it
-      is no longer the corpus's one unrecorded gap.
-    </li>
-    <li>
-      <strong>Net assessment.</strong> Measured against DDD's catalogue, cherry-pit
-      is a high-fidelity <em>tactical + event-sourcing</em> DDD substrate with
-      strong strategic single-context discipline. Its omissions cluster exactly
-      where the Solon subtractive stance predicts — orchestration machinery and
-      multi-context tooling that would add degrees of freedom the niche
-      (single-writer, intra-org, sub-PB) does not need. No pattern now lacks
-      <em>both</em> code and a ratifying decision (<cite>CHE-0020:R5</cite> closed
-      that gap for Specification). The depth pass adds a second axis: even among
-      the type-enforced patterns, the strongest guarantees are on the
-      <em>data</em> plane (immutable envelopes, sealed value objects,
-      TOCTOU-closed store, now also a monotonic checkpoint and a create-time
-      existence guard), while the one remaining un-sealed structural gap is
-      single-writer's composition-root convention (documented and tested, but
-      not type/ownership-sealed) — the surface a saga/process-manager layer, or a
-      future ownership-token seal, would harden further if built.
-    </li>
+    <li>Surface abstractions are first-class and type-enforced across all eight "well represented" patterns. Under the depth pass, five hold end-to-end (<span class="verdict verdict--match">Solid</span>), two are ratified <span class="verdict verdict--drift">Governed</span> specializations (Aggregate, Command — <cite>CHE-0085:R8</cite>, doc-plane, code unchanged), and one remains <span class="verdict verdict--drift">Mixed</span> (Single-writer — still open, see above).</li>
+    <li>Entity, Factory, and Domain Service are "folded, not missing" — responsibilities present, no dedicated trait, ratified by <cite>CHE-0020:R5</cite> (<code>8636c0b</code>). Saga and Process Manager are deliberate non-goals pre-1.0 (<cite>CHE-0040</cite>). Specification is likewise now a ratified absence, not an unrecorded gap.</li>
+    <li><strong>Net assessment.</strong> cherry-pit is a high-fidelity tactical + event-sourcing DDD substrate with strong strategic single-context discipline; omissions cluster exactly where the Solon subtractive stance predicts (orchestration/multi-context tooling the niche doesn't need). The one remaining un-sealed structural gap is single-writer's composition-root convention (documented and tested, not type/ownership-sealed).</li>
   </ul>
 
   <p class="subtitle">
@@ -950,7 +273,8 @@
     <code>cherry-pit-core</code> + <code>-merger</code> + <code>-app</code> +
     <code>-projection</code> + <code>-gateway</code>, full per-pattern file:line
     findings and code excerpts in bd bead <code>adr-fmt-t8k35</code>
-    (labels <code>evidence, review-report</code>).
+    (labels <code>evidence, review-report</code>); D2 coverage extension and
+    language-consistency evidence in bd bead <code>adr-fmt-vie4a</code>.
   </p>
 </main>
 </body>
