@@ -1848,7 +1848,6 @@ dependencies = [
  "percent-encoding",
  "proptest",
  "reqwest",
- "rmp-serde",
  "rustls",
  "scc",
  "secrecy",

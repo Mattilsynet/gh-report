@@ -73,7 +73,6 @@ http = { workspace = true }
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
-rmp-serde = { workspace = true }
 
 # Time
 jiff = { workspace = true }
