@@ -389,6 +389,15 @@ impl<E: DomainEvent + Serialize + DeserializeOwned> EventStore for MsgpackFileSt
 
         let envelopes = Self::build_envelopes(id, 0, events, &context)?;
         let path = self.aggregate_path(id);
+        if tokio::fs::try_exists(&path)
+            .await
+            .map_err(infrastructure_error)?
+        {
+            return Err(infrastructure_error(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("stream file for aggregate {id} already exists; refusing to overwrite"),
+            )));
+        }
         self.write_atomic(&path, &envelopes).await?;
 
         Ok((id, envelopes))
@@ -564,6 +573,42 @@ mod tests {
         assert_eq!(id1, agg_id(1));
         assert_eq!(id2, agg_id(2));
         assert_eq!(id3, agg_id(3));
+    }
+
+    /// G4 (defense-in-depth, CHE-0019/CHE-0032): `create()` must reject
+    /// (no overwrite) when a stream file already exists at the path the
+    /// internal id counter is about to assign. Simulates the counter
+    /// invariant being violated by an out-of-band writer placing a file
+    /// at the next id's path between the counter's lazy scan and its
+    /// next `create()` call.
+    #[tokio::test]
+    async fn create_rejects_when_stream_file_already_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MsgpackFileStore::new(dir.path());
+
+        let (id1, _) = store
+            .create(vec![TestEvent::Created { name: "a".into() }], no_ctx())
+            .await
+            .unwrap();
+        assert_eq!(id1, agg_id(1));
+
+        let next_path = store.aggregate_path(agg_id(2));
+        tokio::fs::write(&next_path, b"out-of-band stream contents")
+            .await
+            .unwrap();
+
+        let result = store
+            .create(vec![TestEvent::Created { name: "b".into() }], no_ctx())
+            .await;
+        assert!(
+            result.is_err(),
+            "create() must reject rather than overwrite an existing stream file"
+        );
+        let on_disk = tokio::fs::read(&next_path).await.unwrap();
+        assert_eq!(
+            on_disk, b"out-of-band stream contents",
+            "existing stream file must be left untouched"
+        );
     }
 
     #[tokio::test]

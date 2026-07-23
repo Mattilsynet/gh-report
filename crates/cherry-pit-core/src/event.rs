@@ -194,14 +194,23 @@ impl<E: DomainEvent> EventEnvelope<E> {
     /// # Errors
     ///
     /// Returns [`EnvelopeError::NilEventId`] for malformed event identity,
-    /// [`EnvelopeError::AggregateIdMismatch`] for cross-stream data, or
-    /// [`EnvelopeError::SequenceGap`] for non-contiguous sequence numbers.
+    /// [`EnvelopeError::DuplicateEventId`] for a repeated `event_id`
+    /// within the stream, [`EnvelopeError::AggregateIdMismatch`] for
+    /// cross-stream data, or [`EnvelopeError::SequenceGap`] for
+    /// non-contiguous sequence numbers.
     pub fn validate_stream(
         aggregate_id: AggregateId,
         stream: &[Self],
     ) -> Result<(), EnvelopeError> {
+        let mut seen_event_ids = std::collections::HashSet::with_capacity(stream.len());
         for (index, envelope) in stream.iter().enumerate() {
             envelope.validate()?;
+
+            if !seen_event_ids.insert(envelope.event_id) {
+                return Err(EnvelopeError::DuplicateEventId {
+                    event_id: envelope.event_id,
+                });
+            }
 
             if envelope.aggregate_id != aggregate_id {
                 return Err(EnvelopeError::AggregateIdMismatch {
@@ -528,6 +537,39 @@ mod tests {
                 expected_sequence: 2,
                 actual_sequence,
             }) if actual_sequence.get() == 3
+        ));
+    }
+
+    #[test]
+    fn validate_stream_rejects_duplicate_event_id() {
+        let id = AggregateId::new(NonZeroU64::new(1).unwrap());
+        let shared_event_id = uuid::Uuid::now_v7();
+        let stream = vec![
+            EventEnvelope::new(
+                shared_event_id,
+                id,
+                NonZeroU64::new(1).unwrap(),
+                jiff::Timestamp::now(),
+                None,
+                None,
+                TestEvent::Happened { value: "a".into() },
+            )
+            .unwrap(),
+            EventEnvelope::new(
+                shared_event_id,
+                id,
+                NonZeroU64::new(2).unwrap(),
+                jiff::Timestamp::now(),
+                None,
+                None,
+                TestEvent::Happened { value: "b".into() },
+            )
+            .unwrap(),
+        ];
+
+        assert!(matches!(
+            EventEnvelope::validate_stream(id, &stream),
+            Err(EnvelopeError::DuplicateEventId { event_id }) if event_id == shared_event_id
         ));
     }
 

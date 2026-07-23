@@ -304,6 +304,14 @@ pub enum EnvelopeError {
         /// it comes directly from `EventEnvelope::sequence()`.
         actual_sequence: NonZeroU64,
     },
+
+    /// Two envelopes in the same stream share an `event_id` (CHE-0019,
+    /// CHE-0032). Envelope identity must be unique per stream; a
+    /// repeated `event_id` indicates corrupt or duplicated data.
+    DuplicateEventId {
+        /// The `event_id` that appears more than once in the stream.
+        event_id: uuid::Uuid,
+    },
 }
 
 impl EnvelopeError {
@@ -329,6 +337,9 @@ impl fmt::Display for EnvelopeError {
                 f,
                 "event sequence gap: expected sequence {expected_sequence}, actual {actual_sequence}"
             ),
+            Self::DuplicateEventId { event_id } => {
+                write!(f, "duplicate event_id in stream: {event_id}")
+            }
         }
     }
 }
