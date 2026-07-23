@@ -1,13 +1,13 @@
 # CHE-0045. Serialization Scope Per Crate
 
 Date: 2026-04-25
-Last-reviewed: 2026-04-25
+Last-reviewed: 2026-07-23
 Tier: B
 Status: Accepted
 
 ## Related
 
-References: CHE-0029
+References: CHE-0029, CHE-0100
 
 ## Context
 
@@ -45,7 +45,7 @@ R3 [5]: Feature flags gate serialization dependencies so users opt in
 | Crate | Serialization | Governing ADR |
 |-------|--------------|---------------|
 | `cherry-pit-core` | None — domain traits are format-agnostic. `DomainEvent: Serialize + DeserializeOwned` enables any serde backend. | CHE-0010 |
-| `cherry-pit-gateway` | MessagePack with named/map encoding (`rmp-serde`), format-scope only — applies when a `cherry-pit-gateway`-backed store exists; not a store-existence mandate. Forward-compatible field evolution via `#[serde(default)]`. | CHE-0045 (this ADR) |
+| `cherry-pit-gateway` | None; store retired (CHE-0100). `MsgpackFileStore` and its `rmp-serde` dependency no longer exist. | CHE-0100 |
 | `pardosa` | pardosa-genome as primary. MsgPack and JSON as feature-gated fallbacks for debugging and interop. | PAR-0006 |
 | `pardosa-genome` | Defines the genome binary wire format. Serde-native with `GenomeSafe` marker trait. | GEN-0001 through GEN-0033 |
 | `cherry-pit-web` (planned) | JSON via `serde_json` for HTTP API responses. Format determined by web conventions, not event storage. | — |
@@ -69,7 +69,7 @@ R3 [5]: Feature flags gate serialization dependencies so users opt in
 
 ## Consequences
 
-- No conflict between this ADR's `cherry-pit-gateway` row and PAR-0006 — they govern different crates. Users choosing `cherry-pit-gateway` get MsgPack; users choosing `pardosa` get genome.
+- No conflict between this ADR's `cherry-pit-gateway` row and PAR-0006 — they govern different crates. `cherry-pit-gateway` no longer has a serialization strategy of its own (store retired, CHE-0100); users choosing `pardosa` get genome.
 - Domain event portability — `cherry-pit-core` is format-agnostic, so migrating from `MsgpackFileStore` to a future `GenomeFileStore` requires no domain code changes.
 - Schema evolution strategies differ by crate: additive field evolution with `#[serde(default)]` (CHE-0022) for gateway, new-stream migration (PAR-0005) for pardosa.
 - Two serialization strategies means two sets of golden-file tests and encoding-specific bug surfaces.

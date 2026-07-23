@@ -1,13 +1,13 @@
 # CHE-0032. Atomic File Writes via Temp-File and Rename
 
 Date: 2026-04-25
-Last-reviewed: 2026-04-28
+Last-reviewed: 2026-07-23
 Tier: D
 Status: Accepted
 
 ## Related
 
-References: CHE-0006
+References: CHE-0006, CHE-0053, CHE-0100
 
 ## Context
 
@@ -24,8 +24,11 @@ R2 [10]: On rename failure clean up the temp file on a best-effort
 R3 [10]: Call File::sync_all on the temp file before rename and sync
   the parent directory after rename to guarantee data durability
   across power failure
-R4 [10]: Remove orphaned .msgpack.tmp files during MsgpackFileStore
-  startup write recovery before create or append mutates the store
+R4 [10]: Retired (CHE-0100) — this rule named `MsgpackFileStore`'s
+  `.msgpack.tmp` recovery step as its exemplar; the store is gone.
+  R1-R3 (temp-file + fsync + rename + parent-fsync) remain the general
+  crash-safety invariant, applying to any writer needing atomic file
+  replacement, per CHE-0053:R5-R6's mechanism-vs-invariant split.
 
 1. Serialize envelopes to bytes in memory.
 2. Write bytes to `{filename}.tmp` in the store directory.

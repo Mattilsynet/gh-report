@@ -9,7 +9,7 @@ Parent-cross-domain: PGN-0008 — adr-srv consumes pardosa through the public ty
 
 ## Related
 
-References: PGN-0008, PGN-0003, PGN-0013, PGN-0014, CHE-0074, CHE-0075, CHE-0072, AFM-0027 | Supersedes: none
+References: PGN-0008, PGN-0003, PGN-0013, PGN-0014, CHE-0074, CHE-0075, CHE-0072, AFM-0027, CHE-0100 | Supersedes: none
 
 ## Context
 
@@ -60,3 +60,11 @@ R10 [4]: With adr-srv migrated off it, `cherry-pit-gateway`'s `MsgpackFileStore`
 + becomes easier: adr-srv's durable bytes are schema-hashed native events, one fiber per ADR file, and adr-srv finally has a governing ADR instead of a fabricated citation.
 − becomes harder: adr-srv owns the scrape-to-native mapping and must prove field preservation; the on-disk `.msgpack` store is abandoned rather than migrated.
 risks/migration: this is a hard cut for adr-srv's event log. The sanctioned recovery path is the boot-time corpus re-scrape (AFM-0027), not replay of the abandoned `.msgpack` data — the follow-on M2 sub-mission MUST demonstrate a passing rebuild-from-corpus test before M4 drops the old dependencies. `MsgpackFileStore` code removal is deferred to a separate package per R10; this ADR ratifies its test-only status but does not schedule its removal.
+
+R10 is superseded-in-part by CHE-0100: R10's "test-only" characterization
+is now false — `MsgpackFileStore` is retired in full (code, dependency,
+and its file-topology/fencing ADRs), not merely reduced to test-only
+status. R1-R9 and this ADR's Accepted status/lineage are unaffected;
+R10's disposition of adr-srv's migration (removing adr-srv's own
+dependency on the store) remains correct and unchanged — only its
+description of the store's *remaining* fleet-wide role is superseded.

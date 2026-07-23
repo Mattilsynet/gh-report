@@ -1,13 +1,13 @@
 # CHE-0047. Operational Recovery Runbooks
 
 Date: 2026-04-29
-Last-reviewed: 2026-04-29
+Last-reviewed: 2026-07-23
 Tier: B
 Status: Accepted
 
 ## Related
 
-References: CHE-0042, GND-0001, GND-0004, GND-0007
+References: CHE-0042, GND-0001, GND-0004, GND-0007, CHE-0100
 
 ## Context
 
@@ -17,7 +17,7 @@ Event-sourced systems recover by replaying durable facts, but operators still ne
 
 Operational recovery is a first-class architecture concern. Recovery paths quarantine first, repair second, and resume only after validation succeeds.
 
-R1 [5]: MsgpackFileStore recovery removes orphaned .msgpack.tmp files before create or append mutates aggregate streams
+R1 [5]: Retired (CHE-0100) — `MsgpackFileStore` and its `.msgpack.tmp` orphan files no longer exist; no `.msgpack.tmp` recovery runbook is needed. A future pgno-writer temp-file recovery rule, if one becomes necessary, belongs to a pgno-scoped ADR, not this one.
 R2 [5]: EventStore implementations classify malformed bytes, aggregate_id mismatches, and sequence gaps as StoreError::CorruptData
 R3 [5]: Corrupt EventEnvelope streams are quarantined before repair tools rewrite or replace persisted data
 R4 [5]: Dead-letter repair records preserve event_id, aggregate_id, sequence, correlation_id, causation_id, error category, and operator action
