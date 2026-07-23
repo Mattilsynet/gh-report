@@ -16,9 +16,11 @@ Cherry-pit is a multi-crate workspace (CHE-0029) spanning domain traits
 event serialization and storage layer (`pardosa`, `pardosa-genome`).
 Two serialization decisions exist:
 
-1. **CHE-0031** — MessagePack named encoding for `cherry-pit-gateway`'s
-   `MsgpackFileStore`. Optimised for forward-compatible event
-   persistence with `#[serde(default)]` field evolution.
+1. **CHE-0031** (superseded; retired lineage now covers pardosa-genome
+   store encoding, not gateway format) — originally named MessagePack
+   encoding for `cherry-pit-gateway`'s `MsgpackFileStore`. The gateway's
+   `rmp-serde` choice is retained; this ADR's table and Boundary Rules
+   now govern it directly.
 2. **PAR-0006** — pardosa-genome as the primary
    serialization for the `pardosa` crate. Optimised for zero-copy
    reads, compile-time schema hashing, and integrated compression.
@@ -43,7 +45,7 @@ R3 [5]: Feature flags gate serialization dependencies so users opt in
 | Crate | Serialization | Governing ADR |
 |-------|--------------|---------------|
 | `cherry-pit-core` | None — domain traits are format-agnostic. `DomainEvent: Serialize + DeserializeOwned` enables any serde backend. | CHE-0010 |
-| `cherry-pit-gateway` | MessagePack with named/map encoding (`rmp-serde`). Forward-compatible field evolution via `#[serde(default)]`. | CHE-0031 |
+| `cherry-pit-gateway` | MessagePack with named/map encoding (`rmp-serde`), format-scope only — applies when a `cherry-pit-gateway`-backed store exists; not a store-existence mandate. Forward-compatible field evolution via `#[serde(default)]`. | CHE-0045 (this ADR) |
 | `pardosa` | pardosa-genome as primary. MsgPack and JSON as feature-gated fallbacks for debugging and interop. | PAR-0006 |
 | `pardosa-genome` | Defines the genome binary wire format. Serde-native with `GenomeSafe` marker trait. | GEN-0001 through GEN-0033 |
 | `cherry-pit-web` (planned) | JSON via `serde_json` for HTTP API responses. Format determined by web conventions, not event storage. | — |
@@ -67,7 +69,7 @@ R3 [5]: Feature flags gate serialization dependencies so users opt in
 
 ## Consequences
 
-- No conflict between CHE-0031 and PAR-0006 — they govern different crates. Users choosing `cherry-pit-gateway` get MsgPack; users choosing `pardosa` get genome.
+- No conflict between this ADR's `cherry-pit-gateway` row and PAR-0006 — they govern different crates. Users choosing `cherry-pit-gateway` get MsgPack; users choosing `pardosa` get genome.
 - Domain event portability — `cherry-pit-core` is format-agnostic, so migrating from `MsgpackFileStore` to a future `GenomeFileStore` requires no domain code changes.
 - Schema evolution strategies differ by crate: additive field evolution with `#[serde(default)]` (CHE-0022) for gateway, new-stream migration (PAR-0005) for pardosa.
 - Two serialization strategies means two sets of golden-file tests and encoding-specific bug surfaces.
