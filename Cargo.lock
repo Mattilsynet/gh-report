@@ -791,6 +791,7 @@ dependencies = [
  "cherry-pit-core",
  "futures-util",
  "jiff",
+ "pardosa-cherry-pit-test-support",
  "proptest",
  "rmp-serde",
  "scc",

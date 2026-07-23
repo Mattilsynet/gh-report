@@ -159,6 +159,27 @@ impl<Ev: DomainEvent + GenomeSafe + Encode + Decode> PgnoEventStore<Ev> {
     }
 }
 
+/// Reusable event fixtures for external consumers of [`PgnoEventStore`]
+/// (e.g. `cherry-pit-gateway` test targets) that cannot depend on
+/// `pardosa-schema` directly per CHE-0084:R5 severance.
+pub mod fixture {
+    use cherry_pit_core::DomainEvent;
+    use pardosa_schema::GenomeSafe;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, GenomeSafe)]
+    #[repr(u8)]
+    pub enum RecordedEvent {
+        Recorded { value: u32 } = 0,
+    }
+
+    impl DomainEvent for RecordedEvent {
+        fn event_type(&self) -> &'static str {
+            "pgno-fixture.recorded"
+        }
+    }
+}
+
 fn to_store_error(error: FiberStoreError) -> StoreError {
     match error {
         FiberStoreError::ConcurrencyConflict {

@@ -21,8 +21,8 @@ pardosa-fiber-store = { path = "../pardosa-fiber-store", version = "=0.1.0" }
 pardosa-schema = { path = "../pardosa-schema", version = "=0.1.0", features = ["derive"] }
 jiff = { workspace = true }
 uuid = { workspace = true }
+serde = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
-serde = { workspace = true }
