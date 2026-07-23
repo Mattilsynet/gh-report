@@ -1288,10 +1288,26 @@ async fn resolve_team_rosters(
 /// Flatten the projection's `(team_domain_key, TeamRoster)` snapshot into
 /// the render-facing roster list, discarding the domain key (render
 /// matches on `TeamRoster::canonical_owner`, not the fiber key).
+///
+/// Also merges in the retained ghost rosters (CHE-0093:R2/R4) — teams
+/// detached from the live snapshot because they no longer exist on
+/// GitHub (or no longer own any repository), whose last-known status was
+/// `Deleted`. Without this merge, `build_deleted_view_model`'s
+/// ghost-teams anomaly row would vanish the moment detach folds the live
+/// roster to `None`, even though the team is still CODEOWNERS-referenced.
+/// A domain key present in the live snapshot always wins (a ghost entry
+/// only exists for keys the live snapshot no longer carries, but this
+/// guards against future overlap).
 fn team_rosters_from_projection(state: &AppState) -> Vec<crate::domain::metrics::TeamRoster> {
-    state
-        .projection_team_rosters_snapshot()
+    let live = state.projection_team_rosters_snapshot();
+    let live_keys: std::collections::BTreeSet<String> =
+        live.iter().map(|(key, _)| key.clone()).collect();
+    let ghosts = state
+        .projection_team_ghost_rosters_snapshot()
         .into_iter()
+        .filter(|(key, _)| !live_keys.contains(key));
+    live.into_iter()
+        .chain(ghosts)
         .map(|(_, roster)| roster)
         .collect()
 }
@@ -2487,7 +2503,7 @@ mod tests {
             .record_team(
                 "TestOrg",
                 &crate::domain::metrics::TeamRoster {
-                    canonical_owner: "@testorg/platform".to_string(),
+                    canonical_owner: "@TestOrg/platform".to_string(),
                     team_slug: "platform".to_string(),
                     status: crate::domain::metrics::TeamRosterStatus::Complete,
                     members: vec![crate::domain::metrics::TeamMember {
@@ -2513,6 +2529,67 @@ mod tests {
         assert!(
             already_enriched,
             "projection-sourced rosters are already org-membership-enriched"
+        );
+    }
+
+    /// (c) RENDER: a `Deleted` team still referenced in CODEOWNERS stays
+    /// VISIBLE on the ghost-teams view after detach removes it from the
+    /// live `team_rosters` projection snapshot — pins CHE-0093:R4/R5
+    /// (derive from the retained ghost-roster classification, not the
+    /// post-detach live snapshot). Falsified against the pre-fix
+    /// `team_rosters_from_projection`, which only reads the live
+    /// snapshot and drops the team entirely once `detach_team` removes
+    /// its fiber.
+    #[tokio::test]
+    async fn team_rosters_from_projection_retains_deleted_team_after_detach() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let nats = crate::config::runtime::NatsStoreConfig::for_org(
+            "TestOrg",
+            crate::config::runtime::DEFAULT_NATS_URL,
+        )
+        .expect("nats config");
+        let state = AppState::with_stores(
+            &events_dir,
+            crate::config::runtime::PardosaBackend::Pgno,
+            nats,
+        )
+        .await
+        .expect("with stores");
+
+        let deleted_roster = crate::domain::metrics::TeamRoster {
+            canonical_owner: "@TestOrg/platform".to_string(),
+            team_slug: "platform".to_string(),
+            status: crate::domain::metrics::TeamRosterStatus::Deleted,
+            members: Vec::new(),
+        };
+        state
+            .detach_team(
+                "TestOrg",
+                &deleted_roster,
+                "2026-07-23T00:00:00Z",
+                crate::event::OrgMembershipFetchStatus::Fetched,
+            )
+            .expect("detach deleted roster");
+
+        assert!(
+            state
+                .projection_team_rosters_snapshot()
+                .into_iter()
+                .all(|(_, roster)| roster.canonical_owner != "@TestOrg/platform"),
+            "detach must remove the fiber from the live team_rosters snapshot"
+        );
+
+        let rosters = team_rosters_from_projection(&state);
+
+        assert!(
+            rosters
+                .iter()
+                .any(|roster| roster.canonical_owner == "@TestOrg/platform"
+                    && roster.status == crate::domain::metrics::TeamRosterStatus::Deleted),
+            "a Deleted team still referenced in CODEOWNERS must stay visible on the \
+             ghost-teams render surface after detach removes it from the live \
+             projection snapshot (CHE-0093:R4/R5); got {rosters:?}"
         );
     }
 

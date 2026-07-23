@@ -578,6 +578,25 @@ impl AppState {
         })
     }
 
+    /// Detached-but-`Deleted` ghost team rosters retained across detach
+    /// (CHE-0093:R2/R4), so the ghost-teams render surface survives the
+    /// live projection removing the fiber on detach.
+    pub(crate) fn projection_team_ghost_rosters_snapshot(
+        &self,
+    ) -> Vec<(String, crate::domain::metrics::TeamRoster)> {
+        resolve_projection(&self.projection_state, |projection| {
+            match crate::projection::EvidenceProjectionReadPort::resolve(
+                projection,
+                crate::projection::EvidenceProjectionQuery::TeamGhostRostersSnapshot,
+            ) {
+                crate::projection::EvidenceProjectionResponse::TeamGhostRostersSnapshot(
+                    rosters,
+                ) => rosters,
+                _ => Vec::new(),
+            }
+        })
+    }
+
     /// Test-only accessor for the materialised `projection_state`.
     #[doc(hidden)]
     pub fn projection_state_for_test(&self) -> Arc<Mutex<crate::projection::EvidenceProjection>> {
@@ -921,11 +940,7 @@ fn team_projection_event(
     crate::projection::EvidenceProjectionEvent::TeamStateCaptured {
         detached,
         domain_key,
-        roster: if detached {
-            None
-        } else {
-            Some(Box::new(event.into()))
-        },
+        roster: Some(Box::new(event.into())),
     }
 }
 

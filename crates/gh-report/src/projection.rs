@@ -76,6 +76,16 @@ pub struct EvidenceProjection {
     /// (CHE-0089:R4), keyed by `team_domain_key`. `BTreeMap` for the same
     /// deterministic-iteration rationale as [`Self::repositories`].
     pub team_rosters: BTreeMap<String, TeamRoster>,
+
+    /// Detached-but-still-`Deleted` team rosters, keyed by
+    /// `team_domain_key` (CHE-0093:R2/R4). A detach event whose roster
+    /// carries [`TeamRosterStatus::Deleted`] removes the fiber from
+    /// [`Self::team_rosters`] (the live view) but retains it here so the
+    /// ghost-teams render surface (`build_deleted_view_model`) survives
+    /// detach — derived from the same event stream, never a new
+    /// persisted schema fact. A later non-`Deleted` record for the same
+    /// key clears the ghost entry (the team is live again).
+    pub team_ghost_rosters: BTreeMap<String, TeamRoster>,
 }
 
 /// Projection-input event consumed by the core [`cherry_pit_core::Projection`] impl.
@@ -109,7 +119,9 @@ pub enum EvidenceProjectionEvent {
         detached: bool,
         /// Team projection key (`team_domain_key`).
         domain_key: String,
-        /// Team roster when the fiber is live.
+        /// The roster payload, carried on both a live upsert and a
+        /// detach — the detach tombstone's status feeds the ghost-teams
+        /// retention path (see [`EvidenceProjection::team_ghost_rosters`]).
         roster: Option<Box<TeamRoster>>,
     },
 }
@@ -176,6 +188,15 @@ impl Projection for EvidenceProjection {
             } => {
                 if *detached {
                     self.team_rosters.remove(domain_key);
+                    match roster.as_ref() {
+                        Some(roster) if roster.status == TeamRosterStatus::Deleted => {
+                            self.team_ghost_rosters
+                                .insert(domain_key.clone(), roster.as_ref().clone());
+                        }
+                        _ => {
+                            self.team_ghost_rosters.remove(domain_key);
+                        }
+                    }
                 } else if let Some(roster) = roster.as_ref() {
                     let existing_is_complete = self
                         .team_rosters
@@ -186,6 +207,7 @@ impl Projection for EvidenceProjection {
                         self.team_rosters
                             .insert(domain_key.clone(), roster.as_ref().clone());
                     }
+                    self.team_ghost_rosters.remove(domain_key);
                 }
             }
         }
@@ -214,6 +236,9 @@ pub enum EvidenceProjectionQuery {
     TeamRoster(String),
     /// Return all team rosters in `team_domain_key` order.
     TeamRostersSnapshot,
+    /// Return all detached-but-`Deleted` ghost team rosters in
+    /// `team_domain_key` order (CHE-0093:R2/R4).
+    TeamGhostRostersSnapshot,
 }
 
 /// Typed read response for the governance evidence projection.
@@ -237,6 +262,8 @@ pub enum EvidenceProjectionResponse {
     TeamRoster(Box<Option<TeamRoster>>),
     /// Ordered `(team_domain_key, TeamRoster)` pairs.
     TeamRostersSnapshot(Vec<(String, TeamRoster)>),
+    /// Ordered `(team_domain_key, TeamRoster)` ghost-roster pairs.
+    TeamGhostRostersSnapshot(Vec<(String, TeamRoster)>),
 }
 
 /// Static read port for [`EvidenceProjection`].
@@ -273,6 +300,7 @@ impl EvidenceProjection {
             && self.deleted.is_empty()
             && self.org_state.is_none()
             && self.team_rosters.is_empty()
+            && self.team_ghost_rosters.is_empty()
     }
 
     /// Apply an org snapshot as latest-event-read state.
@@ -310,6 +338,16 @@ impl EvidenceProjection {
     #[must_use]
     pub fn team_rosters_snapshot(&self) -> Vec<(String, TeamRoster)> {
         self.team_rosters
+            .iter()
+            .map(|(key, roster)| (key.clone(), roster.clone()))
+            .collect()
+    }
+
+    /// Snapshot of all ghost (detached-but-`Deleted`) team rosters in
+    /// `team_domain_key` order (CHE-0093:R2/R4).
+    #[must_use]
+    pub fn team_ghost_rosters_snapshot(&self) -> Vec<(String, TeamRoster)> {
+        self.team_ghost_rosters
             .iter()
             .map(|(key, roster)| (key.clone(), roster.clone()))
             .collect()
@@ -447,6 +485,11 @@ impl ReadPort for EvidenceProjectionReadPort {
             }
             EvidenceProjectionQuery::TeamRostersSnapshot => {
                 EvidenceProjectionResponse::TeamRostersSnapshot(projection.team_rosters_snapshot())
+            }
+            EvidenceProjectionQuery::TeamGhostRostersSnapshot => {
+                EvidenceProjectionResponse::TeamGhostRostersSnapshot(
+                    projection.team_ghost_rosters_snapshot(),
+                )
             }
         }
     }

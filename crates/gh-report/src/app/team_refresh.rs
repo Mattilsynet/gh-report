@@ -20,7 +20,7 @@ use crate::app::write_policy::{
     WriteFailureContext, WriteFailureContextOwned, log_write_failure, write_with_policy,
 };
 use crate::collector::team_membership;
-use crate::domain::metrics::{TeamRoster, team_owner_slugs};
+use crate::domain::metrics::{TeamRoster, TeamRosterStatus, team_owner_slugs};
 use crate::error::AppError;
 use crate::event::{OrgMembershipFetchStatus, team_domain_key};
 use crate::github::client::GitHubClient;
@@ -39,6 +39,15 @@ pub struct TickFailure {
 /// `TeamStateCaptured` event (OCC-fenced, persist-then-fold — see
 /// [`AppState::record_team`]), and detach any team the projection
 /// previously recorded that no longer owns any repository.
+///
+/// A freshly-fetched roster whose status is
+/// [`TeamRosterStatus::Deleted`] (the team itself no longer exists on
+/// GitHub) routes to [`AppState::detach_team`] instead of
+/// [`AppState::record_team`] even when it is still CODEOWNERS-referenced
+/// (CHE-0092:R1/R2) — a `Deleted` roster observation is a no-op-on-
+/// convergence signal, not a live upsert; re-recording it every tick is
+/// a wasteful OCC fence write with no projection effect once anti-
+/// downgrade guarding is in place.
 ///
 /// # Errors
 ///
@@ -73,13 +82,14 @@ pub async fn run_team_refresh_tick(
     team_membership::enrich_team_rosters_with_org_membership(&mut rosters, org_members.as_ref());
 
     for roster in &rosters {
+        let detach = roster.status == TeamRosterStatus::Deleted;
         write_team_event(
             state,
             &org,
             roster,
             fetched_at,
             org_membership_fetch_status,
-            false,
+            detach,
         )
         .await?;
     }
@@ -174,7 +184,16 @@ fn conflict_seq_fields(error: &AppError) -> (Option<u64>, Option<u64>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::state::AppState;
+    use crate::config::runtime::{NatsStoreConfig, PardosaBackend};
     use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRosterStatus};
+    use crate::github::auth::GitHubCredential;
+    use crate::github::budget::BudgetGate;
+    use crate::github::client::GitHubClient;
+    use std::sync::Arc as StdArc;
+    use std::time::Duration;
+    use wiremock::matchers::path;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn roster(canonical_owner: &str, team_slug: &str) -> TeamRoster {
         TeamRoster {
@@ -205,6 +224,163 @@ mod tests {
         let r = roster("@acme/platform", "platform");
         assert_eq!(r.team_slug, "platform");
         assert_eq!(r.members.len(), 1);
+    }
+
+    fn test_client(base_url: &str) -> GitHubClient {
+        let credential = GitHubCredential {
+            mode: crate::domain::auth::AuthMode::Pat,
+            token: secrecy::SecretString::from("test-token"),
+            expires_at: None,
+        };
+        let budget = StdArc::new(BudgetGate::new(
+            crate::config::API_BUDGET_LIMIT,
+            Duration::from_secs(crate::config::API_BUDGET_WAIT_SECS),
+        ));
+        let rate_limit = StdArc::new(crate::github::rate_limit::new_default());
+        GitHubClient::new(credential, base_url, "test-org", None, budget, rate_limit)
+            .expect("test client construction should succeed")
+    }
+
+    async fn test_state() -> (std::sync::Arc<AppState>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let nats = NatsStoreConfig::for_org("test-org", crate::config::runtime::DEFAULT_NATS_URL)
+            .expect("nats config");
+        let state = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats)
+            .await
+            .expect("with stores");
+        (state, dir)
+    }
+
+    /// Mount the org-members and both team-role endpoints so a tick's
+    /// full fetch sequence resolves without a real network call.
+    /// `team_status` selects a `200` complete-member response or a
+    /// `404` (team deleted) response for the given `team_slug`.
+    async fn mount_team_and_org_endpoints(server: &MockServer, team_slug: &str, deleted: bool) {
+        Mock::given(path("/orgs/test-org/members"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(server)
+            .await;
+
+        let members_path = format!("/orgs/test-org/teams/{team_slug}/members");
+        let response = if deleted {
+            ResponseTemplate::new(404).set_body_json(serde_json::json!({"message": "Not Found"}))
+        } else {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!([{"login": "octocat"}]))
+        };
+        Mock::given(path(members_path))
+            .respond_with(response)
+            .mount(server)
+            .await;
+    }
+
+    /// (a) A refresh tick given a roster whose GitHub-side fetch classifies
+    /// `Deleted` (404), for a team slug still referenced in CODEOWNERS
+    /// (i.e. still present in `team_pairs` derived from the repo
+    /// projection), routes to the detach path — not a `record_team`
+    /// live-write. Pins CHE-0092:R1/R2: a `Deleted` observation converges
+    /// to no-op, it does not re-record a live roster every tick.
+    ///
+    /// Falsified against the pre-fix routing (which always calls
+    /// `record_team`): seeding an existing `Complete` roster first means
+    /// a `record_team` write on the next tick is anti-downgrade-guarded
+    /// and leaves the stale `Complete` entry untouched (`Some`), whereas
+    /// a `detach_team` write removes the fiber entirely (`None`).
+    #[tokio::test]
+    async fn deleted_roster_still_in_codeowners_routes_to_detach_not_record() {
+        let (state, _dir) = test_state().await;
+        let evidence = crate::test_fixtures::make_repository_evidence(
+            "repo-a",
+            crate::domain::repository::Visibility::Public,
+            false,
+            crate::test_fixtures::make_checks(
+                crate::test_fixtures::policy_pass_setting(),
+                crate::test_fixtures::secret_enabled_observable(false),
+                crate::test_fixtures::dependabot_enabled(),
+                crate::test_fixtures::branch_pass(),
+                crate::test_fixtures::codeowners_with_owners(&["@test-org/platform"]),
+            ),
+        );
+        let domain_key = evidence.repository.inventory_key.clone();
+        let repo_name = evidence.repository.name.clone();
+        state
+            .record_repo(&domain_key, evidence, &repo_name, "2026-07-23T00:00:00Z")
+            .expect("seed repo evidence");
+
+        let team_key = team_domain_key("test-org", "platform").expect("derive team key");
+        state
+            .record_team(
+                "test-org",
+                &roster("@test-org/platform", "platform"),
+                "2026-07-22T00:00:00Z",
+                crate::event::OrgMembershipFetchStatus::Fetched,
+            )
+            .expect("seed existing complete roster");
+        assert!(
+            state.lock_projection().team_rosters.contains_key(&team_key),
+            "seeded roster must be live before the tick under test"
+        );
+
+        let server = MockServer::start().await;
+        mount_team_and_org_endpoints(&server, "platform", true).await;
+        let client = test_client(&server.uri());
+
+        run_team_refresh_tick(&state, &client, "2026-07-23T01:00:00Z")
+            .await
+            .expect("tick succeeds");
+
+        assert!(
+            !state.lock_projection().team_rosters.contains_key(&team_key),
+            "a Deleted roster still in CODEOWNERS must route to detach_team, \
+             removing the live fiber — not record_team, which would leave the \
+             stale Complete entry anti-downgrade-guarded in place"
+        );
+    }
+
+    /// (b) A second identical tick over an already-detached team is a
+    /// no-op: no new live-write, no fence churn (idempotent convergence,
+    /// CHE-0091:R4). The ghost roster observed after the first tick must
+    /// be unchanged (same content) after the second tick.
+    #[tokio::test]
+    async fn second_identical_tick_is_idempotent_no_new_write() {
+        let (state, _dir) = test_state().await;
+        let evidence = crate::test_fixtures::make_repository_evidence(
+            "repo-a",
+            crate::domain::repository::Visibility::Public,
+            false,
+            crate::test_fixtures::make_checks(
+                crate::test_fixtures::policy_pass_setting(),
+                crate::test_fixtures::secret_enabled_observable(false),
+                crate::test_fixtures::dependabot_enabled(),
+                crate::test_fixtures::branch_pass(),
+                crate::test_fixtures::codeowners_with_owners(&["@test-org/platform"]),
+            ),
+        );
+        let domain_key = evidence.repository.inventory_key.clone();
+        let repo_name = evidence.repository.name.clone();
+        state
+            .record_repo(&domain_key, evidence, &repo_name, "2026-07-23T00:00:00Z")
+            .expect("seed repo evidence");
+
+        let server = MockServer::start().await;
+        mount_team_and_org_endpoints(&server, "platform", true).await;
+        let client = test_client(&server.uri());
+
+        run_team_refresh_tick(&state, &client, "2026-07-23T01:00:00Z")
+            .await
+            .expect("first tick succeeds");
+        let after_first = state.projection_team_ghost_rosters_snapshot();
+
+        run_team_refresh_tick(&state, &client, "2026-07-23T02:00:00Z")
+            .await
+            .expect("second identical tick succeeds");
+        let after_second = state.projection_team_ghost_rosters_snapshot();
+
+        assert_eq!(
+            after_first, after_second,
+            "a second identical tick over an already-detached team must be a \
+             no-op convergence, not a fresh write that churns the ghost roster"
+        );
     }
 
     #[derive(Clone, Default)]
