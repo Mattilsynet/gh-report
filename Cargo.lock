@@ -777,7 +777,6 @@ dependencies = [
  "cherry-pit-core",
  "jiff",
  "proptest",
- "rmp-serde",
  "serde",
  "serde_json",
  "toml",

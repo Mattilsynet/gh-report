@@ -136,28 +136,6 @@ mod tests {
     }
 
     #[test]
-    fn serde_msgpack_roundtrip() {
-        let aggregate_id = id(42);
-        let bytes = rmp_serde::to_vec(&aggregate_id).unwrap();
-        let back: AggregateId = rmp_serde::from_slice(&bytes).unwrap();
-        assert_eq!(back, aggregate_id);
-    }
-
-    #[test]
-    fn serde_msgpack_zero_rejected() {
-        let bytes = rmp_serde::to_vec(&0u64).unwrap();
-        let result = rmp_serde::from_slice::<AggregateId>(&bytes);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn serde_msgpack_wire_format_matches_raw_u64() {
-        let raw_bytes = rmp_serde::to_vec(&42u64).unwrap();
-        let id_bytes = rmp_serde::to_vec(&id(42)).unwrap();
-        assert_eq!(raw_bytes, id_bytes);
-    }
-
-    #[test]
     fn hash_consistent() {
         use std::collections::HashSet;
         let mut set = HashSet::new();
@@ -211,14 +189,6 @@ mod tests {
                 let id = AggregateId::new(NonZeroU64::new(val).unwrap());
                 let json = serde_json::to_string(&id).unwrap();
                 let back: AggregateId = serde_json::from_str(&json).unwrap();
-                prop_assert_eq!(back, id);
-            }
-
-            #[test]
-            fn aggregate_id_msgpack_roundtrip(val in 1..=u64::MAX) {
-                let id = AggregateId::new(NonZeroU64::new(val).unwrap());
-                let bytes = rmp_serde::to_vec(&id).unwrap();
-                let back: AggregateId = rmp_serde::from_slice(&bytes).unwrap();
                 prop_assert_eq!(back, id);
             }
         }

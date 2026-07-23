@@ -15,8 +15,9 @@ use crate::error::EnvelopeError;
 /// `Clone` + `Send` + `Sync` + `'static` + `serde::Serialize` +
 /// `serde::de::DeserializeOwned`. The legacy `pardosa-encoding` crate
 /// (binary `Encode`/`Decode`) has been removed from these bounds; the
-/// wire format is now msgpack via `rmp-serde`. This is unrelated to the
-/// current `pardosa` substrate crates, which remain live.
+/// wire format is chosen by infrastructure, not fixed here (CHE-0045
+/// R1-R2). This is unrelated to the current `pardosa` substrate
+/// crates, which remain live.
 /// CHE-0022 R1–R5: event enum evolution rules — no `#[non_exhaustive]`,
 /// immutable `event_type()` strings, new fields as `Option<T>`;
 /// CHE-0045 R1–R2: domain events format-agnostic, serde chosen by infra.
@@ -323,10 +324,10 @@ impl<E: DomainEvent> EventEnvelope<E> {
     }
 }
 
-/// Canonical serialization of an envelope is via serde + msgpack
-/// (`rmp-serde`). The struct's serde derive defines the wire format.
-/// Field order and per-field encoding follow serde's derived layout —
-/// treat the resulting bytes as a wire format.
+/// Canonical serialization of an envelope is via serde; the wire format
+/// is chosen by infrastructure (CHE-0045:R1-R2), not fixed by this
+/// crate. The struct's serde derive defines the field layout that any
+/// chosen format encodes.
 ///
 /// (ADR cleanup deferred per user mission scope: the legacy
 /// `pardosa-encoding` crate's `Encode`/`Decode` impls have been removed
@@ -355,7 +356,7 @@ mod tests {
 
     proptest! {
         #[test]
-        fn envelope_msgpack_roundtrip(
+        fn envelope_json_roundtrip(
             seq in 1..=u64::MAX,
             value in "[a-zA-Z0-9]{0,50}",
         ) {
@@ -371,8 +372,8 @@ mod tests {
                 TestEvent::Happened { value: value.clone() },
             ).unwrap();
 
-            let bytes = rmp_serde::encode::to_vec_named(&envelope).unwrap();
-            let back: EventEnvelope<TestEvent> = rmp_serde::from_slice(&bytes).unwrap();
+            let json = serde_json::to_string(&envelope).unwrap();
+            let back: EventEnvelope<TestEvent> = serde_json::from_str(&json).unwrap();
 
             prop_assert_eq!(back.event_id(), envelope.event_id());
             prop_assert_eq!(back.aggregate_id(), envelope.aggregate_id());
@@ -382,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn envelope_msgpack_roundtrip_with_correlation_and_causation() {
+    fn envelope_json_roundtrip_with_correlation_and_causation() {
         let id = AggregateId::new(NonZeroU64::new(42).unwrap());
         let envelope = EventEnvelope::new(
             uuid::Uuid::now_v7(),
@@ -397,8 +398,8 @@ mod tests {
         )
         .unwrap();
 
-        let bytes = rmp_serde::encode::to_vec_named(&envelope).unwrap();
-        let back: EventEnvelope<TestEvent> = rmp_serde::from_slice(&bytes).unwrap();
+        let json = serde_json::to_string(&envelope).unwrap();
+        let back: EventEnvelope<TestEvent> = serde_json::from_str(&json).unwrap();
 
         assert_eq!(back.event_id(), envelope.event_id());
         assert_eq!(back.aggregate_id(), envelope.aggregate_id());
@@ -595,81 +596,5 @@ mod tests {
             Err(EnvelopeError::AggregateIdMismatch { expected, actual })
                 if expected == id && actual == other_id
         ));
-    }
-
-    /// Build a deterministic envelope with fixed values for golden-file
-    /// comparison. Every field uses a hard-coded constant so the
-    /// serialized bytes are reproducible across runs and platforms.
-    fn golden_envelope() -> EventEnvelope<TestEvent> {
-        let event_id = uuid::Uuid::from_bytes([
-            0x01, 0x93, 0xa3, 0xe8, 0x80, 0x00, 0x7c, 0xde, 0x8f, 0x01, 0x23, 0x45, 0x67, 0x89,
-            0xab, 0xcd,
-        ]);
-        let correlation_id = uuid::Uuid::from_bytes([
-            0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x71, 0x22, 0x83, 0x44, 0x55, 0x66, 0x77, 0x88,
-            0x99, 0x00,
-        ]);
-        let causation_id = uuid::Uuid::from_bytes([
-            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x89, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
-            0xff, 0x00,
-        ]);
-        let aggregate_id = AggregateId::new(NonZeroU64::new(42).unwrap());
-        let sequence = NonZeroU64::new(7).unwrap();
-        let timestamp = jiff::Timestamp::from_second(1_700_000_000).unwrap();
-
-        EventEnvelope {
-            event_id,
-            aggregate_id,
-            sequence,
-            timestamp,
-            correlation_id: Some(correlation_id),
-            causation_id: Some(causation_id),
-            payload: TestEvent::Happened {
-                value: "golden".into(),
-            },
-        }
-    }
-
-    /// Path to the golden-file fixture, relative to the crate root.
-    fn golden_file_path() -> std::path::PathBuf {
-        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        manifest.join("tests/fixtures/envelope_golden.msgpack")
-    }
-
-    #[test]
-    fn envelope_serde_golden_file_roundtrip() {
-        let envelope = golden_envelope();
-        let serialized = rmp_serde::encode::to_vec_named(&envelope).unwrap();
-
-        let path = golden_file_path();
-        if !path.exists() {
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, &serialized).unwrap();
-            eprintln!(
-                "Golden file written to {}. Commit this file.",
-                path.display()
-            );
-        }
-
-        let expected = std::fs::read(&path).unwrap();
-        assert_eq!(
-            serialized,
-            expected,
-            "Serialized envelope does not match golden file at {}. \
-             If the change is intentional (schema evolution), update the \
-             fixture and document in an ADR.",
-            path.display()
-        );
-
-        let deserialized: EventEnvelope<TestEvent> = rmp_serde::from_slice(&expected).unwrap();
-        deserialized.validate().unwrap();
-
-        assert_eq!(deserialized.event_id(), envelope.event_id());
-        assert_eq!(deserialized.aggregate_id(), envelope.aggregate_id());
-        assert_eq!(deserialized.sequence(), envelope.sequence());
-        assert_eq!(deserialized.timestamp(), envelope.timestamp());
-        assert_eq!(deserialized.correlation_id(), envelope.correlation_id());
-        assert_eq!(deserialized.causation_id(), envelope.causation_id());
-        assert_eq!(deserialized.payload(), envelope.payload());
     }
 }

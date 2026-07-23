@@ -108,8 +108,8 @@ impl<E: DomainEvent> EventBus for FakeBus<E> {
 ///
 /// Optimistic concurrency: `append` rejects with
 /// [`StoreError::ConcurrencyConflict`] when `expected_sequence` does not
-/// match the stream's actual last sequence (mirror of
-/// `msgpack_file.rs:514-519`).
+/// match the stream's actual last sequence (mirror of the pgno-backed
+/// gateway adapter's expected-sequence check).
 ///
 /// `AggregateId` allocation: a single per-store `NonZeroU64` counter
 /// behind the same `Mutex` as the streams. First `create` returns id 1,
@@ -147,10 +147,11 @@ impl<E: DomainEvent> Default for InMemoryEventStore<E> {
 
 /// Allocate sequential envelopes starting at `start + 1`.
 ///
-/// Mirrors `msgpack_file.rs:316` (`build_envelopes`): one shared
-/// timestamp per batch (the batch is atomic), `event_id` via
-/// [`uuid::Uuid::now_v7`] (CHE-0033:R1 — in-process v7 is correct here;
-/// deterministic-v7 is reserved for substrate adapters).
+/// Mirrors the pgno-backed gateway adapter's batch-envelope
+/// construction: one shared timestamp per batch (the batch is atomic),
+/// `event_id` via [`uuid::Uuid::now_v7`] (CHE-0033:R1 — in-process v7
+/// is correct here; deterministic-v7 is reserved for substrate
+/// adapters).
 fn build_envelopes<E: DomainEvent>(
     id: AggregateId,
     start_sequence: u64,
