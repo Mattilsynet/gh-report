@@ -67,6 +67,7 @@ crates = [
     "cherry-pit-storage",
     "cherry-pit-sd-viz",
     "gh-report",
+    "adr-srv",
 ]
 
 [[domains]]
