@@ -111,8 +111,12 @@ pub trait EventStore: Send + Sync + 'static {
     ///
     /// Dropping the future MAY cancel `create` at any point; if dropped
     /// post-persistence the caller MUST treat the aggregate as
-    /// potentially-created. Implementors MUST NOT leave a partial
-    /// stream; atomicity matches [`append`](Self::append).
+    /// potentially-created. Atomicity matches
+    /// [`append`](Self::append): guaranteed per-call for the single
+    /// event a call actually persists, not as an all-or-nothing
+    /// guarantee across an arbitrary multi-event `events` batch (that
+    /// stronger guarantee is store-dependent and not part of the
+    /// portable `EventStore` contract).
     ///
     /// # Retry / duplicate delivery
     ///
@@ -131,9 +135,19 @@ pub trait EventStore: Send + Sync + 'static {
     /// Append new events to an existing aggregate's stream.
     ///
     /// The aggregate must already exist via [`create`](Self::create).
-    /// Empty `events` is a no-op returning `Ok(vec![])`. Persists
-    /// atomically — either all events persist, or none do. Returns the
+    /// Empty `events` is a no-op returning `Ok(vec![])`. Returns the
     /// created envelopes.
+    ///
+    /// # Atomicity
+    ///
+    /// The `EventStore` contract guarantees PER-CALL atomicity: a
+    /// call's persisted events are durably committed as a unit or the
+    /// call fails and observes none of them. It does NOT guarantee
+    /// multi-event all-or-nothing durability as a portable property of
+    /// every implementation — that stronger guarantee is
+    /// store-dependent (some backends, e.g. the pardosa/pgno
+    /// substrate, accept and durably commit exactly one event per
+    /// call).
     ///
     /// `expected_sequence` is the caller's last-loaded sequence
     /// ([`NonZeroU64`], always ≥1 since [`create`](Self::create)
@@ -153,9 +167,11 @@ pub trait EventStore: Send + Sync + 'static {
     ///
     /// # Cancellation
     ///
-    /// Dropping the future MUST NOT leave a partial append observable
-    /// to any subsequent [`load`](Self::load) — resolves to "all
-    /// persisted" or "none persisted", never a prefix.
+    /// Dropping the future MUST NOT leave a partial-event observable
+    /// to any subsequent [`load`](Self::load) — for the events a call
+    /// does persist, resolution is "all persisted" or "none
+    /// persisted", never a torn single event; see "Atomicity" above
+    /// for the scope of that guarantee across a multi-event batch.
     ///
     /// # Retry
     ///

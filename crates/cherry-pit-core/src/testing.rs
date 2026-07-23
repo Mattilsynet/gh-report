@@ -528,8 +528,11 @@ pub mod conformance {
         scenario_create_then_append_is_monotone::<S, _, _>(&make_store, &make_event).await;
     }
 
-    /// Scenario 1: `create` returns envelopes with sequences contiguous
-    /// from 1, and `load` returns the same stream (store.rs:115-120).
+    /// Scenario 1: sequential single-event `create` then `append`s
+    /// return envelopes with sequences contiguous from 1, and `load`
+    /// returns the same stream (store.rs:115-120). Each write is a
+    /// single-event call — only per-call atomicity is exercised, per
+    /// [`EventStore::append`]'s documented contract scope.
     async fn scenario_create_load_roundtrip<S, F, ME>(make_store: &F, make_event: &ME)
     where
         S: EventStore,
@@ -538,18 +541,27 @@ pub mod conformance {
     {
         let store = make_store();
         let (id, created) = store
-            .create(
-                vec![make_event(0), make_event(1), make_event(2)],
-                CorrelationContext::none(),
-            )
+            .create(vec![make_event(0)], CorrelationContext::none())
             .await
             .expect("create with non-empty events must succeed");
         assert_eq!(
             created.len(),
-            3,
+            1,
             "create must return one envelope per supplied event"
         );
-        for (i, env) in created.iter().enumerate() {
+        let mut all = created;
+        let mut last_seq = all.last().expect("create returns ≥1 envelope").sequence();
+        for i in 1..3u32 {
+            let appended = store
+                .append(id, last_seq, vec![make_event(i)], CorrelationContext::none())
+                .await
+                .expect("append with correct expected_sequence must succeed");
+            assert_eq!(appended.len(), 1, "append must return one envelope");
+            last_seq = appended[0].sequence();
+            all.extend(appended);
+        }
+        assert_eq!(all.len(), 3, "create+2 appends must produce 3 envelopes");
+        for (i, env) in all.iter().enumerate() {
             let expected = u64::try_from(i).expect("i fits in u64") + 1;
             assert_eq!(
                 env.sequence().get(),
@@ -705,8 +717,11 @@ pub mod conformance {
         );
     }
 
-    /// Scenario 6: `create` followed by `append` produces a monotone,
-    /// gap-free, end-to-end-loadable stream.
+    /// Scenario 6: `create` followed by sequential single-event
+    /// `append`s produces a monotone, gap-free, end-to-end-loadable
+    /// stream. Each write is a single-event call — only per-call
+    /// atomicity is exercised, per [`EventStore::append`]'s documented
+    /// contract scope.
     async fn scenario_create_then_append_is_monotone<S, F, ME>(make_store: &F, make_event: &ME)
     where
         S: EventStore,
@@ -715,38 +730,26 @@ pub mod conformance {
     {
         let store = make_store();
         let (id, created) = store
-            .create(
-                vec![make_event(0), make_event(1)],
-                CorrelationContext::none(),
-            )
+            .create(vec![make_event(0)], CorrelationContext::none())
             .await
             .expect("create must succeed");
-        let last_seq = created.last().expect("≥1 envelope").sequence();
-        assert_eq!(
-            last_seq.get(),
-            2,
-            "after create of 2 events, last sequence must be 2",
-        );
-        let appended = store
-            .append(
-                id,
-                last_seq,
-                vec![make_event(2), make_event(3)],
-                CorrelationContext::none(),
-            )
-            .await
-            .expect("append with correct expected_sequence must succeed");
-        assert_eq!(appended.len(), 2, "append returns one envelope per event");
-        assert_eq!(
-            appended[0].sequence().get(),
-            3,
-            "first appended sequence must be last_create_seq + 1",
-        );
-        assert_eq!(
-            appended[1].sequence().get(),
-            4,
-            "second appended sequence must be contiguous",
-        );
+        let mut last_seq = created.last().expect("≥1 envelope").sequence();
+        assert_eq!(last_seq.get(), 1, "after create of 1 event, last sequence must be 1");
+
+        for (offset, i) in (1..4u32).enumerate() {
+            let appended = store
+                .append(id, last_seq, vec![make_event(i)], CorrelationContext::none())
+                .await
+                .expect("append with correct expected_sequence must succeed");
+            assert_eq!(appended.len(), 1, "append returns one envelope per event");
+            let expected = u64::try_from(offset).expect("offset fits in u64") + 2;
+            assert_eq!(
+                appended[0].sequence().get(),
+                expected,
+                "appended[{offset}] sequence must be contiguous",
+            );
+            last_seq = appended[0].sequence();
+        }
 
         let full = store
             .load(id)
@@ -755,7 +758,7 @@ pub mod conformance {
         assert_eq!(
             full.len(),
             4,
-            "stream after create+append must contain all 4 events",
+            "stream after create+3 appends must contain all 4 events",
         );
         for (i, env) in full.iter().enumerate() {
             let expected = u64::try_from(i).expect("i fits in u64") + 1;
@@ -836,9 +839,10 @@ pub mod conformance {
     /// Scenarios:
     ///
     /// 1. `P::default()` constructs without panic.
-    /// 2. Replay-equivalence (CHE-0048:R3): applying the envelopes from one
-    ///    `create` call to two fresh `P::default()` instances yields equal
-    ///    `P`s (per caller-supplied `compare`).
+    /// 2. Replay-equivalence (CHE-0048:R3): applying the envelopes from a
+    ///    sequential single-event `create` + `append`s to two fresh
+    ///    `P::default()` instances yields equal `P`s (per caller-supplied
+    ///    `compare`).
     /// 3. Re-replay determinism: applying the same envelope sequence twice
     ///    into fresh `P`s yields the same outcome (CHE-0048:R3).
     ///
@@ -866,13 +870,18 @@ pub mod conformance {
         let _ = P::default();
 
         let store = make_store();
-        let (id, _) = store
-            .create(
-                vec![make_event(0), make_event(1), make_event(2)],
-                CorrelationContext::none(),
-            )
+        let (id, created) = store
+            .create(vec![make_event(0)], CorrelationContext::none())
             .await
             .expect("create must succeed");
+        let mut last_seq = created.last().expect("≥1 envelope").sequence();
+        for i in 1..3u32 {
+            let appended = store
+                .append(id, last_seq, vec![make_event(i)], CorrelationContext::none())
+                .await
+                .expect("append with correct expected_sequence must succeed");
+            last_seq = appended.last().expect("≥1 envelope").sequence();
+        }
         let envs = store
             .load(id)
             .await
