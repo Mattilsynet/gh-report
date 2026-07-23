@@ -38,9 +38,13 @@ Companion docs: `OPERATIONS.md` (operator runbook), `README.md` (DoD-4).
 > `DomainEvent` EventStore is `crate::store::NativeStore`
 > (`pardosa_fiber_store::FiberStore<DomainEvent>`, one pardosa fiber per
 > repository domain key, `.pgno` container or NATS JetStream backend
-> per CHE-0072), not `cherry_pit_gateway::MsgpackFileStore`.
-> `MsgpackFileStore` is retained only for the non-persisted-by-CHE-0074
-> scheduler and sweep-timeout event classes (`src/app/state.rs:48-51`).
+> per CHE-0072), not a msgpack-file-backed store.
+> `SchedulerEventStoreImpl` / `SweepTimeoutEventStoreImpl` are ephemeral,
+> in-process, non-persisted stores (CHE-0099) for the scheduler and
+> sweep-timeout event classes (`src/app/state.rs:48-51`) — Direction A of
+> the msgpack-removal-2 mission deleted the last two `cherry-pit-gateway`
+> msgpack-file-backed event store prod consumers; `gh-report` no
+> longer persists any event stream via msgpack.
 >
 > The legacy per-repo evidence cache (v1's mutable evidence store) was
 > retained on disk (`src/app/evidence_store.rs`, held as a compile-only
@@ -230,15 +234,18 @@ rolled forward from v1).
     as the durable `DomainEvent` EventStore, one pardosa fiber per
     repository domain key (CHE-0074:R4), backed by a `.pgno` container
     or NATS JetStream (backend selection per CHE-0072). This supersedes
-    the retired `cherry_pit_gateway::MsgpackFileStore<OrgGovernance>` /
-    `PardosaEventStore` byte-adapter wiring (CHE-0074:R8). Companion
+    the retired `cherry_pit_gateway`'s `OrgGovernance`-typed msgpack-file
+    store / `PardosaEventStore` byte-adapter wiring (CHE-0074:R8). Companion
     `crate::store::NativeOrgStore` and `crate::store::NativeTeamStore`
     provide the org-fiber (CHE-0073:R8) and per-team-fiber (CHE-0073:R10,
-    CHE-0089) current-state classes. `cherry_pit_gateway::MsgpackFileStore`
-    remains wired only for the non-persisted-by-CHE-0074 scheduler and
-    sweep-timeout event classes (`SchedulerEventStoreImpl`,
-    `SweepTimeoutEventStoreImpl`, `src/app/state.rs:48-51`) — these are
-    not part of the `DomainEvent` durability contract CHE-0073/74 govern.
+    CHE-0089) current-state classes. `SchedulerEventStoreImpl` /
+    `SweepTimeoutEventStoreImpl` are ephemeral, in-process, non-persisted
+    stores (CHE-0099; `app/ephemeral_store.rs`, wired at
+    `src/app/state.rs:48-51`) for the scheduler and sweep-timeout event
+    classes — these are not part of the `DomainEvent` durability contract
+    CHE-0073/74 govern, and are not part of the msgpack-file family
+    either (Direction A of msgpack-removal-2 deleted gh-report's last two
+    `cherry-pit-gateway` msgpack-file-backed event store prod consumers).
   - `cherry_pit_app::InProcessEventBus<SweepTimeoutEvent>` (W2
     truth-alignment) is wired for the scheduler's sweep-timeout event
     class only (`src/app/collect.rs:27,584-638`); it does not carry
@@ -331,14 +338,11 @@ disk at all. It is rebuilt in memory on every boot by folding
                                         # FiberStore<TeamStateCaptured>,
                                         # one fiber per (org, team_slug)
                                         # pair (CHE-0073:R10, CHE-0089).
-    sweep-timeout-schedules/           # SchedulerEventStoreImpl —
-                                        # cherry_pit_gateway::MsgpackFileStore,
-                                        # non-persisted-by-CHE-0074 class
-                                        # (`src/app/state.rs:48-51`).
-    sweep-timeouts/                    # SweepTimeoutEventStoreImpl —
-                                        # cherry_pit_gateway::MsgpackFileStore,
-                                        # same non-persisted-by-CHE-0074
-                                        # class.
+                                        # SchedulerEventStoreImpl /
+                                        # SweepTimeoutEventStoreImpl are
+                                        # ephemeral, in-process, and
+                                        # write nothing under
+                                        # <store_dir>/events (CHE-0099).
   locks/
     <filename>.lock                   # CHE-0043 process-level fencing
                                        # (RunLock, BC-v2-18).
@@ -349,9 +353,10 @@ pardosa's `detach` (CHE-0073:R2/R6); the pardosa envelope `detached` flag
 is the sole soft-delete signal folded by the projection (CHE-0073:R7). A
 returning identity is rescued via `rescue_detached`, not re-created.
 
-All fiber-store writes go through pardosa's own atomic-append substrate;
-`MsgpackFileStore` writes for the scheduler/sweep-timeout classes remain
-atomic temp-then-rename per CHE-0032. The process-wide RunLock at
+All fiber-store writes go through pardosa's own atomic-append substrate.
+The scheduler and sweep-timeout event classes are ephemeral and
+in-process (CHE-0099) — they persist nothing, so there is no
+atomic-write concern for them. The process-wide RunLock at
 `<store_dir>/locks/...` fences the entire store (BC-v2-18).
 
 **No `baseline/`, no `<YYYY-MM-DD>.checkpoint`, no projection-snapshot
@@ -469,7 +474,7 @@ strict prescriptive non-goals**. When CHE-0018 (sync domain / async
 infra), CHE-0024 (event delivery), CHE-0029 (workspace graph),
 CHE-0032 / CHE-0036 / CHE-0043 (atomic writes / file-per-stream /
 process fencing), CHE-0048 (cherry-pit-projection), CHE-0050
-(MsgpackFileStore), CHE-0051 (cherry-pit-app), CHE-0052
+(cherry-pit-gateway msgpack-file store), CHE-0051 (cherry-pit-app), CHE-0052
 (cherry-pit-runtime), or CHE-0053 (cherry-pit-storage)
 prescribe a shape, follow the ADR even where it deviates from the
 default surgical-extraction posture. Implementation
@@ -539,7 +544,7 @@ fixes their contract with gh-report code post-M2 cutover.
   subsequent observations append to it. On boot, `FiberIndex<domain_key>`
   is rebuilt from the log and `resume_defined` appends to an existing
   Defined fiber (CHE-0074:R5). This supersedes the retired
-  `cherry_pit_gateway::MsgpackFileStore<DomainEvent>` /
+  `cherry_pit_gateway`'s `DomainEvent`-typed msgpack-file store /
   `PardosaEventStore` byte-adapter contract in its entirety — no
   `EventEnvelope`-as-bytes payload, no adapter-owned logical-stream
   reconstruction (CHE-0074:R8). Removal appends a `RepositoryStateCaptured`
@@ -550,10 +555,13 @@ fixes their contract with gh-report code post-M2 cutover.
   `crate::store::NativeTeamStore` provide the org-fiber (CHE-0073:R8) and
   per-team-fiber (CHE-0073:R10) current-state classes at
   `<store_dir>/events/org-events.pgno` and `…/team-events.pgno`.
-  `cherry_pit_gateway::MsgpackFileStore` remains wired only for the
-  non-persisted-by-CHE-0074 scheduler and sweep-timeout event classes
-  (`SchedulerEventStoreImpl`, `SweepTimeoutEventStoreImpl`,
-  `src/app/state.rs:48-51`); the `create` / `append` / `load` semantics
+  `SchedulerEventStoreImpl` / `SweepTimeoutEventStoreImpl` are ephemeral,
+  in-process, non-persisted stores (CHE-0099; `app/ephemeral_store.rs`)
+  for the scheduler and sweep-timeout event classes
+  (`src/app/state.rs:48-51`) — Direction A of msgpack-removal-2 deleted
+  the last two `cherry-pit-gateway` msgpack-file-backed event store prod
+  consumers, so these two classes are ephemeral rather than
+  msgpack-file-backed; the `create` / `append` / `load` semantics
   described for those two classes (CHE-0013, CHE-0016, CHE-0019) are
   unaffected by this corrigendum.
 - **Write entry points — W2 truth-alignment: withdrawn.** No

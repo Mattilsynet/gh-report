@@ -35,7 +35,7 @@ fn dump_baseline_empty_store_uses_pardosa_pgno_artifact() {
     );
     assert!(
         !events_dir.join("1.msgpack").exists(),
-        "M1 must not write the old MsgpackFileStore aggregate file"
+        "M1 must not write the old msgpack-file-backed aggregate file"
     );
     assert!(
         !stdout.contains("tier-fail"),

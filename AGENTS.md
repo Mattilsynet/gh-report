@@ -164,7 +164,11 @@ rejects illegal architectures, the search space an agent must explore collapses.
   parent-dir fsync); the production path in
   `cherry-pit-gateway/src/event_store/msgpack_file.rs::write_atomic` already
   implements it. `cherry-pit-gateway` genuinely uses MessagePack on disk;
-  `gh-report` persists via native pardosa (`.pgno`, default backend,
-  CHE-0074) and is msgpack-free as of the CHE-0074 purge — the prior
-  incidental `rmp-serde` uses (in-process timer codec, byte-size metric
-  sample, and three serde-compat tests) were removed.
+  `gh-report` persists domain events via native pardosa (`.pgno`, default
+  backend, CHE-0074), and (per CHE-0099, msgpack-removal-2 Direction A)
+  its scheduler + sweep-timeout streams are ephemeral in-process stores
+  with no on-disk persistence — `gh-report` is genuinely msgpack-free for
+  every prod event store as of msgpack-removal-2, not just for the
+  CHE-0074-governed domain-event trio. The prior incidental `rmp-serde`
+  uses (in-process timer codec, byte-size metric sample, and three
+  serde-compat tests) were removed at the CHE-0074 purge.

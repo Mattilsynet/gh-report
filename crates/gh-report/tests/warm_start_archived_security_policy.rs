@@ -14,8 +14,8 @@
 //!
 //! Unit tests cover each axis in isolation. This integration test
 //! adds the higher-level contract: the invariants survive a
-//! cross-handle warm start, where events are written through
-//! `pardosa-eventstore` (`MsgpackFileStore`), the store handle drops
+//! cross-handle warm start, where events are written through pardosa's
+//! native `.pgno` fiber store, the store handle drops
 //! (releasing `RunLock` — the closest in-process analogue to a
 //! restart), and state rehydrates through `AppState::with_stores` +
 //! `snapshot_fast_path_init` (the chain `gh-report` runs on boot).
