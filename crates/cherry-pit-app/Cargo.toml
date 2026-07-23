@@ -27,6 +27,7 @@ jiff = { workspace = true }
 
 [dev-dependencies]
 cherry-pit-core = { workspace = true, features = ["testing"] }
+pardosa-cherry-pit-test-support = { path = "../pardosa-cherry-pit-test-support" }
 serde = { workspace = true }
 tokio = { workspace = true }
 jiff = { workspace = true }

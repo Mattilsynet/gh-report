@@ -185,6 +185,9 @@ pub use scheduler_store::{
     PgnoSchedulerStore, SchedulerEventConversionError, SchedulerEventDto, from_dto, to_dto,
 };
 
+pub mod serde_bridge;
+pub use serde_bridge::{PgnoSerdeStore, SerdeBridgeError, SerdeEnvelopeDto};
+
 fn to_store_error(error: FiberStoreError) -> StoreError {
     match error {
         FiberStoreError::ConcurrencyConflict {

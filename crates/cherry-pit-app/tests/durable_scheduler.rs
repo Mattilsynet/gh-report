@@ -6,8 +6,9 @@ use cherry_pit_core::{
     AggregateId, CorrelationContext, DomainEvent, EventStore, ScheduleArmed, ScheduleCancelled,
     ScheduleFired, ScheduleId, ScheduledDomainEvent, SchedulerEvent,
 };
-use cherry_pit_gateway::MsgpackFileStore;
+use pardosa_cherry_pit_test_support::{PgnoSchedulerStore, PgnoSerdeStore};
 use serde::{Deserialize, Serialize};
+use tempfile::TempPath;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 enum AuditEvent {
@@ -31,6 +32,8 @@ impl ScheduledDomainEvent for AuditEvent {
         }
     }
 }
+
+type AuditStore = PgnoSerdeStore<AuditEvent>;
 
 #[derive(Clone)]
 struct AuditDecoder;
@@ -67,8 +70,15 @@ fn ctx() -> CorrelationContext {
     CorrelationContext::new(uuid::Uuid::from_u128(90), uuid::Uuid::from_u128(91))
 }
 
+fn temp_pgno_path() -> TempPath {
+    let file = tempfile::NamedTempFile::new().expect("create temp file");
+    let path = file.into_temp_path();
+    std::fs::remove_file(&path).expect("clear placeholder so create_pgno starts fresh");
+    path
+}
+
 async fn opened_target(
-    store: &MsgpackFileStore<AuditEvent>,
+    store: &AuditStore,
 ) -> (AggregateId, Vec<cherry_pit_core::EventEnvelope<AuditEvent>>) {
     store
         .create(
@@ -109,10 +119,10 @@ fn recording_bus() -> (InProcessEventBus<AuditEvent>, Arc<Mutex<Vec<AuditEvent>>
 
 #[tokio::test]
 async fn scheduled_effect_persists_then_publishes_auditable_event() {
-    let scheduler_dir = tempfile::tempdir().unwrap();
-    let target_dir = tempfile::tempdir().unwrap();
-    let scheduler_store = MsgpackFileStore::<SchedulerEvent>::new(scheduler_dir.path());
-    let target_store = MsgpackFileStore::<AuditEvent>::new(target_dir.path());
+    let scheduler_path = temp_pgno_path();
+    let target_path = temp_pgno_path();
+    let scheduler_store = PgnoSchedulerStore::create_pgno(&scheduler_path).unwrap();
+    let target_store = AuditStore::create_pgno(&target_path).unwrap();
     let (target_id, _) = opened_target(&target_store).await;
     let (bus, published) = recording_bus();
     let driver = DurableScheduler::<_, _, _, _, AuditEvent>::new(
@@ -140,10 +150,10 @@ async fn scheduled_effect_persists_then_publishes_auditable_event() {
 
 #[tokio::test]
 async fn recovery_fires_due_schedule_at_most_once_after_reopen() {
-    let scheduler_dir = tempfile::tempdir().unwrap();
-    let target_dir = tempfile::tempdir().unwrap();
-    let scheduler_store = MsgpackFileStore::<SchedulerEvent>::new(scheduler_dir.path());
-    let target_store = MsgpackFileStore::<AuditEvent>::new(target_dir.path());
+    let scheduler_path = temp_pgno_path();
+    let target_path = temp_pgno_path();
+    let scheduler_store = PgnoSchedulerStore::create_pgno(&scheduler_path).unwrap();
+    let target_store = AuditStore::create_pgno(&target_path).unwrap();
     let (target_id, _) = opened_target(&target_store).await;
     let (bus, published) = recording_bus();
     let armed = schedule(sid(30), target_id, uuid::Uuid::from_u128(300));
@@ -160,8 +170,8 @@ async fn recovery_fires_due_schedule_at_most_once_after_reopen() {
     drop(scheduler_store);
     drop(target_store);
 
-    let scheduler_store = MsgpackFileStore::<SchedulerEvent>::new(scheduler_dir.path());
-    let target_store = MsgpackFileStore::<AuditEvent>::new(target_dir.path());
+    let scheduler_store = PgnoSchedulerStore::open_pgno(&scheduler_path).unwrap();
+    let target_store = AuditStore::open_pgno(&target_path).unwrap();
     let driver = DurableScheduler::<_, _, _, _, AuditEvent>::new(
         &scheduler_store,
         &target_store,
@@ -190,10 +200,10 @@ async fn recovery_fires_due_schedule_at_most_once_after_reopen() {
 
 #[tokio::test]
 async fn no_loss_recovery_completes_schedule_fired_without_caller_event() {
-    let scheduler_dir = tempfile::tempdir().unwrap();
-    let target_dir = tempfile::tempdir().unwrap();
-    let scheduler_store = MsgpackFileStore::<SchedulerEvent>::new(scheduler_dir.path());
-    let target_store = MsgpackFileStore::<AuditEvent>::new(target_dir.path());
+    let scheduler_path = temp_pgno_path();
+    let target_path = temp_pgno_path();
+    let scheduler_store = PgnoSchedulerStore::create_pgno(&scheduler_path).unwrap();
+    let target_store = AuditStore::create_pgno(&target_path).unwrap();
     let (target_id, _) = opened_target(&target_store).await;
     let armed = schedule(sid(40), target_id, uuid::Uuid::from_u128(400));
     let (scheduler_id, armed_envelopes) = scheduler_store
@@ -212,8 +222,8 @@ async fn no_loss_recovery_completes_schedule_fired_without_caller_event() {
     drop(scheduler_store);
     drop(target_store);
 
-    let scheduler_store = MsgpackFileStore::<SchedulerEvent>::new(scheduler_dir.path());
-    let target_store = MsgpackFileStore::<AuditEvent>::new(target_dir.path());
+    let scheduler_store = PgnoSchedulerStore::open_pgno(&scheduler_path).unwrap();
+    let target_store = AuditStore::open_pgno(&target_path).unwrap();
     let (bus, published) = recording_bus();
     let driver = DurableScheduler::<_, _, _, _, AuditEvent>::new(
         &scheduler_store,
@@ -237,10 +247,10 @@ async fn no_loss_recovery_completes_schedule_fired_without_caller_event() {
 
 #[tokio::test]
 async fn cancelled_and_unknown_schedules_do_not_fire() {
-    let scheduler_dir = tempfile::tempdir().unwrap();
-    let target_dir = tempfile::tempdir().unwrap();
-    let scheduler_store = MsgpackFileStore::<SchedulerEvent>::new(scheduler_dir.path());
-    let target_store = MsgpackFileStore::<AuditEvent>::new(target_dir.path());
+    let scheduler_path = temp_pgno_path();
+    let target_path = temp_pgno_path();
+    let scheduler_store = PgnoSchedulerStore::create_pgno(&scheduler_path).unwrap();
+    let target_store = AuditStore::create_pgno(&target_path).unwrap();
     let (target_id, _) = opened_target(&target_store).await;
     let (bus, published) = recording_bus();
     let driver = DurableScheduler::<_, _, _, _, AuditEvent>::new(
@@ -275,3 +285,4 @@ fn durable_scheduler_has_no_hidden_coordinator_surface() {
     assert!(!source.contains("Box<dyn"));
     assert!(!source.contains("retry"));
 }
+
