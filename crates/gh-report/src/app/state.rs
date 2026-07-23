@@ -46,9 +46,9 @@ pub type OrgEventStoreImpl = crate::store::NativeOrgStore;
 pub type TeamEventStoreImpl = crate::store::NativeTeamStore;
 pub(crate) type ProjectionState<P> = Arc<Mutex<P>>;
 pub(crate) type SchedulerEventStoreImpl =
-    cherry_pit_gateway::MsgpackFileStore<cherry_pit_core::SchedulerEvent>;
+    crate::app::ephemeral_store::EphemeralEventStore<cherry_pit_core::SchedulerEvent>;
 pub(crate) type SweepTimeoutEventStoreImpl =
-    cherry_pit_gateway::MsgpackFileStore<crate::event::SweepTimeoutEvent>;
+    crate::app::ephemeral_store::EphemeralEventStore<crate::event::SweepTimeoutEvent>;
 
 pub use crate::app::evidence_service::EvidenceState;
 pub use crate::app::github_infra::GithubState;
@@ -184,7 +184,14 @@ pub struct AppState {
     /// and via [`Self::fold_team_event_into_projection`].
     pub team_event_store: Arc<TeamEventStoreImpl>,
 
+    /// Ephemeral in-process scheduler bookkeeping stream (CHE-0099):
+    /// audit-only, cleared on process restart only (the store is a single
+    /// long-lived object for the process lifetime; the scheduler timer,
+    /// not this store, re-arms per run).
     pub(crate) scheduler_event_store: Arc<SchedulerEventStoreImpl>,
+    /// Ephemeral in-process sweep-timeout stream (CHE-0099): audit-only,
+    /// cleared on process restart only (the store is a single long-lived
+    /// object for the process lifetime, not reset per collection run).
     pub(crate) sweep_timeout_event_store: Arc<SweepTimeoutEventStoreImpl>,
 
     /// Materialised projection state rebuilt from [`Self::event_store`].
@@ -670,12 +677,12 @@ fn open_team_event_store(
     }
 }
 
-fn scheduler_event_store(events_dir: &Path) -> SchedulerEventStoreImpl {
-    SchedulerEventStoreImpl::new(events_dir.join("sweep-timeout-schedules"))
+fn scheduler_event_store() -> SchedulerEventStoreImpl {
+    SchedulerEventStoreImpl::new()
 }
 
-fn sweep_timeout_event_store(events_dir: &Path) -> SweepTimeoutEventStoreImpl {
-    SweepTimeoutEventStoreImpl::new(events_dir.join("sweep-timeouts"))
+fn sweep_timeout_event_store() -> SweepTimeoutEventStoreImpl {
+    SweepTimeoutEventStoreImpl::new()
 }
 
 fn open_or_create_jetstream(
@@ -1201,14 +1208,12 @@ async fn noop_team_event_store() -> Arc<TeamEventStoreImpl> {
 
 #[cfg(test)]
 fn noop_scheduler_event_store() -> Arc<SchedulerEventStoreImpl> {
-    let dir = tempfile::tempdir().expect("test tempdir");
-    Arc::new(scheduler_event_store(dir.keep().as_path()))
+    Arc::new(scheduler_event_store())
 }
 
 #[cfg(test)]
 fn noop_sweep_timeout_event_store() -> Arc<SweepTimeoutEventStoreImpl> {
-    let dir = tempfile::tempdir().expect("test tempdir");
-    Arc::new(sweep_timeout_event_store(dir.keep().as_path()))
+    Arc::new(sweep_timeout_event_store())
 }
 
 #[cfg(test)]
@@ -1304,8 +1309,8 @@ impl AppState {
         let event_store = Arc::new(event_store);
         let org_event_store = Arc::new(org_event_store);
         let team_event_store = Arc::new(team_event_store);
-        let scheduler_event_store = Arc::new(scheduler_event_store(&events_dir));
-        let sweep_timeout_event_store = Arc::new(sweep_timeout_event_store(&events_dir));
+        let scheduler_event_store = Arc::new(scheduler_event_store());
+        let sweep_timeout_event_store = Arc::new(sweep_timeout_event_store());
         let last_recovery = org_event_store
             .last_recovery()
             .map(|recovery| LastRecoveryStatus::from_outcome("orgs", &recovery))

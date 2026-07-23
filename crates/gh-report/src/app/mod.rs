@@ -2,6 +2,7 @@
 
 pub mod collect;
 pub mod daemon;
+pub mod ephemeral_store;
 pub mod evidence_service;
 pub mod github_infra;
 pub mod state;

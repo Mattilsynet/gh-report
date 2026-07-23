@@ -3723,7 +3723,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn saga_timeout_persists_auditable_scheduled_event() {
+    async fn saga_timeout_records_auditable_scheduled_event() {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
         let run = test_run_meta();
@@ -3757,10 +3757,6 @@ mod tests {
             matches!(saga.phase(), SweepPhase::Failed { .. }),
             "expected Failed phase after scheduled sweep timeout, got {:?}",
             saga.phase()
-        );
-        assert!(
-            config.store_dir.join("sweep-timeouts").exists(),
-            "scheduled sweep timeout must persist an auditable domain event under store_dir/sweep-timeouts"
         );
         state.work_queue.close();
         pool.abort();
