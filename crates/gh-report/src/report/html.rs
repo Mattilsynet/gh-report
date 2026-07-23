@@ -1156,7 +1156,13 @@ fn build_orphaned_by_team(rows: &[OrphanedRepoRow]) -> Vec<OrphanedTeamGroup> {
 /// to its referencing repos via [`crate::domain::metrics::build_owner_repo_map`],
 /// keyed by the team's full lowercased canonical owner (`@org/slug`), not its
 /// bare GitHub API slug — the two are different strings and only the
-/// canonical form is a valid map key. A glob-shaped CODEOWNERS owner (e.g.
+/// canonical form is a valid map key. A `Deleted` roster only renders as a
+/// `GhostTeam` when its `canonical_owner` is still present in
+/// `owner_repo_map` (CHE-0093:R4, oracle adr-fmt-7532n): CODEOWNERS-reference
+/// is definitional for the anomaly, so a since-de-referenced team is not a
+/// ghost and drops out of every render once its CODEOWNERS reference is
+/// removed, closing the GC gap flagged in adr-fmt-ivnsa. A glob-shaped
+/// CODEOWNERS owner (e.g.
 /// `@org/*`) is a `WildcardOwner` anomaly, detected directly from
 /// `owner_repo_map` without needing a team-roster entry (it never derives a
 /// fiber, CHE-0093:R4).
@@ -1180,7 +1186,10 @@ fn build_deleted_view_model(
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(repositories);
     let mut ghost_teams: Vec<GhostTeamRow> = team_rosters
         .iter()
-        .filter(|roster| roster.status == TeamRosterStatus::Deleted)
+        .filter(|roster| {
+            roster.status == TeamRosterStatus::Deleted
+                && owner_repo_map.contains_key(&roster.canonical_owner.to_lowercase())
+        })
         .map(|roster| {
             let mut referencing_repos: Vec<String> = owner_repo_map
                 .get(&roster.canonical_owner.to_lowercase())

@@ -3441,6 +3441,62 @@ fn build_deleted_view_model_includes_ghost_team_with_referencing_repos() {
     );
 }
 
+/// GC-gap regression (adr-fmt-7532n, CHE-0093:R4): a Deleted roster whose
+/// `canonical_owner` no longer appears in any repo's CODEOWNERS (i.e. absent
+/// from `owner_repo_map`) is by definition not a `GhostTeam` anomaly — a
+/// team can only be a ghost while still CODEOWNERS-referenced. Render-time
+/// filtering must gate on current `owner_repo_map` membership, not on
+/// `status == Deleted` alone, or a resolved anomaly renders forever.
+#[test]
+fn build_deleted_view_model_drops_deleted_roster_no_longer_codeowners_referenced() {
+    let repos = vec![test_fixtures::make_repository_evidence(
+        "codeowners-repo",
+        Visibility::Public,
+        false,
+        test_fixtures::make_checks(
+            test_fixtures::policy_pass_setting(),
+            test_fixtures::secret_enabled_observable(false),
+            test_fixtures::dependabot_enabled(),
+            test_fixtures::branch_pass(),
+            test_fixtures::codeowners_with_owners(&["@org/still-referenced"]),
+        ),
+    )];
+    let team_rosters = vec![
+        TeamRoster {
+            canonical_owner: "@org/still-referenced".to_string(),
+            team_slug: "still-referenced".to_string(),
+            status: TeamRosterStatus::Deleted,
+            members: Vec::new(),
+        },
+        TeamRoster {
+            canonical_owner: "@org/dereferenced".to_string(),
+            team_slug: "dereferenced".to_string(),
+            status: TeamRosterStatus::Deleted,
+            members: Vec::new(),
+        },
+    ];
+
+    let vm = build_deleted_view_model(&[], "TestOrg", &repos, &team_rosters);
+
+    assert_eq!(
+        vm.ghost_teams.len(),
+        1,
+        "expected only the still-CODEOWNERS-referenced Deleted roster to \
+             render as a ghost team; a de-referenced Deleted roster is not a \
+             GhostTeam anomaly by CHE-0093:R4; got {:?}",
+        vm.ghost_teams
+    );
+    assert_eq!(vm.ghost_teams[0].team_slug, "still-referenced");
+    assert!(
+        !vm.ghost_teams
+            .iter()
+            .any(|row| row.team_slug == "dereferenced"),
+        "a Deleted roster no longer present in owner_repo_map must not \
+             render as a ghost team; got {:?}",
+        vm.ghost_teams
+    );
+}
+
 #[test]
 fn build_deleted_view_model_omits_ghost_teams_when_none_are_deleted() {
     let repos = vec![test_fixtures::make_repository_evidence(
