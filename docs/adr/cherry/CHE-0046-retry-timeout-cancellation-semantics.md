@@ -23,6 +23,7 @@ R3 [5]: Retried commands crossing HTTP, queue, scheduler, or webhook boundaries 
 R4 [5]: EventBus publication retries use persisted EventEnvelope event_id values as deduplication keys for downstream consumers
 R5 [5]: Cancellation of CommandGateway futures does not imply rollback after EventStore append succeeds; callers recover by reloading aggregate state
 R6 [6]: Retry telemetry records attempt number, backoff duration, deadline, error category, aggregate_id, and correlation_id
+R7 [5]: R1's `CommandGateway` retry applies to direct command invocation at gateway boundaries (HTTP, queue, scheduler, webhook per R3); it does not extend to the async policy-output dispatch consumer (`cherry-pit-app::run_dispatch_consumer`), which is a terminal sink — `Retryable` policy-dispatch errors are logged and dropped there (CHE-0051:R7), not redispatched, because no gateway retry path is wired at that layer
 
 ## Consequences
 
