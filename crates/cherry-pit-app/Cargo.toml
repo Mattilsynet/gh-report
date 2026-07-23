@@ -26,6 +26,7 @@ uuid = { workspace = true }
 jiff = { workspace = true }
 
 [dev-dependencies]
+cherry-pit-core = { workspace = true, features = ["testing"] }
 serde = { workspace = true }
 tokio = { workspace = true }
 jiff = { workspace = true }

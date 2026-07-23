@@ -1,37 +1,33 @@
-//! In-fixture infrastructure: `MsgpackFileStore`-backed `CommandGateway`
+//! In-fixture infrastructure: `InMemoryEventStore`-backed `CommandGateway`
 //! generic over an aggregate type, plus aliases binding it to `Foo` /
 //! `Bar`.
 //!
 //! Modelled on `cherry-pit-web/tests/integration_inmem.rs::InMemGateway`.
 //! No canonical `CommandGateway` impl ships in the workspace today
 //! (only test-local stubs); per S7 contract `abort_if #4` fallback we
-//! provide one here so the integration test exercises the real
-//! `MsgpackFileStore` round-trip.
+//! provide one here. This fixture exercises higher wiring/policy logic
+//! only (no file/recovery semantics under test), so an in-memory store
+//! suffices (bd adr-fmt-ak43v Target B triage).
 
 use std::sync::Arc;
 
+use cherry_pit_core::testing::InMemoryEventStore;
 use cherry_pit_core::{
     Aggregate, AggregateId, Command, CommandGateway, CorrelationContext, CreateResult,
     DispatchError, DispatchResult, EventEnvelope, EventStore, HandleCommand, StoreError,
 };
-use cherry_pit_gateway::MsgpackFileStore;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 
 use super::domain::{Bar, Foo};
 
-/// Generic `MsgpackFileStore`-backed gateway parameterised over `A`.
+/// Generic `InMemoryEventStore`-backed gateway parameterised over `A`.
 ///
 /// Each instance is bound to one aggregate type per CHE-0005:R1.
 pub struct FileStoreGateway<A: Aggregate> {
-    store: Arc<MsgpackFileStore<<A as Aggregate>::Event>>,
+    store: Arc<InMemoryEventStore<<A as Aggregate>::Event>>,
 }
 
-impl<A: Aggregate> FileStoreGateway<A>
-where
-    <A as Aggregate>::Event: Serialize + DeserializeOwned,
-{
-    pub fn new(store: Arc<MsgpackFileStore<<A as Aggregate>::Event>>) -> Self {
+impl<A: Aggregate> FileStoreGateway<A> {
+    pub fn new(store: Arc<InMemoryEventStore<<A as Aggregate>::Event>>) -> Self {
         Self { store }
     }
 }
@@ -39,7 +35,6 @@ where
 impl<A> CommandGateway for FileStoreGateway<A>
 where
     A: Aggregate,
-    <A as Aggregate>::Event: Serialize + DeserializeOwned,
 {
     type Aggregate = A;
 

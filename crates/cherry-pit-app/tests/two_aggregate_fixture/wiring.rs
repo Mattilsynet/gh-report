@@ -6,8 +6,7 @@ use std::sync::Arc;
 
 use cherry_pit_app::{App, InProcessEventBus, TracingDeadLetterSink};
 use cherry_pit_core::CommandGateway;
-use cherry_pit_gateway::MsgpackFileStore;
-use tempfile::TempDir;
+use cherry_pit_core::testing::InMemoryEventStore;
 
 use super::domain::{BarEvent, FooEvent, FooToBarOutput, FooToBarPolicy};
 use super::infra::{BarGateway, FooGateway};
@@ -15,27 +14,23 @@ use super::infra::{BarGateway, FooGateway};
 pub struct Assembled {
     pub app: App<
         FooGateway,
-        MsgpackFileStore<FooEvent>,
+        InMemoryEventStore<FooEvent>,
         InProcessEventBus<FooEvent>,
         (),
         TracingDeadLetterSink,
     >,
     pub foo_gateway: Arc<FooGateway>,
     pub bar_gateway: Arc<BarGateway>,
-    pub _dirs: (TempDir, TempDir, TempDir),
 }
 
 pub fn assemble() -> Assembled {
-    let foo_dir = tempfile::tempdir().expect("foo dir");
-    let bar_dir = tempfile::tempdir().expect("bar dir");
-    let app_store_dir = tempfile::tempdir().expect("app store dir");
-    let foo_store = Arc::new(MsgpackFileStore::<FooEvent>::new(foo_dir.path()));
-    let bar_store = Arc::new(MsgpackFileStore::<BarEvent>::new(bar_dir.path()));
+    let foo_store = Arc::new(InMemoryEventStore::<FooEvent>::new());
+    let bar_store = Arc::new(InMemoryEventStore::<BarEvent>::new());
     let foo_gateway = Arc::new(FooGateway::new(Arc::clone(&foo_store)));
     let bar_gateway = Arc::new(BarGateway::new(Arc::clone(&bar_store)));
     let mut app = App::new(
         FooGateway::new(Arc::clone(&foo_store)),
-        MsgpackFileStore::<FooEvent>::new(app_store_dir.path()),
+        InMemoryEventStore::<FooEvent>::new(),
         InProcessEventBus::<FooEvent>::new(),
         (),
         TracingDeadLetterSink::new(),
@@ -60,6 +55,5 @@ pub fn assemble() -> Assembled {
         app,
         foo_gateway,
         bar_gateway,
-        _dirs: (foo_dir, bar_dir, app_store_dir),
     }
 }
