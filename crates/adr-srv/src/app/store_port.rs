@@ -1,19 +1,15 @@
 //! `AdrStorePort` — the persistence abstraction [`AdrService`](crate::app::service::AdrService)
 //! is generic over (CHE-0098 N-R7 port seam).
 //!
-//! Two implementations coexist during the migration: the legacy
-//! `cherry-pit-gateway` `MsgpackFileStore` (cherry-pit test-suite
-//! reference `EventStore`, CHE-0098 R10) and the native pardosa
-//! [`NativeAdrStore`] (CHE-0098 R1–R5, production wiring). Both are
-//! keyed uniformly by [`AdrId`] at the [`AdrService`](crate::app::service::AdrService)
-//! layer; only the opaque per-implementation [`AdrStorePort::Id`]
-//! (needed to re-target a subsequent `append`) differs.
+//! The native pardosa [`NativeAdrStore`] (CHE-0098 R1–R5, production
+//! wiring) is the sole implementation since the CHE-0098 R8/R9 hard
+//! cut off the transitional `cherry-pit-gateway` file-per-aggregate
+//! store; the seam stays generic per N-R7 rather than collapsing to
+//! a concrete type, so a future test-only or alternate store can
+//! re-implement it without touching [`AdrService`](crate::app::service::AdrService).
 
 use std::future::Future;
 use std::num::NonZeroU64;
-
-use cherry_pit_core::{AggregateId, CorrelationContext, EventStore, ListableEventStore};
-use cherry_pit_gateway::MsgpackFileStore;
 
 use crate::domain::adr_id::AdrId;
 use crate::domain::events::AdrIngested;
@@ -56,56 +52,6 @@ pub trait AdrStorePort: Send + Sync {
     fn replay_all(
         &self,
     ) -> impl Future<Output = Result<Vec<ReplayedStream<Self::Id>>, Self::Error>> + Send;
-}
-
-impl AdrStorePort for MsgpackFileStore<AdrIngested> {
-    type Id = AggregateId;
-    type Error = cherry_pit_core::StoreError;
-
-    async fn create(&self, event: AdrIngested) -> Result<(AggregateId, NonZeroU64), Self::Error> {
-        let (id, envelopes) =
-            EventStore::create(self, vec![event], CorrelationContext::none()).await?;
-        let seq = envelopes
-            .last()
-            .expect("create returned non-empty envelopes")
-            .sequence();
-        Ok((id, seq))
-    }
-
-    async fn append(
-        &self,
-        id: AggregateId,
-        expected_seq: NonZeroU64,
-        event: AdrIngested,
-    ) -> Result<NonZeroU64, Self::Error> {
-        let envelopes = EventStore::append(
-            self,
-            id,
-            expected_seq,
-            vec![event],
-            CorrelationContext::none(),
-        )
-        .await?;
-        Ok(envelopes
-            .last()
-            .expect("append returned non-empty envelopes")
-            .sequence())
-    }
-
-    async fn replay_all(&self) -> Result<Vec<ReplayedStream<AggregateId>>, Self::Error> {
-        let ids = ListableEventStore::list_aggregates(self).await?;
-        let mut out = Vec::with_capacity(ids.len());
-        for id in ids {
-            let envelopes = EventStore::load(self, id).await?;
-            let Some(first) = envelopes.first() else {
-                continue;
-            };
-            let adr_id = first.payload().id.clone();
-            let events = envelopes.into_iter().map(|e| e.payload().clone()).collect();
-            out.push((adr_id, id, events));
-        }
-        Ok(out)
-    }
 }
 
 /// Failure surface for the [`NativeAdrStore`] [`AdrStorePort`] impl:

@@ -5,9 +5,9 @@
 //! `AdrIngested` is the single event type for M1. M1.3 onward MUST
 //! NOT change its payload shape — only additive evolution (tail-
 //! appended fields) is permitted per CHE-0022:R5. On-disk encoding
-//! is msgpack (self-describing) via
-//! `cherry_pit_gateway::MsgpackFileStore`; additive field changes
-//! are wire-compatible without re-baselining.
+//! is via [`NativeAdrStore`](crate::store::NativeAdrStore) (CHE-0098
+//! R8/R9); additive field changes stay wire-compatible under the
+//! native `GenomeSafe` schema-hashing scheme.
 //!
 //! Future events (e.g. `AdrRatified`, `AdrSuperseded`, `AdrRetired`)
 //! land as additional types in this module in Phase 3; the M1 single-

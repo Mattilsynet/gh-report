@@ -5,10 +5,15 @@
 //!   - `AdrId::from_str("AFM-0001")` succeeds; displays as `"AFM-0001"`.
 //!   - `AdrId::from_str("invalid")` returns `Err`.
 //!   - `BodyHash::compute(b"hello")` deterministic.
-//!   - `AdrIngested` round-trips through msgpack (rmp-serde) byte-identical.
 //!   - `AdrDocument::apply` updates state from event.
 //!   - `AdrService::new(store)` constructs against `NativeAdrStore::create_pgno`.
 //!   - axum `/health` router returns 200.
+//!
+//! Native wire round-trip byte-stability for `AdrIngested` is covered
+//! at `domain::native_event::tests::native_event_wire_round_trips`
+//! (CHE-0098 R8/R9; the legacy self-describing binary-encoding
+//! coverage was retired with the hard cut off the transitional
+//! gateway store).
 
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -130,27 +135,6 @@ fn adr_date_rejects_invalid_month_and_day() {
     assert!(AdrDate::new(2026, 2, 29).is_err());
     assert!(AdrDate::new(2024, 2, 29).is_ok());
     assert!(AdrDate::new(2026, 4, 31).is_err());
-}
-
-#[test]
-fn adr_ingested_round_trips_byte_identical() {
-    let event = sample_event();
-    let bytes = rmp_serde::to_vec_named(&event).expect("encode AdrIngested");
-    let decoded: AdrIngested = rmp_serde::from_slice(&bytes).expect("decode AdrIngested");
-    assert_eq!(decoded, event, "round-trip must preserve value");
-
-    let bytes2 = rmp_serde::to_vec_named(&decoded).expect("re-encode AdrIngested");
-    assert_eq!(
-        bytes, bytes2,
-        "re-encode must produce byte-identical output"
-    );
-}
-
-#[test]
-fn adr_ingested_encodes_to_non_empty_bytes() {
-    let event = sample_event();
-    let bytes = rmp_serde::to_vec_named(&event).expect("encode AdrIngested");
-    assert!(!bytes.is_empty(), "encoded event must have bytes");
 }
 
 #[test]

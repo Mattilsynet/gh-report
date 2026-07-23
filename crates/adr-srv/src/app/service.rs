@@ -2,14 +2,12 @@
 //! `AdrDocument` aggregate.
 //!
 //! Generic over [`AdrStorePort`] (CHE-0098 N-R7 port seam): production
-//! wiring (`main.rs`) instantiates `AdrService<NativeAdrStore>`; the
-//! cherry-pit test-suite reference store
-//! (`cherry_pit_gateway::MsgpackFileStore`, CHE-0098 R10) remains a
-//! valid instantiation via its own [`AdrStorePort`] impl. Indices
+//! wiring (`main.rs`) instantiates `AdrService<NativeAdrStore>`, the
+//! sole [`AdrStorePort`] implementation since the CHE-0098 R8/R9 hard
+//! cut off the transitional cherry-pit-gateway store. Indices
 //! (`adrs_by_id`, `next_seq`, `latest_body_hash`) are keyed uniformly
-//! by [`AdrId`] regardless of which port is in play; only the opaque
-//! [`AdrStorePort::Id`] needed to re-target a subsequent `append`
-//! varies per implementation.
+//! by [`AdrId`]; the opaque [`AdrStorePort::Id`] needed to re-target
+//! a subsequent `append` is implementation-specific.
 //!
 //! ## Surface
 //!

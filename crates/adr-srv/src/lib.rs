@@ -3,10 +3,9 @@
 //! adr-srv — service crate scraping the ADR corpus via the adr-fmt
 //! library (AFM-0026:R1 surface) and projecting records into pardosa-
 //! genome event envelopes via the `ApplicationService` pattern
-//! (CHE-0054:R8/R10 carve-out: no agent / gateway / `App<...>`).
+//! (bespoke service: no agent / gateway / `App<...>` framework).
 //!
-//! See AFM-0027 for the adr-fmt ↔ adr-srv boundary and CHE-0054:R8/R10
-//! for the bespoke-service rationale.
+//! See AFM-0027 for the adr-fmt ↔ adr-srv boundary.
 //!
 //! ## Module layout (CHE-0030 + AFM-0026:R1)
 //!
