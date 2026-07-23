@@ -329,6 +329,12 @@ tr:nth-child(even) td {
   color: #8a3838;
 }
 
+.verdict--unknown {
+  background: #f2f2f0;
+  border-color: #c4c4bc;
+  color: #6a6a60;
+}
+
 /* --- Mermaid diagram containers --- */
 
 .mermaid {
