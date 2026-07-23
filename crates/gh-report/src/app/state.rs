@@ -2942,9 +2942,9 @@ mod tests {
         let seed_repo = crate::test_fixtures::all_passing_evidence("seed-repo");
         state
             .record_repo(
-                &seed_repo.repository.inventory_key.clone(),
+                &seed_repo.repository.inventory_key,
                 seed_repo.clone(),
-                &seed_repo.repository.name.clone(),
+                &seed_repo.repository.name,
                 "2026-06-11T00:00:00Z",
             )
             .expect("seed repo store so its pgno file is non-empty before the second handle opens");
@@ -3035,7 +3035,7 @@ mod tests {
             .record_org(crate::domain::evidence::OrgStateSnapshot {
                 archived_repos: 7,
                 assessment_metadata: metadata.clone(),
-                alert_summary: alert_summary.clone(),
+                alert_summary,
             })
             .expect("record org state");
         assert!(events_dir.join("events.pgno").exists());
