@@ -432,3 +432,104 @@ async fn dispatch_after_task_shutdown_returns_infra_error() {
     drop(handle2);
     let _ = join2.await;
 }
+
+/// G5 (CHE-0005 single-writer-through-merger convention, doc'd on
+/// `Merger::spawn`) — correct wiring: only `handle` is used to
+/// mutate the aggregate after `spawn`. Every command, including a
+/// create-or-append burst against the same domain key, goes through
+/// the single serialized task and produces exactly one aggregate
+/// with a contiguous, gap-free sequence.
+#[tokio::test]
+async fn single_writer_through_merger_handle_is_the_only_write_path() {
+    let (store, bus, index, next_seq) = build();
+    let (handle, _join) = Merger::<Counter, _, _, _>::spawn(
+        CounterArm,
+        Arc::clone(&store),
+        Arc::clone(&bus),
+        Arc::clone(&index),
+        Arc::clone(&next_seq),
+    );
+
+    handle
+        .dispatch(
+            CounterCmd::Create {
+                key: "single-writer".into(),
+                initial: 1,
+            },
+            CorrelationContext::none(),
+        )
+        .await
+        .expect("create via handle");
+    handle
+        .dispatch(
+            CounterCmd::Increment {
+                key: "single-writer".into(),
+                by: 1,
+            },
+            CorrelationContext::none(),
+        )
+        .await
+        .expect("append via handle");
+
+    let assigned = {
+        let guard = index.lock().unwrap();
+        assert_eq!(guard.len(), 1, "exactly one aggregate created");
+        *guard.get("single-writer").expect("indexed")
+    };
+    let loaded = store.load(assigned).await.expect("load for verification");
+    assert_eq!(loaded.len(), 2, "contiguous create + append, no gaps");
+}
+
+/// Documents the INHERENT-RUST hazard named in `Merger::spawn`'s doc
+/// comment: `Arc` is `Clone` by definition, so a composition root
+/// that retains a second clone of the store `Arc` passed into
+/// `spawn` can call `EventStore` methods directly, bypassing the
+/// merger's single-task serialization entirely. This is not sealable
+/// at the trait/method surface (would need a non-`Clone` owning-store
+/// token — DEFERRED, out of scope). This test pins that the bypass
+/// is real so the documented caveat does not silently regress into
+/// an unstated assumption.
+#[tokio::test]
+async fn retained_store_clone_bypasses_merger_single_writer() {
+    let (store, bus, index, next_seq) = build();
+    let (handle, _join) = Merger::<Counter, _, _, _>::spawn(
+        CounterArm,
+        Arc::clone(&store),
+        Arc::clone(&bus),
+        Arc::clone(&index),
+        Arc::clone(&next_seq),
+    );
+
+    handle
+        .dispatch(
+            CounterCmd::Create {
+                key: "bypass".into(),
+                initial: 0,
+            },
+            CorrelationContext::none(),
+        )
+        .await
+        .expect("create via handle");
+
+    let assigned = {
+        let guard = index.lock().unwrap();
+        *guard.get("bypass").expect("indexed")
+    };
+
+    store
+        .append(
+            assigned,
+            NonZeroU64::new(1).unwrap(),
+            vec![CounterEvent::Incremented { by: 99 }],
+            CorrelationContext::none(),
+        )
+        .await
+        .expect("direct store.append bypasses the merger entirely");
+
+    let loaded = store.load(assigned).await.expect("load");
+    assert_eq!(
+        loaded.len(),
+        2,
+        "the retained clone wrote directly, unserialized by the merger task"
+    );
+}

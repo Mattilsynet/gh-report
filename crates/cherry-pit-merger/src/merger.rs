@@ -74,6 +74,24 @@ where
     /// The channel is bounded ([`MERGER_CHANNEL_CAPACITY`]); a
     /// saturated queue back-pressures producers via
     /// [`mpsc::Sender::send`] rather than dropping commands.
+    ///
+    /// # Single-writer-through-merger convention (CHE-0005)
+    ///
+    /// `store` is consumed as an [`Arc`] by value. The single-writer
+    /// guarantee this crate provides (the I1 TOCTOU serialization —
+    /// see [`crate::shared`]) holds only through the returned
+    /// [`MergerHandle`]: every command MUST route through the handle,
+    /// never directly against a retained clone of the same `Arc<S>`.
+    /// `Arc` is `Clone` by definition (INHERENT-RUST — this is not
+    /// sealable at the trait/method surface); a composition root that
+    /// keeps a second clone of the store `Arc` passed into `spawn` and
+    /// calls `store.create()`/`store.append()` directly bypasses the
+    /// merger's single-task serialization entirely. Correct wiring
+    /// passes the store `Arc` to `spawn` and then drops (or never
+    /// retains) any other clone of it; only [`MergerHandle`] should
+    /// remain as the write path. A full compile-time seal would need a
+    /// non-`Clone` owning-store token threaded through construction —
+    /// a separate, larger design, out of scope here (DEFERRED).
     #[must_use]
     pub fn spawn(
         arm: Arm,
