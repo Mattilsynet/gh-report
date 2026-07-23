@@ -8,7 +8,7 @@ Crates: cherry-pit-merger, cherry-pit-app
 
 ## Related
 
-References: CHE-0069, CHE-0051, CHE-0005:R1, CHE-0014, CHE-0041, CHE-0024, CHE-0025
+References: CHE-0069, CHE-0051, CHE-0008, CHE-0015, CHE-0005:R1, CHE-0014, CHE-0041, CHE-0024, CHE-0025
 
 ## Context
 
@@ -31,6 +31,8 @@ R5 [5]: Multi-aggregate use expands concrete per-aggregate types; no dyn or type
 R6 [5]: The family ships no concrete CommandGateway/CommandBus driving adapter today; consumers own that adapter through explicit wiring, and this deferred capability is not debt for this decision; concrete external ingestion may later trigger an adapter ADR under CHE-0014, CHE-0005:R1, and CHE-0025
 
 R7 [5]: This ADR is explanatory choice-model guidance only; it creates no scaffolding, generators, runtime surface, sealed-surface change, or new port contract, and compile-time wiring remains the primary guidance per CHE-0080
+
+R8 [5]: `MergerArm::handle(&A, cmd) -> Result<Vec<A::Event>, Err>` (CHE-0069:R2) is a RATIFIED governed specialization of `HandleCommand::handle` (CHE-0008:R1–R3), not accidental drift: the `&A` param and single-`Err`-per-aggregate collapse (vs CHE-0015:R1's per-command error type) are motivated on an aggregate-agnostic-dispatch axis orthogonal to CHE-0008's per-command purity (decided moltke 2026-07-23, bd-adr-fmt-sgrz2, H1a). Concurrency safety rests solely on CHE-0069:R4 (task + channel), not the signature.
 
 ## Consequences
 
