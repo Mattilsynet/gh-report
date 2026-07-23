@@ -39,6 +39,11 @@ pub use domain::{
     KNOWN_DOMAINS, Status, Tier,
 };
 
+pub use domain::{
+    AdrDomain, AdrFrontmatterEvent, AdrIdEvent, AdrIngestedEvent, AdrStatus, AdrTier,
+    NativeConversionError, NativeMapError,
+};
+
 pub use app::{AdrService, AppState, IngestOutcome};
 
 pub use projection::AdrCorpus;

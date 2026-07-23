@@ -31,6 +31,16 @@ jiff = { workspace = true }
 xxhash-rust = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
+# Native GenomeSafe event model (CHE-0098 N-R2/N-R3): schema-hashed
+# durable payload, distinct from the transitional serde AdrIngested
+# struct persisted via cherry-pit-gateway. pardosa-wire is a direct dep
+# (not just transitive via pardosa-schema) because pardosa-derive's
+# GenomeSafe macro resolves Encode/Decode paths via `pardosa` (the
+# store facade, out of scope until M2) or `pardosa-wire` directly.
+pardosa-schema = { path = "../pardosa-schema", version = "=0.1.0" }
+pardosa-wire = { path = "../pardosa-wire", version = "=0.1.0" }
+thiserror = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tower = { workspace = true }

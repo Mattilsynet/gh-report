@@ -14,6 +14,7 @@ pub mod aggregate;
 pub mod body_hash;
 pub mod events;
 pub mod frontmatter;
+pub mod native_event;
 
 pub use adr_date::{AdrDate, AdrDateError};
 pub use adr_id::{AdrId, AdrIdError, KNOWN_DOMAINS};
@@ -21,3 +22,7 @@ pub use aggregate::AdrDocument;
 pub use body_hash::BodyHash;
 pub use events::AdrIngested;
 pub use frontmatter::{AdrFrontmatter, Status, Tier};
+pub use native_event::{
+    AdrDomain, AdrFrontmatterEvent, AdrIdEvent, AdrIngestedEvent, AdrStatus, AdrTier,
+    NativeConversionError, NativeMapError,
+};
