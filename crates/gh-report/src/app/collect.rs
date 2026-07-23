@@ -3597,9 +3597,11 @@ mod tests {
             .await
             .unwrap();
 
-        let snapshot = state.projection_snapshot();
-        let mut found_names: Vec<String> =
-            snapshot.iter().map(|e| e.repository.name.clone()).collect();
+        let mut found_names: Vec<String> = state
+            .projection_snapshot()
+            .into_iter()
+            .map(|e| e.repository.name)
+            .collect();
         found_names.sort();
         assert_eq!(found_names, vec!["alpha", "middle", "zebra"]);
 
