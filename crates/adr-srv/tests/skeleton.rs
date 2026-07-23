@@ -7,7 +7,7 @@
 //!   - `BodyHash::compute(b"hello")` deterministic.
 //!   - `AdrIngested` round-trips through msgpack (rmp-serde) byte-identical.
 //!   - `AdrDocument::apply` updates state from event.
-//!   - `AdrService::new(store)` constructs against `MsgpackFileStore::new`.
+//!   - `AdrService::new(store)` constructs against `NativeAdrStore::create_pgno`.
 //!   - axum `/health` router returns 200.
 
 use std::str::FromStr;
@@ -15,9 +15,8 @@ use std::sync::{Arc, Mutex};
 
 use adr_srv::{
     AdrCorpus, AdrDate, AdrDocument, AdrFrontmatter, AdrId, AdrIngested, AdrService, AppState,
-    BodyHash, Status, Tier, build_schema,
+    BodyHash, NativeAdrStore, Status, Tier, build_schema,
 };
-use cherry_pit_gateway::MsgpackFileStore;
 
 fn sample_event() -> AdrIngested {
     AdrIngested {
@@ -193,9 +192,9 @@ fn adr_document_apply_updates_state_from_event() {
 }
 
 #[tokio::test]
-async fn adr_service_constructs_against_msgpack_file_store() {
+async fn adr_service_constructs_against_native_store() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store: MsgpackFileStore<AdrIngested> = MsgpackFileStore::new(dir.path());
+    let store = NativeAdrStore::create_pgno(&dir.path().join("adr.pgno")).expect("create store");
     let service = AdrService::new(Arc::new(store));
     let _store_ref = service.store();
 }
@@ -203,7 +202,7 @@ async fn adr_service_constructs_against_msgpack_file_store() {
 #[tokio::test]
 async fn app_state_constructs_from_service() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store: MsgpackFileStore<AdrIngested> = MsgpackFileStore::new(dir.path());
+    let store = NativeAdrStore::create_pgno(&dir.path().join("adr.pgno")).expect("create store");
     let service = Arc::new(AdrService::new(Arc::new(store)));
     let corpus: Arc<Mutex<AdrCorpus>> = Arc::new(Mutex::new(AdrCorpus::default()));
     let schema = build_schema(Arc::clone(&corpus));
