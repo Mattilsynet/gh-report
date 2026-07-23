@@ -164,4 +164,7 @@ rejects illegal architectures, the search space an agent must explore collapses.
   parent-dir fsync); the production path in
   `cherry-pit-gateway/src/event_store/msgpack_file.rs::write_atomic` already
   implements it. `cherry-pit-gateway` genuinely uses MessagePack on disk;
-  `gh-report` does not (native pardosa `.pgno`, default backend).
+  `gh-report` persists via native pardosa (`.pgno`, default backend,
+  CHE-0074) and is msgpack-free as of the CHE-0074 purge — the prior
+  incidental `rmp-serde` uses (in-process timer codec, byte-size metric
+  sample, and three serde-compat tests) were removed.
