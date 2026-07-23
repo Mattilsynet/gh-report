@@ -1,0 +1,5 @@
+**/backup_state.json
+**/export-state.json
+**/metadata.json
+**/payload_sequence.json
+**/projection_snapshot.json
