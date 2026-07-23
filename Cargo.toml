@@ -27,6 +27,7 @@ members = [
     "crates/non-exhaustive-check",
     "crates/pardosa-mint-private-tests",
     "crates/pardosa-test-support-harness",
+    "crates/pardosa-cherry-pit-test-support",
 ]
 
 # gh-report-web-client is wasm32-only (Leptos CSR, CHE-0087 R6): excluded
@@ -59,6 +60,7 @@ default-members = [
     "crates/non-exhaustive-check",
     "crates/pardosa-mint-private-tests",
     "crates/pardosa-test-support-harness",
+    "crates/pardosa-cherry-pit-test-support",
 ]
 
 [workspace.package]

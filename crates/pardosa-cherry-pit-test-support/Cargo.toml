@@ -1,0 +1,28 @@
+[package]
+name = "pardosa-cherry-pit-test-support"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Test-only pgno-backed cherry_pit_core::EventStore adapter (bridge crate per CHE-0084:R4-R6; outside the cherry-pit-* DAG, dev-dependency only for cherry-pit-* test targets)."
+
+[lints]
+workspace = true
+
+[lib]
+name = "pardosa_cherry_pit_test_support"
+path = "src/lib.rs"
+
+[dependencies]
+cherry-pit-core = { path = "../cherry-pit-core", version = "=0.1.0" }
+pardosa = { path = "../pardosa", version = "=0.4.0" }
+pardosa-fiber-store = { path = "../pardosa-fiber-store", version = "=0.1.0" }
+pardosa-schema = { path = "../pardosa-schema", version = "=0.1.0", features = ["derive"] }
+jiff = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+serde = { workspace = true }

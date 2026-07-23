@@ -2925,6 +2925,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "pardosa-cherry-pit-test-support"
+version = "0.0.0"
+dependencies = [
+ "cherry-pit-core",
+ "jiff",
+ "pardosa",
+ "pardosa-fiber-store",
+ "pardosa-schema",
+ "serde",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "pardosa-derive"
 version = "0.1.0"
 dependencies = [
