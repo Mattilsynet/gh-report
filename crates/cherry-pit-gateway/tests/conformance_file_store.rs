@@ -39,8 +39,7 @@ async fn pgno_event_store_conforms() {
         let paths = Arc::clone(&paths);
         move || {
             let path = temp_pgno_path();
-            let store =
-                PgnoEventStore::<RecordedEvent>::create_pgno(&path).expect("create store");
+            let store = PgnoEventStore::<RecordedEvent>::create_pgno(&path).expect("create store");
             paths.lock().expect("paths mutex").push(path);
             store
         }
@@ -59,8 +58,7 @@ async fn sum_view_projection_conforms_over_pgno_event_store() {
         let paths = Arc::clone(&paths);
         move || {
             let path = temp_pgno_path();
-            let store =
-                PgnoEventStore::<RecordedEvent>::create_pgno(&path).expect("create store");
+            let store = PgnoEventStore::<RecordedEvent>::create_pgno(&path).expect("create store");
             paths.lock().expect("paths mutex").push(path);
             store
         }

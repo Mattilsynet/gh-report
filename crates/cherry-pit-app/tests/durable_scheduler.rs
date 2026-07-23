@@ -285,4 +285,3 @@ fn durable_scheduler_has_no_hidden_coordinator_surface() {
     assert!(!source.contains("Box<dyn"));
     assert!(!source.contains("retry"));
 }
-

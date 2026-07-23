@@ -554,7 +554,12 @@ pub mod conformance {
         let mut last_seq = all.last().expect("create returns ≥1 envelope").sequence();
         for i in 1..3u32 {
             let appended = store
-                .append(id, last_seq, vec![make_event(i)], CorrelationContext::none())
+                .append(
+                    id,
+                    last_seq,
+                    vec![make_event(i)],
+                    CorrelationContext::none(),
+                )
                 .await
                 .expect("append with correct expected_sequence must succeed");
             assert_eq!(appended.len(), 1, "append must return one envelope");
@@ -735,11 +740,20 @@ pub mod conformance {
             .await
             .expect("create must succeed");
         let mut last_seq = created.last().expect("≥1 envelope").sequence();
-        assert_eq!(last_seq.get(), 1, "after create of 1 event, last sequence must be 1");
+        assert_eq!(
+            last_seq.get(),
+            1,
+            "after create of 1 event, last sequence must be 1"
+        );
 
         for (offset, i) in (1..4u32).enumerate() {
             let appended = store
-                .append(id, last_seq, vec![make_event(i)], CorrelationContext::none())
+                .append(
+                    id,
+                    last_seq,
+                    vec![make_event(i)],
+                    CorrelationContext::none(),
+                )
                 .await
                 .expect("append with correct expected_sequence must succeed");
             assert_eq!(appended.len(), 1, "append returns one envelope per event");
@@ -878,7 +892,12 @@ pub mod conformance {
         let mut last_seq = created.last().expect("≥1 envelope").sequence();
         for i in 1..3u32 {
             let appended = store
-                .append(id, last_seq, vec![make_event(i)], CorrelationContext::none())
+                .append(
+                    id,
+                    last_seq,
+                    vec![make_event(i)],
+                    CorrelationContext::none(),
+                )
                 .await
                 .expect("append with correct expected_sequence must succeed");
             last_seq = appended.last().expect("≥1 envelope").sequence();

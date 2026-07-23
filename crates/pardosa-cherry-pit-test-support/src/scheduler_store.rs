@@ -150,10 +150,11 @@ fn caller_event_type_dto(value: &str) -> Result<CallerEventTypeDto, SchedulerEve
 }
 
 fn payload_dto(value: &[u8]) -> Result<PayloadDto, SchedulerEventConversionError> {
-    PayloadDto::try_from(value.to_vec())
-        .map_err(|_| SchedulerEventConversionError::PayloadTooLong {
+    PayloadDto::try_from(value.to_vec()).map_err(|_| {
+        SchedulerEventConversionError::PayloadTooLong {
             actual: value.len(),
-        })
+        }
+    })
 }
 
 /// Convert a `SchedulerEvent` into its bridge-local DTO.
@@ -195,13 +196,11 @@ pub fn to_dto(
 }
 
 fn target_aggregate_from(raw: u64) -> Result<AggregateId, StoreError> {
-    NonZeroU64::new(raw)
-        .map(AggregateId::new)
-        .ok_or_else(|| {
-            StoreError::CorruptData(Box::<dyn std::error::Error + Send + Sync>::from(
-                "scheduler DTO target_aggregate must be non-zero",
-            ))
-        })
+    NonZeroU64::new(raw).map(AggregateId::new).ok_or_else(|| {
+        StoreError::CorruptData(Box::<dyn std::error::Error + Send + Sync>::from(
+            "scheduler DTO target_aggregate must be non-zero",
+        ))
+    })
 }
 
 /// Convert a bridge-local DTO back into a `SchedulerEvent`.
@@ -216,9 +215,7 @@ fn target_aggregate_from(raw: u64) -> Result<AggregateId, StoreError> {
 /// `target_aggregate` or `fire_at_nanos` value is structurally
 /// impossible (zero aggregate id; out-of-range timestamp) — defense in
 /// depth against corrupted `.pgno` bytes, not a normal conversion path.
-pub fn from_dto(
-    dto: SchedulerEventDto,
-) -> Result<cherry_pit_core::SchedulerEvent, StoreError> {
+pub fn from_dto(dto: SchedulerEventDto) -> Result<cherry_pit_core::SchedulerEvent, StoreError> {
     use cherry_pit_core::SchedulerEvent;
     use cherry_pit_core::{ScheduleArmed, ScheduleCancelled, ScheduleFired};
 
@@ -249,9 +246,11 @@ pub fn from_dto(
                 correlation_from(fired.correlation_id, fired.causation_id),
             )))
         }
-        SchedulerEventDto::Cancelled(cancelled) => SchedulerEvent::Cancelled(
-            ScheduleCancelled::new(cherry_pit_core::ScheduleId::from_uuid(cancelled.schedule_id)),
-        ),
+        SchedulerEventDto::Cancelled(cancelled) => {
+            SchedulerEvent::Cancelled(ScheduleCancelled::new(
+                cherry_pit_core::ScheduleId::from_uuid(cancelled.schedule_id),
+            ))
+        }
     })
 }
 
@@ -351,10 +350,7 @@ impl PgnoSchedulerStore {
 impl EventStore for PgnoSchedulerStore {
     type Event = cherry_pit_core::SchedulerEvent;
 
-    async fn load(
-        &self,
-        id: AggregateId,
-    ) -> Result<Vec<EventEnvelope<Self::Event>>, StoreError> {
+    async fn load(&self, id: AggregateId) -> Result<Vec<EventEnvelope<Self::Event>>, StoreError> {
         let envelopes = self.inner.load(id).await?;
         envelopes.iter().map(remap_envelope).collect()
     }
@@ -534,7 +530,12 @@ mod tests {
 
         let wrong = NonZeroU64::new(99).unwrap();
         let result = store
-            .append(id, wrong, vec![cancelled_event(1)], CorrelationContext::none())
+            .append(
+                id,
+                wrong,
+                vec![cancelled_event(1)],
+                CorrelationContext::none(),
+            )
             .await;
 
         assert!(matches!(

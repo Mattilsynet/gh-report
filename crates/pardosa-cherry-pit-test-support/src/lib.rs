@@ -15,8 +15,7 @@ use pardosa::store::{Decode, Encode, Event as PardosaEvent, HasEventSchemaSource
 use pardosa_fiber_store::{FiberStoreError, ObservedFiberStore};
 use pardosa_schema::GenomeSafe;
 
-const SINGLE_EVENT_ONLY: &str =
-    "PgnoEventStore accepts only single-event batches (create/append); \
+const SINGLE_EVENT_ONLY: &str = "PgnoEventStore accepts only single-event batches (create/append); \
      multi-event atomic commit has no primitive in the pardosa substrate today \
      (see bd adr-fmt-75wcc option (a))";
 
@@ -80,15 +79,13 @@ impl<Ev: DomainEvent + GenomeSafe + Encode + Decode> PgnoEventStore<Ev> {
     }
 
     fn from_store(store: ObservedFiberStore<PgnoEnvelope<Ev>>) -> Self {
-        let max_id = store
-            .all_events()
-            .map_or(0, |events| {
-                events
-                    .iter()
-                    .map(|(_, event)| event.aggregate_id)
-                    .max()
-                    .unwrap_or(0)
-            });
+        let max_id = store.all_events().map_or(0, |events| {
+            events
+                .iter()
+                .map(|(_, event)| event.aggregate_id)
+                .max()
+                .unwrap_or(0)
+        });
         Self {
             store,
             next_id: AtomicU64::new(max_id),
@@ -98,7 +95,11 @@ impl<Ev: DomainEvent + GenomeSafe + Encode + Decode> PgnoEventStore<Ev> {
 
     fn aggregate_lock(&self, id: u64) -> Arc<StdMutex<()>> {
         let mut locks = self.locks.lock().expect("aggregate-lock map poisoned");
-        Arc::clone(locks.entry(id).or_insert_with(|| Arc::new(StdMutex::new(()))))
+        Arc::clone(
+            locks
+                .entry(id)
+                .or_insert_with(|| Arc::new(StdMutex::new(()))),
+        )
     }
 
     fn ordered_stream(&self, id: AggregateId) -> Result<Vec<EventEnvelope<Ev>>, StoreError> {
@@ -194,11 +195,9 @@ fn to_store_error(error: FiberStoreError) -> StoreError {
             expected_seq,
             actual_seq,
             source,
-        } => StoreError::Infrastructure(Box::<dyn std::error::Error + Send + Sync>::from(
-            format!(
-                "pardosa fiber store concurrency conflict (expected {expected_seq:?}, actual {actual_seq:?}): {source}"
-            ),
-        )),
+        } => StoreError::Infrastructure(Box::<dyn std::error::Error + Send + Sync>::from(format!(
+            "pardosa fiber store concurrency conflict (expected {expected_seq:?}, actual {actual_seq:?}): {source}"
+        ))),
         other => StoreError::Infrastructure(Box::new(other)),
     }
 }
@@ -464,7 +463,9 @@ mod tests {
             .create(vec![event("a"), event("b")], CorrelationContext::none())
             .await;
 
-        assert!(matches!(result, Err(StoreError::Infrastructure(e)) if e.to_string().contains("single-event")));
+        assert!(
+            matches!(result, Err(StoreError::Infrastructure(e)) if e.to_string().contains("single-event"))
+        );
     }
 
     #[tokio::test]
@@ -485,15 +486,16 @@ mod tests {
             )
             .await;
 
-        assert!(matches!(result, Err(StoreError::Infrastructure(e)) if e.to_string().contains("single-event")));
+        assert!(
+            matches!(result, Err(StoreError::Infrastructure(e)) if e.to_string().contains("single-event"))
+        );
     }
 
     #[tokio::test]
     async fn concurrent_single_appends_one_wins_one_conflicts() {
         let path = temp_pgno_path();
-        let store = StdArc::new(
-            PgnoEventStore::<TestEvent>::create_pgno(&path).expect("create store"),
-        );
+        let store =
+            StdArc::new(PgnoEventStore::<TestEvent>::create_pgno(&path).expect("create store"));
         let (id, created) = store
             .create(vec![event("a")], CorrelationContext::none())
             .await
