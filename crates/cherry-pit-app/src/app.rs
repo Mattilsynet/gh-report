@@ -328,7 +328,7 @@ where
 /// On dispatch error, behaviour matches the pre-F2 shape: `Terminal`
 /// failures are dead-lettered inside `dispatch_one`; `Retryable`
 /// failures surface as `tracing::error!` and do NOT abort the
-/// consumer (CHE-0051:R7 + CHE-0046:R2). One bad envelope must not
+/// consumer (CHE-0051:R7 + CHE-0046:R7). One bad envelope must not
 /// stop the bus.
 async fn run_dispatch_consumer<E, G, D>(
     mut rx: mpsc::Receiver<EventEnvelope<E>>,
@@ -368,7 +368,7 @@ where
     /// adr-fmt-cq7vb.2, Approach A2): sizes an `mpsc::channel` per
     /// [`Self::with_dispatch_buffer_capacity`] (default
     /// [`DEFAULT_DISPATCH_BUFFER_CAPACITY`]); spawns one sequential
-    /// consumer per CHE-0051:R7 + CHE-0024:R5 + CHE-0046:R2
+    /// consumer per CHE-0051:R7 + CHE-0024:R5 + CHE-0046:R7
     /// (`Terminal` dead-lettered, `Retryable` logged, neither
     /// aborts); installs a synchronous fan-out callback on
     /// [`InProcessEventBus::register`] (CHE-0024:R2 + CHE-0051:R2)

@@ -14,9 +14,9 @@ fn m1_forbid_unsafe_code() {
 }
 
 /// M3: `cherry-pit-core` dependencies restricted to {serde, uuid, jiff}
-/// (CHE-0029 R4). Pardosa-encoding has been removed from this workspace
-/// (mission pardosa-deletion-1779100000); ADR cleanup deferred per user
-/// mission scope. Also covers M23 (no thiserror). The CHE-0029 R6
+/// (CHE-0029 R4). Pardosa-encoding was removed from this workspace
+/// (mission pardosa-deletion-1779100000) and this allowlist assertion
+/// verifies the removal holds. Also covers M23 (no thiserror). The CHE-0029 R6
 /// closure check (forbidden transitives: tokio/axum/async-nats/tracing)
 /// is orthogonal and verified by `dep_tree.rs`.
 #[test]

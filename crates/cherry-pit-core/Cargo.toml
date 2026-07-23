@@ -29,11 +29,10 @@ testing = []
 serde = { workspace = true }
 uuid = { workspace = true }
 jiff = { workspace = true }
-# Pardosa-encoding has been removed from the workspace
-# (pardosa-deletion-1779100000); DomainEvent now bounds on
-# serde::{Serialize, DeserializeOwned}. ADR cleanup deferred per user
-# mission scope — CHE-0064:R2 / PAR-0024:R5 governance debt accepted;
-# follow-up tracked in bd issue (see ADR supersession debt).
+# Pardosa-encoding was removed from the workspace
+# (pardosa-deletion-1779100000); DomainEvent bounds on
+# serde::{Serialize, DeserializeOwned}. Removal is complete — no
+# pardosa-encoding dependency remains in this manifest.
 
 [dev-dependencies]
 proptest = { workspace = true }

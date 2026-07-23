@@ -75,7 +75,7 @@ where
     /// saturated queue back-pressures producers via
     /// [`mpsc::Sender::send`] rather than dropping commands.
     ///
-    /// # Single-writer-through-merger convention (CHE-0005)
+    /// # Single-writer-through-merger convention (CHE-0006)
     ///
     /// `store` is consumed as an [`Arc`] by value. The single-writer
     /// guarantee this crate provides (the I1 TOCTOU serialization —
