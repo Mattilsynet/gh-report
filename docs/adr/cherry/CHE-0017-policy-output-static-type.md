@@ -7,7 +7,7 @@ Status: Accepted
 
 ## Related
 
-References: CHE-0004
+References: CHE-0004, CHE-0008, CHE-0018
 
 ## Context
 
@@ -63,3 +63,4 @@ R2 [5]: Define policy output as an enum so the compiler verifies
 - **`Output` is not bounded by `Command`.** Policy outputs may carry routing context (target `AggregateId`, cross-context metadata) beyond the command itself. Requiring `Command` on `Output` would conflate routing with intent.
 - The infrastructure dispatch layer must know the output enum type, creating coupling resolved by `cherry-pit-app`.
 - Policies receive `EventEnvelope`, not raw events — they need metadata to construct correctly targeted outputs.
+- **`react` purity beyond async-freedom (no blocking I/O, no globals, deterministic) is convention, not compiler-enforced** (parity with CHE-0008's `handle` disclosure). CHE-0018:R1's synchronous signature prevents async I/O and mutation of `self`, but nothing prevents a blocking call, global state, or non-determinism inside `react`. Enforcement relies on code review.
