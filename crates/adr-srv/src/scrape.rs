@@ -23,7 +23,7 @@ use adr_fmt::{
     resolve_corpus_root,
 };
 
-use crate::app::{AdrService, IngestOutcome};
+use crate::app::{AdrService, AdrStorePort, IngestOutcome};
 use crate::domain::adr_date::AdrDate;
 use crate::domain::adr_id::AdrId;
 use crate::domain::body_hash::BodyHash;
@@ -50,7 +50,7 @@ pub struct ScrapeReport {
 /// Error variants for [`scrape_corpus`].
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum ScrapeError {
+pub enum ScrapeError<E> {
     /// `adr-fmt.toml` could not be loaded.
     Config(LoadError),
     /// Corpus root could not be resolved from the marker.
@@ -58,14 +58,14 @@ pub enum ScrapeError {
     /// `parse_domain` / `parse_stale` returned `Err` (infrastructure
     /// failure: unreadable directory).
     Parse(ParseError),
-    /// `AdrService::ingest_if_changed` surfaced a `StoreError`.
-    Store(cherry_pit_core::StoreError),
+    /// `AdrService::ingest_if_changed` surfaced a store-port error.
+    Store(E),
     /// `fs::read` on an ADR file failed (computed `body_hash` requires
     /// raw bytes per AFM-0027:R4).
     Io(std::io::Error),
 }
 
-impl core::fmt::Display for ScrapeError {
+impl<E: core::fmt::Display> core::fmt::Display for ScrapeError<E> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Config(e) => write!(f, "scrape: config load failed: {e}"),
@@ -77,36 +77,34 @@ impl core::fmt::Display for ScrapeError {
     }
 }
 
-impl std::error::Error for ScrapeError {}
+impl<E: core::fmt::Debug + core::fmt::Display> std::error::Error for ScrapeError<E> {}
 
-impl From<LoadError> for ScrapeError {
+impl<E> From<LoadError> for ScrapeError<E> {
     fn from(e: LoadError) -> Self {
         Self::Config(e)
     }
 }
 
-impl From<ResolveCorpusError> for ScrapeError {
+impl<E> From<ResolveCorpusError> for ScrapeError<E> {
     fn from(e: ResolveCorpusError) -> Self {
         Self::ResolveCorpus(e)
     }
 }
 
-impl From<ParseError> for ScrapeError {
+impl<E> From<ParseError> for ScrapeError<E> {
     fn from(e: ParseError) -> Self {
         Self::Parse(e)
     }
 }
 
-impl From<cherry_pit_core::StoreError> for ScrapeError {
-    fn from(e: cherry_pit_core::StoreError) -> Self {
-        Self::Store(e)
-    }
-}
-
-impl From<std::io::Error> for ScrapeError {
+impl<E> From<std::io::Error> for ScrapeError<E> {
     fn from(e: std::io::Error) -> Self {
         Self::Io(e)
     }
+}
+
+fn store_error<E>(e: E) -> ScrapeError<E> {
+    ScrapeError::Store(e)
 }
 
 /// Walk the corpus rooted at `marker_dir`, project every parseable
@@ -118,11 +116,11 @@ impl From<std::io::Error> for ScrapeError {
 /// corpus resolve, directory read, file read, store append). Per-
 /// record projection failures (missing frontmatter, unparseable id)
 /// are recorded in `ScrapeReport.diagnostics` and the walk continues.
-pub async fn scrape_corpus(
-    service: &AdrService,
+pub async fn scrape_corpus<S: AdrStorePort>(
+    service: &AdrService<S>,
     marker_dir: &Path,
     corpus: &Arc<Mutex<AdrCorpus>>,
-) -> Result<ScrapeReport, ScrapeError> {
+) -> Result<ScrapeReport, ScrapeError<S::Error>> {
     let config: Config = load_quiet(marker_dir)?;
     let corpus_root = resolve_corpus_root(marker_dir, &config.corpus)?;
 
@@ -169,12 +167,12 @@ pub async fn scrape_corpus(
 /// ingest. Updates `report` with `records_seen` + `events_emitted`
 /// counters and per-record skip diagnostics. Returns `Err` only on
 /// infrastructure failure (IO read, store error).
-async fn ingest_record(
-    service: &AdrService,
+async fn ingest_record<S: AdrStorePort>(
+    service: &AdrService<S>,
     record: &AdrRecord,
     report: &mut ScrapeReport,
     corpus: &Arc<Mutex<AdrCorpus>>,
-) -> Result<(), ScrapeError> {
+) -> Result<(), ScrapeError<S::Error>> {
     report.records_seen += 1;
 
     let projected = match project(record) {
@@ -187,7 +185,11 @@ async fn ingest_record(
         }
     };
 
-    match service.ingest_if_changed(projected, corpus).await? {
+    match service
+        .ingest_if_changed(projected, corpus)
+        .await
+        .map_err(store_error)?
+    {
         IngestOutcome::Created | IngestOutcome::Appended => {
             report.events_emitted += 1;
         }

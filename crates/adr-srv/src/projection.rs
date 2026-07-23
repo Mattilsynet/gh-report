@@ -51,7 +51,18 @@ impl Projection for AdrCorpus {
     type Event = AdrIngested;
 
     fn apply(&mut self, envelope: &EventEnvelope<Self::Event>) {
-        let event = envelope.payload();
+        self.apply_event(envelope.payload());
+    }
+}
+
+impl AdrCorpus {
+    /// Fold a single `AdrIngested` event into the corpus, independent
+    /// of any store envelope. [`Projection::apply`] delegates to this
+    /// for the `cherry_pit_core` `Projection` trait surface; store
+    /// ports that do not produce a `cherry_pit_core::EventEnvelope`
+    /// (CHE-0098 native pardosa port) call this directly — read access
+    /// stays on the CHE-0075 `ReadPort` seam either way.
+    pub fn apply_event(&mut self, event: &AdrIngested) {
         let id = event.id.clone();
         let updated = match self.docs.get(&id).cloned() {
             Some(existing) => existing.apply(event),
@@ -59,9 +70,7 @@ impl Projection for AdrCorpus {
         };
         self.docs.insert(id, updated);
     }
-}
 
-impl AdrCorpus {
     /// Look up a single ADR by id.
     #[must_use]
     pub fn get(&self, id: &AdrId) -> Option<&AdrDocument> {

@@ -48,6 +48,8 @@ dependencies = [
  "cherry-pit-gateway",
  "http",
  "jiff",
+ "pardosa",
+ "pardosa-fiber-store",
  "pardosa-schema",
  "pardosa-wire",
  "rmp-serde",

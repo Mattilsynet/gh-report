@@ -261,6 +261,14 @@ impl AdrIngestedEvent {
     pub fn event_type(&self) -> &'static str {
         "AdrIngested"
     }
+
+    /// Domain key for the native pardosa store port (CHE-0098 N-R4):
+    /// one fiber per ADR-file aggregate, keyed by the same
+    /// `DOMAIN-NNNN` string [`AdrId::to_string`] produces.
+    #[must_use]
+    pub fn domain_key(&self) -> String {
+        format!("{}-{:04}", self.id.domain.as_prefix(), self.id.number)
+    }
 }
 
 impl Validate for AdrIngestedEvent {
@@ -275,12 +283,11 @@ impl TryFrom<&AdrIngested> for AdrIngestedEvent {
     type Error = NativeConversionError;
 
     fn try_from(domain: &AdrIngested) -> Result<Self, Self::Error> {
-        let id = AdrIdEvent::from_domain(&domain.id).map_err(|source| {
-            NativeConversionError::Map {
+        let id =
+            AdrIdEvent::from_domain(&domain.id).map_err(|source| NativeConversionError::Map {
                 field: "id",
                 source,
-            }
-        })?;
+            })?;
         let title = NonEmptyEventString::try_new(domain.frontmatter.title.as_str()).map_err(
             |err| match err {
                 pardosa_schema::DomainError::TooLong { .. } => {
@@ -306,8 +313,10 @@ impl TryFrom<&AdrIngested> for AdrIngestedEvent {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let references = EventVec::try_from(references)
-            .map_err(|_| NativeConversionError::TooMany { field: "references" })?;
+        let references =
+            EventVec::try_from(references).map_err(|_| NativeConversionError::TooMany {
+                field: "references",
+            })?;
         Ok(Self {
             id,
             frontmatter,
@@ -341,6 +350,10 @@ impl TryFrom<&AdrIngestedEvent> for AdrIngested {
             references,
         })
     }
+}
+
+impl pardosa::store::HasEventSchemaSource for AdrIngestedEvent {
+    const EVENT_SCHEMA_SOURCE: Option<&'static str> = Some("adr-srv/AdrIngestedEvent");
 }
 
 #[cfg(test)]

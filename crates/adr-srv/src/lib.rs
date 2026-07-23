@@ -27,6 +27,7 @@ mod domain;
 mod graphql;
 mod projection;
 pub mod scrape;
+mod store;
 
 use std::path::{Path, PathBuf};
 
@@ -44,11 +45,13 @@ pub use domain::{
     NativeConversionError, NativeMapError,
 };
 
-pub use app::{AdrService, AppState, IngestOutcome};
+pub use app::{AdrService, AdrStorePort, AppState, IngestOutcome, NativeAdrStorePortError};
 
 pub use projection::AdrCorpus;
 
 pub use graphql::{AdrGql, AdrRef, AdrSchema, Query, build_schema};
+
+pub use store::{NativeAdrStore, NativeStoreError};
 
 /// Minimal probe that the AFM-0026:R1 surface compiles and is callable
 /// from this crate. Loads the workspace `adr-fmt.toml` and resolves the

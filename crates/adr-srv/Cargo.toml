@@ -41,6 +41,13 @@ pardosa-schema = { path = "../pardosa-schema", version = "=0.1.0" }
 pardosa-wire = { path = "../pardosa-wire", version = "=0.1.0" }
 thiserror = { workspace = true }
 
+# Native pardosa store port (CHE-0098 N-R1/N-R4/N-R5): production
+# persistence facade + one-fiber-per-key adapter. NOT
+# cherry-pit-pardosa (N-R1 forbids that dep for production
+# persistence).
+pardosa = { path = "../pardosa", version = "=0.4.0" }
+pardosa-fiber-store = { path = "../pardosa-fiber-store", version = "=0.1.0" }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tower = { workspace = true }
