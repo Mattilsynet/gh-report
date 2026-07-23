@@ -493,7 +493,7 @@ struct SweepTimeoutPayload {
 #[derive(Debug, thiserror::Error)]
 enum SweepTimeoutDecodeError {
     #[error("decode sweep timeout payload failed: {0}")]
-    Decode(#[from] rmp_serde::decode::Error),
+    Decode(#[from] serde_json::Error),
     #[error("invalid sweep timeout payload field: {0}")]
     InvalidField(#[from] pardosa_schema::DomainError),
 }
@@ -505,7 +505,7 @@ impl SchedulePayloadDecoder<SweepTimeoutEvent> for SweepTimeoutDecoder {
     type Error = SweepTimeoutDecodeError;
 
     fn decode(&self, fired: &ScheduleFired) -> Result<SweepTimeoutEvent, Self::Error> {
-        let payload: SweepTimeoutPayload = rmp_serde::from_slice(fired.payload())?;
+        let payload: SweepTimeoutPayload = serde_json::from_slice(fired.payload())?;
         Ok(SweepTimeoutEvent::try_timeout_fired(
             fired.caller_event_id(),
             payload.run_id,
@@ -573,7 +573,7 @@ async fn arm_sweep_timeout(
         error: error.to_string(),
         elapsed_ms,
     };
-    let encoded = rmp_serde::to_vec(&payload).map_err(sweep_timeout_persistence)?;
+    let encoded = serde_json::to_vec(&payload).map_err(sweep_timeout_persistence)?;
     let schedule_id = ScheduleId::from_uuid(uuid::Uuid::now_v7());
     let event_id = uuid::Uuid::now_v7();
     let event = ScheduleArmed::new(

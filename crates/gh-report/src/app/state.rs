@@ -510,7 +510,7 @@ impl AppState {
     ///
     /// Lock-and-release: takes an owned snapshot via
     /// [`Self::projection_snapshot`] (guard does not escape, D-CD-3),
-    /// then serializes the snapshot with `rmp_serde::to_vec` after the
+    /// then serializes the snapshot with `serde_json::to_vec` after the
     /// lock has already been released. Returns `None` rather than
     /// panicking on a serialize failure, so a sampling defect cannot
     /// crash the collection tick. Panics on poisoned mutex to match
@@ -518,7 +518,7 @@ impl AppState {
     /// entries — call from the collection tick, not per HTTP request.
     pub(crate) fn projection_bytes_deep(&self) -> Option<usize> {
         let snapshot = self.projection_snapshot();
-        rmp_serde::to_vec(&snapshot).ok().map(|bytes| bytes.len())
+        serde_json::to_vec(&snapshot).ok().map(|bytes| bytes.len())
     }
 
     pub(crate) fn projection_deleted_snapshot(

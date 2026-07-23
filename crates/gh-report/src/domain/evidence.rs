@@ -178,12 +178,12 @@ mod tests {
         assert_json_snapshot!(evidence);
     }
 
-    /// Backward compat: a `MessagePack` payload containing `warm_start: true`
+    /// Backward compat: a serialized payload containing `warm_start: true`
     /// deserializes correctly into the current `AssessmentMetadata` struct.
     /// This guards against regressions if the field's `#[serde(default)]`
     /// attribute is accidentally removed.
     #[test]
-    fn msgpack_backward_compat_warm_start_present() {
+    fn backward_compat_warm_start_present() {
         use super::AssessmentMetadata;
 
         let metadata = AssessmentMetadata {
@@ -201,31 +201,31 @@ mod tests {
             warm_start: true,
         };
 
-        let encoded = rmp_serde::to_vec_named(&metadata).expect("serialize");
+        let encoded = serde_json::to_vec(&metadata).expect("serialize");
 
-        let decoded: AssessmentMetadata = rmp_serde::from_slice(&encoded).expect("deserialize");
+        let decoded: AssessmentMetadata = serde_json::from_slice(&encoded).expect("deserialize");
 
         assert!(decoded.warm_start);
         assert_eq!(decoded.organization, "TestOrg");
         assert_eq!(decoded.run_id, "compat-test");
     }
 
-    /// Forward compat: a `MessagePack` payload *without* the `warm_start`
+    /// Forward compat: a serialized payload *without* the `warm_start`
     /// field deserializes successfully. This simulates reading a baseline
     /// written by a future binary that has removed the field, or an old
     /// baseline from before the field was added. The `#[serde(default)]`
     /// attribute ensures `warm_start` defaults to `false`.
     #[test]
-    fn msgpack_forward_compat_warm_start_absent() {
+    fn forward_compat_warm_start_absent() {
         let metadata = test_fixtures::make_metadata();
         let mut json_val = serde_json::to_value(&metadata).expect("to json");
         let obj = json_val.as_object_mut().expect("object");
         obj.remove("warm_start");
 
-        let msgpack = rmp_serde::to_vec_named(&json_val).expect("to msgpack");
+        let encoded = serde_json::to_vec(&json_val).expect("to json bytes");
 
         let decoded: super::AssessmentMetadata =
-            rmp_serde::from_slice(&msgpack).expect("deserialize without warm_start");
+            serde_json::from_slice(&encoded).expect("deserialize without warm_start");
 
         assert!(
             !decoded.warm_start,
@@ -234,11 +234,11 @@ mod tests {
         assert_eq!(decoded.organization, "TestOrg");
     }
 
-    /// Extra-field compat: a `MessagePack` payload with an *unknown* extra
+    /// Extra-field compat: a serialized payload with an *unknown* extra
     /// field deserializes successfully. This guards the assumption that
     /// `AssessmentMetadata` does not use `#[serde(deny_unknown_fields)]`.
     #[test]
-    fn msgpack_ignores_unknown_fields() {
+    fn ignores_unknown_fields() {
         let metadata = test_fixtures::make_metadata();
         let mut json_val = serde_json::to_value(&metadata).expect("to json");
         let obj = json_val.as_object_mut().expect("object");
@@ -247,10 +247,10 @@ mod tests {
             serde_json::Value::String("hello".to_string()),
         );
 
-        let msgpack = rmp_serde::to_vec_named(&json_val).expect("to msgpack");
+        let encoded = serde_json::to_vec(&json_val).expect("to json bytes");
 
         let decoded: super::AssessmentMetadata =
-            rmp_serde::from_slice(&msgpack).expect("deserialize with unknown field");
+            serde_json::from_slice(&encoded).expect("deserialize with unknown field");
 
         assert_eq!(decoded.organization, "TestOrg");
         assert_eq!(decoded.run_id, "test-run-id");
