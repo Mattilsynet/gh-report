@@ -7,7 +7,7 @@ Status: Accepted
 
 ## Related
 
-References: CHE-0011, CHE-0013, CHE-0018, CHE-0033
+References: CHE-0011, CHE-0013, CHE-0018, CHE-0033, CHE-0005, CHE-0040
 
 ## Context
 
@@ -27,6 +27,13 @@ R3 [5]: Callers never invent aggregate IDs; the store is the sole
   source of ID assignment
 R4 [5]: If domain logic needs its own identity, store it as a domain
   field populated during the first event's apply
+R5 [5]: Four tactical DDD patterns are deliberately absent, ratified
+  as non-goals not gaps: Factory (creation lives in `EventStore::create`
+  per R2), Domain Service (cross-aggregate logic lives in
+  `Policy::react` choreography, CHE-0040), Entity beyond the
+  aggregate root (one root per context, CHE-0005), and Specification
+  (no query/selection abstraction needed; add one only if a concrete
+  need surfaces — none has)
 
 1. **`Aggregate` has no `id()` method.** Aggregate identity is
    managed by the infrastructure layer (event store, command bus,
