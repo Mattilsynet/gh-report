@@ -1,57 +1,76 @@
-//! Registrant 2: `MsgpackFileStore` against the conformance harness.
-//!
-//! Second of three SM-4 registrants (in-memory in
-//! `cherry-pit-core/tests/conformance_in_memory.rs`; projection
-//! file-store in `cherry-pit-projection/tests/`); the pardosa-backed
-//! store (Track 2.2) is a future fourth registrant with matching shape.
-//!
-//! `#[tokio::test]` drives the `async fn` harness directly (gateway
-//! carries `tokio` dev-dep with `macros, rt-multi-thread`). Each
-//! scenario gets a fresh `MsgpackFileStore` rooted at a fresh
-//! `TempDir`, retained in an `Arc<Mutex<Vec<TempDir>>>` for the
-//! harness call's duration — drop order matters, since
-//! `MsgpackFileStore` holds a `.lock` file handle that must close
-//! before the `TempDir` is reaped.
-//!
-//! Q01 (linus round-2): scenario 5 asserts `StoreError::Infrastructure`
-//! for append-to-never-created; `msgpack_file.rs:504-508` produces
-//! exactly that variant. Kept narrow deliberately — broadening to
-//! `Infrastructure | ConcurrencyConflict` weakens the contract without
-//! cause; relax only if the pardosa registrant diverges.
-
 use std::sync::{Arc, Mutex};
 
-use cherry_pit_core::DomainEvent;
-use cherry_pit_core::testing::conformance::assert_event_store_conformance;
-use cherry_pit_gateway::MsgpackFileStore;
-use serde::{Deserialize, Serialize};
-use tempfile::TempDir;
+use cherry_pit_core::testing::conformance::{
+    assert_event_store_conformance, assert_projection_conformance,
+};
+use cherry_pit_core::{EventEnvelope, Projection};
+use pardosa_cherry_pit_test_support::PgnoEventStore;
+use pardosa_cherry_pit_test_support::fixture::RecordedEvent;
+use tempfile::TempPath;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-enum TestEvent {
-    Stamped(u32),
+fn temp_pgno_path() -> TempPath {
+    let file = tempfile::NamedTempFile::new().expect("create temp file");
+    let path = file.into_temp_path();
+    std::fs::remove_file(&path).expect("clear placeholder so create_pgno starts fresh");
+    path
 }
 
-impl DomainEvent for TestEvent {
-    fn event_type(&self) -> &'static str {
-        "conformance.stamped"
+#[derive(Default, Debug, PartialEq)]
+struct SumView {
+    total: u64,
+    applied: u64,
+}
+
+impl Projection for SumView {
+    type Event = RecordedEvent;
+
+    fn apply(&mut self, env: &EventEnvelope<Self::Event>) {
+        let RecordedEvent::Recorded { value } = env.payload();
+        self.total += u64::from(*value);
+        self.applied += 1;
     }
 }
 
 #[tokio::test]
-async fn msgpack_file_store_conforms() {
-    let dirs: Arc<Mutex<Vec<TempDir>>> = Arc::new(Mutex::new(Vec::new()));
+async fn pgno_event_store_conforms() {
+    let paths: Arc<Mutex<Vec<TempPath>>> = Arc::new(Mutex::new(Vec::new()));
 
     let factory = {
-        let dirs = Arc::clone(&dirs);
+        let paths = Arc::clone(&paths);
         move || {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let store = MsgpackFileStore::<TestEvent>::new(dir.path());
-            dirs.lock().expect("dirs mutex").push(dir);
+            let path = temp_pgno_path();
+            let store =
+                PgnoEventStore::<RecordedEvent>::create_pgno(&path).expect("create store");
+            paths.lock().expect("paths mutex").push(path);
             store
         }
     };
-    let make_event = |i: u32| TestEvent::Stamped(i);
+    let make_event = |i: u32| RecordedEvent::Recorded { value: i };
 
-    assert_event_store_conformance::<MsgpackFileStore<TestEvent>, _, _>(factory, make_event).await;
+    assert_event_store_conformance::<PgnoEventStore<RecordedEvent>, _, _>(factory, make_event)
+        .await;
+}
+
+#[tokio::test]
+async fn sum_view_projection_conforms_over_pgno_event_store() {
+    let paths: Arc<Mutex<Vec<TempPath>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let factory = {
+        let paths = Arc::clone(&paths);
+        move || {
+            let path = temp_pgno_path();
+            let store =
+                PgnoEventStore::<RecordedEvent>::create_pgno(&path).expect("create store");
+            paths.lock().expect("paths mutex").push(path);
+            store
+        }
+    };
+    let make_event = |i: u32| RecordedEvent::Recorded { value: i };
+
+    assert_projection_conformance::<SumView, PgnoEventStore<RecordedEvent>, _, _, _>(
+        factory,
+        make_event,
+        |a, b| a == b,
+    )
+    .await;
 }

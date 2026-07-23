@@ -269,6 +269,13 @@ impl<Ev: DomainEvent + GenomeSafe + Encode + Decode> EventStore for PgnoEventSto
         let _guard = lock.lock().expect("aggregate lock poisoned");
 
         let existing = self.ordered_stream(id)?;
+        if existing.is_empty() {
+            return Err(StoreError::Infrastructure(Box::<
+                dyn std::error::Error + Send + Sync,
+            >::from(format!(
+                "append to aggregate {id:?} that was never created"
+            ))));
+        }
         let actual_sequence = existing.last().map_or(0, |e| e.sequence().get());
         if actual_sequence != expected_sequence.get() {
             return Err(StoreError::ConcurrencyConflict {
