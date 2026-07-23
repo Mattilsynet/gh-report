@@ -337,10 +337,19 @@ mod tests {
         );
     }
 
-    /// (b) A second identical tick over an already-detached team is a
-    /// no-op: no new live-write, no fence churn (idempotent convergence,
-    /// CHE-0091:R4). The ghost roster observed after the first tick must
-    /// be unchanged (same content) after the second tick.
+    /// (b) A second identical tick over an already-detached team converges
+    /// to the same ghost-roster content (idempotent projection output).
+    /// The stronger "no new committed event" claim is NOT verified here:
+    /// `NativeTeamStore::fold_events` delegates to
+    /// `fold_defined_events`, which excludes detached fibers by its own
+    /// doc contract, so a count taken after the team is already detached
+    /// is structurally 0 regardless of what the second tick's `detach`
+    /// call does internally — an assertion built on it cannot fail on
+    /// the churn it would claim to detect (adr-fmt-nygqw High finding).
+    /// The actual "no redundant write on an already-detached fiber"
+    /// guarantee is pinned by `NativeTeamStore::detach`'s own doc
+    /// contract ("A no-op (key never seen / already detached) returns
+    /// `Ok(())`") at the store layer, not re-derivable here.
     #[tokio::test]
     async fn second_identical_tick_is_idempotent_no_new_write() {
         let (state, _dir) = test_state().await;
