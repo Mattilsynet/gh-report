@@ -1,7 +1,7 @@
 # CHE-0077. Explicit Domain Event Scheduler
 
 Date: 2026-06-13
-Last-reviewed: 2026-06-15
+Last-reviewed: 2026-07-23
 Tier: B
 Status: Accepted
 
@@ -39,6 +39,8 @@ R6 [5]: Forbid hidden callbacks, step coordinators, retry engines, or non-event 
 R7 [5]: Keep the v0.1 shape local and statically wired; runtime-pluggable scheduler topology is out of scope
 
 R8 [6]: Expose overdue and failed schedule outcomes as explicit domain events or dead-letter records, never silent logs only
+
+R9 [5]: R4's durable-recovery requirement governs the scheduler primitive's guarantee, not a per-consumer obligation. A consumer whose governing ADR documents best-effort rationale MAY use an ephemeral scheduler; it forgoes R4 durability rather than violating it. The primitive still provides durable recovery for consumers that use it.
 
 ## Consequences
 

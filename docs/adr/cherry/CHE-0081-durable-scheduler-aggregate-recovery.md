@@ -1,14 +1,14 @@
 # CHE-0081. Durable Scheduler Aggregate Recovery
 
 Date: 2026-06-15
-Last-reviewed: 2026-06-15
+Last-reviewed: 2026-07-23
 Tier: B
 Status: Accepted
 Crates: cherry-pit-core, cherry-pit-app, gh-report
 
 ## Related
 
-References: CHE-0077, CHE-0040, CHE-0024, CHE-0018, CHE-0048, CHE-0006, CHE-0051, CHE-0041, CHE-0005, CHE-0025, CHE-0029, CHE-0057, CHE-0022, CHE-0070, PGN-0016
+References: CHE-0077, CHE-0040, CHE-0024, CHE-0018, CHE-0048, CHE-0006, CHE-0051, CHE-0041, CHE-0005, CHE-0025, CHE-0029, CHE-0057, CHE-0022, CHE-0070, PGN-0016, CHE-0099
 
 ## Context
 
@@ -37,6 +37,8 @@ R8 [5]: Treat embedded caller payloads as opaque transport, not scheduler-owned 
 R9 [5]: Retain terminal scheduler events in v0.1; pruning, compaction, retention windows, or terminal-schedule garbage collection require a later ADR.
 
 R10 [5]: Place scheduler events, trait, and fold in `cherry-pit-core`; place the async driver and dead-letter wiring in `cherry-pit-app`, statically wired and never pardosa-sited.
+
+R11 [5]: A consumer MAY wire an ephemeral in-memory `EventStore` into the scheduler driver, opting out of the R1/R2/R6/R7 durable-recovery guarantees, provided its governing ADR records the rationale and accepts best-effort semantics (pending timers lost on restart by design). The `DurableScheduler` pattern stays the default and fully available; this rule scopes applicability.
 
 ## Consequences
 
