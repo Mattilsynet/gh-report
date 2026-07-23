@@ -24,7 +24,8 @@ R1 [5]: Construct EventEnvelope exclusively through
 R2 [5]: Use NonZeroU64 for the EventEnvelope sequence field so
   zero sequences are rejected at the type level
 R3 [5]: Access EventEnvelope fields through accessor methods
-  (event_id(), aggregate_id(), sequence(), timestamp(), payload())
+  (event_id(), aggregate_id(), sequence(), timestamp(),
+  correlation_id(), causation_id(), payload())
 R4 [5]: Call EventEnvelope::validate_stream() after deserialization in
   EventStore::load implementations to catch corrupt stored data,
   aggregate_id mismatches, and sequence gaps
@@ -57,7 +58,7 @@ handled separately (see below).
 `Result<Self, EnvelopeError>`. It validates that `event_id` is non-nil
 (returns `EnvelopeError::NilEventId` otherwise), then assigns all
 fields. Zero sequence is impossible at the type level via `NonZeroU64`.
-See `cherry-pit-core/src/envelope.rs` for full implementation.
+See `cherry-pit-core/src/event.rs` for full implementation.
 
 The constructor is `pub` (not `pub(crate)`) because `cherry-pit-gateway`
 is a separate crate that must call it. The constructor is safe for

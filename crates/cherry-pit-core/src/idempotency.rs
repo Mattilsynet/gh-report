@@ -3,9 +3,10 @@
 //! Per CHE-0046 R3 + CHE-0049 R6, idempotency keys are *never*
 //! synthesised by the framework — the consumer's chosen stability
 //! semantics are the only authority. This invariant is enforced at the
-//! type level: the public constructor [`IdempotencyKey::from_header_value`]
-//! is the only way to obtain `Some(IdempotencyKey)` from outside this
-//! crate, and it requires an inbound header value. The `pub(crate)`
+//! type level per CHE-0041 R5, which ratifies the carrier-type seal: the
+//! public constructor [`IdempotencyKey::from_header_value`] is the only
+//! way to obtain `Some(IdempotencyKey)` from outside this crate, and it
+//! requires an inbound header value. The `pub(crate)`
 //! [`IdempotencyKey::new_unchecked`] is not re-exported and is
 //! inaccessible to downstream crates.
 //!
@@ -43,7 +44,8 @@ impl IdempotencyKey {
     ///
     /// Intentionally `pub(crate)` — downstream crates have no access to
     /// this path, which is the structural enforcement of the
-    /// never-synthesise invariant (CHE-0046 R3 + CHE-0049 R6).
+    /// never-synthesise invariant. The seal itself is ratified by
+    /// CHE-0041 R5; the invariant it upholds is CHE-0046 R3 + CHE-0049 R6.
     pub(crate) fn new_unchecked(s: String) -> Self {
         Self(s)
     }

@@ -13,8 +13,10 @@ use crate::error::EnvelopeError;
 /// for substrate-side persistence + transport.
 /// (CHE-0010 R1–R3 [amended; see ADR-debt issue]: supertrait bounds
 /// `Clone` + `Send` + `Sync` + `'static` + `serde::Serialize` +
-/// `serde::de::DeserializeOwned`. Pardosa-encoding has been removed
-/// from the workspace; the wire format is now msgpack via `rmp-serde`.
+/// `serde::de::DeserializeOwned`. The legacy `pardosa-encoding` crate
+/// (binary `Encode`/`Decode`) has been removed from these bounds; the
+/// wire format is now msgpack via `rmp-serde`. This is unrelated to the
+/// current `pardosa` substrate crates, which remain live.
 /// CHE-0022 R1–R5: event enum evolution rules — no `#[non_exhaustive]`,
 /// immutable `event_type()` strings, new fields as `Option<T>`;
 /// CHE-0045 R1–R2: domain events format-agnostic, serde chosen by infra.
@@ -317,10 +319,14 @@ impl<E: DomainEvent> EventEnvelope<E> {
 /// Field order and per-field encoding follow serde's derived layout —
 /// treat the resulting bytes as a wire format.
 ///
-/// (ADR cleanup deferred per user mission scope: pardosa-encoding
-/// `Encode`/`Decode` impls have been removed alongside the pardosa
-/// crates; the prior CHE-0064 hash-chain pre-image is no longer
-/// applicable in this workspace.)
+/// (ADR cleanup deferred per user mission scope: the legacy
+/// `pardosa-encoding` crate's `Encode`/`Decode` impls have been removed
+/// from `DomainEvent`'s bounds; the prior CHE-0064 hash-chain pre-image
+/// is no longer applicable in this workspace. NB: the current `pardosa`
+/// substrate crates — the `.pgno`/NATS event store, reintroduced after
+/// the legacy encoding crate was deleted — are unrelated to that removal
+/// and remain live; `cherry-pit-core` simply does not depend on them
+/// (CHE-0010 severance).)
 #[cfg(test)]
 mod tests {
     use super::*;
