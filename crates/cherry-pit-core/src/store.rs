@@ -15,8 +15,8 @@ use crate::event::{DomainEvent, EventEnvelope};
 /// by `(AggregateId, sequence)`. The `Event` associated type binds one
 /// store to one domain event type (compile-time cross-aggregate
 /// deserialization proof). Secondary (driven) port; concrete
-/// implementations (in-memory, Pardosa-backed, PostgreSQL-backed) live in
-/// infrastructure crates.
+/// implementations (in-memory for tests, MessagePack-file-backed via
+/// `cherry-pit-gateway`) live in infrastructure crates.
 ///
 /// The store, not the caller, creates [`EventEnvelope`]s and assigns new
 /// `AggregateId`s via [`create`](Self::create) (CHE-0016:R1–R2,
