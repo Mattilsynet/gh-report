@@ -818,8 +818,8 @@ name = "cherry-pit-projection"
 version = "0.1.0"
 dependencies = [
  "cherry-pit-core",
- "cherry-pit-gateway",
  "jiff",
+ "pardosa-cherry-pit-test-support",
  "proptest",
  "rmp-serde",
  "serde",

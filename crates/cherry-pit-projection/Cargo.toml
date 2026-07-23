@@ -25,7 +25,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 cherry-pit-core = { workspace = true, features = ["testing"] }
-cherry-pit-gateway = { workspace = true }
+pardosa-cherry-pit-test-support = { path = "../pardosa-cherry-pit-test-support" }
 proptest = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "sync"] }
