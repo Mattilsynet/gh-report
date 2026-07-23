@@ -3,14 +3,9 @@
 //! Infrastructure implementations for cherry-pit port traits.
 //!
 //! This crate provides concrete implementations of the ports defined
-//! in `cherry-pit-core`. For development and small deployments, the
-//! [`MsgpackFileStore`] persists aggregate event streams as `MessagePack`
-//! files on the local filesystem.
-//!
-//! ## Event store implementations
-//!
-//! - [`MsgpackFileStore`] — file-based, MessagePack-serialized, default
-//!   directory `store/`
+//! in `cherry-pit-core`. Event stores are consumed via `pardosa`
+//! (`.pgno`, default backend); the crate's own file-based `MessagePack`
+//! event store was retired per CHE-0100 (msgpack-removal-2).
 //!
 //! ## Governing ADRs
 //!
@@ -25,8 +20,6 @@
 
 #![forbid(unsafe_code)]
 
-mod event_store;
 mod recovery;
 
-pub use event_store::MsgpackFileStore;
 pub use recovery::{StaleLockEvidence, stale_lock_evidence};
