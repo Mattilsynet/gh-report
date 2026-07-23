@@ -49,17 +49,29 @@ pub enum ProjectionError {
     /// projection store instance. Surfaces CHE-0043:R1–R3 fencing
     /// contention to callers as a retryable failure.
     StoreLocked,
+
+    /// `persist` was called with a `last_sequence` strictly lower than
+    /// the existing on-disk checkpoint for the same aggregate. Rejected
+    /// with no write performed (CHE-0097:R1).
+    CheckpointRegression {
+        /// The sequence already recorded on disk.
+        existing: NonZeroU64,
+        /// The lower sequence the caller attempted to persist.
+        attempted: NonZeroU64,
+    },
 }
 
 impl ProjectionError {
     /// Classify the projection failure for retry guidance.
     ///
-    /// `CorruptData` maps to [`ErrorCategory::Terminal`] (do not retry); other
-    /// variants map to [`ErrorCategory::Retryable`] (retry per CHE-0046).
+    /// `CorruptData` and `CheckpointRegression` map to
+    /// [`ErrorCategory::Terminal`] (CHE-0097:R3 — a sequence regression
+    /// is a caller-side ordering bug, not transient); other variants map
+    /// to [`ErrorCategory::Retryable`] (retry per CHE-0046).
     #[must_use]
     pub const fn category(&self) -> ErrorCategory {
         match self {
-            Self::CorruptData(_) => ErrorCategory::Terminal,
+            Self::CorruptData(_) | Self::CheckpointRegression { .. } => ErrorCategory::Terminal,
             Self::Infrastructure(_) | Self::StoreLocked => ErrorCategory::Retryable,
         }
     }
@@ -92,6 +104,13 @@ impl fmt::Display for ProjectionError {
                 f,
                 "projection store directory is locked by another writer (CHE-0043)"
             ),
+            Self::CheckpointRegression {
+                existing,
+                attempted,
+            } => write!(
+                f,
+                "checkpoint sequence regression: attempted {attempted} is lower than existing {existing} (CHE-0097)"
+            ),
         }
     }
 }
@@ -100,7 +119,7 @@ impl Error for ProjectionError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::CorruptData(e) | Self::Infrastructure(e) => Some(e.as_ref()),
-            Self::StoreLocked => None,
+            Self::StoreLocked | Self::CheckpointRegression { .. } => None,
         }
     }
 }
@@ -465,6 +484,16 @@ where
         let agg_lock = self.aggregate_lock(aggregate_id);
         let _guard = agg_lock.lock().await;
         self.sweep_orphan_tmp(aggregate_id).await?;
+
+        if let Some(existing) = self.load_checkpoint_inner(aggregate_id).await?
+            && last_sequence < existing.last_sequence()
+        {
+            return Err(ProjectionError::CheckpointRegression {
+                existing: existing.last_sequence(),
+                attempted: last_sequence,
+            });
+        }
+
         let snapshot = rmp_serde::encode::to_vec_named(projection)
             .map_err(|e| ProjectionError::Infrastructure(Box::new(e)))?;
         write_atomic(&self.snapshot_path(aggregate_id), snapshot).await?;
@@ -1542,10 +1571,11 @@ mod tests {
         }
 
         #[test]
-        fn persist_is_last_writer_wins_on_checkpoint(
+        fn persist_advances_checkpoint_on_equal_or_higher_sequence(
             first in 1_u64..1_000_000,
-            second in 1_u64..1_000_000,
+            delta in 0_u64..1_000_000,
         ) {
+            let second = first + delta;
             let rt = tokio::runtime::Runtime::new().expect("runtime");
             rt.block_on(async move {
                 let id = aggregate_id(1);
@@ -1559,7 +1589,7 @@ mod tests {
                 backend
                     .persist(id, &CounterView { total: second }, seq(second))
                     .await
-                    .expect("second persist");
+                    .expect("second persist at equal-or-higher sequence");
 
                 let checkpoint = backend
                     .load_checkpoint(id)
@@ -1764,5 +1794,67 @@ mod tests {
             ProjectionDriver<CounterView, StaticStore>,
         );
         assert_eq!(<T as ProjectionDriverTuple>::ARITY, 2);
+    }
+
+    /// CHE-0097:R1 — `persist(10)` then `persist(3)` on the same aggregate
+    /// must reject the regression and leave the on-disk checkpoint
+    /// (and snapshot) at the higher sequence untouched.
+    #[tokio::test]
+    async fn persist_rejects_checkpoint_sequence_regression() {
+        let id = aggregate_id(1);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = FileProjectionStore::<CounterView>::new(dir.path(), "counter");
+
+        backend
+            .persist(id, &CounterView { total: 10 }, seq(10))
+            .await
+            .expect("persist at sequence 10");
+
+        let result = backend.persist(id, &CounterView { total: 3 }, seq(3)).await;
+        assert!(
+            matches!(result, Err(ProjectionError::CheckpointRegression { .. })),
+            "expected CheckpointRegression, got {result:?}"
+        );
+
+        let checkpoint = backend
+            .load_checkpoint(id)
+            .await
+            .expect("load checkpoint")
+            .expect("checkpoint exists");
+        assert_eq!(
+            checkpoint.last_sequence(),
+            seq(10),
+            "on-disk checkpoint must remain at the pre-regression sequence"
+        );
+        assert_eq!(
+            backend.load_snapshot(id).await.expect("load snapshot"),
+            Some(CounterView { total: 10 }),
+            "on-disk snapshot must remain at the pre-regression value"
+        );
+    }
+
+    /// CHE-0097:R2 — persisting the same sequence again is not a
+    /// regression; the call succeeds and the checkpoint is unchanged.
+    #[tokio::test]
+    async fn persist_allows_equal_sequence_repersist() {
+        let id = aggregate_id(1);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = FileProjectionStore::<CounterView>::new(dir.path(), "counter");
+
+        backend
+            .persist(id, &CounterView { total: 5 }, seq(5))
+            .await
+            .expect("persist at sequence 5");
+        backend
+            .persist(id, &CounterView { total: 5 }, seq(5))
+            .await
+            .expect("re-persist at equal sequence must not be a regression");
+
+        let checkpoint = backend
+            .load_checkpoint(id)
+            .await
+            .expect("load checkpoint")
+            .expect("checkpoint exists");
+        assert_eq!(checkpoint.last_sequence(), seq(5));
     }
 }
