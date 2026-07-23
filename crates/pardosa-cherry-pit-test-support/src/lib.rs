@@ -180,6 +180,11 @@ pub mod fixture {
     }
 }
 
+pub mod scheduler_store;
+pub use scheduler_store::{
+    PgnoSchedulerStore, SchedulerEventConversionError, SchedulerEventDto, from_dto, to_dto,
+};
+
 fn to_store_error(error: FiberStoreError) -> StoreError {
     match error {
         FiberStoreError::ConcurrencyConflict {
