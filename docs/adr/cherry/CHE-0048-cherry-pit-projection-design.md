@@ -7,7 +7,7 @@ Status: Accepted
 
 ## Related
 
-References: CHE-0005:R1, CHE-0008, CHE-0009:R1, CHE-0024:R1, CHE-0024:R3, CHE-0024:R4, CHE-0029:R4, CHE-0036, CHE-0037:R1, CHE-0038, CHE-0043, CHE-0047, CHE-0044:R3, CHE-0074
+References: CHE-0005:R1, CHE-0008, CHE-0009:R1, CHE-0024:R1, CHE-0024:R3, CHE-0024:R4, CHE-0029:R4, CHE-0036, CHE-0037:R1, CHE-0038, CHE-0043, CHE-0047, CHE-0044:R3, CHE-0072, CHE-0074, CHE-0098
 
 ## Context
 
@@ -19,11 +19,11 @@ This ADR resolves five gaps as one posture bundle: storage shape, rebuild primit
 
 ## Decision
 
-The projection storage adapter uses file-based MessagePack snapshots as the production backend, with an in-memory backend for tests and ephemeral views. Both implement a single internal port trait parameterised on `P: Projection`.
+The projection storage adapter uses a pardosa-backed persistent backend (pgno/nats) as the production backend, with an in-memory backend for tests and ephemeral views. Both implement a single internal port trait parameterised on `P: Projection`.
 
-**Scope (R1–R2).** The on-disk snapshot + checkpoint persistence mandate in R1 and R2 binds the `cherry-pit-projection` crate — the canonical projection runtime. Consumers that elect replay-as-rebuild through the pardosa adapter (CHE-0071) are exempt; `gh-report` is the v0.1 instance of this election, retiring `baseline.msgpack` and `checkpoint` files in favour of event-log replay. The exemption is a scope reduction, not a content reversal: R1–R2 remain binding for cherry-pit-projection.
+**Scope (R1–R2).** The persistent snapshot + checkpoint persistence mandate in R1 and R2 binds the `cherry-pit-projection` crate — the canonical projection runtime. Consumers that elect replay-as-rebuild through the pardosa adapter (CHE-0071) are exempt; `gh-report` is the v0.1 instance of this election, retiring `baseline.msgpack` and `checkpoint` files in favour of event-log replay. The exemption is a scope reduction, not a content reversal: R1–R2 remain binding for cherry-pit-projection. This election is the EPHEMERAL backend generalised by R10.
 
-R1 [5]: Within `cherry-pit-projection`, the production adapter writes one MessagePack file per (aggregate_id, projection_name) tuple using rmp-serde with named encoding, following the temp-file-then-rename atomicity pattern established by CHE-0032:R1–R4 and the advisory `.lock` fencing model from CHE-0043:R1–R3
+R1 [5]: Within cherry-pit-projection, the PERSISTENT backend stores each (aggregate_id, projection_name) snapshot through the pardosa store facade (pgno default, nats optional; CHE-0072 selector), reusing the native-pardosa GenomeSafe DTO bridge pattern of CHE-0074/CHE-0098; MessagePack/rmp-serde file snapshots are removed. Atomicity is delegated to the pardosa backend, not file temp-rename.
 
 R2 [5]: Within `cherry-pit-projection`, a sibling checkpoint file is written strictly after the snapshot file for each (aggregate_id, projection_name) pair, recording aggregate_id, last applied sequence (NonZeroU64), and handler identity string, so that a crash between snapshot and checkpoint causes replay of already-applied events rather than skipping unapplied ones
 
@@ -41,9 +41,11 @@ R8 [5]: The adapter calls validate_stream() on every EventStore::load result bef
 
 R9 [5]: The `ProjectionCheckpoint` data type lives in cherry-pit-core as a peer of `EventEnvelope` (CHE-0042) — both are core-resident serde-deriving carriers — while `FileProjectionStore` and identity validation (R8) remain in cherry-pit-projection, which re-exports `ProjectionCheckpoint` for back-compat; core's dep budget (CHE-0029:R4) is preserved with no new dependencies
 
+R10 [5]: cherry-pit-projection exposes exactly two sanctioned persistence backends behind one internal port trait parameterised on P: Projection: EPHEMERAL (in-memory, rebuild-from-log every start; R5) and PERSISTENT (pardosa-backed; R1). Both are first-class; consumers select per deployment. No third backend without a new ADR.
+
 ## Consequences
 
-The file-based posture inherits the single-process locking assumption from CHE-0006:R1 and CHE-0043. Multi-process projection writers would require a new ADR establishing cross-process coordination semantics — this is explicitly deferred.
+The persistent-backend posture inherits the single-process locking assumption from CHE-0006:R1 and CHE-0043. Multi-process projection writers would require a new ADR establishing cross-process coordination semantics — this is explicitly deferred. The PERSISTENT backend (R1) may impose an additional bound on `P` (e.g. `GenomeSafe`) as a pay-for-what-you-use constraint; the shared `Projection` trait and the EPHEMERAL backend's bounds (R5) are unchanged.
 
 Single-aggregate, single-projection-per-driver scope means cross-aggregate read models (spanning bounded contexts per CHE-0005:R3) are out of scope for v0.1. Multi-projection composition deferred to WU-5 cherry-pit-app design.
 
@@ -55,7 +57,7 @@ Rebuild cost is O(total events per aggregate) with no snapshot shortcut (CHE-003
 
 **sled embedded KV** — Same paradigm-novelty objection as SQLite, with additional ecosystem maintenance risk from reduced upstream activity.
 
-**In-memory-only for production** — Acceptable for tests and ephemeral views (shipped as the companion backend per R5) but not viable as the sole adapter because rebuild-from-zero on every process start is impractical at non-trivial event volumes.
+**In-memory-only for production** — Originally rejected (2026-05) as impractical at non-trivial event volumes. RECONCILED (Layer 4, msgpack-removal-2): both production consumers (gh-report, adr-srv) ship in-memory rebuild-from-log on ephemeral Cloud Run filesystems where a local snapshot file does not survive restart. EPHEMERAL is therefore an ACCEPTED sanctioned backend (R5, R10), not a rejected alternative. The volume objection is bounded by the consumer's event count and CHE-0037:R1's no-snapshot-shortcut posture, accepted per consumer.
 
 **Same-file checkpoint** — Bundling snapshot and checkpoint in a single MessagePack blob makes it structurally impossible to express the strict "checkpoint after snapshot" write ordering required by CHE-0024:R4. A crash during a combined write could leave a new checkpoint pointing past an incompletely written snapshot.
 
