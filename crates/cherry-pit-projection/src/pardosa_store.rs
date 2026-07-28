@@ -100,15 +100,52 @@ fn decode_snapshot<P: DeserializeOwned>(bytes: &SnapshotBytesDto) -> ProjectionR
     serde_json::from_slice(bytes).map_err(|e| ProjectionError::CorruptData(Box::new(e)))
 }
 
-/// Pardosa-backed PERSISTENT projection storage backend (CHE-0048, amended
-/// R1/R10). Sibling of [`crate::FileProjectionStore`] — same key shape
-/// `(aggregate_id, projection_name)`, same CHE-0048:R2 snapshot-then-
-/// checkpoint write ordering, different storage medium: an append-only
-/// pardosa fiber store rather than msgpack files.
+/// Pardosa-backed PERSISTENT projection storage backend — one of the two
+/// sanctioned backends under CHE-0048:R10 (the other being the EPHEMERAL
+/// [`crate::InMemoryProjection`]). Same key shape `(aggregate_id,
+/// projection_name)` and the same CHE-0048:R2 snapshot-then-checkpoint
+/// write ordering as the legacy msgpack file backend, but backed by an
+/// append-only pardosa fiber store rather than the filesystem.
 ///
 /// Each snapshot/checkpoint pair is recorded onto its own fiber (one fiber
 /// per `(aggregate_id, projection_name, kind)` triple); loads take the
 /// latest live record per fiber (latest-wins).
+///
+/// # Examples
+///
+/// Persist a snapshot + checkpoint to a `.pgno` file and read them back:
+///
+/// ```
+/// use std::num::NonZeroU64;
+/// use cherry_pit_core::AggregateId;
+/// use cherry_pit_projection::PardosaProjectionStore;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// struct CounterView { total: u64 }
+///
+/// # tokio::runtime::Builder::new_current_thread()
+/// #     .enable_all()
+/// #     .build()
+/// #     .unwrap()
+/// #     .block_on(async {
+/// let file = tempfile::NamedTempFile::new().unwrap();
+/// let path = file.into_temp_path();
+/// std::fs::remove_file(&path).unwrap();
+///
+/// let store = PardosaProjectionStore::<CounterView>::create_pgno(&path, "counter_view").unwrap();
+/// let id = AggregateId::new(NonZeroU64::new(1).unwrap());
+/// let four = NonZeroU64::new(4).unwrap();
+///
+/// store.persist(id, &CounterView { total: 4 }, four).await.unwrap();
+///
+/// let snapshot = store.load_snapshot(id).await.unwrap();
+/// assert_eq!(snapshot, Some(CounterView { total: 4 }));
+///
+/// let checkpoint = store.load_checkpoint(id).await.unwrap().unwrap();
+/// assert_eq!(checkpoint.last_sequence(), four);
+/// # });
+/// ```
 pub struct PardosaProjectionStore<P> {
     store: ObservedFiberStore<PardosaProjectionRecord>,
     projection_name: String,

@@ -151,6 +151,11 @@ pub use pardosa_store::PardosaProjectionStore;
 /// two leaves the snapshot present but the checkpoint absent — restart code
 /// must treat that as "rebuild" rather than "trust snapshot".
 ///
+/// Superseded by [`crate::PardosaProjectionStore`], the PERSISTENT backend
+/// sanctioned by CHE-0048:R1/R10; this msgpack file backend is retained for
+/// the current release and slated for removal alongside the `rmp-serde`
+/// dependency in a follow-up mission.
+///
 /// # Examples
 ///
 /// Construct a backend and verify its identity (no I/O):
@@ -163,36 +168,8 @@ pub use pardosa_store::PardosaProjectionStore;
 /// assert_eq!(store.dir(), std::path::Path::new("target/projection-doctest"));
 /// ```
 ///
-/// Persist a snapshot + checkpoint and read them back:
-///
-/// ```
-/// use std::num::NonZeroU64;
-/// use cherry_pit_core::AggregateId;
-/// use cherry_pit_projection::FileProjectionStore;
-/// use serde::{Deserialize, Serialize};
-///
-/// #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-/// struct CounterView { total: u64 }
-///
-/// # tokio::runtime::Builder::new_current_thread()
-/// #     .enable_all()
-/// #     .build()
-/// #     .unwrap()
-/// #     .block_on(async {
-/// let dir = tempfile::tempdir().unwrap();
-/// let store = FileProjectionStore::<CounterView>::new(dir.path(), "counter_view");
-/// let id = AggregateId::new(NonZeroU64::new(1).unwrap());
-/// let four = NonZeroU64::new(4).unwrap();
-///
-/// store.persist(id, &CounterView { total: 4 }, four).await.unwrap();
-///
-/// let snapshot = store.load_snapshot(id).await.unwrap();
-/// assert_eq!(snapshot, Some(CounterView { total: 4 }));
-///
-/// let checkpoint = store.load_checkpoint(id).await.unwrap().unwrap();
-/// assert_eq!(checkpoint.last_sequence(), four);
-/// # });
-/// ```
+/// See [`crate::PardosaProjectionStore`]'s own examples for the persist /
+/// load-back round trip on the sanctioned persistent backend.
 #[derive(Debug, Clone)]
 pub struct FileProjectionStore<P> {
     dir: PathBuf,
