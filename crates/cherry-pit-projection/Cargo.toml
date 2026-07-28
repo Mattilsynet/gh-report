@@ -19,9 +19,13 @@ workspace = true
 [dependencies]
 cherry-pit-core = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 rmp-serde = { workspace = true }
 tokio = { workspace = true, features = ["fs", "rt", "sync"] }
 tracing = { workspace = true }
+pardosa = { path = "../pardosa", version = "=0.4.0" }
+pardosa-fiber-store = { path = "../pardosa-fiber-store", version = "=0.1.0" }
+pardosa-schema = { path = "../pardosa-schema", version = "=0.1.0", features = ["derive"] }
 
 [dev-dependencies]
 cherry-pit-core = { workspace = true, features = ["testing"] }

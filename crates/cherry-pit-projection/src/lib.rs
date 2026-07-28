@@ -138,6 +138,9 @@ pub use cherry_pit_core::ProjectionCheckpoint;
 mod write_cell;
 pub use write_cell::WriteCell;
 
+mod pardosa_store;
+pub use pardosa_store::PardosaProjectionStore;
+
 /// `MessagePack` file backend for projection snapshots and checkpoints.
 ///
 /// Writes one snapshot and one sibling checkpoint file per
