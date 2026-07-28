@@ -156,4 +156,3 @@ async fn pardosa_projection_store_persist_is_snapshot_then_checkpoint_ordered() 
         "CHE-0097:R1 monotonicity: persist below the existing checkpoint must be rejected"
     );
 }
-

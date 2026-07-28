@@ -31,14 +31,11 @@ gateway implementation.
   code must treat that as "rebuild" rather than "trust snapshot". Durability
   (fsync/atomicity) is delegated to the pardosa backend, not to file
   temp-rename choreography.
-- `FileProjectionStore<P>` — the legacy `MessagePack` file backend. Same
-  snapshot-then-checkpoint semantics as `PardosaProjectionStore`, but
-  superseded by it per CHE-0048:R1/R10 ("MessagePack/rmp-serde file
-  snapshots are removed"); retained for the current release only and slated
-  for removal alongside the `rmp-serde` dependency in a follow-up mission.
-  Per CHE-0048:R10, `cherry-pit-projection` sanctions **exactly two**
-  backends going forward — EPHEMERAL and PERSISTENT above — no third
-  backend without a new ADR.
+- `FileProjectionStore<P>` — removed. Superseded by `PardosaProjectionStore`
+  per CHE-0048:R1/R10; the `MessagePack`-encoded file backend was retired
+  with the workspace's msgpack purge. `cherry-pit-projection` sanctions
+  **exactly two** backends going forward — EPHEMERAL and PERSISTENT above —
+  no third backend without a new ADR.
 - `ProjectionCheckpoint` — persisted `(aggregate_id, projection_name,
   last_sequence)` record.
 - `ProjectionError` / `ProjectionResult<T>` — typed corruption, infrastructure,
@@ -102,35 +99,5 @@ async fn persist_and_load(path: &std::path::Path) -> Result<(), Box<dyn std::err
     let snapshot = store.load_snapshot(id).await?;
     assert_eq!(snapshot, Some(CounterView { total: 4 }));
     Ok(())
-}
-```
-
-
-```rust,no_run
-use cherry_pit_core::{AggregateId, DomainEvent, EventEnvelope, EventStore, Projection};
-use cherry_pit_projection::{FileProjectionStore, ProjectionDriver};
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum CounterEvent { Incremented }
-impl DomainEvent for CounterEvent {
-    fn event_type(&self) -> &'static str { "counter.incremented" }
-}
-
-#[derive(Default, Clone, Serialize, Deserialize)]
-struct CounterView { total: u64 }
-impl Projection for CounterView {
-    type Event = CounterEvent;
-    fn apply(&mut self, _event: &EventEnvelope<Self::Event>) { self.total += 1; }
-}
-
-async fn rebuild<S>(store: S, id: AggregateId) -> Result<CounterView, Box<dyn std::error::Error>>
-where
-    S: EventStore<Event = CounterEvent>,
-{
-    let driver = ProjectionDriver::<CounterView, _>::new(store);
-    let files = FileProjectionStore::<CounterView>::new("projection-store", "counter-view");
-    let correlation = cherry_pit_core::CorrelationContext::none();
-    Ok(driver.rebuild_file(id, &correlation, &files).await?)
 }
 ```

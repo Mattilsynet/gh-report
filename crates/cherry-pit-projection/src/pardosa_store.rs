@@ -266,7 +266,7 @@ where
     /// deserialize as `P`.
     #[expect(
         clippy::unused_async,
-        reason = "async fn matches FileProjectionStore's call-site-compatible async surface; pardosa's facade is sync (PGN-0010:R5 bridge convention)"
+        reason = "async fn preserves a call-site-compatible async surface for callers; pardosa's facade is sync (PGN-0010:R5 bridge convention)"
     )]
     pub async fn load_snapshot(&self, aggregate_id: AggregateId) -> ProjectionResult<Option<P>> {
         let latest = self.store.latest_defined(record_key).map_err(to_infra)?;
@@ -290,7 +290,7 @@ where
     /// does not match this backend.
     #[expect(
         clippy::unused_async,
-        reason = "async fn matches FileProjectionStore's call-site-compatible async surface; pardosa's facade is sync (PGN-0010:R5 bridge convention)"
+        reason = "async fn preserves a call-site-compatible async surface for callers; pardosa's facade is sync (PGN-0010:R5 bridge convention)"
     )]
     pub async fn load_checkpoint(
         &self,
@@ -345,7 +345,7 @@ where
     /// failures.
     #[expect(
         clippy::unused_async,
-        reason = "async fn matches FileProjectionStore's call-site-compatible async surface; pardosa's facade is sync (PGN-0010:R5 bridge convention)"
+        reason = "async fn preserves a call-site-compatible async surface for callers; pardosa's facade is sync (PGN-0010:R5 bridge convention)"
     )]
     pub async fn delete(&self, aggregate_id: AggregateId) -> ProjectionResult<()> {
         let projection_name = to_bounded_name(&self.projection_name)?;
@@ -401,7 +401,7 @@ impl<P> PardosaProjectionStore<P>
 where
     P: Serialize,
 {
-    async fn persist_crash_after_snapshot(
+    fn persist_crash_after_snapshot(
         &self,
         aggregate_id: AggregateId,
         projection: &P,
@@ -511,9 +511,7 @@ mod tests {
             PardosaProjectionStore::<CounterView>::create_pgno(&path, "counter_view").unwrap();
         let id = aggregate_id(1);
 
-        let crash = store
-            .persist_crash_after_snapshot(id, &CounterView { total: 7 })
-            .await;
+        let crash = store.persist_crash_after_snapshot(id, &CounterView { total: 7 });
         assert!(crash.is_err());
 
         assert_eq!(

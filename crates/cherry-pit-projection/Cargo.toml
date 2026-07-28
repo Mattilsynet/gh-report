@@ -20,7 +20,6 @@ workspace = true
 cherry-pit-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-rmp-serde = { workspace = true }
 tokio = { workspace = true, features = ["fs", "rt", "sync"] }
 tracing = { workspace = true }
 pardosa = { path = "../pardosa", version = "=0.4.0" }
