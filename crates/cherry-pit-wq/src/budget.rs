@@ -210,6 +210,33 @@ impl BudgetGate {
     pub fn total_calls_made(&self) -> u64 {
         self.total_calls.load(Ordering::Relaxed)
     }
+
+    /// Refund one previously-acquired permit back to the current epoch.
+    ///
+    /// For a call that turned out not to count against the resource this
+    /// gate protects (e.g. a GitHub 304 Not Modified conditional
+    /// revalidation, which does not consume the real upstream rate
+    /// limit) — call [`Self::acquire`] up front as usual, then call this
+    /// once the outcome is known to be free.
+    ///
+    /// CAS-based, matching [`Self::acquire`]'s concurrency idiom.
+    /// Saturates at 0: never underflows past a concurrent epoch reset
+    /// that already zeroed `calls`.
+    pub fn refund(&self) {
+        loop {
+            let current = self.calls.load(Ordering::Acquire);
+            if current == 0 {
+                return;
+            }
+            if self
+                .calls
+                .compare_exchange_weak(current, current - 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return;
+            }
+        }
+    }
 }
 
 struct ResetGuard<'a> {
@@ -531,5 +558,80 @@ mod tests {
     fn set_epoch_limit_zero_panics() {
         let gate = BudgetGate::new(1, Duration::from_secs(1));
         gate.set_epoch_limit(0);
+    }
+
+    #[tokio::test]
+    async fn refund_decrements_calls_but_not_total_calls() {
+        let gate = BudgetGate::new(5, Duration::from_secs(1));
+        let cancel = CancellationToken::new();
+        assert!(gate.acquire(&cancel).await);
+        assert!(gate.acquire(&cancel).await);
+        assert_eq!(gate.calls_made(), 2);
+
+        gate.refund();
+
+        assert_eq!(gate.calls_made(), 1);
+        assert_eq!(
+            gate.total_calls_made(),
+            2,
+            "total_calls_made is a lifetime audit trail, unaffected by refund"
+        );
+    }
+
+    #[test]
+    fn refund_on_empty_gate_saturates_at_zero() {
+        let gate = BudgetGate::new(5, Duration::from_secs(1));
+        gate.refund();
+        assert_eq!(gate.calls_made(), 0);
+    }
+
+    #[tokio::test]
+    async fn refund_never_underflows_below_zero_after_epoch_reset() {
+        tokio::time::pause();
+        let gate = Arc::new(BudgetGate::new(1, Duration::from_mins(1)));
+        let cancel = CancellationToken::new();
+
+        assert!(gate.acquire(&cancel).await);
+        assert_eq!(gate.calls_made(), 1);
+
+        let g = Arc::clone(&gate);
+        let waiter_cancel = cancel.clone();
+        let handle = tokio::spawn(async move { g.acquire(&waiter_cancel).await });
+        tokio::time::advance(Duration::from_secs(61)).await;
+        assert!(handle.await.unwrap());
+        assert_eq!(gate.calls_made(), 1);
+
+        gate.refund();
+        gate.refund();
+        assert_eq!(
+            gate.calls_made(),
+            0,
+            "a second refund past zero must saturate, never wrap/underflow"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_refund_never_underflows() {
+        let gate = Arc::new(BudgetGate::new(20, Duration::from_secs(1)));
+        let cancel = CancellationToken::new();
+        for _ in 0..20 {
+            assert!(gate.acquire(&cancel).await);
+        }
+        assert_eq!(gate.calls_made(), 20);
+
+        let mut handles = Vec::new();
+        for _ in 0..30 {
+            let g = Arc::clone(&gate);
+            handles.push(tokio::spawn(async move { g.refund() }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        assert_eq!(
+            gate.calls_made(),
+            0,
+            "30 refunds against 20 acquired permits must saturate at 0, never underflow"
+        );
     }
 }

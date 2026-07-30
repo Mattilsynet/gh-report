@@ -919,7 +919,10 @@ impl GitHubClient {
     /// are captured via a side-channel and read after the call.
     ///
     /// # Budget note
-    /// Stale entries that fail `ETag` revalidation consume two budget
+    /// A successful `ETag` revalidation (304 Not Modified) refunds its
+    /// acquired permit (adr-fmt-op2u6-F1) — GitHub does not charge a 304
+    /// against the real rate limit, so net budget impact is zero. Stale
+    /// entries that fail `ETag` revalidation still consume two budget
     /// permits: one for the conditional request, one for the full
     /// retry — a deliberate trade-off, since this is rare.
     ///
@@ -1079,6 +1082,7 @@ impl GitHubClient {
             .map(String::from);
 
         if status == 304 {
+            self.budget.refund();
             debug!(repo = %repo_name, "ETag revalidation: 304 Not Modified");
             self.repo_detail_cache.upsert_sync(
                 repo_name.to_string(),
@@ -2417,6 +2421,51 @@ mod tests {
         assert!(
             cached.etag.is_some(),
             "ETag should be preserved after revalidation"
+        );
+    }
+
+    #[tokio::test]
+    async fn repo_details_etag_revalidation_304_refunds_the_acquired_budget_permit() {
+        use wiremock::matchers::{header, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        Mock::given(path("/repos/test-org/free-revalidate-repo"))
+            .and(header("If-None-Match", "\"etag-v1\""))
+            .respond_with(ResponseTemplate::new(304))
+            .expect(3)
+            .mount(&server)
+            .await;
+
+        let (budget, rate_limit) = test_budget_and_rate_limit();
+        let client = build_test_client_with_budget(&server.uri(), &budget, &rate_limit);
+
+        let cached_data = serde_json::json!({"default_branch": "main"});
+        for _ in 0..3 {
+            client.repo_detail_cache.upsert_sync(
+                "free-revalidate-repo".to_string(),
+                CachedResult {
+                    status_code: 200,
+                    data: Some(cached_data.clone()),
+                    etag: Some("\"etag-v1\"".to_string()),
+                    stale: true,
+                },
+            );
+            let result = client.repo_details("free-revalidate-repo").await;
+            assert!(result.is_ok());
+        }
+
+        assert_eq!(
+            budget.calls_made(),
+            0,
+            "3 real 304s must net to 0 charged permits, not 3: calls_made={}",
+            budget.calls_made()
+        );
+        assert_eq!(
+            budget.total_calls_made(),
+            3,
+            "total_calls_made is the lifetime audit trail and stays at 3 acquisitions"
         );
     }
 
