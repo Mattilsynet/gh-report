@@ -893,6 +893,7 @@ name = "cherry-pit-wq"
 version = "0.2.0"
 dependencies = [
  "cherry-pit-core",
+ "criterion",
  "futures-util",
  "loom",
  "proptest",

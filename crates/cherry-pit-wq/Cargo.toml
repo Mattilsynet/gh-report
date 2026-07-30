@@ -29,3 +29,8 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"
 uuid = { workspace = true }
 proptest = { workspace = true }
 loom = "0.7"
+criterion = { workspace = true }
+
+[[bench]]
+name = "contention"
+harness = false
