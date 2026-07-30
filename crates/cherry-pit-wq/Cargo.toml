@@ -28,3 +28,4 @@ tokio-util = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 uuid = { workspace = true }
 proptest = { workspace = true }
+loom = "0.7"
