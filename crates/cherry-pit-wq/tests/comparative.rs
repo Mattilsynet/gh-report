@@ -248,3 +248,197 @@ fn phantom_304_headline_contrast() {
         );
     });
 }
+
+/// Layer 4 — CURRENT needs `epochs` simulated full-epoch cooldowns to
+/// admit an all-free draw storm, purely from phantom-304 conflation;
+/// A (`settle(Free)`) needs zero. `tokio::time::pause`/`advance` drives
+/// simulated multi-hour epoch cycles deterministically (no wall-clock
+/// cost). This generalises `phantom_304_headline_contrast` from a single
+/// epoch to a multi-hour storm, the shape Layer 4 asks for.
+#[tokio::test]
+async fn l4_current_needs_n_epoch_resets_for_phantom_304_storm_while_a_needs_zero() {
+    tokio::time::pause();
+
+    let limit = 5u64;
+    let epochs = 3usize;
+    let total_draws = usize::try_from(limit).unwrap_or(usize::MAX) * epochs;
+
+    let gate = Arc::new(BudgetGate::new(limit, Duration::from_hours(1)));
+    let cancel = CancellationToken::new();
+    let g = Arc::clone(&gate);
+    let c = cancel.clone();
+    let handle = tokio::spawn(async move {
+        for _ in 0..total_draws {
+            assert!(
+                g.acquire(&c).await,
+                "cancellation must not fire in this simulation"
+            );
+        }
+    });
+    for _ in 0..epochs {
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_mins(61)).await;
+    }
+    handle.await.unwrap();
+    assert_eq!(
+        gate.total_calls_made(),
+        total_draws as u64,
+        "CURRENT: all draws eventually admitted, but only after {epochs} simulated full-epoch \
+         cooldowns triggered purely by free (304) draws"
+    );
+
+    let gate_a = Arc::new(BudgetGate::new(limit, Duration::from_hours(1)));
+    let regulator = BudgetRegulator::new(Arc::clone(&gate_a));
+    for _ in 0..total_draws {
+        assert_eq!(regulator.admit(&cancel).await, Admission::Admitted);
+        regulator.settle(SettleOutcome::Free);
+    }
+    assert_eq!(
+        gate_a.calls_made(),
+        0,
+        "A: the same {total_draws}-draw all-free storm needs zero epoch resets — every draw \
+         refunded via settle(Free), no simulated wait required at all"
+    );
+}
+
+/// Layer 4 — B: budget conservation and reset-cycle correctness across a
+/// simulated multi-hour idle gap. `capacity_tokens == refill_per_sec *
+/// 3600` is chosen so exactly one simulated hour regenerates exactly one
+/// capacity's worth — advancing by exactly that amount must refill to
+/// precisely `capacity_tokens` (not more, not less: no overshoot, no
+/// unbounded accumulation), and a draw beyond that within the same burst
+/// must not admit instantly.
+#[test]
+fn l4_b_token_bucket_conserves_and_caps_across_simulated_multi_hour_idle_gap() {
+    let rt = current_thread_rt();
+    let clock = FakeClock::new();
+    let refill_per_sec = 1u64;
+    let capacity_tokens = refill_per_sec * 3600;
+    let bucket = Arc::new(TokenBucketRegulator::new(
+        Arc::clone(&clock) as Arc<dyn Clock>,
+        capacity_tokens,
+        refill_per_sec,
+    ));
+    let cancel = CancellationToken::new();
+
+    rt.block_on(async {
+        for _ in 0..capacity_tokens {
+            assert_eq!(bucket.admit(&cancel).await, Admission::Admitted);
+        }
+    });
+
+    clock.advance(Duration::from_hours(1));
+
+    rt.block_on(async {
+        for _ in 0..capacity_tokens {
+            assert_eq!(
+                bucket.admit(&cancel).await,
+                Admission::Admitted,
+                "exactly one simulated hour's worth (== capacity_tokens) admits immediately \
+                 after the idle gap — refill is capped precisely at capacity, no overshoot"
+            );
+        }
+    });
+
+    rt.block_on(async {
+        let extra = tokio::time::timeout(Duration::from_millis(20), bucket.admit(&cancel)).await;
+        assert!(
+            extra.is_err(),
+            "conservation: a (capacity_tokens + 1)'th draw in the same burst must not admit \
+             instantly"
+        );
+    });
+}
+
+/// [`Regulator`] test-double proving F3: the seam ACCEPTS a Retry-After
+/// style regulator that rejects admission until a simulated Retry-After
+/// deadline elapses. No concrete Retry-After regulator ships from this
+/// mission — this proves the seam only (mission `out_of_scope`).
+struct RetryAfterTestDouble {
+    clock: Arc<dyn Clock>,
+    until: Instant,
+}
+
+impl RetryAfterTestDouble {
+    fn new(clock: Arc<dyn Clock>, retry_after: Duration) -> Self {
+        let until = clock.now() + retry_after;
+        Self { clock, until }
+    }
+}
+
+impl Regulator for RetryAfterTestDouble {
+    fn admit<'a>(
+        &'a self,
+        cancel: &'a CancellationToken,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Admission> + Send + 'a>> {
+        Box::pin(async move {
+            loop {
+                let now = self.clock.now();
+                if now >= self.until {
+                    return Admission::Admitted;
+                }
+                let wait = self.until - now;
+                tokio::select! {
+                    () = tokio::time::sleep(wait) => {}
+                    () = cancel.cancelled() => return Admission::Cancelled,
+                }
+            }
+        })
+    }
+
+    fn settle(&self, _outcome: SettleOutcome) {}
+}
+
+/// F3 — seam acceptance: [`RetryAfterTestDouble`] is dyn-compatible and
+/// composes into the same ordered `&[Arc<dyn Regulator>]` chain as a real
+/// adapter ([`BudgetRegulator`]); it rejects (parks) admission until its
+/// simulated Retry-After deadline elapses, then admits.
+///
+/// CURRENT has no equivalent injection path: [`cherry_pit_wq::run_worker_pool`]'s
+/// signature takes `budget_gate: Arc<BudgetGate>, rate_limit_state:
+/// Arc<RateLimitState>` — two fixed concrete types, not a slice of trait
+/// objects — so there is no way to substitute or add a Retry-After-aware
+/// gate into the CURRENT worker pool without changing its signature
+/// (a compile-time API fact, not a runtime behaviour to assert).
+#[test]
+fn f3_seam_accepts_test_double_retry_after_regulator_current_has_no_injection_path() {
+    let clock = FakeClock::new();
+    let retry_after = Duration::from_mins(1);
+    let double = Arc::new(RetryAfterTestDouble::new(
+        Arc::clone(&clock) as Arc<dyn Clock>,
+        retry_after,
+    ));
+
+    let budget = Arc::new(BudgetRegulator::new(Arc::new(BudgetGate::new(
+        10,
+        Duration::from_secs(1),
+    ))));
+    let regulators: Vec<Arc<dyn Regulator>> =
+        vec![Arc::clone(&double) as Arc<dyn Regulator>, budget];
+    assert_eq!(
+        regulators.len(),
+        2,
+        "the Regulator seam accepts the test-double alongside a real adapter"
+    );
+
+    let rt = current_thread_rt();
+    let cancel = CancellationToken::new();
+
+    rt.block_on(async {
+        let not_yet = tokio::time::timeout(Duration::from_millis(20), double.admit(&cancel)).await;
+        assert!(
+            not_yet.is_err(),
+            "must not admit before the simulated Retry-After elapses"
+        );
+    });
+
+    clock.advance(retry_after);
+
+    rt.block_on(async {
+        assert_eq!(
+            double.admit(&cancel).await,
+            Admission::Admitted,
+            "admits once the simulated Retry-After deadline has elapsed"
+        );
+    });
+}
