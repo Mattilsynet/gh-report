@@ -1,0 +1,122 @@
+---
+deadlock_detection: false
+---
+# Model #1 — N-writer OCC fence + clean-abort re-arm.
+#
+# Seam:
+#   pardosa/src/authoritative.rs        (authoritative read of committed_seq)
+#   pardosa-nats append gate            (Semaphore(1) — single-handle append
+#                                         serialization, handle.rs:203-208)
+#   gh-report/src/app/daemon.rs::rearm_fenced_run (PGN-0016:R7) — on
+#                                         FencedConflict/ConcurrencyConflict,
+#                                         abort cleanly (no retry-to-win, per
+#                                         the 341188b amendment) and re-arm
+#                                         with a fresh authoritative read on
+#                                         the next scheduled tick.
+#   Prose property already pinned at
+#   crates/gh-report/tests/live_nats_n_writer_fence_property.rs:1-16.
+#
+# ADRs: PGN-0016 (fence + re-arm policy), PGN-0010/PGN-0008/PGN-0015
+#       (sync facade boundary the OCC read/append sits behind).
+#
+# NUM_WRITERS writers share ONE aggregate's log. Each writer's cycle:
+#   1. authoritative read: read_seq := committed_seq   (models
+#      pardosa/src/authoritative.rs)
+#   2. attempt append at read_seq+1
+#   3. commit iff committed_seq is STILL == read_seq (optimistic
+#      concurrency check) -> committed_seq := read_seq + 1
+#      else -> FencedConflict, abort cleanly, re-arm (fresh read next tick)
+#
+# A single writer doing two back-to-back appends is modeled by letting one
+# writer role run the cycle twice in a row (append_gate Semaphore(1) means
+# a lone writer's own successive appends never race each other — captured
+# here as "when only one writer is active, it always wins its own CAS").
+
+NUM_WRITERS = 3
+# No numeric retry cap: each writer retries (fresh read -> attempt) until
+# it commits exactly once. State stays finite because retries only
+# reset self.read_seq (no counter growth) and committed_seq is capped at
+# NUM_WRITERS (each writer commits at most once).
+
+role Writer:
+    action Init:
+        self.read_seq = -1       # -1 == "no authoritative read yet"
+        self.done = False        # has committed its one write
+
+    # Step 1: authoritative read (pardosa/src/authoritative.rs)
+    # fair (weak): once a writer still has work to do and no pending
+    # read, it must eventually take a fresh authoritative read — models
+    # the re-arm policy actually retrying on the next scheduled tick
+    # rather than stalling forever.
+    atomic fair action ReadAuthoritative:
+        require not self.done
+        require self.read_seq == -1
+        self.read_seq = committed_seq
+
+    # Step 2+3: attempt append, OCC check, commit-or-fence-and-abort
+    # fair (weak): once a read is pending, the writer must eventually
+    # attempt its append (no indefinite stall holding a stale read).
+    atomic fair action AttemptAppend:
+        require self.read_seq != -1
+        if committed_seq == self.read_seq:
+            # OCC check passes: single writer wins this position
+            committed_seq = committed_seq + 1
+            log.append(self.__id__)
+            self.done = True
+            self.read_seq = -1
+        else:
+            # FencedConflict: abort cleanly, no retry-to-win.
+            # Re-arm happens on the NEXT ReadAuthoritative (fresh read).
+            self.read_seq = -1
+
+action Init:
+    committed_seq = 0
+    log = []
+    writers = bag()
+    for i in range(NUM_WRITERS):
+        writers.add(Writer())
+
+# SAFETY: at most one append commits per sequence position — the log has
+# no duplicate positions and committed_seq always equals len(log).
+always assertion ExactlyOneCommitPerSeq:
+    return committed_seq == len(log)
+
+# SAFETY: committed_seq only ever increases by exactly 1 per commit — no
+# lost update, no split-brain (two writers can never both believe they
+# won the same position).
+transition assertion CommittedSeqMonotonic:
+    if after.committed_seq != before.committed_seq:
+        return after.committed_seq == before.committed_seq + 1
+    return True  # stutter allowed
+
+# SAFETY (bound): committed_seq structurally never exceeds NUM_WRITERS —
+# each writer commits at most once (self.done latches True permanently).
+always assertion CommittedSeqBounded:
+    return committed_seq <= NUM_WRITERS
+
+# LIVENESS: under fair scheduling, every writer eventually commits its
+# one write. This is the "OCC churn self-heals via re-arm" property no
+# unit/property test can give — it requires modeling the retry loop
+# across time, not a single race snapshot.
+eventually always assertion EveryWriterEventuallyCommits:
+    for w in writers:
+        if not w.done:
+            return False
+    return True
+
+# --- TEETH (falsification) ---
+# To reproduce a liveness violation, change AttemptAppend's else-branch to
+# "retry-to-win" (re-attempt append immediately using the SAME stale
+# read_seq, instead of aborting and re-arming with a fresh read):
+#
+#     else:
+#         pass  # self.read_seq stays stale — no fresh authoritative read
+#               # (this is the pre-341188b behaviour the amendment removed)
+#
+# With that change, a writer's read_seq never resets to -1 on conflict,
+# so ReadAuthoritative's `require self.read_seq == -1` guard can never
+# re-fire for that writer — it is permanently stuck retrying the SAME
+# stale AttemptAppend, which keeps failing once the other writer has
+# advanced committed_seq past it. EveryWriterEventuallyCommits fails to
+# hold under fair scheduling. See README.md for the captured fizz
+# counterexample output.

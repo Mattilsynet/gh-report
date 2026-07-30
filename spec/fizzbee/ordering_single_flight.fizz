@@ -1,0 +1,145 @@
+---
+deadlock_detection: false
+---
+# Model #3 — TOCTOU single-flight create + ordering.
+#
+# Seam:
+#   crates/cherry-pit-merger/tests/i1_toctou_pin.rs:1-20 (the 4 pinned
+#     invariants this model restates as `always` assertions)
+#   merger create-path lookup -> EventStore::create -> index.or_insert,
+#     cite repo_service.rs:493 per that test header
+#   cherry-pit-core/src/checkpoint.rs (CHE-0097 checkpoint monotonicity)
+#   CHE-0019 (duplicate event_id rejection)
+#
+# ADRs: CHE-0097 (checkpoint sequence monotonicity), CHE-0019 (duplicate
+# event_id rejection at the event-store boundary).
+#
+# N concurrent dispatches target the SAME domain_key against one merger.
+# Each dispatch: lookup routing_index[domain_key]; if absent, create the
+# aggregate at seq 1 and index.or_insert the mapping; if present, append
+# at seq (current_seq + 1). The lookup -> create -> insert sequence is
+# single-flighted (guarded atomically) in the real merger — this model's
+# PASSING form makes that guard explicit via one atomic action covering
+# the whole lookup..append cycle. The TEETH variant (below) splits
+# lookup from create/append into two separate atomic steps, exposing
+# the TOCTOU race the real single-flight guard prevents.
+
+NUM_DISPATCHES = 3
+
+action Init:
+    routing_index = {}   # domain_key -> agg_id (agg_id is always "AGG" here,
+                          # single domain_key modeled; multiplicity of the
+                          # index entry itself, not the key space, is what
+                          # invariant 1 checks)
+    stream = []           # per-aggregate event log; entry i has seq i+1
+    bus_log = []          # envelopes published in dispatch order
+    seq_tracker = 0       # per-aggregate sequence tracker
+    dispatches_done = 0
+
+# Single-flighted dispatch: the entire lookup -> decide -> mutate
+# sequence is one atomic step, matching the real guard that serializes
+# concurrent same-domain_key dispatches across lookup..create..insert.
+atomic fair action Dispatch:
+    require dispatches_done < NUM_DISPATCHES
+    dispatches_done = dispatches_done + 1
+    if "AGG" not in routing_index:
+        # create path: seq 1, index.or_insert
+        routing_index["AGG"] = "AGG"
+        stream.append(1)
+        seq_tracker = 1
+    else:
+        # append path: seq (current_seq + 1)
+        seq_tracker = seq_tracker + 1
+        stream.append(seq_tracker)
+    bus_log.append(seq_tracker)
+
+# INVARIANT 1: exactly one routing-index entry materialises.
+always assertion ExactlyOneRoutingIndexEntry:
+    return len(routing_index) <= 1
+
+# INVARIANT 2: stream = monotonic 1..=dispatches_done (1 create + (N-1)
+# appends, no orphan stream, no gaps).
+always assertion StreamMonotonicNoGaps:
+    if len(stream) == 0:
+        return True
+    for i in range(len(stream)):
+        if stream[i] != i + 1:
+            return False
+    return len(stream) == dispatches_done
+
+# INVARIANT 3: bus log = dispatches_done envelopes in sequence order.
+always assertion BusLogInSequenceOrder:
+    if len(bus_log) == 0:
+        return True
+    for i in range(len(bus_log)):
+        if bus_log[i] != i + 1:
+            return False
+    return len(bus_log) == dispatches_done
+
+# INVARIANT 4: the per-aggregate sequence tracker records dispatches_done.
+always assertion SeqTrackerMatchesDispatchCount:
+    return seq_tracker == dispatches_done
+
+# CHE-0097: checkpoint sequence never regresses (transition form of
+# invariant 4 — seq_tracker is monotonically non-decreasing step to step).
+transition assertion CheckpointNeverRegresses(before, after):
+    if after.seq_tracker != before.seq_tracker:
+        return after.seq_tracker > before.seq_tracker
+    return True  # stutter allowed
+
+# CHE-0019: no duplicate event_id — every stream position appears at
+# most once (structurally guaranteed by StreamMonotonicNoGaps above,
+# restated here directly against the append operation's uniqueness).
+always assertion NoDuplicateStreamPositions:
+    seen = {}
+    for s in stream:
+        if s in seen:
+            return False
+        seen[s] = True
+    return True
+
+# LIVENESS: every dispatch eventually completes (no starvation under the
+# single-flight guard — fairness on Dispatch ensures progress).
+eventually always assertion AllDispatchesEventuallyComplete:
+    return dispatches_done == NUM_DISPATCHES
+
+# --- TEETH (falsification) ---
+# Drop the single-flight guard: split the atomic Dispatch action into
+# two separate atomic actions — LookupPhase (reads routing_index,
+# decides "would create" vs "would append", but does NOT mutate yet)
+# and CommitPhase (does the actual create-or-append) — so that two
+# concurrent dispatches can both observe an EMPTY routing_index in
+# LookupPhase before either has run CommitPhase:
+#
+#     atomic fair action LookupPhase:
+#         require dispatches_done < NUM_DISPATCHES
+#         require self.phase == "idle"
+#         self.would_create = ("AGG" not in routing_index)
+#         self.phase = "looked_up"
+#
+#     atomic fair action CommitPhase:
+#         require self.phase == "looked_up"
+#         dispatches_done = dispatches_done + 1
+#         if self.would_create:
+#             # TEETH: stale "would_create" decision from LookupPhase —
+#             # two dispatches can BOTH take this branch if both looked
+#             # up before either committed, producing TWO create-seq-1
+#             # entries (an orphan/duplicate stream position) and (with
+#             # a keyed routing_index) two aggregates for one domain_key.
+#             routing_index["AGG"] = "AGG"
+#             stream.append(1)
+#             seq_tracker = 1
+#         else:
+#             seq_tracker = seq_tracker + 1
+#             stream.append(seq_tracker)
+#         bus_log.append(seq_tracker)
+#         self.phase = "idle"
+#
+# With two dispatchers both reading an empty routing_index in
+# LookupPhase before either CommitPhase runs, both commit a seq-1 create
+# — NoDuplicateStreamPositions and StreamMonotonicNoGaps both fail
+# (stream = [1, 1, ...], a duplicate/orphan position and a gap where seq
+# 2 should be). See README.md for the captured fizz counterexample
+# output (the split-phase variant lives in the mission's back-brief
+# evidence, not committed here, to keep this file's single Dispatch
+# action as the PASSING single-flighted design).

@@ -1,0 +1,151 @@
+---
+deadlock_detection: false
+---
+# Model #2 — election/epoch/cooldown CAS budget gate (THE F1 MONEY SHOT).
+#
+# Seam: crates/cherry-pit-wq/src/budget.rs
+#   acquire() CAS-increment loop            :142-199
+#   resetting AtomicBool CAS election        :160-164
+#   epoch_advanced Notify (wake parked)       :192-198, ResetGuard::drop :246-250
+#   cooldown reset (calls := 0)               :187
+#   refund() CAS-decrement, saturating at 0   :225-239 (F1 fix, commit 934060d)
+#
+# ADRs: none dedicated — cherry-pit-wq internal concurrency primitive
+# guarding upstream API budget, not an ADR-governed contract surface.
+# Cited for the historical F1 incident: commit 934060d fixed a real
+# ~34x overcounting bug (3 false-positive collection freezes in 7 days)
+# where GitHub 304 Not-Modified conditional-revalidation responses
+# acquired a budget permit unconditionally but never refunded it, so a
+# workload that was mostly free 304s still drove `calls` to `limit` as
+# if every request were real spend.
+#
+# N workers race to acquire a call permit against a shared epoch counter
+# (calls) bounded by limit. When calls == limit, exactly one worker
+# CAS-elects (resetting: false->true) to "sleep" through cooldown and
+# reset calls := 0 (and, in this model, real_spend := 0 in lockstep —
+# both are the SAME epoch-scoped counter in the real gate; we track
+# real_spend separately here only to state the F1 invariant), clearing
+# resetting and waking parked workers; the rest park on epoch_advanced.
+#
+# Each acquire's outcome is real work (counts as genuine upstream spend)
+# or a free 304 (does not — must be refunded away). This model captures
+# the DESIGN, not byte-for-byte Rust: the CAS-loop spin shape collapses
+# to a single atomic action (FizzBee already treats each atomic action
+# as indivisible); the interesting nondeterminism is which worker's
+# election/park/wake/outcome interleaves with which other worker's.
+
+NUM_WORKERS = 3
+LIMIT = 2
+EPOCHS = 2  # bound: enough epoch transitions to exercise reset + re-election
+
+role Worker:
+    action Init:
+        self.state = "idle"     # idle -> parked -> idle (after wake or reset)
+        self.done_this_epoch = False  # one acquire attempt per epoch (bound)
+
+    # Fast path: calls < limit, CAS-increment succeeds immediately.
+    # `outcome` models whether this call turns out to be real upstream
+    # spend or a free 304 revalidation (GitHubClient::try_etag_revalidation).
+    atomic fair action AcquireFastPath:
+        require self.state == "idle"
+        require not self.done_this_epoch
+        require calls < limit
+        require total_epochs < EPOCHS
+        outcome = oneof ["real", "free304"]
+        calls = calls + 1
+        if outcome == "real":
+            real_spend = real_spend + 1
+        else:
+            # THE F1 FIX: refund() the free 304 in the same logical step
+            # as GitHubClient::try_etag_revalidation calling gate.refund()
+            # right after acquire() when the response is 304 (commit
+            # 934060d). Saturating decrement, matches refund()'s CAS loop.
+            if calls > 0:
+                calls = calls - 1
+        self.done_this_epoch = True
+
+    # Slow path, elector: calls == limit and resetting CAS wins (false->true).
+    atomic fair action AcquireElectReset:
+        require self.state == "idle"
+        require not self.done_this_epoch
+        require calls >= limit
+        require not resetting
+        require total_epochs < EPOCHS
+        resetting = True
+        # sleep + reset represented as a single atomic step (no other
+        # worker can observe the gate mid-reset — matches the Rust
+        # ResetGuard's exclusive hold on `resetting` across the sleep)
+        calls = 0
+        real_spend = 0
+        resetting = False
+        total_epochs = total_epochs + 1
+        for w in workers:
+            if w.state == "parked":
+                w.state = "idle"
+            w.done_this_epoch = False
+        # the electing worker's own acquire attempt re-enters next turn
+        # via AcquireFastPath (calls is now 0 < limit)
+
+    # Slow path, loser: calls == limit and resetting already held ->
+    # park on epoch_advanced (woken by the elector's reset above).
+    atomic fair action AcquireParkOnFull:
+        require self.state == "idle"
+        require not self.done_this_epoch
+        require calls >= limit
+        require resetting
+        self.state = "parked"
+
+action Init:
+    calls = 0
+    real_spend = 0     # epoch-scoped genuine-upstream-call counter (model-only)
+    limit = LIMIT
+    resetting = False
+    total_epochs = 0
+    workers = bag()
+    for i in range(NUM_WORKERS):
+        workers.add(Worker())
+
+# SAFETY: calls never exceeds limit — the CAS-increment guard.
+always assertion CallsNeverExceedsLimit:
+    return calls <= limit
+
+# SAFETY (the F1 invariant, THE MONEY SHOT): `calls` tracks only real
+# upstream spend. A free 304 that is properly refunded nets to zero, so
+# calls must never exceed real_spend within an epoch. This is exactly
+# what commit 934060d's refund() fixes: without it, free 304s inflate
+# `calls` and drive spurious exhaustion (calls == limit) even though
+# real_spend is far below limit.
+always assertion CallsTracksOnlyRealSpend:
+    return calls <= real_spend
+
+# LIVENESS: every parked worker is eventually woken (no lost wakeup) —
+# the elector's reset always fires notify_waiters(), so no permanently
+# stuck parked worker.
+eventually always assertion NoParkedWorkerStuckForever:
+    for w in workers:
+        if w.state == "parked":
+            return False
+    return True
+
+# --- TEETH (priority: reproduces commit 934060d's F1 bug) ---
+#
+# PRE-F1 model: delete the refund branch in AcquireFastPath's else-arm
+# (i.e. free304 outcomes count toward `calls` but are never given back):
+#
+#     if outcome == "real":
+#         real_spend = real_spend + 1
+#     else:
+#         pass  # TEETH: no refund — the pre-934060d bug. A free 304
+#               # still burned down the epoch budget exactly like real
+#               # spend, so `calls` overcounts real_spend by however
+#               # many free 304s occurred (the actual ~34x factor
+#               # observed in prod).
+#
+# With that change, `fizz` immediately reports CallsTracksOnlyRealSpend
+# violated: a trace where every acquire happens to land on "free304"
+# drives calls -> limit (triggering the CAS-elect/cooldown/reset path
+# and, at scale, the "API budget exhausted, pausing collection" warn!
+# and a full wait_duration sleep) while real_spend stays at 0 — the
+# exact phantom-exhaustion / false-positive-freeze shape of the
+# production incident. See README.md for the captured fizz counter-
+# example output (before) and the passing run (after, this file).
