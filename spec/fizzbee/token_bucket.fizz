@@ -1,0 +1,100 @@
+---
+deadlock_detection: false
+---
+# Model #3 — clock-driven token-bucket Regulator (increment B: F2 elimination).
+#
+# Seam: crates/cherry-pit-wq/src/token_bucket.rs
+#   TokenBucketRegulator::try_debit_one  — single CAS on consumed_milli
+#   generated(now) = elapsed(now) * rate, uncapped; available =
+#   min(capacity, generated - consumed) — a pure function of clock time,
+#   recomputed from scratch on every call. No stored "last refill", no
+#   elected resetter, no shared wakeup channel.
+#
+# Contrast with spec/fizzbee/budget_gate.fizz (Model #2, F2 THE SHAPE
+# BEING REMOVED): that model has a `resetting` election flag (CAS
+# false->true elects exactly one worker to reset+wake) and an
+# `epoch_advanced` shared Notify channel that parked workers wait on and
+# the elector wakes via notify_waiters(). Both of those pieces of shared
+# coordination state are ABSENT here: every worker's AttemptDebit action
+# is a self-contained CAS against `consumed` computed from ITS OWN
+# `now` reading — no other worker's action can put this worker into a
+# "parked, waiting to be woken by worker X" state, because there is no
+# such state to enter. This is the F2 elimination the mission calls for.
+
+NUM_WORKERS = 3
+CAPACITY = 2
+RATE_PER_TICK = 1   # tokens generated per abstract clock tick
+TICKS = 3           # bound: enough ticks to exercise refill across the run
+
+role Worker:
+    action Init:
+        self.done = False   # one debit attempt per worker (bound, matches
+                             # budget_gate.fizz's done_this_epoch bound)
+
+    # The only action a worker can take: attempt a lock-free debit. No
+    # "elect", no "park", no "wake" action exists for this role — there
+    # is nothing to elect or park on. `now` is read fresh from the
+    # shared monotonic `clock` each time; `generated` and `available`
+    # are recomputed, never stored.
+    #
+    # ASSUMPTION (linus review round 1, adr-fmt-tcg3b): `atomic` here
+    # models the real code's single-load-check-then-CAS retry loop
+    # (try_debit_one), where the compare_exchange_weak's operand is the
+    # SAME load the availability decision was computed from — a failed
+    # CAS retries from the top rather than acting on stale data. That
+    # single-load-then-CAS shape is what makes the two-step
+    # check-then-update effectively atomic; this model assumes the
+    # CAS-correct implementation, not an earlier two-independent-loads
+    # variant (which would NOT be a faithful atomic collapse and would
+    # require a non-atomic action to catch the resulting race).
+    atomic fair action AttemptDebit:
+        require not self.done
+        generated = min(CAPACITY, clock * RATE_PER_TICK)
+        available = generated - consumed
+        if available >= 1:
+            consumed = consumed + 1
+        self.done = True
+
+# The only other action in the system: the clock ticks forward. This
+# models elapsed real time passing (tokio::time / Instant) — no worker
+# owns or gates this transition; it is exogenous, matching "refill is a
+# pure function of elapsed time", not something any worker CAS-elects
+# itself into driving.
+atomic fair action ClockTick:
+    require clock < TICKS
+    clock = clock + 1
+
+action Init:
+    clock = 0
+    consumed = 0
+    workers = bag()
+    for i in range(NUM_WORKERS):
+        workers.add(Worker())
+
+# SAFETY: consumed never exceeds what has actually been generated —
+# the token-bucket analogue of CallsNeverExceedsLimit in
+# budget_gate.fizz. No worker can ever debit past what the pure
+# elapsed-time function has made available.
+always assertion ConsumedNeverExceedsGenerated:
+    generated = min(CAPACITY, clock * RATE_PER_TICK)
+    return consumed <= generated
+
+# SAFETY: consumed never exceeds capacity — the bucket-full ceiling
+# holds regardless of how much time has passed (mirrors
+# CallsNeverExceedsLimit's role, now against the RATE axis).
+always assertion ConsumedNeverExceedsCapacity:
+    return consumed <= CAPACITY
+
+# LIVENESS: every worker eventually completes its one debit attempt.
+# Unlike budget_gate.fizz's NoParkedWorkerStuckForever (which proves a
+# *wakeup* mechanism has no lost notify), this liveness property is
+# trivial here precisely BECAUSE there is no parked state to get stuck
+# in — every worker's single action is always eventually enabled once
+# the clock ticks enough. The triviality of this proof, compared to
+# budget_gate.fizz's, is itself evidence of the state-space collapse:
+# there is no wakeup-fairness argument left to make.
+eventually always assertion AllWorkersEventuallyDone:
+    for w in workers:
+        if not w.done:
+            return False
+    return True

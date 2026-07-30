@@ -244,6 +244,94 @@ evidence; re-derive it verbatim from the comment to reproduce.)
 
 ---
 
+## #4 — `token_bucket.fizz`: clock-driven token bucket (increment B — F2 elimination)
+
+**Invariant.** N workers race to debit a token-bucket regulator whose
+available-token count is a pure function of elapsed clock time —
+`available(now) = min(capacity, generated(now) - consumed)`, where
+`generated(now) = elapsed(now) * rate` grows without bound and
+`consumed` is a single monotonic `AtomicU64`. A debit succeeds via one
+lock-free CAS; no worker elects itself to reset shared state, and no
+worker parks on a wakeup channel — this is the design change increment
+B makes to eliminate `budget_gate.fizz`'s F2 shared-election state-space
+explosion (the `resetting` `AtomicBool` election + `epoch_advanced`
+`Notify` park/wake pair).
+
+**Code seam.** `crates/cherry-pit-wq/src/token_bucket.rs`
+- `TokenBucketRegulator::try_debit_one` — single-CAS debit loop
+- `generated`/`available` computation — pure function of `Instant`,
+  recomputed from scratch every call, no stored "last refill" state
+- `impl Regulator for TokenBucketRegulator` — third additive impl
+  behind the increment-A seam (`crates/cherry-pit-wq/src/regulator.rs`)
+
+**ADRs.** CHE-0055 (Regulator seam, additive-only per CHE-0022:R1),
+CHE-0007 (`#![forbid(unsafe_code)]` — lock-freedom via safe
+`std::sync::atomic` only, no `unsafe`), CHE-0029 (hand-rolled
+tokio-only, no new crate dependency).
+
+**Command.** `fizz spec/fizzbee/token_bucket.fizz`
+
+**Observed result (PASSED).**
+```
+Valid Nodes: 61 Unique states: 61
+Checking eventually always AllWorkersEventuallyDone
+IsLive: true
+PASSED: Model checker completed successfully
+```
+(NUM_WORKERS=3, CAPACITY=2, TICKS=3.)
+
+**Node-count comparison vs `budget_gate.fizz` (the F2 shape being
+replaced).**
+
+| Model | Valid nodes | Unique states | Election/wakeup state? |
+|---|---|---|---|
+| `budget_gate.fizz` (NUM_WORKERS=3, LIMIT=2, EPOCHS=2) | 81 | 39 | Yes — `resetting` `AtomicBool` CAS-election + `epoch_advanced` `Notify` park/wake; a `Worker.state` field with an explicit `"parked"` value |
+| `token_bucket.fizz` (NUM_WORKERS=3, CAPACITY=2, TICKS=3) | 61 | 61 | No — no election flag, no wakeup channel, no `"parked"` state exists in the model at all |
+
+Both `Valid Nodes` counts were measured this session by running `fizz`
+directly (`budget_gate.fizz`'s 81-node baseline is **reproduced**, not
+assumed — the mission brief's cited figure checks out against the
+committed file as-is). The 61-node token-bucket model shows a ~25%
+raw node-count reduction under comparably-scaled bounds — but the
+qualitative collapse is the load-bearing claim: `budget_gate.fizz` has
+three actions per worker (`AcquireFastPath` / `AcquireElectReset` /
+`AcquireParkOnFull`) plus a `state` field threading `idle -> parked ->
+idle`, all of which exist solely to coordinate the shared
+election/wakeup; `token_bucket.fizz` has exactly one action per worker
+(`AttemptDebit`) and no coordination-only state field at all. The
+election/wakeup machinery is not shrunk — it is entirely absent, which
+is what `AllWorkersEventuallyDone`'s liveness proof being structurally
+trivial (no wakeup-fairness argument to make, unlike
+`NoParkedWorkerStuckForever`) is evidence of.
+
+**Teeth.** Not applicable in the F1-money-shot sense (there is no
+refund/overcounting bug class here — RATE-only, no charge concept).
+The falsifier for this model is the abort condition itself: if a
+`resetting`-shaped election field or a `"parked"` `Worker.state` value
+had to be reintroduced to make the model liveness-pass, that would
+falsify the F2-elimination design premise. No such field exists in
+`token_bucket.fizz` and the model passes both safety assertions
+(`ConsumedNeverExceedsGenerated`, `ConsumedNeverExceedsCapacity`) and
+the liveness assertion as committed.
+
+**Atomicity assumption (linus review round 1, adr-fmt-tcg3b, Critical
+finding).** `AttemptDebit` is declared `atomic`, collapsing the real
+code's load-check-then-CAS into one indivisible model step. This is a
+faithful abstraction only because `try_debit_one` reuses a single
+`consumed_milli` load as both the availability check and the
+`compare_exchange_weak` operand — a genuinely-atomic-effect retry loop
+where a lost race fails the CAS and retries, rather than acting on a
+stale decision. An earlier implementation revision took two independent
+loads (one for the check, one for the CAS operand); that variant was
+racy — two callers could both observe availability, then both CAS
+against a post-race value and over-admit — and this model's `atomic`
+action would NOT have been a faithful abstraction of it (the model's
+own safety assertions would have passed while the real code violated
+them, exactly the gap linus's review caught). This entry now assumes
+the CAS-correct implementation, not the two-independent-loads variant.
+
+---
+
 ## Follow-ups (out of scope for this mission)
 
 - Wiring `fizz` into CI (noted as a possible follow-up bead; not

@@ -69,6 +69,7 @@
 mod budget;
 mod rate_limit;
 mod regulator;
+mod token_bucket;
 mod work_queue;
 mod worker_pool;
 
@@ -76,6 +77,7 @@ pub use budget::BudgetGate;
 pub use cherry_pit_core::{DomainKey, JobOutcome, JobSource};
 pub use rate_limit::{RateLimitObservation, RateLimitState};
 pub use regulator::{Admission, BudgetRegulator, RateLimitRegulator, Regulator, SettleOutcome};
+pub use token_bucket::{Clock, SystemClock, TokenBucketRegulator};
 pub use work_queue::{
     BatchEnqueueResult, BatchTracker, EnqueueResult, JobSpec, WorkQueue, enqueue_batch,
 };
