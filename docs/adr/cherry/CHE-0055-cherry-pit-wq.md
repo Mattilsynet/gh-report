@@ -1,7 +1,7 @@
 # CHE-0055. Cherry Pit WQ Design
 
 Date: 2026-05-12
-Last-reviewed: 2026-06-14
+Last-reviewed: 2026-07-30
 
 Tier: B
 Status: Accepted
@@ -38,6 +38,8 @@ R9 [4]: cherry-pit-wq gains `pub trait RateLimitObserver` with `observe(&self, h
 
 R10 [5]: v0.1 public surface per CHE-0030:R1 flat re-exports: from `cherry-pit-core` — `DomainKey`, `JobSource`, `JobOutcome`; from wq — `WorkQueue`, `JobSpec`, `EnqueueResult`, `BatchEnqueueResult`, `BatchTracker`, `enqueue_batch`, `JobExecutor`, `WorkerPoolConfig`, `run_worker_pool`, `shutdown_worker_pool`, `BudgetGate`, `RateLimitState`, `RateLimitObserver`. **Removed from CHE-0052:R3:** `next_url`, `next_url_same_origin`, `HALT_THRESHOLD`, `WARN_THRESHOLD` (now in gh-report per R7). Internal modules (`work_queue`, `worker_pool`, `budget`, `rate_limit` — `pagination` deleted) stay implementation detail per CHE-0030:R2.
 
+R10 addendum [5] (minor, additive per CHE-0022:R1 / R8 bracketing-minor; CHE-0101): the v0.1 flat public surface additionally re-exports from wq: `Regulator` (trait), `run_worker_pool_regulated` (fn), and the `Regulator` adapter types `BudgetRegulator`, `RateLimitRegulator` (wrapping the existing `BudgetGate` / `RateLimitState` — rate vs. concurrency split), plus the `Admission` / `SettleOutcome` carriers the trait's methods use. The pre-existing items `BudgetGate`, `RateLimitState`, `RateLimitObserver`, `run_worker_pool`, `shutdown_worker_pool`, `WorkerPoolConfig` remain listed and frozen — not removed, so no SemVer-major is triggered; this is a bracketing minor per R8. Internal module `regulator` (new) is implementation detail per CHE-0030:R2. The dual-pool cutover topology this addition enables is governed by CHE-0101.
+
 R11 [4]: cherry-pit-wq carries `#![forbid(unsafe_code)]` at the crate root per CHE-0007:R1 and CHE-0007:R3, and contains no `unsafe` blocks, `unsafe impl`, or `unsafe fn` bodies per CHE-0007:R2 — CHE-0052:R2 carried forward unchanged; BC-14 is satisfied by construction
 
 R12 [4]: graceful shutdown follows the donor `shutdown_worker_pool(handles, timeout)` contract — workers complete their current `JobExecutor::execute` future or are aborted at the timeout boundary — and reconciles with CHE-0046:R5: cancellation of a worker future does NOT imply rollback of any side effect the executor body may have committed before the cancellation point; recovery semantics are the consumer's responsibility (CHE-0052:R7 carried forward unchanged)
@@ -49,6 +51,9 @@ R14 [4]: cherry-pit-wq emits observability via `tracing` only — no Prometheus 
 R15 [4]: tests follow the CHE-0038 taxonomy — unit tests beside their modules, integration tests under `crates/cherry-pit-wq/tests/`, `tempfile` plus real tokio runtimes preferred over mocks per CHE-0038:R5 (CHE-0052:R10 unchanged). The BC-7 propagation property test asserting correlation parity between `JobSpec` and the resulting `JobOutcome` is now binding (per R4/R6) rather than aspirational.
 
 R16 [4]: the public surface is additive-only across SemVer-minor bumps per CHE-0022:R1 — adding public types or re-exports is minor; renaming or removing any R10 item is major. `#[non_exhaustive]` markers preserved from the donor (`JobSpec`, `EnqueueResult`, `WorkerPoolConfig`, `BatchEnqueueResult`, `BatchTracker`, `RateLimitState`, `BudgetGate`) keep struct surfaces extensible; `JobSource`, `JobOutcome` (now in core) carry the same markers (CHE-0052:R11 retargeted in scope).
+
+R16 addendum [4] (CHE-0101): the `Regulator` additions are additive-only (CHE-0022:R1) — no existing signature changes; `run_worker_pool` runs alongside `run_worker_pool_regulated` unchanged. Every new struct or enum carrying data that may grow (`Admission`, `SettleOutcome`) carries `#[non_exhaustive]` so variant growth stays minor (CHE-0021 / CHE-0094:R9). The `Regulator` trait itself is not `#[non_exhaustive]` (traits use sealing, not the attribute); it is not sealed in this increment because both in-tree adapters (`BudgetRegulator`, `RateLimitRegulator`) and future consumer-supplied regulators are intended implementors.
+
 
 ## Consequences
 
