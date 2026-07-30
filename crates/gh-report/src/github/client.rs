@@ -122,6 +122,9 @@ async fn read_body_limited(
 /// - `repo_detail_cache: scc::HashMap` — per-run memoization of repo detail responses
 /// - `last_response_etags: scc::HashMap` — side-channel for `ETag` capture by `request_single_inner`,
 ///   consumed by `repo_details` for conditional request support
+/// - `deleted_team_slugs: scc::HashMap` — process-lifetime (not per-run) record of team
+///   slugs observed 404 (deleted); survives `clear_run_cache` so a repeatedly-referenced
+///   dead CODEOWNERS team costs one API call per process, not one per collection tick
 /// - `rate_limit: RateLimitState` — atomics for rate limit tracking
 /// - `halted_until: AtomicU64` — time-bounded halt; auto-clears when rate-limit window passes
 /// - `credential: tokio::sync::Mutex` — serialized credential refresh
@@ -172,6 +175,16 @@ pub struct GitHubClient {
     /// Side-channel for `ETag` extraction: maps API path → last-seen `ETag`.
     /// Populated by `request_single_inner`, read by `repo_details`.
     last_response_etags: SccHashMap<String, String>,
+    /// Process-lifetime record of CODEOWNERS team slugs observed 404
+    /// (deleted) via [`Self::record_deleted_team`]. Deliberately NOT
+    /// cleared by [`Self::clear_run_cache`]: a dead team reference costs
+    /// one wasted API call once per process, not once per collection
+    /// tick, for as long as the process runs. A plain unbounded set is
+    /// safe here because the key space — team slugs referenced by one
+    /// org's CODEOWNERS file — is naturally small and bounded by the
+    /// org's own team count, not by call volume. A legitimately
+    /// recreated team re-appears after the next process restart.
+    deleted_team_slugs: SccHashMap<String, ()>,
 }
 
 /// Cached repository detail result. Only successful results are cached.
@@ -185,6 +198,18 @@ struct CachedResult {
     /// invalidated by `evict_stale_entries`. Stale entries are revalidated
     /// via `ETag` conditional requests before being trusted.
     stale: bool,
+}
+
+/// Whether `team_slug` is already recorded in `cache` as a known-deleted
+/// CODEOWNERS team this process (adr-fmt-op2u6-F3).
+fn cache_contains_deleted_team(cache: &SccHashMap<String, ()>, team_slug: &str) -> bool {
+    cache.contains_sync(team_slug)
+}
+
+/// Record `team_slug` in `cache` as observed 404 (deleted). Returns `true`
+/// on first insertion, `false` if `team_slug` was already present.
+fn cache_record_deleted_team(cache: &SccHashMap<String, ()>, team_slug: &str) -> bool {
+    cache.insert_sync(team_slug.to_string(), ()).is_ok()
 }
 
 /// Extract the origin (scheme + host + optional port) from a URL string.
@@ -328,6 +353,7 @@ impl GitHubClient {
             budget,
             budget_cancel: tokio_util::sync::CancellationToken::new(),
             last_response_etags: SccHashMap::new(),
+            deleted_team_slugs: SccHashMap::new(),
         })
     }
 
@@ -1198,6 +1224,20 @@ impl GitHubClient {
         self.budget.total_calls_made()
     }
 
+    /// Whether `team_slug` was already observed 404 (deleted) this process
+    /// (adr-fmt-op2u6-F3).
+    #[must_use]
+    pub fn is_known_deleted_team(&self, team_slug: &str) -> bool {
+        cache_contains_deleted_team(&self.deleted_team_slugs, team_slug)
+    }
+
+    /// Record `team_slug` as observed 404 (deleted) this process
+    /// (adr-fmt-op2u6-F3). Returns `true` on first insertion, `false` if
+    /// already recorded.
+    pub fn record_deleted_team(&self, team_slug: &str) -> bool {
+        cache_record_deleted_team(&self.deleted_team_slugs, team_slug)
+    }
+
     /// Clear per-run caches without destroying the client.
     ///
     /// Clears the in-memory `scc::HashMap` repo detail cache and the `ETag`
@@ -1498,6 +1538,33 @@ impl std::fmt::Debug for GitHubClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_contains_deleted_team_is_false_initially() {
+        let cache: SccHashMap<String, ()> = SccHashMap::new();
+        assert!(!cache_contains_deleted_team(&cache, "some-team"));
+    }
+
+    #[test]
+    fn cache_record_deleted_team_first_insertion_returns_true_and_is_visible() {
+        let cache: SccHashMap<String, ()> = SccHashMap::new();
+        assert!(cache_record_deleted_team(&cache, "dead-team"));
+        assert!(cache_contains_deleted_team(&cache, "dead-team"));
+    }
+
+    #[test]
+    fn cache_record_deleted_team_second_insertion_returns_false() {
+        let cache: SccHashMap<String, ()> = SccHashMap::new();
+        assert!(cache_record_deleted_team(&cache, "dead-team"));
+        assert!(!cache_record_deleted_team(&cache, "dead-team"));
+    }
+
+    #[test]
+    fn cache_contains_deleted_team_is_false_for_a_different_slug() {
+        let cache: SccHashMap<String, ()> = SccHashMap::new();
+        assert!(cache_record_deleted_team(&cache, "dead-team"));
+        assert!(!cache_contains_deleted_team(&cache, "live-team"));
+    }
 
     #[test]
     fn validate_api_base_url_accepts_https() {

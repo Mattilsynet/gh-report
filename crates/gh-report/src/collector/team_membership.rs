@@ -11,7 +11,7 @@
 
 use std::collections::HashSet;
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config;
 use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRoster, TeamRosterStatus};
@@ -104,10 +104,19 @@ async fn collect_one_team_roster(
         }
     };
 
+    if client.is_known_deleted_team(&safe_slug) {
+        debug!(
+            team_slug,
+            "team known deleted from a prior fetch this process; skipping roster fetch"
+        );
+        return degraded_roster(canonical_owner, team_slug, TeamRosterStatus::Deleted);
+    }
+
     let all_outcome = fetch_role(client, &safe_slug, "all").await;
     if !all_outcome.is_ok() {
         let status = failure_status(&all_outcome);
         if status == TeamRosterStatus::Deleted {
+            client.record_deleted_team(&safe_slug);
             info!(team_slug, "team no longer exists on GitHub; skipping");
         } else {
             warn!(
@@ -657,5 +666,55 @@ mod tests {
             rosters[0].members[0].in_org, None,
             "degraded org-members fetch must not flag anyone"
         );
+    }
+
+    #[tokio::test]
+    async fn deleted_team_second_fetch_short_circuits_without_a_second_api_call() {
+        let server = MockServer::start().await;
+
+        Mock::given(path("/orgs/test-org/teams/gone-team/members"))
+            .and(query_param("role", "all"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let teams = [("@test-org/gone-team".to_string(), "gone-team".to_string())];
+
+        let first = collect_team_rosters(&client, &teams).await;
+        assert_eq!(first[0].status, TeamRosterStatus::Deleted);
+
+        let second = collect_team_rosters(&client, &teams).await;
+        assert_eq!(
+            second[0].status,
+            TeamRosterStatus::Deleted,
+            "cache short-circuit must still report Deleted"
+        );
+
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn non_deleted_team_is_not_cached() {
+        let server = MockServer::start().await;
+
+        Mock::given(path("/orgs/test-org/teams/secret-team-2/members"))
+            .and(query_param("role", "all"))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let teams = [(
+            "@test-org/secret-team-2".to_string(),
+            "secret-team-2".to_string(),
+        )];
+
+        collect_team_rosters(&client, &teams).await;
+        collect_team_rosters(&client, &teams).await;
+
+        server.verify().await;
     }
 }
