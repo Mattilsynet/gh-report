@@ -68,13 +68,17 @@
 
 mod budget;
 mod rate_limit;
+mod regulator;
 mod work_queue;
 mod worker_pool;
 
 pub use budget::BudgetGate;
 pub use cherry_pit_core::{DomainKey, JobOutcome, JobSource};
 pub use rate_limit::{RateLimitObservation, RateLimitState};
+pub use regulator::{Admission, BudgetRegulator, RateLimitRegulator, Regulator, SettleOutcome};
 pub use work_queue::{
     BatchEnqueueResult, BatchTracker, EnqueueResult, JobSpec, WorkQueue, enqueue_batch,
 };
-pub use worker_pool::{JobExecutor, WorkerPoolConfig, run_worker_pool, shutdown_worker_pool};
+pub use worker_pool::{
+    JobExecutor, WorkerPoolConfig, run_worker_pool, run_worker_pool_regulated, shutdown_worker_pool,
+};

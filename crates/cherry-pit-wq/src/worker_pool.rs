@@ -28,6 +28,7 @@ use cherry_pit_core::{DomainKey, JobOutcome};
 
 use crate::budget::BudgetGate;
 use crate::rate_limit::RateLimitState;
+use crate::regulator::{Admission, Regulator, SettleOutcome};
 use crate::work_queue::WorkQueue;
 
 /// Defines how to execute a job for a domain key.
@@ -207,6 +208,145 @@ async fn worker_loop<C, R, E>(
     }
 }
 
+/// Run the worker pool through an ordered chain of [`Regulator`]s instead
+/// of the fixed budget-then-rate-limit pair.
+///
+/// Additive alongside [`run_worker_pool`] (CHE-0055:R8 / CHE-0022:R1) — the
+/// old function's signature and behaviour are unchanged; this is a new,
+/// independently runnable entry point (dual-queue migration ADR R2/R3).
+///
+/// Each worker requests admission from every regulator in `regulators`,
+/// in order, before calling the executor; if any regulator resolves to
+/// [`Admission::Cancelled`], the worker exits without settling regulators
+/// it never reached. After the executor returns, every regulator that
+/// admitted the job is settled with [`SettleOutcome::Charged`].
+///
+/// # Panics
+///
+/// Panics if `config.worker_count` is 0.
+pub async fn run_worker_pool_regulated<C, R, E>(
+    queue: Arc<WorkQueue<C>>,
+    executor: Arc<E>,
+    regulators: Arc<[Arc<dyn Regulator>]>,
+    config: WorkerPoolConfig,
+    cancel: CancellationToken,
+    outcome_tx: mpsc::Sender<JobOutcome<R>>,
+) where
+    C: Send + Sync + Clone + 'static,
+    R: Send + 'static,
+    E: JobExecutor<Context = C, Result = R>,
+{
+    assert!(config.worker_count > 0, "worker_count must be > 0");
+    let mut handles: Vec<JoinHandle<()>> = Vec::with_capacity(config.worker_count);
+
+    for worker_id in 0..config.worker_count {
+        let queue = Arc::clone(&queue);
+        let executor = Arc::clone(&executor);
+        let regulators = Arc::clone(&regulators);
+        let cancel = cancel.clone();
+        let tx = outcome_tx.clone();
+
+        handles.push(tokio::spawn(async move {
+            worker_loop_regulated(worker_id, queue, executor, regulators, cancel, tx).await;
+        }));
+    }
+
+    drop(outcome_tx);
+
+    for handle in handles {
+        if let Err(e) = handle.await {
+            tracing::error!(error = %e, "regulated worker task panicked");
+        }
+    }
+}
+
+async fn worker_loop_regulated<C, R, E>(
+    worker_id: usize,
+    queue: Arc<WorkQueue<C>>,
+    executor: Arc<E>,
+    regulators: Arc<[Arc<dyn Regulator>]>,
+    cancel: CancellationToken,
+    outcome_tx: mpsc::Sender<JobOutcome<R>>,
+) where
+    C: Send + Sync + Clone + 'static,
+    R: Send + 'static,
+    E: JobExecutor<Context = C, Result = R>,
+{
+    loop {
+        let Some(job) = queue.dequeue().await else {
+            tracing::debug!(worker = worker_id, "queue closed, regulated worker exiting");
+            break;
+        };
+
+        let domain_key = job.domain_key.clone();
+        let source = job.source.clone();
+        let correlation = job.correlation.clone();
+        let start = std::time::Instant::now();
+
+        let mut admitted_by = Vec::with_capacity(regulators.len());
+        let mut cancelled = false;
+        for regulator in regulators.iter() {
+            match regulator.admit(&cancel).await {
+                Admission::Admitted => admitted_by.push(Arc::clone(regulator)),
+                Admission::Cancelled => {
+                    cancelled = true;
+                    break;
+                }
+            }
+        }
+        if cancelled {
+            tracing::debug!(
+                worker = worker_id,
+                "regulated worker cancellation requested during admission"
+            );
+            break;
+        }
+
+        let exec_key = domain_key.clone();
+        let future_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            executor.execute(&exec_key, &job.context)
+        }));
+
+        let outcome = match future_result {
+            Ok(future) => match future.await {
+                Ok(result) => JobOutcome::Success {
+                    domain_key,
+                    result,
+                    source,
+                    duration: start.elapsed(),
+                    correlation,
+                },
+                Err(error) => JobOutcome::Failure {
+                    domain_key,
+                    error,
+                    source,
+                    duration: start.elapsed(),
+                    correlation,
+                },
+            },
+            Err(panic) => JobOutcome::Failure {
+                domain_key,
+                error: format!("executor panicked: {panic:?}"),
+                source,
+                duration: start.elapsed(),
+                correlation,
+            },
+        };
+
+        for regulator in &admitted_by {
+            regulator.settle(SettleOutcome::Charged);
+        }
+
+        if outcome_tx.send(outcome).await.is_err() {
+            tracing::debug!(
+                worker = worker_id,
+                "outcome channel closed, regulated worker exiting"
+            );
+            break;
+        }
+    }
+}
+
 /// Wait until [`RateLimitState::should_halt`] returns `false`.
 ///
 /// When [`RateLimitState::load_reset`] is `Some(reset)` and `reset` is in
@@ -214,7 +354,10 @@ async fn worker_loop<C, R, E>(
 /// capped exponential backoff (1s → 60s). Both sleeps are capped at
 /// 60s per iteration so a stale `reset` value cannot park the worker
 /// indefinitely.
-async fn wait_for_rate_limit_reset(state: &RateLimitState, cancel: &CancellationToken) -> bool {
+pub(crate) async fn wait_for_rate_limit_reset(
+    state: &RateLimitState,
+    cancel: &CancellationToken,
+) -> bool {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let max_sleep = Duration::from_mins(1);
@@ -656,5 +799,79 @@ mod tests {
             .expect("cancelled rate-limit wait should return promptly")
             .expect("waiter did not complete");
         assert!(!completed);
+    }
+
+    /// Dual-queue migration-topology R1 (enqueue-partition invariant) +
+    /// R5 (per-increment both-queues-live verification): a partitioned
+    /// key set run through [`run_worker_pool_regulated`] alongside a
+    /// disjoint key set run through the frozen [`run_worker_pool`]
+    /// produces the same [`JobOutcome`] shape on both pools, and no
+    /// `DomainKey` appears in both outcome sets.
+    #[tokio::test]
+    async fn regulated_pool_runs_alongside_old_pool_on_partitioned_keys() {
+        let old_queue = Arc::new(WorkQueue::new(10));
+        for i in 0..5 {
+            old_queue.enqueue(make_job(&format!("old-{i}")));
+        }
+        old_queue.close();
+
+        let new_queue = Arc::new(WorkQueue::new(10));
+        for i in 0..5 {
+            new_queue.enqueue(make_job(&format!("new-{i}")));
+        }
+        new_queue.close();
+
+        let (old_tx, mut old_rx) = mpsc::channel(16);
+        let (new_tx, mut new_rx) = mpsc::channel(16);
+
+        let old_handle = tokio::spawn(run_worker_pool(
+            Arc::clone(&old_queue),
+            Arc::new(EchoExecutor),
+            Arc::new(BudgetGate::new(1000, Duration::from_secs(1))),
+            Arc::new(RateLimitState::default()),
+            WorkerPoolConfig { worker_count: 2 },
+            cancellation_token(),
+            old_tx,
+        ));
+
+        let budget = Arc::new(BudgetGate::new(1000, Duration::from_secs(1)));
+        let rate_limit = Arc::new(RateLimitState::default());
+        let regulators: Arc<[Arc<dyn Regulator>]> = Arc::from(vec![
+            Arc::new(crate::regulator::BudgetRegulator::new(budget)) as Arc<dyn Regulator>,
+            Arc::new(crate::regulator::RateLimitRegulator::new(rate_limit)) as Arc<dyn Regulator>,
+        ]);
+        let new_handle = tokio::spawn(run_worker_pool_regulated(
+            Arc::clone(&new_queue),
+            Arc::new(EchoExecutor),
+            regulators,
+            WorkerPoolConfig { worker_count: 2 },
+            cancellation_token(),
+            new_tx,
+        ));
+
+        old_handle.await.unwrap();
+        new_handle.await.unwrap();
+
+        let mut old_keys = Vec::new();
+        while let Some(o) = old_rx.recv().await {
+            match o {
+                JobOutcome::Success { domain_key, .. } => old_keys.push(domain_key),
+                _ => panic!("expected success on old pool"),
+            }
+        }
+        let mut new_keys = Vec::new();
+        while let Some(o) = new_rx.recv().await {
+            match o {
+                JobOutcome::Success { domain_key, .. } => new_keys.push(domain_key),
+                _ => panic!("expected success on new (regulated) pool"),
+            }
+        }
+
+        assert_eq!(old_keys.len(), 5);
+        assert_eq!(new_keys.len(), 5);
+        assert!(
+            old_keys.iter().all(|k| !new_keys.contains(k)),
+            "enqueue-partition invariant: no DomainKey may appear in both pools"
+        );
     }
 }
