@@ -45,6 +45,8 @@ use crate::report::view_model::{
 struct ReportTemplate<'a> {
     vm: &'a ReportViewModel,
     nav: TopNav,
+    title: String,
+    warm_start: bool,
 }
 
 /// Askama template for the dashboard index page.
@@ -55,6 +57,8 @@ struct ReportTemplate<'a> {
 struct IndexTemplate<'a> {
     vm: &'a ReportViewModel,
     nav: TopNav,
+    title: String,
+    warm_start: bool,
 }
 
 /// Askama template for the admin diagnostics page.
@@ -63,6 +67,8 @@ struct IndexTemplate<'a> {
 struct AdminTemplate<'a> {
     vm: &'a ReportViewModel,
     nav: TopNav,
+    title: String,
+    warm_start: bool,
 }
 
 /// Askama template for the owners overview page.
@@ -70,9 +76,9 @@ struct AdminTemplate<'a> {
 #[template(path = "owners.html")]
 struct OwnersTemplate<'a> {
     vm: &'a OwnersViewModel,
-    organization: String,
     total_repos: u32,
     nav: TopNav,
+    title: String,
     /// When `true`, emits a `<meta http-equiv="refresh">` tag so the
     /// browser auto-reloads until fresh collection data replaces the
     /// warm-start cache.
@@ -85,6 +91,7 @@ struct OwnersTemplate<'a> {
 struct OwnerDetailTemplate {
     vm: OwnerDetailViewModel,
     nav: TopNav,
+    title: String,
     /// When `true`, emits a `<meta http-equiv="refresh">` tag so the
     /// browser auto-reloads until fresh collection data replaces the
     /// warm-start cache.
@@ -97,6 +104,7 @@ struct OwnerDetailTemplate {
 struct OrphansTemplate {
     vm: OrphanedViewModel,
     nav: TopNav,
+    title: String,
     /// When `true`, emits a `<meta http-equiv="refresh">` tag so the
     /// browser auto-reloads until fresh collection data replaces the
     /// warm-start cache.
@@ -109,6 +117,7 @@ struct OrphansTemplate {
 struct DeletedTemplate {
     vm: DeletedViewModel,
     nav: TopNav,
+    title: String,
     /// When `true`, emits a `<meta http-equiv="refresh">` tag.
     warm_start: bool,
 }
@@ -119,6 +128,7 @@ struct DeletedTemplate {
 struct BranchProtectionTemplate {
     vm: BranchProtectionRegimeViewModel,
     nav: TopNav,
+    title: String,
     /// When `true`, emits a `<meta http-equiv="refresh">` tag.
     warm_start: bool,
 }
@@ -305,9 +315,24 @@ pub fn render_dashboard_streaming(
         technical_issues_total: vm.admin_diagnostics.technical_issues_total,
     };
 
-    let report = render_template(&ReportTemplate { vm: &vm, nav })?;
-    let index = render_template(&IndexTemplate { vm: &vm, nav })?;
-    let admin = render_template(&AdminTemplate { vm: &vm, nav })?;
+    let report = render_template(&ReportTemplate {
+        vm: &vm,
+        nav,
+        title: format!("{} GitHub Governance Overview", vm.organization),
+        warm_start,
+    })?;
+    let index = render_template(&IndexTemplate {
+        vm: &vm,
+        nav,
+        title: format!("{} Security Dashboard", vm.organization),
+        warm_start,
+    })?;
+    let admin = render_template(&AdminTemplate {
+        vm: &vm,
+        nav,
+        title: format!("{} Admin Diagnostics", vm.organization),
+        warm_start,
+    })?;
 
     sink("report.html".to_string(), report);
     sink("index.html".to_string(), index);
@@ -319,37 +344,49 @@ pub fn render_dashboard_streaming(
     sink("sort-init.js".to_string(), String::new());
 
     if let Some(ref owners) = owners_vm {
-        let owners_html = render_template(&OwnersTemplate {
-            vm: owners,
-            organization: evidence.assessment_metadata.organization.clone(),
-            total_repos: evidence.collection_statistics.total_repos,
+        render_owner_pages(
+            evidence,
+            tiers,
+            owners,
+            &orphaned_vm,
             nav,
             warm_start,
-        })?;
-        sink("owners.html".to_string(), owners_html);
-
-        let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
-        let detail_vms = build_owner_detail_view_models(
-            &evidence.metrics.owner_metrics,
-            &owner_repo_map,
-            tiers,
-            &evidence.assessment_metadata.organization,
-            &evidence.assessment_metadata.run_timestamp,
-            &evidence.metrics.team_rosters,
-            &orphaned_vm.by_team,
-        );
-        let nested_nav = TopNav { base: "../", ..nav };
-        for (slug, detail_vm) in &detail_vms {
-            let detail_html = render_template(&OwnerDetailTemplate {
-                vm: detail_vm.clone(),
-                nav: nested_nav,
-                warm_start,
-            })?;
-            sink(format!("owners/{slug}.html"), detail_html);
-        }
+            &mut sink,
+        )?;
     }
 
+    render_secondary_pages(
+        evidence,
+        orphaned_vm,
+        deleted_vm,
+        nav,
+        warm_start,
+        &mut sink,
+    )?;
+
+    Ok(())
+}
+
+/// Render `orphans.html`, `deleted.html`, and `branch_protection.html`.
+///
+/// Split out of [`render_dashboard_streaming`] to keep that function under
+/// the workspace's `too_many_lines` clippy-pedantic bar.
+///
+/// # Errors
+///
+/// Returns [`ReportError::TemplateRenderFailed`] if any template rendering fails.
+fn render_secondary_pages(
+    evidence: &Evidence,
+    orphaned_vm: OrphanedViewModel,
+    deleted_vm: DeletedViewModel,
+    nav: TopNav,
+    warm_start: bool,
+    sink: &mut impl FnMut(String, String),
+) -> Result<(), ReportError> {
+    let org = &evidence.assessment_metadata.organization;
+
     let orphaned_html = render_template(&OrphansTemplate {
+        title: format!("Orphan Repositories — {org}"),
         vm: orphaned_vm,
         nav,
         warm_start,
@@ -357,23 +394,75 @@ pub fn render_dashboard_streaming(
     sink("orphans.html".to_string(), orphaned_html);
 
     let deleted_html = render_template(&DeletedTemplate {
+        title: format!("Deleted Repositories and Teams — {org}"),
         vm: deleted_vm,
         nav,
         warm_start,
     })?;
     sink("deleted.html".to_string(), deleted_html);
 
-    let bpr_vm = build_bpr_view_model(
-        &evidence.repositories,
-        &evidence.assessment_metadata.organization,
-    );
+    let bpr_vm = build_bpr_view_model(&evidence.repositories, org);
     let bpr_html = render_template(&BranchProtectionTemplate {
+        title: format!("Branch Protection Regimes — {org}"),
         vm: bpr_vm,
         nav,
         warm_start,
     })?;
     sink("branch_protection.html".to_string(), bpr_html);
 
+    Ok(())
+}
+
+/// Render `owners.html` and every `owners/{slug}.html` detail page.
+///
+/// Split out of [`render_dashboard_streaming`] to keep that function under
+/// the workspace's `too_many_lines` clippy-pedantic bar.
+///
+/// # Errors
+///
+/// Returns [`ReportError::TemplateRenderFailed`] if any template rendering fails.
+fn render_owner_pages(
+    evidence: &Evidence,
+    tiers: &CoverageTiers,
+    owners: &OwnersViewModel,
+    orphaned_vm: &OrphanedViewModel,
+    nav: TopNav,
+    warm_start: bool,
+    sink: &mut impl FnMut(String, String),
+) -> Result<(), ReportError> {
+    let owners_html = render_template(&OwnersTemplate {
+        vm: owners,
+        total_repos: evidence.collection_statistics.total_repos,
+        nav,
+        title: format!(
+            "Owner Coverage — {}",
+            evidence.assessment_metadata.organization
+        ),
+        warm_start,
+    })?;
+    sink("owners.html".to_string(), owners_html);
+
+    let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
+    let detail_vms = build_owner_detail_view_models(
+        &evidence.metrics.owner_metrics,
+        &owner_repo_map,
+        tiers,
+        &evidence.assessment_metadata.organization,
+        &evidence.assessment_metadata.run_timestamp,
+        &evidence.metrics.team_rosters,
+        &orphaned_vm.by_team,
+    );
+    let nested_nav = TopNav { base: "../", ..nav };
+    for (slug, detail_vm) in &detail_vms {
+        let title = format!("{} — Owner Detail", detail_vm.owner);
+        let detail_html = render_template(&OwnerDetailTemplate {
+            vm: detail_vm.clone(),
+            nav: nested_nav,
+            title,
+            warm_start,
+        })?;
+        sink(format!("owners/{slug}.html"), detail_html);
+    }
     Ok(())
 }
 

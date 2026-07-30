@@ -1,16 +1,9 @@
 {%- import "partials/tooltip.html" as tooltip -%}
+{%- import "partials/head.html" as head -%}
 <!DOCTYPE html>
 <html lang="en">
 
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Branch Protection Regimes — {{ vm.organization }}</title>
-    <link rel="stylesheet" href="style.css">
-    <script src="ws.js" defer></script>
-    <script type="module" src="sort-init.js"></script>
-    {% if warm_start %}<meta http-equiv="refresh" content="5">{% endif %}
-</head>
+{% call head::head(nav.base, title, true, warm_start) %}{% endcall %}
 
 <body>
 
