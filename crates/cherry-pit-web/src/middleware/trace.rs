@@ -54,7 +54,7 @@ impl<B> tower_http::trace::OnResponse<B> for OnHttpResponse {
         if status == StatusCode::SWITCHING_PROTOCOLS {
             info!(status = status.as_u16(), "response");
         } else {
-            info!(
+            debug!(
                 status = status.as_u16(),
                 latency_us = u64::try_from(latency.as_micros()).unwrap_or(u64::MAX),
                 "response",
@@ -150,7 +150,7 @@ mod tests {
 
         impl Subscriber for CaptureSubscriber {
             fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-                metadata.level() <= &Level::INFO
+                metadata.level() <= &Level::DEBUG
             }
 
             fn new_span(&self, _span: &span::Attributes<'_>) -> span::Id {
@@ -187,7 +187,7 @@ mod tests {
             }
 
             fn max_level_hint(&self) -> Option<tracing::metadata::LevelFilter> {
-                Some(tracing::metadata::LevelFilter::INFO)
+                Some(tracing::metadata::LevelFilter::DEBUG)
             }
         }
 

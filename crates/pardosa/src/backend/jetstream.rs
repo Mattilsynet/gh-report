@@ -9,7 +9,7 @@ use crate::durability::AckPosition;
 use crate::error::{BackendError, BackendOp, RuntimeFailureKind};
 use pardosa_nats::{JetStreamAckPosition, JetStreamRuntimeError};
 use std::time::{Duration, Instant};
-use tracing::{info, info_span};
+use tracing::{debug, info, info_span};
 
 #[derive(Clone, Debug)]
 pub(crate) struct JetStreamDurableFrame {
@@ -337,7 +337,7 @@ fn observe_operation(
         terminal_category = tracing::field::Empty,
     );
     span.in_scope(|| {
-        info!(
+        debug!(
             phase = "entry",
             op = fields.op.as_str(),
             "pardosa jetstream backend entry"
@@ -355,7 +355,7 @@ fn observe_operation(
     }
     span.in_scope(|| {
         if let Ok(ack) = result.as_ref() {
-            info!(
+            debug!(
                 phase = "completion",
                 op = fields.op.as_str(),
                 terminal_category = terminal_category.as_str(),
@@ -364,7 +364,7 @@ fn observe_operation(
                 "pardosa jetstream backend completion"
             );
         } else {
-            info!(
+            debug!(
                 phase = "completion",
                 op = fields.op.as_str(),
                 terminal_category = terminal_category.as_str(),
@@ -390,7 +390,7 @@ fn observe_replay_operation(
         terminal_category = tracing::field::Empty,
     );
     span.in_scope(|| {
-        info!(
+        debug!(
             phase = "entry",
             op = TelemetryOp::Replay.as_str(),
             "pardosa jetstream backend entry"
@@ -408,7 +408,7 @@ fn observe_replay_operation(
     }
     span.in_scope(|| {
         if let Ok(records) = result.as_ref() {
-            info!(
+            debug!(
                 phase = "completion",
                 op = TelemetryOp::Replay.as_str(),
                 terminal_category = terminal_category.as_str(),
@@ -417,7 +417,7 @@ fn observe_replay_operation(
                 "pardosa jetstream backend completion"
             );
         } else {
-            info!(
+            debug!(
                 phase = "completion",
                 op = TelemetryOp::Replay.as_str(),
                 terminal_category = terminal_category.as_str(),
@@ -585,6 +585,7 @@ mod tests {
             .with_ansi(false)
             .with_target(false)
             .with_level(false)
+            .with_max_level(tracing::level_filters::LevelFilter::DEBUG)
             .finish();
         tracing::subscriber::with_default(subscriber, || {
             tracing::callsite::rebuild_interest_cache();
