@@ -489,6 +489,64 @@ fn every_html_page_has_balanced_script_tags() {
 }
 
 #[test]
+fn sortable_pages_preload_wasm_glue_and_binary_index_stays_wasm_free() {
+    let evidence = evidence_with_owner_repos();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+    let sortable_html_pages: Vec<&str> = pages
+        .keys()
+        .map(String::as_str)
+        .filter(|name| {
+            *name != "index.html"
+                && std::path::Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
+        })
+        .collect();
+    assert!(
+        sortable_html_pages.len() >= 7,
+        "expected at least 7 sortable pages (admin, branch_protection, deleted, \
+             orphans, owner_detail, owners, report); found {sortable_html_pages:?}"
+    );
+
+    for name in sortable_html_pages {
+        let base = if name.starts_with("owners/") {
+            "../"
+        } else {
+            ""
+        };
+        let body = &pages[name];
+        let modulepreload =
+            format!(r#"<link rel="modulepreload" href="{base}gh-report-web-client.js">"#);
+        let wasm_preload = format!(
+            r#"<link rel="preload" href="{base}gh-report-web-client_bg.wasm" as="fetch" crossorigin>"#
+        );
+        assert!(
+            body.contains(&modulepreload),
+            "{name} missing modulepreload hint {modulepreload:?}"
+        );
+        assert!(
+            body.contains(&wasm_preload),
+            "{name} missing wasm preload hint {wasm_preload:?}"
+        );
+    }
+
+    let index = &pages["index.html"];
+    assert!(
+        !index.contains("modulepreload"),
+        "index.html must stay wasm-free: no modulepreload hint"
+    );
+    assert!(
+        !index.contains("gh-report-web-client"),
+        "index.html must stay wasm-free: no gh-report-web-client reference"
+    );
+    assert!(
+        !index.contains("sort-init.js"),
+        "index.html must stay wasm-free: no sort-init.js"
+    );
+}
+
+#[test]
 fn render_dashboard_index_badge_counts_admin_technical_issues() {
     let evidence = sample_evidence_with_admin_diagnostics();
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();

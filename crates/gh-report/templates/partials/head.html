@@ -5,7 +5,9 @@
     <title>{{ title }}</title>
     <link rel="stylesheet" href="{{ base }}style.css">
     <script src="{{ base }}ws.js" defer></script>
-    {% if sortable %}<script type="module" src="{{ base }}sort-init.js"></script>{% endif %}
+    {% if sortable %}<link rel="modulepreload" href="{{ base }}gh-report-web-client.js">
+    <link rel="preload" href="{{ base }}gh-report-web-client_bg.wasm" as="fetch" crossorigin>
+    <script type="module" src="{{ base }}sort-init.js"></script>{% endif %}
     {% if warm_start %}<meta http-equiv="refresh" content="5">{% endif %}
 </head>
 {%- endmacro -%}

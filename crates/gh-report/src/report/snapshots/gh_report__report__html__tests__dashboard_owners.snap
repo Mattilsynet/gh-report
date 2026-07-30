@@ -10,6 +10,8 @@ expression: "&pages[\"owners.html\"]"
     <title>Owner Coverage — TestOrg</title>
     <link rel="stylesheet" href="style.css">
     <script src="ws.js" defer></script>
+    <link rel="modulepreload" href="gh-report-web-client.js">
+    <link rel="preload" href="gh-report-web-client_bg.wasm" as="fetch" crossorigin>
     <script type="module" src="sort-init.js"></script>
     
 </head>
