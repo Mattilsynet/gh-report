@@ -953,18 +953,46 @@ fn handle_success_outcome(
             );
         }
         Err(failure) => {
-            error!(
-                key = %domain_key,
-                repo = %repo_name,
-                source = ?source,
-                duration_ms = duration.as_millis(),
-                persist_error_variant = persist_error_variant(&failure.error),
-                category = ?failure.category,
-                response = ?failure.response,
-                source_chain = source_chain(&failure.error).as_str(),
-                "job outcome downgraded to failed: durable record write did not succeed"
-            );
+            log_job_persist_failure(&failure, domain_key, &repo_name, source, duration);
         }
+    }
+}
+
+fn log_job_persist_failure(
+    failure: &WriteFailure,
+    domain_key: &str,
+    repo_name: &str,
+    source: &JobSource,
+    duration: Duration,
+) {
+    let persist_error_variant = persist_error_variant(&failure.error);
+    let category = failure.category;
+    let response = failure.response;
+    let source_chain = source_chain(&failure.error);
+    if crate::app::write_policy::severity_for(category) == tracing::Level::WARN {
+        warn!(
+            key = %domain_key,
+            repo = %repo_name,
+            source = ?source,
+            duration_ms = duration.as_millis(),
+            persist_error_variant,
+            category = ?category,
+            response = ?response,
+            source_chain = source_chain.as_str(),
+            "job outcome downgraded to failed: durable record write did not succeed"
+        );
+    } else {
+        error!(
+            key = %domain_key,
+            repo = %repo_name,
+            source = ?source,
+            duration_ms = duration.as_millis(),
+            persist_error_variant,
+            category = ?category,
+            response = ?response,
+            source_chain = source_chain.as_str(),
+            "job outcome downgraded to failed: durable record write did not succeed"
+        );
     }
 }
 
@@ -1238,6 +1266,56 @@ mod tests {
             Some("LoadFailed"),
             "empty repo name must surface as a LoadFailed persist error: {event}"
         );
+    }
+
+    #[test]
+    fn log_job_persist_failure_logs_conflict_at_warn() {
+        let failure = WriteFailure::classify(PersistenceError::FencedConflict {
+            expected_seq: None,
+            actual_seq: None,
+            source: Box::new(std::io::Error::other("fence")),
+        });
+        let output = capture_tracing(|| {
+            log_job_persist_failure(
+                &failure,
+                "acme/widgets",
+                "widgets",
+                &JobSource::InitialLoad,
+                Duration::from_millis(1),
+            );
+        });
+        let event = output
+            .lines()
+            .next()
+            .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .expect("one log line");
+        assert_eq!(
+            event["level"].as_str(),
+            Some("WARN"),
+            "recognised fence conflict must log at WARN, not ERROR: {event}"
+        );
+    }
+
+    #[test]
+    fn log_job_persist_failure_logs_non_conflict_at_error() {
+        let failure = WriteFailure::classify(PersistenceError::InvariantViolation {
+            reason: "x".to_string(),
+        });
+        let output = capture_tracing(|| {
+            log_job_persist_failure(
+                &failure,
+                "acme/widgets",
+                "widgets",
+                &JobSource::InitialLoad,
+                Duration::from_millis(1),
+            );
+        });
+        let event = output
+            .lines()
+            .next()
+            .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .expect("one log line");
+        assert_eq!(event["level"].as_str(), Some("ERROR"));
     }
 
     #[test]

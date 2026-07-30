@@ -1197,13 +1197,7 @@ async fn finalize_and_publish(
     write_with_policy(|| state.record_org(org_snapshot.clone()))
         .await
         .map_err(|write_failure| {
-            error!(
-                persist_error_variant = persist_error_variant(&write_failure.error),
-                category = ?write_failure.category,
-                response = ?write_failure.response,
-                source_chain = source_chain(&write_failure.error).as_str(),
-                "org state record failed"
-            );
+            log_org_record_failure(&write_failure);
             AppError::Persistence(write_failure.error)
         })?;
 
@@ -1251,6 +1245,30 @@ async fn finalize_and_publish(
     );
 
     Ok((pages, warm_start))
+}
+
+fn log_org_record_failure(write_failure: &crate::app::write_policy::WriteFailure) {
+    let persist_error_variant = persist_error_variant(&write_failure.error);
+    let category = write_failure.category;
+    let response = write_failure.response;
+    let source_chain = source_chain(&write_failure.error);
+    if crate::app::write_policy::severity_for(category) == tracing::Level::WARN {
+        warn!(
+            persist_error_variant,
+            category = ?category,
+            response = ?response,
+            source_chain = source_chain.as_str(),
+            "org state record failed"
+        );
+    } else {
+        error!(
+            persist_error_variant,
+            category = ?category,
+            response = ?response,
+            source_chain = source_chain.as_str(),
+            "org state record failed"
+        );
+    }
 }
 
 /// Select the render-time team-roster source for this collect cycle,
@@ -2081,6 +2099,7 @@ fn build_assessment_metadata(
 mod tests {
     use super::*;
     use crate::app::worker_pool::JobExecutor;
+    use crate::app::write_policy::WriteFailure;
     use crate::config::dashboard::DashboardConfig;
     use crate::domain::auth::AuthMode;
     use crate::domain::auth::{Capability, TokenTier};
@@ -2088,6 +2107,87 @@ mod tests {
     use crate::github::auth::CapabilityStatus;
     use crate::test_fixtures;
     use cherry_pit_web::serve::ServerState;
+    use std::sync::Mutex;
+    use tracing_subscriber::fmt::MakeWriter;
+
+    #[derive(Clone, Default)]
+    struct VecWriter {
+        buf: std::sync::Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl VecWriter {
+        fn snapshot(&self) -> String {
+            String::from_utf8(self.buf.lock().expect("buffer mutex").clone()).expect("utf-8")
+        }
+    }
+
+    impl std::io::Write for VecWriter {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.buf
+                .lock()
+                .expect("buffer mutex")
+                .extend_from_slice(data);
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for VecWriter {
+        type Writer = VecWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture_tracing(f: impl FnOnce()) -> String {
+        let writer = VecWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_writer(writer.clone())
+            .with_ansi(false)
+            .with_target(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::callsite::rebuild_interest_cache();
+            f();
+            tracing::callsite::rebuild_interest_cache();
+        });
+        writer.snapshot()
+    }
+
+    fn log_level(output: &str) -> String {
+        serde_json::from_str::<serde_json::Value>(output.lines().next().expect("one log line"))
+            .expect("valid json")["level"]
+            .as_str()
+            .expect("level field present")
+            .to_string()
+    }
+
+    #[test]
+    fn log_org_record_failure_logs_conflict_at_warn() {
+        let failure =
+            WriteFailure::classify(cherry_pit_storage::PersistenceError::FencedConflict {
+                expected_seq: None,
+                actual_seq: None,
+                source: Box::new(std::io::Error::other("fence")),
+            });
+        let output = capture_tracing(|| log_org_record_failure(&failure));
+        assert_eq!(log_level(&output), "WARN");
+    }
+
+    #[test]
+    fn log_org_record_failure_logs_non_conflict_at_error() {
+        let failure =
+            WriteFailure::classify(cherry_pit_storage::PersistenceError::InvariantViolation {
+                reason: "x".to_string(),
+            });
+        let output = capture_tracing(|| log_org_record_failure(&failure));
+        assert_eq!(log_level(&output), "ERROR");
+    }
 
     /// Compile-time assertion: `LiveEvaluator` satisfies `JobExecutor` bounds.
     /// This ensures the impl stays in sync with the trait as both evolve.

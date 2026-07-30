@@ -104,6 +104,25 @@ impl WritePolicyCategory {
     }
 }
 
+/// The tracing severity for a durable-write failure classified as
+/// `category` (COM-0031:R4, adr-fmt-op2u6-F5). `Conflict` is the single
+/// recognised fence variant (PGN-0016:R2) and is the expected shape of a
+/// Cloud-Run-rollover OCC churn on every deploy; logging it at `ERROR`
+/// desensitises ERROR-based alerting. Every other category remains an
+/// unexpected durable-write failure and stays at `ERROR`.
+///
+/// Gates strictly on the typed [`WritePolicyCategory`], never on
+/// error-code text, so classification stays exhaustive and closed.
+#[must_use]
+pub fn severity_for(category: WritePolicyCategory) -> tracing::Level {
+    match category {
+        WritePolicyCategory::Conflict => tracing::Level::WARN,
+        WritePolicyCategory::Transient
+        | WritePolicyCategory::Structural
+        | WritePolicyCategory::Unrecoverable => tracing::Level::ERROR,
+    }
+}
+
 /// A classified durable-write failure: category, ratified response,
 /// and the original error for logging/propagation.
 #[derive(Debug)]
@@ -337,6 +356,7 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::sync::{Arc, Mutex};
+    use tracing::Level;
 
     fn io_error() -> PersistenceError {
         PersistenceError::Io(std::io::Error::other("boom"))
@@ -385,6 +405,21 @@ mod tests {
             .finish();
         tracing::subscriber::with_default(subscriber, f);
         writer.snapshot()
+    }
+
+    #[test]
+    fn severity_for_conflict_is_warn() {
+        assert_eq!(severity_for(WritePolicyCategory::Conflict), Level::WARN);
+    }
+
+    #[test]
+    fn severity_for_non_conflict_categories_is_error() {
+        assert_eq!(severity_for(WritePolicyCategory::Transient), Level::ERROR);
+        assert_eq!(severity_for(WritePolicyCategory::Structural), Level::ERROR);
+        assert_eq!(
+            severity_for(WritePolicyCategory::Unrecoverable),
+            Level::ERROR
+        );
     }
 
     #[test]
