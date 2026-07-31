@@ -2566,6 +2566,291 @@ mod tests {
         );
     }
 
+    /// adr-fmt-5n3es acceptance gate: the F1 free-conservation fix taking
+    /// effect in production. `LiveEvaluator` drives the IDENTICAL free
+    /// (`repo_details` 304) job through both the frozen `run_worker_pool`
+    /// and the live `run_worker_pool_regulated`, each with its own fresh
+    /// budget gate seeded with the same stale-ETag cache state. The frozen
+    /// path never consults `charge_of` (dead in that path — CHE-0055:R17),
+    /// so its job-admission permit stays charged even though `repo_details`
+    /// itself resolves 304; the regulated path settles that same permit
+    /// `Free`, netting it to zero. The two totals must differ by exactly
+    /// 1 permit — the job-admission draw this migration now conserves.
+    async fn run_free_repo_job_through<F, Fut>(server_uri: &str, run: F) -> u64
+    where
+        F: FnOnce(
+            Arc<crate::app::work_queue::WorkQueue<crate::app::collect::JobContext>>,
+            Arc<crate::app::collect::LiveEvaluator>,
+            Arc<crate::github::budget::BudgetGate>,
+            Arc<crate::github::rate_limit::RateLimitState>,
+            tokio::sync::mpsc::Sender<
+                crate::app::worker_pool::JobOutcome<crate::domain::evidence::RepositoryEvidence>,
+            >,
+        ) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        use crate::app::collect::LiveEvaluator;
+        use crate::app::work_queue::{JobSource, WorkQueue};
+        use crate::app::worker_pool::JobOutcome;
+        use crate::domain::repository::Visibility;
+        use cherry_pit_core::CorrelationContext;
+        use cherry_pit_wq::JobSpec;
+
+        let (budget, rate_limit) = test_budget_and_rate_limit();
+        let client = Arc::new(build_test_client_with_budget(
+            server_uri,
+            &budget,
+            &rate_limit,
+        ));
+        client.repo_detail_cache.upsert_sync(
+            "free-repo".to_string(),
+            CachedResult {
+                status_code: 200,
+                data: Some(serde_json::json!({"default_branch": "main"})),
+                etag: Some("\"etag-v1\"".to_string()),
+                stale: true,
+            },
+        );
+        let evaluator = Arc::new(LiveEvaluator::with_shared_org_summary(
+            Arc::clone(&client),
+            Arc::new(ArcSwap::from_pointee(None)),
+        ));
+
+        let queue = Arc::new(WorkQueue::new(10));
+        let repo = crate::test_fixtures::make_repository("free-repo", false, Visibility::Public);
+        let context = crate::app::collect::JobContext {
+            repo: Arc::new(repo),
+            run_timestamp: "2026-07-31T00:00:00Z".to_string(),
+        };
+        queue.enqueue(JobSpec::new(
+            "free-repo".to_string(),
+            context,
+            JobSource::ScheduledBatch,
+            CorrelationContext::none(),
+        ));
+        queue.close();
+
+        let (outcome_tx, mut outcome_rx) = tokio::sync::mpsc::channel(16);
+        let budget_before = budget.calls_made();
+
+        run(
+            queue,
+            evaluator,
+            Arc::clone(&budget),
+            rate_limit,
+            outcome_tx,
+        )
+        .await;
+
+        let mut outcomes = Vec::new();
+        while let Some(o) = outcome_rx.recv().await {
+            outcomes.push(o);
+        }
+        assert_eq!(outcomes.len(), 1, "the job must complete");
+        match &outcomes[0] {
+            JobOutcome::Success { .. } => {}
+            JobOutcome::Failure {
+                domain_key, error, ..
+            } => {
+                panic!("job {domain_key} unexpectedly failed: {error}");
+            }
+            _ => panic!("unexpected JobOutcome variant"),
+        }
+
+        budget.calls_made() - budget_before
+    }
+
+    /// adr-fmt-5n3es acceptance gate: the F1 free-conservation fix taking
+    /// effect in production. `LiveEvaluator` drives the IDENTICAL free
+    /// (`repo_details` 304) job through both the frozen `run_worker_pool`
+    /// and the live `run_worker_pool_regulated`, each with its own fresh
+    /// budget gate seeded with the same stale-ETag cache state. The frozen
+    /// path never consults `charge_of` (dead in that path — CHE-0055:R17),
+    /// so its job-admission permit stays charged even though `repo_details`
+    /// itself resolves 304; the regulated path settles that same permit
+    /// `Free`, netting it to zero. The two totals must differ by exactly
+    /// 1 permit — the job-admission draw this migration now conserves.
+    #[tokio::test]
+    async fn free_repo_details_304_conserves_budget_on_regulated_pool_vs_frozen_pool() {
+        use crate::app::worker_pool::{
+            BudgetRegulator, RateLimitRegulator, Regulator, WorkerPoolConfig, run_worker_pool,
+            run_worker_pool_regulated,
+        };
+        use wiremock::matchers::{header, path, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        Mock::given(path_regex(r"^/repos/[^/]+/[^/]+/.+"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        Mock::given(path("/repos/test-org/free-repo"))
+            .and(header("If-None-Match", "\"etag-v1\""))
+            .respond_with(ResponseTemplate::new(304))
+            .mount(&server)
+            .await;
+
+        let frozen_delta = run_free_repo_job_through(
+            &server.uri(),
+            |queue, evaluator, budget, rate_limit, outcome_tx| async move {
+                run_worker_pool(
+                    queue,
+                    evaluator,
+                    budget,
+                    rate_limit,
+                    {
+                        let mut cfg = WorkerPoolConfig::default();
+                        cfg.worker_count = 1;
+                        cfg
+                    },
+                    tokio_util::sync::CancellationToken::new(),
+                    outcome_tx,
+                )
+                .await;
+            },
+        )
+        .await;
+
+        let regulated_delta = run_free_repo_job_through(
+            &server.uri(),
+            |queue, evaluator, budget, rate_limit, outcome_tx| async move {
+                let regulators: Arc<[Arc<dyn Regulator>]> = Arc::from(vec![
+                    Arc::new(BudgetRegulator::new(budget)) as Arc<dyn Regulator>,
+                    Arc::new(RateLimitRegulator::new(rate_limit)) as Arc<dyn Regulator>,
+                ]);
+                run_worker_pool_regulated(
+                    queue,
+                    evaluator,
+                    regulators,
+                    {
+                        let mut cfg = WorkerPoolConfig::default();
+                        cfg.worker_count = 1;
+                        cfg
+                    },
+                    tokio_util::sync::CancellationToken::new(),
+                    outcome_tx,
+                )
+                .await;
+            },
+        )
+        .await;
+
+        assert_eq!(
+            frozen_delta.checked_sub(regulated_delta),
+            Some(1),
+            "the regulated pool must conserve exactly the 1 job-admission \
+             permit the frozen pool always charges regardless of a free \
+             repo_details 304: frozen_delta={frozen_delta} regulated_delta={regulated_delta}"
+        );
+    }
+
+    /// adr-fmt-5n3es acceptance gate (ii): a charged job (fresh
+    /// `repo_details` 200) must never be settled `Free` on the regulated
+    /// path — its job-admission permit stays charged (asymmetric-risk
+    /// safe default; no budget under-count).
+    #[tokio::test]
+    async fn charged_repo_details_200_never_settles_free_on_regulated_pool() {
+        use crate::app::collect::LiveEvaluator;
+        use crate::app::work_queue::{JobSource, WorkQueue};
+        use crate::app::worker_pool::{
+            BudgetRegulator, JobOutcome, RateLimitRegulator, Regulator, WorkerPoolConfig,
+            run_worker_pool_regulated,
+        };
+        use crate::domain::repository::Visibility;
+        use cherry_pit_core::CorrelationContext;
+        use cherry_pit_wq::JobSpec;
+        use wiremock::matchers::path_regex;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        Mock::given(path_regex(r"^/repos/[^/]+/[^/]+/.+"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        Mock::given(path_regex(r"^/repos/[^/]+/[^/]+$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"default_branch": "main"})),
+            )
+            .mount(&server)
+            .await;
+
+        let (budget, rate_limit) = test_budget_and_rate_limit();
+        let client = Arc::new(build_test_client_with_budget(
+            &server.uri(),
+            &budget,
+            &rate_limit,
+        ));
+
+        let evaluator = Arc::new(LiveEvaluator::with_shared_org_summary(
+            Arc::clone(&client),
+            Arc::new(ArcSwap::from_pointee(None)),
+        ));
+
+        let regulators: Arc<[Arc<dyn Regulator>]> = Arc::from(vec![
+            Arc::new(BudgetRegulator::new(Arc::clone(&budget))) as Arc<dyn Regulator>,
+            Arc::new(RateLimitRegulator::new(Arc::clone(&rate_limit))) as Arc<dyn Regulator>,
+        ]);
+
+        let queue = Arc::new(WorkQueue::new(10));
+        let repo = crate::test_fixtures::make_repository("charged-repo", false, Visibility::Public);
+        let context = crate::app::collect::JobContext {
+            repo: Arc::new(repo),
+            run_timestamp: "2026-07-31T00:00:00Z".to_string(),
+        };
+        queue.enqueue(JobSpec::new(
+            "charged-repo".to_string(),
+            context,
+            JobSource::ScheduledBatch,
+            CorrelationContext::none(),
+        ));
+        queue.close();
+
+        let (outcome_tx, mut outcome_rx) = tokio::sync::mpsc::channel(16);
+        let budget_before = budget.calls_made();
+
+        run_worker_pool_regulated(
+            queue,
+            evaluator,
+            regulators,
+            {
+                let mut cfg = WorkerPoolConfig::default();
+                cfg.worker_count = 1;
+                cfg
+            },
+            tokio_util::sync::CancellationToken::new(),
+            outcome_tx,
+        )
+        .await;
+
+        let mut outcomes = Vec::new();
+        while let Some(o) = outcome_rx.recv().await {
+            outcomes.push(o);
+        }
+        assert_eq!(outcomes.len(), 1, "the job must complete");
+        match &outcomes[0] {
+            JobOutcome::Success { .. } => {}
+            JobOutcome::Failure {
+                domain_key, error, ..
+            } => {
+                panic!("job {domain_key} unexpectedly failed: {error}");
+            }
+            _ => panic!("unexpected JobOutcome variant"),
+        }
+
+        let budget_after = budget.calls_made();
+        assert!(
+            budget_after > budget_before,
+            "a charged (fresh 200) job's job-admission permit must stay \
+             charged, never settled Free (no under-count): calls_made \
+             before={budget_before} after={budget_after}"
+        );
+    }
+
     #[tokio::test]
     async fn repo_details_etag_revalidation_failure_falls_through_to_full_request() {
         use wiremock::matchers::{header, path};

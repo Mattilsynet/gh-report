@@ -2251,6 +2251,78 @@ mod tests {
         test_fixtures::all_passing_evidence(name)
     }
 
+    /// adr-fmt-5n3es acceptance: `LiveEvaluator::charge_of` classifies all
+    /// 6 `evaluate()` calls correctly. `repo_details` is the only call with
+    /// a conditional-request path (Free on 304, else Charged); the other 5
+    /// (`security_policy`, `ghas_scanning`/`secret_scanning`,
+    /// `dependabot_security_updates`, `branch_protection`, `codeowners`) go
+    /// through the generic, non-conditional `client.request()` and must stay
+    /// `Charged` regardless of their result content (CHE-0055:R17 default;
+    /// no accidental Free path for any of the 5).
+    #[test]
+    fn charge_of_classifies_all_six_evaluate_calls() {
+        use crate::app::worker_pool::SettleOutcome;
+        use crate::domain::checks::{
+            BranchProtectionStatus, CodeownersStatus, DependabotStatus, SecretScanningStatus,
+            SecurityPolicyStatus,
+        };
+
+        let evaluator = LiveEvaluator::with_shared_org_summary(
+            test_github_client(),
+            Arc::new(ArcSwap::from_pointee(None)),
+        );
+        let domain_key = "owner/repo".to_string();
+
+        let mut repo_details_free = sample_repo("repo-details-free");
+        repo_details_free.repo_details_not_modified = true;
+        assert_eq!(
+            evaluator.charge_of(&domain_key, &repo_details_free),
+            SettleOutcome::Free,
+            "repo_details: 304 not-modified must settle Free"
+        );
+
+        let charged_cases: [(&str, RepositoryEvidence); 5] = [
+            ("security_policy", {
+                let mut r = sample_repo("security-policy-charged");
+                r.repo_details_not_modified = false;
+                r.checks.security_policy.status = SecurityPolicyStatus::Fail;
+                r
+            }),
+            ("ghas_scanning/secret_scanning", {
+                let mut r = sample_repo("ghas-scanning-charged");
+                r.repo_details_not_modified = false;
+                r.checks.secret_scanning.status = SecretScanningStatus::Disabled;
+                r
+            }),
+            ("dependabot_security_updates", {
+                let mut r = sample_repo("dependabot-charged");
+                r.repo_details_not_modified = false;
+                r.checks.dependabot_security_updates.status = DependabotStatus::Disabled;
+                r
+            }),
+            ("branch_protection", {
+                let mut r = sample_repo("branch-protection-charged");
+                r.repo_details_not_modified = false;
+                r.checks.branch_protection.status = BranchProtectionStatus::Fail;
+                r
+            }),
+            ("codeowners", {
+                let mut r = sample_repo("codeowners-charged");
+                r.repo_details_not_modified = false;
+                r.checks.codeowners.status = CodeownersStatus::Absent;
+                r
+            }),
+        ];
+
+        for (label, result) in &charged_cases {
+            assert_eq!(
+                evaluator.charge_of(&domain_key, result),
+                SettleOutcome::Charged,
+                "{label}: must stay Charged (no conditional-request path)"
+            );
+        }
+    }
+
     fn inventory_payload_with(repos: Vec<Repository>) -> inventory::InventoryPayload {
         inventory::InventoryPayload {
             schema_version: config::INVENTORY_SCHEMA_VERSION.to_string(),
