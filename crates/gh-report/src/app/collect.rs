@@ -341,7 +341,7 @@ async fn run_collection_inner(
 
     let setup = prepare_collection(config, run, state).await?;
 
-    state.ensure_worker_pool().await;
+    state.ensure_worker_pool(config.rate_regulator).await;
 
     let inventory = load_active_repositories(&setup.client).await?;
 

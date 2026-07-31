@@ -4,7 +4,7 @@
 //! This module preserves the original import paths for downstream code.
 
 pub use cherry_pit_wq::{
-    BackoffRegulator, BudgetRegulator, JobExecutor, JobOutcome, RateLimitRegulator, Regulator,
-    SettleOutcome, WorkerPoolConfig, run_worker_pool, run_worker_pool_regulated,
-    shutdown_worker_pool,
+    Admission, BackoffRegulator, BudgetRegulator, Clock, JobExecutor, JobOutcome,
+    RateLimitRegulator, Regulator, SettleOutcome, SystemClock, TokenBucketRegulator,
+    WorkerPoolConfig, run_worker_pool, run_worker_pool_regulated, shutdown_worker_pool,
 };

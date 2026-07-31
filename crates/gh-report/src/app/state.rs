@@ -1767,6 +1767,32 @@ impl AppState {
     }
 }
 
+/// Construct the primary-rate `Regulator` for the worker-pool regulator
+/// chain by matching `kind` to a concrete constructor (adr-fmt-faspg
+/// kill-switch). Each arm builds a concrete `cherry-pit-wq` type coerced
+/// into the existing `Arc<dyn Regulator>` chain slot; no erased selector
+/// indirection is introduced.
+fn build_primary_rate_regulator(
+    kind: crate::config::runtime::RateRegulatorKind,
+    budget: &Arc<crate::github::budget::BudgetGate>,
+) -> Arc<dyn crate::app::worker_pool::Regulator> {
+    match kind {
+        crate::config::runtime::RateRegulatorKind::TokenBucket => {
+            let refill_tokens_per_sec =
+                (crate::config::API_BUDGET_LIMIT / crate::config::API_BUDGET_WAIT_SECS).max(1);
+            Arc::new(crate::app::worker_pool::TokenBucketRegulator::new(
+                Arc::new(crate::app::worker_pool::SystemClock),
+                crate::config::API_BUDGET_LIMIT,
+                refill_tokens_per_sec,
+            )) as Arc<dyn crate::app::worker_pool::Regulator>
+        }
+        crate::config::runtime::RateRegulatorKind::BudgetGate => Arc::new(
+            crate::app::worker_pool::BudgetRegulator::new(Arc::clone(budget)),
+        )
+            as Arc<dyn crate::app::worker_pool::Regulator>,
+    }
+}
+
 impl AppState {
     /// Ensure the long-lived worker pool and delivery task are running.
     ///
@@ -1776,7 +1802,10 @@ impl AppState {
     ///
     /// Returns `true` if the pool was started by this call, `false` if
     /// already running.
-    pub(crate) async fn ensure_worker_pool(self: &Arc<Self>) -> bool {
+    pub(crate) async fn ensure_worker_pool(
+        self: &Arc<Self>,
+        rate_regulator: crate::config::runtime::RateRegulatorKind,
+    ) -> bool {
         let state = Arc::clone(self);
         let mut started_now = false;
 
@@ -1815,8 +1844,7 @@ impl AppState {
                 let regulators: std::sync::Arc<
                     [std::sync::Arc<dyn crate::app::worker_pool::Regulator>],
                 > = std::sync::Arc::from(vec![
-                    std::sync::Arc::new(crate::app::worker_pool::BudgetRegulator::new(budget))
-                        as std::sync::Arc<dyn crate::app::worker_pool::Regulator>,
+                    build_primary_rate_regulator(rate_regulator, &budget),
                     std::sync::Arc::new(crate::app::worker_pool::RateLimitRegulator::new(
                         rate_limit,
                     ))
@@ -1984,6 +2012,47 @@ mod tests {
     use tracing_subscriber::layer::{Context, SubscriberExt};
 
     const SYNTHETIC_RECOVERY_RECORDS: u64 = 7;
+
+    #[tokio::test]
+    async fn primary_rate_regulator_defaults_to_token_bucket_and_conserves() {
+        let budget = Arc::new(crate::github::budget::BudgetGate::new(
+            crate::config::API_BUDGET_LIMIT,
+            std::time::Duration::from_secs(crate::config::API_BUDGET_WAIT_SECS),
+        ));
+        let regulator = build_primary_rate_regulator(
+            crate::config::runtime::RateRegulatorKind::TokenBucket,
+            &budget,
+        );
+        let cancel = tokio_util::sync::CancellationToken::new();
+        for _ in 0..crate::config::API_BUDGET_LIMIT.min(64) {
+            assert_eq!(
+                regulator.admit(&cancel).await,
+                crate::app::worker_pool::Admission::Admitted
+            );
+            regulator.settle(crate::app::worker_pool::SettleOutcome::Charged);
+        }
+    }
+
+    #[tokio::test]
+    async fn primary_rate_regulator_selects_budget_gate_and_conserves() {
+        let budget = Arc::new(crate::github::budget::BudgetGate::new(
+            2,
+            std::time::Duration::from_hours(1),
+        ));
+        let regulator = build_primary_rate_regulator(
+            crate::config::runtime::RateRegulatorKind::BudgetGate,
+            &budget,
+        );
+        let cancel = tokio_util::sync::CancellationToken::new();
+        for _ in 0..2 {
+            assert_eq!(
+                regulator.admit(&cancel).await,
+                crate::app::worker_pool::Admission::Admitted
+            );
+            regulator.settle(crate::app::worker_pool::SettleOutcome::Charged);
+        }
+        assert_eq!(budget.total_calls_made(), 2);
+    }
 
     fn empty_org_summary() -> crate::domain::metrics::OrgAlertSummary {
         crate::domain::metrics::OrgAlertSummary {
