@@ -15,6 +15,13 @@ const DEFAULT_PAGE_UPDATE_CAPACITY: usize = 16;
 /// from the domain projection state into the `HashMap<String, PageEntry>` shape
 /// consumed by `cherry-pit-web`. It is generic over the projection state and
 /// renderer closure, while the wrapped store type is concrete.
+///
+/// This adapter is currently snapshot-only: nothing calls `send` on the
+/// internal broadcast channel, so [`subscribe`](Self::subscribe) hands back a
+/// receiver that never observes a live update. Callers needing current state
+/// must poll [`snapshot`](ProjectionSource::snapshot) /
+/// [`rendered_snapshot`](Self::rendered_snapshot) instead of awaiting the
+/// receiver.
 pub struct InMemoryProjectionSource<P, R>
 where
     P: Projection,
@@ -63,6 +70,13 @@ where
         Some(self.rendered_snapshot())
     }
 
+    /// Returns a receiver on the internal broadcast channel.
+    ///
+    /// No live updates are currently pushed onto this channel; the returned
+    /// receiver will not observe any `PageUpdate` until a producer calls
+    /// `send` on the sender, which nothing in this crate does today. Poll
+    /// [`snapshot`](ProjectionSource::snapshot) for current state instead of
+    /// awaiting this receiver.
     fn subscribe(&self) -> broadcast::Receiver<PageUpdate> {
         self.updates.subscribe()
     }
