@@ -25,11 +25,10 @@
 //!
 //! ```no_run
 //! use std::sync::Arc;
-//! use std::time::Duration;
 //! use cherry_pit_core::CorrelationContext;
 //! use cherry_pit_wq::{
-//!     BudgetGate, JobSource, JobSpec, RateLimitState, WorkQueue,
-//!     WorkerPoolConfig, JobOutcome, run_worker_pool,
+//!     JobOutcome, JobSource, JobSpec, Regulator, SystemClock, TokenBucketRegulator,
+//!     WorkQueue, WorkerPoolConfig, run_worker_pool_regulated,
 //! };
 //! use tokio::sync::mpsc;
 //!
@@ -45,15 +44,14 @@
 //!     CorrelationContext::none(),
 //! ));
 //!
-//! let budget = Arc::new(BudgetGate::new(1000, Duration::from_secs(60)));
-//! let rate_limit = Arc::new(RateLimitState::default());
+//! let token_bucket = Arc::new(TokenBucketRegulator::new(Arc::new(SystemClock), 1000, 100));
+//! let regulators: Arc<[Arc<dyn Regulator>]> = Arc::from([token_bucket as Arc<dyn Regulator>]);
 //! let (tx, _rx) = mpsc::channel::<JobOutcome<String>>(64);
 //!
-//! run_worker_pool(
+//! run_worker_pool_regulated(
 //!     queue,
 //!     executor,
-//!     budget,
-//!     rate_limit,
+//!     regulators,
 //!     WorkerPoolConfig::default(),
 //!     tokio_util::sync::CancellationToken::new(),
 //!     tx,
