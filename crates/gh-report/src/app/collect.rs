@@ -3313,12 +3313,18 @@ mod tests {
         let (budget, rate_limit) = state.github_api_controls();
         let cancel = tokio_util::sync::CancellationToken::new();
 
+        let regulators: Arc<[Arc<dyn crate::app::worker_pool::Regulator>]> = Arc::from(vec![
+            Arc::new(crate::app::worker_pool::BudgetRegulator::new(budget))
+                as Arc<dyn crate::app::worker_pool::Regulator>,
+            Arc::new(crate::app::worker_pool::RateLimitRegulator::new(rate_limit))
+                as Arc<dyn crate::app::worker_pool::Regulator>,
+        ]);
+
         let pool_handle = tokio::spawn(async move {
-            crate::app::worker_pool::run_worker_pool(
+            crate::app::worker_pool::run_worker_pool_regulated(
                 queue,
                 executor,
-                budget,
-                rate_limit,
+                regulators,
                 {
                     let mut cfg = crate::app::worker_pool::WorkerPoolConfig::default();
                     cfg.worker_count = worker_count;

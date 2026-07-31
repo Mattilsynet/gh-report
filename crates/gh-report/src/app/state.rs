@@ -1811,12 +1811,22 @@ impl AppState {
                     delivery_state,
                 ));
 
+                let regulators: std::sync::Arc<
+                    [std::sync::Arc<dyn crate::app::worker_pool::Regulator>],
+                > = std::sync::Arc::from(vec![
+                    std::sync::Arc::new(crate::app::worker_pool::BudgetRegulator::new(budget))
+                        as std::sync::Arc<dyn crate::app::worker_pool::Regulator>,
+                    std::sync::Arc::new(crate::app::worker_pool::RateLimitRegulator::new(
+                        rate_limit,
+                    ))
+                        as std::sync::Arc<dyn crate::app::worker_pool::Regulator>,
+                ]);
+
                 let pool_handle = tokio::spawn(async move {
-                    crate::app::worker_pool::run_worker_pool(
+                    crate::app::worker_pool::run_worker_pool_regulated(
                         queue,
                         evaluator,
-                        budget,
-                        rate_limit,
+                        regulators,
                         crate::app::worker_pool::WorkerPoolConfig::default(),
                         cancel,
                         outcome_tx,
