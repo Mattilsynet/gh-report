@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
 
-use crate::regulator::{Admission, Regulator, SettleOutcome};
+use crate::regulator::{Admission, Regulator};
 
 /// [`Regulator`] that pauses admission until a caller-supplied resume-at
 /// [`Instant`], then admits. `settle` is a no-op — a backoff pause carries
@@ -101,13 +101,12 @@ impl Regulator for BackoffRegulator {
             }
         })
     }
-
-    fn settle(&self, _outcome: SettleOutcome) {}
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::regulator::SettleOutcome;
 
     #[tokio::test]
     async fn admit_grants_immediately_when_unarmed() {
@@ -184,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn settle_is_a_documented_no_op() {
+    fn settle_uses_trait_default_no_op() {
         let regulator = BackoffRegulator::new();
         regulator.settle(SettleOutcome::Charged);
         regulator.settle(SettleOutcome::Free);

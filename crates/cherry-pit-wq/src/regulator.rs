@@ -69,7 +69,12 @@ pub trait Regulator: Send + Sync + 'static {
     ) -> Pin<Box<dyn Future<Output = Admission> + Send + 'a>>;
 
     /// Report the outcome of a job that was admitted by this regulator.
-    fn settle(&self, outcome: SettleOutcome);
+    ///
+    /// Default: no-op. Override only when the regulator carries a charge
+    /// concept (e.g. [`BudgetRegulator`], which releases a permit on
+    /// [`SettleOutcome::Free`]); a regulator with no charge concept (rate
+    /// limiting, backoff) relies on this default.
+    fn settle(&self, _outcome: SettleOutcome) {}
 }
 
 /// [`Regulator`] adapter over [`BudgetGate`].
@@ -145,8 +150,6 @@ impl Regulator for RateLimitRegulator {
             }
         })
     }
-
-    fn settle(&self, _outcome: SettleOutcome) {}
 }
 
 #[cfg(test)]

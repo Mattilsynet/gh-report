@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
 
-use crate::regulator::{Admission, Regulator, SettleOutcome};
+use crate::regulator::{Admission, Regulator};
 
 /// Milli-token fixed-point scale: `consumed_milli` and `capacity_milli`
 /// count thousandths of a token, so refill rates below one token per
@@ -188,15 +188,12 @@ impl Regulator for TokenBucketRegulator {
             }
         })
     }
-
-    /// RATE-only: no charge concept, so settlement is a no-op — matching
-    /// [`RateLimitRegulator`](crate::RateLimitRegulator).
-    fn settle(&self, _outcome: SettleOutcome) {}
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::regulator::SettleOutcome;
 
     /// Deterministic clock for tests: an atomic nanosecond offset from a
     /// fixed base `Instant`, advanced explicitly — no wall-clock sleeps
@@ -360,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn settle_is_a_documented_no_op() {
+    fn settle_uses_trait_default_no_op() {
         let bucket = TokenBucketRegulator::new(Arc::new(SystemClock), 5, 5);
         bucket.settle(SettleOutcome::Charged);
         bucket.settle(SettleOutcome::Free);
