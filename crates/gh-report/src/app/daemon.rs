@@ -1462,6 +1462,7 @@ mod tests {
             force_refresh: false,
             dashboard_config: config::dashboard::DashboardConfig::default(),
             team_roster_read_from_projection: true,
+            rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
         };
         let force_flag = OneShotFlag::new(true);
         let force_refresh_flag = OneShotFlag::new(true);

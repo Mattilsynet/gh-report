@@ -2401,6 +2401,7 @@ mod tests {
             force_refresh: false,
             dashboard_config: DashboardConfig::default(),
             team_roster_read_from_projection: true,
+            rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
         }
     }
 
@@ -2742,6 +2743,7 @@ mod tests {
 
         let config = RuntimeConfig {
             team_roster_read_from_projection: true,
+            rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
             ..sample_config()
         };
         let client = test_github_client();
@@ -2828,6 +2830,7 @@ mod tests {
         let state = AppState::new_with_cache_capacity(10).await;
         let config = RuntimeConfig {
             team_roster_read_from_projection: false,
+            rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
             ..sample_config()
         };
         let client = test_github_client();

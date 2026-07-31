@@ -133,6 +133,22 @@ impl From<PardosaBackendArg> for runtime::PardosaBackend {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+enum RateRegulatorArg {
+    #[default]
+    TokenBucket,
+    BudgetGate,
+}
+
+impl From<RateRegulatorArg> for runtime::RateRegulatorKind {
+    fn from(value: RateRegulatorArg) -> Self {
+        match value {
+            RateRegulatorArg::TokenBucket => Self::TokenBucket,
+            RateRegulatorArg::BudgetGate => Self::BudgetGate,
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "gh-report",
@@ -186,6 +202,12 @@ struct Cli {
     /// Pardosa backend for the event log.
     #[arg(long, default_value = "pgno", env = "GH_REPORT_PARDOSA_BACKEND")]
     pardosa_backend: PardosaBackendArg,
+
+    /// Primary-rate `Regulator` for the worker-pool regulator chain
+    /// (adr-fmt-faspg kill-switch): `token-bucket` (default) or
+    /// `budget-gate` (operational fallback, revert via config alone).
+    #[arg(long, default_value = "token-bucket", env = "GH_REPORT_RATE_REGULATOR")]
+    rate_regulator: RateRegulatorArg,
 
     /// NATS server URL for the pardosa Nats backend.
     #[arg(long, default_value = runtime::DEFAULT_NATS_URL, env = "GH_REPORT_NATS_URL")]
@@ -283,6 +305,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         dashboard_config,
     )?;
     config.pardosa_backend = runtime::PardosaBackend::from(cli.pardosa_backend);
+    config.rate_regulator = runtime::RateRegulatorKind::from(cli.rate_regulator);
     config.nats_url = cli.nats_url;
     config.nats_creds = cli.nats_creds;
     config.force_refresh = cli.force_refresh;
@@ -405,6 +428,37 @@ mod tests {
     fn cli_default_store_dir() {
         let cli = Cli::try_parse_from(["gh-report", "--org", "test-org"]).unwrap();
         assert_eq!(cli.store_dir, std::path::PathBuf::from("store"));
+    }
+
+    #[test]
+    fn cli_default_rate_regulator_is_token_bucket() {
+        let cli = Cli::try_parse_from(["gh-report", "--org", "test-org"]).unwrap();
+        assert!(matches!(cli.rate_regulator, RateRegulatorArg::TokenBucket));
+    }
+
+    #[test]
+    fn cli_parses_rate_regulator_budget_gate() {
+        let cli = Cli::try_parse_from([
+            "gh-report",
+            "--org",
+            "test-org",
+            "--rate-regulator",
+            "budget-gate",
+        ])
+        .unwrap();
+        assert!(matches!(cli.rate_regulator, RateRegulatorArg::BudgetGate));
+    }
+
+    #[test]
+    fn cli_rejects_invalid_rate_regulator() {
+        let result = Cli::try_parse_from([
+            "gh-report",
+            "--org",
+            "test-org",
+            "--rate-regulator",
+            "bogus",
+        ]);
+        assert!(result.is_err());
     }
 
     #[test]

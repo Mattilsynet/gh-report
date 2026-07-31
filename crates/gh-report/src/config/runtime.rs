@@ -46,6 +46,12 @@ pub struct RuntimeConfig {
     /// synchronous `collect_team_rosters` fetch inside the collect cycle
     /// (adr-fmt-47ljf rollback plan).
     pub team_roster_read_from_projection: bool,
+    /// Primary-rate `Regulator` selected for the worker-pool regulator
+    /// chain at `AppState::ensure_worker_pool` startup. `TokenBucket`
+    /// (default): kill-switch/fallback seam for the token-bucket rollout
+    /// (adr-fmt-faspg) — operators revert to `BudgetGate` via config
+    /// alone, no logic redeploy.
+    pub rate_regulator: RateRegulatorKind,
 }
 
 /// Pardosa authoritative backend selected once at startup.
@@ -54,6 +60,21 @@ pub enum PardosaBackend {
     #[default]
     Pgno,
     Nats,
+}
+
+/// Primary-rate `Regulator` implementation selected once at startup
+/// (adr-fmt-faspg). Both variants are already-shipped `cherry-pit-wq`
+/// `Regulator` impls, compiled in unconditionally; this enum only
+/// selects which concrete constructor `AppState::ensure_worker_pool`
+/// calls into the fixed regulator-chain slot.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RateRegulatorKind {
+    /// Clock-driven token bucket (increment B). Kill-switch default.
+    #[default]
+    TokenBucket,
+    /// Epoch-counter budget gate (increment A). Operational fallback.
+    BudgetGate,
 }
 
 /// Derived `JetStream` addressing for one gh-report organization.
@@ -185,6 +206,7 @@ impl RuntimeConfig {
             force_refresh: false,
             dashboard_config: DashboardConfig::default(),
             team_roster_read_from_projection: true,
+            rate_regulator: RateRegulatorKind::default(),
         })
     }
 
@@ -302,6 +324,19 @@ mod tests {
         assert_eq!(cfg.pardosa_backend, PardosaBackend::Pgno);
         assert_eq!(cfg.nats_url, DEFAULT_NATS_URL);
         assert!(cfg.nats_creds.is_none());
+    }
+
+    #[test]
+    fn runtime_config_defaults_to_token_bucket_rate_regulator() {
+        let cfg = RuntimeConfig::new("org", false, 8, PathBuf::from("s")).unwrap();
+        assert_eq!(cfg.rate_regulator, RateRegulatorKind::TokenBucket);
+    }
+
+    #[test]
+    fn runtime_config_selects_budget_gate_rate_regulator() {
+        let mut cfg = RuntimeConfig::new("org", false, 8, PathBuf::from("s")).unwrap();
+        cfg.rate_regulator = RateRegulatorKind::BudgetGate;
+        assert_eq!(cfg.rate_regulator, RateRegulatorKind::BudgetGate);
     }
 
     #[test]
