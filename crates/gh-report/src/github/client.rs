@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use jiff::{SignedDuration, Timestamp};
@@ -36,6 +36,7 @@ use crate::github::auth::{
 use crate::github::budget::BudgetGate;
 use crate::github::pagination;
 use crate::github::rate_limit::RateLimitState;
+use cherry_pit_wq::BackoffRegulator;
 
 /// Maximum length of error response body to include in error messages.
 /// Prevents potential token echoing in logs. Reused by
@@ -153,6 +154,13 @@ pub struct GitHubClient {
     /// Set via `fetch_max` to ensure concurrent halt triggers never regress
     /// the timestamp backward.
     halted_until: AtomicU64,
+    /// Secondary-rate-limit / abuse-detection backoff regulator (adr-fmt-egsrk,
+    /// CHE-0046 inheritance). Armed from a parsed `Retry-After` (429 or
+    /// 403-secondary-limit); shared with the worker pool's regulator chain so
+    /// admission of new jobs pauses until the server-authoritative resume-at
+    /// instant, and consulted by this client's own retry loop to override the
+    /// computed jittered-exponential wait for the same instant.
+    pub backoff: Arc<BackoffRegulator>,
     credential: tokio::sync::Mutex<GitHubCredential>,
     /// Single-flight serializer for credential refresh attempts.
     ///
@@ -350,6 +358,7 @@ impl GitHubClient {
             repo_detail_cache: SccHashMap::new(),
             rate_limit,
             halted_until: AtomicU64::new(0),
+            backoff: Arc::new(BackoffRegulator::new()),
             credential_expires_at: AtomicU64::new(credential.expires_at_unix()),
             credential: tokio::sync::Mutex::new(credential),
             refresh_lock: tokio::sync::Mutex::new(()),
@@ -429,6 +438,34 @@ impl GitHubClient {
             .unwrap_or_default()
             .as_secs();
         now < until
+    }
+
+    /// Detect a secondary-limit / abuse-detection signal (429, or 403 with
+    /// GitHub's secondary-limit body marker) and, if present, arm
+    /// `self.backoff` with the parsed `Retry-After` resume-at instant.
+    ///
+    /// A plain 403 permission-denied response (no marker, no override)
+    /// leaves `self.backoff` untouched — it is a terminal failure, not a
+    /// secondary-limit signal (CHE-0046:R2).
+    fn record_secondary_limit_backoff(&self, status: u16, headers: &http::HeaderMap, body: &str) {
+        if let Some(resume_at) =
+            crate::github::rate_limit::secondary_limit_resume_at(status, headers, body)
+        {
+            self.backoff.set_backoff(resume_at);
+        }
+    }
+
+    /// Build a failure [`ApiOutcome`] for a non-2xx `response`, feeding any
+    /// secondary-limit `Retry-After` signal into `self.backoff` before the
+    /// body is truncated for the error message.
+    async fn failure_outcome(&self, status: u16, response: reqwest::Response) -> ApiOutcome {
+        let retryable = matches!(status, 429 | 500 | 502 | 503 | 504);
+        let response_headers = response.headers().clone();
+        let body = read_body_limited(response, config::MAX_RESPONSE_BODY_BYTES)
+            .await
+            .unwrap_or_default();
+        self.record_secondary_limit_backoff(status, &response_headers, &body);
+        ApiOutcome::failure(Some(status), truncate_error_body(&body), retryable)
     }
 
     /// Clear the rate-limit halt, allowing new requests immediately.
@@ -565,7 +602,11 @@ impl GitHubClient {
 
     /// Make an API request with retry handling.
     ///
-    /// Uses exponential backoff with jitter for retryable failures.
+    /// Uses exponential backoff with jitter for retryable failures. A
+    /// server-specified `Retry-After` (fed into `self.backoff` at the
+    /// 429/403-secondary-limit failure site) overrides the computed
+    /// exponential wait for that one retry, per CHE-0046:R3; absent it,
+    /// the jittered-exponential wait is used.
     /// Automatically refreshes GitHub App tokens before they expire.
     /// Returns an immediate `Failure` if the rate-limit halt flag is set.
     #[instrument(skip_all, fields(path, paginate))]
@@ -638,9 +679,14 @@ impl GitHubClient {
                 if result.status_code() == Some(429) {
                     self.rate_limit_warnings.fetch_add(1, Ordering::Relaxed);
                 }
-                let base_ms = 1000u64 * 2u64.pow(attempt);
-                let jitter_ms = fastrand_jitter(base_ms);
-                let backoff = Duration::from_millis(base_ms + jitter_ms);
+                let backoff = self.backoff.resume_at().map_or_else(
+                    || {
+                        let base_ms = 1000u64 * 2u64.pow(attempt);
+                        let jitter_ms = fastrand_jitter(base_ms);
+                        Duration::from_millis(base_ms + jitter_ms)
+                    },
+                    |resume_at| resume_at.saturating_duration_since(Instant::now()),
+                );
                 debug!(
                     backoff_ms = backoff.as_millis(),
                     attempt,
@@ -726,11 +772,7 @@ impl GitHubClient {
         };
 
         if !response.status().is_success() {
-            let retryable = matches!(status, 429 | 500 | 502 | 503 | 504);
-            let body = read_body_limited(response, config::MAX_RESPONSE_BODY_BYTES)
-                .await
-                .unwrap_or_default();
-            return ApiOutcome::failure(Some(status), truncate_error_body(&body), retryable);
+            return self.failure_outcome(status, response).await;
         }
 
         let body = match read_body_limited(response, config::MAX_RESPONSE_BODY_BYTES).await {
@@ -817,11 +859,7 @@ impl GitHubClient {
             let status = response.status().as_u16();
 
             if !response.status().is_success() {
-                let retryable = matches!(status, 429 | 500 | 502 | 503 | 504);
-                let body = read_body_limited(response, config::MAX_RESPONSE_BODY_BYTES)
-                    .await
-                    .unwrap_or_default();
-                return ApiOutcome::failure(Some(status), truncate_error_body(&body), retryable);
+                return self.failure_outcome(status, response).await;
             }
 
             next_url = trusted_next_url(response.headers(), &self.trusted_origin);
@@ -3167,6 +3205,116 @@ mod tests {
             items.len(),
             config::MAX_PAGINATED_ITEMS,
             "cap must be enforced at accumulation time, never exceeded even transiently"
+        );
+    }
+
+    /// ACCEPTANCE 1 (adr-fmt-egsrk): a 429 with `Retry-After: N` must be
+    /// honored — the client issues no further requests until ~now+N, then
+    /// resumes. `up_to_n_times(1)` on the 429 mock means a premature retry
+    /// (before the wait elapses) would exhaust it and fail against the
+    /// unconditional 200 mock's absence for a third attempt; the assertion
+    /// on elapsed wall time is the direct evidence of the honored pause.
+    #[tokio::test]
+    async fn acceptance_1_retry_after_seconds_honored_before_resuming() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        const RETRY_AFTER_SECS: u64 = 6;
+
+        let server = MockServer::start().await;
+
+        Mock::given(path("/secondary-limit"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .insert_header("retry-after", RETRY_AFTER_SECS.to_string().as_str()),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(path("/secondary-limit"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let start = Instant::now();
+        let outcome = client.request("/secondary-limit", false, 1, 10).await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            outcome.is_ok(),
+            "must succeed after honoring Retry-After: {:?}",
+            outcome.error_message()
+        );
+        assert!(
+            elapsed >= Duration::from_secs(RETRY_AFTER_SECS),
+            "resumption must not happen before now+Retry-After: elapsed={elapsed:?}"
+        );
+    }
+
+    /// ACCEPTANCE 2 (CHE-0046 fallback): a secondary-limit signal WITHOUT a
+    /// `Retry-After` header falls back to jittered-exponential backoff
+    /// bounded by the retry-loop's own attempt cap — not blind, not
+    /// unbounded, and (per this test) not stretched into the multi-second
+    /// range a Retry-After override would produce.
+    #[tokio::test]
+    async fn acceptance_2_secondary_limit_without_retry_after_falls_back_to_exponential() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        Mock::given(path("/no-retry-after"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(path("/no-retry-after"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let start = Instant::now();
+        let outcome = client.request("/no-retry-after", false, 1, 10).await;
+        let elapsed = start.elapsed();
+
+        assert!(outcome.is_ok(), "must succeed after exponential fallback");
+        assert!(
+            elapsed < Duration::from_secs(4),
+            "absent Retry-After, the wait must be the bounded base-attempt exponential \
+             (≈1s + jitter for attempt 0, generously bounded well under a \
+             server-authoritative multi-second pause): elapsed={elapsed:?}"
+        );
+    }
+
+    /// ACCEPTANCE 3 (the escalation-risk guard, adr-fmt-egsrk SAFETY rule):
+    /// `Retry-After: N` must be honored for AT LEAST N — the wait must
+    /// never be shortened below the server's value, even under a second
+    /// concurrent observation. Under-honoring risks escalating GitHub's
+    /// abuse-detection lockout.
+    #[tokio::test]
+    async fn acceptance_3_retry_after_wait_is_never_shortened_below_server_value() {
+        const RETRY_AFTER_SECS: u64 = 2;
+
+        let client = build_test_client("https://api.github.invalid");
+        let now = Instant::now();
+
+        client
+            .backoff
+            .set_backoff(now + Duration::from_secs(RETRY_AFTER_SECS));
+        let shorter_and_later_observation = now + Duration::from_millis(100);
+        client.backoff.set_backoff(shorter_and_later_observation);
+
+        let resume_at = client
+            .backoff
+            .resume_at()
+            .expect("backoff must still be armed");
+        assert!(
+            resume_at >= now + Duration::from_secs(RETRY_AFTER_SECS),
+            "a later, shorter observation must never shorten an already-armed wait"
         );
     }
 }

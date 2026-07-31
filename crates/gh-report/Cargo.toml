@@ -69,6 +69,8 @@ reqwest = { workspace = true }
 # HTTP types (HeaderMap) — used directly by src/github/pagination.rs after
 # the MC-2.3 relocation from cherry-pit-wq (CHE-0055 §G6).
 http = { workspace = true }
+# Retry-After HTTP-date parsing (secondary-limit backoff, adr-fmt-egsrk).
+httpdate = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
