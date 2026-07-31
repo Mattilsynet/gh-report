@@ -54,6 +54,10 @@ R16 [4]: the public surface is additive-only across SemVer-minor bumps per CHE-0
 
 R16 addendum [4] (CHE-0101): the `Regulator` additions are additive-only (CHE-0022:R1) — no existing signature changes; `run_worker_pool` runs alongside `run_worker_pool_regulated` unchanged. Every new struct or enum carrying data that may grow (`Admission`, `SettleOutcome`) carries `#[non_exhaustive]` so variant growth stays minor (CHE-0021 / CHE-0094:R9). The `Regulator` trait itself is not `#[non_exhaustive]` (traits use sealing, not the attribute); it is not sealed in this increment because both in-tree adapters (`BudgetRegulator`, `RateLimitRegulator`) and future consumer-supplied regulators are intended implementors.
 
+R17 (additive MINOR; free/charged settle signal; oracle ruling adr-fmt-wwtuo, adr-fmt-4cnvg): `JobExecutor` gains one defaulted trait method `fn charge_of(&self, domain_key: &DomainKey, result: &Self::Result) -> SettleOutcome { SettleOutcome::Charged }`, letting an executor report that a completed job did not consume the guarded resource (e.g. a conditional revalidation) so `worker_loop_regulated` calls `regulator.settle(charge)` instead of the hardcoded `SettleOutcome::Charged`. The default preserves existing executor behaviour verbatim, so the addition is SemVer-MINOR under R16 / CHE-0022:R1 (additive-only-minor). No new public type is introduced: the existing domain-neutral `SettleOutcome{Free,Charged}` (R10, already `#[non_exhaustive]` per CHE-0021) is reused as the return vocabulary — the GitHub 304 not-modified → `Free` mapping lives in gh-report's executor per CHE-0084 / R7 / R9, not in wq. The method is SYNC (no async, no `#[async_trait]`; if ever async, RPITIT per CHE-0025:R1). The change is confined to the `run_worker_pool_regulated` path; the frozen `run_worker_pool` / `worker_loop` surface (CHE-0101:R2) is byte-unchanged.
+
+R10 enumeration amendment: append to the wq re-export list — `JobExecutor` (now with defaulted `charge_of` method per R17). No new item in the flat re-export set — `SettleOutcome` is already listed via R9/regulator re-exports.
+
 
 ## Consequences
 

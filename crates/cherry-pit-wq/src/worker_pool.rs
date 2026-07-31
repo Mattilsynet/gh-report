@@ -57,6 +57,19 @@ pub trait JobExecutor: Send + Sync + 'static {
         domain_key: &'a DomainKey,
         context: &'a Self::Context,
     ) -> impl Future<Output = Result<Self::Result, String>> + Send + 'a;
+
+    /// Classify a successful result as [`SettleOutcome::Charged`] or
+    /// [`SettleOutcome::Free`] for the regulator chain (CHE-0055:R17).
+    ///
+    /// Defaults to [`SettleOutcome::Charged`] — existing executors keep
+    /// today's behaviour unchanged. Override to report that a result
+    /// (e.g. a conditional revalidation) did not consume the guarded
+    /// resource, so [`run_worker_pool_regulated`] settles the admitting
+    /// regulators as [`SettleOutcome::Free`] instead.
+    fn charge_of(&self, domain_key: &DomainKey, result: &Self::Result) -> SettleOutcome {
+        let _ = (domain_key, result);
+        SettleOutcome::Charged
+    }
 }
 
 /// Configuration for the worker pool.
@@ -333,8 +346,15 @@ async fn worker_loop_regulated<C, R, E>(
             },
         };
 
+        let settle_outcome = match &outcome {
+            JobOutcome::Success {
+                domain_key, result, ..
+            } => executor.charge_of(domain_key, result),
+            _ => SettleOutcome::Charged,
+        };
+
         for regulator in &admitted_by {
-            regulator.settle(SettleOutcome::Charged);
+            regulator.settle(settle_outcome);
         }
 
         if outcome_tx.send(outcome).await.is_err() {
