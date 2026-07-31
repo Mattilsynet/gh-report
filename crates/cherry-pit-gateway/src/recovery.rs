@@ -22,15 +22,40 @@ use std::time::SystemTime;
 ///
 /// Cited from CHE-0043:R1 (lock-acquisition mechanism producing this
 /// artefact) and CHE-0047:R5 (the runbook this helper supports).
+///
+/// Fields are private; construction is via [`stale_lock_evidence`] only.
+/// Metadata is fixed at the moment the `StoreLocked` error was observed
+/// and cannot be mutated or fabricated after the fact (SEC-0002:R2).
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "lock_* prefix matches the accessor names (lock_path/lock_mtime/lock_size); renaming would desync struct field names from their public accessor methods"
+)]
 pub struct StaleLockEvidence {
+    lock_path: PathBuf,
+    lock_mtime: SystemTime,
+    lock_size: u64,
+}
+
+impl StaleLockEvidence {
     /// Absolute or relative path to the `.lock` sentinel file, as
     /// computed from the `store_dir` argument.
-    pub lock_path: PathBuf,
+    #[must_use]
+    pub fn lock_path(&self) -> &Path {
+        &self.lock_path
+    }
+
     /// Last-modified time reported by the filesystem.
-    pub lock_mtime: SystemTime,
+    #[must_use]
+    pub fn lock_mtime(&self) -> SystemTime {
+        self.lock_mtime
+    }
+
     /// Size in bytes (typically zero — the sentinel is content-free).
-    pub lock_size: u64,
+    #[must_use]
+    pub fn lock_size(&self) -> u64 {
+        self.lock_size
+    }
 }
 
 /// Read filesystem metadata for `{store_dir}/.lock`.
@@ -64,5 +89,29 @@ pub fn stale_lock_evidence(store_dir: &Path) -> std::io::Result<Option<StaleLock
         })),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accessors_round_trip_lock_metadata() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let lock_path = dir.path().join(".lock");
+        std::fs::write(&lock_path, b"held").expect("write lock file");
+        let expected_metadata = std::fs::metadata(&lock_path).expect("stat lock file");
+
+        let evidence = stale_lock_evidence(dir.path())
+            .expect("stat store_dir")
+            .expect("lock file present");
+
+        assert_eq!(evidence.lock_path(), lock_path);
+        assert_eq!(
+            evidence.lock_mtime(),
+            expected_metadata.modified().expect("modified time")
+        );
+        assert_eq!(evidence.lock_size(), expected_metadata.len());
     }
 }
