@@ -64,6 +64,7 @@ pub fn make_repository_evidence(
         repository: make_repository(name, archived, visibility),
         checks,
         last_commit: None,
+        repo_details_not_modified: false,
     }
 }
 
@@ -134,6 +135,7 @@ pub fn evidence_from_repository(repo: &Repository, timestamp: &str) -> Repositor
             },
         },
         last_commit: None,
+        repo_details_not_modified: false,
     }
 }
 

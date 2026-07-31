@@ -126,6 +126,7 @@ fn repository_evidence(name: &str) -> RepositoryEvidence {
             },
         },
         last_commit: None,
+        repo_details_not_modified: false,
     }
 }
 

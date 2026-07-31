@@ -139,6 +139,7 @@ impl RepoEvaluator for LiveEvaluator {
         let org_ref = (*org_guard).as_ref().map(AsRef::as_ref);
 
         let _ = self.client.repo_details(&repo.name).await;
+        let repo_details_not_modified = self.client.take_not_modified(&repo.name);
 
         let (sp, ss, dep, bp, co, last_commit) = tokio::join!(
             security_policy::evaluate(&self.client, &repo, ts),
@@ -176,6 +177,7 @@ impl RepoEvaluator for LiveEvaluator {
                 codeowners: co,
             },
             last_commit,
+            repo_details_not_modified,
         })
     }
 }
@@ -190,6 +192,23 @@ impl crate::app::worker_pool::JobExecutor for LiveEvaluator {
         context: &'a Self::Context,
     ) -> impl Future<Output = Result<Self::Result, String>> + Send + 'a {
         self.evaluate(Arc::clone(&context.repo), &context.run_timestamp)
+    }
+
+    /// A 304 not-modified `ETag` revalidation on `repo_details` is the
+    /// only currently-tracked conditional-request signal in the
+    /// evaluate pipeline (adr-fmt-4cnvg / CHE-0055:R17); the other four
+    /// check calls are not conditional-request-aware, so any result is
+    /// `Charged` unless `repo_details` itself resolved for free.
+    fn charge_of(
+        &self,
+        _domain_key: &crate::app::work_queue::DomainKey,
+        result: &Self::Result,
+    ) -> crate::app::worker_pool::SettleOutcome {
+        if result.repo_details_not_modified {
+            crate::app::worker_pool::SettleOutcome::Free
+        } else {
+            crate::app::worker_pool::SettleOutcome::Charged
+        }
     }
 }
 
@@ -1936,6 +1955,7 @@ fn failure_evidence_with_reason(
             },
         },
         last_commit: None,
+        repo_details_not_modified: false,
     }
 }
 
@@ -2195,6 +2215,37 @@ mod tests {
         fn assert_job_executor<T: JobExecutor>() {}
         let _ = assert_job_executor::<LiveEvaluator>;
     };
+
+    /// adr-fmt-4cnvg / CHE-0055:R17 acceptance: `LiveEvaluator::charge_of`
+    /// maps the `repo_details_not_modified` marker (set from a wiremock
+    /// 304 in `github::client` tests) to the domain-neutral
+    /// `SettleOutcome` the regulated worker pool consumes.
+    #[test]
+    fn charge_of_maps_not_modified_marker_to_settle_outcome() {
+        use crate::app::worker_pool::SettleOutcome;
+
+        let evaluator = LiveEvaluator::with_shared_org_summary(
+            test_github_client(),
+            Arc::new(ArcSwap::from_pointee(None)),
+        );
+        let domain_key = "owner/repo".to_string();
+
+        let mut free_result = sample_repo("free-repo");
+        free_result.repo_details_not_modified = true;
+        assert_eq!(
+            evaluator.charge_of(&domain_key, &free_result),
+            SettleOutcome::Free,
+            "a 304 not-modified result must settle Free"
+        );
+
+        let mut charged_result = sample_repo("charged-repo");
+        charged_result.repo_details_not_modified = false;
+        assert_eq!(
+            evaluator.charge_of(&domain_key, &charged_result),
+            SettleOutcome::Charged,
+            "a fresh 200-with-decrement result must settle Charged"
+        );
+    }
 
     fn sample_repo(name: &str) -> RepositoryEvidence {
         test_fixtures::all_passing_evidence(name)

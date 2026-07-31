@@ -125,6 +125,7 @@ async fn boot_all_three_stores_through_verifying_stage(
                 },
                 checks: minimal_checks(),
                 last_commit: None,
+                repo_details_not_modified: false,
             },
             "p4-repo",
             "2026-07-21T00:00:01Z",

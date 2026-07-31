@@ -269,6 +269,7 @@ fn private_404_absence_fixture() -> Vec<RepositoryEvidence> {
                 },
             },
             last_commit: None,
+            repo_details_not_modified: false,
         },
     )
     .collect()
@@ -397,5 +398,6 @@ fn evidence_for(
             },
         },
         last_commit: None,
+        repo_details_not_modified: false,
     }
 }

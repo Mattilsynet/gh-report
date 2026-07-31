@@ -39,6 +39,12 @@ pub struct RepositoryEvidence {
     /// Information about the most recent commit on the default branch.
     /// `None` when the data could not be collected (API error, empty repo, etc.).
     pub last_commit: Option<LastCommitInfo>,
+    /// Whether this evidence's `repo_details` call resolved via a 304
+    /// not-modified `ETag` revalidation rather than a fresh, quota-consuming
+    /// fetch (adr-fmt-4cnvg / CHE-0055:R17). `#[serde(default)]` keeps
+    /// deserialization of pre-existing persisted evidence additive-safe.
+    #[serde(default)]
+    pub repo_details_not_modified: bool,
 }
 
 impl RepositoryEvidence {

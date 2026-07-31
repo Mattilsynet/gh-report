@@ -482,6 +482,7 @@ conversion_pair!(se::RepositoryEvidence => RepositoryEvidence {
         repository: v.repository.into(),
         checks: v.checks.into(),
         last_commit: v.last_commit.map(Into::into),
+        repo_details_not_modified: false,
     }
 });
 

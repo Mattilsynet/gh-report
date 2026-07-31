@@ -175,6 +175,11 @@ pub struct GitHubClient {
     /// Side-channel for `ETag` extraction: maps API path → last-seen `ETag`.
     /// Populated by `request_single_inner`, read by `repo_details`.
     last_response_etags: SccHashMap<String, String>,
+    /// Side-channel recording which `repo_details` calls resolved via a
+    /// 304 not-modified `ETag` revalidation (adr-fmt-4cnvg / CHE-0055:R17).
+    /// Populated by `try_etag_revalidation`, consumed once by
+    /// [`Self::take_not_modified`].
+    not_modified_repos: SccHashMap<String, ()>,
     /// Process-lifetime record of CODEOWNERS team slugs observed 404
     /// (deleted) via [`Self::record_deleted_team`]. Deliberately NOT
     /// cleared by [`Self::clear_run_cache`]: a dead team reference costs
@@ -353,6 +358,7 @@ impl GitHubClient {
             budget,
             budget_cancel: tokio_util::sync::CancellationToken::new(),
             last_response_etags: SccHashMap::new(),
+            not_modified_repos: SccHashMap::new(),
             deleted_team_slugs: SccHashMap::new(),
         })
     }
@@ -1027,6 +1033,17 @@ impl GitHubClient {
         result
     }
 
+    /// Consume and return whether the most recent [`Self::repo_details`]
+    /// call for `repo_name` resolved via a 304 not-modified `ETag`
+    /// revalidation (adr-fmt-4cnvg / CHE-0055:R17).
+    ///
+    /// One-shot: the marker is removed on read, so a stale value cannot
+    /// leak into a later, unrelated call for the same `repo_name`.
+    #[must_use]
+    pub fn take_not_modified(&self, repo_name: &str) -> bool {
+        self.not_modified_repos.remove_sync(repo_name).is_some()
+    }
+
     /// Attempt to revalidate a stale cache entry using an `ETag` conditional request.
     ///
     /// Returns `Some(outcome)` if revalidation succeeded (304 or fresh 200).
@@ -1083,6 +1100,8 @@ impl GitHubClient {
 
         if status == 304 {
             self.budget.refund();
+            self.not_modified_repos
+                .upsert_sync(repo_name.to_string(), ());
             debug!(repo = %repo_name, "ETag revalidation: 304 Not Modified");
             self.repo_detail_cache.upsert_sync(
                 repo_name.to_string(),
@@ -2466,6 +2485,84 @@ mod tests {
             budget.total_calls_made(),
             3,
             "total_calls_made is the lifetime audit trail and stays at 3 acquisitions"
+        );
+    }
+
+    /// adr-fmt-4cnvg / CHE-0055:R17 acceptance: `take_not_modified` reports
+    /// the 304-vs-fresh classification the wq `JobExecutor::charge_of`
+    /// hook needs, one-shot per `repo_details` call.
+    #[tokio::test]
+    async fn take_not_modified_reflects_304_then_clears_on_fresh_200() {
+        use wiremock::matchers::{header, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        Mock::given(path("/repos/test-org/charge-of-repo"))
+            .and(header("If-None-Match", "\"etag-v1\""))
+            .respond_with(ResponseTemplate::new(304))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (budget, rate_limit) = test_budget_and_rate_limit();
+        let client = build_test_client_with_budget(&server.uri(), &budget, &rate_limit);
+
+        let cached_data = serde_json::json!({"default_branch": "main"});
+        client.repo_detail_cache.upsert_sync(
+            "charge-of-repo".to_string(),
+            CachedResult {
+                status_code: 200,
+                data: Some(cached_data),
+                etag: Some("\"etag-v1\"".to_string()),
+                stale: true,
+            },
+        );
+
+        let result = client.repo_details("charge-of-repo").await;
+        assert!(result.is_ok());
+        assert!(
+            client.take_not_modified("charge-of-repo"),
+            "a 304 revalidation must set the not-modified marker (-> SettleOutcome::Free)"
+        );
+        assert!(
+            !client.take_not_modified("charge-of-repo"),
+            "the marker is one-shot: a second read without a new call must be false"
+        );
+    }
+
+    /// Contrast case: a fresh (non-cached, non-conditional) 200 leaves
+    /// `take_not_modified` false — the executor must classify this as
+    /// `SettleOutcome::Charged`.
+    #[tokio::test]
+    async fn take_not_modified_is_false_for_a_fresh_200_with_quota_decrement() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        Mock::given(path("/repos/test-org/fresh-repo"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"default_branch": "main"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (budget, rate_limit) = test_budget_and_rate_limit();
+        let client = build_test_client_with_budget(&server.uri(), &budget, &rate_limit);
+
+        let result = client.repo_details("fresh-repo").await;
+        assert!(result.is_ok());
+        assert_eq!(
+            budget.calls_made(),
+            1,
+            "a fresh 200 must consume one budget permit (quota decrement)"
+        );
+        assert!(
+            !client.take_not_modified("fresh-repo"),
+            "a fresh 200 is not a 304 revalidation -> SettleOutcome::Charged"
         );
     }
 

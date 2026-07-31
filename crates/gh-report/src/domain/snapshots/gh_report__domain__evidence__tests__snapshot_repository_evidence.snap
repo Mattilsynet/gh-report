@@ -65,5 +65,6 @@ expression: evidence
       "truncation": null
     }
   },
-  "last_commit": null
+  "last_commit": null,
+  "repo_details_not_modified": false
 }

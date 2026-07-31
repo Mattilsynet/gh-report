@@ -103,6 +103,7 @@ fn ev(inventory_key: &str, id: &str, name: &str) -> RepositoryEvidence {
             },
         },
         last_commit: None,
+        repo_details_not_modified: false,
     }
 }
 
