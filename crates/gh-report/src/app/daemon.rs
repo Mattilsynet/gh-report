@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::app::collect;
-use crate::app::state::{AppState, log_error_chain, read_rss_kb};
+use crate::app::state::{AppState, log_error_chain, read_cpu_jiffies, read_io_bytes, read_rss_kb};
 use crate::app::work_queue::JobSource;
 use crate::app::worker_pool::JobOutcome;
 use crate::app::write_policy::{WriteFailure, source_chain, write_with_policy_sync};
@@ -58,6 +58,25 @@ const MESSAGE_STOPPED: &str = "daemon stopped";
 
 fn duration_millis(duration: Duration) -> u128 {
     duration.as_millis()
+}
+
+/// Emit the resource-gauge log line for a completed scheduled
+/// collection tick: RSS, CPU jiffies, IO bytes, and projection size
+/// (log-based per PGN-0015; no high-cardinality labels per
+/// COM-0019:R6).
+fn log_scheduled_collection_complete(state: &AppState) {
+    let cpu_jiffies = read_cpu_jiffies();
+    let io_bytes = read_io_bytes();
+    info!(
+        rss_kb = ?read_rss_kb(),
+        cpu_utime_jiffies = ?cpu_jiffies.map(|(utime, _)| utime),
+        cpu_stime_jiffies = ?cpu_jiffies.map(|(_, stime)| stime),
+        io_read_bytes = ?io_bytes.map(|(read, _)| read),
+        io_write_bytes = ?io_bytes.map(|(_, write)| write),
+        projection_repo_count = state.projection_len(),
+        projection_bytes_deep = ?state.projection_bytes_deep(),
+        "scheduled collection complete"
+    );
 }
 
 /// Outcome of waiting for the next scheduled collection tick.
@@ -694,12 +713,7 @@ fn spawn_collection_loop(
             let cfg = scheduled_run_config(&config, &force_flag, &force_refresh_flag);
             match collect::run_with_outcome(cfg, Arc::clone(&state)).await {
                 Ok(collect::CollectionOutcome::Completed) => {
-                    info!(
-                        rss_kb = ?read_rss_kb(),
-                        projection_repo_count = state.projection_len(),
-                        projection_bytes_deep = ?state.projection_bytes_deep(),
-                        "scheduled collection complete"
-                    );
+                    log_scheduled_collection_complete(&state);
                 }
                 Ok(collect::CollectionOutcome::Cancelled) => {
                     info!("scheduled collection aborted on shutdown — no report published");

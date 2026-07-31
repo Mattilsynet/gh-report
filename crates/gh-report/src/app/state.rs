@@ -1944,12 +1944,84 @@ pub(crate) fn read_rss_kb() -> Option<u64> {
     None
 }
 
+/// Parse cumulative user+system CPU jiffies from `/proc/self/stat`
+/// content, returning `(utime, stime)`.
+///
+/// Field layout per `proc(5)`: `pid (comm) state ...` — `comm` is
+/// parenthesised and may itself contain whitespace, so parsing
+/// resumes after the last `)` rather than splitting on whitespace
+/// from the start. `utime` is field 14 and `stime` is field 15
+/// (1-indexed); relative to the fields following `state` (field 3,
+/// index 0 after the `)`), that is index 11 and 12.
+#[cfg(any(target_os = "linux", test))]
+fn parse_cpu_jiffies(stat: &str) -> Option<(u64, u64)> {
+    let close_paren = stat.rfind(')')?;
+    let rest = stat.get(close_paren + 1..)?;
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    let utime = fields.get(11)?.parse::<u64>().ok()?;
+    let stime = fields.get(12)?.parse::<u64>().ok()?;
+    Some((utime, stime))
+}
+
+/// Read cumulative user+system CPU jiffies from `/proc/self/stat`.
+///
+/// Linux-only self-read; `std::fs` only, no unsafe. Returns `None` on
+/// other platforms so callers can treat the value as a uniformly
+/// optional gauge, mirroring [`read_rss_kb`].
+#[cfg(target_os = "linux")]
+pub(crate) fn read_cpu_jiffies() -> Option<(u64, u64)> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    parse_cpu_jiffies(&stat)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn read_cpu_jiffies() -> Option<(u64, u64)> {
+    None
+}
+
+/// Parse cumulative `read_bytes`/`write_bytes` from `/proc/self/io`
+/// content, returning `(read_bytes, write_bytes)`.
+///
+/// Both fields must be present and parse as `u64`; any malformed or
+/// missing field yields `None` rather than a partial result.
+#[cfg(any(target_os = "linux", test))]
+fn parse_io_bytes(io: &str) -> Option<(u64, u64)> {
+    let mut read_bytes = None;
+    let mut write_bytes = None;
+    for line in io.lines() {
+        if let Some(value) = line.strip_prefix("read_bytes:") {
+            read_bytes = value.trim().parse::<u64>().ok();
+        } else if let Some(value) = line.strip_prefix("write_bytes:") {
+            write_bytes = value.trim().parse::<u64>().ok();
+        }
+    }
+    Some((read_bytes?, write_bytes?))
+}
+
+/// Read cumulative `read_bytes`/`write_bytes` from `/proc/self/io`.
+///
+/// Linux-only self-read; `std::fs` only, no unsafe. Returns `None` on
+/// other platforms so callers can treat the value as a uniformly
+/// optional gauge, mirroring [`read_rss_kb`].
+#[cfg(target_os = "linux")]
+pub(crate) fn read_io_bytes() -> Option<(u64, u64)> {
+    let io = std::fs::read_to_string("/proc/self/io").ok()?;
+    parse_io_bytes(&io)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn read_io_bytes() -> Option<(u64, u64)> {
+    None
+}
+
 impl AppState {
     /// Build the JSON payload for the `/api/v1/status` endpoint.
     ///
     /// Returns current and last completed run metadata, uptime, and
-    /// memory gauges (`rss_kb`, `projection_repo_count`,
-    /// `projection_bytes_est`). `projection_bytes_est` is a shallow
+    /// resource gauges (`rss_kb`, `cpu_utime_jiffies`,
+    /// `cpu_stime_jiffies`, `io_read_bytes`, `io_write_bytes`,
+    /// `projection_repo_count`, `projection_bytes_est`).
+    /// `projection_bytes_est` is a shallow
     /// struct-size floor (`size_of::<RepositoryEvidence>() * count`)
     /// excluding heap-owned `String`/`Vec` data — not measured RSS.
     /// The heap-inclusive sample ([`Self::projection_bytes_deep`]) is
@@ -1967,12 +2039,18 @@ impl AppState {
         let projection_repo_count = self.projection_len();
         let projection_bytes_est = projection_repo_count
             * std::mem::size_of::<crate::domain::evidence::RepositoryEvidence>();
+        let cpu_jiffies = read_cpu_jiffies();
+        let io_bytes = read_io_bytes();
         serde_json::json!({
             "current_run": current.as_ref(),
             "last_completed_run": last.as_ref(),
             "last_recovery": last_recovery.as_ref(),
             "uptime_secs": uptime,
             "rss_kb": read_rss_kb(),
+            "cpu_utime_jiffies": cpu_jiffies.map(|(utime, _)| utime),
+            "cpu_stime_jiffies": cpu_jiffies.map(|(_, stime)| stime),
+            "io_read_bytes": io_bytes.map(|(read, _)| read),
+            "io_write_bytes": io_bytes.map(|(_, write)| write),
             "projection_repo_count": projection_repo_count,
             "projection_bytes_est": projection_bytes_est,
         })
@@ -2284,6 +2362,67 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn read_rss_kb_is_some_positive_on_linux() {
         assert!(read_rss_kb().is_some_and(|kb| kb > 0));
+    }
+
+    #[test]
+    fn parse_cpu_jiffies_extracts_utime_and_stime() {
+        let synthetic = "1234 (gh-report) S 1 1234 1234 0 -1 4194304 100 0 0 0 55 12 0 0 20 0 4 0 999 0 0 18446744073709551615 4194304 4196452 140723350667408 0 0 0 0 0 0 0 0 0 17 3 0 0 0 0 0";
+        assert_eq!(parse_cpu_jiffies(synthetic), Some((55, 12)));
+    }
+
+    #[test]
+    fn parse_cpu_jiffies_handles_parenthesised_comm_with_spaces() {
+        let synthetic = "1234 (my weird proc) S 1 1234 1234 0 -1 4194304 100 0 0 0 42 7 0 0 20 0 4 0 999 0 0 18446744073709551615 4194304 4196452 140723350667408 0 0 0 0 0 0 0 0 0 17 3 0 0 0 0 0";
+        assert_eq!(parse_cpu_jiffies(synthetic), Some((42, 7)));
+    }
+
+    #[test]
+    fn parse_cpu_jiffies_none_on_malformed_input() {
+        assert_eq!(parse_cpu_jiffies("not a stat line"), None);
+        assert_eq!(parse_cpu_jiffies(""), None);
+        assert_eq!(parse_cpu_jiffies("1234 (gh-report) S 1"), None);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn read_cpu_jiffies_is_none_off_linux() {
+        assert_eq!(read_cpu_jiffies(), None);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn read_cpu_jiffies_is_some_on_linux() {
+        assert!(read_cpu_jiffies().is_some());
+    }
+
+    #[test]
+    fn parse_io_bytes_extracts_read_and_write() {
+        let synthetic = "rchar: 1000\nwchar: 2000\nsyscr: 3\nsyscw: 4\nread_bytes: 4096\nwrite_bytes: 8192\ncancelled_write_bytes: 0\n";
+        assert_eq!(parse_io_bytes(synthetic), Some((4096, 8192)));
+    }
+
+    #[test]
+    fn parse_io_bytes_none_on_missing_fields() {
+        assert_eq!(parse_io_bytes("rchar: 1000\nwchar: 2000\n"), None);
+        assert_eq!(parse_io_bytes(""), None);
+    }
+
+    #[test]
+    fn parse_io_bytes_none_on_malformed_values() {
+        let synthetic = "read_bytes: not-a-number\nwrite_bytes: 8192\n";
+        assert_eq!(parse_io_bytes(synthetic), None);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn read_io_bytes_is_none_off_linux() {
+        assert_eq!(read_io_bytes(), None);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn read_io_bytes_is_some_on_linux() {
+        assert!(read_io_bytes().is_some());
     }
 
     #[tokio::test(flavor = "multi_thread")]
