@@ -3390,6 +3390,8 @@ mod tests {
                 as Arc<dyn crate::app::worker_pool::Regulator>,
             Arc::new(crate::app::worker_pool::RateLimitRegulator::new(rate_limit))
                 as Arc<dyn crate::app::worker_pool::Regulator>,
+            Arc::new(crate::app::worker_pool::BackoffRegulator::new())
+                as Arc<dyn crate::app::worker_pool::Regulator>,
         ]);
 
         let pool_handle = tokio::spawn(async move {

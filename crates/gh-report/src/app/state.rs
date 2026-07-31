@@ -1788,6 +1788,7 @@ impl AppState {
                     .github_client()
                     .expect("ensure_worker_pool called before github_client initialized")
                     .clone();
+                let backoff = Arc::clone(&client.backoff);
 
                 let evaluator =
                     Arc::new(crate::app::collect::LiveEvaluator::with_shared_org_summary(
@@ -1820,6 +1821,7 @@ impl AppState {
                         rate_limit,
                     ))
                         as std::sync::Arc<dyn crate::app::worker_pool::Regulator>,
+                    Arc::clone(&backoff) as std::sync::Arc<dyn crate::app::worker_pool::Regulator>,
                 ]);
 
                 let pool_handle = tokio::spawn(async move {

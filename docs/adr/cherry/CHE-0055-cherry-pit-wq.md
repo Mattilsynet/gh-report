@@ -58,6 +58,12 @@ R17 (additive MINOR; free/charged settle signal; oracle ruling adr-fmt-wwtuo, ad
 
 R10 enumeration amendment: append to the wq re-export list — `JobExecutor` (now with defaulted `charge_of` method per R17). No new item in the flat re-export set — `SettleOutcome` is already listed via R9/regulator re-exports.
 
+R10 addendum (backoff) [5] (minor, additive per CHE-0022:R1 / R8 bracketing-minor; CHE-0102): the v0.1 flat public surface additionally re-exports from wq: `BackoffRegulator` (a `Regulator`-implementing adapter that pauses worker admission until a caller-supplied resume-at `Instant`). It composes with the existing `Regulator` seam (R10 addendum / CHE-0101) — a pool MAY be wired with `BackoffRegulator` alongside `BudgetRegulator` / `RateLimitRegulator`. The regulator is DOMAIN-AGNOSTIC per CHE-0084:R1/R7/R9: its admission-pause input is an opaque wall-future `Instant`, carrying no GitHub / HTTP / Retry-After / 429 / secondary-limit vocabulary — the upstream signal→instant mapping lives in the consumer (gh-report) per R7/R9. Pre-existing items remain listed and frozen; no SemVer-major is triggered — bracketing minor per R8. New internal module `backoff` is implementation detail per CHE-0030:R2.
+
+R16 addendum (backoff) [4]: the `BackoffRegulator` addition is additive-only (CHE-0022:R1) — no existing signature changes; `run_worker_pool` runs alongside `run_worker_pool_regulated` unchanged. `BackoffRegulator` implements the existing `Regulator` trait (not itself `#[non_exhaustive]`; traits use sealing, and the trait is intentionally unsealed for consumer regulators per the R16 addendum above).
+
+R17-style note (backoff): `BackoffRegulator::set_backoff(&self, resume_at: Instant)` is SYNC (no async, no `#[async_trait]`; if ever async, RPITIT per CHE-0025:R1) and takes an already-resolved `Instant` — never a header string or HTTP status. It uses `fetch_max` on an internal atomic offset, mirroring gh-report's `halted_until: AtomicU64` fast-pre-check pattern: a `set_backoff` call with an earlier `resume_at` than the currently-armed value is a no-op, so the armed instant never regresses (see CHE-0102:R3, the never-shorten safety rule).
+
 
 ## Consequences
 
