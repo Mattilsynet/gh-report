@@ -40,8 +40,10 @@ use cherry_pit_projection::ProjectionDriverTuple;
 type EventOf<G> = <<G as CommandGateway>::Aggregate as Aggregate>::Event;
 
 /// Heterogeneous policy registry shape per CHE-0051:R4. See `dispatch.rs`
-/// C1 boundary note for why the erasure is sound.
-type PolicyRegistry<G> = Arc<Vec<Box<dyn ErasedPolicyDispatcher<EventOf<G>, G>>>>;
+/// C1 boundary note for why the erasure is sound. Plain `Vec` — registration
+/// only happens before [`App::run`] consumes `self` and seals the registry
+/// into an `Arc` for the publish loop.
+type PolicyRegistry<G> = Vec<Box<dyn ErasedPolicyDispatcher<EventOf<G>, G>>>;
 
 /// Default capacity for the bounded dispatch channel between the bus
 /// callback and the single sequential consumer task (F2 / mission
@@ -126,9 +128,10 @@ where
     /// iterate without macro arity expansion. See module-level C1
     /// boundary note.
     ///
-    /// `Arc` keeps the registry shareable for the future `App::run`
-    /// publish loop (which will hand a clone to the bus subscription
-    /// task) without forcing the registry through `&'static`.
+    /// Plain `Vec`: registration after [`Self::run`] consumes `self`
+    /// is unrepresentable — there is no `self` left to register
+    /// against. [`Self::run`] seals this `Vec` into an `Arc` at the
+    /// point it hands a clone to the consumer task.
     policies: PolicyRegistry<G>,
 
     /// Capacity of the bounded dispatch channel between the bus
@@ -163,7 +166,7 @@ where
             bus,
             projections,
             dead_letter,
-            policies: Arc::new(Vec::new()),
+            policies: Vec::new(),
             dispatch_buffer_capacity: DEFAULT_DISPATCH_BUFFER_CAPACITY,
         }
     }
@@ -230,14 +233,6 @@ where
     /// );
     /// # }
     /// ```
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal `Arc<Vec<…>>` registry has outstanding
-    /// clones. Currently **unreachable**: [`Self::run`] consumes
-    /// `self`, so no path clones the registry before `run`. The guard
-    /// becomes load-bearing once a future registry clone is handed to
-    /// the publish loop.
     pub fn register_policy<Pol, F, Fut>(
         &mut self,
         policy: Pol,
@@ -251,11 +246,7 @@ where
     {
         let adapter =
             make_adapter::<Pol, F, Fut, G>(policy, dispatch, policy_identity, output_type);
-        let registry = Arc::get_mut(&mut self.policies).expect(
-            "App::register_policy called after App::run handed the registry to the \
-             publish loop; register all policies before calling run",
-        );
-        registry.push(adapter);
+        self.policies.push(adapter);
     }
 
     /// Number of registered policies. Primarily for testing /
@@ -402,7 +393,7 @@ where
     where
         Sd: Future<Output = ()> + Send,
     {
-        let policies = Arc::clone(&self.policies);
+        let policies = Arc::new(self.policies);
         let gateway = Arc::new(self.gateway);
         let dead_letter = Arc::new(self.dead_letter);
 
