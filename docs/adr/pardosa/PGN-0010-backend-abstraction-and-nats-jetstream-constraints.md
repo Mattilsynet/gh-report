@@ -113,3 +113,15 @@ Part A); unset, empty, `observe`, or any unrecognised value still resolves
 to `ObserveOnly`. This refines the P2b selector's mechanism (compile-time
 constant → runtime env read), not the default: the shipped default remains
 `ObserveOnly`, unchanged from this amendment's original text above.
+
+The mode switch scopes only the three precursor checks
+(bounds/same-fiber/hash); `EventIdPositionMismatch` (contiguity) is not
+gated by `PrecursorCheckMode` and hard-errors unconditionally on every
+`open()`/rehydrate regardless of mode — the shipped default posture is
+"contiguity always enforced, precursor-chain checks observe-only until
+enforced". This is a deliberate staged rollout, not a defect: flipping
+the default to `Enforce` is gated on the NATS-baseline replay soak noted
+above; once that soak clears clean, a follow-up amendment changes the
+`resolve_precursor_check_mode` fail-safe branch's shipped default from
+`ObserveOnly` to `Enforce` (env var stays available as an override in
+either direction).

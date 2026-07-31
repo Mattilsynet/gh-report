@@ -153,17 +153,9 @@ where
     /// All five composition slots are required; there is no `Default`
     /// (CHE-0039:R2 + CHE-0051:R3 mandate explicit construction).
     /// The policy registry starts empty — wire policies via
-    /// [`Self::register_policy`].
-    ///
-    /// **Known ADR-text drift (CHE-0051:R3 vs code).** The ADR text of
-    /// CHE-0051:R3 currently lists four slots
-    /// (`App::new(gateway, store, bus, projections)`); this signature
-    /// is five-slot because the `dead_letter: D` route is required by
-    /// CHE-0051:R7 + CHE-0024:R5 + CHE-0040:R3. The code, the
-    /// type-parameter list `App<G, S, B, P, D>`, and this rustdoc are
-    /// consistent at five slots; the ADR text is the lone outlier.
-    /// The proposed CHE-0051:R3 amendment delta is tracked at
-    /// bd `adr-fmt-ur04` (S8+, post-v0.1).
+    /// [`Self::register_policy`]. The `dead_letter: D` slot is required
+    /// by CHE-0051:R7 + CHE-0024:R5 + CHE-0040:R3's dead-letter routing
+    /// contract.
     pub fn new(gateway: G, store: S, bus: B, projections: P, dead_letter: D) -> Self {
         Self {
             gateway,
