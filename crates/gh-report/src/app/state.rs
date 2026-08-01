@@ -197,6 +197,12 @@ pub struct AppState {
     /// Materialised projection state rebuilt from [`Self::event_store`].
     pub(crate) projection_state: ProjectionState<crate::projection::EvidenceProjection>,
 
+    /// `writer_head_seq`/`projection_applied_seq` runtime counters
+    /// (PGN-0023:R1, Amendment 2026-08-01) backing the serving-side
+    /// lag-SLO gate. Bumped from the same write-then-fold call sites as
+    /// [`Self::projection_state`] itself.
+    pub(crate) lag_counters: crate::app::lag::LagCounters,
+
     /// Webhook ingestion concerns (secret, replay, debounce).
     webhook: WebhookState,
     /// GitHub API infrastructure (budget, rate limit, client, cache).
@@ -1257,6 +1263,7 @@ impl AppState {
             scheduler_event_store,
             sweep_timeout_event_store,
             projection_state,
+            lag_counters: crate::app::lag::LagCounters::default(),
             webhook: WebhookState::from_environment(),
             github: GithubState::new(),
             evidence: EvidenceState::new(),
@@ -1344,6 +1351,7 @@ impl AppState {
             scheduler_event_store,
             sweep_timeout_event_store,
             projection_state,
+            lag_counters: crate::app::lag::LagCounters::default(),
             webhook: WebhookState::from_environment(),
             github: GithubState::new(),
             evidence: EvidenceState::new(),
@@ -1453,11 +1461,15 @@ impl AppState {
     fn fold_repository_event_into_projection(&self, detached: bool, event: &NativeDomainEvent) {
         let mut guard = lock_projection_state(&self.projection_state);
         fold_native_event(&mut guard, detached, event);
+        self.lag_counters.record_write();
+        self.lag_counters.record_applied();
     }
 
     fn fold_org_event_into_projection(&self, event: OrgStateCaptured) {
         let mut guard = lock_projection_state(&self.projection_state);
         fold_org_event(&mut guard, event);
+        self.lag_counters.record_write();
+        self.lag_counters.record_applied();
     }
 
     /// Fold one team roster event into the resident projection
@@ -1470,6 +1482,8 @@ impl AppState {
     pub(crate) fn fold_team_event_into_projection(&self, detached: bool, event: TeamStateCaptured) {
         let mut guard = lock_projection_state(&self.projection_state);
         apply_projection_event(&mut *guard, team_projection_event(detached, event));
+        self.lag_counters.record_write();
+        self.lag_counters.record_applied();
     }
 
     /// Record a freshly-fetched team roster on its own per-team fiber
@@ -1742,6 +1756,7 @@ impl AppStateBuilder {
             scheduler_event_store,
             sweep_timeout_event_store,
             projection_state,
+            lag_counters: crate::app::lag::LagCounters::default(),
             webhook,
             github,
             evidence: EvidenceState::new(),
@@ -2054,6 +2069,17 @@ impl AppState {
             "projection_repo_count": projection_repo_count,
             "projection_bytes_est": projection_bytes_est,
         })
+    }
+}
+
+impl AppState {
+    /// PGN-0023:R1/R7 lag-SLO gate: current severity of
+    /// `writer_head_seq - projection_applied_seq`, resolved through
+    /// [`Self::lag_counters`] (never the write tier, never a raw
+    /// projection lock — R5/R7 read-tier-only scope).
+    #[must_use]
+    pub(crate) fn lag_severity(&self) -> crate::app::lag::LagSeverity {
+        crate::app::lag::LagSeverity::classify(self.lag_counters.snapshot())
     }
 }
 

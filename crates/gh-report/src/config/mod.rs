@@ -132,6 +132,15 @@ pub const API_BUDGET_WAIT_SECS: u64 = 3600;
 /// Work queue capacity (max pending jobs). 10x headroom over typical org size.
 pub const WORK_QUEUE_CAPACITY: usize = 10_000;
 
+/// Projection-lag event-count backstop, WARNING threshold (PGN-0023
+/// Amendment 2026-08-01, ratified alongside the time-based bound derived
+/// from [`COLLECTION_INTERVAL_SECS`]).
+pub const PROJECTION_LAG_EVENT_WARNING: u64 = 100;
+
+/// Projection-lag event-count backstop, CRITICAL threshold (PGN-0023
+/// Amendment 2026-08-01).
+pub const PROJECTION_LAG_EVENT_CRITICAL: u64 = 500;
+
 /// Default maximum visible staleness for the partial-render coalescing
 /// window, per CHE-0068:R3.
 ///

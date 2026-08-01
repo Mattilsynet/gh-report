@@ -5,6 +5,7 @@ pub mod daemon;
 pub mod ephemeral_store;
 pub mod evidence_service;
 pub mod github_infra;
+pub mod lag;
 pub mod state;
 pub mod team_refresh;
 pub mod webhook_context;

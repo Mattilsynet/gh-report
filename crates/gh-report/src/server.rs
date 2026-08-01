@@ -13,11 +13,15 @@
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Request, State};
+use axum::http::StatusCode;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use tower_http::limit::RequestBodyLimitLayer;
 
+use crate::app::lag::LagSeverity;
 use crate::app::state::AppState;
 
 /// CSP applied to the served (dashboard) `ServerConfig`, relaxing
@@ -71,6 +75,64 @@ async fn status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     Json(state.status_payload())
 }
 
+/// Paths exempt from the projection-lag gate: health/readiness/status
+/// probes must answer regardless of read-model staleness, per their own
+/// existing readiness semantics (`ServerState::is_ready`).
+const LAG_GATE_EXEMPT_PATHS: [&str; 3] = ["/healthz", "/readyz", "/api/v1/status"];
+
+/// PGN-0023:R1/R5/R7 projection-lag enforcement gate (Amendment
+/// 2026-08-01 dual-form ratified ceiling), scoped to the serving read
+/// tier only — never the write tier, never the projection lock directly
+/// (`AppState::lag_severity()` resolves through the typed accessor).
+///
+/// `LagSeverity::Critical` refuses with 503 and discloses the observed
+/// staleness (RYW-safety intent, unconditional per the amendment).
+/// `LagSeverity::Warning` is an observable tripwire only (FLO-0014
+/// shape): traced, request still served. Sequence/time values go on the
+/// trace event only, never a metric label (COM-0019:R6).
+async fn projection_lag_gate(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if LAG_GATE_EXEMPT_PATHS.contains(&request.uri().path()) {
+        return next.run(request).await;
+    }
+    match state.lag_severity() {
+        LagSeverity::Nominal => next.run(request).await,
+        LagSeverity::Warning {
+            seq_lag,
+            time_lag_secs,
+        } => {
+            tracing::warn!(
+                seq_lag,
+                time_lag_secs,
+                "PGN-0023 Amendment 2026-08-01: projection lag crossed WARNING threshold"
+            );
+            next.run(request).await
+        }
+        LagSeverity::Critical {
+            seq_lag,
+            time_lag_secs,
+        } => {
+            tracing::warn!(
+                seq_lag,
+                time_lag_secs,
+                "PGN-0023:R1: projection lag crossed CRITICAL threshold, refusing read"
+            );
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "status": "stale",
+                    "seq_lag": seq_lag,
+                    "time_lag_secs": time_lag_secs,
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
 /// Build the [`Router`] for `AppState` using the generic in-memory server.
 ///
 /// Wires `AppState` (which implements [`cherry_pit_web::serve::ServerState`])
@@ -83,7 +145,8 @@ async fn status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
 /// programming error in the hardcoded defaults).
 pub fn build_router(state: Arc<AppState>) -> Router {
     let config = default_server_config();
-    cherry_pit_web::serve::build_router(state, &config, Some(status_router()))
+    let router = cherry_pit_web::serve::build_router(state.clone(), &config, Some(status_router()));
+    router.layer(middleware::from_fn_with_state(state, projection_lag_gate))
 }
 
 #[cfg(test)]
@@ -125,6 +188,93 @@ mod tests {
 
     async fn state_no_cache() -> Arc<AppState> {
         AppState::new().await
+    }
+
+    async fn state_with_html_cache() -> Arc<AppState> {
+        use cherry_pit_web::serve::CachedPage;
+        use std::collections::HashMap;
+
+        let state = state_no_cache().await;
+        let mut pages = HashMap::new();
+        pages.insert(
+            "index.html".to_string(),
+            CachedPage::new("index.html", b"<html>cached</html>".to_vec()),
+        );
+        state.set_html_cache(pages);
+        state
+    }
+
+    async fn serve_index(state: Arc<AppState>) -> reqwest::Response {
+        let app = build_router(state);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        wait_for_server(addr).await;
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        handle.abort();
+        resp
+    }
+
+    #[tokio::test]
+    async fn near_zero_lag_serves_index_no_503() {
+        let state = state_with_html_cache().await;
+        state.lag_counters.record_write();
+        state.lag_counters.record_applied();
+
+        let resp = serve_index(state).await;
+
+        assert_eq!(
+            resp.status(),
+            200,
+            "single-daemon near-zero lag must not falsely refuse a read"
+        );
+    }
+
+    #[tokio::test]
+    async fn warning_lag_still_serves_index() {
+        let state = state_with_html_cache().await;
+        state.lag_counters.record_write();
+        state.lag_counters.record_applied();
+        for _ in 0..crate::config::PROJECTION_LAG_EVENT_WARNING {
+            state.lag_counters.record_write();
+        }
+
+        assert!(matches!(
+            state.lag_severity(),
+            crate::app::lag::LagSeverity::Warning { .. }
+        ));
+
+        let resp = serve_index(state).await;
+
+        assert_eq!(
+            resp.status(),
+            200,
+            "WARNING is an observable tripwire only (Amendment 2026-08-01); read still serves"
+        );
+    }
+
+    #[tokio::test]
+    async fn critical_lag_refuses_index_with_503_and_discloses_staleness() {
+        let state = state_with_html_cache().await;
+        state.lag_counters.record_write();
+        state.lag_counters.record_applied();
+        for _ in 0..crate::config::PROJECTION_LAG_EVENT_CRITICAL {
+            state.lag_counters.record_write();
+        }
+
+        assert!(matches!(
+            state.lag_severity(),
+            crate::app::lag::LagSeverity::Critical { .. }
+        ));
+
+        let resp = serve_index(state).await;
+
+        assert_eq!(resp.status(), 503);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["status"], "stale");
+        assert_eq!(body["seq_lag"], crate::config::PROJECTION_LAG_EVENT_CRITICAL);
     }
 
     #[tokio::test]
