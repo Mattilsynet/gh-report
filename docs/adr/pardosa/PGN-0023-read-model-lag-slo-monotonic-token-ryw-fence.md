@@ -8,7 +8,7 @@ Crates: pardosa, pardosa-nats
 
 ## Related
 
-References: PGN-0016, GND-0011, GND-0010, PGN-0022, CHE-0075, CHE-0048, COM-0019, CHE-0104
+References: PGN-0016, GND-0011, GND-0010, PGN-0022, CHE-0075, CHE-0048, COM-0019, CHE-0105
 
 ## Context
 
@@ -132,7 +132,7 @@ event-count backstop — both measured against the same
 `writer_head_seq - projection_applied_seq` primitive R1 already names:
 
 - Time-based (primary): WARNING when the projection is more than 900s
-  (1× `COLLECTION_INTERVAL_SECS`, per CHE-0104) behind the writer head;
+  (1× `COLLECTION_INTERVAL_SECS`, per CHE-0105) behind the writer head;
   CRITICAL when more than 1800s (2×) behind.
 - Event-count backstop: WARNING at 100 events behind; CRITICAL at 500
   events behind. This backstop exists for the case where lag is driven by
