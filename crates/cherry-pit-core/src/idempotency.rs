@@ -68,8 +68,11 @@ impl<'de> serde::Deserialize<'de> for IdempotencyKey {
         D: serde::Deserializer<'de>,
     {
         let raw = String::deserialize(deserializer)?;
-        Self::from_header_value(&raw)
-            .ok_or_else(|| serde::de::Error::custom("IdempotencyKey must be non-empty after trimming surrounding whitespace"))
+        Self::from_header_value(&raw).ok_or_else(|| {
+            serde::de::Error::custom(
+                "IdempotencyKey must be non-empty after trimming surrounding whitespace",
+            )
+        })
     }
 }
 
