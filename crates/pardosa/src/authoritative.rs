@@ -229,6 +229,7 @@ pub(crate) mod jetstream {
     use super::AuthoritativeBackend;
     use super::sealed;
     use pardosa_nats::JetStreamHandle;
+    use uuid::Uuid;
     /// In-crate adapter wrapping a [`JetStreamHandle`] so the
     /// `JetStream` substrate participates in the sealed
     /// [`AuthoritativeBackend`] + [`crate::backend::BackendSink`]
@@ -239,9 +240,13 @@ pub(crate) mod jetstream {
     /// [`pardosa_nats::JetStreamBackend::open`]. The wrapped
     /// handle is exposed only via [`Self::handle`] for in-crate
     /// inspection; cross-crate code never names the wrapped type.
+    /// `owner_id` is minted once per adapter instance (PGN-0016:R8:
+    /// UUID v7 at process start) and threaded to the fence-conflict
+    /// emission in [`crate::backend::jetstream`] (PGN-0022:R1).
     pub(crate) struct JetStreamBackendAdapter {
         pub(crate) handle: JetStreamHandle,
         pub(crate) schema_tag: Option<String>,
+        owner_id: Uuid,
     }
     impl JetStreamBackendAdapter {
         /// Wrap the supplied [`JetStreamHandle`] as the in-crate
@@ -256,12 +261,19 @@ pub(crate) mod jetstream {
         /// for the runtime's later `append` / `sync` dispatch
         /// (sub-mission 02 wires the dispatch bodies; the
         /// detached-for-tests runtime handle traps any premature
-        /// network call there).
-        pub(crate) const fn new(handle: JetStreamHandle) -> Self {
+        /// network call there). Mints a fresh PGN-0016:R8 owner id
+        /// (UUID v7) for this adapter instance.
+        pub(crate) fn new(handle: JetStreamHandle) -> Self {
             Self {
                 handle,
                 schema_tag: None,
+                owner_id: Uuid::now_v7(),
             }
+        }
+        /// PGN-0016:R8 owner id minted for this adapter instance;
+        /// read at the PGN-0022:R1 fence-conflict emission site.
+        pub(crate) const fn owner_id(&self) -> Uuid {
+            self.owner_id
         }
         pub(crate) fn set_schema_tag(&mut self, schema_tag: String) -> Result<(), std::io::Error> {
             if schema_tag.is_empty() {

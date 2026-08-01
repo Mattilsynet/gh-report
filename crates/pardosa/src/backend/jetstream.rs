@@ -10,6 +10,7 @@ use crate::error::{BackendError, BackendOp, RuntimeFailureKind};
 use pardosa_nats::{JetStreamAckPosition, JetStreamRuntimeError};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, info_span};
+use uuid::Uuid;
 
 #[derive(Clone, Debug)]
 pub(crate) struct JetStreamDurableFrame {
@@ -324,6 +325,7 @@ fn record_operation_metrics(
 
 fn observe_operation(
     fields: OperationTelemetry,
+    owner_id: Uuid,
     run: impl FnOnce() -> Result<AckPosition, BackendError>,
 ) -> Result<AckPosition, BackendError> {
     let start = Instant::now();
@@ -332,6 +334,7 @@ fn observe_operation(
         "pardosa.jetstream.operation",
         op = fields.op.as_str(),
         payload_size_bytes = payload_size,
+        owner_id = %owner_id,
         replay_record_count = tracing::field::Empty,
         latency_seconds = tracing::field::Empty,
         terminal_category = tracing::field::Empty,
@@ -466,7 +469,8 @@ fn map_runtime_error(err: JetStreamRuntimeError, op: BackendOp) -> BackendError 
 impl sealed::Sealed for JetStreamBackendAdapter {}
 impl BackendSink for JetStreamBackendAdapter {
     fn append(&mut self, bytes: &[u8]) -> Result<AckPosition, BackendError> {
-        observe_operation(OperationTelemetry::append(bytes.len()), || {
+        let owner_id = self.owner_id();
+        observe_operation(OperationTelemetry::append(bytes.len()), owner_id, || {
             let outcome = match self.schema_tag.as_deref() {
                 Some(schema_tag) => self.handle.append_with_replay_tag(bytes, schema_tag),
                 None => self.handle.append(bytes),
@@ -477,7 +481,8 @@ impl BackendSink for JetStreamBackendAdapter {
         })
     }
     fn sync(&mut self) -> Result<AckPosition, BackendError> {
-        observe_operation(OperationTelemetry::sync(), || {
+        let owner_id = self.owner_id();
+        observe_operation(OperationTelemetry::sync(), owner_id, || {
             self.handle
                 .sync()
                 .map(map_position)
@@ -542,6 +547,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tracing_subscriber::fmt::MakeWriter;
+    use uuid::Uuid;
+
+    const TEST_OWNER_ID: Uuid = Uuid::from_u128(0x1234_5678_9abc_def0_1234_5678_9abc_def0);
 
     #[derive(Clone, Default)]
     struct VecWriter {
@@ -931,10 +939,10 @@ mod tests {
     #[test]
     fn jetstream_adapter_observability_success_paths_emit_ok_completion() {
         let captured = capture_tracing(|| {
-            let _ = super::observe_operation(super::OperationTelemetry::append(7), || {
+            let _ = super::observe_operation(super::OperationTelemetry::append(7), TEST_OWNER_ID, || {
                 Ok(crate::durability::AckPosition::from_u64(13))
             });
-            let _ = super::observe_operation(super::OperationTelemetry::sync(), || {
+            let _ = super::observe_operation(super::OperationTelemetry::sync(), TEST_OWNER_ID, || {
                 Ok(crate::durability::AckPosition::from_u64(21))
             });
             let _ = super::observe_replay_operation(|| Ok(Vec::new()));
@@ -1036,7 +1044,7 @@ mod tests {
     #[test]
     fn i1_fence_conflict_increments_fence_conflict_path_not_publish_path() {
         let captured = capture_tracing(|| {
-            let _ = super::observe_operation(super::OperationTelemetry::append(4), || {
+            let _ = super::observe_operation(super::OperationTelemetry::append(4), TEST_OWNER_ID, || {
                 Err(BackendError::ConcurrencyConflict {
                     expected_seq: None,
                     actual_seq: None,
@@ -1064,12 +1072,24 @@ mod tests {
             "I1: ConcurrencyConflict must NOT increment the generic publish path; \
              captured={metric_lines:?}",
         );
+        assert!(
+            captured.contains(&format!("owner_id={TEST_OWNER_ID}")),
+            "PGN-0022:R1 / PGN-0016:R8: fence-conflict emission must be keyed by \
+             owner_id on the span; captured={captured:?}",
+        );
+        assert!(
+            !metric_lines
+                .iter()
+                .any(|line| line.contains(&format!("owner_id={TEST_OWNER_ID}"))),
+            "COM-0019:R6 / PGN-0022:R4: owner_id is high-cardinality and must \
+             stay off metric-event lines, span-only; metric_lines={metric_lines:?}",
+        );
     }
 
     #[test]
     fn i2_conflict_unhandled_counter_fires_on_fence_conflict_surfaced_to_caller() {
         let captured = capture_tracing(|| {
-            let _ = super::observe_operation(super::OperationTelemetry::append(4), || {
+            let _ = super::observe_operation(super::OperationTelemetry::append(4), TEST_OWNER_ID, || {
                 Err(BackendError::ConcurrencyConflict {
                     expected_seq: None,
                     actual_seq: None,
@@ -1163,7 +1183,7 @@ mod tests {
     #[test]
     fn i5_ack_timeout_counter_fires_on_timeout_terminal_category() {
         let captured = capture_tracing(|| {
-            let _ = super::observe_operation(super::OperationTelemetry::sync(), || {
+            let _ = super::observe_operation(super::OperationTelemetry::sync(), TEST_OWNER_ID, || {
                 Err(BackendError::Timeout {
                     op: BackendOp::Sync,
                     elapsed: Duration::from_secs(31),

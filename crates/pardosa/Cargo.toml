@@ -37,6 +37,7 @@ pardosa-file = { path = "../pardosa-file", version = "=0.1.0" }
 pardosa-nats = { path = "../pardosa-nats", version = "=0.1.0" }
 tempfile = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
