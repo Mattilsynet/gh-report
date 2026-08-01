@@ -98,3 +98,58 @@ fn persist_with_source_append_rejects_unpersistable_dragline() {
         "preflight must reject before any byte hits the sink",
     );
 }
+mod persist_rehydrate_replay_determinism_proptests {
+    use super::*;
+    use proptest::prelude::*;
+    #[derive(Debug, Clone)]
+    enum LineOp {
+        Create(u64),
+        UpdateFirst(u64),
+    }
+    fn arb_ops() -> impl Strategy<Value = Vec<LineOp>> {
+        prop::collection::vec(
+            prop_oneof![
+                any::<u64>().prop_map(LineOp::Create),
+                any::<u64>().prop_map(LineOp::UpdateFirst),
+            ],
+            0..40,
+        )
+    }
+    proptest! {
+        #[test]
+        fn persist_then_rehydrate_reproduces_original_event_line(ops in arb_ops()) {
+            let mut dragline: Line<u64> = Line::new();
+            let mut first_fiber = None;
+            for op in ops {
+                match op {
+                    LineOp::Create(v) => {
+                        let r = dragline.create(v).expect("commit");
+                        first_fiber.get_or_insert(r.fiber_id);
+                    }
+                    LineOp::UpdateFirst(v) => {
+                        if let Some(id) = first_fiber {
+                            let _ = dragline.update(id, v);
+                        }
+                    }
+                }
+            }
+            let mut sink: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+            persist_with_source(&dragline, &mut sink, None).expect("persist must succeed");
+            let bytes = sink.into_inner();
+            let rehydrated: Line<u64> =
+                rehydrate_unchecked(Cursor::new(bytes), PrecursorCheckMode::ObserveOnly)
+                    .expect("rehydrate must succeed");
+            let original_wire: Vec<Vec<u8>> = dragline
+                .read_line()
+                .iter()
+                .map(pardosa_wire::to_vec)
+                .collect();
+            let rehydrated_wire: Vec<Vec<u8>> = rehydrated
+                .read_line()
+                .iter()
+                .map(pardosa_wire::to_vec)
+                .collect();
+            prop_assert_eq!(rehydrated_wire, original_wire);
+        }
+    }
+}
