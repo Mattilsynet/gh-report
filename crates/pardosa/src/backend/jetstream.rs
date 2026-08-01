@@ -939,12 +939,15 @@ mod tests {
     #[test]
     fn jetstream_adapter_observability_success_paths_emit_ok_completion() {
         let captured = capture_tracing(|| {
-            let _ = super::observe_operation(super::OperationTelemetry::append(7), TEST_OWNER_ID, || {
-                Ok(crate::durability::AckPosition::from_u64(13))
-            });
-            let _ = super::observe_operation(super::OperationTelemetry::sync(), TEST_OWNER_ID, || {
-                Ok(crate::durability::AckPosition::from_u64(21))
-            });
+            let _ = super::observe_operation(
+                super::OperationTelemetry::append(7),
+                TEST_OWNER_ID,
+                || Ok(crate::durability::AckPosition::from_u64(13)),
+            );
+            let _ =
+                super::observe_operation(super::OperationTelemetry::sync(), TEST_OWNER_ID, || {
+                    Ok(crate::durability::AckPosition::from_u64(21))
+                });
             let _ = super::observe_replay_operation(|| Ok(Vec::new()));
         });
         for needle in [
@@ -1044,13 +1047,17 @@ mod tests {
     #[test]
     fn i1_fence_conflict_increments_fence_conflict_path_not_publish_path() {
         let captured = capture_tracing(|| {
-            let _ = super::observe_operation(super::OperationTelemetry::append(4), TEST_OWNER_ID, || {
-                Err(BackendError::ConcurrencyConflict {
-                    expected_seq: None,
-                    actual_seq: None,
-                    source: boxed_source("wrong last sequence"),
-                })
-            });
+            let _ = super::observe_operation(
+                super::OperationTelemetry::append(4),
+                TEST_OWNER_ID,
+                || {
+                    Err(BackendError::ConcurrencyConflict {
+                        expected_seq: None,
+                        actual_seq: None,
+                        source: boxed_source("wrong last sequence"),
+                    })
+                },
+            );
         });
         let metric_lines: Vec<&str> = captured
             .lines()
@@ -1089,13 +1096,17 @@ mod tests {
     #[test]
     fn i2_conflict_unhandled_counter_fires_on_fence_conflict_surfaced_to_caller() {
         let captured = capture_tracing(|| {
-            let _ = super::observe_operation(super::OperationTelemetry::append(4), TEST_OWNER_ID, || {
-                Err(BackendError::ConcurrencyConflict {
-                    expected_seq: None,
-                    actual_seq: None,
-                    source: boxed_source("wrong last sequence"),
-                })
-            });
+            let _ = super::observe_operation(
+                super::OperationTelemetry::append(4),
+                TEST_OWNER_ID,
+                || {
+                    Err(BackendError::ConcurrencyConflict {
+                        expected_seq: None,
+                        actual_seq: None,
+                        source: boxed_source("wrong last sequence"),
+                    })
+                },
+            );
         });
         assert!(
             captured.contains("metric_name=\"pardosa_jetstream_occ_conflict_unhandled_total\""),
@@ -1183,13 +1194,14 @@ mod tests {
     #[test]
     fn i5_ack_timeout_counter_fires_on_timeout_terminal_category() {
         let captured = capture_tracing(|| {
-            let _ = super::observe_operation(super::OperationTelemetry::sync(), TEST_OWNER_ID, || {
-                Err(BackendError::Timeout {
-                    op: BackendOp::Sync,
-                    elapsed: Duration::from_secs(31),
-                    configured: Duration::from_secs(30),
-                })
-            });
+            let _ =
+                super::observe_operation(super::OperationTelemetry::sync(), TEST_OWNER_ID, || {
+                    Err(BackendError::Timeout {
+                        op: BackendOp::Sync,
+                        elapsed: Duration::from_secs(31),
+                        configured: Duration::from_secs(30),
+                    })
+                });
         });
         assert!(
             captured.contains("metric_name=\"pardosa_jetstream_ack_timeout_total\""),
