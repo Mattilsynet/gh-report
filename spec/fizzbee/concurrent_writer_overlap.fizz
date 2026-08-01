@@ -1,0 +1,128 @@
+---
+deadlock_detection: false
+---
+# Model #5 — concurrent-writer-overlap classification (STPA DR-10).
+#
+# Seam:
+#   crates/gh-report/src/app/write_policy.rs::WritePolicyCategory::classify
+#     — the ONE conversion chokepoint from PersistenceError into the
+#     closed {Conflict, Transient, Structural, Unrecoverable} category
+#     set (CHE-0088:R2); FencedConflict always maps to Conflict, and the
+#     trailing wildcard arm fails CLOSED to Unrecoverable for anything
+#     unclassified — never silently swallowed.
+#   crates/gh-report/src/app/write_policy.rs::WritePolicyCategory::response
+#     — Conflict -> Fatal (abort-the-run, PGN-0016:R2).
+#   crates/gh-report/src/app/daemon.rs::rearm_fenced_run (PGN-0016:R7) —
+#     on a Conflict-classified fenced write, abort cleanly and re-arm
+#     with a fresh authoritative read on the next tick.
+#
+# ADRs: PGN-0016 (fence + re-arm policy), CHE-0088 (write-failure
+#       classification, R2/R7/R8), PGN-0022 (multi-process detection
+#       observability — the emission call-site this model does NOT
+#       claim to verify; see README.md Gap note).
+#
+# What this model does NOT claim (per STPA Gap, adr-fmt-pq1b6.1.1):
+# PGN-0022:R1's structured detection emission actually firing inside
+# pardosa-nats was not located in gh-report's own source this session —
+# out of scope, not fabricated here. This model verifies the GH-REPORT
+# SIDE of DR-10: once gh-report's own classification chokepoint sees a
+# fenced write, does it EVER let that overlap go unclassified or
+# misclassified? That is the "formal model verify independently of
+# runtime instrumentation" DR-10 asks for, scoped to source actually
+# read this session.
+
+NUM_WRITERS = 3
+# One aggregate, N writer instances overlapping (the concurrent-writer
+# condition itself — no numeric bound needed on retries: each instance
+# commits at most once, so committed_seq is capped at NUM_WRITERS).
+
+role Writer:
+    action Init:
+        self.read_seq = -1        # -1 == no authoritative read taken yet
+        self.done = False         # committed successfully
+        self.attempted = False    # has taken at least one AttemptAppend
+        self.category = "none"    # "none" | "conflict" | "committed"
+
+    atomic fair action ReadAuthoritative:
+        require not self.done
+        require self.read_seq == -1
+        self.read_seq = committed_seq
+
+    # Models write_policy.rs::classify + response + daemon.rs's
+    # rearm_fenced_run in one atomic step: an overlapping writer's stale
+    # attempt is EITHER the sole committer at this position (no overlap
+    # loss to classify) OR loses the OCC race, and MUST be classified
+    # Conflict (never left "none", never fallen through to a silent
+    # Unrecoverable that would misroute the response) before re-arming.
+    atomic fair action AttemptAppend:
+        require self.read_seq != -1
+        self.attempted = True
+        if committed_seq == self.read_seq:
+            committed_seq = committed_seq + 1
+            log.append(self.__id__)
+            self.done = True
+            self.category = "committed"
+            self.read_seq = -1
+        else:
+            # FencedConflict -> WritePolicyCategory::Conflict (never the
+            # wildcard Unrecoverable arm) -> response() Fatal -> daemon.rs
+            # rearm_fenced_run aborts cleanly and re-arms.
+            self.category = "conflict"
+            self.read_seq = -1
+
+action Init:
+    committed_seq = 0
+    log = []
+    writers = bag()
+    for i in range(NUM_WRITERS):
+        writers.add(Writer())
+
+# SAFETY (DR-10 core claim): every overlap loss is OBSERVABLE — an
+# instance that has attempted at least once is never left "none". This
+# is the formal analogue of CHE-0088:R2's fail-closed classify(): no
+# code path may report a fenced write without a category.
+always assertion NoSilentOverlapLoss:
+    for w in writers:
+        if w.attempted:
+            if w.category != "conflict" and w.category != "committed":
+                return False
+    return True
+
+# SAFETY: the classification is never ambiguous between the two -
+# exactly one committer per sequence position (mirrors occ_fence.fizz's
+# ExactlyOneCommitPerSeq, restated here as the overlap-classification
+# counterpart: a "committed" category is trustworthy — it always
+# matches an actual, unique log append).
+always assertion CommittedCategoryMatchesLog:
+    committed_count = 0
+    for w in writers:
+        if w.category == "committed":
+            committed_count = committed_count + 1
+    return committed_count == len(log)
+
+# LIVENESS: under fair scheduling, every overlapping writer eventually
+# reaches a definite classification (committed, via re-arm-and-retry) —
+# no instance is left permanently unclassified by its own fenced
+# conflicts. Complements occ_fence.fizz's EveryWriterEventuallyCommits;
+# this spec's contribution is the explicit classification field DR-10
+# asks a formal model to verify, not just the final commit outcome.
+eventually always assertion EveryWriterEventuallyResolved:
+    for w in writers:
+        if not w.done:
+            return False
+    return True
+
+# --- TEETH (falsification) ---
+# To reproduce a silent-overlap-loss violation, change AttemptAppend's
+# conflict branch so the category is never set (models a code path that
+# forgets to route a FencedConflict through WritePolicyCategory::classify
+# — e.g. an early `return` before the classification chokepoint):
+#
+#     else:
+#         self.read_seq = -1   # category left at "none" — never set
+#
+# With that change, NoSilentOverlapLoss fails on the very first
+# conflict: an attempted writer with category == "none" is exactly the
+# "swallowed failure" shape H5 names (job outcome unknown, no
+# classification emitted). See README.md for the captured fizz
+# counterexample output.

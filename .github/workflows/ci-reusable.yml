@@ -268,3 +268,42 @@ jobs:
         if: always()
       - run: cargo deny check
         if: always()
+
+  # Gate: every spec/fizzbee/*.fizz design-level model must PASS. FizzBee
+  # models are design-level/STPA-UCA advisory verification (PGN-0026) — this
+  # gate keeps the corpus from silently rotting, it does NOT discharge
+  # PGN-0021:R1's OCC-fence exhaustive-checking obligation (still assigned to
+  # Stateright, deferred per bead adr-fmt-2ysyq; PGN-0026:R2/R3).
+  fizzbee-corpus:
+    name: FizzBee design-level model corpus (PGN-0026)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: install pinned fizz
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < tools/.fizzbee-version)"
+          asset="fizzbee-v${version}-linux_x86"
+          base="https://github.com/fizzbee-io/fizzbee/releases/download/v${version}"
+          expected_sha256="3b5839867da5427a17b7aa56d571b08fba468c0aea5d412afc2d4b725d2c6dab"
+          curl -fsSL -o "${asset}.tar.gz" "${base}/${asset}.tar.gz"
+          echo "${expected_sha256}  ${asset}.tar.gz" | sha256sum -c -
+          tar -xzf "${asset}.tar.gz"
+          echo "$(pwd)/${asset}" >> "$GITHUB_PATH"
+      - name: run every spec/fizzbee/*.fizz, fail on any non-PASSED
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in spec/fizzbee/*.fizz; do
+            echo "::group::fizz $f"
+            output="$(fizz "$f" 2>&1)"
+            echo "$output"
+            if [[ "$output" == *"PASSED:"* ]]; then
+              echo "::endgroup::"
+            else
+              echo "::error::$f did not report PASSED"
+              echo "::endgroup::"
+              fail=1
+            fi
+          done
+          exit $fail

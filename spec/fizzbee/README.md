@@ -1,9 +1,10 @@
-# FizzBee specs — design-level model checking for three concurrency invariants
+# FizzBee specs — design-level model checking for concurrency invariants and STPA UCAs
 
-These specs model the **design** of three concurrency/ordering invariants
-in this workspace, not the Rust implementation byte-for-byte. Value: a
-design-level proof (the model's state space is fully explored and the
-safety/liveness properties hold) plus a living, falsifiable spec.
+These specs model the **design** of concurrency/ordering invariants and
+STPA-derived unsafe-control-actions (UCAs) in this workspace, not the Rust
+implementation byte-for-byte. Value: a design-level proof (the model's state
+space is fully explored and the safety/liveness properties hold) plus a
+living, falsifiable spec.
 **Fidelity caveat**: the existing Rust proptests
 (`live_nats_n_writer_fence_property.rs`, `i1_toctou_pin.rs`) remain the
 impl-fidelity check — these `.fizz` specs do NOT claim the Rust is
@@ -12,6 +13,14 @@ verified; they claim the MODEL is. Run any spec:
 ```
 fizz spec/fizzbee/<name>.fizz
 ```
+
+**Governance (PGN-0026).** FizzBee is adopted as the design-level / STPA-UCA
+modeling tool, wired into CI as a gate (every spec must PASS). This is
+explicitly NOT the PGN-0021:R1 OCC-fence exhaustive-checking obligation —
+that remains assigned to Stateright (deferred, bead adr-fmt-2ysyq).
+`occ_fence.fizz` and `concurrent_writer_overlap.fizz` both touch the
+OCC-fence property but neither is the PGN-0021:R1 verification-of-record;
+see PGN-0026:R2/R3.
 
 `out/` (fizz's graph/AST output) is gitignored — do not commit it.
 
@@ -332,8 +341,184 @@ the CAS-correct implementation, not the two-independent-loads variant.
 
 ---
 
+## #5 — `concurrent_writer_overlap.fizz`: overlap classification (STPA DR-10)
+
+**Invariant.** N writer instances overlap on one aggregate's OCC-fenced
+append. Every instance that loses the race must be classified
+(`WritePolicyCategory::Conflict`), never left unclassified — the formal
+analogue of CHE-0088:R2's fail-closed `classify()` chokepoint. This is
+DR-10's own framing verbatim: "a formal model should verify [overlap]
+independently of runtime instrumentation."
+
+**Code seam.**
+- `crates/gh-report/src/app/write_policy.rs::WritePolicyCategory::classify`
+  — `FencedConflict -> Conflict`; wildcard arm fails CLOSED to
+  `Unrecoverable`, never silently open
+- `crates/gh-report/src/app/write_policy.rs::WritePolicyCategory::response`
+  — `Conflict -> Fatal`
+- `crates/gh-report/src/app/daemon.rs::rearm_fenced_run` (PGN-0016:R7)
+
+**ADRs.** PGN-0016, CHE-0088 (R2/R7/R8), PGN-0022 (NOT independently
+verified — see Gap below).
+
+**Gap (explicit, not fabricated).** PGN-0022:R1's structured detection
+emission firing inside pardosa-nats was not located in gh-report's own
+source this session (out of scope, per the STPA analysis's own flagged
+Gap, bead adr-fmt-pq1b6.1.1). This model verifies gh-report's OWN
+classification chokepoint never silently drops an overlap loss — it does
+NOT claim to verify PGN-0022:R1's emission call-site exists or fires.
+
+**Command.** `fizz spec/fizzbee/concurrent_writer_overlap.fizz`
+
+**Observed result (PASSED).**
+```
+Valid Nodes: 131 Unique states: 131
+Checking eventually always EveryWriterEventuallyResolved
+IsLive: true
+PASSED: Model checker completed successfully
+```
+(NUM_WRITERS=3.)
+
+**Teeth.** In `AttemptAppend`'s conflict branch, drop the classification
+(models a code path that forgets to route a `FencedConflict` through
+`WritePolicyCategory::classify` — e.g. an early return before the
+chokepoint):
+```python
+else:
+    self.read_seq = -1   # category left at "none" — never set
+```
+Captured violation (re-run `fizz spec/fizzbee/concurrent_writer_overlap.fizz`
+after the edit):
+```
+FAILED: Model checker failed. Invariant:  NoSilentOverlapLoss
+------
+Init
+--
+state: {"committed_seq":0,"log":[],"writers":[...]}
+Writer#0: fields(attempted = False, category = "none", done = False, read_seq = -1)
+```
+`category = "none"` after an attempted writer's fenced conflict is exactly
+the "swallowed failure" shape H5 names — a job outcome unknown, no
+classification emitted. Restore with the committed file (or `git checkout`
+if tracked).
+
+---
+
+## #6 — `scheduler_cancel_responsiveness.fizz`: cancel-vs-tick race (STPA CA1, DR-1/DR-9)
+
+**Invariant.** Regardless of the previous collection cycle's outcome
+(Completed, Cancelled, FencedConflict, Err), the scheduler loop's next-tick
+gate always re-fires and always eventually honours a cancel request — no
+outcome branch can special-case its way past the cancel check.
+
+**Code seam.**
+- `crates/gh-report/src/app/daemon.rs::next_collection_tick` (:119-132) —
+  biased `select!` between `cancel.changed()` and `sleep(interval)`
+- `crates/gh-report/src/app/daemon.rs::spawn_collection_loop` (:653-745) —
+  every match arm on the collection outcome falls through to the top of
+  the loop except `Cancel`
+
+**ADRs.** None dedicated (a gap analogous to DR-7's — no ADR governs this
+loop's cancel-check cadence either).
+
+**What this model does NOT claim.** CA1-NP's genuine hazard (a panicked
+task that never ticks again) is only detectable from OUTSIDE the loop
+(DR-1's external staleness monitor) — this model verifies the narrower,
+in-band claim: given the loop is alive, is cancel always honoured.
+
+**Command.** `fizz spec/fizzbee/scheduler_cancel_responsiveness.fizz`
+
+**Observed result (PASSED).**
+```
+Valid Nodes: 12 Unique states: 12
+Checking eventually always CancelAlwaysEventuallyHonored
+IsLive: true
+PASSED: Model checker completed successfully
+```
+(MAX_TICKS=3.)
+
+**Teeth.** Invert `NextTickCheck`'s guard (a plausible transcription bug
+when refactoring the `match` arms):
+```python
+if cancel_requested:
+    ticks_run = ticks_run + 1   # BUG: keeps ticking on cancel
+else:
+    loop_exited = True          # BUG: exits when nobody asked
+```
+Captured violation: `CancelAlwaysEventuallyHonored` fails (once
+`cancel_requested` is True, the buggy branch keeps incrementing
+`ticks_run` instead of setting `loop_exited`, so the assertion's
+`return loop_exited` is never satisfied); `NoSpuriousExit` also fails
+independently (the loop can exit while `cancel_requested` is still
+False). Restore with the committed file.
+
+---
+
+## #7 — `drain_timeout_classification.fizz`: shutdown-drain outcome (STPA CA6, DR-7)
+
+**Invariant.** Each of the three `drain_shutdown_with_timeout` phases
+(worker-pool, delivery, collection) resolves to EXACTLY `drained` or
+`timeout` once the shared budget elapses — never left unclassified
+("pending" forever), and never classified `timeout` before the budget
+actually expires.
+
+**Code seam.**
+- `crates/gh-report/src/app/daemon.rs:48` — `SHUTDOWN_DRAIN_TIMEOUT =
+  Duration::from_secs(3)`
+- `crates/gh-report/src/app/daemon.rs::drain_shutdown_with_timeout`
+  (:290-335ish) — three phases, each logging `reason = "drained"` or
+  `reason = "timeout"`; the collection phase's timeout case is the named
+  `CollectionDrainError::Timeout`
+
+**ADRs.** None dedicated — the STPA analysis itself flags this as a gap
+("No dedicated ADR governs SHUTDOWN_DRAIN_TIMEOUT=3s"); this model
+documents the classification SHAPE, not a claim that 3s is ADR-ratified.
+
+**Command.** `fizz spec/fizzbee/drain_timeout_classification.fizz`
+
+**Observed result (PASSED).**
+```
+Valid Nodes: 75 Unique states: 39
+Checking eventually always EveryPhaseEventuallyResolved
+IsLive: true
+PASSED: Model checker completed successfully
+```
+(NUM_PHASES=3, DRAIN_BUDGET=3.)
+
+**Teeth.** Remove `FinalizeAtBudget`'s classification (models forgetting
+the `else` arm — the phase's join handle abandoned with no logged
+outcome):
+```python
+atomic fair action FinalizeAtBudget:
+    require elapsed == DRAIN_BUDGET
+    pass   # phases left "pending" forever — no timeout classification
+```
+Captured violation: `EveryPhaseEventuallyResolved` fails — any phase
+whose `MaybeFinish` never chose `ready = True` before the budget elapsed
+stays "pending" forever, with no classification event a DR-7 counter
+could observe. Restore with the committed file.
+
+---
+
+## STPA UCA coverage (bead adr-fmt-pq1b6.1.1, DR-1..DR-10)
+
+| DR | UCA / hazard | Modeled? | Spec | Rationale |
+|---|---|---|---|---|
+| DR-1 | CA1-NP tick staleness | Partial | `scheduler_cancel_responsiveness.fizz` | In-band cancel-responsiveness modeled; the panicked-task/no-tick-at-all case is inherently only observable from an external monitor (STPA's own ICP note) — left to the runtime staleness monitor DR-1 specifies. |
+| DR-2 | CA4-WT lock-TTL/interval coupling | No | — | A numeric-coupling tripwire (TTL vs observed run duration), not a control-flow/concurrency property a state-space model adds confidence over; better served by the runtime monitor DR-2 specifies. |
+| DR-3 | CA3 lag-SLO ceiling | No (Gap) | — | STPA's own Step3 flagged this a Gap: the enforcement call-site and numeric ceiling are not visible in gh-report's source this session. Modeling an unconfirmed mechanism would be fabrication, not source-grounded modeling (abort_if branch) — left as a Gap, not modeled. |
+| DR-4 | CA2-ST retry-ceiling severity | No | — | Already covered structurally by `write_policy.rs`'s closed-enum, no-wildcard `response()` dispatch (compile-time exhaustiveness); a log-level threshold monitor, not a concurrency model target. |
+| DR-5/DR-6 | CA5 rate-limit/backoff | No | — | Single-process constant-threshold checks; existing budget_gate.fizz/token_bucket.fizz already cover the concurrency-bearing gate/regulator shape these constants feed. |
+| DR-7 | CA6-ST drain-timeout classification | Yes | `drain_timeout_classification.fizz` | Modeled directly — a genuine concurrency/race property (work-completion vs. budget) a runtime counter alone can't prove has no unclassified-outcome path. |
+| DR-8 | CA2 write-failure distribution | No | — | A rolling-window count monitor; the classification exhaustiveness it depends on is already structurally covered (see DR-4 note above and `concurrent_writer_overlap.fizz`). |
+| DR-9 | CA1 team-refresh decoupling | Partial | `scheduler_cancel_responsiveness.fizz` | Same cancel-responsiveness shape as DR-1, decoupled cadence; the model is cadence-agnostic. |
+| DR-10 | CA4 concurrent-writer-overlap | Yes | `concurrent_writer_overlap.fizz` | Modeled directly, per DR-10's own explicit naming of FizzBee as consumer — scoped to gh-report's classification chokepoint only (see Gap note in that spec's section above); PGN-0022's emission call-site remains unverified. |
+
+---
+
 ## Follow-ups (out of scope for this mission)
 
-- Wiring `fizz` into CI (noted as a possible follow-up bead; not
-  implemented here).
 - Model-based-testing Go adapters (`fizz-mbt`) — not this mission.
+- Numeric ratification of DR-3's PGN-0023 lag-SLO ceiling, which would
+  unblock modeling CA3 (currently a documented Gap, see coverage table
+  above).
