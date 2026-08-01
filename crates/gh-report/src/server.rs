@@ -274,7 +274,10 @@ mod tests {
         assert_eq!(resp.status(), 503);
         let body: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(body["status"], "stale");
-        assert_eq!(body["seq_lag"], crate::config::PROJECTION_LAG_EVENT_CRITICAL);
+        assert_eq!(
+            body["seq_lag"],
+            crate::config::PROJECTION_LAG_EVENT_CRITICAL
+        );
     }
 
     #[tokio::test]

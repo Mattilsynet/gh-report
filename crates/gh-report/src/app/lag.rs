@@ -15,7 +15,9 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::config::{COLLECTION_INTERVAL_SECS, PROJECTION_LAG_EVENT_CRITICAL, PROJECTION_LAG_EVENT_WARNING};
+use crate::config::{
+    COLLECTION_INTERVAL_SECS, PROJECTION_LAG_EVENT_CRITICAL, PROJECTION_LAG_EVENT_WARNING,
+};
 
 /// Time-based WARNING threshold: 1x `COLLECTION_INTERVAL_SECS` (CHE-0104),
 /// per PGN-0023 Amendment 2026-08-01.
@@ -90,7 +92,8 @@ impl LagSnapshot {
 
     #[must_use]
     pub(crate) const fn seq_lag(&self) -> u64 {
-        self.writer_head_seq.saturating_sub(self.projection_applied_seq)
+        self.writer_head_seq
+            .saturating_sub(self.projection_applied_seq)
     }
 
     #[must_use]
