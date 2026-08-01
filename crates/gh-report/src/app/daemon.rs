@@ -86,6 +86,59 @@ enum NextTick {
     Cancel,
 }
 
+/// Graded severity of a single collection run's wall-clock duration
+/// relative to [`crate::infra::lock::DEFAULT_LOCK_TTL`] (FLO-0014:R1
+/// tripwire pair). Distinct from [`crate::report::view_model`]'s
+/// last-run-age staleness check: this signal is in-run
+/// duration-vs-TTL, not time-since-last-completion.
+#[derive(Debug, PartialEq, Eq)]
+enum RunDurationExcursion {
+    Nominal,
+    Warning,
+    Critical,
+}
+
+/// Classify a single run's wall-clock duration against
+/// [`crate::infra::lock::DEFAULT_LOCK_TTL`]: warning above 50% of TTL,
+/// critical above 90% (DR-2, adr-fmt-pq1b6.1.1). A run approaching its
+/// own lock TTL risks losing the lock to a concurrent instance before
+/// completing.
+fn classify_run_duration(elapsed: Duration, ttl: Duration) -> RunDurationExcursion {
+    if elapsed.as_secs_f64() > ttl.as_secs_f64() * 0.9 {
+        RunDurationExcursion::Critical
+    } else if elapsed.as_secs_f64() > ttl.as_secs_f64() * 0.5 {
+        RunDurationExcursion::Warning
+    } else {
+        RunDurationExcursion::Nominal
+    }
+}
+
+/// Emit the FLO-0014:R2 pre-declared response for a run-duration
+/// tripwire breach (DR-2, adr-fmt-pq1b6.1.1): escalate to operator;
+/// consider widening `DEFAULT_LOCK_TTL` or splitting the run. A
+/// no-op on [`RunDurationExcursion::Nominal`].
+fn log_run_duration_tripwire(elapsed: Duration, ttl: Duration) {
+    match classify_run_duration(elapsed, ttl) {
+        RunDurationExcursion::Critical => error!(
+            elapsed_secs = elapsed.as_secs_f64(),
+            ttl_secs = ttl.as_secs_f64(),
+            ratio = elapsed.as_secs_f64() / ttl.as_secs_f64(),
+            response =
+                "escalate to operator; consider widening DEFAULT_LOCK_TTL or splitting the run",
+            "collection run duration exceeded 90% of lock TTL — critical (DR-2, adr-fmt-pq1b6.1.1)"
+        ),
+        RunDurationExcursion::Warning => warn!(
+            elapsed_secs = elapsed.as_secs_f64(),
+            ttl_secs = ttl.as_secs_f64(),
+            ratio = elapsed.as_secs_f64() / ttl.as_secs_f64(),
+            response =
+                "escalate to operator; consider widening DEFAULT_LOCK_TTL or splitting the run",
+            "collection run duration exceeded 50% of lock TTL — warning (DR-2, adr-fmt-pq1b6.1.1)"
+        ),
+        RunDurationExcursion::Nominal => {}
+    }
+}
+
 /// A boolean flag that applies once: armed at construction, then cleared by
 /// the first [`consume`](Self::consume) call. Backs `--force-unlock` and
 /// `--force-refresh`, both of which apply only to the daemon's initial
@@ -711,7 +764,10 @@ fn spawn_collection_loop(
                 NextTick::Run => {}
             }
             let cfg = scheduled_run_config(&config, &force_flag, &force_refresh_flag);
-            match collect::run_with_outcome(cfg, Arc::clone(&state)).await {
+            let run_started = Instant::now();
+            let outcome = collect::run_with_outcome(cfg, Arc::clone(&state)).await;
+            log_run_duration_tripwire(run_started.elapsed(), crate::infra::lock::DEFAULT_LOCK_TTL);
+            match outcome {
                 Ok(collect::CollectionOutcome::Completed) => {
                     log_scheduled_collection_complete(&state);
                 }
@@ -1121,6 +1177,57 @@ mod tests {
     use crate::server::SERVED_CSP_WITH_WASM_UNSAFE_EVAL;
     use std::io::Write;
     use tracing_subscriber::fmt::MakeWriter;
+
+    #[test]
+    fn classify_run_duration_nominal_below_warning_threshold() {
+        let ttl = crate::infra::lock::DEFAULT_LOCK_TTL;
+        let elapsed = ttl
+            .mul_f64(0.5)
+            .checked_sub(Duration::from_secs(1))
+            .expect("half the default TTL exceeds one second");
+        assert_eq!(
+            classify_run_duration(elapsed, ttl),
+            RunDurationExcursion::Nominal
+        );
+    }
+
+    #[test]
+    fn classify_run_duration_warns_above_fifty_percent_of_ttl() {
+        let ttl = crate::infra::lock::DEFAULT_LOCK_TTL;
+        let elapsed = ttl.mul_f64(0.5) + Duration::from_secs(1);
+        assert_eq!(
+            classify_run_duration(elapsed, ttl),
+            RunDurationExcursion::Warning
+        );
+    }
+
+    #[test]
+    fn classify_run_duration_critical_above_ninety_percent_of_ttl() {
+        let ttl = crate::infra::lock::DEFAULT_LOCK_TTL;
+        let elapsed = ttl.mul_f64(0.9) + Duration::from_secs(1);
+        assert_eq!(
+            classify_run_duration(elapsed, ttl),
+            RunDurationExcursion::Critical
+        );
+    }
+
+    #[test]
+    fn classify_run_duration_matches_dr2_absolute_thresholds_for_default_ttl() {
+        let ttl = crate::infra::lock::DEFAULT_LOCK_TTL;
+        assert_eq!(
+            ttl,
+            Duration::from_mins(15),
+            "DR-2 absolute thresholds (450s/810s) assume the current 900s TTL"
+        );
+        assert_eq!(
+            classify_run_duration(Duration::from_secs(450) + Duration::from_secs(1), ttl),
+            RunDurationExcursion::Warning
+        );
+        assert_eq!(
+            classify_run_duration(Duration::from_secs(810) + Duration::from_secs(1), ttl),
+            RunDurationExcursion::Critical
+        );
+    }
 
     #[derive(Clone, Default)]
     struct VecWriter {
