@@ -435,7 +435,7 @@ fn observe_replay_operation(
 fn map_position(pos: JetStreamAckPosition) -> AckPosition {
     AckPosition::from_u64(pos.as_u64())
 }
-fn map_runtime_error(err: JetStreamRuntimeError, op: BackendOp) -> BackendError {
+pub(crate) fn map_runtime_error(err: JetStreamRuntimeError, op: BackendOp) -> BackendError {
     match err {
         JetStreamRuntimeError::Detached => BackendError::RuntimeFailure {
             kind: RuntimeFailureKind::RuntimeShutdown,

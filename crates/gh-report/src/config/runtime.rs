@@ -52,6 +52,9 @@ pub struct RuntimeConfig {
     /// (adr-fmt-faspg) — operators revert to `BudgetGate` via config
     /// alone, no logic redeploy.
     pub rate_regulator: RateRegulatorKind,
+    /// #8 operational-split topology gate (PGN-0027). `SingleDaemon`
+    /// (default) preserves today's single-process behaviour exactly.
+    pub topology: Topology,
 }
 
 /// Pardosa authoritative backend selected once at startup.
@@ -60,6 +63,65 @@ pub enum PardosaBackend {
     #[default]
     Pgno,
     Nats,
+}
+
+/// Operational topology gate for the #8 process split (PGN-0027).
+///
+/// `SingleDaemon` (default) preserves today's shape: collector loop,
+/// team-refresh, axum server, and worker pool all run in one process,
+/// exactly as before this ADR. `Split` runs this binary as one half of
+/// a two-process deployment (operators run two instances with
+/// different `--process-role`), gated by [`ProcessRole`].
+///
+/// Type-driven (R16): a caller cannot construct a "runs neither" or
+/// "runs both roles independently configured" state — every legal
+/// combination is one of these two variants, and [`Self::runs_collector`]
+/// / [`Self::runs_serving`] / [`Self::sources_writer_head_cross_process`]
+/// are total, exhaustive functions of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Topology {
+    #[default]
+    SingleDaemon,
+    Split(ProcessRole),
+}
+
+/// Which half of the #8 split this process instance is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessRole {
+    /// Runs the collection loop and team-refresh writer; writes
+    /// events to the Pardosa/JetStream stream. Does not serve HTTP.
+    Collector,
+    /// Runs the axum server and worker pool; performs no local
+    /// appends. Sources `writer_head_seq` from the `JetStream` stream
+    /// head (PGN-0027 R1) rather than a local counter.
+    Serving,
+}
+
+impl Topology {
+    /// `true` when this process instance should run the collection
+    /// loop and team-refresh writer.
+    #[must_use]
+    pub const fn runs_collector(self) -> bool {
+        matches!(
+            self,
+            Self::SingleDaemon | Self::Split(ProcessRole::Collector)
+        )
+    }
+
+    /// `true` when this process instance should serve HTTP.
+    #[must_use]
+    pub const fn runs_serving(self) -> bool {
+        matches!(self, Self::SingleDaemon | Self::Split(ProcessRole::Serving))
+    }
+
+    /// `true` when the serving read tier must source `writer_head_seq`
+    /// from the `JetStream` stream head (PGN-0027 R1) instead of the
+    /// in-process [`crate::app::lag::LagCounters`] atomic, because this
+    /// process instance performs no local appends of its own.
+    #[must_use]
+    pub const fn sources_writer_head_cross_process(self) -> bool {
+        matches!(self, Self::Split(ProcessRole::Serving))
+    }
 }
 
 /// Primary-rate `Regulator` implementation selected once at startup
@@ -207,6 +269,7 @@ impl RuntimeConfig {
             dashboard_config: DashboardConfig::default(),
             team_roster_read_from_projection: true,
             rate_regulator: RateRegulatorKind::default(),
+            topology: Topology::default(),
         })
     }
 
@@ -337,6 +400,36 @@ mod tests {
         let mut cfg = RuntimeConfig::new("org", false, 8, PathBuf::from("s")).unwrap();
         cfg.rate_regulator = RateRegulatorKind::BudgetGate;
         assert_eq!(cfg.rate_regulator, RateRegulatorKind::BudgetGate);
+    }
+
+    #[test]
+    fn runtime_config_defaults_to_single_daemon_topology() {
+        let cfg = RuntimeConfig::new("org", false, 8, PathBuf::from("s")).unwrap();
+        assert_eq!(cfg.topology, Topology::SingleDaemon);
+    }
+
+    #[test]
+    fn single_daemon_topology_runs_both_roles() {
+        let topology = Topology::SingleDaemon;
+        assert!(topology.runs_collector());
+        assert!(topology.runs_serving());
+        assert!(!topology.sources_writer_head_cross_process());
+    }
+
+    #[test]
+    fn split_collector_topology_runs_collector_only() {
+        let topology = Topology::Split(ProcessRole::Collector);
+        assert!(topology.runs_collector());
+        assert!(!topology.runs_serving());
+        assert!(!topology.sources_writer_head_cross_process());
+    }
+
+    #[test]
+    fn split_serving_topology_runs_serving_only_and_sources_head_cross_process() {
+        let topology = Topology::Split(ProcessRole::Serving);
+        assert!(!topology.runs_collector());
+        assert!(topology.runs_serving());
+        assert!(topology.sources_writer_head_cross_process());
     }
 
     #[test]

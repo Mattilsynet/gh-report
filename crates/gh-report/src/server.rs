@@ -573,6 +573,7 @@ mod tests {
             dashboard_config: DashboardConfig::default(),
             team_roster_read_from_projection: true,
             rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
+            topology: crate::config::runtime::Topology::default(),
         };
 
         assert!(warm_start_from_baseline(&config, &state).await);
@@ -665,6 +666,7 @@ mod tests {
             dashboard_config: crate::config::dashboard::DashboardConfig::default(),
             team_roster_read_from_projection: true,
             rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
+            topology: crate::config::runtime::Topology::default(),
         };
         let evidence = test_fixtures::make_full_evidence(
             test_fixtures::make_metadata(),

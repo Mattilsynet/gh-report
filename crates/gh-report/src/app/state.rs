@@ -203,6 +203,12 @@ pub struct AppState {
     /// [`Self::projection_state`] itself.
     pub(crate) lag_counters: crate::app::lag::LagCounters,
 
+    /// Source of the `writer_head_seq` component of [`Self::lag_severity`]
+    /// (PGN-0027). `Local` (default) preserves today's single-daemon
+    /// behaviour byte-identically; a split-serving process is wired to
+    /// `CrossProcess` at construction, never toggled at read time.
+    pub(crate) writer_head_source: crate::app::lag::WriterHeadSource,
+
     /// Webhook ingestion concerns (secret, replay, debounce).
     webhook: WebhookState,
     /// GitHub API infrastructure (budget, rate limit, client, cache).
@@ -1264,6 +1270,7 @@ impl AppState {
             sweep_timeout_event_store,
             projection_state,
             lag_counters: crate::app::lag::LagCounters::default(),
+            writer_head_source: crate::app::lag::WriterHeadSource::default(),
             webhook: WebhookState::from_environment(),
             github: GithubState::new(),
             evidence: EvidenceState::new(),
@@ -1352,6 +1359,7 @@ impl AppState {
             sweep_timeout_event_store,
             projection_state,
             lag_counters: crate::app::lag::LagCounters::default(),
+            writer_head_source: crate::app::lag::WriterHeadSource::default(),
             webhook: WebhookState::from_environment(),
             github: GithubState::new(),
             evidence: EvidenceState::new(),
@@ -1757,6 +1765,7 @@ impl AppStateBuilder {
             sweep_timeout_event_store,
             projection_state,
             lag_counters: crate::app::lag::LagCounters::default(),
+            writer_head_source: crate::app::lag::WriterHeadSource::default(),
             webhook,
             github,
             evidence: EvidenceState::new(),
@@ -2079,7 +2088,12 @@ impl AppState {
     /// projection lock — R5/R7 read-tier-only scope).
     #[must_use]
     pub(crate) fn lag_severity(&self) -> crate::app::lag::LagSeverity {
-        crate::app::lag::LagSeverity::classify(self.lag_counters.snapshot())
+        let writer_head_seq = self.writer_head_source.resolve(&self.lag_counters);
+        let snapshot = self
+            .lag_counters
+            .snapshot()
+            .with_writer_head_seq(writer_head_seq);
+        crate::app::lag::LagSeverity::classify(snapshot)
     }
 }
 

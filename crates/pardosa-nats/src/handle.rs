@@ -336,6 +336,39 @@ impl JetStreamHandle {
             read_stream_description_once(&js, cfg.stream_name()).await
         })
     }
+    /// Read the stream's server-reported head sequence
+    /// (`StreamInfo.state.last_sequence`) without provisioning or
+    /// mutating the stream, and without touching this handle's cached
+    /// connection or `last_ack_seq` fence (PGN-0027 R1/R3: read-tier
+    /// only, never resyncs the append path; mirrors
+    /// [`Self::replay_readonly`]'s fresh-unshared-connection shape).
+    ///
+    /// This is the ratified cross-process `writer_head_seq` source for
+    /// a separate serving process (PGN-0027 R1) — a read-only
+    /// projection of stream head, never a write, never fence
+    /// participation (PGN-0024 R4).
+    ///
+    /// # Errors
+    ///
+    /// * [`JetStreamRuntimeError::Detached`] — detached test handle.
+    /// * [`JetStreamRuntimeError::Connect`] — connection failed.
+    /// * [`JetStreamRuntimeError::Replay`] — the stream does not exist
+    ///   or the info fetch errored.
+    /// * [`JetStreamRuntimeError::Timeout`] — the read did not complete
+    ///   within the configured operation timeout.
+    pub fn stream_head_seq(&self) -> Result<u64, JetStreamRuntimeError> {
+        let runtime = self
+            .config
+            .runtime_handle()
+            .as_tokio()
+            .ok_or(JetStreamRuntimeError::Detached)?
+            .clone();
+        let cfg = &self.config;
+        run_op(&runtime, cfg.operation_timeout(), async {
+            let js = connect_only(cfg).await?;
+            stream_head_seq_once(&js, cfg.stream_name()).await
+        })
+    }
     /// Read every currently-durable record in `PubAck.seq` order without
     /// provisioning or mutating the stream (PGN-0008:R8 — open-rehydrate-only;
     /// this is the structurally read-only sibling of [`Self::replay_all`]).
@@ -556,6 +589,24 @@ async fn read_stream_description_once(
             source: Box::new(e),
         })?;
     Ok(info.config.description)
+}
+async fn stream_head_seq_once(
+    js: &async_nats::jetstream::Context,
+    stream_name: &str,
+) -> Result<u64, JetStreamRuntimeError> {
+    let stream = js
+        .get_stream(stream_name)
+        .await
+        .map_err(|e| JetStreamRuntimeError::Replay {
+            source: Box::new(e),
+        })?;
+    let info = stream
+        .get_info()
+        .await
+        .map_err(|e| JetStreamRuntimeError::Replay {
+            source: Box::new(e),
+        })?;
+    Ok(info.state.last_sequence)
 }
 async fn publish_once(
     js: &async_nats::jetstream::Context,
@@ -911,6 +962,16 @@ mod tests {
         let err = handle
             .replay_readonly()
             .expect_err("detached test handle cannot read a live stream");
+
+        assert!(matches!(err, JetStreamRuntimeError::Detached));
+    }
+    #[test]
+    fn detached_handle_stream_head_seq_returns_detached() {
+        let handle = JetStreamBackend::open(minimal_config());
+
+        let err = handle
+            .stream_head_seq()
+            .expect_err("detached test handle cannot read a live stream head");
 
         assert!(matches!(err, JetStreamRuntimeError::Detached));
     }
