@@ -18,7 +18,7 @@ jobs:
     name: build, test, lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.97.0
@@ -149,7 +149,7 @@ jobs:
     name: gh-report projection-lock chokepoint (CHE-0048:R2)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: pin .projection_state.lock( to app/state.rs
         run: |
           set -euo pipefail
@@ -177,7 +177,7 @@ jobs:
     name: gh-report FencedConflict converge-sink chokepoint (CHE-0088 amendment)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: every FencedConflict-detecting loop body routes through the sanctioned converge sink
         run: |
           set -euo pipefail
@@ -212,7 +212,7 @@ jobs:
     name: non-exhaustive error-enum gate (RST-0006, PGN-0006, CHE-0021)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.97.0
@@ -239,7 +239,7 @@ jobs:
     name: ban module-level dead_code suppression (crates/*/src)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: ban inner #![allow/expect(dead_code)] in crate src
         run: |
           set -euo pipefail
@@ -257,7 +257,7 @@ jobs:
     name: supply-chain (audit + deny)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.97.0
