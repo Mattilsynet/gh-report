@@ -1,0 +1,28 @@
+[workspace]
+members = ["."]
+
+[package]
+name = "domain-app"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "Apache-2.0 OR MIT"
+homepage = "https://github.com/acje/solon"
+repository = "https://github.com/acje/solon"
+authors = ["acje"]
+publish = false
+
+[dependencies]
+wit-bindgen = "0.60.0"
+wit-bindgen-rt = { version = "0.44.0", features = ["bitflags"] }
+
+[lib]
+crate-type = ["cdylib"]
+
+[package.metadata.component]
+package = "component:domain-app"
+
+[package.metadata.component.target]
+path = "../../wit/domain-app"
+
+[package.metadata.component.dependencies]
