@@ -38,7 +38,7 @@ what PGN-0016/PGN-0023 already assert:
   window.
 - NATS ADR-42 (rev 8, 2026-04-29) states pull-consumer `pinned_client` gives
   "no such guarantee" of exclusivity and that the `failover` option is "not
-  implemented" as of nats-server 2.14 (this workspace pins 2.14.3); the
+  implemented" as of nats-server 2.14 (this workspace pins 2.14.4); the
   `priority_policy`/`priority_groups` fields are gated
   `#[cfg(feature = "server_2_11")]` and this workspace's async-nats feature
   set (`server_2_14`, `jetstream`, `ring`) does not enable `server_2_11` —
