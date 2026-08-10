@@ -38,6 +38,18 @@ R1 [7]: A loaded domain-app guest component has NO ambient authority. It may
   the guest unless the host passes it as an explicit WIT capability import
   (the WASM-native form of SEC-0004:R2, "never globals").
 
+> **R1 clarification — declared imports vs. granted capability** (spike
+> gotcha G4, bd adr-fmt-u73ej): a wasip2 guest linking libstd will show a
+> non-empty DECLARED WIT import list — a minimal WASI I/O/poll baseline — as
+> an artefact of the toolchain, not a grant. "Zero declared imports" is NOT
+> achievable with today's wasip2 libstd and is NOT what R1 asserts. R1's
+> property is zero GRANTED capability: the host's linker decides what is
+> actually satisfiable at instantiation, and a declared import the host does
+> not satisfy is not a capability. Conformance to R1 is therefore asserted
+> against the HOST's linker configuration, not against the guest's declared
+> import list — a guest with a non-empty declared-import list and an empty
+> host-satisfied set is R1-conformant, not a violation.
+
 R2 [7]: The host grants the MINIMAL capability set a domain app needs to run
   domain LOGIC: the domain-event/command marshalling seam (CHE-0106:R4) and
   nothing more by default. Substrate-port authority (`EventStore`/
