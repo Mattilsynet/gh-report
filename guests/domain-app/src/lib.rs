@@ -1,6 +1,6 @@
 wit_bindgen::generate!({
     world: "domain-app",
-    path: "../../wit/domain-app",
+    path: "../../crates/domain-app-host/wit/domain-app",
     additional_derives: [PartialEq],
 });
 

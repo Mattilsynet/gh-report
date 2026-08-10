@@ -23,6 +23,6 @@ crate-type = ["cdylib"]
 package = "component:domain-app"
 
 [package.metadata.component.target]
-path = "../../wit/domain-app"
+path = "../../crates/domain-app-host/wit/domain-app"
 
 [package.metadata.component.dependencies]
