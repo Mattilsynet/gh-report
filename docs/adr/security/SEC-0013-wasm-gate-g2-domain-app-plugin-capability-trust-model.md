@@ -40,9 +40,14 @@ R1 [7]: A loaded domain-app guest component has NO ambient authority. It may
 
 > **R1 clarification — declared imports vs. granted capability** (spike
 > gotcha G4, bd adr-fmt-u73ej): a wasip2 guest linking libstd will show a
-> non-empty DECLARED WIT import list — a minimal WASI I/O/poll baseline — as
-> an artefact of the toolchain, not a grant. "Zero declared imports" is NOT
-> achievable with today's wasip2 libstd and is NOT what R1 asserts. R1's
+> non-empty DECLARED WIT import list — measured at 14 WASI imports (3
+> `wasi:io/*`, 1 `wasi:clocks/monotonic-clock`, 10 `wasi:cli/*`; bd
+> adr-fmt-z2hoi Q1) — as a TOOLCHAIN-LEVEL artefact universal to every
+> `wasm32-wasip2` Rust libstd binary (byte-identical to a bare
+> hello-world component), affecting every future WASM guest host in this
+> codebase, not a grant and not specific to any one guest. "Zero
+> declared imports" is NOT achievable with today's wasip2 libstd and is
+> NOT what R1 asserts. R1's
 > property is zero GRANTED capability: the host's linker decides what is
 > actually satisfiable at instantiation, and a declared import the host does
 > not satisfy is not a capability. Conformance to R1 is therefore asserted
