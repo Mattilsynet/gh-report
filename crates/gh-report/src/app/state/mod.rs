@@ -1182,9 +1182,9 @@ fn team_state_event(
 
 /// Per-construction unique tempdir plus native pardosa `.pgno` event store.
 #[cfg(test)]
-#[expect(
+#[allow(
     clippy::unused_async,
-    reason = "pardosa store facade is synchronous by PGN-0010:R5 / PGN-0015:R6; async fn preserves a uniform .await consumer seam across the sync-over-async backend boundary"
+    reason = "pardosa store facade is synchronous by PGN-0010:R5 / PGN-0015:R6; async fn preserves a uniform .await consumer seam across the sync-over-async backend boundary; #[expect] is unfulfilled under the post-split all-targets configuration (lint no longer fires for these fns once their sole caller moved to a sibling submodule), per house style escape hatch for unfulfilled expectations"
 )]
 async fn noop_event_store() -> Arc<EventStoreImpl> {
     let dir = tempfile::tempdir().expect("test tempdir");
@@ -1193,9 +1193,9 @@ async fn noop_event_store() -> Arc<EventStoreImpl> {
 }
 
 #[cfg(test)]
-#[expect(
+#[allow(
     clippy::unused_async,
-    reason = "pardosa store facade is synchronous by PGN-0010:R5 / PGN-0015:R6; async fn preserves a uniform .await consumer seam across the sync-over-async backend boundary"
+    reason = "pardosa store facade is synchronous by PGN-0010:R5 / PGN-0015:R6; async fn preserves a uniform .await consumer seam across the sync-over-async backend boundary; #[expect] is unfulfilled under the post-split all-targets configuration (lint no longer fires for these fns once their sole caller moved to a sibling submodule), per house style escape hatch for unfulfilled expectations"
 )]
 async fn noop_org_event_store() -> Arc<OrgEventStoreImpl> {
     let dir = tempfile::tempdir().expect("test tempdir");
@@ -1204,9 +1204,9 @@ async fn noop_org_event_store() -> Arc<OrgEventStoreImpl> {
 }
 
 #[cfg(test)]
-#[expect(
+#[allow(
     clippy::unused_async,
-    reason = "pardosa store facade is synchronous by PGN-0010:R5 / PGN-0015:R6; async fn preserves a uniform .await consumer seam across the sync-over-async backend boundary"
+    reason = "pardosa store facade is synchronous by PGN-0010:R5 / PGN-0015:R6; async fn preserves a uniform .await consumer seam across the sync-over-async backend boundary; #[expect] is unfulfilled under the post-split all-targets configuration (lint no longer fires for these fns once their sole caller moved to a sibling submodule), per house style escape hatch for unfulfilled expectations"
 )]
 async fn noop_team_event_store() -> Arc<TeamEventStoreImpl> {
     let dir = tempfile::tempdir().expect("test tempdir");
