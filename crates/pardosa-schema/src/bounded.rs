@@ -441,6 +441,76 @@ mod tests {
             <EventVec<u32, 32> as GenomeSafe>::SCHEMA_HASH,
         );
     }
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+        proptest! {
+            #[test]
+            fn event_string_try_from_succeeds_iff_len_le_max(s in "[a-zA-Z0-9]{0,80}") {
+                let len = s.len();
+                prop_assert_eq!(EventString::<32>::try_from(s).is_ok(), len <= 32);
+            }
+            #[test]
+            fn event_string_roundtrip_identity_for_valid_input(s in "[a-zA-Z0-9]{0,32}") {
+                let original = EventString::<32>::try_from(s).unwrap();
+                let wire = to_vec(&original);
+                let decoded: EventString<32> = from_bytes(&wire).unwrap();
+                prop_assert_eq!(decoded, original);
+            }
+            #[test]
+            fn event_bytes_try_from_succeeds_iff_len_le_max(
+                bytes in prop::collection::vec(any::<u8>(), 0..80)
+            ) {
+                let len = bytes.len();
+                prop_assert_eq!(EventBytes::<32>::try_from(bytes).is_ok(), len <= 32);
+            }
+            #[test]
+            fn event_bytes_roundtrip_identity_for_valid_input(
+                bytes in prop::collection::vec(any::<u8>(), 0..=32)
+            ) {
+                let original = EventBytes::<32>::try_from(bytes).unwrap();
+                let wire = to_vec(&original);
+                let decoded: EventBytes<32> = from_bytes(&wire).unwrap();
+                prop_assert_eq!(decoded, original);
+            }
+            #[test]
+            fn event_vec_try_from_succeeds_iff_len_le_max(
+                items in prop::collection::vec(any::<u32>(), 0..40)
+            ) {
+                let len = items.len();
+                prop_assert_eq!(<EventVec<u32, 16>>::try_from(items).is_ok(), len <= 16);
+            }
+            #[test]
+            fn event_vec_roundtrip_identity_for_valid_input(
+                items in prop::collection::vec(any::<u32>(), 0..=16)
+            ) {
+                let original: EventVec<u32, 16> = EventVec::try_from(items).unwrap();
+                let wire = to_vec(&original);
+                let decoded: EventVec<u32, 16> = from_bytes(&wire).unwrap();
+                prop_assert_eq!(decoded, original);
+            }
+            #[test]
+            fn nonempty_event_string_try_from_succeeds_iff_nonempty_and_len_le_max(
+                s in "[a-zA-Z0-9]{0,80}"
+            ) {
+                let len = s.len();
+                let is_empty = s.is_empty();
+                prop_assert_eq!(
+                    NonEmptyEventString::<32>::try_from(s).is_ok(),
+                    !is_empty && len <= 32
+                );
+            }
+            #[test]
+            fn nonempty_event_string_roundtrip_identity_for_valid_input(
+                s in "[a-zA-Z0-9]{1,32}"
+            ) {
+                let original = NonEmptyEventString::<32>::try_from(s).unwrap();
+                let wire = to_vec(&original);
+                let decoded: NonEmptyEventString<32> = from_bytes(&wire).unwrap();
+                prop_assert_eq!(decoded, original);
+            }
+        }
+    }
     #[test]
     fn bounded_wrapper_schema_sources_are_human_readable() {
         assert_eq!(

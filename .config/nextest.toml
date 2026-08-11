@@ -1,9 +1,10 @@
 # cargo-nextest configuration.
 #
-# Adopted as the workspace test runner (test-stability initiative P0).
-# Per-test process isolation is the primary stability win: it dissolves
-# shared-process-state flakes (e.g. global tracing/$TMPDIR contention) that
-# the single-process `cargo test` harness exposes.
+# Adopted as the LOCAL/inner-loop test runner (test-stability initiative P0).
+# CI retains `cargo test --workspace` (see .github/workflows/ci-reusable.yml);
+# nextest's per-test process isolation is the primary local stability win: it
+# dissolves shared-process-state flakes (e.g. global tracing/$TMPDIR
+# contention) that the single-process `cargo test` harness exposes.
 #
 # Doctests are NOT run by nextest; CI retains a separate `cargo test --doc`
 # step (oracle ruling adr-fmt-cus9e, condition C1).

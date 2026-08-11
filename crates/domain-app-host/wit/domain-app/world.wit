@@ -1,0 +1,58 @@
+package gh-report:domain-app@0.1.0;
+
+/// Typed domain-app plugin boundary (CHE-0106 R4). Records/variants
+/// mirror the native-enum + wire-type precedent at
+/// crates/gh-report/src/event/mod.rs:52-145: every command and event
+/// crossing the guest boundary is a typed WIT shape, never a bare
+/// JSON-in-string payload.
+interface domain-types {
+    /// Illustrative aggregate state (CHE-0012: zero-state via a
+    /// default-constructible record). A production guest defines its
+    /// own state/command/event shapes per aggregate; this reference
+    /// world exists to prove the typed-record seam compiles and runs
+    /// end to end on wasm32-wasip2, not to model a real aggregate.
+    record counter-state {
+        count: u32,
+    }
+
+    /// Commands accepted by the reference aggregate (CHE-0105 R1:
+    /// domain logic only, no substrate port in sight).
+    variant counter-command {
+        increment,
+        reset,
+    }
+
+    /// Events the reference aggregate emits (CHE-0009: apply is
+    /// deterministic and total over these events).
+    variant counter-event {
+        incremented,
+        was-reset,
+    }
+
+    /// Command-handling failure (CHE-0015: error type distinct from
+    /// the event/command shapes).
+    variant handle-error {
+        invariant-violated(string),
+    }
+}
+
+/// The production domain-app plugin boundary. Sync-only (CHE-0107 G3:
+/// no async, no await); exports domain logic only (CHE-0105 R1/R2: no
+/// event-store, no command-gateway, no filesystem/network/clock/random
+/// capability import). `wasm32-wasip2`'s libstd always pulls in a
+/// minimal WASI I/O/poll baseline regardless of this world's declared
+/// imports; that baseline is expected and does not constitute a
+/// substrate-port import (SEC-0013 R1 footnote).
+world domain-app {
+    use domain-types.{counter-state, counter-command, counter-event, handle-error};
+
+    /// Pure command handling (CHE-0008 R1/R2): takes state by value,
+    /// consumes the command, returns zero or more events or a
+    /// domain error. No mutation, no I/O.
+    export handle-command: func(state: counter-state, cmd: counter-command) -> result<list<counter-event>, handle-error>;
+
+    /// Deterministic, total event application (CHE-0009 R1/R2): must
+    /// never fail, used both for new-command replay and history
+    /// reconstruction.
+    export apply-event: func(state: counter-state, event: counter-event) -> counter-state;
+}

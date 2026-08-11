@@ -1,0 +1,119 @@
+---
+deadlock_detection: false
+---
+# Model #7 — shutdown-drain timeout classification (STPA CA6, DR-7).
+#
+# Seam:
+#   crates/gh-report/src/app/daemon.rs:48
+#     `const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(3)`
+#   crates/gh-report/src/app/daemon.rs::drain_shutdown_with_timeout
+#     (:290-335ish) — three phases race their own completion against
+#     the shared `timeout` budget: worker-pool drain, delivery-task
+#     drain, and collection-loop drain
+#     (`drain_collection_loop_after_cancel_with_timeout`). Each phase
+#     logs `reason = "drained"` (cooperative) or `reason = "timeout"`
+#     (budget exceeded) — never neither; the collection phase's timeout
+#     case is the named `CollectionDrainError::Timeout` (:325-330).
+#
+# ADRs: none dedicated (a gap the STPA analysis flagged directly: "No
+#       dedicated ADR governs SHUTDOWN_DRAIN_TIMEOUT=3s" — this model
+#       documents the drain-classification SHAPE the constant
+#       participates in, not a claim that the 3s value itself is
+#       ADR-ratified).
+#
+# STPA hazard modeled: CA6-ST ("drain budget too short, hits timeout
+# routinely") and H6 (ambiguous persist outcome on drain). DR-7's
+# tripwire (timeout-hit rate > 1-in-10) presumes the underlying
+# mechanism NEVER lets a phase go unclassified — this model verifies
+# that presumption: every phase, once the shared budget elapses,
+# resolves to EXACTLY drained or timeout, never a silent third state a
+# DR-7 counter could miss.
+
+NUM_PHASES = 3      # pool, delivery, collection — the three drain_shutdown_with_timeout phases
+DRAIN_BUDGET = 3    # abstract clock ticks, standing in for SHUTDOWN_DRAIN_TIMEOUT's 3s
+
+role Phase:
+    action Init:
+        self.finished = False
+        self.outcome = "pending"   # "pending" | "drained" | "timeout"
+
+    # Each phase nondeterministically becomes ready to complete at any
+    # tick before the budget elapses — models "the underlying work
+    # (worker-pool join, delivery flush, or collection-loop join)
+    # finishes at some unknown point," without fabricating a specific
+    # duration distribution.
+    atomic fair action MaybeFinish:
+        require not self.finished
+        require elapsed < DRAIN_BUDGET
+        ready = oneof [True, False]
+        if ready:
+            self.finished = True
+            self.outcome = "drained"
+
+atomic fair action ClockTick:
+    require elapsed < DRAIN_BUDGET
+    elapsed = elapsed + 1
+
+# Models `SHUTDOWN_DRAIN_TIMEOUT` firing: any phase still not finished
+# once the budget is exhausted is classified `timeout`, mirroring
+# daemon.rs's `else { warn!(reason = "timeout", ...) }` arm on every
+# phase.
+atomic fair action FinalizeAtBudget:
+    require elapsed == DRAIN_BUDGET
+    for p in phases:
+        if not p.finished:
+            p.finished = True
+            p.outcome = "timeout"
+
+action Init:
+    elapsed = 0
+    phases = bag()
+    for i in range(NUM_PHASES):
+        phases.add(Phase())
+
+# SAFETY: a finished phase's outcome is always exactly one of the two
+# named categories — never left "pending" while finished (would be the
+# H6 "ambiguous outcome" hazard DR-7 exists to catch), and never a third,
+# unnamed outcome a counter-based tripwire could not classify.
+always assertion NoSilentDrainOutcome:
+    for p in phases:
+        if p.finished:
+            if p.outcome != "drained" and p.outcome != "timeout":
+                return False
+    return True
+
+# SAFETY: "timeout" is only ever assigned once the budget has actually
+# elapsed — no phase is prematurely marked timed-out while work could
+# still complete within budget (would itself be a different hazard:
+# aborting in-flight work early, CA6-P in the STPA table).
+always assertion TimeoutOnlyAtBudgetExhaustion:
+    for p in phases:
+        if p.outcome == "timeout":
+            if elapsed < DRAIN_BUDGET:
+                return False
+    return True
+
+# LIVENESS: every phase eventually resolves to a definite outcome —
+# shutdown never hangs indefinitely waiting on an unclassified phase.
+# This is the formal counterpart of SHUTDOWN_DRAIN_TIMEOUT's own job:
+# bound the wait, one way or the other.
+eventually always assertion EveryPhaseEventuallyResolved:
+    for p in phases:
+        if not p.finished:
+            return False
+    return True
+
+# --- TEETH (falsification) ---
+# To reproduce a hung-shutdown / silent-outcome violation, remove
+# FinalizeAtBudget's classification (models a code path that races the
+# budget but forgets the `else` arm — the phase's join handle is
+# abandoned with no logged outcome at all):
+#
+#     atomic fair action FinalizeAtBudget:
+#         require elapsed == DRAIN_BUDGET
+#         pass   # phases left "pending" forever — no timeout classification
+#
+# With that change, EveryPhaseEventuallyResolved fails: any phase whose
+# MaybeFinish never chose `ready = True` before the budget elapsed stays
+# "pending" forever, with no classification event a DR-7 counter could
+# observe. See README.md for the captured fizz counterexample output.

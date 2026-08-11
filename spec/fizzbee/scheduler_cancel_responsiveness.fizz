@@ -1,0 +1,106 @@
+---
+deadlock_detection: false
+---
+# Model #6 — scheduler cancel-responsiveness (STPA CA1, DR-1/DR-9).
+#
+# Seam:
+#   crates/gh-report/src/app/daemon.rs::next_collection_tick (:119-132) —
+#     `tokio::select! { biased; _ = cancel.changed() => Cancel, () =
+#     sleep(interval) => Run }`, checked BEFORE `sleep` too
+#     (`if *cancel.borrow() { return Cancel }`). This is the sole gate
+#     between one collection cycle finishing and the next one starting.
+#   crates/gh-report/src/app/daemon.rs::spawn_collection_loop (:653-745)
+#     — the `loop { match next_collection_tick(...) { Cancel => return,
+#     Run => {} } ... }` shape: regardless of whether the PRIOR cycle's
+#     collect::run_with_outcome returned Completed, Cancelled,
+#     FencedConflict, or an Err, control always falls back through to
+#     next_collection_tick at the top of the loop (:663-741 — every
+#     match arm falls through, none early-returns except Cancel).
+#
+# ADRs: none dedicated to this constant/loop shape (a gap the STPA
+#       analysis already flagged for DR-7's sibling constant,
+#       SHUTDOWN_DRAIN_TIMEOUT — this model documents the analogous
+#       CA1 gap: no ADR governs the scheduler's cancel-check cadence
+#       either).
+#
+# STPA hazard modeled: CA1-NP ("Tick does not fire ... task panicked")
+# and the H3 stall it causes are, per DR-1's own ICP note, only
+# detectable from OUTSIDE the loop (an external staleness monitor) —
+# nothing in-band can prove a genuinely-hung task will resume. What CAN
+# be verified in-band, and is the actual claim this model makes, is
+# narrower and load-bearing: GIVEN the loop is still alive (not
+# panicked), does it always eventually honor a cancel request, no
+# matter which outcome the previous collection cycle produced? A
+# regression that special-cases one outcome branch to skip the
+# next_collection_tick check (e.g. an early `continue` added ahead of
+# it) would silently reintroduce H3 for that branch alone — exactly the
+# class of bug a formal model catches that a happy-path integration
+# test would not.
+
+MAX_TICKS = 3
+# Bound on ticks_run, matching the other specs' finite-state-space
+# convention (NUM_WRITERS, TICKS, etc.) — the real loop runs
+# unboundedly, but a cancel request that never arrives within a few
+# iterations is not the property under test here; this bound keeps the
+# reachable state space finite without weakening the assertions below.
+
+atomic fair action RequestCancel:
+    require not cancel_requested
+    cancel_requested = True
+
+# Models one full loop iteration's gate: check cancel_requested (as
+# next_collection_tick does, both before AND via the biased select),
+# and either exit the loop (Cancel) or advance to another tick (Run).
+# `ticks_run` stands in for "collect::run_with_outcome executed once",
+# whose actual Ok/Err variant does not affect whether this gate re-fires
+# on the NEXT iteration — that fall-through-regardless-of-outcome shape
+# is exactly what daemon.rs:663-741's match arms already guarantee and
+# this model exists to hold constant under future edits.
+atomic fair action NextTickCheck:
+    require not loop_exited
+    if cancel_requested:
+        loop_exited = True
+    elif ticks_run < MAX_TICKS:
+        ticks_run = ticks_run + 1
+
+action Init:
+    cancel_requested = False
+    loop_exited = False
+    ticks_run = 0
+
+# SAFETY: the loop never exits before a cancel was actually requested —
+# no spurious/early exit (would itself be a different hazard: dropping
+# a scheduled collection cycle nobody asked to cancel).
+always assertion NoSpuriousExit:
+    if loop_exited:
+        return cancel_requested
+    return True
+
+# LIVENESS: once cancel is requested, the loop always eventually exits —
+# NextTickCheck's biased, always-reachable gate re-fires every
+# iteration regardless of the prior tick's collection outcome. This is
+# the formal counterpart of "the scheduler is never blocked mid-loop
+# unable to observe shutdown", complementing DR-1's out-of-band
+# staleness monitor (which catches the orthogonal panicked/no-tick-at-
+# all case this model does not attempt to model in-band).
+eventually always assertion CancelAlwaysEventuallyHonored:
+    if cancel_requested:
+        return loop_exited
+    return True
+
+# --- TEETH (falsification) ---
+# To reproduce a lost-cancel regression, invert NextTickCheck's guard —
+# models a bug where the cancel flag is read but the branch is backwards
+# (an easy transcription error when refactoring the `match` arms):
+#
+#     if cancel_requested:
+#         ticks_run = ticks_run + 1   # BUG: keeps ticking on cancel
+#     else:
+#         loop_exited = True          # BUG: exits when nobody asked
+#
+# With that change, CancelAlwaysEventuallyHonored fails: once
+# cancel_requested is True, the (buggy) branch keeps advancing
+# ticks_run forever instead of setting loop_exited, so the assertion's
+# `return loop_exited` is never satisfied. NoSpuriousExit also fails
+# independently (the loop can exit with cancel_requested still False).
+# See README.md for the captured fizz counterexample output.

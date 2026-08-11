@@ -28,6 +28,7 @@ members = [
     "crates/pardosa-mint-private-tests",
     "crates/pardosa-test-support-harness",
     "crates/pardosa-cherry-pit-test-support",
+    "crates/domain-app-host",
 ]
 
 # gh-report-web-client is wasm32-only (Leptos CSR, CHE-0087 R6): excluded

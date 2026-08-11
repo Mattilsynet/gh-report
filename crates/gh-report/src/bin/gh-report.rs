@@ -276,24 +276,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .as_deref()
         .ok_or("--org is required when running the daemon")?;
 
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let startup_directive = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+    let (filter_layer, log_reload_handle) = gh_report::infra::logging::build_reloadable_filter(
+        &startup_directive,
+    )
+    .unwrap_or_else(|_| {
+        gh_report::infra::logging::build_reloadable_filter("info")
+            .expect("the literal directive \"info\" always parses")
+    });
 
-    match cli.log_format {
-        LogFormat::Text => {
-            tracing_subscriber::fmt().with_env_filter(env_filter).init();
-        }
-        LogFormat::Json => {
-            use tracing_subscriber::layer::SubscriberExt;
+    {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
 
-            let cloud_logging = gh_report::infra::cloud_logging::CloudLoggingLayer::new();
-            let subscriber = tracing_subscriber::Registry::default()
-                .with(env_filter)
-                .with(cloud_logging);
-            tracing::subscriber::set_global_default(subscriber)
-                .expect("failed to set global subscriber");
+        let registry = tracing_subscriber::Registry::default().with(filter_layer);
+        match cli.log_format {
+            LogFormat::Text => {
+                registry.with(tracing_subscriber::fmt::layer()).init();
+            }
+            LogFormat::Json => {
+                let cloud_logging = gh_report::infra::cloud_logging::CloudLoggingLayer::new();
+                let subscriber = registry.with(cloud_logging);
+                tracing::subscriber::set_global_default(subscriber)
+                    .expect("failed to set global subscriber");
+            }
         }
     }
+
+    gh_report::infra::logging::spawn_sighup_reload_listener(log_reload_handle);
 
     let dashboard_config = dashboard::DashboardConfig::new(cli.pass_threshold, cli.warn_threshold)?;
     let mut config = runtime::RuntimeConfig::with_force_unlock(

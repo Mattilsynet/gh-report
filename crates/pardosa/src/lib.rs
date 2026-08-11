@@ -34,6 +34,7 @@ pub(crate) mod fiber;
 pub(crate) mod fiber_index;
 pub(crate) mod fiber_state;
 pub(crate) mod frontier;
+pub mod head;
 pub(crate) mod migrate;
 pub(crate) mod persist;
 pub mod prelude;
@@ -68,7 +69,7 @@ assert_auto_traits! {
     migrate::MigrationError < std::io::Error >, store::LineCursor < u64 >,
     store::StoreMetadata, store::OfflineRecoveryPlan, store::OfflineRecoveryStatus,
     store::CausalChainError, fiber_index::FiberIndex < u64 >, fiber_index::FiberLookup <
-    FiberId >, fiber_index::ExtractError, } SendOnly {
+    FiberId >, fiber_index::ExtractError, head::WriterHeadReader, } SendOnly {
     store::inner::EventStore < u64, std::io::Cursor < std::vec::Vec < u8 >>>,
     store::inner::EventStore < u64, std::fs::File >, store::inner::StoreWriter <'static,
     u64, std::io::Cursor < std::vec::Vec < u8 >>>, store::FiberHistoryIter <'static, u64

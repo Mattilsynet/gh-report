@@ -20,13 +20,24 @@ binaries plus an ADR-governed library family and a large ADR corpus.
 
 ## Build / test / verify (local cadence; boundary mirrors CI)
 
-- **INNER-LOOP** (every TDD increment, changed crate only):
+Two-tier verify cadence (mission adr-fmt-innerloop-01; measured evidence bead
+adr-fmt-ze83h; oracle rulings bead adr-fmt-8whg7 — doctrine amendment, not a
+new ADR):
+
+- **INNER-LOOP** (every TDD increment, AND every per-review-round
+  re-verification — e.g. each linus NEEDS-WORK round — changed crate only,
+  measured warm costs on crate `adr-fmt`):
   ```
-  CARGO_TERM_PROGRESS_WHEN=never cargo test -p <crate> --message-format=short
-  CARGO_TERM_PROGRESS_WHEN=never cargo clippy -p <crate> --message-format=short -- -D warnings
+  CARGO_TERM_PROGRESS_WHEN=never cargo nextest run -p <crate> --all-features   # ~2s warm (preferred runner)
+  CARGO_TERM_PROGRESS_WHEN=never cargo test -p <crate> --message-format=short  # ~1s warm (fallback / doctests need this form)
+  CARGO_TERM_PROGRESS_WHEN=never cargo clippy -p <crate> --message-format=short -- -D warnings  # ~3s warm
   ```
-  One test: `cargo test -p <crate> <name> --message-format=short`.
-- **BOUNDARY** (mission/sub-mission completion, before claiming done):
+  One test: `cargo test -p <crate> <name> --message-format=short`. `cargo
+  nextest run` does **not** execute doctests — intentional at this tier;
+  doctests move to BOUNDARY + CI (see coverage-parity below). `--workspace` MUST NOT appear in a mission contract's per-increment or per-review-round `verify_commands` — never at that scope, forbidden outside BOUNDARY.
+- **BOUNDARY** (mission/sub-mission completion, before claiming done — runs
+  EXACTLY ONCE per mission, not per increment, not per review round; measured
+  baseline 60-83 min, bead adr-fmt-blhrc):
   ```
   cargo build  --workspace --all-features --locked
   cargo test   --workspace --all-features --locked
@@ -37,6 +48,11 @@ binaries plus an ADR-governed library family and a large ADR corpus.
   to where they earn their cost, not weakens verify-before-claim.
 - **CI-ONLY** (never in the local loop): CI owns deny, audit, and the two
   tripwire jobs.
+- **Coverage-parity** (nothing dropped, only relocated): unit tests run at
+  both INNER-LOOP (crate-scoped) and BOUNDARY (workspace-scoped); doctests run
+  at BOUNDARY (`cargo test --workspace` covers them) and again in CI's
+  dedicated `cargo test --doc` step (oracle ruling adr-fmt-cus9e condition
+  C1); deny/audit/tripwires remain CI-only as before.
 - `clippy::pedantic` is the **standing bar**, not an elevation
   (`[workspace.lints.clippy] pedantic = warn` + CI `-D warnings`). New code must
   pass pedantic with zero warnings.
@@ -48,9 +64,9 @@ binaries plus an ADR-governed library family and a large ADR corpus.
 
 `crates/pardosa-nats/src/test_support.rs` spawns a real `nats-server` and
 **asserts its `--version` matches `tools/.nats-server-version` (currently
-2.14.3)** — it panics on mismatch or if the binary is absent. Affected tests
+2.14.4)** — it panics on mismatch or if the binary is absent. Affected tests
 include `pardosa`'s `dragline::runtime::tests::*jetstream*`. To run them:
-install `nats-server` v2.14.3 onto `PATH`. CI installs it in the `test` job
+install `nats-server` v2.14.4 onto `PATH`. CI installs it in the `test` job
 (checksum-verified). `async-nats` is pinned to the `server_2_14` feature to
 match.
 

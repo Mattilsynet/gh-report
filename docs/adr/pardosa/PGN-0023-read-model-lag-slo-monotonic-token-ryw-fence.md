@@ -1,14 +1,14 @@
 # PGN-0023. Read-Model Lag-SLO, Monotonic Token, and Per-Request RYW Fence
 
 Date: 2026-07-15
-Last-reviewed: 2026-07-16
+Last-reviewed: 2026-08-01
 Tier: B
 Status: Accepted
 Crates: pardosa, pardosa-nats
 
 ## Related
 
-References: PGN-0016, GND-0011, GND-0010, PGN-0022, CHE-0075, CHE-0048, COM-0019
+References: PGN-0016, GND-0011, GND-0010, PGN-0022, CHE-0075, CHE-0048, COM-0019, CHE-0105
 
 ## Context
 
@@ -116,4 +116,39 @@ risks/migration: the strict boundary in R5 is easy to violate by well-
   into a write-path resync; any change touching both this ADR and PGN-0016's
   append path must cite both and justify which side of the R5 boundary it
   sits on.
+
+## Amendment 2026-08-01 (ratified lag-SLO ceiling: dual-form thresholds)
+
+R1's hard ceiling was left as a mechanism without a number: the
+`writer_head_seq - projection_applied_seq` real-numbered bound was fixed,
+but no ratified threshold existed. STPA DR-3 (bead `adr-fmt-pq1b6.1.1`)
+flagged the gap as an unmitigated hazard — an enforcement gate with no
+ratified ceiling enforces an invented number, not a decided one. The user
+has now ratified the ceiling as policy; this amendment records the exact
+values so R1's mechanism has a binding number to enforce.
+
+The ratified ceiling is dual-form — a time-based primary bound and an
+event-count backstop — both measured against the same
+`writer_head_seq - projection_applied_seq` primitive R1 already names:
+
+- Time-based (primary): WARNING when the projection is more than 900s
+  (1× `COLLECTION_INTERVAL_SECS`, per CHE-0105) behind the writer head;
+  CRITICAL when more than 1800s (2×) behind.
+- Event-count backstop: WARNING at 100 events behind; CRITICAL at 500
+  events behind. This backstop exists for the case where lag is driven by
+  event volume rather than elapsed time — a burst can cross the
+  event-count ceiling well inside the time-based window.
+
+Either form crossing its own CRITICAL threshold triggers R1's existing
+RYW-safety intent unconditionally: the read is refused (503) or the
+projection's staleness is explicitly disclosed to the caller, never
+silently served as current. Either form crossing WARNING (but not
+CRITICAL) is an observable tripwire only — logged/traced per R6, no
+change to read behavior. WARNING and CRITICAL are independent per form;
+a read is refused/flagged the moment any one of the four thresholds
+(time-WARNING excepted) reaches CRITICAL, whichever form trips first.
+
+This amendment records ratified numbers only; it does not reopen R1's
+mechanism, R5's read-tier-only scope, or R6's trace-span-only cardinality
+rule — all remain as decided.
 </content>
