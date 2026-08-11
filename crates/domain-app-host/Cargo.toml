@@ -21,6 +21,10 @@ thiserror = { workspace = true }
 [dev-dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+# "wat" is dev-only feature unification (resolver = "3"): test-only text-format
+# component fixtures (ABI-level trap proof, adr-fmt-rjogx High finding) need
+# it, but it must never reach production consumers of this crate.
+wasmtime = { version = "47", default-features = false, features = ["wat"] }
 
 [lints]
 workspace = true

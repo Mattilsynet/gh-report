@@ -1,0 +1,7 @@
+{
+  "count": 3,
+  "command": "reset",
+  "events": [
+    "was-reset"
+  ]
+}

@@ -47,4 +47,14 @@ pub enum HostError {
     /// and must be validated at the boundary before the host trusts it.
     #[error("guest output failed membrane validation: {0}")]
     InvalidGuestOutput(String),
+
+    /// The guest reached for a WASI interface this host links only as an
+    /// always-trapping stub (Option A, ADR-fmt-48ghj Part 3, CHE-0107:R2,
+    /// SEC-0013:R1): the eleven Bucket-2 interfaces
+    /// (`wasi:clocks/monotonic-clock@0.2.9` and the ten `wasi:cli/*@0.2.9`
+    /// interfaces, ADR-fmt-4ksfn AMENDMENT 1) convey zero capability, so
+    /// any call into one of them traps with this variant, naming the
+    /// interface, rather than the generic call-site trap.
+    #[error("guest reached for {interface}, which is a trapping stub (no capability granted)")]
+    CapabilityAccessDenied { interface: &'static str },
 }
