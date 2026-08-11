@@ -3,3 +3,12 @@
 **/metadata.json
 **/payload_sequence.json
 **/projection_snapshot.json
+
+# Non-source noise directories (F5): agent tooling config, spec drafts,
+# durable-memory DB, and generated output should never be indexed.
+.opencode/
+openspec/
+.beads/
+.ooda/
+graphify-out/
+spec/
