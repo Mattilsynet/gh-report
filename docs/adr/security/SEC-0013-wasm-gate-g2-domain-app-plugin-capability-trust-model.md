@@ -50,7 +50,8 @@ R1 [7]: A loaded domain-app guest component has NO ambient authority. It may
 > NOT what R1 asserts. R1's
 > property is zero GRANTED capability: the host's linker decides what is
 > actually satisfiable at instantiation, and a declared import the host does
-> not satisfy is not a capability. Conformance to R1 is therefore asserted
+> not satisfy is not a capability, nor is one satisfied only by a trapping
+> stub that conveys no authority. Conformance to R1 is therefore asserted
 > against the HOST's linker configuration, not against the guest's declared
 > import list — a guest with a non-empty declared-import list and an empty
 > host-satisfied set is R1-conformant, not a violation.
