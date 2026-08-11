@@ -1,5 +1,5 @@
 #!/bin/sh
-# graphify-worktree-guard.sh
+# tools/graphify/worktree-guard.sh
 #
 # Durable copy of the linked-worktree guard snippet installed in
 # .git/hooks/post-commit and .git/hooks/post-checkout.
