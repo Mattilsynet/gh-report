@@ -1,7 +1,7 @@
 # CHE-0082. gh-report Collection Health Taxonomy
 
 Date: 2026-06-17
-Last-reviewed: 2026-07-16
+Last-reviewed: 2026-08-12
 Tier: B
 Status: Accepted
 Crates: gh-report
@@ -26,7 +26,7 @@ R3 [5]: Store HTTP status as `Option<u16>` or an equivalent bounded enum, never 
 
 R4 [5]: Treat public branch-protection 404 with no controls as genuine absence; it may remain a governance Fail.
 
-R5 [5]: Treat a private or internal branch-protection 404 with no controls as genuine absence per R4, a governance Fail counted in the coverage denominator; reserve Unknown with a permission-suspected reason for authority failures (403, denied, rate-limited, or transient), never for the plain absent-control 404.
+R5 [5]: Treat a private or internal branch-protection 404 with no controls as genuine absence per R4 (governance Fail, in the denominator) WHEN `Capability::PrivateBranchProtectionRead` is Available; otherwise (Unavailable, PermissionDenied, or not probed) treat it as Unknown with a permission-suspected reason. Adds only the capability condition; does not revive inferring authority failure from 404 plus visibility alone, which stays forbidden (evidence: adr-fmt-bol6p).
 
 R6 [5]: Keep org-wide collection-health taxonomy counts in report-side aggregation, not on per-repository persisted payloads.
 
@@ -38,4 +38,4 @@ R7 [5]: Represent active credential limitations through the existing AuthMode, T
 
 − becomes harder: schema hashes move when new bounded event fields are appended, requiring re-scrape rather than mixed old/new event replay.
 
-risks/migration: the first run without a GitHub App token reports private/internal branch-protection reads as capability-limited and classifies unreadable 404s as Unknown.
+risks/migration: the first run without a GitHub App token reports private/internal branch-protection reads as capability-limited; per the R5 amendment (2026-08-12, evidence adr-fmt-bol6p), a private/internal branch-protection 404 is genuine absence only while `Capability::PrivateBranchProtectionRead` is Available, and is classified Unknown/permission-suspected otherwise.
