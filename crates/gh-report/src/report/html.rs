@@ -343,6 +343,7 @@ pub fn render_dashboard_streaming(
     sink("gh-report-web-client.js".to_string(), String::new());
     sink("gh-report-web-client_bg.wasm".to_string(), String::new());
     sink("sort-init.js".to_string(), String::new());
+    sink("clipboard.js".to_string(), String::new());
 
     if let Some(ref owners) = owners_vm {
         render_owner_pages(
@@ -444,15 +445,17 @@ fn render_owner_pages(
     sink("owners.html".to_string(), owners_html);
 
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
-    let detail_vms = build_owner_detail_view_models(
-        &evidence.metrics.owner_metrics,
-        &owner_repo_map,
+    let governance_link = nav.governance_standard_link.clone();
+    let ctx = OwnerDetailBuildContext {
+        owner_repo_map: &owner_repo_map,
         tiers,
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &evidence.metrics.team_rosters,
-        &orphaned_vm.by_team,
-    );
+        organization: &evidence.assessment_metadata.organization,
+        run_timestamp: &evidence.assessment_metadata.run_timestamp,
+        team_rosters: &evidence.metrics.team_rosters,
+        orphaned_by_team: &orphaned_vm.by_team,
+        governance_link: governance_link.as_ref(),
+    };
+    let detail_vms = build_owner_detail_view_models(&evidence.metrics.owner_metrics, &ctx);
     let nested_nav = TopNav { base: "../", ..nav };
     for (slug, detail_vm) in &detail_vms {
         let title = format!("{} — Owner Detail", detail_vm.owner);
@@ -768,6 +771,19 @@ fn build_team_security_url(
     ))
 }
 
+/// Shared, per-call context for [`build_owner_detail_view_models`], grouped
+/// into a struct to keep the function's argument count within the pedantic
+/// `too_many_arguments` bar.
+struct OwnerDetailBuildContext<'a> {
+    owner_repo_map: &'a HashMap<String, (String, Vec<&'a RepositoryEvidence>)>,
+    tiers: &'a CoverageTiers,
+    organization: &'a str,
+    run_timestamp: &'a str,
+    team_rosters: &'a [TeamRoster],
+    orphaned_by_team: &'a [OrphanedTeamGroup],
+    governance_link: Option<&'a crate::config::org::HelpLink>,
+}
+
 /// Build per-owner detail view models with per-repo status rows.
 ///
 /// Accepts a pre-computed `owner_repo_map` (built via
@@ -789,12 +805,7 @@ fn build_team_security_url(
 /// Returns a list of (slug, detail view model) pairs.
 fn build_owner_detail_view_models(
     owner_metrics: &[crate::domain::metrics::OwnerMetrics],
-    owner_repo_map: &HashMap<String, (String, Vec<&RepositoryEvidence>)>,
-    tiers: &CoverageTiers,
-    organization: &str,
-    run_timestamp: &str,
-    team_rosters: &[TeamRoster],
-    orphaned_by_team: &[OrphanedTeamGroup],
+    ctx: &OwnerDetailBuildContext<'_>,
 ) -> Vec<(String, OwnerDetailViewModel)> {
     if owner_metrics.is_empty() {
         return Vec::new();
@@ -818,96 +829,122 @@ fn build_owner_detail_view_models(
         .iter()
         .filter_map(|m| {
             let slug = slugs.get(&m.display_name)?.clone();
-
-            let summary_cards: Vec<SummaryCard> = CONTROL_NAMES
-                .iter()
-                .map(|&key| SummaryCard {
-                    key,
-                    label: control_display_name(key).to_string(),
-                    cell: build_control_cell(
-                        &m.per_control_coverage,
-                        &m.score_exclusion_counts,
-                        key,
-                        tiers,
-                    ),
-                    how_to_fix: coverage_control_how_to_fix(key).unwrap_or_default(),
-                })
-                .collect();
-
-            let canonical_key = m.owner.clone();
-            let org_encoded = utf8_percent_encode(organization, PATH_SEGMENT).to_string();
-            let github_url = build_owner_github_url(m.owner_type, &m.owner, &org_encoded);
-            let security_url = build_team_security_url(m.owner_type, &m.owner, &org_encoded);
-            let mut repo_rows: Vec<OwnerRepoRow> = owner_repo_map
-                .get(&canonical_key)
-                .map(|(_, repos)| {
-                    repos
-                        .iter()
-                        .map(|repo| build_owner_repo_row(repo, &org_encoded, run_timestamp, tiers))
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            repo_rows.sort_by_cached_key(|r| r.repo_name.to_lowercase());
-
-            let owner_type_label = m.owner_type.to_string();
-
-            let has_stale_repos = repo_rows.iter().any(|r| r.is_stale);
-            let stale_repo_count =
-                u32::try_from(repo_rows.iter().filter(|r| r.is_stale).count()).unwrap_or(u32::MAX);
-            let total_repo_count = u32::try_from(repo_rows.len()).unwrap_or(u32::MAX);
-
-            let stale_pct = if total_repo_count == 0 {
-                None
-            } else {
-                Some((f64::from(stale_repo_count) / f64::from(total_repo_count)) * 100.0)
-            };
-            let stale_width_class = rate_to_width_class(stale_pct);
-
-            let roster_entry = team_rosters
-                .iter()
-                .find(|r| r.canonical_owner.eq_ignore_ascii_case(&m.owner));
-            let roster = match m.owner_type {
-                OwnerType::User => RosterSection::NotApplicable,
-                OwnerType::Team | OwnerType::AmbiguousTeamShaped => match roster_entry {
-                    Some(r) => RosterSection::Team(build_team_roster_view_model(r)),
-                    None => RosterSection::Unresolved,
-                },
-            };
-
-            let orphan_repo_rows: Vec<OrphanedRepoRow> = orphaned_by_team
-                .iter()
-                .find(|group| group.team.eq_ignore_ascii_case(&m.owner))
-                .map(|group| group.rows.clone())
-                .unwrap_or_default();
-            let orphan_unresolved = matches!(
-                m.owner_type,
-                OwnerType::Team | OwnerType::AmbiguousTeamShaped
-            ) && roster_entry.is_none();
-
-            let detail = OwnerDetailViewModel {
-                owner: m.display_name.clone(),
-                owner_short: strip_org_prefix(&m.display_name),
-                owner_type_label,
-                breadcrumb_label: m.display_name.clone(),
-                repo_rows,
-                control_columns: control_columns.clone(),
-                summary_cards,
-                has_stale_repos,
-                stale_repo_count,
-                total_repo_count,
-                stale_width_class,
-                roster,
-                github_url,
-                security_url,
-                orphan_repo_rows,
-                orphan_unresolved,
-                owner_in_org: m.in_org,
-            };
-
-            Some((slug, detail))
+            Some(build_one_owner_detail_view_model(
+                m,
+                slug,
+                &control_columns,
+                ctx,
+            ))
         })
         .collect()
+}
+
+/// Build a single owner's detail view model (the per-item body factored
+/// out of [`build_owner_detail_view_models`] to keep both functions under
+/// the pedantic line-count bar).
+fn build_one_owner_detail_view_model(
+    m: &crate::domain::metrics::OwnerMetrics,
+    slug: String,
+    control_columns: &[ControlColumn],
+    ctx: &OwnerDetailBuildContext<'_>,
+) -> (String, OwnerDetailViewModel) {
+    let summary_cards: Vec<SummaryCard> = CONTROL_NAMES
+        .iter()
+        .map(|&key| SummaryCard {
+            key,
+            label: control_display_name(key).to_string(),
+            cell: build_control_cell(
+                &m.per_control_coverage,
+                &m.score_exclusion_counts,
+                key,
+                ctx.tiers,
+            ),
+            how_to_fix: coverage_control_how_to_fix(key).unwrap_or_default(),
+        })
+        .collect();
+
+    let canonical_key = m.owner.clone();
+    let org_encoded = utf8_percent_encode(ctx.organization, PATH_SEGMENT).to_string();
+    let github_url = build_owner_github_url(m.owner_type, &m.owner, &org_encoded);
+    let security_url = build_team_security_url(m.owner_type, &m.owner, &org_encoded);
+    let mut repo_rows: Vec<OwnerRepoRow> = ctx
+        .owner_repo_map
+        .get(&canonical_key)
+        .map(|(_, repos)| {
+            repos
+                .iter()
+                .map(|repo| build_owner_repo_row(repo, &org_encoded, ctx.run_timestamp, ctx.tiers))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    repo_rows.sort_by_cached_key(|r| r.repo_name.to_lowercase());
+
+    let owner_type_label = m.owner_type.to_string();
+
+    let has_stale_repos = repo_rows.iter().any(|r| r.is_stale);
+    let stale_repo_count =
+        u32::try_from(repo_rows.iter().filter(|r| r.is_stale).count()).unwrap_or(u32::MAX);
+    let total_repo_count = u32::try_from(repo_rows.len()).unwrap_or(u32::MAX);
+
+    let stale_pct = if total_repo_count == 0 {
+        None
+    } else {
+        Some((f64::from(stale_repo_count) / f64::from(total_repo_count)) * 100.0)
+    };
+    let stale_width_class = rate_to_width_class(stale_pct);
+
+    let roster_entry = ctx
+        .team_rosters
+        .iter()
+        .find(|r| r.canonical_owner.eq_ignore_ascii_case(&m.owner));
+    let roster = match m.owner_type {
+        OwnerType::User => RosterSection::NotApplicable,
+        OwnerType::Team | OwnerType::AmbiguousTeamShaped => match roster_entry {
+            Some(r) => RosterSection::Team(build_team_roster_view_model(r)),
+            None => RosterSection::Unresolved,
+        },
+    };
+
+    let orphan_repo_rows: Vec<OrphanedRepoRow> = ctx
+        .orphaned_by_team
+        .iter()
+        .find(|group| group.team.eq_ignore_ascii_case(&m.owner))
+        .map(|group| group.rows.clone())
+        .unwrap_or_default();
+    let orphan_unresolved = matches!(
+        m.owner_type,
+        OwnerType::Team | OwnerType::AmbiguousTeamShaped
+    ) && roster_entry.is_none();
+
+    let governance_prompt = crate::report::view_model::compose_governance_prompt(
+        ctx.governance_link,
+        &repo_rows,
+        &orphan_repo_rows,
+    );
+
+    let detail = OwnerDetailViewModel {
+        owner: m.display_name.clone(),
+        owner_short: strip_org_prefix(&m.display_name),
+        owner_type_label,
+        breadcrumb_label: m.display_name.clone(),
+        repo_rows,
+        control_columns: control_columns.to_vec(),
+        summary_cards,
+        has_stale_repos,
+        stale_repo_count,
+        total_repo_count,
+        stale_width_class,
+        roster,
+        github_url,
+        security_url,
+        orphan_repo_rows,
+        orphan_unresolved,
+        owner_in_org: m.in_org,
+        governance_prompt,
+    };
+
+    (slug, detail)
 }
 
 /// Extracted last-commit metadata from a [`RepositoryEvidence`].

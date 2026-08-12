@@ -194,6 +194,15 @@
     {% if vm.has_stale_repos %}
     <p class="footer">Rows highlighted in pink have not been updated in over 2 years and may be abandoned.</p>
     {% endif %}
+    {%- if let Some(prompt) = vm.governance_prompt %}
+    <details>
+        <summary>Copy a tidy-governance review prompt</summary>
+        <textarea id="tidy-governance-prompt" class="governance-prompt" readonly rows="8" cols="80">{{ prompt }}</textarea>
+        <p><button type="button" class="copy-button" data-copy-target="tidy-governance-prompt">Copy prompt</button>
+            <span id="tidy-governance-copy-status" class="meta" role="status"></span></p>
+    </details>
+    <script src="{{ nav.base }}clipboard.js" defer></script>
+    {%- endif %}
 
     {% include "partials/footer.html" %}
 </body>
