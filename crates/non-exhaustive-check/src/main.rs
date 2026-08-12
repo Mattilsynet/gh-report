@@ -24,6 +24,7 @@ const LIBRARY_CRATES: &[&str] = &[
     "crates/pardosa-schema",
     "crates/pardosa-nats",
     "crates/pardosa-fiber-store",
+    "crates/gh-report",
 ];
 
 const HELP_TEXT: &str =
