@@ -126,7 +126,7 @@ jobs:
   # (COM-0018 single-writer concurrency + CHE-0048:R7 in-process
   # per-aggregate lock write coordination; "never hold the returned
   # MutexGuard across an .await" — D-CD-3). Raw `.projection_state.lock(`
-  # calls must therefore appear only inside `crates/gh-report/src/app/state.rs`
+  # calls must therefore appear only inside `crates/gh-report/src/app/state/mod.rs`
   # (the accessor definition site and the boot-time `bootstrap_replay_state`
   # which uses tight-scope guards intentionally).
   #
@@ -141,7 +141,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: pin .projection_state.lock( to app/state.rs (COM-0018 + CHE-0048:R7)
+      - name: pin .projection_state.lock( to app/state/mod.rs (COM-0018 + CHE-0048:R7)
         run: tools/tripwires.sh projection-lock
 
   # Signature (chosen over a raw FencedConflict-match ban): FencedConflict

@@ -26,13 +26,25 @@ binaries plus an ADR-governed library family and a large ADR corpus.
   CARGO_TERM_PROGRESS_WHEN=never cargo clippy -p <crate> --message-format=short -- -D warnings
   ```
   One test: `cargo test -p <crate> <name> --message-format=short`.
-- **BOUNDARY** (mission/sub-mission completion, before claiming done):
+- **BOUNDARY** (mission/sub-mission completion, before claiming done;
+  measured total ~4.4 min, bead adr-fmt-351tt (authoritative) / adr-fmt-keehk
+  (orientation) — macOS/arm64, 14 cores, warm cargo cache, uncontended
+  machine; not a universal constant, present with these conditions. The
+  prior "60-83 min" figure (bead adr-fmt-blhrc) is superseded — that run hit
+  environment contention (NI=5, competing processes, Defender activity), not
+  a code baseline):
   ```
-  cargo build  --workspace --all-features --locked
-  cargo test   --workspace --all-features --locked
-  cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-  cargo fmt --all -- --check
+  cargo build  --workspace --all-features --locked                  # 93.7s cold, 678 units
+  cargo test   --workspace --all-features --locked --no-fail-fast   # ~120s warm (~40s compile + 85.6s exec, incl. doctests)
+  cargo clippy --workspace --all-targets --all-features --locked -- -D warnings  # 49.0s
+  cargo fmt --all -- --check                                        # 1.0s
   ```
+  `--no-fail-fast` is mandatory on the BOUNDARY test line: plain `cargo test`
+  stops at the first failing test binary, so a failing BOUNDARY silently
+  verifies only a fraction of the workspace (measured: ~40% covered before
+  abort) — violating the coverage-parity intent of this tier. BOUNDARY stays
+  on `cargo test` rather than `nextest`: nextest measured slower at workspace
+  scope (262s vs ~120s) and does not run doctests.
   Exit codes from this tier back the done-claim; the cadence relocates controls
   to where they earn their cost, not weakens verify-before-claim.
 - **CI-ONLY** (never in the local loop): CI owns deny, audit, and the
@@ -58,15 +70,18 @@ match.
 
 - Triggers on push/PR to `main`. Third-party actions are **SHA-pinned**
   (Dependabot updates them); keep that pattern if you edit the workflow.
-- Build-time chokepoint gates live in `.github/workflows/ci-reusable.yml`
-  (called from `ci.yml`), invoked via `tools/tripwires.sh <check>` — do not
-  break the invariants they guard. Run `tools/tripwires.sh --list` for the
-  current check names and dispatch on any single check locally
-  (`tools/tripwires.sh <check>`), or `tools/tripwires.sh all` for every
-  check. Governing citations (kept current in the script's `::error::`
-  strings, not duplicated here): projection-lock chokepoint is COM-0018 +
-  CHE-0048:R7; async-trait deny is CHE-0025:R1+R2; non-exhaustive gate is
-  RST-0006:R1+R3.
+- Merge gates (RST-0007) live in `.github/workflows/ci-reusable.yml` (called
+  from `ci.yml`), invoked via `tools/tripwires.sh <check>` — do not break the
+  invariants they guard. Run `tools/tripwires.sh --list` for the current check
+  names and dispatch on any single check locally (`tools/tripwires.sh
+  <check>`), or `tools/tripwires.sh all` for every check. Governing citations
+  (kept current in the script's `::error::` strings, not duplicated here):
+  projection-lock is COM-0018 + CHE-0048:R7; async-trait deny is
+  CHE-0025:R1+R2; non-exhaustive gate is RST-0006:R1+R3.
+  The projection-lock whitelist is exactly
+  `crates/gh-report/src/app/state/mod.rs`, NOT the whole `app/state/`
+  directory: the sibling modules (`builder.rs`, `baseline.rs`,
+  `server_state.rs`) are in scope of the ban.
 - `cargo-vet` was removed (deferred per SEC-0009); `cargo-deny`/`cargo-audit`
   are the supply-chain controls.
 
@@ -134,9 +149,29 @@ rejects illegal architectures, the search space an agent must explore collapses.
 
 ## Tooling notes
 
-- `graphify-out/graph.json` exists — use `graphify query/explain/affected` for
-  structural questions before grepping; refresh with `graphify update .` after
-  code changes (or rely on the post-commit hook).
+- `graphify-out/graph.json` exists — for structural questions, lead with
+  `graphify explain <symbol>` (one node + its edges) or
+  `graphify affected <symbol> --depth N` (blast-radius before a refactor);
+  both are precise and fast (~2s for a real query). Demote `graphify query` —
+  it seeds lexically on the question's own words and can flood back hundreds
+  of unranked nodes with the correct answer buried or absent; use it only as
+  a last-resort broad scan, not the first tool reached for. Refresh with
+  `graphify update .` after code changes, or rely on the post-commit hook
+  (post-checkout no longer rebuilds — see below).
+  - Known, upstream-blocked limitations (do not re-litigate, do not attempt
+    a fix here): the graph is **undirected** (`directed=False`), so
+    `affected` blast-radius is symmetric when it conceptually shouldn't be —
+    the graphify library supports `directed=True` internally but no CLI flag
+    persists it (only `diagnose multigraph --directed` simulates it
+    read-only). And **`graph.html` is never generated** — the 5000-node viz
+    limit is a hardcoded literal at four call sites in the installed
+    package, with no resize knob, while this repo's post-cleanup graph is
+    ~11.5k nodes.
+  - The linked-worktree hook guard and the stdlib-stub post-rebuild filter
+    are **machine-local** `.git/hooks/` edits (hooks are never cloned or
+    version-controlled) — see `tools/graphify/README.md` for what they do
+    and the exact re-apply procedure after a fresh clone or a
+    `graphify hook install` re-run, which clobbers all of it.
 - `.beads/` is an embedded-dolt store (gitignored) — bd mutations do **not**
   produce a git commit; the audit trail is dolt history + `interactions.jsonl`.
   Don't try to `git add` bead state.

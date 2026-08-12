@@ -17,10 +17,10 @@ usage() {
 check_projection_lock() {
   offenders=$(grep -RIn --include='*.rs' -E '\.projection_state\.lock\(' \
     crates/gh-report/src \
-    | grep -v '^crates/gh-report/src/app/state.rs:' || true)
+    | grep -v '^crates/gh-report/src/app/state/mod\.rs:' || true)
   if [ -n "$offenders" ]; then
-    echo "::error::raw .projection_state.lock( outside crates/gh-report/src/app/state.rs"
-    echo "::error::use AppState::lock_projection() (state.rs:300-316); COM-0018 + CHE-0048:R7 chokepoint"
+    echo "::error::raw .projection_state.lock( outside crates/gh-report/src/app/state/mod.rs"
+    echo "::error::use AppState::lock_projection() (state/mod.rs); COM-0018 + CHE-0048:R7 chokepoint"
     echo "$offenders"
     return 1
   fi
