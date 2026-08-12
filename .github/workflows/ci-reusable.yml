@@ -78,11 +78,10 @@ jobs:
       - run: cargo fmt --check
         if: always()
       # Tripwire: deny `async-trait` (direct or transitive) in every cherry-pit-*
-      # crate's resolved feature-aware dep tree. Locks in CHE-0025 (port traits
-      # use RPITIT, not `#[async_trait]` macro) and CHE-0029:R4 (forbidden-dep
-      # budget for cherry-pit-core, extended workspace-wide for the cherry-pit-*
-      # family as the architectural floor). Authored in mission
-      # phase2-v2-track-1 SM-1 (bd: adr-fmt-6bua). Audit artefact:
+      # crate's resolved feature-aware dep tree. Locks in CHE-0025:R1 (port
+      # traits use RPITIT, not `#[async_trait]` macro) and CHE-0025:R2 (no
+      # heap allocation per async trait method call via Box). Authored in
+      # mission phase2-v2-track-1 SM-1 (bd: adr-fmt-6bua). Audit artefact:
       # .ooda/track-1-4-rpitit-audit-*.md.
       - name: deny async-trait in cherry-pit-* dep trees
         if: always()
@@ -118,9 +117,10 @@ jobs:
   # Tripwire: pin the `projection_state` mutex chokepoint in gh-report.
   # Per `crates/gh-report/src/app/state.rs:300-316`, `AppState::lock_projection()`
   # is the sole sanctioned accessor for the `EvidenceProjection` mutex
-  # (CHE-0048:R2 sole-writer rule; "never hold the returned MutexGuard
-  # across an .await" — D-CD-3). Raw `.projection_state.lock(` calls
-  # must therefore appear only inside `crates/gh-report/src/app/state.rs`
+  # (COM-0018 single-writer concurrency + CHE-0048:R7 in-process
+  # per-aggregate lock write coordination; "never hold the returned
+  # MutexGuard across an .await" — D-CD-3). Raw `.projection_state.lock(`
+  # calls must therefore appear only inside `crates/gh-report/src/app/state.rs`
   # (the accessor definition site and the boot-time `bootstrap_replay_state`
   # which uses tight-scope guards intentionally).
   #
@@ -131,7 +131,7 @@ jobs:
   # additionally enforced by `clippy::await_holding_lock` (clippy pedantic
   # group, denied by `RUSTFLAGS: -D warnings`).
   projection-lock-tripwire:
-    name: gh-report projection-lock chokepoint (CHE-0048:R2)
+    name: gh-report projection-lock chokepoint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -149,7 +149,7 @@ jobs:
   # is exactly the shape that would have caught the original bug: team-
   # refresh warned-and-returned on FencedConflict without re-arming.
   fence-converge-tripwire:
-    name: gh-report FencedConflict converge-sink chokepoint (CHE-0088 amendment)
+    name: gh-report FencedConflict converge-sink chokepoint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -157,13 +157,13 @@ jobs:
         run: tools/tripwires.sh fence-converge
 
   # Hard gate: every public library `pub enum` deriving `thiserror::Error`
-  # must carry `#[non_exhaustive]` (PGN-0006, CHE-0021), enforced by the
-  # `non-exhaustive-check` crate (RST-0006). The tool is deliberately
-  # conservative — under-flagging (missing a macro-generated enum) is the
-  # safe failure mode; over-flagging is not, so any real hit here is
-  # treated as authoritative rather than advisory.
+  # must carry `#[non_exhaustive]` (RST-0006:R1), enforced by the
+  # `non-exhaustive-check` crate (RST-0006:R3 authorises the CI gate). The
+  # tool is deliberately conservative — under-flagging (missing a
+  # macro-generated enum) is the safe failure mode; over-flagging is not,
+  # so any real hit here is treated as authoritative rather than advisory.
   non-exhaustive-check:
-    name: non-exhaustive error-enum gate (RST-0006, PGN-0006, CHE-0021)
+    name: non-exhaustive error-enum gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

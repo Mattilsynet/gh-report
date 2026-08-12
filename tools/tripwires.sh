@@ -20,7 +20,7 @@ check_projection_lock() {
     | grep -v '^crates/gh-report/src/app/state.rs:' || true)
   if [ -n "$offenders" ]; then
     echo "::error::raw .projection_state.lock( outside crates/gh-report/src/app/state.rs"
-    echo "::error::use AppState::lock_projection() (state.rs:300-316); CHE-0048:R2 chokepoint"
+    echo "::error::use AppState::lock_projection() (state.rs:300-316); COM-0018 + CHE-0048:R7 chokepoint"
     echo "$offenders"
     return 1
   fi
@@ -31,7 +31,7 @@ check_async_trait() {
   for c in cherry-pit-core cherry-pit-gateway cherry-pit-web cherry-pit-agent \
            cherry-pit-projection cherry-pit-wq cherry-pit-storage cherry-pit-sd-viz; do
     if cargo tree -p "$c" -e features 2>&1 | grep -q async-trait; then
-      echo "::error::$c transitively depends on async-trait (CHE-0025/CHE-0029:R4)"
+      echo "::error::$c transitively depends on async-trait (CHE-0025:R1+R2)"
       fail=1
     fi
   done
@@ -82,7 +82,7 @@ check_dead_code_suppression() {
 
 check_non_exhaustive() {
   if ! cargo run -p non-exhaustive-check --quiet -- "$ROOT"; then
-    echo "::error::missing #[non_exhaustive] on a library error enum (RST-0006, PGN-0006, CHE-0021)"
+    echo "::error::missing #[non_exhaustive] on a library error enum (RST-0006:R1+R3)"
     return 1
   fi
 }
