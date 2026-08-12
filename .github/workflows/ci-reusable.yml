@@ -131,11 +131,11 @@ jobs:
         if: always()
 
   # Tripwire: pin the `projection_state` mutex chokepoint in gh-report.
-  # Per `crates/gh-report/src/app/state.rs:300-316`, `AppState::lock_projection()`
+  # Per `crates/gh-report/src/app/state/mod.rs`, `AppState::lock_projection()`
   # is the sole sanctioned accessor for the `EvidenceProjection` mutex
   # (CHE-0048:R2 sole-writer rule; "never hold the returned MutexGuard
   # across an .await" — D-CD-3). Raw `.projection_state.lock(` calls
-  # must therefore appear only inside `crates/gh-report/src/app/state.rs`
+  # must therefore appear only inside `crates/gh-report/src/app/state/mod.rs`
   # (the accessor definition site and the boot-time `bootstrap_replay_state`
   # which uses tight-scope guards intentionally).
   #
@@ -150,15 +150,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: pin .projection_state.lock( to app/state.rs
+      - name: pin .projection_state.lock( to app/state/mod.rs
         run: |
           set -euo pipefail
           offenders=$(grep -RIn --include='*.rs' -E '\.projection_state\.lock\(' \
             crates/gh-report/src \
-            | grep -v '^crates/gh-report/src/app/state.rs:' || true)
+            | grep -v '^crates/gh-report/src/app/state/mod\.rs:' || true)
           if [ -n "$offenders" ]; then
-            echo "::error::raw .projection_state.lock( outside crates/gh-report/src/app/state.rs"
-            echo "::error::use AppState::lock_projection() (state.rs:300-316); CHE-0048:R2 chokepoint"
+            echo "::error::raw .projection_state.lock( outside crates/gh-report/src/app/state/mod.rs"
+            echo "::error::use AppState::lock_projection() (app/state/mod.rs); CHE-0048:R2 chokepoint"
             echo "$offenders"
             exit 1
           fi
