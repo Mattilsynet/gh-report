@@ -266,6 +266,10 @@ fn org_help_config_swap_renders_configured_org_with_no_mattilsynet_leak() {
                     url: "https://acme.example/access".to_string(),
                 }],
             },
+            governance_standard: Some(config::org::HelpLink {
+                label: "Acme governance standard".to_string(),
+                url: "https://acme.example/governance".to_string(),
+            }),
         },
         ..DashboardConfig::default()
     };
@@ -436,11 +440,12 @@ fn render_dashboard_produces_all_pages() {
     assert!(pages.contains_key("gh-report-web-client.js"));
     assert!(pages.contains_key("gh-report-web-client_bg.wasm"));
     assert!(pages.contains_key("sort-init.js"));
+    assert!(pages.contains_key("clipboard.js"));
     assert!(pages.contains_key("orphans.html"));
     assert!(pages.contains_key("deleted.html"));
     assert!(pages.contains_key("branch_protection.html"));
     assert!(!pages.contains_key("OPERATIONS.html"));
-    assert_eq!(pages.len(), 11);
+    assert_eq!(pages.len(), 12);
 }
 
 #[test]
@@ -1310,12 +1315,15 @@ fn detail_vm_control_columns_populated() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     assert_eq!(detail_vms.len(), 1);
@@ -1343,12 +1351,15 @@ fn detail_vm_summary_cards_have_labels() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     let (_, vm) = &detail_vms[0];
@@ -1380,12 +1391,15 @@ fn detail_vm_repo_rows_populated() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     let (_, vm) = &detail_vms[0];
@@ -1411,12 +1425,15 @@ fn detail_vm_repo_rows_sorted_case_insensitive() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     let (_, vm) = &detail_vms[0];
@@ -1430,12 +1447,15 @@ fn detail_vm_repo_rows_status_dots_correct() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     let (_, vm) = &detail_vms[0];
@@ -1470,12 +1490,15 @@ fn detail_vm_no_matching_repos_shows_empty() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(empty_repos);
     let detail_vms = build_owner_detail_view_models(
         &owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        "TestOrg",
-        "2026-04-09T12:00:00+00:00",
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: "TestOrg",
+            run_timestamp: "2026-04-09T12:00:00+00:00",
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     assert_eq!(detail_vms.len(), 1);
@@ -1503,12 +1526,15 @@ fn detail_vm_multi_owner_repo_appears_in_both() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     assert_eq!(detail_vms.len(), 2);
@@ -1529,12 +1555,15 @@ fn detail_vm_repo_url_points_to_github() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     let (_, vm) = &detail_vms[0];
@@ -1568,12 +1597,15 @@ fn detail_vm_repo_url_percent_encodes_special_chars() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        "My Org",
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: "My Org",
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     assert_eq!(detail_vms.len(), 1);
@@ -2298,12 +2330,15 @@ fn detail_vm_repo_row_metadata_defaults_when_no_data() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     let (_, vm) = &detail_vms[0];
@@ -2361,12 +2396,15 @@ fn detail_vm_repo_row_metadata_populated_with_data() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     assert_eq!(detail_vms.len(), 1);
@@ -2424,12 +2462,15 @@ fn detail_vm_unregistered_committer_flagged_when_name_present_but_no_login_match
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     let (_, vm) = &detail_vms[0];
@@ -2471,12 +2512,15 @@ fn detail_vm_last_committer_url_percent_encodes_login() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     let (_, vm) = &detail_vms[0];
@@ -2713,12 +2757,15 @@ fn detail_vm_repo_rows_have_visibility_field() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     let (_, vm) = &detail_vms[0];
@@ -2816,6 +2863,111 @@ fn render_owner_detail_html_escapes_metadata_xss() {
     assert!(
         !detail_page.contains("<b>bold</b>"),
         "raw bold tag must be escaped in committer login"
+    );
+}
+
+/// UF2-GEN + CSP proof: the owner-detail governance-prompt widget only
+/// appears when a governance-standard link is configured, consumes that
+/// config value (never a hardcoded URL/org literal), renders for User
+/// owners too, escapes repo names, and introduces zero inline `<script>`
+/// or `onclick` — the clipboard button is wired via an external asset
+/// registered through the 5-step `include_str!`/`LazyLock` path.
+#[test]
+fn render_owner_detail_html_governance_prompt_widget() {
+    let repo = test_fixtures::make_repository_evidence(
+        "<script>alert(1)</script>",
+        Visibility::Public,
+        false,
+        test_fixtures::make_checks(
+            test_fixtures::policy_pass_setting(),
+            test_fixtures::secret_enabled_observable(false),
+            test_fixtures::dependabot_enabled(),
+            test_fixtures::branch_pass(),
+            test_fixtures::codeowners_with_owners(&["@alice"]),
+        ),
+    );
+    let evidence = evidence_from_repos(vec![repo]);
+    let config = DashboardConfig {
+        org_help: config::org::OrgHelpConfig {
+            governance_standard: Some(config::org::HelpLink {
+                label: "Governance standard".to_string(),
+                url: "https://acme.example/governance".to_string(),
+            }),
+            ..config::org::OrgHelpConfig::default()
+        },
+        ..DashboardConfig::default()
+    };
+
+    let pages = render_dashboard(&evidence, &config).unwrap();
+    let detail_page = pages
+        .iter()
+        .find(|(k, _)| k.starts_with("owners/"))
+        .expect("expected an owner detail page")
+        .1;
+
+    assert!(
+        detail_page.contains("tidy-governance skill"),
+        "prompt must instruct use of the tidy-governance skill"
+    );
+    assert!(
+        detail_page.contains("https://acme.example/governance"),
+        "prompt must contain the configured governance URL, not a literal"
+    );
+    assert!(
+        !detail_page.contains("<script>alert(1)</script>"),
+        "raw script tag in repo name must be escaped"
+    );
+    assert!(
+        detail_page.contains("excludes"),
+        "prompt must note archived repos are excluded from repo_rows"
+    );
+    assert!(
+        !detail_page.to_lowercase().contains("onclick"),
+        "no onclick attribute may be introduced (CSP script-src 'self')"
+    );
+
+    let script_tags: Vec<&str> = detail_page
+        .match_indices("<script")
+        .map(|(i, _)| &detail_page[i..])
+        .collect();
+    for tag in &script_tags {
+        let end = tag.find('>').unwrap_or(0);
+        assert!(
+            tag[..end].contains("src=") || tag.starts_with("<script>alert"),
+            "every <script> tag must be external (src=), no inline script"
+        );
+    }
+    assert!(
+        detail_page.contains(r#"<script src="../clipboard.js" defer></script>"#),
+        "clipboard button must be wired via the external clipboard.js asset"
+    );
+
+    assert!(
+        pages.contains_key("clipboard.js"),
+        "clipboard.js must be registered as a served asset (5-step asset path)"
+    );
+}
+
+/// Absent governance-standard config: the widget renders nothing at all
+/// (decision recorded in the mission bead) rather than a broken prompt
+/// naming a skill with no URL to point at.
+#[test]
+fn render_owner_detail_html_governance_prompt_absent_when_unconfigured() {
+    let evidence = evidence_with_owner_repos();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let detail_page = pages
+        .iter()
+        .find(|(k, _)| k.starts_with("owners/"))
+        .expect("expected an owner detail page")
+        .1;
+
+    assert!(
+        !detail_page.contains("tidy-governance-prompt"),
+        "widget must not render when governance_standard is unconfigured"
+    );
+    assert!(
+        !detail_page.contains("clipboard.js"),
+        "clipboard.js script tag must not render on this page when the widget is absent"
     );
 }
 

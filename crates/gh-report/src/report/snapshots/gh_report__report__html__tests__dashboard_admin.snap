@@ -1,5 +1,6 @@
 ---
 source: crates/gh-report/src/report/html/tests.rs
+assertion_line: 318
 expression: "&pages[\"admin.html\"]"
 ---
 <!DOCTYPE html>
@@ -198,6 +199,7 @@ expression: "&pages[\"admin.html\"]"
         
     </section>
 
+    
 </body>
 
 </html>

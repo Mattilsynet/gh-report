@@ -191,6 +191,13 @@ a:hover {
    font-size: 0.9em;
 }
 
+.governance-prompt {
+   width: 100%;
+   max-width: 72em;
+   font-family: monospace;
+}
+
+
 ul {
    padding-left: 1.5em;
 }

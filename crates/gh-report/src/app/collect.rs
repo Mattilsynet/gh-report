@@ -34,8 +34,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::aggregate::metrics;
 use crate::app::state::{
-    AppState, CACHED_SORT_CLIENT_JS, CACHED_SORT_CLIENT_WASM, CACHED_SORT_INIT_JS,
-    CACHED_STYLESHEET, CACHED_WS_JS, CachedPage,
+    AppState, CACHED_CLIPBOARD_JS, CACHED_SORT_CLIENT_JS, CACHED_SORT_CLIENT_WASM,
+    CACHED_SORT_INIT_JS, CACHED_STYLESHEET, CACHED_WS_JS, CachedPage,
 };
 use crate::app::write_policy::{source_chain, write_with_policy};
 use crate::collector::ghas_scanning;
@@ -1621,8 +1621,14 @@ pub(crate) async fn render_and_cache_evidence(
 /// its body) to match the call-chain signature of
 /// [`render_and_cache_evidence`] / [`publish_evidence`];
 /// `block_in_place` needs an async multi-thread-runtime context,
-/// which the `#[expect]` below documents.
-#[expect(
+/// which the `#[allow]` below documents.
+///
+/// `#[allow]` rather than `#[expect]`: whether `clippy::unused_async` fires
+/// on this body is unstable across build targets (fires for `--lib`, does
+/// not fire once a `--tests` compilation unit also calls this function),
+/// so `#[expect]` is unfulfilled under `--tests` per AGENTS.md's
+/// documented `#[expect]`-instability exception.
+#[allow(
     clippy::unused_async,
     reason = "block_in_place must run inside an async task on a multi-thread runtime; \
               kept async to match render_and_cache_evidence/publish_evidence call chain"
@@ -1645,6 +1651,7 @@ pub(crate) async fn build_cached_pages(
                 "gh-report-web-client.js" => CACHED_SORT_CLIENT_JS.clone(),
                 "gh-report-web-client_bg.wasm" => CACHED_SORT_CLIENT_WASM.clone(),
                 "sort-init.js" => CACHED_SORT_INIT_JS.clone(),
+                "clipboard.js" => CACHED_CLIPBOARD_JS.clone(),
                 _ => CachedPage::new(&path, content.into_bytes()),
             };
             cache.insert(path, page);
