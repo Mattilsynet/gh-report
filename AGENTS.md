@@ -47,8 +47,8 @@ binaries plus an ADR-governed library family and a large ADR corpus.
   scope (262s vs ~120s) and does not run doctests.
   Exit codes from this tier back the done-claim; the cadence relocates controls
   to where they earn their cost, not weakens verify-before-claim.
-- **CI-ONLY** (never in the local loop): CI owns deny, audit, and the two
-  tripwire jobs.
+- **CI-ONLY** (never in the local loop): CI owns deny, audit, and the
+  build-time chokepoint gates (`tools/tripwires.sh --list` enumerates them).
 - `clippy::pedantic` is the **standing bar**, not an elevation
   (`[workspace.lints.clippy] pedantic = warn` + CI `-D warnings`). New code must
   pass pedantic with zero warnings.
@@ -70,16 +70,18 @@ match.
 
 - Triggers on push/PR to `main`. Third-party actions are **SHA-pinned**
   (Dependabot updates them); keep that pattern if you edit the workflow.
-- Two custom **tripwire** jobs live in `.github/workflows/ci-reusable.yml`
-  (called from `ci.yml`) and grep the tree to fail the build — do not break
-  the invariants they guard:
-  - `async-trait-tripwire`: no `async-trait` in any `cherry-pit-*` dep tree
-    (RPITIT only; CHE-0025 / CHE-0029:R4).
-  - `gh-report-projection-lock-tripwire`: raw `.projection_state.lock(` is
-    banned outside `crates/gh-report/src/app/state/mod.rs` — use
-    `AppState::lock_projection()` (CHE-0048:R2). The whitelist is that one
-    file, not the whole `app/state/` directory: the sibling modules
-    (`builder.rs`, `baseline.rs`, `server_state.rs`) are in scope of the ban.
+- Merge gates (RST-0007) live in `.github/workflows/ci-reusable.yml` (called
+  from `ci.yml`), invoked via `tools/tripwires.sh <check>` — do not break the
+  invariants they guard. Run `tools/tripwires.sh --list` for the current check
+  names and dispatch on any single check locally (`tools/tripwires.sh
+  <check>`), or `tools/tripwires.sh all` for every check. Governing citations
+  (kept current in the script's `::error::` strings, not duplicated here):
+  projection-lock is COM-0018 + CHE-0048:R7; async-trait deny is
+  CHE-0025:R1+R2; non-exhaustive gate is RST-0006:R1+R3.
+  The projection-lock whitelist is exactly
+  `crates/gh-report/src/app/state/mod.rs`, NOT the whole `app/state/`
+  directory: the sibling modules (`builder.rs`, `baseline.rs`,
+  `server_state.rs`) are in scope of the ban.
 - `cargo-vet` was removed (deferred per SEC-0009); `cargo-deny`/`cargo-audit`
   are the supply-chain controls.
 
