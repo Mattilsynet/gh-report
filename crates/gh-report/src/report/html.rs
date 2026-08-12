@@ -313,23 +313,24 @@ pub fn render_dashboard_streaming(
         orphaned_count,
         deleted_count: vm.deleted_count,
         technical_issues_total: vm.admin_diagnostics.technical_issues_total,
+        governance_standard_link: config.org_help.governance_standard.clone(),
     };
 
     let report = render_template(&ReportTemplate {
         vm: &vm,
-        nav,
+        nav: nav.clone(),
         title: format!("{} GitHub Governance Overview", vm.organization),
         warm_start,
     })?;
     let index = render_template(&IndexTemplate {
         vm: &vm,
-        nav,
+        nav: nav.clone(),
         title: format!("{} Security Dashboard", vm.organization),
         warm_start,
     })?;
     let admin = render_template(&AdminTemplate {
         vm: &vm,
-        nav,
+        nav: nav.clone(),
         title: format!("{} Admin Diagnostics", vm.organization),
         warm_start,
     })?;
@@ -349,7 +350,7 @@ pub fn render_dashboard_streaming(
             tiers,
             owners,
             &orphaned_vm,
-            nav,
+            nav.clone(),
             warm_start,
             &mut sink,
         )?;
@@ -388,7 +389,7 @@ fn render_secondary_pages(
     let orphaned_html = render_template(&OrphansTemplate {
         title: format!("Orphan Repositories — {org}"),
         vm: orphaned_vm,
-        nav,
+        nav: nav.clone(),
         warm_start,
     })?;
     sink("orphans.html".to_string(), orphaned_html);
@@ -396,7 +397,7 @@ fn render_secondary_pages(
     let deleted_html = render_template(&DeletedTemplate {
         title: format!("Deleted Repositories and Teams — {org}"),
         vm: deleted_vm,
-        nav,
+        nav: nav.clone(),
         warm_start,
     })?;
     sink("deleted.html".to_string(), deleted_html);
@@ -433,7 +434,7 @@ fn render_owner_pages(
     let owners_html = render_template(&OwnersTemplate {
         vm: owners,
         total_repos: evidence.collection_statistics.total_repos,
-        nav,
+        nav: nav.clone(),
         title: format!(
             "Owner Coverage — {}",
             evidence.assessment_metadata.organization
@@ -457,7 +458,7 @@ fn render_owner_pages(
         let title = format!("{} — Owner Detail", detail_vm.owner);
         let detail_html = render_template(&OwnerDetailTemplate {
             vm: detail_vm.clone(),
-            nav: nested_nav,
+            nav: nested_nav.clone(),
             title,
             warm_start,
         })?;

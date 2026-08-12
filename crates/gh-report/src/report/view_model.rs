@@ -84,7 +84,7 @@ impl CoverageTier {
 /// (see `nav_identical_across_all_page_types` in
 /// [`crate::report::html`]'s test module) instead of each page carrying
 /// its own drifting copy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopNav {
     /// Relative path prefix to the dashboard root: `""` at the root, or
     /// `"../"` for a page nested one directory deep (owner detail pages).
@@ -97,6 +97,9 @@ pub struct TopNav {
     pub deleted_count: u32,
     /// Count shown on the Admin badge; the badge itself is hidden at zero.
     pub technical_issues_total: u32,
+    /// Deployment's own governance-standard link (UF2-GEN seam), rendered
+    /// by the footer partial when present. `None` for a fresh deployment.
+    pub governance_standard_link: Option<HelpLink>,
 }
 
 impl TopNav {

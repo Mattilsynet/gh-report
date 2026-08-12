@@ -266,6 +266,10 @@ fn org_help_config_swap_renders_configured_org_with_no_mattilsynet_leak() {
                     url: "https://acme.example/access".to_string(),
                 }],
             },
+            governance_standard: Some(config::org::HelpLink {
+                label: "Acme governance standard".to_string(),
+                url: "https://acme.example/governance".to_string(),
+            }),
         },
         ..DashboardConfig::default()
     };
