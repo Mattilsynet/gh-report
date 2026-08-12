@@ -133,9 +133,29 @@ rejects illegal architectures, the search space an agent must explore collapses.
 
 ## Tooling notes
 
-- `graphify-out/graph.json` exists — use `graphify query/explain/affected` for
-  structural questions before grepping; refresh with `graphify update .` after
-  code changes (or rely on the post-commit hook).
+- `graphify-out/graph.json` exists — for structural questions, lead with
+  `graphify explain <symbol>` (one node + its edges) or
+  `graphify affected <symbol> --depth N` (blast-radius before a refactor);
+  both are precise and fast (~2s for a real query). Demote `graphify query` —
+  it seeds lexically on the question's own words and can flood back hundreds
+  of unranked nodes with the correct answer buried or absent; use it only as
+  a last-resort broad scan, not the first tool reached for. Refresh with
+  `graphify update .` after code changes, or rely on the post-commit hook
+  (post-checkout no longer rebuilds — see below).
+  - Known, upstream-blocked limitations (do not re-litigate, do not attempt
+    a fix here): the graph is **undirected** (`directed=False`), so
+    `affected` blast-radius is symmetric when it conceptually shouldn't be —
+    the graphify library supports `directed=True` internally but no CLI flag
+    persists it (only `diagnose multigraph --directed` simulates it
+    read-only). And **`graph.html` is never generated** — the 5000-node viz
+    limit is a hardcoded literal at four call sites in the installed
+    package, with no resize knob, while this repo's post-cleanup graph is
+    ~11.5k nodes.
+  - The linked-worktree hook guard and the stdlib-stub post-rebuild filter
+    are **machine-local** `.git/hooks/` edits (hooks are never cloned or
+    version-controlled) — see `tools/graphify/README.md` for what they do
+    and the exact re-apply procedure after a fresh clone or a
+    `graphify hook install` re-run, which clobbers all of it.
 - `.beads/` is an embedded-dolt store (gitignored) — bd mutations do **not**
   produce a git commit; the audit trail is dolt history + `interactions.jsonl`.
   Don't try to `git add` bead state.
