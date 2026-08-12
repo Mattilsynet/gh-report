@@ -11,7 +11,8 @@ use crate::domain::checks::{
     BranchControls, BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus,
     BranchRequirements, CollectionFailureReason,
 };
-use crate::domain::repository::{Repository, Visibility};
+use crate::domain::repository::Repository;
+use crate::github::auth::CapabilityStatus;
 use crate::github::client::GitHubClient;
 use cherry_pit_web::sanitize_path_segment;
 
@@ -208,12 +209,13 @@ pub async fn evaluate(
 
     let combined = collect_and_merge_controls(&rulesets_result, &legacy_result, default_branch);
 
+    let branch_protection_capability = client.branch_protection_capability();
     let result = build_protection_result(
         combined,
         &rulesets_result,
         &legacy_result,
         default_branch,
-        repo.visibility,
+        branch_protection_capability,
         run_timestamp,
     );
 
@@ -277,7 +279,7 @@ fn build_protection_result(
     rulesets_result: &crate::github::client::ApiOutcome,
     legacy_result: &crate::github::client::ApiOutcome,
     default_branch: &str,
-    visibility: Visibility,
+    branch_protection_capability: CapabilityStatus,
     run_timestamp: &str,
 ) -> BranchProtectionResult {
     match combined {
@@ -285,7 +287,11 @@ fn build_protection_result(
             let status_code = rulesets_result
                 .status_code()
                 .or_else(|| legacy_result.status_code());
-            let reason_kind = classify_failure_reason(rulesets_result, legacy_result, visibility);
+            let reason_kind = classify_failure_reason(
+                rulesets_result,
+                legacy_result,
+                branch_protection_capability,
+            );
             let reason = reason_kind.map(|reason| reason.to_string());
 
             let status = if reason_kind
@@ -337,10 +343,28 @@ fn build_protection_result(
     }
 }
 
+/// Classify why merged branch-protection controls came back empty.
+///
+/// A 404 from the rulesets endpoint means the repository itself was not
+/// found (rulesets require only read access, so any answer other than a
+/// clean 200 is a repo-level signal) — unconditionally `NotFoundAbsent`.
+///
+/// A 404 from the *legacy* endpoint is ambiguous on its own: GitHub returns
+/// 404 (never 403) for that endpoint when the caller lacks admin on the
+/// repo, regardless of whether protection exists. Whether that 404 is
+/// trustworthy as genuine absence depends on `branch_protection_capability`
+/// — the org-level probe of the same endpoint against a sample repo,
+/// captured once per run in [`crate::github::client::GitHubClient`]:
+/// - `Available` — the probe proved this token *can* read legacy branch
+///   protection, so a 404 here is a real absent-control signal
+///   (`NotFoundAbsent`, CHE-0082:R4/R5).
+/// - `PermissionDenied` / `Unavailable` / `NotProbed` — the token's read
+///   access was never confirmed, so the same 404 cannot be trusted as
+///   absence (`PermissionSuspected`, conservative per the amended R5).
 fn classify_failure_reason(
     rulesets_result: &crate::github::client::ApiOutcome,
     legacy_result: &crate::github::client::ApiOutcome,
-    _visibility: Visibility,
+    branch_protection_capability: CapabilityStatus,
 ) -> Option<CollectionFailureReason> {
     if rulesets_result.status_code() == Some(403) || legacy_result.status_code() == Some(403) {
         return Some(CollectionFailureReason::PermissionDenied);
@@ -348,8 +372,15 @@ fn classify_failure_reason(
     if rulesets_result.status_code() == Some(429) || legacy_result.status_code() == Some(429) {
         return Some(CollectionFailureReason::RateLimited);
     }
-    if rulesets_result.status_code() == Some(404) || legacy_result.status_code() == Some(404) {
+    if rulesets_result.status_code() == Some(404) {
         return Some(CollectionFailureReason::NotFoundAbsent);
+    }
+    if legacy_result.status_code() == Some(404) {
+        return Some(if branch_protection_capability == CapabilityStatus::Available {
+            CollectionFailureReason::NotFoundAbsent
+        } else {
+            CollectionFailureReason::PermissionSuspected
+        });
     }
     if rulesets_result.is_retryable() || legacy_result.is_retryable() {
         return Some(CollectionFailureReason::Transient);
@@ -545,16 +576,17 @@ mod tests {
     }
 
     #[test]
-    fn private_404_without_controls_is_genuine_absence() {
-        let not_found =
+    fn legacy_404_with_capability_available_is_genuine_absence() {
+        let rulesets_ok = crate::github::client::ApiOutcome::success(serde_json::json!([]));
+        let legacy_not_found =
             crate::github::client::ApiOutcome::failure(Some(404), "not found".to_string(), false);
 
         let result = build_protection_result(
             None,
-            &not_found,
-            &not_found,
+            &rulesets_ok,
+            &legacy_not_found,
             "main",
-            Visibility::Private,
+            CapabilityStatus::Available,
             "2026-06-17T11:31:04Z",
         );
 
@@ -564,29 +596,82 @@ mod tests {
             result.details.reason_kind,
             Some(CollectionFailureReason::NotFoundAbsent)
         );
-        assert_eq!(result.details.http_status, Some(404));
         assert_eq!(result.details.force_push_blocked, None);
         assert_eq!(result.details.deletion_blocked, None);
     }
 
     #[test]
-    fn internal_404_without_controls_is_genuine_absence() {
-        let not_found =
+    fn legacy_404_with_capability_permission_denied_is_permission_suspected() {
+        let rulesets_ok = crate::github::client::ApiOutcome::success(serde_json::json!([]));
+        let legacy_not_found =
             crate::github::client::ApiOutcome::failure(Some(404), "not found".to_string(), false);
 
         let result = build_protection_result(
             None,
-            &not_found,
-            &not_found,
+            &rulesets_ok,
+            &legacy_not_found,
             "main",
-            Visibility::Internal,
+            CapabilityStatus::PermissionDenied,
             "2026-06-17T11:31:04Z",
         );
 
-        assert_eq!(result.status, BranchProtectionStatus::Fail);
+        assert_eq!(result.status, BranchProtectionStatus::Unknown);
         assert_eq!(
             result.details.reason_kind,
-            Some(CollectionFailureReason::NotFoundAbsent)
+            Some(CollectionFailureReason::PermissionSuspected)
+        );
+        assert_eq!(
+            result.details.force_push_blocked, None,
+            "CHE-0083:R6 — must not fabricate Some(false) for a permission-suspected 404"
+        );
+        assert_eq!(result.details.deletion_blocked, None);
+    }
+
+    #[test]
+    fn legacy_404_with_capability_not_probed_is_permission_suspected() {
+        let rulesets_ok = crate::github::client::ApiOutcome::success(serde_json::json!([]));
+        let legacy_not_found =
+            crate::github::client::ApiOutcome::failure(Some(404), "not found".to_string(), false);
+
+        let result = build_protection_result(
+            None,
+            &rulesets_ok,
+            &legacy_not_found,
+            "main",
+            CapabilityStatus::NotProbed,
+            "2026-06-17T11:31:04Z",
+        );
+
+        assert_eq!(
+            result.status,
+            BranchProtectionStatus::Unknown,
+            "conservative arm per amended CHE-0082:R5: an unconfirmed capability must not be treated as Available"
+        );
+        assert_eq!(
+            result.details.reason_kind,
+            Some(CollectionFailureReason::PermissionSuspected)
+        );
+    }
+
+    #[test]
+    fn legacy_404_with_capability_unavailable_is_permission_suspected() {
+        let rulesets_ok = crate::github::client::ApiOutcome::success(serde_json::json!([]));
+        let legacy_not_found =
+            crate::github::client::ApiOutcome::failure(Some(404), "not found".to_string(), false);
+
+        let result = build_protection_result(
+            None,
+            &rulesets_ok,
+            &legacy_not_found,
+            "main",
+            CapabilityStatus::Unavailable,
+            "2026-06-17T11:31:04Z",
+        );
+
+        assert_eq!(result.status, BranchProtectionStatus::Unknown);
+        assert_eq!(
+            result.details.reason_kind,
+            Some(CollectionFailureReason::PermissionSuspected)
         );
     }
 
@@ -600,7 +685,7 @@ mod tests {
             &denied,
             &denied,
             "main",
-            Visibility::Private,
+            CapabilityStatus::Available,
             "2026-06-17T11:31:04Z",
         );
 
@@ -612,26 +697,29 @@ mod tests {
     }
 
     #[test]
-    fn public_404_without_controls_is_genuine_absence() {
-        let not_found =
+    fn rulesets_404_is_genuine_absence_regardless_of_capability() {
+        // Rulesets require only read access, so a 404 there is a repo-level
+        // signal (the repo itself is gone), not the ambiguous legacy-endpoint
+        // 404. This arm is unchanged by bp-404-03 and must not become
+        // capability-conditioned.
+        let rulesets_not_found =
             crate::github::client::ApiOutcome::failure(Some(404), "not found".to_string(), false);
+        let legacy_ok = crate::github::client::ApiOutcome::success(serde_json::json!({}));
 
         let result = build_protection_result(
             None,
-            &not_found,
-            &not_found,
+            &rulesets_not_found,
+            &legacy_ok,
             "main",
-            Visibility::Public,
+            CapabilityStatus::PermissionDenied,
             "2026-06-17T11:31:04Z",
         );
 
         assert_eq!(result.status, BranchProtectionStatus::Fail);
-        assert_eq!(result.details.reason.as_deref(), Some("not_found_absent"));
         assert_eq!(
             result.details.reason_kind,
             Some(CollectionFailureReason::NotFoundAbsent)
         );
-        assert_eq!(result.details.http_status, Some(404));
     }
 
     #[test]

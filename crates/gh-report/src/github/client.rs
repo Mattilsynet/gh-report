@@ -198,6 +198,12 @@ pub struct GitHubClient {
     /// org's own team count, not by call volume. A legitimately
     /// recreated team re-appears after the next process restart.
     deleted_team_slugs: SccHashMap<String, ()>,
+    /// Result of the most recent [`Self::probe_capabilities`] call for
+    /// `Capability::PrivateBranchProtectionRead`, read by
+    /// `collector::branch_protection::evaluate` to condition legacy-404
+    /// classification on whether this token can read branch protection at
+    /// all (bp-404-03). `NotProbed` until the first probe completes.
+    branch_protection_capability: ArcSwap<CapabilityStatus>,
 }
 
 /// Cached repository detail result. Only successful results are cached.
@@ -369,6 +375,7 @@ impl GitHubClient {
             last_response_etags: SccHashMap::new(),
             not_modified_repos: SccHashMap::new(),
             deleted_team_slugs: SccHashMap::new(),
+            branch_protection_capability: ArcSwap::from_pointee(CapabilityStatus::NotProbed),
         })
     }
 
@@ -1541,6 +1548,9 @@ impl GitHubClient {
             _ => CapabilityStatus::NotProbed,
         };
 
+        self.branch_protection_capability
+            .store(Arc::new(private_branch_protection_read));
+
         let caps = CapabilitySet {
             repos_list,
             org_secret_scanning_alerts,
@@ -1558,6 +1568,17 @@ impl GitHubClient {
         }
 
         caps
+    }
+
+    /// Most recently probed status of `Capability::PrivateBranchProtectionRead`.
+    ///
+    /// `NotProbed` before the first [`Self::probe_capabilities`] call
+    /// completes in this process. Read by
+    /// `collector::branch_protection::evaluate` to condition legacy-404
+    /// classification (bp-404-03).
+    #[must_use]
+    pub fn branch_protection_capability(&self) -> CapabilityStatus {
+        **self.branch_protection_capability.load()
     }
 
     /// Probe a single endpoint and return its capability status.
