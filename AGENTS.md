@@ -66,6 +66,20 @@ install `nats-server` v2.14.3 onto `PATH`. CI installs it in the `test` job
 (checksum-verified). `async-nats` is pinned to the `server_2_14` feature to
 match.
 
+**Default-local impact (measured, no `nats-server` on `PATH`):** BOUNDARY's
+`cargo test --workspace --all-features --locked --no-fail-fast` exits **101**
+with 11 FAILED test binaries across `gh-report`, `pardosa`, and
+`pardosa-nats` (e.g. `live_nats_n_writer_fence_property`,
+`golden_byte_roundtrip_dual_backend`, `live_jetstream_schema_gate`) — this is
+expected-absent-server, not a regression. The gate is inconsistently applied:
+sibling tests in the *same* binaries correctly self-skip with `ignored,
+requires live nats-server at ...`, but the 11 above panic instead of hitting
+that same guard (origin: `test_support.rs:59,61`). Tracked, not yet fixed:
+bd `adr-fmt-4nm87`. Until fixed, treat a BOUNDARY exit 101 whose only FAILED
+lines are these 11 names as a known-quantity, not `Outcome::Surprise` — but
+do not claim `Outcome::Verified` from a run that never reached exit 0 either;
+say so explicitly (partial) and cite `adr-fmt-4nm87`.
+
 ## CI specifics (`.github/workflows/ci.yml`)
 
 - Triggers on push/PR to `main`. Third-party actions are **SHA-pinned**
