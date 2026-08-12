@@ -83,7 +83,7 @@ jobs:
       # heap allocation per async trait method call via Box). Authored in
       # mission phase2-v2-track-1 SM-1 (bd: adr-fmt-6bua). Audit artefact:
       # .ooda/track-1-4-rpitit-audit-*.md.
-      - name: deny async-trait in cherry-pit-* dep trees
+      - name: deny async-trait in cherry-pit-* dep trees (CHE-0025:R1+R2)
         if: always()
         run: tools/tripwires.sh async-trait
       # Tripwire: cherry-pit-sd-viz must carry zero pardosa* Cargo dependency
@@ -92,7 +92,7 @@ jobs:
       # pardosa-nats types in doc comments only; a real Cargo dependency edge
       # would violate the standing severance. Mirrors the async-trait
       # tripwire shape above (CHE-0094:R8).
-      - name: deny pardosa deps in cherry-pit-sd-viz
+      - name: deny pardosa deps in cherry-pit-sd-viz (CHE-0084:R5)
         if: always()
         run: tools/tripwires.sh pardosa-dep
       # Mechanizes RST-0007:R2's id-existence half (RST-0007:R7): every
@@ -141,7 +141,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: pin .projection_state.lock( to app/state.rs
+      - name: pin .projection_state.lock( to app/state.rs (COM-0018 + CHE-0048:R7)
         run: tools/tripwires.sh projection-lock
 
   # Signature (chosen over a raw FencedConflict-match ban): FencedConflict
@@ -159,7 +159,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: every FencedConflict-detecting loop body routes through the sanctioned converge sink
+      - name: every FencedConflict-detecting loop body routes through the sanctioned converge sink (CHE-0088:R9+R10)
         run: tools/tripwires.sh fence-converge
 
   # Hard gate: every public library `pub enum` deriving `thiserror::Error`
@@ -177,7 +177,7 @@ jobs:
         with:
           toolchain: 1.97.0
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - name: run non-exhaustive-check against the workspace root
+      - name: run non-exhaustive-check against the workspace root (RST-0006:R1+R3)
         run: tools/tripwires.sh non-exhaustive
 
   # Tripwire: ban crate/module-level inner `dead_code` suppression in library
