@@ -59,7 +59,7 @@ R5 [5]: Adding a NEW merge gate requires the ADR it cites to carry a
   flag-day migration.
 R6 [5]: Removing or weakening an existing merge gate follows
   COM-0035:R5.
-R7 [4]: R2's id-existence half is mechanized by the gate-citation
+R7 [5]: R2's id-existence half is mechanized by the gate-citation
   check in `tools/tripwires.sh`, run as a step of the build-test-lint
   job (COM-0017:R4, GND-0009:R4). R2's invariant-match half and
   R3-R6 are not mechanically decidable; a CI rung is explicitly
