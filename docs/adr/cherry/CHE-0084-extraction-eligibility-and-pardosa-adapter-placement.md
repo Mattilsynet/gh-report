@@ -1,7 +1,7 @@
 # CHE-0084. Extraction Eligibility and Pardosa Adapter Placement
 
 Date: 2026-07-02
-Last-reviewed: 2026-07-02
+Last-reviewed: 2026-08-12 — refined — added R9 COM-0017:R4 enforcement statement naming job id build-test-lint / pardosa-dep-deny step (RST-0007:R5)
 Tier: B
 Status: Accepted
 Crates: gh-report, pardosa
@@ -33,6 +33,11 @@ R6 [5]: The adapter crate MUST NOT implement or expose pardosa backends, generic
 R7 [5]: The Phase-2 fiber-store example is ruled: extract the generic one-fiber-per-domain-key pardosa mechanism from `gh-report/src/store/mod.rs` to a pardosa-family adapter crate, working name `pardosa-fiber-store`; gh-report retains `DomainEvent` mapping, `key_of` / `org_key_of`, GitHub policy, and the `NativeStore` facade.
 
 R8 [5]: If a candidate cannot pass R1 or would need a `cherry-pit-*` crate with a pardosa dependency, it is not extraction-eligible under this ADR; author a later superseding ADR rather than adding a fourth placement home.
+
+R9 [5]: CI enforces R5 with a build-time tripwire (job id build-test-lint,
+step "deny pardosa deps in cherry-pit-sd-viz", .github/workflows/ci-
+reusable.yml): a resolved pardosa* Cargo dependency in cherry-pit-sd-viz
+fails the build (COM-0017:R4).
 
 ## Consequences
 
