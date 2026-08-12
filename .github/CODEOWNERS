@@ -1,5 +1,5 @@
-# CODEOWNERS — see https://docs.github.com/articles/about-code-owners
-# Order matters: the last matching pattern takes precedence.
+# Code owners for gh-report
 
-# Default owner for everything in the repo.
-*       @acje
+# Docs: <https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners>
+
+* @Mattilsynet/stabsec
