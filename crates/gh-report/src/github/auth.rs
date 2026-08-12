@@ -603,6 +603,12 @@ pub struct CapabilitySet {
     /// Organization secret scanning alerts — optional.
     pub org_secret_scanning_alerts: CapabilityStatus,
     /// Private/internal repository branch-protection reads — optional.
+    ///
+    /// Probed against a single sampled repository, so this is an org-level
+    /// signal about the credential, not a per-repository verdict: admin
+    /// rights vary per repository, and `Available` here does not promise that
+    /// any given repository's protection is readable. Per-repository
+    /// classification uses that repository's own observed authority signal.
     pub private_branch_protection_read: CapabilityStatus,
 }
 

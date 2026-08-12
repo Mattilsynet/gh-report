@@ -1498,7 +1498,19 @@ impl GitHubClient {
     /// `PrivateBranchProtectionRead` is probed against a single sample repo
     /// drawn from the org repository listing response above — the full repo
     /// inventory is not yet loaded at this point in startup — via a real GET
-    /// against that repo's rulesets endpoint.
+    /// against that repo's legacy branch-protection endpoint
+    /// (`/branches/{default}/protection`). That endpoint is what the
+    /// capability's own contract claims to guard: it is the endpoint that
+    /// returns an ambiguous 404 for a non-admin token, so it must be the one
+    /// actually probed rather than the rulesets endpoint (which answers 200
+    /// under read-only access and would let the guard fail open).
+    ///
+    /// The sample is one repository, so the result is an org-level signal
+    /// about the credential and never a per-repository verdict. Admin rights
+    /// vary per repository, so a caller holding admin on the sampled repo and
+    /// on no other still yields `Available` here. Classification of an
+    /// individual repository's 404 is decided per repository from its own
+    /// observed authority signal (`AdminAccess`), never from this value.
     ///
     /// Other repo-level capabilities (contents, per-repo branch protection,
     /// etc.) are not probed here — each collector independently calls the
@@ -1514,6 +1526,9 @@ impl GitHubClient {
         let sample_repo = first_repo_name(repos_list_probe.data())
             .and_then(|name| cherry_pit_web::sanitize_path_segment(name, "repo_name").ok())
             .map(std::borrow::Cow::into_owned);
+        let sample_default_branch = first_repo_default_branch(repos_list_probe.data())
+            .and_then(|branch| cherry_pit_web::sanitize_path_segment(branch, "branch_name").ok())
+            .map(std::borrow::Cow::into_owned);
 
         let org_secret_scanning_alerts = self
             .probe_endpoint(&format!(
@@ -1522,12 +1537,15 @@ impl GitHubClient {
             ))
             .await;
 
-        let private_branch_protection_read = match sample_repo {
-            Some(repo) => {
-                self.probe_endpoint(&format!("/repos/{}/{}/rulesets", self.org_name, repo))
-                    .await
+        let private_branch_protection_read = match (sample_repo, sample_default_branch) {
+            (Some(repo), Some(branch)) => {
+                self.probe_endpoint(&format!(
+                    "/repos/{}/{}/branches/{}/protection",
+                    self.org_name, repo, branch
+                ))
+                .await
             }
-            None => CapabilityStatus::NotProbed,
+            _ => CapabilityStatus::NotProbed,
         };
 
         let caps = CapabilitySet {
@@ -1572,6 +1590,10 @@ fn classify_capability_probe(result: &ApiOutcome) -> CapabilityStatus {
 
 fn first_repo_name(data: Option<&serde_json::Value>) -> Option<&str> {
     data?.as_array()?.first()?.get("name")?.as_str()
+}
+
+fn first_repo_default_branch(data: Option<&serde_json::Value>) -> Option<&str> {
+    data?.as_array()?.first()?.get("default_branch")?.as_str()
 }
 
 /// Simple jitter: returns a random value in [0, `max_ms`).
@@ -3088,25 +3110,36 @@ mod tests {
         assert_eq!(first_repo_name(Some(&data)), None);
     }
 
+    #[test]
+    fn first_repo_default_branch_extracts_first_array_entry() {
+        let data = serde_json::json!([{"default_branch": "main"}, {"default_branch": "dev"}]);
+        assert_eq!(first_repo_default_branch(Some(&data)), Some("main"));
+    }
+
+    #[test]
+    fn first_repo_default_branch_none_when_entry_has_no_default_branch() {
+        let data = serde_json::json!([{"name": "sample-repo"}]);
+        assert_eq!(first_repo_default_branch(Some(&data)), None);
+    }
+
     #[tokio::test]
-    async fn probe_capabilities_marks_private_branch_protection_available_on_rulesets_200() {
+    async fn probe_capabilities_marks_private_branch_protection_available_on_legacy_200() {
         use wiremock::matchers::path;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
         Mock::given(path("/orgs/test-org/repos"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!([{"name": "sample-repo"}])),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"name": "sample-repo", "default_branch": "main"}
+            ])))
             .mount(&server)
             .await;
         Mock::given(path("/orgs/test-org/secret-scanning/alerts"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
             .mount(&server)
             .await;
-        Mock::given(path("/repos/test-org/sample-repo/rulesets"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+        Mock::given(path("/repos/test-org/sample-repo/branches/main/protection"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
             .mount(&server)
             .await;
 
@@ -3126,17 +3159,16 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(path("/orgs/test-org/repos"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!([{"name": "sample-repo"}])),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"name": "sample-repo", "default_branch": "main"}
+            ])))
             .mount(&server)
             .await;
         Mock::given(path("/orgs/test-org/secret-scanning/alerts"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
             .mount(&server)
             .await;
-        Mock::given(path("/repos/test-org/sample-repo/rulesets"))
+        Mock::given(path("/repos/test-org/sample-repo/branches/main/protection"))
             .respond_with(ResponseTemplate::new(403))
             .mount(&server)
             .await;
@@ -3151,6 +3183,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn probe_capabilities_marks_private_branch_protection_permission_denied_on_404() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+        struct RecordLegacyHit(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl wiremock::Respond for RecordLegacyHit {
+            fn respond(&self, _req: &Request) -> ResponseTemplate {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(404)
+            }
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(path("/orgs/test-org/repos"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"name": "sample-repo", "default_branch": "main"}
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(path("/orgs/test-org/secret-scanning/alerts"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(path("/repos/test-org/sample-repo/rulesets"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        let legacy_hit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        Mock::given(path("/repos/test-org/sample-repo/branches/main/protection"))
+            .and(method("GET"))
+            .respond_with(RecordLegacyHit(std::sync::Arc::clone(&legacy_hit)))
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let caps = client.probe_capabilities().await;
+
+        assert!(
+            legacy_hit.load(std::sync::atomic::Ordering::SeqCst),
+            "probe must request the legacy branch-protection endpoint, not rely on /rulesets"
+        );
+        assert_eq!(
+            caps.private_branch_protection_read,
+            CapabilityStatus::PermissionDenied
+        );
+    }
+
+    #[tokio::test]
     async fn probe_capabilities_leaves_private_branch_protection_not_probed_without_sample_repo() {
         use wiremock::matchers::path;
         use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -3158,6 +3238,34 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(path("/orgs/test-org/repos"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(path("/orgs/test-org/secret-scanning/alerts"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let caps = client.probe_capabilities().await;
+
+        assert_eq!(
+            caps.private_branch_protection_read,
+            CapabilityStatus::NotProbed
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_capabilities_leaves_private_branch_protection_not_probed_without_default_branch()
+    {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/orgs/test-org/repos"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"name": "sample-repo"}])),
+            )
             .mount(&server)
             .await;
         Mock::given(path("/orgs/test-org/secret-scanning/alerts"))
