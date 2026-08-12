@@ -49,23 +49,58 @@ check_fence_converge() {
   FILE=crates/gh-report/src/app/daemon.rs
   check_window() {
     from=$1; to=$2; label=$3
-    body=$(sed -n "${from},${to}p" "$FILE")
-    if ! printf '%s\n' "$body" | grep -q 'FencedConflict'; then
-      echo "::error::$label ($from-$to) no longer detects FencedConflict — tripwire assumption stale, re-check CHE-0088 amendment"
-      return 1
-    fi
-    if ! printf '%s\n' "$body" | grep -q -E 'rearm_fenced_run\(|rearm_fenced_team_refresh_tick\('; then
-      echo "::error::$label ($from-$to) detects FencedConflict without routing through the sanctioned converge sink"
-      echo "::error::use rearm_fenced_run(...)/rearm_fenced_team_refresh_tick(...) -> converge_on_fence; CHE-0088 amendment (adr-fmt-3jptm)"
-      return 1
-    fi
+    awk -v from="$from" -v to="$to" -v label="$label" '
+      NR < from || NR > to { next }
+      {
+        ln = $0
+        opens = gsub(/{/, "{", ln)
+        closes = gsub(/}/, "}", ln)
+        depth_before[NR] = depth
+        depth += opens - closes
+        depth_after[NR] = depth
+        line[NR] = $0
+      }
+      END {
+        n = 0
+        for (i = from; i <= to; i++) {
+          if (line[i] ~ /FencedConflict/) { n++; trig[n] = i }
+        }
+        if (n == 0) {
+          printf("::error::%s (%d-%d) no longer detects FencedConflict — tripwire assumption stale, re-check CHE-0088 amendment\n", label, from, to)
+          exit 1
+        }
+        unpaired = 0
+        for (k = 1; k <= n; k++) {
+          t = trig[k]
+          db = depth_before[t]
+          opened = 0
+          endline = to
+          for (i = t; i <= to; i++) {
+            if (depth_after[i] > db) opened = 1
+            if (opened && depth_after[i] <= db) { endline = i; break }
+          }
+          paired = 0
+          for (i = t; i <= endline; i++) {
+            if (line[i] ~ /rearm_fenced_run\(|rearm_fenced_team_refresh_tick\(/) { paired = 1; break }
+          }
+          if (!paired) {
+            unpaired++
+            printf("::error::%s FencedConflict arm at line %d has no paired rearm_fenced_run(...)/rearm_fenced_team_refresh_tick(...) call in its own arm scope\n", label, t)
+            printf("::error::use rearm_fenced_run(...)/rearm_fenced_team_refresh_tick(...) -> converge_on_fence for this specific arm; CHE-0088 amendment (adr-fmt-3jptm)\n")
+          }
+        }
+        exit (unpaired > 0)
+      }
+    ' "$FILE"
   }
   start1=$(grep -n '^fn spawn_collection_loop' "$FILE" | cut -d: -f1)
   end1=$(awk -v s="$start1" 'NR>s && /^(async )?fn /{print NR; exit}' "$FILE")
   start2=$(grep -n '^fn spawn_team_refresh_loop' "$FILE" | cut -d: -f1)
   end2=$(awk -v s="$start2" 'NR>s && /^(async )?fn /{print NR; exit}' "$FILE")
-  check_window "$start1" "$end1" "spawn_collection_loop"
-  check_window "$start2" "$end2" "spawn_team_refresh_loop"
+  fail=0
+  check_window "$start1" "$end1" "spawn_collection_loop" || fail=1
+  check_window "$start2" "$end2" "spawn_team_refresh_loop" || fail=1
+  return $fail
 }
 
 check_dead_code_suppression() {
