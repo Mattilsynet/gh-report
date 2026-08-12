@@ -112,7 +112,15 @@ adr-fmt-xdlw9 O3).
   BOUNDARY to epic granularity; coverage is relocated to where it earns its
   cost, never dropped.
 - **CI-ONLY** (never in the local loop): CI owns deny, audit, and the two
-  tripwire jobs.
+  tripwire jobs. No agent tier runs these — not INNER, not MID, not BOUNDARY.
+  A green BOUNDARY is therefore NOT a proxy for a green CI; the residual
+  defect class that reaches a PR unnoticed by every agent tier is exactly
+  "violates a CI-only invariant" — a supply-chain advisory, or a tripwire
+  whose grep no longer matches after a rename. Live instance: PR #12's K9
+  rename of `app/state.rs` -> `app/state/mod.rs` broke the
+  `gh-report-projection-lock-tripwire` whitelist; linus APPROVEd 0-issues and
+  BOUNDARY was green, but CI caught the break. Adding a tripwire grep to
+  MID/BOUNDARY is under consideration — it is NOT currently an obligation.
 - `clippy::pedantic` is the **standing bar**, not an elevation
   (`[workspace.lints.clippy] pedantic = warn` + CI `-D warnings`). New code must
   pass pedantic with zero warnings.
