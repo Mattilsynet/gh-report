@@ -26,13 +26,25 @@ binaries plus an ADR-governed library family and a large ADR corpus.
   CARGO_TERM_PROGRESS_WHEN=never cargo clippy -p <crate> --message-format=short -- -D warnings
   ```
   One test: `cargo test -p <crate> <name> --message-format=short`.
-- **BOUNDARY** (mission/sub-mission completion, before claiming done):
+- **BOUNDARY** (mission/sub-mission completion, before claiming done;
+  measured total ~4.4 min, bead adr-fmt-351tt (authoritative) / adr-fmt-keehk
+  (orientation) — macOS/arm64, 14 cores, warm cargo cache, uncontended
+  machine; not a universal constant, present with these conditions. The
+  prior "60-83 min" figure (bead adr-fmt-blhrc) is superseded — that run hit
+  environment contention (NI=5, competing processes, Defender activity), not
+  a code baseline):
   ```
-  cargo build  --workspace --all-features --locked
-  cargo test   --workspace --all-features --locked
-  cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-  cargo fmt --all -- --check
+  cargo build  --workspace --all-features --locked                  # 93.7s cold, 678 units
+  cargo test   --workspace --all-features --locked --no-fail-fast   # ~120s warm (~40s compile + 85.6s exec, incl. doctests)
+  cargo clippy --workspace --all-targets --all-features --locked -- -D warnings  # 49.0s
+  cargo fmt --all -- --check                                        # 1.0s
   ```
+  `--no-fail-fast` is mandatory on the BOUNDARY test line: plain `cargo test`
+  stops at the first failing test binary, so a failing BOUNDARY silently
+  verifies only a fraction of the workspace (measured: ~40% covered before
+  abort) — violating the coverage-parity intent of this tier. BOUNDARY stays
+  on `cargo test` rather than `nextest`: nextest measured slower at workspace
+  scope (262s vs ~120s) and does not run doctests.
   Exit codes from this tier back the done-claim; the cadence relocates controls
   to where they earn their cost, not weakens verify-before-claim.
 - **CI-ONLY** (never in the local loop): CI owns deny, audit, and the two
