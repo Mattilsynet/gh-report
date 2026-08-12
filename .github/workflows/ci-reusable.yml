@@ -18,13 +18,13 @@ jobs:
     name: build, test, lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.97.0
           components: clippy, rustfmt
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo build --workspace --all-features --locked
       # CHE-0087 R5/R6: the Leptos CSR client is wasm32-only and excluded from
       # the default build set. Its committed .wasm/.js artefacts are embedded
@@ -140,7 +140,7 @@ jobs:
     name: gh-report projection-lock chokepoint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: pin .projection_state.lock( to app/state/mod.rs (COM-0018 + CHE-0048:R7)
         run: tools/tripwires.sh projection-lock
 
@@ -158,7 +158,7 @@ jobs:
     name: gh-report FencedConflict converge-sink chokepoint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: every FencedConflict-detecting loop body routes through the sanctioned converge sink (CHE-0088:R9+R10)
         run: tools/tripwires.sh fence-converge
 
@@ -172,11 +172,11 @@ jobs:
     name: non-exhaustive error-enum gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.97.0
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: run non-exhaustive-check against the workspace root (RST-0006:R1+R3)
         run: tools/tripwires.sh non-exhaustive
 
@@ -194,7 +194,7 @@ jobs:
     name: ban module-level dead_code suppression (crates/*/src)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: ban inner #![allow/expect(dead_code)] in crate src
         run: tools/tripwires.sh dead-code-suppression
 
@@ -202,11 +202,11 @@ jobs:
     name: supply-chain (audit + deny)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.97.0
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo install --locked cargo-audit
       - run: cargo audit
       - run: cargo install --locked cargo-deny
