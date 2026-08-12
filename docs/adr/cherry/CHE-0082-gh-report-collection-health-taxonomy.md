@@ -24,7 +24,7 @@ R2 [5]: Append new gh-report event fields under CHE-0022 and PGN-0013; do not re
 
 R3 [5]: Store HTTP status as `Option<u16>` or an equivalent bounded enum, never as text or an HTTP library type.
 
-R4 [5]: Treat public branch-protection 404 with no controls as genuine absence; it may remain a governance Fail.
+R4 [5]: Treat a public branch-protection 404 with no controls as genuine absence (governance Fail, in the denominator) WHEN `Capability::PrivateBranchProtectionRead` is Available; otherwise (Unavailable, PermissionDenied, or not probed) treat it as Unknown with a permission-suspected reason. The legacy endpoint requires repo-admin regardless of visibility, so public 404s are equally uninformative (evidence: adr-fmt-bol6p).
 
 R5 [5]: Treat a private or internal branch-protection 404 with no controls as genuine absence per R4 (governance Fail, in the denominator) WHEN `Capability::PrivateBranchProtectionRead` is Available; otherwise (Unavailable, PermissionDenied, or not probed) treat it as Unknown with a permission-suspected reason. Adds only the capability condition; does not revive inferring authority failure from 404 plus visibility alone, which stays forbidden (evidence: adr-fmt-bol6p).
 
@@ -38,4 +38,6 @@ R7 [5]: Represent active credential limitations through the existing AuthMode, T
 
 − becomes harder: schema hashes move when new bounded event fields are appended, requiring re-scrape rather than mixed old/new event replay.
 
-risks/migration: the first run without a GitHub App token reports private/internal branch-protection reads as capability-limited; per the R5 amendment (2026-08-12, evidence adr-fmt-bol6p), a private/internal branch-protection 404 is genuine absence only while `Capability::PrivateBranchProtectionRead` is Available, and is classified Unknown/permission-suspected otherwise.
+− becomes harder: `Capability::PrivateBranchProtectionRead` now gates both public and private/internal 404 classification (R4, R5); the name predates that scope. Kept as-is — it is wire-format serialised and out of scope to rename here.
+
+risks/migration: the first run without a GitHub App token reports public and private/internal branch-protection reads as capability-limited; per the R4/R5 amendment (2026-08-12, evidence adr-fmt-bol6p), a branch-protection 404 of any visibility is genuine absence only while `Capability::PrivateBranchProtectionRead` is Available, and is classified Unknown/permission-suspected otherwise.
