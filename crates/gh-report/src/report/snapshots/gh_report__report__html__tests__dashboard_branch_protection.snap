@@ -1,5 +1,6 @@
 ---
 source: crates/gh-report/src/report/html/tests.rs
+assertion_line: 328
 expression: "&pages[\"branch_protection.html\"]"
 ---
 <!DOCTYPE html>
@@ -121,6 +122,7 @@ expression: "&pages[\"branch_protection.html\"]"
     </section>
     
 
+    
 </body>
 
 </html>

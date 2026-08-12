@@ -1,5 +1,6 @@
 ---
 source: crates/gh-report/src/report/html/tests.rs
+assertion_line: 407
 expression: "&pages[\"orphans.html\"]"
 ---
 <!DOCTYPE html>
@@ -73,6 +74,7 @@ expression: "&pages[\"orphans.html\"]"
     
 
 
+    
 </body>
 
 </html>

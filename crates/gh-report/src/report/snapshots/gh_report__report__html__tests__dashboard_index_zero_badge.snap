@@ -1,5 +1,6 @@
 ---
 source: crates/gh-report/src/report/html/tests.rs
+assertion_line: 363
 expression: "&pages[\"index.html\"]"
 ---
 <!DOCTYPE html>
@@ -93,6 +94,7 @@ expression: "&pages[\"index.html\"]"
 
     
 
+    
 </body>
 
 </html>

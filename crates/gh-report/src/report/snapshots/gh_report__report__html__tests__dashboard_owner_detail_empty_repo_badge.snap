@@ -1,5 +1,6 @@
 ---
 source: crates/gh-report/src/report/html/tests.rs
+assertion_line: 2646
 expression: detail_page
 ---
 <!DOCTYPE html>
@@ -176,6 +177,7 @@ expression: detail_page
 
     
 
+    
 </body>
 
 </html>

@@ -1,5 +1,6 @@
 ---
 source: crates/gh-report/src/report/html/tests.rs
+assertion_line: 1638
 expression: "&pages[\"owners.html\"]"
 ---
 <!DOCTYPE html>
@@ -95,6 +96,7 @@ expression: "&pages[\"owners.html\"]"
     </tbody>
 </table>
 </div>
+
 
 
 </body>

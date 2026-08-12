@@ -1,5 +1,6 @@
 ---
 source: crates/gh-report/src/report/html/tests.rs
+assertion_line: 3704
 expression: "&pages[\"deleted.html\"]"
 ---
 <!DOCTYPE html>
@@ -97,6 +98,7 @@ expression: "&pages[\"deleted.html\"]"
     
     
 
+    
 </body>
 
 </html>

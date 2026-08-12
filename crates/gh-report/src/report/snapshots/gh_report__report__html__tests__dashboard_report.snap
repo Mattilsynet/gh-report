@@ -1,5 +1,6 @@
 ---
 source: crates/gh-report/src/report/html/tests.rs
+assertion_line: 298
 expression: "&pages[\"report.html\"]"
 ---
 <!DOCTYPE html>
@@ -341,6 +342,7 @@ expression: "&pages[\"report.html\"]"
         </tbody>
     </table>
 
+    
 </body>
 
 </html>
