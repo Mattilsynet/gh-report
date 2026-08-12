@@ -1735,7 +1735,13 @@ fn reuse_from_baseline(
             .updated_at
             .as_deref()
             .unwrap_or_default();
-        if !baseline::should_reuse(baseline_updated_at, repo.updated_at.as_deref()) {
+        let baseline_age =
+            baseline::assess_baseline_age(evidence.checks.observed_at(), run_timestamp);
+        if !baseline::should_reuse(
+            baseline_updated_at,
+            repo.updated_at.as_deref(),
+            baseline_age,
+        ) {
             continue;
         }
         if evidence.checks.dependabot_security_updates.status == DependabotStatus::Enabled
@@ -3433,6 +3439,16 @@ mod tests {
         )
     }
 
+    /// Create a `RunMetadata` with a fixed `started_at`, decoupled from
+    /// wall-clock time, so baseline-age assertions stay deterministic
+    /// (adr-fmt-glprg).
+    fn test_run_meta_at(timestamp: &str) -> RunMetadata {
+        let mut run = test_run_meta();
+        run.started_at =
+            crate::domain::time::parse_iso8601(timestamp).expect("valid fixture timestamp");
+        run
+    }
+
     #[tokio::test]
     async fn collection_outcome_is_cancelled_when_cancel_fires() {
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -3556,29 +3572,30 @@ mod tests {
     async fn saga_resumes_from_event_log_zero_fresh() {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
-        let run = test_run_meta();
+        let run = test_run_meta_at("2026-04-09T12:00:05+00:00");
         let state = AppState::new_with_cache_capacity(10).await;
 
         let mut saga = make_test_saga(&config, &run);
         let ctx = make_test_collection_context();
 
+        let fresh_updated_at = "2026-04-10T00:00:00Z";
         let mut e1 = sample_repo("repo-1");
-        e1.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
+        e1.repository.updated_at = Some(fresh_updated_at.to_string());
         let mut e2 = sample_repo("repo-2");
-        e2.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
+        e2.repository.updated_at = Some(fresh_updated_at.to_string());
         seed_baseline(
             dir.path(),
             &state,
             vec![
-                ("repo-1", "2026-04-10T00:00:00Z", e1),
-                ("repo-2", "2026-04-10T00:00:00Z", e2),
+                ("repo-1", fresh_updated_at, e1),
+                ("repo-2", fresh_updated_at, e2),
             ],
         );
 
         let inventory = InventoryLoad {
             active_repos: vec![
-                arc_repo_with_updated_at("repo-1", Some("2026-04-10T00:00:00Z")),
-                arc_repo_with_updated_at("repo-2", Some("2026-04-10T00:00:00Z")),
+                arc_repo_with_updated_at("repo-1", Some(fresh_updated_at)),
+                arc_repo_with_updated_at("repo-2", Some(fresh_updated_at)),
             ],
             complete: true,
             inventory_fetched_at: None,
@@ -3600,22 +3617,19 @@ mod tests {
     async fn saga_resumes_from_event_log_partial_fresh() {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
-        let run = test_run_meta();
+        let run = test_run_meta_at("2026-04-09T12:00:05+00:00");
         let state = AppState::new_with_cache_capacity(10).await;
 
         let mut saga = make_test_saga(&config, &run);
 
+        let fresh_updated_at = "2026-04-10T00:00:00Z";
         let mut e1 = sample_repo("repo-1");
-        e1.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
-        seed_baseline(
-            dir.path(),
-            &state,
-            vec![("repo-1", "2026-04-10T00:00:00Z", e1)],
-        );
+        e1.repository.updated_at = Some(fresh_updated_at.to_string());
+        seed_baseline(dir.path(), &state, vec![("repo-1", fresh_updated_at, e1)]);
 
         let inventory = InventoryLoad {
             active_repos: vec![
-                arc_repo_with_updated_at("repo-1", Some("2026-04-10T00:00:00Z")),
+                arc_repo_with_updated_at("repo-1", Some(fresh_updated_at)),
                 arc_repo("repo-2"),
             ],
             complete: true,
@@ -3657,24 +3671,22 @@ mod tests {
     async fn saga_reuses_baseline() {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
-        let run = test_run_meta();
+        let run = test_run_meta_at("2026-04-09T12:00:05+00:00");
         let state = AppState::new_with_cache_capacity(10).await;
 
         let mut saga = make_test_saga(&config, &run);
 
+        let fresh_updated_at = "2026-04-10T00:00:00Z";
         let mut evidence_1 = sample_repo("repo-1");
-        evidence_1.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
+        evidence_1.repository.updated_at = Some(fresh_updated_at.to_string());
         seed_baseline(
             dir.path(),
             &state,
-            vec![("repo-1", "2026-04-10T00:00:00Z", evidence_1)],
+            vec![("repo-1", fresh_updated_at, evidence_1)],
         );
 
         let inventory = InventoryLoad {
-            active_repos: vec![arc_repo_with_updated_at(
-                "repo-1",
-                Some("2026-04-10T00:00:00Z"),
-            )],
+            active_repos: vec![arc_repo_with_updated_at("repo-1", Some(fresh_updated_at))],
             complete: true,
             inventory_fetched_at: None,
         };
@@ -3684,6 +3696,93 @@ mod tests {
         assert_eq!(*saga.phase(), SweepPhase::BaselineReused);
         assert_eq!(saga.baseline_reused, 1);
         assert!(state.projection_contains("id-repo-1"));
+    }
+
+    /// adr-fmt-glprg (High): baseline age must be measured from when the
+    /// evidence was actually collected, not from GitHub's `updated_at`.
+    /// Here `repository.updated_at` is old and unchanged (would never
+    /// look "fresh" by that signal), but the evidence itself was observed
+    /// 1h inside `BASELINE_MAX_AGE_SECS` before the run, so reuse must
+    /// still succeed.
+    #[tokio::test]
+    async fn saga_reuses_baseline_with_old_updated_at_but_recent_observation() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta_at("2026-04-10T12:00:00+00:00");
+        let state = AppState::new_with_cache_capacity(10).await;
+
+        let mut saga = make_test_saga(&config, &run);
+
+        let old_updated_at = "2020-01-01T00:00:00Z";
+        let max_age = i64::try_from(config::BASELINE_MAX_AGE_SECS).unwrap();
+        let observed_within_max_age = (crate::domain::time::parse_iso8601(&run.timestamp())
+            .unwrap()
+            - jiff::SignedDuration::from_secs(max_age - 3600))
+        .to_string();
+        let repo = test_fixtures::make_repository("repo-1", false, Visibility::Public);
+        let mut evidence = test_fixtures::evidence_from_repository(&repo, &observed_within_max_age);
+        evidence.repository.updated_at = Some(old_updated_at.to_string());
+        seed_baseline(
+            dir.path(),
+            &state,
+            vec![("repo-1", old_updated_at, evidence)],
+        );
+
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo_with_updated_at("repo-1", Some(old_updated_at))],
+            complete: true,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
+
+        assert_eq!(
+            saga.baseline_reused, 1,
+            "an observation within BASELINE_MAX_AGE_SECS must reuse even when updated_at is old"
+        );
+    }
+
+    /// adr-fmt-glprg (High): the inverse of the above — `repository.updated_at`
+    /// is old and unchanged (identical baseline vs. current), but the
+    /// evidence was observed 1h beyond `BASELINE_MAX_AGE_SECS` before the
+    /// run, so reuse must be refused and the repo recollected, even
+    /// though `updated_at` alone would suggest no change.
+    #[tokio::test]
+    async fn saga_recollects_when_observation_exceeds_max_age_despite_unchanged_updated_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta_at("2026-04-10T12:00:00+00:00");
+        let state = AppState::new_with_cache_capacity(10).await;
+
+        let mut saga = make_test_saga(&config, &run);
+
+        let old_updated_at = "2020-01-01T00:00:00Z";
+        let max_age = i64::try_from(config::BASELINE_MAX_AGE_SECS).unwrap();
+        let observed_beyond_max_age = (crate::domain::time::parse_iso8601(&run.timestamp())
+            .unwrap()
+            - jiff::SignedDuration::from_secs(max_age + 3600))
+        .to_string();
+        let repo = test_fixtures::make_repository("repo-1", false, Visibility::Public);
+        let mut evidence = test_fixtures::evidence_from_repository(&repo, &observed_beyond_max_age);
+        evidence.repository.updated_at = Some(old_updated_at.to_string());
+        seed_baseline(
+            dir.path(),
+            &state,
+            vec![("repo-1", old_updated_at, evidence)],
+        );
+
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo_with_updated_at("repo-1", Some(old_updated_at))],
+            complete: true,
+            inventory_fetched_at: None,
+        };
+
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
+
+        assert_eq!(
+            saga.baseline_reused, 0,
+            "an observation beyond BASELINE_MAX_AGE_SECS must be recollected even when updated_at is unchanged"
+        );
     }
 
     /// Test 11: Changed `updated_at` forces re-evaluation (no baseline reuse).
@@ -3766,8 +3865,13 @@ mod tests {
         let repo = arc_repo_with_updated_at("repo-1", Some("2026-04-10T00:00:00Z"));
         let completed = HashMap::new();
 
-        let baseline_cache =
-            reuse_from_baseline(&[repo], &completed, "2026-04-10T00:00:00Z", &state, false);
+        let baseline_cache = reuse_from_baseline(
+            &[repo],
+            &completed,
+            "2026-04-09T13:00:00+00:00",
+            &state,
+            false,
+        );
 
         assert!(
             baseline_cache.contains_key("id-repo-1"),
@@ -4543,7 +4647,7 @@ mod tests {
     async fn sweep_progress_completed_reflects_current_run_not_projection_len() {
         let dir = tempfile::tempdir().unwrap();
         let config = config_with_dir(dir.path());
-        let mut run = test_run_meta();
+        let mut run = test_run_meta_at("2026-04-09T12:00:05+00:00");
         let state = AppState::new_with_cache_capacity(10).await;
 
         let mut contaminant = sample_repo("repo-not-in-inventory");
@@ -4554,17 +4658,18 @@ mod tests {
             vec![("repo-not-in-inventory", "2026-04-10T00:00:00Z", contaminant)],
         );
 
+        let fresh_updated_at = "2026-04-10T00:00:00Z";
         let mut reused = sample_repo("repo-reused");
-        reused.repository.updated_at = Some("2026-04-10T00:00:00Z".to_string());
+        reused.repository.updated_at = Some(fresh_updated_at.to_string());
         seed_baseline(
             dir.path(),
             &state,
-            vec![("repo-reused", "2026-04-10T00:00:00Z", reused)],
+            vec![("repo-reused", fresh_updated_at, reused)],
         );
 
         let inventory = InventoryLoad {
             active_repos: vec![
-                arc_repo_with_updated_at("repo-reused", Some("2026-04-10T00:00:00Z")),
+                arc_repo_with_updated_at("repo-reused", Some(fresh_updated_at)),
                 arc_repo("repo-pending"),
             ],
             complete: true,

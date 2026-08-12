@@ -28,6 +28,7 @@ use crate::domain::checks::{
     SecurityPolicyStatus,
 };
 use crate::domain::evidence::RepositoryEvidence;
+use crate::domain::time::parse_iso8601;
 
 /// A single repository's baseline entry.
 ///
@@ -55,15 +56,78 @@ pub struct Baseline {
     pub entries: HashMap<String, BaselineEntry>,
 }
 
+/// Whether a baseline entry is still within [`config::BASELINE_MAX_AGE_SECS`]
+/// of the current run, measured from when its evidence was actually
+/// *collected* — never from GitHub's `updated_at`.
+///
+/// GitHub does not bump a repository's `updated_at` when its
+/// branch-protection rules change, so an `updated_at` match between the
+/// baseline and the current repository cannot, by itself, prove a cached
+/// verdict is still correct. `Stale` is a distinct state from an
+/// `updated_at` mismatch: it fires even when `updated_at` is identical,
+/// forcing periodic re-collection instead of trusting a match
+/// indefinitely. Collapsing this into a bare `bool` parameter on
+/// [`should_reuse`] would hide which of "changed" or "too old" caused a
+/// refusal to reuse; this type keeps the two refusal reasons distinct at
+/// the call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaselineAge {
+    /// Within the configured reuse window.
+    Fresh,
+    /// Beyond the configured reuse window, or the age could not be
+    /// determined (fails closed to `Stale` on unparseable timestamps).
+    Stale,
+}
+
+/// Derive [`BaselineAge`] for a baseline entry from the timestamp its
+/// evidence was *observed* (collected) at — see
+/// [`RepositoryChecks::observed_at`](crate::domain::checks::RepositoryChecks::observed_at)
+/// — and the current run's start time, bounded by
+/// [`config::BASELINE_MAX_AGE_SECS`].
+///
+/// `observed_at` must be the evidence's own collection timestamp, not
+/// the repository's `updated_at`: `updated_at` reflects the last
+/// repository change, which need not correlate with when we last
+/// observed it, and does not move for branch-protection-only changes.
+///
+/// Fails closed to `Stale` when either timestamp is unparseable, rather
+/// than trusting an entry whose age cannot be established.
+#[must_use]
+pub fn assess_baseline_age(observed_at: &str, run_timestamp: &str) -> BaselineAge {
+    let Some(observed_ts) = parse_iso8601(observed_at) else {
+        return BaselineAge::Stale;
+    };
+    let Some(run_ts) = parse_iso8601(run_timestamp) else {
+        return BaselineAge::Stale;
+    };
+    let age_secs =
+        u64::try_from(run_ts.duration_since(observed_ts).as_secs().max(0)).unwrap_or(u64::MAX);
+    if age_secs <= config::BASELINE_MAX_AGE_SECS {
+        BaselineAge::Fresh
+    } else {
+        BaselineAge::Stale
+    }
+}
+
 /// Determine whether a baseline entry can be reused for a given repository.
 ///
 /// Reuse is safe when:
 /// - The baseline entry has a non-empty `updated_at` value.
 /// - The current repository has a non-empty `updated_at` value.
 /// - Both values are identical (repository has not changed since the baseline).
+/// - The baseline entry is [`BaselineAge::Fresh`] (bounds indefinite reuse
+///   of a verdict `updated_at` cannot prove is still correct — see
+///   [`assess_baseline_age`]).
 #[must_use]
-pub fn should_reuse(baseline_updated_at: &str, current_updated_at: Option<&str>) -> bool {
+pub fn should_reuse(
+    baseline_updated_at: &str,
+    current_updated_at: Option<&str>,
+    baseline_age: BaselineAge,
+) -> bool {
     if baseline_updated_at.is_empty() {
+        return false;
+    }
+    if baseline_age == BaselineAge::Stale {
         return false;
     }
     match current_updated_at {
@@ -144,7 +208,8 @@ mod tests {
     fn reuse_when_updated_at_matches() {
         assert!(should_reuse(
             "2026-04-09T12:00:00Z",
-            Some("2026-04-09T12:00:00Z")
+            Some("2026-04-09T12:00:00Z"),
+            BaselineAge::Fresh
         ));
     }
 
@@ -152,23 +217,113 @@ mod tests {
     fn no_reuse_when_updated_at_differs() {
         assert!(!should_reuse(
             "2026-04-09T12:00:00Z",
-            Some("2026-04-10T12:00:00Z")
+            Some("2026-04-10T12:00:00Z"),
+            BaselineAge::Fresh
         ));
     }
 
     #[test]
     fn no_reuse_when_current_is_none() {
-        assert!(!should_reuse("2026-04-09T12:00:00Z", None));
+        assert!(!should_reuse(
+            "2026-04-09T12:00:00Z",
+            None,
+            BaselineAge::Fresh
+        ));
     }
 
     #[test]
     fn no_reuse_when_current_is_empty() {
-        assert!(!should_reuse("2026-04-09T12:00:00Z", Some("")));
+        assert!(!should_reuse(
+            "2026-04-09T12:00:00Z",
+            Some(""),
+            BaselineAge::Fresh
+        ));
     }
 
     #[test]
     fn no_reuse_when_baseline_is_empty() {
-        assert!(!should_reuse("", Some("2026-04-09T12:00:00Z")));
+        assert!(!should_reuse(
+            "",
+            Some("2026-04-09T12:00:00Z"),
+            BaselineAge::Fresh
+        ));
+    }
+
+    #[test]
+    fn no_reuse_when_updated_at_identical_but_baseline_stale() {
+        assert!(!should_reuse(
+            "2026-04-09T12:00:00Z",
+            Some("2026-04-09T12:00:00Z"),
+            BaselineAge::Stale
+        ));
+    }
+
+    #[test]
+    fn reuse_when_updated_at_identical_and_baseline_fresh() {
+        assert!(should_reuse(
+            "2026-04-09T12:00:00Z",
+            Some("2026-04-09T12:00:00Z"),
+            BaselineAge::Fresh
+        ));
+    }
+
+    #[test]
+    fn assess_baseline_age_fresh_within_max_age() {
+        assert_eq!(
+            assess_baseline_age("2026-04-09T12:00:00Z", "2026-04-09T13:00:00Z"),
+            BaselineAge::Fresh
+        );
+    }
+
+    #[test]
+    fn assess_baseline_age_stale_beyond_max_age() {
+        assert_eq!(
+            assess_baseline_age("2026-04-08T00:00:00Z", "2026-04-09T13:00:00Z"),
+            BaselineAge::Stale
+        );
+    }
+
+    #[test]
+    fn assess_baseline_age_exactly_at_max_age_is_fresh() {
+        let observed = parse_iso8601("2026-04-08T12:00:00Z").unwrap();
+        let run_ts = observed
+            + jiff::SignedDuration::from_secs(
+                i64::try_from(config::BASELINE_MAX_AGE_SECS).unwrap(),
+            );
+        assert_eq!(
+            assess_baseline_age("2026-04-08T12:00:00Z", &run_ts.to_string()),
+            BaselineAge::Fresh
+        );
+    }
+
+    #[test]
+    fn assess_baseline_age_just_past_max_age_is_stale() {
+        let observed = parse_iso8601("2026-04-08T12:00:00Z").unwrap();
+        let run_ts = observed
+            + jiff::SignedDuration::from_secs(
+                i64::try_from(config::BASELINE_MAX_AGE_SECS).unwrap(),
+            )
+            + jiff::SignedDuration::from_secs(1);
+        assert_eq!(
+            assess_baseline_age("2026-04-08T12:00:00Z", &run_ts.to_string()),
+            BaselineAge::Stale
+        );
+    }
+
+    #[test]
+    fn assess_baseline_age_unparseable_baseline_is_stale() {
+        assert_eq!(
+            assess_baseline_age("not-a-date", "2026-04-09T12:00:00Z"),
+            BaselineAge::Stale
+        );
+    }
+
+    #[test]
+    fn assess_baseline_age_unparseable_run_timestamp_is_stale() {
+        assert_eq!(
+            assess_baseline_age("2026-04-09T12:00:00Z", "not-a-date"),
+            BaselineAge::Stale
+        );
     }
 
     #[test]
