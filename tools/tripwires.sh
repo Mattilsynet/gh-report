@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-CHECKS=(projection-lock async-trait pardosa-dep fence-converge dead-code-suppression non-exhaustive)
+CHECKS=(projection-lock async-trait pardosa-dep fence-converge dead-code-suppression non-exhaustive gate-citation)
 
 usage() {
   echo "usage: tools/tripwires.sh <check>|all|--list"
@@ -122,6 +122,39 @@ check_non_exhaustive() {
   fi
 }
 
+# RST-0007:R7 — mechanizes RST-0007:R2's id-existence half: every ADR
+# rule id cited in a merge-gate step name: or ::error:: string must
+# name an ADR that exists (non-stale) and a rule id present in it.
+# The invariant-match half (does the cited rule's text actually state
+# the invariant) is not mechanically decidable and stays code-review
+# tier per RST-0007:R7.
+check_gate_citation() {
+  local fail=0
+  local tokens
+  tokens=$( { grep -hoE -- '- name:.*' .github/workflows/ci-reusable.yml || true; \
+              grep -hoE '::error::.*' .github/workflows/ci-reusable.yml tools/tripwires.sh || true; } \
+            | grep -oE '[A-Z]{2,4}-[0-9]{4}:R[0-9]+(\+R[0-9]+)*' | sort -u )
+  while IFS= read -r tok; do
+    [ -z "$tok" ] && continue
+    adr_id="${tok%%:*}"
+    rules="${tok#*:}"
+    adr_file=$(find docs/adr -mindepth 2 -maxdepth 2 -name "${adr_id}-*.md" -not -path 'docs/adr/stale/*' -print -quit)
+    if [ -z "$adr_file" ]; then
+      echo "::error::gate-citation: ${tok} cites ADR ${adr_id}, which does not exist in docs/adr/ (RST-0007:R7)"
+      fail=1
+      continue
+    fi
+    IFS='+' read -ra rule_list <<< "$rules"
+    for r in "${rule_list[@]}"; do
+      if ! grep -qE "^${r} \[" "$adr_file"; then
+        echo "::error::gate-citation: ${tok} cites rule ${r}, not present in ${adr_file} (RST-0007:R7)"
+        fail=1
+      fi
+    done
+  done <<< "$tokens"
+  return $fail
+}
+
 run_check() {
   case "$1" in
     projection-lock) check_projection_lock ;;
@@ -130,6 +163,7 @@ run_check() {
     fence-converge) check_fence_converge ;;
     dead-code-suppression) check_dead_code_suppression ;;
     non-exhaustive) check_non_exhaustive ;;
+    gate-citation) check_gate_citation ;;
     *)
       echo "unknown check: $1" >&2
       usage >&2

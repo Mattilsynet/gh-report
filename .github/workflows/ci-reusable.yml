@@ -95,6 +95,12 @@ jobs:
       - name: deny pardosa deps in cherry-pit-sd-viz
         if: always()
         run: tools/tripwires.sh pardosa-dep
+      # Mechanizes RST-0007:R2's id-existence half (RST-0007:R7): every
+      # ADR rule id cited in a merge-gate step name: or ::error:: string
+      # must name an existing, non-stale ADR carrying that rule id.
+      - name: gate-citation check (RST-0007:R7)
+        if: always()
+        run: tools/tripwires.sh gate-citation
       # The pardosa-nats live-test harness (crates/pardosa-nats/src/test_support.rs)
       # spawns a real `nats-server` and asserts its --version matches the pin in
       # tools/.nats-server-version. Install exactly that version, checksum-verified
