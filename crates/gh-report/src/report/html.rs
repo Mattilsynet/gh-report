@@ -479,7 +479,7 @@ fn build_top_security_teams(owners: &OwnersViewModel) -> Vec<TopSecurityTeam> {
     let mut ranked: Vec<&OwnerOverviewRow> = owners
         .rows
         .iter()
-        .filter(|r| r.sec_score.is_some() && r.owner_type == OwnerType::Team)
+        .filter(|r| r.owner_type == OwnerType::Team && r.sec_score.is_some_and(|s| s < 100.0))
         .collect();
     ranked.sort_by(|a, b| {
         b.sec_score

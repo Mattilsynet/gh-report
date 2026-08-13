@@ -4422,10 +4422,8 @@ fn podium_excludes_user_owners() {
         "podium should not contain user owner @alice, got {podium:?}"
     );
     assert!(
-        podium
-            .iter()
-            .any(|t| t.owner.contains("security-team") || t.owner.contains("infra-team")),
-        "podium should contain at least one team owner, got {podium:?}"
+        podium.iter().any(|t| t.owner.contains("dev-team")),
+        "podium should contain at least one team owner still below 100%, got {podium:?}"
     );
 }
 
@@ -4557,7 +4555,7 @@ fn podium_one_team_shows_only_gold() {
             test_fixtures::make_checks(
                 test_fixtures::policy_pass_setting(),
                 test_fixtures::secret_enabled_observable(false),
-                test_fixtures::dependabot_enabled(),
+                test_fixtures::dependabot_disabled(),
                 test_fixtures::branch_pass(),
                 test_fixtures::codeowners_with_owners(&["@org/solo-team"]),
             ),
@@ -4726,6 +4724,104 @@ fn header_uses_page_header_class() {
     assert!(
         index.contains("page-header"),
         "index should use page-header class for the header layout"
+    );
+}
+
+fn team_row(owner: &str, sec_score: f64) -> OwnerOverviewRow {
+    OwnerOverviewRow {
+        owner: format!("@org/{owner}"),
+        owner_short: owner.to_string(),
+        slug: format!("org-{owner}"),
+        owner_type: OwnerType::Team,
+        repo_count: 1,
+        controls: Vec::new(),
+        sec_score: Some(sec_score),
+        sec_score_formatted: format!("{sec_score:.1}%"),
+        sec_score_table_formatted: format!("{sec_score:.0}%"),
+        sec_score_tier: CoverageTier::from_rate(Some(sec_score), &CoverageTiers::default()),
+        sec_score_width_class: rate_to_width_class(Some(sec_score)),
+    }
+}
+
+#[test]
+fn podium_excludes_team_at_exactly_100_percent() {
+    let owners_vm = OwnersViewModel {
+        rows: vec![
+            team_row("perfect-team", 100.0),
+            team_row("climbing-team", 92.0),
+        ],
+        control_columns: Vec::new(),
+    };
+    let podium = build_top_security_teams(&owners_vm);
+
+    assert!(
+        podium.iter().all(|t| t.owner_short != "perfect-team"),
+        "team at exactly 100.0 must be exempt from the podium, got {podium:?}"
+    );
+    assert!(
+        podium.iter().any(|t| t.owner_short == "climbing-team"),
+        "team still climbing must remain on the podium, got {podium:?}"
+    );
+}
+
+#[test]
+fn podium_includes_team_at_99_9_percent() {
+    let owners_vm = OwnersViewModel {
+        rows: vec![team_row("almost-team", 99.9)],
+        control_columns: Vec::new(),
+    };
+    let podium = build_top_security_teams(&owners_vm);
+
+    assert!(
+        podium.iter().any(|t| t.owner_short == "almost-team"),
+        "team at 99.9 (not exactly 100.0) must remain on the podium, got {podium:?}"
+    );
+}
+
+#[test]
+fn podium_empty_when_every_team_at_100_percent() {
+    let owners_vm = OwnersViewModel {
+        rows: vec![team_row("team-a", 100.0), team_row("team-b", 100.0)],
+        control_columns: Vec::new(),
+    };
+    let podium = build_top_security_teams(&owners_vm);
+
+    assert!(
+        podium.is_empty(),
+        "podium must be empty when every team is at 100%, got {podium:?}"
+    );
+}
+
+#[test]
+fn podium_ordering_holds_with_100_percent_exemption_applied() {
+    let owners_vm = OwnersViewModel {
+        rows: vec![
+            team_row("done-team", 100.0),
+            team_row("gold-team", 95.0),
+            team_row("silver-team", 90.0),
+            team_row("bronze-team", 85.0),
+        ],
+        control_columns: Vec::new(),
+    };
+    let podium = build_top_security_teams(&owners_vm);
+    let ranks: Vec<&str> = podium.iter().map(|t| t.rank_class).collect();
+
+    assert!(
+        podium.iter().all(|t| t.owner_short != "done-team"),
+        "100%-team must not occupy a podium slot, got {podium:?}"
+    );
+    assert_eq!(
+        ranks,
+        vec!["rank-silver", "rank-gold", "rank-bronze"],
+        "3-team podium order must remain Silver, Gold, Bronze after exemption, got {ranks:?}"
+    );
+    assert_eq!(
+        podium
+            .iter()
+            .find(|t| t.rank_class == "rank-gold")
+            .map(|t| t.owner_short.as_str()),
+        Some("gold-team"),
+        "highest-scoring non-100% team must take Gold, got {podium:?}"
     );
 }
 
