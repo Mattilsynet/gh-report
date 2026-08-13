@@ -50,7 +50,7 @@ pub struct OrgHelpConfig {
 
 /// Generic label used when an operator supplies a governance-standard URL
 /// without a custom label. Carries no organization-specific wording.
-const DEFAULT_GOVERNANCE_STANDARD_LABEL: &str = "Governance standard";
+const DEFAULT_GOVERNANCE_STANDARD_LABEL: &str = "Governance AI skill";
 
 /// Build an optional governance-standard [`HelpLink`] from operator-supplied
 /// CLI/env values.
@@ -96,7 +96,7 @@ mod tests {
         let link =
             governance_standard_link_from_args(None, Some("https://example.com/std".to_string()))
                 .expect("url present, link should build");
-        assert_eq!(link.label, "Governance standard");
+        assert_eq!(link.label, "Governance AI skill");
         assert_eq!(link.url, "https://example.com/std");
     }
 

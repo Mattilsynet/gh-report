@@ -225,7 +225,7 @@ mod tests {
             dashboard_config: DashboardConfig {
                 org_help: OrgHelpConfig {
                     governance_standard: Some(HelpLink {
-                        label: "Governance standard".to_string(),
+                        label: "Governance AI skill".to_string(),
                         url: "https://acme.example/governance".to_string(),
                     }),
                     ..OrgHelpConfig::default()

@@ -1536,7 +1536,7 @@ pub fn compose_team_access_guidance(cfg: &TeamAccessGuidance) -> (String, Vec<He
 /// use gh_report::report::view_model::{compose_governance_prompt, OwnerRepoRow};
 ///
 /// let link = HelpLink {
-///     label: "Governance standard".to_string(),
+///     label: "Governance AI skill".to_string(),
 ///     url: "https://example.com/tidy-governance".to_string(),
 /// };
 /// let prompt = compose_governance_prompt(Some(&link), &[], &[]).unwrap();
@@ -3786,7 +3786,7 @@ mod tests {
     #[test]
     fn compose_governance_prompt_present_link_includes_repos_and_exclusion_note() {
         let link = HelpLink {
-            label: "Governance standard".to_string(),
+            label: "Governance AI skill".to_string(),
             url: "https://example.com/tidy-governance".to_string(),
         };
         let repo_rows = vec![OwnerRepoRow {
