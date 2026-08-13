@@ -71,7 +71,7 @@ ENV GH_REPORT_LOG_FORMAT=json
 # Bind to all interfaces (container networking requires this).
 ENV BIND_ADDRESS=0.0.0.0
 
-LABEL org.opencontainers.image.source="https://github.com/acje/solon"
+LABEL org.opencontainers.image.source="https://github.com/Mattilsynet/gh-report"
 LABEL org.opencontainers.image.description="GitHub organization governance collector and reporter"
 
 # --org is required and must be supplied at deploy time via container args.

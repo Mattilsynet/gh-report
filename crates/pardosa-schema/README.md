@@ -3,7 +3,7 @@
 Typed-payload vocabulary for pardosa events: `GenomeSafe` marker, bounded
 string / byte / vec wrappers, total-order float wrappers, and `CharScalar`.
 
-Part of the [pardosa](https://github.com/acje/solon) workspace.
+Part of the [pardosa](https://github.com/Mattilsynet/gh-report) workspace.
 
 ## Overview
 

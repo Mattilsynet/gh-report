@@ -7,7 +7,7 @@ of the workspace — it composes the substrate crates (`pardosa-wire`,
 appends typed events, walks per-fiber history, tails the global event line
 with consumer ACK/resume, and follows same-fiber causal precursors.
 
-Part of the [pardosa](https://github.com/acje/solon) workspace.
+Part of the [pardosa](https://github.com/Mattilsynet/gh-report) workspace.
 
 ## Overview
 

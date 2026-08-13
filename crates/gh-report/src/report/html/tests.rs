@@ -1185,10 +1185,108 @@ fn nav_identical_across_all_page_types() {
     }
 
     let detail_page = &pages["owners/org-team-a.html"];
-    let detail_nav = extract_top_nav(detail_page).replace("../", "");
+    let detail_nav = extract_top_nav(detail_page)
+        .replace("href=\"..\"", "href=\".\"")
+        .replace("../", "");
     assert_eq!(
         detail_nav, canonical,
-        "owner_detail.html top-nav must match the canonical nav once its ../ prefix is stripped"
+        "owner_detail.html top-nav must match the canonical nav once its ../ prefix is \
+         stripped and its dashboard_href (\"..\") is normalised back to the root form (\".\")"
+    );
+}
+
+/// Extracts the `href` attribute value immediately preceding `marker` (the
+/// anchor's closing text), e.g. `marker = "\">Dashboard</a>"` for the
+/// top-nav link or `"\">Dashboard</a></li>"` for the breadcrumb link.
+fn extract_href_before<'a>(html: &'a str, marker: &str) -> &'a str {
+    let idx = html
+        .find(marker)
+        .unwrap_or_else(|| panic!("expected marker {marker:?} in html"));
+    let before = &html[..idx];
+    let start = before
+        .rfind("href=\"")
+        .expect("href attribute before marker")
+        + "href=\"".len();
+    &before[start..]
+}
+
+/// Regression for the `index.html`-in-URL fix (mission
+/// `ghreport-m5-index-html-url`): the Dashboard link must resolve to a
+/// distinct, real navigation target at both page depths, never to
+/// `href=""` (silently "the current page" — dead on 5 of 6 root pages)
+/// nor to a literal `index.html` (the polluted URL this fix removes).
+/// Asserts observable resolution to the dashboard root rather than a
+/// particular href spelling, so a portable-root fix (`.`/`..`) or any
+/// future depth-correct target keeps this test meaningful.
+#[test]
+fn dashboard_link_resolves_correctly_at_every_depth() {
+    let evidence = evidence_with_full_nav_surface();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+    for page in [
+        "index.html",
+        "report.html",
+        "owners.html",
+        "orphans.html",
+        "deleted.html",
+        "admin.html",
+    ] {
+        let nav = extract_top_nav(&pages[page]);
+        let href = extract_href_before(nav, "\">Dashboard</a>");
+        assert!(
+            !href.is_empty() && !href.contains("index.html"),
+            "{page}: Dashboard link must not be href=\"\" or reference index.html directly, \
+             got: {href}"
+        );
+        let (target_page, _) = resolve_href_target(href, page);
+        assert_eq!(
+            target_page, "index.html",
+            "{page}: Dashboard link (href=\"{href}\") must resolve to the dashboard root"
+        );
+    }
+
+    let detail_nav = extract_top_nav(&pages["owners/org-team-a.html"]);
+    let detail_href = extract_href_before(detail_nav, "\">Dashboard</a>");
+    assert!(
+        !detail_href.is_empty() && !detail_href.contains("index.html"),
+        "owners/org-team-a.html: nested Dashboard link must not be href=\"\" or reference \
+         index.html directly, got: {detail_href}"
+    );
+    let (detail_target, _) = resolve_href_target(detail_href, "owners/org-team-a.html");
+    assert_eq!(
+        detail_target, "index.html",
+        "owners/org-team-a.html: Dashboard link (href=\"{detail_href}\") must resolve to the \
+         dashboard root"
+    );
+
+    for page in [
+        "owners.html",
+        "admin.html",
+        "branch_protection.html",
+        "orphans.html",
+        "deleted.html",
+    ] {
+        let breadcrumb_href = extract_href_before(&pages[page], "\">Dashboard</a></li>");
+        assert!(
+            !breadcrumb_href.is_empty() && !breadcrumb_href.contains("index.html"),
+            "{page}: breadcrumb Dashboard link must not be href=\"\" or reference index.html \
+             directly, got: {breadcrumb_href}"
+        );
+        let (target_page, _) = resolve_href_target(breadcrumb_href, page);
+        assert_eq!(
+            target_page, "index.html",
+            "{page}: breadcrumb Dashboard link (href=\"{breadcrumb_href}\") must resolve to the \
+             dashboard root"
+        );
+    }
+    let detail_breadcrumb_href =
+        extract_href_before(&pages["owners/org-team-a.html"], "\">Dashboard</a></li>");
+    let (detail_breadcrumb_target, _) =
+        resolve_href_target(detail_breadcrumb_href, "owners/org-team-a.html");
+    assert_eq!(
+        detail_breadcrumb_target, "index.html",
+        "owners/org-team-a.html: breadcrumb Dashboard link (href=\"{detail_breadcrumb_href}\") \
+         must resolve to the dashboard root"
     );
 }
 
@@ -1210,7 +1308,9 @@ fn resolve_href_target(href: &str, current_page: &str) -> (String, Option<String
         Some((page, frag)) => (page, Some(frag.to_string())),
         None => (href, None),
     };
-    let target_page = if let Some(stripped) = page_part.strip_prefix("../") {
+    let target_page = if matches!(page_part, "." | "..") {
+        "index.html".to_string()
+    } else if let Some(stripped) = page_part.strip_prefix("../") {
         stripped.to_string()
     } else if page_part.is_empty() {
         current_page.to_string()

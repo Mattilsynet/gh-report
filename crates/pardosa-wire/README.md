@@ -5,7 +5,7 @@ is the substrate-purity layer: a `#![no_std] + extern crate alloc;` codec that
 turns event types into stable byte sequences and back, with no payload-typed
 vocabulary baked in.
 
-Part of the [pardosa](https://github.com/acje/solon) workspace.
+Part of the [pardosa](https://github.com/Mattilsynet/gh-report) workspace.
 
 ## Overview
 

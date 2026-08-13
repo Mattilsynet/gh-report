@@ -110,7 +110,7 @@ description = """\
     backend abstraction with NATS/JetStream constraints, FiberIndex \
     routing accelerator, and semver governance. Sources rescue \
     ADR-0002..0023; rescue ADRs take precedence over the legacy \
-    Solon PAR/GEN material, which is incorporated only where \
+    gh-report PAR/GEN material, which is incorporated only where \
     non-conflicting. PAR/GEN retirement/stale moves are governed by \
     AFM-0030 (deferral lifted)."""
 crates = [

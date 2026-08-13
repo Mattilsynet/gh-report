@@ -89,6 +89,12 @@ pub struct TopNav {
     /// Relative path prefix to the dashboard root: `""` at the root, or
     /// `"../"` for a page nested one directory deep (owner detail pages).
     pub base: &'static str,
+    /// Dashboard link target, depth-relative so the rendered dashboard stays
+    /// portable under a reverse-proxy subpath or opened straight from disk.
+    /// Deliberately not `base` + `"index.html"` — that concatenation yields
+    /// `href=""` at the root (the current-page self-reference, not the
+    /// dashboard) since `base` is `""` there.
+    pub dashboard_href: DashboardHref,
     /// Whether the Owners link renders (owner/CODEOWNERS metrics available).
     pub show_owners: bool,
     /// Count shown on the Orphans link.
@@ -107,6 +113,38 @@ impl TopNav {
     #[must_use]
     pub fn has_technical_issues(&self) -> bool {
         self.technical_issues_total > 0
+    }
+}
+
+/// Depth of a rendered page relative to the dashboard root.
+///
+/// Resolves the Dashboard nav/breadcrumb link to a depth-relative target
+/// (`.` or `..`) rather than an origin-absolute `/`, so the generated
+/// dashboard stays portable when served under a reverse-proxy subpath or
+/// opened directly from a local directory. Exactly two variants exist —
+/// there is no representable value between "correct" and "wrong depth".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DashboardHref {
+    /// Page rendered at the dashboard root (e.g. `index.html`, `report.html`).
+    Root,
+    /// Page rendered one directory below the root (e.g. `owners/<slug>.html`).
+    Nested,
+}
+
+impl DashboardHref {
+    /// Relative Dashboard-link target for this depth.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Root => ".",
+            Self::Nested => "..",
+        }
+    }
+}
+
+impl std::fmt::Display for DashboardHref {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
