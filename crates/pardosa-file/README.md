@@ -3,7 +3,7 @@
 Payload-opaque `.pgno` file container: writer, reader, format constants, and
 the `Syncable` durability seam.
 
-Part of the [pardosa](https://github.com/acje/solon) workspace.
+Part of the [pardosa](https://github.com/Mattilsynet/gh-report) workspace.
 
 ## Overview
 

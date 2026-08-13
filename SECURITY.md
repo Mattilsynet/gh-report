@@ -8,7 +8,7 @@ the `cherry-pit-*` family it builds on), please report it privately rather
 than filing a public issue.
 
 Send a report to the repository owner via GitHub:
-<https://github.com/acje>. Include:
+<https://github.com/Mattilsynet>. Include:
 
 - a description of the issue and the affected crate(s),
 - reproduction steps or a minimal proof of concept,

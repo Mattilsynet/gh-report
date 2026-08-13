@@ -18,8 +18,8 @@
 //! conflict) into the arm's domain error shape uniformly; see
 //! [CHE-0069:R5].
 //!
-//! [CHE-0069:R2]: https://github.com/acje/solon/blob/main/docs/adr/cherry/CHE-0069-cherry-pit-merger.md
-//! [CHE-0069:R5]: https://github.com/acje/solon/blob/main/docs/adr/cherry/CHE-0069-cherry-pit-merger.md
+//! [CHE-0069:R2]: https://github.com/Mattilsynet/gh-report/blob/main/docs/adr/cherry/CHE-0069-cherry-pit-merger.md
+//! [CHE-0069:R5]: https://github.com/Mattilsynet/gh-report/blob/main/docs/adr/cherry/CHE-0069-cherry-pit-merger.md
 //! [`StoreError`]: cherry_pit_core::StoreError
 //! [`Aggregate::apply`]: cherry_pit_core::Aggregate::apply
 
@@ -45,7 +45,7 @@ use cherry_pit_core::{Aggregate, StoreError};
 ///   existing routing-index entry; a miss returns
 ///   [`MergerArm::missing_key_error`] without touching the store.
 ///
-/// [CHE-0069:R3]: https://github.com/acje/solon/blob/main/docs/adr/cherry/CHE-0069-cherry-pit-merger.md
+/// [CHE-0069:R3]: https://github.com/Mattilsynet/gh-report/blob/main/docs/adr/cherry/CHE-0069-cherry-pit-merger.md
 /// [`EventStore::create`]: cherry_pit_core::EventStore::create
 /// [`EventStore::append`]: cherry_pit_core::EventStore::append
 #[derive(Debug, Clone, PartialEq, Eq)]

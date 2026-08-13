@@ -13,7 +13,7 @@
 //!
 //! [`mpsc::Sender<MergerCommand<A, Arm>>`]: https://docs.rs/tokio/latest/tokio/sync/mpsc/struct.Sender.html
 //! [`oneshot`]: https://docs.rs/tokio/latest/tokio/sync/oneshot/index.html
-//! [CHE-0005:R1]: https://github.com/acje/solon/blob/main/docs/adr/cherry/CHE-0005-single-aggregate-design.md
+//! [CHE-0005:R1]: https://github.com/Mattilsynet/gh-report/blob/main/docs/adr/cherry/CHE-0005-single-aggregate-design.md
 
 use cherry_pit_core::{Aggregate, CorrelationContext, StoreError};
 use tokio::sync::{mpsc, oneshot};

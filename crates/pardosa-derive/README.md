@@ -3,7 +3,7 @@
 Substrate-agnostic event-invariant carrier: sealed traits and derive macros
 for pardosa events. Currently exposes one derive: `#[derive(GenomeSafe)]`.
 
-Part of the [pardosa](https://github.com/acje/solon) workspace.
+Part of the [pardosa](https://github.com/Mattilsynet/gh-report) workspace.
 
 ## Overview
 

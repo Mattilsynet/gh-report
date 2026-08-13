@@ -1,4 +1,4 @@
-# AGENTS.md — solon
+# AGENTS.md — gh-report
 
 Repo-specific operational notes. General agent/OODA doctrine, bd/beads
 conventions, bash hygiene, and the Rust no-`//`-comments rule live in the
@@ -108,9 +108,9 @@ These are load-bearing; violating them is an abort-class change:
   `#[allow(.., reason=..)]` only where `#[expect]` would be unfulfilled (e.g. a
   lint that fires under `--test` but not `--all-features`).
 
-## Intent (why this repo exists — the Solon stance)
+## Intent (why this repo exists — the gh-report stance)
 
-Solon lays down a *small, observable, ratified* set of enabling constraints —
+gh-report lays down a *small, observable, ratified* set of enabling constraints —
 after Solon the lawgiver — so that correct software is easier to build than
 incorrect software. The bet is **subtractive**: remove enough degrees of
 freedom that the remaining moves are obviously correct. When the type system

@@ -1,4 +1,4 @@
-# Solon
+# gh-report
 
 Enabling constraints for agent-first development
 
