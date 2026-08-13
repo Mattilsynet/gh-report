@@ -26,7 +26,7 @@ use crate::domain::time::{is_repo_stale, parse_iso8601};
 use crate::error::ReportError;
 use crate::report::view_model::{
     BprBandGroup, BprRepoRow, BranchProtectionRegimeViewModel, ControlCell, ControlColumn,
-    CoverageTier, DeletedRepoRow, DeletedViewModel, GhostTeamRow, OrphanedRepoRow,
+    CoverageTier, DashboardHref, DeletedRepoRow, DeletedViewModel, GhostTeamRow, OrphanedRepoRow,
     OrphanedTeamGroup, OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow, OwnerRepoRow,
     OwnersViewModel, ReportViewModel, RosterSection, StatusDot, SummaryCard, TeamMemberRow,
     TeamRosterViewModel, TopNav, TopSecurityTeam, WildcardOwnerRow, bpr_band_metadata,
@@ -309,6 +309,7 @@ pub fn render_dashboard_streaming(
 
     let nav = TopNav {
         base: "",
+        dashboard_href: DashboardHref::Root,
         show_owners: owners_vm.is_some(),
         orphaned_count,
         deleted_count: vm.deleted_count,
@@ -456,7 +457,11 @@ fn render_owner_pages(
         governance_link: governance_link.as_ref(),
     };
     let detail_vms = build_owner_detail_view_models(&evidence.metrics.owner_metrics, &ctx);
-    let nested_nav = TopNav { base: "../", ..nav };
+    let nested_nav = TopNav {
+        base: "../",
+        dashboard_href: DashboardHref::Nested,
+        ..nav
+    };
     for (slug, detail_vm) in &detail_vms {
         let title = format!("{} — Owner Detail", detail_vm.owner);
         let detail_html = render_template(&OwnerDetailTemplate {

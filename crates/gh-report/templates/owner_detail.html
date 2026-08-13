@@ -13,7 +13,7 @@
             rel="noopener noreferrer">{{ vm.owner_short }}</a>{% else %}{{ vm.owner_short }}{% endif %}{% if vm.owner_departed() %} {% call tooltip::warning("No longer a member of this GitHub organisation.") %}{% endcall %}{% endif %}</h1>
 
     <ul class="breadcrumb">
-        <li><a href="../index.html">Dashboard</a></li>
+        <li><a href="{{ nav.dashboard_href }}">Dashboard</a></li>
         <li><a href="../owners.html">Owners</a></li>
         <li>{{ vm.breadcrumb_label }}</li>
     </ul>
