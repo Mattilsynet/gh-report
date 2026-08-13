@@ -2890,7 +2890,7 @@ fn render_owner_detail_html_governance_prompt_widget() {
     let config = DashboardConfig {
         org_help: config::org::OrgHelpConfig {
             governance_standard: Some(config::org::HelpLink {
-                label: "Governance standard".to_string(),
+                label: "Governance AI skill".to_string(),
                 url: "https://acme.example/governance".to_string(),
             }),
             ..config::org::OrgHelpConfig::default()
