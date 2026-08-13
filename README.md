@@ -2,7 +2,7 @@
 
 Enabling constraints for agent-first development
 
-Cherry-pit is a library family primarily for coding agents. It constrains compositions that could quietly break how the system fits together. The rules it enforces live in a sizable ADR corpus of ~190 active documents under docs/adr/, each averaging about 5 rules.
+Cherry-pit is a library family primarily for coding agents. It constrains compositions that could quietly break how the system fits together. The rules it enforces live in a large, actively-growing ADR corpus under `docs/adr/` (superseded ADRs move to `docs/adr/stale/`); run `adr-fmt --lint` or `adr-fmt --tree <domain>` for current counts rather than trusting a number here.
 
 A Rust workspace (edition 2024, MSRV 1.97) shipping binaries
 (`adr-fmt`, `adr-srv`, `gh-report`, `comment-free`) plus their
@@ -76,6 +76,11 @@ Operational recovery procedures live at
 ## More
 
 - Per-crate `README.md` files under [`crates/`](crates/).
+
+## Contact
+
+Owned by [`@Mattilsynet/stabsec`](.github/CODEOWNERS). For security reports,
+see [`SECURITY.md`](SECURITY.md) or contact `24.7@mattilsynet.no`.
 
 ## License
 
