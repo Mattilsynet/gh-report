@@ -189,7 +189,11 @@ check_deny_ignore_lifecycle() {
   fi
 
   if ! grep -qE '^[[:space:]]*ignore[[:space:]]*=[[:space:]]*\[' "$manifest"; then
-    echo "deny-ignore-lifecycle: no [advisories] ignore = [ ] block present in $manifest — nothing to enforce (SEC-0013:R3)"
+    if grep -q 'RUSTSEC-' "$manifest"; then
+      echo "::error::deny-ignore-lifecycle: no [advisories] ignore = [ ] block matched, but RUSTSEC- text is present in $manifest — ignore entries appear present but none were parsed — parser/grammar drift, refusing to pass silently (SEC-0013:R3)"
+      return 1
+    fi
+    echo "deny-ignore-lifecycle: no [advisories] ignore = [ ] block present and no RUSTSEC- text found in $manifest — genuinely clean, passing (SEC-0013:R3)"
     return 0
   fi
 
@@ -200,7 +204,11 @@ check_deny_ignore_lifecycle() {
   raw_lines=$(printf '%s\n' "$block" | grep -vE '^[[:space:]]*(#.*)?$' || true)
 
   if [ -z "$raw_lines" ]; then
-    echo "deny-ignore-lifecycle: ignore = [ ] block present but empty in $manifest — nothing to enforce (SEC-0013:R3)"
+    if grep -q 'RUSTSEC-' "$manifest"; then
+      echo "::error::deny-ignore-lifecycle: ignore = [ ] block present but empty in $manifest, yet RUSTSEC- text is present elsewhere — ignore entries appear present but none were parsed — parser/grammar drift, refusing to pass silently (SEC-0013:R3)"
+      return 1
+    fi
+    echo "deny-ignore-lifecycle: ignore = [ ] block present but empty and no RUSTSEC- text found in $manifest — genuinely clean, passing (SEC-0013:R3)"
     return 0
   fi
 
