@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 
 /// Agent-facing RON render of a single [`JetStreamReplayRecord`]:
 /// the envelope frame decoded structurally, the `domain_event` body
-/// rendered as opaque hex (feynman orientation `adr-fmt-de91s` —
+/// rendered as opaque hex (feynman orientation `ghr-1e771939` —
 /// the wire format is schema-driven, not self-describing, so the
 /// concrete payload type cannot be recovered without linking a
 /// consumer's event types).

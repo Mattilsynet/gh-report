@@ -24,7 +24,7 @@
 //! CLI surface frozen for v0.1 per AFM-0001. Library API follows
 //! AFM-0026 / CHE-0030: modules private, minimum re-export set for
 //! `adr-srv` via a flat `pub use` block (oracle summary bd
-//! `adr-fmt-d7ao`).
+//! `ghr-19eb22f6`).
 
 #![forbid(unsafe_code)]
 
@@ -264,7 +264,7 @@ fn scan_corpus(
 ///
 /// `Ok(None)` if no valid marker is found, or `getcwd` fails.
 /// Callers at the binary edge map `Err` to `eprintln! + return 1`
-/// (lift per oracle bd `adr-fmt-d7ao` T2; AFM-0001:R1 governs the
+/// (lift per oracle bd `ghr-19eb22f6` T2; AFM-0001:R1 governs the
 /// binary's contract, not the library).
 fn discover_marker() -> Result<Option<(PathBuf, Config)>, String> {
     let Ok(cwd) = std::env::current_dir() else {

@@ -27,8 +27,8 @@
     ADRs, READMEs, DESIGN.md/OPERATIONS.md, AGENTS.md. No <code>.rs</code>
     source, no <code>Cargo.toml</code>, no dependency graph was read to
     produce this page. Sources:
-    <span class="cite">bd-adr-fmt-kgfyz</span> (prose digest),
-    <span class="cite">adr-fmt-16ja3</span> (oracle binding-ADR summary).
+    <span class="cite">bd-ghr-71fcc1a7</span> (prose digest),
+    <span class="cite">ghr-57115a61</span> (oracle binding-ADR summary).
   </p>
 
   <h2 id="gh-report-stance">gh-report stance — why this repo exists</h2>
@@ -171,7 +171,7 @@
     (gap). Referenced from the cherry-pit-sd-viz README as declaring the
     <code>web-sys</code> feature surface reused by the wasm viz crate; no
     further intended-architecture prose located within scope.
-    <span class="cite-src">(bd-adr-fmt-kgfyz gaps)</span>
+    <span class="cite-src">(bd-ghr-71fcc1a7 gaps)</span>
   </p>
 
   <div class="mermaid">
@@ -543,7 +543,7 @@ flowchart TB
     The ten invariants below are the load-bearing set a later Review phase
     verifies against code. Each cites the exact ADR id(s) confirmed
     verbatim via <code>adr-fmt --context</code>/<code>--refs</code>
-    <span class="cite-src">(adr-fmt-16ja3)</span>.
+    <span class="cite-src">(ghr-57115a61)</span>.
   </p>
 
   <h4>1. Synchronous public facade</h4>
@@ -737,8 +737,8 @@ flowchart TB
   <div class="sources">
     <strong>Sources for this page</strong>
     <ul>
-      <li><code>bd-adr-fmt-kgfyz</code> — prose-derived intended-architecture digest (gh-report stance, per-family decomposition, invariants, citations).</li>
-      <li><code>adr-fmt-16ja3</code> — oracle binding-ADR summary (invariant→ADR-id map, per-family binding sets, CHE-0010 naming-note tension resolution).</li>
+      <li><code>bd-ghr-71fcc1a7</code> — prose-derived intended-architecture digest (Solon stance, per-family decomposition, invariants, citations).</li>
+      <li><code>ghr-57115a61</code> — oracle binding-ADR summary (invariant→ADR-id map, per-family binding sets, CHE-0010 naming-note tension resolution).</li>
       <li>Root: <code>AGENTS.md</code> §What this repo is, §Architecture invariants, §Intent; <code>README.md</code>.</li>
       <li>Per-crate: <code>crates/{gh-report,cherry-pit-*,pardosa*}/README.md</code>, <code>crates/gh-report/{DESIGN.md,OPERATIONS.md}</code>, <code>crates/cherry-pit-gateway/RUNBOOKS.md</code>, <code>docs/pardosa/observability-slo.md</code>.</li>
       <li>ADR corpus via <code>adr-fmt --tree</code> and <code>adr-fmt --context</code> (gh-report, pardosa-nats, cherry-pit-core).</li>
@@ -747,7 +747,7 @@ flowchart TB
   </div>
 
   <footer class="page-footer">
-    Mission <code>arch-docs</code> · bd epic <code>adr-fmt-qsyv9</code> ·
+    Mission <code>arch-docs</code> · bd epic <code>ghr-0279f7cf</code> ·
     This page reads no <code>.rs</code> source, no <code>Cargo.toml</code>,
     and no <code>graphify-out/graph.json</code> — prose only, per phase-A
     constraint.

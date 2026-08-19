@@ -27,10 +27,10 @@ binaries plus an ADR-governed library family and a large ADR corpus.
   ```
   One test: `cargo test -p <crate> <name> --message-format=short`.
 - **BOUNDARY** (mission/sub-mission completion, before claiming done;
-  measured total ~4.4 min, bead adr-fmt-351tt (authoritative) / adr-fmt-keehk
+  measured total ~4.4 min, bead ghr-df35935d (authoritative) / ghr-64e9cdf0
   (orientation) — macOS/arm64, 14 cores, warm cargo cache, uncontended
   machine; not a universal constant, present with these conditions. The
-  prior "60-83 min" figure (bead adr-fmt-blhrc) is superseded — that run hit
+  prior "60-83 min" figure (bead ghr-2f56d34d) is superseded — that run hit
   environment contention (NI=5, competing processes, Defender activity), not
   a code baseline):
   ```
@@ -65,6 +65,20 @@ include `pardosa`'s `dragline::runtime::tests::*jetstream*`. To run them:
 install `nats-server` v2.14.3 onto `PATH`. CI installs it in the `test` job
 (checksum-verified). `async-nats` is pinned to the `server_2_14` feature to
 match.
+
+**Default-local impact (measured, no `nats-server` on `PATH`):** BOUNDARY's
+`cargo test --workspace --all-features --locked --no-fail-fast` exits **101**
+with 11 FAILED test binaries across `gh-report`, `pardosa`, and
+`pardosa-nats` (e.g. `live_nats_n_writer_fence_property`,
+`golden_byte_roundtrip_dual_backend`, `live_jetstream_schema_gate`) — this is
+expected-absent-server, not a regression. The gate is inconsistently applied:
+sibling tests in the *same* binaries correctly self-skip with `ignored,
+requires live nats-server at ...`, but the 11 above panic instead of hitting
+that same guard (origin: `test_support.rs:59,61`). Tracked, not yet fixed:
+bd `ghr-89b05be0`. Until fixed, treat a BOUNDARY exit 101 whose only FAILED
+lines are these 11 names as a known-quantity, not `Outcome::Surprise` — but
+do not claim `Outcome::Verified` from a run that never reached exit 0 either;
+say so explicitly (partial) and cite `ghr-89b05be0`.
 
 ## CI specifics (`.github/workflows/ci.yml`)
 
@@ -176,14 +190,14 @@ rejects illegal architectures, the search space an agent must explore collapses.
   produce a git commit; the audit trail is dolt history + `interactions.jsonl`.
   Don't try to `git add` bead state.
 - Two bd stores exist for this repo's work, selected by cwd:
-  - Repo-local store: `.beads/` here (prefix `adr-fmt`) — the CANONICAL home
+  - Repo-local store: `.beads/` here (prefix `ghr`) — the CANONICAL home
     for any mission that describes THIS repo's code.
   - HOME store: `~/.beads` (prefix `anders_jensen`) — for cross-repo / personal
     work with no single repo home.
 - Convention (advisory — bd has no mechanism to enforce it; see below):
   - Run `bd` from the gh-report repo root (or any path inside it) for any
     repo-scoped mission, so beads auto-discover the repo-local `.beads/` and
-    land with the `adr-fmt` prefix, co-located with the code they describe.
+    land with the `ghr` prefix, co-located with the code they describe.
   - Use the HOME store only for genuinely cross-repo or personal-planning work.
   - A `mission:<slug>` label must resolve to an epic IN THE SAME STORE. Never
     use a bead/mission ID as a label value (`mission:anders_jensen-4gt` was such

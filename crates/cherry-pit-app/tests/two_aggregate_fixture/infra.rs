@@ -7,7 +7,7 @@
 //! (only test-local stubs); per S7 contract `abort_if #4` fallback we
 //! provide one here. This fixture exercises higher wiring/policy logic
 //! only (no file/recovery semantics under test), so an in-memory store
-//! suffices (bd adr-fmt-ak43v Target B triage).
+//! suffices (bd ghr-eac11b81 Target B triage).
 
 use std::sync::Arc;
 

@@ -12,8 +12,8 @@ References: CHE-0029, CHE-0084:R5, CHE-0007, CHE-0086, CHE-0055, CHE-0010, COM-0
 
 ## Context
 
-`gh-report-queue-viz` (adr-fmt-t63uo mission; topology grounded in
-adr-fmt-223sd) was a standalone, client-side, animated discrete-event
+`gh-report-queue-viz` (ghr-832c1132 mission; topology grounded in
+ghr-f6602e2d) was a standalone, client-side, animated discrete-event
 simulation of gh-report's runtime queue network, living inside the
 `gh-report` application tier despite mirroring generic cherry-pit substrate
 shapes (`WorkQueue`, `BatchTracker`, `CachedPage`/`CachedBody`,
@@ -146,17 +146,17 @@ supertrait bounds, not the cherry-pit→pardosa dependency-edge prohibition.
 The correct severance authority is CHE-0029 (acyclic DAG + core dependency
 budget) and CHE-0084:R5 (explicit prohibition on introducing a
 cherry-pit→pardosa edge). CHE-0010 is cited here only contextually, per the
-oracle correction (adr-fmt-zh20j).
+oracle correction (ghr-18e74118).
 
 ## Amendment 2026-07-18 (SD connection grammar)
 
 Per the l.125-129 deferral above, the systems-dynamics modelling layer's
-design lands here rather than as a new ADR: oracle review (adr-fmt-sxlt8)
+design lands here rather than as a new ADR: oracle review (ghr-6e359f77)
 ruled the grammar amends CHE-0094 in place, since CHE-0086's materiality
 bar is cleared but the l.128-129 clause already pre-commits deferred SD
 work to "its own ADR amendment" — not a freestanding ADR. Source grammar:
-adr-fmt-qaavg (directed-connection matrix + 8 invariants, Stock/Flow/
-Converter/Cloud vocabulary per adr-fmt-0pe95).
+ghr-c8ab880e (directed-connection matrix + 8 invariants, Stock/Flow/
+Converter/Cloud vocabulary per ghr-43eba717).
 
 R11 [4]: the following connection invariants are BINDING for
 `cherry-pit-sd-viz`'s systems-dynamics layer (CHE-0086:R3 sibling-surface
@@ -181,7 +181,7 @@ construction, not merely by convention:
 
 R12 [3]: invariant 8 (every feedback loop must pass through at least one
 Stock; a stock-free loop is a degenerate algebraic loop) is ADVISORY and
-documented only this iteration, not type-layer-enforced. adr-fmt-qaavg
+documented only this iteration, not type-layer-enforced. ghr-c8ab880e
 flags this as its weakest-sourced claim — no primary Vensim/Sterman
 citation was reached for it, only structural inference. Active loop-path
 enforcement (graph traversal proving every cycle threads a Stock) is
@@ -193,8 +193,8 @@ R13 [5]: the SD-layer's error type, `SdConnectionError`, MUST be
 for new invariant violations are non-breaking.
 
 NOTE (2026-07-18, provenance only — not a new rule): mission
-sd-ghreport-reconcile (epic adr-fmt-odlad), oracle ruling adr-fmt-7kdrt
-(NOTE-ONLY). `binding.rs::tier1_model()` (source adr-fmt-vrycy) is the
+sd-ghreport-reconcile (epic ghr-6bb163f0), oracle ruling ghr-3146ee6f
+(NOTE-ONLY). `binding.rs::tier1_model()` (source ghr-2113f746) is the
 first canonical full gh-report Tier-1 model instance built via the R11
 grammar above — 7 stocks / 5 clouds / 3 converters / 11 flows / 8
 connectors, legal under the validated builder. The wasm32 view (R5)
@@ -208,8 +208,8 @@ is not an `sd::Model` node and carries no `sdt-*` styling.
 
 Per the l.125-129 deferral (still binding: further SD/viz modelling work
 amends this ADR in place rather than landing as a freestanding ADR) and
-oracle review adr-fmt-5agci: a from-scratch redesign of the wasm32 view
-(mission sd-viz-scene-redesign, epic adr-fmt-sra3p) replaces the
+oracle review ghr-8108c471: a from-scratch redesign of the wasm32 view
+(mission sd-viz-scene-redesign, epic ghr-9ff4305a) replaces the
 component-template-family/overlay-mount approach the 2026-07-18 NOTE
 above recorded with a single declarative, host-pure `Scene` model
 (`scene.rs`) that the wasm32 interpreter (`view.rs`) walks read-only.
@@ -291,9 +291,9 @@ three cumulative boundary-crossing counters (github.com, web-clients,
 durable-substrate) have no direct cumulative-count replacement — the
 windowed ws-permits/github-budget readouts above overlap in spirit but
 are budget views, not the same running-total semantic; this is a named
-Tier-2 follow-up (adr-fmt-hli8g), not a silent drop, matching R18's
+Tier-2 follow-up (ghr-b0212844), not a silent drop, matching R18's
 tiering of the 5 deferred boundary flows below. The
-`SweepPhase` control-state (adr-fmt-vrycy hotspot (c) — still NOT an
+`SweepPhase` control-state (ghr-2113f746 hotspot (c) — still NOT an
 `sd::Model` node; R11/R14 above are unchanged by this) renders as a plain
 annotation badge positioned at the `BatchRemaining` stock's
 already-placed `Scene` origin, sharing no `scene-node-*` class with the
@@ -315,7 +315,7 @@ edges rather than a parallel ad-hoc signal. The remaining 5 boundary
 flows (github-consume, `served_pages`→clients,
 `evidence_projection`→durable/`events_written`) have no per-tick measured
 signal in this crate yet and stay on the placeholder — a Tier-2 follow-
-up, not a regression, per adr-fmt-vrycy's own core/peripheral tiering.
+up, not a regression, per ghr-2113f746's own core/peripheral tiering.
 Belt-item ANIMATION speed is a separate, still view-local smoothing
 signal (`BeltActivity`, an EWMA-style decay) rather than a raw per-tick
 rate fed directly into `belt_item_phase`'s `speed` parameter — R15's

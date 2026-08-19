@@ -1,11 +1,11 @@
 //! App-facing binding of gh-report's [`crate::sim::WorkQueue`] /
 //! [`crate::sim::BatchTracker`] onto the generic STELLA SD core
-//! ([`crate::sd`]), per adr-fmt-0pe95 sect 3-4 and CHE-0094:R7 — the
+//! ([`crate::sd`]), per ghr-43eba717 sect 3-4 and CHE-0094:R7 — the
 //! generic `sd` module stays app-agnostic; this submodule owns the
 //! queue-specific mapping so no queue/gh-report type ever leaks into
 //! `sd.rs`.
 //!
-//! Mapping (adr-fmt-0pe95 sect 3): `WorkQueue::depth()` <-> [`Stock`]
+//! Mapping (ghr-43eba717 sect 3): `WorkQueue::depth()` <-> [`Stock`]
 //! level; accepted arrivals <-> [`Flow::Uniflow`] inflow; jobs leaving the
 //! queue for a worker slot <-> [`Flow::Uniflow`] outflow. Backpressure
 //! (sect 4) is the canonical single balancing (B) loop: as the queue
@@ -14,7 +14,7 @@
 //! on when it starts returning `EnqueueResult::QueueFull` — the loop
 //! closing the gap toward the capacity ceiling.
 //!
-//! Little's Law (adr-fmt-0pe95 sect 3): `L = lambda * W`, rearranged
+//! Little's Law (ghr-43eba717 sect 3): `L = lambda * W`, rearranged
 //! `W = L / lambda` — mean residence time is the macro Stock level
 //! divided by the effective (accepted) arrival rate. See
 //! [`QueueStockBinding::mean_residence_ticks`].
@@ -115,7 +115,7 @@ impl QueueStockBinding {
         self.last_outflow
     }
 
-    /// Utilization [`Connector`] (adr-fmt-0pe95 sect 4): the
+    /// Utilization [`Connector`] (ghr-43eba717 sect 4): the
     /// information-only snapshot the backpressure balancing loop reads
     /// to explain why `WorkQueue::enqueue` is about to start returning
     /// `EnqueueResult::QueueFull`.
@@ -131,13 +131,13 @@ impl QueueStockBinding {
 
     /// The backpressure loop's polarity: always Balancing (B) — a rising
     /// queue depth feeds back, via [`Self::utilization`], to throttle the
-    /// effective inflow as capacity is approached (adr-fmt-0pe95 sect 4).
+    /// effective inflow as capacity is approached (ghr-43eba717 sect 4).
     #[must_use]
     pub fn backpressure_polarity(&self) -> LoopPolarity {
         LoopPolarity::Balancing
     }
 
-    /// Little's Law (adr-fmt-0pe95 sect 3): mean residence time
+    /// Little's Law (ghr-43eba717 sect 3): mean residence time
     /// `W = L / lambda`, where `L` is the current Stock level and
     /// `lambda` is the cumulative effective (accepted) arrival rate per
     /// tick since this binding was created. `None` when no arrivals have
@@ -199,16 +199,16 @@ impl ReadoutStock {
     }
 }
 
-/// Builds the full gh-report Tier-1 SD spine (per adr-fmt-vrycy's
+/// Builds the full gh-report Tier-1 SD spine (per ghr-2113f746's
 /// core-teaching-model ranking) as ONE legal [`Model`], wired through
-/// the existing enforced grammar (adr-fmt-qaavg) with no new grammar
+/// the existing enforced grammar (ghr-c8ab880e) with no new grammar
 /// primitives and no new invariants. Per CHE-0094:R7, gh-report
 /// vocabulary appears only as doc comments and local identifiers here
 /// (`sd.rs` stays app-agnostic); this constructor carries no `Sim`
 /// reference and no live values (structure only — live level readout
 /// stays [`QueueStockBinding`]'s job, unchanged, once per tick).
 ///
-/// Element inventory (adr-fmt-vrycy CORE TEACHING MODEL):
+/// Element inventory (ghr-2113f746 CORE TEACHING MODEL):
 ///
 /// - `work_queue` [`Stock`] — [`crate::sim::Sim::queue_depth`].
 /// - `in_flight` [`Stock`] — worker-pool WIP,
@@ -218,7 +218,7 @@ impl ReadoutStock {
 /// - `evidence_projection` [`Stock`] — repositories captured,
 ///   [`crate::sim::Sim::repositories_captured`].
 /// - `generation`, `served_pages`, `events_written` [`Stock`]s —
-///   monotonic readout accumulators (inflow-only; adr-fmt-vrycy
+///   monotonic readout accumulators (inflow-only; ghr-2113f746
 ///   ambiguity hotspot (d)), tracking
 ///   [`crate::sim::Sim::arcswap_generation`],
 ///   [`crate::sim::Sim::served_pages`], and
@@ -228,18 +228,18 @@ impl ReadoutStock {
 /// - `github_sink`, `web_clients_sink`, `durable_sink`
 ///   [`Terminal::Sink`] clouds — collector-call consumption, served
 ///   pages/broadcasts, and the durable substrate (write-only per
-///   adr-fmt-vrycy hotspot (a): nothing reads the durable count back,
+///   ghr-2113f746 hotspot (a): nothing reads the durable count back,
 ///   so it is a Cloud, never a Stock, in this model).
 /// - `utilization` [`crate::sd::Converter`] — reads `work_queue`,
 ///   feeds back into all three arrival flows via [`Model::connect_info`],
 ///   closing the B1 backpressure loop.
 /// - `barrier_drained` converter — reads `batch_remaining`, gates
-///   `finalize` via connector (adr-fmt-vrycy hotspot (c): the barrier
+///   `finalize` via connector (ghr-2113f746 hotspot (c): the barrier
 ///   itself is Stock+Converter; the discrete `SweepPhase` label is not
 ///   an SD element and appears nowhere in this construction).
 /// - `read_side` converter — reads `evidence_projection`'s LEVEL,
 ///   models `build_cached_pages`; feeds `finalize` via connector
-///   (adr-fmt-vrycy hotspot (b): the read side is a converter chain,
+///   (ghr-2113f746 hotspot (b): the read side is a converter chain,
 ///   not a second material stock-and-flow pipeline).
 ///
 /// # Errors
@@ -293,7 +293,7 @@ pub fn tier1_model() -> Result<Model, SdConnectionError> {
     model.build()
 }
 
-/// The Tier-1 spine's single feedback loop (adr-fmt-vrycy CORE
+/// The Tier-1 spine's single feedback loop (ghr-2113f746 CORE
 /// TEACHING MODEL, B1): `work_queue` depth feeds [`Connector`] into
 /// `utilization`, which feeds back into the arrival flows, throttling
 /// effective inflow as capacity is approached — always Balancing,
@@ -450,7 +450,7 @@ mod tests {
     fn tier1_model_builds_ok_under_enforced_grammar() {
         assert!(
             super::tier1_model().is_ok(),
-            "Tier-1 gh-report spine must be legal under the adr-fmt-qaavg enforced grammar"
+            "Tier-1 gh-report spine must be legal under the ghr-c8ab880e enforced grammar"
         );
     }
 
@@ -496,7 +496,7 @@ mod tests {
                 model.connector_count()
             ),
             (7, 5, 3, 11, 8),
-            "SweepPhase is control-flow (adr-fmt-vrycy hotspot (c)), never an sd::Model node; \
+            "SweepPhase is control-flow (ghr-2113f746 hotspot (c)), never an sd::Model node; \
              any node representing it would perturb this exact tuple, which this constructor \
              never does — no add_stock/add_converter call anywhere maps to SweepPhase"
         );

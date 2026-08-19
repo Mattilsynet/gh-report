@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Strip sourceless stdlib/external type-stub nodes from graphify-out/graph.json.
 
-BACKGROUND (evidence bd adr-fmt-636cr Q2)
+BACKGROUND (evidence bd ghr-84b9eb88 Q2)
 graphify's Rust extractor (extract.py:9194-9216, ensure_named_node) emits a
 node with source_file == "" and source_location == "" whenever a type/name
 is referenced but not defined in the current file (cross-file or

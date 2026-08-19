@@ -27,7 +27,7 @@ type PayloadDto = EventBytes<PAYLOAD_MAX>;
 /// `cherry_pit_core::SchedulerEvent` field-for-field.
 ///
 /// Lives entirely in `pardosa-cherry-pit-test-support` per the
-/// CHE-0029:R4/R6 severance ruling (oracle adr-fmt-1e54l Q3):
+/// CHE-0029:R4/R6 severance ruling (oracle ghr-ad3cb725 Q3):
 /// `cherry_pit_core::SchedulerEvent` itself never derives `GenomeSafe`,
 /// and `cherry-pit-core` gains no `pardosa` dependency edge. Every
 /// `SchedulerEvent` field has a corresponding DTO field of the same

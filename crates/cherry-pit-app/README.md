@@ -148,7 +148,7 @@ around:
   same `App` instance. The publish loop is exercised at the unit
   level (`dispatch.rs` tests cover the dispatcher in isolation); the
   end-to-end publish→dispatch→dead-letter integration test is
-  deferred per [CHE-0024]:R1 and tracked at bd `adr-fmt-1art` (S8+).
+  deferred per [CHE-0024]:R1 and tracked at bd `ghr-cd757891` (S8+).
   Consumers that need to drive publication today must wrap the bus
   before handing it to `App::new` and publish through their own clone.
 - **Projection-tuple arity ceiling 0..=2.** `ProjectionDriverTuple`

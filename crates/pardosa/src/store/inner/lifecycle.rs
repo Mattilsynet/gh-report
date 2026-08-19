@@ -1011,7 +1011,7 @@ mod tests {
 
     /// Contiguity-violating successor: `event_id` (2) does not match
     /// its physical line position (1) — the fifth check-set shape
-    /// (adr-fmt-lutpd finding #2 equivalence gate).
+    /// (ghr-968718c8 finding #2 equivalence gate).
     fn contiguity_mismatch_successor_event(genesis_bytes: &[u8]) -> Event<TaggedPayload> {
         Event::new_unchecked(
             crate::EventId::from_decoded(2),

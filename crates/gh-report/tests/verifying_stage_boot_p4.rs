@@ -1,17 +1,17 @@
-//! P4 (adr-fmt-t7t4v roadmap) regression guard: all three gh-report
+//! P4 (ghr-eedb1f06 roadmap) regression guard: all three gh-report
 //! event stores (main/org/team) rehydrate through the shared pardosa
 //! verifying stage (`rebuild_dragline_with_frontier`) on BOTH backends.
 //!
-//! ## Why (roadmap adr-fmt-t7t4v, phase adr-fmt-x6t9x)
+//! ## Why (roadmap ghr-eedb1f06, phase ghr-f62294b5)
 //!
 //! `open_pgno`/`open_jetstream` on all three native stores
 //! (`NativeStore`, `NativeOrgStore`, `NativeTeamStore`) delegate to
 //! `pardosa_fiber_store::FiberStore::open_pgno`/`open_jetstream`, which
 //! call `PardosaStore::open_with_backend` — both the `Pgno` and
 //! `JetStream` dispatch arms of `open_with_backend` route through
-//! `rebuild_dragline_with_frontier` (P1, adr-fmt-q8qyn), computing all
+//! `rebuild_dragline_with_frontier` (P1, ghr-88387f45), computing all
 //! four `CheckedReplayKind` checks in `PRECURSOR_CHECK_MODE::ObserveOnly`
-//! (P2b, adr-fmt-o1kd3). This closes the seam-survey (adr-fmt-p0t1g)
+//! (P2b, ghr-be9a1b49). This closes the seam-survey (ghr-dbcb6127)
 //! UNOBSERVED GAP without any gh-report code re-point: gh-report already
 //! rehydrates every store through the verifying stage on both backends,
 //! transitively, as of P1+P2b landing.

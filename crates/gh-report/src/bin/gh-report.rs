@@ -15,8 +15,8 @@ use gh_report::config::{self, dashboard, runtime};
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
-/// Non-shipping heap and RSS profiling harness (adr-fmt-gcuq4,
-/// adr-fmt-nfteo memprof-01). Compiled only under the non-default
+/// Non-shipping heap and RSS profiling harness (ghr-61c73290,
+/// ghr-6946f6b2 memprof-01). Compiled only under the non-default
 /// `profiling` feature; never active in a release build.
 #[cfg(feature = "profiling")]
 mod profiling {
@@ -188,7 +188,7 @@ struct Cli {
     #[arg(long, env = "GH_REPORT_FORCE_REFRESH")]
     force_refresh: bool,
 
-    /// Rollback seam for the roster-eda render cutover (adr-fmt-47ljf):
+    /// Rollback seam for the roster-eda render cutover (ghr-a3091aef):
     /// force the render path back to the pre-cutover synchronous
     /// `collect_team_rosters` live fetch instead of reading the persisted
     /// projection. Default off — the projection read is the shipped path.
@@ -204,7 +204,7 @@ struct Cli {
     pardosa_backend: PardosaBackendArg,
 
     /// Primary-rate `Regulator` for the worker-pool regulator chain
-    /// (adr-fmt-faspg kill-switch): `token-bucket` (default) or
+    /// (ghr-79f5d695 kill-switch): `token-bucket` (default) or
     /// `budget-gate` (operational fallback, revert via config alone).
     #[arg(long, default_value = "token-bucket", env = "GH_REPORT_RATE_REGULATOR")]
     rate_regulator: RateRegulatorArg,

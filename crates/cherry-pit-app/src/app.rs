@@ -6,7 +6,7 @@
 //! per CHE-0039:R2 + CHE-0051:R3), [`App::register_policy`]
 //! (per-policy dispatch closure per CHE-0051:R4 + CHE-0017:R2), and
 //! [`App::run`] (F2 bounded dispatch-channel publish loop; mission
-//! adr-fmt-cq7vb.2 Approach A2).
+//! ghr-d64c8076 Approach A2).
 //!
 //! `App<G, S, B, P, D>` is single-aggregate per CHE-0051:R9; five
 //! type parameters cover the composition surface without `Box<dyn>`
@@ -47,7 +47,7 @@ type PolicyRegistry<G> = Vec<Box<dyn ErasedPolicyDispatcher<EventOf<G>, G>>>;
 
 /// Default capacity for the bounded dispatch channel between the bus
 /// callback and the single sequential consumer task (F2 / mission
-/// adr-fmt-cq7vb.2, Approach A2).
+/// ghr-d64c8076, Approach A2).
 ///
 /// 1024 is a generous default for in-process EDA workloads: it
 /// absorbs typical bursts (publisher fan-out from a single command
@@ -136,7 +136,7 @@ where
 
     /// Capacity of the bounded dispatch channel between the bus
     /// callback and the single sequential consumer task (F2 /
-    /// adr-fmt-cq7vb.2, Approach A2). Configured via
+    /// ghr-d64c8076, Approach A2). Configured via
     /// [`Self::with_dispatch_buffer_capacity`]; defaults to
     /// [`DEFAULT_DISPATCH_BUFFER_CAPACITY`]. Read by
     /// [`Self::run`] when standing up the consumer.
@@ -172,7 +172,7 @@ where
     }
 
     /// Override the bounded dispatch-channel capacity used by
-    /// [`Self::run`] (F2 / mission adr-fmt-cq7vb.2 Approach A2).
+    /// [`Self::run`] (F2 / mission ghr-d64c8076 Approach A2).
     ///
     /// Saturation surfaces as a dropped envelope plus `tracing::warn!`
     /// inside the bus callback; the publisher never blocks on a full
@@ -261,7 +261,7 @@ where
 /// blocking the publisher.
 ///
 /// Called from the bus callback installed by [`App::run`]. Per F2
-/// (mission adr-fmt-cq7vb.2 / Approach A2), the publisher-side
+/// (mission ghr-d64c8076 / Approach A2), the publisher-side
 /// contract is **non-blocking**: a full channel surfaces as a
 /// `tracing::warn!` and a dropped envelope, never as a blocked
 /// publisher.
@@ -286,7 +286,7 @@ where
             tracing::warn!(
                 %event_id,
                 capacity = tx.max_capacity(),
-                "dispatch channel full; dropping envelope (F2 back-pressure surface, mission adr-fmt-cq7vb.2). \
+                "dispatch channel full; dropping envelope (F2 back-pressure surface, mission ghr-d64c8076). \
                  Increase App::with_dispatch_buffer_capacity or reduce publish rate.",
             );
         }
@@ -348,7 +348,7 @@ where
     /// any in-flight dispatch before returning.
     ///
     /// Wires the bounded dispatch channel (F2 / mission
-    /// adr-fmt-cq7vb.2, Approach A2): sizes an `mpsc::channel` per
+    /// ghr-d64c8076, Approach A2): sizes an `mpsc::channel` per
     /// [`Self::with_dispatch_buffer_capacity`] (default
     /// [`DEFAULT_DISPATCH_BUFFER_CAPACITY`]); spawns one sequential
     /// consumer per CHE-0051:R7 + CHE-0024:R5 + CHE-0046:R7
@@ -663,7 +663,7 @@ mod tests {
         let _app = fresh_app().with_dispatch_buffer_capacity(0);
     }
 
-    /// F2 / mission adr-fmt-cq7vb.2 back-pressure invariant.
+    /// F2 / mission ghr-d64c8076 back-pressure invariant.
     ///
     /// Wires a bounded channel of capacity 4 between a fast publisher
     /// (calling `enqueue_or_log` directly, the same path the bus
@@ -757,7 +757,7 @@ mod tests {
         );
     }
 
-    /// F2 / mission adr-fmt-cq7vb.2 graceful-drain invariant.
+    /// F2 / mission ghr-d64c8076 graceful-drain invariant.
     ///
     /// Wires a bounded channel of generous capacity (16) and a
     /// non-blocking dispatch closure. Publishes a small batch then

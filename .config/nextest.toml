@@ -6,7 +6,7 @@
 # the single-process `cargo test` harness exposes.
 #
 # Doctests are NOT run by nextest; CI retains a separate `cargo test --doc`
-# step (oracle ruling adr-fmt-cus9e, condition C1).
+# step (oracle ruling ghr-ca569f49, condition C1).
 
 [profile.default]
 # Local developer runs: surface flakes, do not mask them. No retries here on

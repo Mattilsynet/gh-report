@@ -8,7 +8,7 @@
 //! [`secondary_limit_resume_at`] parses the secondary-rate-limit /
 //! abuse-detection signal (429, or 403 with GitHub's secondary-limit body
 //! marker) plus a `Retry-After` header into a resume-at [`Instant`], per
-//! adr-fmt-egsrk / CHE-0046 inheritance. This is a DISTINCT path from
+//! ghr-16813e99 / CHE-0046 inheritance. This is a DISTINCT path from
 //! `update_from_headers`'s primary-limit (`x-ratelimit-remaining:0`)
 //! tracking above — not a duplicate of it.
 

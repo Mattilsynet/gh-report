@@ -152,7 +152,7 @@ pub use pardosa_store::PardosaProjectionStore;
 /// other two R5 obligations — no durable state and rebuild-from-`EventStore`
 /// — are satisfied unchanged. Multi-projection composition and the
 /// keyed-map shape are deferred until CHE-0048:R6 is relaxed (tracked as
-/// a follow-up under epic `adr-fmt-hh07`; targeted at WU-5).
+/// a follow-up under epic `ghr-5ae96ec5`; targeted at WU-5).
 ///
 /// # Examples
 ///

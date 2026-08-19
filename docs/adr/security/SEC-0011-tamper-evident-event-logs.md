@@ -30,7 +30,7 @@ Tampering becomes detectable on checked reads even when storage allows overwrite
 
 ## Proposed amendment (b) — NOT YET RATIFIED
 
-Status: proposal only. R3's opt-in ("backends that surface hash-chain verification at all MUST reject discontinuity") remains the in-force policy. This section records the text R3 would receive if reconciliation path (b) from roadmap adr-fmt-i8j15 (phase adr-fmt-eelvc) is ratified — it does not itself amend the Decision.
+Status: proposal only. R3's opt-in ("backends that surface hash-chain verification at all MUST reject discontinuity") remains the in-force policy. This section records the text R3 would receive if reconciliation path (b) from the roadmap "pardosa backend-agnostic on-read integrity (O1) — mandatory verify stage above the adapter seam" (epic ghr-eedb1f06, phase ghr-b35145a9) is ratified — it does not itself amend the Decision.
 
 Background: PGN-0010:R8 (reconciliation (a), already applied) mandates that an on-read verify stage exists universally above the `AuthoritativeBackend` seam, but leaves each adapter free to declare whether it surfaces hash-chain verification (default true; explicit opt-out permitted with an ADR-cited reason). (a) closes the stage-location gap without touching R3's opt-in. Path (b) would go further: remove the opt-out entirely, so every `AuthoritativeBackend` impl surfaces hash-chain verification and R3's MUST-reject applies unconditionally.
 

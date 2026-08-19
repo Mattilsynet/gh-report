@@ -86,7 +86,7 @@ check_fence_converge() {
           if (!paired) {
             unpaired++
             printf("::error::%s FencedConflict arm at line %d has no paired rearm_fenced_run(...)/rearm_fenced_team_refresh_tick(...) call in its own arm scope\n", label, t)
-            printf("::error::use rearm_fenced_run(...)/rearm_fenced_team_refresh_tick(...) -> converge_on_fence for this specific arm; CHE-0088 amendment (adr-fmt-3jptm)\n")
+            printf("::error::use rearm_fenced_run(...)/rearm_fenced_team_refresh_tick(...) -> converge_on_fence for this specific arm; CHE-0088 amendment (ghr-c905de05)\n")
           }
         }
         exit (unpaired > 0)

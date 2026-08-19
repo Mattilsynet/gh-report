@@ -21,7 +21,7 @@ whether/how gh-report/pardosa scale writers and readers horizontally. This
 ADR records that posture as one ratified decision so it is not re-litigated
 per-PR.
 
-Evidence bead adr-fmt-tstwp (OBSERVE pass, 2026-07-15) grounds every
+Evidence bead ghr-523e4c9d (OBSERVE pass, 2026-07-15) grounds every
 primitive-level claim below in primary sources, confirming and sharpening
 what PGN-0016/PGN-0023 already assert:
 

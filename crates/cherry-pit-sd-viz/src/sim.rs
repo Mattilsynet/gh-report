@@ -1,5 +1,5 @@
 //! Host-testable discrete-event simulation core of gh-report's queue
-//! network (adr-fmt-223sd, adr-fmt-t63uo). Pure Rust, no `web-sys`/`wasm`
+//! network (ghr-f6602e2d, ghr-832c1132). Pure Rust, no `web-sys`/`wasm`
 //! leakage — this module compiles and tests on any host target;
 //! [`crate::view`] (wasm32-only) drives it frame-by-frame and renders
 //! its state.

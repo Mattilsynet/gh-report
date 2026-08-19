@@ -40,8 +40,8 @@ jobs:
       # build-path embedding), so a regen-and-diff gate false-positives on
       # every host that isn't bit-identical to the original build machine
       # (blocked v0.1.39 and v0.1.40, both tagged, both CI-red — bd
-      # adr-fmt-2es67). The prior hyphen/underscore import-key mismatch this
-      # tripwire actually guards against is bd adr-fmt-xgcnn.
+      # ghr-ac704b9e). The prior hyphen/underscore import-key mismatch this
+      # tripwire actually guards against is bd ghr-e32955e3.
       - name: install wasm-tools
         run: cargo install wasm-tools --locked
       - name: import-key invariant (gh-report-web-client wasm/glue)
@@ -57,16 +57,16 @@ jobs:
             | sed -E 's/^\(import "//; s/"$//' \
             | sort -u)"
           if [ "$glue_key" != "$EXPECTED" ]; then
-            echo "::error::glue import key [$glue_key] != expected [$EXPECTED] (see bd adr-fmt-xgcnn, adr-fmt-2es67)"
+            echo "::error::glue import key [$glue_key] != expected [$EXPECTED] (see bd ghr-e32955e3, ghr-ac704b9e)"
             exit 1
           fi
           if [ "$wasm_mod" != "$EXPECTED" ]; then
-            echo "::error::wasm import module [$wasm_mod] != expected [$EXPECTED] (see bd adr-fmt-xgcnn, adr-fmt-2es67)"
+            echo "::error::wasm import module [$wasm_mod] != expected [$EXPECTED] (see bd ghr-e32955e3, ghr-ac704b9e)"
             exit 1
           fi
           n=$(printf '%s\n' "$wasm_mod" | grep -c .)
           if [ "$n" -ne 1 ]; then
-            echo "::error::wasm has $n distinct import modules, expected exactly 1 (see bd adr-fmt-xgcnn, adr-fmt-2es67)"
+            echo "::error::wasm has $n distinct import modules, expected exactly 1 (see bd ghr-e32955e3, ghr-ac704b9e)"
             exit 1
           fi
       # Lint the wasm-only crate on its real target so dom.rs (cfg(wasm32))
@@ -81,7 +81,7 @@ jobs:
       # crate's resolved feature-aware dep tree. Locks in CHE-0025:R1 (port
       # traits use RPITIT, not `#[async_trait]` macro) and CHE-0025:R2 (no
       # heap allocation per async trait method call via Box). Authored in
-      # mission phase2-v2-track-1 SM-1 (bd: adr-fmt-6bua). Audit artefact:
+      # mission phase2-v2-track-1 SM-1 (bd: ghr-15841913). Audit artefact:
       # .ooda/track-1-4-rpitit-audit-*.md.
       - name: deny async-trait in cherry-pit-* dep trees (CHE-0025:R1+R2)
         if: always()

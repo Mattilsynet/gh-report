@@ -1,14 +1,14 @@
-//! Host-pure, declarative Scene model (adr-fmt-sra3p, `svs-02`):
+//! Host-pure, declarative Scene model (ghr-9ff4305a, `svs-02`):
 //! composes [`crate::sd::Model`]'s already-declared element set with a
 //! placement overlay into the single data structure the ENTIRE visual
 //! derives from. No wasm, no DOM/SVG emission, no `web-sys` — those
 //! belong to the (future) wasm-gated interpreter that walks this
 //! `Scene`, never the reverse (COM-0012 inward-only dependency rule).
 //!
-//! # Shape (feynman H1, `adr-fmt-ogosr`)
+//! # Shape (feynman H1, `ghr-ce827966`)
 //!
 //! [`Model`] stays the single structural source of truth: it already
-//! enforces the adr-fmt-qaavg connection grammar at compile time (the
+//! enforces the ghr-c8ab880e connection grammar at compile time (the
 //! sealed [`crate::sd::FlowEndpoint`]/[`crate::sd::ConnectorTail`]/
 //! [`crate::sd::ConnectorHead`] traits) and at `build()` time (the
 //! cloud-to-cloud degenerate-flow check). [`Scene`] adds ONLY a
@@ -400,7 +400,7 @@ fn anchor_side_pair(tail: GridSlot, head: GridSlot) -> (Side, Side) {
 /// Builds the gh-report [`Scene`]: [`crate::binding::tier1_model`]'s
 /// 7 stocks / 5 clouds / 3 converters / 11 flows, placed on a 5-row
 /// grid honoring the source-top-left / client-bottom-right causal
-/// order (adr-fmt-vrycy): row 0 the two source clouds, row 1 the
+/// order (ghr-2113f746): row 0 the two source clouds, row 1 the
 /// queue-processing spine (`work_queue`, `in_flight`), row 2 the
 /// join-barrier stock plus all three converters, row 3 the three
 /// monotonic readout accumulators, row 4 the three sink clouds. Every

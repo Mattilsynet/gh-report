@@ -1,7 +1,7 @@
 # COM-0007. Information Hiding — Minimize Leakage
 
 Date: 2026-04-26
-Last-reviewed: 2026-06-18 — refined — added R5 linking general-purpose interfaces to information hiding per APOSD 2e Ch.6 (false-abstraction principle) (mission:adr-fmt-sc11s)
+Last-reviewed: 2026-06-18 — refined — added R5 linking general-purpose interfaces to information hiding per APOSD 2e Ch.6 (false-abstraction principle) (mission:ghr-3d5c995c)
 Tier: B
 Status: Accepted
 

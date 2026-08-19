@@ -14,7 +14,7 @@ References: CHE-0057, CHE-0018, CHE-0048, CHE-0074 | Supersedes: CHE-0067
 CHE-0067 ratified `ListableEventStore::list_aggregates` with a
 synchronous signature; CHE-0067:R5 fixed it as append-only,
 requiring a superseding ADR for any change. Findings F11 (bd
-`adr-fmt-cq7vb.6`) surfaced the resulting reactor-stall hazard:
+`ghr-8a40cb1e`) surfaced the resulting reactor-stall hazard:
 `MsgpackFileStore::list_aggregates` calls blocking `std::fs::read_dir`,
 stalling the tokio reactor when invoked from `async fn` callers
 (`bootstrap_replay_state`, `new_with_replay`). CHE-0018:R2 binds every
@@ -87,7 +87,7 @@ R6 [5]: Implementations whose enumeration calls blocking syscalls
   `JoinFailure` arm — mitigated by `#[non_exhaustive]` (CHE-0021:R1)
   on `StoreError`.
 
-risks/migration: bd `adr-fmt-cq7vb.6` (sub-mission E-2) lands the
+risks/migration: bd `ghr-8a40cb1e` (sub-mission E-2) lands the
   signature change in one squash-set: trait + 2 impls + 5 call sites
   + new `StoreError::JoinFailure` variant + reactor-stall regression
   test. No `dyn ListableEventStore` exists per pre-flight grep. CHE-0067

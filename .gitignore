@@ -42,6 +42,9 @@ rss.csv
 .beads/issues.jsonl
 .beads/events.jsonl
 
+# Bead-db rollback backups (local artefacts; keep out of git)
+.beads.backup-*
+
 # opencode plugin deps
 .opencode/node_modules/
 *.db

@@ -1,6 +1,6 @@
 //! F4 property: N writers race the real `JetStream` OCC fence.
 //!
-//! Roadmap `adr-fmt-2ysyq` §C/§D Seq 2: author (not reuse) the property
+//! Roadmap `ghr-05367cd6` §C/§D Seq 2: author (not reuse) the property
 //! "N writers race on a seq → exactly one wins → the loser surfaces
 //! `FencedConflict`/`ConcurrencyConflict` and aborts cleanly (no
 //! retry-to-win, per the `341188b` amendment) → a single handle never

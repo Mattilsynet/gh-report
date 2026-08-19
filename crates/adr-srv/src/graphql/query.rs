@@ -5,7 +5,7 @@
 //! the critical section short — the corpus state is `Clone`-cheap
 //! per-doc but the map iteration in `adrs` holds the lock across the
 //! materialisation. Acceptable for v0.1 (boot-time scrape only; no
-//! concurrent ingress — that's bead `adr-fmt-azu5e`, Phase 3).
+//! concurrent ingress — that's bead `ghr-bd2ec9ab`, Phase 3).
 
 use std::sync::{Arc, Mutex};
 

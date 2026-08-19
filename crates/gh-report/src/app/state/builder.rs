@@ -2,7 +2,7 @@
 //!
 //! Consolidates the previous `new_with_cache_capacity`,
 //! `new_with_webhook_secret`, and `new_test` constructors into a
-//! single fluent API. Extracted from `state.rs` (K9, adr-fmt-b98n1) as a
+//! single fluent API. Extracted from `state.rs` (K9, ghr-ff7dd746) as a
 //! pure structural move — no behavioural change.
 
 use std::sync::Arc;

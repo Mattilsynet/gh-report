@@ -2,7 +2,7 @@
 //!
 //! δ.3c-ii: replaces the pre-pivot `infra::baseline::dump_baseline` which
 //! read `<store>/baseline.msgpack`. Extracted from `state.rs` (K9,
-//! adr-fmt-b98n1) as a pure structural move — no behavioural change.
+//! ghr-ff7dd746) as a pure structural move — no behavioural change.
 
 use super::AppState;
 

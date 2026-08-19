@@ -22,7 +22,7 @@ R1 [5]: Score BPR1 Unprotected (CHE-0090's below-baseline band) when branch prot
 
 R2 [5]: Score BPR2 IntegrityOnly when the default branch is protected and force-push plus deletion blocking are observed (CHE-0090's tier consistency map: BPR1<->BelowBaseline, BPR2<->Minimal — the BPR index does not track the old T-number by offset).
 
-R3 [5]: Score BPR3 ReviewedWithBypass or BPR4 ReviewedGated (CHE-0090's split of the old accept bar) when BPR2 also requires pull requests with at least one approving review. Widened dashboard pass bar: branch-protection coverage counts a repository as PASS when its regime is BPR2 IntegrityOnly or higher — pass := regime in {BPR2, BPR3, BPR4, BPR5}; denominator remains all non-archived repos per adr-fmt-tm7ms.
+R3 [5]: Score BPR3 ReviewedWithBypass or BPR4 ReviewedGated (CHE-0090's split of the old accept bar) when BPR2 also requires pull requests with at least one approving review. Widened dashboard pass bar: branch-protection coverage counts a repository as PASS when its regime is BPR2 IntegrityOnly or higher — pass := regime in {BPR2, BPR3, BPR4, BPR5}; denominator remains all non-archived repos per ghr-1e6b9b61.
 
 R4 [5]: Treat required status checks, stale-review dismissal, and admin-equivalent enforcement as additive bonuses that raise a BPR3/BPR4 repository to BPR5 Hardened when present; absence never blocks BPR1 or BPR2.
 

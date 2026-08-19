@@ -81,7 +81,7 @@ fn track_timestamp(current: &mut Option<String>, candidate: &str, keep_oldest: b
 /// Used both for outright failure and for a truncated-but-technically
 /// successful paginated fetch (`result.is_ok()` is `true` but
 /// `result.is_truncated()` is also `true`) — a partial alert list is not
-/// safe to report as a complete [`OrgAlertSummary`] (adr-fmt-uhd6c, mirrors
+/// safe to report as a complete [`OrgAlertSummary`] (ghr-3ede27c2, mirrors
 /// the H1 fix at [`crate::collector::team_membership::org_members_from_outcome`]).
 fn build_failure_summary(result: &ApiOutcome) -> OrgAlertSummary {
     let collection_status = match result.status_code() {
@@ -783,7 +783,7 @@ mod tests {
         );
     }
 
-    /// adr-fmt-uhd6c H1-mirror: a truncated-but-technically-successful
+    /// ghr-3ede27c2 H1-mirror: a truncated-but-technically-successful
     /// paginated fetch (`ApiOutcome::Success { truncated: true, .. }` —
     /// `is_ok()` is `true`, so the pre-fix `collect_org_alerts` guard
     /// `!result.is_ok()` alone would NOT degrade this) must build a

@@ -1,5 +1,5 @@
 /// Encrypted-vs-plaintext decision for a `nats_url`, loopback-aware
-/// (O3 orientation, mission `adr-fmt-1a060`): a plaintext scheme to a
+/// (O3 orientation, mission `ghr-6ea8cd63`): a plaintext scheme to a
 /// loopback host is a local-dev pattern, not a production risk, so it
 /// is allowed without the `--allow-plaintext` escape hatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,7 +68,7 @@ fn extract_host(without_scheme: &str) -> Option<&str> {
 }
 
 /// Evaluate whether `nats_url` may be used, per the O3 loopback-aware
-/// gate (mission `adr-fmt-1a060`, SEC-0007 confidentiality intent).
+/// gate (mission `ghr-6ea8cd63`, SEC-0007 confidentiality intent).
 #[must_use]
 pub fn evaluate_tls_policy(nats_url: &str, allow_plaintext: bool) -> TlsPolicy {
     let Some((scheme, rest)) = nats_url.split_once("://") else {

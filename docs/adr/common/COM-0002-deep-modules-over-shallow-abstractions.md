@@ -1,7 +1,7 @@
 # COM-0002. Deep Modules Over Shallow Abstractions
 
 Date: 2026-04-25
-Last-reviewed: 2026-06-18 — refined — corrected R4 and added R6 to represent APOSD 2e Ch.6 general-purpose-interface and push-specialization principles (mission:adr-fmt-sc11s)
+Last-reviewed: 2026-06-18 — refined — corrected R4 and added R6 to represent APOSD 2e Ch.6 general-purpose-interface and push-specialization principles (mission:ghr-3d5c995c)
 Tier: S
 Status: Accepted
 

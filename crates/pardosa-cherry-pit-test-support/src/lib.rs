@@ -17,7 +17,7 @@ use pardosa_schema::GenomeSafe;
 
 const SINGLE_EVENT_ONLY: &str = "PgnoEventStore accepts only single-event batches (create/append); \
      multi-event atomic commit has no primitive in the pardosa substrate today \
-     (see bd adr-fmt-75wcc option (a))";
+     (see bd ghr-00b572de option (a))";
 
 #[derive(Clone, GenomeSafe)]
 struct PgnoEnvelope<Ev> {
@@ -47,7 +47,7 @@ fn aggregate_key<Ev: Clone>(event: &PardosaEvent<PgnoEnvelope<Ev>>) -> std::iter
 /// commit); a multi-event `Vec` looped over `record()` would let a
 /// crash between calls leave a partial stream durably observable,
 /// violating [`EventStore::append`]'s atomicity contract. See bd
-/// adr-fmt-75wcc.
+/// ghr-00b572de.
 pub struct PgnoEventStore<Ev: DomainEvent + GenomeSafe + Encode + Decode> {
     store: ObservedFiberStore<PgnoEnvelope<Ev>>,
     next_id: AtomicU64,
