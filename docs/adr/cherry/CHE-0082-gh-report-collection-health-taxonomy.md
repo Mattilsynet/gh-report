@@ -1,7 +1,7 @@
 # CHE-0082. gh-report Collection Health Taxonomy
 
 Date: 2026-06-17
-Last-reviewed: 2026-07-16
+Last-reviewed: 2026-08-19 — amended — R4/R5 conditioned the 404 genuine-absence conclusion on a generic observed authority signal, replacing the prior unconditional reading (evidence: ghr-d1176f2a)
 Tier: B
 Status: Accepted
 Crates: gh-report
@@ -24,9 +24,9 @@ R2 [5]: Append new gh-report event fields under CHE-0022 and PGN-0013; do not re
 
 R3 [5]: Store HTTP status as `Option<u16>` or an equivalent bounded enum, never as text or an HTTP library type.
 
-R4 [5]: Treat public branch-protection 404 with no controls as genuine absence; it may remain a governance Fail.
+R4 [5]: Treat a public branch-protection 404 with no controls as genuine absence (governance Fail, denominator-counted) when an observed authority signal shows the caller had sufficient authority to read protection; otherwise treat it as Unknown, permission-suspected. The legacy endpoint requires elevated authority regardless of visibility, so an unauthorized caller's 404 carries no absence information (evidence: ghr-d1176f2a).
 
-R5 [5]: Treat a private or internal branch-protection 404 with no controls as genuine absence per R4, a governance Fail counted in the coverage denominator; reserve Unknown with a permission-suspected reason for authority failures (403, denied, rate-limited, or transient), never for the plain absent-control 404.
+R5 [5]: Treat a private or internal branch-protection 404 with no controls as genuine absence per R4 (Fail, denominator-counted) under the same authority-signal condition; otherwise Unknown, permission-suspected, never plain absent-control. Inferring authority failure from a 404 plus private/internal visibility alone is forbidden: visibility is not an authority signal; this exception keys only on an observed authority signal, never on visibility.
 
 R6 [5]: Keep org-wide collection-health taxonomy counts in report-side aggregation, not on per-repository persisted payloads.
 
@@ -38,4 +38,4 @@ R7 [5]: Represent active credential limitations through the existing AuthMode, T
 
 − becomes harder: schema hashes move when new bounded event fields are appended, requiring re-scrape rather than mixed old/new event replay.
 
-risks/migration: the first run without a GitHub App token reports private/internal branch-protection reads as capability-limited and classifies unreadable 404s as Unknown.
+risks/migration: the first run without a GitHub App token reports branch-protection reads as capability-limited; per the R4/R5 amendment (2026-08-19, evidence ghr-d1176f2a), a branch-protection 404 of any visibility is genuine absence only while an observed authority signal indicates sufficient authority to read protection, and is classified Unknown/permission-suspected otherwise.
