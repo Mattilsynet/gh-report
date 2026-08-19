@@ -154,7 +154,7 @@ pub struct GitHubClient {
     /// Set via `fetch_max` to ensure concurrent halt triggers never regress
     /// the timestamp backward.
     halted_until: AtomicU64,
-    /// Secondary-rate-limit / abuse-detection backoff regulator (adr-fmt-egsrk,
+    /// Secondary-rate-limit / abuse-detection backoff regulator (ghr-16813e99,
     /// CHE-0046 inheritance). Armed from a parsed `Retry-After` (429 or
     /// 403-secondary-limit); shared with the worker pool's regulator chain so
     /// admission of new jobs pauses until the server-authoritative resume-at
@@ -184,7 +184,7 @@ pub struct GitHubClient {
     /// Populated by `request_single_inner`, read by `repo_details`.
     last_response_etags: SccHashMap<String, String>,
     /// Side-channel recording which `repo_details` calls resolved via a
-    /// 304 not-modified `ETag` revalidation (adr-fmt-4cnvg / CHE-0055:R17).
+    /// 304 not-modified `ETag` revalidation (ghr-fe9bb970 / CHE-0055:R17).
     /// Populated by `try_etag_revalidation`, consumed once by
     /// [`Self::take_not_modified`].
     not_modified_repos: SccHashMap<String, ()>,
@@ -214,7 +214,7 @@ struct CachedResult {
 }
 
 /// Whether `team_slug` is already recorded in `cache` as a known-deleted
-/// CODEOWNERS team this process (adr-fmt-op2u6-F3).
+/// CODEOWNERS team this process (ghr-1f2d0659-F3).
 fn cache_contains_deleted_team(cache: &SccHashMap<String, ()>, team_slug: &str) -> bool {
     cache.contains_sync(team_slug)
 }
@@ -964,7 +964,7 @@ impl GitHubClient {
     ///
     /// # Budget note
     /// A successful `ETag` revalidation (304 Not Modified) refunds its
-    /// acquired permit (adr-fmt-op2u6-F1) — GitHub does not charge a 304
+    /// acquired permit (ghr-1f2d0659-F1) — GitHub does not charge a 304
     /// against the real rate limit, so net budget impact is zero. Stale
     /// entries that fail `ETag` revalidation still consume two budget
     /// permits: one for the conditional request, one for the full
@@ -1073,7 +1073,7 @@ impl GitHubClient {
 
     /// Consume and return whether the most recent [`Self::repo_details`]
     /// call for `repo_name` resolved via a 304 not-modified `ETag`
-    /// revalidation (adr-fmt-4cnvg / CHE-0055:R17).
+    /// revalidation (ghr-fe9bb970 / CHE-0055:R17).
     ///
     /// One-shot: the marker is removed on read, so a stale value cannot
     /// leak into a later, unrelated call for the same `repo_name`.
@@ -1286,14 +1286,14 @@ impl GitHubClient {
     }
 
     /// Whether `team_slug` was already observed 404 (deleted) this process
-    /// (adr-fmt-op2u6-F3).
+    /// (ghr-1f2d0659-F3).
     #[must_use]
     pub fn is_known_deleted_team(&self, team_slug: &str) -> bool {
         cache_contains_deleted_team(&self.deleted_team_slugs, team_slug)
     }
 
     /// Record `team_slug` as observed 404 (deleted) this process
-    /// (adr-fmt-op2u6-F3). Returns `true` on first insertion, `false` if
+    /// (ghr-1f2d0659-F3). Returns `true` on first insertion, `false` if
     /// already recorded.
     pub fn record_deleted_team(&self, team_slug: &str) -> bool {
         cache_record_deleted_team(&self.deleted_team_slugs, team_slug)
@@ -2526,7 +2526,7 @@ mod tests {
         );
     }
 
-    /// adr-fmt-4cnvg / CHE-0055:R17 acceptance: `take_not_modified` reports
+    /// ghr-fe9bb970 / CHE-0055:R17 acceptance: `take_not_modified` reports
     /// the 304-vs-fresh classification the wq `JobExecutor::charge_of`
     /// hook needs, one-shot per `repo_details` call.
     #[tokio::test]
@@ -2604,7 +2604,7 @@ mod tests {
         );
     }
 
-    /// adr-fmt-5n3es acceptance gate: the F1 free-conservation fix taking
+    /// ghr-b95e155c acceptance gate: the F1 free-conservation fix taking
     /// effect in production. `LiveEvaluator` drives the IDENTICAL free
     /// (`repo_details` 304) job through both the frozen `run_worker_pool`
     /// and the live `run_worker_pool_regulated`, each with its own fresh
@@ -2698,7 +2698,7 @@ mod tests {
         budget.calls_made() - budget_before
     }
 
-    /// adr-fmt-5n3es acceptance gate: the F1 free-conservation fix taking
+    /// ghr-b95e155c acceptance gate: the F1 free-conservation fix taking
     /// effect in production. `LiveEvaluator` drives the IDENTICAL free
     /// (`repo_details` 304) job through both the frozen `run_worker_pool`
     /// and the live `run_worker_pool_regulated`, each with its own fresh
@@ -2784,7 +2784,7 @@ mod tests {
         );
     }
 
-    /// adr-fmt-5n3es acceptance gate (ii): a charged job (fresh
+    /// ghr-b95e155c acceptance gate (ii): a charged job (fresh
     /// `repo_details` 200) must never be settled `Free` on the regulated
     /// path — its job-admission permit stays charged (asymmetric-risk
     /// safe default; no budget under-count).
@@ -3208,7 +3208,7 @@ mod tests {
         );
     }
 
-    /// ACCEPTANCE 1 (adr-fmt-egsrk): a 429 with `Retry-After: N` must be
+    /// ACCEPTANCE 1 (ghr-16813e99): a 429 with `Retry-After: N` must be
     /// honored — the client issues no further requests until ~now+N, then
     /// resumes. `up_to_n_times(1)` on the 429 mock means a premature retry
     /// (before the wait elapses) would exhaust it and fail against the
@@ -3290,7 +3290,7 @@ mod tests {
         );
     }
 
-    /// ACCEPTANCE 3 (the escalation-risk guard, adr-fmt-egsrk SAFETY rule):
+    /// ACCEPTANCE 3 (the escalation-risk guard, ghr-16813e99 SAFETY rule):
     /// `Retry-After: N` must be honored for AT LEAST N — the wait must
     /// never be shortened below the server's value, even under a second
     /// concurrent observation. Under-honoring risks escalating GitHub's

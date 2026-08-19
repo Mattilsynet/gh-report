@@ -14,7 +14,7 @@ References: CHE-0073, CHE-0074, CHE-0072, CHE-0048, CHE-0068
 
 CHE-0073 R10 sanctions `TeamStateCaptured` as the third persisted current-state
 class for gh-report, mirroring the R8 `OrgStateCaptured` shape. The kqavx
-verdict (bd adr-fmt-kqavx) established that team-membership and orphan
+verdict (bd ghr-893fde5c) established that team-membership and orphan
 attribution do not belong in the `RepositoryStateCaptured` payload — that path
 is a SCHEMA_HASH break forcing a re-scrape, and orphan attribution is a
 render-time derivation (CLASS B). The roadmap now requires the roster to be
@@ -46,4 +46,4 @@ R5 [5]: Decouple the team read-model part from the CHE-0068 collect-cycle freshn
 
 - becomes harder: a third persisted stream adds a SCHEMA_HASH to pin and a fiber-key derivation to maintain; team removal must go through detach rather than a purge.
 
-risks/migration: additive — `TeamStateCaptured` is a new stream with a new SCHEMA_HASH, so no existing repository or org stream is re-scraped. Rollback is removing the variant before any team events are written (bd adr-fmt-glpuf). Field mapping that cannot be made TOTAL (CHE-0074:R3) is an abort.
+risks/migration: additive — `TeamStateCaptured` is a new stream with a new SCHEMA_HASH, so no existing repository or org stream is re-scraped. Rollback is removing the variant before any team events are written (bd ghr-fb883dfb). Field mapping that cannot be made TOTAL (CHE-0074:R3) is an abort.

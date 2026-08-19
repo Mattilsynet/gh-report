@@ -333,7 +333,7 @@ async fn drain_shutdown_with_timeout(
 
 /// Bounded re-arm policy applied after `CollectionOutcome::FencedConflict`.
 ///
-/// Design-Y consumer-owned re-arm (adr-fmt-9a2z7): on a typed fence
+/// Design-Y consumer-owned re-arm (ghr-fea8b799): on a typed fence
 /// conflict the daemon forces a fresh authoritative read (re-seeding the
 /// long-lived store handle via [`AppState::resync_event_store`]) before
 /// retrying the run, instead of the prior non-converging warn-and-wait
@@ -381,7 +381,7 @@ enum ConvergeStep<T, E> {
 }
 
 /// The single sanctioned resync+bounded-retry converge sink
-/// (adr-fmt-3jptm, CHE-0088 amendment): force a fresh authoritative read
+/// (ghr-c905de05, CHE-0088 amendment): force a fresh authoritative read
 /// via `resync`, then retry via `run`, bounded by `policy`. Both
 /// gh-report durable-write loops (collection, team-refresh) route
 /// through this combinator rather than hand-rolling their own converge
@@ -529,7 +529,7 @@ struct TeamRefreshFailureLogged;
 /// authoritative read via `resync`, then retry via `run`, bounded by
 /// `policy` — the team-refresh analogue of
 /// [`rearm_after_fenced_conflict`], routed through the same shared
-/// [`converge_on_fence`] sink (adr-fmt-3jptm) rather than hand-rolling a
+/// [`converge_on_fence`] sink (ghr-c905de05) rather than hand-rolling a
 /// second converge dance. Returns the terminal [`RearmError`] outcome
 /// alongside the last observed [`team_refresh::TickFailure`] (if any run
 /// attempt failed), so the caller can log it exactly once via
@@ -746,7 +746,7 @@ fn log_initial_collection_failure(error: &AppError) {
 /// persists `TeamStateCaptured` events on its own cadence
 /// ([`crate::config::TEAM_REFRESH_INTERVAL_SECS`]). This severs the
 /// repo-snapshot↔roster-fetch coupling that was the raciness root
-/// (adr-fmt-ewc1i, roadmap adr-fmt-se2xh §E Phase 3).
+/// (ghr-3fda2878, roadmap ghr-b562fe02 §E Phase 3).
 ///
 /// Reuses the same cooperative cancellation signal as the collection
 /// loop; a tick in flight is not interrupted (matching the collection
@@ -1770,7 +1770,7 @@ mod tests {
     }
 
     /// Team-refresh converges through the SAME shared sink used by the
-    /// collection loop (adr-fmt-3jptm): a `FencedConflict` tick failure
+    /// collection loop (ghr-c905de05): a `FencedConflict` tick failure
     /// re-arms with a fresh read and converges within the bounded cap,
     /// rather than the prior warn-and-wait-forever shape.
     #[tokio::test(start_paused = true)]
@@ -1819,7 +1819,7 @@ mod tests {
         );
     }
 
-    /// R10 GUARD (adr-fmt-3jptm): a stale/drained writer that would
+    /// R10 GUARD (ghr-c905de05): a stale/drained writer that would
     /// patch-and-redrive the SAME op MUST LOSE — the shared combinator
     /// re-owns/fresh-reads between every retry via `resync`, never a
     /// blind in-append redrive of the cached sequence.

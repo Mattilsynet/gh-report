@@ -11,7 +11,7 @@ References: CHE-0048, CHE-0075, COM-0018, CHE-0009 | Supersedes: none
 
 ## Context
 
-Oracle review (adr-fmt-41zs8 A1) found a load-bearing tension lifting
+Oracle review (ghr-a3140aa4 A1) found a load-bearing tension lifting
 gh-report's `Arc<Mutex<P>>` projection-state helpers
 (`app/state.rs:823-870`) into `cherry-pit-projection`: CHE-0048:R7 permits
 an in-process per-aggregate lock as write-coordination, but COM-0018:R3

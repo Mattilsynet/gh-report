@@ -146,7 +146,7 @@ pub struct BranchProtectionCounts {
     /// indeterminate or not applicable (`BranchProtectionTier::Excluded`) —
     /// and so dropped from `branch_protection_coverage`'s denominator
     /// rather than counted as `fail`. Populated since item6-02; previously
-    /// dead (folded into `fail`, never incremented — adr-fmt-pcoqb). See
+    /// dead (folded into `fail`, never incremented — ghr-bf304b18). See
     /// [`AggregatedMetrics::score_exclusion_counts`] for the breakdown by
     /// exclusion reason.
     pub unknown: u32,
@@ -304,8 +304,8 @@ pub struct OwnerMetrics {
     /// data); `Some(false)`/`Some(true)` when the org-members set was
     /// fetched and this owner's login was checked against it. Render-time
     /// only, mirroring [`TeamMember::in_org`] — never persisted to the
-    /// native per-repo event payload (oracle adr-fmt-kqavx CLASS B verdict,
-    /// re-confirmed adr-fmt-v6hgj).
+    /// native per-repo event payload (oracle ghr-893fde5c CLASS B verdict,
+    /// re-confirmed ghr-5f157796).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_org: Option<bool>,
 }
@@ -363,7 +363,7 @@ impl std::fmt::Display for TeamMemberRole {
 /// A single GitHub team member, fetched fresh at render time (B1).
 ///
 /// Render-time-only: never persisted to the native per-repo event payload
-/// (oracle adr-fmt-kqavx CLASS B verdict).
+/// (oracle ghr-893fde5c CLASS B verdict).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamMember {
     /// GitHub login.
@@ -376,7 +376,7 @@ pub struct TeamMember {
     /// data; `Some(false)` when this login is confirmed absent from the
     /// org (departed); `Some(true)` when confirmed present. Render-time
     /// only, same CLASS B verdict as the rest of this type (oracle
-    /// adr-fmt-kqavx, re-confirmed adr-fmt-v6hgj).
+    /// ghr-893fde5c, re-confirmed ghr-5f157796).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_org: Option<bool>,
 }
@@ -386,7 +386,7 @@ pub struct TeamMember {
 /// Deliberately separate from [`super::auth::Capability`]: `Capability`
 /// derives `GenomeSafe` and rides in the persisted `AssessmentMetadata`, so
 /// adding a variant there would bump `SCHEMA_HASH`. Membership-read
-/// degradation is a render-time-only concern instead (oracle adr-fmt-kqavx).
+/// degradation is a render-time-only concern instead (oracle ghr-893fde5c).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TeamRosterStatus {

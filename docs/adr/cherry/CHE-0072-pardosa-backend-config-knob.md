@@ -33,4 +33,4 @@ R9 [5]: gh-report surfaces the JetStream per-operation timeout as a transition-s
 
 + becomes easier: operators get one visible storage selector and tests can assert `.pgno` artifacts without reworking the application topology.
 − becomes harder: live NATS startup requires a follow-up to supply a runtime handle and a provisioned-NATS conformance run.
-risks/migration: `MsgpackFileStore` remains in-tree per CHE-0044 coexistence, but gh-report production wiring moves to the native pardosa store port. The live-NATS follow-up is tracked in bd `adr-fmt-2v35g`.
+risks/migration: `MsgpackFileStore` remains in-tree per CHE-0044 coexistence, but gh-report production wiring moves to the native pardosa store port. The live-NATS follow-up is tracked in bd `ghr-0f7f0db3`.

@@ -613,7 +613,7 @@ fn build_owners_view_model(
 /// Map an owner per-control coverage key to its `CollectionHealthCheckKind`
 /// axis, for looking up that control's by-reason exclusion breakdown in
 /// [`crate::domain::metrics::OwnerMetrics::score_exclusion_counts`]
-/// (item6-03, bd bead `adr-fmt-orvyn`). `None` for keys with no
+/// (item6-03, bd bead `ghr-f468d5e9`). `None` for keys with no
 /// `ScoreExclusionCount` axis (the owner-only lifecycle controls `non_stale`
 /// and `alert_free`, item6-04's D4 relabel).
 fn control_key_to_check_kind(key: &str) -> Option<CollectionHealthCheckKind> {
@@ -1282,7 +1282,7 @@ fn build_orphaned_by_team(rows: &[OrphanedRepoRow]) -> Vec<OrphanedTeamGroup> {
 /// `rows` (deleted repos) comes from the persisted, event-sourced
 /// [`crate::projection::DeletedRepoRecord`] set. `ghost_teams` and
 /// `wildcard_owners` are the opposite: render-time-only (oracle
-/// adr-fmt-kqavx), rebuilt fresh every call from `team_rosters` and
+/// ghr-893fde5c), rebuilt fresh every call from `team_rosters` and
 /// `repositories` — never persisted. A CODEOWNERS-referenced team whose
 /// roster fetch classified `Deleted` (404) is a `GhostTeam` anomaly, joined
 /// to its referencing repos via [`crate::domain::metrics::build_owner_repo_map`],
@@ -1290,10 +1290,10 @@ fn build_orphaned_by_team(rows: &[OrphanedRepoRow]) -> Vec<OrphanedTeamGroup> {
 /// bare GitHub API slug — the two are different strings and only the
 /// canonical form is a valid map key. A `Deleted` roster only renders as a
 /// `GhostTeam` when its `canonical_owner` is still present in
-/// `owner_repo_map` (CHE-0093:R4, oracle adr-fmt-7532n): CODEOWNERS-reference
+/// `owner_repo_map` (CHE-0093:R4, oracle ghr-d9878e7d): CODEOWNERS-reference
 /// is definitional for the anomaly, so a since-de-referenced team is not a
 /// ghost and drops out of every render once its CODEOWNERS reference is
-/// removed, closing the GC gap flagged in adr-fmt-ivnsa. A glob-shaped
+/// removed, closing the GC gap flagged in ghr-726c35fd. A glob-shaped
 /// CODEOWNERS owner (e.g.
 /// `@org/*`) is a `WildcardOwner` anomaly, detected directly from
 /// `owner_repo_map` without needing a team-roster entry (it never derives a

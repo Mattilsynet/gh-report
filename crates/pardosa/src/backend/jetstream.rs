@@ -278,7 +278,7 @@ fn record_op_only_metric(spec: MetricSpec, op: TelemetryOp, value: f64) {
     dead_code,
     reason = "I2b defensive counter path; Semaphore(1) makes self-fence \
               structurally unreachable today, kept registered for \
-              defense-in-depth per adr-fmt-2ysyq D.3(b)"
+              defense-in-depth per ghr-05367cd6 D.3(b)"
 )]
 fn record_self_fence(op: TelemetryOp) {
     record_op_only_metric(OCC_SELF_FENCE_COUNTER, op, 1.0);

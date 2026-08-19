@@ -13,7 +13,7 @@ References: CHE-0055, COM-0018, CHE-0006, CHE-0061, CHE-0041, CHE-0033, CHE-0034
 
 ## Context
 
-Increment A (mission `cmdqueue-incrementA`, oracle survey `adr-fmt-djfws`)
+Increment A (mission `cmdqueue-incrementA`, oracle survey `ghr-b3743d34`)
 adds a composable `Regulator` seam and an additive
 `run_worker_pool_regulated` alongside the frozen `run_worker_pool`
 (CHE-0055:R8 / CHE-0022:R1 additive-only floor). Running two worker pools

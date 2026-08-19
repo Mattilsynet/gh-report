@@ -18,7 +18,7 @@ requires an observation mechanism for any consistency deviation (R5, R7).
 Candidate tools: Stateright, TLA+, Kani, Smithy. Each trades exhaustiveness,
 Rust-native fit, and authoring cost differently; the fence's abort/replay
 liveness property needs exhaustive state-space coverage, not sampling alone.
-A prior-art scan (bead adr-fmt-j33kz) found no directly reusable FV artifact
+A prior-art scan (bead ghr-590490b3) found no directly reusable FV artifact
 for this per-subject sequence-CAS invariant — a search-blind floor, not a
 ceiling — so the BUILD path here is justified.
 
@@ -62,5 +62,5 @@ R6 [5]: Whichever tool serves R1, model the fence per GND-0010 R7's
   dependency (Stateright) and a property-authoring layer (proptest-
   extension) alongside the existing test suite.
 risks/migration: no pardosa/pardosa-nats code changes ship with this ADR;
-  the roadmap item tracked in bead adr-fmt-2ysyq schedules the FV harness
+  the roadmap item tracked in bead ghr-05367cd6 schedules the FV harness
   build-out as follow-up work.

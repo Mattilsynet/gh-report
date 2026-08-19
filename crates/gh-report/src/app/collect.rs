@@ -196,7 +196,7 @@ impl crate::app::worker_pool::JobExecutor for LiveEvaluator {
 
     /// A 304 not-modified `ETag` revalidation on `repo_details` is the
     /// only currently-tracked conditional-request signal in the
-    /// evaluate pipeline (adr-fmt-4cnvg / CHE-0055:R17); the other four
+    /// evaluate pipeline (ghr-fe9bb970 / CHE-0055:R17); the other four
     /// check calls are not conditional-request-aware, so any result is
     /// `Charged` unless `repo_details` itself resolved for free.
     fn charge_of(
@@ -282,7 +282,7 @@ fn apply_per_run_budget_ceiling(state: &AppState) {
 /// Execute a single collection run.
 ///
 /// Acquires the in-process [`AppState::sweep_lock`] as its first
-/// action (mission `adr-fmt-cq7vb.8.2`), then the on-disk run lock
+/// action (mission `ghr-ad733490`), then the on-disk run lock
 /// (cross-process second line of defence), resolves credentials,
 /// builds the repository inventory from the GitHub API, evaluates
 /// each repository with per-repo failure isolation, renders the HTML
@@ -1292,10 +1292,10 @@ fn log_org_record_failure(write_failure: &crate::app::write_policy::WriteFailure
 
 /// Select the render-time team-roster source for this collect cycle,
 /// gated by [`RuntimeConfig::team_roster_read_from_projection`]
-/// (adr-fmt-47ljf rollback seam).
+/// (ghr-a3091aef rollback seam).
 ///
 /// `true`: reads the persisted projection, fed by the decoupled
-/// team-refresh writer (adr-fmt-ewc1i) — the P5 cutover path. A team not
+/// team-refresh writer (ghr-3fda2878) — the P5 cutover path. A team not
 /// yet captured there simply carries no entry; render already renders
 /// that as a bounded-stale `RosterSection::Unresolved` (CHE-0082), never
 /// a silent vanish or a fetch-timing artifact (GND-0011:R1).
@@ -1981,7 +1981,7 @@ struct BuildEvidenceParams<'a> {
     auth_metadata: &'a AuthMetadata,
     capabilities: &'a CapabilitySet,
     rate_limit_warnings: u32,
-    /// Team rosters sourced this tick (adr-fmt-47ljf): either the
+    /// Team rosters sourced this tick (ghr-a3091aef): either the
     /// persisted projection or a fresh live fetch, per
     /// [`RuntimeConfig::team_roster_read_from_projection`] via
     /// [`resolve_team_rosters`]. Empty at warm-start and during
@@ -1991,7 +1991,7 @@ struct BuildEvidenceParams<'a> {
     team_rosters: Vec<crate::domain::metrics::TeamRoster>,
     /// `true` when `team_rosters` was sourced from the persisted
     /// projection and is therefore already org-membership-enriched at
-    /// write time (adr-fmt-ewc1i); `build_evidence` must not re-enrich in
+    /// write time (ghr-3fda2878); `build_evidence` must not re-enrich in
     /// that case, or a degraded `org_members` fetch this tick would null
     /// out an already-known `TeamMember::in_org`. `false` for the
     /// pre-cutover live-fetch path, where re-enrichment with this tick's
@@ -2223,7 +2223,7 @@ mod tests {
         let _ = assert_job_executor::<LiveEvaluator>;
     };
 
-    /// adr-fmt-4cnvg / CHE-0055:R17 acceptance: `LiveEvaluator::charge_of`
+    /// ghr-fe9bb970 / CHE-0055:R17 acceptance: `LiveEvaluator::charge_of`
     /// maps the `repo_details_not_modified` marker (set from a wiremock
     /// 304 in `github::client` tests) to the domain-neutral
     /// `SettleOutcome` the regulated worker pool consumes.
@@ -2258,7 +2258,7 @@ mod tests {
         test_fixtures::all_passing_evidence(name)
     }
 
-    /// adr-fmt-5n3es acceptance: `LiveEvaluator::charge_of` classifies all
+    /// ghr-b95e155c acceptance: `LiveEvaluator::charge_of` classifies all
     /// 6 `evaluate()` calls correctly. `repo_details` is the only call with
     /// a conditional-request path (Free on 304, else Charged); the other 5
     /// (`security_policy`, `ghas_scanning`/`secret_scanning`,
@@ -2654,7 +2654,7 @@ mod tests {
         );
     }
 
-    /// adr-fmt-47ljf (P5 render cutover): a roster sourced from the
+    /// ghr-a3091aef (P5 render cutover): a roster sourced from the
     /// projection (`team_rosters_already_enriched: true`) was already
     /// org-membership-enriched at write time by the P3 team-refresh
     /// writer. `build_evidence` must not re-run
@@ -2707,7 +2707,7 @@ mod tests {
         );
     }
 
-    /// adr-fmt-47ljf (P5 cutover, flag ON): with
+    /// ghr-a3091aef (P5 cutover, flag ON): with
     /// `team_roster_read_from_projection: true`, `resolve_team_rosters`
     /// reads a roster the P3 team-refresh writer already persisted and
     /// folded into the projection — not a live fetch (the passed-in test
@@ -2825,7 +2825,7 @@ mod tests {
         );
     }
 
-    /// adr-fmt-47ljf (P5 cutover, flag OFF): with
+    /// ghr-a3091aef (P5 cutover, flag OFF): with
     /// `team_roster_read_from_projection: false`, `resolve_team_rosters`
     /// falls back to the pre-cutover live-fetch path — the rollback seam.
     /// Passing empty `evidence_repos` derives zero team slugs, so

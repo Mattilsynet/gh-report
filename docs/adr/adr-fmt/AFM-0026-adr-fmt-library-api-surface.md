@@ -15,9 +15,9 @@ References: AFM-0006, AFM-0017, AFM-0001, CHE-0030, SEC-0004, COM-0007, COM-0013
 in the same crate. With Track 3.2 (`adr-srv`) imminent, the library
 seam becomes a cross-crate contract and merits an explicit pin. The
 surface is defined only by what `lib.rs` happens to expose; the oracle
-summary at bd `adr-fmt-d7ao` enumerates the minimum set `adr-srv`
+summary at bd `ghr-19eb22f6` enumerates the minimum set `adr-srv`
 needs, items currently over-exposed, and the drift from CHE-0030. The
-predecessor mission (bd `adr-fmt-mvtu`; commits `ebe791f` T2 lift,
+predecessor mission (bd `ghr-72558ee7`; commits `ebe791f` T2 lift,
 `be0b552` Q2 trim) tightened the surface in-code; this ADR pins it.
 
 Three pressures shape the decision. AFM-0001:R1 freezes the binary CLI
@@ -88,7 +88,7 @@ R5 [7]: The library MUST NOT widen what the binary's CLI promises per
   library surface without spelunking through `lib.rs`. Internal
   reorganisation of the six private modules no longer risks breaking
   downstream crates. The CHE-0030 doctrinal drift recorded in oracle
-  bd `adr-fmt-d7ao` (T1) is resolved.
+  bd `ghr-19eb22f6` (T1) is resolved.
 − becomes harder: any future need for an item outside the R1 set —
   `config::load`, `nav::ChildEntry`, `rules::run_all`, deeper
   `context` access — requires a follow-up ADR rather than ad-hoc

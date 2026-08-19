@@ -200,7 +200,7 @@ pub struct AppState {
 
     /// Durable native pardosa team event store (CHE-0089:R2), one fiber
     /// per `(org, team_slug)` pair. Consumed by the P3 team-refresh
-    /// writer (adr-fmt-ewc1i); folded into `projection_state` on boot
+    /// writer (ghr-3fda2878); folded into `projection_state` on boot
     /// and via [`Self::fold_team_event_into_projection`].
     pub team_event_store: Arc<TeamEventStoreImpl>,
 
@@ -226,7 +226,7 @@ pub struct AppState {
 
     /// In-process gate serialising concurrent
     /// [`crate::app::collect::run`] invocations against this
-    /// `AppState` (mission `adr-fmt-cq7vb.8.2`).
+    /// `AppState` (mission `ghr-ad733490`).
     ///
     /// `run` acquires this `Arc<tokio::sync::Mutex<()>>` as its first
     /// action and holds an `OwnedMutexGuard` for the lifetime of the
@@ -1147,7 +1147,7 @@ fn detach_tombstone_roster(
 }
 
 /// Build the durable [`TeamStateCaptured`] event from a freshly-fetched
-/// domain [`crate::domain::metrics::TeamRoster`] (adr-fmt-ewc1i, CHE-0089).
+/// domain [`crate::domain::metrics::TeamRoster`] (ghr-3fda2878, CHE-0089).
 ///
 /// `org` is supplied separately: [`crate::domain::metrics::TeamRoster`]
 /// carries only the canonical `@org/team-slug` owner string and the bare
@@ -1378,7 +1378,7 @@ impl AppState {
     /// discarding each store's stale in-memory fence-sequence cache in
     /// place.
     ///
-    /// Design-Y consumer-owned re-arm (adr-fmt-9a2z7): `PersistenceError::FencedConflict`
+    /// Design-Y consumer-owned re-arm (ghr-fea8b799): `PersistenceError::FencedConflict`
     /// can originate from any of the three long-lived native stores —
     /// `record_repo`/`remove_repo`, `record_org`, and `record_team` all map
     /// through the same generic catch-all (`native_store_persistence`) —
@@ -1484,7 +1484,7 @@ impl AppState {
     /// (CHE-0089:R4), keyed by `team_domain_key`. `detached = true`
     /// removes the roster (CHE-0073:R7 detached-remove); otherwise
     /// upserts the latest snapshot (non-detached-upsert). Called by
-    /// [`Self::record_team`] / [`Self::detach_team`] (P3, adr-fmt-ewc1i)
+    /// [`Self::record_team`] / [`Self::detach_team`] (P3, ghr-3fda2878)
     /// after the durable write lands, so the resident projection
     /// reflects the write at runtime, not only on next restart.
     pub(crate) fn fold_team_event_into_projection(&self, detached: bool, event: TeamStateCaptured) {
@@ -1645,7 +1645,7 @@ impl AppState {
 }
 
 /// Construct the primary-rate `Regulator` for the worker-pool regulator
-/// chain by matching `kind` to a concrete constructor (adr-fmt-faspg
+/// chain by matching `kind` to a concrete constructor (ghr-79f5d695
 /// kill-switch). Each arm builds a concrete `cherry-pit-wq` type coerced
 /// into the existing `Arc<dyn Regulator>` chain slot; no erased selector
 /// indirection is introduced.

@@ -135,7 +135,7 @@ impl PageUpdateEvent {
 ///
 /// `ETag` and `Content-Length` are precomputed and stored on [`CachedPage`]
 /// independently of this enum, so the 304 and identity-length paths never
-/// need to inspect the body at all (oracle adr-fmt-jw9x0, SEC-0003).
+/// need to inspect the body at all (oracle ghr-9eb44b8e, SEC-0003).
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum CachedBody {

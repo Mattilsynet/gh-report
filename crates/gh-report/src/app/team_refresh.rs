@@ -1,11 +1,11 @@
 //! Team-refresh writer: a dedicated per-team collector that persists
 //! `TeamStateCaptured` events on a cadence decoupled from the repo
-//! collect cycle (adr-fmt-ewc1i, roadmap adr-fmt-se2xh §C(3)/§E Phase 3).
+//! collect cycle (ghr-3fda2878, roadmap ghr-b562fe02 §C(3)/§E Phase 3).
 //!
 //! This severs the repo-snapshot↔roster-fetch coupling that was the
-//! root of the unresolved-by-timing raciness (adr-fmt-se2xh §A): rosters
+//! root of the unresolved-by-timing raciness (ghr-b562fe02 §A): rosters
 //! are fetched and durably recorded on their own timer, independent of
-//! whether a repo collect cycle is in flight. Render (P5, adr-fmt-47ljf)
+//! whether a repo collect cycle is in flight. Render (P5, ghr-a3091aef)
 //! will read the persisted, folded projection instead of calling
 //! [`crate::collector::team_membership::collect_team_rosters`]
 //! synchronously inside the collect cycle.
@@ -153,7 +153,7 @@ async fn write_team_event(
 
 /// Warn-log a team-refresh tick failure without propagating it into the
 /// caller's control flow. The team-refresh cadence is decoupled from the
-/// repo collect cycle (adr-fmt-ewc1i): a failed tick does not abort the
+/// repo collect cycle (ghr-3fda2878): a failed tick does not abort the
 /// daemon or the next repo collection, it is retried on the next
 /// scheduled team-refresh tick.
 pub fn log_tick_failure(error: &AppError, context: &WriteFailureContextOwned) {
@@ -345,7 +345,7 @@ mod tests {
     /// doc contract, so a count taken after the team is already detached
     /// is structurally 0 regardless of what the second tick's `detach`
     /// call does internally — an assertion built on it cannot fail on
-    /// the churn it would claim to detect (adr-fmt-nygqw High finding).
+    /// the churn it would claim to detect (ghr-dc01e672 High finding).
     /// The actual "no redundant write on an already-detached fiber"
     /// guarantee is pinned by `NativeTeamStore::detach`'s own doc
     /// contract ("A no-op (key never seen / already detached) returns

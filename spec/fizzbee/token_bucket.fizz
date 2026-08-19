@@ -37,7 +37,7 @@ role Worker:
     # shared monotonic `clock` each time; `generated` and `available`
     # are recomputed, never stored.
     #
-    # ASSUMPTION (linus review round 1, adr-fmt-tcg3b): `atomic` here
+    # ASSUMPTION (linus review round 1, ghr-e2e72e32): `atomic` here
     # models the real code's single-load-check-then-CAS retry loop
     # (try_debit_one), where the compare_exchange_weak's operand is the
     # SAME load the availability decision was computed from — a failed

@@ -1073,7 +1073,7 @@ fn evidence_with_owner_repos() -> Evidence {
 
 /// Owner-scoped variant of [`evidence_with_owner_repos`] where one
 /// repo's `security_policy` status is `Unknown` (item6-03, bd bead
-/// `adr-fmt-orvyn`) — exercises the by-reason exclusion breakdown
+/// `ghr-f468d5e9`) — exercises the by-reason exclusion breakdown
 /// surfaced on the owners overview tooltip and the owner detail summary
 /// card, distinct from the clean (no-exclusion) fixture used by the
 /// locked `dashboard_owners`/`dashboard_owner_detail` snapshots.
@@ -1921,7 +1921,7 @@ fn render_owner_detail_html_contains_orphan_repositories_section() {
     );
 }
 
-/// adr-fmt-mobzr: an orphan-repo attribution join must be case-insensitive
+/// ghr-f4d499a1: an orphan-repo attribution join must be case-insensitive
 /// on team name, mirroring the roster-match fix in 845d958. `group.team`
 /// carries the roster's raw-case `canonical_owner` (e.g. `@Org/team-a`),
 /// while `m.owner` is always lowercased at construction
@@ -2136,7 +2136,7 @@ fn render_owner_detail_html_contains_team_roster() {
     );
 }
 
-/// adr-fmt-tuq8n SM1: a roster whose `canonical_owner` was derived from a
+/// ghr-f750ebbc SM1: a roster whose `canonical_owner` was derived from a
 /// mixed-case configured org (`@Org/team-a`) must still resolve against a
 /// CODEOWNERS-derived owner key that is always lowercase (`@org/team-a`,
 /// per `build_owner_repo_map`/`build_owner_metrics`) — case must not
@@ -2228,7 +2228,7 @@ fn render_owner_detail_html_unresolved_roster_never_vanishes() {
     );
 }
 
-/// Defect 2 (adr-fmt-7u2ub): a genuinely `Deleted` (404) team roster must
+/// Defect 2 (ghr-e2e9cccb): a genuinely `Deleted` (404) team roster must
 /// render a reasoned "team no longer exists" state — distinct from both
 /// the generic degraded-fetch copy ("this list may be incomplete", which
 /// wrongly implies partial data for a team that has zero members by
@@ -2750,7 +2750,7 @@ fn render_owner_detail_html_unregistered_committer_shows_warning_badge() {
 
 /// Empty repo (`size:0`, `is_empty` derived at the collector boundary)
 /// exercises the empty-repo pill in the owner detail table
-/// (adr-fmt-nvf8w).
+/// (ghr-8b2cf624).
 #[test]
 fn render_owner_detail_html_empty_repo_shows_pill_snapshot() {
     let mut repo = test_fixtures::make_repository_evidence(
@@ -3751,7 +3751,7 @@ fn build_deleted_view_model_includes_ghost_team_with_referencing_repos() {
     );
 }
 
-/// GC-gap regression (adr-fmt-7532n, CHE-0093:R4): a Deleted roster whose
+/// GC-gap regression (ghr-d9878e7d, CHE-0093:R4): a Deleted roster whose
 /// `canonical_owner` no longer appears in any repo's CODEOWNERS (i.e. absent
 /// from `owner_repo_map`) is by definition not a `GhostTeam` anomaly — a
 /// team can only be a ghost while still CODEOWNERS-referenced. Render-time

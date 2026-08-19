@@ -1,4 +1,4 @@
-//! P1 crux guard (epic `adr-fmt-t7t4v`, phase `adr-fmt-q8qyn`,
+//! P1 crux guard (epic `ghr-eedb1f06`, phase `ghr-88387f45`,
 //! pre-mortem #3): proves the `.pgno` rehydrate arm and the
 //! `JetStream` rehydrate arm fold the SAME raw canonical bytes for
 //! the SAME log into an identical [`Frontier`] — the rolling BLAKE3

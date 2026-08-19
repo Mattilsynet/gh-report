@@ -8,7 +8,7 @@ M2.e post-cutover rewrite reconciling §3, §4, §10, §12 with CHE-0054
 (Accepted), CHE-0024, COM-0019; W1 truth-alignment corrigendum reconciling
 §4, §5, §12 with the shipped CHE-0073 (gh-report Storage Remodel, Accepted)
 + CHE-0074 (gh-report Native Pardosa Store Port, Accepted) storage substrate;
-W2 truth-alignment corrigendum (wave2-ci-hardening SM3, bd adr-fmt-jptkl)
+W2 truth-alignment corrigendum (wave2-ci-hardening SM3, bd ghr-bf5743dd)
 reconciling §3, §4, §12 with the shipped direct-fold write path — the
 `RunService`/`RepoService`/`WebhookService` ApplicationServices,
 `publish_or_trace`, and the `DomainEvent`-carrying `InProcessEventBus`
@@ -481,7 +481,7 @@ default surgical-extraction posture. Implementation
 discretion sits with hopper, bounded by:
 
 - The ADRs above (binding).
-- The 14 v1 BCs in oracle bead `adr-fmt-a6a` and the 19 v2 BCs in
+- The 14 v1 BCs in oracle bead `ghr-4f53dcf1` and the 19 v2 BCs in
   oracle bead `adr-fmt-...`.
 - The DAG and abort criteria in `.ooda/mission-wu6v2-charter-1778415390.md`.
 - This DESIGN.md (binding for §1–§12 shape calls).
@@ -519,7 +519,7 @@ Captured here so moltke can absorb them without re-running the interview:
 1. **AggregateStore is deleted, not ported.** B9' deletes
    `evidence_store.rs` along with its `AggregateStore<K, V, M>` import.
    No A9 / cherry-pit-projection port sub-mission exists in v2; bead
-   `adr-fmt-o09` is closed at A8' with reason "AggregateStore not
+   `ghr-ec6bde11` is closed at A8' with reason "AggregateStore not
    ported per WU-6 v2 charter". The v1 §3a corrigendum routing it
    through cherry-pit-projection is **withdrawn**.
 2. **App::run conformance is a B-phase requirement.** Wired at B10'

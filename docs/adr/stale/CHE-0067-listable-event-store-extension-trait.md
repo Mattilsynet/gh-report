@@ -14,7 +14,7 @@ Reason: CHE-0070 supersedes this ADR's R5 to permit the async
 signature required by CHE-0018:R2 (synchronous-domain /
 asynchronous-infrastructure boundary). CHE-0067 was the only
 infrastructure-port method in `cherry-pit-core` with a sync I/O
-signature; findings F11 (bd `adr-fmt-cq7vb.6`) surfaced the
+signature; findings F11 (bd `ghr-8a40cb1e`) surfaced the
 reactor-stall hazard `MsgpackFileStore::list_aggregates` produces
 when invoked from `async fn` callers via blocking `std::fs::read_dir`.
 The supersession trigger is CHE-0067:R5 verbatim ("changing the

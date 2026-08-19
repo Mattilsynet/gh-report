@@ -21,7 +21,7 @@ internals erodes AFM-0026's surface and CHE-0029's acyclic workspace
 DAG. AFM-0026 is cited only in prose because a `References:` edge to
 a Proposed sibling trips L012.
 
-The oracle summary at bd `adr-fmt-d7ao` answers the questions that
+The oracle summary at bd `ghr-19eb22f6` answers the questions that
 shape this boundary: which crate owns the pardosa bridge (Q4:
 `adr-srv`), which owns scrape idempotency (Q4 + COM-0013:R1:
 `adr-srv`), and how discovery composes (Q5: both walk-up and
@@ -51,7 +51,7 @@ R2 [5]: The pardosa bridge — the mapping from `adr_fmt::AdrRecord`
   NOT take any `pardosa-*` dependency, direct or transitive via
   workspace features. Cites COM-0012:R1 (inner types inner, outer
   adapters outer) and CHE-0029 (adr-fmt is leaf-ish governance, not
-  an event source). Per oracle bd `adr-fmt-d7ao` Q4.
+  an event source). Per oracle bd `ghr-19eb22f6` Q4.
 
 R3 [5]: `adr-srv` re-projects `adr_fmt::report::Diagnostic` (per
   AFM-0026:R3) into its own API type — GraphQL, JSON, or otherwise.
@@ -82,7 +82,7 @@ R6 [5]: Discovery is composable. `adr-srv` MAY use
   semantics, OR pass a pre-resolved corpus root from its own
   service-level configuration. Both modes are supported by
   AFM-0026:R1 and neither is preferred at the ADR level. Per oracle
-  bd `adr-fmt-d7ao` Q5.
+  bd `ghr-19eb22f6` Q5.
 
 ## Consequences
 

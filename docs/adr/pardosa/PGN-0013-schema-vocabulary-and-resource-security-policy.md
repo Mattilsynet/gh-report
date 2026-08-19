@@ -1,7 +1,7 @@
 # PGN-0013. Payload-Type Vocabulary
 
 Date: 2026-06-08
-Last-reviewed: 2026-06-15 — refined — amended R1/R8 for closed bounded-field-type algebra and Box/Arc removal (mission:adr-fmt-50naw)
+Last-reviewed: 2026-06-15 — refined — amended R1/R8 for closed bounded-field-type algebra and Box/Arc removal (mission:ghr-c738d5e1)
 Tier: B
 Status: Accepted
 Crates: pardosa-wire, pardosa-schema

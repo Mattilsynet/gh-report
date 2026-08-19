@@ -94,7 +94,7 @@ fn count_by_visibility(active: &[&RepositoryEvidence], visibility: Visibility) -
 /// - **Branch protection**: counted over **all** non-archived repos;
 ///   denominator is total active repos, so repos the token cannot read
 ///   (`permission_denied`/`unknown`) count as not-covered rather than
-///   being dropped. This is the ratified population (bd `adr-fmt-tm7ms`);
+///   being dropped. This is the ratified population (bd `ghr-1e6b9b61`);
 ///   branch protection is uniquely affected because a large private-repo
 ///   fraction returns `permission_denied`.
 /// - **Open secret alert prevalence**: denominator is repos where secret
@@ -213,7 +213,7 @@ impl ExclusionTally {
     /// opposed to `NotApplicable` or an empty tally. An applicable-but-
     /// unmeasured control must be scored as a genuine failure rather than
     /// vanish as "no observable population" (UF2-5 clause 6, bd
-    /// `adr-fmt-m1s6p`).
+    /// `ghr-e94a6e7e`).
     fn has_measurement_failure(&self) -> bool {
         self.permission_denied > 0 || self.unknown > 0 || self.other > 0
     }
@@ -222,7 +222,7 @@ impl ExclusionTally {
     /// (`PermissionDenied`/`Unknown`/`Other`), excluding `NotApplicable`.
     /// Branch protection folds this into its coverage denominator so a repo
     /// the token cannot read counts as not-covered rather than being dropped
-    /// (bd `adr-fmt-tm7ms`).
+    /// (bd `ghr-1e6b9b61`).
     fn measurement_failure_count(&self) -> u32 {
         self.permission_denied
             .saturating_add(self.unknown)
@@ -265,7 +265,7 @@ impl ExclusionTally {
 }
 
 /// Build a coverage `RateMetric` with a reason-aware floor for the
-/// all-excluded case (UF2-5 clause 6, bd `adr-fmt-m1s6p`).
+/// all-excluded case (UF2-5 clause 6, bd `ghr-e94a6e7e`).
 ///
 /// When `pass + fail == 0` (nothing observable) AND `tally` records a
 /// measurement failure, the control is applicable but could not be
@@ -290,7 +290,7 @@ fn coverage_metric(pass: u32, fail: u32, tally: &ExclusionTally) -> RateMetric {
 /// repo — including those excluded for a measurement-failure reason
 /// (`permission_denied`/`unknown`/`other`) — so a repo the token cannot read
 /// counts as not-covered rather than being dropped. This is the ratified
-/// population matrix for branch protection (bd `adr-fmt-tm7ms`); branch
+/// population matrix for branch protection (bd `ghr-1e6b9b61`); branch
 /// protection is uniquely affected because a large private-repo fraction
 /// returns `permission_denied`. `pass` is the numerator; `fail` is the
 /// observable non-pass count; `measurement_failures` is the excluded count
@@ -1345,7 +1345,7 @@ mod tests {
         );
         assert_eq!(
             metrics.branch_protection_coverage.denominator, 6,
-            "adr-fmt-tm7ms: the permission_denied repo counts in the denominator \
+            "ghr-1e6b9b61: the permission_denied repo counts in the denominator \
              as not-covered (6 = all non-archived), not dropped to the observable 5"
         );
         assert_eq!(metrics.branch_protection_coverage.rate, Some(66.7));
@@ -1458,7 +1458,7 @@ mod tests {
         );
     }
 
-    /// adr-fmt-tm7ms regression: the user-reported symptom was a Branch
+    /// ghr-1e6b9b61 regression: the user-reported symptom was a Branch
     /// Protection dashboard reading `0.0% (0/36)` when 544 of 580 active repos
     /// returned `permission_denied`. Those repos must count in the denominator
     /// as not-covered — an all-permission-denied population yields `0/N`, not
@@ -1491,7 +1491,7 @@ mod tests {
 
         assert_eq!(
             metrics.branch_protection_coverage.denominator, 3,
-            "adr-fmt-tm7ms: all 3 excluded repos count in the denominator as \
+            "ghr-1e6b9b61: all 3 excluded repos count in the denominator as \
              not-covered (0/3), not floored to the observable-empty 0/1"
         );
         assert_eq!(metrics.branch_protection_coverage.rate, Some(0.0));
@@ -1796,7 +1796,7 @@ mod tests {
         assert_eq!(
             metrics.branch_protection_coverage.rate,
             Some(60.0),
-            "adr-fmt-tm7ms: the 1 unmeasured repo counts in the denominator as \
+            "ghr-1e6b9b61: the 1 unmeasured repo counts in the denominator as \
              not-covered (3/5 = 60.0%), not dropped to the observable 3/4"
         );
     }
@@ -2654,11 +2654,11 @@ mod tests {
         );
     }
 
-    /// adr-fmt-voxg6 item1 / adr-fmt-tm7ms: a branch-protection control where
+    /// ghr-f7218363 item1 / ghr-1e6b9b61: a branch-protection control where
     /// every repo is `Excluded` for a measurement-failure reason
     /// (`Unknown`/`PermissionDenied`/`Other`) must score as a genuine failure
     /// (`Some(0.0)`), not vanish to `None` — an all-unmeasured control silently
-    /// inflating Team Health to a vacuous 100% (adr-fmt-doyc8/e861p) is the bug
+    /// inflating Team Health to a vacuous 100% (ghr-1546ca65/e861p) is the bug
     /// this guards against. Under the ratified population matrix branch
     /// protection counts these repos in the denominator (0/2), so the
     /// `Some(0.0)` arises directly rather than via the denom==0 floor.
@@ -2698,7 +2698,7 @@ mod tests {
         assert_eq!(branch_protection.rate, Some(0.0));
     }
 
-    /// adr-fmt-voxg6 item1: a control where every repo is `Excluded` for
+    /// ghr-f7218363 item1: a control where every repo is `Excluded` for
     /// `NotApplicable` — no observable population — legitimately vanishes to
     /// `None`. Security policy is `NotApplicable` on non-public repos.
     #[test]
@@ -2743,7 +2743,7 @@ mod tests {
         assert_eq!(security_policy.rate, None);
     }
 
-    /// adr-fmt-tm7ms: a mixed branch-protection team (pass + fail + excluded)
+    /// ghr-1e6b9b61: a mixed branch-protection team (pass + fail + excluded)
     /// counts the excluded (measurement-failure) repo in the denominator as
     /// not-covered — the ratified population is all non-archived repos, so a
     /// repo the token cannot read lowers the rate rather than being dropped.
@@ -2799,7 +2799,7 @@ mod tests {
         assert_eq!(branch_protection.rate, Some(33.3));
     }
 
-    /// adr-fmt-voxg6 item1 CRITICAL GUARD: `secret_scanning` filters non-public
+    /// ghr-f7218363 item1 CRITICAL GUARD: `secret_scanning` filters non-public
     /// repos *before* classification (metrics.rs guard at the top of
     /// `build_per_control_coverage`'s loop), so an all-private team never
     /// records any `secret_scanning` outcome — the tally is empty, not a
@@ -2840,7 +2840,7 @@ mod tests {
         assert_eq!(secret_scanning.rate, None);
     }
 
-    /// item9 Part B (M1, adr-fmt-jlfs1): mirrors
+    /// item9 Part B (M1, ghr-a1fa33bd): mirrors
     /// `enrich_team_rosters_flags_departed_member_and_clears_present_member`
     /// (`crate::collector::team_membership`) at the `OwnerMetrics` seam —
     /// a `User`-type owner NOT in the org-members set is flagged
@@ -2900,7 +2900,7 @@ mod tests {
         );
     }
 
-    /// item9 Part B (M1, adr-fmt-jlfs1): mirrors
+    /// item9 Part B (M1, ghr-a1fa33bd): mirrors
     /// `enrich_team_rosters_flags_nobody_when_org_members_degraded` — when
     /// the org-members fetch degraded (`org_members: None`), a `User`-type
     /// owner stays `None` (no flag on missing data); a `Team`-type owner
@@ -3000,7 +3000,7 @@ mod tests {
     }
 
     /// UF2-8: cross-page consistency guard for the DECIDED population matrix
-    /// (single source: bd bead `adr-fmt-5dfp2`). Builds ONE repo set — an
+    /// (single source: bd bead `ghr-110e1382`). Builds ONE repo set — an
     /// owner with one public and one private non-archived repo — and
     /// asserts the VISIBILITY axis holds on BOTH the org page
     /// (`aggregate_metrics`) and the owner page (`build_owner_metrics`)
@@ -3293,7 +3293,7 @@ mod tests {
         assert_eq!(branch_protection.numerator, 3);
         assert_eq!(
             branch_protection.denominator, 6,
-            "adr-fmt-tm7ms at owner scope: the permission_denied repo counts in \
+            "ghr-1e6b9b61 at owner scope: the permission_denied repo counts in \
              the denominator as not-covered (6 = all non-archived), not dropped to 5"
         );
         assert_eq!(branch_protection.rate, Some(50.0));
@@ -3340,7 +3340,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             branch_protection.denominator, 3,
-            "adr-fmt-tm7ms: all 3 excluded repos count in the denominator as \
+            "ghr-1e6b9b61: all 3 excluded repos count in the denominator as \
              not-covered (0/3), not floored to the observable-empty 0/1"
         );
         assert_eq!(branch_protection.rate, Some(0.0));
@@ -3421,7 +3421,7 @@ mod tests {
         assert_eq!(
             codeowners.numerator, 2,
             "non-conforming still counts as present in the owner numerator \
-             (unchanged, adr-fmt-pptla)"
+             (unchanged, ghr-32aaf441)"
         );
         assert_eq!(
             codeowners.denominator, 2,

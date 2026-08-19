@@ -4,7 +4,7 @@
 //! referenced by CODEOWNERS, plus (optionally) the current org-members
 //! list used to cross-check whether a team member or individual-user
 //! CODEOWNERS owner has left the organization. Render-time only (oracle
-//! adr-fmt-kqavx CLASS B verdict): rosters and the org-members set are
+//! ghr-893fde5c CLASS B verdict): rosters and the org-members set are
 //! fetched fresh every collection tick via the existing
 //! budget/rate-limit-gated [`GitHubClient::request`] and are never
 //! persisted to the native per-repo event payload.
@@ -201,7 +201,7 @@ pub async fn collect_org_members(client: &GitHubClient) -> Option<HashSet<String
 }
 
 /// Decide the org-members set from an already-fetched `ApiOutcome`, or
-/// degrade to `None` (item9 H1, adr-fmt-jlfs1).
+/// degrade to `None` (item9 H1, ghr-a1fa33bd).
 ///
 /// Degrades on ANY of: outright failure (`!outcome.is_ok()`), OR a
 /// truncated-but-technically-successful paginated fetch
@@ -541,7 +541,7 @@ mod tests {
         );
     }
 
-    /// item9 Part B test (e), H1 fix (adr-fmt-jlfs1): a truncated-but-
+    /// item9 Part B test (e), H1 fix (ghr-a1fa33bd): a truncated-but-
     /// technically-successful paginated fetch (`ApiOutcome::Success {
     /// truncated: true, .. }` — `is_ok()` is `true`, so the pre-fix guard
     /// `!outcome.is_ok()` alone would NOT degrade this) must still yield

@@ -197,7 +197,7 @@ pub struct ControlCell {
     /// or not applicable), `0` when none.
     pub excluded_total: u32,
     /// Formatted `"N unmeasured (breakdown)"` string, or `"0 unmeasured"`
-    /// when `excluded_total` is `0` (item6-03, bd bead `adr-fmt-orvyn`).
+    /// when `excluded_total` is `0` (item6-03, bd bead `ghr-f468d5e9`).
     pub excluded_formatted: String,
 }
 
@@ -667,7 +667,7 @@ pub struct DeletedRepoRow {
 /// A row in the ghost-team acknowledged-owner-anomaly table (CHE-0093:R1),
 /// rendered for a [`GhostTeamRow`] entry.
 ///
-/// Render-time-only (oracle adr-fmt-kqavx): built fresh on every render from
+/// Render-time-only (oracle ghr-893fde5c): built fresh on every render from
 /// [`crate::domain::metrics::TeamRoster`] entries whose fetch 404'd, joined
 /// to their CODEOWNERS-referencing repos. Never persisted; a team drops off
 /// automatically once no live CODEOWNERS references it or it exists again.
@@ -1310,7 +1310,7 @@ fn dashboard_control_how_to_fix() -> ControlHowToFix {
 
 /// Count and formatted breakdown of repos excluded from one control's
 /// coverage denominator. Shared by the org-wide [`ReportViewModel`] fields
-/// and the owner-scoped [`ControlCell`] (item6-03, bd bead `adr-fmt-orvyn`).
+/// and the owner-scoped [`ControlCell`] (item6-03, bd bead `ghr-f468d5e9`).
 pub(crate) struct ControlExclusion {
     pub(crate) total: u32,
     pub(crate) formatted: String,
@@ -1329,7 +1329,7 @@ struct ExclusionBreakdown {
 /// `check_kind` selects which control's rows to fold out of `counts`; reused
 /// for both the org-wide [`ScoreExclusionCount`] rows on `AggregatedMetrics`
 /// and the owner-scoped rows on `OwnerMetrics::score_exclusion_counts`
-/// (item6-03, bd bead `adr-fmt-orvyn`) — the shape is identical at both
+/// (item6-03, bd bead `ghr-f468d5e9`) — the shape is identical at both
 /// scopes, only the input slice differs.
 pub(crate) fn format_exclusion(
     check_kind: CollectionHealthCheckKind,
@@ -1396,7 +1396,7 @@ impl ReportViewModel {
     #[must_use]
     #[expect(
         clippy::too_many_lines,
-        reason = "constructing ReportViewModel is a flat multi-field assignment from pre-computed per-control helpers (how-to-fix copy, health, archival, team-access, exclusion breakdown); the 5 *_how_to_fix fields mirror per-control helper output, and the 10 *_excluded_* fields mirror them again for the by-reason exclusion breakdown (item6 adr-fmt-6mi2t), pushing an already near-threshold constructor over the line count — extracting further would fragment one cohesive struct literal without improving readability"
+        reason = "constructing ReportViewModel is a flat multi-field assignment from pre-computed per-control helpers (how-to-fix copy, health, archival, team-access, exclusion breakdown); the 5 *_how_to_fix fields mirror per-control helper output, and the 10 *_excluded_* fields mirror them again for the by-reason exclusion breakdown (item6 ghr-f4855d2f), pushing an already near-threshold constructor over the line count — extracting further would fragment one cohesive struct literal without improving readability"
     )]
     pub fn from_evidence(evidence: &Evidence, tiers: &CoverageTiers) -> Self {
         let metadata = &evidence.assessment_metadata;

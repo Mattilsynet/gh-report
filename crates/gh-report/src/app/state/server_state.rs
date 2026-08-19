@@ -1,5 +1,5 @@
 //! `ServerState` trait wiring for `AppState`, consumed by
-//! `cherry_pit_web::serve`. Extracted from `state.rs` (K9, adr-fmt-b98n1)
+//! `cherry_pit_web::serve`. Extracted from `state.rs` (K9, ghr-ff7dd746)
 //! as a pure structural move — no behavioural change.
 
 use std::collections::HashMap;

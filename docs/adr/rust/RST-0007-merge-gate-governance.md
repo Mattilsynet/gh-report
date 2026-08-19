@@ -71,11 +71,11 @@ R7 [5]: R2's id-existence half is mechanized by the gate-citation
   enforced ADR rule; R2's id-existence half is checked every PR
 − becomes harder: a new merge gate requires its ADR to carry a
   COM-0017:R4 statement naming the gate by job id up front
-risks/migration: measured debt (bd adr-fmt-yc08w) — 4 of 6 gates lack
+risks/migration: measured debt (bd ghr-9d9fe011) — 4 of 6 gates lack
   a COM-0017:R4 statement (projection-lock-tripwire, async-trait,
   pardosa-dep, dead-code-inner-suppression-tripwire — the last citing
   no ADR), against 2 compliant exemplars (fence-converge-tripwire ->
   CHE-0088:R10; non-exhaustive-check -> RST-0006:R3). Grandfathered
-  per R5; amendment tracked in bd adr-fmt-glvkn. R2's invariant-match
+  per R5; amendment tracked in bd ghr-06ede6e8. R2's invariant-match
   half and R3-R6 stay code-review-tier per R7 — no lint parses
   whether a cited rule's prose states the mechanized invariant.

@@ -166,7 +166,7 @@ mod tests {
         handle.abort();
     }
 
-    /// Production-rendering proof (linus adr-fmt-sai6w Medium finding):
+    /// Production-rendering proof (linus ghr-e9332303 Medium finding):
     /// drives `AppState` through `build_cached_pages` (which calls
     /// `render_dashboard_streaming` directly) with a configured
     /// `governance_standard`, then asserts the production-rendered

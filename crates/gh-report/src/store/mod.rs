@@ -20,13 +20,13 @@ use crate::event::{DomainEvent, OrgStateCaptured, TeamStateCaptured, team_domain
 /// snapshot and backend-reachability tracking. Swappability backs
 /// [`Self::resync_pgno_from_authoritative`] /
 /// [`Self::resync_jetstream_from_authoritative`] — the consumer-owned
-/// Design-Y re-seed on `FencedConflict` (mission adr-fmt-9a2z7).
+/// Design-Y re-seed on `FencedConflict` (mission ghr-fea8b799).
 pub struct NativeStore(ObservedFiberStore<DomainEvent>);
 
 /// Pardosa-native org event store: one fiber per org identity.
 ///
 /// Thin newtype over [`ObservedFiberStore`]; swappable for the same
-/// Design-Y re-seed reason as [`NativeStore`] (mission adr-fmt-9a2z7):
+/// Design-Y re-seed reason as [`NativeStore`] (mission ghr-fea8b799):
 /// `record` can raise the identical `PersistenceError::FencedConflict`
 /// the repos store can, through the same generic catch-all — this store
 /// needs the same atomic re-seed capability, not just the repos store.
@@ -38,7 +38,7 @@ pub struct NativeOrgStore(ObservedFiberStore<OrgStateCaptured>);
 /// fully decoupled from [`NativeStore`] and [`NativeOrgStore`].
 ///
 /// Thin newtype over [`ObservedFiberStore`]; swappable for the same
-/// Design-Y re-seed reason as [`NativeStore`] (mission adr-fmt-9a2z7):
+/// Design-Y re-seed reason as [`NativeStore`] (mission ghr-fea8b799):
 /// `record` can raise the identical `PersistenceError::FencedConflict`
 /// the repos store can.
 pub struct NativeTeamStore(ObservedFiberStore<TeamStateCaptured>);
@@ -100,7 +100,7 @@ impl NativeStore {
     /// Re-seed from a fresh authoritative read of the same `.pgno` backing
     /// file, atomically replacing the fiber-store snapshot in place.
     ///
-    /// Design-Y consumer-owned re-arm (adr-fmt-9a2z7): on `FencedConflict`
+    /// Design-Y consumer-owned re-arm (ghr-fea8b799): on `FencedConflict`
     /// the caller re-reads authoritative state through this method rather
     /// than patching a cached sequence and redriving the same append
     /// (R10-forbidden). Reuses the existing `FiberStore::open_pgno`
@@ -122,7 +122,7 @@ impl NativeStore {
     /// Same Design-Y re-arm as [`Self::resync_pgno_from_authoritative`],
     /// backed by [`FiberStore::open_jetstream`] — which reaches the
     /// `pardosa-nats` crate's `replay_all` internally on open, correctly
-    /// re-seeding the cached fence sequence (adr-fmt-7zpc7 terrain).
+    /// re-seeding the cached fence sequence (ghr-f83210db terrain).
     ///
     /// # Errors
     ///
@@ -277,7 +277,7 @@ impl NativeOrgStore {
 
     /// Re-seed from a fresh authoritative read of the same `.pgno` backing
     /// file. See [`NativeStore::resync_pgno_from_authoritative`] for the
-    /// Design-Y rationale (mission adr-fmt-9a2z7).
+    /// Design-Y rationale (mission ghr-fea8b799).
     ///
     /// # Errors
     ///
@@ -291,7 +291,7 @@ impl NativeOrgStore {
 
     /// Re-seed from a fresh authoritative `JetStream` replay. See
     /// [`NativeStore::resync_jetstream_from_authoritative`] for the
-    /// Design-Y rationale (mission adr-fmt-9a2z7).
+    /// Design-Y rationale (mission ghr-fea8b799).
     ///
     /// # Errors
     ///
@@ -399,7 +399,7 @@ impl NativeTeamStore {
 
     /// Re-seed from a fresh authoritative read of the same `.pgno` backing
     /// file. See [`NativeStore::resync_pgno_from_authoritative`] for the
-    /// Design-Y rationale (mission adr-fmt-9a2z7).
+    /// Design-Y rationale (mission ghr-fea8b799).
     ///
     /// # Errors
     ///
@@ -413,7 +413,7 @@ impl NativeTeamStore {
 
     /// Re-seed from a fresh authoritative `JetStream` replay. See
     /// [`NativeStore::resync_jetstream_from_authoritative`] for the
-    /// Design-Y rationale (mission adr-fmt-9a2z7).
+    /// Design-Y rationale (mission ghr-fea8b799).
     ///
     /// # Errors
     ///
