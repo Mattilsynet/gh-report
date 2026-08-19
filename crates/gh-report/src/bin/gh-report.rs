@@ -15,8 +15,8 @@ use gh_report::config::{self, dashboard, runtime};
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
-/// Non-shipping heap and RSS profiling harness (adr-fmt-gcuq4,
-/// adr-fmt-nfteo memprof-01). Compiled only under the non-default
+/// Non-shipping heap and RSS profiling harness (ghr-61c73290,
+/// ghr-6946f6b2 memprof-01). Compiled only under the non-default
 /// `profiling` feature; never active in a release build.
 #[cfg(feature = "profiling")]
 mod profiling {
@@ -188,7 +188,7 @@ struct Cli {
     #[arg(long, env = "GH_REPORT_FORCE_REFRESH")]
     force_refresh: bool,
 
-    /// Rollback seam for the roster-eda render cutover (adr-fmt-47ljf):
+    /// Rollback seam for the roster-eda render cutover (ghr-a3091aef):
     /// force the render path back to the pre-cutover synchronous
     /// `collect_team_rosters` live fetch instead of reading the persisted
     /// projection. Default off — the projection read is the shipped path.
@@ -204,7 +204,7 @@ struct Cli {
     pardosa_backend: PardosaBackendArg,
 
     /// Primary-rate `Regulator` for the worker-pool regulator chain
-    /// (adr-fmt-faspg kill-switch): `token-bucket` (default) or
+    /// (ghr-79f5d695 kill-switch): `token-bucket` (default) or
     /// `budget-gate` (operational fallback, revert via config alone).
     #[arg(long, default_value = "token-bucket", env = "GH_REPORT_RATE_REGULATOR")]
     rate_regulator: RateRegulatorArg,
@@ -232,6 +232,17 @@ struct Cli {
     /// Minimum coverage percentage for the "warn" tier (yellow).
     #[arg(long, default_value_t = dashboard::default_warn_threshold())]
     warn_threshold: f64,
+
+    /// URL of this deployment's own governance-standard document, rendered
+    /// in the dashboard footer. Absent by default (UF2-GEN seam) — a fresh
+    /// deployment renders no link.
+    #[arg(long, env = "GH_REPORT_GOVERNANCE_STANDARD_URL")]
+    governance_standard_url: Option<String>,
+
+    /// Link text for `--governance-standard-url`. Falls back to a generic
+    /// label when the URL is set but this is not.
+    #[arg(long, env = "GH_REPORT_GOVERNANCE_STANDARD_LABEL")]
+    governance_standard_label: Option<String>,
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -295,7 +306,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let dashboard_config = dashboard::DashboardConfig::new(cli.pass_threshold, cli.warn_threshold)?;
+    let mut dashboard_config =
+        dashboard::DashboardConfig::new(cli.pass_threshold, cli.warn_threshold)?;
+    dashboard_config.org_help.governance_standard = config::org::governance_standard_link_from_args(
+        cli.governance_standard_label.clone(),
+        cli.governance_standard_url.clone(),
+    );
     let mut config = runtime::RuntimeConfig::with_force_unlock(
         org,
         cli.no_resume,
@@ -422,6 +438,35 @@ mod tests {
         let cli = Cli::try_parse_from(["gh-report", "--org", "test-org"]).unwrap();
         assert!((cli.pass_threshold - 80.0).abs() < f64::EPSILON);
         assert!((cli.warn_threshold - 50.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn cli_default_governance_standard_is_absent() {
+        let cli = Cli::try_parse_from(["gh-report", "--org", "test-org"]).unwrap();
+        assert!(cli.governance_standard_url.is_none());
+        assert!(cli.governance_standard_label.is_none());
+    }
+
+    #[test]
+    fn cli_parses_governance_standard_flags() {
+        let cli = Cli::try_parse_from([
+            "gh-report",
+            "--org",
+            "test-org",
+            "--governance-standard-url",
+            "https://example.com/standard",
+            "--governance-standard-label",
+            "Our standard",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.governance_standard_url.as_deref(),
+            Some("https://example.com/standard")
+        );
+        assert_eq!(
+            cli.governance_standard_label.as_deref(),
+            Some("Our standard")
+        );
     }
 
     #[test]

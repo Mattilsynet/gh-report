@@ -84,11 +84,17 @@ impl CoverageTier {
 /// (see `nav_identical_across_all_page_types` in
 /// [`crate::report::html`]'s test module) instead of each page carrying
 /// its own drifting copy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopNav {
     /// Relative path prefix to the dashboard root: `""` at the root, or
     /// `"../"` for a page nested one directory deep (owner detail pages).
     pub base: &'static str,
+    /// Dashboard link target, depth-relative so the rendered dashboard stays
+    /// portable under a reverse-proxy subpath or opened straight from disk.
+    /// Deliberately not `base` + `"index.html"` — that concatenation yields
+    /// `href=""` at the root (the current-page self-reference, not the
+    /// dashboard) since `base` is `""` there.
+    pub dashboard_href: DashboardHref,
     /// Whether the Owners link renders (owner/CODEOWNERS metrics available).
     pub show_owners: bool,
     /// Count shown on the Orphans link.
@@ -97,6 +103,9 @@ pub struct TopNav {
     pub deleted_count: u32,
     /// Count shown on the Admin badge; the badge itself is hidden at zero.
     pub technical_issues_total: u32,
+    /// Deployment's own governance-standard link (UF2-GEN seam), rendered
+    /// by the footer partial when present. `None` for a fresh deployment.
+    pub governance_standard_link: Option<HelpLink>,
 }
 
 impl TopNav {
@@ -104,6 +113,38 @@ impl TopNav {
     #[must_use]
     pub fn has_technical_issues(&self) -> bool {
         self.technical_issues_total > 0
+    }
+}
+
+/// Depth of a rendered page relative to the dashboard root.
+///
+/// Resolves the Dashboard nav/breadcrumb link to a depth-relative target
+/// (`.` or `..`) rather than an origin-absolute `/`, so the generated
+/// dashboard stays portable when served under a reverse-proxy subpath or
+/// opened directly from a local directory. Exactly two variants exist —
+/// there is no representable value between "correct" and "wrong depth".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DashboardHref {
+    /// Page rendered at the dashboard root (e.g. `index.html`, `report.html`).
+    Root,
+    /// Page rendered one directory below the root (e.g. `owners/<slug>.html`).
+    Nested,
+}
+
+impl DashboardHref {
+    /// Relative Dashboard-link target for this depth.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Root => ".",
+            Self::Nested => "..",
+        }
+    }
+}
+
+impl std::fmt::Display for DashboardHref {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -156,7 +197,7 @@ pub struct ControlCell {
     /// or not applicable), `0` when none.
     pub excluded_total: u32,
     /// Formatted `"N unmeasured (breakdown)"` string, or `"0 unmeasured"`
-    /// when `excluded_total` is `0` (item6-03, bd bead `adr-fmt-orvyn`).
+    /// when `excluded_total` is `0` (item6-03, bd bead `ghr-f468d5e9`).
     pub excluded_formatted: String,
 }
 
@@ -390,6 +431,12 @@ pub struct OwnerDetailViewModel {
     /// confirmed absent from the org (departed — warn), `Some(true)`
     /// when confirmed present.
     pub owner_in_org: Option<bool>,
+    /// Prepopulated tidy-governance review prompt for the copy-to-clipboard
+    /// widget (UF2-GEN seam). `None` when no `governance_standard` link is
+    /// configured — the widget does not render at all in that case, rather
+    /// than emit a prompt naming a skill with no repository to point at.
+    /// See [`compose_governance_prompt`].
+    pub governance_prompt: Option<String>,
 }
 
 impl OwnerDetailViewModel {
@@ -620,7 +667,7 @@ pub struct DeletedRepoRow {
 /// A row in the ghost-team acknowledged-owner-anomaly table (CHE-0093:R1),
 /// rendered for a [`GhostTeamRow`] entry.
 ///
-/// Render-time-only (oracle adr-fmt-kqavx): built fresh on every render from
+/// Render-time-only (oracle ghr-893fde5c): built fresh on every render from
 /// [`crate::domain::metrics::TeamRoster`] entries whose fetch 404'd, joined
 /// to their CODEOWNERS-referencing repos. Never persisted; a team drops off
 /// automatically once no live CODEOWNERS references it or it exists again.
@@ -1263,7 +1310,7 @@ fn dashboard_control_how_to_fix() -> ControlHowToFix {
 
 /// Count and formatted breakdown of repos excluded from one control's
 /// coverage denominator. Shared by the org-wide [`ReportViewModel`] fields
-/// and the owner-scoped [`ControlCell`] (item6-03, bd bead `adr-fmt-orvyn`).
+/// and the owner-scoped [`ControlCell`] (item6-03, bd bead `ghr-f468d5e9`).
 pub(crate) struct ControlExclusion {
     pub(crate) total: u32,
     pub(crate) formatted: String,
@@ -1282,7 +1329,7 @@ struct ExclusionBreakdown {
 /// `check_kind` selects which control's rows to fold out of `counts`; reused
 /// for both the org-wide [`ScoreExclusionCount`] rows on `AggregatedMetrics`
 /// and the owner-scoped rows on `OwnerMetrics::score_exclusion_counts`
-/// (item6-03, bd bead `adr-fmt-orvyn`) — the shape is identical at both
+/// (item6-03, bd bead `ghr-f468d5e9`) — the shape is identical at both
 /// scopes, only the input slice differs.
 pub(crate) fn format_exclusion(
     check_kind: CollectionHealthCheckKind,
@@ -1349,7 +1396,7 @@ impl ReportViewModel {
     #[must_use]
     #[expect(
         clippy::too_many_lines,
-        reason = "constructing ReportViewModel is a flat multi-field assignment from pre-computed per-control helpers (how-to-fix copy, health, archival, team-access, exclusion breakdown); the 5 *_how_to_fix fields mirror per-control helper output, and the 10 *_excluded_* fields mirror them again for the by-reason exclusion breakdown (item6 adr-fmt-6mi2t), pushing an already near-threshold constructor over the line count — extracting further would fragment one cohesive struct literal without improving readability"
+        reason = "constructing ReportViewModel is a flat multi-field assignment from pre-computed per-control helpers (how-to-fix copy, health, archival, team-access, exclusion breakdown); the 5 *_how_to_fix fields mirror per-control helper output, and the 10 *_excluded_* fields mirror them again for the by-reason exclusion breakdown (item6 ghr-f4855d2f), pushing an already near-threshold constructor over the line count — extracting further would fragment one cohesive struct literal without improving readability"
     )]
     pub fn from_evidence(evidence: &Evidence, tiers: &CoverageTiers) -> Self {
         let metadata = &evidence.assessment_metadata;
@@ -1511,6 +1558,68 @@ pub fn compose_team_access_guidance(cfg: &TeamAccessGuidance) -> (String, Vec<He
          not a configuration file."
     );
     (text, cfg.help_links.clone())
+}
+
+/// Compose the tidy-governance review prompt for an owner-detail page's
+/// copy-to-clipboard widget (UF2-GEN seam).
+///
+/// Returns `None` when no governance-standard link is configured, so the
+/// caller can skip rendering the widget entirely rather than emit a prompt
+/// naming a skill with no repository standard to point at.
+///
+/// # Examples
+///
+/// ```
+/// use gh_report::config::org::HelpLink;
+/// use gh_report::report::view_model::{compose_governance_prompt, OwnerRepoRow};
+///
+/// let link = HelpLink {
+///     label: "Governance AI skill".to_string(),
+///     url: "https://example.com/tidy-governance".to_string(),
+/// };
+/// let prompt = compose_governance_prompt(Some(&link), &[], &[]).unwrap();
+/// assert!(prompt.contains("tidy-governance"));
+/// assert!(prompt.contains("https://example.com/tidy-governance"));
+///
+/// assert!(compose_governance_prompt(None, &[], &[]).is_none());
+/// # let _: Option<OwnerRepoRow> = None;
+/// ```
+#[must_use]
+pub fn compose_governance_prompt(
+    link: Option<&HelpLink>,
+    repo_rows: &[OwnerRepoRow],
+    orphan_repo_rows: &[OrphanedRepoRow],
+) -> Option<String> {
+    let link = link?;
+    let mut prompt = format!(
+        "Use the tidy-governance skill to review these repositories against the \
+         governance standard at {}.\n\nRepositories on this team:\n",
+        link.url
+    );
+    if repo_rows.is_empty() {
+        prompt.push_str("(none)\n");
+    } else {
+        for row in repo_rows {
+            prompt.push_str("- ");
+            prompt.push_str(&row.repo_name);
+            prompt.push('\n');
+        }
+    }
+    prompt.push_str("\nOrphaned repositories attributed to this team:\n");
+    if orphan_repo_rows.is_empty() {
+        prompt.push_str("(none)\n");
+    } else {
+        for row in orphan_repo_rows {
+            prompt.push_str("- ");
+            prompt.push_str(&row.repo_name);
+            prompt.push('\n');
+        }
+    }
+    prompt.push_str(
+        "\nNote: the repositories list above is CODEOWNERS-attributed and excludes \
+         archived repositories.",
+    );
+    Some(prompt)
 }
 
 fn health_display(
@@ -3705,5 +3814,64 @@ mod tests {
                 RedFlagId::AdminEnforcementNotEquivalent,
             ]
         );
+    }
+
+    #[test]
+    fn compose_governance_prompt_absent_link_yields_none() {
+        assert!(compose_governance_prompt(None, &[], &[]).is_none());
+    }
+
+    #[test]
+    fn compose_governance_prompt_present_link_includes_repos_and_exclusion_note() {
+        let link = HelpLink {
+            label: "Governance AI skill".to_string(),
+            url: "https://example.com/tidy-governance".to_string(),
+        };
+        let repo_rows = vec![OwnerRepoRow {
+            repo_name: "team-repo".to_string(),
+            repo_url: "https://github.com/org/team-repo".to_string(),
+            visibility: "Public".to_string(),
+            controls: Vec::new(),
+            description: String::new(),
+            language: String::new(),
+            is_fork: false,
+            is_empty: false,
+            license: String::new(),
+            pushed_at: String::new(),
+            created_at: String::new(),
+            last_committer_login: String::new(),
+            last_committer_url: String::new(),
+            last_committer_unregistered: false,
+            last_commit_date: String::new(),
+            is_stale: false,
+            repo_score: None,
+            repo_score_formatted: String::new(),
+            repo_score_tier: CoverageTier::Na,
+            repo_score_width_class: "",
+        }];
+        let orphan_rows = vec![OrphanedRepoRow {
+            repo_name: "orphan-repo".to_string(),
+            repo_url: String::new(),
+            visibility: "Public".to_string(),
+            description: String::new(),
+            language: String::new(),
+            is_empty: false,
+            last_committer_login: String::new(),
+            last_committer_url: String::new(),
+            last_committer_unregistered: false,
+            last_commit_date: String::new(),
+            is_stale: false,
+            attributed_team: None,
+            attributed_team_slug: None,
+        }];
+
+        let prompt = compose_governance_prompt(Some(&link), &repo_rows, &orphan_rows).unwrap();
+
+        assert!(prompt.contains("tidy-governance skill"));
+        assert!(prompt.contains("https://example.com/tidy-governance"));
+        assert!(prompt.contains("team-repo"));
+        assert!(prompt.contains("orphan-repo"));
+        assert!(prompt.contains("excludes"));
+        assert!(prompt.contains("archived"));
     }
 }

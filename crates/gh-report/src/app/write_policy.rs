@@ -105,7 +105,7 @@ impl WritePolicyCategory {
 }
 
 /// The tracing severity for a durable-write failure classified as
-/// `category` (COM-0031:R4, adr-fmt-op2u6-F5). `Conflict` is the single
+/// `category` (COM-0031:R4, ghr-1f2d0659-F5). `Conflict` is the single
 /// recognised fence variant (PGN-0016:R2) and is the expected shape of a
 /// Cloud-Run-rollover OCC churn on every deploy; logging it at `ERROR`
 /// desensitises ERROR-based alerting. Every other category remains an
@@ -812,7 +812,7 @@ mod tests {
         }
     }
 
-    /// Guards the "logs label, drops source" gap (adr-fmt-i1t4w Deliverable
+    /// Guards the "logs label, drops source" gap (ghr-9271d2db Deliverable
     /// B) from silently returning: the innermost cause text is two
     /// `source()` hops below the top-level `PersistenceError::Display`
     /// (which reads only "single-writer fence conflict: middle layer

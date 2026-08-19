@@ -67,9 +67,9 @@ default-members = [
 edition = "2024"
 rust-version = "1.97"
 license = "Apache-2.0 OR MIT"
-homepage = "https://github.com/acje/solon"
-repository = "https://github.com/acje/solon"
-authors = ["acje"]
+homepage = "https://github.com/Mattilsynet/gh-report"
+repository = "https://github.com/Mattilsynet/gh-report"
+authors = ["Mattilsynet"]
 
 [workspace.dependencies]
 # === Text processing ===
@@ -211,7 +211,7 @@ url = "2"
 moka = { version = "0.12", features = ["future"] }
 
 # === WASM client (item12-leptos-sort; CHE-0087) ===
-# csr only, no nightly feature (MSRV-verified bd-adr-fmt-p49km: leptos 0.8.20
+# csr only, no nightly feature (MSRV-verified bd-ghr-16858874: leptos 0.8.20
 # rust-version 1.88 < workspace 1.97 pin). wasm-bindgen pinned EXACTLY: the
 # installed wasm-bindgen-cli must match this version bit-for-bit.
 leptos = { version = "0.8.20", default-features = false, features = ["csr"] }

@@ -127,7 +127,7 @@ async fn restart_rehydrates_projection_state() {
     assert!(
         projection.repositories.contains_key("owner/repo-rehydrate"),
         "projection_state.repositories should contain the RepoEvaluated \
-         entry after bootstrap replay (bd adr-fmt-5rwbu); found keys: {:?}",
+         entry after bootstrap replay (bd ghr-58aa6cca); found keys: {:?}",
         projection.repositories.keys().collect::<Vec<_>>(),
     );
 }

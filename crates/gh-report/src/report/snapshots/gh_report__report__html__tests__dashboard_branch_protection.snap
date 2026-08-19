@@ -20,7 +20,7 @@ expression: "&pages[\"branch_protection.html\"]"
 <body>
 
     <nav class="top-nav">
-    <a href="index.html">Dashboard</a>
+    <a href=".">Dashboard</a>
     
     <a href="orphans.html">Orphans (0)</a>
     <a href="report.html" class="nav-right">Report</a>
@@ -31,7 +31,7 @@ expression: "&pages[\"branch_protection.html\"]"
     <h1>Branch Protection Regimes</h1>
 
     <ul class="breadcrumb">
-        <li><a href="index.html">Dashboard</a></li>
+        <li><a href=".">Dashboard</a></li>
         <li>Branch Protection</li>
     </ul>
 
@@ -121,6 +121,7 @@ expression: "&pages[\"branch_protection.html\"]"
     </section>
     
 
+    
 </body>
 
 </html>

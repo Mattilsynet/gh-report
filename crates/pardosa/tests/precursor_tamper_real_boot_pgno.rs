@@ -1,4 +1,4 @@
-//! TEST 2 (bd `adr-fmt-krndg`, epic `adr-fmt-3dvym`): the load-bearing
+//! TEST 2 (bd `ghr-0a2aa63d`, epic `ghr-a6916203`): the load-bearing
 //! true-reject counter-proof for the pgno arm.
 //!
 //! Builds a real two-event chained fiber through the public write API,

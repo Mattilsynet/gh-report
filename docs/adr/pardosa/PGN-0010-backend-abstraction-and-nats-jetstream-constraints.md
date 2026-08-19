@@ -108,7 +108,7 @@ runtime mode, which is a separate future decision this amendment does
 not make.
 
 The `PrecursorCheckMode` selector is now runtime-selectable per store-open
-via `PARDOSA_PRECURSOR_CHECK_MODE=enforce|observe` (mission `adr-fmt-qkq9l`
+via `PARDOSA_PRECURSOR_CHECK_MODE=enforce|observe` (mission `ghr-58d1ed7f`
 Part A); unset, empty, `observe`, or any unrecognised value still resolves
 to `ObserveOnly`. This refines the P2b selector's mechanism (compile-time
 constant → runtime env read), not the default: the shipped default remains

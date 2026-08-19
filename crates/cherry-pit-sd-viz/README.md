@@ -1,8 +1,8 @@
 # cherry-pit-sd-viz
 
 Standalone, client-side, animated discrete-event simulation of gh-report's
-runtime queue network (mission adr-fmt-t63uo; topology grounded in
-adr-fmt-223sd). No dependency on a running gh-report; no trace capture — the
+runtime queue network (mission ghr-832c1132; topology grounded in
+ghr-f6602e2d). No dependency on a running gh-report; no trace capture — the
 simulation is entirely self-contained and runs in-browser.
 
 gh-report is NOT one steady conveyor. It is three distinct triggers feeding a

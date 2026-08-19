@@ -54,6 +54,14 @@ pub use crate::app::evidence_service::EvidenceState;
 pub use crate::app::github_infra::GithubState;
 pub use crate::app::webhook_context::WebhookState;
 
+mod baseline;
+#[cfg(test)]
+mod builder;
+mod server_state;
+
+#[cfg(test)]
+pub use builder::AppStateBuilder;
+
 use crate::app::collect::JobContext;
 use crate::app::work_queue::WorkQueue;
 use crate::domain::evidence::RepositoryEvidence;
@@ -67,31 +75,36 @@ use crate::event::{
 };
 
 /// Embedded CSS stylesheet, compiled into the binary at build time.
-const STYLESHEET: &str = include_str!("../../templates/style.css");
+const STYLESHEET: &str = include_str!("../../../templates/style.css");
 
 /// Embedded WebSocket client script, compiled into the binary at build time.
-const WS_CLIENT_JS: &str = include_str!("../../templates/ws.js");
+const WS_CLIENT_JS: &str = include_str!("../../../templates/ws.js");
 
 /// Embedded Leptos CSR client WASM glue (ES module), compiled into the
 /// binary at build time. See [`crate::app::state`] module docs and
 /// CHE-0087; source crate `gh-report-web-client`, rebuilt and
 /// recommitted per that crate's own build instructions (never a host
 /// `build.rs` step).
-const SORT_CLIENT_JS: &str = include_str!("../../templates/gh-report-web-client.js");
+const SORT_CLIENT_JS: &str = include_str!("../../../templates/gh-report-web-client.js");
 
 /// Embedded Leptos CSR client WASM binary, compiled into the binary at
 /// build time. Binary (not UTF-8), so it bypasses the
 /// `HashMap<String, String>` page map entirely and can only be served
 /// via the [`CachedPage`] `LazyLock` path below (see
 /// [`crate::app::collect::build_cached_pages`]).
-const SORT_CLIENT_WASM: &[u8] = include_bytes!("../../templates/gh-report-web-client_bg.wasm");
+const SORT_CLIENT_WASM: &[u8] = include_bytes!("../../../templates/gh-report-web-client_bg.wasm");
 
 /// Embedded ES-module bootstrap for the Leptos CSR client, compiled
 /// into the binary at build time. Served as an external module script
 /// (referenced via `<script type="module" src="sort-init.js">`) rather
 /// than inlined, so the served Content-Security-Policy keeps
 /// `script-src 'self'` without needing `'unsafe-inline'` (CHE-0087 R8).
-const SORT_INIT_JS: &str = include_str!("../../templates/sort-init.js");
+const SORT_INIT_JS: &str = include_str!("../../../templates/sort-init.js");
+
+/// Embedded copy-to-clipboard script for the owner-detail governance
+/// prompt widget (UF2-GEN seam). External file for the same
+/// `script-src 'self'` reason as [`SORT_INIT_JS`]; CHE-0087.
+const CLIPBOARD_JS: &str = include_str!("../../../templates/clipboard.js");
 
 /// Pre-computed `CachedPage` for `style.css`.
 ///
@@ -133,6 +146,13 @@ pub static CACHED_SORT_CLIENT_WASM: LazyLock<CachedPage> =
 /// Same rationale as [`CACHED_STYLESHEET`]: compute once, clone cheaply.
 pub static CACHED_SORT_INIT_JS: LazyLock<CachedPage> =
     LazyLock::new(|| CachedPage::new("sort-init.js", SORT_INIT_JS.as_bytes().to_vec()));
+
+/// Pre-computed `CachedPage` for `clipboard.js` (the owner-detail
+/// governance-prompt copy-to-clipboard script).
+///
+/// Same rationale as [`CACHED_STYLESHEET`]: compute once, clone cheaply.
+pub static CACHED_CLIPBOARD_JS: LazyLock<CachedPage> =
+    LazyLock::new(|| CachedPage::new("clipboard.js", CLIPBOARD_JS.as_bytes().to_vec()));
 
 /// Shared application state.
 ///
@@ -180,7 +200,7 @@ pub struct AppState {
 
     /// Durable native pardosa team event store (CHE-0089:R2), one fiber
     /// per `(org, team_slug)` pair. Consumed by the P3 team-refresh
-    /// writer (adr-fmt-ewc1i); folded into `projection_state` on boot
+    /// writer (ghr-3fda2878); folded into `projection_state` on boot
     /// and via [`Self::fold_team_event_into_projection`].
     pub team_event_store: Arc<TeamEventStoreImpl>,
 
@@ -206,7 +226,7 @@ pub struct AppState {
 
     /// In-process gate serialising concurrent
     /// [`crate::app::collect::run`] invocations against this
-    /// `AppState` (mission `adr-fmt-cq7vb.8.2`).
+    /// `AppState` (mission `ghr-ad733490`).
     ///
     /// `run` acquires this `Arc<tokio::sync::Mutex<()>>` as its first
     /// action and holds an `OwnedMutexGuard` for the lifetime of the
@@ -1127,7 +1147,7 @@ fn detach_tombstone_roster(
 }
 
 /// Build the durable [`TeamStateCaptured`] event from a freshly-fetched
-/// domain [`crate::domain::metrics::TeamRoster`] (adr-fmt-ewc1i, CHE-0089).
+/// domain [`crate::domain::metrics::TeamRoster`] (ghr-3fda2878, CHE-0089).
 ///
 /// `org` is supplied separately: [`crate::domain::metrics::TeamRoster`]
 /// carries only the canonical `@org/team-slug` owner string and the bare
@@ -1174,9 +1194,9 @@ fn team_state_event(
 
 /// Per-construction unique tempdir plus native pardosa `.pgno` event store.
 #[cfg(test)]
-#[expect(
+#[allow(
     clippy::unused_async,
-    reason = "pardosa store facade is synchronous by PGN-0010:R5 / PGN-0015:R6; async fn preserves a uniform .await consumer seam across the sync-over-async backend boundary"
+    reason = "pardosa store facade is synchronous by PGN-0010:R5 / PGN-0015:R6; async fn preserves a uniform .await consumer seam across the sync-over-async backend boundary; #[expect] is unfulfilled under the post-split all-targets configuration (lint no longer fires for these fns once their sole caller moved to a sibling submodule), per house style escape hatch for unfulfilled expectations"
 )]
 async fn noop_event_store() -> Arc<EventStoreImpl> {
     let dir = tempfile::tempdir().expect("test tempdir");
@@ -1185,9 +1205,9 @@ async fn noop_event_store() -> Arc<EventStoreImpl> {
 }
 
 #[cfg(test)]
-#[expect(
+#[allow(
     clippy::unused_async,
-    reason = "pardosa store facade is synchronous by PGN-0010:R5 / PGN-0015:R6; async fn preserves a uniform .await consumer seam across the sync-over-async backend boundary"
+    reason = "pardosa store facade is synchronous by PGN-0010:R5 / PGN-0015:R6; async fn preserves a uniform .await consumer seam across the sync-over-async backend boundary; #[expect] is unfulfilled under the post-split all-targets configuration (lint no longer fires for these fns once their sole caller moved to a sibling submodule), per house style escape hatch for unfulfilled expectations"
 )]
 async fn noop_org_event_store() -> Arc<OrgEventStoreImpl> {
     let dir = tempfile::tempdir().expect("test tempdir");
@@ -1196,9 +1216,9 @@ async fn noop_org_event_store() -> Arc<OrgEventStoreImpl> {
 }
 
 #[cfg(test)]
-#[expect(
+#[allow(
     clippy::unused_async,
-    reason = "pardosa store facade is synchronous by PGN-0010:R5 / PGN-0015:R6; async fn preserves a uniform .await consumer seam across the sync-over-async backend boundary"
+    reason = "pardosa store facade is synchronous by PGN-0010:R5 / PGN-0015:R6; async fn preserves a uniform .await consumer seam across the sync-over-async backend boundary; #[expect] is unfulfilled under the post-split all-targets configuration (lint no longer fires for these fns once their sole caller moved to a sibling submodule), per house style escape hatch for unfulfilled expectations"
 )]
 async fn noop_team_event_store() -> Arc<TeamEventStoreImpl> {
     let dir = tempfile::tempdir().expect("test tempdir");
@@ -1358,7 +1378,7 @@ impl AppState {
     /// discarding each store's stale in-memory fence-sequence cache in
     /// place.
     ///
-    /// Design-Y consumer-owned re-arm (adr-fmt-9a2z7): `PersistenceError::FencedConflict`
+    /// Design-Y consumer-owned re-arm (ghr-fea8b799): `PersistenceError::FencedConflict`
     /// can originate from any of the three long-lived native stores —
     /// `record_repo`/`remove_repo`, `record_org`, and `record_team` all map
     /// through the same generic catch-all (`native_store_persistence`) —
@@ -1464,7 +1484,7 @@ impl AppState {
     /// (CHE-0089:R4), keyed by `team_domain_key`. `detached = true`
     /// removes the roster (CHE-0073:R7 detached-remove); otherwise
     /// upserts the latest snapshot (non-detached-upsert). Called by
-    /// [`Self::record_team`] / [`Self::detach_team`] (P3, adr-fmt-ewc1i)
+    /// [`Self::record_team`] / [`Self::detach_team`] (P3, ghr-3fda2878)
     /// after the durable write lands, so the resident projection
     /// reflects the write at runtime, not only on next restart.
     pub(crate) fn fold_team_event_into_projection(&self, detached: bool, event: TeamStateCaptured) {
@@ -1622,153 +1642,10 @@ impl AppState {
         self.fold_org_event_into_projection(event);
         Ok(())
     }
-
-    /// Render the current in-memory projection as a JSON-encoded
-    /// [`crate::infra::baseline::Baseline`] suitable for stdout dump.
-    ///
-    /// δ.3c-ii: replaces the pre-pivot `infra::baseline::dump_baseline`
-    /// which read `<store>/baseline.msgpack`. Callers
-    /// (`--dump-baseline`) must run [`Self::snapshot_fast_path_init`]
-    /// first so the projection reflects the event log.
-    ///
-    /// Held internally so the `lock_projection` `MutexGuard` does not
-    /// escape `pub(crate)` visibility. Output shape is byte-equivalent
-    /// to the pre-pivot dump (same `Baseline { schema_version,
-    /// entries }`, same `serde_json::to_string_pretty` formatter).
-    ///
-    /// # Errors
-    /// Surfaces `serde_json` serialization failure (extremely unlikely
-    /// for owned, well-formed `Baseline` data).
-    pub fn dump_baseline_json(&self) -> Result<String, serde_json::Error> {
-        let repos: Vec<crate::domain::evidence::RepositoryEvidence> = self
-            .lock_projection()
-            .repositories
-            .values()
-            .cloned()
-            .collect();
-        let baseline = crate::infra::baseline::build_baseline(&repos);
-        serde_json::to_string_pretty(&baseline)
-    }
-}
-
-/// Builder for constructing `AppState` with explicit control
-/// over cache capacity and webhook secret.
-///
-/// Consolidates the previous `new_with_cache_capacity`,
-/// `new_with_webhook_secret`, and `new_test` constructors into a
-/// single fluent API.
-///
-/// # Example
-///
-/// ```ignore
-/// let state = AppStateBuilder::new()
-///     .cache_capacity(10)
-///     .webhook_secret("test-secret")
-///     .build();
-/// ```
-#[cfg(test)]
-pub struct AppStateBuilder {
-    cache_capacity: Option<u64>,
-    webhook_secret: Option<secrecy::SecretString>,
-}
-
-#[cfg(test)]
-impl Default for AppStateBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(test)]
-impl AppStateBuilder {
-    /// Create a builder with default values.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            cache_capacity: None,
-            webhook_secret: None,
-        }
-    }
-
-    /// Set the cross-run repo detail cache capacity.
-    #[must_use]
-    pub fn cache_capacity(mut self, capacity: u64) -> Self {
-        self.cache_capacity = Some(capacity);
-        self
-    }
-
-    /// Set the webhook HMAC secret.
-    #[must_use]
-    pub fn webhook_secret(mut self, secret: &str) -> Self {
-        self.webhook_secret = Some(secrecy::SecretString::from(secret.to_string()));
-        self
-    }
-
-    /// Build the `Arc<AppState>`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the unique tempdir-based noop event-store directory
-    /// cannot acquire the CHE-0043:R1 advisory flock at `open` time.
-    /// This is an infrastructure-level failure (disk full, permissions,
-    /// no `/tmp`) at builder construction in a test path; halting is
-    /// appropriate.
-    pub async fn build(self) -> Arc<AppState> {
-        let github = match self.cache_capacity {
-            Some(cap) => GithubState::with_cache_capacity(cap),
-            None => GithubState::new(),
-        };
-        let webhook = WebhookState::with_secret(self.webhook_secret);
-        let event_store = noop_event_store().await;
-        let org_event_store = noop_org_event_store().await;
-        let team_event_store = noop_team_event_store().await;
-        let scheduler_event_store = noop_scheduler_event_store();
-        let sweep_timeout_event_store = noop_sweep_timeout_event_store();
-        let projection_state =
-            Arc::new(Mutex::new(crate::projection::EvidenceProjection::default()));
-
-        Arc::new(AppState {
-            started_at: Timestamp::now(),
-            owner_id: uuid::Uuid::now_v7(),
-            current_run: ArcSwap::from_pointee(None),
-            last_completed_run: ArcSwap::from_pointee(None),
-            last_recovery: ArcSwap::from_pointee(None),
-            work_queue: Arc::new(WorkQueue::new(crate::config::WORK_QUEUE_CAPACITY)),
-            worker_pool_started: tokio::sync::OnceCell::new(),
-            worker_pool_cancel: WorkerShutdownToken::new(),
-            event_store,
-            org_event_store,
-            team_event_store,
-            scheduler_event_store,
-            sweep_timeout_event_store,
-            projection_state,
-            webhook,
-            github,
-            evidence: EvidenceState::new(),
-            sweep_lock: Arc::new(tokio::sync::Mutex::new(())),
-        })
-    }
-}
-
-/// Legacy convenience constructors (delegate to builder).
-#[cfg(test)]
-impl AppState {
-    /// Create an `AppState` with a custom cache capacity (for testing).
-    pub async fn new_with_cache_capacity(capacity: u64) -> Arc<Self> {
-        AppStateBuilder::new()
-            .cache_capacity(capacity)
-            .build()
-            .await
-    }
-
-    /// Create an `AppState` with a known webhook secret (for testing).
-    pub async fn new_with_webhook_secret(secret: &str) -> Arc<Self> {
-        AppStateBuilder::new().webhook_secret(secret).build().await
-    }
 }
 
 /// Construct the primary-rate `Regulator` for the worker-pool regulator
-/// chain by matching `kind` to a concrete constructor (adr-fmt-faspg
+/// chain by matching `kind` to a concrete constructor (ghr-79f5d695
 /// kill-switch). Each arm builds a concrete `cherry-pit-wq` type coerced
 /// into the existing `Arc<dyn Regulator>` chain slot; no erased selector
 /// indirection is introduced.
@@ -1976,25 +1853,6 @@ impl AppState {
             "projection_repo_count": projection_repo_count,
             "projection_bytes_est": projection_bytes_est,
         })
-    }
-}
-
-impl cherry_pit_web::serve::ServerState for AppState {
-    fn html_cache(&self) -> &ArcSwap<Option<HashMap<String, CachedPage>>> {
-        &self.evidence.html_cache
-    }
-
-    fn ws_broadcast(&self) -> &tokio::sync::broadcast::Sender<PageUpdateEvent> {
-        &self.evidence.ws_broadcast
-    }
-
-    fn is_ready(&self) -> bool {
-        self.event_store.backend_reachable()
-            && self.org_event_store.backend_reachable()
-            && self.team_event_store.backend_reachable()
-            && (self.last_completed_run.load().is_some()
-                || self.evidence.html_cache.load().is_some()
-                || !self.lock_projection().is_empty())
     }
 }
 

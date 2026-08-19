@@ -9,11 +9,11 @@ use pardosa_wire::{Decode, Encode, Validate, from_bytes, precursor_hash_of, to_v
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek};
 /// Precursor-check enforcement mode consulted by
-/// [`rebuild_dragline_with_frontier`] (roadmap `adr-fmt-t7t4v` P2a/P2b,
+/// [`rebuild_dragline_with_frontier`] (roadmap `ghr-eedb1f06` P2a/P2b,
 /// D2b). `ObserveOnly` computes the three precursor checks and emits a
 /// non-blocking warn per would-fail; `Enforce` rejects instead.
 /// [`precursor_check_mode`] resolves the runtime-selectable mode
-/// (mission `adr-fmt-qkq9l` Part A, PGN-0010 P2b amendment); the
+/// (mission `ghr-58d1ed7f` Part A, PGN-0010 P2b amendment); the
 /// shipped default (env unset or unrecognised) stays `ObserveOnly`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PrecursorCheckMode {
@@ -21,7 +21,7 @@ pub(crate) enum PrecursorCheckMode {
     Enforce,
 }
 /// Environment variable that runtime-selects [`PrecursorCheckMode`]
-/// per store-open (mission `adr-fmt-qkq9l` Part A). `enforce`
+/// per store-open (mission `ghr-58d1ed7f` Part A). `enforce`
 /// (case-insensitive) selects [`PrecursorCheckMode::Enforce`]; `observe`,
 /// unset, empty, or any unrecognised value fails safe to
 /// [`PrecursorCheckMode::ObserveOnly`] — the shipped default is
@@ -47,8 +47,8 @@ pub(crate) fn precursor_check_mode() -> PrecursorCheckMode {
 }
 /// Precursor bounds/fiber/hash check for the batch rebuild path,
 /// delegating to the pure functions shared with the streaming verify
-/// chain in [`super::checked`] (adr-fmt-lutpd finding #2 /
-/// adr-fmt-ibi23) — this replaces the former standalone
+/// chain in [`super::checked`] (ghr-968718c8 finding #2 /
+/// ghr-63f3f265) — this replaces the former standalone
 /// `precursor_would_fail` duplicate.
 fn rebuild_precursor_check<T>(
     events: &[Event<T>],

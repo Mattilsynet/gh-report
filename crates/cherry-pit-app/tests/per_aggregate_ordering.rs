@@ -1,5 +1,5 @@
 //! Per-aggregate event ordering proptest for F2 (mission
-//! adr-fmt-cq7vb.2).
+//! ghr-d64c8076).
 //!
 //! Property: under the F2 design — synchronous bus fan-out
 //! (CHE-0024:§7) feeding a bounded `tokio::sync::mpsc` channel drained

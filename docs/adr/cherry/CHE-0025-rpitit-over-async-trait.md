@@ -1,7 +1,7 @@
 # CHE-0025. RPITIT Over async_trait
 
 Date: 2026-04-24
-Last-reviewed: 2026-04-28
+Last-reviewed: 2026-08-12 — refined — added R3 COM-0017:R4 enforcement statement naming job id build-test-lint / async-trait-deny step (RST-0007:R5)
 Tier: D
 Status: Accepted
 
@@ -23,6 +23,10 @@ R1 [9]: All async port traits use impl Future in return position
   instead of the async_trait proc macro
 R2 [9]: No heap allocation per async trait method call via
   Box<dyn Future>
+R3 [9]: CI enforces R1/R2 with a build-time tripwire (job id
+  build-test-lint, step "deny async-trait in cherry-pit-* dep trees",
+  .github/workflows/ci-reusable.yml): async-trait present in any
+  cherry-pit-* crate's resolved dep tree fails the build (COM-0017:R4).
 
 ## Consequences
 

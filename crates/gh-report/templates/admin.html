@@ -12,7 +12,7 @@
     <h1>Admin Diagnostics</h1>
 
     <ul class="breadcrumb">
-        <li><a href="index.html">Dashboard</a></li>
+        <li><a href="{{ nav.dashboard_href }}">Dashboard</a></li>
         <li>Admin Diagnostics</li>
     </ul>
 
@@ -101,6 +101,7 @@
         {% endif %}
     </section>
 
+    {% include "partials/footer.html" %}
 </body>
 
 </html>

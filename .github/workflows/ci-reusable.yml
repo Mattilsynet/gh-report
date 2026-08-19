@@ -18,13 +18,13 @@ jobs:
     name: build, test, lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.97.0
           components: clippy, rustfmt
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo build --workspace --all-features --locked
       # CHE-0087 R5/R6: the Leptos CSR client is wasm32-only and excluded from
       # the default build set. Its committed .wasm/.js artefacts are embedded
@@ -40,8 +40,8 @@ jobs:
       # build-path embedding), so a regen-and-diff gate false-positives on
       # every host that isn't bit-identical to the original build machine
       # (blocked v0.1.39 and v0.1.40, both tagged, both CI-red — bd
-      # adr-fmt-2es67). The prior hyphen/underscore import-key mismatch this
-      # tripwire actually guards against is bd adr-fmt-xgcnn.
+      # ghr-ac704b9e). The prior hyphen/underscore import-key mismatch this
+      # tripwire actually guards against is bd ghr-e32955e3.
       - name: install wasm-tools
         run: cargo install wasm-tools --locked
       - name: import-key invariant (gh-report-web-client wasm/glue)
@@ -57,16 +57,16 @@ jobs:
             | sed -E 's/^\(import "//; s/"$//' \
             | sort -u)"
           if [ "$glue_key" != "$EXPECTED" ]; then
-            echo "::error::glue import key [$glue_key] != expected [$EXPECTED] (see bd adr-fmt-xgcnn, adr-fmt-2es67)"
+            echo "::error::glue import key [$glue_key] != expected [$EXPECTED] (see bd ghr-e32955e3, ghr-ac704b9e)"
             exit 1
           fi
           if [ "$wasm_mod" != "$EXPECTED" ]; then
-            echo "::error::wasm import module [$wasm_mod] != expected [$EXPECTED] (see bd adr-fmt-xgcnn, adr-fmt-2es67)"
+            echo "::error::wasm import module [$wasm_mod] != expected [$EXPECTED] (see bd ghr-e32955e3, ghr-ac704b9e)"
             exit 1
           fi
           n=$(printf '%s\n' "$wasm_mod" | grep -c .)
           if [ "$n" -ne 1 ]; then
-            echo "::error::wasm has $n distinct import modules, expected exactly 1 (see bd adr-fmt-xgcnn, adr-fmt-2es67)"
+            echo "::error::wasm has $n distinct import modules, expected exactly 1 (see bd ghr-e32955e3, ghr-ac704b9e)"
             exit 1
           fi
       # Lint the wasm-only crate on its real target so dom.rs (cfg(wasm32))
@@ -78,39 +78,29 @@ jobs:
       - run: cargo fmt --check
         if: always()
       # Tripwire: deny `async-trait` (direct or transitive) in every cherry-pit-*
-      # crate's resolved feature-aware dep tree. Locks in CHE-0025 (port traits
-      # use RPITIT, not `#[async_trait]` macro) and CHE-0029:R4 (forbidden-dep
-      # budget for cherry-pit-core, extended workspace-wide for the cherry-pit-*
-      # family as the architectural floor). Authored in mission
-      # phase2-v2-track-1 SM-1 (bd: adr-fmt-6bua). Audit artefact:
+      # crate's resolved feature-aware dep tree. Locks in CHE-0025:R1 (port
+      # traits use RPITIT, not `#[async_trait]` macro) and CHE-0025:R2 (no
+      # heap allocation per async trait method call via Box). Authored in
+      # mission phase2-v2-track-1 SM-1 (bd: ghr-15841913). Audit artefact:
       # .ooda/track-1-4-rpitit-audit-*.md.
-      - name: deny async-trait in cherry-pit-* dep trees
+      - name: deny async-trait in cherry-pit-* dep trees (CHE-0025:R1+R2)
         if: always()
-        run: |
-          set -euo pipefail
-          fail=0
-          for c in cherry-pit-core cherry-pit-gateway cherry-pit-web cherry-pit-agent \
-                   cherry-pit-projection cherry-pit-wq cherry-pit-storage cherry-pit-sd-viz; do
-            if cargo tree -p "$c" -e features 2>&1 | grep -q async-trait; then
-              echo "::error::$c transitively depends on async-trait (CHE-0025/CHE-0029:R4)"
-              fail=1
-            fi
-          done
-          exit $fail
+        run: tools/tripwires.sh async-trait
       # Tripwire: cherry-pit-sd-viz must carry zero pardosa* Cargo dependency
       # (CHE-0029 acyclic DAG + CHE-0084:R5 "MUST NOT introduce any
       # cherry-pit->pardosa dependency edge"). The crate shape-mirrors
       # pardosa-nats types in doc comments only; a real Cargo dependency edge
       # would violate the standing severance. Mirrors the async-trait
       # tripwire shape above (CHE-0094:R8).
-      - name: deny pardosa deps in cherry-pit-sd-viz
+      - name: deny pardosa deps in cherry-pit-sd-viz (CHE-0084:R5)
         if: always()
-        run: |
-          set -euo pipefail
-          if cargo tree -p cherry-pit-sd-viz 2>&1 | grep -q pardosa; then
-            echo "::error::cherry-pit-sd-viz depends on a pardosa* crate (CHE-0029/CHE-0084:R5)"
-            exit 1
-          fi
+        run: tools/tripwires.sh pardosa-dep
+      # Mechanizes RST-0007:R2's id-existence half (RST-0007:R7): every
+      # ADR rule id cited in a merge-gate step name: or ::error:: string
+      # must name an existing, non-stale ADR carrying that rule id.
+      - name: gate-citation check (RST-0007:R7)
+        if: always()
+        run: tools/tripwires.sh gate-citation
       # The pardosa-nats live-test harness (crates/pardosa-nats/src/test_support.rs)
       # spawns a real `nats-server` and asserts its --version matches the pin in
       # tools/.nats-server-version. Install exactly that version, checksum-verified
@@ -133,9 +123,10 @@ jobs:
   # Tripwire: pin the `projection_state` mutex chokepoint in gh-report.
   # Per `crates/gh-report/src/app/state.rs:300-316`, `AppState::lock_projection()`
   # is the sole sanctioned accessor for the `EvidenceProjection` mutex
-  # (CHE-0048:R2 sole-writer rule; "never hold the returned MutexGuard
-  # across an .await" — D-CD-3). Raw `.projection_state.lock(` calls
-  # must therefore appear only inside `crates/gh-report/src/app/state.rs`
+  # (COM-0018 single-writer concurrency + CHE-0048:R7 in-process
+  # per-aggregate lock write coordination; "never hold the returned
+  # MutexGuard across an .await" — D-CD-3). Raw `.projection_state.lock(`
+  # calls must therefore appear only inside `crates/gh-report/src/app/state/mod.rs`
   # (the accessor definition site and the boot-time `bootstrap_replay_state`
   # which uses tight-scope guards intentionally).
   #
@@ -146,22 +137,12 @@ jobs:
   # additionally enforced by `clippy::await_holding_lock` (clippy pedantic
   # group, denied by `RUSTFLAGS: -D warnings`).
   projection-lock-tripwire:
-    name: gh-report projection-lock chokepoint (CHE-0048:R2)
+    name: gh-report projection-lock chokepoint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: pin .projection_state.lock( to app/state.rs
-        run: |
-          set -euo pipefail
-          offenders=$(grep -RIn --include='*.rs' -E '\.projection_state\.lock\(' \
-            crates/gh-report/src \
-            | grep -v '^crates/gh-report/src/app/state.rs:' || true)
-          if [ -n "$offenders" ]; then
-            echo "::error::raw .projection_state.lock( outside crates/gh-report/src/app/state.rs"
-            echo "::error::use AppState::lock_projection() (state.rs:300-316); CHE-0048:R2 chokepoint"
-            echo "$offenders"
-            exit 1
-          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: pin .projection_state.lock( to app/state/mod.rs (COM-0018 + CHE-0048:R7)
+        run: tools/tripwires.sh projection-lock
 
   # Signature (chosen over a raw FencedConflict-match ban): FencedConflict
   # is legitimately classified/matched at many sites — a store-error
@@ -174,56 +155,30 @@ jobs:
   # is exactly the shape that would have caught the original bug: team-
   # refresh warned-and-returned on FencedConflict without re-arming.
   fence-converge-tripwire:
-    name: gh-report FencedConflict converge-sink chokepoint (CHE-0088 amendment)
+    name: gh-report FencedConflict converge-sink chokepoint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: every FencedConflict-detecting loop body routes through the sanctioned converge sink
-        run: |
-          set -euo pipefail
-          FILE=crates/gh-report/src/app/daemon.rs
-          check_window() {
-            from=$1; to=$2; label=$3
-            body=$(sed -n "${from},${to}p" "$FILE")
-            if ! printf '%s\n' "$body" | grep -q 'FencedConflict'; then
-              echo "::error::$label ($from-$to) no longer detects FencedConflict — tripwire assumption stale, re-check CHE-0088 amendment"
-              exit 1
-            fi
-            if ! printf '%s\n' "$body" | grep -q -E 'rearm_fenced_run\(|rearm_fenced_team_refresh_tick\('; then
-              echo "::error::$label ($from-$to) detects FencedConflict without routing through the sanctioned converge sink"
-              echo "::error::use rearm_fenced_run(...)/rearm_fenced_team_refresh_tick(...) -> converge_on_fence; CHE-0088 amendment (adr-fmt-3jptm)"
-              exit 1
-            fi
-          }
-          start1=$(grep -n '^fn spawn_collection_loop' "$FILE" | cut -d: -f1)
-          end1=$(awk -v s="$start1" 'NR>s && /^(async )?fn /{print NR; exit}' "$FILE")
-          start2=$(grep -n '^fn spawn_team_refresh_loop' "$FILE" | cut -d: -f1)
-          end2=$(awk -v s="$start2" 'NR>s && /^(async )?fn /{print NR; exit}' "$FILE")
-          check_window "$start1" "$end1" "spawn_collection_loop"
-          check_window "$start2" "$end2" "spawn_team_refresh_loop"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: every FencedConflict-detecting loop body routes through the sanctioned converge sink (CHE-0088:R9+R10)
+        run: tools/tripwires.sh fence-converge
 
   # Hard gate: every public library `pub enum` deriving `thiserror::Error`
-  # must carry `#[non_exhaustive]` (PGN-0006, CHE-0021), enforced by the
-  # `non-exhaustive-check` crate (RST-0006). The tool is deliberately
-  # conservative — under-flagging (missing a macro-generated enum) is the
-  # safe failure mode; over-flagging is not, so any real hit here is
-  # treated as authoritative rather than advisory.
+  # must carry `#[non_exhaustive]` (RST-0006:R1), enforced by the
+  # `non-exhaustive-check` crate (RST-0006:R3 authorises the CI gate). The
+  # tool is deliberately conservative — under-flagging (missing a
+  # macro-generated enum) is the safe failure mode; over-flagging is not,
+  # so any real hit here is treated as authoritative rather than advisory.
   non-exhaustive-check:
-    name: non-exhaustive error-enum gate (RST-0006, PGN-0006, CHE-0021)
+    name: non-exhaustive error-enum gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.97.0
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - name: run non-exhaustive-check against the workspace root
-        run: |
-          set -euo pipefail
-          if ! cargo run -p non-exhaustive-check --quiet -- "$(pwd)"; then
-            echo "::error::missing #[non_exhaustive] on a library error enum (RST-0006, PGN-0006, CHE-0021)"
-            exit 1
-          fi
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: run non-exhaustive-check against the workspace root (RST-0006:R1+R3)
+        run: tools/tripwires.sh non-exhaustive
 
   # Tripwire: ban crate/module-level inner `dead_code` suppression in library
   # and binary source (`crates/*/src/**`). A blanket `#![allow(dead_code)]` (or
@@ -239,29 +194,21 @@ jobs:
     name: ban module-level dead_code suppression (crates/*/src)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: ban inner #![allow/expect(dead_code)] in crate src
-        run: |
-          set -euo pipefail
-          offenders=$(grep -RIn --include='*.rs' -E \
-            '#!\[.*(allow|expect)\(.*\bdead_code\b' \
-            crates/*/src || true)
-          if [ -n "$offenders" ]; then
-            echo "::error::crate/module-level inner dead_code suppression is banned in crates/*/src"
-            echo "::error::use a targeted OUTER item-level #[expect(dead_code, reason=\"...\")] instead, or delete/cfg-gate the dead item"
-            echo "$offenders"
-            exit 1
-          fi
+        run: tools/tripwires.sh dead-code-suppression
 
   supply-chain:
     name: supply-chain (audit + deny)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: deny-ignore-lifecycle (SEC-0013)
+        run: tools/tripwires.sh deny-ignore-lifecycle
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.97.0
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo install --locked cargo-audit
       - run: cargo audit
       - run: cargo install --locked cargo-deny

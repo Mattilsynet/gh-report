@@ -1,4 +1,4 @@
-//! Acceptance test for adr-fmt-4cnvg / CHE-0055:R17 — the F1 phantom-304
+//! Acceptance test for ghr-fe9bb970 / CHE-0055:R17 — the F1 phantom-304
 //! property on the LIVE `run_worker_pool_regulated` path.
 //!
 //! Historically `worker_loop_regulated` hardcoded

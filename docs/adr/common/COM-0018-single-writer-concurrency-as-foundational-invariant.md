@@ -1,7 +1,7 @@
 # COM-0018. Single-Writer Concurrency as Foundational Invariant
 
 Date: 2026-04-28
-Last-reviewed: 2026-04-29
+Last-reviewed: 2026-08-12 — refined — added R6 COM-0017:R4 enforcement statement naming job id projection-lock-tripwire (RST-0007:R5)
 Tier: S
 Status: Accepted
 
@@ -44,6 +44,12 @@ R4 [3]: Document the single-writer boundary for each stateful
 R5 [3]: Ownership transfer for MsgpackFileStore, Dragline, and
   JetStream stream writers uses fencing, leases, epochs, or
   compare-and-swap before the replacement writer mutates state
+R6 [3]: CI enforces R4's write-path boundary for gh-report's projection state
+  with a build-time tripwire (job id projection-lock-tripwire,
+  .github/workflows/ci-reusable.yml): every .projection_state.lock( call site
+  MUST reside in crates/gh-report/src/app/state.rs, so the single writer is
+  acquired through one auditable chokepoint; a call site elsewhere fails the
+  build (COM-0017:R4).
 
 ## Consequences
 

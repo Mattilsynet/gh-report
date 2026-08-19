@@ -14,7 +14,7 @@ References: CHE-0055, CHE-0101, CHE-0046, CHE-0095, CHE-0084, FLO-0009, CHE-0018
 ## Context
 
 gh-report has no secondary-rate-limit / `Retry-After` handling (mission
-adr-fmt-egsrk, copernicus survey adr-fmt-veoaz): `Retry-After` is parsed
+ghr-16813e99, copernicus survey ghr-bede5372): `Retry-After` is parsed
 nowhere; 429/503 responses get identical blind jittered-exponential
 backoff; a 403-with-secondary-limit-abuse-detection body is
 indistinguishable from a plain 403-permission-denied. Repeatedly hitting
@@ -25,7 +25,7 @@ domain-agnostic pause-until-instant regulator on the `cherry-pit-wq`
 `Regulator` seam (CHE-0055 R10/R16 addenda), plus the gh-report-side HTTP
 adapter that feeds it, and reconciles the one anticipated tension:
 FLO-0009:R1's continuous-admission-gradient preference against a
-`Retry-After` pause (oracle ruling adr-fmt-5sgnt).
+`Retry-After` pause (oracle ruling ghr-a02854a2).
 
 ## Decision
 

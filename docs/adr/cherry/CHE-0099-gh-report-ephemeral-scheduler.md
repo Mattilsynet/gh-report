@@ -29,7 +29,7 @@ rationale:
 - `AGENTS.md:167` called gh-report msgpack-free "as of the CHE-0074 purge";
   the scheduler/sweep-timeout usage postdated that purge and is only
   removed here.
-- `adr-fmt-pk4xa`'s stated scope omitted the gh-report scheduler wiring;
+- `ghr-48e81c30`'s stated scope omitted the gh-report scheduler wiring;
   this ADR corrects it.
 
 ## Decision

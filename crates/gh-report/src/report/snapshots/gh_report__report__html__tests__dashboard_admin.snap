@@ -20,7 +20,7 @@ expression: "&pages[\"admin.html\"]"
 <body>
 
     <nav class="top-nav">
-    <a href="index.html">Dashboard</a>
+    <a href=".">Dashboard</a>
     
     <a href="orphans.html">Orphans (0)</a>
     <a href="report.html" class="nav-right">Report</a>
@@ -31,7 +31,7 @@ expression: "&pages[\"admin.html\"]"
     <h1>Admin Diagnostics</h1>
 
     <ul class="breadcrumb">
-        <li><a href="index.html">Dashboard</a></li>
+        <li><a href=".">Dashboard</a></li>
         <li>Admin Diagnostics</li>
     </ul>
 
@@ -198,6 +198,7 @@ expression: "&pages[\"admin.html\"]"
         
     </section>
 
+    
 </body>
 
 </html>

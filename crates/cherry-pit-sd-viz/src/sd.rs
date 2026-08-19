@@ -1,9 +1,9 @@
 //! Generic, host-testable systems-dynamics core (STELLA/iThink
 //! vocabulary), pure Rust with zero `web-sys`/`wasm` leakage and zero
-//! gh-report-specific types (adr-fmt-lmfyp, per the reference glossary
-//! in adr-fmt-0pe95).
+//! gh-report-specific types (ghr-075bd54f, per the reference glossary
+//! in ghr-43eba717).
 //!
-//! Primitives, per adr-fmt-0pe95 sect 1:
+//! Primitives, per ghr-43eba717 sect 1:
 //!
 //! - [`Stock`] — the state variable; the integral of its net flows.
 //!   `Stock(t+dt) = Stock(t) + dt * (inflow - outflow)`, integrated by
@@ -24,7 +24,7 @@
 //!   sparkline rendering. App-agnostic: it stores `f64` samples, not
 //!   any particular stock's identity.
 //!
-//! Loop polarity (adr-fmt-0pe95 sect 2): [`loop_polarity`] classifies
+//! Loop polarity (ghr-43eba717 sect 2): [`loop_polarity`] classifies
 //! a causal loop as reinforcing (R, even negative links) or balancing
 //! (B, odd negative links).
 
@@ -214,7 +214,7 @@ pub enum LoopPolarity {
 }
 
 /// Classifies a causal loop's polarity from its count of negative
-/// causal links, per adr-fmt-0pe95 sect 2: an even count (zero
+/// causal links, per ghr-43eba717 sect 2: an even count (zero
 /// counts as even) is reinforcing (R); an odd count is balancing (B).
 #[must_use]
 pub fn loop_polarity(negative_links: usize) -> LoopPolarity {
@@ -228,7 +228,7 @@ pub fn loop_polarity(negative_links: usize) -> LoopPolarity {
 /// Opaque handle to a [`Stock`] owned by a [`Model`]. Distinct from
 /// [`FlowId`], [`ConverterId`], and [`CloudId`] at the type level so
 /// the sealed endpoint-kind traits below can admit or reject a handle
-/// per invariants 1, 3, 4, 5 of adr-fmt-qaavg without any runtime tag.
+/// per invariants 1, 3, 4, 5 of ghr-c8ab880e without any runtime tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StockId(usize);
 
@@ -259,7 +259,7 @@ mod sealed {
     pub trait Sealed {}
 }
 
-/// A flow's material endpoint identity, per adr-fmt-qaavg invariant 1:
+/// A flow's material endpoint identity, per ghr-c8ab880e invariant 1:
 /// a flow's two material endpoints are drawn from {Stock, Cloud}
 /// exclusively.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,7 +268,7 @@ pub enum FlowTerminal {
     Cloud(CloudId),
 }
 
-/// A connector edge's node identity, per adr-fmt-qaavg invariants 3-6:
+/// A connector edge's node identity, per ghr-c8ab880e invariants 3-6:
 /// connector tails read Stock/Flow/Converter (never Cloud, invariant
 /// 5); connector heads write into Flow/Converter only (never Stock —
 /// invariant 3, never Cloud — invariant 6).
@@ -280,7 +280,7 @@ pub enum ConnectorNode {
 }
 
 /// Sealed marker for types legal as a [`Flow`]'s material endpoint.
-/// Implemented only for [`StockId`] and [`CloudId`] (adr-fmt-qaavg
+/// Implemented only for [`StockId`] and [`CloudId`] (ghr-c8ab880e
 /// invariant 1) — [`ConverterId`] and connector identities intentionally
 /// have no impl, so passing one to [`Model::connect_flow`] fails to
 /// type-check rather than failing at runtime (invariants 1 and 7).
@@ -305,7 +305,7 @@ impl FlowEndpoint for CloudId {
 
 /// Sealed marker for types legal as a [`Connector`]'s tail (read
 /// side). Implemented for [`StockId`], [`FlowId`], [`ConverterId`] —
-/// deliberately NOT for [`CloudId`] (adr-fmt-qaavg invariant 5: clouds
+/// deliberately NOT for [`CloudId`] (ghr-c8ab880e invariant 5: clouds
 /// carry no readable state).
 pub trait ConnectorTail: sealed::Sealed {
     #[doc(hidden)]
@@ -314,7 +314,7 @@ pub trait ConnectorTail: sealed::Sealed {
 
 /// Sealed marker for types legal as a [`Connector`]'s head (write
 /// side). Implemented only for [`FlowId`] and [`ConverterId`] —
-/// deliberately NOT for [`StockId`] (adr-fmt-qaavg invariant 3: a
+/// deliberately NOT for [`StockId`] (ghr-c8ab880e invariant 3: a
 /// stock changes only via its attached flows) and NOT for [`CloudId`]
 /// (invariant 6: clouds are never a connector endpoint).
 pub trait ConnectorHead: sealed::Sealed {
@@ -364,7 +364,7 @@ struct FlowEdge {
 
 /// A stored information edge: an ordered pair of [`ConnectorNode`]s.
 /// Carries no material value — only node identity — so it structurally
-/// cannot move material (adr-fmt-qaavg invariant 2).
+/// cannot move material (ghr-c8ab880e invariant 2).
 struct ConnectorEdge {
     #[expect(
         dead_code,
@@ -388,7 +388,7 @@ struct ConnectorEdge {
 pub enum SdConnectionError {
     /// Both of a flow's material endpoints are the same or different
     /// clouds: the edge has no effect on any tracked stock and is
-    /// degenerate per the adr-fmt-qaavg connection matrix (cloud->cloud
+    /// degenerate per the ghr-c8ab880e connection matrix (cloud->cloud
     /// is listed forbidden as a no-op).
     DegenerateCloudToCloudFlow {
         /// Index of the offending flow edge, in insertion order.
@@ -405,7 +405,7 @@ pub enum SdConnectionError {
 /// single edge can't see (this iteration: cloud-to-cloud degenerate
 /// flows) are checked once at [`Model::build`].
 ///
-/// Invariant 8 of adr-fmt-qaavg (a genuine feedback loop passes
+/// Invariant 8 of ghr-c8ab880e (a genuine feedback loop passes
 /// through at least one Stock) is ADVISORY ONLY this iteration: it is
 /// the matrix's weakest-sourced/inferred claim, and enforcing it needs
 /// cycle detection over the connector+flow graph, which this builder
@@ -501,7 +501,7 @@ impl Model {
 
     /// Connects a material [`Flow`] between two endpoints. Both `from`
     /// and `to` must implement [`FlowEndpoint`] — only [`StockId`] and
-    /// [`CloudId`] do, per adr-fmt-qaavg invariant 1, so passing a
+    /// [`CloudId`] do, per ghr-c8ab880e invariant 1, so passing a
     /// [`ConverterId`] here does not compile (invariant 7 falls out
     /// for free: a converter can never sit in a flow's material path).
     pub fn connect_flow(
@@ -542,7 +542,7 @@ impl Model {
     /// Returns [`SdConnectionError::DegenerateCloudToCloudFlow`] when
     /// any registered flow has both material endpoints as clouds — an
     /// edge with no effect on any tracked stock, forbidden as a no-op
-    /// per the adr-fmt-qaavg connection matrix.
+    /// per the ghr-c8ab880e connection matrix.
     pub fn build(self) -> Result<Self, SdConnectionError> {
         for (flow_index, edge) in self.flows.iter().enumerate() {
             if matches!(
@@ -599,7 +599,7 @@ impl Model {
 
     /// Overwrites the rate of the [`Flow`] already registered at `id`,
     /// leaving its material endpoints untouched — the live-rate
-    /// wiring path (adr-fmt-sra3p `svs-05`) a per-tick caller uses to
+    /// wiring path (ghr-9ff4305a `svs-05`) a per-tick caller uses to
     /// replace a flow's placeholder rate with one derived from the
     /// running sim's measured per-tick activity. A no-op when `id`
     /// does not name a flow this model registered (defensive; every

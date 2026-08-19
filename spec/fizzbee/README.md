@@ -314,7 +314,7 @@ falsify the F2-elimination design premise. No such field exists in
 (`ConsumedNeverExceedsGenerated`, `ConsumedNeverExceedsCapacity`) and
 the liveness assertion as committed.
 
-**Atomicity assumption (linus review round 1, adr-fmt-tcg3b, Critical
+**Atomicity assumption (linus review round 1, ghr-e2e72e32, Critical
 finding).** `AttemptDebit` is declared `atomic`, collapsing the real
 code's load-check-then-CAS into one indivisible model step. This is a
 faithful abstraction only because `try_debit_one` reuses a single

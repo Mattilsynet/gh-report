@@ -1,5 +1,5 @@
 /// File-permission preflight for the NATS creds file (SEC-0007
-/// confidentiality intent, mission `adr-fmt-1a060`). Warns rather
+/// confidentiality intent, mission `ghr-6ea8cd63`). Warns rather
 /// than errors by default; a permissive mode is not itself proof of
 /// compromise, only of unnecessary exposure.
 #[must_use]

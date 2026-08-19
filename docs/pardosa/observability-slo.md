@@ -2,8 +2,8 @@
 
 Status: advisory, in-repo contract (NOT a ratified ADR). Sequenced as
 `pacelc-exec` Seq 0 (mission `pacelc-exec-seq0`); roadmap source
-`bd show adr-fmt-2ysyq` §B.0/B.1/B.4; ground-truth re-verification
-`bd show adr-fmt-facpa`. Oracle disposition (`adr-fmt-jjp82` Q2a): this is
+`bd show ghr-05367cd6` §B.0/B.1/B.4; ground-truth re-verification
+`bd show ghr-c3b60ff2`. Oracle disposition (`ghr-bb8b0a81` Q2a): this is
 an implementation choice under COM-0019 (GND-0002 intent≠mechanism) — no
 new ADR required for either the backend naming below or these bands, as
 long as the caveat in § Binding-caveat holds.
@@ -52,7 +52,7 @@ guarantee.
 ## SLO / alerting bands (roadmap B.1)
 
 Because pardosa/pardosa-nats are ratified PACELC PC/EC-always (§A,
-`adr-fmt-2ysyq`), a deviation signal firing at all above its healthy
+`ghr-05367cd6`), a deviation signal firing at all above its healthy
 floor is a **correctness incident**, not a latency-budget burn.
 
 | Signal (Phase-1 unless noted) | Healthy band | Alert condition (deviation) | Discriminates |
@@ -78,7 +78,7 @@ two-label metrics (`OPERATION_TERMINAL_COUNTER`, `APPEND_LATENCY_HISTOGRAM`,
 `BRIDGE_DURATION_HISTOGRAM`) = 21 series/metric, plus three op-only-label
 metrics (`ACK_TIMEOUT_COUNTER`, `OCC_CONFLICT_UNHANDLED_COUNTER`,
 `OCC_SELF_FENCE_COUNTER`) at 3 series/metric. Total 72 series against the
-COM-0019:R6 bound of 500 (`adr-fmt-facpa`). Ample headroom remains.
+COM-0019:R6 bound of 500 (`ghr-c3b60ff2`). Ample headroom remains.
 
 ## Scope note
 
@@ -90,7 +90,7 @@ in `crates/pardosa/src/backend/jetstream.rs`:
   gets its own `TerminalCategory::FenceConflict` / `"fence_conflict"`
   label value, distinct from `TerminalCategory::Publish`. Previously it
   was folded into `Publish` (ground-truth gap confirmed by
-  `adr-fmt-facpa`).
+  `ghr-c3b60ff2`).
 - **I2** (`conflict_unhandled`): a dedicated
   `pardosa_jetstream_occ_conflict_unhandled_total` counter fires every
   time a `ConcurrencyConflict` is returned to the caller. **Honest
@@ -116,7 +116,7 @@ in `crates/pardosa/src/backend/jetstream.rs`:
   gap. A new `pardosa_jetstream_ack_timeout_total` op-labelled counter
   fires whenever `TerminalCategory::Timeout` is observed.
 - **I8** (`dedup.hit` + `redelivery.observed`) — **dedup-hit implemented
-  (Seq 2, bd adr-fmt-4omxc); `redelivery.observed` remains unobservable
+  (Seq 2, bd ghr-2c33d49c); `redelivery.observed` remains unobservable
   by design.** Per PGN-0016:R11's 4-layer composition rule (domain
   idempotency → OCC fence → bounded dedup window → this counter),
   `dedup_hit` is an observability signal only: it detects retries that

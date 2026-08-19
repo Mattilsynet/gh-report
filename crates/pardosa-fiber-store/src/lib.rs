@@ -725,7 +725,7 @@ mod tests {
         assert_eq!(
             expected_seq, None,
             "classify_infrastructure_error must never extract seq fields via downcast \
-             (CHE-0027 R1 / oracle adr-fmt-btim1 Q2); retrieval belongs to the \
+             (CHE-0027 R1 / oracle ghr-6abf27ec Q2); retrieval belongs to the \
              match-based from_pardosa_error path"
         );
         assert_eq!(actual_seq, None);

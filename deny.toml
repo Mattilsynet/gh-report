@@ -9,17 +9,10 @@ db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
 unmaintained = "all"
-unused-ignored-advisory = "warn"
-# Accepted-risk unmaintained advisories, each arriving transitively via
-# Leptos 0.8.20 (the gh-report-web-client CSR client adopted under
-# CHE-0087). Both are `unmaintained`, not vulnerabilities, and have no
-# safe upgrade path in the current Leptos release line. Reviewed per
-# SEC-0009; revisit when Leptos drops these transitive deps.
-#   RUSTSEC-2024-0436  paste 1.0.15         (via leptos macro machinery)
-#   RUSTSEC-2026-0173  proc-macro-error2 2  (via leptos macro machinery)
+unused-ignored-advisory = "deny"
 ignore = [
-    "RUSTSEC-2024-0436",
-    "RUSTSEC-2026-0173",
+    { id = "RUSTSEC-2024-0436", reason = "expires=2027-02-15 owner=@Mattilsynet/stabsec class=unmaintained -- compile-time-only proc-macro (paste 1.0.15), never reaches the shipped wasm bundle or server binary; sole path is Leptos macro machinery (chain verified 100% Leptos-family); no patched version; upstream archived 2024-10-06; exit trigger = Leptos drops paste (SEC-0013:R1)" },
+    { id = "RUSTSEC-2026-0173", reason = "expires=2027-02-15 owner=@Mattilsynet/stabsec class=unmaintained -- consumed solely by proc-macro crates (leptos_macro, reactive_stores_macro, syn_derive) (proc-macro-error2 2.0.1); compile-time-only; chain verified; no patched version; upstream archived 2026-06-07; exit trigger = Leptos drops proc-macro-error2 (SEC-0013:R1)" },
 ]
 
 [licenses]
@@ -55,3 +48,10 @@ highlight = "all"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "wasm32-unknown-unknown",
+]

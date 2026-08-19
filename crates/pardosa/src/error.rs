@@ -5,7 +5,7 @@ use crate::frontier::Frontier;
 ///
 /// Each variant carries the actual structured data the violating site has
 /// in hand at the moment of failure — no formatted strings, no debug dumps.
-/// Solon §4.2: the type rejects illegal histories, not a free-form string.
+/// gh-report §4.2: the type rejects illegal histories, not a free-form string.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FiberInvariantKind {

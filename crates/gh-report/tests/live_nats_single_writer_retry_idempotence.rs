@@ -5,7 +5,7 @@
 //! `live_nats_two_writer_fence.rs` / `live_nats_n_writer_fence_property.rs`,
 //! which pin the same underlying mechanism but frame it as two *distinct*
 //! writer handles racing; this test pins the same-writer retry-with-stale-
-//! expected-sequence framing that adr-fmt-upfoa Q2 found absent.
+//! expected-sequence framing that ghr-8e671c59 Q2 found absent.
 use gh_report::app::state::AppState;
 use gh_report::config::runtime::{NatsStoreConfig, PardosaBackend};
 use gh_report::event::DomainEvent;

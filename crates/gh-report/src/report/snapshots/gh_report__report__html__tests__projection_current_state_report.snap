@@ -20,7 +20,7 @@ expression: "&pages[\"report.html\"]"
 <body>
 
     <nav class="top-nav">
-    <a href="index.html">Dashboard</a>
+    <a href=".">Dashboard</a>
     
     <a href="orphans.html">Orphans (1)</a>
     <a href="report.html" class="nav-right">Report</a>
@@ -341,6 +341,7 @@ expression: "&pages[\"report.html\"]"
         </tbody>
     </table>
 
+    
 </body>
 
 </html>

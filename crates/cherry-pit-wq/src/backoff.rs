@@ -1,5 +1,5 @@
 //! Server-authoritative pause-until-instant [`Regulator`] — CHE
-//! secondary-limit-backoff ADR (adr-fmt-egsrk).
+//! secondary-limit-backoff ADR (ghr-16813e99).
 //!
 //! [`BackoffRegulator`] parks worker admission until a caller-supplied
 //! `resume_at` [`Instant`] then admits, mirroring the `halted_until`

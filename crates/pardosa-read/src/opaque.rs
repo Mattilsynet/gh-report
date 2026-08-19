@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 
 /// Envelope-partial decode target for the `domain_event` field of a
 /// [`pardosa::store::Event`] whose concrete payload type is unknown to
-/// this crate (feynman orientation `adr-fmt-de91s`, approach C).
+/// this crate (feynman orientation `ghr-1e771939`, approach C).
 ///
 /// [`Decode`] consumes every remaining byte in the cursor rather than
 /// interpreting them, so this type can stand in for any `T` when only

@@ -15,11 +15,11 @@ Reason: CHE-0062 reverses the R1 prohibitions on `DefaultBodyLimit`,
 and authorises a library-owned `LayerLimits` value type rather than
 the consumer-typed `&ValidatedConfig` parameter CHE-0056's Consequences
 forbade. The supersession trigger is CHE-0056:R5 verbatim: Phase 2 v2
-Track 4 (mission package `phase2-v2-track-4`, bead `adr-fmt-roqu`,
-epic `adr-fmt-ysaa`) consolidates gh-report onto cherry-pit-web,
+Track 4 (mission package `phase2-v2-track-4`, bead `ghr-7838443b`,
+epic `ghr-571e21ee`) consolidates gh-report onto cherry-pit-web,
 making the consumer-side duplication load-bearing in advance of the
 "third consumer" wording — the first consumer's plumbing of two
 Extension layers plus three sizing knobs is what R5 names. Track 4.1
-inventory (bead `adr-fmt-czu1`) tagged the three layers as (a)
-reusable upstream; oracle summary `adr-fmt-u3nf` confirmed CHE-0056
+inventory (bead `ghr-7ea10416`) tagged the three layers as (a)
+reusable upstream; oracle summary `ghr-11c882fe` confirmed CHE-0056
 as the binding ADR blocking that push-up.

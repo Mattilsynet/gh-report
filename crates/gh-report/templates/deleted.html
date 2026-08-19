@@ -12,7 +12,7 @@
     <h1>Deleted Repositories</h1>
 
     <ul class="breadcrumb">
-        <li><a href="index.html">Dashboard</a></li>
+        <li><a href="{{ nav.dashboard_href }}">Dashboard</a></li>
         <li>Deleted</li>
     </ul>
 
@@ -97,6 +97,7 @@
     {% endif %}
     {% endif %}
 
+    {% include "partials/footer.html" %}
 </body>
 
 </html>

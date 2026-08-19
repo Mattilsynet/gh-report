@@ -133,8 +133,8 @@ pub const COLLECTION_INTERVAL_SECS: u64 = 900;
 pub const BASELINE_MAX_AGE_SECS: u64 = 14_400;
 
 /// Fixed interval between team-refresh collector ticks (seconds),
-/// deliberately decoupled from [`COLLECTION_INTERVAL_SECS`] (adr-fmt-ewc1i,
-/// roadmap adr-fmt-se2xh §E Phase 3 T1: decoupled/eventual default). This
+/// deliberately decoupled from [`COLLECTION_INTERVAL_SECS`] (ghr-3fda2878,
+/// roadmap ghr-b562fe02 §E Phase 3 T1: decoupled/eventual default). This
 /// severs the repo-snapshot↔roster-fetch coupling that caused
 /// unresolved-by-timing raciness: the team-refresh writer persists
 /// `TeamStateCaptured` on its own cadence, independent of whether a repo

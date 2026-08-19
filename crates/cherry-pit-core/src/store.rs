@@ -285,7 +285,7 @@ pub trait PurgeableEventStore: EventStore {
     /// audit-trail event require a real payload; others MAY ignore it.
     /// The adapter cannot fabricate `Self::Event` (opaque at the port
     /// boundary), so callers supply the tombstone variant (CHE-0059:R4,
-    /// oracle adjudication `adr-fmt-1clv`).
+    /// oracle adjudication `ghr-03898a5f`).
     ///
     /// `context` carries [`CorrelationContext`] per CHE-0039:R1 —
     /// callers MUST supply it explicitly; the substrate MUST NOT

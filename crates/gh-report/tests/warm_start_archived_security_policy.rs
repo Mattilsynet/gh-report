@@ -151,7 +151,7 @@ async fn warm_start_replay_preserves_archived_public_security_policy_in_aggregat
 /// branch-protection 404 with no controls is genuine absence (a
 /// governance Fail, counted in the denominator) exactly like the
 /// public case, matching codeowners/dependabot's uniform 404-as-Absent
-/// treatment. Regression for the gap in `adr-fmt-vc97r` item 5: no test
+/// treatment. Regression for the gap in `ghr-8aaa6a4c` item 5: no test
 /// previously asserted `branch_protection_coverage.denominator` ==
 /// `codeowners_coverage.denominator` == dependabot's denominator when a
 /// private non-archived repo has a genuine (non-permission) absence.

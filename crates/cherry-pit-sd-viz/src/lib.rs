@@ -1,5 +1,5 @@
 //! Standalone, self-contained, client-side animated discrete-event
-//! simulation of gh-report's queue network (adr-fmt-223sd), making
+//! simulation of gh-report's queue network (ghr-f6602e2d), making
 //! queue-network theory (arrivals, bounded buffer with drop + dedup
 //! loss, M/M/c service station, batch join-barrier, departure fold →
 //! render → publish) legible in a browser. No dependency on a running

@@ -191,6 +191,13 @@ a:hover {
    font-size: 0.9em;
 }
 
+.governance-prompt {
+   width: 100%;
+   max-width: 72em;
+   font-family: monospace;
+}
+
+
 ul {
    padding-left: 1.5em;
 }
@@ -270,6 +277,25 @@ code {
    border-radius: 6px;
    padding: 1em 1.2em;
    background: var(--bg-card);
+}
+
+/* ── Scorecard Denominator Groups ───────────────────────────────── */
+/* Each group is a full-width block hosting its own auto-fit inner grid
+   (mirrors .scorecard), so a separator can sit on the block boundary
+   (border-top) instead of on individual cards — no orphaned bar when
+   cards wrap, since the boundary is the block edge, not a card edge. */
+
+.scorecard-group {
+   grid-column: 1 / -1;
+   display: grid;
+   grid-template-columns: repeat(auto-fit, minmax(14em, 1fr));
+   gap: 1em;
+}
+
+.scorecard-group+.scorecard-group {
+   margin-top: 1.5em;
+   padding-top: 1.5em;
+   border-top: 1px solid var(--border-default);
 }
 
 .card-label {
@@ -781,7 +807,8 @@ details>*:not(summary) {
 /* ── Responsive ─────────────────────────────────────────────────── */
 
 @media (max-width: 64em) {
-   .scorecard {
+   .scorecard,
+   .scorecard-group {
       grid-template-columns: repeat(auto-fit, minmax(12em, 1fr));
    }
 
@@ -795,7 +822,8 @@ details>*:not(summary) {
       padding: .5em 1em 1em;
    }
 
-   .scorecard {
+   .scorecard,
+   .scorecard-group {
       grid-template-columns: 1fr;
    }
 

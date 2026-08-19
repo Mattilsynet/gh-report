@@ -7,8 +7,16 @@ If you discover a security issue in any crate in this workspace (notably
 the `cherry-pit-*` family it builds on), please report it privately rather
 than filing a public issue.
 
-Send a report to the repository owner via GitHub:
-<https://github.com/acje>. Include:
+If GitHub private vulnerability reporting is enabled on this repository
+(Settings → Security → Private vulnerability reporting — currently
+**disabled**, tracked separately as a repo-setting follow-up, not this
+document), use it first: it opens a private advisory visible only to
+maintainers.
+
+Otherwise, email <24.7@mattilsynet.no> (Mattilsynet's published security
+contact, per <https://www.mattilsynet.no/.well-known/security.txt>). The
+repository is owned by the `@Mattilsynet/stabsec` team (see
+`.github/CODEOWNERS`). Include:
 
 - a description of the issue and the affected crate(s),
 - reproduction steps or a minimal proof of concept,

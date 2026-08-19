@@ -17,12 +17,12 @@ resync-then-retry combinator after an OCC fence conflict, cited by
 CHE-0088:R9/R10 as the sanctioned sink. It stays gh-report-local: its retry
 policy is a fixed constant, not caller-supplied, and no cherry-pit ADR
 states the contract this idiom must obey if lifted. Oracle review
-(adr-fmt-a47kk) found the boundary already ratified: PGN-0023:R4 blesses a
+(ghr-100f0c10) found the boundary already ratified: PGN-0023:R4 blesses a
 read-tier catch-up/RYW fence; PGN-0023:R5 forbids that shape on the append
 path, citing PGN-0016:R10's ban on tip-resync-then-retry inside append. This
 ADR names the combinator CHE-0046 extends, and states the constraints a
 future port MUST carry so the idiom is not smuggled in as mere "convergence
-is allowed" convenience. Feynman orientation (adr-fmt-xxr3u) found
+is allowed" convenience. Feynman orientation (ghr-27760f36) found
 extraction premature at n=1 (COM-0001:R2): no second consumer exists to
 triangulate policy shape. This ADR ratifies the boundary only; the port
 stays deferred per the CHE-0037/CHE-0040 trigger-gated precedent.

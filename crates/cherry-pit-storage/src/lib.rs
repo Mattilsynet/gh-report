@@ -50,7 +50,7 @@
 //!
 //! Governing ADR: [CHE-0053].
 //!
-//! [CHE-0053]: https://github.com/acje/solon/blob/main/docs/adr/cherry/CHE-0053-cherry-pit-storage-design.md
+//! [CHE-0053]: https://github.com/Mattilsynet/gh-report/blob/main/docs/adr/cherry/CHE-0053-cherry-pit-storage-design.md
 
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]

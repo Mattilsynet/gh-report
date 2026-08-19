@@ -3,7 +3,7 @@
 //! `run_default_mode_via_lib_api_returns_zero` proves `adr_fmt::run` is
 //! callable from a library consumer. `lib_api_modules_resolve` is a
 //! compile-time probe that every item in the Q2 public-API set (see bd
-//! adr-fmt-d7ao) resolves under its re-exported crate-root path.
+//! ghr-19eb22f6) resolves under its re-exported crate-root path.
 //!
 //! Modules `context`, `nav`, `output`, `refs`, `rules`, `guidelines` are
 //! private per CHE-0030 (Flat Public API via Private Modules); external

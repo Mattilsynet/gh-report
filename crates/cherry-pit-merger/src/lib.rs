@@ -22,8 +22,8 @@
 //! Wiring: implement [`MergerArm`], build the persist handles, pass to
 //! [`Merger::spawn`], dispatch via [`MergerHandle`].
 //!
-//! [CHE-0069]: https://github.com/acje/solon/blob/main/docs/adr/cherry/CHE-0069-cherry-pit-merger.md
-//! [CHE-0029]: https://github.com/acje/solon/blob/main/docs/adr/cherry/CHE-0029-cargo-workspace-crate-dag.md
+//! [CHE-0069]: https://github.com/Mattilsynet/gh-report/blob/main/docs/adr/cherry/CHE-0069-cherry-pit-merger.md
+//! [CHE-0029]: https://github.com/Mattilsynet/gh-report/blob/main/docs/adr/cherry/CHE-0029-cargo-workspace-crate-dag.md
 
 mod arm;
 mod command;

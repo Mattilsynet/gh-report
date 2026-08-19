@@ -266,6 +266,10 @@ fn org_help_config_swap_renders_configured_org_with_no_mattilsynet_leak() {
                     url: "https://acme.example/access".to_string(),
                 }],
             },
+            governance_standard: Some(config::org::HelpLink {
+                label: "Acme governance standard".to_string(),
+                url: "https://acme.example/governance".to_string(),
+            }),
         },
         ..DashboardConfig::default()
     };
@@ -436,11 +440,12 @@ fn render_dashboard_produces_all_pages() {
     assert!(pages.contains_key("gh-report-web-client.js"));
     assert!(pages.contains_key("gh-report-web-client_bg.wasm"));
     assert!(pages.contains_key("sort-init.js"));
+    assert!(pages.contains_key("clipboard.js"));
     assert!(pages.contains_key("orphans.html"));
     assert!(pages.contains_key("deleted.html"));
     assert!(pages.contains_key("branch_protection.html"));
     assert!(!pages.contains_key("OPERATIONS.html"));
-    assert_eq!(pages.len(), 11);
+    assert_eq!(pages.len(), 12);
 }
 
 #[test]
@@ -1068,7 +1073,7 @@ fn evidence_with_owner_repos() -> Evidence {
 
 /// Owner-scoped variant of [`evidence_with_owner_repos`] where one
 /// repo's `security_policy` status is `Unknown` (item6-03, bd bead
-/// `adr-fmt-orvyn`) — exercises the by-reason exclusion breakdown
+/// `ghr-f468d5e9`) — exercises the by-reason exclusion breakdown
 /// surfaced on the owners overview tooltip and the owner detail summary
 /// card, distinct from the clean (no-exclusion) fixture used by the
 /// locked `dashboard_owners`/`dashboard_owner_detail` snapshots.
@@ -1180,10 +1185,108 @@ fn nav_identical_across_all_page_types() {
     }
 
     let detail_page = &pages["owners/org-team-a.html"];
-    let detail_nav = extract_top_nav(detail_page).replace("../", "");
+    let detail_nav = extract_top_nav(detail_page)
+        .replace("href=\"..\"", "href=\".\"")
+        .replace("../", "");
     assert_eq!(
         detail_nav, canonical,
-        "owner_detail.html top-nav must match the canonical nav once its ../ prefix is stripped"
+        "owner_detail.html top-nav must match the canonical nav once its ../ prefix is \
+         stripped and its dashboard_href (\"..\") is normalised back to the root form (\".\")"
+    );
+}
+
+/// Extracts the `href` attribute value immediately preceding `marker` (the
+/// anchor's closing text), e.g. `marker = "\">Dashboard</a>"` for the
+/// top-nav link or `"\">Dashboard</a></li>"` for the breadcrumb link.
+fn extract_href_before<'a>(html: &'a str, marker: &str) -> &'a str {
+    let idx = html
+        .find(marker)
+        .unwrap_or_else(|| panic!("expected marker {marker:?} in html"));
+    let before = &html[..idx];
+    let start = before
+        .rfind("href=\"")
+        .expect("href attribute before marker")
+        + "href=\"".len();
+    &before[start..]
+}
+
+/// Regression for the `index.html`-in-URL fix (mission
+/// `ghreport-m5-index-html-url`): the Dashboard link must resolve to a
+/// distinct, real navigation target at both page depths, never to
+/// `href=""` (silently "the current page" — dead on 5 of 6 root pages)
+/// nor to a literal `index.html` (the polluted URL this fix removes).
+/// Asserts observable resolution to the dashboard root rather than a
+/// particular href spelling, so a portable-root fix (`.`/`..`) or any
+/// future depth-correct target keeps this test meaningful.
+#[test]
+fn dashboard_link_resolves_correctly_at_every_depth() {
+    let evidence = evidence_with_full_nav_surface();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+    for page in [
+        "index.html",
+        "report.html",
+        "owners.html",
+        "orphans.html",
+        "deleted.html",
+        "admin.html",
+    ] {
+        let nav = extract_top_nav(&pages[page]);
+        let href = extract_href_before(nav, "\">Dashboard</a>");
+        assert!(
+            !href.is_empty() && !href.contains("index.html"),
+            "{page}: Dashboard link must not be href=\"\" or reference index.html directly, \
+             got: {href}"
+        );
+        let (target_page, _) = resolve_href_target(href, page);
+        assert_eq!(
+            target_page, "index.html",
+            "{page}: Dashboard link (href=\"{href}\") must resolve to the dashboard root"
+        );
+    }
+
+    let detail_nav = extract_top_nav(&pages["owners/org-team-a.html"]);
+    let detail_href = extract_href_before(detail_nav, "\">Dashboard</a>");
+    assert!(
+        !detail_href.is_empty() && !detail_href.contains("index.html"),
+        "owners/org-team-a.html: nested Dashboard link must not be href=\"\" or reference \
+         index.html directly, got: {detail_href}"
+    );
+    let (detail_target, _) = resolve_href_target(detail_href, "owners/org-team-a.html");
+    assert_eq!(
+        detail_target, "index.html",
+        "owners/org-team-a.html: Dashboard link (href=\"{detail_href}\") must resolve to the \
+         dashboard root"
+    );
+
+    for page in [
+        "owners.html",
+        "admin.html",
+        "branch_protection.html",
+        "orphans.html",
+        "deleted.html",
+    ] {
+        let breadcrumb_href = extract_href_before(&pages[page], "\">Dashboard</a></li>");
+        assert!(
+            !breadcrumb_href.is_empty() && !breadcrumb_href.contains("index.html"),
+            "{page}: breadcrumb Dashboard link must not be href=\"\" or reference index.html \
+             directly, got: {breadcrumb_href}"
+        );
+        let (target_page, _) = resolve_href_target(breadcrumb_href, page);
+        assert_eq!(
+            target_page, "index.html",
+            "{page}: breadcrumb Dashboard link (href=\"{breadcrumb_href}\") must resolve to the \
+             dashboard root"
+        );
+    }
+    let detail_breadcrumb_href =
+        extract_href_before(&pages["owners/org-team-a.html"], "\">Dashboard</a></li>");
+    let (detail_breadcrumb_target, _) =
+        resolve_href_target(detail_breadcrumb_href, "owners/org-team-a.html");
+    assert_eq!(
+        detail_breadcrumb_target, "index.html",
+        "owners/org-team-a.html: breadcrumb Dashboard link (href=\"{detail_breadcrumb_href}\") \
+         must resolve to the dashboard root"
     );
 }
 
@@ -1205,7 +1308,9 @@ fn resolve_href_target(href: &str, current_page: &str) -> (String, Option<String
         Some((page, frag)) => (page, Some(frag.to_string())),
         None => (href, None),
     };
-    let target_page = if let Some(stripped) = page_part.strip_prefix("../") {
+    let target_page = if matches!(page_part, "." | "..") {
+        "index.html".to_string()
+    } else if let Some(stripped) = page_part.strip_prefix("../") {
         stripped.to_string()
     } else if page_part.is_empty() {
         current_page.to_string()
@@ -1310,12 +1415,15 @@ fn detail_vm_control_columns_populated() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     assert_eq!(detail_vms.len(), 1);
@@ -1343,12 +1451,15 @@ fn detail_vm_summary_cards_have_labels() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     let (_, vm) = &detail_vms[0];
@@ -1380,12 +1491,15 @@ fn detail_vm_repo_rows_populated() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     let (_, vm) = &detail_vms[0];
@@ -1411,12 +1525,15 @@ fn detail_vm_repo_rows_sorted_case_insensitive() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     let (_, vm) = &detail_vms[0];
@@ -1430,12 +1547,15 @@ fn detail_vm_repo_rows_status_dots_correct() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     let (_, vm) = &detail_vms[0];
@@ -1470,12 +1590,15 @@ fn detail_vm_no_matching_repos_shows_empty() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(empty_repos);
     let detail_vms = build_owner_detail_view_models(
         &owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        "TestOrg",
-        "2026-04-09T12:00:00+00:00",
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: "TestOrg",
+            run_timestamp: "2026-04-09T12:00:00+00:00",
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     assert_eq!(detail_vms.len(), 1);
@@ -1503,12 +1626,15 @@ fn detail_vm_multi_owner_repo_appears_in_both() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     assert_eq!(detail_vms.len(), 2);
@@ -1529,12 +1655,15 @@ fn detail_vm_repo_url_points_to_github() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     let (_, vm) = &detail_vms[0];
@@ -1568,12 +1697,15 @@ fn detail_vm_repo_url_percent_encodes_special_chars() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        "My Org",
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: "My Org",
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     assert_eq!(detail_vms.len(), 1);
@@ -1789,7 +1921,7 @@ fn render_owner_detail_html_contains_orphan_repositories_section() {
     );
 }
 
-/// adr-fmt-mobzr: an orphan-repo attribution join must be case-insensitive
+/// ghr-f4d499a1: an orphan-repo attribution join must be case-insensitive
 /// on team name, mirroring the roster-match fix in 845d958. `group.team`
 /// carries the roster's raw-case `canonical_owner` (e.g. `@Org/team-a`),
 /// while `m.owner` is always lowercased at construction
@@ -2004,7 +2136,7 @@ fn render_owner_detail_html_contains_team_roster() {
     );
 }
 
-/// adr-fmt-tuq8n SM1: a roster whose `canonical_owner` was derived from a
+/// ghr-f750ebbc SM1: a roster whose `canonical_owner` was derived from a
 /// mixed-case configured org (`@Org/team-a`) must still resolve against a
 /// CODEOWNERS-derived owner key that is always lowercase (`@org/team-a`,
 /// per `build_owner_repo_map`/`build_owner_metrics`) — case must not
@@ -2096,7 +2228,7 @@ fn render_owner_detail_html_unresolved_roster_never_vanishes() {
     );
 }
 
-/// Defect 2 (adr-fmt-7u2ub): a genuinely `Deleted` (404) team roster must
+/// Defect 2 (ghr-e2e9cccb): a genuinely `Deleted` (404) team roster must
 /// render a reasoned "team no longer exists" state — distinct from both
 /// the generic degraded-fetch copy ("this list may be incomplete", which
 /// wrongly implies partial data for a team that has zero members by
@@ -2298,12 +2430,15 @@ fn detail_vm_repo_row_metadata_defaults_when_no_data() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     let (_, vm) = &detail_vms[0];
@@ -2361,12 +2496,15 @@ fn detail_vm_repo_row_metadata_populated_with_data() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     assert_eq!(detail_vms.len(), 1);
@@ -2424,12 +2562,15 @@ fn detail_vm_unregistered_committer_flagged_when_name_present_but_no_login_match
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     let (_, vm) = &detail_vms[0];
@@ -2471,12 +2612,15 @@ fn detail_vm_last_committer_url_percent_encodes_login() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     let (_, vm) = &detail_vms[0];
@@ -2606,7 +2750,7 @@ fn render_owner_detail_html_unregistered_committer_shows_warning_badge() {
 
 /// Empty repo (`size:0`, `is_empty` derived at the collector boundary)
 /// exercises the empty-repo pill in the owner detail table
-/// (adr-fmt-nvf8w).
+/// (ghr-8b2cf624).
 #[test]
 fn render_owner_detail_html_empty_repo_shows_pill_snapshot() {
     let mut repo = test_fixtures::make_repository_evidence(
@@ -2713,12 +2857,15 @@ fn detail_vm_repo_rows_have_visibility_field() {
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
         &evidence.metrics.owner_metrics,
-        &owner_repo_map,
-        &CoverageTiers::default(),
-        &evidence.assessment_metadata.organization,
-        &evidence.assessment_metadata.run_timestamp,
-        &[],
-        &[],
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &[],
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
     );
 
     let (_, vm) = &detail_vms[0];
@@ -2816,6 +2963,111 @@ fn render_owner_detail_html_escapes_metadata_xss() {
     assert!(
         !detail_page.contains("<b>bold</b>"),
         "raw bold tag must be escaped in committer login"
+    );
+}
+
+/// UF2-GEN + CSP proof: the owner-detail governance-prompt widget only
+/// appears when a governance-standard link is configured, consumes that
+/// config value (never a hardcoded URL/org literal), renders for User
+/// owners too, escapes repo names, and introduces zero inline `<script>`
+/// or `onclick` — the clipboard button is wired via an external asset
+/// registered through the 5-step `include_str!`/`LazyLock` path.
+#[test]
+fn render_owner_detail_html_governance_prompt_widget() {
+    let repo = test_fixtures::make_repository_evidence(
+        "<script>alert(1)</script>",
+        Visibility::Public,
+        false,
+        test_fixtures::make_checks(
+            test_fixtures::policy_pass_setting(),
+            test_fixtures::secret_enabled_observable(false),
+            test_fixtures::dependabot_enabled(),
+            test_fixtures::branch_pass(),
+            test_fixtures::codeowners_with_owners(&["@alice"]),
+        ),
+    );
+    let evidence = evidence_from_repos(vec![repo]);
+    let config = DashboardConfig {
+        org_help: config::org::OrgHelpConfig {
+            governance_standard: Some(config::org::HelpLink {
+                label: "Governance AI skill".to_string(),
+                url: "https://acme.example/governance".to_string(),
+            }),
+            ..config::org::OrgHelpConfig::default()
+        },
+        ..DashboardConfig::default()
+    };
+
+    let pages = render_dashboard(&evidence, &config).unwrap();
+    let detail_page = pages
+        .iter()
+        .find(|(k, _)| k.starts_with("owners/"))
+        .expect("expected an owner detail page")
+        .1;
+
+    assert!(
+        detail_page.contains("tidy-governance skill"),
+        "prompt must instruct use of the tidy-governance skill"
+    );
+    assert!(
+        detail_page.contains("https://acme.example/governance"),
+        "prompt must contain the configured governance URL, not a literal"
+    );
+    assert!(
+        !detail_page.contains("<script>alert(1)</script>"),
+        "raw script tag in repo name must be escaped"
+    );
+    assert!(
+        detail_page.contains("excludes"),
+        "prompt must note archived repos are excluded from repo_rows"
+    );
+    assert!(
+        !detail_page.to_lowercase().contains("onclick"),
+        "no onclick attribute may be introduced (CSP script-src 'self')"
+    );
+
+    let script_tags: Vec<&str> = detail_page
+        .match_indices("<script")
+        .map(|(i, _)| &detail_page[i..])
+        .collect();
+    for tag in &script_tags {
+        let end = tag.find('>').unwrap_or(0);
+        assert!(
+            tag[..end].contains("src=") || tag.starts_with("<script>alert"),
+            "every <script> tag must be external (src=), no inline script"
+        );
+    }
+    assert!(
+        detail_page.contains(r#"<script src="../clipboard.js" defer></script>"#),
+        "clipboard button must be wired via the external clipboard.js asset"
+    );
+
+    assert!(
+        pages.contains_key("clipboard.js"),
+        "clipboard.js must be registered as a served asset (5-step asset path)"
+    );
+}
+
+/// Absent governance-standard config: the widget renders nothing at all
+/// (decision recorded in the mission bead) rather than a broken prompt
+/// naming a skill with no URL to point at.
+#[test]
+fn render_owner_detail_html_governance_prompt_absent_when_unconfigured() {
+    let evidence = evidence_with_owner_repos();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let detail_page = pages
+        .iter()
+        .find(|(k, _)| k.starts_with("owners/"))
+        .expect("expected an owner detail page")
+        .1;
+
+    assert!(
+        !detail_page.contains("tidy-governance-prompt"),
+        "widget must not render when governance_standard is unconfigured"
+    );
+    assert!(
+        !detail_page.contains("clipboard.js"),
+        "clipboard.js script tag must not render on this page when the widget is absent"
     );
 }
 
@@ -3499,7 +3751,7 @@ fn build_deleted_view_model_includes_ghost_team_with_referencing_repos() {
     );
 }
 
-/// GC-gap regression (adr-fmt-7532n, CHE-0093:R4): a Deleted roster whose
+/// GC-gap regression (ghr-d9878e7d, CHE-0093:R4): a Deleted roster whose
 /// `canonical_owner` no longer appears in any repo's CODEOWNERS (i.e. absent
 /// from `owner_repo_map`) is by definition not a `GhostTeam` anomaly — a
 /// team can only be a ghost while still CODEOWNERS-referenced. Render-time
@@ -4270,10 +4522,8 @@ fn podium_excludes_user_owners() {
         "podium should not contain user owner @alice, got {podium:?}"
     );
     assert!(
-        podium
-            .iter()
-            .any(|t| t.owner.contains("security-team") || t.owner.contains("infra-team")),
-        "podium should contain at least one team owner, got {podium:?}"
+        podium.iter().any(|t| t.owner.contains("dev-team")),
+        "podium should contain at least one team owner still below 100%, got {podium:?}"
     );
 }
 
@@ -4405,7 +4655,7 @@ fn podium_one_team_shows_only_gold() {
             test_fixtures::make_checks(
                 test_fixtures::policy_pass_setting(),
                 test_fixtures::secret_enabled_observable(false),
-                test_fixtures::dependabot_enabled(),
+                test_fixtures::dependabot_disabled(),
                 test_fixtures::branch_pass(),
                 test_fixtures::codeowners_with_owners(&["@org/solo-team"]),
             ),
@@ -4574,6 +4824,104 @@ fn header_uses_page_header_class() {
     assert!(
         index.contains("page-header"),
         "index should use page-header class for the header layout"
+    );
+}
+
+fn team_row(owner: &str, sec_score: f64) -> OwnerOverviewRow {
+    OwnerOverviewRow {
+        owner: format!("@org/{owner}"),
+        owner_short: owner.to_string(),
+        slug: format!("org-{owner}"),
+        owner_type: OwnerType::Team,
+        repo_count: 1,
+        controls: Vec::new(),
+        sec_score: Some(sec_score),
+        sec_score_formatted: format!("{sec_score:.1}%"),
+        sec_score_table_formatted: format!("{sec_score:.0}%"),
+        sec_score_tier: CoverageTier::from_rate(Some(sec_score), &CoverageTiers::default()),
+        sec_score_width_class: rate_to_width_class(Some(sec_score)),
+    }
+}
+
+#[test]
+fn podium_excludes_team_at_exactly_100_percent() {
+    let owners_vm = OwnersViewModel {
+        rows: vec![
+            team_row("perfect-team", 100.0),
+            team_row("climbing-team", 92.0),
+        ],
+        control_columns: Vec::new(),
+    };
+    let podium = build_top_security_teams(&owners_vm);
+
+    assert!(
+        podium.iter().all(|t| t.owner_short != "perfect-team"),
+        "team at exactly 100.0 must be exempt from the podium, got {podium:?}"
+    );
+    assert!(
+        podium.iter().any(|t| t.owner_short == "climbing-team"),
+        "team still climbing must remain on the podium, got {podium:?}"
+    );
+}
+
+#[test]
+fn podium_includes_team_at_99_9_percent() {
+    let owners_vm = OwnersViewModel {
+        rows: vec![team_row("almost-team", 99.9)],
+        control_columns: Vec::new(),
+    };
+    let podium = build_top_security_teams(&owners_vm);
+
+    assert!(
+        podium.iter().any(|t| t.owner_short == "almost-team"),
+        "team at 99.9 (not exactly 100.0) must remain on the podium, got {podium:?}"
+    );
+}
+
+#[test]
+fn podium_empty_when_every_team_at_100_percent() {
+    let owners_vm = OwnersViewModel {
+        rows: vec![team_row("team-a", 100.0), team_row("team-b", 100.0)],
+        control_columns: Vec::new(),
+    };
+    let podium = build_top_security_teams(&owners_vm);
+
+    assert!(
+        podium.is_empty(),
+        "podium must be empty when every team is at 100%, got {podium:?}"
+    );
+}
+
+#[test]
+fn podium_ordering_holds_with_100_percent_exemption_applied() {
+    let owners_vm = OwnersViewModel {
+        rows: vec![
+            team_row("done-team", 100.0),
+            team_row("gold-team", 95.0),
+            team_row("silver-team", 90.0),
+            team_row("bronze-team", 85.0),
+        ],
+        control_columns: Vec::new(),
+    };
+    let podium = build_top_security_teams(&owners_vm);
+    let ranks: Vec<&str> = podium.iter().map(|t| t.rank_class).collect();
+
+    assert!(
+        podium.iter().all(|t| t.owner_short != "done-team"),
+        "100%-team must not occupy a podium slot, got {podium:?}"
+    );
+    assert_eq!(
+        ranks,
+        vec!["rank-silver", "rank-gold", "rank-bronze"],
+        "3-team podium order must remain Silver, Gold, Bronze after exemption, got {ranks:?}"
+    );
+    assert_eq!(
+        podium
+            .iter()
+            .find(|t| t.rank_class == "rank-gold")
+            .map(|t| t.owner_short.as_str()),
+        Some("gold-team"),
+        "highest-scoring non-100% team must take Gold, got {podium:?}"
     );
 }
 

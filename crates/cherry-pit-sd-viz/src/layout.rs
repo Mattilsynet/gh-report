@@ -3,7 +3,7 @@
 //! residence formatting, and the [`StockKind`] suppression rules that
 //! decide which parts of a generic stock box render for a monotonic
 //! readout accumulator (`generation`/`served_pages`/`events_written`,
-//! adr-fmt-vrycy ambiguity hotspot (d)) versus a standard stock with
+//! ghr-2113f746 ambiguity hotspot (d)) versus a standard stock with
 //! outflow, dots, and residence time.
 //!
 //! Kept out of `sd.rs` (generic SD core stays free of rendering-domain
@@ -15,7 +15,7 @@ use crate::sd::LoopPolarity;
 
 /// Distinguishes four stock-box rendering shapes, decoupled per-field
 /// (dots / outflow / utilization / residence) rather than one
-/// all-or-nothing switch, so each Tier-1 stock (adr-fmt-vrycy CORE
+/// all-or-nothing switch, so each Tier-1 stock (ghr-2113f746 CORE
 /// TEACHING MODEL) gets only the fields it has real data for:
 ///
 /// - [`StockKind::Standard`] — `WorkQueue`: capacity-bounded, live
@@ -32,7 +32,7 @@ use crate::sd::LoopPolarity;
 ///   express as utilization and no dots/residence data.
 /// - [`StockKind::Monotonic`] — readout accumulator whose outflow is
 ///   always `0` and whose residence time is undefined (`generation`,
-///   `served_pages`, `events_written`; adr-fmt-vrycy hotspot (d)).
+///   `served_pages`, `events_written`; ghr-2113f746 hotspot (d)).
 ///
 /// This is a rendering-suppression switch, not a modelling taxonomy —
 /// see [`crate::sd::Stock`] for the single underlying SD type all four
@@ -56,7 +56,7 @@ impl StockKind {
 
     /// Whether this kind's stock box renders an outflow readout.
     /// [`StockKind::Monotonic`] stocks are inflow-only by definition
-    /// (adr-fmt-vrycy hotspot (d)) — an outflow field would always
+    /// (ghr-2113f746 hotspot (d)) — an outflow field would always
     /// read `0.0`. Every other kind has a real, sometimes-nonzero
     /// outflow.
     #[must_use]
@@ -87,7 +87,7 @@ impl StockKind {
 
     /// Whether this kind's stock box renders a loop-polarity badge.
     /// Only [`StockKind::Standard`] (`WorkQueue`) is the stock the B1
-    /// backpressure loop (adr-fmt-vrycy CORE TEACHING MODEL) reads.
+    /// backpressure loop (ghr-2113f746 CORE TEACHING MODEL) reads.
     #[must_use]
     pub fn shows_polarity(self) -> bool {
         matches!(self, StockKind::Standard)
@@ -142,7 +142,7 @@ pub fn format_bounded_level(current: usize, capacity: usize) -> String {
 }
 
 /// The single-character badge label for a causal loop's polarity:
-/// `"B"` (Balancing) or `"R"` (Reinforcing). adr-fmt-vrycy found 0 R
+/// `"B"` (Balancing) or `"R"` (Reinforcing). ghr-2113f746 found 0 R
 /// loops in gh-report's boundary (pure work-shedding/backpressure
 /// system) — the `R` arm exists for completeness per oracle guidance,
 /// not because any in-model loop currently uses it.
@@ -200,7 +200,7 @@ pub fn compression_ratio_percent(raw_bytes: usize, compressed_bytes: usize) -> O
 }
 
 /// Fixed spacing/sizing parameters for the computed grid layout
-/// (adr-fmt-izwyo): margin from the viewBox edge, per-column and
+/// (ghr-cb8464b2): margin from the viewBox edge, per-column and
 /// per-row pitch (box size plus gutter), and the box's own
 /// dimensions. One set of params drives [`grid_slot_origin`],
 /// [`slot_anchor`], and [`grid_dimensions`] so node placement and
@@ -229,7 +229,7 @@ pub enum Side {
 /// The top-left `(x, y)` px of the box at zero-indexed `(row, col)`,
 /// packing columns left-to-right and rows top-to-bottom so row 0
 /// (sources) sits above every later row and the highest-`col` box of
-/// the last row sits at the maximum x (adr-fmt-izwyo: sources
+/// the last row sits at the maximum x (ghr-cb8464b2: sources
 /// top-left, clients bottom-right).
 #[must_use]
 #[expect(
@@ -348,7 +348,7 @@ pub fn cubic_arc_length(
 /// The total `(width, height)` in px a grid of `max_rows` by
 /// `max_cols` boxes needs, so `view.rs`'s SVG `viewBox` and
 /// `index.html`'s `.graph-canvas` can both be sized from the same
-/// formula (adr-fmt-izwyo 1:1 requirement).
+/// formula (ghr-cb8464b2 1:1 requirement).
 #[must_use]
 #[expect(
     clippy::cast_precision_loss,

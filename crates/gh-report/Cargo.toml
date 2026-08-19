@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "GitHub organization governance collector and reporter"
 license = "Apache-2.0 OR MIT"
-repository = "https://github.com/acje/quicksilver"
+repository = "https://github.com/Mattilsynet/gh-report"
 readme = "README.md"
 keywords = ["github", "governance", "security", "compliance"]
 categories = ["command-line-utilities"]
@@ -22,14 +22,14 @@ path = "src/lib.rs"
 workspace = true
 
 [features]
-# Non-default, non-shipping heap/RSS profiling harness (adr-fmt-gcuq4,
-# adr-fmt-nfteo memprof-01). Never enabled in the shipped build.
+# Non-default, non-shipping heap/RSS profiling harness (ghr-61c73290,
+# ghr-6946f6b2 memprof-01). Never enabled in the shipped build.
 profiling = ["dep:dhat"]
 
 [dependencies]
 # dhat heap profiler — optional, feature-gated by `profiling`. Attribute-only
 # global allocator registration (#[global_allocator] static ALLOC: dhat::Alloc
-# = dhat::Alloc;); introduces no unsafe token into this crate (adr-fmt-gcuq4
+# = dhat::Alloc;); introduces no unsafe token into this crate (ghr-61c73290
 # Q3). Never a default dependency.
 dhat = { version = "0.3.3", optional = true }
 # cherry-pit-wq — M5 B2 swap target for worker_pool / work_queue / rate_limit / pagination / budget re-exports
@@ -69,7 +69,7 @@ reqwest = { workspace = true }
 # HTTP types (HeaderMap) — used directly by src/github/pagination.rs after
 # the MC-2.3 relocation from cherry-pit-wq (CHE-0055 §G6).
 http = { workspace = true }
-# Retry-After HTTP-date parsing (secondary-limit backoff, adr-fmt-egsrk).
+# Retry-After HTTP-date parsing (secondary-limit backoff, ghr-16813e99).
 httpdate = { workspace = true }
 
 # Serialization

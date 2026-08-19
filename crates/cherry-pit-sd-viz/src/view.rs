@@ -1,4 +1,4 @@
-//! `wasm32`-only THIN INTERPRETER (`svs-03`..`svs-05`, adr-fmt-sra3p):
+//! `wasm32`-only THIN INTERPRETER (`svs-03`..`svs-05`, ghr-9ff4305a):
 //! walks [`crate::scene::gh_report_scene`]'s host-pure [`Scene`] and
 //! emits DOM+SVG. Holds ZERO layout/position/motion math of its own —
 //! every coordinate rendered here is read from [`Scene::node_origin`],
@@ -65,7 +65,7 @@
 //! per-stock [`LevelHistory`] this module records once per tick) plus
 //! its numeric level — both read-only, so they ride the same full
 //! scene-string regen with no listener-detachment risk. The
-//! `SweepPhase` control-state (adr-fmt-vrycy hotspot (c): NOT an
+//! `SweepPhase` control-state (ghr-2113f746 hotspot (c): NOT an
 //! `sd::Model` element) renders as a plain annotation badge positioned
 //! at the `BatchRemaining` stock's already-placed origin, sharing no
 //! `scene-node-*` class with the wired SD nodes.
@@ -843,7 +843,7 @@ fn stock_sparkline_markup(history: &LevelHistory) -> String {
 
 /// The `BatchRemaining` stock's [`SweepPhase`](crate::sim::SweepPhase)
 /// annotation: a plain non-SD badge positioned at that node's already-
-/// placed origin (adr-fmt-vrycy hotspot (c) — `SweepPhase` is a
+/// placed origin (ghr-2113f746 hotspot (c) — `SweepPhase` is a
 /// discrete control-state enum, never an `sd::Model` node, so this
 /// shares no `scene-node-*` class with the wired SD nodes it sits
 /// beside). Empty when the scene carries no node labeled

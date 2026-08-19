@@ -20,7 +20,7 @@ expression: detail_page
 <body>
 
     <nav class="top-nav">
-    <a href="../index.html">Dashboard</a>
+    <a href="..">Dashboard</a>
     <a href="../owners.html">Owners</a>
     <a href="../orphans.html">Orphans (0)</a>
     <a href="../report.html" class="nav-right">Report</a>
@@ -32,7 +32,7 @@ expression: detail_page
             rel="noopener noreferrer">team-empty</a></h1>
 
     <ul class="breadcrumb">
-        <li><a href="../index.html">Dashboard</a></li>
+        <li><a href="..">Dashboard</a></li>
         <li><a href="../owners.html">Owners</a></li>
         <li>@org/team-empty</li>
     </ul>
@@ -176,6 +176,7 @@ expression: detail_page
 
     
 
+    
 </body>
 
 </html>

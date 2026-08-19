@@ -119,8 +119,8 @@ pub struct CheckedEventStream<R: Read + Seek, T> {
     /// re-encoding decoded events to roll the frontier would
     /// reintroduce a writer-side `Encode` bound.
     frontier: Frontier,
-    /// Precursor-check enforcement mode (adr-fmt-lutpd finding #2 /
-    /// adr-fmt-ibi23). Governs only the three precursor checks
+    /// Precursor-check enforcement mode (ghr-968718c8 finding #2 /
+    /// ghr-63f3f265). Governs only the three precursor checks
     /// (bounds, same-fiber, hash) inside [`Self::verify_precursor`];
     /// contiguity (`check_position`) stays unconditional in both
     /// modes, matching the dragline rebuild path.

@@ -1,4 +1,4 @@
-# AGENTS.md — solon
+# AGENTS.md — gh-report
 
 Repo-specific operational notes. General agent/OODA doctrine, bd/beads
 conventions, bash hygiene, and the Rust no-`//`-comments rule live in the
@@ -26,17 +26,29 @@ binaries plus an ADR-governed library family and a large ADR corpus.
   CARGO_TERM_PROGRESS_WHEN=never cargo clippy -p <crate> --message-format=short -- -D warnings
   ```
   One test: `cargo test -p <crate> <name> --message-format=short`.
-- **BOUNDARY** (mission/sub-mission completion, before claiming done):
+- **BOUNDARY** (mission/sub-mission completion, before claiming done;
+  measured total ~4.4 min, bead ghr-df35935d (authoritative) / ghr-64e9cdf0
+  (orientation) — macOS/arm64, 14 cores, warm cargo cache, uncontended
+  machine; not a universal constant, present with these conditions. The
+  prior "60-83 min" figure (bead ghr-2f56d34d) is superseded — that run hit
+  environment contention (NI=5, competing processes, Defender activity), not
+  a code baseline):
   ```
-  cargo build  --workspace --all-features --locked
-  cargo test   --workspace --all-features --locked
-  cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-  cargo fmt --all -- --check
+  cargo build  --workspace --all-features --locked                  # 93.7s cold, 678 units
+  cargo test   --workspace --all-features --locked --no-fail-fast   # ~120s warm (~40s compile + 85.6s exec, incl. doctests)
+  cargo clippy --workspace --all-targets --all-features --locked -- -D warnings  # 49.0s
+  cargo fmt --all -- --check                                        # 1.0s
   ```
+  `--no-fail-fast` is mandatory on the BOUNDARY test line: plain `cargo test`
+  stops at the first failing test binary, so a failing BOUNDARY silently
+  verifies only a fraction of the workspace (measured: ~40% covered before
+  abort) — violating the coverage-parity intent of this tier. BOUNDARY stays
+  on `cargo test` rather than `nextest`: nextest measured slower at workspace
+  scope (262s vs ~120s) and does not run doctests.
   Exit codes from this tier back the done-claim; the cadence relocates controls
   to where they earn their cost, not weakens verify-before-claim.
-- **CI-ONLY** (never in the local loop): CI owns deny, audit, and the two
-  tripwire jobs.
+- **CI-ONLY** (never in the local loop): CI owns deny, audit, and the
+  build-time chokepoint gates (`tools/tripwires.sh --list` enumerates them).
 - `clippy::pedantic` is the **standing bar**, not an elevation
   (`[workspace.lints.clippy] pedantic = warn` + CI `-D warnings`). New code must
   pass pedantic with zero warnings.
@@ -54,18 +66,36 @@ install `nats-server` v2.14.3 onto `PATH`. CI installs it in the `test` job
 (checksum-verified). `async-nats` is pinned to the `server_2_14` feature to
 match.
 
+**Default-local impact (measured, no `nats-server` on `PATH`):** BOUNDARY's
+`cargo test --workspace --all-features --locked --no-fail-fast` exits **101**
+with 11 FAILED test binaries across `gh-report`, `pardosa`, and
+`pardosa-nats` (e.g. `live_nats_n_writer_fence_property`,
+`golden_byte_roundtrip_dual_backend`, `live_jetstream_schema_gate`) — this is
+expected-absent-server, not a regression. The gate is inconsistently applied:
+sibling tests in the *same* binaries correctly self-skip with `ignored,
+requires live nats-server at ...`, but the 11 above panic instead of hitting
+that same guard (origin: `test_support.rs:59,61`). Tracked, not yet fixed:
+bd `ghr-89b05be0`. Until fixed, treat a BOUNDARY exit 101 whose only FAILED
+lines are these 11 names as a known-quantity, not `Outcome::Surprise` — but
+do not claim `Outcome::Verified` from a run that never reached exit 0 either;
+say so explicitly (partial) and cite `ghr-89b05be0`.
+
 ## CI specifics (`.github/workflows/ci.yml`)
 
 - Triggers on push/PR to `main`. Third-party actions are **SHA-pinned**
   (Dependabot updates them); keep that pattern if you edit the workflow.
-- Two custom **tripwire** jobs live in `.github/workflows/ci-reusable.yml`
-  (called from `ci.yml`) and grep the tree to fail the build — do not break
-  the invariants they guard:
-  - `async-trait-tripwire`: no `async-trait` in any `cherry-pit-*` dep tree
-    (RPITIT only; CHE-0025 / CHE-0029:R4).
-  - `gh-report-projection-lock-tripwire`: raw `.projection_state.lock(` is
-    banned outside `crates/gh-report/src/app/state.rs` — use
-    `AppState::lock_projection()` (CHE-0048:R2).
+- Merge gates (RST-0007) live in `.github/workflows/ci-reusable.yml` (called
+  from `ci.yml`), invoked via `tools/tripwires.sh <check>` — do not break the
+  invariants they guard. Run `tools/tripwires.sh --list` for the current check
+  names and dispatch on any single check locally (`tools/tripwires.sh
+  <check>`), or `tools/tripwires.sh all` for every check. Governing citations
+  (kept current in the script's `::error::` strings, not duplicated here):
+  projection-lock is COM-0018 + CHE-0048:R7; async-trait deny is
+  CHE-0025:R1+R2; non-exhaustive gate is RST-0006:R1+R3.
+  The projection-lock whitelist is exactly
+  `crates/gh-report/src/app/state/mod.rs`, NOT the whole `app/state/`
+  directory: the sibling modules (`builder.rs`, `baseline.rs`,
+  `server_state.rs`) are in scope of the ban.
 - `cargo-vet` was removed (deferred per SEC-0009); `cargo-deny`/`cargo-audit`
   are the supply-chain controls.
 
@@ -92,9 +122,9 @@ These are load-bearing; violating them is an abort-class change:
   `#[allow(.., reason=..)]` only where `#[expect]` would be unfulfilled (e.g. a
   lint that fires under `--test` but not `--all-features`).
 
-## Intent (why this repo exists — the Solon stance)
+## Intent (why this repo exists — the gh-report stance)
 
-Solon lays down a *small, observable, ratified* set of enabling constraints —
+gh-report lays down a *small, observable, ratified* set of enabling constraints —
 after Solon the lawgiver — so that correct software is easier to build than
 incorrect software. The bet is **subtractive**: remove enough degrees of
 freedom that the remaining moves are obviously correct. When the type system
@@ -133,21 +163,41 @@ rejects illegal architectures, the search space an agent must explore collapses.
 
 ## Tooling notes
 
-- `graphify-out/graph.json` exists — use `graphify query/explain/affected` for
-  structural questions before grepping; refresh with `graphify update .` after
-  code changes (or rely on the post-commit hook).
+- `graphify-out/graph.json` exists — for structural questions, lead with
+  `graphify explain <symbol>` (one node + its edges) or
+  `graphify affected <symbol> --depth N` (blast-radius before a refactor);
+  both are precise and fast (~2s for a real query). Demote `graphify query` —
+  it seeds lexically on the question's own words and can flood back hundreds
+  of unranked nodes with the correct answer buried or absent; use it only as
+  a last-resort broad scan, not the first tool reached for. Refresh with
+  `graphify update .` after code changes, or rely on the post-commit hook
+  (post-checkout no longer rebuilds — see below).
+  - Known, upstream-blocked limitations (do not re-litigate, do not attempt
+    a fix here): the graph is **undirected** (`directed=False`), so
+    `affected` blast-radius is symmetric when it conceptually shouldn't be —
+    the graphify library supports `directed=True` internally but no CLI flag
+    persists it (only `diagnose multigraph --directed` simulates it
+    read-only). And **`graph.html` is never generated** — the 5000-node viz
+    limit is a hardcoded literal at four call sites in the installed
+    package, with no resize knob, while this repo's post-cleanup graph is
+    ~11.5k nodes.
+  - The linked-worktree hook guard and the stdlib-stub post-rebuild filter
+    are **machine-local** `.git/hooks/` edits (hooks are never cloned or
+    version-controlled) — see `tools/graphify/README.md` for what they do
+    and the exact re-apply procedure after a fresh clone or a
+    `graphify hook install` re-run, which clobbers all of it.
 - `.beads/` is an embedded-dolt store (gitignored) — bd mutations do **not**
   produce a git commit; the audit trail is dolt history + `interactions.jsonl`.
   Don't try to `git add` bead state.
 - Two bd stores exist for this repo's work, selected by cwd:
-  - Repo-local store: `.beads/` here (prefix `adr-fmt`) — the CANONICAL home
+  - Repo-local store: `.beads/` here (prefix `ghr`) — the CANONICAL home
     for any mission that describes THIS repo's code.
   - HOME store: `~/.beads` (prefix `anders_jensen`) — for cross-repo / personal
     work with no single repo home.
 - Convention (advisory — bd has no mechanism to enforce it; see below):
   - Run `bd` from the gh-report repo root (or any path inside it) for any
     repo-scoped mission, so beads auto-discover the repo-local `.beads/` and
-    land with the `adr-fmt` prefix, co-located with the code they describe.
+    land with the `ghr` prefix, co-located with the code they describe.
   - Use the HOME store only for genuinely cross-repo or personal-planning work.
   - A `mission:<slug>` label must resolve to an epic IN THE SAME STORE. Never
     use a bead/mission ID as a label value (`mission:anders_jensen-4gt` was such

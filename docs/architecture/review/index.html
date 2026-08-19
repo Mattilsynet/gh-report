@@ -36,8 +36,8 @@
     <strong>surface</strong> pass (does the named abstraction exist, is it
     type-enforced), an adversarial <strong>depth</strong> pass on the
     surface-<span class="verdict verdict--match">Well</span> patterns (full
-    file:line evidence in bd bead <code>adr-fmt-t8k35</code>, extended by a D2
-    coverage pass in bd bead <code>adr-fmt-vie4a</code>) checking the <a href="#depth">Depth</a>
+    file:line evidence in bd bead <code>ghr-227343fa</code>, extended by a D2
+    coverage pass in bd bead <code>ghr-c35a9e0d</code>) checking the <a href="#depth">Depth</a>
     column, and a doc-comment-vs-ADR <a href="#language">Language</a>
     consistency pass on the depth-Solid/Governed/Mixed patterns. Four minor
     language drifts (L1–L4) and five depth gaps (G1–G5) were found; all have
@@ -45,7 +45,7 @@
     <a href="#spine">pattern verdict matrix</a>'s Status column.
     <br>
     <strong>Framing:</strong> cherry-pit is a <em>subtractive</em> substrate —
-    illegal compositions must fail to type-check (AGENTS.md, the Solon stance).
+    illegal compositions must fail to type-check (AGENTS.md, the gh-report stance).
     Several DDD patterns are therefore <em>deliberately absent</em>, not
     missing; the matrix distinguishes "lacking by omission" from "lacking by
     ratified deferral" wherever an ADR records the choice.
@@ -125,56 +125,56 @@
         <td><span class="verdict verdict--match">Well</span></td>
         <td><span class="verdict verdict--drift">Governed</span></td>
         <td><span class="verdict verdict--match">Consistent</span></td>
-        <td>Depth gap <strong>G1 (High)</strong> — merger's <code>MergerArm::handle</code> bypassing <code>HandleCommand</code> is now a <strong>ratified governed specialization</strong> (<cite>CHE-0085:R8</cite>, <code>1e79a4d</code>) — a doc-plane classification, not a code change: <code>arm.rs:78</code> remains structurally unbounded by design. Watch-item <code>adr-fmt-nyzzy</code>: first production <code>MergerArm</code> impl must re-audit against CHE-0085:R8. Language (D2, <code>adr-fmt-vie4a</code>): <code>aggregate.rs:6-24</code> doc citations (CHE-0004/0012/0020/0037/0006) match ADR text verbatim, no drift.</td>
+        <td>Depth gap <strong>G1 (High)</strong> — merger's <code>MergerArm::handle</code> bypassing <code>HandleCommand</code> is now a <strong>ratified governed specialization</strong> (<cite>CHE-0085:R8</cite>, <code>1e79a4d</code>) — a doc-plane classification, not a code change: <code>arm.rs:78</code> remains structurally unbounded by design. Watch-item <code>ghr-a5bd537b</code>: first production <code>MergerArm</code> impl must re-audit against CHE-0085:R8. Language (D2, <code>ghr-c35a9e0d</code>): <code>aggregate.rs:6-24</code> doc citations (CHE-0004/0012/0020/0037/0006) match ADR text verbatim, no drift.</td>
       </tr>
       <tr>
         <td><strong>Command</strong> (+ handle/apply split)</td>
         <td><span class="verdict verdict--match">Well</span></td>
         <td><span class="verdict verdict--drift">Governed</span></td>
         <td><span class="verdict verdict--match">Consistent</span></td>
-        <td>Same structural shape as G1, now under the same <cite>CHE-0085:R8</cite> governed-specialization ratification (<code>1e79a4d</code>) — per-command error dilution to per-arm at merger (<code>arm.rs:90</code>) is documented as a deliberate consequence, not fixed in code. Language (D2, <code>adr-fmt-vie4a</code>): <code>aggregate.rs:68-82</code> doc (CHE-0008/0015:R1) matches trait shape exactly; <code>arm.rs:1-24</code> correctly cites CHE-0069:R2/R5 without claiming CHE-0008/0015 compliance — consistent with the CHE-0085:R8 framing, no drift.</td>
+        <td>Same structural shape as G1, now under the same <cite>CHE-0085:R8</cite> governed-specialization ratification (<code>1e79a4d</code>) — per-command error dilution to per-arm at merger (<code>arm.rs:90</code>) is documented as a deliberate consequence, not fixed in code. Language (D2, <code>ghr-c35a9e0d</code>): <code>aggregate.rs:68-82</code> doc (CHE-0008/0015:R1) matches trait shape exactly; <code>arm.rs:1-24</code> correctly cites CHE-0069:R2/R5 without claiming CHE-0008/0015 compliance — consistent with the CHE-0085:R8 framing, no drift.</td>
       </tr>
       <tr>
         <td><strong>Policy</strong> (choreography)</td>
         <td><span class="verdict verdict--match">Well</span></td>
         <td><span class="verdict verdict--match">Solid</span></td>
         <td><span class="verdict verdict--match">Consistent</span></td>
-        <td>Depth gap <strong>G2 (High)</strong> <strong>fixed</strong> — <cite>CHE-0046:R7</cite> now scopes Retryable retry away from the terminal dead-letter sink, and the doc claim in <code>App::run</code> was corrected to match shipped behaviour (<code>a8b63d8</code>); residual stale cites at <code>app.rs:331,371</code> (CHE-0046:R2→R7) also <strong>fixed</strong> (<code>bd594d7</code>). Language (D2, <code>adr-fmt-vie4a</code>): <code>policy.rs:3-16</code> doc (CHE-0017:R1 static Output, CHE-0041:R2 idempotent react) verified structurally true, no drift.</td>
+        <td>Depth gap <strong>G2 (High)</strong> <strong>fixed</strong> — <cite>CHE-0046:R7</cite> now scopes Retryable retry away from the terminal dead-letter sink, and the doc claim in <code>App::run</code> was corrected to match shipped behaviour (<code>a8b63d8</code>); residual stale cites at <code>app.rs:331,371</code> (CHE-0046:R2→R7) also <strong>fixed</strong> (<code>bd594d7</code>). Language (D2, <code>ghr-c35a9e0d</code>): <code>policy.rs:3-16</code> doc (CHE-0017:R1 static Output, CHE-0041:R2 idempotent react) verified structurally true, no drift.</td>
       </tr>
       <tr>
         <td><strong>Projection / CQRS</strong></td>
         <td><span class="verdict verdict--match">Well</span></td>
         <td><span class="verdict verdict--match">Solid</span></td>
         <td><span class="verdict verdict--match">Consistent</span></td>
-        <td>Depth gap <strong>G3 (Medium)</strong> <strong>fixed</strong> — new <cite>CHE-0097</cite> (re-scoped from the withdrawn <cite>CHE-0092</cite>) plus a <code>persist_inner</code> compare-before-write guard and a rejection regression test (<code>b465a7d</code>, <code>3de340a</code>). Language (D2, <code>adr-fmt-vie4a</code>): <code>projection.rs:3-17</code> doc (CHE-0009) and <code>cherry-pit-projection/src/lib.rs:55,68,112</code> (CHE-0097:R1/R3) match the review's G3-fixed claim, no drift.</td>
+        <td>Depth gap <strong>G3 (Medium)</strong> <strong>fixed</strong> — new <cite>CHE-0097</cite> (re-scoped from the withdrawn <cite>CHE-0092</cite>) plus a <code>persist_inner</code> compare-before-write guard and a rejection regression test (<code>b465a7d</code>, <code>3de340a</code>). Language (D2, <code>ghr-c35a9e0d</code>): <code>projection.rs:3-17</code> doc (CHE-0009) and <code>cherry-pit-projection/src/lib.rs:55,68,112</code> (CHE-0097:R1/R3) match the review's G3-fixed claim, no drift.</td>
       </tr>
       <tr>
         <td><strong>Single-writer / aggregate boundary</strong></td>
         <td><span class="verdict verdict--match">Well</span></td>
         <td><span class="verdict verdict--drift">Mixed</span></td>
         <td><span class="verdict verdict--match">Fixed (D2/D3)</span></td>
-        <td>Depth gap <strong>G5 (Medium)</strong> <strong>partially addressed</strong> — a convention doc plus two regression tests landed (<code>5e51285</code>, <cite>CHE-0006</cite>), but the own-store-token seal is <strong>deferred</strong>: a second <code>Arc&lt;S&gt;</code> store clone still bypasses the queue today. Not sealed; still open — tracked under epic <code>adr-fmt-1freh</code> (mission:ddd-adherence); see the still-open list below. Language (D2, <code>adr-fmt-vie4a</code>): <strong>genuine drift found</strong> — <code>merger.rs:78</code> doc-comment header cited "CHE-0005" (single-aggregate-design) instead of the actual governing ADR CHE-0006 (single-writer/one-process-per-aggregate). <strong>Fixed</strong> in commit <code>bd594d7</code>.</td>
+        <td>Depth gap <strong>G5 (Medium)</strong> <strong>partially addressed</strong> — a convention doc plus two regression tests landed (<code>5e51285</code>, <cite>CHE-0006</cite>), but the own-store-token seal is <strong>deferred</strong>: a second <code>Arc&lt;S&gt;</code> store clone still bypasses the queue today. Not sealed; still open — tracked under epic <code>ghr-9240c862</code> (mission:ddd-adherence); see the still-open list below. Language (D2, <code>ghr-c35a9e0d</code>): <strong>genuine drift found</strong> — <code>merger.rs:78</code> doc-comment header cited "CHE-0005" (single-aggregate-design) instead of the actual governing ADR CHE-0006 (single-writer/one-process-per-aggregate). <strong>Fixed</strong> in commit <code>bd594d7</code>.</td>
       </tr>
       <tr>
         <td><strong>Bounded Context</strong></td>
         <td><span class="verdict verdict--match">Well</span></td>
         <td><span class="verdict verdict--match">Solid</span></td>
         <td><span class="verdict verdict--unknown">Unknown</span></td>
-        <td>Depth (D2, <code>adr-fmt-vie4a</code>) <strong>Solid</strong> — enforced by generic per-aggregate port binding (<cite>CHE-0005:R1</cite>); the only shared identity crossing contexts is the opaque <code>AggregateId</code> VO, never concrete state. <code>cargo tree -p cherry-pit-merger</code> / <code>-p cherry-pit-app</code> (exit 0) confirm no merger↔app edge (<cite>CHE-0085:R3</cite>) — a compiler-enforced boundary. Language not run (own-pattern n/a).</td>
+        <td>Depth (D2, <code>ghr-c35a9e0d</code>) <strong>Solid</strong> — enforced by generic per-aggregate port binding (<cite>CHE-0005:R1</cite>); the only shared identity crossing contexts is the opaque <code>AggregateId</code> VO, never concrete state. <code>cargo tree -p cherry-pit-merger</code> / <code>-p cherry-pit-app</code> (exit 0) confirm no merger↔app edge (<cite>CHE-0085:R3</cite>) — a compiler-enforced boundary. Language not run (own-pattern n/a).</td>
       </tr>
       <tr>
         <td><strong>Ubiquitous Language</strong> (as a pattern)</td>
         <td><span class="verdict verdict--match">Well</span></td>
         <td><span class="verdict verdict--match">Solid</span></td>
         <td><span class="verdict verdict--unknown">Unknown</span></td>
-        <td>Depth (D2, <code>adr-fmt-vie4a</code>) <strong>Solid</strong> — verb consistency confirmed at call-sites, not just trait defs (<code>apply</code>/<code>handle</code>/<code>react</code>/<code>publish</code> keep exact meaning across crates, no bleed). (The <em>language-consistency</em> pass elsewhere audits three patterns' vocabulary; this row scores the pattern's own depth.)</td>
+        <td>Depth (D2, <code>ghr-c35a9e0d</code>) <strong>Solid</strong> — verb consistency confirmed at call-sites, not just trait defs (<code>apply</code>/<code>handle</code>/<code>react</code>/<code>publish</code> keep exact meaning across crates, no bleed). (The <em>language-consistency</em> pass elsewhere audits three patterns' vocabulary; this row scores the pattern's own depth.)</td>
       </tr>
       <tr>
         <td><strong>Invariant enforcement</strong></td>
         <td><span class="verdict verdict--match">Well</span></td>
         <td><span class="verdict verdict--match">Solid</span></td>
         <td><span class="verdict verdict--unknown">Unknown</span></td>
-        <td>Depth (D2, <code>adr-fmt-vie4a</code>) <strong>Solid</strong> — single write-side gate confirmed: <code>HandleCommand::handle</code> (<code>aggregate.rs:119-133</code>) is the only path that can reject a command; <code>apply</code> is infallible by signature. Construction-time enforcement (<code>NonZeroU64</code>, validated <code>EventEnvelope::new</code>, sealed <code>IdempotencyKey::new_unchecked</code>), not convention.</td>
+        <td>Depth (D2, <code>ghr-c35a9e0d</code>) <strong>Solid</strong> — single write-side gate confirmed: <code>HandleCommand::handle</code> (<code>aggregate.rs:119-133</code>) is the only path that can reject a command; <code>apply</code> is infallible by signature. Construction-time enforcement (<code>NonZeroU64</code>, validated <code>EventEnvelope::new</code>, sealed <code>IdempotencyKey::new_unchecked</code>), not convention.</td>
       </tr>
       <tr>
         <td><strong>Entity</strong> (identity equality)</td>
@@ -230,8 +230,8 @@
 
   <h2 id="still-open">Still-open / watch items</h2>
   <ul>
-    <li id="lang-singlewriter"><strong>G5 — single-writer own-store-token seal: STILL OPEN, not sealed.</strong> <code>Merger::spawn</code> takes <code>Arc&lt;S&gt;</code>; nothing consumes or seals the caller's clone, so a composition root can retain a second <code>Arc</code> and call <code>store.append()</code> directly, bypassing the queue. Documented and tested-against-regression, but structurally still bypassable today — tracked under epic <code>adr-fmt-1freh</code> (mission:ddd-adherence).</li>
-    <li><strong>G1/Command — governed specialization, watch-item <code>adr-fmt-nyzzy</code>.</strong> <cite>CHE-0085:R8</cite> (<code>1e79a4d</code>) ratifies <code>MergerArm::handle</code> bypassing <code>HandleCommand</code> as deliberate — a doc-plane classification, not a code fix: <code>arm.rs:78</code> remains structurally unbounded. Watch-item tracks re-audit of the first production <code>MergerArm</code> impl against this ratification.</li>
+    <li id="lang-singlewriter"><strong>G5 — single-writer own-store-token seal: STILL OPEN, not sealed.</strong> <code>Merger::spawn</code> takes <code>Arc&lt;S&gt;</code>; nothing consumes or seals the caller's clone, so a composition root can retain a second <code>Arc</code> and call <code>store.append()</code> directly, bypassing the queue. Documented and tested-against-regression, but structurally still bypassable today — tracked under epic <code>ghr-9240c862</code> (mission:ddd-adherence).</li>
+    <li><strong>G1/Command — governed specialization, watch-item <code>ghr-a5bd537b</code>.</strong> <cite>CHE-0085:R8</cite> (<code>1e79a4d</code>) ratifies <code>MergerArm::handle</code> bypassing <code>HandleCommand</code> as deliberate — a doc-plane classification, not a code fix: <code>arm.rs:78</code> remains structurally unbounded. Watch-item tracks re-audit of the first production <code>MergerArm</code> impl against this ratification.</li>
     <li><strong>ACL / Context Mapping — Partial, unchanged.</strong> The hexagonal port/adapter seam (<code>cherry-pit-gateway</code>, <code>ReadPort</code>) <em>is</em> the ACL; there is still no named context-map document, and only one production consumer (<code>gh-report</code>) exists today.</li>
   </ul>
 
@@ -258,7 +258,7 @@
   <ul>
     <li>Surface abstractions are first-class and type-enforced across all eight "well represented" patterns. Under the depth pass, five hold end-to-end (<span class="verdict verdict--match">Solid</span>), two are ratified <span class="verdict verdict--drift">Governed</span> specializations (Aggregate, Command — <cite>CHE-0085:R8</cite>, doc-plane, code unchanged), and one remains <span class="verdict verdict--drift">Mixed</span> (Single-writer — still open, see above).</li>
     <li>Entity, Factory, and Domain Service are "folded, not missing" — responsibilities present, no dedicated trait, ratified by <cite>CHE-0020:R5</cite> (<code>8636c0b</code>). Saga and Process Manager are deliberate non-goals pre-1.0 (<cite>CHE-0040</cite>). Specification is likewise now a ratified absence, not an unrecorded gap.</li>
-    <li><strong>Net assessment.</strong> cherry-pit is a high-fidelity tactical + event-sourcing DDD substrate with strong strategic single-context discipline; omissions cluster exactly where the Solon subtractive stance predicts (orchestration/multi-context tooling the niche doesn't need). The one remaining un-sealed structural gap is single-writer's composition-root convention (documented and tested, not type/ownership-sealed).</li>
+    <li><strong>Net assessment.</strong> cherry-pit is a high-fidelity tactical + event-sourcing DDD substrate with strong strategic single-context discipline; omissions cluster exactly where the gh-report subtractive stance predicts (orchestration/multi-context tooling the niche doesn't need). The one remaining un-sealed structural gap is single-writer's composition-root convention (documented and tested, not type/ownership-sealed).</li>
   </ul>
 
   <p class="subtitle">
@@ -272,9 +272,9 @@
     Depth-pass evidence: adversarial implementation-body review of
     <code>cherry-pit-core</code> + <code>-merger</code> + <code>-app</code> +
     <code>-projection</code> + <code>-gateway</code>, full per-pattern file:line
-    findings and code excerpts in bd bead <code>adr-fmt-t8k35</code>
+    findings and code excerpts in bd bead <code>ghr-227343fa</code>
     (labels <code>evidence, review-report</code>); D2 coverage extension and
-    language-consistency evidence in bd bead <code>adr-fmt-vie4a</code>.
+    language-consistency evidence in bd bead <code>ghr-c35a9e0d</code>.
   </p>
 </main>
 </body>
