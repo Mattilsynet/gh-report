@@ -20,7 +20,7 @@ use crate::{CounterCommand, CounterEvent, CounterState, DomainApp, HandleError};
 /// config-tunable or environment variable. Epoch-based interruption is
 /// wall-clock driven, so two hosts replaying the same event stream could
 /// trap at different points and diverge — the whole reason fuel was
-/// chosen over epoch for this seam (SEC-0013:R3). Fuel *is* deterministic
+/// chosen over epoch for this seam (SEC-0014:R3). Fuel *is* deterministic
 /// given an identical limit, but only given an identical limit: making
 /// the limit tunable would silently reopen the same cross-host replay
 /// divergence hazard through the back door. Every host embedding this
@@ -28,12 +28,12 @@ use crate::{CounterCommand, CounterEvent, CounterState, DomainApp, HandleError};
 /// override path.
 pub const CALL_FUEL_LIMIT: u64 = 10_000_000;
 
-/// Per-call linear memory ceiling (SEC-0013:R3, SEC-0003): an
+/// Per-call linear memory ceiling (SEC-0014:R3, SEC-0003): an
 /// unconfigured instance is forbidden, so every store carries an
 /// explicit memory limit alongside the fuel budget.
 const MEMORY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
-/// Per-call aggregate store-owned allocation ceiling (SEC-0013:R3,
+/// Per-call aggregate store-owned allocation ceiling (SEC-0014:R3,
 /// SEC-0003), separate and independent from [`MEMORY_LIMIT_BYTES`]: a
 /// linear-memory cap alone bounds only wasm linear memory growth, not
 /// table growth or other store-owned allocation, so this crate tracks
@@ -83,13 +83,13 @@ const CORE_INSTANCE_LIMIT: usize = MEASURED_MINIMUM_CORE_INSTANCES + 5;
 /// interface can hand the guest a resource handle to create or hold.
 /// The only interfaces this crate links (`wasi:io/error`, `wasi:io/poll`,
 /// `wasi:io/streams`) exist purely to satisfy `wasm32-wasip2` libstd's
-/// mandatory link-time baseline (SEC-0013:R1 footnote); a compute-only
+/// mandatory link-time baseline (SEC-0014:R1 footnote); a compute-only
 /// guest like the reference `counter` aggregate never calls a function
 /// that constructs a pollable or stream at runtime, so it never needs a
 /// resource-table entry. A [`wasmtime::component::ResourceTable`] grows
 /// independently of wasm linear memory and table growth, so
 /// [`AggregateLimiter`] alone cannot bound it — this is a second,
-/// independent, structural bound standing in for the SEC-0013:R3
+/// independent, structural bound standing in for the SEC-0014:R3
 /// aggregate store-owned-allocation cap on the one class of allocation
 /// `AggregateLimiter` cannot see. If a future `domain-app` world
 /// declares its own `resource` type, or a guest genuinely needs to hold
@@ -147,7 +147,7 @@ impl std::error::Error for StoreBudgetExceeded {}
 /// that reaches for any of its functions always traps with this
 /// identity naming the interface, letting [`classify_trap`] give the
 /// guest's reach its own [`HostError::CapabilityAccessDenied`] variant
-/// rather than the generic call-site bucket (CHE-0107:R2, SEC-0013:R1).
+/// rather than the generic call-site bucket (CHE-0107:R2, SEC-0014:R1).
 #[derive(Debug)]
 struct CapabilityAccessDenied {
     interface: &'static str,
@@ -190,7 +190,7 @@ struct TerminalOutputMarker;
 /// ([`STORE_SIZE_LIMIT_BYTES`]) covering the sum of memory and table
 /// growth this store has performed. `StoreLimits::memory_size` alone
 /// bounds only a single linear memory, not table growth or aggregate
-/// store-owned allocation (SEC-0013:R3 requires both a memory limit AND
+/// store-owned allocation (SEC-0014:R3 requires both a memory limit AND
 /// a store-size cap, not one standing in for the other).
 ///
 /// Growth rejected by either bound raises an `Err`, which Wasmtime
@@ -296,7 +296,7 @@ impl HostRuntime {
     /// every declared import resolves into exactly one of two buckets
     /// (ADR-fmt-4ksfn AMENDMENT 1): the three genuinely-linked
     /// `wasi:io/error`/`poll`/`streams` interfaces `wasm32-wasip2`'s
-    /// libstd requires to instantiate (SEC-0013:R1 footnote), and eleven
+    /// libstd requires to instantiate (SEC-0014:R1 footnote), and eleven
     /// always-trapping stubs (`wasi:clocks/monotonic-clock` plus the ten
     /// `wasi:cli/*` interfaces) that resolve but convey zero capability.
     /// No clocks, random, filesystem, network, environment, or terminal
@@ -466,7 +466,7 @@ fn classify_trap(err: wasmtime::Error, site: TrapSite) -> HostError {
 
 /// Links only the mandatory `wasi:io/error`, `wasi:io/poll`, and
 /// `wasi:io/streams` interfaces `wasm32-wasip2`'s libstd requires to
-/// instantiate (SEC-0013:R1 footnote) — no clocks, random, filesystem,
+/// instantiate (SEC-0014:R1 footnote) — no clocks, random, filesystem,
 /// or socket interface is registered here (the ten `wasi:cli/*`
 /// interfaces and `wasi:clocks/monotonic-clock` are separately linked as
 /// trapping stubs by [`add_trapping_wasi_cli`] and
@@ -996,7 +996,7 @@ mod tests {
     }
 
     /// Bucket assignment (`success_criteria` 4', ADR-fmt-4ksfn AMENDMENT 1,
-    /// this mission's sharpest available statement of SEC-0013:R1
+    /// this mission's sharpest available statement of SEC-0014:R1
     /// conformance): pins the ACTUAL measured 15-import set of the real
     /// reference component and its three-way split -- exactly 3
     /// genuinely-linked `wasi:io/*` interfaces, exactly 11 trap-only
@@ -1075,7 +1075,7 @@ mod tests {
         );
     }
 
-    /// Zero-granted-capability (SEC-0013:R1, this mission's core security
+    /// Zero-granted-capability (SEC-0014:R1, this mission's core security
     /// property). The primary proof is dynamic: the REAL component
     /// instantiates and completes a full call successfully through this
     /// crate's [`super::HostRuntime`] linker, which resolves every one of

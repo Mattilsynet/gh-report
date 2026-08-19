@@ -42,7 +42,7 @@ interface domain-types {
 /// capability import). `wasm32-wasip2`'s libstd always pulls in a
 /// minimal WASI I/O/poll baseline regardless of this world's declared
 /// imports; that baseline is expected and does not constitute a
-/// substrate-port import (SEC-0013 R1 footnote).
+/// substrate-port import (SEC-0014 R1 footnote).
 world domain-app {
     use domain-types.{counter-state, counter-command, counter-event, handle-error};
 

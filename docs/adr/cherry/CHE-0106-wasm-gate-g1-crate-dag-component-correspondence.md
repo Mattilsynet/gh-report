@@ -45,7 +45,7 @@ R2 [5]: Each WASM guest domain-app component corresponds to a compile-time
   DAG, A's guest component must not gain a WIT import edge to B's component.
 
 R3 [5]: The runtime component graph is acyclic, mirroring CHE-0029:R1. A guest
-  component may import host-provided WIT interfaces (capabilities, per SEC-0013)
+  component may import host-provided WIT interfaces (capabilities, per SEC-0014)
   and export its domain-logic interface; guest-to-guest cycles are forbidden by
   construction, as is any component edge that would form a cycle when overlaid
   on the crate DAG.

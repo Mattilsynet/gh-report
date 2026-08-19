@@ -9,7 +9,7 @@ Crates: gh-report, cherry-pit-core
 
 ## Related
 
-References: CHE-0005, CHE-0072, CHE-0010, CHE-0018, CHE-0014, PGN-0010, SEC-0004, RST-0005, CHE-0106, SEC-0013, CHE-0107 | Supersedes: CHE-0104
+References: CHE-0005, CHE-0072, CHE-0010, CHE-0018, CHE-0014, PGN-0010, SEC-0004, RST-0005, CHE-0106, SEC-0014, CHE-0107 | Supersedes: CHE-0104
 
 ## Context
 
@@ -68,7 +68,7 @@ R2 [5]: This ADR does NOT overturn CHE-0005 (Tier S). One concrete
 
 R3 [5]: Production adoption is contingent on the three gate ADRs being
   Accepted and satisfied: CHE-0106 (crate-DAG-to-component correspondence, G1),
-  SEC-0013 (plugin/capability/trust model, G2), CHE-0107 (async-in-components
+  SEC-0014 (plugin/capability/trust model, G2), CHE-0107 (async-in-components
   posture, G3). This ADR is ratified jointly with them; no #5 production code
   lands before all three are in force.
 

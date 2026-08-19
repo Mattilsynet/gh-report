@@ -1,7 +1,7 @@
 //! Host-facing error surface for the `domain-app` plugin boundary.
 
 /// Failure surface for host operations against the `domain-app` guest
-/// component (SEC-0013, CHE-0105/0106/0107).
+/// component (SEC-0014, CHE-0105/0106/0107).
 ///
 /// `#[non_exhaustive]` (constraint 11, PGN-0006:R1/R2): new variants are
 /// non-breaking additions, never removed.
@@ -43,14 +43,14 @@ pub enum HostError {
     HandleCommandTrapped(#[source] wasmtime::Error),
 
     /// Guest output failed membrane validation (constraint 7,
-    /// SEC-0013:R4, SEC-0002:R1/R3/R4): guest output is untrusted input
+    /// SEC-0014:R4, SEC-0002:R1/R3/R4): guest output is untrusted input
     /// and must be validated at the boundary before the host trusts it.
     #[error("guest output failed membrane validation: {0}")]
     InvalidGuestOutput(String),
 
     /// The guest reached for a WASI interface this host links only as an
     /// always-trapping stub (Option A, ADR-fmt-48ghj Part 3, CHE-0107:R2,
-    /// SEC-0013:R1): the eleven Bucket-2 interfaces
+    /// SEC-0014:R1): the eleven Bucket-2 interfaces
     /// (`wasi:clocks/monotonic-clock@0.2.9` and the ten `wasi:cli/*@0.2.9`
     /// interfaces, ADR-fmt-4ksfn AMENDMENT 1) convey zero capability, so
     /// any call into one of them traps with this variant, naming the

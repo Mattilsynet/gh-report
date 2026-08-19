@@ -9,7 +9,7 @@ Crates: gh-report, cherry-pit-core
 
 ## Related
 
-References: CHE-0018, CHE-0025, CHE-0105, CHE-0106, PGN-0010, SEC-0013
+References: CHE-0018, CHE-0025, CHE-0105, CHE-0106, PGN-0010, SEC-0014
 
 ## Context
 

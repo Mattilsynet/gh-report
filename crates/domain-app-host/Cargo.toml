@@ -1,7 +1,7 @@
 [package]
 name = "domain-app-host"
 version = "0.1.0"
-description = "Production WASM host for the domain-app plugin boundary (CHE-0105/0106/0107, SEC-0013)"
+description = "Production WASM host for the domain-app plugin boundary (CHE-0105/0106/0107, SEC-0014)"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
