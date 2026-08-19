@@ -1,4 +1,4 @@
-# SEC-0013. WASM Gate G2: Domain-App Plugin Capability and Trust Model
+# SEC-0014. WASM Gate G2: Domain-App Plugin Capability and Trust Model
 
 Date: 2026-08-01
 Last-reviewed: 2026-08-01
