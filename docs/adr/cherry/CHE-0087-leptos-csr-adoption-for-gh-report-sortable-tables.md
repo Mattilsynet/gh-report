@@ -1,7 +1,7 @@
 # CHE-0087. Leptos CSR Adoption for gh-report Sortable Tables
 
 Date: 2026-07-09
-Last-reviewed: 2026-07-10
+Last-reviewed: 2026-08-19 — amended — R10 pinned-channel numeral corrected 1.96 -> 1.97 to match rust-toolchain.toml/CI/AGENTS.md ground truth; reasoning unchanged (mission:ghr-pkg-w345-w5)
 Tier: B
 Status: Accepted
 Crates: gh-report, gh-report-web-client
@@ -36,7 +36,7 @@ R8 [5]: gh-report's own served Content-Security-Policy, set via `ServerConfig::b
 
 R9 [5]: Server-rendered HTML remains pre-sorted and fully readable with WASM absent, disabled, or failed to load; the Leptos client only progressively enhances already-correct markup and never becomes a rendering requirement.
 
-R10 [5]: Adding the `wasm32-unknown-unknown` compilation target is a target-add under RST-0001, not a toolchain channel bump; the pinned 1.96 channel and MSRV stay unchanged, since Leptos 0.8.20's own MSRV (1.88) already sits below that floor.
+R10 [5]: Adding the `wasm32-unknown-unknown` compilation target is a target-add under RST-0001, not a toolchain channel bump; the pinned 1.97 channel and MSRV stay unchanged, since Leptos 0.8.20's own MSRV (1.88) already sits below that floor.
 
 R11 [5]: Any no-mount CSR path in gh-report-web-client — i.e. progressive enhancement that never calls mount_to_body/mount_to (R9) — MUST, before constructing any Effect::new or other reactive primitive, establish (a) an initialized async executor via Executor::init_wasm_bindgen() and (b) a page-lifetime reactive Owner that is set as the current owner and retained for the document lifetime (let owner = Owner::new(); owner.set(); std::mem::forget(owner);), mirroring Leptos's own hydrate_islands idiom. Without both, effects are constructed but never run (their driving future is never spawned and no owner context exists), so the enhancement silently no-ops while server HTML stays correct per R9. This is an ADDED runtime-init obligation created by the no-mount choice, consistent with and not a reversal of R9.
 

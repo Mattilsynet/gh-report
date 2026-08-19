@@ -4,7 +4,12 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-CHECKS=(projection-lock async-trait pardosa-dep fence-converge dead-code-suppression non-exhaustive gate-citation)
+CHECKS=(projection-lock async-trait pardosa-dep fence-converge dead-code-suppression non-exhaustive gate-citation deny-ignore-lifecycle)
+
+# Activated (ghr-y4hkd discharged, ghr-zcr7c/ghr-swxy8): deny.toml now
+# satisfies SEC-0013:R3 (table-form ignores) as of commit be14235; the
+# check is safe to run on every PR.
+PENDING_CHECKS=()
 
 usage() {
   echo "usage: tools/tripwires.sh <check>|all|--list"
@@ -12,6 +17,12 @@ usage() {
   for c in "${CHECKS[@]}"; do
     echo "  $c"
   done
+  if [ "${#PENDING_CHECKS[@]}" -gt 0 ]; then
+    echo "pending activation (not in all):"
+    for c in "${PENDING_CHECKS[@]}"; do
+      echo "  $c"
+    done
+  fi
 }
 
 check_projection_lock() {
@@ -155,6 +166,102 @@ check_gate_citation() {
   return $fail
 }
 
+# SEC-0013:R2+R3+R4 — enforces the deny.toml advisory-ignore lifecycle:
+# every ignore entry must be table form with a machine-parseable
+# expires=/owner=/class= reason prefix, expiry must not be past-due, and
+# unused-ignored-advisory must stay >= warn. Staged in PENDING_CHECKS
+# (not CHECKS/`all`) until ghr-y4hkd brings deny.toml to R3 shape.
+# Manifest path overridable via DENY_TOML for fixture-based proof runs
+# without touching the real deny.toml.
+check_deny_ignore_lifecycle() {
+  local manifest="${DENY_TOML:-$ROOT/deny.toml}"
+
+  if [ ! -f "$manifest" ]; then
+    echo "::error::deny-ignore-lifecycle: manifest not found at $manifest (SEC-0013:R3)"
+    return 1
+  fi
+
+  local unused_setting
+  unused_setting=$(grep -E '^[[:space:]]*unused-ignored-advisory[[:space:]]*=' "$manifest" | head -1 | sed -E 's/.*=[[:space:]]*"([^"]*)".*/\1/')
+  if [ "$unused_setting" != "warn" ] && [ "$unused_setting" != "deny" ]; then
+    echo "::error::deny-ignore-lifecycle: unused-ignored-advisory must be \"warn\" or stricter, found \"${unused_setting:-<unset>}\" (SEC-0013:R2)"
+    return 1
+  fi
+
+  if ! grep -qE '^[[:space:]]*ignore[[:space:]]*=[[:space:]]*\[' "$manifest"; then
+    if grep -q 'RUSTSEC-' "$manifest"; then
+      echo "::error::deny-ignore-lifecycle: no [advisories] ignore = [ ] block matched, but RUSTSEC- text is present in $manifest — ignore entries appear present but none were parsed — parser/grammar drift, refusing to pass silently (SEC-0013:R3)"
+      return 1
+    fi
+    echo "deny-ignore-lifecycle: no [advisories] ignore = [ ] block present and no RUSTSEC- text found in $manifest — genuinely clean, passing (SEC-0013:R3)"
+    return 0
+  fi
+
+  local block
+  block=$(awk '/^[[:space:]]*ignore[[:space:]]*=[[:space:]]*\[/{flag=1; next} flag && /^[[:space:]]*\]/{exit} flag{print}' "$manifest")
+
+  local raw_lines
+  raw_lines=$(printf '%s\n' "$block" | grep -vE '^[[:space:]]*(#.*)?$' || true)
+
+  if [ -z "$raw_lines" ]; then
+    if grep -q 'RUSTSEC-' "$manifest"; then
+      echo "::error::deny-ignore-lifecycle: ignore = [ ] block present but empty in $manifest, yet RUSTSEC- text is present elsewhere — ignore entries appear present but none were parsed — parser/grammar drift, refusing to pass silently (SEC-0013:R3)"
+      return 1
+    fi
+    echo "deny-ignore-lifecycle: ignore = [ ] block present but empty and no RUSTSEC- text found in $manifest — genuinely clean, passing (SEC-0013:R3)"
+    return 0
+  fi
+
+  local fail=0
+  local entry_count=0
+  local today
+  today=$(date +%F)
+
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    trimmed=$(printf '%s' "$line" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
+
+    if printf '%s' "$trimmed" | grep -qE '^\{.*id[[:space:]]*=[[:space:]]*"[^"]+".*reason[[:space:]]*=[[:space:]]*"[^"]*".*\}'; then
+      entry_count=$((entry_count + 1))
+      local id reason
+      id=$(printf '%s' "$trimmed" | sed -E 's/.*id[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
+      reason=$(printf '%s' "$trimmed" | sed -E 's/.*reason[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/')
+
+      if printf '%s' "$reason" | grep -q 'class=vulnerability'; then
+        echo "::error::deny-ignore-lifecycle: ${id} reason declares class=vulnerability, which MUST NOT be ignored (SEC-0013:R1)"
+        fail=1
+        continue
+      fi
+
+      if ! printf '%s' "$reason" | grep -qE '^expires=[0-9]{4}-[0-9]{2}-[0-9]{2} owner=[^ ]+ class=(unmaintained|notice) -- '; then
+        echo "::error::deny-ignore-lifecycle: ${id} reason does not match required grammar 'expires=YYYY-MM-DD owner=<handle> class=unmaintained|notice -- ' (SEC-0013:R3)"
+        fail=1
+        continue
+      fi
+
+      local expires
+      expires=$(printf '%s' "$reason" | sed -E 's/^expires=([0-9]{4}-[0-9]{2}-[0-9]{2}).*/\1/')
+      if [ "$expires" \< "$today" ]; then
+        echo "::error::deny-ignore-lifecycle: ${id} expires=${expires} is past-due (today=${today}) (SEC-0013:R4)"
+        fail=1
+      fi
+    elif printf '%s' "$trimmed" | grep -qE '^"[^"]+"[[:space:]]*,?[[:space:]]*$'; then
+      entry_count=$((entry_count + 1))
+      local id
+      id=$(printf '%s' "$trimmed" | sed -E 's/^"([^"]+)".*/\1/')
+      echo "::error::deny-ignore-lifecycle: ${id} is bare-string form, not the required { id, reason } table form (SEC-0013:R3)"
+      fail=1
+    fi
+  done <<< "$raw_lines"
+
+  if [ "$entry_count" -eq 0 ]; then
+    echo "::error::deny-ignore-lifecycle: ignore block has content but zero entries were parsed — parser/grammar drift, refusing to pass silently (SEC-0013:R3)"
+    return 1
+  fi
+
+  return $fail
+}
+
 run_check() {
   case "$1" in
     projection-lock) check_projection_lock ;;
@@ -164,6 +271,7 @@ run_check() {
     dead-code-suppression) check_dead_code_suppression ;;
     non-exhaustive) check_non_exhaustive ;;
     gate-citation) check_gate_citation ;;
+    deny-ignore-lifecycle) check_deny_ignore_lifecycle ;;
     *)
       echo "unknown check: $1" >&2
       usage >&2
