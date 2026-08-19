@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-CHECKS=(projection-lock async-trait pardosa-dep fence-converge dead-code-suppression non-exhaustive gate-citation deny-ignore-lifecycle)
+CHECKS=(projection-lock async-trait pardosa-dep fence-converge dead-code-suppression non-exhaustive gate-citation adr-number-collision deny-ignore-lifecycle)
 
 # Activated (ghr-y4hkd discharged, ghr-zcr7c/ghr-swxy8): deny.toml now
 # satisfies SEC-0013:R3 (table-form ignores) as of commit be14235; the
@@ -166,6 +166,52 @@ check_gate_citation() {
   return $fail
 }
 
+# GND-0009 / COM-0017:R4 (oracle finding A6: no ADR governs ADR-id collision)
+# — mechanizes the enforcement surface this invariant needed: no two files
+# under docs/adr/** (INCLUDING docs/adr/stale/) may claim the same
+# PREFIX-NNNN id. Born from the SEC-0013 collision incident (two ADRs both
+# claimed SEC-0013 across branches; resolved by renumbering one to SEC-0014).
+# RESIDUAL GAP, recorded here deliberately (do not remove this notice): this
+# guard sees ONLY the current branch's docs/adr/ tree. A number claimed on an
+# unmerged remote/epic branch is still invisible until that branch merges —
+# cross-branch/remote-ref detection was evaluated and is NOT shipped here
+# (not cheaply/reliably achievable in CI); it may recur on the next
+# long-lived branch and is not caught until merge time.
+# Fail-open guard: the enumeration substep is asserted to return a non-zero,
+# plausible ADR count before the duplicate check runs — a matcher that
+# enumerates nothing would exit 0 forever and is worse than no check.
+check_adr_number_collision() {
+  local files
+  files=$(find "$ROOT/docs/adr" -type f -name '*.md')
+
+  local file_count
+  file_count=$(printf '%s\n' "$files" | grep -c . || true)
+  if [ "$file_count" -eq 0 ]; then
+    echo "::error::adr-number-collision: enumerated ZERO files under docs/adr/**/*.md — fail-open guard tripped, refusing to pass silently"
+    return 1
+  fi
+
+  local ids
+  ids=$(printf '%s\n' "$files" | xargs -n1 basename | grep -oE '^[A-Z]{2,4}-[0-9]{4}')
+
+  local dups
+  dups=$(printf '%s\n' "$ids" | sort | uniq -d)
+  if [ -z "$dups" ]; then
+    return 0
+  fi
+
+  local fail=0
+  while IFS= read -r dup; do
+    [ -z "$dup" ] && continue
+    echo "::error::adr-number-collision: duplicate ADR id ${dup} claimed by more than one file under docs/adr/ (GND-0009)"
+    printf '%s\n' "$files" | xargs -n1 basename | grep -E "^${dup}-" | while IFS= read -r f; do
+      echo "::error::adr-number-collision:   ${f}"
+    done
+    fail=1
+  done <<< "$dups"
+  return $fail
+}
+
 # SEC-0013:R2+R3+R4 — enforces the deny.toml advisory-ignore lifecycle:
 # every ignore entry must be table form with a machine-parseable
 # expires=/owner=/class= reason prefix, expiry must not be past-due, and
@@ -271,6 +317,7 @@ run_check() {
     dead-code-suppression) check_dead_code_suppression ;;
     non-exhaustive) check_non_exhaustive ;;
     gate-citation) check_gate_citation ;;
+    adr-number-collision) check_adr_number_collision ;;
     deny-ignore-lifecycle) check_deny_ignore_lifecycle ;;
     *)
       echo "unknown check: $1" >&2
