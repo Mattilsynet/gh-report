@@ -6,7 +6,7 @@ global `~/.config/opencode/AGENTS.md` (auto-loaded) — not repeated here.
 
 ## What this repo is
 
-Rust workspace (edition 2024, MSRV 1.97, resolver 3, 20 crates) shipping three
+Rust workspace (edition 2024, MSRV 1.97, resolver 3, 27 crates) shipping three
 binaries plus an ADR-governed library family and a large ADR corpus.
 
 - Binaries (real entrypoints): `adr-fmt` (ADR validator, read-only),
@@ -20,19 +20,74 @@ binaries plus an ADR-governed library family and a large ADR corpus.
 
 ## Build / test / verify (local cadence; boundary mirrors CI)
 
-- **INNER-LOOP** (every TDD increment, changed crate only):
+Three-tier verify cadence — INNER (per increment), MID (per sub-mission,
+ONCE), BOUNDARY (per epic, ONCE). This supersedes the prior two-tier text:
+the earlier wording bound BOUNDARY to "mission/sub-mission completion" with
+"exit codes from this tier back the done-claim" (ratified, adr-fmt-8whg7 /
+adr-fmt-xdlw9 O1); that bound the done-claim to the wrong granularity and is
+overwritten here, cited explicitly per adr-fmt-8whg7 and adr-fmt-xdlw9. The
+done-claim is now **tier-scoped**: a claim is backed by the tier whose scope
+matches the claim's scope — a sub-mission done-claim is backed by MID (its
+changed crates + reverse dependents); the EPIC done-claim is backed by
+BOUNDARY. Verify-before-claim is not weakened at any level; what changes is
+that a sub-mission no longer claims workspace-wide correctness it never
+established.
+
+Measured driver: 1647 full-workspace invocations, 84.2% at hopper/linus
+inner-loop tier, ~23.6h wall-clock, 94.6% same-session repeats, against
+0/98 exhaustively-triaged GenuineEscape yield (adr-fmt-bgp65 G2) — the prior
+prose-only cadence clause did not bind because mission contracts exposed one
+undifferentiated `verify_commands` vector and hopper executes every listed
+command (adr-fmt-j5ujb H1). Each tier below declares its own observable
+exit-code criterion (GND-0005, no ADR governs verification tiering itself —
+this is unconstrained ground, adr-fmt-xdlw9 O4 G1-G3/G7; COM-0024 governs
+test KINDS mapped to architectural layers, not runner or cadence choice,
+adr-fmt-xdlw9 O3).
+
+- **INNER** (every hopper TDD increment AND every per-review-round
+  re-verification, changed crate ONLY; exit-code criterion: the changed
+  crate's test + clippy exit 0):
   ```
   CARGO_TERM_PROGRESS_WHEN=never cargo test -p <crate> --message-format=short
   CARGO_TERM_PROGRESS_WHEN=never cargo clippy -p <crate> --message-format=short -- -D warnings
   ```
   One test: `cargo test -p <crate> <name> --message-format=short`.
-- **BOUNDARY** (mission/sub-mission completion, before claiming done;
+  `--workspace` / `--all-features` are FORBIDDEN at this tier.
+- **MID** (ONCE at sub-mission completion, before a sub-mission done-claim;
+  changed crates PLUS their reverse-dependent closure; exit-code criterion:
+  every listed `-p` package's test + clippy exit 0). `--workspace` /
+  `--all-features` are FORBIDDEN at this tier — MID stays scoped to the
+  computed package list, never the whole graph.
+
+  Reverse-dependent closure is mechanically computable, not a judgement
+  call — verified against `cherry-pit-core` (9 transitive reverse
+  dependents: `adr-srv`, `cherry-pit-app`, `cherry-pit-gateway`,
+  `cherry-pit-merger`, `cherry-pit-projection`, `cherry-pit-web`,
+  `cherry-pit-wq`, `gh-report`, `pardosa-cherry-pit-test-support`; exit 0):
+  ```
+  cargo metadata --format-version 1 --no-deps | jq -r --arg t <changed-crate> '
+    (reduce .packages[] as $p ({}; .[$p.name] = [$p.dependencies[]? | select(.path != null) | .name])) as $g
+    | [$t]
+    | until(
+        . as $seen
+        | ($g | to_entries | map(select(.value | any(. as $d | $seen | index($d)))) | map(.key)) as $new
+        | ($seen + $new | unique) == $seen;
+        . as $seen
+        | ($g | to_entries | map(select(.value | any(. as $d | $seen | index($d)))) | map(.key)) as $new
+        | ($seen + $new | unique)
+      )
+    | .[]
+  '
+  ```
+  Feed the resulting package names as `-p <name>` to `cargo test` / `cargo
+  clippy`, one flag per name including `<changed-crate>` itself.
+- **BOUNDARY** (ONCE per EPIC, before the epic done-claim; full workspace;
   measured total ~4.4 min, bead ghr-df35935d (authoritative) / ghr-64e9cdf0
   (orientation) — macOS/arm64, 14 cores, warm cargo cache, uncontended
   machine; not a universal constant, present with these conditions. The
   prior "60-83 min" figure (bead ghr-2f56d34d) is superseded — that run hit
   environment contention (NI=5, competing processes, Defender activity), not
-  a code baseline):
+  a code baseline; exit-code criterion: all four commands below exit 0):
   ```
   cargo build  --workspace --all-features --locked                  # 93.7s cold, 678 units
   cargo test   --workspace --all-features --locked --no-fail-fast   # ~120s warm (~40s compile + 85.6s exec, incl. doctests)
@@ -44,11 +99,28 @@ binaries plus an ADR-governed library family and a large ADR corpus.
   verifies only a fraction of the workspace (measured: ~40% covered before
   abort) — violating the coverage-parity intent of this tier. BOUNDARY stays
   on `cargo test` rather than `nextest`: nextest measured slower at workspace
-  scope (262s vs ~120s) and does not run doctests.
-  Exit codes from this tier back the done-claim; the cadence relocates controls
-  to where they earn their cost, not weakens verify-before-claim.
-- **CI-ONLY** (never in the local loop): CI owns deny, audit, and the
-  build-time chokepoint gates (`tools/tripwires.sh --list` enumerates them).
+  scope (262s vs ~120s) and does not run doctests. `cargo test --doc
+  --workspace` is retained here for agent-local parity with CI's dedicated
+  doctest step (see coverage-parity below).
+
+  Coverage parity (non-negotiable, and free here): CI's C1 doctest
+  condition (adr-fmt-cus9e) is a CI/pre-merge gate ONLY — adr-fmt-8whg7 Q2
+  already adjudicated that C1 does not obligate `cargo test --doc` in the
+  local inner loop. CI is untouched by this tiering change: the 6 required
+  contexts and stabsec code-owner review still run full verification
+  pre-merge. Nothing is deleted, `#[ignore]`d, or feature-gated by moving
+  BOUNDARY to epic granularity; coverage is relocated to where it earns its
+  cost, never dropped.
+- **CI-ONLY** (never in the local loop): CI owns deny, audit, and the two
+  tripwire jobs. No agent tier runs these — not INNER, not MID, not BOUNDARY.
+  A green BOUNDARY is therefore NOT a proxy for a green CI; the residual
+  defect class that reaches a PR unnoticed by every agent tier is exactly
+  "violates a CI-only invariant" — a supply-chain advisory, or a tripwire
+  whose grep no longer matches after a rename. Live instance: PR #12's K9
+  rename of `app/state.rs` -> `app/state/mod.rs` broke the
+  `gh-report-projection-lock-tripwire` whitelist; linus APPROVEd 0-issues and
+  BOUNDARY was green, but CI caught the break. Adding a tripwire grep to
+  MID/BOUNDARY is under consideration — it is NOT currently an obligation.
 - `clippy::pedantic` is the **standing bar**, not an elevation
   (`[workspace.lints.clippy] pedantic = warn` + CI `-D warnings`). New code must
   pass pedantic with zero warnings.
@@ -124,11 +196,13 @@ These are load-bearing; violating them is an abort-class change:
 
 ## Intent (why this repo exists — the gh-report stance)
 
-gh-report lays down a *small, observable, ratified* set of enabling constraints —
-after Solon the lawgiver — so that correct software is easier to build than
-incorrect software. The bet is **subtractive**: remove enough degrees of
-freedom that the remaining moves are obviously correct. When the type system
-rejects illegal architectures, the search space an agent must explore collapses.
+This workspace lays down a *small, observable, ratified* set of enabling
+constraints — an ADR corpus enforced by `adr-fmt`/`adr-srv` — so that correct
+software is easier to build than incorrect software. The bet is
+**subtractive**: remove enough degrees of freedom that the remaining moves
+are obviously correct. When the type system rejects illegal architectures,
+the search space an agent must explore collapses. `gh-report` is the first
+non-trivial consumer of that substrate, not the source of the constraints.
 
 - **The libraries are the product; the binaries are evidence they work.**
   `cherry-pit-*` is the EDA+DDD+hexagonal substrate (illegal compositions —
@@ -163,29 +237,9 @@ rejects illegal architectures, the search space an agent must explore collapses.
 
 ## Tooling notes
 
-- `graphify-out/graph.json` exists — for structural questions, lead with
-  `graphify explain <symbol>` (one node + its edges) or
-  `graphify affected <symbol> --depth N` (blast-radius before a refactor);
-  both are precise and fast (~2s for a real query). Demote `graphify query` —
-  it seeds lexically on the question's own words and can flood back hundreds
-  of unranked nodes with the correct answer buried or absent; use it only as
-  a last-resort broad scan, not the first tool reached for. Refresh with
-  `graphify update .` after code changes, or rely on the post-commit hook
-  (post-checkout no longer rebuilds — see below).
-  - Known, upstream-blocked limitations (do not re-litigate, do not attempt
-    a fix here): the graph is **undirected** (`directed=False`), so
-    `affected` blast-radius is symmetric when it conceptually shouldn't be —
-    the graphify library supports `directed=True` internally but no CLI flag
-    persists it (only `diagnose multigraph --directed` simulates it
-    read-only). And **`graph.html` is never generated** — the 5000-node viz
-    limit is a hardcoded literal at four call sites in the installed
-    package, with no resize knob, while this repo's post-cleanup graph is
-    ~11.5k nodes.
-  - The linked-worktree hook guard and the stdlib-stub post-rebuild filter
-    are **machine-local** `.git/hooks/` edits (hooks are never cloned or
-    version-controlled) — see `tools/graphify/README.md` for what they do
-    and the exact re-apply procedure after a fresh clone or a
-    `graphify hook install` re-run, which clobbers all of it.
+- `graphify-out/graph.json` exists — use `graphify query/explain/affected` for
+  structural questions before grepping; refresh with `graphify update .` after
+  code changes (or rely on the post-commit hook).
 - `.beads/` is an embedded-dolt store (gitignored) — bd mutations do **not**
   produce a git commit; the audit trail is dolt history + `interactions.jsonl`.
   Don't try to `git add` bead state.
