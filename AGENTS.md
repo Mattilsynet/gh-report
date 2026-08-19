@@ -190,14 +190,14 @@ rejects illegal architectures, the search space an agent must explore collapses.
   produce a git commit; the audit trail is dolt history + `interactions.jsonl`.
   Don't try to `git add` bead state.
 - Two bd stores exist for this repo's work, selected by cwd:
-  - Repo-local store: `.beads/` here (prefix `adr-fmt`) — the CANONICAL home
+  - Repo-local store: `.beads/` here (prefix `ghr`) — the CANONICAL home
     for any mission that describes THIS repo's code.
   - HOME store: `~/.beads` (prefix `anders_jensen`) — for cross-repo / personal
     work with no single repo home.
 - Convention (advisory — bd has no mechanism to enforce it; see below):
   - Run `bd` from the gh-report repo root (or any path inside it) for any
     repo-scoped mission, so beads auto-discover the repo-local `.beads/` and
-    land with the `adr-fmt` prefix, co-located with the code they describe.
+    land with the `ghr` prefix, co-located with the code they describe.
   - Use the HOME store only for genuinely cross-repo or personal-planning work.
   - A `mission:<slug>` label must resolve to an epic IN THE SAME STORE. Never
     use a bead/mission ID as a label value (`mission:anders_jensen-4gt` was such
