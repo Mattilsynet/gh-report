@@ -32,7 +32,7 @@ cargo run -p gh-report -- --dump-baseline --org <your-org> --store-dir ./store
 Operational recovery procedures live at
 [`crates/cherry-pit-gateway/RUNBOOKS.md`](crates/cherry-pit-gateway/RUNBOOKS.md).
 
-## Why a 28-crate workspace behind one dashboard
+## Why a 27-crate workspace behind one dashboard
 
 `gh-report` is built on a `cherry-pit-*` event-sourcing substrate (core,
 gateway, projection, app, web, work-queue, storage primitives), with durable
