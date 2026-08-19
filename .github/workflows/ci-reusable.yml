@@ -101,6 +101,13 @@ jobs:
       - name: gate-citation check (RST-0007:R7)
         if: always()
         run: tools/tripwires.sh gate-citation
+      # No two ADR files under docs/adr/** (incl. docs/adr/stale/) may claim
+      # the same PREFIX-NNNN id (GND-0009 / COM-0017:R4, oracle finding A6:
+      # no prior ADR governed this). Sees only THIS branch's tree — a number
+      # claimed on an unmerged remote branch stays invisible until merge.
+      - name: adr-number-collision check (GND-0009)
+        if: always()
+        run: tools/tripwires.sh adr-number-collision
       # The pardosa-nats live-test harness (crates/pardosa-nats/src/test_support.rs)
       # spawns a real `nats-server` and asserts its --version matches the pin in
       # tools/.nats-server-version. Install exactly that version, checksum-verified
