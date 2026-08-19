@@ -11,7 +11,7 @@ use crate::domain::checks::{
     BranchControls, BranchProtectionDetails, BranchProtectionResult, BranchProtectionStatus,
     BranchRequirements, CollectionFailureReason,
 };
-use crate::domain::repository::{Repository, Visibility};
+use crate::domain::repository::Repository;
 use crate::github::client::GitHubClient;
 use cherry_pit_web::sanitize_path_segment;
 
@@ -191,7 +191,7 @@ pub async fn evaluate(
         "/repos/{}/{}/branches/{encoded_branch}/protection",
         client.org_name, safe_name
     );
-    let (rulesets_result, legacy_result) = tokio::join!(
+    let (rulesets_result, legacy_result, repo_details_result) = tokio::join!(
         client.request(
             &rulesets_path,
             false,
@@ -204,7 +204,10 @@ pub async fn evaluate(
             config::DEFAULT_MAX_RETRIES,
             config::DEFAULT_REQUEST_TIMEOUT_SECS,
         ),
+        client.repo_details(&repo.name),
     );
+
+    let admin = repo_admin_signal(&repo_details_result);
 
     let combined = collect_and_merge_controls(&rulesets_result, &legacy_result, default_branch);
 
@@ -213,7 +216,7 @@ pub async fn evaluate(
         &rulesets_result,
         &legacy_result,
         default_branch,
-        repo.visibility,
+        admin,
         run_timestamp,
     );
 
@@ -271,13 +274,49 @@ fn collect_and_merge_controls(
     BranchControls::merge(&all_controls)
 }
 
+/// Caller's `administration:read` signal for the repository under
+/// evaluation, derived from a `repo_details` API outcome.
+///
+/// `Unknown` is a distinct state from `NotAdmin`: it covers a failed or
+/// transient `repo_details` lookup, a missing `permissions` object, or a
+/// missing `permissions.admin` field. Collapsing `Unknown` into `NotAdmin`
+/// (or into a bare `bool`) would make "we could not determine admin
+/// access" indistinguishable from "we determined the caller is not an
+/// admin" — an illegal-state-representable defect this enum removes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdminAccess {
+    /// `permissions.admin` was observed `true`.
+    Admin,
+    /// `permissions.admin` was observed `false`.
+    NotAdmin,
+    /// The lookup failed, was malformed, or lacked the field.
+    Unknown,
+}
+
+/// Derive [`AdminAccess`] from a repo-details API outcome.
+fn repo_admin_signal(repo_details_result: &crate::github::client::ApiOutcome) -> AdminAccess {
+    if !repo_details_result.is_ok() {
+        return AdminAccess::Unknown;
+    }
+    match repo_details_result
+        .data()
+        .and_then(|data| data.get("permissions"))
+        .and_then(|permissions| permissions.get("admin"))
+        .and_then(serde_json::Value::as_bool)
+    {
+        Some(true) => AdminAccess::Admin,
+        Some(false) => AdminAccess::NotAdmin,
+        None => AdminAccess::Unknown,
+    }
+}
+
 /// Build the final `BranchProtectionResult` from merged controls.
 fn build_protection_result(
     combined: Option<BranchControls>,
     rulesets_result: &crate::github::client::ApiOutcome,
     legacy_result: &crate::github::client::ApiOutcome,
     default_branch: &str,
-    visibility: Visibility,
+    admin: AdminAccess,
     run_timestamp: &str,
 ) -> BranchProtectionResult {
     match combined {
@@ -285,7 +324,7 @@ fn build_protection_result(
             let status_code = rulesets_result
                 .status_code()
                 .or_else(|| legacy_result.status_code());
-            let reason_kind = classify_failure_reason(rulesets_result, legacy_result, visibility);
+            let reason_kind = classify_failure_reason(rulesets_result, legacy_result, admin);
             let reason = reason_kind.map(|reason| reason.to_string());
 
             let status = if reason_kind
@@ -340,7 +379,7 @@ fn build_protection_result(
 fn classify_failure_reason(
     rulesets_result: &crate::github::client::ApiOutcome,
     legacy_result: &crate::github::client::ApiOutcome,
-    _visibility: Visibility,
+    admin: AdminAccess,
 ) -> Option<CollectionFailureReason> {
     if rulesets_result.status_code() == Some(403) || legacy_result.status_code() == Some(403) {
         return Some(CollectionFailureReason::PermissionDenied);
@@ -349,7 +388,12 @@ fn classify_failure_reason(
         return Some(CollectionFailureReason::RateLimited);
     }
     if rulesets_result.status_code() == Some(404) || legacy_result.status_code() == Some(404) {
-        return Some(CollectionFailureReason::NotFoundAbsent);
+        return Some(match admin {
+            AdminAccess::Admin => CollectionFailureReason::NotFoundAbsent,
+            AdminAccess::NotAdmin | AdminAccess::Unknown => {
+                CollectionFailureReason::PermissionSuspected
+            }
+        });
     }
     if rulesets_result.is_retryable() || legacy_result.is_retryable() {
         return Some(CollectionFailureReason::Transient);
@@ -545,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn private_404_without_controls_is_genuine_absence() {
+    fn private_404_with_admin_true_is_genuine_absence() {
         let not_found =
             crate::github::client::ApiOutcome::failure(Some(404), "not found".to_string(), false);
 
@@ -554,7 +598,7 @@ mod tests {
             &not_found,
             &not_found,
             "main",
-            Visibility::Private,
+            AdminAccess::Admin,
             "2026-06-17T11:31:04Z",
         );
 
@@ -570,28 +614,7 @@ mod tests {
     }
 
     #[test]
-    fn internal_404_without_controls_is_genuine_absence() {
-        let not_found =
-            crate::github::client::ApiOutcome::failure(Some(404), "not found".to_string(), false);
-
-        let result = build_protection_result(
-            None,
-            &not_found,
-            &not_found,
-            "main",
-            Visibility::Internal,
-            "2026-06-17T11:31:04Z",
-        );
-
-        assert_eq!(result.status, BranchProtectionStatus::Fail);
-        assert_eq!(
-            result.details.reason_kind,
-            Some(CollectionFailureReason::NotFoundAbsent)
-        );
-    }
-
-    #[test]
-    fn private_403_is_still_permission_denied() {
+    fn private_403_is_still_permission_denied_regardless_of_admin() {
         let denied =
             crate::github::client::ApiOutcome::failure(Some(403), "forbidden".to_string(), false);
 
@@ -600,7 +623,7 @@ mod tests {
             &denied,
             &denied,
             "main",
-            Visibility::Private,
+            AdminAccess::NotAdmin,
             "2026-06-17T11:31:04Z",
         );
 
@@ -612,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn public_404_without_controls_is_genuine_absence() {
+    fn not_admin_404_without_controls_is_permission_suspected() {
         let not_found =
             crate::github::client::ApiOutcome::failure(Some(404), "not found".to_string(), false);
 
@@ -621,15 +644,127 @@ mod tests {
             &not_found,
             &not_found,
             "main",
-            Visibility::Public,
+            AdminAccess::NotAdmin,
             "2026-06-17T11:31:04Z",
         );
 
-        assert_eq!(result.status, BranchProtectionStatus::Fail);
-        assert_eq!(result.details.reason.as_deref(), Some("not_found_absent"));
+        assert_eq!(result.status, BranchProtectionStatus::Unknown);
+        assert_eq!(
+            result.details.reason.as_deref(),
+            Some("permission_suspected")
+        );
         assert_eq!(
             result.details.reason_kind,
-            Some(CollectionFailureReason::NotFoundAbsent)
+            Some(CollectionFailureReason::PermissionSuspected)
+        );
+        assert_eq!(result.details.http_status, Some(404));
+    }
+
+    #[test]
+    fn unknown_admin_from_inconclusive_lookup_404_fails_closed_to_permission_suspected() {
+        let not_found =
+            crate::github::client::ApiOutcome::failure(Some(404), "not found".to_string(), false);
+
+        let result = build_protection_result(
+            None,
+            &not_found,
+            &not_found,
+            "main",
+            AdminAccess::Unknown,
+            "2026-06-17T11:31:04Z",
+        );
+
+        assert_eq!(result.status, BranchProtectionStatus::Unknown);
+        assert_eq!(
+            result.details.reason.as_deref(),
+            Some("permission_suspected")
+        );
+        assert_eq!(
+            result.details.reason_kind,
+            Some(CollectionFailureReason::PermissionSuspected)
+        );
+        assert_eq!(result.details.http_status, Some(404));
+    }
+
+    #[test]
+    fn classify_failure_reason_403_unchanged_regardless_of_admin() {
+        let denied =
+            crate::github::client::ApiOutcome::failure(Some(403), "forbidden".to_string(), false);
+
+        assert_eq!(
+            classify_failure_reason(&denied, &denied, AdminAccess::NotAdmin),
+            Some(CollectionFailureReason::PermissionDenied)
+        );
+        assert_eq!(
+            classify_failure_reason(&denied, &denied, AdminAccess::Admin),
+            Some(CollectionFailureReason::PermissionDenied)
+        );
+    }
+
+    #[test]
+    fn repo_admin_signal_is_unknown_when_repo_details_lookup_failed() {
+        let failed = crate::github::client::ApiOutcome::failure(
+            Some(500),
+            "internal server error".to_string(),
+            true,
+        );
+        assert_eq!(repo_admin_signal(&failed), AdminAccess::Unknown);
+    }
+
+    #[test]
+    fn repo_admin_signal_is_unknown_when_permissions_admin_missing() {
+        let success = crate::github::client::ApiOutcome::success(serde_json::json!({
+            "permissions": {}
+        }));
+        assert_eq!(repo_admin_signal(&success), AdminAccess::Unknown);
+    }
+
+    #[test]
+    fn repo_admin_signal_is_unknown_when_permissions_object_absent() {
+        let success = crate::github::client::ApiOutcome::success(serde_json::json!({}));
+        assert_eq!(repo_admin_signal(&success), AdminAccess::Unknown);
+    }
+
+    #[test]
+    fn repo_admin_signal_is_admin_when_permissions_admin_true() {
+        let success = crate::github::client::ApiOutcome::success(serde_json::json!({
+            "permissions": { "admin": true }
+        }));
+        assert_eq!(repo_admin_signal(&success), AdminAccess::Admin);
+    }
+
+    #[test]
+    fn repo_admin_signal_is_not_admin_when_permissions_admin_false() {
+        let success = crate::github::client::ApiOutcome::success(serde_json::json!({
+            "permissions": { "admin": false }
+        }));
+        assert_eq!(repo_admin_signal(&success), AdminAccess::NotAdmin);
+    }
+
+    #[test]
+    fn legacy_404_with_failed_repo_details_lookup_is_permission_suspected_not_genuine_absence() {
+        let not_found =
+            crate::github::client::ApiOutcome::failure(Some(404), "not found".to_string(), false);
+        let repo_details_failed = crate::github::client::ApiOutcome::failure(
+            Some(500),
+            "internal server error".to_string(),
+            true,
+        );
+
+        let admin = repo_admin_signal(&repo_details_failed);
+        let result = build_protection_result(
+            None,
+            &not_found,
+            &not_found,
+            "main",
+            admin,
+            "2026-06-17T11:31:04Z",
+        );
+
+        assert_eq!(result.status, BranchProtectionStatus::Unknown);
+        assert_eq!(
+            result.details.reason_kind,
+            Some(CollectionFailureReason::PermissionSuspected)
         );
         assert_eq!(result.details.http_status, Some(404));
     }

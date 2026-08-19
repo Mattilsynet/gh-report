@@ -29,6 +29,25 @@ pub struct RepositoryChecks {
     pub codeowners: CodeownersResult,
 }
 
+impl RepositoryChecks {
+    /// The timestamp this evidence was actually collected — every check
+    /// result within one collection pass is stamped from the same
+    /// `run_timestamp` (see `collector::branch_protection`,
+    /// `collector::security_policy`, `collector::dependabot`,
+    /// `collector::codeowners`, and `app::collect::failure_evidence_with_reason`),
+    /// so any one field is representative; `branch_protection.timestamp`
+    /// is used here as the anchor.
+    ///
+    /// This is the correct basis for cache-reuse age (adr-fmt-glprg):
+    /// GitHub's `Repository.updated_at` records the last repository
+    /// change, not when we observed it, and does not move when
+    /// branch-protection rules change.
+    #[must_use]
+    pub fn observed_at(&self) -> &str {
+        &self.branch_protection.timestamp
+    }
+}
+
 /// Security policy evaluation outcome.
 ///
 /// # Wire format

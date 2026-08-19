@@ -110,6 +110,28 @@ pub const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1";
 /// the previous collection completes.
 pub const COLLECTION_INTERVAL_SECS: u64 = 900;
 
+/// Maximum age (seconds) a baseline entry may be reused for, even when
+/// the repository's `updated_at` still matches the baseline's recorded
+/// value.
+///
+/// GitHub does not bump a repository's `updated_at` when its
+/// branch-protection rules change, so an `updated_at` match alone cannot
+/// prove a cached branch-protection verdict is still correct
+/// (`infra::baseline::should_reuse`). This bound forces periodic
+/// re-collection regardless of `updated_at`, at the known cost of one
+/// extra evaluation per repository per window.
+///
+/// 4 hours (16 collection cycles at [`COLLECTION_INTERVAL_SECS`]) is a
+/// risk-based choice, not the previously-used 24h/96-cycle figure: a
+/// full day between forced re-checks is too permissive for a
+/// reporting-integrity control whose entire purpose is bounding how
+/// long a stale branch-protection verdict can be served (adr-fmt-glprg
+/// review round 2). 4h keeps the vast majority of the quota savings baseline
+/// reuse exists for — an unchanged repo still avoids re-collection on
+/// 15 of every 16 sweeps — while capping the worst-case staleness
+/// window to well within a single working day.
+pub const BASELINE_MAX_AGE_SECS: u64 = 14_400;
+
 /// Fixed interval between team-refresh collector ticks (seconds),
 /// deliberately decoupled from [`COLLECTION_INTERVAL_SECS`] (ghr-3fda2878,
 /// roadmap ghr-b562fe02 §E Phase 3 T1: decoupled/eventual default). This
