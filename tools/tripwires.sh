@@ -4,14 +4,12 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-CHECKS=(projection-lock async-trait pardosa-dep fence-converge dead-code-suppression non-exhaustive gate-citation)
+CHECKS=(projection-lock async-trait pardosa-dep fence-converge dead-code-suppression non-exhaustive gate-citation deny-ignore-lifecycle)
 
-# Staged, not yet in CHECKS/`all`: deny.toml does not yet satisfy SEC-0013:R3
-# (its two ignore entries are bare strings, not the required table form).
-# Wiring this into CHECKS before that follow-up lands would turn every PR
-# red. Dispatchable by name today via `tools/tripwires.sh deny-ignore-lifecycle`.
-# Activation trigger: ghr-y4hkd.
-PENDING_CHECKS=(deny-ignore-lifecycle)
+# Activated (ghr-y4hkd discharged, ghr-zcr7c/ghr-swxy8): deny.toml now
+# satisfies SEC-0013:R3 (table-form ignores) as of commit be14235; the
+# check is safe to run on every PR.
+PENDING_CHECKS=()
 
 usage() {
   echo "usage: tools/tripwires.sh <check>|all|--list"
@@ -19,10 +17,12 @@ usage() {
   for c in "${CHECKS[@]}"; do
     echo "  $c"
   done
-  echo "pending activation (not in all; blocked on ghr-y4hkd):"
-  for c in "${PENDING_CHECKS[@]}"; do
-    echo "  $c"
-  done
+  if [ "${#PENDING_CHECKS[@]}" -gt 0 ]; then
+    echo "pending activation (not in all):"
+    for c in "${PENDING_CHECKS[@]}"; do
+      echo "  $c"
+    done
+  fi
 }
 
 check_projection_lock() {
