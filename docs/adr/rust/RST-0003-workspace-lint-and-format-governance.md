@@ -1,7 +1,7 @@
 # RST-0003. Workspace Lint and Format Governance
 
 Date: 2026-04-27
-Last-reviewed: 2026-04-28
+Last-reviewed: 2026-08-20 — refined — R5 restated as the attribute `reason =` mechanism enforced by tools/tripwires.sh; the prior wording required a source comment, an artefact the no-non-doc-comment house rule forbids
 Tier: B
 Status: Accepted
 
@@ -37,8 +37,10 @@ R3 [5]: `rustfmt.toml` at workspace root defines formatting;
   only stable rustfmt options are used
 R4 [5]: CI runs `cargo clippy -- -D warnings` and
   `cargo fmt --check`; both must pass for PR merge
-R5 [6]: Per-site `#[allow(clippy::lint)]` requires a justification
-  comment; blanket module-level allows are not permitted
+R5 [6]: Per-site suppression uses `#[expect(clippy::lint, reason =
+  "...")]`, or `#[allow(clippy::lint, reason = "...")]` where the
+  expectation would be unfulfilled; the `reason` argument carries the
+  justification. Blanket module-level allows are not permitted
 
 ## Consequences
 

@@ -1,14 +1,14 @@
 # CHE-0073. gh-report Storage Remodel
 
 Date: 2026-06-10
-Last-reviewed: 2026-07-16 — amended — added R10 TeamStateCaptured as the third persisted current-state class (mirrors R8; specified by CHE-0089); recorded roster durability requirement and render-time orphan-attribution boundary (mission:fr44n)
+Last-reviewed: 2026-08-20 — refined — recorded the CHE-0063 supersession as a `Supersedes:` lineage edge (previously declared only on CHE-0063's `Status:`); prior 2026-07-16 amendment added R10 TeamStateCaptured as the third persisted current-state class (mirrors R8; specified by CHE-0089), roster durability requirement and render-time orphan-attribution boundary (mission:fr44n)
 Tier: B
 Status: Accepted
 Crates: gh-report
 
 ## Related
 
-References: CHE-0074, CHE-0072, CHE-0048, CHE-0022, CHE-0024, CHE-0009, CHE-0005 | Supersedes: CHE-0054
+References: CHE-0074, CHE-0072, CHE-0048, CHE-0022, CHE-0024, CHE-0009, CHE-0005 | Supersedes: CHE-0054, CHE-0063
 
 ## Context
 
