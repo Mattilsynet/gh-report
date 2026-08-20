@@ -1,14 +1,14 @@
 # CHE-0100. Retire gateway MsgpackFileStore; nats/pgno-only persistence
 
 Date: 2026-07-23
-Last-reviewed: 2026-07-23
+Last-reviewed: 2026-08-20 - refined - narrowed R4; CHE-0043's surviving run-lock invariant re-homed to CHE-0053:R13, pgno fence corrected to PGN-0016
 Tier: B
 Status: Accepted
 Crates: cherry-pit-gateway, cherry-pit-core
 
 ## Related
 
-References: CHE-0098, CHE-0074, CHE-0045, CHE-0047, CHE-0032, PGN-0014 | Supersedes: CHE-0036, CHE-0043
+References: CHE-0098, CHE-0074, CHE-0045, CHE-0047, CHE-0032, CHE-0053, PGN-0016 | Supersedes: CHE-0036, CHE-0043
 
 ## Context
 
@@ -37,7 +37,7 @@ the only durable persistence implementations fleet-wide.
 R1 [5]: `pardosa` (`.pgno`-backed) and `pardosa-nats` (JetStream-backed) are the only durable-persistence `EventStore` implementations fleet-wide; msgpack-file persistence (`MsgpackFileStore`) is retired. `cherry-pit-core`'s downstream test/fixture cleanup follows from this rule directly — no separate ADR governs it.
 R2 [5]: `cherry-pit-gateway` deletes `MsgpackFileStore` (module, type, and `StoreError` variants unique to it) and drops the `rmp-serde` dependency once its test consumers migrate per R3.
 R3 [5]: Each `MsgpackFileStore` test consumer migrates to a pgno-backed `EventStore` where the test asserts file, durability, or crash-recovery semantics, or to an in-memory `EventStore` where the test only exercises `EventStore` trait behaviour; the choice per test site is triaged by copernicus evidence, not by this ADR.
-R4 [5]: CHE-0036 (file-per-stream full-rewrite storage model) and CHE-0043 (process-level file fencing) are superseded by this ADR: no rule in either survives `MsgpackFileStore` deletion, because both describe topology and fencing specific to that store's on-disk layout, not to pgno's differing topology (fencing for pgno is PGN-0014's concern).
+R4 [5]: CHE-0036 (file-per-stream storage model) and CHE-0043 (process-level file fencing) are superseded by this ADR: both describe topology and fencing specific to `MsgpackFileStore`'s on-disk layout. CHE-0043's single-process TTL run-lock invariant survives — its mechanism still ships — and is re-homed to CHE-0053:R13; cross-instance pgno fencing is PGN-0016's concern.
 R5 [5]: CHE-0032's atomic-write protocol (R1-R3: temp-file + fsync + rename + parent-dir fsync) is retained as a general crash-safety pattern; only its `MsgpackFileStore`-specific exemplar (R4) is retired, since the store it names no longer exists.
 R6 [5]: CHE-0036 and CHE-0043 move to `docs/adr/stale/` with `Status: Superseded`, superseded-by this ADR.
 

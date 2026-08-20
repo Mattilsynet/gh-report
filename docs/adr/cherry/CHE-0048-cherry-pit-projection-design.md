@@ -1,13 +1,13 @@
 # CHE-0048. Cherry Pit Projection Design
 
 Date: 2026-05-09
-Last-reviewed: 2026-05-19
+Last-reviewed: 2026-08-20 - refined - repointed References and R7 from retired CHE-0043 to CHE-0053:R13
 Tier: B
 Status: Accepted
 
 ## Related
 
-References: CHE-0005:R1, CHE-0008, CHE-0009:R1, CHE-0024:R1, CHE-0024:R3, CHE-0024:R4, CHE-0029:R4, CHE-0036, CHE-0037:R1, CHE-0038, CHE-0043, CHE-0047, CHE-0044:R3, CHE-0072, CHE-0074, CHE-0098
+References: CHE-0005:R1, CHE-0008, CHE-0009:R1, CHE-0024:R1, CHE-0024:R3, CHE-0024:R4, CHE-0029:R4, CHE-0036, CHE-0037:R1, CHE-0038, CHE-0053:R13, CHE-0047, CHE-0044:R3, CHE-0072, CHE-0074, CHE-0098
 
 ## Context
 
@@ -35,7 +35,7 @@ R5 [5]: The in-memory backend uses a concurrent hash map keyed by (aggregate_id,
 
 R6 [5]: v0.1 scope is single-aggregate, single-projection-per-driver-instance — the adapter binds to one aggregate type per Projection impl via associated types (CHE-0005:R1), and multi-projection composition is deferred to the WU-5 cherry-pit-app design phase where a builder with type-state for compile-time wiring completeness will be evaluated
 
-R7 [5]: Per-aggregate write coordination follows the single-process model inherited from CHE-0006:R1 and CHE-0043, using in-process per-aggregate locks consistent with CHE-0035:R1–R3
+R7 [5]: Per-aggregate write coordination follows the single-process model inherited from CHE-0006:R1 and CHE-0053:R13, using in-process per-aggregate locks consistent with CHE-0035:R1–R3
 
 R8 [5]: The adapter calls validate_stream() on every EventStore::load result before driving Projection::apply, per CHE-0042:R3–R4
 
@@ -45,7 +45,7 @@ R10 [5]: cherry-pit-projection exposes exactly two sanctioned persistence backen
 
 ## Consequences
 
-The persistent-backend posture inherits the single-process locking assumption from CHE-0006:R1 and CHE-0043. Multi-process projection writers would require a new ADR establishing cross-process coordination semantics — this is explicitly deferred. The PERSISTENT backend (R1) may impose an additional bound on `P` (e.g. `GenomeSafe`) as a pay-for-what-you-use constraint; the shared `Projection` trait and the EPHEMERAL backend's bounds (R5) are unchanged.
+The persistent-backend posture inherits the single-process locking assumption from CHE-0006:R1 and CHE-0053:R13. Multi-process projection writers would require a new ADR establishing cross-process coordination semantics — this is explicitly deferred. The PERSISTENT backend (R1) may impose an additional bound on `P` (e.g. `GenomeSafe`) as a pay-for-what-you-use constraint; the shared `Projection` trait and the EPHEMERAL backend's bounds (R5) are unchanged.
 
 Single-aggregate, single-projection-per-driver scope means cross-aggregate read models (spanning bounded contexts per CHE-0005:R3) are out of scope for v0.1. Multi-projection composition deferred to WU-5 cherry-pit-app design.
 

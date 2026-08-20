@@ -7,7 +7,7 @@ Status: Superseded by CHE-0074
 
 ## Related
 
-(no lineage edges — successor recorded in Status)
+Supersedes: CHE-0064, CHE-0065
 
 ## Retirement
 

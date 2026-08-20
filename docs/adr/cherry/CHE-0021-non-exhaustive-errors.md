@@ -1,7 +1,7 @@
 # CHE-0021. Non-Exhaustive Error Types for Semver Safety
 
 Date: 2026-04-25
-Last-reviewed: 2026-04-25
+Last-reviewed: 2026-08-20 - refined - repointed a prose citation from retired CHE-0043 to CHE-0053:R13
 Tier: B
 Status: Accepted
 
@@ -28,7 +28,7 @@ All public error types in `cherry-pit-core` are `#[non_exhaustive]`:
   `ConcurrencyConflict`, `Infrastructure` variants.
 - `StoreError` — enum with `ConcurrencyConflict`, `Infrastructure`,
   `StoreLocked`, and `CorruptData` variants. (`StoreLocked` added by
-  CHE-0043.)
+  CHE-0053:R13.)
 - `BusError` — struct wrapping `Box<dyn Error>`. `#[non_exhaustive]`
   prevents external pattern matching on the struct fields.
 - `ErrorCategory` — enum with stable `Retryable` and `Terminal`

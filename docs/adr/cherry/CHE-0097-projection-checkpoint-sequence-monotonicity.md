@@ -1,14 +1,14 @@
 # CHE-0097. Projection Checkpoint Sequence Monotonicity
 
 Date: 2026-07-23
-Last-reviewed: 2026-07-23
+Last-reviewed: 2026-08-20 - refined - repointed References from retired CHE-0043 to CHE-0053:R13
 Tier: B
 Status: Accepted
 Crates: cherry-pit-projection
 
 ## Related
 
-References: CHE-0092, CHE-0046, CHE-0004, CHE-0043
+References: CHE-0092, CHE-0046, CHE-0004, CHE-0053:R13
 
 ## Context
 
