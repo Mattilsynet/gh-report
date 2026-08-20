@@ -45,6 +45,11 @@ rss.csv
 # Bead-db rollback backups (local artefacts; keep out of git)
 .beads.backup-*
 
+# bd runtime artefacts regenerated on demand (workspace gate lock, and the
+# auto-import dedup marker keyed to .beads/issues.jsonl). Never source.
+.beads.gate.lock
+.beads/.auto-import-issues.jsonl
+
 # opencode plugin deps
 .opencode/node_modules/
 *.db
@@ -83,4 +88,9 @@ scripts/
 spec/fizzbee/out/
 out/
 spec/fizzbee/*.json
+
+# Out-of-workspace WASM guest scratch (not a workspace member, no manifest).
+# Holds generated bindings plus a cargo target tree; keep it local rather
+# than deleting it, since it is not rebuildable from anything in this repo.
+guests/
 
