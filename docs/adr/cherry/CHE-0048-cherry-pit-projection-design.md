@@ -1,13 +1,13 @@
 # CHE-0048. Cherry Pit Projection Design
 
 Date: 2026-05-09
-Last-reviewed: 2026-08-20 - refined - repointed References and R7 from retired CHE-0043 to CHE-0053:R13
+Last-reviewed: 2026-08-20 - refined - dropped retired CHE-0036 from References; no rule of it survives CHE-0100
 Tier: B
 Status: Accepted
 
 ## Related
 
-References: CHE-0005:R1, CHE-0008, CHE-0009:R1, CHE-0024:R1, CHE-0024:R3, CHE-0024:R4, CHE-0029:R4, CHE-0036, CHE-0037:R1, CHE-0038, CHE-0053:R13, CHE-0047, CHE-0044:R3, CHE-0072, CHE-0074, CHE-0098
+References: CHE-0005:R1, CHE-0008, CHE-0009:R1, CHE-0024:R1, CHE-0024:R3, CHE-0024:R4, CHE-0029:R4, CHE-0037:R1, CHE-0038, CHE-0053:R13, CHE-0047, CHE-0044:R3, CHE-0072, CHE-0074, CHE-0098
 
 ## Context
 

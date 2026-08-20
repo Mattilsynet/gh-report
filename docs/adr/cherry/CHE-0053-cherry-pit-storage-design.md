@@ -1,14 +1,14 @@
 # CHE-0053. Cherry Pit Storage Design
 
 Date: 2026-05-09
-Last-reviewed: 2026-08-20 - refined - narrowed R5 to CHE-0032; added R13 taking ownership of the single-process run-fencing invariant orphaned by CHE-0100
+Last-reviewed: 2026-08-20 - refined - dropped retired CHE-0036 as a named live invariant owner; no rule of it survives CHE-0100
 
 Tier: B
 Status: Accepted
 
 ## Related
 
-References: CHE-0038, CHE-0007:R1, CHE-0001, CHE-0007:R2, CHE-0007:R3, CHE-0018:R1, CHE-0018:R3, CHE-0022:R1, CHE-0029:R1, CHE-0029:R5, CHE-0029:R6, CHE-0030:R1, CHE-0030:R2, CHE-0032, CHE-0036, PGN-0016:R3, CHE-0051:R1
+References: CHE-0038, CHE-0007:R1, CHE-0001, CHE-0007:R2, CHE-0007:R3, CHE-0018:R1, CHE-0018:R3, CHE-0022:R1, CHE-0029:R1, CHE-0029:R5, CHE-0029:R6, CHE-0030:R1, CHE-0030:R2, CHE-0032, PGN-0016:R3, CHE-0051:R1
 
 ## Context
 
@@ -16,11 +16,11 @@ cherry-pit-storage is a new leaf-utility crate that absorbs the domain-agnostic,
 
 The crate sits on the synchronous side of the CHE-0018 boundary (CHE-0018:R1 sync, CHE-0018:R3 core async-free), opposite cherry-pit-runtime (CHE-0052). It carries no cherry-pit-* deps and per CHE-0029:R1 / CHE-0029:R4 stays a leaf peer of cherry-pit-core.
 
-Invariant ownership stays with CHE-0032 (atomic writes) and CHE-0036 (file-per-stream layout, gateway-owned); this crate ships a *mechanism* satisfying CHE-0032. Run fencing differs: CHE-0100 retired its owner CHE-0043, so R13 owns that invariant here. Object-store backends (CHE-0044) and async wrappers are out of scope.
+Invariant ownership stays with CHE-0032 (atomic writes); this crate ships a *mechanism* satisfying CHE-0032. Run fencing differs: CHE-0100 retired its owner CHE-0043, so R13 owns that invariant here. Object-store backends (CHE-0044) and async wrappers are out of scope.
 
 ## Decision
 
-cherry-pit-storage ships `PersistenceError`, `atomic_write_bytes`, `atomic_write_text`, `RunLock`, `LockMetadata`, `acquire`, `lock_path`, `DEFAULT_LOCK_FILENAME`, `DEFAULT_LOCK_TTL`, and `build_snapshot_signature` as a `pub use`-flat surface (CHE-0030:R1) over private `error`, `fs`, `lock`, and `signature` modules. The crate has zero cherry-pit-* dependencies and depends only on `thiserror`, `tempfile`, `tracing`, `serde`, `serde_json`, and `sha2` (plus whatever crates `lock.rs` already pulls in for filetime / process-id reading). The crate is synchronous — no tokio, no futures-util, no async fn anywhere on the public surface — placing it on the CHE-0018:R1 side of the sync/async line, opposite cherry-pit-runtime (CHE-0052). CHE-0032 / CHE-0036 are referenced (the mechanism shipped here satisfies the CHE-0032 invariant) but their text is not amended; ownership of those invariants stays with those ADRs. Run fencing is the exception: CHE-0100 retired its owner CHE-0043 without a surviving home, so R13 states the invariant here (2026-08-20 amendment). The DAG posture is no inbound cherry-pit-* edges in v0.1; `cherry-pit-gateway` retains its private atomic-write helper rather than depending on cherry-pit-storage, preserving the crate's leaf status (R12).
+cherry-pit-storage ships `PersistenceError`, `atomic_write_bytes`, `atomic_write_text`, `RunLock`, `LockMetadata`, `acquire`, `lock_path`, `DEFAULT_LOCK_FILENAME`, `DEFAULT_LOCK_TTL`, and `build_snapshot_signature` as a `pub use`-flat surface (CHE-0030:R1) over private `error`, `fs`, `lock`, and `signature` modules. The crate has zero cherry-pit-* dependencies and depends only on `thiserror`, `tempfile`, `tracing`, `serde`, `serde_json`, and `sha2` (plus whatever crates `lock.rs` already pulls in for filetime / process-id reading). The crate is synchronous — no tokio, no futures-util, no async fn anywhere on the public surface — placing it on the CHE-0018:R1 side of the sync/async line, opposite cherry-pit-runtime (CHE-0052). CHE-0032 is referenced (the mechanism shipped here satisfies the CHE-0032 invariant) but its text is not amended; ownership of that invariant stays with that ADR. Run fencing is the exception: CHE-0100 retired its owner CHE-0043 without a surviving home, so R13 states the invariant here (2026-08-20 amendment). The DAG posture is no inbound cherry-pit-* edges in v0.1; `cherry-pit-gateway` retains its private atomic-write helper rather than depending on cherry-pit-storage, preserving the crate's leaf status (R12).
 
 R1 [5]: cherry-pit-storage has zero cherry-pit-* dependencies — `[dependencies]` lists only `thiserror`, `tempfile`, `tracing`, `serde`, `serde_json`, `sha2`, and the donor's existing low-level deps (`filetime` for stale-lock detection, `gethostname` and `std::process` for `LockMetadata`); the crate MUST NOT add `cherry-pit-core` or any other `cherry-pit-*` crate to its `[dependencies]` table in v0.1
 
@@ -30,7 +30,7 @@ R3 [5]: cherry-pit-storage exposes its public API via private modules with selec
 
 R4 [5]: cherry-pit-storage is synchronous — no `async fn`, no future-returning method, no tokio dependency, no futures-util dependency — placing the crate on the CHE-0018:R1 sync side of the boundary; consumers needing async I/O wrap calls in `tokio::task::spawn_blocking` themselves (per R7)
 
-R5 [5]: cherry-pit-storage ships the *mechanism* satisfying CHE-0032 (atomic writes via temp + fsync + rename) but does NOT own that invariant — CHE-0032 retains authoritative ownership and consumers cite it directly while reaching for `atomic_write_bytes`; CHE-0036 layout stays gateway-owned; run-fencing ownership is R13's
+R5 [5]: cherry-pit-storage ships the *mechanism* satisfying CHE-0032 (atomic writes via temp + fsync + rename) but does NOT own that invariant — CHE-0032 retains authoritative ownership and consumers cite it directly while reaching for `atomic_write_bytes`; run-fencing ownership is R13's
 
 R6 [4]: cherry-pit-storage preserves the donor's documented crash-safety contract verbatim — `atomic_write_bytes` fsyncs file contents before rename but does NOT fsync the parent directory after rename, guaranteeing durability against process crashes but not against power-loss on all filesystems (per `quics-memoization::lib.rs` lines 8–11); changing this contract is a SemVer-major break and must come with its own ADR
 
@@ -50,7 +50,7 @@ R13 [5]: cherry-pit-storage OWNS the run-fencing invariant, scoped to one host's
 
 ## Consequences
 
-**Positive.** gh-report and future cherry-pit consumers gain a stable crate for crash-safe writes, run-locking, and signatures, severed from the dismantled `quics-memoization` lineage. Zero-cherry-pit-dep posture (R1) keeps the crate a leaf, independently publishable at v0.2. Synchronous stance (R4) leaves cherry-pit-core's transitive closure unchanged. CHE-0032 / CHE-0036 remain unamended (R5); run fencing is owned here (R13).
+**Positive.** gh-report and future cherry-pit consumers gain a stable crate for crash-safe writes, run-locking, and signatures, severed from the dismantled `quics-memoization` lineage. Zero-cherry-pit-dep posture (R1) keeps the crate a leaf, independently publishable at v0.2. Synchronous stance (R4) leaves cherry-pit-core's transitive closure unchanged. CHE-0032 remains unamended (R5); run fencing is owned here (R13).
 
 **Negative.** Fifth aspirational cherry-pit crate in `adr-fmt.toml`; adr-fmt warnings persist until A6 scaffolds it. R12's no-gateway-edge keeps two atomic-write implementations coexisting in v0.1 — intentional bounded duplication, both satisfying CHE-0032; consolidation reopens when R6's contract changes. Async-heavy consumers pay `spawn_blocking` ceremony per call site (R7).
 
@@ -64,7 +64,7 @@ R13 [5]: cherry-pit-storage OWNS the run-fencing invariant, scoped to one host's
 
 **Take ownership of the CHE-0032 / CHE-0036 / CHE-0043 invariants and amend those ADRs to point at cherry-pit-storage as their authoritative home.** Would have re-tiered cherry-pit-storage upward and rewritten the three D-tier ADRs to delegate their guarantees to the new crate. Rejected because it conflates *invariant ownership* with *mechanism shipment*: CHE-0032 should remain the authoritative statement of "atomic file writes use temp + fsync + rename" regardless of whether cherry-pit-storage, cherry-pit-gateway's private helper, or a future object-store backend (CHE-0044) is the call-site mechanism. The split — invariants in their own ADRs, one mechanism in cherry-pit-storage — preserves substitutability (a CHE-0044 object-store backend can satisfy CHE-0032 differently without amending this ADR) and avoids the abort trigger named in the A3 mission contract (no existing CHE ADR is amended).
 
-*Amendment record, 2026-08-20.* This rejection is narrowed, not reversed. Its substitutability argument was made for CHE-0032 and still holds: R5 leaves CHE-0032 authoritative. It no longer holds for run fencing. CHE-0100 (2026-07-23) retired CHE-0043 in full while `RunLock` / `LockMetadata` / `DEFAULT_LOCK_TTL` kept shipping here, leaving a live invariant with no owning ADR — the situation the rejection never contemplated, since it presupposed a live alternative home. No substitutable second fencing mechanism exists. R13 therefore states the invariant here rather than burning a permanent ADR number (AFM-0008:R3) on a one-mechanism invariant. The second ground quoted above ("the abort trigger named in the A3 mission contract") was a mission-scoped constraint, not a durable architectural one.
+*Amendment record, 2026-08-20.* This rejection is narrowed, not reversed. Its substitutability argument was made for CHE-0032 and still holds: R5 leaves CHE-0032 authoritative. It no longer holds for run fencing. CHE-0100 (2026-07-23) retired CHE-0043 in full while `RunLock` / `LockMetadata` / `DEFAULT_LOCK_TTL` kept shipping here, leaving a live invariant with no owning ADR — the situation the rejection never contemplated, since it presupposed a live alternative home. No substitutable second fencing mechanism exists. R13 therefore states the invariant here rather than burning a permanent ADR number (AFM-0008:R3) on a one-mechanism invariant. The second ground quoted above ("the abort trigger named in the A3 mission contract") was a mission-scoped constraint, not a durable architectural one. CHE-0036 is likewise Superseded by CHE-0100, but unlike run fencing no mechanism survives it — no code in this workspace constructs a one-file-per-stream layout — so it is dropped as a named owner here with nothing re-homed.
 
 **Add cherry-pit-storage as an inbound dep on `cherry-pit-core` so core's `Aggregate` trait can call into atomic-write directly during apply.** Would have made cherry-pit-core a consumer of cherry-pit-storage. Rejected on two grounds: (i) it violates CHE-0018:R3 in spirit — core is supposed to be runtime-free and dep-minimal, and pulling `tempfile`, `sha2`, and `serde_json` into core's transitive closure for the benefit of a small mechanism subset is exactly the closure inflation CHE-0029:R6 guards against; (ii) it violates the CHE-0009 infallible-`apply` invariant — `Aggregate::apply` is sync and infallible, but `atomic_write_bytes` returns `Result<(), PersistenceError>` and is fallible by construction, so any temptation to call it from `apply` is already foreclosed by the type system. Storage-primitive consumers are infrastructure-tier (gateway, projection, agent, runtime, application-tier), never core.
 
