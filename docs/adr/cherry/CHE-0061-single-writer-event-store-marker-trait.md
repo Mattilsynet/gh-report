@@ -1,7 +1,7 @@
 # CHE-0061. SingleWriterEventStore Marker Trait
 
 Date: 2026-05-16
-Last-reviewed: 2026-08-20 - refined - repointed R3's run-lock citation from retired CHE-0043 to CHE-0053:R13
+Last-reviewed: 2026-08-20 - refined - dropped retired CHE-0036 from R3; no file-per-stream mechanism survives CHE-0100
 Tier: B
 Status: Accepted
 
@@ -33,7 +33,7 @@ R2 [5]: SingleWriterEventStore is a zero-method marker trait; the
 R3 [5]: PardosaEventStore MUST implement SingleWriterEventStore on
   the strength of PGN-0010:R6's single-writer backend stance; cherry-pit-storage
   MAY implement it where CHE-0006 single-writer is enforced by the
-  file-per-stream layout (CHE-0036) and run-lock (CHE-0053:R13).
+  run-lock (CHE-0053:R13).
 
 R4 [5]: Downstream code requiring single-writer guarantees MUST bound
   on SingleWriterEventStore per CHE-0057:R4 rather than asserting it
