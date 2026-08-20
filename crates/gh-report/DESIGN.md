@@ -472,7 +472,7 @@ a real contract.
 DESIGN.md prefers **idiomatic implementation per the binding ADRs over
 strict prescriptive non-goals**. When CHE-0018 (sync domain / async
 infra), CHE-0024 (event delivery), CHE-0029 (workspace graph),
-CHE-0032 / CHE-0036 / CHE-0043 (atomic writes / file-per-stream /
+CHE-0032 / CHE-0043 (atomic writes /
 process fencing), CHE-0048 (cherry-pit-projection), CHE-0050
 (cherry-pit-gateway msgpack-file store), CHE-0051 (cherry-pit-app), CHE-0052
 (cherry-pit-runtime), or CHE-0053 (cherry-pit-storage)
