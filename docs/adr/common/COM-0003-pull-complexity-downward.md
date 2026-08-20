@@ -1,7 +1,7 @@
 # COM-0003. Pull Complexity Downward
 
 Date: 2026-04-25
-Last-reviewed: 2026-04-28
+Last-reviewed: 2026-08-20 - refined - repointed a prose citation from retired CHE-0043 to CHE-0053:R13
 Tier: B
 Status: Accepted
 
@@ -13,7 +13,7 @@ References: COM-0002
 
 Ousterhout (Ch. 8) argues that since a module is implemented once but called many times, complexity in the implementation is paid once while complexity in the interface is paid by every caller. Configuration parameters are a specific case — each option pushes a decision to callers who must understand and choose correctly.
 
-Cherry-pit applies this extensively: the store creates envelopes (CHE-0016) so callers pass only `Vec<Event>`; infrastructure owns identity (CHE-0020); two-level concurrency (CHE-0035) hides locks behind three methods; file fencing (CHE-0043) acquires lazily without caller involvement.
+Cherry-pit applies this extensively: the store creates envelopes (CHE-0016) so callers pass only `Vec<Event>`; infrastructure owns identity (CHE-0020); two-level concurrency (CHE-0035) hides locks behind three methods; run fencing (CHE-0053:R13) acquires lazily without caller involvement.
 
 ## Decision
 
