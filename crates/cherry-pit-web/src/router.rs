@@ -195,6 +195,7 @@ where
     R: CommandRouter<Gateway = G> + Clone + Send + Sync + 'static,
 {
     let ctx = extract_correlation(&headers);
+    let echo = ctx.clone();
     let idempotency = extract_idempotency_key(&headers);
     let outcome = state
         .router()
@@ -206,11 +207,14 @@ where
         }
         Ok(DispatchOutcome::Sent) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorBody {
-                code: "router_misroute",
-                message: "router returned Sent on create endpoint".to_string(),
-                correlation_id: None,
-            }),
+            Json(
+                ErrorBody {
+                    code: "router_misroute",
+                    message: "router returned Sent on create endpoint".to_string(),
+                    correlation_id: None,
+                }
+                .with_correlation(&echo),
+            ),
         )
             .into_response(),
         Err((status, headers, body)) => (status, headers, Json(body)).into_response(),
@@ -237,6 +241,7 @@ where
     R: CommandRouter<Gateway = G> + Clone + Send + Sync + 'static,
 {
     let ctx = extract_correlation(&headers);
+    let echo = ctx.clone();
     let idempotency = extract_idempotency_key(&headers);
     let outcome = state
         .router()
@@ -246,11 +251,14 @@ where
         Ok(DispatchOutcome::Sent) => StatusCode::OK.into_response(),
         Ok(DispatchOutcome::Created { aggregate_id }) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorBody {
-                code: "router_misroute",
-                message: format!("router returned Created({aggregate_id}) on send endpoint"),
-                correlation_id: None,
-            }),
+            Json(
+                ErrorBody {
+                    code: "router_misroute",
+                    message: format!("router returned Created({aggregate_id}) on send endpoint"),
+                    correlation_id: None,
+                }
+                .with_correlation(&echo),
+            ),
         )
             .into_response(),
         Err((status, headers, body)) => (status, headers, Json(body)).into_response(),

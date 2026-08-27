@@ -188,6 +188,18 @@ fn json_post(uri: &str, body: &StubWire) -> Request<Body> {
         .unwrap()
 }
 
+const MISROUTE_CORRELATION_ID: &str = "6f1d2c3b-4a59-4c7e-8b0d-1e2f3a4b5c6d";
+
+fn correlated_json_post(uri: &str, body: &StubWire) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("x-correlation-id", MISROUTE_CORRELATION_ID)
+        .body(Body::from(serde_json::to_vec(body).unwrap()))
+        .unwrap()
+}
+
 #[tokio::test]
 async fn create_endpoint_returns_201_with_aggregate_id() {
     let response = app()
@@ -224,5 +236,61 @@ async fn rejected_error_maps_to_422() {
     assert!(
         body.contains(r#""code":"rejected""#),
         "error body must carry the stable code: {body}"
+    );
+}
+
+#[tokio::test]
+async fn create_endpoint_misroute_body_carries_the_request_correlation_id() {
+    let response = app()
+        .oneshot(correlated_json_post("/v1/aggregates", &StubWire::Send))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    let body = body_string(response).await;
+    assert!(
+        body.contains(r#""code":"router_misroute""#),
+        "misroute body must carry the stable code: {body}"
+    );
+    assert!(
+        body.contains(&format!(r#""correlation_id":"{MISROUTE_CORRELATION_ID}""#)),
+        "misroute body must carry the request correlation id: {body}"
+    );
+}
+
+#[tokio::test]
+async fn send_endpoint_misroute_body_carries_the_request_correlation_id() {
+    let response = app()
+        .oneshot(correlated_json_post(
+            "/v1/aggregates/1/commands",
+            &StubWire::Create,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    let body = body_string(response).await;
+    assert!(
+        body.contains(r#""code":"router_misroute""#),
+        "misroute body must carry the stable code: {body}"
+    );
+    assert!(
+        body.contains(&format!(r#""correlation_id":"{MISROUTE_CORRELATION_ID}""#)),
+        "misroute body must carry the request correlation id: {body}"
+    );
+}
+
+#[tokio::test]
+async fn misroute_body_elides_correlation_id_when_the_request_carries_none() {
+    let response = app()
+        .oneshot(json_post("/v1/aggregates", &StubWire::Send))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    let body = body_string(response).await;
+    assert!(
+        !body.contains("correlation_id"),
+        "CHE-0039 R2 forbids synthesising a correlation id: {body}"
     );
 }
