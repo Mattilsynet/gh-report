@@ -19,6 +19,16 @@ use axum::{
     response::Response,
 };
 
+/// Default page Content-Security-Policy applied to every response whose
+/// handler did not set one.
+///
+/// Locks every fetch directive to same-origin and denies the two
+/// injection-relevant document directives outright (`base-uri 'none'`
+/// blocks `<base>` hijacking, `form-action 'none'` blocks exfiltration
+/// via injected forms). Consumers override via their validated config;
+/// SVG responses override with the stricter [`SVG_CSP`] instead.
+pub const DEFAULT_CSP: &str = "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'";
+
 /// SVG-specific Content-Security-Policy that blocks script execution.
 ///
 /// Responses serving `image/svg+xml` may carry embedded `<script>` whose

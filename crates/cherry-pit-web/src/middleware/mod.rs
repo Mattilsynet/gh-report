@@ -23,6 +23,7 @@
 pub(crate) mod compression;
 pub(crate) mod correlation;
 pub(crate) mod error;
+pub(crate) mod http;
 pub(crate) mod limits;
 pub(crate) mod path;
 pub(crate) mod security;
@@ -45,7 +46,7 @@ pub use error::{
 };
 pub use limits::LayerLimits;
 pub use path::{NormalizedPath, PathSegmentError, normalize_request_path, sanitize_path_segment};
-pub use security::{SVG_CSP, security_headers};
+pub use security::{DEFAULT_CSP, SVG_CSP, security_headers};
 pub use trace::{HttpTraceLayer, http_trace_layer};
 pub use ws_auth::{WebSocketOriginPolicy, WsAuthLimits};
 

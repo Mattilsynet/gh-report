@@ -44,58 +44,13 @@ use tracing::{debug, info, warn};
 use super::config::ValidatedConfig;
 use super::error::ServerError;
 use super::state::ServerState;
-use crate::middleware::{SVG_CSP, http_trace_layer, normalize_request_path, security_headers};
-
-/// Supported response encodings, in preference order.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Encoding {
-    Zstd,
-    Identity,
-}
-
-/// Negotiate the best encoding from an `Accept-Encoding` header value.
-///
-/// Parses q-values (quality factors) per RFC 7231 §5.3.4 and selects the
-/// highest-quality supported encoding. Only `zstd` and `identity`
-/// are supported. Encodings with `q=0` are excluded.
-///
-/// Default quality is 1.0 when no q-value is specified.
-fn negotiate_encoding(accept: &HeaderValue) -> Encoding {
-    let Ok(s) = accept.to_str() else {
-        return Encoding::Identity;
-    };
-
-    let mut zstd_quality: Option<f32> = None;
-
-    for part in s.split(',') {
-        let part = part.trim();
-        let (name, params) = match part.split_once(';') {
-            Some((n, p)) => (n.trim(), Some(p.trim())),
-            None => (part, None),
-        };
-
-        let quality = params
-            .and_then(|p| {
-                p.split(';').find_map(|param| {
-                    let param = param.trim();
-                    param
-                        .strip_prefix("q=")
-                        .and_then(|q| q.trim().parse::<f32>().ok())
-                })
-            })
-            .unwrap_or(1.0);
-
-        if name == "zstd" && quality > 0.0 {
-            zstd_quality = Some(quality);
-        }
-    }
-
-    if zstd_quality.is_some_and(|q| q > 0.0) {
-        Encoding::Zstd
-    } else {
-        Encoding::Identity
-    }
-}
+use crate::middleware::compression::{Encoding, negotiate_encoding};
+use crate::middleware::http::etag_weak_match;
+use crate::middleware::ws_auth::{WS_MAX_MESSAGE_SIZE, validate_ws_origin};
+use crate::middleware::{
+    DEFAULT_CSP, SVG_CSP, WebSocketOriginPolicy, http_trace_layer, normalize_request_path,
+    security_headers,
+};
 
 /// Server-side ping interval for WebSocket keepalive (seconds).
 const WS_PING_INTERVAL_SECS: u64 = 30;
@@ -103,98 +58,6 @@ const WS_PING_INTERVAL_SECS: u64 = 30;
 /// Maximum time to wait for a Pong response after sending a Ping (seconds).
 /// If the client does not respond within this window, the connection is closed.
 const WS_PONG_DEADLINE_SECS: u64 = 10;
-
-/// Maximum inbound WebSocket message size (bytes). Client messages are
-/// discarded, so 4 KB is sufficient for Pong frames and future commands.
-const WS_MAX_MESSAGE_SIZE: usize = 4096;
-
-/// Validate that the WebSocket `Origin` header matches the request `Host`.
-///
-/// Prevents Cross-Site WebSocket Hijacking (CSWSH): an attacker's page
-/// opening a WebSocket to this service would otherwise have the browser
-/// attach ambient cookies, leaking page-update metadata.
-///
-/// # Algorithm
-///
-/// Reject non-HTTP(S) schemes; extract the host from `Origin`; strip the
-/// default port for the scheme (443/80) from both `Origin` and `Host`;
-/// compare the resulting `(hostname, port)` tuples.
-///
-/// An absent `Origin` header is allowed: browsers always send `Origin` on
-/// same-origin WebSocket connections, so its absence indicates a
-/// non-browser client (curl, monitoring) not subject to CSWSH. This is a
-/// deliberate trade-off — non-browser clients connect unrestricted;
-/// production deployments should enforce authentication at the ingress
-/// layer.
-fn validate_ws_origin(headers: &HeaderMap) -> bool {
-    let Some(origin) = headers.get(header::ORIGIN) else {
-        return true;
-    };
-    let Ok(origin_str) = origin.to_str() else {
-        return false;
-    };
-
-    let Some((scheme, after_scheme)) = origin_str.split_once("://") else {
-        return false;
-    };
-
-    let default_port = match scheme {
-        "https" => "443",
-        "http" => "80",
-        _ => return false,
-    };
-
-    let origin_authority = after_scheme
-        .split_once('/')
-        .map_or(after_scheme, |(head, _)| head);
-
-    let Some(host_hdr) = headers.get(header::HOST) else {
-        return false;
-    };
-    let Ok(host_str) = host_hdr.to_str() else {
-        return false;
-    };
-
-    if origin_authority == host_str {
-        return true;
-    }
-
-    let origin_normalized = normalize_authority(origin_authority, default_port);
-    let host_normalized = normalize_authority(host_str, default_port);
-
-    origin_normalized == host_normalized
-}
-
-/// Strip the default port from an authority string for comparison.
-///
-/// Handles IPv6 bracket notation: `[::1]:8080` splits into hostname
-/// `[::1]` and port `8080`. Plain IPv4/hostname uses `rsplit_once(':')`.
-///
-/// `"example.com:443"` with `default_port = "443"` → `("example.com", "")`.
-/// `"example.com:8080"` with `default_port = "443"` → `("example.com", "8080")`.
-/// `"example.com"` → `("example.com", "")`.
-/// `"[::1]:8080"` → `("[::1]", "8080")`.
-fn normalize_authority<'a>(authority: &'a str, default_port: &str) -> (&'a str, &'a str) {
-    if authority.starts_with('[')
-        && let Some(bracket_end) = authority.find(']')
-    {
-        let after_bracket = &authority[bracket_end + 1..];
-        if let Some(port) = after_bracket.strip_prefix(':') {
-            let hostname = &authority[..=bracket_end];
-            if port == default_port {
-                return (hostname, "");
-            }
-            return (hostname, port);
-        }
-        return (authority, "");
-    }
-
-    match authority.rsplit_once(':') {
-        Some((hostname, port)) if port == default_port => (hostname, ""),
-        Some((hostname, port)) => (hostname, port),
-        None => (authority, ""),
-    }
-}
 
 /// GET /ws — upgrade to WebSocket for real-time page update notifications.
 ///
@@ -221,7 +84,7 @@ async fn ws_handler<S: ServerState>(
     Extension(ws_sem): Extension<Arc<tokio::sync::Semaphore>>,
     headers: HeaderMap,
 ) -> Response {
-    if !validate_ws_origin(&headers) {
+    if !validate_ws_origin(&headers, &WebSocketOriginPolicy::AllowAbsent) {
         warn!("rejected WebSocket upgrade: Origin does not match Host");
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -528,23 +391,6 @@ async fn cache_fallback<S: ServerState>(
     (StatusCode::NOT_FOUND, "not found").into_response()
 }
 
-/// Weak `ETag` comparison per RFC 7232 §2.3.2.
-///
-/// Handles the `*` wildcard: `If-None-Match: *` matches any `ETag`.
-/// Otherwise strips `W/` prefix (if present) from both values before
-/// comparing the opaque-tag portion.
-fn etag_weak_match(client_val: &HeaderValue, server_val: &HeaderValue) -> bool {
-    fn strip_weak(v: &[u8]) -> &[u8] {
-        v.strip_prefix(b"W/").unwrap_or(v)
-    }
-
-    if client_val.as_bytes() == b"*" {
-        return true;
-    }
-
-    strip_weak(client_val.as_bytes()) == strip_weak(server_val.as_bytes())
-}
-
 /// Bind the serving TCP listener.
 ///
 /// # Errors
@@ -634,9 +480,6 @@ pub async fn start<S: ServerState>(
     info!("content server stopped");
     Ok(())
 }
-
-/// Default Content-Security-Policy header value.
-const DEFAULT_CSP: &str = "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'";
 
 /// Build the [`Router`] with security headers, health endpoints, and tracing.
 ///
@@ -2215,7 +2058,10 @@ mod tests {
             HeaderValue::from_static("https://example.com"),
         );
         headers.insert(header::HOST, HeaderValue::from_static("example.com"));
-        assert!(validate_ws_origin(&headers));
+        assert!(validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
     }
 
     #[test]
@@ -2226,7 +2072,10 @@ mod tests {
             HeaderValue::from_static("https://example.com:8080"),
         );
         headers.insert(header::HOST, HeaderValue::from_static("example.com:8080"));
-        assert!(validate_ws_origin(&headers));
+        assert!(validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
     }
 
     #[test]
@@ -2237,7 +2086,10 @@ mod tests {
             HeaderValue::from_static("https://example.com:443"),
         );
         headers.insert(header::HOST, HeaderValue::from_static("example.com"));
-        assert!(validate_ws_origin(&headers));
+        assert!(validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
     }
 
     #[test]
@@ -2245,14 +2097,20 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(header::ORIGIN, HeaderValue::from_static("https://evil.com"));
         headers.insert(header::HOST, HeaderValue::from_static("example.com"));
-        assert!(!validate_ws_origin(&headers));
+        assert!(!validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
     }
 
     #[test]
     fn origin_validation_no_origin_header_allowed() {
         let mut headers = HeaderMap::new();
         headers.insert(header::HOST, HeaderValue::from_static("example.com"));
-        assert!(validate_ws_origin(&headers));
+        assert!(validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
     }
 
     #[test]
@@ -2262,7 +2120,10 @@ mod tests {
             header::ORIGIN,
             HeaderValue::from_static("https://example.com"),
         );
-        assert!(!validate_ws_origin(&headers));
+        assert!(!validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
     }
 
     #[test]
@@ -2273,7 +2134,10 @@ mod tests {
             HeaderValue::from_static("http://localhost:8080"),
         );
         headers.insert(header::HOST, HeaderValue::from_static("localhost:8080"));
-        assert!(validate_ws_origin(&headers));
+        assert!(validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
     }
 
     #[test]
@@ -2284,7 +2148,10 @@ mod tests {
             HeaderValue::from_static("https://sub.example.com"),
         );
         headers.insert(header::HOST, HeaderValue::from_static("example.com"));
-        assert!(!validate_ws_origin(&headers));
+        assert!(!validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
     }
 
     #[test]
@@ -2295,7 +2162,10 @@ mod tests {
             HeaderValue::from_static("https://example.com:9999"),
         );
         headers.insert(header::HOST, HeaderValue::from_static("example.com:8080"));
-        assert!(!validate_ws_origin(&headers));
+        assert!(!validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
     }
 
     #[test]
@@ -2306,7 +2176,10 @@ mod tests {
             HeaderValue::from_static("ftp://example.com"),
         );
         headers.insert(header::HOST, HeaderValue::from_static("example.com"));
-        assert!(!validate_ws_origin(&headers));
+        assert!(!validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
     }
 
     #[test]
@@ -2317,7 +2190,10 @@ mod tests {
             HeaderValue::from_static("file://example.com"),
         );
         headers.insert(header::HOST, HeaderValue::from_static("example.com"));
-        assert!(!validate_ws_origin(&headers));
+        assert!(!validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
     }
 
     #[test]
@@ -2325,7 +2201,10 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(header::ORIGIN, HeaderValue::from_static("example.com"));
         headers.insert(header::HOST, HeaderValue::from_static("example.com"));
-        assert!(!validate_ws_origin(&headers));
+        assert!(!validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
     }
 
     #[test]
@@ -2336,7 +2215,10 @@ mod tests {
             HeaderValue::from_static("https://example.com/path"),
         );
         headers.insert(header::HOST, HeaderValue::from_static("example.com"));
-        assert!(validate_ws_origin(&headers));
+        assert!(validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
     }
 
     #[test]
@@ -2347,7 +2229,10 @@ mod tests {
             HeaderValue::from_static("http://example.com:80"),
         );
         headers.insert(header::HOST, HeaderValue::from_static("example.com"));
-        assert!(validate_ws_origin(&headers));
+        assert!(validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
     }
 
     #[tokio::test]
@@ -3360,34 +3245,6 @@ mod tests {
     }
 
     #[test]
-    fn normalize_authority_ipv6_loopback_no_port() {
-        let (host, port) = normalize_authority("[::1]", "443");
-        assert_eq!(host, "[::1]");
-        assert_eq!(port, "");
-    }
-
-    #[test]
-    fn normalize_authority_ipv6_with_non_default_port() {
-        let (host, port) = normalize_authority("[::1]:8080", "443");
-        assert_eq!(host, "[::1]");
-        assert_eq!(port, "8080");
-    }
-
-    #[test]
-    fn normalize_authority_ipv6_with_default_port_stripped() {
-        let (host, port) = normalize_authority("[::1]:443", "443");
-        assert_eq!(host, "[::1]");
-        assert_eq!(port, "");
-    }
-
-    #[test]
-    fn normalize_authority_ipv6_full_address() {
-        let (host, port) = normalize_authority("[2001:db8::1]:9090", "443");
-        assert_eq!(host, "[2001:db8::1]");
-        assert_eq!(port, "9090");
-    }
-
-    #[test]
     fn has_extension_dotted_directory_no_ext() {
         assert!(!has_extension("v2.0/about"));
     }
@@ -3499,7 +3356,7 @@ mod tests {
                 {
                     headers.insert(header::HOST, v);
                 }
-                let _ = validate_ws_origin(&headers);
+                let _ = validate_ws_origin(&headers, &WebSocketOriginPolicy::AllowAbsent);
             }
 
             /// If no Origin header, validate_ws_origin returns true.
@@ -3509,7 +3366,7 @@ mod tests {
                 if let Ok(v) = HeaderValue::from_str(&host) {
                     headers.insert(header::HOST, v);
                 }
-                prop_assert!(validate_ws_origin(&headers));
+                prop_assert!(validate_ws_origin(&headers, &WebSocketOriginPolicy::AllowAbsent));
             }
 
             /// Cross-origin requests are rejected: Origin host != Host header.
@@ -3523,7 +3380,7 @@ mod tests {
                 let mut headers = HeaderMap::new();
                 headers.insert(header::ORIGIN, HeaderValue::from_str(&origin).unwrap());
                 headers.insert(header::HOST, HeaderValue::from_str(&host).unwrap());
-                prop_assert!(!validate_ws_origin(&headers));
+                prop_assert!(!validate_ws_origin(&headers, &WebSocketOriginPolicy::AllowAbsent));
             }
         }
     }
