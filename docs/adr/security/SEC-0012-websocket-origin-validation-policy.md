@@ -11,7 +11,7 @@ References: SEC-0005, SEC-0001, SEC-0002, SEC-0004, COM-0021, COM-0006, CHE-0049
 
 ## Context
 
-CWE-346 Origin Validation Error and CWE-1385 Insufficient Standardized Cross-Origin Restrictions enable Cross-Site WebSocket Hijacking (CSWSH): a browser context loaded from an attacker-controlled origin opens a WebSocket to the target carrying victim cookies, because the browser cross-origin policy does not restrict WS upgrades on its own. The defence is server-side: reject the upgrade when `Origin` does not authenticate the loading context. SEC-0005:R3 ("identity at the infrastructure boundary") names this surface but is silent on Origin semantics; SEC-0012 narrows authenticity at the WS upgrade and supplements SEC-0005 per SEC-0001:R3. The vulnerable site is `crates/cherry-pit-web/src/projection/handlers.rs:389-392` where absent `Origin` is unconditionally permitted.
+CWE-346 and CWE-1385 enable Cross-Site WebSocket Hijacking (CSWSH): the browser cross-origin policy does not restrict WS upgrades, so an attacker-origin page can open a socket to the target. Ambient cookies are the textbook vector but not the only one — the socket pushes data after the handshake, so a cookieless service still hands that page a read primitive over whatever it publishes. The defence is server-side: reject the upgrade when `Origin` does not authenticate the loading context. SEC-0005:R3 names this surface but is silent on Origin semantics; SEC-0012 narrows authenticity at the WS upgrade per SEC-0001:R3. `projection/handlers.rs` permitted absent `Origin`, and `serve` carried an unreconciled copy of the same defect until 2026-08-27.
 
 ## Decision
 
