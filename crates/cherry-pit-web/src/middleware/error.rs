@@ -43,13 +43,56 @@ const RETRY_AFTER_SECONDS: &str = "1";
 /// HTTP response contract and must remain stable across patches.
 mod code {
     pub(super) const REJECTED: &str = "rejected";
-    pub(super) const CONCURRENCY_CONFLICT: &str = "concurrency_conflict";
-    pub(super) const AGGREGATE_NOT_FOUND: &str = "aggregate_not_found";
-    pub(super) const INFRASTRUCTURE: &str = "infrastructure";
-    pub(super) const STORE_LOCKED: &str = "store_locked";
-    pub(super) const CORRUPT_DATA: &str = "corrupt_data";
-    pub(super) const BUS: &str = "bus";
-    pub(super) const ACCEPTED_UNKNOWN: &str = "accepted_unknown";
+}
+
+/// Error classes rendered opaquely on the wire (SEC-0014:R2).
+///
+/// Each variant owns both its stable wire code and its fixed message,
+/// so the two cannot drift, and the message is a pure function of the
+/// code rather than of the error. This enum is the only route to
+/// [`ErrorBody::opaque`], which is what makes SEC-0014:R4 structural:
+/// there is no parameter through which an error value could be
+/// interpolated into a response body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpaqueCode {
+    ConcurrencyConflict,
+    AggregateNotFound,
+    Infrastructure,
+    StoreLocked,
+    CorruptData,
+    Bus,
+    AcceptedUnknown,
+}
+
+impl OpaqueCode {
+    /// Stable machine-readable code for [`ErrorBody::code`].
+    const fn wire(self) -> &'static str {
+        match self {
+            Self::ConcurrencyConflict => "concurrency_conflict",
+            Self::AggregateNotFound => "aggregate_not_found",
+            Self::Infrastructure => "infrastructure",
+            Self::StoreLocked => "store_locked",
+            Self::CorruptData => "corrupt_data",
+            Self::Bus => "bus",
+            Self::AcceptedUnknown => "accepted_unknown",
+        }
+    }
+
+    /// Fixed human-readable message. Describes the class only — it
+    /// names no path, identifier, sequence, or backend detail.
+    const fn message(self) -> &'static str {
+        match self {
+            Self::ConcurrencyConflict => "the aggregate changed concurrently; reload and retry",
+            Self::AggregateNotFound => "aggregate not found",
+            Self::Infrastructure => "infrastructure failure; retry is safe",
+            Self::StoreLocked => "store temporarily unavailable; retry is safe",
+            Self::CorruptData => "the stored data failed validation",
+            Self::Bus => "event publication failed; retry is safe",
+            Self::AcceptedUnknown => {
+                "command persisted; outcome delivery cancelled — replay is safe"
+            }
+        }
+    }
 }
 
 /// JSON response body for cherry-pit-web error responses.
@@ -95,10 +138,28 @@ pub struct ErrorBody {
 }
 
 impl ErrorBody {
-    fn new(code: &'static str, message: impl Display) -> Self {
+    /// Body for a domain-rejected command: `E`'s `Display` in full
+    /// (SEC-0014:R1, CHE-0049:R4, CHE-0015).
+    ///
+    /// `E` is the consumer's own typed domain error, authored for the
+    /// caller. This is the only constructor that renders a value.
+    fn domain(code: &'static str, message: impl Display) -> Self {
         Self {
             code,
             message: message.to_string(),
+            correlation_id: None,
+        }
+    }
+
+    /// Body for an infrastructure-class error: stable code and a fixed
+    /// message, both owned by `code` (SEC-0014:R2, R4).
+    ///
+    /// Takes no `Display` and no `String`. The full error is emitted to
+    /// `tracing::error!` by the caller instead (SEC-0014:R3).
+    fn opaque(code: OpaqueCode) -> Self {
+        Self {
+            code: code.wire(),
+            message: code.message().to_string(),
             correlation_id: None,
         }
     }
@@ -166,6 +227,23 @@ fn no_headers() -> HeaderMap {
     HeaderMap::new()
 }
 
+/// Build an opaque body and emit the withheld detail to the log
+/// (SEC-0014:R2 + R3).
+///
+/// Pairing the two in one function is the point: the only way to
+/// produce an opaque body from an error is to also log that error, so
+/// redaction cannot silently discard the diagnostic. The log line is
+/// joined to the response by the `X-Correlation-ID` echo that
+/// `correlation_layer` already attaches (CHE-0049:R5).
+fn opaque_body(code: OpaqueCode, err: &dyn Display) -> ErrorBody {
+    tracing::error!(
+        error.code = code.wire(),
+        error.detail = %err,
+        "withheld error detail from HTTP response body per SEC-0014"
+    );
+    ErrorBody::opaque(code)
+}
+
 /// Map a [`DispatchError<E>`] to an HTTP response triple.
 ///
 /// Realises CHE-0049 R4 + R10. The `E` parameter's information is
@@ -197,22 +275,22 @@ where
         DispatchError::Rejected(_) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             no_headers(),
-            ErrorBody::new(code::REJECTED, err),
+            ErrorBody::domain(code::REJECTED, err),
         ),
         DispatchError::ConcurrencyConflict { .. } => (
             StatusCode::CONFLICT,
             no_headers(),
-            ErrorBody::new(code::CONCURRENCY_CONFLICT, err),
+            opaque_body(OpaqueCode::ConcurrencyConflict, err),
         ),
         DispatchError::AggregateNotFound { .. } => (
             StatusCode::NOT_FOUND,
             no_headers(),
-            ErrorBody::new(code::AGGREGATE_NOT_FOUND, err),
+            opaque_body(OpaqueCode::AggregateNotFound, err),
         ),
         _ => (
             StatusCode::SERVICE_UNAVAILABLE,
             retry_after_headers(),
-            ErrorBody::new(code::INFRASTRUCTURE, err),
+            opaque_body(OpaqueCode::Infrastructure, err),
         ),
     }
 }
@@ -242,22 +320,22 @@ pub fn map_store_error(err: &StoreError) -> ErrorResponse {
         StoreError::ConcurrencyConflict { .. } => (
             StatusCode::CONFLICT,
             no_headers(),
-            ErrorBody::new(code::CONCURRENCY_CONFLICT, err),
+            opaque_body(OpaqueCode::ConcurrencyConflict, err),
         ),
         StoreError::StoreLocked { .. } => (
             StatusCode::SERVICE_UNAVAILABLE,
             retry_after_headers(),
-            ErrorBody::new(code::STORE_LOCKED, err),
+            opaque_body(OpaqueCode::StoreLocked, err),
         ),
         StoreError::CorruptData(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             no_headers(),
-            ErrorBody::new(code::CORRUPT_DATA, err),
+            opaque_body(OpaqueCode::CorruptData, err),
         ),
         _ => (
             StatusCode::SERVICE_UNAVAILABLE,
             retry_after_headers(),
-            ErrorBody::new(code::INFRASTRUCTURE, err),
+            opaque_body(OpaqueCode::Infrastructure, err),
         ),
     }
 }
@@ -286,7 +364,7 @@ pub fn map_bus_error(err: &BusError) -> ErrorResponse {
     (
         StatusCode::SERVICE_UNAVAILABLE,
         retry_after_headers(),
-        ErrorBody::new(code::BUS, err),
+        opaque_body(OpaqueCode::Bus, err),
     )
 }
 
@@ -313,10 +391,7 @@ pub fn post_persist_cancellation_response() -> ErrorResponse {
     (
         StatusCode::ACCEPTED,
         no_headers(),
-        ErrorBody::new(
-            code::ACCEPTED_UNKNOWN,
-            "command persisted; outcome delivery cancelled — replay is safe",
-        ),
+        ErrorBody::opaque(OpaqueCode::AcceptedUnknown),
     )
 }
 
@@ -392,7 +467,11 @@ mod tests {
 
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body.code, "aggregate_not_found");
-        assert!(body.message.contains("99"));
+        assert!(
+            !body.message.contains("99"),
+            "SEC-0014:R2 — an infrastructure-class body interpolates no \
+             value from the error, not even an identifier the caller supplied"
+        );
     }
 
     #[test]
@@ -432,7 +511,11 @@ mod tests {
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert!(has_retry_after(&headers));
         assert_eq!(body.code, "store_locked");
-        assert!(body.message.contains("/data/store"));
+        assert!(
+            !body.message.contains("/data/store"),
+            "SEC-0014 — the reported CWE-209 leak: a server filesystem path \
+             must not reach the body of a zero-auth surface"
+        );
     }
 
     #[test]
@@ -545,7 +628,7 @@ mod tests {
     #[test]
     fn with_correlation_populates_when_id_present() {
         let id = uuid::Uuid::now_v7();
-        let body = ErrorBody::new("rejected", "boom")
+        let body = ErrorBody::domain("rejected", "boom")
             .with_correlation(&CorrelationContext::correlated(id));
         assert_eq!(
             body.correlation_id.as_deref(),
@@ -555,7 +638,97 @@ mod tests {
 
     #[test]
     fn with_correlation_leaves_none_when_context_empty() {
-        let body = ErrorBody::new("rejected", "boom").with_correlation(&CorrelationContext::none());
+        let body =
+            ErrorBody::domain("rejected", "boom").with_correlation(&CorrelationContext::none());
         assert!(body.correlation_id.is_none());
+    }
+
+    /// SEC-0014:R2 across every opaque variant at once.
+    ///
+    /// Each error below carries a value that was observed reaching a
+    /// real response body: a server filesystem path, an internal
+    /// routing-index state, and a domain key that in gh-report is an
+    /// org/repo identifier. None may appear on the wire.
+    #[test]
+    fn opaque_bodies_interpolate_nothing_from_the_error() {
+        let leaky: Vec<(StoreError, &str)> = vec![
+            (
+                StoreError::StoreLocked {
+                    path: "/var/lib/gh-report/store".into(),
+                },
+                "/var/lib/gh-report/store",
+            ),
+            (
+                StoreError::CorruptData(
+                    "indexed AggregateId 42 has zero envelopes (routing index stale)".into(),
+                ),
+                "routing index stale",
+            ),
+            (
+                StoreError::CorruptData(
+                    "MergerArm::AppendStrict lookup miss on domain_key \"Mattilsynet/gh-report\""
+                        .into(),
+                ),
+                "Mattilsynet/gh-report",
+            ),
+            (
+                StoreError::Infrastructure("connect to nats://10.0.0.5:4222 refused".into()),
+                "10.0.0.5",
+            ),
+        ];
+
+        for (err, secret) in leaky {
+            let (_status, _headers, body) = map_store_error(&err);
+            assert!(
+                !body.message.contains(secret),
+                "{secret:?} reached the response body via {:?}",
+                body.code
+            );
+            assert!(
+                !body.message.is_empty(),
+                "an opaque body still names its error class"
+            );
+        }
+    }
+
+    /// SEC-0014:R1 — the domain path stays lossless. Redaction applies
+    /// to infrastructure classes only; narrowing it further would
+    /// break the CHE-0049:R4 contract this ADR deliberately preserves.
+    #[test]
+    fn domain_rejection_remains_lossless() {
+        let err: DispatchError<DomainErr> =
+            DispatchError::Rejected(DomainErr("invariant X violated"));
+        let (status, _headers, body) = map_dispatch_error(&err);
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body.code, "rejected");
+        assert!(
+            body.message.contains("invariant X violated"),
+            "the consumer's own typed domain error is authored for the caller"
+        );
+    }
+
+    /// The wire code and its message live on one variant, so a future
+    /// edit cannot change one without the other.
+    #[test]
+    fn every_opaque_code_has_a_distinct_wire_code_and_nonempty_message() {
+        let all = [
+            OpaqueCode::ConcurrencyConflict,
+            OpaqueCode::AggregateNotFound,
+            OpaqueCode::Infrastructure,
+            OpaqueCode::StoreLocked,
+            OpaqueCode::CorruptData,
+            OpaqueCode::Bus,
+            OpaqueCode::AcceptedUnknown,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for code in all {
+            assert!(!code.message().is_empty(), "{code:?} has no message");
+            assert!(
+                seen.insert(code.wire()),
+                "duplicate wire code {:?}",
+                code.wire()
+            );
+        }
     }
 }
