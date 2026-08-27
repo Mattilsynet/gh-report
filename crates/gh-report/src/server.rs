@@ -24,10 +24,19 @@ use crate::app::state::AppState;
 /// `script-src` to permit `wasm-unsafe-eval` for the served WASM bundle.
 pub(crate) const SERVED_CSP_WITH_WASM_UNSAFE_EVAL: &str = "default-src 'self'; style-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; base-uri 'none'; form-action 'none'";
 
-/// Maximum inbound body accepted by the serve surface's built-in
-/// routes, which are GET-only. `extra_routes` that need more (the
-/// webhook receiver) nest their own wider limit.
-const MAX_BODY_BYTES: usize = 1024;
+/// Ceiling on any inbound body reaching the serve surface, including
+/// `extra_routes` (CHE-0062:R4).
+///
+/// This is a ceiling, not a per-route budget: route groups nest their
+/// own tighter caps inside it. It must therefore be at least the
+/// largest body any merged route legitimately accepts, which is the
+/// webhook receiver's [`crate::config::MAX_WEBHOOK_BODY_BYTES`]. Sizing
+/// it below that would reject every GitHub webhook at the ceiling
+/// before the receiver's own wider limit was ever consulted.
+///
+/// The GET-only built-in routes are not sized by this; `cherry-pit-web`
+/// nests its own 1 KB cap on them.
+const MAX_BODY_CEILING_BYTES: usize = crate::config::MAX_WEBHOOK_BODY_BYTES;
 
 /// Maximum in-flight HTTP requests before the concurrency layer sheds
 /// with 503. Defence-in-depth; primary rate limiting is at the ingress.
@@ -39,7 +48,7 @@ const MAX_WS_CONNECTIONS: usize = 200;
 /// SEC-0003 sizing for the serve surface (CHE-0062:R2).
 pub(crate) fn server_layer_limits() -> cherry_pit_web::LayerLimits {
     cherry_pit_web::LayerLimits {
-        max_body_bytes: MAX_BODY_BYTES,
+        max_body_bytes: MAX_BODY_CEILING_BYTES,
         max_inflight_requests: MAX_INFLIGHT_REQUESTS,
     }
 }
