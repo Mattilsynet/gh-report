@@ -64,11 +64,12 @@ R1 [10]: Layer attachment is per-surface, and each surface takes exactly
   `LayerLimits`.
 
 R2 [10]: Numeric limits enter via library-owned value types passed by
-  value. `LayerLimits` fields are exactly `max_body_bytes: usize` (a
-  ceiling — routes may narrow it, none may widen it) and
-  `max_inflight_requests: usize`. `max_ws_connections` is NOT a
+  value. `LayerLimits` fields are exactly `max_body_bytes: NonZeroUsize`
+  (a ceiling — routes may narrow it, none may widen it) and
+  `max_inflight_requests: NonZeroUsize`. `max_ws_connections` is NOT a
   `LayerLimits` field; it lives on SEC-0012's `WsPolicy`. Both structs
-  re-export via `lib.rs` per CHE-0030:R1.
+  re-export via `lib.rs` per CHE-0030:R1. Zero is unrepresentable, not
+  rejected — see Amendment 2026-08-27.
 
 R3 [9]: `&ValidatedConfig` — or any config type carrying sizing that
   R2's carriers own — MUST NOT appear in any cherry-pit-web public
@@ -106,9 +107,19 @@ R6 [7]: When a future availability layer arrives (rate limiting per
   this because cherry-pit-web is internal and `Cargo.lock` is
   committed per the crate README.
 
-## Consequences
+## Amendment 2026-08-27 (zero caps unrepresentable)
 
-### R7 ceiling semantics (2026-08-27)
+R2's field types change from `usize` to `NonZeroUsize`, and `WsPolicy::max_connections` follows. This amends ratified text: R2's word "exactly" bound field types as well as names, and R2 carries the ADR's highest leverage. The amendment is recorded rather than implied, per GND-0007.
+
+The basis is a gap, not a preference. Commit `76d618e` removed `ConfigError::ConcurrencyLimitZero`, `WsMaxConnectionsZero` and `MaxRequestBodyBytesZero` and replaced them with nothing; its stated intent addressed *overflow* clamping only. Since then a zero-valued cap has been accepted unguarded on all three surfaces, governed by no rule. Meanwhile R4 already forbids `Option` per field precisely so that a layer cannot be disabled — yet a zero cap disables it in fact, admitting no request at all. R4's intent and the shipped code have contradicted each other since `76d618e`. This amendment closes that contradiction; it does not open a new one.
+
+The competing reading — that a zero cap is a deliberate operational kill-switch or drain control — was tested and falsified rather than merely disputed. Both semaphores are constructed exactly once at router build (`serve/runtime.rs`) from hard-coded consumer constants (`gh-report/src/server.rs`). There is no runtime setter, no environment path, and no operator interface that can reach either value after construction. A drain control no operator can reach is not a control. Zero therefore denotes misconfiguration and nothing else, which makes uniform rejection the more resilient contract on evidence, not on taste.
+
+Encoding follows SEC-0014:R4 (unrepresentable, not validated) and the workspace's existing numeric precedent CHE-0011:R1, where `AggregateId` wraps `NonZeroU64` to eliminate zero as an identity. `NonZeroUsize` is not `Option` and permits no disabling, so it does not collide with R4.
+
+`WsPolicy::max_connections` needs no rule amendment: SEC-0012:R1 names the field but pins no type, so the change lands within what SEC-0012 leaves open. Its constructor `WsPolicy::new(max_connections)` — the sanctioned construction path per SEC-0012's Consequences — changes signature, and that is the real consumer-facing break. Semver-major across cherry-pit-web and gh-report, pre-authorised by R6. R1's per-surface asymmetry (the CQRS surface takes no `WsPolicy`) and SEC-0012:R1's ratified parameter order are unchanged.
+
+## R7 ceiling semantics (2026-08-27)
 
 R7 does not narrow CHE-0049:R2. `extra_routes` remains the consumer's auth-attachment surface and the consumer still composes auth and rate-limit policy there. What R2 never granted — and what the pre-2026-08-27 CQRS merge order accidentally conferred — was exemption from SEC-0003.
 
@@ -116,6 +127,7 @@ Nesting is the mechanism that makes one ceiling workable across unlike routes: `
 
 Falsifier: a merged route accepting a body larger than `max_body_bytes`, or answering without the CHE-0049:R5 correlation echo, on any of the three surfaces.
 
+## Consequences
 
 ### On the `&ValidatedConfig` question (the load-bearing call)
 
@@ -138,7 +150,7 @@ surface drifts as consumer needs diverge — both outcomes move
 opinion-bearing schema into the library's contract, exactly the
 coupling CHE-0056:R1 was protecting against. By contrast a
 library-owned `LayerLimits` value type names *the sizing surface the
-library actually consumes* (three `usize`s) and nothing else; consumers
+library actually consumes* (two `NonZeroUsize`s) and nothing else; consumers
 retain full freedom over where those numbers come from. The
 API-ceremony cost is one extra struct construction per consumer —
 finite and lower than the long-term cognitive load of conforming to
