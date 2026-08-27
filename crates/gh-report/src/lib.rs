@@ -7,8 +7,7 @@
 //! See [`infra::logging`] for the logging convention and GCP Cloud Logging
 //! formatter.
 
-#![cfg_attr(not(test), forbid(unsafe_code))]
-#![cfg_attr(test, deny(unsafe_code))]
+#![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 pub mod aggregate;

@@ -33,14 +33,22 @@ use axum::http::{HeaderMap, header};
 /// discarded, so 4 KB is sufficient for Pong frames and future commands.
 pub(crate) const WS_MAX_MESSAGE_SIZE: usize = 4096;
 
-/// Policy controlling how the projection WebSocket upgrade validates
-/// the inbound `Origin` header against the `Host` header (SEC-0012).
+/// Policy controlling how a WebSocket upgrade validates the inbound
+/// `Origin` header against the `Host` header (SEC-0012).
 ///
 /// The default ([`WebSocketOriginPolicy::Strict`]) closes the
 /// CWE-346 / CWE-1385 Cross-Site WebSocket Hijacking (CSWSH) hole at
-/// the trust boundary: a browser-context attacker cannot open a WS
-/// to the target carrying victim cookies because the absent or
-/// mismatched `Origin` is rejected before the handshake completes.
+/// the trust boundary: an attacker-origin page cannot open a WS to the
+/// target, because the absent or mismatched `Origin` is rejected
+/// before the handshake completes.
+///
+/// Ambient credentials are the textbook CSWSH vector — the browser
+/// attaches the victim's cookies to a cross-origin upgrade — but they
+/// are not the only one, and a service that sets no cookies is not
+/// therefore safe. The socket pushes data *after* the handshake, so a
+/// successful cross-origin upgrade is a read primitive over whatever
+/// the surface publishes regardless of how the request was
+/// authenticated.
 ///
 /// Future variants land additively per SEC-0012:R4; the
 /// `#[non_exhaustive]` attribute reserves the surface for them
