@@ -122,10 +122,12 @@ impl WsAuthLimits {
 ///   [`WebSocketOriginPolicy::Strict`] → reject (SEC-0012:R2);
 ///   [`WebSocketOriginPolicy::AllowAbsent`] → permit (SEC-0012:R3,
 ///   non-browser-client escape hatch).
-/// - **Present `Origin`**: parsed and compared to `Host` with
-///   authority normalisation (default-port stripping, IPv6 bracket
-///   handling per [`normalize_authority`]). Mismatched, malformed, or
-///   non-HTTP(S) `Origin` is rejected regardless of `policy`.
+/// - **Present `Origin`**: both `Origin` and `Host` are parsed into
+///   [`Authority`] and the two validated values are compared. An
+///   authority that is malformed, ambiguous, or carries userinfo never
+///   becomes a comparison operand (SEC-0012:R6), so mismatched,
+///   malformed, and non-HTTP(S) `Origin` are rejected regardless of
+///   `policy`.
 pub(crate) fn validate_ws_origin(headers: &HeaderMap, policy: &WebSocketOriginPolicy) -> bool {
     let Some(origin) = headers.get(header::ORIGIN) else {
         return matches!(policy, WebSocketOriginPolicy::AllowAbsent);
@@ -136,9 +138,9 @@ pub(crate) fn validate_ws_origin(headers: &HeaderMap, policy: &WebSocketOriginPo
     let Some((scheme, after_scheme)) = origin_str.split_once("://") else {
         return false;
     };
-    let default_port = match scheme {
-        "https" => "443",
-        "http" => "80",
+    let default_port = match scheme.to_ascii_lowercase().as_str() {
+        "https" => 443,
+        "http" => 80,
         _ => return false,
     };
     let origin_authority = after_scheme
@@ -150,46 +152,82 @@ pub(crate) fn validate_ws_origin(headers: &HeaderMap, policy: &WebSocketOriginPo
     let Ok(host_str) = host_hdr.to_str() else {
         return false;
     };
-    if origin_authority == host_str {
-        return true;
-    }
-    normalize_authority(origin_authority, default_port)
-        == normalize_authority(host_str, default_port)
+    let (Some(origin), Some(host)) = (
+        Authority::parse(origin_authority, default_port),
+        Authority::parse(host_str, default_port),
+    ) else {
+        return false;
+    };
+    origin == host
 }
 
-/// Strip the default port from an authority string for comparison.
+/// A validated, normalised HTTP authority (SEC-0012:R6).
 ///
-/// Handles IPv6 bracket notation: `[::1]:8080` splits into hostname
-/// `[::1]` and port `8080`. Plain IPv4/hostname uses `rsplit_once(':')`.
+/// [`Authority::parse`] is the only constructor, so a malformed,
+/// ambiguous, or userinfo-bearing authority is unrepresentable as a
+/// comparison operand rather than being screened by a runtime guard
+/// over raw strings (SEC-0002:R3 parse-don't-validate).
 ///
-/// `"example.com:443"` with `default_port = "443"` → `("example.com", "")`.
-/// `"example.com:8080"` with `default_port = "443"` → `("example.com", "8080")`.
-/// `"example.com"` → `("example.com", "")`.
-/// `"[::1]:8080"` → `("[::1]", "8080")`.
-///
-/// The bracket branch is gated on a leading `[`, so a bare `]` inside an
-/// otherwise plain authority (`foo]bar:8080`) falls through to the
-/// `rsplit_once` branch and keeps its port, rather than being truncated
-/// at the stray bracket.
-fn normalize_authority<'a>(authority: &'a str, default_port: &str) -> (&'a str, &'a str) {
-    if authority.starts_with('[')
-        && let Some(bracket_end) = authority.find(']')
-    {
-        let after_bracket = &authority[bracket_end + 1..];
-        if let Some(port) = after_bracket.strip_prefix(':') {
-            let hostname = &authority[..=bracket_end];
-            if port == default_port {
-                return (hostname, "");
-            }
-            return (hostname, port);
-        }
-        return (authority, "");
-    }
+/// Normalisation makes equality the whole comparison: `host` is
+/// ASCII-lowercased per RFC 3986 §3.2.2, and a port equal to the
+/// scheme default becomes `None` so `example.com` and
+/// `example.com:443` compare equal under `https`.
+#[derive(Debug, PartialEq, Eq)]
+struct Authority {
+    host: String,
+    port: Option<u16>,
+}
 
-    match authority.rsplit_once(':') {
-        Some((hostname, port)) if port == default_port => (hostname, ""),
-        Some((hostname, port)) => (hostname, port),
-        None => (authority, ""),
+impl Authority {
+    /// Parse `raw` as an authority, normalising against `default_port`.
+    ///
+    /// Returns `None` when `raw` is empty, carries userinfo (`@`), has
+    /// an empty or out-of-`u16`-range port, is unbracketed IPv6, or
+    /// carries a bracket outside well-formed IPv6 notation. Each of
+    /// those is an authority whose intended host is ambiguous, and an
+    /// ambiguous authority must not participate in an origin decision.
+    fn parse(raw: &str, default_port: u16) -> Option<Self> {
+        if raw.is_empty() || raw.contains('@') {
+            return None;
+        }
+
+        let (host, port_str) = if let Some(rest) = raw.strip_prefix('[') {
+            let (inner, after) = rest.split_once(']')?;
+            if inner.is_empty() || inner.contains('[') {
+                return None;
+            }
+            let port = if after.is_empty() {
+                None
+            } else {
+                Some(after.strip_prefix(':')?)
+            };
+            (inner, port)
+        } else {
+            if raw.contains('[') || raw.contains(']') {
+                return None;
+            }
+            let (host, port) = match raw.rsplit_once(':') {
+                Some((host, port)) => (host, Some(port)),
+                None => (raw, None),
+            };
+            if host.is_empty() || host.contains(':') {
+                return None;
+            }
+            (host, port)
+        };
+
+        let port = match port_str {
+            Some(port) => {
+                let parsed: u16 = port.parse().ok()?;
+                (parsed != default_port).then_some(parsed)
+            }
+            None => None,
+        };
+
+        Some(Self {
+            host: host.to_ascii_lowercase(),
+            port,
+        })
     }
 }
 
@@ -279,8 +317,9 @@ mod tests {
     /// `("foo]", "")` and `foo]baz` likewise — making a cross-origin
     /// `Origin`/`Host` pair compare equal and pass validation. That is a
     /// CWE-346 origin-validation bypass in the SEC-0012-governed copy.
-    /// The retained parser gates the bracket branch on `starts_with('[')`,
-    /// so this pair must be REJECTED.
+    /// Under SEC-0012:R6 a stray bracket is not merely parsed
+    /// differently, it is rejected: the authority never becomes a
+    /// comparison operand at all.
     #[test]
     fn validate_ws_origin_rejects_stray_bracket_authority_confusion() {
         let h = make_headers(&[("origin", "http://foo]bar"), ("host", "foo]baz")]);
@@ -290,37 +329,101 @@ mod tests {
         );
 
         assert_eq!(
-            normalize_authority("foo]bar:8080", "80"),
-            ("foo]bar", "8080"),
-            "a bare ']' without a leading '[' must not trigger the IPv6 branch"
+            Authority::parse("foo]bar:8080", 80),
+            None,
+            "a bare ']' without a leading '[' is ambiguous and must not parse"
         );
-        assert_ne!(
-            normalize_authority("foo]bar", "80"),
-            normalize_authority("foo]baz", "80"),
-            "distinct stray-bracket authorities must stay distinct"
-        );
-    }
-
-    #[test]
-    fn normalize_authority_ipv6_loopback_no_port() {
-        assert_eq!(normalize_authority("[::1]", "443"), ("[::1]", ""));
-    }
-
-    #[test]
-    fn normalize_authority_ipv6_with_non_default_port() {
-        assert_eq!(normalize_authority("[::1]:8080", "443"), ("[::1]", "8080"));
-    }
-
-    #[test]
-    fn normalize_authority_ipv6_with_default_port_stripped() {
-        assert_eq!(normalize_authority("[::1]:443", "443"), ("[::1]", ""));
-    }
-
-    #[test]
-    fn normalize_authority_ipv6_full_address() {
         assert_eq!(
-            normalize_authority("[2001:db8::1]:9090", "443"),
-            ("[2001:db8::1]", "9090")
+            Authority::parse("foo]baz", 80),
+            None,
+            "the confusable counterpart must be equally unrepresentable"
         );
+    }
+
+    #[test]
+    fn validate_ws_origin_matches_host_case_insensitively() {
+        let h = make_headers(&[("origin", "https://EXAMPLE.com"), ("host", "example.com")]);
+        assert!(
+            validate_ws_origin(&h, &WebSocketOriginPolicy::Strict),
+            "RFC 3986 authority host comparison is case-insensitive"
+        );
+    }
+
+    #[test]
+    fn validate_ws_origin_matches_scheme_case_insensitively() {
+        let h = make_headers(&[("origin", "HTTPS://example.com:443"), ("host", "example.com")]);
+        assert!(
+            validate_ws_origin(&h, &WebSocketOriginPolicy::Strict),
+            "RFC 3986 §3.1 schemes are case-insensitive; an uppercase scheme must still \
+             resolve its default port rather than falsely rejecting a same-origin client"
+        );
+    }
+
+    #[test]
+    fn validate_ws_origin_rejects_userinfo_in_host() {
+        let h = make_headers(&[("origin", "https://example.com"), ("host", "evil.com@example.com")]);
+        assert!(
+            !validate_ws_origin(&h, &WebSocketOriginPolicy::Strict),
+            "userinfo is illegal in Host; it must not normalise away to a matching host"
+        );
+    }
+
+    #[test]
+    fn validate_ws_origin_rejects_out_of_range_port() {
+        let h = make_headers(&[("origin", "https://example.com:99999"), ("host", "example.com")]);
+        assert!(
+            !validate_ws_origin(&h, &WebSocketOriginPolicy::Strict),
+            "an unparseable port must not silently degrade to the scheme default"
+        );
+    }
+
+    fn authority(host: &str, port: Option<u16>) -> Authority {
+        Authority {
+            host: host.to_string(),
+            port,
+        }
+    }
+
+    #[test]
+    fn authority_ipv6_loopback_no_port() {
+        assert_eq!(Authority::parse("[::1]", 443), Some(authority("::1", None)));
+    }
+
+    #[test]
+    fn authority_ipv6_with_non_default_port() {
+        assert_eq!(
+            Authority::parse("[::1]:8080", 443),
+            Some(authority("::1", Some(8080)))
+        );
+    }
+
+    #[test]
+    fn authority_ipv6_with_default_port_stripped() {
+        assert_eq!(
+            Authority::parse("[::1]:443", 443),
+            Some(authority("::1", None))
+        );
+    }
+
+    #[test]
+    fn authority_ipv6_full_address() {
+        assert_eq!(
+            Authority::parse("[2001:db8::1]:9090", 443),
+            Some(authority("2001:db8::1", Some(9090)))
+        );
+    }
+
+    #[test]
+    fn authority_rejects_unbracketed_ipv6_as_ambiguous() {
+        assert_eq!(
+            Authority::parse("2001:db8::1", 443),
+            None,
+            "unbracketed IPv6 cannot be split into host and port unambiguously"
+        );
+    }
+
+    #[test]
+    fn authority_rejects_empty_port() {
+        assert_eq!(Authority::parse("example.com:", 443), None);
     }
 }
