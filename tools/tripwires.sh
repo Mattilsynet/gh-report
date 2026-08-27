@@ -219,8 +219,8 @@ check_adr_number_collision() {
 # SEC-0013:R2+R3+R4 — enforces the deny.toml advisory-ignore lifecycle:
 # every ignore entry must be table form with a machine-parseable
 # expires=/owner=/class= reason prefix, expiry must not be past-due, and
-# unused-ignored-advisory must stay >= warn. Staged in PENDING_CHECKS
-# (not CHECKS/`all`) until ghr-y4hkd brings deny.toml to R3 shape.
+# unused-ignored-advisory must stay >= warn. Active in CHECKS (runs under
+# `all`): ghr-y4hkd is discharged and deny.toml is in R3 shape.
 # Manifest path overridable via DENY_TOML for fixture-based proof runs
 # without touching the real deny.toml.
 check_deny_ignore_lifecycle() {
