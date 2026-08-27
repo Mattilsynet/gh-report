@@ -1,14 +1,14 @@
 # CHE-0062. Library Attaches Availability Layers via Per-Layer Limits
 
 Date: 2026-05-16
-Last-reviewed: 2026-05-16
+Last-reviewed: 2026-08-27
 Tier: B
 Status: Accepted
 
 ## Related
 
 Supersedes: CHE-0056
-References: CHE-0030, CHE-0049, SEC-0003, AFM-0022
+References: CHE-0030, CHE-0049, SEC-0003, SEC-0012, AFM-0022
 
 ## Context
 
@@ -45,28 +45,37 @@ The library owns *what layer is attached where*; the consumer owns
 *what number goes in*. No consumer config type, validated or
 otherwise, crosses the library boundary.
 
-R1 [10]: `cherry_pit_web::build_projection_router` attaches
-  `RequestBodyLimitLayer` (router-scoped), a concurrency-limit layer
-  with 503-shedding semantics matching gh-report's
-  `http_concurrency_limit` (router-scoped), and a WebSocket connection
-  semaphore enforced inside the WS upgrade handler — reversing
-  CHE-0056:R1's prohibitions on these three attachments. The CQRS
-  surface `build_router` follows the same pattern for body cap and
-  concurrency cap; the WS semaphore is projection-only per CHE-0049:R3
-  + R11.
+R1 [10]: Layer attachment is per-surface, and each surface takes exactly
+  the carriers its layers need — reversing CHE-0056:R1's prohibitions on
+  these attachments:
 
-R2 [10]: Numeric limits enter via a library-owned `LayerLimits` value
-  type passed by value. Fields: `max_body_bytes: usize`,
-  `max_inflight_requests: usize`, `max_ws_connections: usize`
-  (projection only). The struct lives in cherry-pit-web, re-exports
-  via `lib.rs` per CHE-0030:R1. Consumers build `LayerLimits` from
-  any source; the library does not inspect that source.
+  - **CQRS `build_router`** — `RequestBodyLimitLayer` (router-scoped) and
+    a 503-shedding concurrency-limit layer matching gh-report's
+    `http_concurrency_limit` (router-scoped). No WS upgrade exists on
+    this surface, so it takes no WS carrier and no WS cap.
+  - **`build_projection_router`** — the same two layers, plus a WebSocket
+    connection semaphore enforced inside the WS upgrade handler.
+  - **`serve::build_router` / `serve::start`** — the same two layers,
+    plus the same WS connection semaphore inside its `/ws` upgrade
+    handler.
 
-R3 [9]: `&ValidatedConfig` (or any consumer-defined config type) MUST
-  NOT appear in any cherry-pit-web public signature. CHE-0056's
-  unenforced-primitive stance narrows from "no layers at all" to
-  "no consumer-typed config at all" — the library discharges its
-  SEC-0003 obligation without adopting consumer schema opinion.
+  Every surface mounting a WS upgrade takes its WS connection cap from
+  the `WsPolicy` carrier defined by SEC-0012:R1, never from
+  `LayerLimits`.
+
+R2 [10]: Numeric limits enter via library-owned value types passed by
+  value. `LayerLimits` fields are exactly `max_body_bytes: usize` (a
+  ceiling — routes may narrow it, none may widen it) and
+  `max_inflight_requests: usize`. `max_ws_connections` is NOT a
+  `LayerLimits` field; it lives on SEC-0012's `WsPolicy`. Both structs
+  re-export via `lib.rs` per CHE-0030:R1.
+
+R3 [9]: `&ValidatedConfig` — or any config type carrying sizing that
+  R2's carriers own — MUST NOT appear in any cherry-pit-web public
+  signature. `serve::build_router` takes `&ServeOptions`, carrying
+  presentation concerns only (`csp`, `error_page_key`). A sizing number
+  reachable through two parameters is two sources of truth; after this
+  change `LayerLimits` and `WsPolicy` are the only ones.
 
 R4 [9]: Layer attachment is unconditional — `LayerLimits` carries
   numeric values, not `Option` per field. The contract is "you
@@ -122,6 +131,22 @@ touching any consumer's schema. Schema coupling outlives API surface
 noise, so (ii) wins on long-term cognitive load.
 
 ### Other downstream effects
+
+R3 retains CHE-0056's narrowing intent verbatim in force: the
+unenforced-primitive stance moved from "no layers at all" to "no
+consumer-typed config at all", and the library still discharges its
+SEC-0003 obligation without adopting consumer schema opinion. What
+2026-08-27 adds is that a *library-owned* type is no more admissible
+than a consumer-owned one when it carries sizing R2's carriers own —
+`serve`'s `ValidatedConfig` was library-owned and still wrong.
+
+`max_ws_connections` left `LayerLimits` because a WS connection cap
+without an origin policy is precisely the omission U1 made: `serve`
+took the cap from `LayerLimits` and never took a policy, so no
+origin-strict WebSocket ran in production. See SEC-0012 Consequences
+for the taxonomy-cohesion reversal that motivates the fusion. The
+field had also been lying on the CQRS surface, which mounts no WS
+upgrade at all.
 
 CHE-0049:R1, R11, R12 (generic typed state, independent builders, no
 trait object) remain ratified verbatim — `LayerLimits` is a
