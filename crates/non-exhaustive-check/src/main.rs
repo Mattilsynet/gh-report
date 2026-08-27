@@ -6,6 +6,8 @@
 //! enums are invisible to this tool, so under-flagging is the deliberate safe
 //! failure mode for this hard CI gate. Governed by RST-0006 / PGN-0006 / CHE-0021.
 
+#![forbid(unsafe_code)]
+
 use std::path::{Path, PathBuf};
 
 const LIBRARY_CRATES: &[&str] = &[
