@@ -20,9 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cherry_pit_core::CorrelationContext;
-use cherry_pit_web::{
-    LayerLimits, PageUpdate, ProjectionState, WsAuthLimits, build_projection_router,
-};
+use cherry_pit_web::{LayerLimits, PageUpdate, ProjectionState, WsPolicy, build_projection_router};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -89,7 +87,7 @@ async fn spawn_projection_server(
     let app = build_projection_router(
         state,
         LayerLimits::permissive_for_tests(),
-        WsAuthLimits::permissive_for_tests(),
+        WsPolicy::permissive_for_tests(),
         axum::Router::new(),
     );
 

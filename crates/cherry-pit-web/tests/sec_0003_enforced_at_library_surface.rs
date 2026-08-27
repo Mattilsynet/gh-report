@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use cherry_pit_web::{LayerLimits, ProjectionState, WsAuthLimits, build_projection_router};
+use cherry_pit_web::{LayerLimits, ProjectionState, WsPolicy, build_projection_router};
 use common::MockProjectionSource;
 use tower::ServiceExt;
 
@@ -46,12 +46,11 @@ async fn body_over_max_returns_413() {
     let limits = LayerLimits {
         max_body_bytes: 1024,
         max_inflight_requests: 1024,
-        max_ws_connections: 1024,
     };
     let app = build_projection_router(
         state,
         limits,
-        WsAuthLimits::permissive_for_tests(),
+        WsPolicy::permissive_for_tests(),
         axum::Router::new(),
     );
 
@@ -81,12 +80,11 @@ async fn body_under_max_passes_layer() {
     let limits = LayerLimits {
         max_body_bytes: 4096,
         max_inflight_requests: 1024,
-        max_ws_connections: 1024,
     };
     let app = build_projection_router(
         state,
         limits,
-        WsAuthLimits::permissive_for_tests(),
+        WsPolicy::permissive_for_tests(),
         axum::Router::new(),
     );
 
@@ -121,12 +119,11 @@ async fn inflight_zero_permits_returns_503() {
     let limits = LayerLimits {
         max_body_bytes: 1024 * 1024,
         max_inflight_requests: 0,
-        max_ws_connections: 1024,
     };
     let app = build_projection_router(
         state,
         limits,
-        WsAuthLimits::permissive_for_tests(),
+        WsPolicy::permissive_for_tests(),
         axum::Router::new(),
     );
 
@@ -147,7 +144,7 @@ async fn inflight_zero_permits_returns_503() {
 /// the WS semaphore has no permits. Mechanism: CHE-0062
 /// (`Arc<Semaphore>::try_acquire_owned` on the upgrade path).
 ///
-/// With `max_ws_connections = 0` `try_acquire_owned` fails on every
+/// With `WsPolicy::max_connections = 0` `try_acquire_owned` fails on every
 /// upgrade attempt, returning 503 before the WS handshake. We exercise
 /// this via a real `tokio_tungstenite::connect_async` against a bound
 /// server (matching the donor's `server.rs:2164` topology); the
@@ -167,14 +164,10 @@ async fn ws_zero_permits_returns_503() {
     let limits = LayerLimits {
         max_body_bytes: 1024 * 1024,
         max_inflight_requests: 1024,
-        max_ws_connections: 0,
     };
-    let app = build_projection_router(
-        state,
-        limits,
-        WsAuthLimits::permissive_for_tests(),
-        axum::Router::new(),
-    );
+    let mut ws_policy = WsPolicy::permissive_for_tests();
+    ws_policy.max_connections = 0;
+    let app = build_projection_router(state, limits, ws_policy, axum::Router::new());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local_addr");
@@ -189,7 +182,7 @@ async fn ws_zero_permits_returns_503() {
             assert_eq!(
                 resp.status(),
                 503,
-                "max_ws_connections=0 must reject WS upgrade with 503"
+                "WsPolicy::max_connections=0 must reject WS upgrade with 503"
             );
         }
         Err(other) => panic!("expected HTTP 503 from upgrade, got: {other}"),
@@ -213,14 +206,10 @@ async fn ws_permit_released_on_disconnect() {
     let limits = LayerLimits {
         max_body_bytes: 1024 * 1024,
         max_inflight_requests: 1024,
-        max_ws_connections: 1,
     };
-    let app = build_projection_router(
-        state,
-        limits,
-        WsAuthLimits::permissive_for_tests(),
-        axum::Router::new(),
-    );
+    let mut ws_policy = WsPolicy::permissive_for_tests();
+    ws_policy.max_connections = 1;
+    let app = build_projection_router(state, limits, ws_policy, axum::Router::new());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local_addr");
@@ -274,7 +263,7 @@ async fn permissive_limits_allow_healthz() {
     let app = build_projection_router(
         state,
         limits,
-        WsAuthLimits::permissive_for_tests(),
+        WsPolicy::permissive_for_tests(),
         axum::Router::new(),
     );
 

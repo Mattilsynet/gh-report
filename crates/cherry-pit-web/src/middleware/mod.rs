@@ -48,7 +48,7 @@ pub use limits::LayerLimits;
 pub use path::{NormalizedPath, PathSegmentError, normalize_request_path, sanitize_path_segment};
 pub use security::{DEFAULT_CSP, SVG_CSP, security_headers};
 pub use trace::{HttpTraceLayer, http_trace_layer};
-pub use ws_auth::{WebSocketOriginPolicy, WsAuthLimits};
+pub use ws_auth::{WebSocketOriginPolicy, WsPolicy};
 
 /// Response header used to echo the active correlation id, per
 /// CHE-0049 R5.

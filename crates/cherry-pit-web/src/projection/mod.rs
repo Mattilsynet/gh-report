@@ -36,7 +36,7 @@ use tokio::sync::Semaphore;
 use tower_http::limit::RequestBodyLimitLayer;
 
 use crate::middleware::LayerLimits;
-use crate::middleware::WsAuthLimits;
+use crate::middleware::WsPolicy;
 use crate::middleware::limits::http_concurrency_limit;
 
 /// Construct an axum router for the projection adapter.
@@ -50,13 +50,14 @@ use crate::middleware::limits::http_concurrency_limit;
 /// CHE-0049 R12, no trait objects). Compose with
 /// [`crate::build_router`] via [`Router::merge`].
 ///
-/// `limits` sizes three layers per CHE-0062:R4 / SEC-0003 R1/R3: body
-/// cap (413), in-flight cap (503-shedding), WS cap (503 via
-/// [`handlers::ws_handler`]).
+/// `limits` sizes the two HTTP layers per CHE-0062:R4 / SEC-0003
+/// R1/R3: body ceiling (413) and in-flight cap (503-shedding).
 ///
-/// `ws_auth` carries the WS auth policy (SEC-0012:R1): default
-/// `Strict` rejects absent/mismatched `Origin` with 403 (SEC-0012:R2);
-/// `AllowAbsent` accepts CWE-346/1385 risk (SEC-0012:R3).
+/// `ws_policy` carries the WS connection cap (503 via
+/// [`handlers::ws_handler`]) and the Origin policy (SEC-0012:R1):
+/// default `Strict` rejects absent/mismatched `Origin` with 403
+/// (SEC-0012:R2); `AllowAbsent` accepts CWE-346/1385 risk
+/// (SEC-0012:R3).
 ///
 /// `extra_routes` is a stateless [`Router`] merged after
 /// `.with_state(state)`; pass [`Router::new()`] for none.
@@ -67,14 +68,14 @@ use crate::middleware::limits::http_concurrency_limit;
 pub fn build_projection_router<P>(
     state: ProjectionState<P>,
     limits: LayerLimits,
-    ws_auth: WsAuthLimits,
+    ws_policy: WsPolicy,
     extra_routes: Router,
 ) -> Router
 where
     P: ProjectionSource,
 {
     let http_semaphore = Arc::new(Semaphore::new(limits.max_inflight_requests));
-    let ws_semaphore = Arc::new(Semaphore::new(limits.max_ws_connections));
+    let ws_semaphore = Arc::new(Semaphore::new(ws_policy.max_connections));
 
     handlers::build(state)
         .merge(extra_routes)
@@ -85,5 +86,5 @@ where
             http_concurrency_limit(sem, request, next)
         }))
         .layer(Extension(ws_semaphore))
-        .layer(Extension(ws_auth))
+        .layer(Extension(ws_policy))
 }

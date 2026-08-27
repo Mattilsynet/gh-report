@@ -12,9 +12,8 @@
 //!   (`crate::middleware::limits::http_concurrency_limit`).
 //!
 //! WS limits are **not** in scope on the CQRS router: per CHE-0049 R3
-//! the cqrs surface is HTTP-only, so [`LayerLimits::max_ws_connections`]
-//! is honoured here only as a `LayerLimits` field placeholder (the value
-//! is unused by [`cherry_pit_web::build_router`]).
+//! the cqrs surface is HTTP-only, so it takes no `WsPolicy` and
+//! `LayerLimits` carries no WS field to leave unused (CHE-0062:R1/R2).
 
 use std::convert::Infallible;
 use std::num::NonZeroU64;
@@ -170,7 +169,6 @@ async fn cqrs_body_over_max_returns_413() {
     let limits = LayerLimits {
         max_body_bytes: 1024,
         max_inflight_requests: 1024,
-        max_ws_connections: 1024,
     };
     let app = app_with(limits);
 
@@ -200,7 +198,6 @@ async fn cqrs_body_under_max_passes_layer() {
     let limits = LayerLimits {
         max_body_bytes: 4096,
         max_inflight_requests: 1024,
-        max_ws_connections: 1024,
     };
     let app = app_with(limits);
 
@@ -238,7 +235,6 @@ async fn cqrs_inflight_zero_permits_returns_503() {
     let limits = LayerLimits {
         max_body_bytes: 1024 * 1024,
         max_inflight_requests: 0,
-        max_ws_connections: 1024,
     };
     let app = app_with(limits);
 

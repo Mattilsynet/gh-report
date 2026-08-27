@@ -331,8 +331,14 @@ mod tests {
 
     fn build_test_app(state: Arc<AppState>) -> Router {
         let extra = webhook_router();
-        let config = crate::server::default_server_config();
-        cherry_pit_web::serve::build_router(state, &config, Some(extra))
+        let options = crate::server::default_server_config();
+        cherry_pit_web::serve::build_router(
+            state,
+            crate::server::server_layer_limits(),
+            crate::server::server_ws_policy(),
+            &options,
+            Some(extra),
+        )
     }
 
     #[tokio::test]

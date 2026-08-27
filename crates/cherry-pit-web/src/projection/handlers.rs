@@ -43,7 +43,7 @@ use super::state::{PageEntry, ProjectionState};
 use crate::middleware::compression::{Encoding, negotiate_encoding};
 use crate::middleware::http::etag_weak_match;
 use crate::middleware::security::DEFAULT_CSP;
-use crate::middleware::ws_auth::{WS_MAX_MESSAGE_SIZE, WsAuthLimits, validate_ws_origin};
+use crate::middleware::ws_auth::{WS_MAX_MESSAGE_SIZE, WsPolicy, validate_ws_origin};
 
 /// WebSocket close code 1001 "Going Away" — RFC 6455 §7.4.1. Used to
 /// signal drop-and-resync on `broadcast::RecvError::Lagged` per
@@ -231,7 +231,7 @@ fn serve_page(page: &PageEntry, request_headers: &HeaderMap, status: StatusCode)
 /// WebSocket upgrade handler.
 ///
 /// Validates `Origin` against the consumer-elected
-/// [`WebSocketOriginPolicy`] carried on the `Extension<WsAuthLimits>`
+/// [`WebSocketOriginPolicy`] carried on the `Extension<WsPolicy>`
 /// attached by [`super::build_projection_router`] (SEC-0012:R1). On
 /// rejection (absent `Origin` under `Strict`, malformed `Origin`, or
 /// mismatched host) returns `403 FORBIDDEN` before the upgrade completes.
@@ -241,7 +241,7 @@ fn serve_page(page: &PageEntry, request_headers: &HeaderMap, status: StatusCode)
 /// [`ws_session`] for the connection lifetime; drop on exit frees the
 /// slot.
 ///
-/// Both `Extension<Arc<Semaphore>>` and `Extension<WsAuthLimits>` are
+/// Both `Extension<Arc<Semaphore>>` and `Extension<WsPolicy>` are
 /// attached by [`super::build_projection_router`]; this handler is the
 /// **only** consumer of those extensions. `state` is the typed
 /// projection state; cloning is an `Arc` bump.
@@ -249,13 +249,13 @@ pub(crate) async fn ws_handler<P>(
     ws: WebSocketUpgrade,
     State(state): State<ProjectionState<P>>,
     Extension(ws_sem): Extension<Arc<Semaphore>>,
-    Extension(ws_auth): Extension<WsAuthLimits>,
+    Extension(ws_policy): Extension<WsPolicy>,
     headers: HeaderMap,
 ) -> Response
 where
     P: ProjectionSource,
 {
-    if !validate_ws_origin(&headers, &ws_auth.origin_policy) {
+    if !validate_ws_origin(&headers, &ws_policy.origin_policy) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let Ok(permit) = ws_sem.clone().try_acquire_owned() else {
@@ -418,7 +418,7 @@ mod tests {
             WebSocketOriginPolicy::Strict
         );
         assert!(matches!(
-            WsAuthLimits::default().origin_policy,
+            WsPolicy::new(8).origin_policy,
             WebSocketOriginPolicy::Strict
         ));
     }
