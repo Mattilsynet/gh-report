@@ -1,7 +1,7 @@
 # SEC-0009. Supply Chain Security via Dependency Auditing
 
 Date: 2026-04-28
-Last-reviewed: 2026-04-29
+Last-reviewed: 2026-08-27 — refined — added R7 COM-0017:R4 enforcement statement naming job id supply-chain (RST-0007:R5)
 Tier: B
 Status: Accepted
 
@@ -41,6 +41,12 @@ R5 [6]: CI runs cargo-deny against advisories, licenses, bans,
   and source registries before merging dependency changes
 R6 [6]: Dependency review records cargo-deny warnings, cargo tree
   diffs, and new unsafe transitive code before accepting updates
+R7 [5]: CI enforces R1/R5 with a build-time tripwire (job id supply-chain,
+  step "cargo deny check (SEC-0009:R1+RST-0004:R4)",
+  .github/workflows/ci-reusable.yml): every pull request MUST pass
+  `cargo deny check` over advisories, licenses, bans, and source
+  registries; a resolved dependency graph violating that policy fails the
+  build (COM-0017:R4).
 
 ## Consequences
 

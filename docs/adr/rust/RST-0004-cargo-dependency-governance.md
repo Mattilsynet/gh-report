@@ -1,7 +1,7 @@
 # RST-0004. Cargo Dependency Governance
 
 Date: 2026-04-27
-Last-reviewed: 2026-04-28
+Last-reviewed: 2026-08-27 — refined — added R7 COM-0017:R4 enforcement statement naming job id supply-chain (RST-0007:R5)
 Tier: B
 Status: Accepted
 
@@ -42,6 +42,13 @@ R5 [6]: Adding a new workspace dependency requires PR
   transitive depth via `cargo tree -p <crate>`
 R6 [6]: Dependencies are periodically reviewed for continued
   necessity using `cargo-udeps` or `cargo machete`
+R7 [5]: CI enforces R3/R4 with a build-time tripwire (job id supply-chain,
+  steps "cargo audit (RST-0004:R3)" and
+  "cargo deny check (SEC-0009:R1+RST-0004:R4)",
+  .github/workflows/ci-reusable.yml): every pull request MUST run both
+  `cargo audit` and `cargo deny check`; a known RustSec advisory, a
+  license outside the allowlist, a banned duplicate, or an unknown source
+  registry fails the build (COM-0017:R4).
 
 ## Consequences
 
