@@ -471,4 +471,189 @@ mod tests {
     fn authority_rejects_empty_port() {
         assert_eq!(Authority::parse("example.com:", 443), None);
     }
+
+    #[test]
+    fn origin_validation_cross_origin_rejected() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ORIGIN, HeaderValue::from_static("https://evil.com"));
+        headers.insert(header::HOST, HeaderValue::from_static("example.com"));
+        assert!(!validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
+    }
+
+    #[test]
+    fn origin_validation_differing_non_default_ports_rejected() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://example.com:9999"),
+        );
+        headers.insert(header::HOST, HeaderValue::from_static("example.com:8080"));
+        assert!(!validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
+    }
+
+    #[test]
+    fn origin_validation_file_scheme_rejected() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("file://example.com"),
+        );
+        headers.insert(header::HOST, HeaderValue::from_static("example.com"));
+        assert!(!validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
+    }
+
+    #[test]
+    fn origin_validation_ftp_scheme_rejected() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("ftp://example.com"),
+        );
+        headers.insert(header::HOST, HeaderValue::from_static("example.com"));
+        assert!(!validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
+    }
+
+    #[test]
+    fn origin_validation_http_default_port_stripped() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("http://example.com:80"),
+        );
+        headers.insert(header::HOST, HeaderValue::from_static("example.com"));
+        assert!(validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
+    }
+
+    #[test]
+    fn origin_validation_http_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("http://localhost:8080"),
+        );
+        headers.insert(header::HOST, HeaderValue::from_static("localhost:8080"));
+        assert!(validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
+    }
+
+    #[test]
+    fn origin_validation_no_host_header_rejected() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://example.com"),
+        );
+        assert!(!validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
+    }
+
+    #[test]
+    fn origin_validation_no_origin_header_allowed() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("example.com"));
+        assert!(validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
+    }
+
+    #[test]
+    fn origin_validation_no_scheme_rejected() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ORIGIN, HeaderValue::from_static("example.com"));
+        headers.insert(header::HOST, HeaderValue::from_static("example.com"));
+        assert!(!validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
+    }
+
+    #[test]
+    fn origin_validation_origin_has_default_port_host_omits() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://example.com:443"),
+        );
+        headers.insert(header::HOST, HeaderValue::from_static("example.com"));
+        assert!(validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
+    }
+
+    #[test]
+    fn origin_validation_origin_with_trailing_path() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://example.com/path"),
+        );
+        headers.insert(header::HOST, HeaderValue::from_static("example.com"));
+        assert!(validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
+    }
+
+    #[test]
+    fn origin_validation_same_origin_matches() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://example.com"),
+        );
+        headers.insert(header::HOST, HeaderValue::from_static("example.com"));
+        assert!(validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
+    }
+
+    #[test]
+    fn origin_validation_same_origin_with_port() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://example.com:8080"),
+        );
+        headers.insert(header::HOST, HeaderValue::from_static("example.com:8080"));
+        assert!(validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
+    }
+
+    #[test]
+    fn origin_validation_subdomain_mismatch_rejected() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://sub.example.com"),
+        );
+        headers.insert(header::HOST, HeaderValue::from_static("example.com"));
+        assert!(!validate_ws_origin(
+            &headers,
+            &WebSocketOriginPolicy::AllowAbsent
+        ));
+    }
 }
