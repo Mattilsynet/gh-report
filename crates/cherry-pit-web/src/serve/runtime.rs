@@ -3392,4 +3392,50 @@ mod tests {
             }
         }
     }
+
+    /// The security-header stack sits outside the body ceiling, so a
+    /// 413 raised by the ceiling is still a fully-headed response.
+    ///
+    /// Guards a strength the sweep recorded as verified ("security
+    /// headers on every serve response") against the P2 layer
+    /// reordering that moved the body cap outward.
+    #[tokio::test]
+    async fn security_headers_survive_a_ceiling_413() {
+        let state = state_with_cache(&[("index.html", "<html>ok</html>")]);
+        let limits = LayerLimits {
+            max_body_bytes: 512,
+            max_inflight_requests: 1024,
+        };
+        let app = build_router(
+            Arc::clone(&state),
+            limits,
+            WsPolicy::permissive_for_tests(),
+            &default_config(),
+            None,
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        wait_for_server(addr).await;
+
+        let resp = reqwest::Client::new()
+            .post(format!("http://{addr}/index.html"))
+            .body(vec![b'x'; 4096])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 413);
+        let h = resp.headers();
+        for name in [
+            "x-frame-options",
+            "x-content-type-options",
+            "referrer-policy",
+            "permissions-policy",
+            "strict-transport-security",
+            "content-security-policy",
+        ] {
+            assert!(h.get(name).is_some(), "413 from ceiling lost {name}");
+        }
+        handle.abort();
+    }
 }
