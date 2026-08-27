@@ -41,15 +41,9 @@ use tokio::sync::{Semaphore, broadcast};
 use super::port::ProjectionSource;
 use super::state::{PageEntry, ProjectionState};
 use crate::middleware::compression::{Encoding, negotiate_encoding};
-use crate::middleware::ws_auth::{WebSocketOriginPolicy, WsAuthLimits};
-
-/// Default Content-Security-Policy header value applied to every response
-/// emitted by the projection adapter. Matches the donor crate's default.
-pub(crate) const DEFAULT_CSP: &str = "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'";
-
-/// Maximum inbound WebSocket message size (bytes). Client frames are
-/// discarded after pong handling; 4 KB suffices.
-pub(crate) const WS_MAX_MESSAGE_SIZE: usize = 4096;
+use crate::middleware::http::etag_weak_match;
+use crate::middleware::security::DEFAULT_CSP;
+use crate::middleware::ws_auth::{WS_MAX_MESSAGE_SIZE, WsAuthLimits, validate_ws_origin};
 
 /// WebSocket close code 1001 "Going Away" — RFC 6455 §7.4.1. Used to
 /// signal drop-and-resync on `broadcast::RecvError::Lagged` per
@@ -234,17 +228,6 @@ fn serve_page(page: &PageEntry, request_headers: &HeaderMap, status: StatusCode)
     resp
 }
 
-/// Weak `ETag` comparison per RFC 7232 §2.3.2.
-fn etag_weak_match(client_val: &HeaderValue, server_val: &HeaderValue) -> bool {
-    fn strip_weak(v: &[u8]) -> &[u8] {
-        v.strip_prefix(b"W/").unwrap_or(v)
-    }
-    if client_val.as_bytes() == b"*" {
-        return true;
-    }
-    strip_weak(client_val.as_bytes()) == strip_weak(server_val.as_bytes())
-}
-
 /// WebSocket upgrade handler.
 ///
 /// Validates `Origin` against the consumer-elected
@@ -353,71 +336,6 @@ pub(crate) async fn ws_session<P>(
     let _ = sender.send(Message::Close(None)).await;
 }
 
-/// Validate the inbound `Origin` against `Host` for CSWSH defence,
-/// gated by the consumer-elected [`WebSocketOriginPolicy`] per
-/// SEC-0012.
-///
-/// Behaviour split by `policy`:
-///
-/// - **Absent `Origin`**: depends on `policy`.
-///   [`WebSocketOriginPolicy::Strict`] → reject (SEC-0012:R2);
-///   [`WebSocketOriginPolicy::AllowAbsent`] → permit (SEC-0012:R3,
-///   non-browser-client escape hatch).
-/// - **Present `Origin`**: parsed and compared to `Host` with
-///   donor-derived authority normalisation (default-port stripping,
-///   IPv6 bracket handling). Mismatched, malformed, or non-HTTP(S)
-///   `Origin` is rejected regardless of `policy`.
-///
-/// Mirrors the donor crate's `server::validate_ws_origin` semantics
-/// for the present-`Origin` branch; the absent-branch policy gate is
-/// the SEC-0012 increment.
-pub(crate) fn validate_ws_origin(headers: &HeaderMap, policy: &WebSocketOriginPolicy) -> bool {
-    let Some(origin) = headers.get(header::ORIGIN) else {
-        return matches!(policy, WebSocketOriginPolicy::AllowAbsent);
-    };
-    let Ok(origin_str) = origin.to_str() else {
-        return false;
-    };
-    let Some((scheme, after_scheme)) = origin_str.split_once("://") else {
-        return false;
-    };
-    let default_port = match scheme {
-        "https" => "443",
-        "http" => "80",
-        _ => return false,
-    };
-    let origin_authority = after_scheme
-        .split('/')
-        .next()
-        .expect("split always yields at least one element");
-    let Some(host_hdr) = headers.get(header::HOST) else {
-        return false;
-    };
-    let Ok(host_str) = host_hdr.to_str() else {
-        return false;
-    };
-    if origin_authority == host_str {
-        return true;
-    }
-    normalize_authority(origin_authority, default_port)
-        == normalize_authority(host_str, default_port)
-}
-
-fn normalize_authority<'a>(authority: &'a str, default_port: &str) -> (&'a str, &'a str) {
-    if let Some(close_bracket) = authority.find(']') {
-        let (host, rest) = authority.split_at(close_bracket + 1);
-        let port = rest.strip_prefix(':').unwrap_or("");
-        let port = if port == default_port { "" } else { port };
-        return (host, port);
-    }
-    if let Some((host, port)) = authority.rsplit_once(':') {
-        let port = if port == default_port { "" } else { port };
-        (host, port)
-    } else {
-        (authority, "")
-    }
-}
-
 /// Apply [`DEFAULT_CSP`] to every response unless an inner handler set
 /// `Content-Security-Policy` directly. Mirrors the donor's
 /// `security_headers` but ports only the CSP knob — `X-Frame-Options`,
@@ -464,6 +382,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::middleware::ws_auth::WebSocketOriginPolicy;
 
     fn make_headers(pairs: &[(&str, &str)]) -> HeaderMap {
         let mut h = HeaderMap::new();
@@ -769,33 +688,5 @@ mod tests {
             PageEntry::new("blog/index.html", b"<html>blog</html>".to_vec()),
         );
         assert!(resolve_page(&snapshot, "blog/index.html").is_some());
-    }
-
-    #[test]
-    fn normalize_authority_ipv6_loopback_no_port() {
-        let (host, port) = normalize_authority("[::1]", "443");
-        assert_eq!(host, "[::1]");
-        assert_eq!(port, "");
-    }
-
-    #[test]
-    fn normalize_authority_ipv6_with_non_default_port() {
-        let (host, port) = normalize_authority("[::1]:8080", "443");
-        assert_eq!(host, "[::1]");
-        assert_eq!(port, "8080");
-    }
-
-    #[test]
-    fn normalize_authority_ipv6_with_default_port_stripped() {
-        let (host, port) = normalize_authority("[::1]:443", "443");
-        assert_eq!(host, "[::1]");
-        assert_eq!(port, "");
-    }
-
-    #[test]
-    fn normalize_authority_ipv6_full_address() {
-        let (host, port) = normalize_authority("[2001:db8::1]:9090", "443");
-        assert_eq!(host, "[2001:db8::1]");
-        assert_eq!(port, "9090");
     }
 }

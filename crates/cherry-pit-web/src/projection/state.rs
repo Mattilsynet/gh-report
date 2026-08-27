@@ -17,10 +17,10 @@ use std::sync::Arc;
 use axum::http::HeaderValue;
 use bytes::Bytes;
 use cherry_pit_core::CorrelationContext;
-use sha2::{Digest, Sha256};
 use tracing::warn;
 
 use super::port::ProjectionSource;
+use crate::middleware::compression::compute_etag;
 
 /// A single cached HTML page ready to serve.
 ///
@@ -272,22 +272,6 @@ impl<P> std::fmt::Debug for ProjectionState<P> {
             )
             .finish()
     }
-}
-
-/// Compute a weak `ETag` from a SHA-256 hash of `body`, truncated to 16 bytes.
-///
-/// Format: `W/"<32 hex chars>"` — weak because the same `ETag` matches
-/// regardless of content encoding (gzip, zstd, identity).
-fn compute_etag(body: &[u8]) -> HeaderValue {
-    use std::fmt::Write;
-    let hash = Sha256::digest(body);
-    let mut etag_str = String::with_capacity(36);
-    etag_str.push_str("W/\"");
-    for b in &hash[..16] {
-        write!(etag_str, "{b:02x}").expect("hex write to String is infallible");
-    }
-    etag_str.push('"');
-    HeaderValue::from_str(&etag_str).expect("ETag is valid ASCII")
 }
 
 /// Look up extension metadata via `match` (O(1) branch table).
