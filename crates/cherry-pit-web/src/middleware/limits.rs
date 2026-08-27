@@ -1,21 +1,24 @@
 //! SEC-0003 availability layers attached library-side per **CHE-0062**.
 //!
-//! Three layers discharge SEC-0003 R1/R2/R3 at every ingestion point;
-//! the library owns *what* is attached *where*, the consumer owns
-//! *what number* via [`LayerLimits`]. No consumer config type crosses
-//! the boundary (CHE-0062:R3).
+//! Two layers discharge SEC-0003 R1/R3 at every ingestion point; the
+//! library owns *what* is attached *where*, the consumer owns *what
+//! number* via [`LayerLimits`]. No consumer config type crosses the
+//! boundary (CHE-0062:R3).
 //!
 //! - **`max_body_bytes`** — inbound body size via
-//!   `RequestBodyLimitLayer` on both routers (SEC-0003:R1).
+//!   `RequestBodyLimitLayer` on every surface (SEC-0003:R1).
 //! - **`max_inflight_requests`** — in-flight requests, 503-shed (not
 //!   queued) via [`http_concurrency_limit`] (SEC-0003:R3).
-//! - **`max_ws_connections`** — concurrent WS upgrades via
-//!   `Arc<Semaphore>::try_acquire_owned`, `503` on exhaustion;
-//!   projection router only, cqrs being HTTP-only (CHE-0049:R3, R11).
+//!
+//! The WS connection cap is deliberately **not** here. It lives on
+//! SEC-0012's `WsPolicy` beside the Origin policy, because a surface
+//! that mounts a `/ws` upgrade needs both to be safe and carrying them
+//! separately let `serve` take the cap and omit the policy — see the
+//! reversal recorded in SEC-0012's Consequences (CHE-0062:R1/R2).
 //!
 //! [`LayerLimits`] omits [`Default`]: a defaulted permissive value is
 //! a SEC-0003 footgun. Tests use
-//! [`LayerLimits::permissive_for_tests`]; production names three
+//! [`LayerLimits::permissive_for_tests`]; production names both
 //! values, `usize` hard upper bounds (`usize::MAX` unbounded, `0`
 //! rejects every request), each unconditionally honoured per
 //! CHE-0062:R4.
@@ -39,7 +42,6 @@ use tokio::sync::Semaphore;
 /// let limits = LayerLimits {
 ///     max_body_bytes: 1024 * 1024,
 ///     max_inflight_requests: 100,
-///     max_ws_connections: 64,
 /// };
 /// ```
 ///
@@ -47,7 +49,7 @@ use tokio::sync::Semaphore;
 /// environment, hard-coded defaults. The library does not inspect that
 /// source (CHE-0062:R3 — no consumer config type crosses the boundary).
 ///
-/// The struct is `Copy`: three `usize`s, no heap. Pass by value at the
+/// The struct is `Copy`: two `usize`s, no heap. Pass by value at the
 /// call site; the router builder copies the values into the per-instance
 /// semaphores it constructs.
 ///
@@ -56,9 +58,11 @@ use tokio::sync::Semaphore;
 /// per the crate README, so the workspace tolerates this.
 #[derive(Debug, Clone, Copy)]
 pub struct LayerLimits {
-    /// Maximum inbound request body in bytes. Bodies exceeding this
-    /// value cause the router to short-circuit with
-    /// `413 Payload Too Large` before reaching the handler. SEC-0003:R1.
+    /// Maximum inbound request body in bytes, applied as a ceiling at
+    /// every ingestion point. Bodies exceeding this value cause the
+    /// router to short-circuit with `413 Payload Too Large` before
+    /// reaching the handler. Route groups may narrow this with their
+    /// own nested layer; none may widen it. SEC-0003:R1.
     pub max_body_bytes: usize,
 
     /// Maximum in-flight HTTP requests. Requests arriving when this
@@ -66,13 +70,6 @@ pub struct LayerLimits {
     /// short-circuit with `503 Service Unavailable` immediately
     /// (sheds load; does not queue). SEC-0003:R3.
     pub max_inflight_requests: usize,
-
-    /// Maximum concurrent WebSocket connections accepted by the
-    /// projection adapter's `/ws` upgrade. Upgrades arriving when this
-    /// many sessions are already attached are rejected with `503`
-    /// before the WS handshake completes. SEC-0003:R3 route-scoped per
-    /// CHE-0049:R3 + R11.
-    pub max_ws_connections: usize,
 }
 
 impl LayerLimits {
@@ -82,19 +79,18 @@ impl LayerLimits {
     /// themselves.
     ///
     /// The name is deliberately pejorative: production code that calls
-    /// this is wrong. Production code names three values informed by
+    /// this is wrong. Production code names both values informed by
     /// SEC-0003:R1/R3 sizing.
     ///
     /// Values are large but not `usize::MAX` so the layers themselves
     /// still execute (exercising the wiring) rather than being elided
-    /// by a fast-path. `1 GiB` body, `1024` in-flight, `1024` WS — all
-    /// well above any per-test load.
+    /// by a fast-path. `1 GiB` body, `1024` in-flight — both well above
+    /// any per-test load.
     #[must_use]
     pub fn permissive_for_tests() -> Self {
         Self {
             max_body_bytes: 1024 * 1024 * 1024,
             max_inflight_requests: 1024,
-            max_ws_connections: 1024,
         }
     }
 }
@@ -137,7 +133,6 @@ mod tests {
         let a = LayerLimits {
             max_body_bytes: 1,
             max_inflight_requests: 2,
-            max_ws_connections: 3,
         };
         let b = a;
         let c = a;
@@ -151,6 +146,5 @@ mod tests {
         let l = LayerLimits::permissive_for_tests();
         assert!(l.max_body_bytes >= 1024 * 1024);
         assert!(l.max_inflight_requests >= 64);
-        assert!(l.max_ws_connections >= 64);
     }
 }

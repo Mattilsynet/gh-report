@@ -1,26 +1,31 @@
-//! SEC-0012 WebSocket Origin validation policy carriers.
+//! SEC-0012 WebSocket policy carrier and Origin validation.
 //!
-//! Realises **SEC-0012** as two library-owned value types threaded
-//! through [`super::super::projection::build_projection_router`]
-//! between `limits` and `extra_routes` per the CHE-0049 Amendment
-//! 2026-06-10 (SEC-0012) grammar:
+//! Realises **SEC-0012** for every cherry-pit-web surface that mounts a
+//! WS upgrade — the projection adapter and the generic serve runtime:
 //!
 //! - [`WebSocketOriginPolicy`] — typed policy enum. `Strict` (default)
 //!   rejects absent `Origin` at WS upgrade with `403 FORBIDDEN`.
 //!   `AllowAbsent` is the documented escape hatch for non-browser
 //!   clients; consumers electing it accept CWE-346 / CWE-1385 risk
 //!   per SEC-0012:R3.
-//! - [`WsAuthLimits`] — sibling value type to [`super::LayerLimits`],
-//!   carrying `origin_policy` today; future authentication knobs land
-//!   as new fields per SEC-0012:R4 + CHE-0062:R6.
+//! - [`WsPolicy`] — the carrier, holding `max_connections` alongside
+//!   `origin_policy` (SEC-0012:R1).
+//!
+//! The two knobs are fused deliberately. They were once split across
+//! `LayerLimits` (availability) and `WsAuthLimits` (authenticity) to
+//! keep CISQ primaries MECE; that split let `serve::build_router` take
+//! the WS cap and never take a policy, so no origin-strict WebSocket
+//! ran in production for the eight weeks SEC-0012:R2 declared `Strict`
+//! the default. A carrier now groups the knobs one capability needs to
+//! be safe, so the omission is a compile error rather than an absence
+//! nobody can see. See SEC-0012's Consequences for the full reversal.
 //!
 //! Both types carry `#[non_exhaustive]` per COM-0021:R1 for additive,
 //! semver-minor evolution.
 //!
-//! The companion [`validate_ws_origin`] and its authority-normalisation
-//! helper live in this module — the single home for WS origin
-//! validation across both the static-serve runtime and the projection
-//! adapter (CHE-0086:R8).
+//! [`validate_ws_origin`] and its [`Authority`] parser live here — the
+//! single home for WS origin validation across both the static-serve
+//! runtime and the projection adapter (CHE-0086:R8).
 
 use axum::http::{HeaderMap, header};
 
@@ -70,43 +75,69 @@ impl Default for WebSocketOriginPolicy {
     }
 }
 
-/// Per-router WebSocket authentication knobs attached by the
-/// projection adapter at construction (SEC-0012:R1, R4).
+/// Per-surface WebSocket policy, attached at router construction by
+/// every cherry-pit-web surface that mounts a `/ws` upgrade
+/// (SEC-0012:R1, R4).
 ///
-/// Sibling to [`super::LayerLimits`] (CHE-0062 availability sizing).
-/// Where `LayerLimits` carries SEC-0003 R1/R3 availability sizing
-/// (`usize` numbers), `WsAuthLimits` carries SEC-0005 authenticity
-/// policy (typed enums). Splitting the two carriers keeps CISQ
-/// primaries MECE per COM-0028 (authenticity vs availability).
+/// Carries the two knobs a WS upgrade needs to be safe:
+/// `max_connections` (the SEC-0003:R3 connection cap, unconditional
+/// per CHE-0062:R4) and `origin_policy` (the SEC-0005 authenticity
+/// election, consumer-discretionary per SEC-0012:R5). Fusing an
+/// electable knob with an unconditional one makes neither
+/// electable-by-omission — a consumer must name both.
 ///
-/// Construct via [`Default::default`] (= safety-by-default per
-/// SEC-0012:R2) or [`WsAuthLimits::permissive_for_tests`]. The
-/// `#[non_exhaustive]` attribute (COM-0021:R1) blocks the
-/// struct-literal idiom outside the crate, matching `LayerLimits`;
-/// consumers cannot accidentally rely on a field set that future
-/// versions will extend per CHE-0062:R6.
-#[derive(Debug, Clone, Default)]
+/// Construct via [`WsPolicy::new`], which yields `Strict` without the
+/// caller having to name it, or [`WsPolicy::permissive_for_tests`].
+/// The `#[non_exhaustive]` attribute (COM-0021:R1) blocks the
+/// struct-literal idiom outside the crate, matching
+/// [`super::LayerLimits`]; consumers cannot accidentally rely on a
+/// field set that future versions will extend per SEC-0012:R4.
+///
+/// [`Default`] is deliberately absent: `max_connections` has no
+/// defensible default, and a defaulted availability cap is the same
+/// SEC-0003 footgun [`super::LayerLimits`] avoids.
+#[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct WsAuthLimits {
+pub struct WsPolicy {
+    /// Maximum concurrent WebSocket connections accepted by the
+    /// surface's `/ws` upgrade. Upgrades arriving when this many
+    /// sessions are already attached are rejected with `503` before
+    /// the handshake completes. SEC-0003:R3 route-scoped.
+    pub max_connections: usize,
+
     /// Policy applied at WS upgrade to the inbound `Origin` header.
     /// See [`WebSocketOriginPolicy`].
     pub origin_policy: WebSocketOriginPolicy,
 }
 
-impl WsAuthLimits {
-    /// Construct a [`WsAuthLimits`] electing the permissive
-    /// [`WebSocketOriginPolicy::AllowAbsent`] variant. Intended
-    /// **only** for tests whose harness does not synthesise an
-    /// `Origin` header.
+impl WsPolicy {
+    /// Construct a [`WsPolicy`] capped at `max_connections` with the
+    /// safety-by-default [`WebSocketOriginPolicy::Strict`] election
+    /// (SEC-0012:R2).
+    ///
+    /// This is the production constructor. `Strict` is reached by not
+    /// asking for anything else, which is the property that makes
+    /// SEC-0012:R2 hold by construction rather than by review.
+    #[must_use]
+    pub fn new(max_connections: usize) -> Self {
+        Self {
+            max_connections,
+            origin_policy: WebSocketOriginPolicy::Strict,
+        }
+    }
+
+    /// Construct a [`WsPolicy`] electing the permissive
+    /// [`WebSocketOriginPolicy::AllowAbsent`] variant with an
+    /// effectively unbounded connection cap. Intended **only** for
+    /// tests whose harness does not synthesise an `Origin` header.
     ///
     /// The name is deliberately pejorative: production code that
     /// calls this is wrong unless the consumer has documented
     /// acceptance of CWE-346 / CWE-1385 risk per SEC-0012:R3.
-    /// Production code constructs via [`Default::default`] (= Strict)
-    /// or explicit named-variant election.
     #[must_use]
     pub fn permissive_for_tests() -> Self {
         Self {
+            max_connections: 1024,
             origin_policy: WebSocketOriginPolicy::AllowAbsent,
         }
     }
@@ -243,15 +274,20 @@ mod tests {
             WebSocketOriginPolicy::Strict
         );
         assert!(matches!(
-            WsAuthLimits::default().origin_policy,
+            WsPolicy::new(8).origin_policy,
             WebSocketOriginPolicy::Strict
         ));
     }
 
     #[test]
+    fn new_carries_the_requested_cap() {
+        assert_eq!(WsPolicy::new(7).max_connections, 7);
+    }
+
+    #[test]
     fn permissive_for_tests_elects_allow_absent() {
         assert!(matches!(
-            WsAuthLimits::permissive_for_tests().origin_policy,
+            WsPolicy::permissive_for_tests().origin_policy,
             WebSocketOriginPolicy::AllowAbsent
         ));
     }
@@ -351,7 +387,10 @@ mod tests {
 
     #[test]
     fn validate_ws_origin_matches_scheme_case_insensitively() {
-        let h = make_headers(&[("origin", "HTTPS://example.com:443"), ("host", "example.com")]);
+        let h = make_headers(&[
+            ("origin", "HTTPS://example.com:443"),
+            ("host", "example.com"),
+        ]);
         assert!(
             validate_ws_origin(&h, &WebSocketOriginPolicy::Strict),
             "RFC 3986 §3.1 schemes are case-insensitive; an uppercase scheme must still \
@@ -361,7 +400,10 @@ mod tests {
 
     #[test]
     fn validate_ws_origin_rejects_userinfo_in_host() {
-        let h = make_headers(&[("origin", "https://example.com"), ("host", "evil.com@example.com")]);
+        let h = make_headers(&[
+            ("origin", "https://example.com"),
+            ("host", "evil.com@example.com"),
+        ]);
         assert!(
             !validate_ws_origin(&h, &WebSocketOriginPolicy::Strict),
             "userinfo is illegal in Host; it must not normalise away to a matching host"
@@ -370,7 +412,10 @@ mod tests {
 
     #[test]
     fn validate_ws_origin_rejects_out_of_range_port() {
-        let h = make_headers(&[("origin", "https://example.com:99999"), ("host", "example.com")]);
+        let h = make_headers(&[
+            ("origin", "https://example.com:99999"),
+            ("host", "example.com"),
+        ]);
         assert!(
             !validate_ws_origin(&h, &WebSocketOriginPolicy::Strict),
             "an unparseable port must not silently degrade to the scheme default"

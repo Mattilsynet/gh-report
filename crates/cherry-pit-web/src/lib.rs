@@ -41,7 +41,7 @@ pub mod path;
 
 pub use command_router::{CommandRouter, DispatchOutcome};
 pub use middleware::{
-    HttpTraceLayer, LayerLimits, NormalizedPath, SVG_CSP, WebSocketOriginPolicy, WsAuthLimits,
+    HttpTraceLayer, LayerLimits, NormalizedPath, SVG_CSP, WebSocketOriginPolicy, WsPolicy,
     compress_zstd, compute_etag, http_trace_layer, normalize_request_path, sanitize_path_segment,
     security_headers,
 };

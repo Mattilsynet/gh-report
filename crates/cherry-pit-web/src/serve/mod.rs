@@ -11,7 +11,7 @@ pub mod error;
 pub mod runtime;
 pub mod state;
 
-pub use config::{ConfigError, ServerConfig, ServerConfigBuilder, ValidatedConfig};
+pub use config::{ConfigError, ServeOptions, ServeOptionsBuilder};
 pub use error::ServerError;
 pub use runtime::{bind_serving_port, build_router, start};
 pub use state::{CachedPage, PageUpdateEvent, ServerState};

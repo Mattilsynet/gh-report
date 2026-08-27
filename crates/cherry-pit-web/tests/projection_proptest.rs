@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use cherry_pit_web::{
-    LayerLimits, PageEntry, PageUpdate, ProjectionSource, ProjectionState, WsAuthLimits,
+    LayerLimits, PageEntry, PageUpdate, ProjectionSource, ProjectionState, WsPolicy,
     build_projection_router, normalize_request_path, sanitize_path_segment,
 };
 use proptest::prelude::*;
@@ -64,7 +64,7 @@ async fn spawn_stub() -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let app: Router = build_projection_router(
         state,
         LayerLimits::permissive_for_tests(),
-        WsAuthLimits::permissive_for_tests(),
+        WsPolicy::permissive_for_tests(),
         Router::new(),
     );
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

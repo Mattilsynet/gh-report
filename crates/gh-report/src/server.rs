@@ -20,34 +20,68 @@ use tower_http::limit::RequestBodyLimitLayer;
 
 use crate::app::state::AppState;
 
-/// CSP applied to the served (dashboard) `ServerConfig`, relaxing
+/// CSP applied to the served (dashboard) options, relaxing
 /// `script-src` to permit `wasm-unsafe-eval` for the served WASM bundle.
 pub(crate) const SERVED_CSP_WITH_WASM_UNSAFE_EVAL: &str = "default-src 'self'; style-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; base-uri 'none'; form-action 'none'";
 
-/// [`cherry_pit_web::serve::ValidatedConfig`] for the served-dashboard path:
+/// Maximum inbound body accepted by the serve surface's built-in
+/// routes, which are GET-only. `extra_routes` that need more (the
+/// webhook receiver) nest their own wider limit.
+const MAX_BODY_BYTES: usize = 1024;
+
+/// Maximum in-flight HTTP requests before the concurrency layer sheds
+/// with 503. Defence-in-depth; primary rate limiting is at the ingress.
+const MAX_INFLIGHT_REQUESTS: usize = 1024;
+
+/// Maximum concurrent dashboard WebSocket sessions.
+const MAX_WS_CONNECTIONS: usize = 200;
+
+/// SEC-0003 sizing for the serve surface (CHE-0062:R2).
+pub(crate) fn server_layer_limits() -> cherry_pit_web::LayerLimits {
+    cherry_pit_web::LayerLimits {
+        max_body_bytes: MAX_BODY_BYTES,
+        max_inflight_requests: MAX_INFLIGHT_REQUESTS,
+    }
+}
+
+/// WebSocket policy for the serve surface (SEC-0012:R1).
+///
+/// Takes the `Strict` Origin election by construction:
+/// [`cherry_pit_web::WsPolicy::new`] yields `Strict` without naming it
+/// (SEC-0012:R2). The `/ws` route carries dashboard page-update
+/// notifications to a browser loaded from this same origin, and
+/// browsers always send `Origin` on a same-origin WebSocket handshake,
+/// so `Strict` costs this deployment nothing. Health checks target
+/// `/healthz`, not `/ws`, so no non-browser client needs the
+/// SEC-0012:R3 `AllowAbsent` escape hatch here.
+pub(crate) fn server_ws_policy() -> cherry_pit_web::WsPolicy {
+    cherry_pit_web::WsPolicy::new(MAX_WS_CONNECTIONS)
+}
+
+/// [`cherry_pit_web::serve::ServeOptions`] for the served-dashboard path:
 /// applies [`SERVED_CSP_WITH_WASM_UNSAFE_EVAL`] on top of the defaults.
 ///
 /// # Panics
 ///
-/// Panics if the config fails to build (indicates a programming error in
+/// Panics if the options fail to build (indicates a programming error in
 /// the hardcoded defaults).
-pub(crate) fn served_dashboard_server_config() -> cherry_pit_web::serve::ValidatedConfig {
-    cherry_pit_web::serve::ServerConfig::builder()
+pub(crate) fn served_dashboard_server_config() -> cherry_pit_web::serve::ServeOptions {
+    cherry_pit_web::serve::ServeOptions::builder()
         .csp_override(SERVED_CSP_WITH_WASM_UNSAFE_EVAL)
         .build()
-        .expect("default config is valid")
+        .expect("default options are valid")
 }
 
-/// Bare-default [`cherry_pit_web::serve::ValidatedConfig`] with no overrides.
+/// Bare-default [`cherry_pit_web::serve::ServeOptions`] with no overrides.
 ///
 /// # Panics
 ///
-/// Panics if the config fails to build (indicates a programming error in
+/// Panics if the options fail to build (indicates a programming error in
 /// the hardcoded defaults).
-pub(crate) fn default_server_config() -> cherry_pit_web::serve::ValidatedConfig {
-    cherry_pit_web::serve::ServerConfig::builder()
+pub(crate) fn default_server_config() -> cherry_pit_web::serve::ServeOptions {
+    cherry_pit_web::serve::ServeOptions::builder()
         .build()
-        .expect("default config is valid")
+        .expect("default options are valid")
 }
 
 /// Build a [`Router`] fragment for the `/api/v1/status` endpoint.
@@ -79,11 +113,17 @@ async fn status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
 ///
 /// # Panics
 ///
-/// Panics if the default `ServerConfig` cannot be built (indicates a
+/// Panics if the default options cannot be built (indicates a
 /// programming error in the hardcoded defaults).
 pub fn build_router(state: Arc<AppState>) -> Router {
-    let config = default_server_config();
-    cherry_pit_web::serve::build_router(state, &config, Some(status_router()))
+    let options = default_server_config();
+    cherry_pit_web::serve::build_router(
+        state,
+        server_layer_limits(),
+        server_ws_policy(),
+        &options,
+        Some(status_router()),
+    )
 }
 
 #[cfg(test)]
@@ -127,7 +167,13 @@ mod tests {
         state.set_html_cache(pages);
 
         let config = served_dashboard_server_config();
-        let app = cherry_pit_web::serve::build_router(state, &config, None);
+        let app = cherry_pit_web::serve::build_router(
+            state,
+            server_layer_limits(),
+            server_ws_policy(),
+            &config,
+            None,
+        );
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -261,7 +307,13 @@ mod tests {
         state.set_html_cache(cache);
 
         let real_csp_config = served_dashboard_server_config();
-        let app = cherry_pit_web::serve::build_router(state, &real_csp_config, None);
+        let app = cherry_pit_web::serve::build_router(
+            state,
+            server_layer_limits(),
+            server_ws_policy(),
+            &real_csp_config,
+            None,
+        );
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -687,12 +739,46 @@ mod tests {
         handle.abort();
     }
 
+    /// gh-report takes SEC-0012:R2's `Strict` election by default
+    /// (`server_ws_policy`), so a non-browser client that sends no
+    /// `Origin` is refused at the dashboard `/ws` upgrade.
+    ///
+    /// Pins the election itself: before `WsPolicy`, `serve` hardcoded
+    /// `AllowAbsent` and this connection succeeded.
+    #[tokio::test]
+    async fn dashboard_ws_rejects_absent_origin() {
+        let state = state_no_cache().await;
+        let app = build_router(Arc::clone(&state));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        wait_for_server(addr).await;
+
+        match tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await {
+            Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
+                assert_eq!(
+                    resp.status(),
+                    403,
+                    "dashboard /ws must refuse an absent Origin under the Strict election"
+                );
+            }
+            Err(other) => panic!("expected HTTP 403 from upgrade, got: {other}"),
+            Ok(_) => panic!("absent Origin must not be upgraded"),
+        }
+
+        handle.abort();
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn ws_e2e_publish_evidence_broadcasts_to_client() {
         use crate::app::collect::publish_evidence;
         use crate::config::runtime::RuntimeConfig;
         use crate::test_fixtures;
         use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
         let state = state_no_cache().await;
         let app = build_router(Arc::clone(&state));
@@ -707,7 +793,12 @@ mod tests {
         wait_for_server(addr).await;
 
         let url = format!("ws://{addr}/ws");
-        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let mut request = url.into_client_request().unwrap();
+        request.headers_mut().insert(
+            axum::http::header::ORIGIN,
+            axum::http::HeaderValue::from_str(&format!("http://{addr}")).unwrap(),
+        );
+        let (mut ws, _) = tokio_tungstenite::connect_async(request).await.unwrap();
         let _ = ws.next().await;
 
         let config = RuntimeConfig {

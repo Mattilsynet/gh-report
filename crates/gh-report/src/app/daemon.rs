@@ -221,6 +221,8 @@ pub async fn run(config: RuntimeConfig) -> Result<(), AppError> {
         Some(listener),
         shutdown,
         Arc::clone(&app_state),
+        crate::server::server_layer_limits(),
+        crate::server::server_ws_policy(),
         &server_config,
         None,
         Some(extra_routes),

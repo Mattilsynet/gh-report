@@ -41,15 +41,14 @@ use tower_http::limit::RequestBodyLimitLayer;
 
 use tracing::{debug, info, warn};
 
-use super::config::ValidatedConfig;
+use super::config::ServeOptions;
 use super::error::ServerError;
 use super::state::ServerState;
 use crate::middleware::compression::{Encoding, negotiate_encoding};
 use crate::middleware::http::etag_weak_match;
-use crate::middleware::ws_auth::{WS_MAX_MESSAGE_SIZE, validate_ws_origin};
+use crate::middleware::ws_auth::{WS_MAX_MESSAGE_SIZE, WsPolicy, validate_ws_origin};
 use crate::middleware::{
-    DEFAULT_CSP, SVG_CSP, WebSocketOriginPolicy, http_trace_layer, normalize_request_path,
-    security_headers,
+    DEFAULT_CSP, LayerLimits, SVG_CSP, http_trace_layer, normalize_request_path, security_headers,
 };
 
 /// Server-side ping interval for WebSocket keepalive (seconds).
@@ -72,7 +71,10 @@ const WS_PONG_DEADLINE_SECS: u64 = 10;
 ///
 /// # Security
 ///
-/// - `Origin` validated against `Host` (CSWSH); 403 on mismatch.
+/// - `Origin` validated against `Host` per the consumer-elected
+///   [`WebSocketOriginPolicy`] carried on `Extension<WsPolicy>`
+///   (SEC-0012:R1); 403 on mismatch, and on absent `Origin` under the
+///   default `Strict` election (SEC-0012:R2).
 /// - Connection count bounded by `ws_semaphore`; 503 when exhausted.
 /// - Max inbound frame size 4 KB (memory-exhaustion defense).
 /// - No application-level auth or rate limiting beyond the semaphore
@@ -82,9 +84,10 @@ async fn ws_handler<S: ServerState>(
     ws: WebSocketUpgrade,
     State(state): State<Arc<S>>,
     Extension(ws_sem): Extension<Arc<tokio::sync::Semaphore>>,
+    Extension(ws_policy): Extension<WsPolicy>,
     headers: HeaderMap,
 ) -> Response {
-    if !validate_ws_origin(&headers, &WebSocketOriginPolicy::AllowAbsent) {
+    if !validate_ws_origin(&headers, &ws_policy.origin_policy) {
         warn!("rejected WebSocket upgrade: Origin does not match Host");
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -436,7 +439,9 @@ pub async fn start<S: ServerState>(
     listener: Option<TcpListener>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     state: Arc<S>,
-    config: &ValidatedConfig,
+    limits: LayerLimits,
+    ws_policy: WsPolicy,
+    options: &ServeOptions,
     addr_tx: Option<tokio::sync::oneshot::Sender<SocketAddr>>,
     extra_routes: Option<Router<Arc<S>>>,
 ) -> Result<(), ServerError> {
@@ -448,7 +453,7 @@ pub async fn start<S: ServerState>(
         );
     }
 
-    let app = build_router(state, config, extra_routes);
+    let app = build_router(state, limits, ws_policy, options, extra_routes);
 
     let listener = if let Some(listener) = listener {
         listener
@@ -498,22 +503,35 @@ pub async fn start<S: ServerState>(
 /// Extra routes (e.g., webhook handler) bring their own body-limit layer,
 /// enabling different limits per route group.
 ///
+/// `limits` carries the SEC-0003 sizing (CHE-0062:R2); `ws_policy`
+/// carries the WS connection cap and Origin election (SEC-0012:R1);
+/// `options` carries presentation only (CHE-0062:R3). Semaphore sizes
+/// are clamped to [`tokio::sync::Semaphore::MAX_PERMITS`], so an
+/// oversized limit saturates rather than panicking at construction.
+///
 /// # Panics
 ///
-/// Panics if `extra_routes` contains routes that conflict with built-in
-/// paths (`/healthz`, `/readyz`, `/favicon.ico`, `/ws`). Axum's
-/// `Router::merge()` panics on overlapping route definitions.
+/// Panics if `options.csp_override()` is not a valid header value.
+/// [`ServeOptions`] validation rejects non-ASCII and CR/LF, so this is
+/// unreachable for options obtained from
+/// [`ServeOptionsBuilder::build`](super::config::ServeOptionsBuilder::build).
 pub fn build_router<S: ServerState>(
     state: Arc<S>,
-    config: &ValidatedConfig,
+    limits: LayerLimits,
+    ws_policy: WsPolicy,
+    options: &ServeOptions,
     extra_routes: Option<Router<Arc<S>>>,
 ) -> Router {
-    let http_semaphore = Arc::new(tokio::sync::Semaphore::new(config.concurrency_limit()));
-    let ws_semaphore = Arc::new(tokio::sync::Semaphore::new(config.ws_max_connections()));
-    let body_limit = config.max_request_body_bytes();
-    let csp: HeaderValue = HeaderValue::from_str(config.csp_override().unwrap_or(DEFAULT_CSP))
+    let http_semaphore = Arc::new(tokio::sync::Semaphore::new(clamp_permits(
+        limits.max_inflight_requests,
+    )));
+    let ws_semaphore = Arc::new(tokio::sync::Semaphore::new(clamp_permits(
+        ws_policy.max_connections,
+    )));
+    let body_limit = limits.max_body_bytes;
+    let csp: HeaderValue = HeaderValue::from_str(options.csp_override().unwrap_or(DEFAULT_CSP))
         .expect("CSP validated by builder");
-    let error_page_key: Option<Arc<str>> = config.error_page_key().map(Into::into);
+    let error_page_key: Option<Arc<str>> = options.error_page_key().map(Into::into);
 
     let builtin_routes = Router::new()
         .route("/healthz", get(healthz))
@@ -532,6 +550,7 @@ pub fn build_router<S: ServerState>(
     router
         .with_state(state)
         .layer(Extension(error_page_key))
+        .layer(Extension(ws_policy))
         .layer(Extension(ws_semaphore))
         .layer(http_trace_layer())
         .layer(middleware::from_fn(move |request, next| {
@@ -542,6 +561,16 @@ pub fn build_router<S: ServerState>(
             let csp = csp.clone();
             security_headers(req, next, csp)
         }))
+}
+
+/// Saturate a caller-supplied permit count at Tokio's hard ceiling.
+///
+/// `Semaphore::new` panics above `MAX_PERMITS`. Clamping turns a
+/// caller arithmetic slip into a saturated bound rather than a
+/// construction-time panic; the value is already far beyond any
+/// reachable concurrency.
+fn clamp_permits(requested: usize) -> usize {
+    requested.min(tokio::sync::Semaphore::MAX_PERMITS)
 }
 
 /// Per-instance HTTP concurrency limiter.
@@ -606,9 +635,10 @@ async fn readyz<S: ServerState>(State(state): State<Arc<S>>) -> impl IntoRespons
 
 #[cfg(test)]
 mod tests {
-    use super::super::config::ServerConfig;
+    use super::super::config::ServeOptions;
     use super::super::state::{CachedPage, PageUpdateEvent};
     use super::*;
+    use crate::middleware::WebSocketOriginPolicy;
     use arc_swap::ArcSwap;
     use std::collections::HashMap;
 
@@ -687,8 +717,36 @@ mod tests {
         MockServerState::new()
     }
 
-    fn default_config() -> ValidatedConfig {
-        ServerConfig::builder().build().unwrap()
+    fn default_config() -> ServeOptions {
+        ServeOptions::builder().build().unwrap()
+    }
+
+    /// Sizing used by every serve test that is not itself exercising a
+    /// limit. Mirrors the pre-CHE-0062 `ServerConfig` defaults so the
+    /// migrated tests assert unchanged behaviour.
+    fn test_limits() -> LayerLimits {
+        LayerLimits {
+            max_body_bytes: 1024,
+            max_inflight_requests: 1024,
+        }
+    }
+
+    /// `build_router` with test sizing and the permissive Origin
+    /// election, preserving the arity these tests were written against.
+    /// Tests that exercise a limit or the Origin policy call
+    /// `build_router` directly instead.
+    fn build_router_with<S: ServerState>(
+        state: Arc<S>,
+        options: &ServeOptions,
+        extra: Option<Router<Arc<S>>>,
+    ) -> Router {
+        build_router(
+            state,
+            test_limits(),
+            WsPolicy::permissive_for_tests(),
+            options,
+            extra,
+        )
     }
 
     #[tokio::test]
@@ -791,7 +849,7 @@ mod tests {
     #[tokio::test]
     async fn server_serves_cached_pages() {
         let state = state_with_cache(&[("page.html", "<html>test</html>")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -814,7 +872,7 @@ mod tests {
     #[tokio::test]
     async fn server_returns_404_for_missing_pages() {
         let state = state_with_cache(&[("index.html", "<html>hi</html>")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -836,7 +894,7 @@ mod tests {
     #[tokio::test]
     async fn favicon_returns_204_without_shadowing_cache_fallback() {
         let state = state_with_cache(&[("index.html", "<html>hi</html>")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -876,7 +934,7 @@ mod tests {
     #[tokio::test]
     async fn server_returns_503_before_first_collection() {
         let state = state_no_cache();
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -898,7 +956,7 @@ mod tests {
     #[tokio::test]
     async fn server_rejects_directory_traversal() {
         let state = state_with_cache(&[("index.html", "<html>ok</html>")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -928,7 +986,7 @@ mod tests {
             ("index.html", "<html>dashboard</html>"),
             ("page.html", "<html>page</html>"),
         ]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -959,7 +1017,7 @@ mod tests {
             ("index.html", "<html>hi</html>"),
             ("style.css", "body { color: red; }"),
         ]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1000,7 +1058,7 @@ mod tests {
     #[tokio::test]
     async fn cache_swap_serves_new_content() {
         let state = state_with_cache(&[("index.html", "<html>v1</html>")]);
-        let app = build_router(Arc::clone(&state), &default_config(), None);
+        let app = build_router_with(Arc::clone(&state), &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1034,7 +1092,7 @@ mod tests {
     #[tokio::test]
     async fn healthz_returns_200_ok() {
         let state = state_no_cache();
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1058,7 +1116,7 @@ mod tests {
     #[tokio::test]
     async fn readyz_returns_503_before_cache() {
         let state = state_no_cache();
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1080,7 +1138,7 @@ mod tests {
     #[tokio::test]
     async fn readyz_returns_200_with_cache_fallback() {
         let state = state_with_cache(&[("index.html", "<html>hi</html>")]);
-        let app = build_router(Arc::clone(&state), &default_config(), None);
+        let app = build_router_with(Arc::clone(&state), &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1107,7 +1165,7 @@ mod tests {
             .is_ready_override
             .store(true, std::sync::atomic::Ordering::Release);
 
-        let app = build_router(Arc::clone(&state), &default_config(), None);
+        let app = build_router_with(Arc::clone(&state), &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1142,6 +1200,8 @@ mod tests {
                 None,
                 shutdown,
                 state,
+                test_limits(),
+                WsPolicy::permissive_for_tests(),
                 &default_config(),
                 Some(addr_tx),
                 None,
@@ -1205,7 +1265,7 @@ mod tests {
     #[tokio::test]
     async fn server_includes_security_headers_on_cached_page() {
         let state = state_with_cache(&[("page.html", "<html>secure</html>")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1240,7 +1300,7 @@ mod tests {
     #[tokio::test]
     async fn healthz_has_security_headers() {
         let state = state_no_cache();
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1262,7 +1322,7 @@ mod tests {
     #[tokio::test]
     async fn readyz_has_security_headers() {
         let state = state_no_cache();
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1282,7 +1342,7 @@ mod tests {
     #[tokio::test]
     async fn cached_page_includes_etag_and_no_cache() {
         let state = state_with_cache(&[("index.html", "<html>hello</html>")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1321,7 +1381,7 @@ mod tests {
     #[tokio::test]
     async fn matching_if_none_match_returns_304() {
         let state = state_with_cache(&[("index.html", "<html>hello</html>")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1358,7 +1418,7 @@ mod tests {
     #[tokio::test]
     async fn non_matching_if_none_match_returns_200() {
         let state = state_with_cache(&[("index.html", "<html>hello</html>")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1385,7 +1445,7 @@ mod tests {
     #[tokio::test]
     async fn etag_304_still_includes_no_cache() {
         let state = state_with_cache(&[("page.html", "<html>page</html>")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1516,7 +1576,7 @@ mod tests {
     #[tokio::test]
     async fn compressed_response_has_content_encoding_and_vary() {
         let state = state_with_cache(&[("index.html", "<html>compressed test</html>")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1559,7 +1619,7 @@ mod tests {
     #[tokio::test]
     async fn identity_response_for_binary_has_no_content_encoding() {
         let state = state_with_cache(&[("data.bin", "raw binary stuff")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1602,7 +1662,7 @@ mod tests {
         use futures_util::StreamExt;
 
         let state = state_no_cache();
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1632,7 +1692,7 @@ mod tests {
         use futures_util::StreamExt;
 
         let state = state_no_cache();
-        let app = build_router(Arc::clone(&state), &default_config(), None);
+        let app = build_router_with(Arc::clone(&state), &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1673,7 +1733,7 @@ mod tests {
         use futures_util::StreamExt;
 
         let state = MockServerState::new();
-        let app = build_router(Arc::clone(&state), &default_config(), None);
+        let app = build_router_with(Arc::clone(&state), &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1736,7 +1796,7 @@ mod tests {
     #[tokio::test]
     async fn non_ws_get_to_ws_path_returns_error() {
         let state = state_no_cache();
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1760,7 +1820,7 @@ mod tests {
     #[tokio::test]
     async fn ws_endpoint_has_security_headers() {
         let state = state_no_cache();
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1777,16 +1837,100 @@ mod tests {
         handle.abort();
     }
 
+    /// SEC-0012:R2 at the serve surface: the `Strict` election reached
+    /// by [`WsPolicy::new`] rejects an absent `Origin` with 403.
+    ///
+    /// This is the guard whose absence was U1. Before `WsPolicy`,
+    /// `serve::build_router` took a WS connection cap and hardcoded
+    /// `AllowAbsent` at the upgrade, so no origin-strict WebSocket ran
+    /// anywhere. `tokio_tungstenite` sends no `Origin`, which is
+    /// exactly the non-browser client `Strict` is meant to turn away.
+    #[tokio::test]
+    async fn strict_origin_policy_rejects_absent_origin_on_serve_ws() {
+        let state = MockServerState::new();
+        let app = build_router(
+            Arc::clone(&state),
+            test_limits(),
+            WsPolicy::new(8),
+            &default_config(),
+            None,
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        wait_for_server(addr).await;
+
+        match tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await {
+            Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
+                assert_eq!(
+                    resp.status(),
+                    403,
+                    "Strict must reject an absent Origin at the serve /ws upgrade"
+                );
+            }
+            Err(other) => panic!("expected HTTP 403 from upgrade, got: {other}"),
+            Ok(_) => panic!("absent Origin must not be upgraded under Strict"),
+        }
+
+        handle.abort();
+    }
+
+    /// The counterpart to the rejection above: `Strict` is a policy on
+    /// absent and mismatched `Origin`, not a blanket refusal to
+    /// upgrade. A same-origin browser handshake still succeeds.
+    #[tokio::test]
+    async fn strict_origin_policy_accepts_matching_origin_on_serve_ws() {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let state = MockServerState::new();
+        let app = build_router(
+            Arc::clone(&state),
+            test_limits(),
+            WsPolicy::new(8),
+            &default_config(),
+            None,
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        wait_for_server(addr).await;
+
+        let mut request = format!("ws://{addr}/ws").into_client_request().unwrap();
+        request.headers_mut().insert(
+            header::ORIGIN,
+            HeaderValue::from_str(&format!("http://{addr}")).unwrap(),
+        );
+
+        let (mut ws, _) = tokio_tungstenite::connect_async(request)
+            .await
+            .expect("same-origin handshake must upgrade under Strict");
+        let _ = ws.next().await;
+        ws.close(None).await.ok();
+
+        handle.abort();
+    }
+
     #[tokio::test]
     async fn ws_semaphore_exhaustion_returns_503() {
         use futures_util::StreamExt;
 
         let state = MockServerState::new();
-        let config = ServerConfig::builder()
-            .ws_max_connections(2)
-            .build()
-            .unwrap();
-        let app = build_router(Arc::clone(&state), &config, None);
+        let mut ws_policy = WsPolicy::permissive_for_tests();
+        ws_policy.max_connections = 2;
+        let app = build_router(
+            Arc::clone(&state),
+            test_limits(),
+            ws_policy,
+            &default_config(),
+            None,
+        );
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1827,11 +1971,15 @@ mod tests {
         use futures_util::StreamExt;
 
         let state = MockServerState::new();
-        let config = ServerConfig::builder()
-            .ws_max_connections(1)
-            .build()
-            .unwrap();
-        let app = build_router(Arc::clone(&state), &config, None);
+        let mut ws_policy = WsPolicy::permissive_for_tests();
+        ws_policy.max_connections = 1;
+        let app = build_router(
+            Arc::clone(&state),
+            test_limits(),
+            ws_policy,
+            &default_config(),
+            None,
+        );
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1875,7 +2023,7 @@ mod tests {
         use futures_util::StreamExt;
 
         let state = state_no_cache();
-        let app = build_router(Arc::clone(&state), &default_config(), None);
+        let app = build_router_with(Arc::clone(&state), &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1925,7 +2073,7 @@ mod tests {
         use tokio::net::TcpListener as TokioTcpListener;
 
         let state = state_no_cache();
-        let app = build_router(Arc::clone(&state), &default_config(), None);
+        let app = build_router_with(Arc::clone(&state), &default_config(), None);
 
         let listener = TokioTcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1962,7 +2110,7 @@ mod tests {
     async fn ws_js_has_correct_content_type_and_zstd() {
         let js_body = "(function(){})();";
         let state = state_with_cache(&[("ws.js", js_body)]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2007,7 +2155,7 @@ mod tests {
         use futures_util::{SinkExt, StreamExt};
 
         let state = state_no_cache();
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2238,7 +2386,7 @@ mod tests {
     #[tokio::test]
     async fn ws_cross_origin_upgrade_rejected() {
         let state = state_no_cache();
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2283,7 +2431,7 @@ mod tests {
     #[tokio::test]
     async fn post_to_cached_page_returns_405() {
         let state = state_with_cache(&[("index.html", "<html>hi</html>")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2316,7 +2464,7 @@ mod tests {
     #[tokio::test]
     async fn put_to_cached_page_returns_405() {
         let state = state_with_cache(&[("index.html", "<html>hi</html>")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2341,7 +2489,7 @@ mod tests {
     #[tokio::test]
     async fn delete_to_cached_page_returns_405() {
         let state = state_with_cache(&[("index.html", "<html>hi</html>")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2366,7 +2514,7 @@ mod tests {
     #[tokio::test]
     async fn head_to_cached_page_returns_200() {
         let state = state_with_cache(&[("index.html", "<html>hi</html>")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2391,7 +2539,7 @@ mod tests {
     #[tokio::test]
     async fn method_not_allowed_has_security_headers() {
         let state = state_with_cache(&[("index.html", "<html>hi</html>")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2417,7 +2565,7 @@ mod tests {
     #[tokio::test]
     async fn options_to_cached_page_returns_405() {
         let state = state_with_cache(&[("index.html", "<html>hi</html>")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2445,7 +2593,7 @@ mod tests {
     #[tokio::test]
     async fn patch_to_cached_page_returns_405() {
         let state = state_with_cache(&[("index.html", "<html>hi</html>")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2553,7 +2701,7 @@ mod tests {
             ("about/index.html", "<html>about page</html>"),
             ("index.html", "<html>root</html>"),
         ]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2573,7 +2721,7 @@ mod tests {
             ("about/index.html", "<html>about page</html>"),
             ("index.html", "<html>root</html>"),
         ]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2593,7 +2741,7 @@ mod tests {
             ("about.html", "<html>about clean url</html>"),
             ("index.html", "<html>root</html>"),
         ]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2613,11 +2761,11 @@ mod tests {
             ("index.html", "<html>root</html>"),
             ("404.html", "<html>custom not found</html>"),
         ]);
-        let config = ServerConfig::builder()
+        let config = ServeOptions::builder()
             .error_page_key("404.html")
             .build()
             .unwrap();
-        let app = build_router(state, &config, None);
+        let app = build_router_with(state, &config, None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2646,11 +2794,11 @@ mod tests {
             ("index.html", "<html>root</html>"),
             ("404.html", "<html>custom not found</html>"),
         ]);
-        let config = ServerConfig::builder()
+        let config = ServeOptions::builder()
             .error_page_key("404.html")
             .build()
             .unwrap();
-        let app = build_router(state, &config, None);
+        let app = build_router_with(state, &config, None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2685,7 +2833,7 @@ mod tests {
     async fn svg_response_has_restrictive_csp() {
         let svg_body = r#"<svg xmlns="http://www.w3.org/2000/svg"><circle r="10"/></svg>"#;
         let state = state_with_cache(&[("logo.svg", svg_body)]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2716,7 +2864,7 @@ mod tests {
 
         let state = state_with_cache(&[("index.html", "<html>ok</html>")]);
         let extra = Router::new().route("/custom", get_route(|| async { "custom response" }));
-        let app = build_router(state, &default_config(), Some(extra));
+        let app = build_router_with(state, &default_config(), Some(extra));
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2735,10 +2883,10 @@ mod tests {
         use axum::routing::get as get_route;
 
         let state = state_with_cache(&[("index.html", "<html>ok</html>")]);
-        let config = ServerConfig::builder()
-            .concurrency_limit(1)
-            .build()
-            .unwrap();
+        let limits = LayerLimits {
+            max_body_bytes: 1024,
+            max_inflight_requests: 1,
+        };
         let extra = Router::new().route(
             "/slow",
             get_route(|| async {
@@ -2746,7 +2894,13 @@ mod tests {
                 "slow"
             }),
         );
-        let app = build_router(Arc::clone(&state), &config, Some(extra));
+        let app = build_router(
+            Arc::clone(&state),
+            limits,
+            WsPolicy::permissive_for_tests(),
+            &default_config(),
+            Some(extra),
+        );
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2783,10 +2937,10 @@ mod tests {
         use axum::routing::post as post_route;
 
         let state = state_with_cache(&[("index.html", "<html>ok</html>")]);
-        let config = ServerConfig::builder()
-            .max_request_body_bytes(1024)
-            .build()
-            .unwrap();
+        let limits = LayerLimits {
+            max_body_bytes: 1024,
+            max_inflight_requests: 1024,
+        };
 
         let extra = Router::new()
             .route(
@@ -2797,7 +2951,13 @@ mod tests {
             )
             .layer(RequestBodyLimitLayer::new(1024 * 1024));
 
-        let app = build_router(Arc::clone(&state), &config, Some(extra));
+        let app = build_router(
+            Arc::clone(&state),
+            limits,
+            WsPolicy::permissive_for_tests(),
+            &default_config(),
+            Some(extra),
+        );
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2841,7 +3001,7 @@ mod tests {
 
         let state = state_with_cache(&[("index.html", "<html>ok</html>")]);
         let extra = Router::new().route("/healthz", get_route(|| async { "shadowed" }));
-        let _app = build_router(state, &default_config(), Some(extra));
+        let _app = build_router_with(state, &default_config(), Some(extra));
     }
 
     #[tokio::test]
@@ -2849,10 +3009,10 @@ mod tests {
         use axum::routing::get as get_route;
 
         let state = state_with_cache(&[("index.html", "<html>ok</html>")]);
-        let config = ServerConfig::builder()
-            .concurrency_limit(1)
-            .build()
-            .unwrap();
+        let limits = LayerLimits {
+            max_body_bytes: 1024,
+            max_inflight_requests: 1,
+        };
         let extra = Router::new().route(
             "/hold",
             get_route(|| async {
@@ -2860,7 +3020,13 @@ mod tests {
                 "held"
             }),
         );
-        let app = build_router(Arc::clone(&state), &config, Some(extra));
+        let app = build_router(
+            Arc::clone(&state),
+            limits,
+            WsPolicy::permissive_for_tests(),
+            &default_config(),
+            Some(extra),
+        );
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2902,7 +3068,7 @@ mod tests {
     #[tokio::test]
     async fn if_none_match_multi_value_returns_200() {
         let state = state_with_cache(&[("index.html", "<html>etag test</html>")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2941,7 +3107,7 @@ mod tests {
     #[tokio::test]
     async fn wasm_has_correct_content_type() {
         let state = state_with_cache(&[("app.wasm", "fake wasm")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2966,7 +3132,7 @@ mod tests {
     #[tokio::test]
     async fn style_css_still_works_directly() {
         let state = state_with_cache(&[("style.css", "body { margin: 0; }")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2991,7 +3157,7 @@ mod tests {
     #[tokio::test]
     async fn oversized_body_returns_413() {
         let state = state_with_cache(&[("index.html", "<html>hi</html>")]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -3064,11 +3230,11 @@ mod tests {
     #[tokio::test]
     async fn custom_csp_override_appears_in_response() {
         let state = state_with_cache(&[("index.html", "<html>csp</html>")]);
-        let config = ServerConfig::builder()
+        let config = ServeOptions::builder()
             .csp_override("default-src 'self' 'unsafe-inline'")
             .build()
             .unwrap();
-        let app = build_router(state, &config, None);
+        let app = build_router_with(state, &config, None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -3098,7 +3264,7 @@ mod tests {
     async fn default_csp_preserved_when_no_override() {
         let state = state_with_cache(&[("index.html", "<html>csp</html>")]);
         let config = default_config();
-        let app = build_router(state, &config, None);
+        let app = build_router_with(state, &config, None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -3133,6 +3299,8 @@ mod tests {
             None,
             shutdown,
             state,
+            test_limits(),
+            WsPolicy::permissive_for_tests(),
             &default_config(),
             None,
             None,
@@ -3149,11 +3317,15 @@ mod tests {
         use futures_util::StreamExt;
 
         let state = MockServerState::new();
-        let config = ServerConfig::builder()
-            .ws_max_connections(2)
-            .build()
-            .unwrap();
-        let app = build_router(Arc::clone(&state), &config, None);
+        let mut ws_policy = WsPolicy::permissive_for_tests();
+        ws_policy.max_connections = 2;
+        let app = build_router(
+            Arc::clone(&state),
+            test_limits(),
+            ws_policy,
+            &default_config(),
+            None,
+        );
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -3188,11 +3360,17 @@ mod tests {
     #[tokio::test]
     async fn concurrency_limit_sheds_load() {
         let state = state_with_cache(&[("index.html", "<html>ok</html>")]);
-        let config = ServerConfig::builder()
-            .concurrency_limit(1)
-            .build()
-            .unwrap();
-        let app = build_router(state, &config, None);
+        let limits = LayerLimits {
+            max_body_bytes: 1024,
+            max_inflight_requests: 1,
+        };
+        let app = build_router(
+            state,
+            limits,
+            WsPolicy::permissive_for_tests(),
+            &default_config(),
+            None,
+        );
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -3215,7 +3393,7 @@ mod tests {
     async fn head_returns_empty_body_with_content_length() {
         let body_content = "<html>hello world</html>";
         let state = state_with_cache(&[("index.html", body_content)]);
-        let app = build_router(state, &default_config(), None);
+        let app = build_router_with(state, &default_config(), None);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
