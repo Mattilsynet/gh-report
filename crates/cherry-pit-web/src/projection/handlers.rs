@@ -368,8 +368,8 @@ pub(crate) async fn projection_default_csp(
     response
 }
 
-/// Build the projection router with `/v1/healthz`, `/v1/readyz`,
-/// `/v1/{*path}` HTTP routes and `/ws` WS upgrade.
+/// Build the projection data-plane routes: `/v1/{*path}` snapshot reads
+/// and the `/ws` upgrade.
 ///
 /// Per CHE-0049 R9 HTTP routes carry the `/v1/` URL prefix. Per R13
 /// `/ws` is unversioned; the envelope `"v": 1` carries the contract
@@ -379,10 +379,20 @@ where
     P: ProjectionSource,
 {
     Router::new()
-        .route("/v1/healthz", get(healthz))
-        .route("/v1/readyz", get(readyz::<P>))
         .route("/ws", get(ws_handler::<P>))
         .route("/v1/{*path}", get(snapshot_get::<P>))
+        .with_state(state)
+}
+
+/// Build the projection control-plane routes: `GET /v1/healthz`
+/// (liveness) and `GET /v1/readyz` (readiness).
+pub(crate) fn build_probes<P>(state: ProjectionState<P>) -> Router
+where
+    P: ProjectionSource,
+{
+    Router::new()
+        .route("/v1/healthz", get(healthz))
+        .route("/v1/readyz", get(readyz::<P>))
         .with_state(state)
 }
 

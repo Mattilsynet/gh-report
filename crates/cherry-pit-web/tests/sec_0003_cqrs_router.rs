@@ -16,7 +16,7 @@
 //! `LayerLimits` carries no WS field to leave unused (CHE-0062:R1/R2).
 
 use std::convert::Infallible;
-use std::num::NonZeroU64;
+use std::num::{NonZeroU64, NonZeroUsize};
 
 use axum::{
     Router,
@@ -167,8 +167,8 @@ fn app_with(limits: LayerLimits) -> Router {
 #[tokio::test]
 async fn cqrs_body_over_max_returns_413() {
     let limits = LayerLimits {
-        max_body_bytes: 1024,
-        max_inflight_requests: 1024,
+        max_body_bytes: NonZeroUsize::new(1024).unwrap(),
+        max_inflight_requests: NonZeroUsize::new(1024).unwrap(),
     };
     let app = app_with(limits);
 
@@ -196,8 +196,8 @@ async fn cqrs_body_over_max_returns_413() {
 #[tokio::test]
 async fn cqrs_body_under_max_passes_layer() {
     let limits = LayerLimits {
-        max_body_bytes: 4096,
-        max_inflight_requests: 1024,
+        max_body_bytes: NonZeroUsize::new(4096).unwrap(),
+        max_inflight_requests: NonZeroUsize::new(1024).unwrap(),
     };
     let app = app_with(limits);
 
@@ -223,31 +223,69 @@ async fn cqrs_body_under_max_passes_layer() {
 /// 503-shedding middleware; **not** `tower::limit::ConcurrencyLimit`
 /// which queues, per CHE-0062:R1).
 ///
-/// With `max_inflight_requests = 0` `try_acquire` fails immediately on
-/// every request: this proves the middleware is wired and exercises
-/// the **shedding** branch without needing a notify-barrier to hold
-/// two concurrent requests in flight. The donor crate's
-/// `gh-report/.../server.rs:2164,:2209` validates the contended-
-/// but-non-zero case in production; this smoke is sufficient to prove
-/// the wiring on the cqrs surface.
+/// Saturation is reached by contention: the cap is 1 and a request
+/// parked inside `/hold` (merged via `extra_routes`, so it sits inside
+/// the concurrency layer per CHE-0062:R7) holds the only permit while
+/// the assertion runs.
 #[tokio::test]
-async fn cqrs_inflight_zero_permits_returns_503() {
+async fn cqrs_inflight_saturation_returns_503() {
+    use std::sync::Arc;
+
+    use tokio::sync::Notify;
+
     let limits = LayerLimits {
-        max_body_bytes: 1024 * 1024,
-        max_inflight_requests: 0,
+        max_body_bytes: NonZeroUsize::new(1024 * 1024).unwrap(),
+        max_inflight_requests: NonZeroUsize::new(1).unwrap(),
     };
-    let app = app_with(limits);
+
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let extra = Router::new().route("/hold", {
+        let entered = Arc::clone(&entered);
+        let release = Arc::clone(&release);
+        axum::routing::get(move || {
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            async move {
+                entered.notify_one();
+                release.notified().await;
+                "held"
+            }
+        })
+    });
+    let state: AppState<StubGateway, StubStore, StubRouter> =
+        AppState::new(StubGateway, StubStore, StubRouter);
+    let app = build_router(state, limits, extra);
+
+    let hold = tokio::spawn({
+        let app = app.clone();
+        async move {
+            let req = Request::builder()
+                .uri("/hold")
+                .body(Body::empty())
+                .expect("request build");
+            app.oneshot(req).await.expect("oneshot").status()
+        }
+    });
+    entered.notified().await;
 
     let req = Request::builder()
         .uri("/v1/aggregates/1")
         .body(Body::empty())
         .expect("request build");
 
-    let resp = app.oneshot(req).await.expect("oneshot");
+    let resp = app.clone().oneshot(req).await.expect("oneshot");
     assert_eq!(
         resp.status(),
         StatusCode::SERVICE_UNAVAILABLE,
-        "max_inflight_requests=0 must shed every request with 503"
+        "a saturated inflight cap must shed every request with 503"
+    );
+
+    release.notify_one();
+    assert_eq!(
+        hold.await.expect("hold task"),
+        StatusCode::OK,
+        "the held request must complete once released"
     );
 }
 
@@ -287,8 +325,8 @@ async fn cqrs_extra_routes_inherit_body_cap_and_correlation() {
     let state: AppState<StubGateway, StubStore, StubRouter> =
         AppState::new(StubGateway, StubStore, StubRouter);
     let limits = LayerLimits {
-        max_body_bytes: 1024,
-        max_inflight_requests: 1024,
+        max_body_bytes: NonZeroUsize::new(1024).unwrap(),
+        max_inflight_requests: NonZeroUsize::new(1024).unwrap(),
     };
     let extra = Router::new().route(
         "/consumer/echo",

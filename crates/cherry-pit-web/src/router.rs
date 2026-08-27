@@ -138,7 +138,7 @@ where
     <G::Aggregate as Aggregate>::Event: Serialize,
     R: CommandRouter<Gateway = G> + Clone + Send + Sync + 'static,
 {
-    let http_semaphore = Arc::new(Semaphore::new(limits.max_inflight_requests));
+    let http_semaphore = Arc::new(Semaphore::new(limits.max_inflight_requests.get()));
     let v1 = Router::new()
         .nest("/v1", v1_routes::<G, S, R>())
         .with_state(state);
@@ -148,7 +148,7 @@ where
         .merge(extra_routes)
         .layer(from_fn(correlation_layer))
         .layer(DefaultBodyLimit::disable())
-        .layer(RequestBodyLimitLayer::new(limits.max_body_bytes))
+        .layer(RequestBodyLimitLayer::new(limits.max_body_bytes.get()))
         .layer(axum::middleware::from_fn(move |request, next| {
             let sem = Arc::clone(&http_semaphore);
             http_concurrency_limit(sem, request, next)

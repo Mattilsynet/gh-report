@@ -51,7 +51,12 @@ use crate::middleware::limits::http_concurrency_limit;
 /// [`crate::build_router`] via [`Router::merge`].
 ///
 /// `limits` sizes the two HTTP layers per CHE-0062:R4 / SEC-0003
-/// R1/R3: body ceiling (413) and in-flight cap (503-shedding).
+/// R1/R3: body ceiling (413) and in-flight cap (503-shedding). The
+/// in-flight cap is applied to the data plane only — `/v1/healthz` and
+/// `/v1/readyz` are merged outside it, and inside the body ceiling and
+/// CSP layers, so that a saturated data plane cannot fail a liveness
+/// probe. A probe reports whether the process is alive, never whether
+/// it is busy.
 ///
 /// `ws_policy` carries the WS connection cap (503 via
 /// [`handlers::ws_handler`]) and the Origin policy (SEC-0012:R1):
@@ -74,18 +79,19 @@ pub fn build_projection_router<P>(
 where
     P: ProjectionSource,
 {
-    let http_semaphore = Arc::new(Semaphore::new(limits.max_inflight_requests));
-    let ws_semaphore = Arc::new(Semaphore::new(ws_policy.max_connections));
+    let http_semaphore = Arc::new(Semaphore::new(limits.max_inflight_requests.get()));
+    let ws_semaphore = Arc::new(Semaphore::new(ws_policy.max_connections.get()));
 
-    handlers::build(state)
+    handlers::build(state.clone())
         .merge(extra_routes)
-        .layer(axum::middleware::from_fn(handlers::projection_default_csp))
-        .layer(DefaultBodyLimit::disable())
-        .layer(RequestBodyLimitLayer::new(limits.max_body_bytes))
         .layer(axum::middleware::from_fn(move |request, next| {
             let sem = Arc::clone(&http_semaphore);
             http_concurrency_limit(sem, request, next)
         }))
+        .merge(handlers::build_probes(state))
+        .layer(axum::middleware::from_fn(handlers::projection_default_csp))
+        .layer(DefaultBodyLimit::disable())
+        .layer(RequestBodyLimitLayer::new(limits.max_body_bytes.get()))
         .layer(Extension(ws_semaphore))
         .layer(Extension(ws_policy))
 }

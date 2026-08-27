@@ -21,6 +21,7 @@
 //! - HTTP concurrency bounded by semaphore (defense-in-depth)
 
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use axum::Router;
@@ -494,12 +495,17 @@ const BUILTIN_MAX_BODY_BYTES: usize = 1024;
 ///
 /// # Layers (outermost → innermost)
 ///
-/// 1. **Security headers** — injected on every response.
-/// 2. **HTTP concurrency limit** — bounds in-flight requests via semaphore.
-///    Returns 503 when limit is reached.
-/// 3. **Body ceiling** — `limits.max_body_bytes`, applied to every
+/// 1. **Security headers** — injected on every response, probes included.
+/// 2. **Body ceiling** — `limits.max_body_bytes`, applied to every
 ///    ingestion point including `extra_routes` (CHE-0062:R4).
-/// 4. **Tracing** — structured request/response logging.
+/// 3. **Tracing** — structured request/response logging.
+/// 4. **HTTP concurrency limit** — bounds in-flight requests via
+///    semaphore, returning 503 when the limit is reached. Applied to the
+///    data plane ONLY.
+///
+/// `GET /healthz` and `GET /readyz` are merged outside the concurrency
+/// limit and inside every other layer: they answer 200 while the data
+/// plane sheds with 503.
 ///
 /// Built-in routes nest a tighter [`BUILTIN_MAX_BODY_BYTES`] cap inside
 /// the ceiling. Route groups merged via `extra_routes` may do the same —
@@ -525,22 +531,25 @@ pub fn build_router<S: ServerState>(
     options: &ServeOptions,
     extra_routes: Option<Router<Arc<S>>>,
 ) -> Router {
-    let http_semaphore = Arc::new(tokio::sync::Semaphore::new(clamp_permits(
-        limits.max_inflight_requests,
-    )));
-    let ws_semaphore = Arc::new(tokio::sync::Semaphore::new(clamp_permits(
-        ws_policy.max_connections,
-    )));
+    let http_semaphore = Arc::new(tokio::sync::Semaphore::new(
+        clamp_permits(limits.max_inflight_requests).get(),
+    ));
+    let ws_semaphore = Arc::new(tokio::sync::Semaphore::new(
+        clamp_permits(ws_policy.max_connections).get(),
+    ));
     let csp: HeaderValue = HeaderValue::from_str(options.csp_override().unwrap_or(DEFAULT_CSP))
         .expect("CSP validated by builder");
     let error_page_key: Option<Arc<str>> = options.error_page_key().map(Into::into);
 
     let builtin_routes = Router::new()
-        .route("/healthz", get(healthz))
-        .route("/readyz", get(readyz::<S>))
         .route("/favicon.ico", get(favicon))
         .route("/ws", get(ws_handler::<S>))
         .fallback(cache_fallback::<S>)
+        .layer(RequestBodyLimitLayer::new(BUILTIN_MAX_BODY_BYTES));
+
+    let probe_routes = Router::new()
+        .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz::<S>))
         .layer(RequestBodyLimitLayer::new(BUILTIN_MAX_BODY_BYTES));
 
     let mut router = Router::new().merge(builtin_routes);
@@ -550,17 +559,18 @@ pub fn build_router<S: ServerState>(
     }
 
     router
+        .layer(middleware::from_fn(move |request, next| {
+            let sem = Arc::clone(&http_semaphore);
+            http_concurrency_limit(sem, request, next)
+        }))
+        .merge(probe_routes)
         .with_state(state)
         .layer(Extension(error_page_key))
         .layer(Extension(ws_policy))
         .layer(Extension(ws_semaphore))
         .layer(http_trace_layer())
         .layer(DefaultBodyLimit::disable())
-        .layer(RequestBodyLimitLayer::new(limits.max_body_bytes))
-        .layer(middleware::from_fn(move |request, next| {
-            let sem = Arc::clone(&http_semaphore);
-            http_concurrency_limit(sem, request, next)
-        }))
+        .layer(RequestBodyLimitLayer::new(limits.max_body_bytes.get()))
         .layer(middleware::from_fn(move |req, next| {
             let csp = csp.clone();
             security_headers(req, next, csp)
@@ -573,8 +583,10 @@ pub fn build_router<S: ServerState>(
 /// caller arithmetic slip into a saturated bound rather than a
 /// construction-time panic; the value is already far beyond any
 /// reachable concurrency.
-fn clamp_permits(requested: usize) -> usize {
-    requested.min(tokio::sync::Semaphore::MAX_PERMITS)
+fn clamp_permits(requested: NonZeroUsize) -> NonZeroUsize {
+    const CEILING: NonZeroUsize =
+        NonZeroUsize::new(tokio::sync::Semaphore::MAX_PERMITS).expect("nonzero");
+    requested.min(CEILING)
 }
 
 /// Per-instance HTTP concurrency limiter.
@@ -730,8 +742,8 @@ mod tests {
     /// migrated tests assert unchanged behaviour.
     fn test_limits() -> LayerLimits {
         LayerLimits {
-            max_body_bytes: 1024,
-            max_inflight_requests: 1024,
+            max_body_bytes: NonZeroUsize::new(1024).unwrap(),
+            max_inflight_requests: NonZeroUsize::new(1024).unwrap(),
         }
     }
 
@@ -1799,7 +1811,7 @@ mod tests {
         let app = build_router(
             Arc::clone(&state),
             test_limits(),
-            WsPolicy::new(8),
+            WsPolicy::new(NonZeroUsize::new(8).unwrap()),
             &default_config(),
             None,
         );
@@ -1838,7 +1850,7 @@ mod tests {
         let app = build_router(
             Arc::clone(&state),
             test_limits(),
-            WsPolicy::new(8),
+            WsPolicy::new(NonZeroUsize::new(8).unwrap()),
             &default_config(),
             None,
         );
@@ -1871,7 +1883,7 @@ mod tests {
 
         let state = MockServerState::new();
         let mut ws_policy = WsPolicy::permissive_for_tests();
-        ws_policy.max_connections = 2;
+        ws_policy.max_connections = NonZeroUsize::new(2).unwrap();
         let app = build_router(
             Arc::clone(&state),
             test_limits(),
@@ -1920,7 +1932,7 @@ mod tests {
 
         let state = MockServerState::new();
         let mut ws_policy = WsPolicy::permissive_for_tests();
-        ws_policy.max_connections = 1;
+        ws_policy.max_connections = NonZeroUsize::new(1).unwrap();
         let app = build_router(
             Arc::clone(&state),
             test_limits(),
@@ -2647,8 +2659,8 @@ mod tests {
 
         let state = state_with_cache(&[("index.html", "<html>ok</html>")]);
         let limits = LayerLimits {
-            max_body_bytes: 1024,
-            max_inflight_requests: 1,
+            max_body_bytes: NonZeroUsize::new(1024).unwrap(),
+            max_inflight_requests: NonZeroUsize::new(1).unwrap(),
         };
         let extra = Router::new().route(
             "/slow",
@@ -2701,8 +2713,8 @@ mod tests {
 
         let state = state_with_cache(&[("index.html", "<html>ok</html>")]);
         let limits = LayerLimits {
-            max_body_bytes: 1024 * 1024,
-            max_inflight_requests: 1024,
+            max_body_bytes: NonZeroUsize::new(1024 * 1024).unwrap(),
+            max_inflight_requests: NonZeroUsize::new(1024).unwrap(),
         };
 
         let extra = Router::new()
@@ -2770,8 +2782,8 @@ mod tests {
 
         let state = state_with_cache(&[("index.html", "<html>ok</html>")]);
         let limits = LayerLimits {
-            max_body_bytes: 4096,
-            max_inflight_requests: 1024,
+            max_body_bytes: NonZeroUsize::new(4096).unwrap(),
+            max_inflight_requests: NonZeroUsize::new(1024).unwrap(),
         };
 
         let extra = Router::new()
@@ -2841,8 +2853,8 @@ mod tests {
 
         let state = state_with_cache(&[("index.html", "<html>ok</html>")]);
         let limits = LayerLimits {
-            max_body_bytes: 1024,
-            max_inflight_requests: 1,
+            max_body_bytes: NonZeroUsize::new(1024).unwrap(),
+            max_inflight_requests: NonZeroUsize::new(1).unwrap(),
         };
         let extra = Router::new().route(
             "/hold",
@@ -3155,7 +3167,7 @@ mod tests {
 
         let state = MockServerState::new();
         let mut ws_policy = WsPolicy::permissive_for_tests();
-        ws_policy.max_connections = 2;
+        ws_policy.max_connections = NonZeroUsize::new(2).unwrap();
         let app = build_router(
             Arc::clone(&state),
             test_limits(),
@@ -3198,8 +3210,8 @@ mod tests {
     async fn concurrency_limit_sheds_load() {
         let state = state_with_cache(&[("index.html", "<html>ok</html>")]);
         let limits = LayerLimits {
-            max_body_bytes: 1024,
-            max_inflight_requests: 1,
+            max_body_bytes: NonZeroUsize::new(1024).unwrap(),
+            max_inflight_requests: NonZeroUsize::new(1).unwrap(),
         };
         let app = build_router(
             state,
@@ -3403,8 +3415,8 @@ mod tests {
     async fn security_headers_survive_a_ceiling_413() {
         let state = state_with_cache(&[("index.html", "<html>ok</html>")]);
         let limits = LayerLimits {
-            max_body_bytes: 512,
-            max_inflight_requests: 1024,
+            max_body_bytes: NonZeroUsize::new(512).unwrap(),
+            max_inflight_requests: NonZeroUsize::new(1024).unwrap(),
         };
         let app = build_router(
             Arc::clone(&state),
@@ -3436,6 +3448,93 @@ mod tests {
         ] {
             assert!(h.get(name).is_some(), "413 from ceiling lost {name}");
         }
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn probes_answer_200_with_all_security_headers_while_data_plane_sheds_503() {
+        use axum::routing::get as get_route;
+
+        let state = state_with_cache(&[("index.html", "<html>ok</html>")]);
+        let limits = LayerLimits {
+            max_body_bytes: NonZeroUsize::new(1024).unwrap(),
+            max_inflight_requests: NonZeroUsize::new(1).unwrap(),
+        };
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let extra = Router::new().route("/hold", {
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            get_route(move || {
+                let entered = Arc::clone(&entered);
+                let release = Arc::clone(&release);
+                async move {
+                    entered.notify_one();
+                    release.notified().await;
+                    "held"
+                }
+            })
+        });
+        let app = build_router(
+            Arc::clone(&state),
+            limits,
+            WsPolicy::permissive_for_tests(),
+            &default_config(),
+            Some(extra),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        wait_for_server(addr).await;
+        let client = reqwest::Client::new();
+
+        let hold = tokio::spawn({
+            let client = client.clone();
+            let url = format!("http://{addr}/hold");
+            async move { client.get(url).send().await.unwrap().status() }
+        });
+        entered.notified().await;
+
+        let shed = client
+            .get(format!("http://{addr}/index.html"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            shed.status(),
+            503,
+            "the data plane must still shed under saturation"
+        );
+
+        for probe in ["/healthz", "/readyz"] {
+            let resp = client
+                .get(format!("http://{addr}{probe}"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                200,
+                "{probe} must answer while the inflight limiter is saturated"
+            );
+            let h = resp.headers();
+            for name in [
+                "x-frame-options",
+                "x-content-type-options",
+                "referrer-policy",
+                "permissions-policy",
+                "strict-transport-security",
+                "content-security-policy",
+            ] {
+                assert!(
+                    h.get(name).is_some(),
+                    "{probe} outside the limiter lost {name}"
+                );
+            }
+        }
+
+        release.notify_one();
+        assert_eq!(hold.await.unwrap(), 200, "the held request must complete");
         handle.abort();
     }
 }
