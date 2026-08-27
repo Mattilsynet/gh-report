@@ -9,7 +9,13 @@ CHECKS=(projection-lock async-trait pardosa-dep fence-converge dead-code-suppres
 # Activated (ghr-y4hkd discharged, ghr-zcr7c/ghr-swxy8): deny.toml now
 # satisfies SEC-0013:R3 (table-form ignores) as of commit be14235; the
 # check is safe to run on every PR.
-PENDING_CHECKS=()
+#
+# forbid-unsafe-total is staged here (listed, NOT in `all`): the check is
+# implemented and proven to bite (ghr-ckrfk), but the tree currently has
+# uncovered crate roots, and closing those needs source edits that are
+# out of scope for the sub-mission that added this check. Move it into
+# CHECKS once the uncovered roots the check names are covered.
+PENDING_CHECKS=(forbid-unsafe-total)
 
 usage() {
   echo "usage: tools/tripwires.sh <check>|all|--list"
@@ -308,6 +314,80 @@ check_deny_ignore_lifecycle() {
   return $fail
 }
 
+# RST-0005:R1 — mechanizes the "CI grep" enforcement half of "Every crate
+# in the workspace includes #![forbid(unsafe_code)] at the crate root,
+# enforced by clippy's disallowed-macros or CI grep". Before this check the
+# attribute was carried by convention only: a new crate could silently omit
+# it and nothing failed. Totality is the point — a non-total check is not a
+# check.
+# Scope: every workspace member listed in the root Cargo.toml, and for each
+# member every COMPILATION root it owns (src/lib.rs, src/main.rs, and each
+# src/bin/*.rs), since #![forbid] is an inner attribute scoped to one root.
+# Fail-open guards: zero members parsed, or zero roots discovered, are hard
+# failures — a matcher that enumerates nothing would exit 0 forever and is
+# worse than no check. Manifest overridable via FORBID_UNSAFE_MANIFEST and
+# member paths resolved under FORBID_UNSAFE_ROOT for fixture-based proof
+# runs.
+check_forbid_unsafe_total() {
+  local manifest="${FORBID_UNSAFE_MANIFEST:-$ROOT/Cargo.toml}"
+  local base="${FORBID_UNSAFE_ROOT:-$ROOT}"
+
+  if [ ! -f "$manifest" ]; then
+    echo "::error::forbid-unsafe-total: workspace manifest not found at $manifest (RST-0005:R1)"
+    return 1
+  fi
+
+  local members
+  members=$(awk '/^members[[:space:]]*=[[:space:]]*\[/{flag=1; next} flag && /^[[:space:]]*\]/{exit} flag{print}' "$manifest" \
+    | grep -oE '"[^"]+"' | tr -d '"')
+
+  local member_count
+  member_count=$(printf '%s\n' "$members" | grep -c . || true)
+  if [ "$member_count" -eq 0 ]; then
+    echo "::error::forbid-unsafe-total: parsed ZERO workspace members from $manifest — fail-open guard tripped, refusing to pass silently (RST-0005:R1)"
+    return 1
+  fi
+
+  local roots=()
+  local m
+  while IFS= read -r m; do
+    [ -z "$m" ] && continue
+    local dir="$base/$m"
+    if [ ! -d "$dir" ]; then
+      echo "::error::forbid-unsafe-total: workspace member ${m} listed in $manifest has no directory at ${dir} (RST-0005:R1)"
+      return 1
+    fi
+    local candidate
+    for candidate in "$dir/src/lib.rs" "$dir/src/main.rs"; do
+      [ -f "$candidate" ] && roots+=("$candidate")
+    done
+    if [ -d "$dir/src/bin" ]; then
+      while IFS= read -r candidate; do
+        [ -n "$candidate" ] && roots+=("$candidate")
+      done < <(find "$dir/src/bin" -maxdepth 1 -type f -name '*.rs' | sort)
+    fi
+  done <<< "$members"
+
+  if [ "${#roots[@]}" -eq 0 ]; then
+    echo "::error::forbid-unsafe-total: discovered ZERO crate roots across ${member_count} workspace members — fail-open guard tripped, refusing to pass silently (RST-0005:R1)"
+    return 1
+  fi
+
+  local fail=0
+  local root_file
+  for root_file in "${roots[@]}"; do
+    if ! grep -qE '^#!\[forbid\(unsafe_code\)\]' "$root_file"; then
+      echo "::error::forbid-unsafe-total: ${root_file#"$base"/} lacks #![forbid(unsafe_code)] at the crate root (RST-0005:R1)"
+      fail=1
+    fi
+  done
+
+  if [ "$fail" -eq 0 ]; then
+    echo "forbid-unsafe-total: ${#roots[@]} crate roots across ${member_count} workspace members all carry #![forbid(unsafe_code)] (RST-0005:R1)"
+  fi
+  return $fail
+}
+
 run_check() {
   case "$1" in
     projection-lock) check_projection_lock ;;
@@ -319,6 +399,7 @@ run_check() {
     gate-citation) check_gate_citation ;;
     adr-number-collision) check_adr_number_collision ;;
     deny-ignore-lifecycle) check_deny_ignore_lifecycle ;;
+    forbid-unsafe-total) check_forbid_unsafe_total ;;
     *)
       echo "unknown check: $1" >&2
       usage >&2
