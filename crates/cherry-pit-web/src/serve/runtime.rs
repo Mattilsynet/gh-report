@@ -11,11 +11,6 @@
 //! ingress layer. The WebSocket carries only page-update notifications,
 //! never secrets.
 //!
-//! # Known Limitations
-//!
-//! `If-None-Match` compares only the first `ETag` value; a multi-value
-//! header always returns 200.
-//!
 //! # Security Invariants
 //!
 //! - `normalize_request_path` rejects traversal; only cache keys served
@@ -45,7 +40,7 @@ use super::config::ServeOptions;
 use super::error::ServerError;
 use super::state::ServerState;
 use crate::middleware::compression::{Encoding, negotiate_encoding};
-use crate::middleware::http::etag_weak_match;
+use crate::middleware::http::if_none_match_matches;
 use crate::middleware::ws_auth::{WS_MAX_MESSAGE_SIZE, WsPolicy, validate_ws_origin};
 use crate::middleware::{
     DEFAULT_CSP, LayerLimits, SVG_CSP, http_trace_layer, normalize_request_path, security_headers,
@@ -215,10 +210,7 @@ fn serve_page(
 ) -> Response {
     let has_compressed = page.body.zstd().is_some();
 
-    if !skip_etag_check
-        && let Some(if_none_match) = request_headers.get(axum::http::header::IF_NONE_MATCH)
-        && etag_weak_match(if_none_match, &page.etag)
-    {
+    if !skip_etag_check && if_none_match_matches(request_headers, &page.etag) {
         let mut resp = Response::new(axum::body::Body::empty());
         *resp.status_mut() = StatusCode::NOT_MODIFIED;
         resp.headers_mut()
@@ -2904,8 +2896,14 @@ mod tests {
         handle.abort();
     }
 
+    /// RFC 7232 §3.2: `If-None-Match` is a list and a match on any
+    /// entry means "not modified".
+    ///
+    /// This asserted `200` and called it a known limitation. The list
+    /// was compared as one opaque string, so every cache holding more
+    /// than one validator re-downloaded the full body on each request.
     #[tokio::test]
-    async fn if_none_match_multi_value_returns_200() {
+    async fn if_none_match_multi_value_returns_304() {
         let state = state_with_cache(&[("index.html", "<html>etag test</html>")]);
         let app = build_router_with(state, &default_config(), None);
 
@@ -2936,8 +2934,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             resp.status(),
-            200,
-            "multi-value If-None-Match should return 200 (known limitation)"
+            304,
+            "a multi-value If-None-Match containing the current ETag is a match"
         );
 
         handle.abort();
