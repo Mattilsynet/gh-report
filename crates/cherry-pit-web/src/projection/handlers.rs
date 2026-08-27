@@ -41,7 +41,8 @@ use tokio::sync::{Semaphore, broadcast};
 use super::port::ProjectionSource;
 use super::state::{PageEntry, ProjectionState};
 use crate::middleware::compression::{Encoding, negotiate_encoding};
-use crate::middleware::http::etag_weak_match;
+use crate::middleware::http::if_none_match_matches;
+use crate::middleware::normalize_request_path;
 use crate::middleware::security::DEFAULT_CSP;
 use crate::middleware::ws_auth::{WS_MAX_MESSAGE_SIZE, WsPolicy, validate_ws_origin};
 
@@ -90,10 +91,16 @@ where
 /// - **503** when no snapshot has been published yet.
 /// - **404** when the snapshot does not contain the requested key.
 ///
-/// `path` is the captured wildcard segment from `/v1/{*path}`. The
-/// projection adapter is read-only; path normalisation is delegated to
-/// the wildcard capture (axum rejects traversal sequences before they
-/// reach the handler).
+/// `path` is the captured wildcard segment from `/v1/{*path}`, routed
+/// through [`normalize_request_path`] before lookup — the same
+/// normalisation the serve surface applies (CHE-0086:R8).
+///
+/// axum does **not** normalise `..` or `%2e%2e`; matchit matches the
+/// wildcard literally. Nothing here touches a filesystem — the key is
+/// a lookup into a published in-memory snapshot, so a traversal
+/// sequence could only ever have missed and 404'd. Normalising anyway
+/// keeps one path contract across both read surfaces rather than two
+/// that happen to agree.
 pub(crate) async fn snapshot_get<P>(
     State(state): State<ProjectionState<P>>,
     request: axum::http::Request<axum::body::Body>,
@@ -119,9 +126,12 @@ where
     };
 
     let raw_path = request.uri().path();
-    let key = raw_path.strip_prefix("/v1/").unwrap_or(raw_path);
+    let suffix = raw_path.strip_prefix("/v1").unwrap_or(raw_path);
+    let Some(normalized) = normalize_request_path(suffix) else {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    };
 
-    let Some(page) = resolve_page(&snapshot, key) else {
+    let Some(page) = resolve_page(&snapshot, normalized.key.as_ref()) else {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     };
     serve_page(page, request.headers(), StatusCode::OK)
@@ -174,9 +184,7 @@ fn resolve_page<'a>(snapshot: &'a HashMap<String, PageEntry>, key: &str) -> Opti
 fn serve_page(page: &PageEntry, request_headers: &HeaderMap, status: StatusCode) -> Response {
     let has_compressed = page.body_zstd.is_some();
 
-    if let Some(if_none_match) = request_headers.get(header::IF_NONE_MATCH)
-        && etag_weak_match(if_none_match, &page.etag)
-    {
+    if if_none_match_matches(request_headers, &page.etag) {
         let mut resp = Response::new(axum::body::Body::empty());
         *resp.status_mut() = StatusCode::NOT_MODIFIED;
         resp.headers_mut().insert(header::ETAG, page.etag.clone());
@@ -381,20 +389,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn etag_match_handles_weak_prefix() {
-        let server = HeaderValue::from_static(r#"W/"abc""#);
-        let client = HeaderValue::from_static(r#""abc""#);
-        assert!(etag_weak_match(&client, &server));
-    }
-
-    #[test]
-    fn etag_match_handles_wildcard() {
-        let server = HeaderValue::from_static(r#"W/"abc""#);
-        let client = HeaderValue::from_static("*");
-        assert!(etag_weak_match(&client, &server));
-    }
 
     #[test]
     fn resolve_page_direct_match() {

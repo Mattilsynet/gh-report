@@ -82,6 +82,13 @@ pub(crate) enum Encoding {
 /// highest-quality supported encoding. An entry with `q=0` is an
 /// explicit refusal and is excluded; absent q-value defaults to `1.0`.
 ///
+/// A `q=0` refusal wins over any other `zstd` entry regardless of
+/// position. A header listing `zstd` twice is malformed, and the
+/// conservative reading of a client that mentions `zstd;q=0` at all is
+/// that it cannot decode zstd — previously the refusal was simply
+/// skipped, so `zstd, zstd;q=0` negotiated zstd and sent a body the
+/// client had just said it did not want.
+///
 /// Strict superset of the prior simplified inline check
 /// (`s.split(',').any(|p| p.trim().starts_with("zstd"))`): every header
 /// value the simplified version accepted is still accepted here, plus
@@ -91,7 +98,7 @@ pub(crate) fn negotiate_encoding(accept: &HeaderValue) -> Encoding {
         return Encoding::Identity;
     };
 
-    let mut zstd_quality: Option<f32> = None;
+    let mut zstd_acceptable = false;
 
     for part in s.split(',') {
         let part = part.trim();
@@ -99,6 +106,10 @@ pub(crate) fn negotiate_encoding(accept: &HeaderValue) -> Encoding {
             Some((n, p)) => (n.trim(), Some(p.trim())),
             None => (part, None),
         };
+
+        if name != "zstd" {
+            continue;
+        }
 
         let quality = params
             .and_then(|p| {
@@ -111,12 +122,14 @@ pub(crate) fn negotiate_encoding(accept: &HeaderValue) -> Encoding {
             })
             .unwrap_or(1.0);
 
-        if name == "zstd" && quality > 0.0 {
-            zstd_quality = Some(quality);
+        if quality > 0.0 {
+            zstd_acceptable = true;
+        } else {
+            return Encoding::Identity;
         }
     }
 
-    if zstd_quality.is_some_and(|q| q > 0.0) {
+    if zstd_acceptable {
         Encoding::Zstd
     } else {
         Encoding::Identity
@@ -241,5 +254,34 @@ mod tests {
     fn negotiate_encoding_wildcard_alone_is_identity() {
         let h = HeaderValue::from_static("*;q=0.5");
         assert_eq!(negotiate_encoding(&h), Encoding::Identity);
+    }
+
+    /// A refusal anywhere in the list wins.
+    ///
+    /// The loop previously only ever *set* acceptance, so a `q=0` entry
+    /// after a bare `zstd` was skipped and the client received a zstd
+    /// body it had explicitly refused.
+    #[test]
+    fn duplicate_zstd_with_trailing_refusal_is_identity() {
+        let v = HeaderValue::from_static("zstd, zstd;q=0");
+        assert_eq!(negotiate_encoding(&v), Encoding::Identity);
+    }
+
+    #[test]
+    fn duplicate_zstd_with_leading_refusal_is_identity() {
+        let v = HeaderValue::from_static("zstd;q=0, zstd");
+        assert_eq!(negotiate_encoding(&v), Encoding::Identity);
+    }
+
+    #[test]
+    fn refusal_among_other_encodings_is_identity() {
+        let v = HeaderValue::from_static("gzip, zstd;q=0, br");
+        assert_eq!(negotiate_encoding(&v), Encoding::Identity);
+    }
+
+    #[test]
+    fn repeated_acceptable_zstd_still_negotiates_zstd() {
+        let v = HeaderValue::from_static("zstd;q=0.5, zstd;q=0.9");
+        assert_eq!(negotiate_encoding(&v), Encoding::Zstd);
     }
 }

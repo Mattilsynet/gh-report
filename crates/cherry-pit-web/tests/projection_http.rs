@@ -336,8 +336,12 @@ async fn etag_304_still_includes_no_cache() {
     s.shutdown().await;
 }
 
+/// RFC 7232 §3.2 on the projection surface: `If-None-Match` is a list
+/// and a match on any entry means "not modified". Asserted `200` and
+/// called it a known limitation until the shared helper started
+/// walking the list.
 #[tokio::test]
-async fn if_none_match_multi_value_returns_200() {
+async fn if_none_match_multi_value_returns_304() {
     let source = MockProjectionSource::new();
     source.set_snapshot(Some(mk_snapshot(&[(
         "index.html",
@@ -361,8 +365,8 @@ async fn if_none_match_multi_value_returns_200() {
         http_get_with_headers(s.addr, "/v1/index.html", &[("if-none-match", &multi_value)]).await;
     assert_eq!(
         resp.status(),
-        200,
-        "multi-value If-None-Match should return 200 (known limitation)"
+        304,
+        "a multi-value If-None-Match containing the current ETag is a match"
     );
 
     s.shutdown().await;
@@ -768,5 +772,51 @@ async fn negotiate_rejects_q_zero_with_preceding_params() {
         "q=0 with preceding params must suppress zstd encoding; got {:?}",
         resp.headers().get("content-encoding"),
     );
+    s.shutdown().await;
+}
+
+/// V3: the handler's doc claimed "axum rejects traversal sequences
+/// before they reach the handler". It does not — matchit matches the
+/// `/v1/{*path}` wildcard literally, so `..` and `%2e%2e` arrive intact.
+///
+/// The claim was harmless (the key is an in-memory map lookup, never a
+/// filesystem path) but it was a security guarantee asserted by prose
+/// alone. This makes the real invariant executable: traversal-shaped
+/// keys reach the handler and are refused, and nothing escapes the
+/// published snapshot.
+#[tokio::test]
+async fn traversal_shaped_keys_reach_the_handler_and_are_refused() {
+    let source = MockProjectionSource::new();
+    source.set_snapshot(Some(mk_snapshot(&[(
+        "index.html",
+        "index.html",
+        "<html>ok</html>",
+    )])));
+    let s = spawn_test_server_secured(source).await;
+
+    for path in [
+        "/v1/../secret.txt",
+        "/v1/%2e%2e/secret.txt",
+        "/v1/%2e%2e%2fsecret.txt",
+        "/v1/foo/../../etc/passwd",
+        "/v1/foo%00bar",
+        "/v1/foo%5Cbar",
+    ] {
+        let resp = http_get(s.addr, path).await;
+        assert_ne!(
+            resp.status(),
+            200,
+            "{path} must not resolve to a snapshot entry"
+        );
+        assert!(
+            resp.status() == 404 || resp.status() == 400,
+            "{path} yielded unexpected {}",
+            resp.status()
+        );
+    }
+
+    let ok = http_get(s.addr, "/v1/index.html").await;
+    assert_eq!(ok.status(), 200, "ordinary keys still resolve");
+
     s.shutdown().await;
 }
