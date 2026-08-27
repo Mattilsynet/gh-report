@@ -22,7 +22,10 @@
 
 mod common;
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
+
+use tokio::sync::Notify;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -44,8 +47,8 @@ async fn body_over_max_returns_413() {
     let source = MockProjectionSource::new();
     let state = ProjectionState::from_arc(source);
     let limits = LayerLimits {
-        max_body_bytes: 1024,
-        max_inflight_requests: 1024,
+        max_body_bytes: NonZeroUsize::new(1024).unwrap(),
+        max_inflight_requests: NonZeroUsize::new(1024).unwrap(),
     };
     let app = build_projection_router(
         state,
@@ -78,8 +81,8 @@ async fn body_under_max_passes_layer() {
     let source = MockProjectionSource::new();
     let state = ProjectionState::from_arc(source);
     let limits = LayerLimits {
-        max_body_bytes: 4096,
-        max_inflight_requests: 1024,
+        max_body_bytes: NonZeroUsize::new(4096).unwrap(),
+        max_inflight_requests: NonZeroUsize::new(1024).unwrap(),
     };
     let app = build_projection_router(
         state,
@@ -104,50 +107,101 @@ async fn body_under_max_passes_layer() {
 }
 
 /// SEC-0003:R3 (backpressure) — exhausting the inflight semaphore
-/// returns 503. Mechanism: CHE-0062 (`http_concurrency_limit`).
+/// sheds the **data plane** with 503, while the liveness and readiness
+/// probes still answer 200. Mechanism: CHE-0062
+/// (`http_concurrency_limit`).
 ///
-/// With `max_inflight_requests = 0` the `try_acquire` fails immediately
-/// for every request: this proves the middleware is wired and exercises
-/// the **shedding** branch without needing a notify-barrier to hold two
-/// concurrent requests in flight. The donor crate's
-/// `server.rs:2164,:2209` validates the contended-but-non-zero case in
-/// production; this smoke is sufficient to prove the wiring.
+/// The cap is 1 and a request parked inside `/hold` (merged via
+/// `extra_routes`, so it sits inside the concurrency layer per
+/// CHE-0062:R7) holds the only permit while the assertions run. The
+/// shed assertion targets `/data`, a fast `extra_routes` handler that
+/// answers 200 when it is not shed.
 #[tokio::test]
-async fn inflight_zero_permits_returns_503() {
+async fn inflight_saturation_sheds_data_plane_503_but_probes_answer_200_with_csp() {
     let source = MockProjectionSource::new();
     let state = ProjectionState::from_arc(source);
     let limits = LayerLimits {
-        max_body_bytes: 1024 * 1024,
-        max_inflight_requests: 0,
+        max_body_bytes: NonZeroUsize::new(1024 * 1024).unwrap(),
+        max_inflight_requests: NonZeroUsize::new(1).unwrap(),
     };
-    let app = build_projection_router(
-        state,
-        limits,
-        WsPolicy::permissive_for_tests(),
-        axum::Router::new(),
-    );
+
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let extra = axum::Router::new()
+        .route("/data", axum::routing::get(|| async { "data" }))
+        .route("/hold", {
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            axum::routing::get(move || {
+                let entered = Arc::clone(&entered);
+                let release = Arc::clone(&release);
+                async move {
+                    entered.notify_one();
+                    release.notified().await;
+                    "held"
+                }
+            })
+        });
+    let app = build_projection_router(state, limits, WsPolicy::permissive_for_tests(), extra);
+
+    let hold = tokio::spawn({
+        let app = app.clone();
+        async move {
+            let req = Request::builder()
+                .uri("/hold")
+                .body(Body::empty())
+                .expect("request build");
+            app.oneshot(req).await.expect("oneshot").status()
+        }
+    });
+    entered.notified().await;
 
     let req = Request::builder()
-        .uri("/v1/healthz")
+        .uri("/data")
         .body(Body::empty())
         .expect("request build");
-
-    let resp = app.oneshot(req).await.expect("oneshot");
+    let resp = app.clone().oneshot(req).await.expect("oneshot");
     assert_eq!(
         resp.status(),
         StatusCode::SERVICE_UNAVAILABLE,
-        "max_inflight_requests=0 must shed every request with 503"
+        "a saturated inflight cap must shed every data-plane request with 503"
+    );
+
+    for probe in ["/v1/healthz", "/v1/readyz"] {
+        let req = Request::builder()
+            .uri(probe)
+            .body(Body::empty())
+            .expect("request build");
+        let resp = app.clone().oneshot(req).await.expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "{probe} must answer while the inflight limiter is saturated"
+        );
+        assert!(
+            resp.headers()
+                .get(axum::http::header::CONTENT_SECURITY_POLICY)
+                .is_some(),
+            "{probe} outside the limiter lost content-security-policy"
+        );
+    }
+
+    release.notify_one();
+    assert_eq!(
+        hold.await.expect("hold task"),
+        StatusCode::OK,
+        "the held request must complete once released"
     );
 }
 
-/// SEC-0003:R3 (backpressure) — WS upgrade is rejected with 503 when
-/// the WS semaphore has no permits. Mechanism: CHE-0062
-/// (`Arc<Semaphore>::try_acquire_owned` on the upgrade path).
+/// SEC-0003:R3 (backpressure) — a WS upgrade arriving when the
+/// connection cap is already met is rejected with 503. Mechanism:
+/// CHE-0062 (`Arc<Semaphore>::try_acquire_owned` on the upgrade path).
 ///
-/// With `WsPolicy::max_connections = 0` `try_acquire_owned` fails on every
-/// upgrade attempt, returning 503 before the WS handshake. We exercise
-/// this via a real `tokio_tungstenite::connect_async` against a bound
-/// server (matching the donor's `server.rs:2164` topology); the
+/// The cap is 1 and a live session holds the only permit, so the
+/// second `try_acquire_owned` fails and the upgrade is refused before
+/// the handshake. We exercise this via a real
+/// `tokio_tungstenite::connect_async` against a bound server; the
 /// connect-attempt observes the 503 status on the upgrade response.
 ///
 /// `oneshot`-with-fabricated-upgrade-headers is **not** a viable test
@@ -156,17 +210,17 @@ async fn inflight_zero_permits_returns_503() {
 /// in the synthetic headers front-runs the semaphore check with a
 /// `426 Upgrade Required`. A real client handshake side-steps that.
 #[tokio::test]
-async fn ws_zero_permits_returns_503() {
+async fn ws_upgrade_beyond_connection_cap_returns_503() {
     use tokio::net::TcpListener;
 
     let source = MockProjectionSource::new();
     let state = ProjectionState::from_arc(source);
     let limits = LayerLimits {
-        max_body_bytes: 1024 * 1024,
-        max_inflight_requests: 1024,
+        max_body_bytes: NonZeroUsize::new(1024 * 1024).unwrap(),
+        max_inflight_requests: NonZeroUsize::new(1024).unwrap(),
     };
     let mut ws_policy = WsPolicy::permissive_for_tests();
-    ws_policy.max_connections = 0;
+    ws_policy.max_connections = NonZeroUsize::new(1).unwrap();
     let app = build_projection_router(state, limits, ws_policy, axum::Router::new());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -176,13 +230,23 @@ async fn ws_zero_permits_returns_503() {
     });
 
     let url = format!("ws://{addr}/ws");
+
+    let (_held, held_resp) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("1st WS connect takes the only permit");
+    assert_eq!(
+        held_resp.status(),
+        101,
+        "the 1st upgrade must succeed and hold the permit"
+    );
+
     let result = tokio_tungstenite::connect_async(&url).await;
     match result {
         Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
             assert_eq!(
                 resp.status(),
                 503,
-                "WsPolicy::max_connections=0 must reject WS upgrade with 503"
+                "an upgrade beyond max_connections must be rejected with 503"
             );
         }
         Err(other) => panic!("expected HTTP 503 from upgrade, got: {other}"),
@@ -204,11 +268,11 @@ async fn ws_permit_released_on_disconnect() {
     let source = MockProjectionSource::new();
     let state = ProjectionState::from_arc(source);
     let limits = LayerLimits {
-        max_body_bytes: 1024 * 1024,
-        max_inflight_requests: 1024,
+        max_body_bytes: NonZeroUsize::new(1024 * 1024).unwrap(),
+        max_inflight_requests: NonZeroUsize::new(1024).unwrap(),
     };
     let mut ws_policy = WsPolicy::permissive_for_tests();
-    ws_policy.max_connections = 1;
+    ws_policy.max_connections = NonZeroUsize::new(1).unwrap();
     let app = build_projection_router(state, limits, ws_policy, axum::Router::new());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");

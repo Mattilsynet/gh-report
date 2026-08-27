@@ -11,6 +11,7 @@
 //! `organization`, evidence-to-WebSocket pipeline) that cannot be tested
 //! in the generic server module's domain-free test harness.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -36,14 +37,15 @@ pub(crate) const SERVED_CSP_WITH_WASM_UNSAFE_EVAL: &str = "default-src 'self'; s
 ///
 /// The GET-only built-in routes are not sized by this; `cherry-pit-web`
 /// nests its own 1 KB cap on them.
-const MAX_BODY_CEILING_BYTES: usize = crate::config::MAX_WEBHOOK_BODY_BYTES;
+const MAX_BODY_CEILING_BYTES: NonZeroUsize =
+    NonZeroUsize::new(crate::config::MAX_WEBHOOK_BODY_BYTES).expect("nonzero");
 
 /// Maximum in-flight HTTP requests before the concurrency layer sheds
 /// with 503. Defence-in-depth; primary rate limiting is at the ingress.
-const MAX_INFLIGHT_REQUESTS: usize = 1024;
+const MAX_INFLIGHT_REQUESTS: NonZeroUsize = NonZeroUsize::new(1024).expect("nonzero");
 
 /// Maximum concurrent dashboard WebSocket sessions.
-const MAX_WS_CONNECTIONS: usize = 200;
+const MAX_WS_CONNECTIONS: NonZeroUsize = NonZeroUsize::new(200).expect("nonzero");
 
 /// SEC-0003 sizing for the serve surface (CHE-0062:R2).
 pub(crate) fn server_layer_limits() -> cherry_pit_web::LayerLimits {

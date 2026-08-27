@@ -27,6 +27,8 @@
 //! single home for WS origin validation across both the static-serve
 //! runtime and the projection adapter (CHE-0086:R8).
 
+use std::num::NonZeroUsize;
+
 use axum::http::{HeaderMap, header};
 
 /// Maximum inbound WebSocket message size (bytes). Client messages are
@@ -111,7 +113,12 @@ pub struct WsPolicy {
     /// surface's `/ws` upgrade. Upgrades arriving when this many
     /// sessions are already attached are rejected with `503` before
     /// the handshake completes. SEC-0003:R3 route-scoped.
-    pub max_connections: usize,
+    ///
+    /// [`NonZeroUsize`] for the reason given on
+    /// [`super::LayerLimits`]: a cap of zero accepts no connection at
+    /// all, so it is a disabled layer in fact, and CHE-0062:R4 puts
+    /// disabling out of scope.
+    pub max_connections: NonZeroUsize,
 
     /// Policy applied at WS upgrade to the inbound `Origin` header.
     /// See [`WebSocketOriginPolicy`].
@@ -127,7 +134,7 @@ impl WsPolicy {
     /// asking for anything else, which is the property that makes
     /// SEC-0012:R2 hold by construction rather than by review.
     #[must_use]
-    pub fn new(max_connections: usize) -> Self {
+    pub fn new(max_connections: NonZeroUsize) -> Self {
         Self {
             max_connections,
             origin_policy: WebSocketOriginPolicy::Strict,
@@ -144,8 +151,9 @@ impl WsPolicy {
     /// acceptance of CWE-346 / CWE-1385 risk per SEC-0012:R3.
     #[must_use]
     pub fn permissive_for_tests() -> Self {
+        const CONNECTIONS: NonZeroUsize = NonZeroUsize::new(1024).expect("nonzero");
         Self {
-            max_connections: 1024,
+            max_connections: CONNECTIONS,
             origin_policy: WebSocketOriginPolicy::AllowAbsent,
         }
     }
@@ -282,14 +290,19 @@ mod tests {
             WebSocketOriginPolicy::Strict
         );
         assert!(matches!(
-            WsPolicy::new(8).origin_policy,
+            WsPolicy::new(NonZeroUsize::new(8).unwrap()).origin_policy,
             WebSocketOriginPolicy::Strict
         ));
     }
 
     #[test]
     fn new_carries_the_requested_cap() {
-        assert_eq!(WsPolicy::new(7).max_connections, 7);
+        assert_eq!(
+            WsPolicy::new(NonZeroUsize::new(7).unwrap())
+                .max_connections
+                .get(),
+            7
+        );
     }
 
     #[test]
