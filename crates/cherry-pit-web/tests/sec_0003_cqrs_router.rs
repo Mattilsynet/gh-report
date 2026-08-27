@@ -270,3 +270,61 @@ async fn cqrs_permissive_limits_allow_load() {
         "permissive limits must not short-circuit valid traffic"
     );
 }
+
+/// CHE-0062:R4 + CHE-0049:R5 on the CQRS surface: consumer routes
+/// merged via `extra_routes` sit *inside* the availability stack and
+/// the correlation echo, not outside it.
+///
+/// Before this, `build_router` layered the `/v1` sub-router and then
+/// merged `extra_routes` alongside it, so a consumer route received no
+/// body cap, no concurrency cap and no correlation echo at all — an
+/// ingestion point with none of the SEC-0003:R1/R3 obligations
+/// CHE-0062:R4 calls unconditional.
+#[tokio::test]
+async fn cqrs_extra_routes_inherit_body_cap_and_correlation() {
+    use axum::routing::post as post_route;
+
+    let state: AppState<StubGateway, StubStore, StubRouter> =
+        AppState::new(StubGateway, StubStore, StubRouter);
+    let limits = LayerLimits {
+        max_body_bytes: 1024,
+        max_inflight_requests: 1024,
+    };
+    let extra = Router::new().route(
+        "/consumer/echo",
+        post_route(|body: axum::body::Bytes| async move { format!("{} bytes", body.len()) }),
+    );
+    let app = build_router(state, limits, extra);
+
+    let oversize = Request::builder()
+        .method("POST")
+        .uri("/consumer/echo")
+        .header("content-type", "application/octet-stream")
+        .body(Body::from(vec![0u8; 2048]))
+        .expect("request builds");
+    let resp = app
+        .clone()
+        .oneshot(oversize)
+        .await
+        .expect("router responds");
+    assert_eq!(
+        resp.status(),
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "a merged consumer route must inherit the SEC-0003:R1 body cap"
+    );
+
+    let correlated = Request::builder()
+        .method("POST")
+        .uri("/consumer/echo")
+        .header("x-correlation-id", "6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+        .body(Body::from(vec![0u8; 16]))
+        .expect("request builds");
+    let resp = app.oneshot(correlated).await.expect("router responds");
+    assert_eq!(
+        resp.headers()
+            .get("x-correlation-id")
+            .and_then(|v| v.to_str().ok()),
+        Some("6ba7b810-9dad-11d1-80b4-00c04fd430c8"),
+        "CHE-0049:R5 says every response echoes the correlation identifier"
+    );
+}

@@ -79,6 +79,7 @@ where
 
     handlers::build(state)
         .merge(extra_routes)
+        .layer(axum::middleware::from_fn(handlers::projection_default_csp))
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(limits.max_body_bytes))
         .layer(axum::middleware::from_fn(move |request, next| {

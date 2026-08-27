@@ -83,6 +83,13 @@ R4 [9]: Layer attachment is unconditional — `LayerLimits` carries
   layer is out of scope; the obligation under SEC-0003 R1/R3 is
   unconditional at every cherry-pit-web ingestion point.
 
+R7 [9]: "Every ingestion point" includes consumer routes merged via
+  `extra_routes`: the availability layers wrap the *merged* router on
+  every surface. `max_body_bytes` is a ceiling, not a per-route
+  budget — a route group MAY nest a tighter `RequestBodyLimitLayer`
+  inside it, NONE may widen it, and a consumer needing a larger body
+  raises the ceiling explicitly.
+
 R5 [8]: gh-report's `infra/server/server.rs` removes its
   `RequestBodyLimitLayer`, `http_concurrency_limit`, and WS semaphore
   attachments in Track 4.3, after Track 4.2 lands the library-side
@@ -100,6 +107,15 @@ R6 [7]: When a future availability layer arrives (rate limiting per
   committed per the crate README.
 
 ## Consequences
+
+### R7 ceiling semantics (2026-08-27)
+
+R7 does not narrow CHE-0049:R2. `extra_routes` remains the consumer's auth-attachment surface and the consumer still composes auth and rate-limit policy there. What R2 never granted — and what the pre-2026-08-27 CQRS merge order accidentally conferred — was exemption from SEC-0003.
+
+Nesting is the mechanism that makes one ceiling workable across unlike routes: `cherry-pit-web` nests 1 KB on its own GET-only serve built-ins, and gh-report's webhook receiver nests 1 MiB on `/webhook`. The ceiling bounds both. Sizing the ceiling below a merged route's genuine need rejects that route at the ceiling before its own wider limit is consulted, which is why raising it is a visible decision rather than an accident of merge order.
+
+Falsifier: a merged route accepting a body larger than `max_body_bytes`, or answering without the CHE-0049:R5 correlation echo, on any of the three surfaces.
+
 
 ### On the `&ValidatedConfig` question (the load-bearing call)
 

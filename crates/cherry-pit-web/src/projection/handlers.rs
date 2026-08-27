@@ -376,7 +376,6 @@ where
         .route("/ws", get(ws_handler::<P>))
         .route("/v1/{*path}", get(snapshot_get::<P>))
         .with_state(state)
-        .layer(axum::middleware::from_fn(projection_default_csp))
 }
 
 #[cfg(test)]

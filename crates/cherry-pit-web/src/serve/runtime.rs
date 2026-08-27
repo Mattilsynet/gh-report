@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Extension, Request, State};
+use axum::extract::{DefaultBodyLimit, Extension, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -486,6 +486,15 @@ pub async fn start<S: ServerState>(
     Ok(())
 }
 
+/// Body cap for the serve surface's own built-in routes.
+///
+/// `/healthz`, `/readyz`, `/favicon.ico`, `/ws` and the cache fallback
+/// are all GET-only, so they need no meaningful request body. This is
+/// nested *inside* the `LayerLimits::max_body_bytes` ceiling: the
+/// library sizes its own routes tightly, the consumer sizes the
+/// ceiling that bounds everything including `extra_routes`.
+const BUILTIN_MAX_BODY_BYTES: usize = 1024;
+
 /// Build the [`Router`] with security headers, health endpoints, and tracing.
 ///
 /// Extracted so that tests exercise the exact same router configuration as
@@ -496,12 +505,14 @@ pub async fn start<S: ServerState>(
 /// 1. **Security headers** — injected on every response.
 /// 2. **HTTP concurrency limit** — bounds in-flight requests via semaphore.
 ///    Returns 503 when limit is reached.
-/// 3. **Tracing** — structured request/response logging.
+/// 3. **Body ceiling** — `limits.max_body_bytes`, applied to every
+///    ingestion point including `extra_routes` (CHE-0062:R4).
+/// 4. **Tracing** — structured request/response logging.
 ///
-/// Built-in routes have a `RequestBodyLimitLayer` (default 1 KB) applied
-/// via `.layer()` (covers both matched routes and the cache fallback).
-/// Extra routes (e.g., webhook handler) bring their own body-limit layer,
-/// enabling different limits per route group.
+/// Built-in routes nest a tighter [`BUILTIN_MAX_BODY_BYTES`] cap inside
+/// the ceiling. Route groups merged via `extra_routes` may do the same —
+/// the webhook receiver is the motivating case — but none may widen it
+/// past the ceiling.
 ///
 /// `limits` carries the SEC-0003 sizing (CHE-0062:R2); `ws_policy`
 /// carries the WS connection cap and Origin election (SEC-0012:R1);
@@ -528,7 +539,6 @@ pub fn build_router<S: ServerState>(
     let ws_semaphore = Arc::new(tokio::sync::Semaphore::new(clamp_permits(
         ws_policy.max_connections,
     )));
-    let body_limit = limits.max_body_bytes;
     let csp: HeaderValue = HeaderValue::from_str(options.csp_override().unwrap_or(DEFAULT_CSP))
         .expect("CSP validated by builder");
     let error_page_key: Option<Arc<str>> = options.error_page_key().map(Into::into);
@@ -539,7 +549,7 @@ pub fn build_router<S: ServerState>(
         .route("/favicon.ico", get(favicon))
         .route("/ws", get(ws_handler::<S>))
         .fallback(cache_fallback::<S>)
-        .layer(RequestBodyLimitLayer::new(body_limit));
+        .layer(RequestBodyLimitLayer::new(BUILTIN_MAX_BODY_BYTES));
 
     let mut router = Router::new().merge(builtin_routes);
 
@@ -553,6 +563,8 @@ pub fn build_router<S: ServerState>(
         .layer(Extension(ws_policy))
         .layer(Extension(ws_semaphore))
         .layer(http_trace_layer())
+        .layer(DefaultBodyLimit::disable())
+        .layer(RequestBodyLimitLayer::new(limits.max_body_bytes))
         .layer(middleware::from_fn(move |request, next| {
             let sem = Arc::clone(&http_semaphore);
             http_concurrency_limit(sem, request, next)
@@ -2697,7 +2709,7 @@ mod tests {
 
         let state = state_with_cache(&[("index.html", "<html>ok</html>")]);
         let limits = LayerLimits {
-            max_body_bytes: 1024,
+            max_body_bytes: 1024 * 1024,
             max_inflight_requests: 1024,
         };
 
@@ -2735,7 +2747,7 @@ mod tests {
         assert_eq!(
             resp.status(),
             413,
-            "built-in route should reject body > max_request_body_bytes"
+            "built-in route should reject body > BUILTIN_MAX_BODY_BYTES"
         );
 
         let resp = client
@@ -2746,7 +2758,75 @@ mod tests {
             .unwrap();
         assert!(
             resp.status() != 413,
-            "extra route should accept body within its own limit, got {}",
+            "extra route should accept a body within the ceiling and its own limit, got {}",
+            resp.status()
+        );
+
+        handle.abort();
+    }
+
+    /// CHE-0062:R4 at the serve surface: `max_body_bytes` is a ceiling
+    /// over *every* ingestion point, so a merged route cannot widen it.
+    ///
+    /// The `/upload` route below asks for 1 MiB, far above the 4 KiB
+    /// ceiling. Before the ceiling wrapped the merged router, only the
+    /// built-in routes carried a body layer at all and this request was
+    /// accepted — a consumer route could silently opt out of SEC-0003:R1.
+    #[tokio::test]
+    async fn body_ceiling_covers_extra_routes_and_cannot_be_widened() {
+        use axum::routing::post as post_route;
+
+        let state = state_with_cache(&[("index.html", "<html>ok</html>")]);
+        let limits = LayerLimits {
+            max_body_bytes: 4096,
+            max_inflight_requests: 1024,
+        };
+
+        let extra = Router::new()
+            .route(
+                "/upload",
+                post_route(|body: axum::body::Bytes| async move {
+                    format!("received {} bytes", body.len())
+                }),
+            )
+            .layer(RequestBodyLimitLayer::new(1024 * 1024));
+
+        let app = build_router(
+            Arc::clone(&state),
+            limits,
+            WsPolicy::permissive_for_tests(),
+            &default_config(),
+            Some(extra),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        wait_for_server(addr).await;
+
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .post(format!("http://{addr}/upload"))
+            .body(vec![b'x'; 8192])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            413,
+            "a merged route must not widen the body ceiling"
+        );
+
+        let resp = client
+            .post(format!("http://{addr}/upload"))
+            .body(vec![b'x'; 2048])
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            resp.status() != 413,
+            "a body under the ceiling must still reach the merged route, got {}",
             resp.status()
         );
 

@@ -33,9 +33,15 @@ use crate::state::AppState;
 
 /// Build the cherry-pit-web router.
 ///
-/// Mounts routes under `/v1/` (CHE-0049 R9); merges `extra_routes` at
-/// the top level, outside the v1 layer stack, so consumers compose
-/// their own auth/sizing/rate-limit policies (CHE-0049 R2, CHE-0062:R1).
+/// Mounts routes under `/v1/` (CHE-0049 R9) and merges `extra_routes`
+/// at the top level. The SEC-0003 availability layers and the
+/// correlation echo wrap the merged router, so `extra_routes` are
+/// covered too (CHE-0062:R4 — unconditional at every ingestion point;
+/// CHE-0049:R5 — every response echoes the correlation identifier).
+/// `limits.max_body_bytes` is a **ceiling**: consumers may nest a
+/// tighter `RequestBodyLimitLayer` on their own route groups, and
+/// still compose their own auth and rate-limit policy there
+/// (CHE-0049:R2).
 /// Returned [`Router`] has state applied ([`Router::with_state`]) —
 /// ready for `axum::serve` or composition. Generic dispatch is
 /// mandatory (CHE-0049 R1, CHE-0050 R4); `Box<dyn _>` forbidden.
@@ -49,12 +55,11 @@ use crate::state::AppState;
 /// # Parameters
 ///
 /// - `state` — typed application state (CHE-0049:R1, CHE-0050:R2).
-/// - `limits` — SEC-0003 availability-layer sizing for the v1
-///   sub-router: body cap ([`RequestBodyLimitLayer`]), inflight cap
-///   ([`http_concurrency_limit`], 503-shedding) per CHE-0062:R1/R4.
-///   [`LayerLimits::max_ws_connections`] is projection-only. Tests use
-///   [`LayerLimits::permissive_for_tests`].
-/// - `extra_routes` — stateless [`Router`] merged outside the SEC-0003
+/// - `limits` — SEC-0003 availability-layer sizing applied to the
+///   whole surface: body ceiling ([`RequestBodyLimitLayer`]), inflight
+///   cap ([`http_concurrency_limit`], 503-shedding) per CHE-0062:R1/R4.
+///   Tests use [`LayerLimits::permissive_for_tests`].
+/// - `extra_routes` — stateless [`Router`] merged inside the SEC-0003
 ///   stack (CHE-0049:R2); pass [`Router::new`] when unused.
 ///
 /// # Example
@@ -136,6 +141,11 @@ where
     let http_semaphore = Arc::new(Semaphore::new(limits.max_inflight_requests));
     let v1 = Router::new()
         .nest("/v1", v1_routes::<G, S, R>())
+        .with_state(state);
+
+    Router::new()
+        .merge(v1)
+        .merge(extra_routes)
         .layer(from_fn(correlation_layer))
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(limits.max_body_bytes))
@@ -143,8 +153,6 @@ where
             let sem = Arc::clone(&http_semaphore);
             http_concurrency_limit(sem, request, next)
         }))
-        .with_state(state);
-    Router::new().merge(extra_routes).merge(v1)
 }
 
 /// Versioned routes mounted under `/v1/` per CHE-0049 R9.
