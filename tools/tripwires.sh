@@ -4,18 +4,16 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-CHECKS=(projection-lock async-trait pardosa-dep fence-converge dead-code-suppression non-exhaustive gate-citation adr-number-collision deny-ignore-lifecycle)
+CHECKS=(projection-lock async-trait pardosa-dep fence-converge dead-code-suppression non-exhaustive gate-citation adr-number-collision deny-ignore-lifecycle forbid-unsafe-total)
 
 # Activated (ghr-y4hkd discharged, ghr-zcr7c/ghr-swxy8): deny.toml now
 # satisfies SEC-0013:R3 (table-form ignores) as of commit be14235; the
 # check is safe to run on every PR.
 #
-# forbid-unsafe-total is staged here (listed, NOT in `all`): the check is
-# implemented and proven to bite (ghr-ckrfk), but the tree currently has
-# uncovered crate roots, and closing those needs source edits that are
-# out of scope for the sub-mission that added this check. Move it into
-# CHECKS once the uncovered roots the check names are covered.
-PENDING_CHECKS=(forbid-unsafe-total)
+# forbid-unsafe-total activated (ghr-5rewy): the two previously uncovered
+# crate roots now carry #![forbid(unsafe_code)], so RST-0005:R1 coverage
+# is total across every workspace compilation root.
+PENDING_CHECKS=()
 
 usage() {
   echo "usage: tools/tripwires.sh <check>|all|--list"

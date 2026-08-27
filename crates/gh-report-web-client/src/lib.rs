@@ -6,7 +6,7 @@
 //! host `cargo build --workspace` never fetches or compiles them for
 //! this crate; only [`sort`] (pure, dependency-free) compiles on host.
 
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 pub mod sort;
 
