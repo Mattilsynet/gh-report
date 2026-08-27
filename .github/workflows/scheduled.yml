@@ -1,0 +1,80 @@
+name: Scheduled
+
+# SCHEDULED ONLY — deliberately never merge-blocking.
+#
+# There is intentionally no `push:`, `pull_request:`, or `workflow_call:`
+# trigger here, and these jobs are intentionally NOT called from
+# ci-reusable.yml. Per RST-0007:R1 a merge gate is "a build-time,
+# merge-blocking CI check" — conjunctive — so a schedule-only workflow sits
+# outside RST-0007 entirely and carries none of its R2-R7 citation/ADR
+# obligations. Do NOT add these jobs to branch protection: making either one
+# a required context would re-trigger RST-0007:R5, and no feature-matrix ADR
+# exists to cite.
+#
+# Cadence: weekly. Both jobs are periodic, band-[6] review-tier work with no
+# per-commit signal value; weekly is proportionate.
+
+on:
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scheduled-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  feature-powerset:
+    name: cargo-hack feature-powerset
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.97.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo install --locked cargo-hack
+      # gh-report-web-client is excluded per CHE-0087:R6 — it is outside the
+      # host workspace's default build set and builds only under an explicit
+      # --target wasm32-unknown-unknown invocation. Including it here would
+      # make this job a permanent false red for reasons unrelated to feature
+      # combinatorics.
+      - name: cargo hack --feature-powerset (CHE-0087:R6 exclusion)
+        run: |
+          cargo hack --feature-powerset check \
+            --workspace --exclude gh-report-web-client --locked || {
+            echo "::error::feature-powerset: a feature combination fails to compile; see the failing 'cargo check' invocation above for the exact --features set"
+            exit 1
+          }
+
+  geiger:
+    name: cargo-geiger unsafe surface (SEC-0009:R3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # SEC-0009:R3 is band-[6] review-tier and says only "report ... flagged for
+    # review when new unsafe appears" — it names no gate. cargo-geiger exits
+    # non-zero merely on warnings, so this job reports and never fails the run.
+    # This is SEC-0009:R3 compliance, not new safety value: forbid(unsafe_code)
+    # is already total across the crate roots (RST-0005:R1).
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.97.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo install --locked cargo-geiger
+      # cargo-geiger requires an absolute --manifest-path and rejects a virtual
+      # workspace manifest, so it is pointed at the gh-report binary crate —
+      # the workspace's top-level consumer, whose dep tree transitively covers
+      # the cherry-pit-* and pardosa* substrate.
+      - name: cargo geiger transitive unsafe report (SEC-0009:R3)
+        run: |
+          cargo geiger \
+            --manifest-path "$GITHUB_WORKSPACE/crates/gh-report/Cargo.toml" \
+            --output-format GitHubMarkdown \
+            >> "$GITHUB_STEP_SUMMARY" || true
