@@ -134,6 +134,12 @@ impl CommandRouter for StubRouter {
     type Gateway = StubGateway;
     type Wire = StubWire;
 
+    fn target_aggregate_id(wire: &Self::Wire) -> Option<AggregateId> {
+        match wire {
+            StubWire::Create => None,
+        }
+    }
+
     async fn dispatch(
         &self,
         _gateway: &Self::Gateway,

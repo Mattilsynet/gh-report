@@ -113,6 +113,9 @@ impl CommandRouter for R {
     ) -> Result<DispatchOutcome, ErrorEnvelope> {
         Ok(DispatchOutcome::Sent)
     }
+    fn target_aggregate_id(_: &W) -> Option<AggregateId> {
+        None
+    }
 }
 
 fn main() {

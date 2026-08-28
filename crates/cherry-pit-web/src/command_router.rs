@@ -93,7 +93,9 @@ pub enum DispatchOutcome {
 ///    (`map_dispatch_error`, `map_store_error`, `map_bus_error`) —
 ///    never ad-hoc.
 ///
-/// `dispatch` is the **only** method by design (R1).
+/// `dispatch` translates and dispatches; `target_aggregate_id` lets
+/// cherry-pit-web check the URL path id against the body's target
+/// before dispatching (R1, amended 2026-08-27).
 ///
 /// ## Bounds
 ///
@@ -176,6 +178,7 @@ pub enum DispatchOutcome {
 ///         let (aggregate_id, _) = gateway.create(C, ctx).await.unwrap();
 ///         Ok(DispatchOutcome::Created { aggregate_id })
 ///     }
+///     fn target_aggregate_id(_wire: &Wire) -> Option<AggregateId> { None }
 /// }
 ///
 /// // Smoke check the impl runs.
@@ -228,4 +231,23 @@ pub trait CommandRouter {
         idempotency: Option<IdempotencyKey>,
         wire: Self::Wire,
     ) -> impl std::future::Future<Output = Result<DispatchOutcome, ErrorEnvelope>> + Send;
+
+    /// Report the aggregate this wire DTO targets, if it names one.
+    ///
+    /// cherry-pit-web calls this on the
+    /// `POST /v1/aggregates/{id}/commands` path *before*
+    /// [`dispatch`](Self::dispatch), to check the URL path id against
+    /// the body's own target. Without it the path id and the body are
+    /// two independent authorities over one identity, and the path id
+    /// can only be ignored.
+    ///
+    /// Return [`None`] when the DTO names no aggregate. `None` means
+    /// **unverifiable**, never "agrees": cherry-pit-web rejects such a
+    /// request with 400 rather than dispatching it, so a wire variant
+    /// that reaches this path must name its target.
+    ///
+    /// This is a comparison key for an aggregate the store already
+    /// assigned (CHE-0020:R3) — never a caller-invented identity, which
+    /// remains confined to the create path.
+    fn target_aggregate_id(wire: &Self::Wire) -> Option<AggregateId>;
 }
