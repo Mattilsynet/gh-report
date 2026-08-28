@@ -60,7 +60,6 @@ jobs:
     # non-zero merely on warnings, so this job reports and never fails the run.
     # This is SEC-0009:R3 compliance, not new safety value: forbid(unsafe_code)
     # is already total across the crate roots (RST-0005:R1).
-    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -74,7 +73,14 @@ jobs:
       # the cherry-pit-* and pardosa* substrate.
       - name: cargo geiger transitive unsafe report (SEC-0009:R3)
         run: |
-          cargo geiger \
+          set -o pipefail
+          echo "## cargo-geiger unsafe surface (SEC-0009:R3)" >> "$GITHUB_STEP_SUMMARY"
+          out=$(cargo geiger \
             --manifest-path "$GITHUB_WORKSPACE/crates/gh-report/Cargo.toml" \
-            --output-format GitHubMarkdown \
-            >> "$GITHUB_STEP_SUMMARY" || true
+            --output-format GitHubMarkdown) || true
+          if [ -z "$out" ]; then
+            echo "::warning::cargo-geiger produced no output — report path broken, not a clean result"
+            echo "_geiger produced no output; report path may be broken._" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '%s\n' "$out" >> "$GITHUB_STEP_SUMMARY"
+          fi
