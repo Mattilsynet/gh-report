@@ -202,7 +202,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: ban inner #![allow/expect(dead_code)] in crate src
+      - name: ban inner #![allow/expect(dead_code)] in crate src (RST-0003:R6)
         run: tools/tripwires.sh dead-code-suppression
 
   supply-chain:
