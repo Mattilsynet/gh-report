@@ -1,7 +1,7 @@
 # RST-0003. Workspace Lint and Format Governance
 
 Date: 2026-04-27
-Last-reviewed: 2026-08-20 — refined — R5 restated as the attribute `reason =` mechanism enforced by tools/tripwires.sh; the prior wording required a source comment, an artefact the no-non-doc-comment house rule forbids
+Last-reviewed: 2026-08-28 — refined — added R6 stating the inner-attribute `dead_code` suppression invariant enforced by dead-code-inner-suppression-tripwire (RST-0007:R2/R5)
 Tier: B
 Status: Accepted
 
@@ -41,6 +41,12 @@ R5 [6]: Per-site suppression uses `#[expect(clippy::lint, reason =
   "...")]`, or `#[allow(clippy::lint, reason = "...")]` where the
   expectation would be unfulfilled; the `reason` argument carries the
   justification. Blanket module-level allows are not permitted
+R6 [5]: Rust sources under `crates/*/src` MUST NOT carry an inner
+  attribute `#![allow(dead_code)]` or `#![expect(dead_code)]`,
+  including `cfg_attr`-wrapped forms; outer item-level
+  `#[expect(dead_code, reason = "...")]` MAY suppress a specific item.
+  Enforced by the `dead-code-inner-suppression-tripwire` job in CI
+  (COM-0017:R4)
 
 ## Consequences
 
