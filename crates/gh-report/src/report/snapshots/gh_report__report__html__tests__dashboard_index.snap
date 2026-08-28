@@ -32,7 +32,7 @@ expression: "&pages[\"index.html\"]"
 
     <div class="scorecard">
         <div class="card health-score-card tier-warn" title="Geometric mean of measured control rates across six controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS, Archival Coverage. Unmeasured controls are excluded from each rate's denominator. Rewards balanced improvement across all controls.">
-            <p class="card-label">Org Governance</p>
+            <p class="card-label">Overall Organization Governance Score</p>
             <p class="card-value">68.8%</p>
             <div class="progress-bar">
                 <div class="progress-fill tier-warn w-70"></div>

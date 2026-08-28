@@ -666,8 +666,8 @@ fn render_dashboard_index_contains_health_score() {
     let index = &pages["index.html"];
 
     assert!(
-        index.contains("Org Governance"),
-        "index should contain the Org Governance card label"
+        index.contains("Overall Organization Governance Score"),
+        "index should contain the Overall Organization Governance Score card label"
     );
     assert!(
         !index.contains("Organisation Governance Score"),
@@ -736,8 +736,8 @@ fn render_dashboard_index_health_score_na_when_all_zero_denom() {
     let index = &pages["index.html"];
 
     assert!(
-        index.contains("Org Governance"),
-        "Org Governance card should still appear when N/A"
+        index.contains("Overall Organization Governance Score"),
+        "Overall Organization Governance Score card should still appear when N/A"
     );
     assert!(
         index.contains("tier-na"),

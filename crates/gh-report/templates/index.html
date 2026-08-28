@@ -15,7 +15,7 @@
 
     <div class="scorecard">
         <div class="card health-score-card {{ vm.health_tier.css_class() }}" title="Geometric mean of measured control rates across six controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS, Archival Coverage. Unmeasured controls are excluded from each rate's denominator. Rewards balanced improvement across all controls.">
-            <p class="card-label">Org Governance</p>
+            <p class="card-label">Overall Organization Governance Score</p>
             <p class="card-value">{{ vm.health_score_formatted }}</p>
             <div class="progress-bar">
                 <div class="progress-fill {{ vm.health_tier.css_class() }} {{ vm.health_width_class }}"></div>
