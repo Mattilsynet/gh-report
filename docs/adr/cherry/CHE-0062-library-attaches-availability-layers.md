@@ -12,30 +12,24 @@ References: CHE-0030, CHE-0049, SEC-0003, SEC-0012, AFM-0022
 
 ## Context
 
-CHE-0056 placed SEC-0003 R1–R3 enforcement (request body cap,
-ingestion-point backpressure, WebSocket connection cap) at the
-consumer. Its R5 named the supersession trigger verbatim:
+CHE-0056 placed SEC-0003 R1–R3 enforcement (body cap, backpressure, WS
+connection cap) at the consumer. R5 named the supersession trigger
+verbatim:
 
 > R5 [7]: When a third in-workspace consumer ships, this ADR is
 >   reviewed; if the consumer-side duplication becomes load-bearing
 >   (more than naming + sizing), supersede with an in-library binding
 >   per COM-0013:R4 reversibility
 
-Phase 2 v2 Track 4 (mission package
-`.ooda/mission-package-phase2-v2-track-4-1778929160.md`) consolidates
-gh-report onto cherry-pit-web. Track 4.1's diff inventory
-(`.ooda/gh-report-cherry-pit-web-gap.md`) tags `RequestBodyLimitLayer`,
-the `http_concurrency_limit` middleware, and the WS semaphore plumbing
-as (a) reusable upstream. The first consumer's duplication is already
-load-bearing — sizing knobs plus a `Semaphore` plumbed through two
-Extension layers — and Track 4.3 cannot delete it without leaving a
-SEC-0003 enforcement window. R5 fires.
+Track 4 consolidates gh-report onto cherry-pit-web; the first
+consumer's duplication is already load-bearing: sizing knobs plus a
+`Semaphore` through two Extension layers. Track 4.3 cannot delete it
+without opening a SEC-0003 window, so R5 fires.
 
-CHE-0056's Consequences were equally explicit on the inverse: "no
-`&ValidatedConfig` parameter on `build_router`, no config field on
-`AppState`, no second public builder." This ADR reverses the layer
-prohibitions while preserving that API-coupling intent via a
-different shape.
+CHE-0056 was equally explicit on the inverse: no `&ValidatedConfig`
+parameter, no config field on `AppState`, no second public builder.
+This ADR reverses those prohibitions while preserving the intent
+differently.
 
 ## Decision
 
@@ -129,62 +123,21 @@ Falsifier: a merged route accepting a body larger than `max_body_bytes`, or answ
 
 ## Consequences
 
-### On the `&ValidatedConfig` question (the load-bearing call)
+`LayerLimits` is library-owned, so no consumer config type crosses the
+boundary and future layers extend the struct rather than any consumer's
+schema. The cost is one struct construction per consumer.
 
-Two shapes satisfy the SEC-0003 obligation for items 3/4/5:
+CHE-0049:R1, R11, R12 remain ratified verbatim — `LayerLimits` is a
+non-generic value parameter. CHE-0049:R14 (`middleware`) is the home for
+the new helpers; CHE-0030:R1 requires a `pub use LayerLimits` in
+`lib.rs`.
 
-**(i) `&ValidatedConfig` on the builder.** cherry-pit-web takes a
-reference to gh-report's validated config (or a trait abstracting it)
-and reads sizing fields off it. Simple call site; one parameter.
+`max_ws_connections` moved to SEC-0012's `WsPolicy`: a WS cap without an
+origin policy is the omission U1 recorded, and the field was inert on the
+CQRS surface, which mounts no WS upgrade.
 
-**(ii) Per-layer numeric limits via a library-owned struct.**
-cherry-pit-web defines `LayerLimits { … }`; consumers construct it
-from any source. Library never sees the consumer's config type.
-
-This ADR takes **(ii)**. cherry-pit-web is shared across an unknown
-number of future consumers (CHE-0056:R5 explicitly anticipated
-multiplicity). Coupling its public signature to `&ValidatedConfig`
-forces every consumer to either name a type with that exact shape or
-pulls cherry-pit-web toward a `ValidatedConfigLike` trait whose
-surface drifts as consumer needs diverge — both outcomes move
-opinion-bearing schema into the library's contract, exactly the
-coupling CHE-0056:R1 was protecting against. By contrast a
-library-owned `LayerLimits` value type names *the sizing surface the
-library actually consumes* (two `NonZeroUsize`s) and nothing else; consumers
-retain full freedom over where those numbers come from. The
-API-ceremony cost is one extra struct construction per consumer —
-finite and lower than the long-term cognitive load of conforming to
-`ValidatedConfig`'s contract. Future layers extend the struct without
-touching any consumer's schema. Schema coupling outlives API surface
-noise, so (ii) wins on long-term cognitive load.
-
-### Other downstream effects
-
-R3 retains CHE-0056's narrowing intent verbatim in force: the
-unenforced-primitive stance moved from "no layers at all" to "no
-consumer-typed config at all", and the library still discharges its
-SEC-0003 obligation without adopting consumer schema opinion. What
-2026-08-27 adds is that a *library-owned* type is no more admissible
-than a consumer-owned one when it carries sizing R2's carriers own —
+R3 now also bars a *library-owned* config type carrying R2's sizing —
 `serve`'s `ValidatedConfig` was library-owned and still wrong.
-
-`max_ws_connections` left `LayerLimits` because a WS connection cap
-without an origin policy is precisely the omission U1 made: `serve`
-took the cap from `LayerLimits` and never took a policy, so no
-origin-strict WebSocket ran in production. See SEC-0012 Consequences
-for the taxonomy-cohesion reversal that motivates the fusion. The
-field had also been lying on the CQRS surface, which mounts no WS
-upgrade at all.
-
-CHE-0049:R1, R11, R12 (generic typed state, independent builders, no
-trait object) remain ratified verbatim — `LayerLimits` is a
-non-generic value parameter. CHE-0049:R14 (`middleware` private
-module) is the canonical home for the new helpers. CHE-0030:R1
-requires a `pub use LayerLimits` entry in `lib.rs`. The SEC-0003
-obligation against the merged binary surface is satisfied either way;
-this ADR moves the discharge point inside the library and eliminates
-the consumer-side duplication CHE-0056:R5 named as the supersession
-trigger.
 
 ## Falsifiers
 
@@ -204,10 +157,20 @@ schema-decoupling claim.
 
 ## Rejected Alternatives
 
-**`&ValidatedConfig` parameter (option i).** Couples cherry-pit-web's
-public signature to a consumer-defined type (or to a trait abstracting
-one). Rejected per the trade-off analysis above: schema coupling
-outlives API surface savings.
+**`&ValidatedConfig` parameter (option i).** cherry-pit-web takes a
+reference to the consumer's validated config (or a trait abstracting
+one) and reads sizing fields off it — one parameter, simple call site.
+Rejected because cherry-pit-web is shared across an unknown number of
+consumers (CHE-0056:R5 anticipated multiplicity): coupling its public
+signature to `&ValidatedConfig` either forces every consumer to name a
+type of that exact shape, or pulls the library toward a
+`ValidatedConfigLike` trait whose surface drifts as consumer needs
+diverge. Both move opinion-bearing schema into the library's contract —
+precisely the coupling CHE-0056:R1 protected against. A library-owned
+`LayerLimits` instead names exactly the sizing surface the library
+consumes (two `NonZeroUsize`s) and nothing else, leaving consumers free
+over where those numbers come from. Schema coupling outlives API
+surface savings.
 
 **Builder pattern (`Builder::with_body_limit(n).build()`).** Adds API
 surface (one type plus N setter methods plus a terminal `build`) for
