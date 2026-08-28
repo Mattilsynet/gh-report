@@ -143,6 +143,17 @@ check_non_exhaustive() {
 # The invariant-match half (does the cited rule's text actually state
 # the invariant) is not mechanically decidable and stays code-review
 # tier per RST-0007:R7.
+# Second half (ghr-xaoyd): R2 also requires every gate to name AT LEAST
+# ONE rule id. Validating only the ids that happen to be present let a
+# zero-citation gate pass vacuously — exactly how
+# dead-code-inner-suppression-tripwire stayed green while violating R2.
+# Every job under jobs: must therefore carry a PREFIX-NNNN:RN token on
+# one of its own step `- name:` lines. Per RST-0007:R3 the job `name:`
+# is deliberately NOT consulted: the citation must not live there.
+# Fail-open guard, per check_adr_number_collision: the job enumeration
+# is asserted to return a plausible non-zero count before the assertion
+# runs — a parser that matches nothing would exit 0 forever and is
+# worse than no check.
 check_gate_citation() {
   local fail=0
   local tokens
@@ -167,6 +178,45 @@ check_gate_citation() {
       fi
     done
   done <<< "$tokens"
+
+  local job_report
+  job_report=$(awk '
+    /^jobs:[[:space:]]*$/ { injobs = 1; next }
+    injobs == 0 { next }
+    /^[^[:space:]#]/ { injobs = 0; next }
+    /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
+      if (job != "") printf "%s\t%d\t%d\n", job, cited, steps
+      job = $0
+      sub(/^  /, "", job)
+      sub(/:[[:space:]]*$/, "", job)
+      cited = 0
+      steps = 0
+      next
+    }
+    job != "" && /^[[:space:]]*- name:/ {
+      steps++
+      if ($0 ~ /[A-Z][A-Z][A-Z]?[A-Z]?-[0-9][0-9][0-9][0-9]:R[0-9]/) cited = 1
+    }
+    END { if (job != "") printf "%s\t%d\t%d\n", job, cited, steps }
+  ' .github/workflows/ci-reusable.yml)
+
+  local job_count step_total
+  job_count=$(printf '%s\n' "$job_report" | grep -c . || true)
+  step_total=$(printf '%s\n' "$job_report" | awk -F'\t' '{s += $3} END {print s + 0}')
+  if [ "$job_count" -eq 0 ] || [ "$step_total" -eq 0 ]; then
+    echo "::error::gate-citation: enumerated ${job_count} job(s) and ${step_total} step name(s) from .github/workflows/ci-reusable.yml — fail-open guard tripped, refusing to pass silently (RST-0007:R7)"
+    return 1
+  fi
+
+  local job_id job_cited
+  while IFS=$'\t' read -r job_id job_cited _; do
+    [ -z "$job_id" ] && continue
+    if [ "$job_cited" -eq 0 ]; then
+      echo "::error::gate-citation: job ${job_id} cites no ADR rule id on any of its step name: lines — every merge gate MUST name at least one rule it enforces (RST-0007:R2+R7)"
+      fail=1
+    fi
+  done <<< "$job_report"
+
   return $fail
 }
 
