@@ -338,6 +338,13 @@ impl CommandRouter for InMemRouter {
     type Gateway = InMemGateway;
     type Wire = CounterWire;
 
+    fn target_aggregate_id(wire: &Self::Wire) -> Option<AggregateId> {
+        match wire {
+            CounterWire::Create { .. } => None,
+            CounterWire::Increment { target, .. } => NonZeroU64::new(*target).map(AggregateId::new),
+        }
+    }
+
     async fn dispatch(
         &self,
         gateway: &Self::Gateway,

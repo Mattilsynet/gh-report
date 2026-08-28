@@ -122,6 +122,7 @@ use crate::state::AppState;
 ///     async fn dispatch(&self, _: &G, _: CorrelationContext, _: Option<IdempotencyKey>, _: W)
 ///         -> Result<DispatchOutcome, ErrorEnvelope>
 ///     { Ok(DispatchOutcome::Sent) }
+///     fn target_aggregate_id(_: &W) -> Option<AggregateId> { None }
 /// }
 ///
 /// let state = AppState::new(G, S, R);
@@ -221,17 +222,45 @@ where
     }
 }
 
+/// Outcome of resolving the URL path aggregate id against the wire
+/// DTO's own declared target on the send path.
+///
+/// Three states, no boolean: absence of a body target is its own
+/// variant, so it cannot collapse into agreement. A caller must name
+/// every arm to consume this, which is what keeps
+/// [`send_handler`] from failing open on an unverifiable request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PathBodyAgreement {
+    /// Both authorities name the same aggregate.
+    Agrees,
+    /// Both name an aggregate, and they differ.
+    Mismatch,
+    /// The wire DTO names no aggregate, so the path id is
+    /// unconfirmable — not confirmed.
+    BodyDeclaresNoTarget,
+}
+
+impl PathBodyAgreement {
+    fn resolve(path: AggregateId, body: Option<AggregateId>) -> Self {
+        match body {
+            Some(target) if target == path => Self::Agrees,
+            Some(_) => Self::Mismatch,
+            None => Self::BodyDeclaresNoTarget,
+        }
+    }
+}
+
 /// `POST /v1/aggregates/:id/commands` — send handler.
 ///
-/// The path `:id` is parsed but not currently propagated into the
-/// router signature — CHE-0050 R1 fixes the `dispatch` shape and the
-/// wire DTO is expected to carry whatever target id the consumer's
-/// `Command` requires. The `Path` extractor remains so the route
-/// pattern is honoured and a malformed `:id` still 400s before
-/// reaching the router.
+/// The path `:id` and the wire DTO are two potential authorities over
+/// one aggregate identity. This handler resolves them against each
+/// other via [`PathBodyAgreement`] and dispatches only on
+/// [`PathBodyAgreement::Agrees`], so neither authority can silently
+/// win. Status for a disagreement is selected here, never in
+/// [`CommandRouter::dispatch`] (CHE-0050:R3).
 async fn send_handler<G, S, R>(
     State(state): State<AppState<G, S, R>>,
-    Path(_id): Path<String>,
+    Path(id): Path<NonZeroU64>,
     headers: HeaderMap,
     Json(wire): Json<R::Wire>,
 ) -> axum::response::Response
@@ -242,6 +271,28 @@ where
 {
     let ctx = extract_correlation(&headers);
     let echo = ctx.clone();
+
+    let refusal =
+        match PathBodyAgreement::resolve(AggregateId::new(id), R::target_aggregate_id(&wire)) {
+            PathBodyAgreement::Agrees => None,
+            PathBodyAgreement::Mismatch => Some(ErrorBody {
+                code: "path_body_target_mismatch",
+                message: "path aggregate id disagrees with the command's target aggregate"
+                    .to_string(),
+                correlation_id: None,
+            }),
+            PathBodyAgreement::BodyDeclaresNoTarget => Some(ErrorBody {
+                code: "path_body_target_absent",
+                message: "command names no target aggregate, so the path aggregate id \
+                      cannot be confirmed"
+                    .to_string(),
+                correlation_id: None,
+            }),
+        };
+    if let Some(body) = refusal {
+        return (StatusCode::BAD_REQUEST, Json(body.with_correlation(&echo))).into_response();
+    }
+
     let idempotency = extract_idempotency_key(&headers);
     let outcome = state
         .router()

@@ -130,6 +130,8 @@ enum StubWire {
     Send,
     /// Resolves to `Err` via `map_dispatch_error(&Rejected(_))` — 422.
     RejectMe,
+    /// Carries no target aggregate id at all.
+    Untargeted,
 }
 
 #[derive(Clone)]
@@ -138,6 +140,15 @@ struct StubRouter;
 impl CommandRouter for StubRouter {
     type Gateway = StubGateway;
     type Wire = StubWire;
+
+    fn target_aggregate_id(wire: &Self::Wire) -> Option<AggregateId> {
+        match wire {
+            StubWire::Create | StubWire::Send | StubWire::RejectMe => {
+                Some(AggregateId::new(NonZeroU64::new(1).unwrap()))
+            }
+            StubWire::Untargeted => None,
+        }
+    }
 
     async fn dispatch(
         &self,
@@ -150,7 +161,7 @@ impl CommandRouter for StubRouter {
             StubWire::Create => Ok(DispatchOutcome::Created {
                 aggregate_id: AggregateId::new(NonZeroU64::new(1).unwrap()),
             }),
-            StubWire::Send => Ok(DispatchOutcome::Sent),
+            StubWire::Send | StubWire::Untargeted => Ok(DispatchOutcome::Sent),
             StubWire::RejectMe => {
                 let err: DispatchError<RejectErr> = DispatchError::Rejected(RejectErr("nope"));
                 Err(map_dispatch_error(&err))
@@ -292,5 +303,77 @@ async fn misroute_body_elides_correlation_id_when_the_request_carries_none() {
     assert!(
         !body.contains("correlation_id"),
         "CHE-0039 R2 forbids synthesising a correlation id: {body}"
+    );
+}
+
+#[tokio::test]
+async fn send_endpoint_rejects_a_path_id_that_disagrees_with_the_body_target() {
+    let response = app()
+        .oneshot(json_post("/v1/aggregates/999/commands", &StubWire::Send))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "path id 999 disagrees with the body target 1 and must be rejected"
+    );
+    let body = body_string(response).await;
+    assert!(
+        body.contains(r#""code":"path_body_target_mismatch""#),
+        "mismatch must carry its own stable code: {body}"
+    );
+}
+
+#[tokio::test]
+async fn send_endpoint_rejects_a_body_that_declares_no_target() {
+    let response = app()
+        .oneshot(json_post(
+            "/v1/aggregates/1/commands",
+            &StubWire::Untargeted,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "an absent body target is unverifiable, not verified; it must not fail open"
+    );
+    let body = body_string(response).await;
+    assert!(
+        body.contains(r#""code":"path_body_target_absent""#),
+        "absent target must be distinguishable from a mismatch: {body}"
+    );
+}
+
+#[tokio::test]
+async fn send_endpoint_rejects_a_non_numeric_path_id() {
+    let response = app()
+        .oneshot(json_post(
+            "/v1/aggregates/not-a-number/commands",
+            &StubWire::Send,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "a malformed :id must 400 in the extractor before the router runs"
+    );
+}
+
+#[tokio::test]
+async fn send_endpoint_rejects_a_zero_path_id() {
+    let response = app()
+        .oneshot(json_post("/v1/aggregates/0/commands", &StubWire::Send))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "CHE-0011:R2 puts the zero-check at the integer-entry boundary"
     );
 }

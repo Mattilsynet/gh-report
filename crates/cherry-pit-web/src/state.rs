@@ -98,6 +98,7 @@ use crate::command_router::CommandRouter;
 ///     async fn dispatch(&self, _: &G, _: CorrelationContext, _: Option<IdempotencyKey>, _: W)
 ///         -> Result<DispatchOutcome, ErrorEnvelope>
 ///     { Ok(DispatchOutcome::Sent) }
+///     fn target_aggregate_id(_: &W) -> Option<AggregateId> { None }
 /// }
 ///
 /// // Construct AppState by value — CHE-0049 R1 + CHE-0050 R2.
