@@ -123,8 +123,8 @@ check_dead_code_suppression() {
     '#!\[.*(allow|expect)\(.*\bdead_code\b' \
     crates/*/src || true)
   if [ -n "$offenders" ]; then
-    echo "::error::crate/module-level inner dead_code suppression is banned in crates/*/src"
-    echo "::error::use a targeted OUTER item-level #[expect(dead_code, reason=\"...\")] instead, or delete/cfg-gate the dead item"
+    echo "::error::crate/module-level inner dead_code suppression is banned in crates/*/src (RST-0003:R6)"
+    echo "::error::use a targeted OUTER item-level #[expect(dead_code, reason=\"...\")] instead, or delete/cfg-gate the dead item (RST-0003:R6)"
     echo "$offenders"
     return 1
   fi
