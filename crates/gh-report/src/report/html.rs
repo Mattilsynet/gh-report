@@ -154,7 +154,17 @@ const CONTROL_NAMES: &[&str] = &[
     "branch_protection",
 ];
 
-/// All 6 security controls used for the per-owner Team Health score geometric mean.
+/// The 6 of the 7 per-owner Team Health controls whose rates are READ from
+/// [`OwnerMetrics::per_control_coverage`].
+///
+/// The seventh control, [`NON_ORPHANED_CONTROL`], is deliberately absent from
+/// this list and is never a key of that map. It is computed by
+/// [`AttributedOwner`] from render-time orphan attribution, which both
+/// [`build_owners_view_model`] and [`build_owner_detail_view_models`]
+/// structurally require by accepting only that type. Absence from a
+/// string-keyed map is therefore not a representable state for the seventh
+/// control, and no caller can silently fall back to a six-control Team
+/// Health score.
 ///
 /// Excludes `codeowners` — it is tautological at the per-owner level because
 /// repos are associated with owners via CODEOWNERS parsing, so every owner's
@@ -164,8 +174,14 @@ const CONTROL_NAMES: &[&str] = &[
 /// by [`enrich_owner_metrics_with_lifecycle`] that measure repo freshness
 /// and secret scanning cleanliness per owner.
 ///
+/// This plus [`NON_ORPHANED_CONTROL`] is the OWNER-level set of seven. The
+/// ORG-level governance set is a different, six-control set (it keeps
+/// `codeowners` and `archival_coverage`, and has no per-owner orphan
+/// attribution to draw on).
+///
+/// [`OwnerMetrics::per_control_coverage`]: crate::domain::metrics::OwnerMetrics::per_control_coverage
 /// [`enrich_owner_metrics_with_lifecycle`]: crate::aggregate::metrics::enrich_owner_metrics_with_lifecycle
-const SEC_SCORE_CONTROLS: &[&str] = &[
+const SEC_SCORE_MAP_CONTROLS: &[&str] = &[
     "security_policy",
     "secret_scanning",
     "dependabot_security_updates",
@@ -173,6 +189,17 @@ const SEC_SCORE_CONTROLS: &[&str] = &[
     "non_stale",
     "alert_free",
 ];
+
+/// The seventh per-owner Team Health control: computed render-side from the
+/// same CODEOWNERS/roster orphan-attribution join that builds the orphans
+/// page (CHE-0089:R4), never collected and never persisted.
+///
+/// This key names the control for [`ControlCell`] exclusion lookup and card
+/// identity only; it is never used to look a rate up in
+/// [`OwnerMetrics::per_control_coverage`].
+///
+/// [`OwnerMetrics::per_control_coverage`]: crate::domain::metrics::OwnerMetrics::per_control_coverage
+const NON_ORPHANED_CONTROL: &str = "non_orphaned";
 
 /// Percent-encoding set for URL path segments.
 ///
@@ -281,14 +308,15 @@ pub fn render_dashboard_streaming(
     let tiers = &config.tiers;
     let warm_start = evidence.assessment_metadata.warm_start;
 
-    let owners_vm = build_owners_view_model(&evidence.metrics.owner_metrics, tiers);
-
     let orphaned_vm = build_orphaned_view_model(
         &evidence.repositories,
         &evidence.assessment_metadata.organization,
         &evidence.assessment_metadata.run_timestamp,
         &evidence.metrics.team_rosters,
     );
+    let attributed_owners =
+        AttributedOwner::attribute_all(&evidence.metrics.owner_metrics, &orphaned_vm.by_team);
+    let owners_vm = build_owners_view_model(&attributed_owners, tiers);
     let orphaned_count = orphaned_vm.orphaned_count;
     let deleted_vm = build_deleted_view_model(
         &evidence.deleted,
@@ -348,12 +376,15 @@ pub fn render_dashboard_streaming(
 
     if let Some(ref owners) = owners_vm {
         render_owner_pages(
-            evidence,
-            tiers,
-            owners,
-            &orphaned_vm,
-            nav.clone(),
-            warm_start,
+            OwnerPagesParams {
+                evidence,
+                tiers,
+                owners,
+                attributed_owners: &attributed_owners,
+                orphaned_vm: &orphaned_vm,
+                nav: nav.clone(),
+                warm_start,
+            },
             &mut sink,
         )?;
     }
@@ -416,6 +447,17 @@ fn render_secondary_pages(
     Ok(())
 }
 
+/// Everything [`render_owner_pages`] needs beyond its output sink.
+struct OwnerPagesParams<'a> {
+    evidence: &'a Evidence,
+    tiers: &'a CoverageTiers,
+    owners: &'a OwnersViewModel,
+    attributed_owners: &'a [AttributedOwner<'a>],
+    orphaned_vm: &'a OrphanedViewModel,
+    nav: TopNav,
+    warm_start: bool,
+}
+
 /// Render `owners.html` and every `owners/{slug}.html` detail page.
 ///
 /// Split out of [`render_dashboard_streaming`] to keep that function under
@@ -425,14 +467,18 @@ fn render_secondary_pages(
 ///
 /// Returns [`ReportError::TemplateRenderFailed`] if any template rendering fails.
 fn render_owner_pages(
-    evidence: &Evidence,
-    tiers: &CoverageTiers,
-    owners: &OwnersViewModel,
-    orphaned_vm: &OrphanedViewModel,
-    nav: TopNav,
-    warm_start: bool,
+    params: OwnerPagesParams<'_>,
     sink: &mut impl FnMut(String, String),
 ) -> Result<(), ReportError> {
+    let OwnerPagesParams {
+        evidence,
+        tiers,
+        owners,
+        attributed_owners,
+        orphaned_vm,
+        nav,
+        warm_start,
+    } = params;
     let owners_html = render_template(&OwnersTemplate {
         vm: owners,
         total_repos: evidence.collection_statistics.total_repos,
@@ -456,7 +502,7 @@ fn render_owner_pages(
         orphaned_by_team: &orphaned_vm.by_team,
         governance_link: governance_link.as_ref(),
     };
-    let detail_vms = build_owner_detail_view_models(&evidence.metrics.owner_metrics, &ctx);
+    let detail_vms = build_owner_detail_view_models(attributed_owners, &ctx);
     let nested_nav = TopNav {
         base: "../",
         dashboard_href: DashboardHref::Nested,
@@ -527,20 +573,85 @@ fn build_top_security_teams(owners: &OwnersViewModel) -> Vec<TopSecurityTeam> {
         .collect()
 }
 
-/// Build the owners overview view model from per-owner metrics.
+/// One owner's [`OwnerMetrics`] joined, at render time, to the orphan
+/// attribution that backs the seventh Team Health control.
 ///
-/// Returns `None` if no owner metrics are available.
+/// This is the render-ready owner type: it is the ONLY input accepted by
+/// [`build_owners_view_model`] and [`build_owner_detail_view_models`], and
+/// it can only be built through [`AttributedOwner::attribute_all`], which
+/// requires the orphan attribution alongside the metrics. `non_orphaned` is
+/// therefore a required field rather than a fallible lookup, so a
+/// six-control Team Health score is not a representable state and no caller
+/// can silently produce one while the copy promises seven controls.
+///
+/// Borrowing `metrics` keeps the persisted
+/// [`crate::domain::evidence::Evidence`] unmutated (CHE-0089:R4); the joined
+/// rate lives only for the duration of a render.
+///
+/// [`OwnerMetrics`]: crate::domain::metrics::OwnerMetrics
+struct AttributedOwner<'a> {
+    metrics: &'a crate::domain::metrics::OwnerMetrics,
+    non_orphaned: crate::domain::metrics::RateMetric,
+}
+
+impl<'a> AttributedOwner<'a> {
+    /// Join every owner to its render-time orphan attribution.
+    ///
+    /// `non_orphaned` is `owned / (owned + attributed)`, where `owned` is the
+    /// count of repos the owner owns through CODEOWNERS
+    /// ([`OwnerMetrics::total_repos`]) and `attributed` is the count of orphan
+    /// repos — repos with no CODEOWNERS owner at all — that the render-time
+    /// last-committer/roster join attributed to that owner. The rate RISES as
+    /// an owner's repos gain real CODEOWNERS ownership, which is what makes it
+    /// a valid higher-is-better control alongside [`SEC_SCORE_MAP_CONTROLS`].
+    ///
+    /// An owner with no attributed orphans scores 1.0 — a measured full
+    /// rate, not a missing control.
+    ///
+    /// [`OwnerMetrics::total_repos`]: crate::domain::metrics::OwnerMetrics::total_repos
+    fn attribute_all(
+        owner_metrics: &'a [crate::domain::metrics::OwnerMetrics],
+        orphaned_by_team: &[OrphanedTeamGroup],
+    ) -> Vec<Self> {
+        owner_metrics
+            .iter()
+            .map(|metrics| {
+                let attributed = orphaned_by_team
+                    .iter()
+                    .find(|group| group.team.eq_ignore_ascii_case(&metrics.owner))
+                    .map_or(0, |group| {
+                        u32::try_from(group.rows.len()).unwrap_or(u32::MAX)
+                    });
+                let owned = metrics.total_repos;
+                Self {
+                    metrics,
+                    non_orphaned: crate::domain::metrics::RateMetric::new(
+                        owned,
+                        owned.saturating_add(attributed),
+                    ),
+                }
+            })
+            .collect()
+    }
+}
+
+/// Build the owners overview view model from render-ready owners.
+///
+/// Accepting only [`AttributedOwner`] is what guarantees the seventh Team
+/// Health control is always present.
+///
+/// Returns `None` if no owners are available.
 fn build_owners_view_model(
-    owner_metrics: &[crate::domain::metrics::OwnerMetrics],
+    attributed_owners: &[AttributedOwner<'_>],
     tiers: &CoverageTiers,
 ) -> Option<OwnersViewModel> {
-    if owner_metrics.is_empty() {
+    if attributed_owners.is_empty() {
         return None;
     }
 
-    let owners: Vec<String> = owner_metrics
+    let owners: Vec<String> = attributed_owners
         .iter()
-        .map(|m| m.display_name.clone())
+        .map(|o| o.metrics.display_name.clone())
         .collect();
     let slugs = crate::report::view_model::generate_unique_slugs(&owners);
 
@@ -552,9 +663,10 @@ fn build_owners_view_model(
         })
         .collect();
 
-    let rows: Vec<OwnerOverviewRow> = owner_metrics
+    let rows: Vec<OwnerOverviewRow> = attributed_owners
         .iter()
-        .map(|m| {
+        .map(|o| {
+            let m = o.metrics;
             let slug = slugs
                 .get(&m.display_name)
                 .cloned()
@@ -572,10 +684,11 @@ fn build_owners_view_model(
                 })
                 .collect();
 
-            let sec_rates: Vec<Option<f64>> = SEC_SCORE_CONTROLS
+            let mut sec_rates: Vec<Option<f64>> = SEC_SCORE_MAP_CONTROLS
                 .iter()
                 .map(|&key| m.per_control_coverage.get(key).and_then(|rm| rm.rate))
                 .collect();
+            sec_rates.push(o.non_orphaned.rate);
             let sec_score = compute_health_score(&sec_rates);
             let sec_score_formatted = match sec_score {
                 Some(s) => format!("{s:.1}%"),
@@ -640,7 +753,34 @@ fn build_control_cell(
     key: &str,
     tiers: &CoverageTiers,
 ) -> ControlCell {
-    let rate_metric = per_control_coverage.get(key);
+    control_cell(
+        per_control_coverage.get(key),
+        score_exclusion_counts,
+        key,
+        tiers,
+    )
+}
+
+/// Build a [`ControlCell`] from a rate this caller already holds.
+///
+/// Used for [`NON_ORPHANED_CONTROL`], whose rate comes from
+/// [`AttributedOwner::non_orphaned`] rather than from a string-keyed map, so
+/// "no such key" is not a reachable state for it.
+fn required_control_cell(
+    rate_metric: &crate::domain::metrics::RateMetric,
+    score_exclusion_counts: &[ScoreExclusionCount],
+    key: &str,
+    tiers: &CoverageTiers,
+) -> ControlCell {
+    control_cell(Some(rate_metric), score_exclusion_counts, key, tiers)
+}
+
+fn control_cell(
+    rate_metric: Option<&crate::domain::metrics::RateMetric>,
+    score_exclusion_counts: &[ScoreExclusionCount],
+    key: &str,
+    tiers: &CoverageTiers,
+) -> ControlCell {
     let rate = rate_metric.and_then(|rm| rm.rate);
     let formatted = rate_metric.map_or_else(|| "N/A".to_string(), ToString::to_string);
     let table_formatted = rate_metric.map_or_else(
@@ -809,16 +949,16 @@ struct OwnerDetailBuildContext<'a> {
 ///
 /// Returns a list of (slug, detail view model) pairs.
 fn build_owner_detail_view_models(
-    owner_metrics: &[crate::domain::metrics::OwnerMetrics],
+    attributed_owners: &[AttributedOwner<'_>],
     ctx: &OwnerDetailBuildContext<'_>,
 ) -> Vec<(String, OwnerDetailViewModel)> {
-    if owner_metrics.is_empty() {
+    if attributed_owners.is_empty() {
         return Vec::new();
     }
 
-    let owners: Vec<String> = owner_metrics
+    let owners: Vec<String> = attributed_owners
         .iter()
-        .map(|m| m.display_name.clone())
+        .map(|o| o.metrics.display_name.clone())
         .collect();
     let slugs = crate::report::view_model::generate_unique_slugs(&owners);
 
@@ -830,12 +970,12 @@ fn build_owner_detail_view_models(
         })
         .collect();
 
-    owner_metrics
+    attributed_owners
         .iter()
-        .filter_map(|m| {
-            let slug = slugs.get(&m.display_name)?.clone();
+        .filter_map(|o| {
+            let slug = slugs.get(&o.metrics.display_name)?.clone();
             Some(build_one_owner_detail_view_model(
-                m,
+                o,
                 slug,
                 &control_columns,
                 ctx,
@@ -848,11 +988,12 @@ fn build_owner_detail_view_models(
 /// out of [`build_owner_detail_view_models`] to keep both functions under
 /// the pedantic line-count bar).
 fn build_one_owner_detail_view_model(
-    m: &crate::domain::metrics::OwnerMetrics,
+    owner: &AttributedOwner<'_>,
     slug: String,
     control_columns: &[ControlColumn],
     ctx: &OwnerDetailBuildContext<'_>,
 ) -> (String, OwnerDetailViewModel) {
+    let m = owner.metrics;
     let summary_cards: Vec<SummaryCard> = CONTROL_NAMES
         .iter()
         .map(|&key| SummaryCard {
@@ -892,6 +1033,12 @@ fn build_one_owner_detail_view_model(
         &m.per_control_coverage,
         &m.score_exclusion_counts,
         "non_stale",
+        ctx.tiers,
+    );
+    let non_orphaned_cell = required_control_cell(
+        &owner.non_orphaned,
+        &m.score_exclusion_counts,
+        NON_ORPHANED_CONTROL,
         ctx.tiers,
     );
 
@@ -934,6 +1081,7 @@ fn build_one_owner_detail_view_model(
         summary_cards,
         has_stale_repos,
         non_stale_cell,
+        non_orphaned_cell,
         roster,
         github_url,
         security_url,

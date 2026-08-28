@@ -397,6 +397,17 @@ pub struct OwnerDetailViewModel {
     /// public and independently assignable, so this is single-constructor
     /// consolidation, not a type-level guarantee of agreement.
     pub non_stale_cell: ControlCell,
+    /// Orphan-ownership control cell for the "Non-Orphaned Repos" card —
+    /// the `non_orphaned` per-control coverage rate
+    /// `owned / (owned + attributed)`, the same value that feeds this
+    /// owner's Team Health score.
+    ///
+    /// `owned` counts this owner's CODEOWNERS-owned repos; `attributed`
+    /// counts orphan repos (no CODEOWNERS owner at all) that the
+    /// render-time last-committer/roster join attributed to this owner.
+    /// The rate therefore rises as ownership improves. Computed render-side
+    /// on every render (CHE-0089:R4) and never persisted.
+    pub non_orphaned_cell: ControlCell,
     /// Team member roster section (B1, CHE-0082:R5). Always one of three
     /// distinct visible states — see [`RosterSection`] — never a silent
     /// `None` omission.
