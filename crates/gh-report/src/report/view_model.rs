@@ -387,16 +387,16 @@ pub struct OwnerDetailViewModel {
     pub summary_cards: Vec<SummaryCard>,
     /// Whether any repo row is flagged as stale (drives footnote rendering).
     pub has_stale_repos: bool,
-    /// Number of stale repos for this owner (`updated_at` > 2 years before report date).
-    pub stale_repo_count: u32,
-    /// Total number of repos for this owner (for the card denominator).
-    pub total_repo_count: u32,
-    /// CSS width class for the stale repos progress bar.
+    /// Freshness control cell for the "Non-Stale Repos" card — the
+    /// `non_stale` per-control coverage rate `(total - stale) / total`,
+    /// the same value that feeds this owner's Team Health score.
     ///
-    /// Represents the proportion of stale repos relative to total repos
-    /// for this owner — distinct from the org-level stale rate on the
-    /// dashboard which measures archival coverage.
-    pub stale_width_class: &'static str,
+    /// A single cell rather than separate count/total/width fields, so the
+    /// card value, tier and progress-bar width are all produced by one
+    /// `build_control_cell` call from one rate. `ControlCell`'s fields stay
+    /// public and independently assignable, so this is single-constructor
+    /// consolidation, not a type-level guarantee of agreement.
+    pub non_stale_cell: ControlCell,
     /// Team member roster section (B1, CHE-0082:R5). Always one of three
     /// distinct visible states — see [`RosterSection`] — never a silent
     /// `None` omission.

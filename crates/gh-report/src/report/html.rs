@@ -888,16 +888,12 @@ fn build_one_owner_detail_view_model(
     let owner_type_label = m.owner_type.to_string();
 
     let has_stale_repos = repo_rows.iter().any(|r| r.is_stale);
-    let stale_repo_count =
-        u32::try_from(repo_rows.iter().filter(|r| r.is_stale).count()).unwrap_or(u32::MAX);
-    let total_repo_count = u32::try_from(repo_rows.len()).unwrap_or(u32::MAX);
-
-    let stale_pct = if total_repo_count == 0 {
-        None
-    } else {
-        Some((f64::from(stale_repo_count) / f64::from(total_repo_count)) * 100.0)
-    };
-    let stale_width_class = rate_to_width_class(stale_pct);
+    let non_stale_cell = build_control_cell(
+        &m.per_control_coverage,
+        &m.score_exclusion_counts,
+        "non_stale",
+        ctx.tiers,
+    );
 
     let roster_entry = ctx
         .team_rosters
@@ -937,9 +933,7 @@ fn build_one_owner_detail_view_model(
         control_columns: control_columns.to_vec(),
         summary_cards,
         has_stale_repos,
-        stale_repo_count,
-        total_repo_count,
-        stale_width_class,
+        non_stale_cell,
         roster,
         github_url,
         security_url,

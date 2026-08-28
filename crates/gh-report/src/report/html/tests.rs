@@ -4359,8 +4359,8 @@ fn render_owner_detail_html_repo_posture_tooltip_states_formula_and_exclusion_ru
 }
 
 #[test]
-fn render_owner_detail_html_stale_repos_card_disambiguates_freshness_from_archival_coverage() {
-    let evidence = evidence_with_owner_repos();
+fn render_owner_detail_html_non_stale_repos_card_disambiguates_freshness_from_archival_coverage() {
+    let evidence = evidence_with_mixed_owner_types();
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
 
     let detail_page = pages
@@ -4370,20 +4370,139 @@ fn render_owner_detail_html_stale_repos_card_disambiguates_freshness_from_archiv
         .1;
 
     assert!(
-        detail_page.contains("Stale Repos"),
-        "Stale Repos card label must be unchanged (no value/label change for this card)"
+        detail_page.contains("card-label\">Non-Stale Repos"),
+        "the card label must be the positive 'Non-Stale Repos'; detail page:\n{detail_page}"
     );
     assert!(
+        !detail_page.contains("card-label\">Stale Repos"),
+        "the old negative 'Stale Repos' card label must be gone (substring of the new label, so assert the full label boundary)"
+    );
+
+    let card_block = detail_page
+        .split("card-label\">Non-Stale Repos")
+        .nth(1)
+        .expect("Non-Stale Repos card block")
+        .split("</div>")
+        .next()
+        .expect("card block body");
+    assert!(
+        card_block.contains('%'),
+        "the Non-Stale Repos card value must be a percentage, not a bare count; card block:\n{card_block}"
+    );
+
+    assert!(
         detail_page.contains("(total - stale) / total"),
-        "Stale Repos card tooltip must state the Freshness control's exact formula; detail page:\n{detail_page}"
+        "Non-Stale Repos card tooltip must state the Freshness control's exact formula; detail page:\n{detail_page}"
     );
     assert!(
         detail_page.contains("Freshness"),
-        "Stale Repos card tooltip must name the Freshness control it disambiguates from"
+        "Non-Stale Repos card tooltip must name the Freshness control it disambiguates from"
     );
     assert!(
         detail_page.contains("Distinct from the org-wide Archival Coverage"),
-        "Stale Repos card tooltip must explicitly disambiguate from the org-level Archival Coverage metric"
+        "Non-Stale Repos card tooltip must explicitly disambiguate from the org-level Archival Coverage metric"
+    );
+}
+
+fn evidence_with_enriched_single_team_owner() -> Evidence {
+    let repos = vec![test_fixtures::make_repository_evidence(
+        "fresh-team-repo",
+        Visibility::Public,
+        false,
+        test_fixtures::make_checks(
+            test_fixtures::policy_pass_setting(),
+            test_fixtures::secret_enabled_observable(false),
+            test_fixtures::dependabot_enabled(),
+            test_fixtures::branch_pass(),
+            test_fixtures::codeowners_with_owners(&["@org/fresh-team"]),
+        ),
+    )];
+
+    let mut metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
+    crate::aggregate::metrics::enrich_owner_metrics_with_lifecycle(
+        &mut metrics.owner_metrics,
+        &repos,
+        &test_fixtures::make_timestamp(),
+    );
+    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
+
+    test_fixtures::make_full_evidence(
+        test_fixtures::make_metadata(),
+        stats,
+        metrics,
+        test_fixtures::make_observability(),
+        repos,
+    )
+}
+
+fn owner_detail_card_block<'page>(detail_page: &'page str, card_label: &str) -> &'page str {
+    let needle = format!("card-label\">{card_label} ");
+    let label_at = detail_page
+        .find(&needle)
+        .unwrap_or_else(|| panic!("expected a '{card_label}' card; detail page:\n{detail_page}"));
+    let start = detail_page[..label_at]
+        .rfind("<div class=\"card")
+        .expect("card opening tag preceding the card label");
+
+    let rest = &detail_page[start..];
+    let mut depth = 0_usize;
+    let mut cursor = 0_usize;
+    let end = loop {
+        let next_open = rest[cursor..].find("<div").map(|at| cursor + at);
+        let next_close = rest[cursor..].find("</div>").map(|at| cursor + at);
+        match (next_open, next_close) {
+            (Some(open), Some(close)) if open < close => {
+                depth += 1;
+                cursor = open + "<div".len();
+            }
+            (_, Some(close)) => {
+                depth = depth
+                    .checked_sub(1)
+                    .expect("card markup closes more divs than it opens");
+                cursor = close + "</div>".len();
+                if depth == 0 {
+                    break cursor;
+                }
+            }
+            _ => panic!("card markup never closes; detail page:\n{detail_page}"),
+        }
+    };
+
+    &detail_page[start..start + end]
+}
+
+#[test]
+fn render_owner_detail_html_non_stale_repos_card_pins_enriched_rate_tier_and_width() {
+    let evidence = evidence_with_enriched_single_team_owner();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+    let detail_page = pages
+        .iter()
+        .find(|(k, _)| k.starts_with("owners/"))
+        .expect("expected an owner detail page")
+        .1;
+
+    let card = owner_detail_card_block(detail_page, "Non-Stale Repos");
+
+    assert!(
+        card.contains("<p class=\"card-value\">100.0% (1/1)</p>"),
+        "the enriched Non-Stale Repos card must render the reused non_stale RateMetric exactly as '100.0% (1/1)', not 'N/A' and not a bare count; card:\n{card}"
+    );
+    assert!(
+        card.contains("tier-pass"),
+        "a 100% non-stale rate must style as the positive tier-pass (polarity inverted from the old stale-count tier-warn); card:\n{card}"
+    );
+    assert!(
+        !card.contains("tier-warn"),
+        "a fully non-stale owner must not carry the negative tier-warn styling; card:\n{card}"
+    );
+    assert!(
+        card.contains("progress-fill tier-pass w-100"),
+        "the progress bar must be full width (w-100) and positively tiered for a 100% non-stale rate; card:\n{card}"
+    );
+    assert!(
+        !card.contains("N/A"),
+        "an enriched owner must never render N/A for the Non-Stale Repos card; card:\n{card}"
     );
 }
 

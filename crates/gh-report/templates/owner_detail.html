@@ -123,11 +123,11 @@
         </div>
         {% endif %}
         {% endfor %}
-        <div class="card{% if vm.stale_repo_count > 0 %} tier-warn{% endif %}">
-            <p class="card-label">Stale Repos {% call tooltip::tooltip("Repos not updated in 2+ years, out of this owner's total. The complement (total - stale) / total is this owner's Freshness rate, one of six controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.") %}{% endcall %}</p>
-            <p class="card-value">{{ vm.stale_repo_count }} / {{ vm.total_repo_count }}</p>
+        <div class="card {{ vm.non_stale_cell.tier.css_class() }}">
+            <p class="card-label">Non-Stale Repos {% call tooltip::tooltip("(total - stale) / total for this owner's repos — the share not stale, where stale means not updated in 2+ years. This is the owner's Freshness rate, one of six controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.") %}{% endcall %}</p>
+            <p class="card-value">{{ vm.non_stale_cell.rate_formatted }}</p>
             <div class="progress-bar">
-                <div class="progress-fill{% if vm.stale_repo_count > 0 %} tier-warn{% endif %} {{ vm.stale_width_class }}"></div>
+                <div class="progress-fill {{ vm.non_stale_cell.tier.css_class() }} {{ vm.non_stale_cell.width_class }}"></div>
             </div>
         </div>
     </div>

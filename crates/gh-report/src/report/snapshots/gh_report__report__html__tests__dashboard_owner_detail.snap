@@ -95,11 +95,11 @@ expression: "&pages[\"owners/org-team-a.html\"]"
         </a>
         
         
-        <div class="card">
-            <p class="card-label">Stale Repos <span class="tooltip-trigger" tabindex="0" data-tooltip="Repos not updated in 2+ years, out of this owner&#39;s total. The complement (total - stale) / total is this owner&#39;s Freshness rate, one of six controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.">ⓘ<span class="sr-only">Repos not updated in 2+ years, out of this owner&#39;s total. The complement (total - stale) / total is this owner&#39;s Freshness rate, one of six controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.</span></span></p>
-            <p class="card-value">0 / 2</p>
+        <div class="card tier-na">
+            <p class="card-label">Non-Stale Repos <span class="tooltip-trigger" tabindex="0" data-tooltip="(total - stale) / total for this owner&#39;s repos — the share not stale, where stale means not updated in 2+ years. This is the owner&#39;s Freshness rate, one of six controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.">ⓘ<span class="sr-only">(total - stale) / total for this owner&#39;s repos — the share not stale, where stale means not updated in 2+ years. This is the owner&#39;s Freshness rate, one of six controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.</span></span></p>
+            <p class="card-value">N/A</p>
             <div class="progress-bar">
-                <div class="progress-fill w-0"></div>
+                <div class="progress-fill tier-na w-0"></div>
             </div>
         </div>
     </div>
