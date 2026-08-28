@@ -1,7 +1,7 @@
 # CHE-0082. gh-report Collection Health Taxonomy
 
 Date: 2026-06-17
-Last-reviewed: 2026-08-19 — amended — R4/R5 conditioned the 404 genuine-absence conclusion on a generic observed authority signal, replacing the prior unconditional reading (evidence: ghr-d1176f2a)
+Last-reviewed: 2026-08-19 — refined — R4/R5 conditioned the 404 genuine-absence conclusion on a generic observed authority signal, replacing the prior unconditional reading (evidence: ghr-d1176f2a)
 Tier: B
 Status: Accepted
 Crates: gh-report
