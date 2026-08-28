@@ -163,9 +163,14 @@ pub struct OwnerOverviewRow {
     pub repo_count: u32,
     /// Per-control coverage cells.
     pub controls: Vec<ControlCell>,
-    /// Composite security score (geometric mean of 6 control rates, 0.1% floor):
-    /// `security_policy`, `secret_scanning`, `dependabot_security_updates`,
-    /// `branch_protection`, `non_stale`, `alert_free`.
+    /// Composite Team Health score (geometric mean of the owner-level set of
+    /// 7 control rates, 0.1% floor): `security_policy`, `secret_scanning`,
+    /// `dependabot_security_updates`, `branch_protection`, `non_stale`,
+    /// `alert_free`, `non_orphaned`.
+    ///
+    /// This is the OWNER-level set of seven. The org-level Org Governance set
+    /// is a different set of six — see [`ReportViewModel::health_score`].
+    ///
     /// `None` when all control rates are N/A.
     pub sec_score: Option<f64>,
     /// Formatted sec score string at prose precision (e.g., `"72.3%"` or
@@ -1233,10 +1238,17 @@ pub struct ReportViewModel {
     pub branch_protection_how_to_fix: &'static str,
     pub codeowners_how_to_fix: &'static str,
 
-    /// Composite health score (geometric mean of available coverage rates).
+    /// Composite Org Governance score (geometric mean of available coverage
+    /// rates), rendered on the dashboard as the "Overall Organization
+    /// Governance Score" card. "Org Governance" is the internal short name
+    /// for that same score.
+    ///
     /// `None` when all 6 control rates are N/A (`security_policy`,
     /// `secret_scanning`, `dependabot_security_updates`, `branch_protection`,
     /// `codeowners`, `archival_coverage`).
+    ///
+    /// This is the ORG-level set of six. The owner-level Team Health set is a
+    /// different set of seven — see [`OwnerOverviewRow::sec_score`].
     pub health_score: Option<f64>,
     /// Coverage tier for the health score.
     pub health_tier: CoverageTier,
@@ -2195,9 +2207,16 @@ const WIDTH_CLASSES: [&str; 21] = [
 /// owner's control rates) as the geometric mean of available
 /// coverage rates.
 ///
-/// Combines security control rates (Security Policy, Secret
-/// Scanning, Dependabot, Branch Protection, CODEOWNERS, optionally
-/// Archival Coverage). `None` (N/A) is excluded, not zeroed.
+/// "Org Governance" is the internal short name for the organization-wide
+/// score the dashboard labels "Overall Organization Governance Score".
+///
+/// This function is arity-agnostic — it means the geometric mean over
+/// whatever rates the caller supplies. The two callers supply different
+/// sets: Org Governance passes six org-level rates (Security Policy,
+/// Secret Scanning, Dependabot, Branch Protection, CODEOWNERS, Archival
+/// Coverage); Team Health passes seven owner-level rates (Security Policy,
+/// Secret Scanning, Dependabot, Branch Protection, Freshness, Alert-Free,
+/// Non-Orphaned). `None` (N/A) is excluded, not zeroed.
 ///
 /// Rates clamp to `[0.0, 100.0]`. A genuine `0.0` floors to `0.1` so
 /// one zero-rate control doesn't collapse the mean.

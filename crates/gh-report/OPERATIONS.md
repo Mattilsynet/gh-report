@@ -285,6 +285,10 @@ flowchart TB
 
 `gh-report` computes three related security scores from a shared set of controls: **Repo Posture** (per repository, arithmetic mean), **Team Health** (per CODEOWNERS owner, geometric mean), and **Org Governance** (organization-wide, geometric mean). This section is the authoritative description of how each is computed and classified; the dashboard, the report HTML, and downstream consumers all rely on it.
 
+**Score names on the dashboard.** *Org Governance* is the internal short name used throughout this document, the code (`ReportViewModel::health_score`, `compute_health_score`), and the tests. The dashboard card that renders it is labelled **Overall Organization Governance Score** (`templates/index.html`) — the same score under a fuller user-facing name, not a second score. *Repo Posture* and *Team Health* are labelled identically in the code and on the dashboard.
+
+**Control-set arity differs by score, and the two geometric scores are no longer the same size.** *Team Health* is a **seven**-control set; *Org Governance* is a **six**-control set. An unqualified "six controls" claim is only ever about the org score. See [Team Health and Org Governance](#team-health-geometric-per-owner-and-org-governance-geometric-organization-wide) for both lists.
+
 ### Controls
 
 | # | Control | Source field |
@@ -297,7 +301,7 @@ flowchart TB
 
 All five controls carry equal weight within whichever score consumes them. There is no aggregation hierarchy and no weighted policy.
 
-**Repo Posture** uses all five. **Team Health** (owner-level) uses four of the five — it drops `codeowners`, which is tautologically 100% at the per-owner level (repos are associated with an owner *by* CODEOWNERS parsing, so the control carries no signal there). **Org Governance** uses all five. Team Health and Org Governance each additionally fold in lifecycle-derived rates that are not in the table above — see [Aggregation](#aggregation).
+**Repo Posture** uses all five. **Team Health** (owner-level) uses four of the five — it drops `codeowners`, which is tautologically 100% at the per-owner level (repos are associated with an owner *by* CODEOWNERS parsing, so the control carries no signal there). **Org Governance** uses all five. Team Health and Org Governance each additionally fold in rates that are not in the table above — three of them for Team Health, one for Org Governance — see [Aggregation](#aggregation).
 
 ### Per-status classification
 
@@ -338,22 +342,36 @@ score = exp( mean( ln(rate_i) ) )     over the n controls with a non-N/A rate;
                                        whole product to zero
 ```
 
-- **Team Health** (owner-level, six control rates): Security Policy, Secret Scanning, Dependabot, Branch Protection, Freshness, Alert-Free.
-- **Org Governance** (org-level, six control rates): Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS, Archival Coverage.
+- **Team Health** (owner-level, **seven** control rates): Security Policy, Secret Scanning, Dependabot, Branch Protection, Freshness, Alert-Free, Non-Orphaned.
+- **Org Governance** (org-level, **six** control rates): Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS, Archival Coverage. Rendered on the dashboard as the *Overall Organization Governance Score* card.
 
-Each of the four (Team Health) or five (Org Governance) shared security-control rates is itself a `Pass/(Pass+Fail)`-shaped coverage rate computed over that owner's or the org's repos, with `Excluded` repos dropped from the denominator per the rule above — a control whose every repo is `Excluded` (zero denominator) contributes `N/A` and is dropped from the geometric mean rather than treated as `0`. The composite score itself is `N/A` only when every one of its six input rates is `N/A`.
+The two sets are deliberately different sizes and are not interchangeable. Team Health gained a seventh control (Non-Orphaned) without any change to the org set: Non-Orphaned has no org-level meaning, because org-wide orphan counts are reported directly rather than as a per-owner attribution share. Any statement about "six controls" applies to Org Governance only; any statement about "seven controls" applies to Team Health only.
+
+Each of the four (Team Health) or five (Org Governance) shared security-control rates is itself a `Pass/(Pass+Fail)`-shaped coverage rate computed over that owner's or the org's repos, with `Excluded` repos dropped from the denominator per the rule above — a control whose every repo is `Excluded` (zero denominator) contributes `N/A` and is dropped from the geometric mean rather than treated as `0`. The composite score itself is `N/A` only when every one of its input rates is `N/A` (all seven for Team Health, all six for Org Governance).
 
 Result rounded to one decimal place for display.
 
-#### Lifecycle-derived rates (not among the five shared controls)
+#### Derived rates (not among the five shared controls)
 
-Team Health and Org Governance each fold in rate(s) outside the five-control table above. These are pure report-side aggregations over already-collected evidence fields (repository `updated_at`, secret-scanning alert observability) — no new persisted field, so they are not independently subject to `EVIDENCE_SCHEMA_VERSION`:
+Team Health folds in three rates outside the five-control table above; Org Governance folds in one. These are pure report-side aggregations over already-collected evidence fields (repository `updated_at`, secret-scanning alert observability, CODEOWNERS ownership and team rosters) — no new persisted field, so they are not independently subject to `EVIDENCE_SCHEMA_VERSION`:
 
 - **Freshness** (owner-level, feeds Team Health only): `(total − stale) / total`, where a repo is "stale" per `domain::time::is_repo_stale` (`updated_at` more than `STALE_THRESHOLD_DAYS` — currently 730 days — before the run timestamp; unknown `updated_at` is never stale). Denominator = the owner's total repo count.
 - **Alert-Free** (owner-level, feeds Team Health only): the percentage of the owner's *observable* repos (secret scanning `Enabled` **and** alerts observable) with no open secret-scanning alert. Denominator = observable repo count; zero observable repos → `N/A`.
+- **Non-Orphaned** (owner-level, feeds Team Health only): `owned / (owned + attributed)`, where `owned` is the count of repos the owner owns through CODEOWNERS (`OwnerMetrics::total_repos`) and `attributed` is the count of *orphan* repos — repos with no CODEOWNERS owner at all — that the render-time last-committer/roster join attributed to this owner. The rate rises as an owner's repos gain real CODEOWNERS ownership, which is what makes it a valid higher-is-better control. An owner with no attributed orphans measures `1.0`; that is a measured full rate, not a missing control. Computed render-side on every render and never persisted (CHE-0089:R4) — the value therefore cannot come from `OwnerMetrics::per_control_coverage` and is instead carried by the render-only `AttributedOwner` type in `report::html`, which is the sole input to the owner view-model builders. Distinct from the org-wide orphaned-repos count, which counts every unowned repo in the organization rather than one owner's share.
 - **Archival Coverage** (org-level, feeds Org Governance only): `archived / (archived + stale_active)` — the fraction of stale-lifecycle repositories (already archived, plus still-active-but-stale) that have actually been archived. `None` when there are no archived repos and no active repos are stale.
 
 Each is `RateMetric`-shaped (`N/A` on a zero denominator) and participates in its score's geometric mean exactly like the security-control rates above.
+
+#### Owner-detail metric cards
+
+The owner/team detail page surfaces two of the owner-level derived rates as their own percentage cards, showing exactly the value that feeds that owner's Team Health score (one number, one source):
+
+| Card label | Value | Feeds Team Health as |
+|------------|-------|----------------------|
+| **Non-Stale Repos** | `(total − stale) / total` for this owner's repos, as a percentage | Freshness |
+| **Non-Orphaned Repos** | `owned / (owned + attributed)` for this owner, as a percentage | Non-Orphaned |
+
+Both are positive-polarity cards: higher is better, and tier colouring follows the same direction as the other percentage cards. Each card's tooltip states its formula and that it is one of the **seven** controls behind Team Health.
 
 ### By-reason exclusion breakdown
 
