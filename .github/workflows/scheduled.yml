@@ -84,3 +84,36 @@ jobs:
           else
             printf '%s\n' "$out" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  adr-lint-ratchet:
+    name: adr-fmt lint ratchet (AFM-0003:R3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # AFM-0003:R1/R2 keep adr-fmt advisory-only — every finding is
+    # Severity::Warning and the tool exits 0 for all lint findings. R3 places
+    # enforcement in a CI wrapper that parses "## Diagnostics: N warning(s)"
+    # and fails above the project threshold; tools/adr-lint-ratchet.sh is that
+    # wrapper and docs/adr/.lint-threshold is that threshold, which no ADR
+    # defines. This job lives here, not in ci-reusable.yml, precisely because
+    # this workflow is schedule-only: a merge-blocking adr-fmt job would be a
+    # new gate under RST-0007:R5, which requires AFM-0003 to carry a
+    # COM-0017:R4 statement naming the job by id — it has none. Do NOT add
+    # this job to branch protection.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.97.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo install --locked --path crates/adr-fmt
+      - name: adr-fmt lint ratchet (AFM-0003:R3)
+        run: |
+          out=$(tools/adr-lint-ratchet.sh 2>&1) && rc=0 || rc=$?
+          printf '%s\n' "$out"
+          {
+            echo "## adr-fmt lint ratchet (AFM-0003:R3)"
+            echo '~~~'
+            printf '%s\n' "$out"
+            echo '~~~'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
