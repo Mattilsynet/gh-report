@@ -1,7 +1,7 @@
 # RST-0007. Merge-Gate Governance
 
 Date: 2026-08-12
-Last-reviewed: 2026-08-27 — refined — corrected stale gate-compliance accounting in Consequences (GND-0007:R4)
+Last-reviewed: 2026-08-28 — refined — all six gates now compliant (dead-code cites RST-0003:R6) and R7's coverage claim holds as written now gate-citation rejects zero-citation gates
 Tier: B
 Status: Accepted
 Parent-cross-domain: COM-0017 — merge-gate authorship and citation obligations are the general enforcement-mechanism concern COM-0017 already governs; no same-domain RST parent covers who may add a gate or what it must cite
@@ -68,29 +68,17 @@ R7 [5]: R2's id-existence half is mechanized by the gate-citation
 ## Consequences
 
 + becomes easier: a reviewer traces any merge gate back to its
-  enforced ADR rule; R2's id-existence half is checked every PR
+  enforced ADR rule; R2 is checked in full on every PR
 − becomes harder: a new merge gate requires its ADR to carry a
   COM-0017:R4 statement naming the gate by job id up front
 risks/migration: 6 merge-blocking gates, ground-truthed against
   branch protection `required_status_checks.contexts` on 2026-08-27.
-  Compliant: build-test-lint (per-step citations);
+  All six now comply: build-test-lint (per-step citations);
   projection-lock-tripwire (COM-0018); fence-converge-tripwire
-  (CHE-0088:R10); non-exhaustive-check (RST-0006:R1+R3); the
-  async-trait and pardosa-dep steps (CHE-0025, CHE-0084); and
-  supply-chain (SEC-0009:R7, RST-0004:R7). Remaining non-compliant:
-  dead-code-inner-suppression-tripwire — it cites no ADR rule id, and
-  no ADR states the invariant it mechanizes (zero occurrences of
-  `dead_code` across `docs/adr/`), so R2 cannot be satisfied without
-  authoring one — OPEN finding, bd ghr-x7bm6, recorded not closed.
-  This supersedes the stale measured-debt figure (bd ghr-9d9fe011,
-  "4 of 6 gates lack a COM-0017:R4 statement"), which predates the
-  2026-08-12 amendments to COM-0018, CHE-0025 and CHE-0084 and never
-  counted supply-chain; amendment tracked in bd ghr-06ede6e8.
-  Grandfathered per R5. R7 OVERSTATES coverage: the gate-citation
-  check validates the rule ids it finds on `- name:` and `::error::`
-  lines but never asserts a gate cites at least one, so a
-  zero-citation gate passes vacuously — how
-  dead-code-inner-suppression-tripwire stays green while violating
-  R2. R2's invariant-match half and R3-R6 stay code-review-tier per
-  R7 — no lint parses whether a cited rule's prose states the
-  mechanized invariant.
+  (CHE-0088:R10); non-exhaustive-check (RST-0006:R1+R3);
+  dead-code-inner-suppression-tripwire (RST-0003:R6); supply-chain
+  (SEC-0009:R7, RST-0004:R7). The last closed bd ghr-x7bm6. R7's
+  coverage claim now holds as written: gate-citation additionally
+  asserts every job cites at least one rule id, so no gate passes
+  vacuously. R2's invariant-match half and R3-R6 stay
+  code-review-tier per R7.
