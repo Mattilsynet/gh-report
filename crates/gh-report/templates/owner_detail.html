@@ -124,14 +124,14 @@
         {% endif %}
         {% endfor %}
         <div class="card {{ vm.non_stale_cell.tier.css_class() }}">
-            <p class="card-label">Non-Stale Repos {% call tooltip::tooltip("(total - stale) / total for this owner's repos — the share not stale, where stale means not updated in 2+ years. This is the owner's Freshness rate, one of seven controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.") %}{% endcall %}</p>
+            <p class="card-label">{{ vm.non_stale_label }} {% call tooltip::tooltip("(total - stale) / total for this owner's repos — the share not stale, where stale means not updated in 2+ years. One of seven controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.") %}{% endcall %}</p>
             <p class="card-value">{{ vm.non_stale_cell.rate_formatted }}</p>
             <div class="progress-bar">
                 <div class="progress-fill {{ vm.non_stale_cell.tier.css_class() }} {{ vm.non_stale_cell.width_class }}"></div>
             </div>
         </div>
         <div class="card {{ vm.non_orphaned_cell.tier.css_class() }}">
-            <p class="card-label">Non-Orphaned Repos {% call tooltip::tooltip("owned / (owned + attributed) for this owner — the share of this owner's repos that carry real CODEOWNERS ownership, rather than being orphans (no CODEOWNERS owner at all) merely attributed to this owner because their last committer is on its roster. Rises as ownership improves; one of seven controls behind the Team Health score. Distinct from the org-wide orphaned-repos count, which counts every unowned repo in the organization rather than this owner's share.") %}{% endcall %}</p>
+            <p class="card-label">{{ vm.non_orphaned_label }} {% call tooltip::tooltip("owned / (owned + attributed) for this owner — the share of this owner's repos that carry real CODEOWNERS ownership, rather than being orphans (no CODEOWNERS owner at all) merely attributed to this owner because their last committer is on its roster. Rises as more repos gain a CODEOWNERS owner; one of seven controls behind the Team Health score. Distinct from the org-wide orphaned-repos count, which counts every unowned repo in the organization rather than this owner's share.") %}{% endcall %}</p>
             <p class="card-value">{{ vm.non_orphaned_cell.rate_formatted }}</p>
             <div class="progress-bar">
                 <div class="progress-fill {{ vm.non_orphaned_cell.tier.css_class() }} {{ vm.non_orphaned_cell.width_class }}"></div>

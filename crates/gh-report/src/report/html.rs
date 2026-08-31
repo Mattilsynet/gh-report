@@ -249,6 +249,7 @@ fn control_display_name(key: &str) -> &'static str {
         "dependabot_security_updates" => "Dependabot Status",
         "branch_protection" => "Branch Protection",
         "non_stale" => "Freshness",
+        "non_orphaned" => "Ownership",
         "alert_free" => "Alert-Free",
         _ => "Unknown",
     }
@@ -1081,7 +1082,9 @@ fn build_one_owner_detail_view_model(
         summary_cards,
         has_stale_repos,
         non_stale_cell,
+        non_stale_label: control_display_name("non_stale").to_string(),
         non_orphaned_cell,
+        non_orphaned_label: control_display_name(NON_ORPHANED_CONTROL).to_string(),
         roster,
         github_url,
         security_url,

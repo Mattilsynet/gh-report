@@ -368,8 +368,8 @@ The owner/team detail page surfaces two of the owner-level derived rates as thei
 
 | Card label | Value | Feeds Team Health as |
 |------------|-------|----------------------|
-| **Non-Stale Repos** | `(total − stale) / total` for this owner's repos, as a percentage | Freshness |
-| **Non-Orphaned Repos** | `owned / (owned + attributed)` for this owner, as a percentage | Non-Orphaned |
+| **Freshness** | `(total − stale) / total` for this owner's repos, as a percentage | Freshness |
+| **Ownership** | `owned / (owned + attributed)` for this owner, as a percentage | Ownership |
 
 Both are positive-polarity cards: higher is better, and tier colouring follows the same direction as the other percentage cards. Each card's tooltip states its formula and that it is one of the **seven** controls behind Team Health.
 

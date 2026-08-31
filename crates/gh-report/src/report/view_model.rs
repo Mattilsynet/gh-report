@@ -392,7 +392,7 @@ pub struct OwnerDetailViewModel {
     pub summary_cards: Vec<SummaryCard>,
     /// Whether any repo row is flagged as stale (drives footnote rendering).
     pub has_stale_repos: bool,
-    /// Freshness control cell for the "Non-Stale Repos" card — the
+    /// Freshness control cell for the "Freshness" card — the
     /// `non_stale` per-control coverage rate `(total - stale) / total`,
     /// the same value that feeds this owner's Team Health score.
     ///
@@ -402,7 +402,11 @@ pub struct OwnerDetailViewModel {
     /// public and independently assignable, so this is single-constructor
     /// consolidation, not a type-level guarantee of agreement.
     pub non_stale_cell: ControlCell,
-    /// Orphan-ownership control cell for the "Non-Orphaned Repos" card —
+    /// Display label for the `non_stale_cell` card, resolved from the
+    /// shared control vocabulary rather than hardcoded in the template, so
+    /// a control rename cannot desynchronise the card from the vocabulary.
+    pub non_stale_label: String,
+    /// Orphan-ownership control cell for the "Ownership" card —
     /// the `non_orphaned` per-control coverage rate
     /// `owned / (owned + attributed)`, the same value that feeds this
     /// owner's Team Health score.
@@ -413,6 +417,10 @@ pub struct OwnerDetailViewModel {
     /// The rate therefore rises as ownership improves. Computed render-side
     /// on every render (CHE-0089:R4) and never persisted.
     pub non_orphaned_cell: ControlCell,
+    /// Display label for the `non_orphaned_cell` card, resolved from the
+    /// shared control vocabulary rather than hardcoded in the template, so
+    /// a control rename cannot desynchronise the card from the vocabulary.
+    pub non_orphaned_label: String,
     /// Team member roster section (B1, CHE-0082:R5). Always one of three
     /// distinct visible states — see [`RosterSection`] — never a silent
     /// `None` omission.

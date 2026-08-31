@@ -4370,37 +4370,33 @@ fn render_owner_detail_html_non_stale_repos_card_disambiguates_freshness_from_ar
         .1;
 
     assert!(
-        detail_page.contains("card-label\">Non-Stale Repos"),
-        "the card label must be the positive 'Non-Stale Repos'; detail page:\n{detail_page}"
-    );
-    assert!(
-        !detail_page.contains("card-label\">Stale Repos"),
-        "the old negative 'Stale Repos' card label must be gone (substring of the new label, so assert the full label boundary)"
+        detail_page.contains("card-label\">Freshness"),
+        "the card label must be the control-vocabulary noun 'Freshness'; detail page:\n{detail_page}"
     );
 
     let card_block = detail_page
-        .split("card-label\">Non-Stale Repos")
+        .split("card-label\">Freshness")
         .nth(1)
-        .expect("Non-Stale Repos card block")
+        .expect("Freshness card block")
         .split("</div>")
         .next()
         .expect("card block body");
     assert!(
         card_block.contains('%'),
-        "the Non-Stale Repos card value must be a percentage, not a bare count; card block:\n{card_block}"
+        "the Freshness card value must be a percentage, not a bare count; card block:\n{card_block}"
     );
 
     assert!(
         detail_page.contains("(total - stale) / total"),
-        "Non-Stale Repos card tooltip must state the Freshness control's exact formula; detail page:\n{detail_page}"
+        "Freshness card tooltip must state the Freshness control's exact formula; detail page:\n{detail_page}"
     );
     assert!(
-        detail_page.contains("Freshness"),
-        "Non-Stale Repos card tooltip must name the Freshness control it disambiguates from"
+        !detail_page.contains("the owner's Freshness rate"),
+        "the tooltip must not restate the card's own name back at it; under a card named Freshness that phrasing is circular"
     );
     assert!(
         detail_page.contains("Distinct from the org-wide Archival Coverage"),
-        "Non-Stale Repos card tooltip must explicitly disambiguate from the org-level Archival Coverage metric"
+        "Freshness card tooltip must explicitly disambiguate from the org-level Archival Coverage metric"
     );
 }
 
@@ -4482,11 +4478,11 @@ fn render_owner_detail_html_non_stale_repos_card_pins_enriched_rate_tier_and_wid
         .expect("expected an owner detail page")
         .1;
 
-    let card = owner_detail_card_block(detail_page, "Non-Stale Repos");
+    let card = owner_detail_card_block(detail_page, "Freshness");
 
     assert!(
         card.contains("<p class=\"card-value\">100.0% (1/1)</p>"),
-        "the enriched Non-Stale Repos card must render the reused non_stale RateMetric exactly as '100.0% (1/1)', not 'N/A' and not a bare count; card:\n{card}"
+        "the enriched Freshness card must render the reused non_stale RateMetric exactly as '100.0% (1/1)', not 'N/A' and not a bare count; card:\n{card}"
     );
     assert!(
         card.contains("tier-pass"),
@@ -4502,7 +4498,7 @@ fn render_owner_detail_html_non_stale_repos_card_pins_enriched_rate_tier_and_wid
     );
     assert!(
         !card.contains("N/A"),
-        "an enriched owner must never render N/A for the Non-Stale Repos card; card:\n{card}"
+        "an enriched owner must never render N/A for the Freshness card; card:\n{card}"
     );
 }
 
@@ -4544,6 +4540,11 @@ fn is_pending_repo_negative_none() {
 #[test]
 fn control_display_name_non_stale() {
     assert_eq!(super::control_display_name("non_stale"), "Freshness");
+}
+
+#[test]
+fn control_display_name_non_orphaned() {
+    assert_eq!(super::control_display_name("non_orphaned"), "Ownership");
 }
 
 #[test]
@@ -5192,7 +5193,7 @@ fn render_owner_detail_html_non_orphaned_repos_card_pins_render_side_rate_tier_a
     let evidence = evidence_with_enriched_single_team_owner();
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
 
-    let card = owner_detail_card_block(owner_detail_page(&pages), "Non-Orphaned Repos");
+    let card = owner_detail_card_block(owner_detail_page(&pages), "Ownership");
 
     assert!(
         card.contains("<p class=\"card-value\">100.0% (1/1)</p>"),
@@ -5223,7 +5224,7 @@ fn render_owner_detail_html_non_orphaned_repos_card_counts_owned_over_owned_plus
     let evidence = evidence_with_team_owner_and_attributed_orphans(2, 1);
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
 
-    let card = owner_detail_card_block(owner_detail_page(&pages), "Non-Orphaned Repos");
+    let card = owner_detail_card_block(owner_detail_page(&pages), "Ownership");
 
     assert!(
         card.contains("<p class=\"card-value\">66.7% (2/3)</p>"),
@@ -5252,8 +5253,8 @@ fn non_orphaned_control_is_monotonically_higher_is_better() {
     )
     .unwrap();
 
-    let fewer_card = owner_detail_card_block(owner_detail_page(&fewer), "Non-Orphaned Repos");
-    let more_card = owner_detail_card_block(owner_detail_page(&more), "Non-Orphaned Repos");
+    let fewer_card = owner_detail_card_block(owner_detail_page(&fewer), "Ownership");
+    let more_card = owner_detail_card_block(owner_detail_page(&more), "Ownership");
 
     assert!(
         fewer_card.contains("<p class=\"card-value\">66.7% (2/3)</p>"),
@@ -5287,7 +5288,7 @@ fn non_orphaned_repos_card_tooltip_states_formula_and_seven_control_set() {
 
     assert!(
         detail_page.contains("owned / (owned + attributed)"),
-        "the Non-Orphaned Repos tooltip must state its exact formula"
+        "the Ownership tooltip must state its exact formula"
     );
     assert!(
         detail_page.contains("one of seven controls behind the Team Health score"),
