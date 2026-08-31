@@ -64,9 +64,9 @@ expression: "&pages[\"owners.html\"]"
             <td class="text-center">
                 <div class="score-bar-inline">
                     <div class="progress-bar">
-                        <div class="progress-fill tier-warn w-65"></div>
+                        <div class="progress-fill tier-warn w-60"></div>
                     </div>
-                    <span class="score-label">66%</span>
+                    <span class="score-label">60%</span>
                 </div>
             </td>
             
