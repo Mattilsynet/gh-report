@@ -99,6 +99,7 @@ impl AppStateBuilder {
             work_queue: Arc::new(WorkQueue::new(crate::config::WORK_QUEUE_CAPACITY)),
             worker_pool_started: tokio::sync::OnceCell::new(),
             worker_pool_cancel: WorkerShutdownToken::new(),
+            run_fence: Mutex::new(None),
             event_store,
             org_event_store,
             team_event_store,

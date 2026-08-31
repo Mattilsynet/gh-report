@@ -1147,13 +1147,29 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
 
     tracker.wait().await;
     state.set_active_batch_tracker(None);
+    let fence = state.take_run_fence();
 
     let _ = pp_shutdown.send(true);
     if let Err(e) = pp_task.await {
         error!(error = ?e, "partial publisher task panicked");
     }
 
-    Ok(true)
+    batch_outcome(fence)
+}
+
+/// Resolve the batch barrier into a run outcome.
+///
+/// A latched fence is re-raised as the typed
+/// [`PersistenceError::FencedConflict`] it originally was, so the run
+/// aborts here (PGN-0016:R2) and converges through the sanctioned
+/// `converge_on_fence` sink via the existing
+/// [`CollectionOutcome::FencedConflict`] mapping — no re-arm is
+/// performed at this call site (CHE-0088:R9).
+fn batch_outcome(fence: Option<crate::app::daemon::FenceSignal>) -> Result<bool, AppError> {
+    match fence {
+        Some(signal) => Err(AppError::Persistence(signal.into_error())),
+        None => Ok(true),
+    }
 }
 
 /// Arguments for [`finalize_and_publish`].

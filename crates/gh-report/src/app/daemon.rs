@@ -333,6 +333,53 @@ async fn drain_shutdown_with_timeout(
     }
 }
 
+/// A durable-write failure proven to be
+/// [`WritePolicyCategory::Conflict`] — the OCC fence rejecting a
+/// superseded writer (PGN-0016:R2).
+///
+/// Correct by construction: the only constructor is
+/// [`FenceSignal::from_failure`], which rejects every other category, so
+/// a non-fence failure cannot be carried as a fence signal and cannot
+/// abort a run that should merely have been logged. The typed
+/// [`PersistenceError`] is carried whole — never string-flattened
+/// (PGN-0016:R9) — so the run boundary can re-raise it as
+/// [`AppError::Persistence`] and converge through the single sanctioned
+/// [`converge_on_fence`] sink (CHE-0088:R9) rather than re-arming at the
+/// detection site.
+#[derive(Debug)]
+pub(crate) struct FenceSignal {
+    error: PersistenceError,
+}
+
+impl FenceSignal {
+    pub(crate) fn from_failure(
+        failure: crate::app::write_policy::WriteFailure,
+    ) -> Result<Self, crate::app::write_policy::WriteFailure> {
+        if failure.category == crate::app::write_policy::WritePolicyCategory::Conflict {
+            Ok(Self {
+                error: failure.error,
+            })
+        } else {
+            Err(failure)
+        }
+    }
+
+    pub(crate) fn into_error(self) -> PersistenceError {
+        self.error
+    }
+}
+
+/// The outcome of delivering one job outcome to durable storage.
+///
+/// `Fenced` is the only variant that aborts the run; every other
+/// persist failure stays `Delivered` and keeps its existing
+/// severity-based logging and batch accounting, so propagation is not
+/// widened from the fence to all durable-write failures.
+enum DeliveryStep {
+    Delivered,
+    Fenced(FenceSignal),
+}
+
 /// Bounded re-arm policy applied after `CollectionOutcome::FencedConflict`.
 ///
 /// Design-Y consumer-owned re-arm (ghr-fea8b799): on a typed fence
@@ -906,28 +953,53 @@ pub(crate) async fn delivery_loop(
             }
         };
 
+        if state.run_is_fenced() {
+            warn!(
+                source = ?source,
+                "discarding delivery outcome: run aborted by the single-writer fence — a \
+                 superseded writer must not append (PGN-0016:R2); the converged run re-collects it"
+            );
+            continue;
+        }
+
         match outcome {
             JobOutcome::Success {
                 domain_key, result, ..
             } => {
-                handle_success_outcome(&state, &domain_key, &result, &source, duration);
+                let step = handle_success_outcome(&state, &domain_key, &result, &source, duration);
+                apply_delivery_step(&state, step, &source);
             }
             JobOutcome::Failure {
                 domain_key, error, ..
             } => {
                 handle_failure_outcome(&state, &domain_key, &error, &source, duration);
+                apply_delivery_step(&state, DeliveryStep::Delivered, &source);
             }
             _ => {
                 warn!("delivery_loop: unhandled JobOutcome variant, skipping");
-                continue;
             }
-        }
-
-        if matches!(source, JobSource::ScheduledBatch) {
-            state.complete_active_batch();
         }
     }
     info!("delivery task exiting — outcome channel closed");
+}
+
+/// Apply one delivery outcome to run-level accounting.
+///
+/// `Fenced` aborts the run through [`AppState::fence_active_run`] and
+/// deliberately does NOT complete a batch slot for the fenced record: a
+/// write the fence rejected did not happen, and the batch is abandoned
+/// as a unit rather than counted down member by member. Every other
+/// outcome — success or a non-fence persist failure — keeps the
+/// pre-existing per-record countdown.
+fn apply_delivery_step(state: &Arc<AppState>, step: DeliveryStep, source: &JobSource) {
+    match step {
+        DeliveryStep::Fenced(signal) => state.fence_active_run(signal),
+        DeliveryStep::Delivered => {
+            if matches!(source, JobSource::ScheduledBatch) {
+                state.complete_active_batch();
+            }
+        }
+    }
 }
 
 /// Publish a successful repo evaluation and log completion.
@@ -939,7 +1011,7 @@ fn handle_success_outcome(
     result: &RepositoryEvidence,
     source: &JobSource,
     duration: Duration,
-) {
+) -> DeliveryStep {
     let repo_name = result.repository.name.clone();
     let timestamp = jiff::Timestamp::now().to_string();
     match write_with_policy_sync(|| {
@@ -953,10 +1025,30 @@ fn handle_success_outcome(
                 duration_ms = duration.as_millis(),
                 "job completed"
             );
+            DeliveryStep::Delivered
         }
-        Err(failure) => {
-            log_job_persist_failure(&failure, domain_key, &repo_name, source, duration);
-        }
+        Err(failure) => classify_persist_failure(failure, domain_key, &repo_name, source, duration),
+    }
+}
+
+/// Log a durable-write failure, then decide whether it aborts the run.
+///
+/// A `Conflict` is the OCC fence rejecting this writer: it must reach a
+/// run boundary as a typed error (CHE-0088:R3 no-swallow) so the run
+/// aborts (PGN-0016:R2). Every other category keeps its existing
+/// log-and-continue handling — the propagation is scoped to the fence,
+/// not widened to all persist failures.
+fn classify_persist_failure(
+    failure: WriteFailure,
+    domain_key: &str,
+    repo_name: &str,
+    source: &JobSource,
+    duration: Duration,
+) -> DeliveryStep {
+    log_job_persist_failure(&failure, domain_key, repo_name, source, duration);
+    match FenceSignal::from_failure(failure) {
+        Ok(signal) => DeliveryStep::Fenced(signal),
+        Err(_) => DeliveryStep::Delivered,
     }
 }
 
@@ -1932,5 +2024,250 @@ mod tests {
             other => panic!("expected RunFailed give-up for a non-fence error, got {other:?}"),
         }
         assert!(last_failure.is_some());
+    }
+}
+
+#[cfg(test)]
+mod fence_propagation_tests {
+    use super::*;
+    use crate::app::write_policy::WriteFailure;
+
+    fn fenced_failure() -> WriteFailure {
+        WriteFailure::classify(PersistenceError::FencedConflict {
+            expected_seq: Some(8901),
+            actual_seq: Some(8902),
+            source: Box::new(std::io::Error::other("wrong last sequence")),
+        })
+    }
+
+    fn transient_failure() -> WriteFailure {
+        WriteFailure::classify(PersistenceError::BackendUnavailable {
+            reason: "backend down".to_string(),
+        })
+    }
+
+    fn structural_failure() -> WriteFailure {
+        WriteFailure::classify(PersistenceError::InvariantViolation {
+            reason: "bad shape".to_string(),
+        })
+    }
+
+    fn classify(failure: WriteFailure) -> DeliveryStep {
+        classify_persist_failure(
+            failure,
+            "owner/repo",
+            "repo",
+            &JobSource::ScheduledBatch,
+            Duration::from_millis(1),
+        )
+    }
+
+    /// `success_criteria` 2: the typed conflict must NOT be turned into a
+    /// log-record-and-continue. Asserts on the propagated typed error,
+    /// never on a log line.
+    #[test]
+    fn fenced_persist_failure_is_not_swallowed_into_a_log_record() {
+        let step = classify(fenced_failure());
+
+        let DeliveryStep::Fenced(signal) = step else {
+            panic!(
+                "a typed FencedConflict must propagate as DeliveryStep::Fenced \
+                 (CHE-0088:R3 no-swallow), not be logged and continued"
+            );
+        };
+        assert!(
+            matches!(signal.into_error(), PersistenceError::FencedConflict { .. }),
+            "the fence signal must carry the typed error whole (PGN-0016:R9)"
+        );
+    }
+
+    /// `success_criteria` 3: do not widen the blast radius to all persist
+    /// errors — only the fence aborts the run.
+    #[test]
+    fn non_conflict_persist_failures_retain_existing_handling() {
+        for failure in [transient_failure(), structural_failure()] {
+            let category = failure.category;
+            assert!(
+                matches!(classify(failure), DeliveryStep::Delivered),
+                "{category:?} must keep its existing log-and-continue handling"
+            );
+        }
+    }
+
+    async fn state_with_batch(
+        count: usize,
+    ) -> (Arc<AppState>, Arc<crate::app::work_queue::BatchTracker>) {
+        let state = AppState::new().await;
+        let tracker = crate::app::work_queue::BatchTracker::new(count);
+        state.set_active_batch_tracker(Some(Arc::clone(&tracker)));
+        (state, tracker)
+    }
+
+    /// `GAP-1`: a record whose persist was fenced must not complete a batch
+    /// slot, and the barrier must be released so the run can abort
+    /// instead of waiting on outcomes an aborted run never delivers.
+    #[tokio::test]
+    async fn fenced_record_aborts_the_batch_instead_of_completing_a_slot() {
+        let (state, tracker) = state_with_batch(3).await;
+
+        let DeliveryStep::Fenced(signal) = classify(fenced_failure()) else {
+            panic!("fenced failure must classify as Fenced");
+        };
+        apply_delivery_step(
+            &state,
+            DeliveryStep::Fenced(signal),
+            &JobSource::ScheduledBatch,
+        );
+
+        assert_eq!(
+            tracker.remaining(),
+            0,
+            "the batch barrier must be released wholesale so the run aborts (PGN-0016:R2)"
+        );
+        assert!(
+            state.run_is_fenced(),
+            "the run-scoped fence latch must be armed for the run boundary to observe"
+        );
+    }
+
+    /// `success_criteria` 4: the happy path still completes batches
+    /// normally, one slot per delivered record.
+    #[tokio::test]
+    async fn delivered_record_completes_exactly_one_batch_slot() {
+        let (state, tracker) = state_with_batch(3).await;
+
+        apply_delivery_step(&state, DeliveryStep::Delivered, &JobSource::ScheduledBatch);
+
+        assert_eq!(
+            tracker.remaining(),
+            2,
+            "one delivered record completes one slot"
+        );
+        assert!(
+            !state.run_is_fenced(),
+            "a delivered record must not fence the run"
+        );
+    }
+
+    /// `success_criteria` 1: the fence latched by the detached delivery
+    /// task becomes the typed error at the run boundary, which the
+    /// existing mapping turns into `CollectionOutcome::FencedConflict` —
+    /// the value the daemon loop already routes into the single
+    /// sanctioned `converge_on_fence` sink. No new re-arm call site.
+    #[tokio::test(start_paused = true)]
+    async fn latched_fence_converges_through_the_sanctioned_sink() {
+        let (state, _tracker) = state_with_batch(1).await;
+        let DeliveryStep::Fenced(signal) = classify(fenced_failure()) else {
+            panic!("fenced failure must classify as Fenced");
+        };
+        apply_delivery_step(
+            &state,
+            DeliveryStep::Fenced(signal),
+            &JobSource::ScheduledBatch,
+        );
+
+        let fence = state
+            .take_run_fence()
+            .expect("run boundary must observe the fence");
+        let run_error = AppError::Persistence(fence.into_error());
+        assert!(
+            matches!(
+                run_error,
+                AppError::Persistence(PersistenceError::FencedConflict { .. })
+            ),
+            "the run boundary must abort with the typed conflict"
+        );
+
+        let policy = RearmPolicy {
+            max_attempts: 2,
+            backoff_base: Duration::from_millis(1),
+        };
+        let mut attempt = 0;
+        let outcome = rearm_after_fenced_conflict(
+            &policy,
+            || async { Ok(()) },
+            move || {
+                attempt += 1;
+                let fenced_again = attempt == 1;
+                async move {
+                    if fenced_again {
+                        Ok(collect::CollectionOutcome::FencedConflict)
+                    } else {
+                        Ok(collect::CollectionOutcome::Completed)
+                    }
+                }
+            },
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, Ok(collect::CollectionOutcome::Completed)),
+            "the fenced run must converge through converge_on_fence, got {outcome:?}"
+        );
+    }
+
+    /// `GAP-2`: outcomes already in flight against a now-stale writer are
+    /// discarded rather than written — the amplification mechanism. The
+    /// discarded record is not lost: the converged run re-collects it.
+    #[tokio::test]
+    async fn in_flight_outcomes_are_discarded_once_the_run_is_fenced() {
+        let (state, tracker) = state_with_batch(2).await;
+        let DeliveryStep::Fenced(signal) = classify(fenced_failure()) else {
+            panic!("fenced failure must classify as Fenced");
+        };
+        apply_delivery_step(
+            &state,
+            DeliveryStep::Fenced(signal),
+            &JobSource::ScheduledBatch,
+        );
+
+        let (outcome_tx, outcome_rx) = tokio::sync::mpsc::channel(1);
+        outcome_tx
+            .send(JobOutcome::Success {
+                domain_key: "stale-repo".to_string(),
+                result: crate::test_fixtures::all_passing_evidence("stale-repo"),
+                source: JobSource::ScheduledBatch,
+                duration: Duration::from_millis(1),
+                correlation: cherry_pit_core::CorrelationContext::none(),
+            })
+            .await
+            .expect("queue outcome");
+        drop(outcome_tx);
+
+        delivery_loop(outcome_rx, Arc::clone(&state)).await;
+
+        assert!(
+            !state.projection_contains("stale-repo"),
+            "a record in flight against a superseded writer must not be written (PGN-0016:R2)"
+        );
+        assert_eq!(
+            tracker.remaining(),
+            0,
+            "the aborted batch stays drained; discards must not underflow the tracker"
+        );
+    }
+
+    /// The latch is run-scoped: arming a fresh batch clears a fence left
+    /// by the previous, aborted run.
+    #[tokio::test]
+    async fn arming_a_new_batch_clears_the_previous_runs_fence() {
+        let (state, _tracker) = state_with_batch(1).await;
+        let DeliveryStep::Fenced(signal) = classify(fenced_failure()) else {
+            panic!("fenced failure must classify as Fenced");
+        };
+        apply_delivery_step(
+            &state,
+            DeliveryStep::Fenced(signal),
+            &JobSource::ScheduledBatch,
+        );
+        assert!(state.run_is_fenced());
+
+        let next = crate::app::work_queue::BatchTracker::new(2);
+        state.set_active_batch_tracker(Some(next));
+
+        assert!(
+            !state.run_is_fenced(),
+            "a new run must not inherit the aborted run's fence"
+        );
     }
 }
