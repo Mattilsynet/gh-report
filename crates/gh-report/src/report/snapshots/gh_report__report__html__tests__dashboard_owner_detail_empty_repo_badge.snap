@@ -102,11 +102,11 @@ expression: detail_page
                 <div class="progress-fill tier-na w-0"></div>
             </div>
         </div>
-        <div class="card tier-pass">
+        <div class="card tier-na">
             <p class="card-label">Ownership <span class="tooltip-trigger" tabindex="0" data-tooltip="owned / (owned + attributed) for this owner — the share of this owner&#39;s repos that carry real CODEOWNERS ownership, rather than being orphans (no CODEOWNERS owner at all) merely attributed to this owner because their last committer is on its roster. Rises as more repos gain a CODEOWNERS owner; one of seven controls behind the Team Health score. Distinct from the org-wide orphaned-repos count, which counts every unowned repo in the organization rather than this owner&#39;s share.">ⓘ<span class="sr-only">owned / (owned + attributed) for this owner — the share of this owner&#39;s repos that carry real CODEOWNERS ownership, rather than being orphans (no CODEOWNERS owner at all) merely attributed to this owner because their last committer is on its roster. Rises as more repos gain a CODEOWNERS owner; one of seven controls behind the Team Health score. Distinct from the org-wide orphaned-repos count, which counts every unowned repo in the organization rather than this owner&#39;s share.</span></span></p>
-            <p class="card-value">100.0% (1/1)</p>
+            <p class="card-value">N/A</p>
             <div class="progress-bar">
-                <div class="progress-fill tier-pass w-100"></div>
+                <div class="progress-fill tier-na w-0"></div>
             </div>
         </div>
     </div>

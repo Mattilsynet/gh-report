@@ -350,8 +350,11 @@ pub fn render_dashboard_streaming(
         &evidence.assessment_metadata.run_timestamp,
         &evidence.metrics.team_rosters,
     );
-    let attributed_owners =
-        AttributedOwner::attribute_all(&evidence.metrics.owner_metrics, &orphaned_vm.by_team);
+    let attributed_owners = AttributedOwner::attribute_all(
+        &evidence.metrics.owner_metrics,
+        &orphaned_vm.by_team,
+        &evidence.metrics.team_rosters,
+    );
     let owners_vm = build_owners_view_model(&attributed_owners, tiers);
     let orphaned_count = orphaned_vm.orphaned_count;
     let deleted_vm = build_deleted_view_model(
@@ -618,7 +621,10 @@ fn build_top_security_teams(owners: &OwnersViewModel) -> Vec<TopSecurityTeam> {
 /// requires the orphan attribution alongside the metrics. `non_orphaned` is
 /// therefore a required field rather than a fallible lookup, so a
 /// six-control Team Health score is not a representable state and no caller
-/// can silently produce one while the copy promises seven controls.
+/// can silently produce one while the copy promises seven controls. The
+/// field's [`NonOrphanedControl`] type keeps "attribution ran and found no
+/// orphans" distinct from "attribution could not be run"; only the latter
+/// legitimately drops out of the score.
 ///
 /// Borrowing `metrics` keeps the persisted
 /// [`crate::domain::evidence::Evidence`] unmutated (CHE-0089:R4); the joined
@@ -627,7 +633,46 @@ fn build_top_security_teams(owners: &OwnersViewModel) -> Vec<TopSecurityTeam> {
 /// [`OwnerMetrics`]: crate::domain::metrics::OwnerMetrics
 struct AttributedOwner<'a> {
     metrics: &'a crate::domain::metrics::OwnerMetrics,
-    non_orphaned: crate::domain::metrics::RateMetric,
+    non_orphaned: NonOrphanedControl,
+}
+
+/// The seventh Team Health control, carrying its own provenance.
+///
+/// [`Self::Measured`] and [`Self::Unresolved`] are distinct VALUES, not a
+/// rate plus a flag: an owner whose orphan attribution could not be run has
+/// no [`RateMetric`] to read at all, so "zero orphans attributed" cannot be
+/// confused with "attribution never happened". That distinction is what
+/// keeps a vacuous 100% out of the geometric mean — [`Self::rate`] returns
+/// `None` for [`Self::Unresolved`], and [`compute_health_score`] already
+/// excludes `None`.
+///
+/// [`RateMetric`]: crate::domain::metrics::RateMetric
+enum NonOrphanedControl {
+    /// Orphan attribution ran for this owner; the rate is a real measurement.
+    Measured(crate::domain::metrics::RateMetric),
+    /// Orphan attribution could not be run — the owner is team-shaped and no
+    /// team roster resolved, so no orphan could be attributed to it on
+    /// evidence rather than by default.
+    Unresolved,
+}
+
+impl NonOrphanedControl {
+    /// The rate for the geometric mean; `None` excludes the control.
+    fn rate(&self) -> Option<f64> {
+        match self {
+            Self::Measured(metric) => metric.rate,
+            Self::Unresolved => None,
+        }
+    }
+
+    /// The underlying metric, or `None` when there is nothing measured to
+    /// render — which [`control_cell`] already presents as `N/A`.
+    fn measured(&self) -> Option<&crate::domain::metrics::RateMetric> {
+        match self {
+            Self::Measured(metric) => Some(metric),
+            Self::Unresolved => None,
+        }
+    }
 }
 
 impl<'a> AttributedOwner<'a> {
@@ -642,29 +687,47 @@ impl<'a> AttributedOwner<'a> {
     /// a valid higher-is-better control alongside [`SEC_SCORE_MAP_CONTROLS`].
     ///
     /// An owner with no attributed orphans scores 1.0 — a measured full
-    /// rate, not a missing control.
+    /// rate, not a missing control. An owner for which attribution could not
+    /// be RUN at all is different: a team-shaped owner with no resolvable
+    /// entry in `team_rosters` cannot have any orphan attributed to it on
+    /// evidence, so its rate would be a vacuous 1.0 rather than a
+    /// measurement. That case yields [`NonOrphanedControl::Unresolved`] and
+    /// drops out of the Team Health geometric mean, matching the
+    /// roster-unresolved banner gate on the owner-detail page.
     ///
     /// [`OwnerMetrics::total_repos`]: crate::domain::metrics::OwnerMetrics::total_repos
     fn attribute_all(
         owner_metrics: &'a [crate::domain::metrics::OwnerMetrics],
         orphaned_by_team: &[OrphanedTeamGroup],
+        team_rosters: &[TeamRoster],
     ) -> Vec<Self> {
         owner_metrics
             .iter()
             .map(|metrics| {
-                let attributed = orphaned_by_team
-                    .iter()
-                    .find(|group| group.team.eq_ignore_ascii_case(&metrics.owner))
-                    .map_or(0, |group| {
-                        u32::try_from(group.rows.len()).unwrap_or(u32::MAX)
-                    });
-                let owned = metrics.total_repos;
-                Self {
-                    metrics,
-                    non_orphaned: crate::domain::metrics::RateMetric::new(
+                let roster_resolved = match metrics.owner_type {
+                    OwnerType::User => true,
+                    OwnerType::Team | OwnerType::AmbiguousTeamShaped => team_rosters
+                        .iter()
+                        .any(|r| r.canonical_owner.eq_ignore_ascii_case(&metrics.owner)),
+                };
+                let non_orphaned = if roster_resolved {
+                    let attributed = orphaned_by_team
+                        .iter()
+                        .find(|group| group.team.eq_ignore_ascii_case(&metrics.owner))
+                        .map_or(0, |group| {
+                            u32::try_from(group.rows.len()).unwrap_or(u32::MAX)
+                        });
+                    let owned = metrics.total_repos;
+                    NonOrphanedControl::Measured(crate::domain::metrics::RateMetric::new(
                         owned,
                         owned.saturating_add(attributed),
-                    ),
+                    ))
+                } else {
+                    NonOrphanedControl::Unresolved
+                };
+                Self {
+                    metrics,
+                    non_orphaned,
                 }
             })
             .collect()
@@ -728,7 +791,7 @@ fn build_owners_view_model(
                         .and_then(|rm| rm.rate)
                 })
                 .collect();
-            sec_rates.push(o.non_orphaned.rate);
+            sec_rates.push(o.non_orphaned.rate());
             let sec_score = compute_health_score(&sec_rates);
             let sec_score_formatted = match sec_score {
                 Some(s) => format!("{s:.1}%"),
@@ -805,14 +868,17 @@ fn build_control_cell(
 ///
 /// Used for [`NON_ORPHANED_CONTROL`], whose rate comes from
 /// [`AttributedOwner::non_orphaned`] rather than from a string-keyed map, so
-/// "no such key" is not a reachable state for it.
+/// "no such key" is not a reachable state for it. A
+/// [`NonOrphanedControl::Unresolved`] owner has nothing measured to show and
+/// renders through the same `N/A` presentation [`control_cell`] already
+/// gives every other absent control.
 fn required_control_cell(
-    rate_metric: &crate::domain::metrics::RateMetric,
+    control: &NonOrphanedControl,
     score_exclusion_counts: &[ScoreExclusionCount],
     key: &str,
     tiers: &CoverageTiers,
 ) -> ControlCell {
-    control_cell(Some(rate_metric), score_exclusion_counts, key, tiers)
+    control_cell(control.measured(), score_exclusion_counts, key, tiers)
 }
 
 fn control_cell(
