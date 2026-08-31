@@ -351,6 +351,28 @@ pub enum CollectionFailureReason {
     Invalid = 5,
 }
 
+impl CollectionFailureReason {
+    /// Whether this reason makes the observation indeterminate rather than
+    /// a domain finding.
+    ///
+    /// This is the CHE-0090:R2 Excluded set. `NotFoundAbsent` is deliberately
+    /// outside it: under CHE-0082:R4/R5 a not-found carrying an observed
+    /// authority signal is genuine absence, which is a finding. Every other
+    /// reason describes a failure to observe, and a failure to observe must
+    /// never be scored as either protected or unprotected.
+    #[must_use]
+    pub const fn is_indeterminate(self) -> bool {
+        matches!(
+            self,
+            Self::PermissionDenied
+                | Self::PermissionSuspected
+                | Self::Transient
+                | Self::RateLimited
+                | Self::Invalid
+        )
+    }
+}
+
 impl std::fmt::Display for CollectionFailureReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -432,16 +454,9 @@ impl From<BranchProtectionRegime> for BranchProtectionTier {
 
 fn classify_branch_protection_regime(signals: BranchTierSignals) -> BranchProtectionRegime {
     if signals.status == BranchProtectionStatus::Unknown
-        || matches!(
-            signals.reason_kind,
-            Some(
-                CollectionFailureReason::PermissionDenied
-                    | CollectionFailureReason::PermissionSuspected
-                    | CollectionFailureReason::Transient
-                    | CollectionFailureReason::RateLimited
-                    | CollectionFailureReason::Invalid
-            )
-        )
+        || signals
+            .reason_kind
+            .is_some_and(CollectionFailureReason::is_indeterminate)
     {
         return BranchProtectionRegime::Unmeasured;
     }
