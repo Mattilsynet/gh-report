@@ -4539,22 +4539,17 @@ fn is_pending_repo_negative_none() {
 
 #[test]
 fn control_display_name_non_stale() {
-    assert_eq!(super::control_display_name("non_stale"), "Freshness");
+    assert_eq!(super::ControlKey::NonStale.display_name(), "Freshness");
 }
 
 #[test]
 fn control_display_name_non_orphaned() {
-    assert_eq!(super::control_display_name("non_orphaned"), "Ownership");
+    assert_eq!(super::ControlKey::NonOrphaned.display_name(), "Ownership");
 }
 
 #[test]
 fn control_display_name_alert_free() {
-    assert_eq!(super::control_display_name("alert_free"), "Alert-Free");
-}
-
-#[test]
-fn control_display_name_unknown_key() {
-    assert_eq!(super::control_display_name("bogus"), "Unknown");
+    assert_eq!(super::ControlKey::AlertFree.display_name(), "Alert-Free");
 }
 
 /// Helper to build evidence with specific owners and types.

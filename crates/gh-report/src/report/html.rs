@@ -146,12 +146,61 @@ const STYLESHEET: &str = include_str!("../../templates/style.css");
 /// in CSP — no inline scripts needed.
 const WS_CLIENT_JS: &str = include_str!("../../templates/ws.js");
 
+/// Canonical owner of every dashboard control key and its display label
+/// (COM-0027:R1). The wire strings emitted by [`ControlKey::as_str`] are the
+/// authoritative spelling of each control key; the rate-map keys in
+/// [`OwnerMetrics::per_control_coverage`] and the template comparisons are
+/// derived views of them.
+///
+/// Both [`ControlKey::as_str`] and [`ControlKey::display_name`] match
+/// exhaustively with no catch-all arm, so a control added here without a
+/// display label is a compile error rather than a silent `"Unknown"` in the
+/// rendered dashboard.
+///
+/// [`OwnerMetrics::per_control_coverage`]: crate::domain::metrics::OwnerMetrics::per_control_coverage
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ControlKey {
+    SecurityPolicy,
+    SecretScanning,
+    DependabotSecurityUpdates,
+    BranchProtection,
+    NonStale,
+    NonOrphaned,
+    AlertFree,
+}
+
+impl ControlKey {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SecurityPolicy => "security_policy",
+            Self::SecretScanning => "secret_scanning",
+            Self::DependabotSecurityUpdates => "dependabot_security_updates",
+            Self::BranchProtection => "branch_protection",
+            Self::NonStale => "non_stale",
+            Self::NonOrphaned => "non_orphaned",
+            Self::AlertFree => "alert_free",
+        }
+    }
+
+    fn display_name(self) -> &'static str {
+        match self {
+            Self::SecurityPolicy => "Security Policy",
+            Self::SecretScanning => "Secret Scanning",
+            Self::DependabotSecurityUpdates => "Dependabot Status",
+            Self::BranchProtection => "Branch Protection",
+            Self::NonStale => "Freshness",
+            Self::NonOrphaned => "Ownership",
+            Self::AlertFree => "Alert-Free",
+        }
+    }
+}
+
 /// Control names in canonical order for owner tables.
-const CONTROL_NAMES: &[&str] = &[
-    "security_policy",
-    "secret_scanning",
-    "dependabot_security_updates",
-    "branch_protection",
+const CONTROL_NAMES: &[ControlKey] = &[
+    ControlKey::SecurityPolicy,
+    ControlKey::SecretScanning,
+    ControlKey::DependabotSecurityUpdates,
+    ControlKey::BranchProtection,
 ];
 
 /// The 6 of the 7 per-owner Team Health controls whose rates are READ from
@@ -181,13 +230,13 @@ const CONTROL_NAMES: &[&str] = &[
 ///
 /// [`OwnerMetrics::per_control_coverage`]: crate::domain::metrics::OwnerMetrics::per_control_coverage
 /// [`enrich_owner_metrics_with_lifecycle`]: crate::aggregate::metrics::enrich_owner_metrics_with_lifecycle
-const SEC_SCORE_MAP_CONTROLS: &[&str] = &[
-    "security_policy",
-    "secret_scanning",
-    "dependabot_security_updates",
-    "branch_protection",
-    "non_stale",
-    "alert_free",
+const SEC_SCORE_MAP_CONTROLS: &[ControlKey] = &[
+    ControlKey::SecurityPolicy,
+    ControlKey::SecretScanning,
+    ControlKey::DependabotSecurityUpdates,
+    ControlKey::BranchProtection,
+    ControlKey::NonStale,
+    ControlKey::AlertFree,
 ];
 
 /// The seventh per-owner Team Health control: computed render-side from the
@@ -199,7 +248,7 @@ const SEC_SCORE_MAP_CONTROLS: &[&str] = &[
 /// [`OwnerMetrics::per_control_coverage`].
 ///
 /// [`OwnerMetrics::per_control_coverage`]: crate::domain::metrics::OwnerMetrics::per_control_coverage
-const NON_ORPHANED_CONTROL: &str = "non_orphaned";
+const NON_ORPHANED_CONTROL: ControlKey = ControlKey::NonOrphaned;
 
 /// Percent-encoding set for URL path segments.
 ///
@@ -239,20 +288,6 @@ fn render_template<T: askama::Template>(tmpl: &T) -> Result<String, ReportError>
         .map_err(|e| ReportError::TemplateRenderFailed {
             reason: e.to_string(),
         })
-}
-
-/// Human-readable labels for control names.
-fn control_display_name(key: &str) -> &'static str {
-    match key {
-        "security_policy" => "Security Policy",
-        "secret_scanning" => "Secret Scanning",
-        "dependabot_security_updates" => "Dependabot Status",
-        "branch_protection" => "Branch Protection",
-        "non_stale" => "Freshness",
-        "non_orphaned" => "Ownership",
-        "alert_free" => "Alert-Free",
-        _ => "Unknown",
-    }
 }
 
 /// Render the complete multi-page dashboard from collected evidence.
@@ -659,8 +694,8 @@ fn build_owners_view_model(
     let control_columns: Vec<ControlColumn> = CONTROL_NAMES
         .iter()
         .map(|&k| ControlColumn {
-            name: control_display_name(k),
-            tooltip: coverage_control_column_tooltip(k).unwrap_or_default(),
+            name: k.display_name(),
+            tooltip: coverage_control_column_tooltip(k.as_str()).unwrap_or_default(),
         })
         .collect();
 
@@ -679,7 +714,7 @@ fn build_owners_view_model(
                     build_control_cell(
                         &m.per_control_coverage,
                         &m.score_exclusion_counts,
-                        key,
+                        key.as_str(),
                         tiers,
                     )
                 })
@@ -687,7 +722,11 @@ fn build_owners_view_model(
 
             let mut sec_rates: Vec<Option<f64>> = SEC_SCORE_MAP_CONTROLS
                 .iter()
-                .map(|&key| m.per_control_coverage.get(key).and_then(|rm| rm.rate))
+                .map(|&key| {
+                    m.per_control_coverage
+                        .get(key.as_str())
+                        .and_then(|rm| rm.rate)
+                })
                 .collect();
             sec_rates.push(o.non_orphaned.rate);
             let sec_score = compute_health_score(&sec_rates);
@@ -966,8 +1005,8 @@ fn build_owner_detail_view_models(
     let control_columns: Vec<ControlColumn> = CONTROL_NAMES
         .iter()
         .map(|&k| ControlColumn {
-            name: control_display_name(k),
-            tooltip: coverage_control_column_tooltip(k).unwrap_or_default(),
+            name: k.display_name(),
+            tooltip: coverage_control_column_tooltip(k.as_str()).unwrap_or_default(),
         })
         .collect();
 
@@ -998,15 +1037,15 @@ fn build_one_owner_detail_view_model(
     let summary_cards: Vec<SummaryCard> = CONTROL_NAMES
         .iter()
         .map(|&key| SummaryCard {
-            key,
-            label: control_display_name(key).to_string(),
+            key: key.as_str(),
+            label: key.display_name().to_string(),
             cell: build_control_cell(
                 &m.per_control_coverage,
                 &m.score_exclusion_counts,
-                key,
+                key.as_str(),
                 ctx.tiers,
             ),
-            how_to_fix: coverage_control_how_to_fix(key).unwrap_or_default(),
+            how_to_fix: coverage_control_how_to_fix(key.as_str()).unwrap_or_default(),
         })
         .collect();
 
@@ -1033,13 +1072,13 @@ fn build_one_owner_detail_view_model(
     let non_stale_cell = build_control_cell(
         &m.per_control_coverage,
         &m.score_exclusion_counts,
-        "non_stale",
+        ControlKey::NonStale.as_str(),
         ctx.tiers,
     );
     let non_orphaned_cell = required_control_cell(
         &owner.non_orphaned,
         &m.score_exclusion_counts,
-        NON_ORPHANED_CONTROL,
+        NON_ORPHANED_CONTROL.as_str(),
         ctx.tiers,
     );
 
@@ -1082,9 +1121,9 @@ fn build_one_owner_detail_view_model(
         summary_cards,
         has_stale_repos,
         non_stale_cell,
-        non_stale_label: control_display_name("non_stale").to_string(),
+        non_stale_label: ControlKey::NonStale.display_name().to_string(),
         non_orphaned_cell,
-        non_orphaned_label: control_display_name(NON_ORPHANED_CONTROL).to_string(),
+        non_orphaned_label: NON_ORPHANED_CONTROL.display_name().to_string(),
         roster,
         github_url,
         security_url,
