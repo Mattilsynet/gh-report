@@ -666,8 +666,8 @@ fn render_dashboard_index_contains_health_score() {
     let index = &pages["index.html"];
 
     assert!(
-        index.contains("Org Governance"),
-        "index should contain the Org Governance card label"
+        index.contains("Overall Organization Governance Score"),
+        "index should contain the Overall Organization Governance Score card label"
     );
     assert!(
         !index.contains("Organisation Governance Score"),
@@ -736,8 +736,8 @@ fn render_dashboard_index_health_score_na_when_all_zero_denom() {
     let index = &pages["index.html"];
 
     assert!(
-        index.contains("Org Governance"),
-        "Org Governance card should still appear when N/A"
+        index.contains("Overall Organization Governance Score"),
+        "Overall Organization Governance Score card should still appear when N/A"
     );
     assert!(
         index.contains("tier-na"),
@@ -1414,7 +1414,7 @@ fn detail_vm_control_columns_populated() {
     let evidence = evidence_with_owner_repos();
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
-        &evidence.metrics.owner_metrics,
+        &unattributed_owners(&evidence.metrics.owner_metrics),
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
@@ -1450,7 +1450,7 @@ fn detail_vm_summary_cards_have_labels() {
     let evidence = evidence_with_owner_repos();
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
-        &evidence.metrics.owner_metrics,
+        &unattributed_owners(&evidence.metrics.owner_metrics),
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
@@ -1490,7 +1490,7 @@ fn detail_vm_repo_rows_populated() {
     let evidence = evidence_with_owner_repos();
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
-        &evidence.metrics.owner_metrics,
+        &unattributed_owners(&evidence.metrics.owner_metrics),
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
@@ -1524,7 +1524,7 @@ fn detail_vm_repo_rows_sorted_case_insensitive() {
     let evidence = evidence_with_owner_repos();
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
-        &evidence.metrics.owner_metrics,
+        &unattributed_owners(&evidence.metrics.owner_metrics),
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
@@ -1546,7 +1546,7 @@ fn detail_vm_repo_rows_status_dots_correct() {
     let evidence = evidence_with_owner_repos();
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
-        &evidence.metrics.owner_metrics,
+        &unattributed_owners(&evidence.metrics.owner_metrics),
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
@@ -1589,7 +1589,7 @@ fn detail_vm_no_matching_repos_shows_empty() {
     let empty_repos: &[RepositoryEvidence] = &[];
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(empty_repos);
     let detail_vms = build_owner_detail_view_models(
-        &owner_metrics,
+        &unattributed_owners(&owner_metrics),
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
@@ -1625,7 +1625,7 @@ fn detail_vm_multi_owner_repo_appears_in_both() {
 
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
-        &evidence.metrics.owner_metrics,
+        &unattributed_owners(&evidence.metrics.owner_metrics),
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
@@ -1654,7 +1654,7 @@ fn detail_vm_repo_url_points_to_github() {
     let evidence = evidence_with_owner_repos();
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
-        &evidence.metrics.owner_metrics,
+        &unattributed_owners(&evidence.metrics.owner_metrics),
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
@@ -1696,7 +1696,7 @@ fn detail_vm_repo_url_percent_encodes_special_chars() {
 
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
-        &evidence.metrics.owner_metrics,
+        &unattributed_owners(&evidence.metrics.owner_metrics),
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
@@ -2429,7 +2429,7 @@ fn detail_vm_repo_row_metadata_defaults_when_no_data() {
     let evidence = evidence_with_owner_repos();
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
-        &evidence.metrics.owner_metrics,
+        &unattributed_owners(&evidence.metrics.owner_metrics),
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
@@ -2495,7 +2495,7 @@ fn detail_vm_repo_row_metadata_populated_with_data() {
 
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
-        &evidence.metrics.owner_metrics,
+        &unattributed_owners(&evidence.metrics.owner_metrics),
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
@@ -2561,7 +2561,7 @@ fn detail_vm_unregistered_committer_flagged_when_name_present_but_no_login_match
 
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
-        &evidence.metrics.owner_metrics,
+        &unattributed_owners(&evidence.metrics.owner_metrics),
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
@@ -2611,7 +2611,7 @@ fn detail_vm_last_committer_url_percent_encodes_login() {
 
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
-        &evidence.metrics.owner_metrics,
+        &unattributed_owners(&evidence.metrics.owner_metrics),
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
@@ -2856,7 +2856,7 @@ fn detail_vm_repo_rows_have_visibility_field() {
     let evidence = evidence_with_owner_repos();
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
     let detail_vms = build_owner_detail_view_models(
-        &evidence.metrics.owner_metrics,
+        &unattributed_owners(&evidence.metrics.owner_metrics),
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
@@ -4286,9 +4286,9 @@ fn repo_score_matches_expected_value_per_case() {
 #[test]
 fn owner_sec_score_computed_in_overview() {
     let evidence = evidence_with_owner_repos();
-    let owners_vm =
-        super::build_owners_view_model(&evidence.metrics.owner_metrics, &CoverageTiers::default())
-            .expect("should have owner metrics");
+    let attributed = super::AttributedOwner::attribute_all(&evidence.metrics.owner_metrics, &[]);
+    let owners_vm = super::build_owners_view_model(&attributed, &CoverageTiers::default())
+        .expect("should have owner metrics");
 
     assert!(!owners_vm.rows.is_empty());
     let row = &owners_vm.rows[0];
@@ -4359,8 +4359,8 @@ fn render_owner_detail_html_repo_posture_tooltip_states_formula_and_exclusion_ru
 }
 
 #[test]
-fn render_owner_detail_html_stale_repos_card_disambiguates_freshness_from_archival_coverage() {
-    let evidence = evidence_with_owner_repos();
+fn render_owner_detail_html_non_stale_repos_card_disambiguates_freshness_from_archival_coverage() {
+    let evidence = evidence_with_mixed_owner_types();
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
 
     let detail_page = pages
@@ -4370,20 +4370,135 @@ fn render_owner_detail_html_stale_repos_card_disambiguates_freshness_from_archiv
         .1;
 
     assert!(
-        detail_page.contains("Stale Repos"),
-        "Stale Repos card label must be unchanged (no value/label change for this card)"
+        detail_page.contains("card-label\">Freshness"),
+        "the card label must be the control-vocabulary noun 'Freshness'; detail page:\n{detail_page}"
     );
+
+    let card_block = detail_page
+        .split("card-label\">Freshness")
+        .nth(1)
+        .expect("Freshness card block")
+        .split("</div>")
+        .next()
+        .expect("card block body");
+    assert!(
+        card_block.contains('%'),
+        "the Freshness card value must be a percentage, not a bare count; card block:\n{card_block}"
+    );
+
     assert!(
         detail_page.contains("(total - stale) / total"),
-        "Stale Repos card tooltip must state the Freshness control's exact formula; detail page:\n{detail_page}"
+        "Freshness card tooltip must state the Freshness control's exact formula; detail page:\n{detail_page}"
     );
     assert!(
-        detail_page.contains("Freshness"),
-        "Stale Repos card tooltip must name the Freshness control it disambiguates from"
+        !detail_page.contains("the owner's Freshness rate"),
+        "the tooltip must not restate the card's own name back at it; under a card named Freshness that phrasing is circular"
     );
     assert!(
         detail_page.contains("Distinct from the org-wide Archival Coverage"),
-        "Stale Repos card tooltip must explicitly disambiguate from the org-level Archival Coverage metric"
+        "Freshness card tooltip must explicitly disambiguate from the org-level Archival Coverage metric"
+    );
+}
+
+fn evidence_with_enriched_single_team_owner() -> Evidence {
+    let repos = vec![test_fixtures::make_repository_evidence(
+        "fresh-team-repo",
+        Visibility::Public,
+        false,
+        test_fixtures::make_checks(
+            test_fixtures::policy_pass_setting(),
+            test_fixtures::secret_enabled_observable(false),
+            test_fixtures::dependabot_enabled(),
+            test_fixtures::branch_pass(),
+            test_fixtures::codeowners_with_owners(&["@org/fresh-team"]),
+        ),
+    )];
+
+    let mut metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
+    crate::aggregate::metrics::enrich_owner_metrics_with_lifecycle(
+        &mut metrics.owner_metrics,
+        &repos,
+        &test_fixtures::make_timestamp(),
+    );
+    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
+
+    test_fixtures::make_full_evidence(
+        test_fixtures::make_metadata(),
+        stats,
+        metrics,
+        test_fixtures::make_observability(),
+        repos,
+    )
+}
+
+fn owner_detail_card_block<'page>(detail_page: &'page str, card_label: &str) -> &'page str {
+    let needle = format!("card-label\">{card_label} ");
+    let label_at = detail_page
+        .find(&needle)
+        .unwrap_or_else(|| panic!("expected a '{card_label}' card; detail page:\n{detail_page}"));
+    let start = detail_page[..label_at]
+        .rfind("<div class=\"card")
+        .expect("card opening tag preceding the card label");
+
+    let rest = &detail_page[start..];
+    let mut depth = 0_usize;
+    let mut cursor = 0_usize;
+    let end = loop {
+        let next_open = rest[cursor..].find("<div").map(|at| cursor + at);
+        let next_close = rest[cursor..].find("</div>").map(|at| cursor + at);
+        match (next_open, next_close) {
+            (Some(open), Some(close)) if open < close => {
+                depth += 1;
+                cursor = open + "<div".len();
+            }
+            (_, Some(close)) => {
+                depth = depth
+                    .checked_sub(1)
+                    .expect("card markup closes more divs than it opens");
+                cursor = close + "</div>".len();
+                if depth == 0 {
+                    break cursor;
+                }
+            }
+            _ => panic!("card markup never closes; detail page:\n{detail_page}"),
+        }
+    };
+
+    &detail_page[start..start + end]
+}
+
+#[test]
+fn render_owner_detail_html_non_stale_repos_card_pins_enriched_rate_tier_and_width() {
+    let evidence = evidence_with_enriched_single_team_owner();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+    let detail_page = pages
+        .iter()
+        .find(|(k, _)| k.starts_with("owners/"))
+        .expect("expected an owner detail page")
+        .1;
+
+    let card = owner_detail_card_block(detail_page, "Freshness");
+
+    assert!(
+        card.contains("<p class=\"card-value\">100.0% (1/1)</p>"),
+        "the enriched Freshness card must render the reused non_stale RateMetric exactly as '100.0% (1/1)', not 'N/A' and not a bare count; card:\n{card}"
+    );
+    assert!(
+        card.contains("tier-pass"),
+        "a 100% non-stale rate must style as the positive tier-pass (polarity inverted from the old stale-count tier-warn); card:\n{card}"
+    );
+    assert!(
+        !card.contains("tier-warn"),
+        "a fully non-stale owner must not carry the negative tier-warn styling; card:\n{card}"
+    );
+    assert!(
+        card.contains("progress-fill tier-pass w-100"),
+        "the progress bar must be full width (w-100) and positively tiered for a 100% non-stale rate; card:\n{card}"
+    );
+    assert!(
+        !card.contains("N/A"),
+        "an enriched owner must never render N/A for the Freshness card; card:\n{card}"
     );
 }
 
@@ -4424,17 +4539,17 @@ fn is_pending_repo_negative_none() {
 
 #[test]
 fn control_display_name_non_stale() {
-    assert_eq!(super::control_display_name("non_stale"), "Freshness");
+    assert_eq!(super::ControlKey::NonStale.display_name(), "Freshness");
+}
+
+#[test]
+fn control_display_name_non_orphaned() {
+    assert_eq!(super::ControlKey::NonOrphaned.display_name(), "Ownership");
 }
 
 #[test]
 fn control_display_name_alert_free() {
-    assert_eq!(super::control_display_name("alert_free"), "Alert-Free");
-}
-
-#[test]
-fn control_display_name_unknown_key() {
-    assert_eq!(super::control_display_name("bogus"), "Unknown");
+    assert_eq!(super::ControlKey::AlertFree.display_name(), "Alert-Free");
 }
 
 /// Helper to build evidence with specific owners and types.
@@ -4510,9 +4625,9 @@ fn evidence_with_mixed_owner_types() -> Evidence {
 #[test]
 fn podium_excludes_user_owners() {
     let evidence = evidence_with_mixed_owner_types();
-    let owners_vm =
-        build_owners_view_model(&evidence.metrics.owner_metrics, &CoverageTiers::default())
-            .expect("owner metrics present");
+    let attributed = super::AttributedOwner::attribute_all(&evidence.metrics.owner_metrics, &[]);
+    let owners_vm = build_owners_view_model(&attributed, &CoverageTiers::default())
+        .expect("owner metrics present");
     let podium = build_top_security_teams(&owners_vm);
 
     assert!(
@@ -4585,9 +4700,9 @@ fn render_owner_detail_html_present_individual_user_owner_shows_no_warning_badge
 #[test]
 fn podium_gold_in_center_position() {
     let evidence = evidence_with_mixed_owner_types();
-    let owners_vm =
-        build_owners_view_model(&evidence.metrics.owner_metrics, &CoverageTiers::default())
-            .expect("owner metrics present");
+    let attributed = super::AttributedOwner::attribute_all(&evidence.metrics.owner_metrics, &[]);
+    let owners_vm = build_owners_view_model(&attributed, &CoverageTiers::default())
+        .expect("owner metrics present");
     let podium = build_top_security_teams(&owners_vm);
 
     let ranks: Vec<&str> = podium.iter().map(|t| t.rank_class).collect();
@@ -4635,7 +4750,8 @@ fn podium_zero_teams_produces_empty() {
         &test_fixtures::make_timestamp(),
     );
 
-    let owners_vm = build_owners_view_model(&metrics.owner_metrics, &CoverageTiers::default())
+    let attributed = super::AttributedOwner::attribute_all(&metrics.owner_metrics, &[]);
+    let owners_vm = build_owners_view_model(&attributed, &CoverageTiers::default())
         .expect("owner metrics present");
     let podium = build_top_security_teams(&owners_vm);
 
@@ -4680,7 +4796,8 @@ fn podium_one_team_shows_only_gold() {
         &test_fixtures::make_timestamp(),
     );
 
-    let owners_vm = build_owners_view_model(&metrics.owner_metrics, &CoverageTiers::default())
+    let attributed = super::AttributedOwner::attribute_all(&metrics.owner_metrics, &[]);
+    let owners_vm = build_owners_view_model(&attributed, &CoverageTiers::default())
         .expect("owner metrics present");
     let podium = build_top_security_teams(&owners_vm);
     let ranks: Vec<&str> = podium.iter().map(|t| t.rank_class).collect();
@@ -4928,9 +5045,9 @@ fn podium_ordering_holds_with_100_percent_exemption_applied() {
 #[test]
 fn owner_sec_score_includes_lifecycle_controls() {
     let evidence = evidence_with_mixed_owner_types();
-    let owners_vm =
-        super::build_owners_view_model(&evidence.metrics.owner_metrics, &CoverageTiers::default())
-            .expect("should have owner metrics");
+    let attributed = super::AttributedOwner::attribute_all(&evidence.metrics.owner_metrics, &[]);
+    let owners_vm = super::build_owners_view_model(&attributed, &CoverageTiers::default())
+        .expect("should have owner metrics");
 
     let security_team = owners_vm
         .rows
@@ -4946,4 +5063,296 @@ fn owner_sec_score_includes_lifecycle_controls() {
         security_team.sec_score_formatted, "100.0%",
         "all-passing team with fresh repo and no alerts should score 100%"
     );
+}
+
+/// One team owner with `owned` CODEOWNERS-owned repos, plus `orphans`
+/// orphan repos (no CODEOWNERS) whose last committer sits on that team's
+/// roster, so the render-time orphan-attribution join attributes them to
+/// the team.
+///
+/// The owner's non-orphaned share is therefore `owned / (owned + orphans)`.
+/// Callers pick asymmetric counts so that the correct formula and its
+/// inversion `attributed / (owned + attributed)` render different values.
+fn evidence_with_team_owner_and_attributed_orphans(owned: usize, orphans: usize) -> Evidence {
+    use crate::domain::evidence::LastCommitInfo;
+    use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRoster, TeamRosterStatus};
+
+    let mut repos: Vec<_> = (0..owned)
+        .map(|i| {
+            test_fixtures::make_repository_evidence(
+                &format!("owned-team-repo-{i}"),
+                Visibility::Public,
+                false,
+                test_fixtures::make_checks(
+                    test_fixtures::policy_pass_setting(),
+                    test_fixtures::secret_enabled_observable(false),
+                    test_fixtures::dependabot_enabled(),
+                    test_fixtures::branch_pass(),
+                    test_fixtures::codeowners_with_owners(&["@org/fresh-team"]),
+                ),
+            )
+        })
+        .collect();
+
+    for i in 0..orphans {
+        let mut orphan = test_fixtures::make_repository_evidence(
+            &format!("orphan-team-repo-{i}"),
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_absent(),
+            ),
+        );
+        orphan.last_commit = Some(LastCommitInfo {
+            committer_login: Some("alice".to_string()),
+            committer_name: Some("Alice Anderson".to_string()),
+            commit_date: Some("2026-04-01T00:00:00Z".to_string()),
+        });
+        repos.push(orphan);
+    }
+
+    let mut metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
+    crate::aggregate::metrics::enrich_owner_metrics_with_lifecycle(
+        &mut metrics.owner_metrics,
+        &repos,
+        &test_fixtures::make_timestamp(),
+    );
+    metrics.team_rosters = vec![TeamRoster {
+        canonical_owner: "@org/fresh-team".to_string(),
+        team_slug: "fresh-team".to_string(),
+        status: TeamRosterStatus::Complete,
+        members: vec![TeamMember {
+            login: "alice".to_string(),
+            role: TeamMemberRole::Maintainer,
+            in_org: None,
+        }],
+    }];
+    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
+
+    test_fixtures::make_full_evidence(
+        test_fixtures::make_metadata(),
+        stats,
+        metrics,
+        test_fixtures::make_observability(),
+        repos,
+    )
+}
+
+fn owner_detail_page(pages: &HashMap<String, String>) -> &String {
+    pages
+        .iter()
+        .find(|(k, _)| k.starts_with("owners/"))
+        .expect("expected an owner detail page")
+        .1
+}
+
+/// Isolate one element that carries `title="{owner}"`, bounded by
+/// `open_tag`/`close_tag`, so an assertion binds to THAT owner rather than
+/// to any substring anywhere on the page.
+fn titled_block<'page>(
+    page: &'page str,
+    owner: &str,
+    open_tag: &str,
+    close_tag: &str,
+) -> &'page str {
+    let needle = format!("title=\"{owner}\"");
+    let title_at = page
+        .find(&needle)
+        .unwrap_or_else(|| panic!("expected an element titled '{owner}'; page:\n{page}"));
+    let start = page[..title_at]
+        .rfind(open_tag)
+        .unwrap_or_else(|| panic!("expected a '{open_tag}' opening the '{owner}' block"));
+    let end = page[start..].find(close_tag).map_or_else(
+        || panic!("expected a '{close_tag}' closing the '{owner}' block"),
+        |at| start + at + close_tag.len(),
+    );
+    &page[start..end]
+}
+
+/// The owners-table `<tr>` for one owner.
+fn owners_table_row_block<'page>(owners_page: &'page str, owner: &str) -> &'page str {
+    titled_block(owners_page, owner, "<tr>", "</tr>")
+}
+
+/// The dashboard top-security-teams `<a class="card ...">` for one owner.
+fn top_security_team_card_block<'page>(index_page: &'page str, owner: &str) -> &'page str {
+    titled_block(index_page, owner, "<a href=\"owners/", "</a>")
+}
+
+#[test]
+fn render_owner_detail_html_non_orphaned_repos_card_pins_render_side_rate_tier_and_width() {
+    let evidence = evidence_with_enriched_single_team_owner();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+    let card = owner_detail_card_block(owner_detail_page(&pages), "Ownership");
+
+    assert!(
+        card.contains("<p class=\"card-value\">100.0% (1/1)</p>"),
+        "an owner with one owned repo and no attributed orphans must render '100.0% (1/1)'; card:\n{card}"
+    );
+    assert!(
+        card.contains("tier-pass"),
+        "a 100% non-orphaned rate must style as the positive tier-pass; card:\n{card}"
+    );
+    assert!(
+        card.contains("progress-fill tier-pass w-100"),
+        "the progress bar must be full width and positively tiered at 100%; card:\n{card}"
+    );
+    assert!(
+        !card.contains("N/A"),
+        "an owner with at least one owned repo must never render N/A; card:\n{card}"
+    );
+}
+
+/// Anti-inversion pin. Counts are deliberately ASYMMETRIC: with owned=2 and
+/// attributed=1 the correct `owned / (owned + attributed)` renders
+/// `66.7% (2/3)`, while the inversion `attributed / (owned + attributed)`
+/// would render `33.3% (1/3)` — different numerator AND different rate, so
+/// this assertion can actually discriminate the two formulas. (A 1-vs-1
+/// fixture cannot: both readings render an identical `50.0% (1/2)`.)
+#[test]
+fn render_owner_detail_html_non_orphaned_repos_card_counts_owned_over_owned_plus_attributed() {
+    let evidence = evidence_with_team_owner_and_attributed_orphans(2, 1);
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+    let card = owner_detail_card_block(owner_detail_page(&pages), "Ownership");
+
+    assert!(
+        card.contains("<p class=\"card-value\">66.7% (2/3)</p>"),
+        "two owned repos against one attributed orphan is 2/3 = 66.7%, with the OWNED count as numerator; card:\n{card}"
+    );
+    assert!(
+        !card.contains("33.3% (1/3)"),
+        "33.3% (1/3) is the inverted attributed/(owned + attributed) reading and must never render; card:\n{card}"
+    );
+}
+
+/// Polarity pin, the property that makes this a valid geometric-mean
+/// control: accruing MORE orphan-attributed repos must LOWER both the
+/// non-orphaned rate and the owner's Team Health score. Two otherwise
+/// identical fixtures differ only in orphan count.
+#[test]
+fn non_orphaned_control_is_monotonically_higher_is_better() {
+    let fewer = render_dashboard(
+        &evidence_with_team_owner_and_attributed_orphans(2, 1),
+        &DashboardConfig::default(),
+    )
+    .unwrap();
+    let more = render_dashboard(
+        &evidence_with_team_owner_and_attributed_orphans(2, 3),
+        &DashboardConfig::default(),
+    )
+    .unwrap();
+
+    let fewer_card = owner_detail_card_block(owner_detail_page(&fewer), "Ownership");
+    let more_card = owner_detail_card_block(owner_detail_page(&more), "Ownership");
+
+    assert!(
+        fewer_card.contains("<p class=\"card-value\">66.7% (2/3)</p>"),
+        "two owned, one attributed orphan is 2/3; card:\n{fewer_card}"
+    );
+    assert!(
+        more_card.contains("<p class=\"card-value\">40.0% (2/5)</p>"),
+        "two owned, three attributed orphans is 2/5 — the SAME owned numerator over a larger denominator; card:\n{more_card}"
+    );
+
+    let fewer_index = fewer.get("index.html").expect("dashboard index page");
+    let more_index = more.get("index.html").expect("dashboard index page");
+    let fewer_score = top_security_team_card_block(fewer_index, "@org/fresh-team").to_string();
+    let more_score = top_security_team_card_block(more_index, "@org/fresh-team").to_string();
+
+    assert!(
+        fewer_score.contains("<p class=\"card-value\">94.4%</p>"),
+        "six controls at 100% and non_orphaned at 66.7% give exp((6 * ln 100 + ln 66.7) / 7) = 94.378... -> 94.4%; card:\n{fewer_score}"
+    );
+    assert!(
+        more_score.contains("<p class=\"card-value\">87.7%</p>"),
+        "six controls at 100% and non_orphaned at 40.0% give exp((6 * ln 100 + ln 40) / 7) = 87.730... -> 87.7%; card:\n{more_score}"
+    );
+}
+
+#[test]
+fn non_orphaned_repos_card_tooltip_states_formula_and_seven_control_set() {
+    let evidence = evidence_with_enriched_single_team_owner();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let detail_page = owner_detail_page(&pages);
+
+    assert!(
+        detail_page.contains("owned / (owned + attributed)"),
+        "the Ownership tooltip must state its exact formula"
+    );
+    assert!(
+        detail_page.contains("one of seven controls behind the Team Health score"),
+        "owner-level tooltips must say seven controls once Non-Orphaned joins the set"
+    );
+    assert!(
+        !detail_page.contains("one of six controls behind the Team Health score"),
+        "no owner-level tooltip may still claim a six-control Team Health set"
+    );
+}
+
+/// The owner-level Team Health set is seven controls: six read from
+/// `per_control_coverage` plus the computed `non_orphaned`. The seventh must
+/// NOT be a member of the map-backed list — that is what makes "absent from
+/// the map" an unrepresentable state for it, so no caller can silently
+/// produce a six-control score.
+#[test]
+fn sec_score_controls_is_the_seven_owner_level_controls() {
+    assert_eq!(
+        super::SEC_SCORE_MAP_CONTROLS.len(),
+        6,
+        "six of the seven owner controls are read from per_control_coverage"
+    );
+    assert!(
+        !super::SEC_SCORE_MAP_CONTROLS.contains(&super::NON_ORPHANED_CONTROL),
+        "non_orphaned must never be looked up in the string-keyed coverage map; it is computed from required orphan attribution"
+    );
+    assert_eq!(
+        super::SEC_SCORE_MAP_CONTROLS.len() + 1,
+        7,
+        "the per-owner Team Health set gains non_orphaned as a seventh control"
+    );
+}
+
+/// The seventh control actually moves the score. Hand-derived from the
+/// geometric mean: six controls at 100% and `non_orphaned` at 50% give
+/// `exp((6 * ln 100 + ln 50) / 7) = exp(4.5061486) = 90.572...`, which
+/// renders as the one-decimal detail format `90.6%` and the whole-number
+/// table format `91%`. Both are asserted against the TARGET OWNER's own
+/// isolated block, never as a bare substring of the page.
+#[test]
+fn owner_team_health_score_includes_non_orphaned_control() {
+    let evidence = evidence_with_team_owner_and_attributed_orphans(1, 1);
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let owners_page = pages.get("owners.html").expect("owners page");
+    let index_page = pages.get("index.html").expect("dashboard index page");
+
+    let row = owners_table_row_block(owners_page, "@org/fresh-team");
+    assert!(
+        row.contains("<span class=\"score-label\">91%</span>"),
+        "the owner's own Team Health table cell must show the whole-number 91% once the 50% non-orphaned control joins the geometric mean; row:\n{row}"
+    );
+    assert!(
+        !row.contains("<span class=\"score-label\">100%</span>"),
+        "the pre-seventh-control 100% Team Health score must not survive in the owner's row; row:\n{row}"
+    );
+
+    let card = top_security_team_card_block(index_page, "@org/fresh-team");
+    assert!(
+        card.contains("<p class=\"card-value\">90.6%</p>"),
+        "the owner's own dashboard card must show the one-decimal 90.6% detail format; card:\n{card}"
+    );
+}
+
+/// Pair owner metrics with EMPTY render-time orphan attribution, for tests
+/// whose subject is not the seventh Team Health control. Every owner's
+/// `non_orphaned` rate is a measured 100% here, never an absent control.
+fn unattributed_owners(
+    owner_metrics: &[crate::domain::metrics::OwnerMetrics],
+) -> Vec<super::AttributedOwner<'_>> {
+    super::AttributedOwner::attribute_all(owner_metrics, &[])
 }
