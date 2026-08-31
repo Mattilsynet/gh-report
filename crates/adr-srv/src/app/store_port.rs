@@ -76,12 +76,20 @@ impl AdrStorePort for NativeAdrStore {
     type Id = ();
     type Error = NativeAdrStorePortError;
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "the native store writes through a synchronous sled-backed facade with nothing to await; the `async` keyword is dictated by the AdrStorePort trait signature"
+    )]
     async fn create(&self, event: AdrIngested) -> Result<((), NonZeroU64), Self::Error> {
         let native = AdrIngestedEvent::try_from(&event)?;
         self.record(native)?;
         Ok(((), NonZeroU64::new(1).expect("1 is non-zero")))
     }
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "the native store writes through a synchronous sled-backed facade with nothing to await; the `async` keyword is dictated by the AdrStorePort trait signature"
+    )]
     async fn append(
         &self,
         (): (),
@@ -93,6 +101,10 @@ impl AdrStorePort for NativeAdrStore {
         Ok(NonZeroU64::new(1).expect("1 is non-zero"))
     }
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "the native store writes through a synchronous sled-backed facade with nothing to await; the `async` keyword is dictated by the AdrStorePort trait signature"
+    )]
     async fn replay_all(&self) -> Result<Vec<ReplayedStream<()>>, Self::Error> {
         let mut grouped: std::collections::BTreeMap<AdrId, Vec<AdrIngested>> =
             std::collections::BTreeMap::new();

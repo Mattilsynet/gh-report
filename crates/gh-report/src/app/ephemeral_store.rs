@@ -89,6 +89,10 @@ fn build_envelopes<E: DomainEvent>(
 impl<E: DomainEvent> EventStore for EphemeralEventStore<E> {
     type Event = E;
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "the ephemeral store operates on a Mutex-guarded in-memory map with no I/O to await; the `async` keyword is dictated by the EventStore trait signature"
+    )]
     async fn load(&self, id: AggregateId) -> Result<Vec<EventEnvelope<Self::Event>>, StoreError> {
         let state = self
             .state
@@ -100,6 +104,10 @@ impl<E: DomainEvent> EventStore for EphemeralEventStore<E> {
         Ok(stream)
     }
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "the ephemeral store operates on a Mutex-guarded in-memory map with no I/O to await; the `async` keyword is dictated by the EventStore trait signature"
+    )]
     async fn create(
         &self,
         events: Vec<Self::Event>,
@@ -129,6 +137,10 @@ impl<E: DomainEvent> EventStore for EphemeralEventStore<E> {
         Ok((id, envelopes))
     }
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "the ephemeral store operates on a Mutex-guarded in-memory map with no I/O to await; the `async` keyword is dictated by the EventStore trait signature"
+    )]
     async fn append(
         &self,
         id: AggregateId,

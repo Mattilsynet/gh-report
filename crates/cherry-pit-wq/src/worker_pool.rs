@@ -453,6 +453,10 @@ mod tests {
         type Context = String;
         type Result = String;
 
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "mock executor returns immediately with no I/O to await; the `async` keyword is dictated by the JobExecutor trait signature"
+        )]
         async fn execute<'a>(
             &'a self,
             domain_key: &'a DomainKey,
@@ -469,6 +473,10 @@ mod tests {
         type Context = String;
         type Result = String;
 
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "mock executor returns immediately with no I/O to await; the `async` keyword is dictated by the JobExecutor trait signature"
+        )]
         async fn execute<'a>(
             &'a self,
             _domain_key: &'a DomainKey,

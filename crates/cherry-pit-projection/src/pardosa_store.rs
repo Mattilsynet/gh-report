@@ -268,6 +268,10 @@ where
         clippy::unused_async,
         reason = "async fn preserves a call-site-compatible async surface for callers; pardosa's facade is sync (PGN-0010:R5 bridge convention)"
     )]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "pardosa's facade is synchronous (PGN-0010:R5 bridge convention); the `async` keyword preserves the trait's async surface for callers"
+    )]
     pub async fn load_snapshot(&self, aggregate_id: AggregateId) -> ProjectionResult<Option<P>> {
         let latest = self.store.latest_defined(record_key).map_err(to_infra)?;
         let key = snapshot_key(aggregate_id, &self.projection_name);
@@ -291,6 +295,10 @@ where
     #[expect(
         clippy::unused_async,
         reason = "async fn preserves a call-site-compatible async surface for callers; pardosa's facade is sync (PGN-0010:R5 bridge convention)"
+    )]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "pardosa's facade is synchronous (PGN-0010:R5 bridge convention); the `async` keyword preserves the trait's async surface for callers"
     )]
     pub async fn load_checkpoint(
         &self,
@@ -346,6 +354,10 @@ where
     #[expect(
         clippy::unused_async,
         reason = "async fn preserves a call-site-compatible async surface for callers; pardosa's facade is sync (PGN-0010:R5 bridge convention)"
+    )]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "pardosa's facade is synchronous (PGN-0010:R5 bridge convention); the `async` keyword preserves the trait's async surface for callers"
     )]
     pub async fn delete(&self, aggregate_id: AggregateId) -> ProjectionResult<()> {
         let projection_name = to_bounded_name(&self.projection_name)?;

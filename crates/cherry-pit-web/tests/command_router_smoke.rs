@@ -67,6 +67,10 @@ struct StubGateway;
 impl CommandGateway for StubGateway {
     type Aggregate = StubAggregate;
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "test double answers from in-memory state with no I/O to await; the `async` keyword is dictated by the trait signature under test"
+    )]
     async fn create<C>(
         &self,
         _cmd: C,
@@ -79,6 +83,10 @@ impl CommandGateway for StubGateway {
         Err(DispatchError::Infrastructure("stub gateway".into()))
     }
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "test double answers from in-memory state with no I/O to await; the `async` keyword is dictated by the trait signature under test"
+    )]
     async fn send<C>(
         &self,
         _id: AggregateId,
@@ -98,10 +106,18 @@ struct StubStore;
 impl EventStore for StubStore {
     type Event = StubEvent;
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "test double answers from in-memory state with no I/O to await; the `async` keyword is dictated by the trait signature under test"
+    )]
     async fn load(&self, _id: AggregateId) -> Result<Vec<EventEnvelope<Self::Event>>, StoreError> {
         Ok(vec![])
     }
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "test double answers from in-memory state with no I/O to await; the `async` keyword is dictated by the trait signature under test"
+    )]
     async fn create(
         &self,
         _events: Vec<Self::Event>,
@@ -110,6 +126,10 @@ impl EventStore for StubStore {
         Err(StoreError::Infrastructure("stub store".into()))
     }
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "test double answers from in-memory state with no I/O to await; the `async` keyword is dictated by the trait signature under test"
+    )]
     async fn append(
         &self,
         _id: AggregateId,
@@ -150,6 +170,10 @@ impl CommandRouter for StubRouter {
         }
     }
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "test double answers from in-memory state with no I/O to await; the `async` keyword is dictated by the trait signature under test"
+    )]
     async fn dispatch(
         &self,
         _gateway: &Self::Gateway,

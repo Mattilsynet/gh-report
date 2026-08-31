@@ -168,10 +168,18 @@ fn build_envelopes(
 impl EventStore for InMemStore {
     type Event = CounterEvent;
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "test double answers from in-memory state with no I/O to await; the `async` keyword is dictated by the trait signature under test"
+    )]
     async fn load(&self, id: AggregateId) -> Result<Vec<EventEnvelope<Self::Event>>, StoreError> {
         Ok(self.snapshot(id))
     }
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "test double answers from in-memory state with no I/O to await; the `async` keyword is dictated by the trait signature under test"
+    )]
     async fn create(
         &self,
         events: Vec<Self::Event>,
@@ -191,6 +199,10 @@ impl EventStore for InMemStore {
         Ok((aggregate_id, envelopes))
     }
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "test double answers from in-memory state with no I/O to await; the `async` keyword is dictated by the trait signature under test"
+    )]
     async fn append(
         &self,
         id: AggregateId,

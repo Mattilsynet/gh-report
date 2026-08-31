@@ -84,6 +84,10 @@ impl<E: DomainEvent> Default for FakeBus<E> {
 impl<E: DomainEvent> EventBus for FakeBus<E> {
     type Event = E;
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "FakeBus records envelopes into a Mutex-backed Vec with no I/O to await; the `async` keyword is dictated by the EventBus trait signature"
+    )]
     async fn publish(
         &self,
         events: &[EventEnvelope<Self::Event>],
@@ -193,6 +197,10 @@ fn build_envelopes<E: DomainEvent>(
 impl<E: DomainEvent> EventStore for InMemoryEventStore<E> {
     type Event = E;
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "the in-memory store reads from a Mutex-guarded map with no I/O to await; the `async` keyword is dictated by the EventStore trait signature"
+    )]
     async fn load(&self, id: AggregateId) -> Result<Vec<EventEnvelope<Self::Event>>, StoreError> {
         let state = self
             .state
@@ -204,6 +212,10 @@ impl<E: DomainEvent> EventStore for InMemoryEventStore<E> {
         Ok(stream)
     }
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "the in-memory store creates streams under a Mutex with no I/O to await; the `async` keyword is dictated by the EventStore trait signature"
+    )]
     async fn create(
         &self,
         events: Vec<Self::Event>,
@@ -233,6 +245,10 @@ impl<E: DomainEvent> EventStore for InMemoryEventStore<E> {
         Ok((id, envelopes))
     }
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "the in-memory store appends under a Mutex with no I/O to await; the `async` keyword is dictated by the EventStore trait signature"
+    )]
     async fn append(
         &self,
         id: AggregateId,
@@ -276,6 +292,10 @@ impl<E: DomainEvent> EventStore for InMemoryEventStore<E> {
 }
 
 impl<E: DomainEvent> ListableEventStore for InMemoryEventStore<E> {
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "listing aggregate ids walks a Mutex-guarded map with no I/O to await; the `async` keyword is dictated by the ListableEventStore trait signature"
+    )]
     async fn list_aggregates(&self) -> Result<Vec<AggregateId>, StoreError> {
         let state = self
             .state

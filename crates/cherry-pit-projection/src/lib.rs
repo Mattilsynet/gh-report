@@ -484,6 +484,10 @@ mod tests {
     impl EventStore for StaticStore {
         type Event = CounterEvent;
 
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "test stub serves a fixed in-memory stream with no I/O to await; the `async` keyword is dictated by the EventStore trait signature"
+        )]
         async fn load(
             &self,
             _id: AggregateId,
@@ -491,6 +495,10 @@ mod tests {
             Ok(self.stream.lock().expect("stream mutex").clone())
         }
 
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "test stub serves a fixed in-memory stream with no I/O to await; the `async` keyword is dictated by the EventStore trait signature"
+        )]
         async fn create(
             &self,
             _events: Vec<Self::Event>,
@@ -499,6 +507,10 @@ mod tests {
             Err(StoreError::Infrastructure("unused".into()))
         }
 
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "test stub serves a fixed in-memory stream with no I/O to await; the `async` keyword is dictated by the EventStore trait signature"
+        )]
         async fn append(
             &self,
             _id: AggregateId,
