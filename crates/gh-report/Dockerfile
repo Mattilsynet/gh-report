@@ -14,7 +14,7 @@
 #   podman run --rm -p 8080:8080 -e GITHUB_TOKEN=ghp_... -e BIND_ADDRESS=0.0.0.0 gh-report --org MyOrg
 
 # ── Stage 1: Build ───────────────────────────────────────────────
-FROM rust:1.98.0-bookworm@sha256:0000000000000000000000000000000000000000000000000000000000000bad AS builder
+FROM rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922 AS builder
 
 # cmake + clang + perl: required by aws-lc-sys (transitive dep of jsonwebtoken).
 # --no-install-recommends keeps the layer small.
