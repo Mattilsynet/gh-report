@@ -1,7 +1,7 @@
 # CHE-0087. Leptos CSR Adoption for gh-report Sortable Tables
 
 Date: 2026-07-09
-Last-reviewed: 2026-08-19 — amended — R10 pinned-channel numeral corrected 1.96 -> 1.97 to match rust-toolchain.toml/CI/AGENTS.md ground truth; reasoning unchanged (mission:ghr-pkg-w345-w5)
+Last-reviewed: 2026-08-31 — refined — R10 and Context pinned-channel numerals corrected to 1.98 to match rust-toolchain.toml/CI/AGENTS.md ground truth; reasoning unchanged (mission:ghr-508w6)
 Tier: B
 Status: Accepted
 Crates: gh-report, gh-report-web-client
@@ -12,7 +12,7 @@ References: CHE-0007, CHE-0086, RST-0005, SEC-0004, RST-0004, RST-0002, SEC-0009
 
 ## Context
 
-gh-report's HTML tables are server-rendered and static; users cannot re-sort a column without a full page reload and a server-side query change. Leptos 0.8.20 (Rust→WASM CSR) via wasm-bindgen 0.2.126 is MSRV-compatible with the pinned 1.96 toolchain (Leptos MSRV 1.88), needs no nightly, and sorts client-side with no server round-trip. The tension is RST-0005/CHE-0007's workspace `#![forbid(unsafe_code)]`: wasm-bindgen's FFI glue is generated `unsafe`. The current pins compile clean under `forbid`, but `forbid` cannot be `#[allow]`-overridden should a future wasm-bindgen emit `unsafe` the lint rejects — so this crate uses `#![deny(unsafe_code)]`, banning hand-authored `unsafe` while tolerating generated FFI glue across version drift. RST-0005 R2 and SEC-0004 R4 require a dedicated ADR before a crate omits the workspace default; this is that ADR.
+gh-report's HTML tables are server-rendered and static; users cannot re-sort a column without a full page reload and a server-side query change. Leptos 0.8.20 (Rust→WASM CSR) via wasm-bindgen 0.2.126 is MSRV-compatible with the pinned 1.98 toolchain (Leptos MSRV 1.88), needs no nightly, and sorts client-side with no server round-trip. The tension is RST-0005/CHE-0007's workspace `#![forbid(unsafe_code)]`: wasm-bindgen's FFI glue is generated `unsafe`. The current pins compile clean under `forbid`, but `forbid` cannot be `#[allow]`-overridden should a future wasm-bindgen emit `unsafe` the lint rejects — so this crate uses `#![deny(unsafe_code)]`, banning hand-authored `unsafe` while tolerating generated FFI glue across version drift. RST-0005 R2 and SEC-0004 R4 require a dedicated ADR before a crate omits the workspace default; this is that ADR.
 
 ## Decision
 
@@ -36,7 +36,7 @@ R8 [5]: gh-report's own served Content-Security-Policy, set via `ServerConfig::b
 
 R9 [5]: Server-rendered HTML remains pre-sorted and fully readable with WASM absent, disabled, or failed to load; the Leptos client only progressively enhances already-correct markup and never becomes a rendering requirement.
 
-R10 [5]: Adding the `wasm32-unknown-unknown` compilation target is a target-add under RST-0001, not a toolchain channel bump; the pinned 1.97 channel and MSRV stay unchanged, since Leptos 0.8.20's own MSRV (1.88) already sits below that floor.
+R10 [5]: Adding the `wasm32-unknown-unknown` compilation target is a target-add under RST-0001, not a toolchain channel bump; the pinned 1.98 channel and MSRV stay unchanged, since Leptos 0.8.20's own MSRV (1.88) already sits below that floor.
 
 R11 [5]: Any no-mount CSR path in gh-report-web-client — i.e. progressive enhancement that never calls mount_to_body/mount_to (R9) — MUST, before constructing any Effect::new or other reactive primitive, establish (a) an initialized async executor via Executor::init_wasm_bindgen() and (b) a page-lifetime reactive Owner that is set as the current owner and retained for the document lifetime (let owner = Owner::new(); owner.set(); std::mem::forget(owner);), mirroring Leptos's own hydrate_islands idiom. Without both, effects are constructed but never run (their driving future is never spawned and no owner context exists), so the enhancement silently no-ops while server HTML stays correct per R9. This is an ADDED runtime-init obligation created by the no-mount choice, consistent with and not a reversal of R9.
 
