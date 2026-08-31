@@ -2056,7 +2056,7 @@ fn parse_link_at(line: &str, start: usize) -> Option<(LinkShape, usize)> {
 /// brackets are skipped. Nested `[` / `]` inside an item link label
 /// is uncommon; treat the first unescaped `]` as the close. Returns
 /// `None` if no close is found on `line`.
-fn find_matching_bracket(line: &str, open: usize) -> Option<usize> {
+const fn find_matching_bracket(line: &str, open: usize) -> Option<usize> {
     let bytes = line.as_bytes();
     let mut i = open + 1;
     while i < bytes.len() {
@@ -2074,7 +2074,7 @@ fn find_matching_bracket(line: &str, open: usize) -> Option<usize> {
 }
 /// Find the matching `)` for the `(` at `open`, respecting backslash
 /// escapes. Returns `None` if no close is found on `line`.
-fn find_matching_paren(line: &str, open: usize) -> Option<usize> {
+const fn find_matching_paren(line: &str, open: usize) -> Option<usize> {
     let bytes = line.as_bytes();
     let mut i = open + 1;
     while i < bytes.len() {

@@ -177,6 +177,10 @@ mod tests {
     /// expression, not a paraphrase. If this helper drifts from the call
     /// site, the equivalence claim drifts with it — which is precisely
     /// what the equivalence test is meant to detect.
+    #[expect(
+        clippy::manual_is_variant_and,
+        reason = "this helper deliberately reproduces the replaced call-site expression character-for-character; rewriting it to is_ok_and would make it a paraphrase and void the equivalence anchor documented above"
+    )]
     fn simplified_accepts_zstd(v: &HeaderValue) -> bool {
         v.to_str()
             .ok()

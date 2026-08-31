@@ -58,6 +58,10 @@ pub struct TickFailure {
 /// by the durable-write policy (CHE-0088). No in-band retry masks a
 /// conflict (PGN-0016:R1/R2/R10); the caller (the decoupled cadence
 /// loop) is responsible for logging and waiting for the next tick.
+#[expect(
+    clippy::result_large_err,
+    reason = "TickFailure deliberately carries AppError plus the owned WriteFailureContext by value so the durable-write policy classification (CHE-0088) survives to the caller; boxing it is an error-taxonomy change (PGN-0006/CHE-0021), out of scope for a toolchain bump"
+)]
 pub async fn run_team_refresh_tick(
     state: &Arc<AppState>,
     client: &GitHubClient,
@@ -117,6 +121,10 @@ pub async fn run_team_refresh_tick(
     Ok(())
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "TickFailure deliberately carries AppError plus the owned WriteFailureContext by value so the durable-write policy classification (CHE-0088) survives to the caller; boxing it is an error-taxonomy change (PGN-0006/CHE-0021), out of scope for a toolchain bump"
+)]
 async fn write_team_event(
     state: &Arc<AppState>,
     org: &str,

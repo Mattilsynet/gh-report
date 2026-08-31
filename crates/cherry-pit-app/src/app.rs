@@ -489,15 +489,27 @@ mod tests {
     struct StoreStub;
     impl EventStore for StoreStub {
         type Event = E;
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "test stub returns a canned value with no I/O to await; the `async` keyword is dictated by the trait signature under test"
+        )]
         async fn load(
             &self,
             _id: cherry_pit_core::AggregateId,
         ) -> Result<Vec<EventEnvelope<E>>, StoreError> {
             Ok(Vec::new())
         }
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "test stub returns a canned value with no I/O to await; the `async` keyword is dictated by the trait signature under test"
+        )]
         async fn create(&self, _events: Vec<E>, _ctx: CorrelationContext) -> StoreCreateResult<E> {
             Err(StoreError::Infrastructure("stub".into()))
         }
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "test stub returns a canned value with no I/O to await; the `async` keyword is dictated by the trait signature under test"
+        )]
         async fn append(
             &self,
             _id: cherry_pit_core::AggregateId,
@@ -513,6 +525,10 @@ mod tests {
     struct BusStub;
     impl EventBus for BusStub {
         type Event = E;
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "test stub returns a canned value with no I/O to await; the `async` keyword is dictated by the trait signature under test"
+        )]
         async fn publish(&self, _events: &[EventEnvelope<E>]) -> Result<(), BusError> {
             Ok(())
         }
@@ -522,6 +538,10 @@ mod tests {
     struct GatewayStub;
     impl CommandGateway for GatewayStub {
         type Aggregate = Agg;
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "test stub returns a canned value with no I/O to await; the `async` keyword is dictated by the trait signature under test"
+        )]
         async fn create<C>(&self, _cmd: C, _ctx: CorrelationContext) -> CreateResult<Agg, C>
         where
             Agg: HandleCommand<C>,
@@ -529,6 +549,10 @@ mod tests {
         {
             panic!("stub gateway create not used in S5 tests")
         }
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "test stub returns a canned value with no I/O to await; the `async` keyword is dictated by the trait signature under test"
+        )]
         async fn send<C>(
             &self,
             _id: cherry_pit_core::AggregateId,
@@ -545,6 +569,10 @@ mod tests {
 
     struct SinkStub;
     impl DeadLetterSink for SinkStub {
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "test stub returns a canned value with no I/O to await; the `async` keyword is dictated by the trait signature under test"
+        )]
         async fn record(
             &self,
             _record: crate::dead_letter::DeadLetterRecord,

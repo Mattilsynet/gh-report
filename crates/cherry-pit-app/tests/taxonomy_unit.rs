@@ -82,12 +82,24 @@ impl CommandGateway for GwStub {
 struct StStub;
 impl EventStore for StStub {
     type Event = E;
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "test stub returns a canned value with no I/O to await; the `async` keyword is dictated by the trait signature under test"
+    )]
     async fn load(&self, _id: AggregateId) -> Result<Vec<EventEnvelope<E>>, StoreError> {
         Ok(Vec::new())
     }
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "test stub returns a canned value with no I/O to await; the `async` keyword is dictated by the trait signature under test"
+    )]
     async fn create(&self, _events: Vec<E>, _ctx: CorrelationContext) -> StoreCreateResult<E> {
         Err(StoreError::Infrastructure("stub".into()))
     }
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "test stub returns a canned value with no I/O to await; the `async` keyword is dictated by the trait signature under test"
+    )]
     async fn append(
         &self,
         _id: AggregateId,
@@ -108,6 +120,10 @@ struct CaptureSink {
 }
 
 impl DeadLetterSink for CaptureSink {
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "test stub returns a canned value with no I/O to await; the `async` keyword is dictated by the trait signature under test"
+    )]
     async fn record(
         &self,
         record: DeadLetterRecord,

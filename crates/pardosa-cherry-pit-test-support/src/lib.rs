@@ -211,10 +211,18 @@ fn single_event_error() -> StoreError {
 impl<Ev: DomainEvent + GenomeSafe + Encode + Decode> EventStore for PgnoEventStore<Ev> {
     type Event = Ev;
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "test-support store operates on in-memory pardosa state with no I/O to await; the `async` keyword is dictated by the trait signature it implements"
+    )]
     async fn load(&self, id: AggregateId) -> Result<Vec<EventEnvelope<Self::Event>>, StoreError> {
         self.ordered_stream(id)
     }
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "test-support store operates on in-memory pardosa state with no I/O to await; the `async` keyword is dictated by the trait signature it implements"
+    )]
     async fn create(
         &self,
         events: Vec<Self::Event>,
@@ -253,6 +261,10 @@ impl<Ev: DomainEvent + GenomeSafe + Encode + Decode> EventStore for PgnoEventSto
         Ok((id, envelopes))
     }
 
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "test-support store operates on in-memory pardosa state with no I/O to await; the `async` keyword is dictated by the trait signature it implements"
+    )]
     async fn append(
         &self,
         id: AggregateId,

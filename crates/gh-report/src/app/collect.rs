@@ -2449,6 +2449,10 @@ mod tests {
     where
         F: FnMut(&Repository, &str) -> Result<RepositoryEvidence, String> + Send,
     {
+        #[expect(
+            clippy::unused_async_trait_impl,
+            reason = "test evaluator applies a closure synchronously with no I/O to await; the `async` keyword is dictated by the RepoEvaluator trait signature"
+        )]
         async fn evaluate<'a>(
             &'a self,
             repo: Arc<Repository>,
