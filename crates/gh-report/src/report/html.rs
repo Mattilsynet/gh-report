@@ -688,12 +688,15 @@ impl<'a> AttributedOwner<'a> {
     ///
     /// An owner with no attributed orphans scores 1.0 — a measured full
     /// rate, not a missing control. An owner for which attribution could not
-    /// be RUN at all is different: a team-shaped owner with no resolvable
-    /// entry in `team_rosters` cannot have any orphan attributed to it on
-    /// evidence, so its rate would be a vacuous 1.0 rather than a
-    /// measurement. That case yields [`NonOrphanedControl::Unresolved`] and
-    /// drops out of the Team Health geometric mean, matching the
-    /// roster-unresolved banner gate on the owner-detail page.
+    /// be RUN at all is different: a team-shaped owner whose entry in
+    /// `team_rosters` is absent, or present in any status other than
+    /// [`TeamRosterStatus::Complete`], has no trustworthy member set, so no
+    /// orphan could be attributed to it on evidence and its rate would be a
+    /// vacuous 1.0 rather than a measurement. Every such case yields
+    /// [`NonOrphanedControl::Unresolved`] and drops out of the Team Health
+    /// geometric mean, matching the roster-unresolved banner gate on the
+    /// owner-detail page. The status match is exhaustive by construction, so
+    /// a new [`TeamRosterStatus`] variant cannot silently reach `Measured`.
     ///
     /// [`OwnerMetrics::total_repos`]: crate::domain::metrics::OwnerMetrics::total_repos
     fn attribute_all(
@@ -704,13 +707,29 @@ impl<'a> AttributedOwner<'a> {
         owner_metrics
             .iter()
             .map(|metrics| {
-                let roster_resolved = match metrics.owner_type {
-                    OwnerType::User => true,
-                    OwnerType::Team | OwnerType::AmbiguousTeamShaped => team_rosters
+                let attribution_ran = match (
+                    metrics.owner_type,
+                    team_rosters
                         .iter()
-                        .any(|r| r.canonical_owner.eq_ignore_ascii_case(&metrics.owner)),
+                        .find(|r| r.canonical_owner.eq_ignore_ascii_case(&metrics.owner))
+                        .map(|r| r.status),
+                ) {
+                    (OwnerType::User, _)
+                    | (
+                        OwnerType::Team | OwnerType::AmbiguousTeamShaped,
+                        Some(TeamRosterStatus::Complete),
+                    ) => true,
+                    (
+                        OwnerType::Team | OwnerType::AmbiguousTeamShaped,
+                        None
+                        | Some(
+                            TeamRosterStatus::Deleted
+                            | TeamRosterStatus::PermissionDenied
+                            | TeamRosterStatus::TransientError,
+                        ),
+                    ) => false,
                 };
-                let non_orphaned = if roster_resolved {
+                let non_orphaned = if attribution_ran {
                     let attributed = orphaned_by_team
                         .iter()
                         .find(|group| group.team.eq_ignore_ascii_case(&metrics.owner))

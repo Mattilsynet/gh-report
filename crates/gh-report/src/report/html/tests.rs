@@ -1413,14 +1413,15 @@ fn served_pages_have_no_dangling_internal_links() {
 fn detail_vm_control_columns_populated() {
     let evidence = evidence_with_owner_repos();
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
+    let fixture = unattributed_owners(&evidence.metrics.owner_metrics);
     let detail_vms = build_owner_detail_view_models(
-        &unattributed_owners(&evidence.metrics.owner_metrics),
+        &fixture.owners,
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
             organization: &evidence.assessment_metadata.organization,
             run_timestamp: &evidence.assessment_metadata.run_timestamp,
-            team_rosters: &[],
+            team_rosters: &fixture.rosters,
             orphaned_by_team: &[],
             governance_link: None,
         },
@@ -1449,14 +1450,15 @@ fn detail_vm_control_columns_populated() {
 fn detail_vm_summary_cards_have_labels() {
     let evidence = evidence_with_owner_repos();
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
+    let fixture = unattributed_owners(&evidence.metrics.owner_metrics);
     let detail_vms = build_owner_detail_view_models(
-        &unattributed_owners(&evidence.metrics.owner_metrics),
+        &fixture.owners,
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
             organization: &evidence.assessment_metadata.organization,
             run_timestamp: &evidence.assessment_metadata.run_timestamp,
-            team_rosters: &[],
+            team_rosters: &fixture.rosters,
             orphaned_by_team: &[],
             governance_link: None,
         },
@@ -1489,14 +1491,15 @@ fn detail_vm_summary_cards_have_no_operations_anchor_field() {
 fn detail_vm_repo_rows_populated() {
     let evidence = evidence_with_owner_repos();
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
+    let fixture = unattributed_owners(&evidence.metrics.owner_metrics);
     let detail_vms = build_owner_detail_view_models(
-        &unattributed_owners(&evidence.metrics.owner_metrics),
+        &fixture.owners,
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
             organization: &evidence.assessment_metadata.organization,
             run_timestamp: &evidence.assessment_metadata.run_timestamp,
-            team_rosters: &[],
+            team_rosters: &fixture.rosters,
             orphaned_by_team: &[],
             governance_link: None,
         },
@@ -1523,14 +1526,15 @@ fn detail_vm_repo_rows_populated() {
 fn detail_vm_repo_rows_sorted_case_insensitive() {
     let evidence = evidence_with_owner_repos();
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
+    let fixture = unattributed_owners(&evidence.metrics.owner_metrics);
     let detail_vms = build_owner_detail_view_models(
-        &unattributed_owners(&evidence.metrics.owner_metrics),
+        &fixture.owners,
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
             organization: &evidence.assessment_metadata.organization,
             run_timestamp: &evidence.assessment_metadata.run_timestamp,
-            team_rosters: &[],
+            team_rosters: &fixture.rosters,
             orphaned_by_team: &[],
             governance_link: None,
         },
@@ -1545,14 +1549,15 @@ fn detail_vm_repo_rows_sorted_case_insensitive() {
 fn detail_vm_repo_rows_status_dots_correct() {
     let evidence = evidence_with_owner_repos();
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
+    let fixture = unattributed_owners(&evidence.metrics.owner_metrics);
     let detail_vms = build_owner_detail_view_models(
-        &unattributed_owners(&evidence.metrics.owner_metrics),
+        &fixture.owners,
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
             organization: &evidence.assessment_metadata.organization,
             run_timestamp: &evidence.assessment_metadata.run_timestamp,
-            team_rosters: &[],
+            team_rosters: &fixture.rosters,
             orphaned_by_team: &[],
             governance_link: None,
         },
@@ -1588,14 +1593,15 @@ fn detail_vm_no_matching_repos_shows_empty() {
 
     let empty_repos: &[RepositoryEvidence] = &[];
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(empty_repos);
+    let fixture = unattributed_owners(&owner_metrics);
     let detail_vms = build_owner_detail_view_models(
-        &unattributed_owners(&owner_metrics),
+        &fixture.owners,
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
             organization: "TestOrg",
             run_timestamp: "2026-04-09T12:00:00+00:00",
-            team_rosters: &[],
+            team_rosters: &fixture.rosters,
             orphaned_by_team: &[],
             governance_link: None,
         },
@@ -1624,14 +1630,15 @@ fn detail_vm_multi_owner_repo_appears_in_both() {
     let evidence = evidence_from_repos(repos);
 
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
+    let fixture = unattributed_owners(&evidence.metrics.owner_metrics);
     let detail_vms = build_owner_detail_view_models(
-        &unattributed_owners(&evidence.metrics.owner_metrics),
+        &fixture.owners,
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
             organization: &evidence.assessment_metadata.organization,
             run_timestamp: &evidence.assessment_metadata.run_timestamp,
-            team_rosters: &[],
+            team_rosters: &fixture.rosters,
             orphaned_by_team: &[],
             governance_link: None,
         },
@@ -1653,14 +1660,15 @@ fn detail_vm_multi_owner_repo_appears_in_both() {
 fn detail_vm_repo_url_points_to_github() {
     let evidence = evidence_with_owner_repos();
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
+    let fixture = unattributed_owners(&evidence.metrics.owner_metrics);
     let detail_vms = build_owner_detail_view_models(
-        &unattributed_owners(&evidence.metrics.owner_metrics),
+        &fixture.owners,
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
             organization: &evidence.assessment_metadata.organization,
             run_timestamp: &evidence.assessment_metadata.run_timestamp,
-            team_rosters: &[],
+            team_rosters: &fixture.rosters,
             orphaned_by_team: &[],
             governance_link: None,
         },
@@ -1695,14 +1703,15 @@ fn detail_vm_repo_url_percent_encodes_special_chars() {
     let evidence = evidence_from_repos(repos);
 
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
+    let fixture = unattributed_owners(&evidence.metrics.owner_metrics);
     let detail_vms = build_owner_detail_view_models(
-        &unattributed_owners(&evidence.metrics.owner_metrics),
+        &fixture.owners,
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
             organization: "My Org",
             run_timestamp: &evidence.assessment_metadata.run_timestamp,
-            team_rosters: &[],
+            team_rosters: &fixture.rosters,
             orphaned_by_team: &[],
             governance_link: None,
         },
@@ -2428,14 +2437,15 @@ fn format_date_prefix_matches_expected_for_each_input_shape() {
 fn detail_vm_repo_row_metadata_defaults_when_no_data() {
     let evidence = evidence_with_owner_repos();
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
+    let fixture = unattributed_owners(&evidence.metrics.owner_metrics);
     let detail_vms = build_owner_detail_view_models(
-        &unattributed_owners(&evidence.metrics.owner_metrics),
+        &fixture.owners,
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
             organization: &evidence.assessment_metadata.organization,
             run_timestamp: &evidence.assessment_metadata.run_timestamp,
-            team_rosters: &[],
+            team_rosters: &fixture.rosters,
             orphaned_by_team: &[],
             governance_link: None,
         },
@@ -2494,14 +2504,15 @@ fn detail_vm_repo_row_metadata_populated_with_data() {
     let evidence = evidence_from_repos(repos);
 
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
+    let fixture = unattributed_owners(&evidence.metrics.owner_metrics);
     let detail_vms = build_owner_detail_view_models(
-        &unattributed_owners(&evidence.metrics.owner_metrics),
+        &fixture.owners,
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
             organization: &evidence.assessment_metadata.organization,
             run_timestamp: &evidence.assessment_metadata.run_timestamp,
-            team_rosters: &[],
+            team_rosters: &fixture.rosters,
             orphaned_by_team: &[],
             governance_link: None,
         },
@@ -2560,14 +2571,15 @@ fn detail_vm_unregistered_committer_flagged_when_name_present_but_no_login_match
     let evidence = evidence_from_repos(repos);
 
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
+    let fixture = unattributed_owners(&evidence.metrics.owner_metrics);
     let detail_vms = build_owner_detail_view_models(
-        &unattributed_owners(&evidence.metrics.owner_metrics),
+        &fixture.owners,
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
             organization: &evidence.assessment_metadata.organization,
             run_timestamp: &evidence.assessment_metadata.run_timestamp,
-            team_rosters: &[],
+            team_rosters: &fixture.rosters,
             orphaned_by_team: &[],
             governance_link: None,
         },
@@ -2610,14 +2622,15 @@ fn detail_vm_last_committer_url_percent_encodes_login() {
     let evidence = evidence_from_repos(repos);
 
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
+    let fixture = unattributed_owners(&evidence.metrics.owner_metrics);
     let detail_vms = build_owner_detail_view_models(
-        &unattributed_owners(&evidence.metrics.owner_metrics),
+        &fixture.owners,
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
             organization: &evidence.assessment_metadata.organization,
             run_timestamp: &evidence.assessment_metadata.run_timestamp,
-            team_rosters: &[],
+            team_rosters: &fixture.rosters,
             orphaned_by_team: &[],
             governance_link: None,
         },
@@ -2855,14 +2868,15 @@ fn render_owner_detail_html_contains_visibility_header() {
 fn detail_vm_repo_rows_have_visibility_field() {
     let evidence = evidence_with_owner_repos();
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
+    let fixture = unattributed_owners(&evidence.metrics.owner_metrics);
     let detail_vms = build_owner_detail_view_models(
-        &unattributed_owners(&evidence.metrics.owner_metrics),
+        &fixture.owners,
         &OwnerDetailBuildContext {
             owner_repo_map: &owner_repo_map,
             tiers: &CoverageTiers::default(),
             organization: &evidence.assessment_metadata.organization,
             run_timestamp: &evidence.assessment_metadata.run_timestamp,
-            team_rosters: &[],
+            team_rosters: &fixture.rosters,
             orphaned_by_team: &[],
             governance_link: None,
         },
@@ -5367,7 +5381,8 @@ fn owner_team_health_score_includes_non_orphaned_control() {
 }
 
 /// A team-shaped owner with two owned repos, one of which FAILS branch
-/// protection, and NO resolvable team roster.
+/// protection, and a team roster in `roster_status` — `None` meaning no
+/// roster entry exists for the owner at all.
 ///
 /// The failing control is what makes the six-control geometric mean
 /// discriminable from the seven-control one: five controls at 100% plus
@@ -5375,7 +5390,11 @@ fn owner_team_health_score_includes_non_orphaned_control() {
 /// (six controls, ownership EXCLUDED) versus
 /// `exp((6 * ln 100 + ln 50) / 7) = 90.572...` (seven controls, ownership
 /// silently included as a vacuous 1.0 factor).
-fn evidence_with_unresolved_roster_team_owner() -> Evidence {
+fn evidence_with_unresolved_roster_team_owner(
+    roster_status: Option<crate::domain::metrics::TeamRosterStatus>,
+) -> Evidence {
+    use crate::domain::metrics::TeamRoster;
+
     let repos = vec![
         test_fixtures::make_repository_evidence(
             "fresh-team-repo-0",
@@ -5409,6 +5428,15 @@ fn evidence_with_unresolved_roster_team_owner() -> Evidence {
         &repos,
         &test_fixtures::make_timestamp(),
     );
+    metrics.team_rosters = roster_status
+        .map(|status| TeamRoster {
+            canonical_owner: "@org/fresh-team".to_string(),
+            team_slug: "fresh-team".to_string(),
+            status,
+            members: Vec::new(),
+        })
+        .into_iter()
+        .collect();
     let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
 
     test_fixtures::make_full_evidence(
@@ -5425,7 +5453,7 @@ fn evidence_with_unresolved_roster_team_owner() -> Evidence {
 /// the established not-applicable presentation, never as a measured 100%.
 #[test]
 fn non_orphaned_control_renders_na_when_roster_unresolved() {
-    let evidence = evidence_with_unresolved_roster_team_owner();
+    let evidence = evidence_with_unresolved_roster_team_owner(None);
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
 
     let card = owner_detail_card_block(owner_detail_page(&pages), "Ownership");
@@ -5446,7 +5474,7 @@ fn non_orphaned_control_renders_na_when_roster_unresolved() {
 /// hand-derived six- versus seven-control figures.
 #[test]
 fn team_health_score_excludes_ownership_factor_when_roster_unresolved() {
-    let evidence = evidence_with_unresolved_roster_team_owner();
+    let evidence = evidence_with_unresolved_roster_team_owner(None);
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
     let index_page = pages.get("index.html").expect("dashboard index page");
 
@@ -5482,6 +5510,81 @@ fn non_orphaned_control_stays_measured_100_when_roster_resolved_with_no_orphans(
     );
 }
 
+/// Every roster status that is NOT `Complete`. A roster entry in any of
+/// these states carries an empty or untrustworthy member set, so orphan
+/// attribution did not run on evidence for that owner — presence of an
+/// entry is not resolution.
+fn non_complete_roster_statuses() -> [crate::domain::metrics::TeamRosterStatus; 3] {
+    use crate::domain::metrics::TeamRosterStatus;
+
+    [
+        TeamRosterStatus::Deleted,
+        TeamRosterStatus::PermissionDenied,
+        TeamRosterStatus::TransientError,
+    ]
+}
+
+/// Round-2 HIGH regression, render side. A roster entry that EXISTS but did
+/// not complete must render the not-applicable presentation exactly as an
+/// absent entry does; its empty member set cannot attribute an orphan, so a
+/// rendered 100% would be manufactured, not measured.
+#[test]
+fn non_orphaned_control_renders_na_for_every_non_complete_roster_status() {
+    for status in non_complete_roster_statuses() {
+        let evidence = evidence_with_unresolved_roster_team_owner(Some(status));
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+        let card = owner_detail_card_block(owner_detail_page(&pages), "Ownership");
+
+        assert!(
+            card.contains("N/A"),
+            "roster status {status:?} did not resolve, so the Ownership control must render N/A; card:\n{card}"
+        );
+        assert!(
+            !card.contains("100.0% (2/2)"),
+            "roster status {status:?} must never manufacture a vacuous 100%; card:\n{card}"
+        );
+    }
+}
+
+/// Round-2 HIGH regression, score side. A non-complete roster status must
+/// drop the Ownership factor out of the geometric mean rather than fold in
+/// a vacuous 1.0. Figures are the same six- versus seven-control pair
+/// derived in [`evidence_with_unresolved_roster_team_owner`].
+#[test]
+fn team_health_score_excludes_ownership_factor_for_every_non_complete_roster_status() {
+    for status in non_complete_roster_statuses() {
+        let evidence = evidence_with_unresolved_roster_team_owner(Some(status));
+        let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+        let index_page = pages.get("index.html").expect("dashboard index page");
+
+        let card = top_security_team_card_block(index_page, "@org/fresh-team");
+
+        assert!(
+            card.contains("<p class=\"card-value\">89.1%</p>"),
+            "roster status {status:?} must exclude ownership, giving the six-control mean 89.1%; card:\n{card}"
+        );
+        assert!(
+            !card.contains("<p class=\"card-value\">90.6%</p>"),
+            "roster status {status:?} must not fold a vacuous 1.0 ownership factor into the mean; card:\n{card}"
+        );
+    }
+}
+
+/// Owners paired with EMPTY render-time orphan attribution, together with
+/// the synthetic rosters that attribution was run against.
+///
+/// Both halves must reach the render: the owners go to
+/// [`super::build_owner_detail_view_models`] and the SAME rosters go to
+/// [`super::OwnerDetailBuildContext::team_rosters`]. Handing the detail
+/// context an empty roster list instead would build a contradictory page —
+/// a measured Ownership control beside an unresolved-roster banner for the
+/// same owner.
+struct UnattributedFixture<'a> {
+    owners: Vec<super::AttributedOwner<'a>>,
+    rosters: Vec<crate::domain::metrics::TeamRoster>,
+}
+
 /// Pair owner metrics with EMPTY render-time orphan attribution, for tests
 /// whose subject is not the seventh Team Health control. Every owner's
 /// `non_orphaned` rate is a measured 100% here, never an absent control.
@@ -5492,7 +5595,7 @@ fn non_orphaned_control_stays_measured_100_when_roster_resolved_with_no_orphans(
 /// it from the score — a different subject from the one they assert on.
 fn unattributed_owners(
     owner_metrics: &[crate::domain::metrics::OwnerMetrics],
-) -> Vec<super::AttributedOwner<'_>> {
+) -> UnattributedFixture<'_> {
     use crate::domain::metrics::{TeamRoster, TeamRosterStatus};
 
     let rosters: Vec<TeamRoster> = owner_metrics
@@ -5507,5 +5610,7 @@ fn unattributed_owners(
         })
         .collect();
 
-    super::AttributedOwner::attribute_all(owner_metrics, &[], &rosters)
+    let owners = super::AttributedOwner::attribute_all(owner_metrics, &[], &rosters);
+
+    UnattributedFixture { owners, rosters }
 }
