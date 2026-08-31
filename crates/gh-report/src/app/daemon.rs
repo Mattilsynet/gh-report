@@ -380,6 +380,38 @@ enum DeliveryStep {
     Fenced(FenceSignal),
 }
 
+/// The durable-write side of the delivery task, as the delivery task
+/// sees it: one repository record in, a classified [`WriteFailure`] out.
+///
+/// Production is [`AppState`] itself, wrapping the inherent
+/// `record_repo` in the single `write_with_policy_sync` chokepoint
+/// (CHE-0088:R2). The seam exists so a fenced repository persist can be
+/// arranged at the real delivery/collection boundary, where the OCC
+/// fence itself needs a second live writer to raise.
+pub(crate) trait RepoRecorder: Send + Sync + 'static {
+    fn record_repo(
+        &self,
+        domain_key: &str,
+        evidence: RepositoryEvidence,
+        repo_name: &str,
+        timestamp: &str,
+    ) -> Result<(), WriteFailure>;
+}
+
+impl RepoRecorder for AppState {
+    fn record_repo(
+        &self,
+        domain_key: &str,
+        evidence: RepositoryEvidence,
+        repo_name: &str,
+        timestamp: &str,
+    ) -> Result<(), WriteFailure> {
+        write_with_policy_sync(|| {
+            AppState::record_repo(self, domain_key, evidence.clone(), repo_name, timestamp)
+        })
+    }
+}
+
 /// Bounded re-arm policy applied after `CollectionOutcome::FencedConflict`.
 ///
 /// Design-Y consumer-owned re-arm (ghr-fea8b799): on a typed fence
@@ -936,8 +968,18 @@ async fn drain_collection_loop_after_cancel_with_timeout(
 ///
 /// Phase E adds: incremental rendering, WS broadcast.
 pub(crate) async fn delivery_loop(
+    rx: tokio::sync::mpsc::Receiver<JobOutcome<RepositoryEvidence>>,
+    state: Arc<AppState>,
+) {
+    let recorder = Arc::clone(&state);
+    delivery_loop_with_recorder(rx, state, recorder).await;
+}
+
+/// [`delivery_loop`] over an explicit durable-write side.
+pub(crate) async fn delivery_loop_with_recorder<R: RepoRecorder>(
     mut rx: tokio::sync::mpsc::Receiver<JobOutcome<RepositoryEvidence>>,
     state: Arc<AppState>,
+    recorder: Arc<R>,
 ) {
     while let Some(outcome) = rx.recv().await {
         let (source, duration) = match &outcome {
@@ -966,14 +1008,27 @@ pub(crate) async fn delivery_loop(
             JobOutcome::Success {
                 domain_key, result, ..
             } => {
-                let step = handle_success_outcome(&state, &domain_key, &result, &source, duration);
+                let step = handle_success_outcome(
+                    recorder.as_ref(),
+                    &domain_key,
+                    &result,
+                    &source,
+                    duration,
+                );
                 apply_delivery_step(&state, step, &source);
             }
             JobOutcome::Failure {
                 domain_key, error, ..
             } => {
-                handle_failure_outcome(&state, &domain_key, &error, &source, duration);
-                apply_delivery_step(&state, DeliveryStep::Delivered, &source);
+                let step = handle_failure_outcome(
+                    &state,
+                    recorder.as_ref(),
+                    &domain_key,
+                    &error,
+                    &source,
+                    duration,
+                );
+                apply_delivery_step(&state, step, &source);
             }
             _ => {
                 warn!("delivery_loop: unhandled JobOutcome variant, skipping");
@@ -1005,8 +1060,8 @@ fn apply_delivery_step(state: &Arc<AppState>, step: DeliveryStep, source: &JobSo
 /// Publish a successful repo evaluation and log completion.
 ///
 /// Extracted from [`delivery_loop`] for cohesion; no behavioural change.
-fn handle_success_outcome(
-    state: &Arc<AppState>,
+fn handle_success_outcome<R: RepoRecorder + ?Sized>(
+    recorder: &R,
     domain_key: &str,
     result: &RepositoryEvidence,
     source: &JobSource,
@@ -1014,9 +1069,7 @@ fn handle_success_outcome(
 ) -> DeliveryStep {
     let repo_name = result.repository.name.clone();
     let timestamp = jiff::Timestamp::now().to_string();
-    match write_with_policy_sync(|| {
-        state.record_repo(domain_key, result.clone(), &repo_name, &timestamp)
-    }) {
+    match recorder.record_repo(domain_key, result.clone(), &repo_name, &timestamp) {
         Ok(()) => {
             info!(
                 key = %domain_key,
@@ -1092,36 +1145,38 @@ fn log_job_persist_failure(
 
 /// Publish a failed repo evaluation and log the failure.
 ///
-/// Extracted from [`delivery_loop`] for cohesion; no behavioural change.
-fn handle_failure_outcome(
+/// The synthesised failure-state record is a second repository write on
+/// the same fiber, so it can be rejected by the same OCC fence: its
+/// persist failure is classified through the same
+/// [`classify_persist_failure`] path, and a `Conflict` aborts the run
+/// rather than being logged and accounted as delivered (CHE-0088:R3,
+/// PGN-0016:R2). Non-conflict categories keep their existing
+/// log-and-continue handling.
+fn handle_failure_outcome<R: RepoRecorder + ?Sized>(
     state: &Arc<AppState>,
+    recorder: &R,
     domain_key: &str,
     error: &str,
     source: &JobSource,
     duration: Duration,
-) {
+) -> DeliveryStep {
     let existing = state.projection_get(domain_key);
-    let repo_name = if let Some(existing) = existing {
+    let (repo_name, step) = if let Some(existing) = existing {
         let name = existing.repository.name.clone();
         let failure = collect::failure_evidence(
             &std::sync::Arc::new(existing.repository.clone()),
             &jiff::Timestamp::now().to_string(),
         );
         let timestamp = jiff::Timestamp::now().to_string();
-        if let Err(write_failure) = write_with_policy_sync(|| {
-            state.record_repo(domain_key, failure.clone(), &name, &timestamp)
-        }) {
-            tracing::error!(
-                persist_error_variant = persist_error_variant(&write_failure.error),
-                category = ?write_failure.category,
-                response = ?write_failure.response,
-                source_chain = source_chain(&write_failure.error).as_str(),
-                "repository failure state record failed"
-            );
-        }
-        name
+        let step = match recorder.record_repo(domain_key, failure.clone(), &name, &timestamp) {
+            Ok(()) => DeliveryStep::Delivered,
+            Err(write_failure) => {
+                classify_failure_state_persist_failure(write_failure, domain_key, &name)
+            }
+        };
+        (name, step)
     } else {
-        domain_key.to_string()
+        (domain_key.to_string(), DeliveryStep::Delivered)
     };
     error!(
         key = %domain_key,
@@ -1131,6 +1186,31 @@ fn handle_failure_outcome(
         duration_ms = duration.as_millis(),
         "job failed"
     );
+    step
+}
+
+/// Log a failed failure-state write, then decide whether it aborts the
+/// run. Same fence gate as [`classify_persist_failure`]; only the log
+/// line differs, because this write is the synthesised failure record
+/// rather than the collected evidence.
+fn classify_failure_state_persist_failure(
+    write_failure: WriteFailure,
+    domain_key: &str,
+    repo_name: &str,
+) -> DeliveryStep {
+    tracing::error!(
+        key = %domain_key,
+        repo = %repo_name,
+        persist_error_variant = persist_error_variant(&write_failure.error),
+        category = ?write_failure.category,
+        response = ?write_failure.response,
+        source_chain = source_chain(&write_failure.error).as_str(),
+        "repository failure state record failed"
+    );
+    match FenceSignal::from_failure(write_failure) {
+        Ok(signal) => DeliveryStep::Fenced(signal),
+        Err(_) => DeliveryStep::Delivered,
+    }
 }
 
 /// Resolve the port number from the `PORT` env var, defaulting to 8080.
@@ -1296,7 +1376,7 @@ mod tests {
 
         let output = capture_tracing(|| {
             handle_success_outcome(
-                &state,
+                state.as_ref(),
                 "no-swallow-test-key",
                 &evidence,
                 &JobSource::InitialLoad,
@@ -1329,7 +1409,7 @@ mod tests {
 
         let output = capture_tracing(|| {
             handle_success_outcome(
-                &state,
+                state.as_ref(),
                 "escalation-test-key",
                 &evidence,
                 &JobSource::InitialLoad,
@@ -2269,5 +2349,108 @@ mod fence_propagation_tests {
             !state.run_is_fenced(),
             "a new run must not inherit the aborted run's fence"
         );
+    }
+
+    struct ScriptedRecorder {
+        result: std::sync::Mutex<Option<WriteFailure>>,
+    }
+
+    impl ScriptedRecorder {
+        fn failing(failure: WriteFailure) -> Arc<Self> {
+            Arc::new(Self {
+                result: std::sync::Mutex::new(Some(failure)),
+            })
+        }
+    }
+
+    impl RepoRecorder for ScriptedRecorder {
+        fn record_repo(
+            &self,
+            _domain_key: &str,
+            _evidence: RepositoryEvidence,
+            _repo_name: &str,
+            _timestamp: &str,
+        ) -> Result<(), WriteFailure> {
+            match self.result.lock().unwrap().take() {
+                Some(failure) => Err(failure),
+                None => Ok(()),
+            }
+        }
+    }
+
+    async fn state_with_projected_repo() -> (Arc<AppState>, String) {
+        let state = AppState::new().await;
+        let evidence = crate::test_fixtures::all_passing_evidence("fail-repo");
+        let domain_key = evidence.repository.inventory_key.clone();
+        state.lock_projection().load_baseline(vec![evidence]);
+        (state, domain_key)
+    }
+
+    fn failure_step(state: &Arc<AppState>, recorder: &ScriptedRecorder, key: &str) -> DeliveryStep {
+        handle_failure_outcome(
+            state,
+            recorder,
+            key,
+            "simulated evaluation failure",
+            &JobSource::ScheduledBatch,
+            Duration::from_millis(1),
+        )
+    }
+
+    /// `success_criteria` 2 on the sibling write: the failure-state record
+    /// is a second repository append on the same fiber, so a `Conflict`
+    /// there must propagate as the typed fence rather than be logged and
+    /// accounted as delivered (CHE-0088:R3).
+    #[tokio::test]
+    async fn fenced_failure_state_persist_is_not_swallowed() {
+        let (state, domain_key) = state_with_projected_repo().await;
+        let recorder = ScriptedRecorder::failing(fenced_failure());
+
+        let DeliveryStep::Fenced(signal) = failure_step(&state, &recorder, &domain_key) else {
+            panic!(
+                "a typed FencedConflict from the failure-state write must propagate as \
+                 DeliveryStep::Fenced, not be logged and counted as delivered"
+            );
+        };
+        assert!(
+            matches!(signal.into_error(), PersistenceError::FencedConflict { .. }),
+            "the fence signal must carry the typed error whole (PGN-0016:R9)"
+        );
+    }
+
+    /// `success_criteria` 3 on the sibling write: the blast radius stays
+    /// scoped to the fence — non-conflict failure-state persist errors
+    /// keep their existing log-and-continue handling.
+    #[tokio::test]
+    async fn non_conflict_failure_state_persist_retains_existing_handling() {
+        for failure in [transient_failure(), structural_failure()] {
+            let category = failure.category;
+            let (state, domain_key) = state_with_projected_repo().await;
+            let recorder = ScriptedRecorder::failing(failure);
+
+            assert!(
+                matches!(
+                    failure_step(&state, &recorder, &domain_key),
+                    DeliveryStep::Delivered
+                ),
+                "{category:?} must keep its existing log-and-continue handling"
+            );
+        }
+    }
+
+    /// A failed job whose failure-state record persists cleanly still
+    /// completes its batch slot — the happy path of the failure branch.
+    #[tokio::test]
+    async fn successful_failure_state_persist_stays_delivered() {
+        let (state, domain_key) = state_with_projected_repo().await;
+        let recorder = Arc::new(ScriptedRecorder {
+            result: std::sync::Mutex::new(None),
+        });
+
+        assert!(matches!(
+            failure_step(&state, &recorder, &domain_key),
+            DeliveryStep::Delivered
+        ));
+        assert!(!state.run_is_fenced());
     }
 }
