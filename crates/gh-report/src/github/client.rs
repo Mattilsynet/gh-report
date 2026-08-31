@@ -4,7 +4,7 @@
 //! # Thread safety
 //!
 //! `GitHubClient` uses interior mutability for all mutable state:
-//! - `ArcSwap<HeaderValue>` for lock-free per-request auth header reads
+//! - `ArcSwap<AuthHeader>` for lock-free per-request auth header reads
 //! - `tokio::sync::Mutex<GitHubCredential>` for credential refresh (~1/hour)
 //! - `scc::HashMap` for concurrent repo detail cache and `ETag` tracking
 //! - Atomics for counters, rate limit state, and time-bounded halt (`halted_until`)
@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use jiff::{SignedDuration, Timestamp};
-use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue};
+use reqwest::header::{ACCEPT, HeaderMap, HeaderValue};
 use scc::HashMap as SccHashMap;
 use secrecy::ExposeSecret;
 use zeroize::Zeroizing;
@@ -33,6 +33,7 @@ use crate::github::auth::{
     AuthMetadata, CapabilitySet, CapabilityStatus, GitHubAppConfig, GitHubCredential,
     InstallationTokenResponse, generate_app_jwt, parse_oauth_scopes,
 };
+use crate::github::auth_header::AuthHeader;
 use crate::github::budget::BudgetGate;
 use crate::github::pagination;
 use crate::github::rate_limit::RateLimitState;
@@ -119,7 +120,7 @@ async fn read_body_limited(
 ///
 /// All public methods take `&self`. Interior mutability is used for all
 /// mutable state, making this type safe for sharing via `Arc<GitHubClient>`:
-/// - `auth_header: ArcSwap<HeaderValue>` — lock-free per-request auth injection
+/// - `auth_header: ArcSwap<AuthHeader>` — lock-free per-request auth injection
 /// - `repo_detail_cache: scc::HashMap` — per-run memoization of repo detail responses
 /// - `last_response_etags: scc::HashMap` — side-channel for `ETag` capture by `request_single_inner`,
 ///   consumed by `repo_details` for conditional request support
@@ -137,7 +138,7 @@ pub struct GitHubClient {
     http: reqwest::Client,
     /// Per-request Authorization header, updated on credential refresh.
     /// Lock-free reads via `ArcSwap` — zero contention on the hot path.
-    auth_header: ArcSwap<HeaderValue>,
+    auth_header: ArcSwap<AuthHeader>,
     base_url: String,
     /// The trusted origin (scheme + host + port) used for pagination URL validation.
     trusted_origin: String,
@@ -350,7 +351,7 @@ impl GitHubClient {
 
         Ok(Self {
             http,
-            auth_header: ArcSwap::from_pointee(auth_header_value),
+            auth_header: ArcSwap::from_pointee(AuthHeader::new(auth_header_value)),
             base_url: validated_url,
             trusted_origin,
             org_name: validated_org,
@@ -524,7 +525,8 @@ impl GitHubClient {
             let mut cred = self.credential.lock().await;
             *cred = new_cred;
         }
-        self.auth_header.store(Arc::new(new_header));
+        self.auth_header
+            .store(Arc::new(AuthHeader::new(new_header)));
         self.credential_expires_at
             .store(new_expiry, Ordering::Release);
 
@@ -553,10 +555,9 @@ impl GitHubClient {
             self.base_url
         );
 
-        let response = self
-            .http
-            .post(&url)
-            .header(AUTHORIZATION, jwt_auth)
+        let jwt_auth = AuthHeader::new(jwt_auth);
+        let response = jwt_auth
+            .apply(self.http.post(&url))
             .timeout(Duration::from_secs(config::DEFAULT_REQUEST_TIMEOUT_SECS))
             .send()
             .await
@@ -727,10 +728,8 @@ impl GitHubClient {
     ) -> ApiOutcome {
         let url = format!("{}{}", self.base_url, path);
         let auth = self.auth_header.load();
-        let response = match self
-            .http
-            .get(&url)
-            .header(AUTHORIZATION, (**auth).clone())
+        let response = match auth
+            .apply(self.http.get(&url))
             .timeout(Duration::from_secs(timeout_secs))
             .send()
             .await
@@ -934,9 +933,7 @@ impl GitHubClient {
         timeout_secs: u64,
     ) -> Result<reqwest::Response, ApiOutcome> {
         let auth = self.auth_header.load();
-        self.http
-            .get(url)
-            .header(AUTHORIZATION, (**auth).clone())
+        auth.apply(self.http.get(url))
             .timeout(Duration::from_secs(timeout_secs))
             .send()
             .await
@@ -1112,10 +1109,8 @@ impl GitHubClient {
 
         let url = format!("{}{}", self.base_url, path);
         let auth = self.auth_header.load();
-        let response = match self
-            .http
-            .get(&url)
-            .header(AUTHORIZATION, (**auth).clone())
+        let response = match auth
+            .apply(self.http.get(&url))
             .header("If-None-Match", etag_value)
             .timeout(Duration::from_secs(config::DEFAULT_REQUEST_TIMEOUT_SECS))
             .send()
