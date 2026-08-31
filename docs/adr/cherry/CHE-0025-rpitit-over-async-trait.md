@@ -1,7 +1,7 @@
 # CHE-0025. RPITIT Over async_trait
 
 Date: 2026-04-24
-Last-reviewed: 2026-08-12 — refined — added R3 COM-0017:R4 enforcement statement naming job id build-test-lint / async-trait-deny step (RST-0007:R5)
+Last-reviewed: 2026-08-31 — refined — Decision and Consequences MSRV numerals corrected 1.96 -> 1.98 to match rust-toolchain.toml/Cargo.toml ground truth (drift predated the 1.97 cycle); R1-R3 are numeral-free and unchanged (mission:ghr-508w6)
 Tier: D
 Status: Accepted
 
@@ -17,7 +17,7 @@ Cherry-pit's port traits (EventStore, CommandBus, CommandGateway, EventBus) are 
 
 All async port traits use RPITIT (`impl Future` in return position)
 instead of the `async_trait` proc macro. The minimum supported Rust
-version is 1.96 (edition 2024).
+version is 1.98 (edition 2024).
 
 R1 [9]: All async port traits use impl Future in return position
   instead of the async_trait proc macro
@@ -34,4 +34,4 @@ R3 [9]: CI enforces R1/R2 with a build-time tripwire (job id
 - Object safety permanently sacrificed — no `dyn EventStore`. Consistent with single-aggregate design (concrete types everywhere).
 - The `Send` bound on returned futures constrains adapter implementations.
 - Trait signatures use explicit `-> impl Future<...> + Send` rather than `async fn` sugar.
-- MSRV of 1.96 excludes older toolchains. Acceptable for a pre-1.0 project.
+- MSRV of 1.98 excludes older toolchains. Acceptable for a pre-1.0 project.
