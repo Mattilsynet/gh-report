@@ -209,10 +209,7 @@ pub async fn evaluate(
 
     let admin = repo_admin_signal(&repo_details_result);
 
-    let combined = collect_and_merge_controls(&rulesets_result, &legacy_result, default_branch);
-
-    let result = build_protection_result(
-        combined,
+    let result = evaluate_outcomes(
         &rulesets_result,
         &legacy_result,
         default_branch,
@@ -231,47 +228,48 @@ pub async fn evaluate(
     result
 }
 
-/// Collect applicable ruleset + legacy controls and merge them.
-fn collect_and_merge_controls(
-    rulesets_result: &crate::github::client::ApiOutcome,
-    legacy_result: &crate::github::client::ApiOutcome,
-    default_branch: &str,
-) -> Option<BranchControls> {
-    let mut ruleset_controls: Vec<BranchControls> = Vec::new();
-    if rulesets_result.is_ok()
-        && let Some(rulesets) = rulesets_result.data().and_then(serde_json::Value::as_array)
-    {
-        for ruleset in rulesets {
-            if ruleset_applies(ruleset, default_branch) {
-                ruleset_controls.push(summarize_ruleset(ruleset));
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProtectionEndpoint {
+    Rulesets,
+    Legacy,
+}
+
+impl ProtectionEndpoint {
+    fn parse_payload(
+        self,
+        data: Option<&serde_json::Value>,
+        default_branch: &str,
+    ) -> Option<Vec<BranchControls>> {
+        let data = data?;
+        match self {
+            Self::Rulesets => {
+                let rulesets = data.as_array()?;
+                let controls: Vec<BranchControls> = rulesets
+                    .iter()
+                    .filter(|ruleset| ruleset_applies(ruleset, default_branch))
+                    .map(summarize_ruleset)
+                    .collect();
+                trace!(
+                    applicable_rulesets = controls.len(),
+                    total_rulesets = rulesets.len(),
+                    "filtered rulesets for default branch"
+                );
+                Some(controls)
+            }
+            Self::Legacy => {
+                if !data.is_object() {
+                    return None;
+                }
+                let controls = summarize_legacy_protection(data);
+                trace!(
+                    has_pr = controls.has_pr(),
+                    has_status_checks = controls.has_status_checks(),
+                    "legacy branch protection summarized"
+                );
+                Some(vec![controls])
             }
         }
-        trace!(
-            applicable_rulesets = ruleset_controls.len(),
-            total_rulesets = rulesets.len(),
-            "filtered rulesets for default branch"
-        );
     }
-
-    let merged_ruleset = BranchControls::merge(&ruleset_controls);
-
-    let legacy_controls = if legacy_result.is_ok() {
-        legacy_result.data().map(|data| {
-            let controls = summarize_legacy_protection(data);
-            trace!(
-                has_pr = controls.has_pr(),
-                has_status_checks = controls.has_status_checks(),
-                "legacy branch protection summarized"
-            );
-            controls
-        })
-    } else {
-        None
-    };
-
-    let all_controls: Vec<BranchControls> =
-        merged_ruleset.into_iter().chain(legacy_controls).collect();
-    BranchControls::merge(&all_controls)
 }
 
 /// Caller's `administration:read` signal for the repository under
@@ -310,95 +308,255 @@ fn repo_admin_signal(repo_details_result: &crate::github::client::ApiOutcome) ->
     }
 }
 
-/// Build the final `BranchProtectionResult` from merged controls.
-fn build_protection_result(
-    combined: Option<BranchControls>,
+enum ProtectionEvidence {
+    Complete(BranchControls),
+    Incomplete(EndpointFailure),
+    AbsentControls {
+        absence: ConfirmedAbsence,
+        http_status: Option<u16>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfirmedAbsence {
+    NoControls,
+    AuthorityConfirmedNotFound,
+}
+
+impl ConfirmedAbsence {
+    const fn reason_kind(self) -> Option<CollectionFailureReason> {
+        match self {
+            Self::NoControls => None,
+            Self::AuthorityConfirmedNotFound => Some(CollectionFailureReason::NotFoundAbsent),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EndpointFailure {
+    reason: IndeterminateReason,
+    http_status: Option<u16>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IndeterminateReason {
+    PermissionDenied,
+    RateLimited,
+    PermissionSuspected,
+    Transient,
+    Invalid,
+}
+
+impl IndeterminateReason {
+    const fn precedence(self) -> u8 {
+        match self {
+            Self::PermissionDenied => 0,
+            Self::RateLimited => 1,
+            Self::PermissionSuspected => 2,
+            Self::Transient => 3,
+            Self::Invalid => 4,
+        }
+    }
+
+    const fn persisted(self) -> CollectionFailureReason {
+        match self {
+            Self::PermissionDenied => CollectionFailureReason::PermissionDenied,
+            Self::RateLimited => CollectionFailureReason::RateLimited,
+            Self::PermissionSuspected => CollectionFailureReason::PermissionSuspected,
+            Self::Transient => CollectionFailureReason::Transient,
+            Self::Invalid => CollectionFailureReason::Invalid,
+        }
+    }
+}
+
+enum EndpointEvidence {
+    Observed(Vec<BranchControls>),
+    ConfirmedAbsent { http_status: Option<u16> },
+    Indeterminate(EndpointFailure),
+}
+
+fn classify_endpoint(
+    outcome: &crate::github::client::ApiOutcome,
+    endpoint: ProtectionEndpoint,
+    default_branch: &str,
+    admin: AdminAccess,
+) -> EndpointEvidence {
+    match outcome {
+        crate::github::client::ApiOutcome::Success {
+            status_code, data, ..
+        } => endpoint
+            .parse_payload(data.as_ref(), default_branch)
+            .map_or_else(
+                || {
+                    EndpointEvidence::Indeterminate(EndpointFailure {
+                        reason: IndeterminateReason::Invalid,
+                        http_status: Some(*status_code),
+                    })
+                },
+                EndpointEvidence::Observed,
+            ),
+        crate::github::client::ApiOutcome::Failure {
+            status_code,
+            retryable,
+            ..
+        } => {
+            let reason = match (*status_code, admin) {
+                (Some(403), _) => IndeterminateReason::PermissionDenied,
+                (Some(429), _) => IndeterminateReason::RateLimited,
+                (Some(404), AdminAccess::Admin) => {
+                    return EndpointEvidence::ConfirmedAbsent {
+                        http_status: *status_code,
+                    };
+                }
+                (Some(404), AdminAccess::NotAdmin | AdminAccess::Unknown) => {
+                    IndeterminateReason::PermissionSuspected
+                }
+                _ if *retryable => IndeterminateReason::Transient,
+                _ => IndeterminateReason::Invalid,
+            };
+            EndpointEvidence::Indeterminate(EndpointFailure {
+                reason,
+                http_status: *status_code,
+            })
+        }
+    }
+}
+
+fn evaluate_outcomes(
     rulesets_result: &crate::github::client::ApiOutcome,
     legacy_result: &crate::github::client::ApiOutcome,
     default_branch: &str,
     admin: AdminAccess,
     run_timestamp: &str,
 ) -> BranchProtectionResult {
-    match combined {
-        None => {
-            let status_code = rulesets_result
-                .status_code()
-                .or_else(|| legacy_result.status_code());
-            let reason_kind = classify_failure_reason(rulesets_result, legacy_result, admin);
-            let reason = reason_kind.map(|reason| reason.to_string());
+    let evidence = classify_evidence(rulesets_result, legacy_result, default_branch, admin);
+    build_protection_result(evidence, default_branch, run_timestamp)
+}
 
-            let status = if reason_kind
-                .is_some_and(|reason| !matches!(reason, CollectionFailureReason::NotFoundAbsent))
-            {
-                BranchProtectionStatus::Unknown
-            } else {
-                BranchProtectionStatus::Fail
-            };
+fn classify_evidence(
+    rulesets_result: &crate::github::client::ApiOutcome,
+    legacy_result: &crate::github::client::ApiOutcome,
+    default_branch: &str,
+    admin: AdminAccess,
+) -> ProtectionEvidence {
+    let rulesets = classify_endpoint(
+        rulesets_result,
+        ProtectionEndpoint::Rulesets,
+        default_branch,
+        admin,
+    );
+    let legacy = classify_endpoint(
+        legacy_result,
+        ProtectionEndpoint::Legacy,
+        default_branch,
+        admin,
+    );
+    let endpoints = [&rulesets, &legacy];
 
-            BranchProtectionResult {
-                status,
-                details: BranchProtectionDetails {
-                    default_branch: default_branch.to_string(),
-                    has_pr: None,
-                    required_reviewers: None,
-                    has_status_checks: None,
-                    admin_equivalent: None,
-                    has_broad_bypass: None,
-                    reason,
-                    reason_kind,
-                    http_status: status_code,
-                    force_push_blocked: None,
-                    deletion_blocked: None,
-                },
-                timestamp: run_timestamp.to_string(),
+    let indeterminate = endpoints
+        .into_iter()
+        .filter_map(|endpoint| match endpoint {
+            EndpointEvidence::Indeterminate(failure) => Some(*failure),
+            EndpointEvidence::Observed(_) | EndpointEvidence::ConfirmedAbsent { .. } => None,
+        })
+        .min_by_key(|failure| failure.reason.precedence());
+
+    if let Some(failure) = indeterminate {
+        return ProtectionEvidence::Incomplete(failure);
+    }
+
+    let observed: Vec<BranchControls> = endpoints
+        .into_iter()
+        .filter_map(|endpoint| match endpoint {
+            EndpointEvidence::Observed(controls) => Some(controls.iter().cloned()),
+            EndpointEvidence::ConfirmedAbsent { .. } | EndpointEvidence::Indeterminate(_) => None,
+        })
+        .flatten()
+        .collect();
+
+    let Some(controls) = BranchControls::merge(&observed) else {
+        let (absence, http_status) = match (&rulesets, &legacy) {
+            (EndpointEvidence::ConfirmedAbsent { http_status }, _)
+            | (_, EndpointEvidence::ConfirmedAbsent { http_status }) => {
+                (ConfirmedAbsence::AuthorityConfirmedNotFound, *http_status)
             }
-        }
-        Some(controls) => {
-            let status = controls.status();
-            BranchProtectionResult {
-                status,
-                details: BranchProtectionDetails {
-                    default_branch: default_branch.to_string(),
-                    has_pr: Some(controls.has_pr()),
-                    required_reviewers: Some(controls.reviewer_count),
-                    has_status_checks: Some(controls.has_status_checks()),
-                    admin_equivalent: Some(controls.admin_equivalent()),
-                    has_broad_bypass: Some(controls.has_broad_bypass()),
-                    reason: None,
-                    reason_kind: None,
-                    http_status: None,
-                    force_push_blocked: controls.force_push_blocked(),
-                    deletion_blocked: controls.deletion_blocked(),
-                },
-                timestamp: run_timestamp.to_string(),
-            }
-        }
+            _ => (
+                ConfirmedAbsence::NoControls,
+                rulesets_result
+                    .status_code()
+                    .or_else(|| legacy_result.status_code()),
+            ),
+        };
+        return ProtectionEvidence::AbsentControls {
+            absence,
+            http_status,
+        };
+    };
+
+    ProtectionEvidence::Complete(controls)
+}
+
+fn build_protection_result(
+    evidence: ProtectionEvidence,
+    default_branch: &str,
+    run_timestamp: &str,
+) -> BranchProtectionResult {
+    match evidence {
+        ProtectionEvidence::Incomplete(failure) => BranchProtectionResult {
+            status: BranchProtectionStatus::Unknown,
+            details: unobserved_details(
+                default_branch,
+                Some(failure.reason.persisted()),
+                failure.http_status,
+            ),
+            timestamp: run_timestamp.to_string(),
+        },
+        ProtectionEvidence::AbsentControls {
+            absence,
+            http_status,
+        } => BranchProtectionResult {
+            status: BranchProtectionStatus::Fail,
+            details: unobserved_details(default_branch, absence.reason_kind(), http_status),
+            timestamp: run_timestamp.to_string(),
+        },
+        ProtectionEvidence::Complete(controls) => BranchProtectionResult {
+            status: controls.status(),
+            details: BranchProtectionDetails {
+                default_branch: default_branch.to_string(),
+                has_pr: Some(controls.has_pr()),
+                required_reviewers: Some(controls.reviewer_count),
+                has_status_checks: Some(controls.has_status_checks()),
+                admin_equivalent: Some(controls.admin_equivalent()),
+                has_broad_bypass: Some(controls.has_broad_bypass()),
+                reason: None,
+                reason_kind: None,
+                http_status: None,
+                force_push_blocked: controls.force_push_blocked(),
+                deletion_blocked: controls.deletion_blocked(),
+            },
+            timestamp: run_timestamp.to_string(),
+        },
     }
 }
 
-fn classify_failure_reason(
-    rulesets_result: &crate::github::client::ApiOutcome,
-    legacy_result: &crate::github::client::ApiOutcome,
-    admin: AdminAccess,
-) -> Option<CollectionFailureReason> {
-    if rulesets_result.status_code() == Some(403) || legacy_result.status_code() == Some(403) {
-        return Some(CollectionFailureReason::PermissionDenied);
+fn unobserved_details(
+    default_branch: &str,
+    reason_kind: Option<CollectionFailureReason>,
+    status_code: Option<u16>,
+) -> BranchProtectionDetails {
+    BranchProtectionDetails {
+        default_branch: default_branch.to_string(),
+        has_pr: None,
+        required_reviewers: None,
+        has_status_checks: None,
+        admin_equivalent: None,
+        has_broad_bypass: None,
+        reason: reason_kind.map(|reason| reason.to_string()),
+        reason_kind,
+        http_status: status_code,
+        force_push_blocked: None,
+        deletion_blocked: None,
     }
-    if rulesets_result.status_code() == Some(429) || legacy_result.status_code() == Some(429) {
-        return Some(CollectionFailureReason::RateLimited);
-    }
-    if rulesets_result.status_code() == Some(404) || legacy_result.status_code() == Some(404) {
-        return Some(match admin {
-            AdminAccess::Admin => CollectionFailureReason::NotFoundAbsent,
-            AdminAccess::NotAdmin | AdminAccess::Unknown => {
-                CollectionFailureReason::PermissionSuspected
-            }
-        });
-    }
-    if rulesets_result.is_retryable() || legacy_result.is_retryable() {
-        return Some(CollectionFailureReason::Transient);
-    }
-    None
 }
 
 /// Check if a ruleset applies to a given branch.
@@ -593,8 +751,7 @@ mod tests {
         let not_found =
             crate::github::client::ApiOutcome::failure(Some(404), "not found".to_string(), false);
 
-        let result = build_protection_result(
-            None,
+        let result = evaluate_outcomes(
             &not_found,
             &not_found,
             "main",
@@ -618,8 +775,7 @@ mod tests {
         let denied =
             crate::github::client::ApiOutcome::failure(Some(403), "forbidden".to_string(), false);
 
-        let result = build_protection_result(
-            None,
+        let result = evaluate_outcomes(
             &denied,
             &denied,
             "main",
@@ -639,8 +795,7 @@ mod tests {
         let not_found =
             crate::github::client::ApiOutcome::failure(Some(404), "not found".to_string(), false);
 
-        let result = build_protection_result(
-            None,
+        let result = evaluate_outcomes(
             &not_found,
             &not_found,
             "main",
@@ -665,8 +820,7 @@ mod tests {
         let not_found =
             crate::github::client::ApiOutcome::failure(Some(404), "not found".to_string(), false);
 
-        let result = build_protection_result(
-            None,
+        let result = evaluate_outcomes(
             &not_found,
             &not_found,
             "main",
@@ -687,18 +841,145 @@ mod tests {
     }
 
     #[test]
-    fn classify_failure_reason_403_unchanged_regardless_of_admin() {
+    fn classify_endpoint_403_unchanged_regardless_of_admin() {
         let denied =
             crate::github::client::ApiOutcome::failure(Some(403), "forbidden".to_string(), false);
 
-        assert_eq!(
-            classify_failure_reason(&denied, &denied, AdminAccess::NotAdmin),
-            Some(CollectionFailureReason::PermissionDenied)
+        for admin in [
+            AdminAccess::NotAdmin,
+            AdminAccess::Admin,
+            AdminAccess::Unknown,
+        ] {
+            match classify_endpoint(&denied, ProtectionEndpoint::Rulesets, "main", admin) {
+                EndpointEvidence::Indeterminate(failure) => {
+                    assert_eq!(failure.reason, IndeterminateReason::PermissionDenied);
+                    assert_eq!(failure.http_status, Some(403));
+                }
+                _ => panic!("403 must classify as an indeterminate denial"),
+            }
+        }
+    }
+
+    #[test]
+    fn every_indeterminate_reason_persists_as_an_indeterminate_collection_reason() {
+        for reason in [
+            IndeterminateReason::PermissionDenied,
+            IndeterminateReason::RateLimited,
+            IndeterminateReason::PermissionSuspected,
+            IndeterminateReason::Transient,
+            IndeterminateReason::Invalid,
+        ] {
+            assert!(reason.persisted().is_indeterminate(), "{reason:?}");
+        }
+    }
+
+    #[test]
+    fn classify_endpoint_maps_every_unmodelled_failure_to_an_indeterminate_reason() {
+        let cases = [
+            (Some(401), false, IndeterminateReason::Invalid),
+            (Some(422), false, IndeterminateReason::Invalid),
+            (None, false, IndeterminateReason::Invalid),
+            (Some(500), true, IndeterminateReason::Transient),
+            (None, true, IndeterminateReason::Transient),
+        ];
+
+        for (status, retryable, expected) in cases {
+            let outcome =
+                crate::github::client::ApiOutcome::failure(status, "failed".to_string(), retryable);
+            match classify_endpoint(
+                &outcome,
+                ProtectionEndpoint::Rulesets,
+                "main",
+                AdminAccess::Admin,
+            ) {
+                EndpointEvidence::Indeterminate(failure) => {
+                    assert_eq!(failure.reason, expected, "status {status:?}");
+                    assert_eq!(failure.http_status, status);
+                    assert!(failure.reason.persisted().is_indeterminate());
+                }
+                _ => panic!("failure {status:?} must never classify as observed or absent"),
+            }
+        }
+    }
+
+    #[test]
+    fn unauthenticated_rulesets_with_readable_legacy_protection_is_not_scored() {
+        let rulesets_unauthorized = crate::github::client::ApiOutcome::failure(
+            Some(401),
+            "bad credentials".to_string(),
+            false,
         );
-        assert_eq!(
-            classify_failure_reason(&denied, &denied, AdminAccess::Admin),
-            Some(CollectionFailureReason::PermissionDenied)
+        let legacy = crate::github::client::ApiOutcome::success(serde_json::json!({
+            "required_pull_request_reviews": { "required_approving_review_count": 2 },
+            "allow_force_pushes": {"enabled": false},
+            "allow_deletions": {"enabled": false}
+        }));
+
+        let result = evaluate_outcomes(
+            &rulesets_unauthorized,
+            &legacy,
+            "main",
+            AdminAccess::Admin,
+            "2026-08-31T00:00:00Z",
         );
+
+        assert_eq!(result.status, BranchProtectionStatus::Unknown);
+        assert_eq!(
+            result.details.reason_kind,
+            Some(CollectionFailureReason::Invalid)
+        );
+        assert_eq!(result.details.http_status, Some(401));
+        assert_eq!(result.details.has_pr, None);
+    }
+
+    #[test]
+    fn asymmetric_failure_persists_the_failing_endpoint_status_not_the_readable_one() {
+        let rulesets = applicable_ruleset_outcome();
+        let legacy_denied =
+            crate::github::client::ApiOutcome::failure(Some(403), "forbidden".to_string(), false);
+
+        let denied_legacy = evaluate_outcomes(
+            &rulesets,
+            &legacy_denied,
+            "main",
+            AdminAccess::NotAdmin,
+            "2026-08-31T00:00:00Z",
+        );
+        assert_eq!(denied_legacy.details.http_status, Some(403));
+
+        let legacy = crate::github::client::ApiOutcome::success(serde_json::json!({
+            "required_pull_request_reviews": { "required_approving_review_count": 2 }
+        }));
+        let denied_rulesets =
+            crate::github::client::ApiOutcome::failure(Some(403), "forbidden".to_string(), false);
+
+        let denied_ruleset_side = evaluate_outcomes(
+            &denied_rulesets,
+            &legacy,
+            "main",
+            AdminAccess::NotAdmin,
+            "2026-08-31T00:00:00Z",
+        );
+        assert_eq!(denied_ruleset_side.details.http_status, Some(403));
+    }
+
+    #[test]
+    fn confirmed_absence_never_renders_an_indeterminate_reason() {
+        assert_eq!(ConfirmedAbsence::NoControls.reason_kind(), None);
+        assert_eq!(
+            ConfirmedAbsence::AuthorityConfirmedNotFound.reason_kind(),
+            Some(CollectionFailureReason::NotFoundAbsent)
+        );
+        for absence in [
+            ConfirmedAbsence::NoControls,
+            ConfirmedAbsence::AuthorityConfirmedNotFound,
+        ] {
+            assert!(
+                !absence
+                    .reason_kind()
+                    .is_some_and(CollectionFailureReason::is_indeterminate)
+            );
+        }
     }
 
     #[test]
@@ -752,8 +1033,7 @@ mod tests {
         );
 
         let admin = repo_admin_signal(&repo_details_failed);
-        let result = build_protection_result(
-            None,
+        let result = evaluate_outcomes(
             &not_found,
             &not_found,
             "main",
@@ -767,6 +1047,210 @@ mod tests {
             Some(CollectionFailureReason::PermissionSuspected)
         );
         assert_eq!(result.details.http_status, Some(404));
+    }
+
+    fn applicable_ruleset_outcome() -> crate::github::client::ApiOutcome {
+        crate::github::client::ApiOutcome::success(serde_json::json!([
+            {
+                "target": "branch",
+                "enforcement": "active",
+                "conditions": { "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] } },
+                "rules": [
+                    {"type": "pull_request", "parameters": {"required_approving_review_count": 1}},
+                    {"type": "non_fast_forward"},
+                    {"type": "deletion"}
+                ],
+                "bypass_actors": []
+            }
+        ]))
+    }
+
+    #[test]
+    fn readable_rulesets_with_denied_legacy_endpoint_is_not_scored_from_partial_evidence() {
+        let rulesets = applicable_ruleset_outcome();
+        let legacy_denied =
+            crate::github::client::ApiOutcome::failure(Some(403), "forbidden".to_string(), false);
+
+        let result = evaluate_outcomes(
+            &rulesets,
+            &legacy_denied,
+            "main",
+            AdminAccess::NotAdmin,
+            "2026-08-31T00:00:00Z",
+        );
+
+        assert_eq!(result.status, BranchProtectionStatus::Unknown);
+        assert_eq!(
+            result.details.reason_kind,
+            Some(CollectionFailureReason::PermissionDenied)
+        );
+    }
+
+    #[test]
+    fn denied_rulesets_with_readable_legacy_protection_is_also_indeterminate() {
+        let rulesets_denied =
+            crate::github::client::ApiOutcome::failure(Some(403), "forbidden".to_string(), false);
+        let legacy = crate::github::client::ApiOutcome::success(serde_json::json!({
+            "required_pull_request_reviews": { "required_approving_review_count": 2 },
+            "allow_force_pushes": {"enabled": false},
+            "allow_deletions": {"enabled": false}
+        }));
+
+        let result = evaluate_outcomes(
+            &rulesets_denied,
+            &legacy,
+            "main",
+            AdminAccess::NotAdmin,
+            "2026-08-31T00:00:00Z",
+        );
+
+        assert_eq!(result.status, BranchProtectionStatus::Unknown);
+        assert_eq!(
+            result.details.reason_kind,
+            Some(CollectionFailureReason::PermissionDenied)
+        );
+        assert_eq!(result.details.has_pr, None);
+        assert_eq!(result.details.force_push_blocked, None);
+    }
+
+    #[test]
+    fn readable_rulesets_with_legacy_404_under_non_admin_is_permission_suspected() {
+        let rulesets = applicable_ruleset_outcome();
+        let legacy_not_found =
+            crate::github::client::ApiOutcome::failure(Some(404), "not found".to_string(), false);
+
+        let result = evaluate_outcomes(
+            &rulesets,
+            &legacy_not_found,
+            "main",
+            AdminAccess::NotAdmin,
+            "2026-08-31T00:00:00Z",
+        );
+
+        assert_eq!(result.status, BranchProtectionStatus::Unknown);
+        assert_eq!(
+            result.details.reason_kind,
+            Some(CollectionFailureReason::PermissionSuspected)
+        );
+    }
+
+    #[test]
+    fn readable_rulesets_with_legacy_404_under_admin_still_scores_as_genuine_absence() {
+        let rulesets = applicable_ruleset_outcome();
+        let legacy_not_found =
+            crate::github::client::ApiOutcome::failure(Some(404), "not found".to_string(), false);
+
+        let result = evaluate_outcomes(
+            &rulesets,
+            &legacy_not_found,
+            "main",
+            AdminAccess::Admin,
+            "2026-08-31T00:00:00Z",
+        );
+
+        assert_eq!(result.status, BranchProtectionStatus::Pass);
+        assert_eq!(result.details.reason_kind, None);
+        assert_eq!(result.details.has_pr, Some(true));
+        assert_eq!(result.details.force_push_blocked, Some(true));
+    }
+
+    fn readable_legacy_outcome() -> crate::github::client::ApiOutcome {
+        crate::github::client::ApiOutcome::success(serde_json::json!({
+            "required_pull_request_reviews": { "required_approving_review_count": 2 },
+            "required_status_checks": { "contexts": ["ci/build"] },
+            "enforce_admins": { "enabled": true },
+            "allow_force_pushes": {"enabled": false},
+            "allow_deletions": {"enabled": false}
+        }))
+    }
+
+    fn success_without_payload() -> crate::github::client::ApiOutcome {
+        crate::github::client::ApiOutcome::Success {
+            status_code: 200,
+            data: None,
+            headers: None,
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn wrong_shaped_rulesets_payload_is_indeterminate_despite_readable_legacy_sibling() {
+        let rulesets_wrong_shape =
+            crate::github::client::ApiOutcome::success(serde_json::json!({"rulesets": "nope"}));
+
+        let result = evaluate_outcomes(
+            &rulesets_wrong_shape,
+            &readable_legacy_outcome(),
+            "main",
+            AdminAccess::Admin,
+            "2026-08-31T00:00:00Z",
+        );
+
+        assert_eq!(result.status, BranchProtectionStatus::Unknown);
+        assert_eq!(
+            result.details.reason_kind,
+            Some(CollectionFailureReason::Invalid)
+        );
+        assert_eq!(result.details.http_status, Some(200));
+        assert_eq!(result.details.has_pr, None);
+    }
+
+    #[test]
+    fn absent_rulesets_payload_is_indeterminate_despite_readable_legacy_sibling() {
+        let result = evaluate_outcomes(
+            &success_without_payload(),
+            &readable_legacy_outcome(),
+            "main",
+            AdminAccess::Admin,
+            "2026-08-31T00:00:00Z",
+        );
+
+        assert_eq!(result.status, BranchProtectionStatus::Unknown);
+        assert_eq!(
+            result.details.reason_kind,
+            Some(CollectionFailureReason::Invalid)
+        );
+        assert_eq!(result.details.has_pr, None);
+    }
+
+    #[test]
+    fn wrong_shaped_legacy_payload_is_indeterminate_despite_readable_rulesets_sibling() {
+        let legacy_wrong_shape =
+            crate::github::client::ApiOutcome::success(serde_json::json!(["not", "an", "object"]));
+
+        let result = evaluate_outcomes(
+            &applicable_ruleset_outcome(),
+            &legacy_wrong_shape,
+            "main",
+            AdminAccess::Admin,
+            "2026-08-31T00:00:00Z",
+        );
+
+        assert_eq!(result.status, BranchProtectionStatus::Unknown);
+        assert_eq!(
+            result.details.reason_kind,
+            Some(CollectionFailureReason::Invalid)
+        );
+        assert_eq!(result.details.http_status, Some(200));
+        assert_eq!(result.details.has_pr, None);
+    }
+
+    #[test]
+    fn absent_legacy_payload_is_indeterminate_despite_readable_rulesets_sibling() {
+        let result = evaluate_outcomes(
+            &applicable_ruleset_outcome(),
+            &success_without_payload(),
+            "main",
+            AdminAccess::Admin,
+            "2026-08-31T00:00:00Z",
+        );
+
+        assert_eq!(result.status, BranchProtectionStatus::Unknown);
+        assert_eq!(
+            result.details.reason_kind,
+            Some(CollectionFailureReason::Invalid)
+        );
+        assert_eq!(result.details.has_pr, None);
     }
 
     #[test]
