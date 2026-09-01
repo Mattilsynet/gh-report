@@ -15,42 +15,97 @@
 /// Template used when no known GitHub route shape matches.
 pub(crate) const UNMATCHED: &str = "/{unmatched}";
 
-/// The closed set of route templates [`route_template`] can return.
+/// The closed set of GitHub routes this crate is permitted to name.
 ///
-/// Test-only: the `&'static str` return type is the production guarantee.
-/// This enumeration exists so tests can assert set membership of every
-/// emitted `route` field.
-#[cfg(test)]
-pub(crate) const TEMPLATES: [&str; 14] = [
-    "/user",
-    "/rate_limit",
-    "/app/installations/{installation_id}/access_tokens",
-    "/orgs/{org}/repos",
-    "/orgs/{org}/members",
-    "/orgs/{org}/teams/{team_slug}/members",
-    "/orgs/{org}/secret-scanning/alerts",
-    "/repos/{owner}/{repo}",
-    "/repos/{owner}/{repo}/rulesets",
-    "/repos/{owner}/{repo}/commits",
-    "/repos/{owner}/{repo}/secret-scanning/alerts",
-    "/repos/{owner}/{repo}/branches/{branch}/protection",
-    "/repos/{owner}/{repo}/contents/{path}",
-    UNMATCHED,
-];
+/// A fieldless enum: a route value carries no runtime bytes at all, so it
+/// cannot be constructed from — or made to carry — a request target. Its
+/// discriminant doubles as a dense index for per-route aggregation, which
+/// makes an out-of-set aggregation key unrepresentable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum Route {
+    User,
+    RateLimit,
+    InstallationAccessTokens,
+    OrgRepos,
+    OrgMembers,
+    TeamMembers,
+    OrgSecretScanningAlerts,
+    Repo,
+    RepoRulesets,
+    RepoCommits,
+    RepoSecretScanningAlerts,
+    BranchProtection,
+    RepoContents,
+    Unmatched,
+}
+
+impl Route {
+    /// Number of distinct routes; the width of any per-route aggregation.
+    pub(crate) const COUNT: usize = 14;
+
+    /// Every route, in discriminant order.
+    pub(crate) const ALL: [Self; Self::COUNT] = [
+        Self::User,
+        Self::RateLimit,
+        Self::InstallationAccessTokens,
+        Self::OrgRepos,
+        Self::OrgMembers,
+        Self::TeamMembers,
+        Self::OrgSecretScanningAlerts,
+        Self::Repo,
+        Self::RepoRulesets,
+        Self::RepoCommits,
+        Self::RepoSecretScanningAlerts,
+        Self::BranchProtection,
+        Self::RepoContents,
+        Self::Unmatched,
+    ];
+
+    /// The `&'static str` template naming this route.
+    pub(crate) const fn template(self) -> &'static str {
+        match self {
+            Self::User => "/user",
+            Self::RateLimit => "/rate_limit",
+            Self::InstallationAccessTokens => "/app/installations/{installation_id}/access_tokens",
+            Self::OrgRepos => "/orgs/{org}/repos",
+            Self::OrgMembers => "/orgs/{org}/members",
+            Self::TeamMembers => "/orgs/{org}/teams/{team_slug}/members",
+            Self::OrgSecretScanningAlerts => "/orgs/{org}/secret-scanning/alerts",
+            Self::Repo => "/repos/{owner}/{repo}",
+            Self::RepoRulesets => "/repos/{owner}/{repo}/rulesets",
+            Self::RepoCommits => "/repos/{owner}/{repo}/commits",
+            Self::RepoSecretScanningAlerts => "/repos/{owner}/{repo}/secret-scanning/alerts",
+            Self::BranchProtection => "/repos/{owner}/{repo}/branches/{branch}/protection",
+            Self::RepoContents => "/repos/{owner}/{repo}/contents/{path}",
+            Self::Unmatched => UNMATCHED,
+        }
+    }
+
+    /// Dense aggregation index, always below [`Self::COUNT`].
+    pub(crate) const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// Reduce a request path or absolute request URL to a bounded [`Route`].
+///
+/// The runtime target is consumed only to select a variant; no byte of it
+/// is borrowed into the result.
+pub(crate) fn route_of_target(target: &str) -> Route {
+    route_of(path_for_matching(target))
+}
 
 /// Reduce a request path or absolute request URL to a bounded route template.
 ///
 /// The return type is `&'static str`: the result is always one of
-/// [`TEMPLATES`], never a substring of `target`.
+/// [`Route::ALL`]'s templates, never a substring of `target`.
 pub(crate) fn route_template(target: &str) -> &'static str {
-    route_of(path_for_matching(target))
+    route_of_target(target).template()
 }
 
 const MAX_TRACKED_SEGMENTS: usize = 8;
 
-const CONTENTS: &str = "/repos/{owner}/{repo}/contents/{path}";
-
-fn route_of(path: &str) -> &'static str {
+fn route_of(path: &str) -> Route {
     let mut tracked = [""; MAX_TRACKED_SEGMENTS];
     let mut count = 0usize;
     for segment in path.split('/').filter(|s| !s.is_empty()) {
@@ -62,32 +117,26 @@ fn route_of(path: &str) -> &'static str {
 
     if count > MAX_TRACKED_SEGMENTS {
         return match tracked {
-            ["repos", _, _, "contents", ..] => CONTENTS,
-            _ => UNMATCHED,
+            ["repos", _, _, "contents", ..] => Route::RepoContents,
+            _ => Route::Unmatched,
         };
     }
 
     match &tracked[..count] {
-        ["user"] => "/user",
-        ["rate_limit"] => "/rate_limit",
-        ["app", "installations", _, "access_tokens"] => {
-            "/app/installations/{installation_id}/access_tokens"
-        }
-        ["orgs", _, "repos"] => "/orgs/{org}/repos",
-        ["orgs", _, "members"] => "/orgs/{org}/members",
-        ["orgs", _, "teams", _, "members"] => "/orgs/{org}/teams/{team_slug}/members",
-        ["orgs", _, "secret-scanning", "alerts"] => "/orgs/{org}/secret-scanning/alerts",
-        ["repos", _, _] => "/repos/{owner}/{repo}",
-        ["repos", _, _, "rulesets"] => "/repos/{owner}/{repo}/rulesets",
-        ["repos", _, _, "commits"] => "/repos/{owner}/{repo}/commits",
-        ["repos", _, _, "secret-scanning", "alerts"] => {
-            "/repos/{owner}/{repo}/secret-scanning/alerts"
-        }
-        ["repos", _, _, "branches", _, "protection"] => {
-            "/repos/{owner}/{repo}/branches/{branch}/protection"
-        }
-        ["repos", _, _, "contents", ..] => CONTENTS,
-        _ => UNMATCHED,
+        ["user"] => Route::User,
+        ["rate_limit"] => Route::RateLimit,
+        ["app", "installations", _, "access_tokens"] => Route::InstallationAccessTokens,
+        ["orgs", _, "repos"] => Route::OrgRepos,
+        ["orgs", _, "members"] => Route::OrgMembers,
+        ["orgs", _, "teams", _, "members"] => Route::TeamMembers,
+        ["orgs", _, "secret-scanning", "alerts"] => Route::OrgSecretScanningAlerts,
+        ["repos", _, _] => Route::Repo,
+        ["repos", _, _, "rulesets"] => Route::RepoRulesets,
+        ["repos", _, _, "commits"] => Route::RepoCommits,
+        ["repos", _, _, "secret-scanning", "alerts"] => Route::RepoSecretScanningAlerts,
+        ["repos", _, _, "branches", _, "protection"] => Route::BranchProtection,
+        ["repos", _, _, "contents", ..] => Route::RepoContents,
+        _ => Route::Unmatched,
     }
 }
 
@@ -113,20 +162,40 @@ fn authority_tail(authority_onwards: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{TEMPLATES, UNMATCHED, route_template};
+    use super::{Route, UNMATCHED, route_template};
 
     const PLANTED: &str = "ghp_plantedsecret1234567890abcdefghij";
+
+    fn is_closed(template: &str) -> bool {
+        Route::ALL.iter().any(|r| r.template() == template)
+    }
 
     fn assert_closed_and_secret_free(target: &str) {
         let template = route_template(target);
         assert!(
-            TEMPLATES.contains(&template),
+            is_closed(template),
             "template {template} is outside the closed set for target {target}"
         );
         assert!(
             !template.contains(PLANTED),
             "template {template} leaked the planted secret from {target}"
         );
+    }
+
+    #[test]
+    fn route_indices_are_dense_and_bounded() {
+        for (expected, route) in Route::ALL.iter().enumerate() {
+            assert_eq!(route.index(), expected);
+            assert!(route.index() < Route::COUNT);
+        }
+    }
+
+    #[test]
+    fn every_route_has_a_distinct_template() {
+        let mut templates: Vec<&'static str> = Route::ALL.iter().map(|r| r.template()).collect();
+        templates.sort_unstable();
+        templates.dedup();
+        assert_eq!(templates.len(), Route::COUNT);
     }
 
     #[test]
@@ -169,7 +238,7 @@ mod tests {
         for target in targets {
             let template = route_template(target);
             assert!(
-                TEMPLATES.contains(&template),
+                is_closed(template),
                 "template {template} is outside the closed set for target {target}"
             );
         }

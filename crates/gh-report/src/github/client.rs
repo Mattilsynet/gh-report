@@ -35,9 +35,10 @@ use crate::github::auth::{
 };
 use crate::github::auth_header::AuthHeader;
 use crate::github::budget::BudgetGate;
+use crate::github::budget_checkpoint::BudgetCheckpoints;
 use crate::github::pagination;
 use crate::github::rate_limit::RateLimitState;
-use crate::github::route_template::route_template;
+use crate::github::route_template::{route_of_target, route_template};
 use cherry_pit_wq::BackoffRegulator;
 use std::num::NonZeroU32;
 
@@ -322,6 +323,13 @@ pub struct GitHubClient {
     /// collection runs.
     budget: Arc<BudgetGate>,
     budget_cancel: tokio_util::sync::CancellationToken,
+    /// Per-run, per-route call aggregation feeding the bounded INFO
+    /// budget-progress checkpoints.
+    ///
+    /// Swapped for a fresh tracker by [`Self::clear_run_cache`] at each
+    /// collection-run boundary, so counts, threshold cursor, start time, and
+    /// call baseline are always those of the run in progress.
+    budget_checkpoints: ArcSwap<BudgetCheckpoints>,
     /// Side-channel for `ETag` extraction: maps API path → last-seen `ETag`.
     /// Populated by `request_single_inner`, read by `repo_details`.
     last_response_etags: SccHashMap<String, String>,
@@ -506,6 +514,9 @@ impl GitHubClient {
             refresh_lock: tokio::sync::Mutex::new(()),
             app_config,
             auth_metadata: StdMutex::new(None),
+            budget_checkpoints: ArcSwap::from_pointee(BudgetCheckpoints::for_run(
+                budget.total_calls_made(),
+            )),
             budget,
             budget_cancel: tokio_util::sync::CancellationToken::new(),
             last_response_etags: SccHashMap::new(),
@@ -920,11 +931,11 @@ impl GitHubClient {
         elapsed: Duration,
         attempt: u32,
     ) {
-        let route = route_template(target);
+        let route = route_of_target(target);
         let budget = self.budget.epoch_usage();
         debug!(
             method = "GET",
-            route,
+            route = route.template(),
             status = ?status,
             latency_ms = elapsed.as_millis(),
             attempt,
@@ -932,6 +943,20 @@ impl GitHubClient {
             budget_ceiling = budget.epoch_limit,
             "github api request attempt"
         );
+
+        if let Some(checkpoint) = self.budget_checkpoints.load().record(
+            route,
+            self.budget.total_calls_made(),
+            budget.epoch_limit,
+        ) {
+            info!(
+                budget_calls = checkpoint.calls,
+                budget_ceiling = checkpoint.ceiling,
+                elapsed_secs = checkpoint.elapsed.as_secs(),
+                approx_top_routes = %checkpoint.approx_top_routes,
+                "github api budget progress checkpoint"
+            );
+        }
     }
 
     /// Make a single (non-paginated) API request.
@@ -1557,8 +1582,11 @@ impl GitHubClient {
     /// Clear per-run caches without destroying the client.
     ///
     /// Clears the in-memory `scc::HashMap` repo detail cache and the `ETag`
-    /// side-channel. Does **not** affect the shared `BudgetGate`,
-    /// `RateLimitState`, HTTP connection pool, or credentials.
+    /// side-channel, and installs a fresh budget-checkpoint tracker baselined
+    /// at the budget gate's current call count, so the new run emits its own
+    /// milestones instead of inheriting the previous run's exhausted cursor.
+    /// Does **not** affect the shared `BudgetGate`, `RateLimitState`, HTTP
+    /// connection pool, or credentials.
     ///
     /// # Ordering constraint
     ///
@@ -1569,6 +1597,10 @@ impl GitHubClient {
     pub fn clear_run_cache(&self) {
         self.repo_detail_cache.clear_sync();
         self.last_response_etags.clear_sync();
+        self.budget_checkpoints
+            .store(Arc::new(BudgetCheckpoints::for_run(
+                self.budget.total_calls_made(),
+            )));
         self.rate_limit_warnings
             .store(0, std::sync::atomic::Ordering::Relaxed);
     }
@@ -2163,7 +2195,7 @@ mod tests {
     }
 
     fn assert_events_are_route_template_only(events: &[CapturedEvent]) {
-        use crate::github::route_template::TEMPLATES;
+        use crate::github::route_template::Route;
 
         assert!(!events.is_empty(), "no events captured");
         for event in events {
@@ -2176,7 +2208,7 @@ mod tests {
             }
             if let Some(route) = event.fields.get("route") {
                 assert!(
-                    TEMPLATES.contains(&route.as_str()),
+                    Route::ALL.iter().any(|r| r.template() == route.as_str()),
                     "route field {route} is outside the closed template set"
                 );
             }
@@ -2348,6 +2380,300 @@ mod tests {
             .expect("pagination completion record");
         assert_eq!(completion.field("route"), "/orgs/{org}/repos");
         assert!(!completion.fields.contains_key("path"));
+    }
+
+    fn build_test_client_with_ceiling(base_url: &str, limit: u64) -> GitHubClient {
+        build_test_client_with_budget(
+            base_url,
+            &Arc::new(BudgetGate::new(limit, Duration::from_millis(1))),
+            &Arc::new(crate::github::rate_limit::new_default()),
+        )
+    }
+
+    fn checkpoint_events(events: &[CapturedEvent]) -> Vec<&CapturedEvent> {
+        events
+            .iter()
+            .filter(|e| e.message == "github api budget progress checkpoint")
+            .collect()
+    }
+
+    async fn drive_requests_and_capture_checkpoints(
+        target: &str,
+        requests: usize,
+    ) -> Vec<CapturedEvent> {
+        drive_paginated_requests_and_capture_checkpoints(target, requests, false).await
+    }
+
+    async fn drive_paginated_requests_and_capture_checkpoints(
+        target: &str,
+        requests: usize,
+        paginate: bool,
+    ) -> Vec<CapturedEvent> {
+        use wiremock::matchers::any;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([{"id": 1}])))
+            .mount(&server)
+            .await;
+
+        let client = build_test_client_with_ceiling(&server.uri(), 4);
+        let (events, _guard) = capture_events();
+        for _ in 0..requests {
+            let _ = client.request(target, paginate, 0, 10).await;
+        }
+        drain_events(&events)
+    }
+
+    #[tokio::test]
+    async fn budget_checkpoint_is_emitted_at_info_with_every_diagnostic_field() {
+        let captured = drive_requests_and_capture_checkpoints("/orgs/test-org/repos", 8).await;
+        let checkpoints = checkpoint_events(&captured);
+        assert!(
+            !checkpoints.is_empty(),
+            "no budget checkpoint was emitted at the default level"
+        );
+        for event in &checkpoints {
+            assert_eq!(event.level, tracing::Level::INFO);
+            for name in [
+                "budget_calls",
+                "budget_ceiling",
+                "elapsed_secs",
+                "approx_top_routes",
+            ] {
+                assert!(
+                    event.fields.contains_key(name),
+                    "checkpoint is missing field {name}"
+                );
+            }
+            assert!(
+                event
+                    .field("approx_top_routes")
+                    .starts_with("/orgs/{org}/repos="),
+                "unexpected breakdown {}",
+                event.field("approx_top_routes")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn each_collection_run_emits_its_own_budget_checkpoints() {
+        use crate::github::budget_checkpoint::MAX_CHECKPOINTS_PER_RUN;
+        use wiremock::matchers::any;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([{"id": 1}])))
+            .mount(&server)
+            .await;
+
+        let client = build_test_client_with_ceiling(&server.uri(), 4);
+        let requests_exhausting_every_threshold = 64;
+
+        let first_run = {
+            let (events, _guard) = capture_events();
+            for _ in 0..requests_exhausting_every_threshold {
+                let _ = client.request("/orgs/test-org/repos", false, 0, 10).await;
+            }
+            drain_events(&events)
+        };
+        let first = checkpoint_events(&first_run).len();
+        assert_eq!(
+            first, MAX_CHECKPOINTS_PER_RUN,
+            "the first run should exhaust every threshold"
+        );
+
+        client.clear_run_cache();
+
+        let second_run = {
+            let (events, _guard) = capture_events();
+            for _ in 0..requests_exhausting_every_threshold {
+                let _ = client.request("/orgs/test-org/repos", false, 0, 10).await;
+            }
+            drain_events(&events)
+        };
+        let second = checkpoint_events(&second_run).len();
+        assert_eq!(
+            second, first,
+            "the second run inherited the first run's exhausted checkpoint state"
+        );
+        for event in checkpoint_events(&second_run) {
+            assert_ne!(
+                event.field("budget_calls"),
+                "0",
+                "second-run checkpoints must count that run's own calls"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn budget_checkpoint_volume_is_bounded_not_per_request() {
+        use crate::github::budget_checkpoint::MAX_CHECKPOINTS_PER_RUN;
+
+        let captured = drive_requests_and_capture_checkpoints("/orgs/test-org/repos", 200).await;
+        let attempts = attempt_events(&captured).len();
+        let checkpoints = checkpoint_events(&captured).len();
+        assert_eq!(attempts, 200, "each request is one outbound attempt");
+        assert!(
+            checkpoints <= MAX_CHECKPOINTS_PER_RUN,
+            "{checkpoints} checkpoints for {attempts} requests exceeds the \
+             per-run bound {MAX_CHECKPOINTS_PER_RUN}"
+        );
+    }
+
+    fn checkpoint_lane_failure(lane: &str, captured: &[CapturedEvent]) -> Option<String> {
+        use crate::github::route_template::Route;
+
+        let checkpoints = checkpoint_events(captured);
+        if checkpoints.is_empty() {
+            return Some(format!(
+                "{lane}: the checkpoint emission site was never exercised"
+            ));
+        }
+        for event in &checkpoints {
+            if event.level != tracing::Level::INFO {
+                return Some(format!("{lane}: checkpoint was not emitted at INFO"));
+            }
+            let mut rendered = event.message.clone();
+            for (key, value) in &event.fields {
+                rendered.push_str(key);
+                rendered.push_str(value);
+            }
+            if rendered.contains(PLANTED_SECRET) {
+                return Some(format!("{lane}: checkpoint leaked the plant: {rendered}"));
+            }
+            for pair in event.field("approx_top_routes").split(' ') {
+                let Some((template, _)) = pair.split_once('=') else {
+                    return Some(format!("{lane}: malformed breakdown entry {pair}"));
+                };
+                if !Route::ALL.iter().any(|r| r.template() == template) {
+                    return Some(format!(
+                        "{lane}: breakdown named {template}, outside the closed set"
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    /// Drive two pages where page 2's URL is supplied by the server's `Link`
+    /// header and carries the plant, under a ceiling low enough that a
+    /// checkpoint is emitted on the page-2 attempt.
+    async fn drive_server_supplied_link_and_capture_checkpoints() -> Vec<CapturedEvent> {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let next = format!(
+            "<{}/orgs/test-org/repos?page=2&access_token={PLANTED_SECRET}>; rel=\"next\"",
+            server.uri()
+        );
+        Mock::given(path("/orgs/test-org/repos"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"name": "a"}]))
+                    .insert_header("link", next.as_str()),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(path("/orgs/test-org/repos"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{"name": "b"}])),
+            )
+            .mount(&server)
+            .await;
+
+        let client = build_test_client_with_ceiling(&server.uri(), 4);
+        let (events, _guard) = capture_events();
+        let outcome = client.request("/orgs/test-org/repos", true, 0, 10).await;
+        assert!(outcome.is_ok());
+
+        let captured = drain_events(&events);
+        assert_eq!(
+            attempt_events(&captured).len(),
+            2,
+            "the server-supplied page-2 URL must have been dispatched"
+        );
+        assert!(
+            checkpoint_events(&captured).len() >= 2,
+            "the ceiling must be low enough for a checkpoint on the page-2 attempt"
+        );
+        captured
+    }
+
+    #[tokio::test]
+    async fn guard_bite_no_budget_checkpoint_field_carries_a_planted_secret() {
+        let mut failures: Vec<String> = Vec::new();
+
+        for (lane, target, paginate) in [
+            (
+                "a: query string",
+                format!("/orgs/test-org/repos?access_token={PLANTED_SECRET}"),
+                false,
+            ),
+            (
+                "b: userinfo, absolute url",
+                format!(
+                    "https://x-access-token:{PLANTED_SECRET}@api.github.com/orgs/test-org/repos"
+                ),
+                false,
+            ),
+            (
+                "b: userinfo, scheme-relative",
+                format!("//x-access-token:{PLANTED_SECRET}@api.github.com/orgs/test-org/repos"),
+                false,
+            ),
+            (
+                "b: userinfo, bare authority",
+                format!("x-access-token:{PLANTED_SECRET}@api.github.com/orgs/test-org/repos"),
+                false,
+            ),
+            (
+                "b: userinfo, backslash separators",
+                format!(
+                    "https:\\x-access-token:{PLANTED_SECRET}@api.github.com\\orgs\\test-org\\repos"
+                ),
+                false,
+            ),
+            (
+                "c: fragment",
+                format!("/orgs/test-org/repos#{PLANTED_SECRET}"),
+                false,
+            ),
+            (
+                "d: percent-encoded delimiter",
+                format!("/repos/a/b/%3Faccess_token%3D{PLANTED_SECRET}"),
+                false,
+            ),
+            (
+                "e: legal path segment",
+                format!("/orgs/{PLANTED_SECRET}/repos"),
+                false,
+            ),
+            (
+                "g: initial paginated request target",
+                format!("/orgs/test-org/repos?access_token={PLANTED_SECRET}"),
+                true,
+            ),
+        ] {
+            let captured =
+                drive_paginated_requests_and_capture_checkpoints(&target, 8, paginate).await;
+            failures.extend(checkpoint_lane_failure(lane, &captured));
+        }
+
+        let link_lane = drive_server_supplied_link_and_capture_checkpoints().await;
+        failures.extend(checkpoint_lane_failure(
+            "f: server-supplied pagination link",
+            &link_lane,
+        ));
+
+        assert!(
+            failures.is_empty(),
+            "checkpoint guard-bite lanes failed: {failures:#?}"
+        );
     }
 
     #[tokio::test]

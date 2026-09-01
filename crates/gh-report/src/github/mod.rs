@@ -3,6 +3,7 @@
 pub mod auth;
 pub(crate) mod auth_header;
 pub mod budget;
+pub(crate) mod budget_checkpoint;
 pub mod client;
 pub mod dto;
 pub mod pagination;
