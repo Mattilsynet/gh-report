@@ -8,7 +8,7 @@ Deployment, authentication, permissions, logging, output layout, retention, and 
 
 1. Performs an initial data collection against the configured GitHub organization.
 2. Starts an HTTP server (in-memory cache — no disk I/O on the serving path).
-3. Re-collects every 15 minutes.
+3. Re-collects every 60 minutes, aligned to GitHub's hourly quota replenishment. The interval is a compile-time constant (`config::COLLECTION_INTERVAL_SECS`); there is no environment variable or CLI flag to change it at deploy time.
 4. Shuts down gracefully on `Ctrl-C` or `SIGTERM`.
 
 A file lock (`store/collector.lock`) prevents overlapping collections. If a scheduled run starts while a previous one is still in progress, the new run is skipped with a warning.
@@ -715,7 +715,7 @@ gcloud run deploy gh-report \
 
 **Deployment notes:**
 
-- `--min-instances=1` — the daemon must stay running for scheduled re-collection (15-minute interval).
+- `--min-instances=1` — the daemon must stay running for scheduled re-collection (60-minute interval).
 - `--max-instances=1` — prevents concurrent instances with conflicting file locks.
 - **Secrets:** Production uses `GITHUB_TOKEN` from Secret Manager secret `gh-report-token`; the GitHub App variables remain useful for local/break-glass deployments that intentionally use app auth.
 - **Persistence:** Production durability is NATS JetStream plus the in-memory projection rebuilt from the event log. The deployed Terraform has no Cloud Storage FUSE mount, and `baseline.msgpack` is retired from the gh-report boot path.
