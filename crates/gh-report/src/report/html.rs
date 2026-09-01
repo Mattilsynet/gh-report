@@ -183,6 +183,18 @@ impl ControlKey {
         }
     }
 
+    fn drill_down_href(self) -> Option<&'static str> {
+        match self {
+            Self::BranchProtection => Some("../branch_protection.html"),
+            Self::SecurityPolicy
+            | Self::SecretScanning
+            | Self::DependabotSecurityUpdates
+            | Self::NonStale
+            | Self::NonOrphaned
+            | Self::AlertFree => None,
+        }
+    }
+
     fn display_name(self) -> &'static str {
         match self {
             Self::SecurityPolicy => "Security Policy",
@@ -1167,6 +1179,7 @@ fn build_one_owner_detail_view_model(
         .iter()
         .map(|&key| SummaryCard {
             key: key.as_str(),
+            drill_down_href: key.drill_down_href(),
             label: key.display_name().to_string(),
             cell: build_control_cell(
                 &m.per_control_coverage,
