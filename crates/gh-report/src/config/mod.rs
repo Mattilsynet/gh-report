@@ -165,7 +165,38 @@ pub const BASELINE_MAX_AGE_SECS: u64 = 14_400;
 /// unresolved-by-timing raciness: the team-refresh writer persists
 /// `TeamStateCaptured` on its own cadence, independent of whether a repo
 /// collect cycle is in flight.
-pub const TEAM_REFRESH_INTERVAL_SECS: u64 = 1800;
+///
+/// 24 hours. Team membership changes on a human hiring/offboarding
+/// timescale, not a CI timescale, so a daily roster sweep is the
+/// business-appropriate period; the previous 1800s spent a full
+/// `2 x T + 1` fetch set (T = CODEOWNERS-referenced teams) 48 times a
+/// day against a quota [`COLLECTION_INTERVAL_SECS`] already consumes
+/// 81.6% of. FLO-0002:R2 harmonicity holds: 86400/3600 = 24, an integer
+/// number of collection cycles.
+///
+/// A longer PERIOD must not become a LOSS OF INFORMATION. Two things
+/// keep it from being one, and both are load-bearing:
+///
+/// - Every tick still fetches the same `2 x T` roster sets and the same
+///   org-members cross-check. Frequency is cut; coverage is not.
+/// - [`crate::app::daemon`] runs one refresh at STARTUP before entering
+///   this period. Without it a Cloud Run revision would serve an empty
+///   or rehydrated-only roster for a full 24 hours.
+///
+/// Per GND-0011:R6 a lag bound is not design intent unless it is
+/// observed and reported: the owner-detail page renders each team's
+/// roster age, derived at render time from the persisted
+/// `TeamStateCaptured.fetched_at`.
+pub const TEAM_REFRESH_INTERVAL_SECS: u64 = 86_400;
+
+/// Interval between polls for the lazily-initialised GitHub client while
+/// the team-refresh loop's startup tick waits for it to exist.
+///
+/// The client is created on the first repo collect, so the startup
+/// refresh cannot assume one at spawn time. Polling — rather than
+/// skipping — is what keeps a not-yet-ready client from silently
+/// costing a full [`TEAM_REFRESH_INTERVAL_SECS`] of roster data.
+pub const TEAM_REFRESH_CLIENT_POLL_SECS: u64 = 5;
 
 /// Fallback API budget ceiling used only before the first GitHub API
 /// response of a fresh process (`RateLimitState::load_remaining()` is
@@ -240,9 +271,24 @@ pub const SWEEP_TIMEOUT_SECS: u64 = 7_200;
 mod tests {
     use super::{
         BASELINE_MAX_AGE_SECS, COLLECTION_INTERVAL_SECS, EVIDENCE_SCHEMA_MAJOR,
-        EVIDENCE_SCHEMA_VERSION, USER_AGENT,
+        EVIDENCE_SCHEMA_VERSION, TEAM_REFRESH_INTERVAL_SECS, USER_AGENT,
     };
     use std::time::Duration;
+
+    #[test]
+    fn team_refresh_interval_is_twenty_four_hours() {
+        assert_eq!(TEAM_REFRESH_INTERVAL_SECS, 86_400);
+        assert_eq!(
+            Duration::from_secs(TEAM_REFRESH_INTERVAL_SECS),
+            Duration::from_hours(24)
+        );
+    }
+
+    #[test]
+    fn team_refresh_interval_is_an_integer_multiple_of_the_collection_interval() {
+        assert_eq!(TEAM_REFRESH_INTERVAL_SECS % COLLECTION_INTERVAL_SECS, 0);
+        assert_eq!(TEAM_REFRESH_INTERVAL_SECS / COLLECTION_INTERVAL_SECS, 24);
+    }
 
     #[test]
     fn collection_interval_is_one_hour_aligned_to_quota_replenishment() {
