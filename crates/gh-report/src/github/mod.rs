@@ -7,3 +7,4 @@ pub mod client;
 pub mod dto;
 pub mod pagination;
 pub mod rate_limit;
+pub(crate) mod route_template;

@@ -37,7 +37,148 @@ use crate::github::auth_header::AuthHeader;
 use crate::github::budget::BudgetGate;
 use crate::github::pagination;
 use crate::github::rate_limit::RateLimitState;
+use crate::github::route_template::route_template;
 use cherry_pit_wq::BackoffRegulator;
+use std::num::NonZeroU32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreDispatchFailure {
+    HaltedBeforeDispatch,
+    CredentialRefreshFailed,
+    BudgetAcquireCancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DispatchedFailure {
+    CredentialRefreshFailed,
+    RateLimitHalt,
+    HttpError,
+    RetryExhausted,
+}
+
+mod succeeded {
+    use super::ApiOutcome;
+
+    pub(super) struct SucceededOutcome(ApiOutcome);
+
+    impl SucceededOutcome {
+        pub(super) fn new(outcome: ApiOutcome) -> Result<Self, ApiOutcome> {
+            match outcome {
+                ApiOutcome::Success { .. } => Ok(Self(outcome)),
+                ApiOutcome::Failure { .. } => Err(outcome),
+            }
+        }
+
+        pub(super) fn status_code(&self) -> Option<u16> {
+            self.0.status_code()
+        }
+
+        pub(super) fn into_outcome(self) -> ApiOutcome {
+            self.0
+        }
+    }
+}
+
+use succeeded::SucceededOutcome;
+
+enum RequestRun {
+    NeverDispatched {
+        outcome: ApiOutcome,
+        cause: PreDispatchFailure,
+    },
+    Succeeded {
+        outcome: SucceededOutcome,
+        attempts: NonZeroU32,
+    },
+    Failed {
+        outcome: ApiOutcome,
+        attempts: NonZeroU32,
+        cause: DispatchedFailure,
+    },
+}
+
+impl RequestRun {
+    fn never_dispatched(outcome: ApiOutcome, cause: PreDispatchFailure) -> Self {
+        RequestRun::NeverDispatched { outcome, cause }
+    }
+
+    fn dispatched(outcome: ApiOutcome, attempt: u32, cause: DispatchedFailure) -> Self {
+        RequestRun::Failed {
+            outcome,
+            attempts: attempts_after(attempt),
+            cause,
+        }
+    }
+
+    fn dispatched_terminal(outcome: ApiOutcome, attempt: u32) -> Self {
+        let attempts = attempts_after(attempt);
+        let retryable = outcome.is_retryable();
+        match SucceededOutcome::new(outcome) {
+            Ok(outcome) => RequestRun::Succeeded { outcome, attempts },
+            Err(outcome) => RequestRun::Failed {
+                outcome,
+                attempts,
+                cause: if retryable {
+                    DispatchedFailure::RetryExhausted
+                } else {
+                    DispatchedFailure::HttpError
+                },
+            },
+        }
+    }
+
+    fn outcome(self) -> ApiOutcome {
+        match self {
+            RequestRun::NeverDispatched { outcome, .. } | RequestRun::Failed { outcome, .. } => {
+                outcome
+            }
+            RequestRun::Succeeded { outcome, .. } => outcome.into_outcome(),
+        }
+    }
+
+    fn status_code(&self) -> Option<u16> {
+        match self {
+            RequestRun::NeverDispatched { outcome, .. } | RequestRun::Failed { outcome, .. } => {
+                outcome.status_code()
+            }
+            RequestRun::Succeeded { outcome, .. } => outcome.status_code(),
+        }
+    }
+
+    fn attempts(&self) -> u32 {
+        match self {
+            RequestRun::NeverDispatched { .. } => 0,
+            RequestRun::Succeeded { attempts, .. } | RequestRun::Failed { attempts, .. } => {
+                attempts.get()
+            }
+        }
+    }
+
+    fn terminal_category(&self) -> &'static str {
+        match self {
+            RequestRun::NeverDispatched { cause, .. } => match cause {
+                PreDispatchFailure::HaltedBeforeDispatch => "halted_before_dispatch",
+                PreDispatchFailure::CredentialRefreshFailed => "credential_refresh_failed",
+                PreDispatchFailure::BudgetAcquireCancelled => "budget_acquire_cancelled",
+            },
+            RequestRun::Succeeded { .. } => "success",
+            RequestRun::Failed { cause, .. } => match cause {
+                DispatchedFailure::CredentialRefreshFailed => "credential_refresh_failed",
+                DispatchedFailure::RateLimitHalt => "rate_limit_halt",
+                DispatchedFailure::HttpError => "http_error",
+                DispatchedFailure::RetryExhausted => "retry_exhausted",
+            },
+        }
+    }
+
+    fn is_success(&self) -> bool {
+        matches!(self, RequestRun::Succeeded { .. })
+    }
+}
+
+fn attempts_after(attempt: u32) -> NonZeroU32 {
+    NonZeroU32::new(attempt.saturating_add(1)).unwrap_or(NonZeroU32::MIN)
+}
 
 /// Maximum length of error response body to include in error messages.
 /// Prevents potential token echoing in logs. Reused by
@@ -610,7 +751,7 @@ impl GitHubClient {
     /// the jittered-exponential wait is used.
     /// Automatically refreshes GitHub App tokens before they expire.
     /// Returns an immediate `Failure` if the rate-limit halt flag is set.
-    #[instrument(skip_all, fields(path, paginate))]
+    #[instrument(skip_all, fields(route = route_template(path), paginate = paginate))]
     pub async fn request(
         &self,
         path: &str,
@@ -618,59 +759,103 @@ impl GitHubClient {
         retries: u32,
         timeout_secs: u64,
     ) -> ApiOutcome {
+        let started = Instant::now();
+        let run = self
+            .request_inner(path, paginate, retries, timeout_secs)
+            .await;
+        self.record_terminal_outcome(path, &run, started.elapsed());
+        run.outcome()
+    }
+
+    fn record_terminal_outcome(&self, path: &str, run: &RequestRun, elapsed: Duration) {
+        let route = route_template(path);
+        let latency_ms = elapsed.as_millis();
+        let status = run.status_code();
+        let budget = self.budget.epoch_usage();
+
+        if run.is_success() {
+            debug!(
+                method = "GET",
+                route,
+                status = ?status,
+                latency_ms,
+                attempts = run.attempts(),
+                terminal_category = run.terminal_category(),
+                budget_calls = budget.calls_made,
+                budget_ceiling = budget.epoch_limit,
+                "github api request complete"
+            );
+        } else {
+            warn!(
+                method = "GET",
+                route,
+                status = ?status,
+                latency_ms,
+                attempts = run.attempts(),
+                terminal_category = run.terminal_category(),
+                budget_calls = budget.calls_made,
+                budget_ceiling = budget.epoch_limit,
+                "github api request failed"
+            );
+        }
+    }
+
+    async fn request_inner(
+        &self,
+        path: &str,
+        paginate: bool,
+        retries: u32,
+        timeout_secs: u64,
+    ) -> RequestRun {
         if self.is_halted() {
-            return ApiOutcome::failure(
-                None,
-                format!(
-                    "rate limit halt: remaining < {}",
-                    crate::github::rate_limit::HALT_THRESHOLD
+            return RequestRun::never_dispatched(
+                ApiOutcome::failure(
+                    None,
+                    format!(
+                        "rate limit halt: remaining < {}",
+                        crate::github::rate_limit::HALT_THRESHOLD
+                    ),
+                    false,
                 ),
-                false,
+                PreDispatchFailure::HaltedBeforeDispatch,
             );
         }
 
         if let Err(e) = self.ensure_credential().await {
-            return ApiOutcome::failure(None, format!("credential refresh failed: {e}"), false);
+            return RequestRun::never_dispatched(
+                ApiOutcome::failure(None, format!("credential refresh failed: {e}"), false),
+                PreDispatchFailure::CredentialRefreshFailed,
+            );
         }
 
         if !self.budget.acquire(&self.budget_cancel).await {
-            return ApiOutcome::failure(None, "budget acquire cancelled".to_string(), false);
+            return RequestRun::never_dispatched(
+                ApiOutcome::failure(None, "budget acquire cancelled".to_string(), false),
+                PreDispatchFailure::BudgetAcquireCancelled,
+            );
         }
 
         let mut stale_token_retried = false;
         let attempts = retries + 1;
         for attempt in 0..attempts {
-            debug!(path = %path, attempt, paginate, "API request attempt");
             let result = if paginate {
-                self.request_paginated(path, timeout_secs).await
+                self.request_paginated(path, timeout_secs, attempt).await
             } else {
-                self.request_single(path, timeout_secs).await
+                self.request_single(path, timeout_secs, attempt).await
             };
 
             if self.rate_limit.should_halt() {
-                let halt_until = self.rate_limit.load_reset().unwrap_or_else(|| {
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs()
-                        .saturating_add(3600)
-                });
-                self.halted_until.fetch_max(halt_until, Ordering::Release);
-                error!(
-                    remaining = ?self.rate_limit.load_remaining(),
-                    halt_until,
-                    "rate limit halt triggered — requests blocked until reset window"
-                );
-                return result;
+                self.note_rate_limit_halt();
+                return RequestRun::dispatched(result, attempt, DispatchedFailure::RateLimitHalt);
             }
 
             if result.status_code() == Some(401) && !stale_token_retried {
                 stale_token_retried = true;
                 if let Err(e) = self.ensure_credential().await {
-                    return ApiOutcome::failure(
-                        None,
-                        format!("credential refresh failed: {e}"),
-                        false,
+                    return RequestRun::dispatched(
+                        ApiOutcome::failure(None, format!("credential refresh failed: {e}"), false),
+                        attempt,
+                        DispatchedFailure::CredentialRefreshFailed,
                     );
                 }
                 continue;
@@ -680,14 +865,7 @@ impl GitHubClient {
                 if result.status_code() == Some(429) {
                     self.rate_limit_warnings.fetch_add(1, Ordering::Relaxed);
                 }
-                let backoff = self.backoff.resume_at().map_or_else(
-                    || {
-                        let base_ms = 1000u64 * 2u64.pow(attempt);
-                        let jitter_ms = fastrand_jitter(base_ms);
-                        Duration::from_millis(base_ms + jitter_ms)
-                    },
-                    |resume_at| resume_at.saturating_duration_since(Instant::now()),
-                );
+                let backoff = self.backoff_delay(attempt);
                 debug!(
                     backoff_ms = backoff.as_millis(),
                     attempt,
@@ -698,22 +876,75 @@ impl GitHubClient {
                 continue;
             }
 
-            return result;
+            return RequestRun::dispatched_terminal(result, attempt);
         }
 
-        ApiOutcome::failure(None, "retry exhaustion".to_string(), false)
+        RequestRun::Failed {
+            outcome: ApiOutcome::failure(None, "retry exhaustion".to_string(), false),
+            attempts: NonZeroU32::new(attempts).unwrap_or(NonZeroU32::MIN),
+            cause: DispatchedFailure::RetryExhausted,
+        }
+    }
+
+    fn note_rate_limit_halt(&self) {
+        let halt_until = self.rate_limit.load_reset().unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .saturating_add(3600)
+        });
+        self.halted_until.fetch_max(halt_until, Ordering::Release);
+        error!(
+            remaining = ?self.rate_limit.load_remaining(),
+            halt_until,
+            "rate limit halt triggered — requests blocked until reset window"
+        );
+    }
+
+    fn backoff_delay(&self, attempt: u32) -> Duration {
+        self.backoff.resume_at().map_or_else(
+            || {
+                let base_ms = 1000u64 * 2u64.pow(attempt);
+                let jitter_ms = fastrand_jitter(base_ms);
+                Duration::from_millis(base_ms + jitter_ms)
+            },
+            |resume_at| resume_at.saturating_duration_since(Instant::now()),
+        )
+    }
+
+    fn record_request_attempt(
+        &self,
+        target: &str,
+        status: Option<u16>,
+        elapsed: Duration,
+        attempt: u32,
+    ) {
+        let route = route_template(target);
+        let budget = self.budget.epoch_usage();
+        debug!(
+            method = "GET",
+            route,
+            status = ?status,
+            latency_ms = elapsed.as_millis(),
+            attempt,
+            budget_calls = budget.calls_made,
+            budget_ceiling = budget.epoch_limit,
+            "github api request attempt"
+        );
     }
 
     /// Make a single (non-paginated) API request.
-    async fn request_single(&self, path: &str, timeout_secs: u64) -> ApiOutcome {
-        self.request_single_inner(path, timeout_secs, false).await
+    async fn request_single(&self, path: &str, timeout_secs: u64, attempt: u32) -> ApiOutcome {
+        self.request_single_inner(path, timeout_secs, false, attempt)
+            .await
     }
 
     /// Make a single request that captures response headers.
     ///
     /// Used for metadata collection (e.g., `X-OAuth-Scopes` header parsing).
     async fn request_single_with_headers(&self, path: &str, timeout_secs: u64) -> ApiOutcome {
-        self.request_single_inner(path, timeout_secs, true).await
+        self.request_single_inner(path, timeout_secs, true, 0).await
     }
 
     /// Shared implementation for single (non-paginated) API requests.
@@ -725,20 +956,28 @@ impl GitHubClient {
         path: &str,
         timeout_secs: u64,
         capture_headers: bool,
+        attempt: u32,
     ) -> ApiOutcome {
         let url = format!("{}{}", self.base_url, path);
         let auth = self.auth_header.load();
-        let response = match auth
+        let started = Instant::now();
+        let sent = auth
             .apply(self.http.get(&url))
             .timeout(Duration::from_secs(timeout_secs))
             .send()
-            .await
-        {
-            Ok(resp) => resp,
+            .await;
+        let elapsed = started.elapsed();
+        let response = match sent {
+            Ok(resp) => {
+                self.record_request_attempt(path, Some(resp.status().as_u16()), elapsed, attempt);
+                resp
+            }
             Err(e) if e.is_timeout() => {
+                self.record_request_attempt(path, None, elapsed, attempt);
                 return ApiOutcome::failure(None, "timeout".to_string(), true);
             }
             Err(e) => {
+                self.record_request_attempt(path, None, elapsed, attempt);
                 return ApiOutcome::failure(None, e.to_string(), true);
             }
         };
@@ -817,7 +1056,8 @@ impl GitHubClient {
     /// - Validates that each `next` URL from the `Link` header belongs to the
     ///   same origin as `self.base_url` to prevent SSRF attacks.
     /// - Enforces a maximum page count to prevent OOM from unbounded pagination.
-    async fn request_paginated(&self, path: &str, timeout_secs: u64) -> ApiOutcome {
+    async fn request_paginated(&self, path: &str, timeout_secs: u64, attempt: u32) -> ApiOutcome {
+        let route = route_template(path);
         let mut all_items: Vec<serde_json::Value> = Vec::new();
         let mut next_url: Option<String> = Some(format!("{}{}", self.base_url, path));
         let mut page_count: usize = 0;
@@ -828,7 +1068,7 @@ impl GitHubClient {
             if page_count > config::MAX_PAGINATION_PAGES {
                 warn!(
                     pages = config::MAX_PAGINATION_PAGES,
-                    path, "pagination limit reached"
+                    route, "pagination limit reached"
                 );
                 truncated = true;
                 break;
@@ -836,7 +1076,7 @@ impl GitHubClient {
 
             if self.is_halted() {
                 warn!(
-                    path = %path,
+                    route,
                     pages_completed = page_count - 1,
                     "pagination halted due to rate limit"
                 );
@@ -849,7 +1089,10 @@ impl GitHubClient {
                 break;
             }
 
-            let response = match self.send_paginated_request(&url, timeout_secs).await {
+            let response = match self
+                .send_paginated_request(&url, timeout_secs, attempt)
+                .await
+            {
                 Ok(resp) => resp,
                 Err(outcome) => return outcome,
             };
@@ -885,7 +1128,7 @@ impl GitHubClient {
                         all_items.extend(items.into_iter().take(remaining));
                         warn!(
                             items = all_items.len(),
-                            path, "paginated item limit reached"
+                            route, "paginated item limit reached"
                         );
                         truncated = true;
                         break;
@@ -896,7 +1139,7 @@ impl GitHubClient {
                     if all_items.len() >= config::MAX_PAGINATED_ITEMS {
                         warn!(
                             items = all_items.len(),
-                            path, "paginated item limit reached"
+                            route, "paginated item limit reached"
                         );
                         truncated = true;
                         break;
@@ -910,7 +1153,7 @@ impl GitHubClient {
         }
 
         debug!(
-            path = %path,
+            route,
             pages = page_count,
             items = all_items.len(),
             truncated,
@@ -931,19 +1174,36 @@ impl GitHubClient {
         &self,
         url: &str,
         timeout_secs: u64,
+        attempt: u32,
     ) -> Result<reqwest::Response, ApiOutcome> {
         let auth = self.auth_header.load();
-        auth.apply(self.http.get(url))
+        let started = Instant::now();
+        let sent = auth
+            .apply(self.http.get(url))
             .timeout(Duration::from_secs(timeout_secs))
             .send()
-            .await
-            .map_err(|e| {
+            .await;
+        let elapsed = started.elapsed();
+
+        match sent {
+            Ok(response) => {
+                self.record_request_attempt(
+                    url,
+                    Some(response.status().as_u16()),
+                    elapsed,
+                    attempt,
+                );
+                Ok(response)
+            }
+            Err(e) => {
+                self.record_request_attempt(url, None, elapsed, attempt);
                 if e.is_timeout() {
-                    ApiOutcome::failure(None, "timeout".to_string(), true)
+                    Err(ApiOutcome::failure(None, "timeout".to_string(), true))
                 } else {
-                    ApiOutcome::failure(None, e.to_string(), true)
+                    Err(ApiOutcome::failure(None, e.to_string(), true))
                 }
-            })
+            }
+        }
     }
 
     /// Get cached or fresh repository details.
@@ -1515,6 +1775,7 @@ impl GitHubClient {
             .request_single(
                 &format!("/orgs/{}/repos?per_page=1", self.org_name),
                 config::DEFAULT_REQUEST_TIMEOUT_SECS,
+                0,
             )
             .await;
         let repos_list = classify_capability_probe(&repos_list_probe);
@@ -1569,7 +1830,7 @@ impl GitHubClient {
     /// needed, distinguish these in the future.
     async fn probe_endpoint(&self, path: &str) -> CapabilityStatus {
         let result = self
-            .request_single(path, config::DEFAULT_REQUEST_TIMEOUT_SECS)
+            .request_single(path, config::DEFAULT_REQUEST_TIMEOUT_SECS, 0)
             .await;
         classify_capability_probe(&result)
     }
@@ -1616,6 +1877,513 @@ impl std::fmt::Debug for GitHubClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, Clone)]
+    struct CapturedEvent {
+        level: tracing::Level,
+        message: String,
+        fields: HashMap<String, String>,
+    }
+
+    impl CapturedEvent {
+        fn field(&self, key: &str) -> &str {
+            self.fields.get(key).map_or("", String::as_str)
+        }
+    }
+
+    struct CaptureLayer {
+        events: Arc<StdMutex<Vec<CapturedEvent>>>,
+    }
+
+    struct CaptureVisitor {
+        message: String,
+        fields: HashMap<String, String>,
+    }
+
+    impl tracing::field::Visit for CaptureVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            let rendered = format!("{value:?}");
+            if field.name() == "message" {
+                self.message = rendered;
+            } else {
+                self.fields.insert(field.name().to_string(), rendered);
+            }
+        }
+
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            if field.name() == "message" {
+                self.message = value.to_string();
+            } else {
+                self.fields
+                    .insert(field.name().to_string(), value.to_string());
+            }
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut visitor = CaptureVisitor {
+                message: String::new(),
+                fields: HashMap::new(),
+            };
+            event.record(&mut visitor);
+            self.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(CapturedEvent {
+                    level: *event.metadata().level(),
+                    message: visitor.message,
+                    fields: visitor.fields,
+                });
+        }
+    }
+
+    fn capture_events() -> (
+        Arc<StdMutex<Vec<CapturedEvent>>>,
+        tracing::subscriber::DefaultGuard,
+    ) {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let events = Arc::new(StdMutex::new(Vec::new()));
+        let layer = CaptureLayer {
+            events: Arc::clone(&events),
+        };
+        let subscriber = tracing_subscriber::Registry::default().with(layer);
+        let guard = tracing::subscriber::set_default(subscriber);
+        (events, guard)
+    }
+
+    fn drain_events(events: &Arc<StdMutex<Vec<CapturedEvent>>>) -> Vec<CapturedEvent> {
+        events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn attempt_events(events: &[CapturedEvent]) -> Vec<&CapturedEvent> {
+        events
+            .iter()
+            .filter(|e| e.message == "github api request attempt")
+            .collect()
+    }
+
+    fn terminal_events(events: &[CapturedEvent]) -> Vec<&CapturedEvent> {
+        events
+            .iter()
+            .filter(|e| {
+                e.message == "github api request complete"
+                    || e.message == "github api request failed"
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn successful_request_emits_one_debug_attempt_event_with_the_required_fields() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/repos/test-org/observed-repo"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": 1})))
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let (events, _guard) = capture_events();
+        let outcome = client
+            .request("/repos/test-org/observed-repo", false, 0, 10)
+            .await;
+        assert!(outcome.is_ok());
+
+        let captured = drain_events(&events);
+        let attempts = attempt_events(&captured);
+        assert_eq!(attempts.len(), 1, "expected exactly one attempt event");
+
+        let event = attempts[0];
+        assert_eq!(event.level, tracing::Level::DEBUG);
+        assert_eq!(event.field("method"), "GET");
+        assert_eq!(event.field("route"), "/repos/{owner}/{repo}");
+        assert!(
+            !event.fields.contains_key("path"),
+            "the raw request target must not be emitted (SEC-0007:R1)"
+        );
+        assert_eq!(event.field("status"), "Some(200)");
+        assert_eq!(event.field("attempt"), "0");
+        assert!(event.fields.contains_key("latency_ms"));
+        assert!(event.fields.contains_key("budget_calls"));
+        assert!(event.fields.contains_key("budget_ceiling"));
+    }
+
+    #[tokio::test]
+    async fn successful_request_terminal_event_stays_at_debug() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/repos/test-org/quiet-repo"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": 1})))
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let (events, _guard) = capture_events();
+        let _ = client
+            .request("/repos/test-org/quiet-repo", false, 0, 10)
+            .await;
+
+        let captured = drain_events(&events);
+        let terminals = terminal_events(&captured);
+        assert_eq!(terminals.len(), 1);
+        assert_eq!(terminals[0].level, tracing::Level::DEBUG);
+        assert_eq!(terminals[0].field("terminal_category"), "success");
+        assert_eq!(terminals[0].field("attempts"), "1");
+        assert!(
+            captured.iter().all(|e| e.level != tracing::Level::INFO),
+            "per-request instrumentation must not emit at INFO (COM-0031:R4)"
+        );
+    }
+
+    #[tokio::test]
+    async fn retried_request_emits_one_attempt_event_per_attempt_and_a_terminal_warn() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/repos/test-org/flaky-repo"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("upstream boom"))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let (events, _guard) = capture_events();
+        let outcome = client
+            .request("/repos/test-org/flaky-repo", false, 1, 10)
+            .await;
+        assert!(outcome.is_err());
+
+        let captured = drain_events(&events);
+        let attempts = attempt_events(&captured);
+        assert_eq!(
+            attempts.len(),
+            2,
+            "a retried request must emit one event per attempt"
+        );
+        assert_eq!(attempts[0].field("attempt"), "0");
+        assert_eq!(attempts[1].field("attempt"), "1");
+        for event in &attempts {
+            assert_eq!(event.field("route"), "/repos/{owner}/{repo}");
+            assert_eq!(event.field("status"), "Some(500)");
+        }
+
+        let terminals = terminal_events(&captured);
+        assert_eq!(terminals.len(), 1);
+        let terminal = terminals[0];
+        assert_eq!(terminal.level, tracing::Level::WARN);
+        assert_eq!(terminal.field("attempts"), "2");
+        assert_eq!(terminal.field("terminal_category"), "retry_exhausted");
+        assert_eq!(terminal.field("status"), "Some(500)");
+    }
+
+    #[tokio::test]
+    async fn paginated_request_emits_one_attempt_event_per_page() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let next = format!(
+            "<{}/orgs/test-org/repos?page=2>; rel=\"next\"",
+            server.uri()
+        );
+        Mock::given(path("/orgs/test-org/repos"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"name": "a"}]))
+                    .insert_header("link", next.as_str()),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(path("/orgs/test-org/repos"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{"name": "b"}])),
+            )
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let (events, _guard) = capture_events();
+        let outcome = client.request("/orgs/test-org/repos", true, 0, 10).await;
+        assert!(outcome.is_ok());
+
+        let captured = drain_events(&events);
+        let attempts = attempt_events(&captured);
+        assert_eq!(attempts.len(), 2, "each page is one outbound call");
+        for event in &attempts {
+            assert_eq!(event.field("route"), "/orgs/{org}/repos");
+            assert_eq!(event.field("status"), "Some(200)");
+        }
+    }
+
+    const PLANTED_SECRET: &str = "ghp_plantedsecret1234567890abcdefghij";
+
+    fn assert_no_captured_field_contains(events: &[CapturedEvent], needle: &str) {
+        assert!(!events.is_empty(), "no events captured");
+        for event in events {
+            let mut rendered = event.message.clone();
+            for (key, value) in &event.fields {
+                rendered.push_str(key);
+                rendered.push_str(value);
+            }
+            assert!(
+                !rendered.contains(needle),
+                "log record leaked {needle}: {rendered}"
+            );
+        }
+    }
+
+    async fn drive_request_and_capture(target: &str, paginate: bool) -> Vec<CapturedEvent> {
+        use wiremock::matchers::any;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([{"id": 1}])))
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let (events, _guard) = capture_events();
+        let _ = client.request(target, paginate, 0, 10).await;
+        drain_events(&events)
+    }
+
+    fn assert_events_are_route_template_only(events: &[CapturedEvent]) {
+        use crate::github::route_template::TEMPLATES;
+
+        assert!(!events.is_empty(), "no events captured");
+        for event in events {
+            for name in ["path", "target", "url", "request_target", "full_url"] {
+                assert!(
+                    !event.fields.contains_key(name),
+                    "event {:?} emits a runtime-derived target field {name}",
+                    event.message
+                );
+            }
+            if let Some(route) = event.fields.get("route") {
+                assert!(
+                    TEMPLATES.contains(&route.as_str()),
+                    "route field {route} is outside the closed template set"
+                );
+            }
+        }
+    }
+
+    fn assert_no_leak(events: &[CapturedEvent]) {
+        assert_no_captured_field_contains(events, PLANTED_SECRET);
+        assert_events_are_route_template_only(events);
+    }
+
+    #[tokio::test]
+    async fn guard_bite_a_secret_in_a_query_string_never_reaches_an_emitted_field() {
+        let captured = drive_request_and_capture(
+            &format!("/repos/test-org/planted-repo?access_token={PLANTED_SECRET}"),
+            false,
+        )
+        .await;
+        assert_no_leak(&captured);
+    }
+
+    #[tokio::test]
+    async fn guard_bite_b_secret_in_userinfo_never_reaches_an_emitted_field() {
+        for target in [
+            format!("https://x-access-token:{PLANTED_SECRET}@api.github.com/repos/a/b"),
+            format!("//x-access-token:{PLANTED_SECRET}@api.github.com/repos/a/b"),
+            format!("x-access-token:{PLANTED_SECRET}@api.github.com/repos/a/b"),
+            format!("https:\\x-access-token:{PLANTED_SECRET}@api.github.com\\repos\\a\\b"),
+        ] {
+            let captured = drive_request_and_capture(&target, false).await;
+            assert_no_leak(&captured);
+        }
+    }
+
+    #[tokio::test]
+    async fn guard_bite_c_secret_in_a_fragment_never_reaches_an_emitted_field() {
+        let captured =
+            drive_request_and_capture(&format!("/repos/a/b#{PLANTED_SECRET}"), false).await;
+        assert_no_leak(&captured);
+    }
+
+    #[tokio::test]
+    async fn guard_bite_d_secret_behind_a_percent_encoded_delimiter_never_reaches_a_field() {
+        for target in [
+            format!("/repos/a/b/%23{PLANTED_SECRET}"),
+            format!("/repos/a/b/%3Faccess_token%3D{PLANTED_SECRET}"),
+            format!("/repos/a/b/%2540{PLANTED_SECRET}"),
+        ] {
+            let captured = drive_request_and_capture(&target, false).await;
+            assert_no_leak(&captured);
+        }
+    }
+
+    #[tokio::test]
+    async fn guard_bite_e_secret_in_a_legal_path_segment_never_reaches_an_emitted_field() {
+        for target in [
+            format!("/repos/test-org/{PLANTED_SECRET}"),
+            format!("/repos/{PLANTED_SECRET}/repo/commits"),
+            format!("/repos/a/b/contents/dir/{PLANTED_SECRET}/file.txt"),
+            format!("/orgs/{PLANTED_SECRET}/repos"),
+        ] {
+            let captured = drive_request_and_capture(&target, false).await;
+            assert_no_leak(&captured);
+        }
+    }
+
+    #[tokio::test]
+    async fn guard_bite_f_secret_in_a_server_supplied_pagination_link_never_reaches_a_field() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let next = format!(
+            "<{}/orgs/test-org/repos?page=2&access_token={PLANTED_SECRET}>; rel=\"next\"",
+            server.uri()
+        );
+        Mock::given(path("/orgs/test-org/repos"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"name": "a"}]))
+                    .insert_header("link", next.as_str()),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(path("/orgs/test-org/repos"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{"name": "b"}])),
+            )
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let (events, _guard) = capture_events();
+        let outcome = client.request("/orgs/test-org/repos", true, 0, 10).await;
+        assert!(outcome.is_ok());
+
+        let captured = drain_events(&events);
+        assert_no_leak(&captured);
+        let attempts = attempt_events(&captured);
+        assert_eq!(attempts.len(), 2, "each page is one outbound call");
+        for event in &attempts {
+            assert_eq!(event.field("route"), "/orgs/{org}/repos");
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum PaginationReach {
+        CompletesOnMock,
+        FailsBeforeDispatch,
+    }
+
+    #[tokio::test]
+    async fn guard_bite_g_secret_in_the_initial_paginated_request_target_never_reaches_a_field() {
+        for (target, reach) in [
+            (
+                format!("/orgs/{PLANTED_SECRET}/repos"),
+                PaginationReach::CompletesOnMock,
+            ),
+            (
+                format!("/orgs/test-org/repos?per_page=100&access_token={PLANTED_SECRET}"),
+                PaginationReach::CompletesOnMock,
+            ),
+            (
+                format!("/orgs/test-org/repos#{PLANTED_SECRET}"),
+                PaginationReach::CompletesOnMock,
+            ),
+            (
+                format!("/repos/a/b/contents/{PLANTED_SECRET}"),
+                PaginationReach::CompletesOnMock,
+            ),
+            (
+                format!("https://x-access-token:{PLANTED_SECRET}@api.github.com/orgs/o/repos"),
+                PaginationReach::FailsBeforeDispatch,
+            ),
+            (
+                format!("/repos/a/b/%23{PLANTED_SECRET}"),
+                PaginationReach::CompletesOnMock,
+            ),
+        ] {
+            let captured = drive_request_and_capture(&target, true).await;
+            assert_no_leak(&captured);
+            let completed = captured
+                .iter()
+                .any(|e| e.message == "paginated request complete");
+            match reach {
+                PaginationReach::CompletesOnMock => assert!(
+                    completed,
+                    "the pagination completion record must have been exercised for {target}"
+                ),
+                PaginationReach::FailsBeforeDispatch => assert!(
+                    !completed,
+                    "an undispatchable target must not reach the completion record: {target}"
+                ),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn every_pagination_record_carries_the_route_template_and_no_raw_target() {
+        let captured = drive_request_and_capture(
+            &format!("/orgs/test-org/repos?access_token={PLANTED_SECRET}"),
+            true,
+        )
+        .await;
+        let completion = captured
+            .iter()
+            .find(|e| e.message == "paginated request complete")
+            .expect("pagination completion record");
+        assert_eq!(completion.field("route"), "/orgs/{org}/repos");
+        assert!(!completion.fields.contains_key("path"));
+    }
+
+    #[tokio::test]
+    async fn no_request_event_field_carries_credential_material() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/repos/test-org/secret-free-repo"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+
+        let client = build_test_client(&server.uri());
+        let (events, _guard) = capture_events();
+        let _ = client
+            .request("/repos/test-org/secret-free-repo", false, 1, 10)
+            .await;
+
+        let captured = drain_events(&events);
+        assert!(!captured.is_empty());
+        for event in &captured {
+            let mut rendered = event.message.clone();
+            for (key, value) in &event.fields {
+                rendered.push_str(key);
+                rendered.push_str(value);
+            }
+            let lowered = rendered.to_lowercase();
+            assert!(
+                !lowered.contains("test-token")
+                    && !lowered.contains("bearer ")
+                    && !lowered.contains("authorization"),
+                "log record leaked credential material: {rendered}"
+            );
+        }
+    }
 
     #[test]
     fn cache_contains_deleted_team_is_false_initially() {
@@ -1857,7 +2625,7 @@ mod tests {
 
         let client = build_test_client(&server.uri());
         let result = client
-            .request_single_inner("/test/created", 10, false)
+            .request_single_inner("/test/created", 10, false, 0)
             .await;
 
         assert!(result.is_ok());
@@ -1887,7 +2655,7 @@ mod tests {
 
         let client = build_test_client(&server.uri());
         let result = client
-            .request_single_inner("/test/accepted", 10, false)
+            .request_single_inner("/test/accepted", 10, false, 0)
             .await;
 
         assert!(result.is_ok());
@@ -1907,7 +2675,7 @@ mod tests {
 
         let client = build_test_client(&server.uri());
         let result = client
-            .request_single_inner("/test/no-content", 10, false)
+            .request_single_inner("/test/no-content", 10, false, 0)
             .await;
 
         assert!(result.is_ok());
@@ -1936,7 +2704,9 @@ mod tests {
             .await;
 
         let client = build_test_client(&server.uri());
-        let result = client.request_single_inner("/test/headers", 10, true).await;
+        let result = client
+            .request_single_inner("/test/headers", 10, true, 0)
+            .await;
 
         assert!(result.is_ok());
         assert_eq!(result.status_code(), Some(200));
@@ -1973,7 +2743,7 @@ mod tests {
 
         let client = build_test_client(&server.uri());
         let result = client
-            .request_single_inner("/test/no-headers", 10, false)
+            .request_single_inner("/test/no-headers", 10, false, 0)
             .await;
 
         assert!(result.is_ok());
