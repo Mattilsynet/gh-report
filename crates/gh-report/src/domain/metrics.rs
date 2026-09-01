@@ -407,7 +407,7 @@ pub struct TeamMember {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TeamRosterStatus {
-    /// Both member and maintainer pages were fetched successfully.
+    /// The team's member page-set was fetched successfully.
     Complete,
     /// The team no longer exists on GitHub (404) — a CODEOWNERS reference
     /// to a team GitHub has deleted.
