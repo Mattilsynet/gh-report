@@ -1307,6 +1307,11 @@ pub struct ReportViewModel {
     pub branch_protection_how_to_fix: &'static str,
     pub codeowners_how_to_fix: &'static str,
 
+    /// Link from the dashboard index to the Branch Protection drill-down
+    /// page, derived from [`DrillDownPage`] so the index card and the emitted
+    /// page share one owner of page identity (CHE-0108:R3).
+    pub branch_protection_drill_down: DrillDownLink,
+
     /// Composite Org Governance score (geometric mean of available coverage
     /// rates), rendered on the dashboard as the "Overall Organization
     /// Governance Score" card. "Org Governance" is the internal short name
@@ -1596,6 +1601,7 @@ impl ReportViewModel {
             dependabot_how_to_fix: how_to_fix.dependabot,
             branch_protection_how_to_fix: how_to_fix.branch_protection,
             codeowners_how_to_fix: how_to_fix.codeowners,
+            branch_protection_drill_down: DrillDownPage::BranchProtection.link(DashboardHref::Root),
             health_score: health.score,
             health_tier: health.tier,
             health_score_formatted: health.score_formatted,

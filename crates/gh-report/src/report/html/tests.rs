@@ -5727,3 +5727,53 @@ fn template_card_key_literals() {
          drill_down_href) over a hand-maintained literal."
     );
 }
+
+#[test]
+fn drill_down_page_identity_has_a_template_and_no_template_restates_it() {
+    let template_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
+    let templates = html_files_under(&template_dir);
+
+    assert!(
+        !templates.is_empty(),
+        "found no templates under {} — this guard would pass vacuously \
+         (CHE-0108:R6)",
+        template_dir.display()
+    );
+
+    let mut violations = Vec::new();
+
+    for &page in DrillDownPage::ALL {
+        let file_name = page.file_name();
+        let own_template = template_dir.join(file_name);
+
+        assert!(
+            own_template.is_file(),
+            "DrillDownPage::{page:?} owns page identity \"{file_name}\" but no \
+             template exists at {} — the emitted page and its links would point \
+             at nothing (CHE-0108:R3)",
+            own_template.display()
+        );
+
+        for path in &templates {
+            if path == &own_template {
+                continue;
+            }
+
+            let source = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+
+            if source.contains(file_name) {
+                violations.push(format!("{}: restates \"{file_name}\"", path.display()));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "template(s) hand-maintain a page-identity spelling that \
+         DrillDownPage::file_name already owns, so renaming the page would \
+         leave a dangling link with every test green: {violations:#?}\n\
+         Render a typed DrillDownLink field instead (CHE-0108:R1, \
+         CHE-0108:R4)."
+    );
+}
