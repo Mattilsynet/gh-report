@@ -1880,6 +1880,7 @@ fn render_owner_detail_html_contains_orphan_repositories_section() {
         crate::aggregate::metrics::build_collection_statistics(&evidence.repositories);
     evidence.metrics.team_rosters = vec![
         TeamRoster {
+            fetched_at: None,
             canonical_owner: "@org/team-a".to_string(),
             team_slug: "team-a".to_string(),
             status: TeamRosterStatus::Complete,
@@ -1890,6 +1891,7 @@ fn render_owner_detail_html_contains_orphan_repositories_section() {
             }],
         },
         TeamRoster {
+            fetched_at: None,
             canonical_owner: "@org/team-b".to_string(),
             team_slug: "team-b".to_string(),
             status: TeamRosterStatus::Complete,
@@ -1966,6 +1968,7 @@ fn render_owner_detail_html_orphan_team_match_is_case_insensitive() {
     evidence.collection_statistics =
         crate::aggregate::metrics::build_collection_statistics(&evidence.repositories);
     evidence.metrics.team_rosters = vec![TeamRoster {
+        fetched_at: None,
         canonical_owner: "@Org/team-a".to_string(),
         team_slug: "team-a".to_string(),
         status: TeamRosterStatus::Complete,
@@ -2091,6 +2094,7 @@ fn render_owner_detail_html_contains_team_roster() {
 
     let mut evidence = evidence_with_owner_repos();
     evidence.metrics.team_rosters = vec![TeamRoster {
+        fetched_at: None,
         canonical_owner: "@org/team-a".to_string(),
         team_slug: "team-a".to_string(),
         status: TeamRosterStatus::Complete,
@@ -2156,6 +2160,7 @@ fn render_owner_detail_html_roster_match_is_case_insensitive() {
 
     let mut evidence = evidence_with_owner_repos();
     evidence.metrics.team_rosters = vec![TeamRoster {
+        fetched_at: None,
         canonical_owner: "@Org/team-a".to_string(),
         team_slug: "team-a".to_string(),
         status: TeamRosterStatus::Complete,
@@ -2188,6 +2193,7 @@ fn render_owner_detail_html_no_departed_warning_when_present_or_degraded() {
 
     let mut evidence = evidence_with_owner_repos();
     evidence.metrics.team_rosters = vec![TeamRoster {
+        fetched_at: None,
         canonical_owner: "@org/team-a".to_string(),
         team_slug: "team-a".to_string(),
         status: TeamRosterStatus::Complete,
@@ -2249,6 +2255,7 @@ fn render_owner_detail_html_deleted_roster_renders_reasoned_state() {
 
     let mut evidence = evidence_with_owner_repos();
     evidence.metrics.team_rosters = vec![TeamRoster {
+        fetched_at: None,
         canonical_owner: "@org/team-a".to_string(),
         team_slug: "team-a".to_string(),
         status: TeamRosterStatus::Deleted,
@@ -2298,6 +2305,7 @@ fn render_owner_detail_html_codeowners_meta_has_no_operations_link() {
 
     let mut evidence = evidence_with_owner_repos();
     evidence.metrics.team_rosters = vec![TeamRoster {
+        fetched_at: None,
         canonical_owner: "@org/team-a".to_string(),
         team_slug: "team-a".to_string(),
         status: TeamRosterStatus::Complete,
@@ -3381,6 +3389,7 @@ fn build_orphaned_vm_attributes_team_via_last_committer_login() {
     });
 
     let team_rosters = vec![TeamRoster {
+        fetched_at: None,
         canonical_owner: "@org/team-a".to_string(),
         team_slug: "team-a".to_string(),
         status: TeamRosterStatus::Complete,
@@ -3454,6 +3463,7 @@ fn render_orphaned_html_contains_orphans_by_team_section() {
         vec![orphan],
     );
     evidence.metrics.team_rosters = vec![TeamRoster {
+        fetched_at: None,
         canonical_owner: "@org/team-a".to_string(),
         team_slug: "team-a".to_string(),
         status: TeamRosterStatus::Complete,
@@ -3550,6 +3560,7 @@ fn render_orphaned_html_stale_repo_has_stale_marker_and_footnote() {
         vec![orphan],
     );
     evidence.metrics.team_rosters = vec![TeamRoster {
+        fetched_at: None,
         canonical_owner: "@org/team-a".to_string(),
         team_slug: "team-a".to_string(),
         status: TeamRosterStatus::Complete,
@@ -3740,6 +3751,7 @@ fn build_deleted_view_model_includes_ghost_team_with_referencing_repos() {
         ),
     )];
     let team_rosters = vec![TeamRoster {
+        fetched_at: None,
         canonical_owner: "@org/dead-team".to_string(),
         team_slug: "dead-team".to_string(),
         status: TeamRosterStatus::Deleted,
@@ -3787,12 +3799,14 @@ fn build_deleted_view_model_drops_deleted_roster_no_longer_codeowners_referenced
     )];
     let team_rosters = vec![
         TeamRoster {
+            fetched_at: None,
             canonical_owner: "@org/still-referenced".to_string(),
             team_slug: "still-referenced".to_string(),
             status: TeamRosterStatus::Deleted,
             members: Vec::new(),
         },
         TeamRoster {
+            fetched_at: None,
             canonical_owner: "@org/dereferenced".to_string(),
             team_slug: "dereferenced".to_string(),
             status: TeamRosterStatus::Deleted,
@@ -3836,6 +3850,7 @@ fn build_deleted_view_model_omits_ghost_teams_when_none_are_deleted() {
         ),
     )];
     let team_rosters = vec![TeamRoster {
+        fetched_at: None,
         canonical_owner: "@org/live-team".to_string(),
         team_slug: "live-team".to_string(),
         status: TeamRosterStatus::Complete,
@@ -3900,6 +3915,7 @@ fn render_dashboard_deleted_page_omits_owner_anomalies_section_when_none() {
 fn render_dashboard_deleted_page_lists_ghost_team_with_referencing_repo() {
     let mut evidence = evidence_with_owner_repos();
     evidence.metrics.team_rosters = vec![TeamRoster {
+        fetched_at: None,
         canonical_owner: "@org/team-a".to_string(),
         team_slug: "team-a".to_string(),
         status: TeamRosterStatus::Deleted,
@@ -3954,6 +3970,7 @@ fn render_dashboard_deleted_page_owner_anomalies_snapshot() {
     evidence.repositories[0].checks.codeowners =
         test_fixtures::codeowners_with_owners(&["@org/team-a", "@TestOrg/*"]);
     evidence.metrics.team_rosters = vec![TeamRoster {
+        fetched_at: None,
         canonical_owner: "@org/team-a".to_string(),
         team_slug: "team-a".to_string(),
         status: TeamRosterStatus::Deleted,
@@ -5154,6 +5171,7 @@ fn evidence_with_team_owner_and_attributed_orphans(owned: usize, orphans: usize)
         &test_fixtures::make_timestamp(),
     );
     metrics.team_rosters = vec![TeamRoster {
+        fetched_at: None,
         canonical_owner: "@org/fresh-team".to_string(),
         team_slug: "fresh-team".to_string(),
         status: TeamRosterStatus::Complete,
@@ -5430,6 +5448,7 @@ fn evidence_with_unresolved_roster_team_owner(
     );
     metrics.team_rosters = roster_status
         .map(|status| TeamRoster {
+            fetched_at: None,
             canonical_owner: "@org/fresh-team".to_string(),
             team_slug: "fresh-team".to_string(),
             status,
@@ -5601,6 +5620,7 @@ fn unattributed_owners(
     let rosters: Vec<TeamRoster> = owner_metrics
         .iter()
         .map(|m| TeamRoster {
+            fetched_at: None,
             canonical_owner: m.owner.clone(),
             team_slug: crate::domain::metrics::team_slug_from_canonical_owner(&m.owner)
                 .unwrap_or_default()
@@ -5613,4 +5633,103 @@ fn unattributed_owners(
     let owners = super::AttributedOwner::attribute_all(owner_metrics, &[], &rosters);
 
     UnattributedFixture { owners, rosters }
+}
+
+/// GND-0011:R6 — a roster's age must be OBSERVED AND REPORTED on a page a
+/// dashboard user actually reads, not merely present in the view model.
+/// The surface is the owner-detail page's Team Members section.
+#[test]
+fn owner_detail_renders_roster_age_from_the_persisted_fetch_instant() {
+    let mut evidence = evidence_with_owner_repos();
+    let fetched_at = (jiff::Timestamp::now() - std::time::Duration::from_hours(6)).to_string();
+    evidence.metrics.team_rosters = vec![TeamRoster {
+        fetched_at: Some(fetched_at.clone()),
+        canonical_owner: "@org/team-a".to_string(),
+        team_slug: "team-a".to_string(),
+        status: TeamRosterStatus::Complete,
+        members: vec![crate::domain::metrics::TeamMember {
+            login: "alice".to_string(),
+            role: crate::domain::metrics::TeamMemberRole::Maintainer,
+            in_org: None,
+        }],
+    }];
+
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let detail_page = &pages["owners/org-team-a.html"];
+
+    assert!(
+        detail_page.contains("Roster last refreshed 6 hours ago"),
+        "the owner-detail page must report the roster's render-derived age: {detail_page}"
+    );
+    assert!(
+        detail_page.contains(&fetched_at),
+        "the persisted fetch instant must be shown verbatim alongside the age"
+    );
+}
+
+/// "Error is not a negative finding": an absent `fetched_at` must render
+/// as UNKNOWN, never as fresh and never as the current instant.
+///
+/// Falsified against a `None => now()` fallback, which would emit "just
+/// now" and satisfy no reader that the roster is actually current.
+#[test]
+fn owner_detail_renders_absent_fetch_instant_as_unknown_not_fresh() {
+    let mut evidence = evidence_with_owner_repos();
+    evidence.metrics.team_rosters = vec![TeamRoster {
+        fetched_at: None,
+        canonical_owner: "@org/team-a".to_string(),
+        team_slug: "team-a".to_string(),
+        status: TeamRosterStatus::Complete,
+        members: vec![crate::domain::metrics::TeamMember {
+            login: "alice".to_string(),
+            role: crate::domain::metrics::TeamMemberRole::Maintainer,
+            in_org: None,
+        }],
+    }];
+
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let detail_page = &pages["owners/org-team-a.html"];
+
+    assert!(
+        detail_page.contains("Roster age unknown"),
+        "an absent fetch instant must render as unknown: {detail_page}"
+    );
+    assert!(
+        !detail_page.contains("Roster last refreshed"),
+        "an absent fetch instant must NOT be rendered as an age at all, and \
+         above all not as a fresh one: {detail_page}"
+    );
+    assert!(
+        !detail_page.contains("just now"),
+        "unknown age must never borrow the current instant: {detail_page}"
+    );
+}
+
+/// A roster older than its own refresh interval is FLAGGED, never
+/// silently served as current (GND-0011:R1).
+#[test]
+fn owner_detail_flags_a_roster_older_than_the_refresh_interval() {
+    let mut evidence = evidence_with_owner_repos();
+    let stale = (jiff::Timestamp::now()
+        - std::time::Duration::from_secs(crate::config::TEAM_REFRESH_INTERVAL_SECS * 3))
+    .to_string();
+    evidence.metrics.team_rosters = vec![TeamRoster {
+        fetched_at: Some(stale),
+        canonical_owner: "@org/team-a".to_string(),
+        team_slug: "team-a".to_string(),
+        status: TeamRosterStatus::Complete,
+        members: vec![crate::domain::metrics::TeamMember {
+            login: "alice".to_string(),
+            role: crate::domain::metrics::TeamMemberRole::Maintainer,
+            in_org: None,
+        }],
+    }];
+
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let detail_page = &pages["owners/org-team-a.html"];
+
+    assert!(
+        detail_page.contains("older than the scheduled 24-hour roster refresh"),
+        "a beyond-bound roster must be flagged, not served as current: {detail_page}"
+    );
 }

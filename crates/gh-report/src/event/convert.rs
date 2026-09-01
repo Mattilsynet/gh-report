@@ -698,15 +698,23 @@ impl From<TeamRosterStatusEvent> for sm::TeamRosterStatus {
 ///
 /// `canonical_owner` is derived from `(org, team_slug)` as
 /// `"@{org}/{team_slug}"`, matching
-/// [`sm::team_slug_from_canonical_owner`]'s inverse. `fetched_at` and
-/// `orphan_attribution_inputs` are durable event fields with no home
-/// on [`sm::TeamRoster`] (render-time orphan attribution stays a pure
-/// CODEOWNERS join, kqavx CLASS B) and are intentionally dropped here.
+/// [`sm::team_slug_from_canonical_owner`]'s inverse. `fetched_at` is
+/// carried through so a render can derive the roster's age and report it
+/// (GND-0011:R6); an empty durable value maps to `None` rather than to
+/// an empty-string timestamp, so "unknown" stays distinguishable from a
+/// real instant. `orphan_attribution_inputs` remains a durable event
+/// field with no home on [`sm::TeamRoster`] (render-time orphan
+/// attribution stays a pure CODEOWNERS join, kqavx CLASS B) and is
+/// intentionally dropped here.
 impl From<TeamStateCaptured> for sm::TeamRoster {
     fn from(v: TeamStateCaptured) -> Self {
         let org = v.org.as_str().to_string();
         let team_slug = v.team_slug.as_str().to_string();
         let canonical_owner = format!("@{org}/{team_slug}");
+        let fetched_at = match v.fetched_at.as_str() {
+            "" => None,
+            instant => Some(instant.to_string()),
+        };
         let members = v
             .members
             .into_inner()
@@ -722,6 +730,7 @@ impl From<TeamStateCaptured> for sm::TeamRoster {
             team_slug,
             status: v.status.into(),
             members,
+            fetched_at,
         }
     }
 }

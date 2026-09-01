@@ -421,6 +421,20 @@ pub struct TeamRoster {
     pub status: TeamRosterStatus,
     /// Team members, complete and role-tagged when `status == Complete`.
     pub members: Vec<TeamMember>,
+    /// RFC-3339 instant at which the durable
+    /// [`crate::event::TeamStateCaptured`] behind this roster was
+    /// fetched, carried through the projection fold so a render can
+    /// derive and report the roster's age (GND-0011:R6).
+    ///
+    /// `None` on the live-fetch path
+    /// ([`crate::collector::team_membership::collect_team_rosters`]),
+    /// which legitimately does not know it: the timestamp is stamped by
+    /// the team-refresh writer at persist time, not by the fetch.
+    ///
+    /// This carries the persisted value; it is NOT a derived age. Per
+    /// GND-0011:R5 / CHE-0022:R6 the age itself is computed at render
+    /// time and never persisted or folded.
+    pub fetched_at: Option<String>,
 }
 
 /// Extract the GitHub team slug from a canonical CODEOWNERS owner string.

@@ -2541,6 +2541,7 @@ mod tests {
             crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
         );
         let rosters = vec![TeamRoster {
+            fetched_at: None,
             canonical_owner: "@testorg/team-foo".to_string(),
             team_slug: "team-foo".to_string(),
             status: TeamRosterStatus::Complete,
@@ -2586,6 +2587,7 @@ mod tests {
             crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
         );
         let rosters = vec![TeamRoster {
+            fetched_at: None,
             canonical_owner: "@testorg/team-foo".to_string(),
             team_slug: "team-foo".to_string(),
             status: TeamRosterStatus::Complete,
@@ -2648,6 +2650,7 @@ mod tests {
             crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
         );
         let rosters = vec![TeamRoster {
+            fetched_at: None,
             canonical_owner: "@testorg/team-foo".to_string(),
             team_slug: "team-foo".to_string(),
             status: TeamRosterStatus::Complete,
@@ -2700,6 +2703,7 @@ mod tests {
             crate::config::EVIDENCE_SCHEMA_VERSION.to_string(),
         );
         let rosters = vec![TeamRoster {
+            fetched_at: None,
             canonical_owner: "@testorg/team-foo".to_string(),
             team_slug: "team-foo".to_string(),
             status: TeamRosterStatus::Complete,
@@ -2760,6 +2764,7 @@ mod tests {
             .record_team(
                 "TestOrg",
                 &crate::domain::metrics::TeamRoster {
+                    fetched_at: None,
                     canonical_owner: "@TestOrg/platform".to_string(),
                     team_slug: "platform".to_string(),
                     status: crate::domain::metrics::TeamRosterStatus::Complete,
@@ -2816,6 +2821,7 @@ mod tests {
         .expect("with stores");
 
         let deleted_roster = crate::domain::metrics::TeamRoster {
+            fetched_at: None,
             canonical_owner: "@TestOrg/platform".to_string(),
             team_slug: "platform".to_string(),
             status: crate::domain::metrics::TeamRosterStatus::Deleted,

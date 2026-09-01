@@ -961,6 +961,32 @@ mod tests {
         }
     }
 
+    /// The projection fold's arm materialises the read-model roster from
+    /// the durable event; before this change it dropped `fetched_at`, so
+    /// the timestamp never reached render and the 24h staleness bound
+    /// could not be observed (GND-0011:R6). Pins that it survives.
+    #[test]
+    fn team_state_captured_carries_fetched_at_into_the_read_model_roster() {
+        let event = team_state_captured();
+        let roster = crate::domain::metrics::TeamRoster::from(event);
+        assert_eq!(
+            roster.fetched_at.as_deref(),
+            Some("2026-07-16T00:00:00Z"),
+            "the persisted fetch instant must survive the fold; dropping it is \
+             what made the roster's age unobservable at render"
+        );
+    }
+
+    /// An empty durable `fetched_at` must map to `None`, never to an
+    /// empty-string instant that a render could mistake for a real one.
+    #[test]
+    fn empty_durable_fetched_at_becomes_unknown_not_an_empty_instant() {
+        let mut event = team_state_captured();
+        event.fetched_at = es("");
+        let roster = crate::domain::metrics::TeamRoster::from(event);
+        assert_eq!(roster.fetched_at, None);
+    }
+
     #[test]
     fn native_team_state_round_trips() {
         let event = team_state_captured();

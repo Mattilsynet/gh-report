@@ -24,6 +24,12 @@
     {% when crate::report::view_model::RosterSection::Team with (roster) %}
     <details>
         <summary>Team Members ({{ roster.member_count }})</summary>
+        {% match roster.freshness %}
+        {% when crate::report::view_model::RosterFreshness::Observed with { fetched_at, age_label, beyond_refresh_interval } %}
+        <p class="meta{% if beyond_refresh_interval %} tier-warn{% endif %}">Roster last refreshed {{ age_label }} (<time datetime="{{ fetched_at }}">{{ fetched_at }}</time>).{% if beyond_refresh_interval %} This is older than the scheduled 24-hour roster refresh — membership shown here may be out of date.{% endif %} {% call tooltip::tooltip("Team rosters refresh on their own 24-hour cadence, separate from repository collection. This age is derived when the page is rendered from the timestamp recorded with the roster.") %}{% endcall %}</p>
+        {% when crate::report::view_model::RosterFreshness::Unknown %}
+        <p class="meta tier-warn">Roster age unknown — no refresh timestamp was recorded for this roster, so its membership cannot be assumed current. {% call tooltip::tooltip("No fetch timestamp reached this render. The roster is shown, but its age is not known and must not be read as fresh.") %}{% endcall %}</p>
+        {% endmatch %}
         {% if let Some(notice) = roster.degraded_notice %}
         <p class="meta tier-warn">{{ notice }}</p>
         {% endif %}

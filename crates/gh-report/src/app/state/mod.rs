@@ -1209,6 +1209,7 @@ fn detach_tombstone_roster(
     roster: &crate::domain::metrics::TeamRoster,
 ) -> crate::domain::metrics::TeamRoster {
     crate::domain::metrics::TeamRoster {
+        fetched_at: None,
         canonical_owner: roster.canonical_owner.clone(),
         team_slug: roster.team_slug.clone(),
         status: roster.status,
@@ -2775,6 +2776,7 @@ mod tests {
         team_slug: &str,
     ) -> crate::domain::metrics::TeamRoster {
         crate::domain::metrics::TeamRoster {
+            fetched_at: None,
             canonical_owner: canonical_owner.to_string(),
             team_slug: team_slug.to_string(),
             status: crate::domain::metrics::TeamRosterStatus::Complete,

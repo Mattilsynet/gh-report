@@ -42,6 +42,7 @@ pub async fn collect_team_rosters(
 
 fn degraded_roster(canonical_owner: &str, team_slug: &str, status: TeamRosterStatus) -> TeamRoster {
     TeamRoster {
+        fetched_at: None,
         canonical_owner: canonical_owner.to_string(),
         team_slug: team_slug.to_string(),
         status,
@@ -171,6 +172,7 @@ async fn collect_one_team_roster(
     members.sort_by_cached_key(|m| m.login.to_lowercase());
 
     TeamRoster {
+        fetched_at: None,
         canonical_owner: canonical_owner.to_string(),
         team_slug: team_slug.to_string(),
         status: TeamRosterStatus::Complete,
@@ -591,6 +593,7 @@ mod tests {
         let org_members = org_members_from_outcome(&truncated);
 
         let mut rosters = vec![TeamRoster {
+            fetched_at: None,
             canonical_owner: "@test-org/team-a".to_string(),
             team_slug: "team-a".to_string(),
             status: TeamRosterStatus::Complete,
@@ -617,6 +620,7 @@ mod tests {
     #[test]
     fn enrich_team_rosters_flags_departed_member_and_clears_present_member() {
         let mut rosters = vec![TeamRoster {
+            fetched_at: None,
             canonical_owner: "@test-org/team-a".to_string(),
             team_slug: "team-a".to_string(),
             status: TeamRosterStatus::Complete,
@@ -657,6 +661,7 @@ mod tests {
     #[test]
     fn enrich_team_rosters_flags_nobody_when_org_members_degraded() {
         let mut rosters = vec![TeamRoster {
+            fetched_at: None,
             canonical_owner: "@test-org/team-a".to_string(),
             team_slug: "team-a".to_string(),
             status: TeamRosterStatus::Complete,
