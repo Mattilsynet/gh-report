@@ -1173,10 +1173,19 @@ fn bounded_string<const MAX: usize>(
         .map_err(|error| conversion_persistence(&error))
 }
 
-fn team_member_role_event(role: crate::domain::metrics::TeamMemberRole) -> TeamMemberRoleEvent {
+/// Read-model role -> durable role, the write-side half of the TOTAL
+/// mapping CHE-0089:R3 requires (the read side is
+/// `impl From<TeamMemberRoleEvent> for TeamMemberRole`). `Unknown` is
+/// persisted as `Unknown`; flattening it to `Member` on the way out
+/// would reintroduce exactly the silent default COM-0028:R2 forbids,
+/// one layer deeper where no test on the collector would see it.
+pub(crate) fn team_member_role_event(
+    role: crate::domain::metrics::TeamMemberRole,
+) -> TeamMemberRoleEvent {
     match role {
         crate::domain::metrics::TeamMemberRole::Maintainer => TeamMemberRoleEvent::Maintainer,
         crate::domain::metrics::TeamMemberRole::Member => TeamMemberRoleEvent::Member,
+        crate::domain::metrics::TeamMemberRole::Unknown => TeamMemberRoleEvent::Unknown,
     }
 }
 

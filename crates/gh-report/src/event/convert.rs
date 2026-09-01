@@ -673,11 +673,17 @@ impl From<OrgStateCaptured> for se::OrgStateSnapshot {
     }
 }
 
+/// Durable role -> read-model role. TOTAL in both directions
+/// (CHE-0089:R3): every durable variant has a domain counterpart here,
+/// and [`crate::app::state`]'s `team_member_role_event` maps every
+/// domain variant back. `Unknown` survives the round trip rather than
+/// collapsing to `Member` (COM-0028:R2).
 impl From<TeamMemberRoleEvent> for sm::TeamMemberRole {
     fn from(v: TeamMemberRoleEvent) -> Self {
         match v {
             TeamMemberRoleEvent::Maintainer => Self::Maintainer,
             TeamMemberRoleEvent::Member => Self::Member,
+            TeamMemberRoleEvent::Unknown => Self::Unknown,
         }
     }
 }

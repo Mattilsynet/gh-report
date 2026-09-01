@@ -349,6 +349,16 @@ pub enum TeamMemberRole {
     Maintainer,
     /// Ordinary team member.
     Member,
+    /// GitHub did not tell us: the roster entry carried no `role` field,
+    /// or carried a value this build does not recognise.
+    ///
+    /// COM-0028:R2 — an absent or unparseable probe result is its own
+    /// verdict, never folded into a negative one. Without this variant
+    /// the only representable answers are `Maintainer` and `Member`, so
+    /// "we do not know" would have to masquerade as `Member` and would
+    /// under-report a maintainer. The variant exists so that state is
+    /// unrepresentable rather than merely discouraged.
+    Unknown,
 }
 
 impl std::fmt::Display for TeamMemberRole {
@@ -356,6 +366,7 @@ impl std::fmt::Display for TeamMemberRole {
         match self {
             Self::Maintainer => f.write_str("Maintainer"),
             Self::Member => f.write_str("Member"),
+            Self::Unknown => f.write_str("Unknown"),
         }
     }
 }
