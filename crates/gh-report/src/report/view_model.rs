@@ -148,6 +148,62 @@ impl std::fmt::Display for DashboardHref {
     }
 }
 
+/// Canonical owner of drill-down page identity (CHE-0108:R1/R3).
+///
+/// [`DrillDownPage::file_name`] is the single authoritative spelling of a
+/// drill-down page's filename. The emitted page, every link targeting it, and
+/// the template-existence guard all derive from this one match, so renaming a
+/// page here moves the page and its links together instead of leaving a
+/// dangling link behind.
+///
+/// The match is exhaustive with no catch-all arm, so a page added here without
+/// a filename is a compile error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrillDownPage {
+    /// The Branch Protection Regime (BPR0..BPR5) drill-down page.
+    BranchProtection,
+}
+
+impl DrillDownPage {
+    /// Every drill-down page, for guards that must enumerate the value set.
+    pub const ALL: &'static [Self] = &[Self::BranchProtection];
+
+    /// Canonical filename of this page, relative to the dashboard root.
+    #[must_use]
+    pub fn file_name(self) -> &'static str {
+        match self {
+            Self::BranchProtection => "branch_protection.html",
+        }
+    }
+
+    /// Link to this page from a page rendered at `depth`.
+    #[must_use]
+    pub fn link(self, depth: DashboardHref) -> DrillDownLink {
+        DrillDownLink { page: self, depth }
+    }
+}
+
+/// A depth-resolved link to a [`DrillDownPage`].
+///
+/// Carries the decision a template would otherwise make by comparing strings
+/// (CHE-0108:R2): the page identity comes from [`DrillDownPage::file_name`]
+/// and only the depth prefix varies, so no second filename literal exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DrillDownLink {
+    page: DrillDownPage,
+    depth: DashboardHref,
+}
+
+impl std::fmt::Display for DrillDownLink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.depth {
+            DashboardHref::Root => {}
+            DashboardHref::Nested => f.write_str("../")?,
+        }
+        f.write_str(self.page.file_name())
+    }
+}
+
 /// A row in the owners overview table.
 #[derive(Debug, Clone)]
 pub struct OwnerOverviewRow {
@@ -282,10 +338,10 @@ pub struct SummaryCard {
     /// without matching on the human-readable `label`, which can reword.
     pub key: &'static str,
     /// Relative URL of this control's drill-down page, or `None` when the
-    /// control has no drill-down. A compile-time-constant projection of the
-    /// control key, so templates branch on a typed field instead of comparing
-    /// `key` against a hand-maintained string literal.
-    pub drill_down_href: Option<&'static str>,
+    /// control has no drill-down. Derived from [`DrillDownPage`], the single
+    /// owner of page identity, so templates render a typed link instead of a
+    /// hand-maintained string literal (CHE-0108:R1/R2).
+    pub drill_down_href: Option<DrillDownLink>,
     /// Human-readable control name (e.g., `"Security Policy"`).
     pub label: String,
     /// Coverage rate and tier for styling.
