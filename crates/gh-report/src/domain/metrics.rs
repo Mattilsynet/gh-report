@@ -360,23 +360,29 @@ impl std::fmt::Display for TeamMemberRole {
     }
 }
 
-/// A single GitHub team member, fetched fresh at render time (B1).
+/// A single GitHub team member (B1).
 ///
-/// Render-time-only: never persisted to the native per-repo event payload
-/// (oracle ghr-893fde5c CLASS B verdict).
+/// Mirrored durably by [`crate::event::TeamMemberEvent`] inside
+/// `TeamStateCaptured` (CHE-0089:R1). The narrower CLASS B verdict that
+/// survives (oracle ghr-893fde5c, amended 2026-07-16 by mission
+/// ghr-deb615c4) is that this type adds no field to the native per-repo
+/// `RepositoryStateCaptured` payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamMember {
     /// GitHub login.
     pub login: String,
     /// The member's role on this team.
     pub role: TeamMemberRole,
-    /// Current org-membership state, cross-checked at render time against
-    /// a freshly-fetched org-members set (item9 Part B). `None` when the
-    /// org-members fetch was unfetched/degraded — never flag on missing
-    /// data; `Some(false)` when this login is confirmed absent from the
-    /// org (departed); `Some(true)` when confirmed present. Render-time
-    /// only, same CLASS B verdict as the rest of this type (oracle
-    /// ghr-893fde5c, re-confirmed ghr-5f157796).
+    /// Current org-membership state, cross-checked against the
+    /// org-members set fetched on the same team-refresh tick as the
+    /// roster (item9 Part B; [`crate::app::team_refresh`]). `None` when
+    /// the org-members fetch was unfetched/degraded — never flag on
+    /// missing data; `Some(false)` when this login is confirmed absent
+    /// from the org (departed); `Some(true)` when confirmed present.
+    /// Persisted with the rest of the roster; adds no
+    /// `RepositoryStateCaptured` field, same narrowed CLASS B verdict as
+    /// the rest of this type (oracle ghr-893fde5c, re-confirmed
+    /// ghr-5f157796, amended ghr-deb615c4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_org: Option<bool>,
 }

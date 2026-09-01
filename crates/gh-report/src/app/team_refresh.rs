@@ -6,9 +6,11 @@
 //! root of the unresolved-by-timing raciness (ghr-b562fe02 §A): rosters
 //! are fetched and durably recorded on their own timer, independent of
 //! whether a repo collect cycle is in flight. Render (P5, ghr-a3091aef)
-//! will read the persisted, folded projection instead of calling
-//! [`crate::collector::team_membership::collect_team_rosters`]
-//! synchronously inside the collect cycle.
+//! has shipped and reads the persisted, folded projection by default
+//! (`RuntimeConfig::team_roster_read_from_projection`, default `true`);
+//! the synchronous
+//! [`crate::collector::team_membership::collect_team_rosters`] call
+//! inside the collect cycle survives only as that flag's rollback seam.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;

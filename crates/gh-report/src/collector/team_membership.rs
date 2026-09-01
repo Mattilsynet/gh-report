@@ -3,11 +3,18 @@
 //! Fetches the complete, role-tagged member roster for each GitHub team
 //! referenced by CODEOWNERS, plus (optionally) the current org-members
 //! list used to cross-check whether a team member or individual-user
-//! CODEOWNERS owner has left the organization. Render-time only (oracle
-//! ghr-893fde5c CLASS B verdict): rosters and the org-members set are
-//! fetched fresh every collection tick via the existing
-//! budget/rate-limit-gated [`GitHubClient::request`] and are never
-//! persisted to the native per-repo event payload.
+//! CODEOWNERS owner has left the organization. Both fetches run on the
+//! decoupled team-refresh tick ([`crate::app::team_refresh`]) via the
+//! existing budget/rate-limit-gated [`GitHubClient::request`], not on
+//! the repo collect cycle; the collect cycle calls them synchronously
+//! only under the `team_roster_read_from_projection = false` rollback
+//! seam. The fetched rosters ARE persisted durably, as
+//! `TeamStateCaptured` events — the 2026-07-16 amendment to oracle
+//! ghr-893fde5c (mission ghr-deb615c4) ratified roster persistence
+//! (CHE-0073:R10, CHE-0089). The surviving CLASS B verdict is narrower
+//! than "render-time only": no team data enters the
+//! `RepositoryStateCaptured` payload, and orphan attribution stays a
+//! render-time derivation.
 
 use std::collections::HashSet;
 
