@@ -5614,3 +5614,116 @@ fn unattributed_owners(
 
     UnattributedFixture { owners, rosters }
 }
+
+const ALL_CONTROL_KEYS: &[ControlKey] = &[
+    ControlKey::SecurityPolicy,
+    ControlKey::SecretScanning,
+    ControlKey::DependabotSecurityUpdates,
+    ControlKey::BranchProtection,
+    ControlKey::NonStale,
+    ControlKey::NonOrphaned,
+    ControlKey::AlertFree,
+];
+
+fn extract_card_key_literals(template_source: &str) -> Vec<String> {
+    const SUBJECT: &str = "card.key";
+
+    let mut found = Vec::new();
+    let mut rest = template_source;
+
+    while let Some(at) = rest.find(SUBJECT) {
+        let after_subject = &rest[at + SUBJECT.len()..];
+        rest = after_subject;
+
+        let operator_and_on = after_subject.trim_start();
+        let after_operator = match operator_and_on
+            .strip_prefix("==")
+            .or_else(|| operator_and_on.strip_prefix("!="))
+        {
+            Some(tail) => tail.trim_start(),
+            None => continue,
+        };
+
+        let Some(literal_body) = after_operator.strip_prefix('"') else {
+            continue;
+        };
+        let Some(end) = literal_body.find('"') else {
+            continue;
+        };
+        found.push(literal_body[..end].to_string());
+    }
+
+    found
+}
+
+fn html_files_under(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    let entries = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("failed to read template dir {}: {e}", dir.display()));
+
+    for entry in entries {
+        let path = entry.expect("failed to read a template dir entry").path();
+        if path.is_dir() {
+            files.extend(html_files_under(&path));
+        } else if path.extension().is_some_and(|ext| ext == "html") {
+            files.push(path);
+        }
+    }
+
+    files
+}
+
+#[test]
+fn extract_card_key_literals_finds_both_comparison_forms() {
+    let synthetic = r#"
+        {% if card.key == "branch_protection" %}
+        {% if card.key != "secret_scanning" %}
+        {% if card.key   ==   "non_stale" %}
+        {% if card.label == "Branch Protection" %}
+    "#;
+
+    assert_eq!(
+        extract_card_key_literals(synthetic),
+        vec![
+            "branch_protection".to_string(),
+            "secret_scanning".to_string(),
+            "non_stale".to_string(),
+        ],
+        "the card.key literal extractor must catch ==, != and whitespace \
+         variants while ignoring comparisons against other fields"
+    );
+}
+
+#[test]
+fn template_card_key_literals() {
+    let template_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
+    let known: HashSet<&'static str> = ALL_CONTROL_KEYS.iter().map(|k| k.as_str()).collect();
+
+    let templates = html_files_under(&template_dir);
+    assert!(
+        !templates.is_empty(),
+        "found no templates under {} — the tripwire would pass vacuously",
+        template_dir.display()
+    );
+
+    let mut unpinned = Vec::new();
+    for path in &templates {
+        let source = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+
+        for literal in extract_card_key_literals(&source) {
+            if !known.contains(literal.as_str()) {
+                unpinned.push(format!("{}: card.key == \"{literal}\"", path.display()));
+            }
+        }
+    }
+
+    assert!(
+        unpinned.is_empty(),
+        "template(s) compare card.key against string literal(s) that \
+         ControlKey::as_str does not own, so a ControlKey rename would \
+         silently sever the branch: {unpinned:#?}\n\
+         Prefer a typed discriminator field on SummaryCard (see \
+         drill_down_href) over a hand-maintained literal."
+    );
+}
