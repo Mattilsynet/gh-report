@@ -834,9 +834,18 @@ fn log_initial_collection_failure(error: &AppError) {
 /// loop's own drain semantics — see module docs), but the wait between
 /// ticks observes cancellation immediately.
 ///
-/// Ticks before the GitHub client has been initialised by the first
-/// repo collection are skipped (logged at `info`) rather than treated
-/// as a failure — the client is created lazily on first repo collect.
+/// Ticks wait for the GitHub client rather than skipping when it is
+/// absent: it is created lazily on the first repo collection, so a tick
+/// racing that initialisation must block on it. Skipping instead would
+/// forfeit a full [`crate::config::TEAM_REFRESH_INTERVAL_SECS`] of
+/// roster data — 24 hours after every Cloud Run revision.
+///
+/// A refresh runs at STARTUP, before the first interval wait, so a
+/// freshly-started revision reaches a populated roster in seconds
+/// rather than a day. The wait is deliberately on client availability
+/// rather than on the initial collection's completion: taking a
+/// completion signal from [`spawn_collection_loop`] would reintroduce
+/// the repo-collect-cycle coupling CHE-0089:R5 severs.
 fn spawn_team_refresh_loop(
     config: &RuntimeConfig,
     state: Arc<AppState>,
@@ -846,6 +855,13 @@ fn spawn_team_refresh_loop(
     let nats = config.nats_store_config();
     let backend = config.pardosa_backend;
     tokio::spawn(async move {
+        let ClientReady::Client(client) = await_github_client(&state, &mut cancel).await else {
+            info!("team-refresh loop cancelled while awaiting GitHub client — exiting");
+            return;
+        };
+        info!("team-refresh startup tick running (does not wait a full interval)");
+        run_one_team_refresh_tick(&state, &client, &events_dir, backend, nats.as_ref()).await;
+
         loop {
             match next_collection_tick(
                 &mut cancel,
@@ -859,38 +875,79 @@ fn spawn_team_refresh_loop(
                 }
                 NextTick::Run => {}
             }
-            let Some(client) = state.github_client() else {
-                info!("team-refresh tick skipped: GitHub client not yet initialised");
-                continue;
+            let ClientReady::Client(client) = await_github_client(&state, &mut cancel).await else {
+                info!("team-refresh loop cancelled while awaiting GitHub client — exiting");
+                return;
             };
-            let fetched_at = jiff::Timestamp::now().to_string();
-            if let Err(failure) =
-                crate::app::team_refresh::run_team_refresh_tick(&state, &client, &fetched_at).await
-            {
-                if matches!(
-                    failure.error,
-                    AppError::Persistence(PersistenceError::FencedConflict { .. })
-                ) {
-                    warn!(
-                        owner_id = %state.owner_id,
-                        expected = "rollover",
-                        "team-refresh tick fenced by active single-writer guard — expected Cloud-Run-rollover OCC churn (PGN-0016:R7); re-arming with fresh authoritative read"
-                    );
-                    rearm_fenced_team_refresh_tick(
-                        &events_dir,
-                        backend,
-                        nats.as_ref(),
-                        &state,
-                        &client,
-                        &fetched_at,
-                    )
-                    .await;
-                } else {
-                    crate::app::team_refresh::log_tick_failure(&failure.error, &failure.context);
-                }
-            }
+            run_one_team_refresh_tick(&state, &client, &events_dir, backend, nats.as_ref()).await;
         }
     })
+}
+
+/// Outcome of waiting for the lazily-initialised GitHub client.
+///
+/// Deliberately two variants with no "not ready, skip anyway" arm: a
+/// skipped tick is indistinguishable from a lost refresh period, which
+/// at a 24h cadence is the regression this wait exists to prevent. The
+/// only way out without a client is cancellation.
+enum ClientReady {
+    Client(Arc<crate::github::client::GitHubClient>),
+    Cancelled,
+}
+
+/// Wait until the GitHub client exists, or until shutdown is requested.
+///
+/// Returns immediately when the client is already initialised (the
+/// steady-state case), so the poll cost is paid only during the startup
+/// race against the first repo collection.
+async fn await_github_client(
+    state: &Arc<AppState>,
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+) -> ClientReady {
+    let poll = Duration::from_secs(crate::config::TEAM_REFRESH_CLIENT_POLL_SECS);
+    loop {
+        if *cancel.borrow() {
+            return ClientReady::Cancelled;
+        }
+        if let Some(client) = state.github_client() {
+            return ClientReady::Client(client);
+        }
+        tokio::select! {
+            biased;
+            _ = cancel.changed() => return ClientReady::Cancelled,
+            () = tokio::time::sleep(poll) => {}
+        }
+    }
+}
+
+/// Run one team-refresh tick, re-arming once on a single-writer fence
+/// conflict and warn-logging any other failure without propagating it.
+async fn run_one_team_refresh_tick(
+    state: &Arc<AppState>,
+    client: &crate::github::client::GitHubClient,
+    events_dir: &std::path::Path,
+    backend: crate::config::runtime::PardosaBackend,
+    nats: Result<&crate::config::runtime::NatsStoreConfig, &ConfigError>,
+) {
+    let fetched_at = jiff::Timestamp::now().to_string();
+    if let Err(failure) =
+        crate::app::team_refresh::run_team_refresh_tick(state, client, &fetched_at).await
+    {
+        if matches!(
+            failure.error,
+            AppError::Persistence(PersistenceError::FencedConflict { .. })
+        ) {
+            warn!(
+                owner_id = %state.owner_id,
+                expected = "rollover",
+                "team-refresh tick fenced by active single-writer guard — expected Cloud-Run-rollover OCC churn (PGN-0016:R7); re-arming with fresh authoritative read"
+            );
+            rearm_fenced_team_refresh_tick(events_dir, backend, nats, state, client, &fetched_at)
+                .await;
+        } else {
+            crate::app::team_refresh::log_tick_failure(&failure.error, &failure.context);
+        }
+    }
 }
 
 /// Resolve the config for the daemon's initial collection run: consumes
@@ -1281,6 +1338,7 @@ mod tests {
     use crate::server::SERVED_CSP_WITH_WASM_UNSAFE_EVAL;
     use std::io::Write;
     use tracing_subscriber::fmt::MakeWriter;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[derive(Clone, Default)]
     struct VecWriter {
@@ -1712,6 +1770,199 @@ mod tests {
         assert!(
             !store_constructed.load(Ordering::Acquire),
             "store construction must not run after duplicate bind"
+        );
+    }
+
+    async fn team_refresh_test_state() -> (Arc<AppState>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let nats = config::runtime::NatsStoreConfig::for_org(
+            "test-org",
+            config::runtime::DEFAULT_NATS_URL,
+        )
+        .expect("nats config");
+        let state = AppState::with_stores(&events_dir, config::runtime::PardosaBackend::Pgno, nats)
+            .await
+            .expect("with stores");
+        (state, dir)
+    }
+
+    fn team_refresh_test_client(base_url: &str) -> crate::github::client::GitHubClient {
+        let credential = crate::github::auth::GitHubCredential {
+            mode: crate::domain::auth::AuthMode::Pat,
+            token: secrecy::SecretString::from("test-token"),
+            expires_at: None,
+        };
+        let budget = Arc::new(crate::github::budget::BudgetGate::new(
+            config::API_BUDGET_LIMIT,
+            Duration::from_secs(config::API_BUDGET_WAIT_SECS),
+        ));
+        let rate_limit = Arc::new(crate::github::rate_limit::new_default());
+        crate::github::client::GitHubClient::new(
+            credential, base_url, "test-org", None, budget, rate_limit,
+        )
+        .expect("test client construction should succeed")
+    }
+
+    async fn install_team_refresh_client(state: &Arc<AppState>, base_url: &str) {
+        let client = Arc::new(team_refresh_test_client(base_url));
+        state
+            .github_client_or_try_init(|| async move { Ok::<_, std::convert::Infallible>(client) })
+            .await
+            .expect("client init is infallible");
+    }
+
+    /// A not-yet-initialised GitHub client must NOT let the startup tick
+    /// silently no-op. `await_github_client` has no "skip" variant, so
+    /// the only observable behaviours are "still waiting" and "Client".
+    ///
+    /// Falsifier: the pre-fix code path read `state.github_client()` once
+    /// and `continue`d on `None`, which under this test would resolve
+    /// instantly with the roster never fetched. Here the future is proven
+    /// still pending after a full 24h of virtual time — longer than the
+    /// refresh interval it is protecting — and then proven to resolve the
+    /// moment the client appears.
+    #[tokio::test(start_paused = true)]
+    async fn startup_tick_waits_for_a_lazily_initialised_client_instead_of_skipping() {
+        let (state, _dir) = team_refresh_test_state().await;
+        let (_tx, mut cancel) = tokio::sync::watch::channel(false);
+
+        assert!(
+            state.github_client().is_none(),
+            "precondition: the client must be uninitialised"
+        );
+
+        let mut waiting = Box::pin(await_github_client(&state, &mut cancel));
+        let pending = tokio::time::timeout(
+            Duration::from_secs(config::TEAM_REFRESH_INTERVAL_SECS),
+            &mut waiting,
+        )
+        .await;
+        assert!(
+            pending.is_err(),
+            "a not-yet-ready client must leave the startup tick WAITING, never \
+             resolve it into a silent skip that forfeits a refresh period"
+        );
+
+        let server = MockServer::start().await;
+        install_team_refresh_client(&state, &server.uri()).await;
+
+        let resolved = tokio::time::timeout(Duration::from_hours(1), waiting)
+            .await
+            .expect("wait must resolve once the client is initialised");
+        assert!(
+            matches!(resolved, ClientReady::Client(_)),
+            "the wait must hand back the now-initialised client"
+        );
+    }
+
+    /// Cancellation is the ONLY exit from the wait without a client, so a
+    /// shutdown during the startup race terminates the loop rather than
+    /// hanging it.
+    #[tokio::test(start_paused = true)]
+    async fn startup_tick_wait_exits_on_cancellation_when_no_client_ever_arrives() {
+        let (state, _dir) = team_refresh_test_state().await;
+        let (tx, mut cancel) = tokio::sync::watch::channel(false);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            let _ = tx.send(true);
+        });
+        let outcome = await_github_client(&state, &mut cancel).await;
+        assert!(matches!(outcome, ClientReady::Cancelled));
+    }
+
+    /// The first roster fetch must happen at STARTUP, not one full
+    /// `TEAM_REFRESH_INTERVAL_SECS` later. At 86400s the pre-fix
+    /// sleep-first loop meant 24 hours of empty roster state after every
+    /// Cloud Run revision.
+    ///
+    /// Virtual time is paused, so the elapsed figure asserted below is
+    /// the scheduler's own accounting of how much of the interval the
+    /// loop waited before its first write — not wall-clock noise.
+    #[tokio::test(start_paused = true)]
+    async fn team_refresh_loop_records_a_roster_at_startup_without_waiting_an_interval() {
+        let (state, dir) = team_refresh_test_state().await;
+        let evidence = crate::test_fixtures::make_repository_evidence(
+            "repo-a",
+            crate::domain::repository::Visibility::Public,
+            false,
+            crate::test_fixtures::make_checks(
+                crate::test_fixtures::policy_pass_setting(),
+                crate::test_fixtures::secret_enabled_observable(false),
+                crate::test_fixtures::dependabot_enabled(),
+                crate::test_fixtures::branch_pass(),
+                crate::test_fixtures::codeowners_with_owners(&["@test-org/platform"]),
+            ),
+        );
+        let domain_key = evidence.repository.inventory_key.clone();
+        let repo_name = evidence.repository.name.clone();
+        state
+            .record_repo(&domain_key, evidence, &repo_name, "2026-07-23T00:00:00Z")
+            .expect("seed repo evidence");
+
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::path("/orgs/test-org/members"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(wiremock::matchers::path(
+            "/orgs/test-org/teams/platform/members",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!([{"login": "octocat"}])),
+        )
+        .mount(&server)
+        .await;
+        install_team_refresh_client(&state, &server.uri()).await;
+
+        let team_key =
+            crate::event::team_domain_key("test-org", "platform").expect("derive team key");
+        let config = RuntimeConfig {
+            org_name: "test-org".to_string(),
+            no_resume: true,
+            max_workers: 1,
+            store_dir: dir.path().to_path_buf(),
+            pardosa_backend: config::runtime::PardosaBackend::Pgno,
+            nats_url: config::runtime::DEFAULT_NATS_URL.to_string(),
+            nats_creds: None,
+            force_unlock: false,
+            force_refresh: false,
+            dashboard_config: config::dashboard::DashboardConfig::default(),
+            team_roster_read_from_projection: true,
+            rate_regulator: crate::config::runtime::RateRegulatorKind::default(),
+        };
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+
+        let started = tokio::time::Instant::now();
+        let handle = spawn_team_refresh_loop(&config, Arc::clone(&state), cancel_rx);
+
+        let recorded = tokio::time::timeout(
+            Duration::from_secs(config::TEAM_REFRESH_INTERVAL_SECS),
+            async {
+                loop {
+                    if state.lock_projection().team_rosters.contains_key(&team_key) {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            },
+        )
+        .await;
+        let elapsed = started.elapsed();
+        let _ = cancel_tx.send(true);
+        handle.abort();
+
+        assert!(
+            recorded.is_ok(),
+            "the team-refresh loop must record a roster at startup; waiting a \
+             full {}s interval first is a 24h information regression",
+            config::TEAM_REFRESH_INTERVAL_SECS,
+        );
+        assert!(
+            elapsed < Duration::from_secs(config::TEAM_REFRESH_INTERVAL_SECS),
+            "startup roster fetch consumed {elapsed:?} of virtual time, which is \
+             not strictly less than one refresh interval — the loop is still \
+             sleeping before its first tick"
         );
     }
 
