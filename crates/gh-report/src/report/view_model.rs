@@ -281,6 +281,11 @@ pub struct SummaryCard {
     /// Lets templates target one control's rendering (e.g. a tooltip)
     /// without matching on the human-readable `label`, which can reword.
     pub key: &'static str,
+    /// Relative URL of this control's drill-down page, or `None` when the
+    /// control has no drill-down. A compile-time-constant projection of the
+    /// control key, so templates branch on a typed field instead of comparing
+    /// `key` against a hand-maintained string literal.
+    pub drill_down_href: Option<&'static str>,
     /// Human-readable control name (e.g., `"Security Policy"`).
     pub label: String,
     /// Coverage rate and tier for styling.
