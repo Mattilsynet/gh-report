@@ -22,6 +22,18 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+/// A paired reading of one [`BudgetGate`] epoch's call count and ceiling.
+///
+/// Best-effort diagnostic snapshot, not a linearizable pair — see
+/// [`BudgetGate::epoch_usage`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EpochUsage {
+    /// Calls made in the current epoch at the moment of the read.
+    pub calls_made: u64,
+    /// The per-epoch ceiling in force at the moment of the read.
+    pub epoch_limit: u64,
+}
+
 /// A budget gate that limits the number of API calls per epoch.
 ///
 /// CAS-based counter: never increments past the limit. When the limit is
@@ -203,6 +215,21 @@ impl BudgetGate {
     #[must_use]
     pub fn calls_made(&self) -> u64 {
         self.calls.load(Ordering::Relaxed)
+    }
+
+    /// A paired reading of the current epoch's call count and ceiling.
+    ///
+    /// Best-effort telemetry: the two counters are read with separate
+    /// relaxed loads, so a concurrent [`Self::set_epoch_limit`] or epoch
+    /// reset can land between them. Intended for diagnostic log fields,
+    /// never for a gating decision — [`Self::acquire`] is the only
+    /// authority on whether a call may proceed.
+    #[must_use]
+    pub fn epoch_usage(&self) -> EpochUsage {
+        EpochUsage {
+            epoch_limit: self.limit.load(Ordering::Relaxed),
+            calls_made: self.calls.load(Ordering::Relaxed),
+        }
     }
 
     /// Cumulative number of calls made across all epochs.
