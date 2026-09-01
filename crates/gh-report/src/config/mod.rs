@@ -169,16 +169,21 @@ pub const BASELINE_MAX_AGE_SECS: u64 = 14_400;
 /// 24 hours. Team membership changes on a human hiring/offboarding
 /// timescale, not a CI timescale, so a daily roster sweep is the
 /// business-appropriate period; the previous 1800s spent a full
-/// `2 x T + 1` fetch set (T = CODEOWNERS-referenced teams) 48 times a
-/// day against a quota [`COLLECTION_INTERVAL_SECS`] already consumes
-/// 81.6% of. FLO-0002:R2 harmonicity holds: 86400/3600 = 24, an integer
+/// `T + 1` fetch set (T = CODEOWNERS-referenced teams) 48 times a day
+/// against a quota [`COLLECTION_INTERVAL_SECS`] already consumes 81.6%
+/// of. FLO-0002:R2 harmonicity holds: 86400/3600 = 24, an integer
 /// number of collection cycles.
 ///
 /// A longer PERIOD must not become a LOSS OF INFORMATION. Two things
 /// keep it from being one, and both are load-bearing:
 ///
-/// - Every tick still fetches the same `2 x T` roster sets and the same
-///   org-members cross-check. Frequency is cut; coverage is not.
+/// - Every tick still fetches every CODEOWNERS-referenced team's full
+///   roster and the same org-members cross-check. The per-team cost
+///   halved from two paginated fetch sets to `T` when the redundant
+///   `role=maintainer` fetch was deleted, but that removed a REQUEST,
+///   not a field: role now comes from the `role=all` response, which
+///   always carried it. Frequency is cut and cost is cut; coverage is
+///   not.
 /// - [`crate::app::daemon`] runs one refresh at STARTUP before entering
 ///   this period. Without it a Cloud Run revision would serve an empty
 ///   or rehydrated-only roster for a full 24 hours.
