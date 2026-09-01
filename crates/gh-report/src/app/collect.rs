@@ -1147,13 +1147,29 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
 
     tracker.wait().await;
     state.set_active_batch_tracker(None);
+    let fence = state.take_run_fence();
 
     let _ = pp_shutdown.send(true);
     if let Err(e) = pp_task.await {
         error!(error = ?e, "partial publisher task panicked");
     }
 
-    Ok(true)
+    batch_outcome(fence)
+}
+
+/// Resolve the batch barrier into a run outcome.
+///
+/// A latched fence is re-raised as the typed
+/// [`PersistenceError::FencedConflict`] it originally was, so the run
+/// aborts here (PGN-0016:R2) and converges through the sanctioned
+/// `converge_on_fence` sink via the existing
+/// [`CollectionOutcome::FencedConflict`] mapping — no re-arm is
+/// performed at this call site (CHE-0088:R9).
+fn batch_outcome(fence: Option<crate::app::daemon::FenceSignal>) -> Result<bool, AppError> {
+    match fence {
+        Some(signal) => Err(AppError::Persistence(signal.into_error())),
+        None => Ok(true),
+    }
 }
 
 /// Arguments for [`finalize_and_publish`].
@@ -3393,12 +3409,29 @@ mod tests {
     where
         E: crate::app::worker_pool::JobExecutor<Context = JobContext, Result = RepositoryEvidence>,
     {
+        let recorder = Arc::clone(state);
+        start_test_worker_pool_with_recorder(state, executor, worker_count, recorder)
+    }
+
+    /// [`start_test_worker_pool`] over an explicit durable-write side, so a
+    /// fenced repository persist can be arranged at the real boundary.
+    fn start_test_worker_pool_with_recorder<E, R>(
+        state: &Arc<AppState>,
+        executor: Arc<E>,
+        worker_count: usize,
+        recorder: Arc<R>,
+    ) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>)
+    where
+        E: crate::app::worker_pool::JobExecutor<Context = JobContext, Result = RepositoryEvidence>,
+        R: crate::app::daemon::RepoRecorder,
+    {
         let (outcome_tx, outcome_rx) = tokio::sync::mpsc::channel(1024);
 
         let delivery_state = Arc::clone(state);
-        let delivery_handle = tokio::spawn(crate::app::daemon::delivery_loop(
+        let delivery_handle = tokio::spawn(crate::app::daemon::delivery_loop_with_recorder(
             outcome_rx,
             delivery_state,
+            recorder,
         ));
 
         let queue = Arc::clone(&state.work_queue);
@@ -4233,6 +4266,104 @@ mod tests {
         let delivery_result = delivery.await;
         assert!(pool_result.is_ok(), "worker pool should exit cleanly");
         assert!(delivery_result.is_ok(), "delivery loop should exit cleanly");
+    }
+
+    /// Durable-write side that the OCC fence always rejects, standing in
+    /// for the superseding writer a local test cannot start.
+    struct FencingRecorder {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl crate::app::daemon::RepoRecorder for FencingRecorder {
+        fn record_repo(
+            &self,
+            _domain_key: &str,
+            _evidence: RepositoryEvidence,
+            _repo_name: &str,
+            _timestamp: &str,
+        ) -> Result<(), crate::app::write_policy::WriteFailure> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(crate::app::write_policy::WriteFailure::classify(
+                PersistenceError::FencedConflict {
+                    expected_seq: Some(8901),
+                    actual_seq: Some(8902),
+                    source: Box::new(std::io::Error::other("wrong last sequence")),
+                },
+            ))
+        }
+    }
+
+    /// `success_criteria` 1 at the real boundary: a fenced repository
+    /// persist raised inside the detached delivery task travels the
+    /// production chain — worker pool -> `delivery_loop` -> run fence ->
+    /// `SweepSaga::step_enqueue_and_await` -> `enqueue_and_await_batch`
+    /// -> `run_collection_inner_with_pipeline` — and lands as
+    /// `CollectionOutcome::FencedConflict`, the value the daemon already
+    /// routes into the single `converge_on_fence` sink.
+    ///
+    /// Drives the `JobOutcome::Failure` branch specifically: the
+    /// synthesised failure-state record is the second repository write,
+    /// and it must not be swallowed either.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fenced_failure_state_persist_reaches_collection_boundary_as_fenced_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10).await;
+        let ctx = make_test_collection_context();
+
+        let mut seeded = sample_repo("repo-1");
+        seeded.repository.updated_at = Some("2026-01-01T00:00:00Z".to_string());
+        seed_baseline(
+            dir.path(),
+            &state,
+            vec![("repo-1", "2026-01-01T00:00:00Z", seeded)],
+        );
+
+        let evaluator = Arc::new(FnEvaluator(std::sync::Mutex::new(
+            |_repo: &Repository, _ts: &str| Err("simulated evaluation failure".to_string()),
+        )));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let recorder = Arc::new(FencingRecorder {
+            calls: Arc::clone(&calls),
+        });
+
+        let (pool, delivery) = start_test_worker_pool_with_recorder(&state, evaluator, 1, recorder);
+
+        let mut saga = make_test_saga(&config, &run);
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo_with_updated_at(
+                "repo-1",
+                Some("2026-04-10T00:00:00Z"),
+            )],
+            complete: true,
+            inventory_fetched_at: None,
+        };
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let outcome = run_collection_inner_with_pipeline(&cancel, async {
+            saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state).await
+        })
+        .await
+        .expect("a fenced run aborts through the collection boundary");
+
+        assert_eq!(
+            outcome,
+            CollectionOutcome::FencedConflict,
+            "a fenced repository persist in the delivery task must abort the run at the \
+             collection boundary (PGN-0016:R2), not be logged and counted as delivered"
+        );
+        assert!(
+            calls.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "the fence must be raised by a real durable-write attempt on the delivery path"
+        );
+
+        state.work_queue.close();
+        pool.abort();
+        delivery.abort();
+        let _pool_result = pool.await;
+        let _delivery_result = delivery.await;
     }
 
     #[tokio::test(flavor = "multi_thread")]

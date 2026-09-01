@@ -192,6 +192,18 @@ pub struct AppState {
     pub(crate) worker_pool_started: tokio::sync::OnceCell<WorkerPoolHandles>,
     pub(crate) worker_pool_cancel: WorkerShutdownToken,
 
+    /// Run-scoped OCC-fence latch, armed by the detached delivery task
+    /// when a durable write is rejected by the single-writer fence and
+    /// drained by the collect cycle at the batch barrier.
+    ///
+    /// Exists because the delivery task is detached: without it a typed
+    /// `FencedConflict` raised there reaches no run boundary, so the run
+    /// cannot abort (PGN-0016:R2) and the superseded writer keeps
+    /// replaying against a head it can never match. Armed at most once
+    /// per run — first fence wins, since the run aborts wholesale and
+    /// later fences describe the same lost race.
+    pub(crate) run_fence: Mutex<Option<crate::app::daemon::FenceSignal>>,
+
     /// Durable native pardosa event store.
     pub event_store: Arc<EventStoreImpl>,
 
@@ -380,6 +392,9 @@ impl AppState {
         &self,
         tracker: Option<Arc<crate::app::work_queue::BatchTracker>>,
     ) {
+        if tracker.is_some() {
+            self.clear_run_fence();
+        }
         self.evidence.batch_tracker.store(Arc::new(tracker));
     }
 
@@ -388,6 +403,61 @@ impl AppState {
         if let Some(tracker) = tracker_guard.as_ref() {
             tracker.complete_one();
         }
+    }
+
+    /// Abort the active run on an OCC fence: latch the typed conflict and
+    /// release the batch barrier by draining the tracker outright.
+    ///
+    /// The remaining count is drained rather than decremented by one
+    /// because the batch is abandoned as a unit — no further record of
+    /// this run may be written by a writer the fence has already
+    /// superseded (PGN-0016:R2). Draining also unblocks the collect
+    /// cycle immediately instead of leaving it waiting on outcomes the
+    /// aborted run will never deliver.
+    ///
+    /// First fence wins; a later fence in the same run is dropped, since
+    /// the run is already aborting on the first one.
+    pub(crate) fn fence_active_run(&self, signal: crate::app::daemon::FenceSignal) {
+        let mut slot = self
+            .run_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.is_none() {
+            *slot = Some(signal);
+        }
+        drop(slot);
+
+        let tracker_guard = self.evidence.batch_tracker.load();
+        if let Some(tracker) = tracker_guard.as_ref() {
+            while tracker.remaining() > 0 {
+                tracker.complete_one();
+            }
+        }
+    }
+
+    /// Whether the active run has been aborted by the fence. Gates the
+    /// delivery task so no further record of an aborted run is written
+    /// through a superseded writer.
+    pub(crate) fn run_is_fenced(&self) -> bool {
+        self.run_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+    }
+
+    /// Take the latched fence, if any, at the run boundary.
+    pub(crate) fn take_run_fence(&self) -> Option<crate::app::daemon::FenceSignal> {
+        self.run_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+
+    fn clear_run_fence(&self) {
+        *self
+            .run_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     #[must_use]
@@ -1271,6 +1341,7 @@ impl AppState {
             work_queue: Arc::new(WorkQueue::new(crate::config::WORK_QUEUE_CAPACITY)),
             worker_pool_started: tokio::sync::OnceCell::new(),
             worker_pool_cancel: WorkerShutdownToken::new(),
+            run_fence: Mutex::new(None),
             event_store,
             org_event_store,
             team_event_store,
@@ -1358,6 +1429,7 @@ impl AppState {
             work_queue: Arc::new(WorkQueue::new(crate::config::WORK_QUEUE_CAPACITY)),
             worker_pool_started: tokio::sync::OnceCell::new(),
             worker_pool_cancel: WorkerShutdownToken::new(),
+            run_fence: Mutex::new(None),
             event_store,
             org_event_store,
             team_event_store,
