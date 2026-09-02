@@ -8,4 +8,5 @@ pub mod client;
 pub mod dto;
 pub mod pagination;
 pub mod rate_limit;
+pub mod replenish;
 pub(crate) mod route_template;
