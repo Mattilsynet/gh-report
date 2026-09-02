@@ -32,6 +32,11 @@ pub enum Discard {
     /// rather than at runtime.
     Old,
 }
+/// The callable a [`ServerInfoObserver`] wraps: the broker's identity for
+/// one established connection, plus the connection generation it was read
+/// from.
+pub type ServerInfoSink = Arc<dyn Fn(&async_nats::ServerInfo, u64) + Send + Sync>;
+
 /// Sink invoked with the broker's [`async_nats::ServerInfo`] each time a
 /// connection to NATS is established, including reconnects performed
 /// internally by `async-nats`.
@@ -41,19 +46,25 @@ pub enum Discard {
 /// point: `pardosa-nats` supplies the observation, the adapter ring owns
 /// the emission. Held as `Arc<dyn Fn>` — both are core, so this adds no
 /// dependency.
+///
+/// The second argument is the connection generation
+/// (`Client::statistics().connects`), read after the ordering barrier so
+/// it names the connection whose identity was read. It is what makes a
+/// coalesced flap observable: the sequence skips rather than smoothing.
 #[derive(Clone)]
-pub struct ServerInfoObserver(Arc<dyn Fn(&async_nats::ServerInfo) + Send + Sync>);
+pub struct ServerInfoObserver(ServerInfoSink);
 
 impl ServerInfoObserver {
     /// Wrap a caller-supplied sink.
     #[must_use]
-    pub fn new(sink: Arc<dyn Fn(&async_nats::ServerInfo) + Send + Sync>) -> Self {
+    pub fn new(sink: ServerInfoSink) -> Self {
         Self(sink)
     }
 
-    /// Invoke the sink with one observation of the connected broker.
-    pub fn observe(&self, info: &async_nats::ServerInfo) {
-        (self.0)(info);
+    /// Invoke the sink with one observation of the connected broker and
+    /// the connection generation it was read from.
+    pub fn observe(&self, info: &async_nats::ServerInfo, connect_generation: u64) {
+        (self.0)(info, connect_generation);
     }
 }
 
@@ -481,7 +492,7 @@ mod tests {
         let sink = Arc::clone(&seen);
         let cfg = minimal_builder()
             .server_info_observer(ServerInfoObserver::new(Arc::new(
-                move |info: &async_nats::ServerInfo| {
+                move |info: &async_nats::ServerInfo, _generation: u64| {
                     sink.lock()
                         .expect("sink mutex is not poisoned")
                         .push(info.version.clone());
@@ -496,7 +507,7 @@ mod tests {
         };
         cfg.server_info_observer()
             .expect("observer round-trips through the builder")
-            .observe(&info);
+            .observe(&info, 7);
 
         assert_eq!(
             *seen.lock().expect("sink mutex is not poisoned"),
@@ -522,7 +533,7 @@ mod tests {
             .single_writer_fence_enabled(true)
             .stream_description_marker("marker-before")
             .server_info_observer(ServerInfoObserver::new(Arc::new(
-                move |info: &async_nats::ServerInfo| {
+                move |info: &async_nats::ServerInfo, _generation: u64| {
                     sink.lock()
                         .expect("sink mutex is not poisoned")
                         .push(info.version.clone());
@@ -563,7 +574,7 @@ mod tests {
         rebuilt
             .server_info_observer()
             .expect("the observer survives the rebuild")
-            .observe(&info);
+            .observe(&info, 7);
         assert_eq!(
             *observed.lock().expect("sink mutex is not poisoned"),
             vec!["2.14.6".to_owned()],

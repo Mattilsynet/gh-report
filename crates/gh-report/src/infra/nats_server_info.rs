@@ -6,6 +6,13 @@
 //! as `jsonPayload.<field>` in Cloud Logging, and are drawn from an
 //! explicit allowlist rather than by serialising `ServerInfo` wholesale
 //! (SEC-0007:R1/R2/R4, COM-0019:R5).
+//!
+//! Each record also carries `nats_connect_generation`, the broker
+//! connection counter the identity was read from. `async-nats` announces
+//! connection events over a bounded channel that drops on overflow, so a
+//! burst of reconnects can be coalesced into fewer records than
+//! connections. The generation sequence makes that visible as a gap
+//! rather than letting a flap look like a quiet period.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -40,7 +47,9 @@ impl NatsServerInfoLogger {
     /// established connection, including `async-nats`-internal reconnects.
     #[must_use]
     pub fn into_observer(self: Arc<Self>) -> pardosa_nats::ServerInfoObserver {
-        pardosa_nats::ServerInfoObserver::new(Arc::new(move |info| self.observe(info)))
+        pardosa_nats::ServerInfoObserver::new(Arc::new(move |info, connect_generation| {
+            self.observe(info, connect_generation);
+        }))
     }
 
     fn classify(&self, version: &str) -> VersionTransition {
@@ -55,10 +64,11 @@ impl NatsServerInfoLogger {
         }
     }
 
-    fn observe(&self, info: &pardosa_nats::ServerInfo) {
+    fn observe(&self, info: &pardosa_nats::ServerInfo, connect_generation: u64) {
         match self.classify(&info.version) {
             VersionTransition::Changed { previous } => tracing::warn!(
                 previous_server_version = %previous,
+                nats_connect_generation = connect_generation,
                 server_version = %info.version,
                 server_go = %info.go,
                 server_host = %info.host,
@@ -75,6 +85,7 @@ impl NatsServerInfoLogger {
                 "nats broker version changed"
             ),
             VersionTransition::FirstSeen | VersionTransition::Unchanged => tracing::info!(
+                nats_connect_generation = connect_generation,
                 server_version = %info.version,
                 server_go = %info.go,
                 server_host = %info.host,
@@ -233,7 +244,7 @@ mod tests {
     #[test]
     fn first_connect_emits_every_allowlisted_field_at_info() {
         let events = capture(|| {
-            NatsServerInfoLogger::new().observe(&server_info("2.14.5"));
+            NatsServerInfoLogger::new().observe(&server_info("2.14.5"), 1);
         });
 
         assert_eq!(events.len(), 1);
@@ -253,10 +264,31 @@ mod tests {
         assert_eq!(record.field("server_headers"), Some("true"));
         assert_eq!(record.field("server_auth_required"), Some("true"));
         assert_eq!(record.field("server_tls_required"), Some("true"));
+        assert_eq!(record.field("nats_connect_generation"), Some("1"));
         assert_eq!(
             record.fields.len(),
-            13,
-            "the allowlist is exactly 13 fields; a 14th means something leaked in"
+            14,
+            "the allowlist is exactly 13 broker fields plus the connect generation; \
+             a 15th means something leaked in"
+        );
+    }
+
+    #[test]
+    fn a_coalesced_flap_is_visible_as_a_gap_in_the_generation_sequence() {
+        let logger = NatsServerInfoLogger::new();
+        let events = capture(|| {
+            logger.observe(&server_info("2.14.5"), 1);
+            logger.observe(&server_info("2.14.5"), 4);
+        });
+
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| e.field("nats_connect_generation").unwrap_or_default())
+                .collect::<Vec<_>>(),
+            vec!["1", "4"],
+            "generations 2 and 3 were coalesced away by the event channel; the gap is \
+             what makes that observable instead of silently smoothed"
         );
     }
 
@@ -264,8 +296,8 @@ mod tests {
     fn reconnect_with_same_version_stays_at_info() {
         let logger = NatsServerInfoLogger::new();
         let events = capture(|| {
-            logger.observe(&server_info("2.14.5"));
-            logger.observe(&server_info("2.14.5"));
+            logger.observe(&server_info("2.14.5"), 1);
+            logger.observe(&server_info("2.14.5"), 2);
         });
 
         assert_eq!(events.len(), 2);
@@ -284,8 +316,8 @@ mod tests {
     fn reconnect_with_changed_version_warns_with_old_and_new() {
         let logger = NatsServerInfoLogger::new();
         let events = capture(|| {
-            logger.observe(&server_info("2.14.5"));
-            logger.observe(&server_info("2.14.6"));
+            logger.observe(&server_info("2.14.5"), 1);
+            logger.observe(&server_info("2.14.6"), 2);
         });
 
         assert_eq!(events.len(), 2);
@@ -302,8 +334,8 @@ mod tests {
     fn no_forbidden_field_appears_in_any_emitted_record() {
         let logger = NatsServerInfoLogger::new();
         let events = capture(|| {
-            logger.observe(&server_info("2.14.5"));
-            logger.observe(&server_info("2.14.6"));
+            logger.observe(&server_info("2.14.5"), 1);
+            logger.observe(&server_info("2.14.6"), 2);
         });
 
         assert_eq!(events.len(), 2);
@@ -327,7 +359,7 @@ mod tests {
 
         let events = capture(|| {
             if let Some(info) = absent.as_ref() {
-                observer.observe(info);
+                observer.observe(info, 1);
             }
         });
 
@@ -351,8 +383,8 @@ mod tests {
         let observer = Arc::clone(&logger).into_observer();
 
         let events = capture(|| {
-            observer.observe(&server_info("2.14.5"));
-            observer.observe(&server_info("2.14.6"));
+            observer.observe(&server_info("2.14.5"), 1);
+            observer.observe(&server_info("2.14.6"), 2);
         });
 
         assert_eq!(events.len(), 2);

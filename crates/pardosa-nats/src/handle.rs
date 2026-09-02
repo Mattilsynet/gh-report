@@ -3,7 +3,7 @@ use crate::error::JetStreamRuntimeError;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 use tokio::runtime::Handle;
@@ -466,28 +466,23 @@ async fn connect_client(
     };
 
     let client_slot: Arc<OnceLock<async_nats::Client>> = Arc::new(OnceLock::new());
-    let connected_seen = Arc::new(AtomicUsize::new(0));
     {
         let observer = observer.clone();
         let client_slot = Arc::clone(&client_slot);
-        let connected_seen = Arc::clone(&connected_seen);
         options = options.event_callback(move |event| {
             let observer = observer.clone();
             let client_slot = Arc::clone(&client_slot);
-            let connected_seen = Arc::clone(&connected_seen);
             async move {
                 if event != async_nats::Event::Connected {
                     return;
                 }
-                if connected_seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                let Some(client) = client_slot.get() else {
                     return;
-                }
-                tokio::task::yield_now().await;
-                if let Some(client) = client_slot.get()
-                    && let Some(info) = client.try_server_info()
-                {
-                    observer.observe(&info);
-                }
+                };
+                crate::barrier::observe_connection(client, &observer, || {
+                    client.statistics().connects.load(Ordering::Relaxed)
+                })
+                .await;
             }
         });
     }
@@ -499,9 +494,10 @@ async fn connect_client(
             source: Box::new(e),
         })?;
     let _ = client_slot.set(client.clone());
-    if let Some(info) = client.try_server_info() {
-        observer.observe(&info);
-    }
+    crate::barrier::observe_connection(&client, &observer, || {
+        client.statistics().connects.load(Ordering::Relaxed)
+    })
+    .await;
     Ok(client)
 }
 

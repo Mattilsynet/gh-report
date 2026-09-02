@@ -16,6 +16,7 @@
 //! Phase 1.5 bindings enforced at construction: single-subject
 //! (no `*`/`>`), `Discard: New`, `Storage: File`, `R ≥ 1`.
 #![forbid(unsafe_code)]
+mod barrier;
 mod config;
 mod error;
 mod handle;
@@ -23,6 +24,7 @@ mod runtime;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub use async_nats::ServerInfo;
+pub use barrier::ConnectionBarrier;
 pub use config::{
     DEFAULT_OPERATION_TIMEOUT, Discard, JetStreamConfig, JetStreamConfigBuilder,
     OPERATION_TIMEOUT_ENV, ServerInfoObserver, Storage,
