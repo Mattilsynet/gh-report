@@ -10,7 +10,10 @@
 //! Per CHE-0102:R3 a stated future reset is never shortened; a missing,
 //! already-elapsed, or implausibly distant timestamp is not authoritative
 //! and falls back to [`config::API_BUDGET_WAIT_SECS`], which is bounded
-//! and never shorter than GitHub's hourly window.
+//! and never shorter than GitHub's hourly window. [`wait_for_reset`]
+//! returns that decision as a [`ResetWait`], so the log can report which
+//! source the wait actually came from instead of merely whether a
+//! timestamp was present.
 //!
 //! The ceiling is re-derived from `x-ratelimit-limit` — the window's
 //! entitlement — and NOT from the pre-reset `remaining`, which is stale
@@ -77,11 +80,12 @@ impl ReplenishPolicy for GithubReplenishPolicy {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Replenished> + Send + 'a>> {
         Box::pin(async move {
             let reset = self.state.load_reset();
-            let wait = wait_for_reset(reset, unix_now());
+            let decision = wait_for_reset(reset, unix_now());
+            let wait = decision.wait();
             info!(
                 wait_secs = wait.as_secs(),
                 reset = ?reset,
-                authoritative = reset.is_some(),
+                wait_source = decision.source(),
                 "budget epoch waiting for the GitHub rate-limit window to roll"
             );
 
@@ -112,20 +116,78 @@ fn unix_now() -> u64 {
         .as_secs()
 }
 
+/// Why a reported reset timestamp was not usable as a stated wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RejectedReset {
+    /// No `x-ratelimit-reset` has been observed yet.
+    Absent,
+    /// The reported reset is at or before now, so it states no wait.
+    Elapsed,
+    /// The reported reset is further out than [`MAX_PLAUSIBLE_RESET_SECS`];
+    /// malformed or clock-skewed, not a stated wait.
+    ImplausiblyDistant,
+}
+
+/// Where the replenish wait came from.
+///
+/// The two cases are distinct variants rather than a duration plus an
+/// `authoritative` flag, so a rejected timestamp cannot be reported as
+/// authoritative: [`Self::Fallback`] carries no duration at all, and its
+/// wait can therefore only be the bounded
+/// [`config::API_BUDGET_WAIT_SECS`] window, never one derived from the
+/// timestamp that was just rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResetWait {
+    /// GitHub stated a future, plausibly-distant reset. Honoured in full
+    /// plus [`RESET_SLACK_SECS`], never shortened (CHE-0102:R3).
+    Stated(Duration),
+    /// No usable stated reset; wait the bounded fallback window.
+    Fallback(RejectedReset),
+}
+
+impl ResetWait {
+    /// How long to actually sleep.
+    fn wait(self) -> Duration {
+        match self {
+            Self::Stated(wait) => wait,
+            Self::Fallback(_) => Duration::from_secs(config::API_BUDGET_WAIT_SECS),
+        }
+    }
+
+    /// Log-friendly name of the decision this wait came from.
+    fn source(self) -> &'static str {
+        match self {
+            Self::Stated(_) => "stated-reset",
+            Self::Fallback(RejectedReset::Absent) => "fallback-no-reset-reported",
+            Self::Fallback(RejectedReset::Elapsed) => "fallback-reset-elapsed",
+            Self::Fallback(RejectedReset::ImplausiblyDistant) => {
+                "fallback-reset-implausibly-distant"
+            }
+        }
+    }
+}
+
 /// How long to wait before treating the quota window as rolled.
 ///
 /// Only a future, plausibly-distant reported reset is authoritative; it
 /// is honoured in full plus [`RESET_SLACK_SECS`] and never shortened
 /// (CHE-0102:R3). Every other reading — absent, already elapsed, or
 /// beyond [`MAX_PLAUSIBLE_RESET_SECS`] — is not a stated wait, and falls
-/// back to the bounded [`config::API_BUDGET_WAIT_SECS`] window.
-fn wait_for_reset(reset: Option<u64>, now: u64) -> Duration {
-    match reset {
-        Some(reset) if reset > now && reset.saturating_sub(now) <= MAX_PLAUSIBLE_RESET_SECS => {
-            Duration::from_secs(reset - now + RESET_SLACK_SECS)
-        }
-        _ => Duration::from_secs(config::API_BUDGET_WAIT_SECS),
+/// back to the bounded [`config::API_BUDGET_WAIT_SECS`] window. The
+/// returned [`ResetWait`] names which of the two happened, so telemetry
+/// reports the decision rather than the mere presence of a timestamp.
+fn wait_for_reset(reset: Option<u64>, now: u64) -> ResetWait {
+    let Some(reset) = reset else {
+        return ResetWait::Fallback(RejectedReset::Absent);
+    };
+    if reset <= now {
+        return ResetWait::Fallback(RejectedReset::Elapsed);
     }
+    let distance = reset - now;
+    if distance > MAX_PLAUSIBLE_RESET_SECS {
+        return ResetWait::Fallback(RejectedReset::ImplausiblyDistant);
+    }
+    ResetWait::Stated(Duration::from_secs(distance + RESET_SLACK_SECS))
 }
 
 /// The rolled window's call entitlement.
@@ -149,46 +211,79 @@ mod tests {
 
     #[test]
     fn future_reset_is_honoured_in_full_plus_slack() {
+        let decision = wait_for_reset(Some(1_000 + 3600), 1_000);
+        assert_eq!(decision, ResetWait::Stated(Duration::from_secs(3605)));
         assert_eq!(
-            wait_for_reset(Some(1_000 + 3600), 1_000),
+            decision.wait(),
             Duration::from_secs(3600 + RESET_SLACK_SECS),
             "a stated future reset must never be shortened (CHE-0102:R3)"
         );
+        assert_eq!(decision.source(), "stated-reset");
     }
 
     #[test]
     fn missing_reset_falls_back_to_the_bounded_window() {
+        let decision = wait_for_reset(None, 1_000);
+        assert_eq!(decision, ResetWait::Fallback(RejectedReset::Absent));
         assert_eq!(
-            wait_for_reset(None, 1_000),
+            decision.wait(),
             Duration::from_secs(config::API_BUDGET_WAIT_SECS)
         );
+        assert_eq!(decision.source(), "fallback-no-reset-reported");
     }
 
     #[test]
     fn past_reset_falls_back_to_the_bounded_window() {
+        let decision = wait_for_reset(Some(999), 1_000);
         assert_eq!(
-            wait_for_reset(Some(999), 1_000),
-            Duration::from_secs(config::API_BUDGET_WAIT_SECS),
+            decision,
+            ResetWait::Fallback(RejectedReset::Elapsed),
             "an elapsed timestamp states no wait; it must not authorise an instant resize"
         );
         assert_eq!(
-            wait_for_reset(Some(1_000), 1_000),
+            decision.wait(),
             Duration::from_secs(config::API_BUDGET_WAIT_SECS)
+        );
+        assert_eq!(
+            wait_for_reset(Some(1_000), 1_000),
+            ResetWait::Fallback(RejectedReset::Elapsed)
         );
     }
 
     #[test]
     fn implausibly_distant_reset_is_rejected_not_slept_through() {
+        let rejected = wait_for_reset(Some(1_000 + MAX_PLAUSIBLE_RESET_SECS + 1), 1_000);
         assert_eq!(
-            wait_for_reset(Some(1_000 + MAX_PLAUSIBLE_RESET_SECS + 1), 1_000),
-            Duration::from_secs(config::API_BUDGET_WAIT_SECS),
+            rejected,
+            ResetWait::Fallback(RejectedReset::ImplausiblyDistant),
             "a reset beyond a day is malformed, and must never park the daemon unbounded"
         );
         assert_eq!(
+            rejected.wait(),
+            Duration::from_secs(config::API_BUDGET_WAIT_SECS)
+        );
+        assert_eq!(
             wait_for_reset(Some(1_000 + MAX_PLAUSIBLE_RESET_SECS), 1_000),
-            Duration::from_secs(MAX_PLAUSIBLE_RESET_SECS + RESET_SLACK_SECS),
+            ResetWait::Stated(Duration::from_secs(
+                MAX_PLAUSIBLE_RESET_SECS + RESET_SLACK_SECS
+            )),
             "the plausibility boundary itself is still authoritative"
         );
+    }
+
+    #[test]
+    fn a_rejected_reset_is_never_reported_as_authoritative() {
+        for reset in [None, Some(999), Some(1_000 + MAX_PLAUSIBLE_RESET_SECS + 1)] {
+            let decision = wait_for_reset(reset, 1_000);
+            assert!(
+                matches!(decision, ResetWait::Fallback(_)),
+                "presence of a timestamp is not acceptance of it"
+            );
+            assert!(
+                decision.source().starts_with("fallback-"),
+                "telemetry must name the rejection, not the mere presence"
+            );
+        }
     }
 
     #[test]
