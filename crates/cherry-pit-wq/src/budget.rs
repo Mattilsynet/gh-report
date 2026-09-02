@@ -215,7 +215,9 @@ impl BudgetGate {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(policy);
     }
-    /// Change the per-epoch call limit that `acquire` gates against.    ///
+
+    /// Change the per-epoch call limit that `acquire` gates against.
+    ///
     /// Safe to call on a shared `Arc<BudgetGate>` — uses an atomic
     /// store, no lock. Takes effect for any `acquire` loop iteration
     /// that has not yet snapshotted the previous limit; does not reset
