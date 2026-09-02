@@ -65,6 +65,18 @@ pub enum Replenished {
 /// on the caller's ambient runtime. The returned future is boxed at this
 /// boundary to keep the trait dyn-compatible without `#[async_trait]`,
 /// which is forbidden fleet-wide.
+///
+/// # Panics
+///
+/// A panic inside [`Self::replenish`] is a fail-closed path, not a
+/// resume path. The panic unwinds out of [`BudgetGate::acquire`] to the
+/// elected caller, and while unwinding the gate's epoch-transition guard
+/// runs: it clears the election flag and wakes the parked waiters, so a
+/// successor can be elected rather than the epoch deadlocking on a
+/// permanently-held election. Neither the call counter nor the epoch
+/// ceiling is touched on this path, so no epoch can reopen on a ceiling
+/// the policy never established — the successor sees exactly the
+/// pre-panic counter and ceiling.
 pub trait ReplenishPolicy: Send + Sync + 'static {
     /// Wait for the guarded resource to replenish, then report the
     /// ceiling for the next epoch.
@@ -548,6 +560,117 @@ mod tests {
                 epoch_limit: 1
             },
             "neither counter nor ceiling may move when the policy reports Unavailable"
+        );
+    }
+
+    /// Panics on its first consultation, then records the gate state it
+    /// is handed on every later one.
+    struct PanicOncePolicy {
+        consultations: AtomicU64,
+        delay: Duration,
+        seen: StdMutex<Vec<EpochUsage>>,
+        gate: StdMutex<Option<Weak<BudgetGate>>>,
+    }
+
+    impl PanicOncePolicy {
+        fn new(delay: Duration) -> Arc<Self> {
+            Arc::new(Self {
+                consultations: AtomicU64::new(0),
+                delay,
+                seen: StdMutex::new(Vec::new()),
+                gate: StdMutex::new(None),
+            })
+        }
+
+        fn watch(&self, gate: &Arc<BudgetGate>) {
+            *self.gate.lock().unwrap() = Some(Arc::downgrade(gate));
+        }
+
+        fn observations(&self) -> Vec<EpochUsage> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+
+    impl ReplenishPolicy for PanicOncePolicy {
+        fn replenish<'a>(
+            &'a self,
+            _cancel: &'a CancellationToken,
+        ) -> Pin<Box<dyn Future<Output = Replenished> + Send + 'a>> {
+            Box::pin(async move {
+                let nth = self.consultations.fetch_add(1, Ordering::AcqRel);
+                if nth == 0 {
+                    tokio::time::sleep(self.delay).await;
+                    panic!("replenish policy panicked");
+                }
+                if let Some(gate) = self.gate.lock().unwrap().as_ref().and_then(Weak::upgrade) {
+                    self.seen.lock().unwrap().push(gate.epoch_usage());
+                }
+                Replenished::Unavailable
+            })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn replenish_policy_panic_releases_the_election_without_moving_the_epoch() {
+        let policy = PanicOncePolicy::new(Duration::from_secs(1));
+        let gate = Arc::new(
+            BudgetGate::new(1, Duration::from_secs(10))
+                .with_replenish_policy(Arc::clone(&policy) as Arc<dyn ReplenishPolicy>),
+        );
+        policy.watch(&gate);
+        let cancel = CancellationToken::new();
+
+        assert!(gate.acquire(&cancel).await);
+
+        let elected_gate = Arc::clone(&gate);
+        let elected_cancel = cancel.clone();
+        let elected = tokio::spawn(async move { elected_gate.acquire(&elected_cancel).await });
+        tokio::task::yield_now().await;
+
+        let successor_gate = Arc::clone(&gate);
+        let successor_cancel = cancel.clone();
+        let successor =
+            tokio::spawn(async move { successor_gate.acquire(&successor_cancel).await });
+        tokio::task::yield_now().await;
+        assert!(
+            !successor.is_finished(),
+            "the successor must be parked behind the elected worker, not racing it"
+        );
+
+        tokio::time::advance(Duration::from_secs(2)).await;
+
+        let elected_result = elected.await;
+        assert!(
+            elected_result
+                .expect_err("the panic must surface to the elected caller")
+                .is_panic(),
+            "a panicking policy must unwind out of acquire, never be swallowed"
+        );
+
+        let reopened = tokio::time::timeout(Duration::from_secs(5), successor)
+            .await
+            .expect("the unwind must clear the election and wake a waiter, not deadlock the epoch")
+            .expect("the successor must not itself panic");
+        assert!(
+            !reopened,
+            "the successor re-runs the transition; this policy still reports Unavailable"
+        );
+
+        assert_eq!(
+            policy.observations(),
+            vec![EpochUsage {
+                calls_made: 1,
+                epoch_limit: 1
+            }],
+            "the panic must leave both counter and ceiling exactly as the successor inherits them"
+        );
+        assert_eq!(
+            gate.epoch_usage(),
+            EpochUsage {
+                calls_made: 1,
+                epoch_limit: 1
+            },
+            "a panicking policy may never move the epoch counter or ceiling"
         );
     }
 
