@@ -13,14 +13,82 @@
 //! interior mutability (`std::sync::Mutex`) so it can be attached after
 //! the gate is wrapped in `Arc`.
 
+use std::future::Future;
+use std::num::NonZeroU64;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+#[cfg(test)]
+use std::sync::Weak;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
+
+/// Outcome of consulting a [`ReplenishPolicy`] at an epoch transition.
+///
+/// [`Self::Ceiling`] carries a [`NonZeroU64`] so a zero ceiling — which
+/// [`BudgetGate::set_epoch_limit`] rejects by panic — has no constructor
+/// path through this seam.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Replenished {
+    /// The guarded resource has replenished; resume the next epoch with
+    /// this ceiling.
+    Ceiling(NonZeroU64),
+    /// Cancellation fired while the policy was waiting.
+    Cancelled,
+    /// The policy could not establish a replenished ceiling (no
+    /// authoritative signal, or the signal was rejected as implausible).
+    /// The gate fails closed rather than resuming on a stale ceiling.
+    Unavailable,
+}
+
+/// Source-agnostic replenish contract for [`BudgetGate`].
+///
+/// When a policy is attached, it REPLACES the gate's fixed cooldown
+/// sleep at an epoch transition: the elected worker calls
+/// [`Self::replenish`], which waits until the guarded resource has
+/// actually replenished and reports the ceiling for the next epoch. The
+/// gate then applies that ceiling and resets the call counter as one
+/// transition, so an epoch can never resume on a ceiling sized from a
+/// pre-replenish reading.
+///
+/// Vocabulary is deliberately source-neutral (CHE-0084, CHE-0055:R9,
+/// COM-0012:R5): the wait duration and ceiling policy belong to the
+/// adapter that owns the upstream resource's semantics, never to this
+/// crate.
+///
+/// Implementations must not construct a runtime (CHE-0055:R5) — they run
+/// on the caller's ambient runtime. The returned future is boxed at this
+/// boundary to keep the trait dyn-compatible without `#[async_trait]`,
+/// which is forbidden fleet-wide.
+///
+/// # Panics
+///
+/// A panic inside [`Self::replenish`] is a fail-closed path, not a
+/// resume path. The panic unwinds out of [`BudgetGate::acquire`] to the
+/// elected caller, and while unwinding the gate's epoch-transition guard
+/// runs: it clears the election flag and wakes the parked waiters, so a
+/// successor can be elected rather than the epoch deadlocking on a
+/// permanently-held election. Neither the call counter nor the epoch
+/// ceiling is touched on this path, so no epoch can reopen on a ceiling
+/// the policy never established — the successor sees exactly the
+/// pre-panic counter and ceiling.
+pub trait ReplenishPolicy: Send + Sync + 'static {
+    /// Wait for the guarded resource to replenish, then report the
+    /// ceiling for the next epoch.
+    ///
+    /// Must return [`Replenished::Cancelled`] promptly when `cancel`
+    /// fires, and [`Replenished::Unavailable`] rather than guessing when
+    /// no authoritative replenish signal can be established.
+    fn replenish<'a>(
+        &'a self,
+        cancel: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Replenished> + Send + 'a>>;
+}
 
 /// A paired reading of one [`BudgetGate`] epoch's call count and ceiling.
 ///
@@ -68,6 +136,14 @@ pub struct BudgetGate {
     /// only long enough to clone the `Arc<Notify>` — never across await
     /// points.
     pause_notify: StdMutex<Option<Arc<Notify>>>,
+    /// Optional replenish policy consulted at each epoch transition.
+    ///
+    /// When present it replaces the fixed [`Self::wait_duration`] sleep
+    /// and supplies the next epoch's ceiling. Uses `std::sync::Mutex`
+    /// for the same reason as [`Self::pause_notify`]: attachment after
+    /// the gate is wrapped in `Arc`. The lock is held only long enough
+    /// to clone the `Arc` — never across an await point.
+    replenish_policy: StdMutex<Option<Arc<dyn ReplenishPolicy>>>,
 }
 
 impl std::fmt::Debug for BudgetGate {
@@ -98,6 +174,7 @@ impl BudgetGate {
             resetting: AtomicBool::new(false),
             epoch_advanced: Notify::new(),
             pause_notify: StdMutex::new(None),
+            replenish_policy: StdMutex::new(None),
         }
     }
 
@@ -123,6 +200,34 @@ impl BudgetGate {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(notify);
     }
 
+    /// Attach a [`ReplenishPolicy`] consulted at every epoch transition.
+    ///
+    /// Replaces the fixed cooldown sleep: see [`ReplenishPolicy`] for the
+    /// contract. Distinct from [`Self::with_pause_notify`], which is an
+    /// observability hook delivered with `notify_one` to a single
+    /// competing listener and must not be repurposed for control flow.
+    #[must_use]
+    pub fn with_replenish_policy(self, policy: Arc<dyn ReplenishPolicy>) -> Self {
+        *self
+            .replenish_policy
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(policy);
+        self
+    }
+
+    /// Set the replenish policy after construction.
+    ///
+    /// Safe to call on a shared `Arc<BudgetGate>` — uses interior
+    /// mutability. Replaces any previously attached policy; a policy
+    /// already awaiting inside an in-flight epoch transition keeps running
+    /// to completion.
+    pub fn set_replenish_policy(&self, policy: Arc<dyn ReplenishPolicy>) {
+        *self
+            .replenish_policy
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(policy);
+    }
+
     /// Change the per-epoch call limit that `acquire` gates against.
     ///
     /// Safe to call on a shared `Arc<BudgetGate>` — uses an atomic
@@ -143,14 +248,21 @@ impl BudgetGate {
     /// Acquire one API call permit.
     ///
     /// Returns immediately if budget is available. If the epoch limit is
-    /// reached, exactly one caller is elected to sleep `wait_duration`
-    /// and reset the counter; the rest wait on `epoch_advanced` without
-    /// holding any async mutex across the sleep.
+    /// reached, exactly one caller is elected to perform the epoch
+    /// transition; the rest wait on `epoch_advanced` without holding any
+    /// async mutex across the wait.
     ///
-    /// Returns `false` when `cancel` is cancelled while this caller is
-    /// parked in the elected cooldown sleep; in that case the epoch is not
-    /// reset and callers should exit rather than resume work.
-    #[must_use = "false means cancellation fired; caller must exit, not resume work"]
+    /// The elected caller either consults an attached [`ReplenishPolicy`]
+    /// — which waits for the guarded resource to replenish and supplies
+    /// the next epoch's ceiling — or, with no policy attached, sleeps the
+    /// fixed `wait_duration` and retains the current ceiling.
+    ///
+    /// Returns `false` when the epoch did NOT reopen: `cancel` fired
+    /// while this caller was parked in the transition, or an attached
+    /// policy reported [`Replenished::Unavailable`]. In both cases the
+    /// counter is not reset and callers must exit rather than resume work
+    /// on a stale ceiling — the seam fails closed.
+    #[must_use = "false means the epoch did not reopen; caller must exit, not resume work"]
     pub async fn acquire(&self, cancel: &CancellationToken) -> bool {
         loop {
             let limit = self.limit.load(Ordering::Acquire);
@@ -192,13 +304,45 @@ impl BudgetGate {
                 if let Some(n) = notify {
                     n.notify_one();
                 }
-                tokio::select! {
-                    () = tokio::time::sleep(self.wait_duration) => {}
-                    () = cancel.cancelled() => return false,
-                }
-                self.calls.store(0, Ordering::Release);
+                let policy = self
+                    .replenish_policy
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                let reopened = match policy {
+                    Some(policy) => match policy.replenish(cancel).await {
+                        Replenished::Ceiling(ceiling) => {
+                            self.limit.store(ceiling.get(), Ordering::Release);
+                            self.calls.store(0, Ordering::Release);
+                            true
+                        }
+                        Replenished::Cancelled => false,
+                        Replenished::Unavailable => {
+                            warn!(
+                                "replenish policy reported no authoritative ceiling; \
+                                 holding the budget epoch closed rather than resuming stale"
+                            );
+                            false
+                        }
+                    },
+                    None => {
+                        tokio::select! {
+                            () = tokio::time::sleep(self.wait_duration) => {
+                                self.calls.store(0, Ordering::Release);
+                                true
+                            }
+                            () = cancel.cancelled() => false,
+                        }
+                    }
+                };
                 drop(guard);
-                info!("API budget replenished, resuming collection");
+                if !reopened {
+                    return false;
+                }
+                info!(
+                    epoch_limit = self.limit.load(Ordering::Acquire),
+                    "API budget replenished, resuming collection"
+                );
                 continue;
             }
             let notified = self.epoch_advanced.notified();
@@ -280,6 +424,313 @@ impl Drop for ResetGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn nz(v: u64) -> NonZeroU64 {
+        NonZeroU64::new(v).expect("test ceiling is non-zero")
+    }
+
+    /// Records the gate's observable state at the moment the policy is
+    /// consulted, then reports a fixed outcome.
+    struct RecordingPolicy {
+        outcome: Replenished,
+        wait: Duration,
+        seen: StdMutex<Vec<EpochUsage>>,
+        gate: StdMutex<Option<std::sync::Weak<BudgetGate>>>,
+    }
+
+    impl RecordingPolicy {
+        fn new(outcome: Replenished, wait: Duration) -> Arc<Self> {
+            Arc::new(Self {
+                outcome,
+                wait,
+                seen: StdMutex::new(Vec::new()),
+                gate: StdMutex::new(None),
+            })
+        }
+
+        fn watch(&self, gate: &Arc<BudgetGate>) {
+            *self.gate.lock().unwrap() = Some(Arc::downgrade(gate));
+        }
+
+        fn observations(&self) -> Vec<EpochUsage> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+
+    impl ReplenishPolicy for RecordingPolicy {
+        fn replenish<'a>(
+            &'a self,
+            cancel: &'a CancellationToken,
+        ) -> Pin<Box<dyn Future<Output = Replenished> + Send + 'a>> {
+            Box::pin(async move {
+                if let Some(gate) = self.gate.lock().unwrap().as_ref().and_then(Weak::upgrade) {
+                    self.seen.lock().unwrap().push(gate.epoch_usage());
+                }
+                tokio::select! {
+                    () = tokio::time::sleep(self.wait) => {}
+                    () = cancel.cancelled() => return Replenished::Cancelled,
+                }
+                self.outcome
+            })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn replenish_policy_resizes_ceiling_and_resets_counter_as_one_transition() {
+        let policy =
+            RecordingPolicy::new(Replenished::Ceiling(nz(4900)), Duration::from_secs(3600));
+        let gate = Arc::new(
+            BudgetGate::new(1, Duration::from_secs(10))
+                .with_replenish_policy(Arc::clone(&policy) as Arc<dyn ReplenishPolicy>),
+        );
+        policy.watch(&gate);
+        let cancel = CancellationToken::new();
+
+        assert!(gate.acquire(&cancel).await);
+
+        let g = Arc::clone(&gate);
+        let waiter_cancel = cancel.clone();
+        let waiter = tokio::spawn(async move { g.acquire(&waiter_cancel).await });
+
+        tokio::time::advance(Duration::from_secs(3599)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !waiter.is_finished(),
+            "the gate must not undercut the policy's stated wait"
+        );
+        assert_eq!(
+            gate.epoch_usage(),
+            EpochUsage {
+                calls_made: 1,
+                epoch_limit: 1
+            },
+            "no resize may land before the policy resolves"
+        );
+
+        tokio::time::advance(Duration::from_secs(10)).await;
+        assert!(waiter.await.unwrap());
+
+        assert_eq!(
+            gate.epoch_usage(),
+            EpochUsage {
+                calls_made: 1,
+                epoch_limit: 4900
+            }
+        );
+        assert_eq!(
+            policy.observations(),
+            vec![EpochUsage {
+                calls_made: 1,
+                epoch_limit: 1
+            }],
+            "policy is consulted at the transition, before the counter reset"
+        );
+
+        let next = tokio::time::timeout(Duration::from_millis(100), gate.acquire(&cancel))
+            .await
+            .expect("a resized epoch must admit the next permit immediately");
+        assert!(next);
+        assert_eq!(gate.calls_made(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn replenish_unavailable_fails_closed_without_resetting_the_epoch() {
+        let policy = RecordingPolicy::new(Replenished::Unavailable, Duration::from_secs(60));
+        let gate = Arc::new(
+            BudgetGate::new(1, Duration::from_secs(10))
+                .with_replenish_policy(Arc::clone(&policy) as Arc<dyn ReplenishPolicy>),
+        );
+        let cancel = CancellationToken::new();
+
+        assert!(gate.acquire(&cancel).await);
+
+        let g = Arc::clone(&gate);
+        let waiter_cancel = cancel.clone();
+        let waiter = tokio::spawn(async move { g.acquire(&waiter_cancel).await });
+        tokio::time::advance(Duration::from_secs(61)).await;
+
+        assert!(
+            !waiter.await.unwrap(),
+            "an unavailable ceiling must fail closed, never resume on the stale one"
+        );
+        assert_eq!(
+            gate.epoch_usage(),
+            EpochUsage {
+                calls_made: 1,
+                epoch_limit: 1
+            },
+            "neither counter nor ceiling may move when the policy reports Unavailable"
+        );
+    }
+
+    /// Panics on its first consultation, then records the gate state it
+    /// is handed on every later one.
+    struct PanicOncePolicy {
+        consultations: AtomicU64,
+        delay: Duration,
+        seen: StdMutex<Vec<EpochUsage>>,
+        gate: StdMutex<Option<Weak<BudgetGate>>>,
+    }
+
+    impl PanicOncePolicy {
+        fn new(delay: Duration) -> Arc<Self> {
+            Arc::new(Self {
+                consultations: AtomicU64::new(0),
+                delay,
+                seen: StdMutex::new(Vec::new()),
+                gate: StdMutex::new(None),
+            })
+        }
+
+        fn watch(&self, gate: &Arc<BudgetGate>) {
+            *self.gate.lock().unwrap() = Some(Arc::downgrade(gate));
+        }
+
+        fn observations(&self) -> Vec<EpochUsage> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+
+    impl ReplenishPolicy for PanicOncePolicy {
+        fn replenish<'a>(
+            &'a self,
+            _cancel: &'a CancellationToken,
+        ) -> Pin<Box<dyn Future<Output = Replenished> + Send + 'a>> {
+            Box::pin(async move {
+                let nth = self.consultations.fetch_add(1, Ordering::AcqRel);
+                if nth == 0 {
+                    tokio::time::sleep(self.delay).await;
+                    panic!("replenish policy panicked");
+                }
+                if let Some(gate) = self.gate.lock().unwrap().as_ref().and_then(Weak::upgrade) {
+                    self.seen.lock().unwrap().push(gate.epoch_usage());
+                }
+                Replenished::Unavailable
+            })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn replenish_policy_panic_releases_the_election_without_moving_the_epoch() {
+        let policy = PanicOncePolicy::new(Duration::from_secs(1));
+        let gate = Arc::new(
+            BudgetGate::new(1, Duration::from_secs(10))
+                .with_replenish_policy(Arc::clone(&policy) as Arc<dyn ReplenishPolicy>),
+        );
+        policy.watch(&gate);
+        let cancel = CancellationToken::new();
+
+        assert!(gate.acquire(&cancel).await);
+
+        let elected_gate = Arc::clone(&gate);
+        let elected_cancel = cancel.clone();
+        let elected = tokio::spawn(async move { elected_gate.acquire(&elected_cancel).await });
+        tokio::task::yield_now().await;
+
+        let successor_gate = Arc::clone(&gate);
+        let successor_cancel = cancel.clone();
+        let successor =
+            tokio::spawn(async move { successor_gate.acquire(&successor_cancel).await });
+        tokio::task::yield_now().await;
+        assert!(
+            !successor.is_finished(),
+            "the successor must be parked behind the elected worker, not racing it"
+        );
+
+        tokio::time::advance(Duration::from_secs(2)).await;
+
+        let elected_result = elected.await;
+        assert!(
+            elected_result
+                .expect_err("the panic must surface to the elected caller")
+                .is_panic(),
+            "a panicking policy must unwind out of acquire, never be swallowed"
+        );
+
+        let reopened = tokio::time::timeout(Duration::from_secs(5), successor)
+            .await
+            .expect("the unwind must clear the election and wake a waiter, not deadlock the epoch")
+            .expect("the successor must not itself panic");
+        assert!(
+            !reopened,
+            "the successor re-runs the transition; this policy still reports Unavailable"
+        );
+
+        assert_eq!(
+            policy.observations(),
+            vec![EpochUsage {
+                calls_made: 1,
+                epoch_limit: 1
+            }],
+            "the panic must leave both counter and ceiling exactly as the successor inherits them"
+        );
+        assert_eq!(
+            gate.epoch_usage(),
+            EpochUsage {
+                calls_made: 1,
+                epoch_limit: 1
+            },
+            "a panicking policy may never move the epoch counter or ceiling"
+        );
+    }
+
+    #[tokio::test]
+    async fn replenish_policy_honours_cancellation_promptly() {
+        let policy =
+            RecordingPolicy::new(Replenished::Ceiling(nz(4900)), Duration::from_secs(3600));
+        let gate = Arc::new(
+            BudgetGate::new(1, Duration::from_secs(3600))
+                .with_replenish_policy(Arc::clone(&policy) as Arc<dyn ReplenishPolicy>),
+        );
+        let pause = Arc::new(Notify::new());
+        gate.set_pause_notify(Arc::clone(&pause));
+        let cancel = CancellationToken::new();
+
+        assert!(gate.acquire(&cancel).await);
+
+        let g = Arc::clone(&gate);
+        let waiter_cancel = cancel.clone();
+        let waiter = tokio::spawn(async move { g.acquire(&waiter_cancel).await });
+
+        pause.notified().await;
+        cancel.cancel();
+
+        let acquired = tokio::time::timeout(Duration::from_millis(100), waiter)
+            .await
+            .expect("a cancelled replenish must return promptly")
+            .expect("waiter task should not panic");
+        assert!(!acquired);
+        assert_eq!(
+            gate.epoch_usage(),
+            EpochUsage {
+                calls_made: 1,
+                epoch_limit: 1
+            }
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_replenish_policy_retains_legacy_fixed_cooldown() {
+        let gate = Arc::new(BudgetGate::new(2, Duration::from_secs(10)));
+        let cancel = CancellationToken::new();
+
+        assert!(gate.acquire(&cancel).await);
+        assert!(gate.acquire(&cancel).await);
+
+        let g = Arc::clone(&gate);
+        let waiter_cancel = cancel.clone();
+        let waiter = tokio::spawn(async move { g.acquire(&waiter_cancel).await });
+        tokio::time::advance(Duration::from_secs(11)).await;
+
+        assert!(waiter.await.unwrap());
+        assert_eq!(
+            gate.epoch_usage(),
+            EpochUsage {
+                calls_made: 1,
+                epoch_limit: 2
+            }
+        );
+    }
 
     #[tokio::test]
     async fn acquire_within_limit_succeeds() {

@@ -244,17 +244,21 @@ struct OrgAlertContext {
 }
 
 /// Effective per-run API call budget ceiling from the last-observed
-/// GitHub rate-limit `remaining` count, reserving a 100-call buffer.
+/// GitHub rate-limit `remaining` count, reserving a call buffer.
 ///
 /// Returns [`config::API_BUDGET_LIMIT`] when `remaining` is `None`
 /// (no API response observed yet in this process — the first run of
-/// a fresh daemon). Otherwise returns `remaining - 100`, clamped to a
-/// minimum of 1 so the result is always a valid argument to
-/// [`cherry_pit_wq::BudgetGate::set_epoch_limit`], which panics on 0.
+/// a fresh daemon). Otherwise applies the shared buffer-and-floor policy
+/// in [`crate::github::replenish::ceiling_from_entitlement`], which never
+/// yields 0 (rejected by
+/// [`cherry_pit_wq::BudgetGate::set_epoch_limit`]) and never collapses to
+/// the one-call corner FLO-0009:R1 rules out. A trough reading therefore
+/// starts the run throttled, not wedged; the gate's replenish policy
+/// re-sizes the ceiling once GitHub's window rolls.
 fn effective_budget_ceiling(remaining: Option<u32>) -> u64 {
     match remaining {
         None => config::API_BUDGET_LIMIT,
-        Some(r) => u64::from(r.saturating_sub(100)).max(1),
+        Some(r) => crate::github::replenish::ceiling_from_entitlement(u64::from(r)).get(),
     }
 }
 
@@ -2443,10 +2447,15 @@ mod tests {
     }
 
     #[test]
-    fn effective_budget_ceiling_clamps_to_one_at_or_below_buffer() {
-        assert_eq!(effective_budget_ceiling(Some(100)), 1);
-        assert_eq!(effective_budget_ceiling(Some(0)), 1);
-        assert_eq!(effective_budget_ceiling(Some(50)), 1);
+    fn effective_budget_ceiling_floors_at_or_below_buffer() {
+        let floor = crate::github::replenish::ceiling_from_entitlement(0).get();
+        assert_eq!(effective_budget_ceiling(Some(100)), floor);
+        assert_eq!(effective_budget_ceiling(Some(0)), floor);
+        assert_eq!(
+            effective_budget_ceiling(Some(40)),
+            floor,
+            "the incident's trough reading must throttle, never wedge at one call"
+        );
     }
 
     #[test]

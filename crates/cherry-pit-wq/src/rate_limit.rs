@@ -88,6 +88,28 @@ impl RateLimitObservation {
     }
 }
 
+/// Whether the observed quota reading still describes the live window.
+///
+/// Separates *measured* quota from *derived* admission so the two can
+/// never be conflated: a rolled window is recorded by
+/// [`RateLimitState::note_window_rolled`], which takes no reading and so
+/// cannot express a remaining count, while [`RateLimitObservation`] has
+/// no field for window liveness and so cannot express a roll. An
+/// adapter that knows the window has restarted therefore has no way to
+/// say it by inventing a `remaining` value.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuotaWindow {
+    /// The last observed `remaining` describes the window in force; it
+    /// bounds admission.
+    Observed,
+    /// The window that reading described has elapsed. The reading is
+    /// retained for telemetry but no longer bounds admission, and no
+    /// replacement count is inferred — the next real observation
+    /// supplies one.
+    Rolled,
+}
+
 /// Tracks rate-limit observations from an upstream resource adapter.
 ///
 /// Thread-safe via atomics; no locking required.
@@ -103,6 +125,10 @@ pub struct RateLimitState {
     /// Whether the near-exhaustion warning has already been emitted.
     /// Resets when `remaining` climbs back above the advisory threshold.
     warned_near_limit: AtomicBool,
+    /// Whether the window described by `remaining` has since elapsed.
+    /// Set only by [`note_window_rolled`](Self::note_window_rolled) and
+    /// cleared by any observation carrying a `remaining` count.
+    window_rolled: AtomicBool,
     /// Remaining count below which [`should_halt`](Self::should_halt) returns `true`.
     halt_threshold: u32,
     /// Remaining count below which a warning is emitted.
@@ -119,6 +145,7 @@ impl Default for RateLimitState {
             remaining: AtomicU32::new(REMAINING_UNKNOWN),
             reset: AtomicU64::new(0),
             warned_near_limit: AtomicBool::new(false),
+            window_rolled: AtomicBool::new(false),
             halt_threshold: 0,
             warn_threshold: 0,
         }
@@ -148,12 +175,18 @@ impl RateLimitState {
     /// are advisory and use `Relaxed`. Each field is only updated when
     /// the observation carries a value, so adapters can omit fields they
     /// did not observe.
+    ///
+    /// An observation carrying `remaining` is a measurement of the live
+    /// window, so it also returns [`quota_window`](Self::quota_window)
+    /// to [`QuotaWindow::Observed`]: a real reading always supersedes a
+    /// previously derived roll.
     pub fn observe(&self, obs: RateLimitObservation) {
         if let Some(limit) = obs.limit {
             self.limit.store(limit, Ordering::Relaxed);
         }
         if let Some(remaining) = obs.remaining {
             self.remaining.store(remaining, Ordering::Release);
+            self.window_rolled.store(false, Ordering::Release);
             if self.warn_threshold > 0 && remaining < self.warn_threshold {
                 if !self.warned_near_limit.swap(true, Ordering::Relaxed) {
                     warn!(
@@ -198,6 +231,35 @@ impl RateLimitState {
         }
     }
 
+    /// Record that the window the last observation described has elapsed.
+    ///
+    /// This is a *derived* statement about window liveness, not a
+    /// measurement: it deliberately takes no quota reading, so an
+    /// adapter that has waited out the window cannot express its
+    /// inference as a fabricated `remaining` count. The observed
+    /// `remaining`, `limit`, and `reset` are left exactly as measured —
+    /// [`load_remaining`](Self::load_remaining) keeps reporting the real
+    /// last reading for telemetry — while
+    /// [`should_halt`](Self::should_halt) stops treating that reading as
+    /// a bound on admission until the next real observation arrives.
+    ///
+    /// Callers must only call this once the window is genuinely known to
+    /// have elapsed (having waited out the resource's own stated window);
+    /// it is an admission signal, never a substitute for observing quota.
+    pub fn note_window_rolled(&self) {
+        self.window_rolled.store(true, Ordering::Release);
+    }
+
+    /// Whether the observed quota reading still describes the live window.
+    #[must_use]
+    pub fn quota_window(&self) -> QuotaWindow {
+        if self.window_rolled.load(Ordering::Acquire) {
+            QuotaWindow::Rolled
+        } else {
+            QuotaWindow::Observed
+        }
+    }
+
     /// Configured halt threshold (zero ⇒ never halts).
     #[must_use]
     pub fn halt_threshold(&self) -> u32 {
@@ -227,9 +289,19 @@ impl RateLimitState {
     /// Returns `false` when remaining is unknown (sentinel) — we cannot
     /// halt on missing data because that would block runs that haven't
     /// observed any signal yet.
+    ///
+    /// Also returns `false` while
+    /// [`quota_window`](Self::quota_window) reports
+    /// [`QuotaWindow::Rolled`]: the retained reading describes a window
+    /// that has ended, so it is no longer a bound on admission. The
+    /// reading itself is left intact rather than being replaced by an
+    /// inferred one.
     #[must_use]
     pub fn should_halt(&self) -> bool {
         if self.halt_threshold == 0 {
+            return false;
+        }
+        if self.window_rolled.load(Ordering::Acquire) {
             return false;
         }
         matches!(self.load_remaining(), Some(r) if r < self.halt_threshold)
@@ -311,6 +383,73 @@ mod tests {
         assert!(!state.warned_near_limit.load(Ordering::Relaxed));
         state.observe(RateLimitObservation::new().with_remaining(30));
         assert!(state.warned_near_limit.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn rolled_window_admits_without_overwriting_the_observed_remaining() {
+        let state = RateLimitState::with_thresholds(50, 100);
+        state.observe(
+            RateLimitObservation::new()
+                .with_limit(5000)
+                .with_remaining(40),
+        );
+        assert!(state.should_halt());
+        assert_eq!(state.quota_window(), QuotaWindow::Observed);
+
+        state.note_window_rolled();
+
+        assert_eq!(state.quota_window(), QuotaWindow::Rolled);
+        assert!(
+            !state.should_halt(),
+            "a rolled window must not halt on the ended window's remaining"
+        );
+        assert_eq!(
+            state.load_remaining(),
+            Some(40),
+            "the observed remaining is preserved; inference must never overwrite a measurement"
+        );
+        assert_eq!(state.load_limit(), Some(5000));
+    }
+
+    #[test]
+    fn a_real_observation_supersedes_a_rolled_window() {
+        let state = RateLimitState::with_thresholds(50, 100);
+        state.observe(RateLimitObservation::new().with_remaining(40));
+        state.note_window_rolled();
+        assert!(!state.should_halt());
+
+        state.observe(RateLimitObservation::new().with_remaining(10));
+
+        assert_eq!(
+            state.quota_window(),
+            QuotaWindow::Observed,
+            "a measurement retires the derived admission"
+        );
+        assert!(
+            state.should_halt(),
+            "a fresh measurement re-arms the halt gate"
+        );
+    }
+
+    #[test]
+    fn note_window_rolled_fabricates_no_quota_reading() {
+        let state = RateLimitState::with_thresholds(50, 100);
+        state.note_window_rolled();
+        assert_eq!(state.load_remaining(), None);
+        assert_eq!(state.load_limit(), None);
+        assert_eq!(state.load_reset(), None);
+        assert!(!state.should_halt());
+    }
+
+    #[test]
+    fn rolled_window_leaves_the_advisory_warning_on_observed_data() {
+        let state = RateLimitState::with_thresholds(50, 100);
+        state.observe(RateLimitObservation::new().with_remaining(40));
+        state.note_window_rolled();
+        assert!(
+            state.is_near_limit(),
+            "advisory telemetry keeps reporting what was actually measured"
+        );
     }
 
     #[test]

@@ -73,9 +73,9 @@ mod work_queue;
 mod worker_pool;
 
 pub use backoff::BackoffRegulator;
-pub use budget::{BudgetGate, EpochUsage};
+pub use budget::{BudgetGate, EpochUsage, ReplenishPolicy, Replenished};
 pub use cherry_pit_core::{DomainKey, JobOutcome, JobSource};
-pub use rate_limit::{RateLimitObservation, RateLimitState};
+pub use rate_limit::{QuotaWindow, RateLimitObservation, RateLimitState};
 pub use regulator::{Admission, BudgetRegulator, RateLimitRegulator, Regulator, SettleOutcome};
 pub use token_bucket::{Clock, SystemClock, TokenBucketRegulator};
 pub use work_queue::{
