@@ -3169,6 +3169,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cold_start_from_three_empty_stores_reaches_ready_after_first_run() {
+        use cherry_pit_web::serve::ServerState;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events_dir = dir.path().join("events");
+        let nats = NatsStoreConfig::for_org("TestOrg", crate::config::runtime::DEFAULT_NATS_URL)
+            .expect("nats config");
+        let state = AppState::with_stores(&events_dir, PardosaBackend::Pgno, nats)
+            .await
+            .expect("cold start must open all three stores from empty");
+
+        let repo_count = state
+            .event_store
+            .fold_events(0_usize, |acc, _, _| *acc += 1)
+            .expect("fold repo events");
+        let org_count = state
+            .org_event_store
+            .fold_events(0_usize, |acc, _| *acc += 1)
+            .expect("fold org events");
+        let team_count = state
+            .team_event_store
+            .fold_events(0_usize, |acc, _| *acc += 1)
+            .expect("fold team events");
+        assert_eq!(
+            (repo_count, org_count, team_count),
+            (0, 0, 0),
+            "this test characterises a genuinely empty three-store cold start, \
+             with no pre-seeded repository, org, or team evidence"
+        );
+        assert!(state.lock_projection().is_empty());
+
+        assert!(
+            !state.is_ready(),
+            "an empty cold start is not ready until the first collection run lands evidence"
+        );
+
+        let mut metadata = crate::test_fixtures::make_metadata();
+        metadata.organization = "TestOrg".to_string();
+        metadata.run_id = "cold-start-first-run".to_string();
+
+        state
+            .record_org(crate::domain::evidence::OrgStateSnapshot {
+                archived_repos: 0,
+                assessment_metadata: metadata,
+                alert_summary: empty_org_summary(),
+            })
+            .expect("first run records org state");
+
+        assert!(
+            state.is_ready(),
+            "cold start from three empty stores must reach ready on the first completed \
+             run, without any pre-seeded repository evidence"
+        );
+    }
+
+    #[tokio::test]
     async fn line_order_replay_matches_live_projection_after_detach() {
         let dir = tempfile::tempdir().expect("tempdir");
         let events_dir = dir.path().join("events");
