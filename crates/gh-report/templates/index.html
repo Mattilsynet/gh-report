@@ -57,7 +57,7 @@
                 <p class="card-detail">{{ vm.dependabot_excluded_formatted }}</p>
                 {%- endif %}
             </div>
-            <a href="branch_protection.html" class="card {{ vm.branch_protection_tier.css_class() }}" title="Percentage of observable repos at branch-protection BPR2 (IntegrityOnly) or higher. Unreadable or permission-suspected repos are excluded from this percentage (see the unmeasured breakdown below), not classified as below-bar. Click through for the BPR0..BPR5 regime drill-down.">
+            <a href="{{ vm.branch_protection_drill_down }}" class="card {{ vm.branch_protection_tier.css_class() }}" title="Percentage of observable repos at branch-protection BPR2 (IntegrityOnly) or higher. Unreadable or permission-suspected repos are excluded from this percentage (see the unmeasured breakdown below), not classified as below-bar. Click through for the BPR0..BPR5 regime drill-down.">
                 <p class="card-label">Branch Protection {% call tooltip::tooltip(vm.branch_protection_how_to_fix) %}{% endcall %}</p>
                 <p class="card-value">{{ vm.branch_protection_coverage_formatted }}</p>
                 <p class="card-detail">BPR1 {{ vm.branch_protection_fail }}{% if vm.branch_protection_excluded_total > 0 %} · {{ vm.branch_protection_excluded_formatted }}{% endif %}</p>
