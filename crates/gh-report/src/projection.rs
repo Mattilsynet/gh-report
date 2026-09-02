@@ -532,6 +532,7 @@ mod tests {
     fn team_roster(canonical_owner: &str, team_slug: &str) -> TeamRoster {
         use crate::domain::metrics::{TeamMember, TeamMemberRole, TeamRosterStatus};
         TeamRoster {
+            fetched_at: None,
             canonical_owner: canonical_owner.to_string(),
             team_slug: team_slug.to_string(),
             status: TeamRosterStatus::Complete,
@@ -595,6 +596,7 @@ mod tests {
     ) -> TeamRoster {
         use crate::domain::metrics::{TeamMember, TeamMemberRole};
         TeamRoster {
+            fetched_at: None,
             canonical_owner: canonical_owner.to_string(),
             team_slug: team_slug.to_string(),
             status,

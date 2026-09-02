@@ -108,7 +108,30 @@ pub const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1";
 
 /// Fixed interval between collection runs (seconds). Timer starts after
 /// the previous collection completes.
-pub const COLLECTION_INTERVAL_SECS: u64 = 900;
+///
+/// One hour, aligned to GitHub's hourly REST quota replenishment. A full
+/// refresh wave costs ~4,079 calls against ~5,000 replenished per hour.
+/// At the previous 900s cadence that demanded up to four waves per hour
+/// (~16,316 calls/h), 3.26x more than the quota supplies — so the
+/// collector necessarily exhausted its budget and stalled for
+/// [`API_BUDGET_WAIT_SECS`]; the observed exhaust-then-pause cycle was
+/// the arithmetic consequence of the cadence, not a fault. At 3600s one
+/// wave consumes 81.6% of an hour's quota, leaving ~921 calls of
+/// headroom.
+///
+/// The cost of a longer period (FLO-0012:R1 — both sides, not one): peak
+/// staleness of a report rises from 15 to 60 minutes, and the
+/// `CollectionRunStale` red flag (derived as 2x this interval in
+/// `report::view_model`) now takes 2h rather than 30min to surface a
+/// wedged daemon. The cost of a shorter period is quota exhaustion and
+/// the stall above, which suppresses collection far more than the
+/// cadence nominally schedules. The observation that would shift this
+/// optimum is the per-wave call count: materially below ~2,500 calls
+/// would make a 1800s cadence affordable again.
+///
+/// Frequency is cut, information is not: every repository, control and
+/// field is still collected on every tick.
+pub const COLLECTION_INTERVAL_SECS: u64 = 3_600;
 
 /// Maximum age (seconds) a baseline entry may be reused for, even when
 /// the repository's `updated_at` still matches the baseline's recorded
@@ -121,15 +144,18 @@ pub const COLLECTION_INTERVAL_SECS: u64 = 900;
 /// re-collection regardless of `updated_at`, at the known cost of one
 /// extra evaluation per repository per window.
 ///
-/// 4 hours (16 collection cycles at [`COLLECTION_INTERVAL_SECS`]) is a
-/// risk-based choice, not the previously-used 24h/96-cycle figure: a
-/// full day between forced re-checks is too permissive for a
-/// reporting-integrity control whose entire purpose is bounding how
-/// long a stale branch-protection verdict can be served (adr-fmt-glprg
-/// review round 2). 4h keeps the vast majority of the quota savings baseline
-/// reuse exists for — an unchanged repo still avoids re-collection on
-/// 15 of every 16 sweeps — while capping the worst-case staleness
-/// window to well within a single working day.
+/// The bound is wall-clock, not cycle-count: it caps how long a stale
+/// branch-protection verdict may be served, independent of how often the
+/// collector ticks. 4 hours is a risk-based choice, not the
+/// previously-used 24h figure: a full day between forced re-checks is
+/// too permissive for a reporting-integrity control whose entire purpose
+/// is bounding that staleness window (adr-fmt-glprg review round 2). At
+/// the current [`COLLECTION_INTERVAL_SECS`] it spans 4 collection
+/// cycles, so an unchanged repository still avoids re-collection on 3 of
+/// every 4 sweeps — most of the quota saving baseline reuse exists for —
+/// while the worst-case staleness window stays well within a single
+/// working day. Retuning the collection cadence changes the cycle count
+/// but not this bound, which is why the value is unchanged.
 pub const BASELINE_MAX_AGE_SECS: u64 = 14_400;
 
 /// Fixed interval between team-refresh collector ticks (seconds),
@@ -139,7 +165,43 @@ pub const BASELINE_MAX_AGE_SECS: u64 = 14_400;
 /// unresolved-by-timing raciness: the team-refresh writer persists
 /// `TeamStateCaptured` on its own cadence, independent of whether a repo
 /// collect cycle is in flight.
-pub const TEAM_REFRESH_INTERVAL_SECS: u64 = 1800;
+///
+/// 24 hours. Team membership changes on a human hiring/offboarding
+/// timescale, not a CI timescale, so a daily roster sweep is the
+/// business-appropriate period; the previous 1800s spent a full
+/// `T + 1` fetch set (T = CODEOWNERS-referenced teams) 48 times a day
+/// against a quota [`COLLECTION_INTERVAL_SECS`] already consumes 81.6%
+/// of. FLO-0002:R2 harmonicity holds: 86400/3600 = 24, an integer
+/// number of collection cycles.
+///
+/// A longer PERIOD must not become a LOSS OF INFORMATION. Two things
+/// keep it from being one, and both are load-bearing:
+///
+/// - Every tick still fetches every CODEOWNERS-referenced team's full
+///   roster and the same org-members cross-check. The per-team cost
+///   halved from two paginated fetch sets to `T` when the redundant
+///   `role=maintainer` fetch was deleted, but that removed a REQUEST,
+///   not a field: role now comes from the `role=all` response, which
+///   always carried it. Frequency is cut and cost is cut; coverage is
+///   not.
+/// - [`crate::app::daemon`] runs one refresh at STARTUP before entering
+///   this period. Without it a Cloud Run revision would serve an empty
+///   or rehydrated-only roster for a full 24 hours.
+///
+/// Per GND-0011:R6 a lag bound is not design intent unless it is
+/// observed and reported: the owner-detail page renders each team's
+/// roster age, derived at render time from the persisted
+/// `TeamStateCaptured.fetched_at`.
+pub const TEAM_REFRESH_INTERVAL_SECS: u64 = 86_400;
+
+/// Interval between polls for the lazily-initialised GitHub client while
+/// the team-refresh loop's startup tick waits for it to exist.
+///
+/// The client is created on the first repo collect, so the startup
+/// refresh cannot assume one at spawn time. Polling — rather than
+/// skipping — is what keeps a not-yet-ready client from silently
+/// costing a full [`TEAM_REFRESH_INTERVAL_SECS`] of roster data.
+pub const TEAM_REFRESH_CLIENT_POLL_SECS: u64 = 5;
 
 /// Fallback API budget ceiling used only before the first GitHub API
 /// response of a fresh process (`RateLimitState::load_remaining()` is
@@ -212,7 +274,42 @@ pub const SWEEP_TIMEOUT_SECS: u64 = 7_200;
 
 #[cfg(test)]
 mod tests {
-    use super::{EVIDENCE_SCHEMA_MAJOR, EVIDENCE_SCHEMA_VERSION, USER_AGENT};
+    use super::{
+        BASELINE_MAX_AGE_SECS, COLLECTION_INTERVAL_SECS, EVIDENCE_SCHEMA_MAJOR,
+        EVIDENCE_SCHEMA_VERSION, TEAM_REFRESH_INTERVAL_SECS, USER_AGENT,
+    };
+    use std::time::Duration;
+
+    #[test]
+    fn team_refresh_interval_is_twenty_four_hours() {
+        assert_eq!(TEAM_REFRESH_INTERVAL_SECS, 86_400);
+        assert_eq!(
+            Duration::from_secs(TEAM_REFRESH_INTERVAL_SECS),
+            Duration::from_hours(24)
+        );
+    }
+
+    #[test]
+    fn team_refresh_interval_is_an_integer_multiple_of_the_collection_interval() {
+        assert_eq!(TEAM_REFRESH_INTERVAL_SECS % COLLECTION_INTERVAL_SECS, 0);
+        assert_eq!(TEAM_REFRESH_INTERVAL_SECS / COLLECTION_INTERVAL_SECS, 24);
+    }
+
+    #[test]
+    fn collection_interval_is_one_hour_aligned_to_quota_replenishment() {
+        assert_eq!(COLLECTION_INTERVAL_SECS, 3_600);
+        assert_eq!(
+            Duration::from_secs(COLLECTION_INTERVAL_SECS),
+            Duration::from_hours(1)
+        );
+    }
+
+    #[test]
+    fn baseline_max_age_is_four_hours_and_an_integer_multiple_of_the_collection_interval() {
+        assert_eq!(BASELINE_MAX_AGE_SECS, 14_400);
+        assert_eq!(BASELINE_MAX_AGE_SECS % COLLECTION_INTERVAL_SECS, 0);
+        assert_eq!(BASELINE_MAX_AGE_SECS / COLLECTION_INTERVAL_SECS, 4);
+    }
 
     #[test]
     fn gh_report_version_is_non_empty() {

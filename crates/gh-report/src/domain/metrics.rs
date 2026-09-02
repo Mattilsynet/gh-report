@@ -349,6 +349,16 @@ pub enum TeamMemberRole {
     Maintainer,
     /// Ordinary team member.
     Member,
+    /// GitHub did not tell us: the roster entry carried no `role` field,
+    /// or carried a value this build does not recognise.
+    ///
+    /// COM-0028:R2 — an absent or unparseable probe result is its own
+    /// verdict, never folded into a negative one. Without this variant
+    /// the only representable answers are `Maintainer` and `Member`, so
+    /// "we do not know" would have to masquerade as `Member` and would
+    /// under-report a maintainer. The variant exists so that state is
+    /// unrepresentable rather than merely discouraged.
+    Unknown,
 }
 
 impl std::fmt::Display for TeamMemberRole {
@@ -356,27 +366,34 @@ impl std::fmt::Display for TeamMemberRole {
         match self {
             Self::Maintainer => f.write_str("Maintainer"),
             Self::Member => f.write_str("Member"),
+            Self::Unknown => f.write_str("Unknown"),
         }
     }
 }
 
-/// A single GitHub team member, fetched fresh at render time (B1).
+/// A single GitHub team member (B1).
 ///
-/// Render-time-only: never persisted to the native per-repo event payload
-/// (oracle ghr-893fde5c CLASS B verdict).
+/// Mirrored durably by [`crate::event::TeamMemberEvent`] inside
+/// `TeamStateCaptured` (CHE-0089:R1). The narrower CLASS B verdict that
+/// survives (oracle ghr-893fde5c, amended 2026-07-16 by mission
+/// ghr-deb615c4) is that this type adds no field to the native per-repo
+/// `RepositoryStateCaptured` payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamMember {
     /// GitHub login.
     pub login: String,
     /// The member's role on this team.
     pub role: TeamMemberRole,
-    /// Current org-membership state, cross-checked at render time against
-    /// a freshly-fetched org-members set (item9 Part B). `None` when the
-    /// org-members fetch was unfetched/degraded — never flag on missing
-    /// data; `Some(false)` when this login is confirmed absent from the
-    /// org (departed); `Some(true)` when confirmed present. Render-time
-    /// only, same CLASS B verdict as the rest of this type (oracle
-    /// ghr-893fde5c, re-confirmed ghr-5f157796).
+    /// Current org-membership state, cross-checked against the
+    /// org-members set fetched on the same team-refresh tick as the
+    /// roster (item9 Part B; [`crate::app::team_refresh`]). `None` when
+    /// the org-members fetch was unfetched/degraded — never flag on
+    /// missing data; `Some(false)` when this login is confirmed absent
+    /// from the org (departed); `Some(true)` when confirmed present.
+    /// Persisted with the rest of the roster; adds no
+    /// `RepositoryStateCaptured` field, same narrowed CLASS B verdict as
+    /// the rest of this type (oracle ghr-893fde5c, re-confirmed
+    /// ghr-5f157796, amended ghr-deb615c4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_org: Option<bool>,
 }
@@ -390,7 +407,7 @@ pub struct TeamMember {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TeamRosterStatus {
-    /// Both member and maintainer pages were fetched successfully.
+    /// The team's member page-set was fetched successfully.
     Complete,
     /// The team no longer exists on GitHub (404) — a CODEOWNERS reference
     /// to a team GitHub has deleted.
@@ -415,6 +432,20 @@ pub struct TeamRoster {
     pub status: TeamRosterStatus,
     /// Team members, complete and role-tagged when `status == Complete`.
     pub members: Vec<TeamMember>,
+    /// RFC-3339 instant at which the durable
+    /// [`crate::event::TeamStateCaptured`] behind this roster was
+    /// fetched, carried through the projection fold so a render can
+    /// derive and report the roster's age (GND-0011:R6).
+    ///
+    /// `None` on the live-fetch path
+    /// ([`crate::collector::team_membership::collect_team_rosters`]),
+    /// which legitimately does not know it: the timestamp is stamped by
+    /// the team-refresh writer at persist time, not by the fetch.
+    ///
+    /// This carries the persisted value; it is NOT a derived age. Per
+    /// GND-0011:R5 / CHE-0022:R6 the age itself is computed at render
+    /// time and never persisted or folded.
+    pub fetched_at: Option<String>,
 }
 
 /// Extract the GitHub team slug from a canonical CODEOWNERS owner string.

@@ -491,11 +491,26 @@ pub struct TeamMemberEvent {
     pub in_org: Option<bool>,
 }
 
+/// Durable mirror of [`crate::domain::metrics::TeamMemberRole`].
+///
+/// `Unknown = 2` exists on BOTH sides of the port. CHE-0089:R3 requires
+/// the field mapping to be TOTAL, so a domain variant with no durable
+/// counterpart (or the reverse) would abort the port; adding the variant
+/// here is what makes COM-0028:R2's explicit "we do not know" persistable
+/// instead of being flattened into `Member` at write time.
+///
+/// Adding the variant MOVES `TeamStateCaptured::SCHEMA_HASH`
+/// (PGN-0003:R4 — the operative test is wire bytes), pinned by
+/// `team_state_schema_identity_is_stable` (CHE-0089:R1). PGN-0009's
+/// posture is a clean break: events written under the old hash are
+/// refused and re-scraped, not folded. No `#[non_exhaustive]` here —
+/// CHE-0022:R5 forbids it on domain event enums.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, GenomeSafe)]
 #[repr(u8)]
 pub enum TeamMemberRoleEvent {
     Maintainer = 0,
     Member = 1,
+    Unknown = 2,
 }
 
 /// Fetch-completeness status of the underlying team roster fetch, mirroring
@@ -961,6 +976,86 @@ mod tests {
         }
     }
 
+    /// The projection fold's arm materialises the read-model roster from
+    /// the durable event; before this change it dropped `fetched_at`, so
+    /// the timestamp never reached render and the 24h staleness bound
+    /// could not be observed (GND-0011:R6). Pins that it survives.
+    #[test]
+    fn team_state_captured_carries_fetched_at_into_the_read_model_roster() {
+        let event = team_state_captured();
+        let roster = crate::domain::metrics::TeamRoster::from(event);
+        assert_eq!(
+            roster.fetched_at.as_deref(),
+            Some("2026-07-16T00:00:00Z"),
+            "the persisted fetch instant must survive the fold; dropping it is \
+             what made the roster's age unobservable at render"
+        );
+    }
+
+    /// An empty durable `fetched_at` must map to `None`, never to an
+    /// empty-string instant that a render could mistake for a real one.
+    #[test]
+    fn empty_durable_fetched_at_becomes_unknown_not_an_empty_instant() {
+        let mut event = team_state_captured();
+        event.fetched_at = es("");
+        let roster = crate::domain::metrics::TeamRoster::from(event);
+        assert_eq!(roster.fetched_at, None);
+    }
+
+    /// CHE-0089:R3 totality, both directions. Written as an exhaustive
+    /// match on each side rather than a variant list, so a future variant
+    /// added to either enum fails to compile here until its counterpart
+    /// exists — the one-sided mapping this sub-mission's abort clause
+    /// names is made unrepresentable rather than merely tested for.
+    #[test]
+    fn team_member_role_mapping_is_total_in_both_directions() {
+        use crate::domain::metrics::TeamMemberRole as Domain;
+
+        for durable in [
+            TeamMemberRoleEvent::Maintainer,
+            TeamMemberRoleEvent::Member,
+            TeamMemberRoleEvent::Unknown,
+        ] {
+            let domain = Domain::from(durable);
+            let expected = match durable {
+                TeamMemberRoleEvent::Maintainer => Domain::Maintainer,
+                TeamMemberRoleEvent::Member => Domain::Member,
+                TeamMemberRoleEvent::Unknown => Domain::Unknown,
+            };
+            assert_eq!(domain, expected);
+            assert_eq!(
+                crate::app::state::team_member_role_event(domain),
+                durable,
+                "durable -> domain -> durable must be the identity; a variant \
+                 that collapses onto another loses the distinction the durable \
+                 enum exists to keep"
+            );
+        }
+
+        for domain in [Domain::Maintainer, Domain::Member, Domain::Unknown] {
+            let durable = crate::app::state::team_member_role_event(domain);
+            let expected = match domain {
+                Domain::Maintainer => TeamMemberRoleEvent::Maintainer,
+                Domain::Member => TeamMemberRoleEvent::Member,
+                Domain::Unknown => TeamMemberRoleEvent::Unknown,
+            };
+            assert_eq!(durable, expected);
+        }
+    }
+
+    /// An unknown role must never reach a reader as "Member".
+    #[test]
+    fn unknown_role_renders_as_unknown_not_as_member() {
+        assert_eq!(
+            crate::domain::metrics::TeamMemberRole::Unknown.to_string(),
+            "Unknown"
+        );
+        assert_ne!(
+            crate::domain::metrics::TeamMemberRole::Unknown.to_string(),
+            crate::domain::metrics::TeamMemberRole::Member.to_string()
+        );
+    }
+
     #[test]
     fn native_team_state_round_trips() {
         let event = team_state_captured();
@@ -970,15 +1065,27 @@ mod tests {
         assert_eq!(decoded.event_type(), "TeamStateCaptured");
     }
 
+    /// Pins `TeamStateCaptured`'s durable identity (CHE-0089:R1).
+    ///
+    /// Both hashes moved on 2026-09-01 when `TeamMemberRoleEvent` gained
+    /// `Unknown = 2`; PGN-0003:R4's operative test is wire bytes, and a
+    /// new variant changes them. Prior pins, superseded:
+    /// `SCHEMA_HASH` `183_613_944_288_693_483_085_779_945_989_704_975_171`,
+    /// `ENVELOPE_HASH` `77_602_136_066_483_672_592_325_871_032_789_847_338`.
+    ///
+    /// PGN-0009's posture is a clean break: team rosters persisted under
+    /// the old hash are refused and re-scraped on deploy, not folded. The
+    /// startup refresh tick makes that survivable — without it the
+    /// re-scrape would wait a full 24h refresh interval.
     #[test]
     fn team_state_schema_identity_is_stable() {
         assert_eq!(
             <TeamStateCaptured as GenomeSafe>::SCHEMA_HASH,
-            183_613_944_288_693_483_085_779_945_989_704_975_171_u128
+            219_895_886_879_494_904_516_783_322_142_991_399_079_u128
         );
         assert_eq!(
             pardosa::store::Event::<TeamStateCaptured>::ENVELOPE_HASH,
-            77_602_136_066_483_672_592_325_871_032_789_847_338_u128
+            288_373_920_339_495_655_745_397_872_071_770_585_758_u128
         );
         assert_eq!(
             <TeamStateCaptured as HasEventSchemaSource>::EVENT_SCHEMA_SOURCE,

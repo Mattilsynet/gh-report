@@ -28,8 +28,8 @@ use crate::report::view_model::{
     BprBandGroup, BprRepoRow, BranchProtectionRegimeViewModel, ControlCell, ControlColumn,
     CoverageTier, DashboardHref, DeletedRepoRow, DeletedViewModel, DrillDownPage, GhostTeamRow,
     OrphanedRepoRow, OrphanedTeamGroup, OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow,
-    OwnerRepoRow, OwnersViewModel, ReportViewModel, RosterSection, StatusDot, SummaryCard,
-    TeamMemberRow, TeamRosterViewModel, TopNav, TopSecurityTeam, WildcardOwnerRow,
+    OwnerRepoRow, OwnersViewModel, ReportViewModel, RosterFreshness, RosterSection, StatusDot,
+    SummaryCard, TeamMemberRow, TeamRosterViewModel, TopNav, TopSecurityTeam, WildcardOwnerRow,
     bpr_band_metadata, compute_health_score, coverage_control_column_tooltip,
     coverage_control_how_to_fix, format_exclusion, generate_slug, rate_to_width_class,
     strip_org_prefix,
@@ -944,8 +944,50 @@ fn control_cell(
     }
 }
 
+/// Derive a roster's age at render time from the persisted
+/// `TeamStateCaptured.fetched_at` carried on [`TeamRoster`]
+/// (GND-0011:R6, CHE-0089:R4).
+///
+/// Nothing here is persisted or folded back: the age exists only for the
+/// duration of this render (GND-0011:R5, CHE-0022:R6). An absent or
+/// unparseable instant yields [`RosterFreshness::Unknown`] — never a
+/// fresh-looking value derived from `now`, because a bounded-stale
+/// roster must be flagged rather than served as current (GND-0011:R1).
+fn derive_roster_freshness(roster: &TeamRoster, now: jiff::Timestamp) -> RosterFreshness {
+    let Some(fetched_at) = roster.fetched_at.as_deref() else {
+        return RosterFreshness::Unknown;
+    };
+    let Ok(fetched) = fetched_at.parse::<jiff::Timestamp>() else {
+        return RosterFreshness::Unknown;
+    };
+    let elapsed_secs = now.as_second().saturating_sub(fetched.as_second());
+    let Ok(elapsed_secs) = u64::try_from(elapsed_secs) else {
+        return RosterFreshness::Unknown;
+    };
+    RosterFreshness::Observed {
+        fetched_at: fetched_at.to_string(),
+        age_label: humanise_roster_age(elapsed_secs),
+        beyond_refresh_interval: elapsed_secs > config::TEAM_REFRESH_INTERVAL_SECS,
+    }
+}
+
+/// Render an elapsed-seconds count as coarse human-readable age text.
+fn humanise_roster_age(elapsed_secs: u64) -> String {
+    const MINUTE: u64 = 60;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    let (count, unit) = match elapsed_secs {
+        s if s < MINUTE => return "just now".to_string(),
+        s if s < HOUR => (s / MINUTE, "minute"),
+        s if s < DAY => (s / HOUR, "hour"),
+        s => (s / DAY, "day"),
+    };
+    let plural = if count == 1 { "" } else { "s" };
+    format!("{count} {unit}{plural} ago")
+}
+
 /// Build a [`TeamRosterViewModel`] from a fetched [`TeamRoster`] (B1).
-fn build_team_roster_view_model(roster: &TeamRoster) -> TeamRosterViewModel {
+fn build_team_roster_view_model(roster: &TeamRoster, now: jiff::Timestamp) -> TeamRosterViewModel {
     let mut members: Vec<TeamMemberRow> = roster
         .members
         .iter()
@@ -991,6 +1033,7 @@ fn build_team_roster_view_model(roster: &TeamRoster) -> TeamRosterViewModel {
         degraded_notice,
         members,
         member_count,
+        freshness: derive_roster_freshness(roster, now),
     }
 }
 
@@ -1193,7 +1236,7 @@ fn build_one_owner_detail_view_model(
     let roster = match m.owner_type {
         OwnerType::User => RosterSection::NotApplicable,
         OwnerType::Team | OwnerType::AmbiguousTeamShaped => match roster_entry {
-            Some(r) => RosterSection::Team(build_team_roster_view_model(r)),
+            Some(r) => RosterSection::Team(build_team_roster_view_model(r, jiff::Timestamp::now())),
             None => RosterSection::Unresolved,
         },
     };

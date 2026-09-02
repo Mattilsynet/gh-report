@@ -6,9 +6,11 @@
 //! root of the unresolved-by-timing raciness (ghr-b562fe02 §A): rosters
 //! are fetched and durably recorded on their own timer, independent of
 //! whether a repo collect cycle is in flight. Render (P5, ghr-a3091aef)
-//! will read the persisted, folded projection instead of calling
-//! [`crate::collector::team_membership::collect_team_rosters`]
-//! synchronously inside the collect cycle.
+//! has shipped and reads the persisted, folded projection by default
+//! (`RuntimeConfig::team_roster_read_from_projection`, default `true`);
+//! the synchronous
+//! [`crate::collector::team_membership::collect_team_rosters`] call
+//! inside the collect cycle survives only as that flag's rollback seam.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -205,6 +207,7 @@ mod tests {
 
     fn roster(canonical_owner: &str, team_slug: &str) -> TeamRoster {
         TeamRoster {
+            fetched_at: None,
             canonical_owner: canonical_owner.to_string(),
             team_slug: team_slug.to_string(),
             status: TeamRosterStatus::Complete,
@@ -393,10 +396,43 @@ mod tests {
             .expect("second identical tick succeeds");
         let after_second = state.projection_team_ghost_rosters_snapshot();
 
+        let content = |snapshot: Vec<(String, TeamRoster)>| -> Vec<(String, TeamRoster)> {
+            snapshot
+                .into_iter()
+                .map(|(key, mut roster)| {
+                    roster.fetched_at = None;
+                    (key, roster)
+                })
+                .collect()
+        };
         assert_eq!(
-            after_first, after_second,
+            content(after_first.clone()),
+            content(after_second.clone()),
             "a second identical tick over an already-detached team must be a \
-             no-op convergence, not a fresh write that churns the ghost roster"
+             no-op convergence in roster CONTENT, not a fresh write that churns \
+             the ghost roster"
+        );
+
+        let instants = |snapshot: &[(String, TeamRoster)]| -> Vec<Option<String>> {
+            snapshot
+                .iter()
+                .map(|(_, roster)| roster.fetched_at.clone())
+                .collect()
+        };
+        assert_eq!(
+            instants(&after_first),
+            vec![Some("2026-07-23T01:00:00Z".to_string())],
+            "the ghost roster must carry the observation instant of the tick \
+             that produced it"
+        );
+        assert_eq!(
+            instants(&after_second),
+            vec![Some("2026-07-23T02:00:00Z".to_string())],
+            "fetched_at is the ONE field a repeat tick may legitimately \
+             advance: it records when the team was last OBSERVED to still be \
+             deleted, which is exactly the freshness signal the roster-age \
+             render reports (GND-0011:R6). Convergence is a claim about roster \
+             content, not about the age of the observation behind it"
         );
     }
 

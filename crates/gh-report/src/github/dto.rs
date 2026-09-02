@@ -63,13 +63,36 @@ pub struct LicenseInfo {
 
 /// A member of a GitHub team, from the "List team members" REST endpoint.
 ///
-/// The endpoint returns a full `simple-user` object; only `login` is needed
-/// here, so every other field is ignored by serde (see
-/// `extra_unknown_fields_ignored` for the general precedent this relies on).
+/// The endpoint returns a full `simple-user` object plus the membership
+/// fields below. `?role=` on that endpoint is a FILTER over which members
+/// come back, not a switch controlling whether `role` appears on each
+/// one — every response carries it, so reading it here costs no extra
+/// request. Every field beyond these three is ignored by serde (see
+/// `extra_unknown_fields_ignored` for the general precedent this relies
+/// on).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GhTeamMember {
     /// GitHub login of the team member.
     pub login: String,
+    /// Raw role string as GitHub sent it, typically `"maintainer"` or
+    /// `"member"`.
+    ///
+    /// `Option` because absence must stay distinguishable from any
+    /// present value: `None` and an unrecognised string both classify as
+    /// [`crate::domain::metrics::TeamMemberRole::Unknown`], never as
+    /// `Member` (COM-0028:R2). Kept as the wire string rather than
+    /// deserialised straight into the domain enum so an unrecognised
+    /// value degrades one member's role instead of failing the whole
+    /// entry's parse.
+    #[serde(default)]
+    pub role: Option<String>,
+    /// Whether this membership is inherited from a parent team.
+    ///
+    /// Already on the wire and free to capture. Deliberately NOT plumbed
+    /// into the persisted event or any render yet — recorded as a
+    /// deferral, not a silent drop.
+    #[serde(default)]
+    pub inherited: Option<bool>,
 }
 
 /// A member of a GitHub organization, from the "List organization

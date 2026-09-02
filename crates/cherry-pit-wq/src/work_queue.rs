@@ -290,6 +290,39 @@ impl BatchTracker {
         }
     }
 
+    /// Retire up to `count` outstanding slots in a single atomic step,
+    /// returning how many were actually retired. Notifies waiters when
+    /// this empties the batch.
+    ///
+    /// Retiring more slots than remain is saturating rather than an
+    /// error: a job already in flight when a concurrent [`drain`] empties
+    /// the batch still reports its completion, and that report must not
+    /// wrap the counter.
+    ///
+    /// [`drain`]: BatchTracker::drain
+    pub fn retire(&self, count: usize) -> usize {
+        if count == 0 {
+            return 0;
+        }
+        let prev = self
+            .remaining
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                Some(remaining.saturating_sub(count))
+            })
+            .unwrap_or_else(|unchanged| unchanged);
+        let retired = prev.min(count);
+        if retired > 0 && prev == retired {
+            self.done.notify_waiters();
+        }
+        retired
+    }
+
+    /// Retire every outstanding slot in a single atomic step, releasing
+    /// the barrier wholesale. Returns how many slots were retired.
+    pub fn drain(&self) -> usize {
+        self.retire(usize::MAX)
+    }
+
     /// Wait until all tracked jobs are complete.
     pub async fn wait(&self) {
         let notified = self.done.notified();
@@ -433,6 +466,44 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), handle)
             .await
             .expect("should complete within timeout")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn retire_saturates_against_a_concurrent_drain() {
+        let tracker = BatchTracker::new(3);
+        assert_eq!(tracker.drain(), 3);
+        assert_eq!(tracker.remaining(), 0);
+        assert_eq!(
+            tracker.retire(2),
+            0,
+            "slots a drain already retired must not be retired twice"
+        );
+        assert_eq!(tracker.remaining(), 0);
+        assert_eq!(tracker.drain(), 0);
+    }
+
+    #[tokio::test]
+    async fn retire_over_the_remaining_count_never_wraps() {
+        let tracker = BatchTracker::new(2);
+        assert_eq!(tracker.retire(5), 2);
+        assert_eq!(tracker.remaining(), 0);
+        assert_eq!(tracker.retire(usize::MAX), 0);
+        assert_eq!(tracker.remaining(), 0);
+    }
+
+    #[tokio::test]
+    async fn retire_releases_the_barrier_when_it_empties_the_batch() {
+        let tracker = BatchTracker::new(4);
+        let t = Arc::clone(&tracker);
+        let handle = tokio::spawn(async move { t.wait().await });
+        tokio::task::yield_now().await;
+
+        assert_eq!(tracker.retire(1), 1);
+        assert_eq!(tracker.drain(), 3);
+        tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+            .await
+            .expect("a drain must release waiters")
             .unwrap();
     }
 

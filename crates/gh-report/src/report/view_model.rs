@@ -378,6 +378,40 @@ impl TeamMemberRow {
     }
 }
 
+/// How old the roster behind a [`TeamRosterViewModel`] is, derived at
+/// render time from the persisted `TeamStateCaptured.fetched_at`
+/// (GND-0011:R6, CHE-0089:R4).
+///
+/// The age is computed here and nowhere else: it is never persisted, never
+/// folded into the projection, and never written back onto an event
+/// payload (GND-0011:R5, CHE-0022:R6).
+///
+/// Two variants, and deliberately no third that means "assume fresh".
+/// [`Self::Unknown`] is a first-class rendered state, so a roster whose
+/// `fetched_at` never reached the render reads as *unknown age* rather
+/// than silently borrowing the current instant — the roster is
+/// bounded-stale data and must be flagged, never served as current
+/// (GND-0011:R1). There is no `Default` and no `now()` fallback, so a
+/// caller cannot construct a fresh-looking value out of missing data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RosterFreshness {
+    /// A persisted fetch instant was carried through the fold and the
+    /// age was derived from it at render time.
+    Observed {
+        /// The persisted RFC-3339 fetch instant, shown verbatim.
+        fetched_at: String,
+        /// Human-readable age at render time (e.g. `"6 hours ago"`).
+        age_label: String,
+        /// Whether the derived age exceeds the refresh interval the
+        /// roster is contracted to — the bound being observed and
+        /// reported, not merely assumed (GND-0011:R6).
+        beyond_refresh_interval: bool,
+    },
+    /// No fetch instant reached the render (a live-fetch roster, or a
+    /// durable event carrying an empty value). Rendered as unknown.
+    Unknown,
+}
+
 /// View model for a team's member roster (B1), embedded in
 /// [`OwnerDetailViewModel`] for team-type owners.
 #[derive(Debug, Clone)]
@@ -396,6 +430,8 @@ pub struct TeamRosterViewModel {
     pub members: Vec<TeamMemberRow>,
     /// `members.len()`, for the section heading.
     pub member_count: u32,
+    /// Render-time-derived roster age (GND-0011:R6).
+    pub freshness: RosterFreshness,
 }
 
 /// The B1 team-roster section state for an owner's detail page

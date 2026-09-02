@@ -388,20 +388,22 @@ impl AppState {
         self.evidence.ws_broadcast.subscribe()
     }
 
+    #[must_use]
+    pub(crate) fn begin_run(&self) -> Option<crate::app::daemon::FenceSignal> {
+        self.take_run_fence()
+    }
+
     pub(crate) fn set_active_batch_tracker(
         &self,
         tracker: Option<Arc<crate::app::work_queue::BatchTracker>>,
     ) {
-        if tracker.is_some() {
-            self.clear_run_fence();
-        }
         self.evidence.batch_tracker.store(Arc::new(tracker));
     }
 
     pub(crate) fn complete_active_batch(&self) {
         let tracker_guard = self.evidence.batch_tracker.load();
         if let Some(tracker) = tracker_guard.as_ref() {
-            tracker.complete_one();
+            tracker.retire(1);
         }
     }
 
@@ -429,9 +431,7 @@ impl AppState {
 
         let tracker_guard = self.evidence.batch_tracker.load();
         if let Some(tracker) = tracker_guard.as_ref() {
-            while tracker.remaining() > 0 {
-                tracker.complete_one();
-            }
+            tracker.drain();
         }
     }
 
@@ -451,13 +451,6 @@ impl AppState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
-    }
-
-    fn clear_run_fence(&self) {
-        *self
-            .run_fence
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     #[must_use]
@@ -1173,10 +1166,19 @@ fn bounded_string<const MAX: usize>(
         .map_err(|error| conversion_persistence(&error))
 }
 
-fn team_member_role_event(role: crate::domain::metrics::TeamMemberRole) -> TeamMemberRoleEvent {
+/// Read-model role -> durable role, the write-side half of the TOTAL
+/// mapping CHE-0089:R3 requires (the read side is
+/// `impl From<TeamMemberRoleEvent> for TeamMemberRole`). `Unknown` is
+/// persisted as `Unknown`; flattening it to `Member` on the way out
+/// would reintroduce exactly the silent default COM-0028:R2 forbids,
+/// one layer deeper where no test on the collector would see it.
+pub(crate) fn team_member_role_event(
+    role: crate::domain::metrics::TeamMemberRole,
+) -> TeamMemberRoleEvent {
     match role {
         crate::domain::metrics::TeamMemberRole::Maintainer => TeamMemberRoleEvent::Maintainer,
         crate::domain::metrics::TeamMemberRole::Member => TeamMemberRoleEvent::Member,
+        crate::domain::metrics::TeamMemberRole::Unknown => TeamMemberRoleEvent::Unknown,
     }
 }
 
@@ -1209,6 +1211,7 @@ fn detach_tombstone_roster(
     roster: &crate::domain::metrics::TeamRoster,
 ) -> crate::domain::metrics::TeamRoster {
     crate::domain::metrics::TeamRoster {
+        fetched_at: None,
         canonical_owner: roster.canonical_owner.clone(),
         team_slug: roster.team_slug.clone(),
         status: roster.status,
@@ -2775,6 +2778,7 @@ mod tests {
         team_slug: &str,
     ) -> crate::domain::metrics::TeamRoster {
         crate::domain::metrics::TeamRoster {
+            fetched_at: None,
             canonical_owner: canonical_owner.to_string(),
             team_slug: team_slug.to_string(),
             status: crate::domain::metrics::TeamRosterStatus::Complete,

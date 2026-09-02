@@ -73,6 +73,7 @@ fn org_snapshot() -> OrgStateSnapshot {
 
 fn team_roster() -> TeamRoster {
     TeamRoster {
+        fetched_at: None,
         canonical_owner: "@p4bootorg/platform".to_string(),
         team_slug: "platform".to_string(),
         status: TeamRosterStatus::Complete,

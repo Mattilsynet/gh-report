@@ -3,11 +3,18 @@
 //! Fetches the complete, role-tagged member roster for each GitHub team
 //! referenced by CODEOWNERS, plus (optionally) the current org-members
 //! list used to cross-check whether a team member or individual-user
-//! CODEOWNERS owner has left the organization. Render-time only (oracle
-//! ghr-893fde5c CLASS B verdict): rosters and the org-members set are
-//! fetched fresh every collection tick via the existing
-//! budget/rate-limit-gated [`GitHubClient::request`] and are never
-//! persisted to the native per-repo event payload.
+//! CODEOWNERS owner has left the organization. Both fetches run on the
+//! decoupled team-refresh tick ([`crate::app::team_refresh`]) via the
+//! existing budget/rate-limit-gated [`GitHubClient::request`], not on
+//! the repo collect cycle; the collect cycle calls them synchronously
+//! only under the `team_roster_read_from_projection = false` rollback
+//! seam. The fetched rosters ARE persisted durably, as
+//! `TeamStateCaptured` events — the 2026-07-16 amendment to oracle
+//! ghr-893fde5c (mission ghr-deb615c4) ratified roster persistence
+//! (CHE-0073:R10, CHE-0089). The surviving CLASS B verdict is narrower
+//! than "render-time only": no team data enters the
+//! `RepositoryStateCaptured` payload, and orphan attribution stays a
+//! render-time derivation.
 
 use std::collections::HashSet;
 
@@ -35,6 +42,7 @@ pub async fn collect_team_rosters(
 
 fn degraded_roster(canonical_owner: &str, team_slug: &str, status: TeamRosterStatus) -> TeamRoster {
     TeamRoster {
+        fetched_at: None,
         canonical_owner: canonical_owner.to_string(),
         team_slug: team_slug.to_string(),
         status,
@@ -56,28 +64,68 @@ fn failure_status(outcome: &ApiOutcome) -> TeamRosterStatus {
     }
 }
 
-/// Parse a successful members-list `ApiOutcome` into a list of logins.
+/// Parse a successful members-list `ApiOutcome` into logins paired with
+/// the role GitHub reported for each.
 ///
 /// Entries that fail to parse as [`GhTeamMember`] are skipped and logged;
-/// they do not fail the whole fetch.
-fn logins_from_outcome(outcome: &ApiOutcome) -> Vec<String> {
+/// they do not fail the whole fetch. A parsed entry whose role is absent
+/// or unrecognised yields [`TeamMemberRole::Unknown`] — see
+/// [`role_from_wire`].
+fn members_from_outcome(outcome: &ApiOutcome) -> Vec<(String, TeamMemberRole)> {
     let items = outcome
         .data()
         .and_then(serde_json::Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let mut logins = Vec::with_capacity(items.len());
+    let mut members = Vec::with_capacity(items.len());
     for item in items {
         match serde_json::from_value::<GhTeamMember>(item) {
-            Ok(member) => logins.push(member.login),
+            Ok(member) => {
+                let role = role_from_wire(member.role.as_deref(), &member.login);
+                members.push((member.login, role));
+            }
             Err(e) => warn!(error = %e, "failed to parse team member entry — skipping"),
         }
     }
-    logins
+    members
 }
 
-/// Fetch one page-set of team members filtered to `role` (`"member"` or
-/// `"maintainer"`), fully paginated via [`GitHubClient::request`].
+/// Classify GitHub's raw role string.
+///
+/// Absent and unrecognised both yield [`TeamMemberRole::Unknown`]. They
+/// are NOT folded into `Member`: COM-0028:R2 — a missing or unparseable
+/// probe result is its own verdict, and calling an unknown role "Member"
+/// would assert something GitHub never said, silently downgrading a
+/// maintainer we simply failed to read.
+fn role_from_wire(role: Option<&str>, login: &str) -> TeamMemberRole {
+    match role {
+        Some("maintainer") => TeamMemberRole::Maintainer,
+        Some("member") => TeamMemberRole::Member,
+        Some(other) => {
+            warn!(
+                login,
+                role = other,
+                "unrecognised team member role — recording as Unknown"
+            );
+            TeamMemberRole::Unknown
+        }
+        None => {
+            warn!(
+                login,
+                "team member entry carried no role — recording as Unknown"
+            );
+            TeamMemberRole::Unknown
+        }
+    }
+}
+
+/// Fetch one page-set of team members filtered to `role` (`"all"`,
+/// `"member"`, or `"maintainer"`), fully paginated via
+/// [`GitHubClient::request`].
+///
+/// `role` filters WHICH members are returned; each returned member
+/// carries its own role either way, so `"all"` is the only value this
+/// collector needs.
 async fn fetch_role(client: &GitHubClient, team_slug: &str, role: &str) -> ApiOutcome {
     let path = format!(
         "/orgs/{}/teams/{}/members?role={}&per_page={}",
@@ -127,43 +175,18 @@ async fn collect_one_team_roster(
         }
         return degraded_roster(canonical_owner, team_slug, status);
     }
-    let all_logins = logins_from_outcome(&all_outcome);
-
-    let maintainer_outcome = fetch_role(client, &safe_slug, "maintainer").await;
-    if !maintainer_outcome.is_ok() {
-        warn!(
-            team_slug,
-            status = ?maintainer_outcome.status_code(),
-            "team maintainer-role fetch failed — roles default to Member"
-        );
-    }
-    let maintainer_logins: std::collections::HashSet<String> = if maintainer_outcome.is_ok() {
-        logins_from_outcome(&maintainer_outcome)
-    } else {
-        Vec::new()
-    }
-    .into_iter()
-    .map(|login| login.to_lowercase())
-    .collect();
-
-    let mut members: Vec<TeamMember> = all_logins
+    let mut members: Vec<TeamMember> = members_from_outcome(&all_outcome)
         .into_iter()
-        .map(|login| {
-            let role = if maintainer_logins.contains(&login.to_lowercase()) {
-                TeamMemberRole::Maintainer
-            } else {
-                TeamMemberRole::Member
-            };
-            TeamMember {
-                login,
-                role,
-                in_org: None,
-            }
+        .map(|(login, role)| TeamMember {
+            login,
+            role,
+            in_org: None,
         })
         .collect();
     members.sort_by_cached_key(|m| m.login.to_lowercase());
 
     TeamRoster {
+        fetched_at: None,
         canonical_owner: canonical_owner.to_string(),
         team_slug: team_slug.to_string(),
         status: TeamRosterStatus::Complete,
@@ -236,7 +259,7 @@ fn org_members_from_outcome(outcome: &ApiOutcome) -> Option<HashSet<String>> {
 /// Parse a successful org-members-list `ApiOutcome` into a list of logins.
 ///
 /// Entries that fail to parse as [`GhOrgMember`] are skipped and logged;
-/// they do not fail the whole fetch. Mirrors [`logins_from_outcome`]
+/// they do not fail the whole fetch. Mirrors [`members_from_outcome`]
 /// exactly, against the org-members DTO instead of the team-members DTO.
 fn org_member_logins_from_outcome(outcome: &ApiOutcome) -> Vec<String> {
     let items = outcome
@@ -336,11 +359,15 @@ mod tests {
     }
 
     /// A4 regression guard: the roster fetch must be complete for a
-    /// multi-page, multi-role team. Reproduces the drop this mission
-    /// resolves — a naive fetch (single page, `role=member` only) silently
-    /// drops the second page's members and every maintainer (proven red
-    /// against the single-page/single-role implementation this test was
-    /// first written against).
+    /// multi-page, multi-role team. Reproduces the drop the original
+    /// mission resolved — a naive fetch (single page, `role=member` only)
+    /// silently drops the second page's members and every maintainer.
+    ///
+    /// The observable outcomes asserted here are unchanged from the
+    /// two-fetch era (alice is a Maintainer, bob a Member, carol survives
+    /// pagination); only the source of the role moved, from a second
+    /// `role=maintainer` page-set to the role field the `role=all`
+    /// response already carried.
     #[tokio::test]
     async fn roster_fetch_is_complete_across_pages_and_roles() {
         let server = MockServer::start().await;
@@ -349,7 +376,10 @@ mod tests {
             .and(query_param("role", "all"))
             .respond_with(
                 ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!([{"login": "alice"}, {"login": "bob"}]))
+                    .set_body_json(serde_json::json!([
+                        {"login": "alice", "role": "maintainer"},
+                        {"login": "bob", "role": "member"},
+                    ]))
                     .insert_header(
                         "link",
                         format!("<{}/members-page-2>; rel=\"next\"", server.uri()),
@@ -360,15 +390,8 @@ mod tests {
 
         Mock::given(path("/members-page-2"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!([{"login": "carol"}])),
-            )
-            .mount(&server)
-            .await;
-
-        Mock::given(path("/orgs/test-org/teams/big-team/members"))
-            .and(query_param("role", "maintainer"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!([{"login": "alice"}])),
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"login": "carol", "role": "member"}])),
             )
             .mount(&server)
             .await;
@@ -404,7 +427,7 @@ mod tests {
         assert_eq!(
             alice_role,
             Some(TeamMemberRole::Maintainer),
-            "alice is a maintainer per the role=maintainer fetch"
+            "alice is a maintainer per the role her role=all entry carried"
         );
         let bob_role = roster
             .members
@@ -441,24 +464,23 @@ mod tests {
         assert!(rosters[0].members.is_empty());
     }
 
-    /// A maintainer-role fetch failure degrades role tagging only — the
-    /// roster (driven by the `all`-role fetch) stays complete and nobody
-    /// is dropped.
+    /// An unreadable role degrades that member's ROLE only: the roster
+    /// stays Complete and nobody is dropped.
+    ///
+    /// Replaces the former `maintainer_fetch_failure_falls_back_to_member`
+    /// test, whose failure mode (a failed second fetch) no longer exists.
+    /// The outcome it protected — a role problem must never cost a member
+    /// their place on the roster — is asserted here, minus the silent
+    /// fallback to Member that COM-0028:R2 forbids.
     #[tokio::test]
-    async fn maintainer_fetch_failure_falls_back_to_member_role_without_dropping_anyone() {
+    async fn an_unreadable_role_degrades_the_role_only_and_drops_nobody() {
         let server = MockServer::start().await;
 
         Mock::given(path("/orgs/test-org/teams/flaky-team/members"))
             .and(query_param("role", "all"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!([{"login": "dan"}])),
-            )
-            .mount(&server)
-            .await;
-
-        Mock::given(path("/orgs/test-org/teams/flaky-team/members"))
-            .and(query_param("role", "maintainer"))
-            .respond_with(ResponseTemplate::new(404))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"login": "dan", "role": "wrangler"},
+            ])))
             .mount(&server)
             .await;
 
@@ -473,7 +495,87 @@ mod tests {
         assert_eq!(rosters[0].status, TeamRosterStatus::Complete);
         assert_eq!(rosters[0].members.len(), 1);
         assert_eq!(rosters[0].members[0].login, "dan");
-        assert_eq!(rosters[0].members[0].role, TeamMemberRole::Member);
+        assert_eq!(rosters[0].members[0].role, TeamMemberRole::Unknown);
+    }
+
+    /// GUARD-BITE (AGENTS.md § Code-quality methods rule 2). Plants a
+    /// real violation: one member whose entry carries NO `role` key at
+    /// all, and one whose role is a value this build does not recognise.
+    /// Both must surface as [`TeamMemberRole::Unknown`].
+    ///
+    /// Proven to bite: run against the `role=maintainer`-set-membership
+    /// implementation — which classified every non-maintainer as
+    /// `Member` — this assertion FAILS on both members, because "absent"
+    /// and "unrecognised" were indistinguishable from "ordinary member".
+    /// That silent default is precisely what COM-0028:R2 forbids.
+    #[tokio::test]
+    async fn absent_or_unrecognised_role_becomes_unknown_never_member() {
+        let server = MockServer::start().await;
+
+        Mock::given(path("/orgs/test-org/teams/odd-team/members"))
+            .and(query_param("role", "all"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"login": "alice", "role": "maintainer"},
+                {"login": "bob", "role": "member"},
+                {"login": "carol"},
+                {"login": "dave", "role": "triage-lead"},
+            ])))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let rosters = collect_team_rosters(
+            &client,
+            &[("@test-org/odd-team".to_string(), "odd-team".to_string())],
+        )
+        .await;
+
+        let roles: Vec<(&str, TeamMemberRole)> = rosters[0]
+            .members
+            .iter()
+            .map(|m| (m.login.as_str(), m.role))
+            .collect();
+        assert_eq!(
+            roles,
+            vec![
+                ("alice", TeamMemberRole::Maintainer),
+                ("bob", TeamMemberRole::Member),
+                ("carol", TeamMemberRole::Unknown),
+                ("dave", TeamMemberRole::Unknown),
+            ],
+            "a missing `role` key and an unrecognised role value must each \
+             surface as Unknown; reporting either as Member would state a \
+             fact GitHub never told us (COM-0028:R2)"
+        );
+    }
+
+    /// Exactly ONE paginated fetch per team. `.expect(1)` plus
+    /// `server.verify()` fails the test if the members path is hit twice,
+    /// and no `role=maintainer` mock exists, so the deleted second fetch
+    /// cannot quietly return.
+    #[tokio::test]
+    async fn one_paginated_members_fetch_per_team_and_no_maintainer_fetch() {
+        let server = MockServer::start().await;
+
+        Mock::given(path("/orgs/test-org/teams/one-fetch/members"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"login": "alice", "role": "maintainer"},
+                {"login": "bob", "role": "member"},
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let rosters = collect_team_rosters(
+            &client,
+            &[("@test-org/one-fetch".to_string(), "one-fetch".to_string())],
+        )
+        .await;
+
+        assert_eq!(rosters[0].status, TeamRosterStatus::Complete);
+        assert_eq!(rosters[0].members.len(), 2);
+        server.verify().await;
     }
 
     /// item9 Part B test (d): the org-members fetch is complete across a
@@ -584,6 +686,7 @@ mod tests {
         let org_members = org_members_from_outcome(&truncated);
 
         let mut rosters = vec![TeamRoster {
+            fetched_at: None,
             canonical_owner: "@test-org/team-a".to_string(),
             team_slug: "team-a".to_string(),
             status: TeamRosterStatus::Complete,
@@ -610,6 +713,7 @@ mod tests {
     #[test]
     fn enrich_team_rosters_flags_departed_member_and_clears_present_member() {
         let mut rosters = vec![TeamRoster {
+            fetched_at: None,
             canonical_owner: "@test-org/team-a".to_string(),
             team_slug: "team-a".to_string(),
             status: TeamRosterStatus::Complete,
@@ -650,6 +754,7 @@ mod tests {
     #[test]
     fn enrich_team_rosters_flags_nobody_when_org_members_degraded() {
         let mut rosters = vec![TeamRoster {
+            fetched_at: None,
             canonical_owner: "@test-org/team-a".to_string(),
             team_slug: "team-a".to_string(),
             status: TeamRosterStatus::Complete,

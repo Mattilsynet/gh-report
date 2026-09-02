@@ -110,11 +110,11 @@ check_fence_converge() {
   }
   start1=$(grep -n '^fn spawn_collection_loop' "$FILE" | cut -d: -f1)
   end1=$(awk -v s="$start1" 'NR>s && /^(async )?fn /{print NR; exit}' "$FILE")
-  start2=$(grep -n '^fn spawn_team_refresh_loop' "$FILE" | cut -d: -f1)
+  start2=$(grep -n '^async fn run_one_team_refresh_tick' "$FILE" | cut -d: -f1)
   end2=$(awk -v s="$start2" 'NR>s && /^(async )?fn /{print NR; exit}' "$FILE")
   fail=0
   check_window "$start1" "$end1" "spawn_collection_loop" || fail=1
-  check_window "$start2" "$end2" "spawn_team_refresh_loop" || fail=1
+  check_window "$start2" "$end2" "run_one_team_refresh_tick" || fail=1
   return $fail
 }
 
