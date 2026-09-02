@@ -93,12 +93,6 @@ struct ConnectDecision {
     require_tls: bool,
 }
 
-impl ConnectDecision {
-    fn uses_bare_anonymous_connect(&self) -> bool {
-        self.credentials_path.is_none() && !self.require_tls
-    }
-}
-
 fn connect_decision(url: &str, credentials_path: Option<&Path>) -> ConnectDecision {
     ConnectDecision {
         credentials_path: credentials_path.map(Path::to_path_buf),
@@ -459,21 +453,13 @@ async fn connect_client(
     url: &str,
     decision: &ConnectDecision,
 ) -> Result<async_nats::Client, JetStreamRuntimeError> {
-    if decision.uses_bare_anonymous_connect() {
-        async_nats::connect(url)
-            .await
-            .map_err(|e| JetStreamRuntimeError::Connect {
-                source: Box::new(e),
-            })
-    } else {
-        let options = build_connect_options(decision)?;
-        options
-            .connect(url)
-            .await
-            .map_err(|e| JetStreamRuntimeError::Connect {
-                source: Box::new(e),
-            })
-    }
+    let options = build_connect_options(decision)?;
+    options
+        .connect(url)
+        .await
+        .map_err(|e| JetStreamRuntimeError::Connect {
+            source: Box::new(e),
+        })
 }
 
 fn build_connect_options(
@@ -747,8 +733,8 @@ mod tests {
             "tls:// URL with credentials must require TLS"
         );
         assert!(
-            !decision.uses_bare_anonymous_connect(),
-            "credentials path must leave the anonymous connect branch"
+            decision.credentials_path.is_some(),
+            "credentials path must be carried into the connect options"
         );
     }
 
@@ -770,8 +756,8 @@ mod tests {
 
         assert_eq!(decision.credentials_path, None);
         assert!(
-            decision.uses_bare_anonymous_connect(),
-            "None credentials on nats:// must preserve the bare anonymous connect branch"
+            !decision.require_tls,
+            "None credentials on nats:// must stay anonymous and plaintext"
         );
     }
 
@@ -811,7 +797,7 @@ mod tests {
             matches!(options, Ok(Ok(_))),
             "valid credentials fixture must build connect options without tokio file IO"
         );
-        assert!(!decision.uses_bare_anonymous_connect());
+        assert!(decision.credentials_path.is_some());
     }
 
     #[test]
