@@ -182,6 +182,32 @@ impl JetStreamConfig {
     pub const fn server_info_observer(&self) -> Option<&ServerInfoObserver> {
         self.server_info_observer.as_ref()
     }
+    /// Reopen this configuration as a builder carrying every field
+    /// forward, so a caller needing to change one setting overrides
+    /// that setting instead of re-enumerating the whole shape.
+    ///
+    /// The body is an exhaustive struct literal with no `..` rest
+    /// pattern: a field added to either struct fails to compile here,
+    /// which is what makes silent field loss unrepresentable at a call
+    /// site rather than merely unlikely.
+    #[must_use]
+    pub fn to_builder(&self) -> JetStreamConfigBuilder {
+        JetStreamConfigBuilder {
+            stream_name: Some(self.stream_name.clone()),
+            subject: Some(self.subject.clone()),
+            durable_consumer: Some(self.durable_consumer.clone()),
+            storage: Some(self.storage),
+            discard: Some(self.discard),
+            replicas: Some(self.replicas.get()),
+            runtime_handle: Some(self.runtime_handle.clone()),
+            nats_url: Some(self.nats_url.clone()),
+            credentials_path: self.credentials_path.clone(),
+            operation_timeout: Some(self.operation_timeout),
+            single_writer_fence_enabled: Some(self.single_writer_fence_enabled),
+            stream_description_marker: self.stream_description_marker.clone(),
+            server_info_observer: self.server_info_observer.clone(),
+        }
+    }
 }
 /// Incremental builder for [`JetStreamConfig`]. Validation runs
 /// exactly once, in [`Self::build`].
@@ -475,6 +501,73 @@ mod tests {
         assert_eq!(
             *seen.lock().expect("sink mutex is not poisoned"),
             vec!["2.14.6".to_owned()]
+        );
+    }
+
+    #[test]
+    fn to_builder_preserves_every_field_across_a_rebuild() {
+        let observed = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&observed);
+        let original = JetStreamConfig::builder()
+            .stream_name("PARDOSA_PRESERVE")
+            .subject("pardosa.preserve")
+            .durable_consumer("pardosa-preserve")
+            .storage(Storage::File)
+            .discard(Discard::New)
+            .replicas(3)
+            .runtime_handle(RuntimeHandle::detached_for_tests())
+            .nats_url("nats://preserve.example:4333")
+            .credentials_path(PathBuf::from("/run/secrets/preserve.creds"))
+            .operation_timeout(Duration::from_secs(7))
+            .single_writer_fence_enabled(true)
+            .stream_description_marker("marker-before")
+            .server_info_observer(ServerInfoObserver::new(Arc::new(
+                move |info: &async_nats::ServerInfo| {
+                    sink.lock()
+                        .expect("sink mutex is not poisoned")
+                        .push(info.version.clone());
+                },
+            )))
+            .build()
+            .expect("fully-populated config builds");
+
+        let rebuilt = original
+            .to_builder()
+            .stream_description_marker("marker-after")
+            .build()
+            .expect("rebuilt config builds");
+
+        assert_eq!(rebuilt.stream_name(), "PARDOSA_PRESERVE");
+        assert_eq!(rebuilt.subject(), "pardosa.preserve");
+        assert_eq!(rebuilt.durable_consumer(), "pardosa-preserve");
+        assert_eq!(rebuilt.storage(), Storage::File);
+        assert_eq!(rebuilt.discard(), Discard::New);
+        assert_eq!(rebuilt.replicas().get(), 3);
+        assert_eq!(rebuilt.nats_url(), "nats://preserve.example:4333");
+        assert_eq!(
+            rebuilt.credentials_path(),
+            Some(Path::new("/run/secrets/preserve.creds"))
+        );
+        assert_eq!(rebuilt.operation_timeout(), Duration::from_secs(7));
+        assert!(rebuilt.single_writer_fence_enabled());
+        assert_eq!(
+            rebuilt.stream_description_marker(),
+            Some("marker-after"),
+            "the one overridden field is the only field that moves"
+        );
+
+        let info = async_nats::ServerInfo {
+            version: "2.14.6".to_owned(),
+            ..async_nats::ServerInfo::default()
+        };
+        rebuilt
+            .server_info_observer()
+            .expect("the observer survives the rebuild")
+            .observe(&info);
+        assert_eq!(
+            *observed.lock().expect("sink mutex is not poisoned"),
+            vec!["2.14.6".to_owned()],
+            "a rebuild that silently dropped the observer is the defect this pins"
         );
     }
 }

@@ -270,25 +270,13 @@ pub(crate) mod jetstream {
                     "JetStream schema marker must not be empty",
                 ));
             }
-            let mut builder = pardosa_nats::JetStreamConfig::builder()
-                .stream_name(self.handle.config().stream_name().to_owned())
-                .subject(self.handle.config().subject().to_owned())
-                .durable_consumer(self.handle.config().durable_consumer().to_owned())
-                .storage(self.handle.config().storage())
-                .discard(self.handle.config().discard())
-                .replicas(self.handle.config().replicas().get())
-                .runtime_handle(self.handle.config().runtime_handle().clone())
-                .nats_url(self.handle.config().nats_url().to_owned())
-                .operation_timeout(self.handle.config().operation_timeout())
-                .single_writer_fence_enabled(self.handle.config().single_writer_fence_enabled())
-                .stream_description_marker(schema_tag.clone());
-            if let Some(path) = self.handle.config().credentials_path() {
-                builder = builder.credentials_path(path.to_path_buf());
-            }
-            if let Some(observer) = self.handle.config().server_info_observer() {
-                builder = builder.server_info_observer(observer.clone());
-            }
-            let cfg = builder.build().map_err(std::io::Error::other)?;
+            let cfg = self
+                .handle
+                .config()
+                .to_builder()
+                .stream_description_marker(schema_tag.clone())
+                .build()
+                .map_err(std::io::Error::other)?;
             self.handle = pardosa_nats::JetStreamBackend::open(cfg);
             self.schema_tag = Some(schema_tag);
             Ok(())
