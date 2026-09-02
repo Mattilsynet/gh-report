@@ -285,6 +285,9 @@ pub(crate) mod jetstream {
             if let Some(path) = self.handle.config().credentials_path() {
                 builder = builder.credentials_path(path.to_path_buf());
             }
+            if let Some(observer) = self.handle.config().server_info_observer() {
+                builder = builder.server_info_observer(observer.clone());
+            }
             let cfg = builder.build().map_err(std::io::Error::other)?;
             self.handle = pardosa_nats::JetStreamBackend::open(cfg);
             self.schema_tag = Some(schema_tag);

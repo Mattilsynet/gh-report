@@ -9,5 +9,6 @@ pub mod baseline;
 pub mod cloud_logging;
 pub mod lock;
 pub mod logging;
+pub mod nats_server_info;
 pub mod signal;
 pub mod tls;

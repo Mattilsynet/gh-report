@@ -2,6 +2,7 @@ use crate::error::JetStreamConfigError;
 use crate::runtime::RuntimeHandle;
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 pub(crate) const DEFAULT_NATS_URL: &str = "nats://localhost:4222";
@@ -31,6 +32,37 @@ pub enum Discard {
     /// rather than at runtime.
     Old,
 }
+/// Sink invoked with the broker's [`async_nats::ServerInfo`] each time a
+/// connection to NATS is established, including reconnects performed
+/// internally by `async-nats`.
+///
+/// The substrate ring carries no logging facility of its own
+/// (`AGENTS.md` substrate ring purity), so the observer is the inversion
+/// point: `pardosa-nats` supplies the observation, the adapter ring owns
+/// the emission. Held as `Arc<dyn Fn>` — both are core, so this adds no
+/// dependency.
+#[derive(Clone)]
+pub struct ServerInfoObserver(Arc<dyn Fn(&async_nats::ServerInfo) + Send + Sync>);
+
+impl ServerInfoObserver {
+    /// Wrap a caller-supplied sink.
+    #[must_use]
+    pub fn new(sink: Arc<dyn Fn(&async_nats::ServerInfo) + Send + Sync>) -> Self {
+        Self(sink)
+    }
+
+    /// Invoke the sink with one observation of the connected broker.
+    pub fn observe(&self, info: &async_nats::ServerInfo) {
+        (self.0)(info);
+    }
+}
+
+impl std::fmt::Debug for ServerInfoObserver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ServerInfoObserver(<sink>)")
+    }
+}
+
 /// Validated, immutable configuration for a [`crate::
 /// JetStreamHandle`] — the offline shape of the substrate.
 ///
@@ -51,6 +83,7 @@ pub struct JetStreamConfig {
     operation_timeout: Duration,
     single_writer_fence_enabled: bool,
     stream_description_marker: Option<String>,
+    server_info_observer: Option<ServerInfoObserver>,
 }
 impl JetStreamConfig {
     /// Begin assembling a [`JetStreamConfig`] via the builder.
@@ -143,6 +176,12 @@ impl JetStreamConfig {
     pub fn stream_description_marker(&self) -> Option<&str> {
         self.stream_description_marker.as_deref()
     }
+    /// The observer invoked with the broker's `ServerInfo` on every
+    /// established connection, when one was configured.
+    #[must_use]
+    pub const fn server_info_observer(&self) -> Option<&ServerInfoObserver> {
+        self.server_info_observer.as_ref()
+    }
 }
 /// Incremental builder for [`JetStreamConfig`]. Validation runs
 /// exactly once, in [`Self::build`].
@@ -160,6 +199,7 @@ pub struct JetStreamConfigBuilder {
     operation_timeout: Option<Duration>,
     single_writer_fence_enabled: Option<bool>,
     stream_description_marker: Option<String>,
+    server_info_observer: Option<ServerInfoObserver>,
 }
 impl JetStreamConfigBuilder {
     /// Set the `JetStream` stream name (rejected if empty at
@@ -249,6 +289,14 @@ impl JetStreamConfigBuilder {
         self.stream_description_marker = Some(marker.into());
         self
     }
+    /// Set the observer invoked with the broker's `ServerInfo` on every
+    /// established connection, including `async-nats`-internal reconnects.
+    /// Omitting it leaves the substrate silent, as before.
+    #[must_use]
+    pub fn server_info_observer(mut self, observer: ServerInfoObserver) -> Self {
+        self.server_info_observer = Some(observer);
+        self
+    }
     /// Run validation and assemble the immutable [`JetStreamConfig`].
     ///
     /// # Errors
@@ -317,6 +365,7 @@ impl JetStreamConfigBuilder {
             operation_timeout,
             single_writer_fence_enabled,
             stream_description_marker,
+            server_info_observer: self.server_info_observer,
         })
     }
 }
@@ -388,5 +437,44 @@ mod tests {
             .expect("empty credential path config builds");
 
         assert_eq!(cfg.credentials_path(), None);
+    }
+
+    #[test]
+    fn builder_defaults_server_info_observer_to_none() {
+        let cfg = minimal_builder().build().expect("minimal config builds");
+
+        assert!(
+            cfg.server_info_observer().is_none(),
+            "the substrate stays silent unless an observer is injected"
+        );
+    }
+
+    #[test]
+    fn builder_round_trips_server_info_observer_and_dispatches_to_the_sink() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&seen);
+        let cfg = minimal_builder()
+            .server_info_observer(ServerInfoObserver::new(Arc::new(
+                move |info: &async_nats::ServerInfo| {
+                    sink.lock()
+                        .expect("sink mutex is not poisoned")
+                        .push(info.version.clone());
+                },
+            )))
+            .build()
+            .expect("observer-bearing config builds");
+
+        let info = async_nats::ServerInfo {
+            version: "2.14.6".to_owned(),
+            ..async_nats::ServerInfo::default()
+        };
+        cfg.server_info_observer()
+            .expect("observer round-trips through the builder")
+            .observe(&info);
+
+        assert_eq!(
+            *seen.lock().expect("sink mutex is not poisoned"),
+            vec!["2.14.6".to_owned()]
+        );
     }
 }

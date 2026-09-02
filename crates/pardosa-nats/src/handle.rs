@@ -1,9 +1,10 @@
-use crate::config::JetStreamConfig;
+use crate::config::{JetStreamConfig, ServerInfoObserver};
 use crate::error::JetStreamRuntimeError;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 use tokio::runtime::Handle;
 use tokio::sync::Semaphore;
@@ -421,7 +422,7 @@ async fn connect_only(
 ) -> Result<async_nats::jetstream::Context, JetStreamRuntimeError> {
     let url = cfg.nats_url().to_owned();
     let decision = connect_decision(&url, cfg.credentials_path());
-    let client = connect_client(&url, &decision).await?;
+    let client = connect_client(&url, &decision, cfg.server_info_observer()).await?;
     Ok(async_nats::jetstream::new(client))
 }
 async fn ensure_state(
@@ -452,14 +453,56 @@ async fn ensure_state(
 async fn connect_client(
     url: &str,
     decision: &ConnectDecision,
+    observer: Option<&ServerInfoObserver>,
 ) -> Result<async_nats::Client, JetStreamRuntimeError> {
-    let options = build_connect_options(decision)?;
-    options
+    let mut options = build_connect_options(decision)?;
+    let Some(observer) = observer.cloned() else {
+        return options
+            .connect(url)
+            .await
+            .map_err(|e| JetStreamRuntimeError::Connect {
+                source: Box::new(e),
+            });
+    };
+
+    let client_slot: Arc<OnceLock<async_nats::Client>> = Arc::new(OnceLock::new());
+    let connected_seen = Arc::new(AtomicUsize::new(0));
+    {
+        let observer = observer.clone();
+        let client_slot = Arc::clone(&client_slot);
+        let connected_seen = Arc::clone(&connected_seen);
+        options = options.event_callback(move |event| {
+            let observer = observer.clone();
+            let client_slot = Arc::clone(&client_slot);
+            let connected_seen = Arc::clone(&connected_seen);
+            async move {
+                if event != async_nats::Event::Connected {
+                    return;
+                }
+                if connected_seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return;
+                }
+                tokio::task::yield_now().await;
+                if let Some(client) = client_slot.get()
+                    && let Some(info) = client.try_server_info()
+                {
+                    observer.observe(&info);
+                }
+            }
+        });
+    }
+
+    let client = options
         .connect(url)
         .await
         .map_err(|e| JetStreamRuntimeError::Connect {
             source: Box::new(e),
-        })
+        })?;
+    let _ = client_slot.set(client.clone());
+    if let Some(info) = client.try_server_info() {
+        observer.observe(&info);
+    }
+    Ok(client)
 }
 
 fn build_connect_options(

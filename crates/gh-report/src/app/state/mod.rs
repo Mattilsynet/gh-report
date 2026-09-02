@@ -855,7 +855,11 @@ fn jetstream_backend(
         .durable_consumer(nats.durable_consumer)
         .nats_url(nats.nats_url)
         .runtime_handle(RuntimeHandle::from_tokio(handle))
-        .single_writer_fence_enabled(true);
+        .single_writer_fence_enabled(true)
+        .server_info_observer(
+            std::sync::Arc::new(crate::infra::nats_server_info::NatsServerInfoLogger::new())
+                .into_observer(),
+        );
     if let Some(path) = nats.credentials_path {
         builder = builder.credentials_path(path);
     }
