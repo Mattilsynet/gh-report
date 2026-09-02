@@ -26,10 +26,10 @@ use crate::domain::time::{is_repo_stale, parse_iso8601};
 use crate::error::ReportError;
 use crate::report::view_model::{
     BprBandGroup, BprRepoRow, BranchProtectionRegimeViewModel, ControlCell, ControlColumn,
-    CoverageTier, DashboardHref, DeletedRepoRow, DeletedViewModel, GhostTeamRow, OrphanedRepoRow,
-    OrphanedTeamGroup, OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow, OwnerRepoRow,
-    OwnersViewModel, ReportViewModel, RosterFreshness, RosterSection, StatusDot, SummaryCard,
-    TeamMemberRow, TeamRosterViewModel, TopNav, TopSecurityTeam, WildcardOwnerRow,
+    CoverageTier, DashboardHref, DeletedRepoRow, DeletedViewModel, DrillDownPage, GhostTeamRow,
+    OrphanedRepoRow, OrphanedTeamGroup, OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow,
+    OwnerRepoRow, OwnersViewModel, ReportViewModel, RosterFreshness, RosterSection, StatusDot,
+    SummaryCard, TeamMemberRow, TeamRosterViewModel, TopNav, TopSecurityTeam, WildcardOwnerRow,
     bpr_band_metadata, compute_health_score, coverage_control_column_tooltip,
     coverage_control_how_to_fix, format_exclusion, generate_slug, rate_to_width_class,
     strip_org_prefix,
@@ -183,9 +183,9 @@ impl ControlKey {
         }
     }
 
-    fn drill_down_href(self) -> Option<&'static str> {
+    fn drill_down_page(self) -> Option<DrillDownPage> {
         match self {
-            Self::BranchProtection => Some("../branch_protection.html"),
+            Self::BranchProtection => Some(DrillDownPage::BranchProtection),
             Self::SecurityPolicy
             | Self::SecretScanning
             | Self::DependabotSecurityUpdates
@@ -494,7 +494,10 @@ fn render_secondary_pages(
         nav,
         warm_start,
     })?;
-    sink("branch_protection.html".to_string(), bpr_html);
+    sink(
+        DrillDownPage::BranchProtection.file_name().to_string(),
+        bpr_html,
+    );
 
     Ok(())
 }
@@ -1179,7 +1182,9 @@ fn build_one_owner_detail_view_model(
         .iter()
         .map(|&key| SummaryCard {
             key: key.as_str(),
-            drill_down_href: key.drill_down_href(),
+            drill_down_href: key
+                .drill_down_page()
+                .map(|page| page.link(DashboardHref::Nested)),
             label: key.display_name().to_string(),
             cell: build_control_cell(
                 &m.per_control_coverage,
