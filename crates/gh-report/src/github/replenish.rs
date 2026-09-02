@@ -16,12 +16,20 @@
 //! entitlement — and NOT from the pre-reset `remaining`, which is stale
 //! by construction at this point and is what wedged the epoch at a
 //! ceiling of 1 (bd ghr-jiq9z).
+//!
+//! Having waited the window out, the policy records the roll with
+//! [`RateLimitState::note_window_rolled`], which carries no quota
+//! reading. It deliberately does NOT write a `remaining` count: no HTTP
+//! response supplied one, and synthesising the entitlement would turn a
+//! measured observer into an inferred one and let admission proceed on
+//! fabricated quota (bd ghr-8i060). The last real reading stays intact
+//! for telemetry; the next real response replaces it.
 
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use cherry_pit_wq::{RateLimitObservation, ReplenishPolicy, Replenished};
+use cherry_pit_wq::{ReplenishPolicy, Replenished};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -85,10 +93,7 @@ impl ReplenishPolicy for GithubReplenishPolicy {
             let entitlement = window_entitlement(self.state.load_limit());
             let ceiling = ceiling_from_entitlement(entitlement);
 
-            self.state.observe(
-                RateLimitObservation::new()
-                    .with_remaining(u32::try_from(entitlement).unwrap_or(u32::MAX)),
-            );
+            self.state.note_window_rolled();
 
             info!(
                 ceiling = ceiling.get(),

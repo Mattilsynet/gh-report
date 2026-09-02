@@ -92,7 +92,7 @@ pub(crate) fn build_cache(capacity: u64) -> moka::future::Cache<String, CachedRe
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use cherry_pit_wq::{Admission, EpochUsage, RateLimitObservation, Regulator};
+    use cherry_pit_wq::{Admission, EpochUsage, QuotaWindow, RateLimitObservation, Regulator};
     use tokio_util::sync::CancellationToken;
 
     use super::{Arc, Duration, build_budget_gate};
@@ -170,5 +170,11 @@ mod tests {
             Admission::Admitted,
             "worker admission must clear too — a resized ceiling alone still starves the pool"
         );
+        assert_eq!(
+            rate_limit.load_remaining(),
+            Some(40),
+            "admission must clear by noting the window rolled, never by fabricating quota"
+        );
+        assert_eq!(rate_limit.quota_window(), QuotaWindow::Rolled);
     }
 }
