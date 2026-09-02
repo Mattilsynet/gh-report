@@ -1076,6 +1076,34 @@ struct BatchParams<'a> {
     state: &'a Arc<AppState>,
 }
 
+/// A batch that has been published to the work queue together with the
+/// completion bookkeeping that will retire it.
+struct PublishedBatch {
+    tracker: Arc<crate::app::work_queue::BatchTracker>,
+    result: crate::app::work_queue::BatchEnqueueResult,
+}
+
+enum RunStart {
+    Fenced(crate::app::daemon::FenceSignal),
+    Published(PublishedBatch),
+}
+
+fn publish_batch<F>(state: &Arc<AppState>, expected: usize, publish: F) -> RunStart
+where
+    F: FnOnce() -> crate::app::work_queue::BatchEnqueueResult,
+{
+    if let Some(signal) = state.begin_run() {
+        return RunStart::Fenced(signal);
+    }
+    let tracker = crate::app::work_queue::BatchTracker::new(expected);
+    state.set_active_batch_tracker(Some(Arc::clone(&tracker)));
+
+    let result = publish();
+
+    tracker.retire(expected.saturating_sub(result.accepted));
+    RunStart::Published(PublishedBatch { tracker, result })
+}
+
 /// Enqueue pending repos, wait for all jobs to complete, then shut down
 /// the partial publisher. Returns `false` if the queue rejected all jobs
 /// (caller should abort the sweep).
@@ -1106,12 +1134,23 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
         })
         .collect();
 
-    let batch_result = crate::app::work_queue::enqueue_batch(
-        &state.work_queue,
-        items,
-        &crate::app::work_queue::JobSource::ScheduledBatch,
-        corr_ctx,
-    );
+    let expected = items.len();
+    let queue = Arc::clone(&state.work_queue);
+    let started = publish_batch(state, expected, move || {
+        crate::app::work_queue::enqueue_batch(
+            &queue,
+            items,
+            &crate::app::work_queue::JobSource::ScheduledBatch,
+            corr_ctx,
+        )
+    });
+    let PublishedBatch {
+        tracker,
+        result: batch_result,
+    } = match started {
+        RunStart::Fenced(signal) => return batch_outcome(Some(signal)),
+        RunStart::Published(batch) => batch,
+    };
 
     if batch_result.accepted == 0 && !pending.is_empty() {
         warn!(
@@ -1119,6 +1158,7 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
             rejected = batch_result.rejected,
             "sweep aborted: work queue rejected all jobs (closed or full)"
         );
+        state.set_active_batch_tracker(None);
         return Ok(false);
     }
 
@@ -1129,9 +1169,6 @@ async fn enqueue_and_await_batch(params: BatchParams<'_>) -> Result<bool, AppErr
             "some sweep jobs rejected — queue capacity < inventory"
         );
     }
-
-    let tracker = crate::app::work_queue::BatchTracker::new(batch_result.accepted);
-    state.set_active_batch_tracker(Some(Arc::clone(&tracker)));
 
     let pp_config = PartialPublishConfig {
         pause_notify: Arc::clone(pause_notify),
@@ -4297,6 +4334,110 @@ mod tests {
                 },
             ))
         }
+    }
+
+    #[tokio::test]
+    async fn a_fence_raised_while_publishing_still_releases_the_batch_barrier() {
+        let state = AppState::new_with_cache_capacity(10).await;
+        let repo = arc_repo_with_updated_at("repo-1", None);
+        let items = vec![(
+            repo.inventory_key.clone(),
+            JobContext {
+                repo: Arc::clone(&repo),
+                run_timestamp: "2026-01-01T00:00:00Z".to_string(),
+            },
+        )];
+        let corr_ctx = CorrelationContext::none();
+        let queue = Arc::clone(&state.work_queue);
+        let fencing_state = Arc::clone(&state);
+
+        let RunStart::Published(batch) = publish_batch(&state, items.len(), move || {
+            let result = crate::app::work_queue::enqueue_batch(
+                &queue,
+                items,
+                &crate::app::work_queue::JobSource::ScheduledBatch,
+                &corr_ctx,
+            );
+            let failure = crate::app::write_policy::WriteFailure::classify(
+                PersistenceError::FencedConflict {
+                    expected_seq: Some(8901),
+                    actual_seq: Some(8902),
+                    source: Box::new(std::io::Error::other("wrong last sequence")),
+                },
+            );
+            let Ok(signal) = crate::app::daemon::FenceSignal::from_failure(failure) else {
+                panic!("a Conflict write failure must yield a fence signal");
+            };
+            fencing_state.fence_active_run(signal);
+            result
+        }) else {
+            panic!("an unfenced run start must publish the batch");
+        };
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), batch.tracker.wait())
+            .await
+            .expect(
+                "the batch barrier must be released by the fence: a job published before its \
+                 tracker exists leaves tracker.wait() waiting on an outcome already consumed",
+            );
+        assert!(
+            state.run_is_fenced(),
+            "a latched fence must survive tracker registration (CHE-0088:R3 no-swallow)"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_fence_latched_before_publication_reaches_the_collection_boundary_as_fenced_conflict()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_with_dir(dir.path());
+        let run = test_run_meta();
+        let state = AppState::new_with_cache_capacity(10).await;
+        let ctx = make_test_collection_context();
+
+        let failure =
+            crate::app::write_policy::WriteFailure::classify(PersistenceError::FencedConflict {
+                expected_seq: Some(8901),
+                actual_seq: Some(8902),
+                source: Box::new(std::io::Error::other("wrong last sequence")),
+            });
+        let Ok(signal) = crate::app::daemon::FenceSignal::from_failure(failure) else {
+            panic!("a Conflict write failure must yield a fence signal");
+        };
+        state.fence_active_run(signal);
+
+        let mut saga = make_test_saga(&config, &run);
+        let inventory = InventoryLoad {
+            active_repos: vec![arc_repo_with_updated_at(
+                "repo-1",
+                Some("2026-04-10T00:00:00Z"),
+            )],
+            complete: true,
+            inventory_fetched_at: None,
+        };
+        saga_run_resume_and_baseline(&mut saga, &inventory, &config, &run, &state);
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            run_collection_inner_with_pipeline(&cancel, async {
+                saga_step_enqueue_and_await(&mut saga, &config, &run, &ctx, &inventory, &state)
+                    .await
+            }),
+        )
+        .await
+        .expect("a fence latched before publication must abort the run, not wait on a batch")
+        .expect("a fenced run aborts through the collection boundary");
+
+        assert_eq!(
+            outcome,
+            CollectionOutcome::FencedConflict,
+            "a fence latched before batch publication (a webhook-sourced conflict, or one left \
+             by a cancelled run) must be consumed and propagated to converge_on_fence, never \
+             erased at the run boundary (CHE-0088:R3/R9)"
+        );
+
+        state.work_queue.close();
     }
 
     /// `success_criteria` 1 at the real boundary: a fenced repository

@@ -2578,10 +2578,33 @@ mod fence_propagation_tests {
         );
     }
 
-    /// The latch is run-scoped: arming a fresh batch clears a fence left
-    /// by the previous, aborted run.
     #[tokio::test]
-    async fn arming_a_new_batch_clears_the_previous_runs_fence() {
+    async fn a_delivered_completion_after_a_fence_drain_cannot_underflow_the_tracker() {
+        let (state, tracker) = state_with_batch(2).await;
+        let DeliveryStep::Fenced(signal) = classify(fenced_failure()) else {
+            panic!("fenced failure must classify as Fenced");
+        };
+        apply_delivery_step(
+            &state,
+            DeliveryStep::Fenced(signal),
+            &JobSource::ScheduledBatch,
+        );
+        assert_eq!(tracker.remaining(), 0);
+
+        apply_delivery_step(&state, DeliveryStep::Delivered, &JobSource::ScheduledBatch);
+        apply_delivery_step(&state, DeliveryStep::Delivered, &JobSource::ScheduledBatch);
+
+        assert_eq!(
+            tracker.remaining(),
+            0,
+            "a job already in flight when the fence drained the batch must retire into an \
+             empty tracker, never wrap it to usize::MAX"
+        );
+        assert!(state.run_is_fenced());
+    }
+
+    #[tokio::test]
+    async fn only_an_explicit_run_start_consumes_the_previous_runs_fence() {
         let (state, _tracker) = state_with_batch(1).await;
         let DeliveryStep::Fenced(signal) = classify(fenced_failure()) else {
             panic!("fenced failure must classify as Fenced");
@@ -2595,7 +2618,16 @@ mod fence_propagation_tests {
 
         let next = crate::app::work_queue::BatchTracker::new(2);
         state.set_active_batch_tracker(Some(next));
+        assert!(
+            state.run_is_fenced(),
+            "installing a tracker must not erase a latched fence (CHE-0088:R3)"
+        );
 
+        assert!(
+            state.begin_run().is_some(),
+            "a run start must hand the previous run's fence to its caller for propagation, \
+             never discard it (CHE-0088:R3/R9)"
+        );
         assert!(
             !state.run_is_fenced(),
             "a new run must not inherit the aborted run's fence"

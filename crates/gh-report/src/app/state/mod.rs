@@ -388,20 +388,22 @@ impl AppState {
         self.evidence.ws_broadcast.subscribe()
     }
 
+    #[must_use]
+    pub(crate) fn begin_run(&self) -> Option<crate::app::daemon::FenceSignal> {
+        self.take_run_fence()
+    }
+
     pub(crate) fn set_active_batch_tracker(
         &self,
         tracker: Option<Arc<crate::app::work_queue::BatchTracker>>,
     ) {
-        if tracker.is_some() {
-            self.clear_run_fence();
-        }
         self.evidence.batch_tracker.store(Arc::new(tracker));
     }
 
     pub(crate) fn complete_active_batch(&self) {
         let tracker_guard = self.evidence.batch_tracker.load();
         if let Some(tracker) = tracker_guard.as_ref() {
-            tracker.complete_one();
+            tracker.retire(1);
         }
     }
 
@@ -429,9 +431,7 @@ impl AppState {
 
         let tracker_guard = self.evidence.batch_tracker.load();
         if let Some(tracker) = tracker_guard.as_ref() {
-            while tracker.remaining() > 0 {
-                tracker.complete_one();
-            }
+            tracker.drain();
         }
     }
 
@@ -451,13 +451,6 @@ impl AppState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
-    }
-
-    fn clear_run_fence(&self) {
-        *self
-            .run_fence
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     #[must_use]
