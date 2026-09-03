@@ -159,17 +159,35 @@ impl std::fmt::Display for DashboardHref {
 pub enum DrillDownPage {
     /// The Branch Protection Regime (BPR0..BPR5) drill-down page.
     BranchProtection,
+    /// The Security Policy coverage-denominator drill-down page.
+    SecurityPolicy,
+    /// The Secret Scanning coverage-denominator drill-down page.
+    SecretScanning,
+    /// The Dependabot Status coverage-denominator drill-down page.
+    DependabotStatus,
+    /// The CODEOWNERS coverage-denominator drill-down page.
+    Codeowners,
 }
 
 impl DrillDownPage {
     /// Every drill-down page, for guards that must enumerate the value set.
-    pub const ALL: &'static [Self] = &[Self::BranchProtection];
+    pub const ALL: &'static [Self] = &[
+        Self::BranchProtection,
+        Self::SecurityPolicy,
+        Self::SecretScanning,
+        Self::DependabotStatus,
+        Self::Codeowners,
+    ];
 
     /// Canonical filename of this page, relative to the dashboard root.
     #[must_use]
     pub fn file_name(self) -> &'static str {
         match self {
             Self::BranchProtection => "branch_protection.html",
+            Self::SecurityPolicy => "security_policy.html",
+            Self::SecretScanning => "secret_scanning.html",
+            Self::DependabotStatus => "dependabot_status.html",
+            Self::Codeowners => "codeowners.html",
         }
     }
 
@@ -708,6 +726,72 @@ pub struct BprRepoRow {
     pub force_push_blocked: StatusDot,
     /// Whether branch deletion is blocked on the protected branch.
     pub deletion_blocked: StatusDot,
+}
+
+/// One repository inside a control's coverage denominator.
+///
+/// Constructible only from a [`ControlOutcome`], so a repository the control
+/// could not be measured on has no way to reach this row type and be
+/// rendered as failing.
+///
+/// [`ControlOutcome`]: crate::aggregate::metrics::ControlOutcome
+#[derive(Debug, Clone)]
+pub struct DenominatorRepoRow {
+    /// Repository name.
+    pub repo_name: String,
+    /// URL to the repository on GitHub, empty when unknown.
+    pub repo_url: String,
+    /// Repository visibility label (`"Public"`, `"Internal"`, or `"Private"`).
+    pub visibility: String,
+    /// Whether the repository is archived.
+    pub archived: bool,
+    /// `"Met"` or `"Not met"` — never an unmeasured state.
+    pub outcome_label: &'static str,
+    /// CSS class distinguishing met from unmet.
+    pub outcome_css_class: &'static str,
+}
+
+/// One repository inside a control's population but outside its denominator.
+#[derive(Debug, Clone)]
+pub struct UnmeasuredRepoRow {
+    /// Repository name.
+    pub repo_name: String,
+    /// URL to the repository on GitHub, empty when unknown.
+    pub repo_url: String,
+    /// Repository visibility label.
+    pub visibility: String,
+    /// Whether the repository is archived.
+    pub archived: bool,
+    /// Why the control could not be measured on this repository.
+    pub reason_label: &'static str,
+}
+
+/// The repositories behind one dashboard card's coverage percentage.
+///
+/// `eligible` is EXACTLY the control's coverage denominator, so the page and
+/// the card can never disagree about which repositories the metric was
+/// computed over. `unmeasured` sits outside that denominator and outside the
+/// percentage entirely.
+#[derive(Debug, Clone)]
+pub struct ControlDenominatorViewModel {
+    /// Organization name (for the page title and prose).
+    pub organization: String,
+    /// Display name of the control, owned by `ControlKey::display_name`.
+    pub control_name: &'static str,
+    /// Prose description of the population the denominator is drawn from.
+    pub population_description: &'static str,
+    /// Filename of this page, owned by [`DrillDownPage::file_name`].
+    pub page_file_name: &'static str,
+    /// The denominator, one row per repository, sorted by name.
+    pub eligible: Vec<DenominatorRepoRow>,
+    /// Repositories excluded from the denominator, sorted by name.
+    pub unmeasured: Vec<UnmeasuredRepoRow>,
+    /// Coverage numerator (count of `Met` rows in `eligible`).
+    pub numerator: u32,
+    /// Coverage denominator (`eligible.len()`).
+    pub denominator: u32,
+    /// The card's formatted percentage, e.g. `"72.3%"` or `"N/A"`.
+    pub coverage_formatted: String,
 }
 
 /// One Branch Protection Regime band and its member repos.
@@ -1362,6 +1446,19 @@ pub struct ReportViewModel {
     /// page share one owner of page identity (CHE-0108:R3).
     pub branch_protection_drill_down: DrillDownLink,
 
+    /// Link from the dashboard index to the Security Policy
+    /// coverage-denominator drill-down page.
+    pub security_policy_drill_down: DrillDownLink,
+    /// Link from the dashboard index to the Secret Scanning
+    /// coverage-denominator drill-down page.
+    pub secret_scanning_drill_down: DrillDownLink,
+    /// Link from the dashboard index to the Dependabot Status
+    /// coverage-denominator drill-down page.
+    pub dependabot_drill_down: DrillDownLink,
+    /// Link from the dashboard index to the CODEOWNERS
+    /// coverage-denominator drill-down page.
+    pub codeowners_drill_down: DrillDownLink,
+
     /// Composite Org Governance score (geometric mean of available coverage
     /// rates), rendered on the dashboard as the "Overall Organization
     /// Governance Score" card. "Org Governance" is the internal short name
@@ -1664,6 +1761,10 @@ impl ReportViewModel {
             branch_protection_how_to_fix: how_to_fix.branch_protection,
             codeowners_how_to_fix: how_to_fix.codeowners,
             branch_protection_drill_down: DrillDownPage::BranchProtection.link(DashboardHref::Root),
+            security_policy_drill_down: DrillDownPage::SecurityPolicy.link(DashboardHref::Root),
+            secret_scanning_drill_down: DrillDownPage::SecretScanning.link(DashboardHref::Root),
+            dependabot_drill_down: DrillDownPage::DependabotStatus.link(DashboardHref::Root),
+            codeowners_drill_down: DrillDownPage::Codeowners.link(DashboardHref::Root),
             health_score: health.score,
             health_tier: health.tier,
             health_score_formatted: health.score_formatted,

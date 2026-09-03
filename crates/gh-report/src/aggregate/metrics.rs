@@ -757,6 +757,231 @@ fn count_alert_observable_enabled(active: &[&RepositoryEvidence]) -> u32 {
     )
 }
 
+/// A control whose org-level coverage denominator can be enumerated
+/// repository by repository.
+///
+/// Branch protection is deliberately absent: its denominator is the whole
+/// active population and it already owns a richer drill-down
+/// (`branch_protection.html`) that partitions by regime rather than by
+/// denominator membership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoverageControl {
+    /// [`AggregatedMetrics::security_policy_coverage`].
+    SecurityPolicy,
+    /// [`AggregatedMetrics::secret_scanning_coverage`].
+    SecretScanning,
+    /// [`AggregatedMetrics::dependabot_security_updates_coverage`].
+    Dependabot,
+    /// [`AggregatedMetrics::codeowners_coverage`].
+    Codeowners,
+}
+
+impl CoverageControl {
+    /// Every enumerable control, for guards that must cover the value set.
+    pub const ALL: &'static [Self] = &[
+        Self::SecurityPolicy,
+        Self::SecretScanning,
+        Self::Dependabot,
+        Self::Codeowners,
+    ];
+
+    /// The coverage [`RateMetric`] this control's denominator belongs to.
+    #[must_use]
+    pub fn coverage(self, metrics: &AggregatedMetrics) -> &RateMetric {
+        match self {
+            Self::SecurityPolicy => &metrics.security_policy_coverage,
+            Self::SecretScanning => &metrics.secret_scanning_coverage,
+            Self::Dependabot => &metrics.dependabot_security_updates_coverage,
+            Self::Codeowners => &metrics.codeowners_coverage,
+        }
+    }
+
+    /// Prose description of the repository population this control's
+    /// denominator is drawn from, before unmeasurable repos are removed.
+    #[must_use]
+    pub fn population_description(self) -> &'static str {
+        match self {
+            Self::SecurityPolicy | Self::SecretScanning => {
+                "every public repository, archived included"
+            }
+            Self::Dependabot | Self::Codeowners => "every non-archived repository",
+        }
+    }
+
+    fn in_population(self, repo: &RepositoryEvidence) -> bool {
+        match self {
+            Self::SecurityPolicy | Self::SecretScanning => {
+                repo.repository.visibility == Visibility::Public
+            }
+            Self::Dependabot | Self::Codeowners => !repo.repository.archived,
+        }
+    }
+
+    fn classify(self, repo: &RepositoryEvidence) -> DenominatorMembership {
+        match self {
+            Self::SecurityPolicy => match repo.checks.security_policy.status {
+                SecurityPolicyStatus::Pass => DenominatorMembership::Eligible(ControlOutcome::Met),
+                SecurityPolicyStatus::Fail => {
+                    DenominatorMembership::Eligible(ControlOutcome::Unmet)
+                }
+                SecurityPolicyStatus::Unknown => {
+                    DenominatorMembership::Excluded(UnmeasuredReason::Unknown)
+                }
+                SecurityPolicyStatus::NotApplicable => {
+                    DenominatorMembership::Excluded(UnmeasuredReason::NotApplicable)
+                }
+            },
+            Self::SecretScanning => match repo.checks.secret_scanning.status {
+                SecretScanningStatus::Enabled => {
+                    DenominatorMembership::Eligible(ControlOutcome::Met)
+                }
+                SecretScanningStatus::Disabled => {
+                    DenominatorMembership::Eligible(ControlOutcome::Unmet)
+                }
+                SecretScanningStatus::PermissionDenied => {
+                    DenominatorMembership::Excluded(UnmeasuredReason::PermissionDenied)
+                }
+                SecretScanningStatus::Unknown => {
+                    DenominatorMembership::Excluded(UnmeasuredReason::Unknown)
+                }
+            },
+            Self::Dependabot => match repo.checks.dependabot_security_updates.status {
+                DependabotStatus::Enabled => DenominatorMembership::Eligible(ControlOutcome::Met),
+                DependabotStatus::Paused | DependabotStatus::Disabled => {
+                    DenominatorMembership::Eligible(ControlOutcome::Unmet)
+                }
+                DependabotStatus::Unknown => {
+                    DenominatorMembership::Excluded(UnmeasuredReason::Unknown)
+                }
+            },
+            Self::Codeowners => match repo.checks.codeowners.status {
+                CodeownersStatus::Conforming | CodeownersStatus::NonConforming => {
+                    DenominatorMembership::Eligible(ControlOutcome::Met)
+                }
+                CodeownersStatus::Absent => DenominatorMembership::Eligible(ControlOutcome::Unmet),
+                CodeownersStatus::Unknown => {
+                    DenominatorMembership::Excluded(UnmeasuredReason::Unknown)
+                }
+            },
+        }
+    }
+}
+
+/// Why a repository inside a control's population is nonetheless outside its
+/// coverage denominator.
+///
+/// A repository that could not be measured is never the same thing as a
+/// repository that failed the control, so no variant here can be confused
+/// with a [`ControlOutcome`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnmeasuredReason {
+    /// The token could not read the control's state.
+    PermissionDenied,
+    /// The control's state was not determined.
+    Unknown,
+    /// The control does not apply to this repository.
+    NotApplicable,
+}
+
+impl UnmeasuredReason {
+    /// Human-readable label for rendering.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::PermissionDenied => "Permission denied",
+            Self::Unknown => "Unknown",
+            Self::NotApplicable => "Not applicable",
+        }
+    }
+}
+
+/// The verdict for a repository that *is* inside the coverage denominator.
+///
+/// Only two verdicts are representable, because only measured repositories
+/// reach this type: "could not measure" is [`UnmeasuredReason`], carried by a
+/// different [`DenominatorMembership`] variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlOutcome {
+    /// Counted in the numerator.
+    Met,
+    /// Counted in the denominator but not the numerator.
+    Unmet,
+}
+
+impl ControlOutcome {
+    /// Human-readable label for rendering.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Met => "Met",
+            Self::Unmet => "Not met",
+        }
+    }
+}
+
+/// Whether a repository is inside a control's coverage denominator.
+///
+/// Three-way by construction: a caller holding an [`Excluded`] value has no
+/// [`ControlOutcome`] to render, so an unmeasurable repository cannot be
+/// displayed as failing the control.
+///
+/// [`Excluded`]: DenominatorMembership::Excluded
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DenominatorMembership {
+    /// Inside the denominator, with a measured verdict.
+    Eligible(ControlOutcome),
+    /// Inside the population, outside the denominator.
+    Excluded(UnmeasuredReason),
+}
+
+/// Enumerate the repositories behind `control`'s org-level coverage
+/// denominator, in input order.
+///
+/// This SURFACES the denominator that [`aggregate_metrics`] computes; it does
+/// not define a second one. The population filter and the status-to-bucket
+/// mapping mirror this module's `count_*_statuses` functions arm for arm, and
+/// `denominator_repo_count` is asserted equal to the corresponding
+/// [`RateMetric::denominator`] by the drill-down guard tests.
+#[must_use]
+pub fn control_denominator_population(
+    control: CoverageControl,
+    repositories: &[RepositoryEvidence],
+) -> Vec<(&RepositoryEvidence, DenominatorMembership)> {
+    repositories
+        .iter()
+        .filter(|repo| control.in_population(repo))
+        .map(|repo| (repo, control.classify(repo)))
+        .collect()
+}
+
+/// Count the [`DenominatorMembership::Eligible`] entries of a population.
+#[must_use]
+pub fn denominator_repo_count(population: &[(&RepositoryEvidence, DenominatorMembership)]) -> u32 {
+    count_as_u32(
+        population
+            .iter()
+            .filter(|(_, membership)| matches!(membership, DenominatorMembership::Eligible(_)))
+            .count(),
+    )
+}
+
+/// Count the [`ControlOutcome::Met`] entries of a population — the coverage
+/// numerator.
+#[must_use]
+pub fn denominator_met_count(population: &[(&RepositoryEvidence, DenominatorMembership)]) -> u32 {
+    count_as_u32(
+        population
+            .iter()
+            .filter(|(_, membership)| {
+                matches!(
+                    membership,
+                    DenominatorMembership::Eligible(ControlOutcome::Met)
+                )
+            })
+            .count(),
+    )
+}
+
 use crate::domain::metrics::build_owner_repo_map;
 
 /// Build per-owner metrics from CODEOWNERS parsed data.

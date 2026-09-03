@@ -1,0 +1,79 @@
+{%- import "partials/tooltip.html" as tooltip -%}
+<h1>{{ vm.control_name }} Coverage</h1>
+
+<ul class="breadcrumb">
+    <li><a href="{{ nav.dashboard_href }}">Dashboard</a></li>
+    <li>{{ vm.control_name }}</li>
+</ul>
+
+<p class="meta">The {{ vm.numerator }} of {{ vm.denominator }} repositories
+    ({{ vm.coverage_formatted }}) behind the {{ vm.control_name }} card for
+    <code>{{ vm.organization }}</code>. The population considered is
+    {{ vm.population_description }}; the table below is exactly the denominator that
+    percentage is computed over, so the page and the card cannot disagree.</p>
+
+<section class="card">
+    <h2>In the denominator ({{ vm.eligible.len() }})</h2>
+    {% if vm.eligible.is_empty() %}
+    <p class="meta">No repository in this organization could be measured for this control, so the
+        card has no observable population.</p>
+    {% else %}
+    <div class="table-wrapper">
+        <table class="data-table" data-sortable>
+            <thead>
+                <tr>
+                    <th scope="col" data-sort-type="text">{% call tooltip::header("Repository", "Repository name; links to it on GitHub when a URL is known.") %}{% endcall %}</th>
+                    <th scope="col" data-sort-type="text">{% call tooltip::header("Visibility", "The repository's GitHub visibility: Public, Internal, or Private.") %}{% endcall %}</th>
+                    <th scope="col" data-sort-type="text">{% call tooltip::header("Archived", "Whether the repository is archived on GitHub.") %}{% endcall %}</th>
+                    <th scope="col" data-sort-type="text">{% call tooltip::header("Verdict", "Met counts toward the card's numerator; Not met counts only toward its denominator.") %}{% endcall %}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in vm.eligible %}
+                <tr data-denominator-row data-repo="{{ row.repo_name }}">
+                    <td>{% if row.repo_url.is_empty() %}{{ row.repo_name }}{% else %}<a href="{{ row.repo_url }}"
+                            target="_blank" rel="noopener noreferrer">{{ row.repo_name }}</a>{% endif %}</td>
+                    <td>{{ row.visibility }}</td>
+                    <td>{% if row.archived %}Yes{% else %}No{% endif %}</td>
+                    <td class="{{ row.outcome_css_class }}">{{ row.outcome_label }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+</section>
+
+<section class="card">
+    <h2>Not measured — outside the denominator ({{ vm.unmeasured.len() }})</h2>
+    <p class="meta">These repositories are in the population but the control could not be measured on
+        them. They are excluded from both the numerator and the denominator: not measured is not the
+        same finding as not compliant, and neither the card nor this page treats them as failing.</p>
+    {% if vm.unmeasured.is_empty() %}
+    <p class="meta">Every repository in the population was measured.</p>
+    {% else %}
+    <div class="table-wrapper">
+        <table class="data-table" data-sortable>
+            <thead>
+                <tr>
+                    <th scope="col" data-sort-type="text">{% call tooltip::header("Repository", "Repository name; links to it on GitHub when a URL is known.") %}{% endcall %}</th>
+                    <th scope="col" data-sort-type="text">{% call tooltip::header("Visibility", "The repository's GitHub visibility: Public, Internal, or Private.") %}{% endcall %}</th>
+                    <th scope="col" data-sort-type="text">{% call tooltip::header("Archived", "Whether the repository is archived on GitHub.") %}{% endcall %}</th>
+                    <th scope="col" data-sort-type="text">{% call tooltip::header("Why not measured", "Permission denied, Unknown, or Not applicable — never a compliance verdict.") %}{% endcall %}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in vm.unmeasured %}
+                <tr data-unmeasured-row data-repo="{{ row.repo_name }}">
+                    <td>{% if row.repo_url.is_empty() %}{{ row.repo_name }}{% else %}<a href="{{ row.repo_url }}"
+                            target="_blank" rel="noopener noreferrer">{{ row.repo_name }}</a>{% endif %}</td>
+                    <td>{{ row.visibility }}</td>
+                    <td>{% if row.archived %}Yes{% else %}No{% endif %}</td>
+                    <td>{{ row.reason_label }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+</section>

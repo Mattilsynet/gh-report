@@ -440,9 +440,16 @@ fn render_dashboard_produces_all_pages() {
     assert!(pages.contains_key("favicon.svg"));
     assert!(pages.contains_key("orphans.html"));
     assert!(pages.contains_key("deleted.html"));
-    assert!(pages.contains_key("branch_protection.html"));
+    for &page in DrillDownPage::ALL {
+        let file_name = page.file_name();
+        assert!(
+            pages.contains_key(file_name),
+            "DrillDownPage::{page:?} owns page identity \"{file_name}\" but the \
+             dashboard never emits it, so every link to it dangles"
+        );
+    }
     assert!(!pages.contains_key("OPERATIONS.html"));
-    assert_eq!(pages.len(), 12);
+    assert_eq!(pages.len(), 16);
 }
 
 #[test]
@@ -6202,4 +6209,321 @@ fn drill_down_page_identity_has_a_template_and_no_template_restates_it() {
          Render a typed DrillDownLink field instead (CHE-0108:R1, \
          CHE-0108:R4)."
     );
+}
+
+/// A mixed population exercising every denominator bucket of all four
+/// coverage controls: pass, fail, and each unmeasurable reason, across
+/// public/private and archived/active repos.
+///
+/// `metrics` is built by [`aggregate_metrics`] from the same repository
+/// slice the pages render from, exactly as the production path does, so the
+/// card numbers under test are the real ones and not a hand-written fixture.
+fn evidence_with_mixed_denominator_population() -> Evidence {
+    use crate::aggregate::metrics::aggregate_metrics;
+
+    let mk = |name: &str,
+              visibility: Visibility,
+              archived: bool,
+              policy,
+              secret,
+              dependabot,
+              codeowners| {
+        test_fixtures::make_repository_evidence(
+            name,
+            visibility,
+            archived,
+            test_fixtures::make_checks(
+                policy,
+                secret,
+                dependabot,
+                test_fixtures::branch_pass(),
+                codeowners,
+            ),
+        )
+    };
+
+    let repositories = vec![
+        mk(
+            "pub-all-pass",
+            Visibility::Public,
+            false,
+            test_fixtures::policy_pass_setting(),
+            test_fixtures::secret_enabled_observable(false),
+            test_fixtures::dependabot_enabled(),
+            test_fixtures::codeowners_conforming(),
+        ),
+        mk(
+            "pub-all-fail",
+            Visibility::Public,
+            false,
+            test_fixtures::policy_fail(),
+            test_fixtures::secret_disabled(),
+            test_fixtures::dependabot_disabled(),
+            test_fixtures::codeowners_absent(),
+        ),
+        mk(
+            "pub-all-unmeasured",
+            Visibility::Public,
+            false,
+            test_fixtures::policy_unknown(),
+            test_fixtures::secret_permission_denied(),
+            test_fixtures::dependabot_unknown(),
+            test_fixtures::codeowners_unknown(),
+        ),
+        mk(
+            "pub-secret-unknown",
+            Visibility::Public,
+            false,
+            test_fixtures::policy_pass_file(),
+            test_fixtures::secret_unknown(),
+            test_fixtures::dependabot_enabled(),
+            test_fixtures::codeowners_non_conforming(),
+        ),
+        mk(
+            "pub-archived",
+            Visibility::Public,
+            true,
+            test_fixtures::policy_pass_setting(),
+            test_fixtures::secret_disabled(),
+            test_fixtures::dependabot_disabled(),
+            test_fixtures::codeowners_absent(),
+        ),
+        mk(
+            "private-active",
+            Visibility::Private,
+            false,
+            test_fixtures::policy_fail(),
+            test_fixtures::secret_permission_denied(),
+            test_fixtures::dependabot_enabled(),
+            test_fixtures::codeowners_conforming(),
+        ),
+        mk(
+            "internal-archived",
+            Visibility::Internal,
+            true,
+            test_fixtures::policy_fail(),
+            test_fixtures::secret_disabled(),
+            test_fixtures::dependabot_unknown(),
+            test_fixtures::codeowners_unknown(),
+        ),
+    ];
+
+    let metrics = aggregate_metrics(&repositories);
+    test_fixtures::make_full_evidence(
+        test_fixtures::make_metadata(),
+        test_fixtures::make_collection_statistics(5, 3, 1, 1),
+        metrics,
+        test_fixtures::make_observability(),
+        repositories,
+    )
+}
+
+/// Repository names carried by rows matching `marker` on a rendered page.
+fn repo_names_in_rows(page: &str, marker: &str) -> HashSet<String> {
+    let needle = format!("<tr {marker} data-repo=\"");
+    let mut names = HashSet::new();
+    let mut rest = page;
+    while let Some(at) = rest.find(&needle) {
+        rest = &rest[at + needle.len()..];
+        let end = rest
+            .find('"')
+            .expect("data-repo attribute must be terminated");
+        names.insert(rest[..end].to_string());
+        rest = &rest[end..];
+    }
+    names
+}
+
+/// THE invariant: each drill-down page lists exactly the repositories in its
+/// card's coverage denominator.
+///
+/// Two independently-derived links are asserted, so neither side can be
+/// checked against itself:
+///
+/// 1. page ⟷ population — the repository names parsed back out of the
+///    rendered HTML against `control_denominator_population`.
+/// 2. population ⟷ card — that population's size against the
+///    `RateMetric` denominator `aggregate_metrics` computes by a separate
+///    counting path (`count_*_statuses` + `coverage_metric`), which is the
+///    number the dashboard card displays.
+///
+/// Break either the page builder or the counting path and the chain fails.
+#[test]
+fn drill_down_page_lists_exactly_the_card_denominator_for_every_control() {
+    use crate::aggregate::metrics::{
+        DenominatorMembership, aggregate_metrics, control_denominator_population,
+        denominator_met_count, denominator_repo_count,
+    };
+
+    let evidence = evidence_with_mixed_denominator_population();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let card_metrics = aggregate_metrics(&evidence.repositories);
+
+    for entry in super::DENOMINATOR_DRILL_DOWNS {
+        let file_name = entry.page.file_name();
+        let page = pages
+            .get(file_name)
+            .unwrap_or_else(|| panic!("{file_name} was not rendered"));
+
+        let population = control_denominator_population(entry.control, &evidence.repositories);
+        let expected_denominator: HashSet<String> = population
+            .iter()
+            .filter(|(_, m)| matches!(m, DenominatorMembership::Eligible(_)))
+            .map(|(repo, _)| repo.repository.name.clone())
+            .collect();
+        let expected_unmeasured: HashSet<String> = population
+            .iter()
+            .filter(|(_, m)| matches!(m, DenominatorMembership::Excluded(_)))
+            .map(|(repo, _)| repo.repository.name.clone())
+            .collect();
+
+        let rendered_denominator = repo_names_in_rows(page, "data-denominator-row");
+        let rendered_unmeasured = repo_names_in_rows(page, "data-unmeasured-row");
+
+        assert_eq!(
+            rendered_denominator, expected_denominator,
+            "{file_name} lists a repository set that is not the {:?} coverage \
+             denominator, so the page and its card disagree about what was \
+             measured",
+            entry.control
+        );
+        assert_eq!(
+            rendered_unmeasured, expected_unmeasured,
+            "{file_name} does not list exactly the repositories excluded from \
+             the {:?} denominator",
+            entry.control
+        );
+        assert!(
+            rendered_denominator.is_disjoint(&rendered_unmeasured),
+            "{file_name} renders an unmeasurable repository inside the \
+             denominator, presenting a repository that could not be measured \
+             as one that failed the control"
+        );
+
+        let metric = entry.control.coverage(&card_metrics);
+        let observable = metric
+            .extra
+            .get("observable_repositories")
+            .and_then(serde_json::Value::as_u64)
+            .expect("every enumerable coverage control records its observable population");
+        let counted = u64::from(denominator_repo_count(&population));
+
+        assert_eq!(
+            counted, observable,
+            "the {:?} population surfaced on {file_name} has {counted} members \
+             but aggregate_metrics counted {observable} observable repositories \
+             — the page would show a different set from the card",
+            entry.control
+        );
+        if observable == 0 {
+            assert_eq!(
+                (metric.numerator, metric.denominator),
+                (0, 1),
+                "an all-unmeasurable {:?} population must floor to 0/1",
+                entry.control
+            );
+        } else {
+            assert_eq!(
+                u64::from(metric.denominator),
+                observable,
+                "the {:?} card denominator is not its observable population",
+                entry.control
+            );
+            assert_eq!(
+                u64::from(denominator_met_count(&population)),
+                u64::from(metric.numerator),
+                "the {:?} page's Met count is not the card numerator",
+                entry.control
+            );
+        }
+    }
+}
+
+/// The four controls do NOT share one denominator rule, so the guard above
+/// must be per-control. This pins the two axes on which they differ:
+/// population (public-including-archived vs non-archived) and which
+/// unmeasurable statuses exist at all.
+#[test]
+fn denominator_population_semantics_differ_per_control() {
+    use crate::aggregate::metrics::{CoverageControl, control_denominator_population};
+
+    let evidence = evidence_with_mixed_denominator_population();
+    let names = |control| {
+        let mut v: Vec<String> = control_denominator_population(control, &evidence.repositories)
+            .iter()
+            .map(|(repo, _)| repo.repository.name.clone())
+            .collect();
+        v.sort();
+        v
+    };
+
+    let public_population = vec![
+        "pub-all-fail".to_string(),
+        "pub-all-pass".to_string(),
+        "pub-all-unmeasured".to_string(),
+        "pub-archived".to_string(),
+        "pub-secret-unknown".to_string(),
+    ];
+    let active_population = vec![
+        "private-active".to_string(),
+        "pub-all-fail".to_string(),
+        "pub-all-pass".to_string(),
+        "pub-all-unmeasured".to_string(),
+        "pub-secret-unknown".to_string(),
+    ];
+
+    assert_eq!(names(CoverageControl::SecurityPolicy), public_population);
+    assert_eq!(names(CoverageControl::SecretScanning), public_population);
+    assert_eq!(names(CoverageControl::Dependabot), active_population);
+    assert_eq!(names(CoverageControl::Codeowners), active_population);
+    assert_ne!(
+        public_population, active_population,
+        "the two populations must differ, or this guard proves nothing"
+    );
+}
+
+/// A repository the control could not be measured on is never rendered as
+/// failing the control (AGENTS.md code-quality rule 1).
+#[test]
+fn unmeasurable_repositories_never_render_as_failing_the_control() {
+    let evidence = evidence_with_mixed_denominator_population();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+
+    for entry in super::DENOMINATOR_DRILL_DOWNS {
+        let page = &pages[entry.page.file_name()];
+        let unmeasured = repo_names_in_rows(page, "data-unmeasured-row");
+        assert!(
+            unmeasured.contains("pub-all-unmeasured"),
+            "{} must list pub-all-unmeasured as unmeasured",
+            entry.page.file_name()
+        );
+        let denominator = repo_names_in_rows(page, "data-denominator-row");
+        assert!(
+            !denominator.contains("pub-all-unmeasured"),
+            "{} counts an unmeasurable repository in the denominator",
+            entry.page.file_name()
+        );
+    }
+}
+
+/// Every denominator drill-down page is reachable from its dashboard card.
+#[test]
+fn every_denominator_drill_down_is_linked_from_the_index_card() {
+    let evidence = evidence_with_mixed_denominator_population();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let index = &pages["index.html"];
+
+    for entry in super::DENOMINATOR_DRILL_DOWNS {
+        let file_name = entry.page.file_name();
+        assert!(
+            index.contains(&format!("href=\"{file_name}\"")),
+            "the {} card does not link to {file_name}, so the drill-down is \
+             unreachable from the number it explains",
+            entry.display_name
+        );
+        assert!(
+            pages.contains_key(file_name),
+            "{file_name} is linked from index.html but never rendered"
+        );
+    }
 }

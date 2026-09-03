@@ -22,7 +22,7 @@
             </div>
         </div>
         <div class="scorecard-group">
-            <div class="card {{ vm.policy_tier.css_class() }}" title="Percentage of public repos with a SECURITY.md or GitHub security-policy setting enabled.">
+            <a href="{{ vm.security_policy_drill_down }}" class="card {{ vm.policy_tier.css_class() }}" title="Percentage of public repos with a SECURITY.md or GitHub security-policy setting enabled. Click through for the repositories behind this percentage.">
                 <p class="card-label">Security Policy {% call tooltip::tooltip(vm.policy_how_to_fix) %}{% endcall %}</p>
                 <p class="card-value">{{ vm.policy_coverage_formatted }}</p>
                 <div class="progress-bar">
@@ -31,8 +31,8 @@
                 {%- if vm.policy_excluded_total > 0 %}
                 <p class="card-detail">{{ vm.policy_excluded_formatted }}</p>
                 {%- endif %}
-            </div>
-            <div class="card {{ vm.secret_scanning_tier.css_class() }}" title="Percentage of public repos with GitHub secret scanning enabled to detect leaked credentials.">
+            </a>
+            <a href="{{ vm.secret_scanning_drill_down }}" class="card {{ vm.secret_scanning_tier.css_class() }}" title="Percentage of public repos with GitHub secret scanning enabled to detect leaked credentials. Click through for the repositories behind this percentage.">
                 <p class="card-label">Secret Scanning {% call tooltip::tooltip(vm.secret_scanning_how_to_fix) %}{% endcall %}</p>
                 <p class="card-value">{{ vm.secret_scanning_coverage_formatted }}</p>
                 <p class="card-detail">{{ vm.org_alert_total_open_secret_alerts }} open org alerts · {{ vm.org_alert_collection_status }}</p>
@@ -44,10 +44,10 @@
                 {%- if vm.secret_scanning_excluded_total > 0 %}
                 <p class="card-detail">{{ vm.secret_scanning_excluded_formatted }}</p>
                 {%- endif %}
-            </div>
+            </a>
         </div>
         <div class="scorecard-group">
-            <div class="card {{ vm.dependabot_tier.css_class() }}" title="Percentage of repos with Dependabot security updates enabled (auto-PRs for vulnerable dependencies).">
+            <a href="{{ vm.dependabot_drill_down }}" class="card {{ vm.dependabot_tier.css_class() }}" title="Percentage of repos with Dependabot security updates enabled (auto-PRs for vulnerable dependencies). Click through for the repositories behind this percentage.">
                 <p class="card-label">Dependabot Status {% call tooltip::tooltip(vm.dependabot_how_to_fix) %}{% endcall %}</p>
                 <p class="card-value">{{ vm.dependabot_coverage_formatted }}</p>
                 <div class="progress-bar">
@@ -56,7 +56,7 @@
                 {%- if vm.dependabot_excluded_total > 0 %}
                 <p class="card-detail">{{ vm.dependabot_excluded_formatted }}</p>
                 {%- endif %}
-            </div>
+            </a>
             <a href="{{ vm.branch_protection_drill_down }}" class="card {{ vm.branch_protection_tier.css_class() }}" title="Percentage of observable repos at branch-protection BPR2 (IntegrityOnly) or higher. Unreadable or permission-suspected repos are excluded from this percentage (see the unmeasured breakdown below), not classified as below-bar. Click through for the BPR0..BPR5 regime drill-down.">
                 <p class="card-label">Branch Protection {% call tooltip::tooltip(vm.branch_protection_how_to_fix) %}{% endcall %}</p>
                 <p class="card-value">{{ vm.branch_protection_coverage_formatted }}</p>
@@ -67,7 +67,7 @@
                     </div>
                 </div>
             </a>
-            <div class="card {{ vm.codeowners_tier.css_class() }}" title="Percentage of repos with a CODEOWNERS file identifying responsible teams or individuals.">
+            <a href="{{ vm.codeowners_drill_down }}" class="card {{ vm.codeowners_tier.css_class() }}" title="Percentage of repos with a CODEOWNERS file identifying responsible teams or individuals. Click through for the repositories behind this percentage.">
                 <p class="card-label">CODEOWNERS {% call tooltip::tooltip(vm.codeowners_how_to_fix) %}{% endcall %}</p>
                 <p class="card-value">{{ vm.codeowners_coverage_formatted }}</p>
                 <div class="progress-bar">
@@ -76,7 +76,7 @@
                 {%- if vm.codeowners_excluded_total > 0 %}
                 <p class="card-detail">{{ vm.codeowners_excluded_formatted }}</p>
                 {%- endif %}
-            </div>
+            </a>
         </div>
         <div class="scorecard-group">
             <div class="card {{ vm.stale_tier.css_class() }}" title="{{ vm.lifecycle_retirement_tooltip }}">
