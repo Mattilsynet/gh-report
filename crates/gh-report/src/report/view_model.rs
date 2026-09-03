@@ -219,6 +219,11 @@ pub struct OwnerOverviewRow {
     pub repo_count: u32,
     /// Per-control coverage cells.
     pub controls: Vec<ControlCell>,
+    /// Freshness (`non_stale`) cell for the rightmost owners-table column,
+    /// built from the same `per_control_coverage["non_stale"]` `RateMetric`
+    /// the owner detail page's Freshness card renders, so the two cannot
+    /// disagree.
+    pub freshness_cell: ControlCell,
     /// Composite Team Health score (geometric mean of the owner-level set of
     /// 7 control rates, 0.1% floor): `security_policy`, `secret_scanning`,
     /// `dependabot_security_updates`, `branch_protection`, `non_stale`,
@@ -579,6 +584,11 @@ pub struct OwnersViewModel {
     pub rows: Vec<OwnerOverviewRow>,
     /// Ordered control columns for table headers (name + header tooltip).
     pub control_columns: Vec<ControlColumn>,
+    /// The rightmost owners-table column: Freshness, named by
+    /// `ControlKey::NonStale`. Kept out of `control_columns` because that
+    /// vector is shared with the owner detail page's control table and
+    /// summary cards.
+    pub freshness_column: ControlColumn,
 }
 
 /// A top-scoring security team for display in the CODEOWNERS Summary box.

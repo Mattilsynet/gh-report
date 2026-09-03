@@ -4537,6 +4537,134 @@ fn render_owner_detail_html_non_stale_repos_card_pins_enriched_rate_tier_and_wid
     );
 }
 
+fn owners_header_cells(owners_page: &str) -> Vec<String> {
+    let thead_start = owners_page
+        .find("<thead>")
+        .expect("owners.html must have a <thead>");
+    let thead_end = owners_page[thead_start..]
+        .find("</thead>")
+        .expect("owners.html <thead> must close")
+        + thead_start;
+    owners_page[thead_start..thead_end]
+        .split("<th ")
+        .skip(1)
+        .map(|chunk| {
+            let end = chunk.find("</th>").expect("every <th> must close");
+            chunk[..end].to_string()
+        })
+        .collect()
+}
+
+fn owners_first_row_cells(owners_page: &str) -> Vec<String> {
+    let tbody_start = owners_page
+        .find("<tbody>")
+        .expect("owners.html must have a <tbody>");
+    let row_start = owners_page[tbody_start..]
+        .find("<tr>")
+        .expect("owners.html must have a data row")
+        + tbody_start;
+    let row_end = owners_page[row_start..]
+        .find("</tr>")
+        .expect("the first data row must close")
+        + row_start;
+    owners_page[row_start..row_end]
+        .split("<td")
+        .skip(1)
+        .map(|chunk| {
+            let end = chunk.find("</td>").expect("every <td> must close");
+            chunk[..end].to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn owners_table_freshness_column_is_rightmost_and_sortable() {
+    let evidence = evidence_with_enriched_single_team_owner();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let owners_page = pages.get("owners.html").expect("owners page");
+
+    let headers = owners_header_cells(owners_page);
+    let last = headers.last().expect("owners table must have headers");
+
+    assert!(
+        last.contains("numeric\">Freshness "),
+        "the Freshness column must be the RIGHTMOST owners-table column; headers:\n{headers:#?}"
+    );
+    assert!(
+        last.contains("data-sort-type=\"numeric\""),
+        "the Freshness header must opt into the existing wasm sorter with data-sort-type=\"numeric\"; header:\n{last}"
+    );
+    assert_eq!(
+        headers
+            .iter()
+            .filter(|h| h.contains("numeric\">Freshness "))
+            .count(),
+        1,
+        "exactly one Freshness column may exist; headers:\n{headers:#?}"
+    );
+}
+
+#[test]
+fn owners_table_freshness_cell_agrees_with_owner_detail_card() {
+    let evidence = evidence_with_enriched_single_team_owner();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let owners_page = pages.get("owners.html").expect("owners page");
+
+    let headers = owners_header_cells(owners_page);
+    let cells = owners_first_row_cells(owners_page);
+    assert_eq!(
+        headers.len(),
+        cells.len(),
+        "owners row must have exactly one cell per header"
+    );
+    let freshness_index = headers
+        .iter()
+        .position(|h| h.contains("numeric\">Freshness "))
+        .expect("a Freshness header");
+    let last = &cells[freshness_index];
+
+    assert!(
+        last.contains("100% (1/1)"),
+        "the Freshness cell must follow the owners-table ControlCell convention (whole-percent rate_table_formatted); cell:\n{last}"
+    );
+    assert!(
+        !last.contains("N/A"),
+        "an enriched owner must never render N/A in the Freshness column; cell:\n{last}"
+    );
+
+    let detail_page = pages
+        .iter()
+        .find(|(k, _)| k.starts_with("owners/"))
+        .expect("expected an owner detail page")
+        .1;
+    let card = owner_detail_card_block(detail_page, "Freshness");
+    assert!(
+        card.contains("<p class=\"card-value\">100.0% (1/1)</p>"),
+        "the detail card must still render the same non_stale RateMetric at prose precision; card:\n{card}"
+    );
+}
+
+#[test]
+fn owners_vm_freshness_cell_reuses_the_detail_card_rate_metric() {
+    let evidence = evidence_with_enriched_single_team_owner();
+    let fixture = unattributed_owners(&evidence.metrics.owner_metrics);
+    let vm = build_owners_view_model(&fixture.owners, &CoverageTiers::default())
+        .expect("owners view model for an enriched owner");
+
+    let row = &vm.rows[0];
+    assert_eq!(
+        row.freshness_cell.rate_formatted,
+        evidence.metrics.owner_metrics[0]
+            .per_control_coverage
+            .get("non_stale")
+            .expect("enriched owner carries a non_stale RateMetric")
+            .to_string(),
+        "the owners-column cell must reuse the same non_stale RateMetric the detail card renders, not a recomputation"
+    );
+    assert_eq!(vm.freshness_column.name, "Freshness");
+    assert!(!vm.freshness_column.tooltip.is_empty());
+}
+
 #[test]
 fn is_pending_repo_positive() {
     let mut checks = make_checks_with_statuses(
@@ -4997,6 +5125,12 @@ fn team_row(owner: &str, sec_score: f64) -> OwnerOverviewRow {
         owner_type: OwnerType::Team,
         repo_count: 1,
         controls: Vec::new(),
+        freshness_cell: build_control_cell(
+            &std::collections::HashMap::new(),
+            &[],
+            "non_stale",
+            &CoverageTiers::default(),
+        ),
         sec_score: Some(sec_score),
         sec_score_formatted: format!("{sec_score:.1}%"),
         sec_score_table_formatted: format!("{sec_score:.0}%"),
@@ -5013,6 +5147,10 @@ fn podium_excludes_team_at_exactly_100_percent() {
             team_row("climbing-team", 92.0),
         ],
         control_columns: Vec::new(),
+        freshness_column: ControlColumn {
+            name: "Freshness",
+            tooltip: "t",
+        },
     };
     let podium = build_top_security_teams(&owners_vm);
 
@@ -5031,6 +5169,10 @@ fn podium_includes_team_at_99_9_percent() {
     let owners_vm = OwnersViewModel {
         rows: vec![team_row("almost-team", 99.9)],
         control_columns: Vec::new(),
+        freshness_column: ControlColumn {
+            name: "Freshness",
+            tooltip: "t",
+        },
     };
     let podium = build_top_security_teams(&owners_vm);
 
@@ -5045,6 +5187,10 @@ fn podium_empty_when_every_team_at_100_percent() {
     let owners_vm = OwnersViewModel {
         rows: vec![team_row("team-a", 100.0), team_row("team-b", 100.0)],
         control_columns: Vec::new(),
+        freshness_column: ControlColumn {
+            name: "Freshness",
+            tooltip: "t",
+        },
     };
     let podium = build_top_security_teams(&owners_vm);
 
@@ -5064,6 +5210,10 @@ fn podium_ordering_holds_with_100_percent_exemption_applied() {
             team_row("bronze-team", 85.0),
         ],
         control_columns: Vec::new(),
+        freshness_column: ControlColumn {
+            name: "Freshness",
+            tooltip: "t",
+        },
     };
     let podium = build_top_security_teams(&owners_vm);
     let ranks: Vec<&str> = podium.iter().map(|t| t.rank_class).collect();

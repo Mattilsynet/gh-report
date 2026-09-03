@@ -26,10 +26,11 @@
             <th scope="col" data-sort-type="text">{% call tooltip::header("Owner", "The CODEOWNERS-identified team or user these repositories are grouped under; links to that owner's detail page.") %}{% endcall %}</th>
             <th scope="col" data-sort-type="text">{% call tooltip::header("Type", "Whether this owner is a GitHub team or an individual user, parsed from the CODEOWNERS entry.") %}{% endcall %}</th>
             <th scope="col" data-sort-type="numeric">{% call tooltip::header("Repos", "Number of repositories attributed to this owner via CODEOWNERS.") %}{% endcall %}</th>
-            <th scope="col" class="text-center" data-sort-type="numeric">{% call tooltip::header("Team Health", "Geometric mean of measured control rates across seven controls for this owner's repos — Security Policy, Secret Scanning, Dependabot, Branch Protection, Freshness, Alert-Free, Ownership. The four columns below show the control-presence inputs; Freshness, Alert-Free and Ownership feed the score but are not shown as columns. Unmeasured controls are excluded from each rate's denominator. Excludes CODEOWNERS, which is always 100% at the owner level by construction. This is the owner-level set; the org-wide Governance score is a different six-control set. N/A when no control is scorable.") %}{% endcall %}</th>
+            <th scope="col" class="text-center" data-sort-type="numeric">{% call tooltip::header("Team Health", "Geometric mean of measured control rates across seven controls for this owner's repos — Security Policy, Secret Scanning, Dependabot, Branch Protection, Freshness, Alert-Free, Ownership. The four control-presence columns and the Freshness column below show five of those inputs; Alert-Free and Ownership feed the score but are not shown as columns. Unmeasured controls are excluded from each rate's denominator. Excludes CODEOWNERS, which is always 100% at the owner level by construction. This is the owner-level set; the org-wide Governance score is a different six-control set. N/A when no control is scorable.") %}{% endcall %}</th>
             {% for column in vm.control_columns %}
             <th scope="col" class="text-center" data-sort-type="numeric">{% call tooltip::header(column.name, column.tooltip) %}{% endcall %}</th>
             {% endfor %}
+            <th scope="col" class="text-center" data-sort-type="numeric">{% call tooltip::header(vm.freshness_column.name, vm.freshness_column.tooltip) %}{% endcall %}</th>
         </tr>
     </thead>
     <tbody>
@@ -52,6 +53,10 @@
                 {{ cell.rate_table_formatted }}
             </td>
             {% endfor %}
+            <td class="text-center">
+                <span class="status-dot {{ row.freshness_cell.tier.status_dot_class() }}" title="{{ row.freshness_cell.rate_table_formatted }}{% if row.freshness_cell.excluded_total > 0 %} — {{ row.freshness_cell.excluded_formatted }}{% endif %}"><span class="sr-only">{{ row.freshness_cell.rate_table_formatted }}{% if row.freshness_cell.excluded_total > 0 %} — {{ row.freshness_cell.excluded_formatted }}{% endif %}</span></span>
+                {{ row.freshness_cell.rate_table_formatted }}
+            </td>
         </tr>
         {% endfor %}
     </tbody>
