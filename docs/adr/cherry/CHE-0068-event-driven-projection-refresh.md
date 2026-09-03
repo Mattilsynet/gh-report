@@ -22,7 +22,7 @@ Variance absorber (FLO-0002:R1). Leading-edge firing is aperiodic, so cadence ca
 
 FLO-0009:R1 reconciliation (CHE-0102 precedent). It does not literally bind: this is render-side, has no queue-fill input, and admits or rejects nothing. Its spirit is satisfied rather than ignored — the regulator has no cliff, because the leading edge never delays the first signal after idle and the output rate degrades smoothly to the hold-down asymptote. A gradient response would need a queue-fill signal this path lacks.
 
-Barrier interaction (R5) is load-bearing at ten seconds where it was incidental at one: the pre-amendment implementation dropped a pending render at the barrier outright, a fault the wider window would have made ten times more likely. The hold-down is pre-empted by the barrier, never waited out at it.
+Barrier interaction (R5) is load-bearing at ten seconds where it was incidental at one: the pre-amendment implementation dropped a pending render at the barrier outright, a fault the wider window would have made ten times more likely. The hold-down is pre-empted by the barrier, never waited out at it. The precise bound is two render durations, not one: shutdown cannot be observed atomically with the dispatch of the render it would have prevented, so at most one render may begin before shutdown is observed and complete after it was sent, and at most one terminal flush follows once shutdown is observed. That in-flight render is deliberately not cancelled — cancelling it would discard completed work, trading the never-drop property R5 exists to protect for a tighter delay bound. What R5 obligates is that the barrier is never delayed by the hold-down window, and that holds.
 
 ## Decision
 

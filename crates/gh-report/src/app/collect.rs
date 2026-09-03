@@ -1920,6 +1920,19 @@ enum Transition {
     ParkIdle,
 }
 
+/// Decide what the publisher loop does next.
+///
+/// Terminal bound, stated precisely. `stopping` is snapshotted after the
+/// event is selected, so shutdown may be sent after that snapshot has read
+/// `false` and before the render it authorised begins. At most ONE render
+/// can therefore be in flight across the shutdown send. That render is
+/// deliberately not cancelled: cancelling it would discard already-completed
+/// work, which is the coalesce-never-drop property this state machine exists
+/// to protect. Trading that property for a tighter delay bound is not a
+/// trade this publisher makes.
+///
+/// Once `stopping` is observed `true`, every `(state, event)` maps to
+/// [`Transition::Exit`], so no further render can start inside the loop.
 fn transition(stopping: bool, state: PublisherState, event: LoopEvent) -> Transition {
     match (stopping, event, state) {
         (true, LoopEvent::Signal, _) => Transition::Exit {
@@ -1946,6 +1959,20 @@ fn parked_deadline() -> tokio::time::Instant {
     tokio::time::Instant::now() + std::time::Duration::from_hours(24)
 }
 
+/// Flush the terminal render, if the barrier decision requires one.
+///
+/// After shutdown is OBSERVED the loop has already been left, and at most
+/// ONE flush render occurs here. Combined with the single uncancelled
+/// in-flight render described on [`transition`], the complete barrier is
+/// delayed by at most TWO render durations: one render that began before
+/// shutdown was observed and completed after shutdown was sent, plus this
+/// one terminal flush. It is NOT delayed by one render — that stronger
+/// claim is false, because the loop cannot atomically snapshot `stopping`
+/// and dispatch the render it authorises.
+///
+/// The barrier is NEVER delayed by the hold-down window. That is the
+/// obligation CHE-0068:R5 actually states, and it holds: the hold-down is
+/// pre-empted at the barrier, never waited out.
 async fn finalise_at_barrier<F, Fut>(decision: FinalRender, mut render: F)
 where
     F: FnMut() -> Fut,
@@ -2749,7 +2776,7 @@ mod publisher_state_machine_tests {
         );
         assert!(
             barrier_cost < render_duration * 2,
-            "CHE-0068:R5 - the barrier is delayed by at most ONE render"
+            "with no render in flight at the shutdown send, the barrier costs one render"
         );
         assert!(
             barrier_cost < HOLD_DOWN,
@@ -2853,7 +2880,50 @@ mod publisher_state_machine_tests {
         );
         assert!(
             barrier_cost < render_duration * 2,
-            "exit is bounded by exactly one render, not by producer activity"
+            "with no render in flight at the shutdown send, exit costs one render and is \
+             bounded by that, not by producer activity"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_sent_after_the_stopping_snapshot_costs_at_most_two_renders() {
+        let render_duration = Duration::from_secs(2);
+        let h = spawn_harness(render_duration);
+        h.settle().await;
+
+        h.notify.notify_one();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(
+            h.count(),
+            0,
+            "the leading-edge render is in flight; stopping was snapshotted false before it"
+        );
+
+        let shutdown_sent = tokio::time::Instant::now();
+        h.stop();
+        h.notify.notify_one();
+
+        let total = h.join().await;
+        let barrier_cost = tokio::time::Instant::now().duration_since(shutdown_sent);
+
+        assert_eq!(
+            total, 2,
+            "exactly two renders: the one in flight across the shutdown send, which is \
+             deliberately not cancelled because cancelling would discard completed work, \
+             plus one terminal flush"
+        );
+        assert!(
+            barrier_cost >= render_duration,
+            "the terminal flush really did run a slow render"
+        );
+        assert!(
+            barrier_cost <= render_duration * 2,
+            "the true bound: at most one uncancelled in-flight render plus one terminal \
+             flush, never a third"
+        );
+        assert!(
+            barrier_cost < HOLD_DOWN,
+            "CHE-0068:R5 - the barrier is never delayed by the hold-down window"
         );
     }
 }
