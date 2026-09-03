@@ -42,38 +42,11 @@ pub struct TeamAccessGuidance {
 pub struct OrgHelpConfig {
     /// Guidance for the "add a team member" remediation (UF2-1).
     pub team_access: TeamAccessGuidance,
-    /// Link to the deployment's own governance-standard document, rendered
-    /// in the dashboard footer when present. Absent by default — a fresh
-    /// deployment renders no link and assumes no such document exists.
-    pub governance_standard: Option<HelpLink>,
-}
-
-/// Generic label used when an operator supplies a governance-standard URL
-/// without a custom label. Carries no organization-specific wording.
-const DEFAULT_GOVERNANCE_STANDARD_LABEL: &str = "Governance AI skill";
-
-/// Build an optional governance-standard [`HelpLink`] from operator-supplied
-/// CLI/env values.
-///
-/// The link is enabled solely by presence of `url`; `label` is cosmetic and
-/// falls back to a generic default when absent. This keeps "URL present,
-/// label absent" the only partial state, and gives it a well-defined,
-/// fully-generic meaning rather than treating it as invalid input.
-#[must_use]
-pub fn governance_standard_link_from_args(
-    label: Option<String>,
-    url: Option<String>,
-) -> Option<HelpLink> {
-    let url = url?;
-    Some(HelpLink {
-        label: label.unwrap_or_else(|| DEFAULT_GOVERNANCE_STANDARD_LABEL.to_string()),
-        url,
-    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{OrgHelpConfig, TeamAccessGuidance, governance_standard_link_from_args};
+    use super::{OrgHelpConfig, TeamAccessGuidance};
 
     #[test]
     fn default_org_help_config_carries_no_org_specifics() {
@@ -82,33 +55,6 @@ mod tests {
         assert!(cfg.team_access.contact.is_none());
         assert!(cfg.team_access.governance_model.is_none());
         assert!(cfg.team_access.help_links.is_empty());
-        assert!(cfg.governance_standard.is_none());
-    }
-
-    #[test]
-    fn governance_standard_link_from_args_absent_without_url() {
-        assert!(governance_standard_link_from_args(Some("Standard".to_string()), None).is_none());
-        assert!(governance_standard_link_from_args(None, None).is_none());
-    }
-
-    #[test]
-    fn governance_standard_link_from_args_defaults_label_when_only_url_given() {
-        let link =
-            governance_standard_link_from_args(None, Some("https://example.com/std".to_string()))
-                .expect("url present, link should build");
-        assert_eq!(link.label, "Governance AI skill");
-        assert_eq!(link.url, "https://example.com/std");
-    }
-
-    #[test]
-    fn governance_standard_link_from_args_uses_provided_label() {
-        let link = governance_standard_link_from_args(
-            Some("Org Standard".to_string()),
-            Some("https://example.com/std".to_string()),
-        )
-        .expect("url present, link should build");
-        assert_eq!(link.label, "Org Standard");
-        assert_eq!(link.url, "https://example.com/std");
     }
 
     #[test]

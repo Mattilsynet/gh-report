@@ -157,92 +157,16 @@ mod tests {
         assert!(config.csp_override().is_none());
     }
 
-    #[tokio::test]
-    async fn served_dashboard_config_serves_clipboard_js_under_real_csp() {
-        use cherry_pit_web::serve::CachedPage;
-        use std::collections::HashMap;
-
-        let state = state_no_cache().await;
-        let mut pages = HashMap::new();
-        pages.insert(
-            "owners/org-team-a.html".to_string(),
-            CachedPage::new(
-                "owners/org-team-a.html",
-                b"<script src=\"../clipboard.js\" defer></script>".to_vec(),
-            ),
-        );
-        pages.insert(
-            "clipboard.js".to_string(),
-            CachedPage::new("clipboard.js", b"document.title;".to_vec()),
-        );
-        state.set_html_cache(pages);
-
-        let config = served_dashboard_server_config();
-        let app = cherry_pit_web::serve::build_router(
-            state,
-            server_layer_limits(),
-            server_ws_policy(),
-            &config,
-            None,
-        );
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        let handle = tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-
-        wait_for_server(addr).await;
-
-        let page_resp = reqwest::get(format!("http://{addr}/owners/org-team-a.html"))
-            .await
-            .unwrap();
-        assert_eq!(page_resp.status(), 200);
-        let csp = page_resp
-            .headers()
-            .get("content-security-policy")
-            .expect("served page must carry a CSP header")
-            .to_str()
-            .unwrap();
-        assert_eq!(csp, SERVED_CSP_WITH_WASM_UNSAFE_EVAL);
-        assert!(
-            csp.contains("script-src 'self'"),
-            "served CSP must forbid inline script"
-        );
-
-        let script_resp = reqwest::get(format!("http://{addr}/clipboard.js"))
-            .await
-            .unwrap();
-        assert_eq!(
-            script_resp.status(),
-            200,
-            "clipboard.js must be served at all 5 asset-path steps under the real CSP"
-        );
-
-        handle.abort();
-    }
-
-    /// Production-rendering proof (linus ghr-e9332303 Medium finding):
-    /// drives `AppState` through `build_cached_pages` (which calls
-    /// `render_dashboard_streaming` directly) with a configured
-    /// `governance_standard`, then asserts the production-rendered
-    /// owner-detail page and `clipboard.js` are served with the real
-    /// dashboard CSP and carry the external, non-inline script contract.
-    /// Unlike `served_dashboard_config_serves_clipboard_js_under_real_csp`
-    /// above (hand-built cache fixture, CSP-only proof), this test would
-    /// fail if the template or the 5-step asset registration regressed
-    /// while a hand-built fixture stayed valid.
     /// Builds a `(RuntimeConfig, Evidence)` pair for the production-render
-    /// proof test below: one owner-attributed repo, with
-    /// `dashboard_config.org_help.governance_standard` configured so the
-    /// owner-detail widget renders.
-    fn governance_configured_fixture() -> (
+    /// proof test below (linus ghr-e9332303 Medium finding): one
+    /// owner-attributed repo driven through `build_cached_pages`, so the
+    /// test fails if the owner-detail template or the asset registration
+    /// path regresses while a hand-built cache fixture stays valid.
+    fn owner_page_fixture() -> (
         crate::config::runtime::RuntimeConfig,
         crate::domain::evidence::Evidence,
     ) {
         use crate::config::dashboard::DashboardConfig;
-        use crate::config::org::{HelpLink, OrgHelpConfig};
         use crate::config::runtime::{PardosaBackend, RateRegulatorKind, RuntimeConfig};
         use crate::domain::repository::Visibility;
 
@@ -279,16 +203,7 @@ mod tests {
             nats_creds: None,
             force_unlock: false,
             force_refresh: false,
-            dashboard_config: DashboardConfig {
-                org_help: OrgHelpConfig {
-                    governance_standard: Some(HelpLink {
-                        label: "Governance AI skill".to_string(),
-                        url: "https://acme.example/governance".to_string(),
-                    }),
-                    ..OrgHelpConfig::default()
-                },
-                ..DashboardConfig::default()
-            },
+            dashboard_config: DashboardConfig::default(),
             team_roster_read_from_projection: true,
             rate_regulator: RateRegulatorKind::default(),
         };
@@ -300,7 +215,7 @@ mod tests {
     async fn served_dashboard_config_serves_production_rendered_owner_detail_page() {
         use crate::app::collect::build_cached_pages;
 
-        let (config, evidence) = governance_configured_fixture();
+        let (config, evidence) = owner_page_fixture();
         let cache = build_cached_pages(&config, &evidence)
             .await
             .expect("production cache-build path succeeds");
@@ -310,8 +225,8 @@ mod tests {
             .cloned()
             .expect("owner-detail page rendered by the production path");
         assert!(
-            cache.contains_key("clipboard.js"),
-            "clipboard.js must be registered by the 5-step asset path"
+            cache.contains_key("style.css"),
+            "style.css must be registered by the asset path"
         );
 
         let state = state_no_cache().await;
@@ -349,10 +264,6 @@ mod tests {
 
         let body = page_resp.text().await.unwrap();
         assert!(
-            body.contains(r#"<script src="../clipboard.js" defer></script>"#),
-            "production-rendered owner page must wire the clipboard button via the external asset"
-        );
-        assert!(
             !body.to_lowercase().contains("onclick"),
             "production-rendered owner page must introduce zero onclick attributes"
         );
@@ -367,15 +278,6 @@ mod tests {
                 "every <script> tag on the served production page must be external"
             );
         }
-
-        let script_resp = reqwest::get(format!("http://{addr}/clipboard.js"))
-            .await
-            .unwrap();
-        assert_eq!(
-            script_resp.status(),
-            200,
-            "clipboard.js must be served under the real CSP at the production-registered path"
-        );
 
         handle.abort();
     }
