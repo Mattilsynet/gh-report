@@ -2462,7 +2462,7 @@ pub(crate) const LIFECYCLE_RETIREMENT_LABEL: &str = "Lifecycle: Retirement";
 ///
 /// Sole owner of this string; the index template reads it through
 /// [`ReportViewModel::lifecycle_retirement_tooltip`].
-pub(crate) const LIFECYCLE_RETIREMENT_TOOLTIP: &str = "Archived / (archived + stale-active) — fraction of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better.";
+pub(crate) const LIFECYCLE_RETIREMENT_TOOLTIP: &str = "Archived / (archived + stale-active) — fraction of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better. One of six controls behind the Org Governance score. It asks whether dead work has been retired, the later stage of the repository lifecycle arc. One of two Lifecycle controls, and distinct from the per-owner Lifecycle: Freshness, which asks whether work is still happening and divides by all of an owner's repos rather than by stale-lifecycle repos only.";
 
 /// Canonical, single-source explanatory copy for the `non_stale` control
 /// ("Freshness").
@@ -2472,7 +2472,7 @@ pub(crate) const LIFECYCLE_RETIREMENT_TOOLTIP: &str = "Archived / (archived + st
 /// [`coverage_control_column_tooltip`], and the owner-detail Freshness
 /// summary card, via [`OwnerDetailViewModel::non_stale_tooltip`]. Neither
 /// template may hardcode this copy (COM-0027:R3/R4).
-pub(crate) const NON_STALE_TOOLTIP: &str = "(total - stale) / total for this owner's repos — the share not stale, where stale means not updated in 2+ years. One of seven controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.";
+pub(crate) const NON_STALE_TOOLTIP: &str = "(total - stale) / total for this owner's repos — the share not stale, where stale means not updated in 2+ years. One of seven controls behind the Team Health score. It asks whether work is still happening, the earlier stage of the repository lifecycle arc. One of two Lifecycle controls, and distinct from the org-wide Lifecycle: Retirement, which asks whether dead work has been retired and divides by stale-lifecycle repos only rather than by all of this owner's repos.";
 
 pub(crate) fn coverage_control_column_tooltip(key: &str) -> Option<&'static str> {
     match key {

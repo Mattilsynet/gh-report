@@ -4430,8 +4430,8 @@ fn render_owner_detail_html_non_stale_repos_card_disambiguates_freshness_from_ar
         "the tooltip must not restate the card's own name back at it; under a card named Freshness that phrasing is circular"
     );
     assert!(
-        detail_page.contains("Distinct from the org-wide Archival Coverage"),
-        "Freshness card tooltip must explicitly disambiguate from the org-level Archival Coverage metric"
+        detail_page.contains("distinct from the org-wide Lifecycle: Retirement"),
+        "Freshness card tooltip must explicitly disambiguate from the org-level Lifecycle: Retirement metric"
     );
 }
 
