@@ -4711,6 +4711,148 @@ fn owners_overview_columns_and_cells_derive_from_one_canonical_collection() {
     }
 }
 
+/// Two repos for one team, exactly one of them stale, every other control
+/// passing on both.
+///
+/// Deliberately ASYMMETRIC: `non_stale` is 1/2 (50%) while every plausible
+/// wrong source a recomputation could reach for — `security_policy`,
+/// `secret_scanning`, `dependabot_security_updates`, `branch_protection`,
+/// repo count — is 2/2 (100%). A cell built from the wrong key therefore
+/// cannot coincidentally match the right one, which a symmetric 1/1 fixture
+/// permits.
+fn evidence_with_asymmetric_freshness_team_owner() -> Evidence {
+    let mut repos = vec![
+        test_fixtures::make_repository_evidence(
+            "fresh-team-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_with_owners(&["@org/fresh-team"]),
+            ),
+        ),
+        test_fixtures::make_repository_evidence(
+            "stale-team-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_with_owners(&["@org/fresh-team"]),
+            ),
+        ),
+    ];
+    repos[1].repository.updated_at = Some("2019-01-01T00:00:00Z".to_string());
+
+    let mut metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
+    crate::aggregate::metrics::enrich_owner_metrics_with_lifecycle(
+        &mut metrics.owner_metrics,
+        &repos,
+        &test_fixtures::make_timestamp(),
+    );
+    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
+
+    test_fixtures::make_full_evidence(
+        test_fixtures::make_metadata(),
+        stats,
+        metrics,
+        test_fixtures::make_observability(),
+        repos,
+    )
+}
+
+#[test]
+fn owners_column_and_detail_card_render_the_same_freshness_control_cell() {
+    let evidence = evidence_with_asymmetric_freshness_team_owner();
+    let owner = &evidence.metrics.owner_metrics[0];
+
+    let non_stale = owner
+        .per_control_coverage
+        .get("non_stale")
+        .expect("enriched owner carries a non_stale RateMetric");
+    assert_eq!(
+        non_stale.to_string(),
+        "50.0% (1/2)",
+        "fixture precondition: non_stale must be ASYMMETRIC (1/2), so a cell built from a wrong key cannot coincidentally agree"
+    );
+    for decoy in [
+        "security_policy",
+        "secret_scanning",
+        "dependabot_security_updates",
+        "branch_protection",
+    ] {
+        assert_eq!(
+            owner
+                .per_control_coverage
+                .get(decoy)
+                .map(std::string::ToString::to_string),
+            Some("100.0% (2/2)".to_string()),
+            "fixture precondition: {decoy} must differ from non_stale so it is a detectable decoy"
+        );
+    }
+
+    let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
+    let fixture = unattributed_owners(&evidence.metrics.owner_metrics);
+
+    let owners_vm = build_owners_view_model(&fixture.owners, &CoverageTiers::default())
+        .expect("owners view model");
+    let detail_vms = build_owner_detail_view_models(
+        &fixture.owners,
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &fixture.rosters,
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
+    );
+
+    let overview = owners_vm.rows[0]
+        .controls
+        .last()
+        .expect("rightmost owners-overview control cell");
+    let detail = &detail_vms[0].1.non_stale_cell;
+
+    assert_eq!(
+        overview.rate_formatted, detail.rate_formatted,
+        "overview column and detail card must render the same rate at prose precision"
+    );
+    assert_eq!(
+        overview.rate_table_formatted, detail.rate_table_formatted,
+        "overview column and detail card must render the same rate at table precision"
+    );
+    assert_eq!(
+        overview.tier.css_class(),
+        detail.tier.css_class(),
+        "overview column and detail card must land in the same coverage tier"
+    );
+    assert_eq!(
+        overview.width_class, detail.width_class,
+        "overview column and detail card must render the same progress width"
+    );
+    assert_eq!(
+        overview.excluded_total, detail.excluded_total,
+        "overview column and detail card must report the same exclusion count"
+    );
+    assert_eq!(
+        overview.excluded_formatted, detail.excluded_formatted,
+        "overview column and detail card must report the same exclusion breakdown"
+    );
+
+    assert_eq!(
+        overview.rate_formatted, "50.0% (1/2)",
+        "both cells must carry the ASYMMETRIC non_stale rate; agreeing on a wrong value is still a regression"
+    );
+    assert_eq!(overview.rate_table_formatted, "50% (1/2)");
+}
+
 #[test]
 fn owners_vm_freshness_cell_reuses_the_detail_card_rate_metric() {
     let evidence = evidence_with_enriched_single_team_owner();
