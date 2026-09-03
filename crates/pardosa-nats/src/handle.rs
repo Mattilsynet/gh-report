@@ -1,9 +1,10 @@
-use crate::config::JetStreamConfig;
+use crate::config::{JetStreamConfig, ServerInfoObserver};
 use crate::error::JetStreamRuntimeError;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 use tokio::runtime::Handle;
 use tokio::sync::Semaphore;
@@ -91,12 +92,6 @@ struct LiveState {
 struct ConnectDecision {
     credentials_path: Option<PathBuf>,
     require_tls: bool,
-}
-
-impl ConnectDecision {
-    fn uses_bare_anonymous_connect(&self) -> bool {
-        self.credentials_path.is_none() && !self.require_tls
-    }
 }
 
 fn connect_decision(url: &str, credentials_path: Option<&Path>) -> ConnectDecision {
@@ -427,7 +422,7 @@ async fn connect_only(
 ) -> Result<async_nats::jetstream::Context, JetStreamRuntimeError> {
     let url = cfg.nats_url().to_owned();
     let decision = connect_decision(&url, cfg.credentials_path());
-    let client = connect_client(&url, &decision).await?;
+    let client = connect_client(&url, &decision, cfg.server_info_observer()).await?;
     Ok(async_nats::jetstream::new(client))
 }
 async fn ensure_state(
@@ -458,22 +453,52 @@ async fn ensure_state(
 async fn connect_client(
     url: &str,
     decision: &ConnectDecision,
+    observer: Option<&ServerInfoObserver>,
 ) -> Result<async_nats::Client, JetStreamRuntimeError> {
-    if decision.uses_bare_anonymous_connect() {
-        async_nats::connect(url)
-            .await
-            .map_err(|e| JetStreamRuntimeError::Connect {
-                source: Box::new(e),
-            })
-    } else {
-        let options = build_connect_options(decision)?;
-        options
+    let mut options = build_connect_options(decision)?;
+    let Some(observer) = observer.cloned() else {
+        return options
             .connect(url)
             .await
             .map_err(|e| JetStreamRuntimeError::Connect {
                 source: Box::new(e),
-            })
+            });
+    };
+
+    let client_slot: Arc<OnceLock<async_nats::Client>> = Arc::new(OnceLock::new());
+    {
+        let observer = observer.clone();
+        let client_slot = Arc::clone(&client_slot);
+        options = options.event_callback(move |event| {
+            let observer = observer.clone();
+            let client_slot = Arc::clone(&client_slot);
+            async move {
+                if event != async_nats::Event::Connected {
+                    return;
+                }
+                let Some(client) = client_slot.get() else {
+                    return;
+                };
+                crate::barrier::observe_connection(client, &observer, || {
+                    client.statistics().connects.load(Ordering::Relaxed)
+                })
+                .await;
+            }
+        });
     }
+
+    let client = options
+        .connect(url)
+        .await
+        .map_err(|e| JetStreamRuntimeError::Connect {
+            source: Box::new(e),
+        })?;
+    let _ = client_slot.set(client.clone());
+    crate::barrier::observe_connection(&client, &observer, || {
+        client.statistics().connects.load(Ordering::Relaxed)
+    })
+    .await;
+    Ok(client)
 }
 
 fn build_connect_options(
@@ -747,8 +772,8 @@ mod tests {
             "tls:// URL with credentials must require TLS"
         );
         assert!(
-            !decision.uses_bare_anonymous_connect(),
-            "credentials path must leave the anonymous connect branch"
+            decision.credentials_path.is_some(),
+            "credentials path must be carried into the connect options"
         );
     }
 
@@ -770,8 +795,8 @@ mod tests {
 
         assert_eq!(decision.credentials_path, None);
         assert!(
-            decision.uses_bare_anonymous_connect(),
-            "None credentials on nats:// must preserve the bare anonymous connect branch"
+            !decision.require_tls,
+            "None credentials on nats:// must stay anonymous and plaintext"
         );
     }
 
@@ -811,7 +836,7 @@ mod tests {
             matches!(options, Ok(Ok(_))),
             "valid credentials fixture must build connect options without tokio file IO"
         );
-        assert!(!decision.uses_bare_anonymous_connect());
+        assert!(decision.credentials_path.is_some());
     }
 
     #[test]

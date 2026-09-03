@@ -2,6 +2,7 @@ use crate::error::JetStreamConfigError;
 use crate::runtime::RuntimeHandle;
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 pub(crate) const DEFAULT_NATS_URL: &str = "nats://localhost:4222";
@@ -31,6 +32,48 @@ pub enum Discard {
     /// rather than at runtime.
     Old,
 }
+/// The callable a [`ServerInfoObserver`] wraps: the broker's identity for
+/// one established connection, plus the connection generation it was read
+/// from.
+pub type ServerInfoSink = Arc<dyn Fn(&async_nats::ServerInfo, u64) + Send + Sync>;
+
+/// Sink invoked with the broker's [`async_nats::ServerInfo`] each time a
+/// connection to NATS is established, including reconnects performed
+/// internally by `async-nats`.
+///
+/// The substrate ring carries no logging facility of its own
+/// (`AGENTS.md` substrate ring purity), so the observer is the inversion
+/// point: `pardosa-nats` supplies the observation, the adapter ring owns
+/// the emission. Held as `Arc<dyn Fn>` — both are core, so this adds no
+/// dependency.
+///
+/// The second argument is the connection generation
+/// (`Client::statistics().connects`), read after the ordering barrier so
+/// it names the connection whose identity was read. It is what makes a
+/// coalesced flap observable: the sequence skips rather than smoothing.
+#[derive(Clone)]
+pub struct ServerInfoObserver(ServerInfoSink);
+
+impl ServerInfoObserver {
+    /// Wrap a caller-supplied sink.
+    #[must_use]
+    pub fn new(sink: ServerInfoSink) -> Self {
+        Self(sink)
+    }
+
+    /// Invoke the sink with one observation of the connected broker and
+    /// the connection generation it was read from.
+    pub fn observe(&self, info: &async_nats::ServerInfo, connect_generation: u64) {
+        (self.0)(info, connect_generation);
+    }
+}
+
+impl std::fmt::Debug for ServerInfoObserver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ServerInfoObserver(<sink>)")
+    }
+}
+
 /// Validated, immutable configuration for a [`crate::
 /// JetStreamHandle`] — the offline shape of the substrate.
 ///
@@ -51,6 +94,7 @@ pub struct JetStreamConfig {
     operation_timeout: Duration,
     single_writer_fence_enabled: bool,
     stream_description_marker: Option<String>,
+    server_info_observer: Option<ServerInfoObserver>,
 }
 impl JetStreamConfig {
     /// Begin assembling a [`JetStreamConfig`] via the builder.
@@ -143,6 +187,38 @@ impl JetStreamConfig {
     pub fn stream_description_marker(&self) -> Option<&str> {
         self.stream_description_marker.as_deref()
     }
+    /// The observer invoked with the broker's `ServerInfo` on every
+    /// established connection, when one was configured.
+    #[must_use]
+    pub const fn server_info_observer(&self) -> Option<&ServerInfoObserver> {
+        self.server_info_observer.as_ref()
+    }
+    /// Reopen this configuration as a builder carrying every field
+    /// forward, so a caller needing to change one setting overrides
+    /// that setting instead of re-enumerating the whole shape.
+    ///
+    /// The body is an exhaustive struct literal with no `..` rest
+    /// pattern: a field added to either struct fails to compile here,
+    /// which is what makes silent field loss unrepresentable at a call
+    /// site rather than merely unlikely.
+    #[must_use]
+    pub fn to_builder(&self) -> JetStreamConfigBuilder {
+        JetStreamConfigBuilder {
+            stream_name: Some(self.stream_name.clone()),
+            subject: Some(self.subject.clone()),
+            durable_consumer: Some(self.durable_consumer.clone()),
+            storage: Some(self.storage),
+            discard: Some(self.discard),
+            replicas: Some(self.replicas.get()),
+            runtime_handle: Some(self.runtime_handle.clone()),
+            nats_url: Some(self.nats_url.clone()),
+            credentials_path: self.credentials_path.clone(),
+            operation_timeout: Some(self.operation_timeout),
+            single_writer_fence_enabled: Some(self.single_writer_fence_enabled),
+            stream_description_marker: self.stream_description_marker.clone(),
+            server_info_observer: self.server_info_observer.clone(),
+        }
+    }
 }
 /// Incremental builder for [`JetStreamConfig`]. Validation runs
 /// exactly once, in [`Self::build`].
@@ -160,6 +236,7 @@ pub struct JetStreamConfigBuilder {
     operation_timeout: Option<Duration>,
     single_writer_fence_enabled: Option<bool>,
     stream_description_marker: Option<String>,
+    server_info_observer: Option<ServerInfoObserver>,
 }
 impl JetStreamConfigBuilder {
     /// Set the `JetStream` stream name (rejected if empty at
@@ -249,6 +326,14 @@ impl JetStreamConfigBuilder {
         self.stream_description_marker = Some(marker.into());
         self
     }
+    /// Set the observer invoked with the broker's `ServerInfo` on every
+    /// established connection, including `async-nats`-internal reconnects.
+    /// Omitting it leaves the substrate silent, as before.
+    #[must_use]
+    pub fn server_info_observer(mut self, observer: ServerInfoObserver) -> Self {
+        self.server_info_observer = Some(observer);
+        self
+    }
     /// Run validation and assemble the immutable [`JetStreamConfig`].
     ///
     /// # Errors
@@ -317,6 +402,7 @@ impl JetStreamConfigBuilder {
             operation_timeout,
             single_writer_fence_enabled,
             stream_description_marker,
+            server_info_observer: self.server_info_observer,
         })
     }
 }
@@ -388,5 +474,111 @@ mod tests {
             .expect("empty credential path config builds");
 
         assert_eq!(cfg.credentials_path(), None);
+    }
+
+    #[test]
+    fn builder_defaults_server_info_observer_to_none() {
+        let cfg = minimal_builder().build().expect("minimal config builds");
+
+        assert!(
+            cfg.server_info_observer().is_none(),
+            "the substrate stays silent unless an observer is injected"
+        );
+    }
+
+    #[test]
+    fn builder_round_trips_server_info_observer_and_dispatches_to_the_sink() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&seen);
+        let cfg = minimal_builder()
+            .server_info_observer(ServerInfoObserver::new(Arc::new(
+                move |info: &async_nats::ServerInfo, _generation: u64| {
+                    sink.lock()
+                        .expect("sink mutex is not poisoned")
+                        .push(info.version.clone());
+                },
+            )))
+            .build()
+            .expect("observer-bearing config builds");
+
+        let info = async_nats::ServerInfo {
+            version: "2.14.6".to_owned(),
+            ..async_nats::ServerInfo::default()
+        };
+        cfg.server_info_observer()
+            .expect("observer round-trips through the builder")
+            .observe(&info, 7);
+
+        assert_eq!(
+            *seen.lock().expect("sink mutex is not poisoned"),
+            vec!["2.14.6".to_owned()]
+        );
+    }
+
+    #[test]
+    fn to_builder_preserves_every_field_across_a_rebuild() {
+        let observed = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&observed);
+        let original = JetStreamConfig::builder()
+            .stream_name("PARDOSA_PRESERVE")
+            .subject("pardosa.preserve")
+            .durable_consumer("pardosa-preserve")
+            .storage(Storage::File)
+            .discard(Discard::New)
+            .replicas(3)
+            .runtime_handle(RuntimeHandle::detached_for_tests())
+            .nats_url("nats://preserve.example:4333")
+            .credentials_path(PathBuf::from("/run/secrets/preserve.creds"))
+            .operation_timeout(Duration::from_secs(7))
+            .single_writer_fence_enabled(true)
+            .stream_description_marker("marker-before")
+            .server_info_observer(ServerInfoObserver::new(Arc::new(
+                move |info: &async_nats::ServerInfo, _generation: u64| {
+                    sink.lock()
+                        .expect("sink mutex is not poisoned")
+                        .push(info.version.clone());
+                },
+            )))
+            .build()
+            .expect("fully-populated config builds");
+
+        let rebuilt = original
+            .to_builder()
+            .stream_description_marker("marker-after")
+            .build()
+            .expect("rebuilt config builds");
+
+        assert_eq!(rebuilt.stream_name(), "PARDOSA_PRESERVE");
+        assert_eq!(rebuilt.subject(), "pardosa.preserve");
+        assert_eq!(rebuilt.durable_consumer(), "pardosa-preserve");
+        assert_eq!(rebuilt.storage(), Storage::File);
+        assert_eq!(rebuilt.discard(), Discard::New);
+        assert_eq!(rebuilt.replicas().get(), 3);
+        assert_eq!(rebuilt.nats_url(), "nats://preserve.example:4333");
+        assert_eq!(
+            rebuilt.credentials_path(),
+            Some(Path::new("/run/secrets/preserve.creds"))
+        );
+        assert_eq!(rebuilt.operation_timeout(), Duration::from_secs(7));
+        assert!(rebuilt.single_writer_fence_enabled());
+        assert_eq!(
+            rebuilt.stream_description_marker(),
+            Some("marker-after"),
+            "the one overridden field is the only field that moves"
+        );
+
+        let info = async_nats::ServerInfo {
+            version: "2.14.6".to_owned(),
+            ..async_nats::ServerInfo::default()
+        };
+        rebuilt
+            .server_info_observer()
+            .expect("the observer survives the rebuild")
+            .observe(&info, 7);
+        assert_eq!(
+            *observed.lock().expect("sink mutex is not poisoned"),
+            vec!["2.14.6".to_owned()],
+            "a rebuild that silently dropped the observer is the defect this pins"
+        );
     }
 }
