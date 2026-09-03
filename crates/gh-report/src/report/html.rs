@@ -201,7 +201,7 @@ impl ControlKey {
             Self::SecretScanning => "Secret Scanning",
             Self::DependabotSecurityUpdates => "Dependabot Status",
             Self::BranchProtection => "Branch Protection",
-            Self::NonStale => "Freshness",
+            Self::NonStale => "Lifecycle: Freshness",
             Self::NonOrphaned => "Ownership",
             Self::AlertFree => "Alert-Free",
         }

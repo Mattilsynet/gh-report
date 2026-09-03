@@ -96,7 +96,7 @@ expression: "&pages[\"owners/org-team-a.html\"]"
         
         
         <div class="card tier-na">
-            <p class="card-label">Freshness <span class="tooltip-trigger" tabindex="0" data-tooltip="(total - stale) / total for this owner&#39;s repos — the share not stale, where stale means not updated in 2+ years. One of seven controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.">ⓘ<span class="sr-only">(total - stale) / total for this owner&#39;s repos — the share not stale, where stale means not updated in 2+ years. One of seven controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.</span></span></p>
+            <p class="card-label">Lifecycle: Freshness <span class="tooltip-trigger" tabindex="0" data-tooltip="(total - stale) / total for this owner&#39;s repos — the share not stale, where stale means not updated in 2+ years. One of seven controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.">ⓘ<span class="sr-only">(total - stale) / total for this owner&#39;s repos — the share not stale, where stale means not updated in 2+ years. One of seven controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.</span></span></p>
             <p class="card-value">N/A</p>
             <div class="progress-bar">
                 <div class="progress-fill tier-na w-0"></div>

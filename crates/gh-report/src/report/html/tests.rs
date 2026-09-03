@@ -4405,12 +4405,12 @@ fn render_owner_detail_html_non_stale_repos_card_disambiguates_freshness_from_ar
         .1;
 
     assert!(
-        detail_page.contains("card-label\">Freshness"),
+        detail_page.contains("card-label\">Lifecycle: Freshness"),
         "the card label must be the control-vocabulary noun 'Freshness'; detail page:\n{detail_page}"
     );
 
     let card_block = detail_page
-        .split("card-label\">Freshness")
+        .split("card-label\">Lifecycle: Freshness")
         .nth(1)
         .expect("Freshness card block")
         .split("</div>")
@@ -4513,7 +4513,7 @@ fn render_owner_detail_html_non_stale_repos_card_pins_enriched_rate_tier_and_wid
         .expect("expected an owner detail page")
         .1;
 
-    let card = owner_detail_card_block(detail_page, "Freshness");
+    let card = owner_detail_card_block(detail_page, "Lifecycle: Freshness");
 
     assert!(
         card.contains("<p class=\"card-value\">100.0% (1/1)</p>"),
@@ -4587,7 +4587,7 @@ fn owners_table_freshness_column_is_rightmost_and_sortable() {
     let last = headers.last().expect("owners table must have headers");
 
     assert!(
-        last.contains("numeric\">Freshness "),
+        last.contains("numeric\">Lifecycle: Freshness "),
         "the Freshness column must be the RIGHTMOST owners-table column; headers:\n{headers:#?}"
     );
     assert!(
@@ -4597,7 +4597,7 @@ fn owners_table_freshness_column_is_rightmost_and_sortable() {
     assert_eq!(
         headers
             .iter()
-            .filter(|h| h.contains("numeric\">Freshness "))
+            .filter(|h| h.contains("numeric\">Lifecycle: Freshness "))
             .count(),
         1,
         "exactly one Freshness column may exist; headers:\n{headers:#?}"
@@ -4619,7 +4619,7 @@ fn owners_table_freshness_cell_agrees_with_owner_detail_card() {
     );
     let freshness_index = headers
         .iter()
-        .position(|h| h.contains("numeric\">Freshness "))
+        .position(|h| h.contains("numeric\">Lifecycle: Freshness "))
         .expect("a Freshness header");
     let last = &cells[freshness_index];
 
@@ -4637,7 +4637,7 @@ fn owners_table_freshness_cell_agrees_with_owner_detail_card() {
         .find(|(k, _)| k.starts_with("owners/"))
         .expect("expected an owner detail page")
         .1;
-    let card = owner_detail_card_block(detail_page, "Freshness");
+    let card = owner_detail_card_block(detail_page, "Lifecycle: Freshness");
     assert!(
         card.contains("<p class=\"card-value\">100.0% (1/1)</p>"),
         "the detail card must still render the same non_stale RateMetric at prose precision; card:\n{card}"
@@ -4693,7 +4693,7 @@ fn owners_overview_columns_and_cells_derive_from_one_canonical_collection() {
 
     assert_eq!(
         vm.control_columns.last().map(|c| c.name),
-        Some("Freshness"),
+        Some("Lifecycle: Freshness"),
         "Freshness must be the RIGHTMOST member of the single canonical owners-overview column collection, not a column appended beside it; columns:\n{:#?}",
         vm.control_columns
     );
@@ -4874,7 +4874,7 @@ fn owners_vm_freshness_cell_reuses_the_detail_card_rate_metric() {
             .to_string(),
         "the owners-column cell must reuse the same non_stale RateMetric the detail card renders, not a recomputation"
     );
-    assert_eq!(vm.control_columns.last().map(|c| c.name), Some("Freshness"));
+    assert_eq!(vm.control_columns.last().map(|c| c.name), Some("Lifecycle: Freshness"));
     assert!(!vm.control_columns.last().unwrap().tooltip.is_empty());
 }
 
@@ -4915,7 +4915,7 @@ fn is_pending_repo_negative_none() {
 
 #[test]
 fn control_display_name_non_stale() {
-    assert_eq!(super::ControlKey::NonStale.display_name(), "Freshness");
+    assert_eq!(super::ControlKey::NonStale.display_name(), "Lifecycle: Freshness");
 }
 
 #[test]
