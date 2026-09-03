@@ -699,7 +699,7 @@ fn render_dashboard_index_org_governance_tooltip_states_formula_and_exclusion_ru
     );
     assert!(
             index.contains(
-                "Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS, Archival Coverage"
+                "Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS, Lifecycle: Retirement"
             ),
             "Org Governance tooltip must state its six-control set"
         );

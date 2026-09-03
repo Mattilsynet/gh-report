@@ -2446,7 +2446,7 @@ pub(crate) fn coverage_control_how_to_fix(key: &str) -> Option<&'static str> {
 /// member of any per-owner control set.
 ///
 /// [`ControlKey`]: crate::report::html::ControlKey
-pub(crate) const ARCHIVAL_COVERAGE_LABEL: &str = "Archival Coverage";
+pub(crate) const ARCHIVAL_COVERAGE_LABEL: &str = "Lifecycle: Retirement";
 
 /// Canonical, single-source explanatory copy for the control labelled
 /// [`ARCHIVAL_COVERAGE_LABEL`].
