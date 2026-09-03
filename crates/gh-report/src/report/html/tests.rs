@@ -4645,6 +4645,33 @@ fn owners_table_freshness_cell_agrees_with_owner_detail_card() {
 }
 
 #[test]
+fn owners_overview_columns_and_cells_derive_from_one_canonical_collection() {
+    let evidence = evidence_with_enriched_single_team_owner();
+    let fixture = unattributed_owners(&evidence.metrics.owner_metrics);
+    let vm = build_owners_view_model(&fixture.owners, &CoverageTiers::default())
+        .expect("owners view model for an enriched owner");
+
+    assert_eq!(
+        vm.control_columns.last().map(|c| c.name),
+        Some("Freshness"),
+        "Freshness must be the RIGHTMOST member of the single canonical owners-overview column collection, not a column appended beside it; columns:\n{:#?}",
+        vm.control_columns
+    );
+    assert!(
+        vm.control_columns.iter().all(|c| !c.tooltip.is_empty()),
+        "every owners-overview column must carry a header tooltip resolved from the shared vocabulary; columns:\n{:#?}",
+        vm.control_columns
+    );
+    for row in &vm.rows {
+        assert_eq!(
+            row.controls.len(),
+            vm.control_columns.len(),
+            "header and cell vectors must both derive from the same canonical collection"
+        );
+    }
+}
+
+#[test]
 fn owners_vm_freshness_cell_reuses_the_detail_card_rate_metric() {
     let evidence = evidence_with_enriched_single_team_owner();
     let fixture = unattributed_owners(&evidence.metrics.owner_metrics);
@@ -4652,8 +4679,12 @@ fn owners_vm_freshness_cell_reuses_the_detail_card_rate_metric() {
         .expect("owners view model for an enriched owner");
 
     let row = &vm.rows[0];
+    let freshness_cell = row
+        .controls
+        .last()
+        .expect("owners-overview controls must include the rightmost Freshness cell");
     assert_eq!(
-        row.freshness_cell.rate_formatted,
+        freshness_cell.rate_formatted,
         evidence.metrics.owner_metrics[0]
             .per_control_coverage
             .get("non_stale")
@@ -4661,8 +4692,8 @@ fn owners_vm_freshness_cell_reuses_the_detail_card_rate_metric() {
             .to_string(),
         "the owners-column cell must reuse the same non_stale RateMetric the detail card renders, not a recomputation"
     );
-    assert_eq!(vm.freshness_column.name, "Freshness");
-    assert!(!vm.freshness_column.tooltip.is_empty());
+    assert_eq!(vm.control_columns.last().map(|c| c.name), Some("Freshness"));
+    assert!(!vm.control_columns.last().unwrap().tooltip.is_empty());
 }
 
 #[test]
@@ -5125,12 +5156,6 @@ fn team_row(owner: &str, sec_score: f64) -> OwnerOverviewRow {
         owner_type: OwnerType::Team,
         repo_count: 1,
         controls: Vec::new(),
-        freshness_cell: build_control_cell(
-            &std::collections::HashMap::new(),
-            &[],
-            "non_stale",
-            &CoverageTiers::default(),
-        ),
         sec_score: Some(sec_score),
         sec_score_formatted: format!("{sec_score:.1}%"),
         sec_score_table_formatted: format!("{sec_score:.0}%"),
@@ -5147,10 +5172,6 @@ fn podium_excludes_team_at_exactly_100_percent() {
             team_row("climbing-team", 92.0),
         ],
         control_columns: Vec::new(),
-        freshness_column: ControlColumn {
-            name: "Freshness",
-            tooltip: "t",
-        },
     };
     let podium = build_top_security_teams(&owners_vm);
 
@@ -5169,10 +5190,6 @@ fn podium_includes_team_at_99_9_percent() {
     let owners_vm = OwnersViewModel {
         rows: vec![team_row("almost-team", 99.9)],
         control_columns: Vec::new(),
-        freshness_column: ControlColumn {
-            name: "Freshness",
-            tooltip: "t",
-        },
     };
     let podium = build_top_security_teams(&owners_vm);
 
@@ -5187,10 +5204,6 @@ fn podium_empty_when_every_team_at_100_percent() {
     let owners_vm = OwnersViewModel {
         rows: vec![team_row("team-a", 100.0), team_row("team-b", 100.0)],
         control_columns: Vec::new(),
-        freshness_column: ControlColumn {
-            name: "Freshness",
-            tooltip: "t",
-        },
     };
     let podium = build_top_security_teams(&owners_vm);
 
@@ -5210,10 +5223,6 @@ fn podium_ordering_holds_with_100_percent_exemption_applied() {
             team_row("bronze-team", 85.0),
         ],
         control_columns: Vec::new(),
-        freshness_column: ControlColumn {
-            name: "Freshness",
-            tooltip: "t",
-        },
     };
     let podium = build_top_security_teams(&owners_vm);
     let ranks: Vec<&str> = podium.iter().map(|t| t.rank_class).collect();

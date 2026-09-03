@@ -217,13 +217,13 @@ pub struct OwnerOverviewRow {
     pub owner_type: OwnerType,
     /// Number of repositories this owner is responsible for.
     pub repo_count: u32,
-    /// Per-control coverage cells.
+    /// Per-control coverage cells, one per entry of the canonical
+    /// owners-overview column collection and in that same order, so a cell
+    /// can never desynchronise from its header. Includes the rightmost
+    /// Freshness (`non_stale`) cell, built from the same
+    /// `per_control_coverage["non_stale"]` `RateMetric` the owner detail
+    /// page's Freshness card renders, so the two cannot disagree.
     pub controls: Vec<ControlCell>,
-    /// Freshness (`non_stale`) cell for the rightmost owners-table column,
-    /// built from the same `per_control_coverage["non_stale"]` `RateMetric`
-    /// the owner detail page's Freshness card renders, so the two cannot
-    /// disagree.
-    pub freshness_cell: ControlCell,
     /// Composite Team Health score (geometric mean of the owner-level set of
     /// 7 control rates, 0.1% floor): `security_policy`, `secret_scanning`,
     /// `dependabot_security_updates`, `branch_protection`, `non_stale`,
@@ -582,13 +582,10 @@ impl OwnerDetailViewModel {
 pub struct OwnersViewModel {
     /// One row per owner, sorted.
     pub rows: Vec<OwnerOverviewRow>,
-    /// Ordered control columns for table headers (name + header tooltip).
+    /// Ordered control columns for table headers (name + header tooltip),
+    /// derived from the single canonical owners-overview column collection.
+    /// Freshness is its rightmost member.
     pub control_columns: Vec<ControlColumn>,
-    /// The rightmost owners-table column: Freshness, named by
-    /// `ControlKey::NonStale`. Kept out of `control_columns` because that
-    /// vector is shared with the owner detail page's control table and
-    /// summary cards.
-    pub freshness_column: ControlColumn,
 }
 
 /// A top-scoring security team for display in the CODEOWNERS Summary box.
@@ -2415,6 +2412,16 @@ pub(crate) fn coverage_control_how_to_fix(key: &str) -> Option<&'static str> {
     }
 }
 
+/// Canonical, single-source explanatory copy for the `non_stale` control
+/// ("Freshness").
+///
+/// Sole owner of this string. Both consumers derive from it rather than
+/// re-stating it: the owners-overview column header, via
+/// [`coverage_control_column_tooltip`], and the owner-detail Freshness
+/// summary card, via [`OwnerDetailViewModel::non_stale_tooltip`]. Neither
+/// template may hardcode this copy (COM-0027:R3/R4).
+pub(crate) const NON_STALE_TOOLTIP: &str = "(total - stale) / total for this owner's repos — the share not stale, where stale means not updated in 2+ years. One of seven controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.";
+
 pub(crate) fn coverage_control_column_tooltip(key: &str) -> Option<&'static str> {
     match key {
         "security_policy" => Some(
@@ -2429,6 +2436,7 @@ pub(crate) fn coverage_control_column_tooltip(key: &str) -> Option<&'static str>
         "branch_protection" => Some(
             "Branch protection at the T2 accept-bar or better — pull request review required, on top of T1's force-push and deletion blocking. Same per-repo check behind both this column and the org-wide Branch Protection metric.",
         ),
+        "non_stale" => Some(NON_STALE_TOOLTIP),
         _ => None,
     }
 }
@@ -3284,12 +3292,16 @@ mod tests {
                 "Branch protection at the T2 accept-bar or better — pull request review required, on top of T1's force-push and deletion blocking. Same per-repo check behind both this column and the org-wide Branch Protection metric."
             )
         );
+        assert_eq!(
+            coverage_control_column_tooltip("non_stale"),
+            Some(NON_STALE_TOOLTIP),
+            "non_stale must resolve to the single canonical Freshness copy"
+        );
     }
 
     #[test]
     fn coverage_control_column_tooltip_returns_none_for_unknown_key() {
         assert_eq!(coverage_control_column_tooltip("codeowners"), None);
-        assert_eq!(coverage_control_column_tooltip("non_stale"), None);
         assert_eq!(coverage_control_column_tooltip("bogus"), None);
     }
 

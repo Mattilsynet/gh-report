@@ -30,7 +30,6 @@
             {% for column in vm.control_columns %}
             <th scope="col" class="text-center" data-sort-type="numeric">{% call tooltip::header(column.name, column.tooltip) %}{% endcall %}</th>
             {% endfor %}
-            <th scope="col" class="text-center" data-sort-type="numeric">{% call tooltip::header(vm.freshness_column.name, vm.freshness_column.tooltip) %}{% endcall %}</th>
         </tr>
     </thead>
     <tbody>
@@ -53,10 +52,6 @@
                 {{ cell.rate_table_formatted }}
             </td>
             {% endfor %}
-            <td class="text-center">
-                <span class="status-dot {{ row.freshness_cell.tier.status_dot_class() }}" title="{{ row.freshness_cell.rate_table_formatted }}{% if row.freshness_cell.excluded_total > 0 %} — {{ row.freshness_cell.excluded_formatted }}{% endif %}"><span class="sr-only">{{ row.freshness_cell.rate_table_formatted }}{% if row.freshness_cell.excluded_total > 0 %} — {{ row.freshness_cell.excluded_formatted }}{% endif %}</span></span>
-                {{ row.freshness_cell.rate_table_formatted }}
-            </td>
         </tr>
         {% endfor %}
     </tbody>

@@ -229,6 +229,7 @@ const OWNERS_OVERVIEW_CONTROLS: &[ControlKey] = &[
     ControlKey::SecretScanning,
     ControlKey::DependabotSecurityUpdates,
     ControlKey::BranchProtection,
+    ControlKey::NonStale,
 ];
 
 /// Canonical ordered control set of the owner DETAIL page's summary cards.
@@ -307,13 +308,6 @@ const SEC_SCORE_MAP_CONTROLS: &[ControlKey] = &[
 ///
 /// [`OwnerMetrics::per_control_coverage`]: crate::domain::metrics::OwnerMetrics::per_control_coverage
 const NON_ORPHANED_CONTROL: ControlKey = ControlKey::NonOrphaned;
-
-/// Header tooltip for the owners-overview Freshness column.
-///
-/// Canonical owner of this copy; the template derives the header from it and
-/// from [`ControlKey::NonStale`], so column and owner-detail Freshness card
-/// name the same control.
-const FRESHNESS_COLUMN_TOOLTIP: &str = "(total - stale) / total for this owner's repos — the share not stale, where stale means not updated in 2+ years. One of seven controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.";
 
 /// Percent-encoding set for URL path segments.
 ///
@@ -870,13 +864,6 @@ fn build_owners_view_model(
                 })
                 .collect();
 
-            let freshness_cell = build_control_cell(
-                &m.per_control_coverage,
-                &m.score_exclusion_counts,
-                ControlKey::NonStale.as_str(),
-                tiers,
-            );
-
             let mut sec_rates: Vec<Option<f64>> = SEC_SCORE_MAP_CONTROLS
                 .iter()
                 .map(|&key| {
@@ -905,7 +892,6 @@ fn build_owners_view_model(
                 owner_type: m.owner_type,
                 repo_count: m.total_repos,
                 controls,
-                freshness_cell,
                 sec_score,
                 sec_score_formatted,
                 sec_score_table_formatted,
@@ -918,10 +904,6 @@ fn build_owners_view_model(
     Some(OwnersViewModel {
         rows,
         control_columns,
-        freshness_column: ControlColumn {
-            name: ControlKey::NonStale.display_name(),
-            tooltip: FRESHNESS_COLUMN_TOOLTIP,
-        },
     })
 }
 
