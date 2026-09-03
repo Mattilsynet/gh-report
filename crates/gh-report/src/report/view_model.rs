@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use jiff::{SignedDuration, Timestamp};
 
+use crate::aggregate::metrics::ControlOutcome;
 use crate::config;
 use crate::config::dashboard::CoverageTiers;
 use crate::config::org::{HelpLink, TeamAccessGuidance};
@@ -145,57 +146,56 @@ impl std::fmt::Display for DashboardHref {
     }
 }
 
-/// Canonical owner of drill-down page identity (CHE-0108:R1/R3).
-///
-/// [`DrillDownPage::file_name`] is the single authoritative spelling of a
-/// drill-down page's filename. The emitted page, every link targeting it, and
-/// the template-existence guard all derive from this one match, so renaming a
-/// page here moves the page and its links together instead of leaving a
-/// dangling link behind.
-///
-/// The match is exhaustive with no catch-all arm, so a page added here without
-/// a filename is a compile error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DrillDownPage {
-    /// The Branch Protection Regime (BPR0..BPR5) drill-down page.
-    BranchProtection,
-    /// The Security Policy coverage-denominator drill-down page.
-    SecurityPolicy,
-    /// The Secret Scanning coverage-denominator drill-down page.
-    SecretScanning,
-    /// The Dependabot Status coverage-denominator drill-down page.
-    DependabotStatus,
-    /// The CODEOWNERS coverage-denominator drill-down page.
-    Codeowners,
+macro_rules! drill_down_pages {
+    ($( $(#[$variant_doc:meta])* $variant:ident => $file_name:literal ),+ $(,)?) => {
+        /// Canonical owner of drill-down page identity (CHE-0108:R1/R3).
+        ///
+        /// The variant set, [`DrillDownPage::ALL`] and
+        /// [`DrillDownPage::file_name`] are emitted from ONE declaration, so a
+        /// page cannot be declared without both a filename and membership of
+        /// the enumeration every guard iterates. Omitting either half is a
+        /// macro-arm mismatch and fails to compile; declaring a page whose
+        /// asset is never emitted reddens
+        /// `render_dashboard_produces_all_pages`.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum DrillDownPage {
+            $( $(#[$variant_doc])* $variant, )+
+        }
+
+        impl DrillDownPage {
+            /// Every drill-down page, for guards that must enumerate the value
+            /// set. Emitted from the same declaration as the variants, so it
+            /// cannot fall behind them.
+            pub const ALL: &'static [Self] = &[ $( Self::$variant ),+ ];
+
+            /// Canonical filename of this page, relative to the dashboard root.
+            #[must_use]
+            pub fn file_name(self) -> &'static str {
+                match self {
+                    $( Self::$variant => $file_name, )+
+                }
+            }
+
+            /// Link to this page from a page rendered at `depth`.
+            #[must_use]
+            pub fn link(self, depth: DashboardHref) -> DrillDownLink {
+                DrillDownLink { page: self, depth }
+            }
+        }
+    };
 }
 
-impl DrillDownPage {
-    /// Every drill-down page, for guards that must enumerate the value set.
-    pub const ALL: &'static [Self] = &[
-        Self::BranchProtection,
-        Self::SecurityPolicy,
-        Self::SecretScanning,
-        Self::DependabotStatus,
-        Self::Codeowners,
-    ];
-
-    /// Canonical filename of this page, relative to the dashboard root.
-    #[must_use]
-    pub fn file_name(self) -> &'static str {
-        match self {
-            Self::BranchProtection => "branch_protection.html",
-            Self::SecurityPolicy => "security_policy.html",
-            Self::SecretScanning => "secret_scanning.html",
-            Self::DependabotStatus => "dependabot_status.html",
-            Self::Codeowners => "codeowners.html",
-        }
-    }
-
-    /// Link to this page from a page rendered at `depth`.
-    #[must_use]
-    pub fn link(self, depth: DashboardHref) -> DrillDownLink {
-        DrillDownLink { page: self, depth }
-    }
+drill_down_pages! {
+    /// The Branch Protection Regime (BPR0..BPR5) drill-down page.
+    BranchProtection => "branch_protection.html",
+    /// The Security Policy coverage-denominator drill-down page.
+    SecurityPolicy => "security_policy.html",
+    /// The Secret Scanning coverage-denominator drill-down page.
+    SecretScanning => "secret_scanning.html",
+    /// The Dependabot Status coverage-denominator drill-down page.
+    DependabotStatus => "dependabot_status.html",
+    /// The CODEOWNERS coverage-denominator drill-down page.
+    Codeowners => "codeowners.html",
 }
 
 /// A depth-resolved link to a [`DrillDownPage`].
@@ -730,25 +730,88 @@ pub struct BprRepoRow {
 
 /// One repository inside a control's coverage denominator.
 ///
-/// Constructible only from a [`ControlOutcome`], so a repository the control
-/// could not be measured on has no way to reach this row type and be
-/// rendered as failing.
+/// The verdict is carried as a [`ControlOutcome`] in a private field and the
+/// presentation strings are derived from it, so the only way to obtain a row
+/// is to hand [`DenominatorRepoRow::new`] a measured outcome. A repository the
+/// control could not be measured on carries an
+/// [`UnmeasuredReason`] instead and therefore has no value that fits the
+/// constructor: an unmeasurable repository is unrepresentable as a compliance
+/// verdict, not merely never written as one.
 ///
 /// [`ControlOutcome`]: crate::aggregate::metrics::ControlOutcome
+/// [`UnmeasuredReason`]: crate::aggregate::metrics::UnmeasuredReason
 #[derive(Debug, Clone)]
 pub struct DenominatorRepoRow {
+    repo_name: String,
+    repo_url: String,
+    visibility: String,
+    archived: bool,
+    outcome: ControlOutcome,
+}
+
+impl DenominatorRepoRow {
+    /// Build a row for a repository measured with `outcome`.
+    #[must_use]
+    pub fn new(
+        repo_name: String,
+        repo_url: String,
+        visibility: String,
+        archived: bool,
+        outcome: ControlOutcome,
+    ) -> Self {
+        Self {
+            repo_name,
+            repo_url,
+            visibility,
+            archived,
+            outcome,
+        }
+    }
+
     /// Repository name.
-    pub repo_name: String,
+    #[must_use]
+    pub fn repo_name(&self) -> &str {
+        &self.repo_name
+    }
+
     /// URL to the repository on GitHub, empty when unknown.
-    pub repo_url: String,
+    #[must_use]
+    pub fn repo_url(&self) -> &str {
+        &self.repo_url
+    }
+
     /// Repository visibility label (`"Public"`, `"Internal"`, or `"Private"`).
-    pub visibility: String,
+    #[must_use]
+    pub fn visibility(&self) -> &str {
+        &self.visibility
+    }
+
     /// Whether the repository is archived.
-    pub archived: bool,
+    #[must_use]
+    pub fn archived(&self) -> bool {
+        self.archived
+    }
+
+    /// The measured verdict this row renders.
+    #[must_use]
+    pub fn outcome(&self) -> ControlOutcome {
+        self.outcome
+    }
+
     /// `"Met"` or `"Not met"` — never an unmeasured state.
-    pub outcome_label: &'static str,
+    #[must_use]
+    pub fn outcome_label(&self) -> &'static str {
+        self.outcome.label()
+    }
+
     /// CSS class distinguishing met from unmet.
-    pub outcome_css_class: &'static str,
+    #[must_use]
+    pub fn outcome_css_class(&self) -> &'static str {
+        match self.outcome {
+            ControlOutcome::Met => "status-pass",
+            ControlOutcome::Unmet => "status-fail",
+        }
+    }
 }
 
 /// One repository inside a control's population but outside its denominator.

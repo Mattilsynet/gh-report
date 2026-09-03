@@ -12,8 +12,8 @@ use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use tracing::debug;
 
 use crate::aggregate::metrics::{
-    ControlOutcome, CoverageControl, DenominatorMembership, control_denominator_population,
-    denominator_met_count, denominator_repo_count,
+    CoverageControl, DenominatorMembership, control_denominator_population, denominator_met_count,
+    denominator_repo_count,
 };
 use crate::config;
 use crate::config::dashboard::{CoverageTiers, DashboardConfig};
@@ -701,17 +701,9 @@ fn build_control_denominator_view_model(
         let visibility = repo.repository.visibility.to_string();
         let archived = repo.repository.archived;
         match membership {
-            DenominatorMembership::Eligible(outcome) => eligible.push(DenominatorRepoRow {
-                repo_name,
-                repo_url,
-                visibility,
-                archived,
-                outcome_label: outcome.label(),
-                outcome_css_class: match outcome {
-                    ControlOutcome::Met => "status-pass",
-                    ControlOutcome::Unmet => "status-fail",
-                },
-            }),
+            DenominatorMembership::Eligible(outcome) => eligible.push(DenominatorRepoRow::new(
+                repo_name, repo_url, visibility, archived, *outcome,
+            )),
             DenominatorMembership::Excluded(reason) => unmeasured.push(UnmeasuredRepoRow {
                 repo_name,
                 repo_url,
@@ -721,7 +713,7 @@ fn build_control_denominator_view_model(
             }),
         }
     }
-    eligible.sort_by(|a, b| a.repo_name.cmp(&b.repo_name));
+    eligible.sort_by(|a, b| a.repo_name().cmp(b.repo_name()));
     unmeasured.sort_by(|a, b| a.repo_name.cmp(&b.repo_name));
 
     ControlDenominatorViewModel {

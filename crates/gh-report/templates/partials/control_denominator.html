@@ -30,12 +30,12 @@
             </thead>
             <tbody>
                 {% for row in vm.eligible %}
-                <tr data-denominator-row data-repo="{{ row.repo_name }}">
-                    <td>{% if row.repo_url.is_empty() %}{{ row.repo_name }}{% else %}<a href="{{ row.repo_url }}"
-                            target="_blank" rel="noopener noreferrer">{{ row.repo_name }}</a>{% endif %}</td>
-                    <td>{{ row.visibility }}</td>
-                    <td>{% if row.archived %}Yes{% else %}No{% endif %}</td>
-                    <td class="{{ row.outcome_css_class }}">{{ row.outcome_label }}</td>
+                <tr data-denominator-row data-repo="{{ row.repo_name() }}">
+                    <td>{% if row.repo_url().is_empty() %}{{ row.repo_name() }}{% else %}<a href="{{ row.repo_url() }}"
+                            target="_blank" rel="noopener noreferrer">{{ row.repo_name() }}</a>{% endif %}</td>
+                    <td>{{ row.visibility() }}</td>
+                    <td>{% if row.archived() %}Yes{% else %}No{% endif %}</td>
+                    <td class="{{ row.outcome_css_class() }}">{{ row.outcome_label() }}</td>
                 </tr>
                 {% endfor %}
             </tbody>
