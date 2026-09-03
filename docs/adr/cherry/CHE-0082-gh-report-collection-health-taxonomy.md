@@ -1,7 +1,7 @@
 # CHE-0082. gh-report Collection Health Taxonomy
 
 Date: 2026-06-17
-Last-reviewed: 2026-08-19 — refined — R4/R5 conditioned the 404 genuine-absence conclusion on a generic observed authority signal, replacing the prior unconditional reading (evidence: ghr-d1176f2a)
+Last-reviewed: 2026-09-03 — refined — R2 corrected: pardosa structural genome hashing makes an event-field append a schema break, so R2 now cites CHE-0022:R3 instead of contradicting it (evidence: ghr-da3yy)
 Tier: B
 Status: Accepted
 Crates: gh-report
@@ -20,7 +20,7 @@ Make collection health explicit. Per-repository raw failures carry typed reason 
 
 R1 [5]: Persist per-repository collection-health facts only when they describe that repository's own check result.
 
-R2 [5]: Append new gh-report event fields under CHE-0022 and PGN-0013; do not rename or reshape existing persisted fields.
+R2 [5]: `pardosa-derive`'s `build_field_hash_exprs` folds every event field's name and type into PGN-0003:R4 `SCHEMA_HASH`, so appending a gh-report event field is a reshape in effect. Such a change MUST be handled as the schema bump CHE-0022:R3 already mandates; mixed old/new replay MUST NOT be attempted. Enforcement is the substrate-computed hash gate, not review.
 
 R3 [5]: Store HTTP status as `Option<u16>` or an equivalent bounded enum, never as text or an HTTP library type.
 
@@ -38,4 +38,4 @@ R7 [5]: Represent active credential limitations through the existing AuthMode, T
 
 − becomes harder: schema hashes move when new bounded event fields are appended, requiring re-scrape rather than mixed old/new event replay.
 
-risks/migration: the first run without a GitHub App token reports branch-protection reads as capability-limited; per the R4/R5 amendment (2026-08-19, evidence ghr-d1176f2a), a branch-protection 404 of any visibility is genuine absence only while an observed authority signal indicates sufficient authority to read protection, and is classified Unknown/permission-suspected otherwise.
+risks/migration: the first run without a GitHub App token reports branch-protection reads as capability-limited; per the R4/R5 amendment (2026-08-19, evidence ghr-d1176f2a), a branch-protection 404 of any visibility is genuine absence only while an observed authority signal indicates sufficient authority to read protection, and is classified Unknown/permission-suspected otherwise. Per the R2 amendment (2026-09-03, evidence ghr-da3yy), appending a bounded event field moves `SCHEMA_HASH` and mandates refuse-and-re-scrape per CHE-0022:R3; the realised failure is the v18→v19 incident (`OPERATIONS.md:512`).

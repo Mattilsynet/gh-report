@@ -1,7 +1,7 @@
 # CHE-0091. gh-report Detach/Rescue Event-Content Contract
 
 Date: 2026-07-17
-Last-reviewed: 2026-07-17
+Last-reviewed: 2026-09-03 — refined — corrected the risks/migration "no SCHEMA_HASH move" claim: R2's body fields do move the hash, only the fold is unaffected (evidence: ghr-da3yy)
 Tier: B
 Status: Accepted
 Crates: gh-report
@@ -67,4 +67,4 @@ R5 [5]: The tombstone body carries no cross-entity computed aggregates (CHE-0022
 
 - becomes harder: `detach_team` must be reconciled to the minimal-tombstone shape (tracked as implement-mission work); call sites that want audit context must thread `reason`/`actor`/`detached_at` through explicitly.
 
-risks/migration: additive on the DomainEvent body only, no envelope change, no SCHEMA_HASH move for the fold (fold reads only the envelope `detached` flag). Reconciling `detach_team` (`state.rs:1452`) to match `remove_repo` (`state.rs:1498`) is deferred to the implement mission.
+risks/migration: additive on the DomainEvent body only, no envelope change — but R2's added body fields move PGN-0003 `SCHEMA_HASH`, so old-schema data is refused and re-scraped per CHE-0022:R3; only the read-model fold is unaffected, since it reads solely the envelope `detached` flag. Reconciling `detach_team` (`state.rs:1452`) to match `remove_repo` (`state.rs:1498`) is deferred to the implement mission.
