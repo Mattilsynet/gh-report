@@ -132,25 +132,34 @@ adr-fmt-xdlw9 O3).
 
 `crates/pardosa-nats/src/test_support.rs` spawns a real `nats-server` and
 **asserts its `--version` matches `tools/.nats-server-version` (currently
-2.14.3)** — it panics on mismatch or if the binary is absent. Affected tests
+2.14.5)** — it panics on mismatch or if the binary is absent. Affected tests
 include `pardosa`'s `dragline::runtime::tests::*jetstream*`. To run them:
-install `nats-server` v2.14.3 onto `PATH`. CI installs it in the `test` job
+install `nats-server` v2.14.5 onto `PATH`. CI installs it in the `test` job
 (checksum-verified). `async-nats` is pinned to the `server_2_14` feature to
 match.
 
-**Default-local impact (measured, no `nats-server` on `PATH`):** BOUNDARY's
-`cargo test --workspace --all-features --locked --no-fail-fast` exits **101**
-with 11 FAILED test binaries across `gh-report`, `pardosa`, and
-`pardosa-nats` (e.g. `live_nats_n_writer_fence_property`,
-`golden_byte_roundtrip_dual_backend`, `live_jetstream_schema_gate`) — this is
-expected-absent-server, not a regression. The gate is inconsistently applied:
-sibling tests in the *same* binaries correctly self-skip with `ignored,
-requires live nats-server at ...`, but the 11 above panic instead of hitting
-that same guard (origin: `test_support.rs:59,61`). Tracked, not yet fixed:
-bd `ghr-89b05be0`. Until fixed, treat a BOUNDARY exit 101 whose only FAILED
-lines are these 11 names as a known-quantity, not `Outcome::Surprise` — but
-do not claim `Outcome::Verified` from a run that never reached exit 0 either;
-say so explicitly (partial) and cite `ghr-89b05be0`.
+**Default-local impact — two distinct failure modes, do not conflate them:**
+
+1. **Version mismatch (the mode observed locally today).** With a
+   `nats-server` on `PATH` whose version differs from the pin, the live-NATS
+   tests panic with `VersionMismatch { expected: "2.14.5", observed:
+   "2.14.6" }`. Measured across three MID runs: **exactly 10 test targets /
+   15 tests**, stable in both count and reason. Tracked as bd `ghr-3plly`
+   (the pin decision itself). This is the failure set an agent will normally
+   see; treat a run whose only FAILED lines are these 15 as a known-quantity,
+   not `Outcome::Surprise`.
+2. **Absent server.** With no `nats-server` on `PATH` at all, the gate is
+   inconsistently applied: sibling tests in the *same* binaries correctly
+   self-skip with `ignored, requires live nats-server at ...`, while others
+   panic instead of hitting that same guard (origin: `test_support.rs:59,61`).
+   Tracked, not yet fixed: bd `ghr-89b05be0`.
+
+Either way, do not claim `Outcome::Verified` from a run that never reached
+exit 0 — say so explicitly (partial) and cite the matching bead.
+
+A second, unrelated known-red: `cargo test -p pardosa --test trybuild` is a
+false red on **incremental** builds only (reproduced on `main` @ `d7270f5`);
+it passes on a clean rebuild. Not a regression.
 
 ## CI specifics (`.github/workflows/ci.yml`)
 

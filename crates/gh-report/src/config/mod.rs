@@ -216,15 +216,31 @@ pub const API_BUDGET_WAIT_SECS: u64 = 3600;
 /// Work queue capacity (max pending jobs). 10x headroom over typical org size.
 pub const WORK_QUEUE_CAPACITY: usize = 10_000;
 
-/// Default maximum visible staleness for the partial-render coalescing
-/// window, per CHE-0068:R3.
+/// Hold-down window the partial publisher observes after a render
+/// completes, before it will render again.
 ///
-/// The partial publisher coalesces `RepoEvaluated`-driven render
-/// triggers into at most one render per `PARTIAL_RENDER_MAX_STALENESS`
-/// interval. CHE-0068 picks one second as the starting heuristic
-/// balancing user-perceived freshness against render and broadcast
-/// cost; revisit on load data.
-pub const PARTIAL_RENDER_MAX_STALENESS: std::time::Duration = std::time::Duration::from_secs(1);
+/// This is the canonical location for the value (COM-0027:R1); the
+/// matching prose lives in CHE-0068:R3, amended from one second to ten
+/// in the same change set that introduced this constant (COM-0027:R3).
+/// There is no second hand-maintained representation, and no literal at
+/// the call site (COM-0027:R4).
+///
+/// The render trigger is the budget-gate epoch-pause notification
+/// (`crate::app::collect` wires `set_budget_pause_notify`, fired by
+/// `cherry_pit_wq::budget`), not a `RepoEvaluated` event — there is no
+/// `RepoEvaluated` signal on this path. A pause follows a chunk of
+/// evaluated repositories, so it stands in for "new information landed"
+/// in effect, but the mechanism is the pause hook.
+///
+/// Semantics are leading-edge: a signal arriving while idle renders
+/// immediately, and the hold-down is measured from render COMPLETION,
+/// so a slow render can never overlap itself. Signals arriving during
+/// the hold-down are coalesced into exactly one follow-up render and
+/// are never dropped.
+///
+/// Harmonic with [`COLLECTION_INTERVAL_SECS`] per FLO-0002:R2:
+/// 3600 / 10 = 360, an integer. Asserted below.
+pub const PARTIAL_RENDER_HOLD_DOWN: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Secret alert age bucket definitions: (label, `min_days`, `max_days`).
 ///
@@ -276,9 +292,22 @@ pub const SWEEP_TIMEOUT_SECS: u64 = 7_200;
 mod tests {
     use super::{
         BASELINE_MAX_AGE_SECS, COLLECTION_INTERVAL_SECS, EVIDENCE_SCHEMA_MAJOR,
-        EVIDENCE_SCHEMA_VERSION, TEAM_REFRESH_INTERVAL_SECS, USER_AGENT,
+        EVIDENCE_SCHEMA_VERSION, PARTIAL_RENDER_HOLD_DOWN, TEAM_REFRESH_INTERVAL_SECS, USER_AGENT,
     };
     use std::time::Duration;
+
+    #[test]
+    fn partial_render_hold_down_is_ten_seconds() {
+        assert_eq!(PARTIAL_RENDER_HOLD_DOWN, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn partial_render_hold_down_is_an_integer_divisor_of_the_collection_interval() {
+        let hold_down_secs = PARTIAL_RENDER_HOLD_DOWN.as_secs();
+        assert_ne!(hold_down_secs, 0);
+        assert_eq!(COLLECTION_INTERVAL_SECS % hold_down_secs, 0);
+        assert_eq!(COLLECTION_INTERVAL_SECS / hold_down_secs, 360);
+    }
 
     #[test]
     fn team_refresh_interval_is_twenty_four_hours() {

@@ -1853,6 +1853,234 @@ pub(crate) struct PartialPublishConfig {
     pub state: Arc<AppState>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublisherState {
+    Idle,
+    HoldingDown { dirty: bool },
+}
+
+impl PublisherState {
+    fn is_holding_down(self) -> bool {
+        matches!(self, Self::HoldingDown { .. })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoopEvent {
+    Signal,
+    HoldDownExpired,
+    ShutdownObserved,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BufferedSignal {
+    Present,
+    Absent,
+}
+
+impl BufferedSignal {
+    fn drain(pause_notify: &tokio::sync::Notify) -> Self {
+        let mut notified = std::pin::pin!(pause_notify.notified());
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        match std::future::Future::poll(notified.as_mut(), &mut cx) {
+            std::task::Poll::Ready(()) => Self::Present,
+            std::task::Poll::Pending => Self::Absent,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinalRender {
+    Required,
+    NotRequired,
+}
+
+impl FinalRender {
+    fn at_barrier(state: PublisherState, buffered: BufferedSignal) -> Self {
+        match (state, buffered) {
+            (PublisherState::HoldingDown { dirty: true }, _)
+            | (
+                PublisherState::Idle | PublisherState::HoldingDown { dirty: false },
+                BufferedSignal::Present,
+            ) => Self::Required,
+            (
+                PublisherState::Idle | PublisherState::HoldingDown { dirty: false },
+                BufferedSignal::Absent,
+            ) => Self::NotRequired,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Transition {
+    Exit { carried_signal: BufferedSignal },
+    RenderLeadingEdge,
+    MarkDirty,
+    RenderCoalesced,
+    ParkIdle,
+}
+
+/// Decide what the publisher loop does next.
+///
+/// Terminal bound, stated precisely. `stopping` is snapshotted after the
+/// event is selected, so shutdown may be sent after that snapshot has read
+/// `false` and before the render it authorised begins. At most ONE render
+/// can therefore be in flight across the shutdown send. That render is
+/// deliberately not cancelled: cancelling it would discard already-completed
+/// work, which is the coalesce-never-drop property this state machine exists
+/// to protect. Trading that property for a tighter delay bound is not a
+/// trade this publisher makes.
+///
+/// Once `stopping` is observed `true`, every `(state, event)` maps to
+/// [`Transition::Exit`], so no further render can start inside the loop.
+fn transition(stopping: bool, state: PublisherState, event: LoopEvent) -> Transition {
+    match (stopping, event, state) {
+        (true, LoopEvent::Signal, _) => Transition::Exit {
+            carried_signal: BufferedSignal::Present,
+        },
+        (true, LoopEvent::HoldDownExpired | LoopEvent::ShutdownObserved, _)
+        | (false, LoopEvent::ShutdownObserved, _) => Transition::Exit {
+            carried_signal: BufferedSignal::Absent,
+        },
+        (false, LoopEvent::Signal, PublisherState::Idle) => Transition::RenderLeadingEdge,
+        (false, LoopEvent::Signal, PublisherState::HoldingDown { .. }) => Transition::MarkDirty,
+        (false, LoopEvent::HoldDownExpired, PublisherState::HoldingDown { dirty: true }) => {
+            Transition::RenderCoalesced
+        }
+        (
+            false,
+            LoopEvent::HoldDownExpired,
+            PublisherState::Idle | PublisherState::HoldingDown { dirty: false },
+        ) => Transition::ParkIdle,
+    }
+}
+
+fn parked_deadline() -> tokio::time::Instant {
+    tokio::time::Instant::now() + std::time::Duration::from_hours(24)
+}
+
+/// Flush the terminal render, if the barrier decision requires one.
+///
+/// After shutdown is OBSERVED the loop has already been left, and at most
+/// ONE flush render occurs here. Combined with the single uncancelled
+/// in-flight render described on [`transition`], the complete barrier is
+/// delayed by at most TWO render durations: one render that began before
+/// shutdown was observed and completed after shutdown was sent, plus this
+/// one terminal flush. It is NOT delayed by one render — that stronger
+/// claim is false, because the loop cannot atomically snapshot `stopping`
+/// and dispatch the render it authorises.
+///
+/// The barrier is NEVER delayed by the hold-down window. That is the
+/// obligation CHE-0068:R5 actually states, and it holds: the hold-down is
+/// pre-empted at the barrier, never waited out.
+async fn finalise_at_barrier<F, Fut>(decision: FinalRender, mut render: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    match decision {
+        FinalRender::Required => render().await,
+        FinalRender::NotRequired => {}
+    }
+}
+
+async fn run_partial_publisher<F, Fut>(
+    pause_notify: &tokio::sync::Notify,
+    shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
+    hold_down: std::time::Duration,
+    mut render: F,
+) where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    let mut state = PublisherState::Idle;
+    let hold_down_timer = tokio::time::sleep_until(parked_deadline());
+    tokio::pin!(hold_down_timer);
+
+    let (state_at_barrier, buffered_at_barrier) = loop {
+        let event = tokio::select! {
+            () = pause_notify.notified() => LoopEvent::Signal,
+            () = &mut hold_down_timer, if state.is_holding_down() => LoopEvent::HoldDownExpired,
+            _ = shutdown_rx.changed() => LoopEvent::ShutdownObserved,
+        };
+
+        let stopping = *shutdown_rx.borrow();
+
+        match transition(stopping, state, event) {
+            Transition::Exit {
+                carried_signal: BufferedSignal::Present,
+            } => break (state, BufferedSignal::Present),
+
+            Transition::Exit {
+                carried_signal: BufferedSignal::Absent,
+            } => break (state, BufferedSignal::drain(pause_notify)),
+
+            Transition::RenderLeadingEdge | Transition::RenderCoalesced => {
+                render().await;
+                state = PublisherState::HoldingDown { dirty: false };
+                hold_down_timer
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + hold_down);
+            }
+
+            Transition::MarkDirty => {
+                state = PublisherState::HoldingDown { dirty: true };
+            }
+
+            Transition::ParkIdle => {
+                state = PublisherState::Idle;
+                hold_down_timer.as_mut().reset(parked_deadline());
+            }
+        }
+    };
+
+    finalise_at_barrier(
+        FinalRender::at_barrier(state_at_barrier, buffered_at_barrier),
+        render,
+    )
+    .await;
+}
+
+/// Render one partial report from the current projection snapshot.
+async fn partial_render_once(pp: &PartialPublishConfig, state: &AppState) {
+    let all_evidence = state.projection_snapshot();
+
+    let evidence = build_evidence(BuildEvidenceParams {
+        repositories: all_evidence,
+        deleted: state
+            .projection_deleted_snapshot()
+            .into_iter()
+            .map(|(_, record)| record)
+            .collect(),
+        org_state: state.projection_org_state(),
+        config: &pp.config,
+        run: &pp.run,
+        inventory_fetched_at: pp.inventory_fetched_at.clone(),
+        org_alert_summary: pp.org_alert_summary.as_deref(),
+        auth_metadata: &pp.auth_metadata,
+        capabilities: &pp.capabilities,
+        rate_limit_warnings: 0,
+        team_rosters: Vec::new(),
+        team_rosters_already_enriched: true,
+        org_members: None,
+    });
+
+    let pending_repos: u64 = 0;
+
+    match render_and_cache_evidence(&pp.config, &pp.run, &evidence, &pp.state).await {
+        Ok(page_count) => {
+            info!(
+                batch_id = %pp.run.run_id,
+                page_count = page_count,
+                pending_repos,
+                timestamp = %jiff::Timestamp::now(),
+                "partial report published"
+            );
+        }
+        Err(e) => warn!(error = %e, "partial report publish failed"),
+    }
+}
+
 /// Spawn a partial publisher that reads from the evidence store (C9).
 ///
 /// Reads through `state.projection_snapshot()` so the typed read-side port
@@ -1867,76 +2095,24 @@ fn spawn_partial_publisher_from_store(
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
     let handle = tokio::spawn(async move {
-        let debounce_duration = crate::config::PARTIAL_RENDER_MAX_STALENESS;
-        let mut pending = false;
-        let debounce_timer = tokio::time::sleep(debounce_duration);
-        tokio::pin!(debounce_timer);
-        debounce_timer
-            .as_mut()
-            .reset(tokio::time::Instant::now() + std::time::Duration::from_hours(24));
+        let pause_notify = Arc::clone(&pp.pause_notify);
+        let pp = Arc::new(pp);
 
-        loop {
-            tokio::select! {
-                () = pp.pause_notify.notified() => {
-                    if !pending {
-                        pending = true;
-                        debounce_timer.as_mut().reset(
-                            tokio::time::Instant::now() + debounce_duration,
-                        );
-                    }
-                }
-
-                () = &mut debounce_timer, if pending => {
-                    pending = false;
-
-                    let all_evidence = state.projection_snapshot();
-
-                    let evidence = build_evidence(BuildEvidenceParams {
-                        repositories: all_evidence,
-                        deleted: state
-                            .projection_deleted_snapshot()
-                            .into_iter()
-                            .map(|(_, record)| record)
-                            .collect(),
-                        org_state: state.projection_org_state(),
-                        config: &pp.config,
-                        run: &pp.run,
-                        inventory_fetched_at: pp.inventory_fetched_at.clone(),
-                        org_alert_summary: pp.org_alert_summary.as_deref(),
-                        auth_metadata: &pp.auth_metadata,
-                        capabilities: &pp.capabilities,
-                        rate_limit_warnings: 0,
-                        team_rosters: Vec::new(),
-                        team_rosters_already_enriched: true,
-                        org_members: None,
-                    });
-
-                    let pending_repos: u64 = 0;
-
-                    match render_and_cache_evidence(
-                        &pp.config,
-                        &pp.run,
-                        &evidence,
-                        &pp.state,
-                    )
-                    .await
-                    {
-                        Ok(page_count) => {
-                            info!(
-                                batch_id = %pp.run.run_id,
-                                page_count = page_count,
-                                pending_repos,
-                                timestamp = %jiff::Timestamp::now(),
-                                "partial report published"
-                            );
-                        }
-                        Err(e) => warn!(error = %e, "partial report publish failed"),
-                    }
-                }
-
-                _ = shutdown_rx.changed() => break,
+        let render = move || {
+            let pp = Arc::clone(&pp);
+            let state = Arc::clone(&state);
+            async move {
+                partial_render_once(&pp, &state).await;
             }
-        }
+        };
+
+        run_partial_publisher(
+            &pause_notify,
+            &mut shutdown_rx,
+            crate::config::PARTIAL_RENDER_HOLD_DOWN,
+            render,
+        )
+        .await;
     });
 
     (handle, shutdown_tx)
@@ -2182,6 +2358,573 @@ fn build_assessment_metadata(
             .unavailable_capabilities_for_auth_mode(auth_metadata.auth_mode),
         inventory_fetched_at,
         warm_start: false,
+    }
+}
+
+#[cfg(test)]
+mod publisher_state_machine_tests {
+    use super::{
+        BufferedSignal, FinalRender, LoopEvent, PublisherState, Transition, run_partial_publisher,
+        transition,
+    };
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    const HOLD_DOWN: Duration = Duration::from_secs(10);
+
+    struct Harness {
+        notify: Arc<tokio::sync::Notify>,
+        shutdown_tx: tokio::sync::watch::Sender<bool>,
+        renders: Arc<AtomicUsize>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    fn spawn_harness(render_duration: Duration) -> Harness {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+        let renders = Arc::new(AtomicUsize::new(0));
+
+        let loop_notify = Arc::clone(&notify);
+        let loop_renders = Arc::clone(&renders);
+
+        let task = tokio::spawn(async move {
+            let render = move || {
+                let renders = Arc::clone(&loop_renders);
+                async move {
+                    if !render_duration.is_zero() {
+                        tokio::time::sleep(render_duration).await;
+                    }
+                    renders.fetch_add(1, Ordering::SeqCst);
+                }
+            };
+            run_partial_publisher(&loop_notify, &mut shutdown_rx, HOLD_DOWN, render).await;
+        });
+
+        Harness {
+            notify,
+            shutdown_tx,
+            renders,
+            task,
+        }
+    }
+
+    impl Harness {
+        fn count(&self) -> usize {
+            self.renders.load(Ordering::SeqCst)
+        }
+
+        async fn settle(&self) {
+            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+
+        async fn shutdown(self) -> usize {
+            let _ = self.shutdown_tx.send(true);
+            self.task.await.expect("publisher task joins cleanly");
+            self.renders.load(Ordering::SeqCst)
+        }
+
+        fn stop(&self) {
+            let _ = self.shutdown_tx.send(true);
+        }
+
+        async fn join(self) -> usize {
+            self.task.await.expect("publisher task joins cleanly");
+            self.renders.load(Ordering::SeqCst)
+        }
+    }
+
+    #[test]
+    fn holding_down_with_a_dirty_flag_is_distinct_from_a_clean_hold_down() {
+        assert_ne!(
+            PublisherState::HoldingDown { dirty: true },
+            PublisherState::HoldingDown { dirty: false }
+        );
+        assert_ne!(
+            PublisherState::Idle,
+            PublisherState::HoldingDown { dirty: false }
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_signal_while_idle_renders_immediately_on_the_leading_edge() {
+        let h = spawn_harness(Duration::ZERO);
+        h.settle().await;
+        assert_eq!(h.count(), 0);
+
+        h.notify.notify_one();
+        h.settle().await;
+
+        assert_eq!(
+            h.count(),
+            1,
+            "a signal arriving while idle must render at once, adding no latency"
+        );
+        h.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_signal_during_the_hold_down_coalesces_into_exactly_one_later_render() {
+        let h = spawn_harness(Duration::ZERO);
+        h.settle().await;
+
+        h.notify.notify_one();
+        h.settle().await;
+        assert_eq!(h.count(), 1);
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        h.notify.notify_one();
+        h.settle().await;
+        assert_eq!(
+            h.count(),
+            1,
+            "a signal inside the hold-down must not render immediately"
+        );
+
+        tokio::time::sleep(Duration::from_secs(7)).await;
+        h.settle().await;
+        assert_eq!(h.count(), 1, "the hold-down has not expired yet");
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        h.settle().await;
+        assert_eq!(
+            h.count(),
+            2,
+            "the coalesced signal must produce exactly one follow-up render"
+        );
+
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        h.settle().await;
+        assert_eq!(h.count(), 2, "a clean hold-down expiry must not render");
+
+        h.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn many_signals_inside_one_window_produce_exactly_one_follow_up_render() {
+        let h = spawn_harness(Duration::ZERO);
+        h.settle().await;
+
+        h.notify.notify_one();
+        h.settle().await;
+        assert_eq!(h.count(), 1);
+
+        for _ in 0..20 {
+            h.notify.notify_one();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        h.settle().await;
+        assert_eq!(h.count(), 1);
+
+        tokio::time::sleep(Duration::from_secs(12)).await;
+        h.settle().await;
+        assert_eq!(
+            h.count(),
+            2,
+            "twenty signals in one window coalesce to one follow-up render"
+        );
+
+        h.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_hold_down_is_measured_from_render_completion_not_render_start() {
+        let render_duration = Duration::from_secs(4);
+        let h = spawn_harness(render_duration);
+        h.settle().await;
+
+        let started = tokio::time::Instant::now();
+        h.notify.notify_one();
+        tokio::time::sleep(render_duration).await;
+        h.settle().await;
+        assert_eq!(h.count(), 1, "the leading-edge render has completed");
+
+        h.notify.notify_one();
+        h.settle().await;
+
+        tokio::time::sleep(Duration::from_secs(9)).await;
+        h.settle().await;
+        assert_eq!(
+            h.count(),
+            1,
+            "hold-down anchored to completion has not expired 13s after render start"
+        );
+
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        h.settle().await;
+        assert_eq!(
+            h.count(),
+            1,
+            "anchoring to render START would have completed a second render by now"
+        );
+
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        h.settle().await;
+        assert_eq!(h.count(), 2, "the follow-up render starts after completion");
+        assert!(
+            tokio::time::Instant::now().duration_since(started) >= render_duration + HOLD_DOWN,
+            "the second render cannot begin before completion + hold-down"
+        );
+
+        h.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_signal_arriving_while_a_render_is_in_flight_is_not_lost() {
+        let render_duration = Duration::from_secs(4);
+        let h = spawn_harness(render_duration);
+        h.settle().await;
+
+        h.notify.notify_one();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        h.notify.notify_one();
+
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        h.settle().await;
+        assert_eq!(h.count(), 1, "only the in-flight render has completed");
+
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        h.settle().await;
+        assert_eq!(
+            h.count(),
+            2,
+            "the signal delivered mid-render was retained and coalesced, not dropped"
+        );
+
+        h.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_dirty_flag_pending_at_the_barrier_is_flushed_before_the_task_exits() {
+        let h = spawn_harness(Duration::ZERO);
+        h.settle().await;
+
+        h.notify.notify_one();
+        h.settle().await;
+        assert_eq!(h.count(), 1);
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        h.notify.notify_one();
+        h.settle().await;
+        assert_eq!(h.count(), 1, "still inside the hold-down");
+
+        let barrier_entered = tokio::time::Instant::now();
+        let total = h.shutdown().await;
+
+        assert_eq!(
+            total, 2,
+            "CHE-0068:R5 - a pending coalesced render must be flushed at the barrier, not dropped"
+        );
+        assert!(
+            tokio::time::Instant::now().duration_since(barrier_entered) < HOLD_DOWN,
+            "CHE-0068:R5 - the barrier must pre-empt the hold-down, never wait it out"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_clean_hold_down_at_the_barrier_does_not_render_again() {
+        let h = spawn_harness(Duration::ZERO);
+        h.settle().await;
+
+        h.notify.notify_one();
+        h.settle().await;
+        assert_eq!(h.count(), 1);
+
+        assert_eq!(
+            h.shutdown().await,
+            1,
+            "nothing is pending, so the barrier flushes nothing"
+        );
+    }
+
+    const ALL_STATES: [PublisherState; 3] = [
+        PublisherState::Idle,
+        PublisherState::HoldingDown { dirty: false },
+        PublisherState::HoldingDown { dirty: true },
+    ];
+
+    const ALL_EVENTS: [LoopEvent; 3] = [
+        LoopEvent::Signal,
+        LoopEvent::HoldDownExpired,
+        LoopEvent::ShutdownObserved,
+    ];
+
+    #[test]
+    fn once_shutdown_is_observed_every_event_leaves_the_loop_without_rendering() {
+        for state in ALL_STATES {
+            for event in ALL_EVENTS {
+                assert!(
+                    matches!(transition(true, state, event), Transition::Exit { .. }),
+                    "after shutdown is observed the loop must have no branch left to take: \
+                     state {state:?}, event {event:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_signal_consumed_by_the_exiting_iteration_is_carried_into_the_terminal_decision() {
+        for state in ALL_STATES {
+            assert_eq!(
+                transition(true, state, LoopEvent::Signal),
+                Transition::Exit {
+                    carried_signal: BufferedSignal::Present
+                },
+                "the exiting iteration consumed the Notify permit, so it must carry it \
+                 forward rather than drop it: state {state:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn before_shutdown_the_loop_still_advances_the_hold_down_state_machine() {
+        assert_eq!(
+            transition(false, PublisherState::Idle, LoopEvent::Signal),
+            Transition::RenderLeadingEdge
+        );
+        assert_eq!(
+            transition(
+                false,
+                PublisherState::HoldingDown { dirty: false },
+                LoopEvent::Signal
+            ),
+            Transition::MarkDirty
+        );
+        assert_eq!(
+            transition(
+                false,
+                PublisherState::HoldingDown { dirty: true },
+                LoopEvent::HoldDownExpired
+            ),
+            Transition::RenderCoalesced
+        );
+        assert_eq!(
+            transition(
+                false,
+                PublisherState::HoldingDown { dirty: false },
+                LoopEvent::HoldDownExpired
+            ),
+            Transition::ParkIdle
+        );
+    }
+
+    #[test]
+    fn a_buffered_signal_forces_a_final_render_even_from_a_clean_state() {
+        assert_eq!(
+            FinalRender::at_barrier(PublisherState::Idle, BufferedSignal::Present),
+            FinalRender::Required
+        );
+        assert_eq!(
+            FinalRender::at_barrier(
+                PublisherState::HoldingDown { dirty: false },
+                BufferedSignal::Present
+            ),
+            FinalRender::Required
+        );
+        assert_eq!(
+            FinalRender::at_barrier(PublisherState::Idle, BufferedSignal::Absent),
+            FinalRender::NotRequired
+        );
+        assert_eq!(
+            FinalRender::at_barrier(
+                PublisherState::HoldingDown { dirty: true },
+                BufferedSignal::Absent
+            ),
+            FinalRender::Required
+        );
+    }
+
+    #[test]
+    fn draining_reports_a_buffered_permit_exactly_once_and_never_blocks() {
+        let notify = tokio::sync::Notify::new();
+        assert_eq!(BufferedSignal::drain(&notify), BufferedSignal::Absent);
+
+        notify.notify_one();
+        assert_eq!(BufferedSignal::drain(&notify), BufferedSignal::Present);
+        assert_eq!(BufferedSignal::drain(&notify), BufferedSignal::Absent);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_barrier_flush_pre_empts_the_hold_down_and_renders_exactly_once() {
+        let render_duration = Duration::from_secs(4);
+        let h = spawn_harness(render_duration);
+        h.settle().await;
+
+        h.notify.notify_one();
+        tokio::time::sleep(render_duration).await;
+        h.settle().await;
+        assert_eq!(h.count(), 1, "the leading-edge render has completed");
+
+        h.notify.notify_one();
+        h.settle().await;
+        assert_eq!(h.count(), 1, "still inside the hold-down");
+
+        let barrier_entered = tokio::time::Instant::now();
+        h.stop();
+        let total = h.join().await;
+        let barrier_cost = tokio::time::Instant::now().duration_since(barrier_entered);
+
+        assert_eq!(
+            total, 2,
+            "CHE-0068:R5 - the barrier flushes the pending render exactly once"
+        );
+        assert!(
+            barrier_cost >= render_duration,
+            "the flush really did run a slow render"
+        );
+        assert!(
+            barrier_cost < render_duration * 2,
+            "with no render in flight at the shutdown send, the barrier costs one render"
+        );
+        assert!(
+            barrier_cost < HOLD_DOWN,
+            "CHE-0068:R5 - the barrier pre-empts the hold-down, never waits it out"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn signals_arriving_during_the_barrier_flush_cannot_cause_a_second_render() {
+        let render_duration = Duration::from_secs(4);
+        let h = spawn_harness(render_duration);
+        h.settle().await;
+
+        h.notify.notify_one();
+        tokio::time::sleep(render_duration).await;
+        h.settle().await;
+        assert_eq!(h.count(), 1);
+
+        h.notify.notify_one();
+        h.settle().await;
+        assert_eq!(h.count(), 1, "still inside the hold-down");
+
+        let barrier_entered = tokio::time::Instant::now();
+        h.stop();
+
+        for _ in 0..16 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            h.notify.notify_one();
+        }
+
+        let total = h.join().await;
+        let barrier_cost = tokio::time::Instant::now().duration_since(barrier_entered);
+
+        assert_eq!(
+            total, 2,
+            "signals arriving during the flush are deliberately discarded: the barrier \
+             observes the latest state at barrier time, not afterwards"
+        );
+        assert!(
+            barrier_cost < HOLD_DOWN,
+            "a producer active during the flush cannot delay exit"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_permit_buffered_before_shutdown_with_a_clean_hold_down_still_flushes_once() {
+        let render_duration = Duration::from_secs(4);
+        let h = spawn_harness(render_duration);
+        h.settle().await;
+
+        h.notify.notify_one();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        h.notify.notify_one();
+        h.stop();
+
+        let total = h.join().await;
+
+        assert_eq!(
+            total, 2,
+            "a signal buffered in the Notify permit before shutdown, with the state still \
+             clean, must be drained into the terminal decision and flushed exactly once"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_producer_notifying_across_shutdown_cannot_delay_exit_beyond_one_render() {
+        let render_duration = Duration::from_secs(4);
+        let h = spawn_harness(render_duration);
+        h.settle().await;
+
+        h.notify.notify_one();
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        h.settle().await;
+        assert_eq!(
+            h.count(),
+            1,
+            "the hold-down has expired clean; state is Idle"
+        );
+
+        let producer_notify = Arc::clone(&h.notify);
+        let producer = tokio::spawn(async move {
+            loop {
+                producer_notify.notify_one();
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        });
+
+        let barrier_entered = tokio::time::Instant::now();
+        h.notify.notify_one();
+        h.stop();
+
+        let total = h.join().await;
+        let barrier_cost = tokio::time::Instant::now().duration_since(barrier_entered);
+        producer.abort();
+
+        assert_eq!(
+            total, 2,
+            "a producer notifying continuously across shutdown must not buy itself a second \
+             render: the terminal path has no branch it can win"
+        );
+        assert!(
+            barrier_cost < render_duration * 2,
+            "with no render in flight at the shutdown send, exit costs one render and is \
+             bounded by that, not by producer activity"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_sent_after_the_stopping_snapshot_costs_at_most_two_renders() {
+        let render_duration = Duration::from_secs(2);
+        let h = spawn_harness(render_duration);
+        h.settle().await;
+
+        h.notify.notify_one();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(
+            h.count(),
+            0,
+            "the leading-edge render is in flight; stopping was snapshotted false before it"
+        );
+
+        let shutdown_sent = tokio::time::Instant::now();
+        h.stop();
+        h.notify.notify_one();
+
+        let total = h.join().await;
+        let barrier_cost = tokio::time::Instant::now().duration_since(shutdown_sent);
+
+        assert_eq!(
+            total, 2,
+            "exactly two renders: the one in flight across the shutdown send, which is \
+             deliberately not cancelled because cancelling would discard completed work, \
+             plus one terminal flush"
+        );
+        assert!(
+            barrier_cost >= render_duration,
+            "the terminal flush really did run a slow render"
+        );
+        assert!(
+            barrier_cost <= render_duration * 2,
+            "the true bound: at most one uncancelled in-flight render plus one terminal \
+             flush, never a third"
+        );
+        assert!(
+            barrier_cost < HOLD_DOWN,
+            "CHE-0068:R5 - the barrier is never delayed by the hold-down window"
+        );
     }
 }
 
