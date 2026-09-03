@@ -208,8 +208,53 @@ impl ControlKey {
     }
 }
 
-/// Control names in canonical order for owner tables.
-const CONTROL_NAMES: &[ControlKey] = &[
+/// Canonical ordered column set of the owners OVERVIEW table
+/// (`owners.html`), left to right.
+///
+/// Sole owner of which controls that table shows and in what order: both the
+/// `<th>` headers ([`OwnersViewModel::control_columns`]) and every row's
+/// cells ([`OwnerOverviewRow::controls`]) are derived from this one list, so
+/// a reorder, addition or removal cannot desynchronise header from cell.
+///
+/// Deliberately separate from
+/// [`OWNER_DETAIL_SUMMARY_CARD_CONTROLS`] and [`REPO_STATUS_DOT_CONTROLS`]:
+/// those answer different questions for different consumers, and a single
+/// shared list would silently inject a column change into all three
+/// (COM-0027:R3/R4).
+///
+/// [`OwnersViewModel::control_columns`]: crate::report::view_model::OwnersViewModel::control_columns
+/// [`OwnerOverviewRow::controls`]: crate::report::view_model::OwnerOverviewRow::controls
+const OWNERS_OVERVIEW_CONTROLS: &[ControlKey] = &[
+    ControlKey::SecurityPolicy,
+    ControlKey::SecretScanning,
+    ControlKey::DependabotSecurityUpdates,
+    ControlKey::BranchProtection,
+];
+
+/// Canonical ordered control set of the owner DETAIL page's summary cards.
+///
+/// Sole owner of which controls get a drill-down summary card. The two
+/// lifecycle cards rendered beside them (Freshness, Ownership) are not
+/// members: they are read from different sources
+/// ([`OwnerDetailViewModel::non_stale_cell`] and `non_orphaned_cell`) and
+/// carry no `how_to_fix` drill-down, so representing them here would claim a
+/// uniformity the data does not have.
+///
+/// [`OwnerDetailViewModel::non_stale_cell`]: crate::report::view_model::OwnerDetailViewModel::non_stale_cell
+const OWNER_DETAIL_SUMMARY_CARD_CONTROLS: &[ControlKey] = &[
+    ControlKey::SecurityPolicy,
+    ControlKey::SecretScanning,
+    ControlKey::DependabotSecurityUpdates,
+    ControlKey::BranchProtection,
+];
+
+/// Canonical ordered column set of the per-repository status-dot table on the
+/// owner detail page.
+///
+/// Sole owner of those column headers. Its order MUST match the order in
+/// which [`build_status_dots`] emits its [`StatusDot`] vector, since the
+/// template zips headers against dots positionally.
+const REPO_STATUS_DOT_CONTROLS: &[ControlKey] = &[
     ControlKey::SecurityPolicy,
     ControlKey::SecretScanning,
     ControlKey::DependabotSecurityUpdates,
@@ -796,7 +841,7 @@ fn build_owners_view_model(
         .collect();
     let slugs = crate::report::view_model::generate_unique_slugs(&owners);
 
-    let control_columns: Vec<ControlColumn> = CONTROL_NAMES
+    let control_columns: Vec<ControlColumn> = OWNERS_OVERVIEW_CONTROLS
         .iter()
         .map(|&k| ControlColumn {
             name: k.display_name(),
@@ -813,7 +858,7 @@ fn build_owners_view_model(
                 .cloned()
                 .unwrap_or_else(|| "unknown".to_string());
 
-            let controls: Vec<ControlCell> = CONTROL_NAMES
+            let controls: Vec<ControlCell> = OWNERS_OVERVIEW_CONTROLS
                 .iter()
                 .map(|&key| {
                     build_control_cell(
@@ -1165,7 +1210,7 @@ fn build_owner_detail_view_models(
         .collect();
     let slugs = crate::report::view_model::generate_unique_slugs(&owners);
 
-    let control_columns: Vec<ControlColumn> = CONTROL_NAMES
+    let control_columns: Vec<ControlColumn> = REPO_STATUS_DOT_CONTROLS
         .iter()
         .map(|&k| ControlColumn {
             name: k.display_name(),
@@ -1197,7 +1242,7 @@ fn build_one_owner_detail_view_model(
     ctx: &OwnerDetailBuildContext<'_>,
 ) -> (String, OwnerDetailViewModel) {
     let m = owner.metrics;
-    let summary_cards: Vec<SummaryCard> = CONTROL_NAMES
+    let summary_cards: Vec<SummaryCard> = OWNER_DETAIL_SUMMARY_CARD_CONTROLS
         .iter()
         .map(|&key| SummaryCard {
             key: key.as_str(),
@@ -1760,7 +1805,7 @@ fn unknown_or_pending_dot(pending: bool) -> StatusDot {
 
 /// Map a repository's check results to status dots for each control.
 ///
-/// Returns one [`StatusDot`] per control in [`CONTROL_NAMES`] order:
+/// Returns one [`StatusDot`] per control in [`REPO_STATUS_DOT_CONTROLS`] order:
 /// 1. Security Policy
 /// 2. Secret Scanning
 /// 3. Dependabot Status
