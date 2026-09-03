@@ -147,6 +147,13 @@ const STYLESHEET: &str = include_str!("../../templates/style.css");
 /// in CSP — no inline scripts needed.
 const WS_CLIENT_JS: &str = include_str!("../../templates/ws.js");
 
+/// Embedded site favicon, compiled into the binary at build time.
+///
+/// Published as `favicon.svg` alongside the HTML pages and referenced
+/// from the shared head partial, so every served page carries it under
+/// `default-src 'self'` with no CSP relaxation.
+const FAVICON_SVG: &str = include_str!("../../templates/favicon.svg");
+
 /// Canonical owner of every dashboard control key and its display label
 /// (COM-0027:R1). The wire strings emitted by [`ControlKey::as_str`] are the
 /// authoritative spelling of each control key; the rate-map keys in
@@ -467,6 +474,7 @@ pub fn render_dashboard_streaming(
     sink("admin.html".to_string(), admin);
     sink("style.css".to_string(), STYLESHEET.to_string());
     sink("ws.js".to_string(), WS_CLIENT_JS.to_string());
+    sink("favicon.svg".to_string(), FAVICON_SVG.to_string());
     sink("gh-report-web-client.js".to_string(), String::new());
     sink("gh-report-web-client_bg.wasm".to_string(), String::new());
     sink("sort-init.js".to_string(), String::new());

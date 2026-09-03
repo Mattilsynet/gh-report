@@ -380,6 +380,69 @@ mod tests {
         handle.abort();
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn served_dashboard_serves_favicon_and_pages_reference_it() {
+        use crate::app::collect::build_cached_pages;
+
+        let (config, evidence) = governance_configured_fixture();
+        let cache = build_cached_pages(&config, &evidence)
+            .await
+            .expect("production cache-build path succeeds");
+        assert!(
+            cache.contains_key("favicon.svg"),
+            "favicon.svg must be registered by the asset path"
+        );
+
+        let state = state_no_cache().await;
+        state.set_html_cache(cache);
+
+        let app = cherry_pit_web::serve::build_router(
+            state,
+            server_layer_limits(),
+            server_ws_policy(),
+            &served_dashboard_server_config(),
+            None,
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        wait_for_server(addr).await;
+
+        let icon_resp = reqwest::get(format!("http://{addr}/favicon.svg"))
+            .await
+            .unwrap();
+        assert_eq!(icon_resp.status(), 200);
+        assert_eq!(
+            icon_resp
+                .headers()
+                .get("content-type")
+                .expect("favicon must carry a content-type")
+                .to_str()
+                .unwrap(),
+            "image/svg+xml"
+        );
+        let icon_body = icon_resp.text().await.unwrap();
+        assert!(
+            icon_body.contains("<svg"),
+            "favicon body must be an SVG document"
+        );
+
+        let page_resp = reqwest::get(format!("http://{addr}/index.html"))
+            .await
+            .unwrap();
+        assert_eq!(page_resp.status(), 200);
+        let body = page_resp.text().await.unwrap();
+        assert!(
+            body.contains(r#"<link rel="icon" type="image/svg+xml" href="favicon.svg">"#),
+            "served page head must reference the favicon"
+        );
+
+        handle.abort();
+    }
+
     async fn wait_for_server(addr: std::net::SocketAddr) {
         let timeout = std::time::Duration::from_secs(5);
         tokio::time::timeout(timeout, async {

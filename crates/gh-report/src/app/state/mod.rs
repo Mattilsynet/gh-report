@@ -80,6 +80,9 @@ const STYLESHEET: &str = include_str!("../../../templates/style.css");
 /// Embedded WebSocket client script, compiled into the binary at build time.
 const WS_CLIENT_JS: &str = include_str!("../../../templates/ws.js");
 
+/// Embedded site favicon, compiled into the binary at build time.
+const FAVICON_SVG: &str = include_str!("../../../templates/favicon.svg");
+
 /// Embedded Leptos CSR client WASM glue (ES module), compiled into the
 /// binary at build time. See [`crate::app::state`] module docs and
 /// CHE-0087; source crate `gh-report-web-client`, rebuilt and
@@ -119,6 +122,12 @@ pub static CACHED_STYLESHEET: LazyLock<CachedPage> =
 /// Same rationale as [`CACHED_STYLESHEET`]: compute once, clone cheaply.
 pub static CACHED_WS_JS: LazyLock<CachedPage> =
     LazyLock::new(|| CachedPage::new("ws.js", WS_CLIENT_JS.as_bytes().to_vec()));
+
+/// Pre-computed `CachedPage` for `favicon.svg`.
+///
+/// Same rationale as [`CACHED_STYLESHEET`]: compute once, clone cheaply.
+pub static CACHED_FAVICON_SVG: LazyLock<CachedPage> =
+    LazyLock::new(|| CachedPage::new("favicon.svg", FAVICON_SVG.as_bytes().to_vec()));
 
 /// Pre-computed `CachedPage` for `gh-report-web-client.js` (the Leptos
 /// CSR client's ES module glue).

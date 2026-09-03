@@ -110,6 +110,7 @@ fn is_non_html_asset(name: &str) -> bool {
         ext.eq_ignore_ascii_case("css")
             || ext.eq_ignore_ascii_case("js")
             || ext.eq_ignore_ascii_case("wasm")
+            || ext.eq_ignore_ascii_case("svg")
     })
 }
 
@@ -441,11 +442,12 @@ fn render_dashboard_produces_all_pages() {
     assert!(pages.contains_key("gh-report-web-client_bg.wasm"));
     assert!(pages.contains_key("sort-init.js"));
     assert!(pages.contains_key("clipboard.js"));
+    assert!(pages.contains_key("favicon.svg"));
     assert!(pages.contains_key("orphans.html"));
     assert!(pages.contains_key("deleted.html"));
     assert!(pages.contains_key("branch_protection.html"));
     assert!(!pages.contains_key("OPERATIONS.html"));
-    assert_eq!(pages.len(), 12);
+    assert_eq!(pages.len(), 13);
 }
 
 #[test]
