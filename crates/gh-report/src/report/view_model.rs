@@ -1386,6 +1386,18 @@ pub struct ReportViewModel {
     /// CSS width class for the health score progress bar.
     pub health_width_class: &'static str,
 
+    /// Display label of the org-wide archived/(archived + stale-active)
+    /// control, derived from [`ARCHIVAL_COVERAGE_LABEL`].
+    ///
+    /// The index template reads this in both places that name the control —
+    /// its own card and the Org Governance score tooltip's six-control
+    /// roster — so the two cannot drift apart (CHE-0108:R1, COM-0027:R3).
+    pub archival_coverage_label: &'static str,
+    /// Explanatory copy for the card carrying
+    /// [`ReportViewModel::archival_coverage_label`], derived from
+    /// [`ARCHIVAL_COVERAGE_TOOLTIP`].
+    pub archival_coverage_tooltip: &'static str,
+
     /// Archival coverage rate: proportion of stale-lifecycle repos
     /// (stale active + archived) that have been archived.
     /// Formula: `archived / (archived + stale_active) × 100`.
@@ -1657,6 +1669,8 @@ impl ReportViewModel {
             health_score_formatted: health.score_formatted,
             health_score_table_formatted: health.table_formatted,
             health_width_class: health.width_class,
+            archival_coverage_label: ARCHIVAL_COVERAGE_LABEL,
+            archival_coverage_tooltip: ARCHIVAL_COVERAGE_TOOLTIP,
             stale_rate,
             stale_rate_formatted,
             stale_tier,
@@ -2418,6 +2432,28 @@ pub(crate) fn coverage_control_how_to_fix(key: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+/// Canonical, single-source display label of the org-wide
+/// `archived / (archived + stale_active)` control.
+///
+/// Sole owner of this name. Both places that name the control on the index
+/// page — the control's own card and the Org Governance score tooltip's
+/// six-control roster — read it through
+/// [`ReportViewModel::archival_coverage_label`]; neither template may
+/// hardcode it (CHE-0108:R1, COM-0027:R3).
+///
+/// This control has no [`ControlKey`] variant: it is org-level and is not a
+/// member of any per-owner control set.
+///
+/// [`ControlKey`]: crate::report::html::ControlKey
+pub(crate) const ARCHIVAL_COVERAGE_LABEL: &str = "Archival Coverage";
+
+/// Canonical, single-source explanatory copy for the control labelled
+/// [`ARCHIVAL_COVERAGE_LABEL`].
+///
+/// Sole owner of this string; the index template reads it through
+/// [`ReportViewModel::archival_coverage_tooltip`].
+pub(crate) const ARCHIVAL_COVERAGE_TOOLTIP: &str = "Archived / (archived + stale-active) — fraction of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better.";
 
 /// Canonical, single-source explanatory copy for the `non_stale` control
 /// ("Freshness").
