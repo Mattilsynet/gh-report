@@ -11,6 +11,10 @@ use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 
 use tracing::debug;
 
+use crate::aggregate::metrics::{
+    CoverageControl, DenominatorMembership, control_denominator_population, denominator_met_count,
+    denominator_repo_count,
+};
 use crate::config;
 use crate::config::dashboard::{CoverageTiers, DashboardConfig};
 use crate::domain::checks::{
@@ -26,10 +30,11 @@ use crate::domain::time::{is_repo_stale, parse_iso8601};
 use crate::error::ReportError;
 use crate::report::view_model::{
     BprBandGroup, BprRepoRow, BranchProtectionRegimeViewModel, ControlCell, ControlColumn,
-    CoverageTier, DashboardHref, DeletedRepoRow, DeletedViewModel, DrillDownPage, GhostTeamRow,
-    OrphanedRepoRow, OrphanedTeamGroup, OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow,
-    OwnerRepoRow, OwnersViewModel, ReportViewModel, RosterFreshness, RosterSection, StatusDot,
-    SummaryCard, TeamMemberRow, TeamRosterViewModel, TopNav, TopSecurityTeam, WildcardOwnerRow,
+    ControlDenominatorViewModel, CoverageTier, DashboardHref, DeletedRepoRow, DeletedViewModel,
+    DenominatorRepoRow, DrillDownPage, GhostTeamRow, OrphanedRepoRow, OrphanedTeamGroup,
+    OrphanedViewModel, OwnerDetailViewModel, OwnerOverviewRow, OwnerRepoRow, OwnersViewModel,
+    ReportViewModel, RosterFreshness, RosterSection, StatusDot, SummaryCard, TeamMemberRow,
+    TeamRosterViewModel, TopNav, TopSecurityTeam, UnmeasuredRepoRow, WildcardOwnerRow,
     bpr_band_metadata, compute_health_score, coverage_control_column_tooltip,
     coverage_control_how_to_fix, format_exclusion, generate_slug, rate_to_width_class,
     strip_org_prefix,
@@ -134,6 +139,29 @@ struct BranchProtectionTemplate {
     warm_start: bool,
 }
 
+/// Declare one coverage-denominator drill-down template.
+///
+/// Askama binds a template path to a struct, so the four denominator pages
+/// need four types; the macro keeps them a single shape over a single view
+/// model rather than four hand-maintained page layouts.
+macro_rules! denominator_template {
+    ($name:ident, $path:literal) => {
+        #[derive(Template)]
+        #[template(path = $path)]
+        struct $name {
+            vm: ControlDenominatorViewModel,
+            nav: TopNav,
+            title: String,
+            warm_start: bool,
+        }
+    };
+}
+
+denominator_template!(SecurityPolicyDenominatorTemplate, "security_policy.html");
+denominator_template!(SecretScanningDenominatorTemplate, "secret_scanning.html");
+denominator_template!(DependabotDenominatorTemplate, "dependabot_status.html");
+denominator_template!(CodeownersDenominatorTemplate, "codeowners.html");
+
 /// Embedded CSS stylesheet, compiled into the binary at build time.
 ///
 /// Published as `style.css` alongside the HTML pages so the server's
@@ -202,7 +230,7 @@ impl ControlKey {
         }
     }
 
-    fn display_name(self) -> &'static str {
+    const fn display_name(self) -> &'static str {
         match self {
             Self::SecurityPolicy => "Security Policy",
             Self::SecretScanning => "Secret Scanning",
@@ -214,6 +242,48 @@ impl ControlKey {
         }
     }
 }
+
+/// One dashboard card whose coverage denominator is enumerated on its own
+/// drill-down page.
+///
+/// Pairs the three owners of the page's identity: the denominator
+/// ([`CoverageControl`], owned by `aggregate::metrics`), the filename
+/// ([`DrillDownPage`], CHE-0108:R1) and the display label
+/// ([`ControlKey::display_name`], COM-0027:R3). No field is restated at a
+/// call site.
+struct DenominatorDrillDown {
+    control: CoverageControl,
+    page: DrillDownPage,
+    display_name: &'static str,
+}
+
+/// Canonical set of coverage cards that own a denominator drill-down page.
+///
+/// `CODEOWNERS` has no [`ControlKey`] variant — it is tautological at the
+/// per-owner level and so is absent from every owner-facing control list —
+/// so its label is spelled here, where nothing else owns it.
+const DENOMINATOR_DRILL_DOWNS: &[DenominatorDrillDown] = &[
+    DenominatorDrillDown {
+        control: CoverageControl::SecurityPolicy,
+        page: DrillDownPage::SecurityPolicy,
+        display_name: ControlKey::SecurityPolicy.display_name(),
+    },
+    DenominatorDrillDown {
+        control: CoverageControl::SecretScanning,
+        page: DrillDownPage::SecretScanning,
+        display_name: ControlKey::SecretScanning.display_name(),
+    },
+    DenominatorDrillDown {
+        control: CoverageControl::Dependabot,
+        page: DrillDownPage::DependabotStatus,
+        display_name: ControlKey::DependabotSecurityUpdates.display_name(),
+    },
+    DenominatorDrillDown {
+        control: CoverageControl::Codeowners,
+        page: DrillDownPage::Codeowners,
+        display_name: "CODEOWNERS",
+    },
+];
 
 /// Canonical ordered column set of the owners OVERVIEW table
 /// (`owners.html`), left to right.
@@ -497,7 +567,7 @@ pub fn render_dashboard_streaming(
         evidence,
         orphaned_vm,
         deleted_vm,
-        nav,
+        &nav,
         warm_start,
         &mut sink,
     )?;
@@ -505,7 +575,8 @@ pub fn render_dashboard_streaming(
     Ok(())
 }
 
-/// Render `orphans.html`, `deleted.html`, and `branch_protection.html`.
+/// Render `orphans.html`, `deleted.html`, `branch_protection.html`, and the
+/// four coverage-denominator drill-down pages.
 ///
 /// Split out of [`render_dashboard_streaming`] to keep that function under
 /// the workspace's `too_many_lines` clippy-pedantic bar.
@@ -517,7 +588,7 @@ fn render_secondary_pages(
     evidence: &Evidence,
     orphaned_vm: OrphanedViewModel,
     deleted_vm: DeletedViewModel,
-    nav: TopNav,
+    nav: &TopNav,
     warm_start: bool,
     sink: &mut impl FnMut(String, String),
 ) -> Result<(), ReportError> {
@@ -543,7 +614,7 @@ fn render_secondary_pages(
     let bpr_html = render_template(&BranchProtectionTemplate {
         title: format!("Branch Protection Regimes — {org}"),
         vm: bpr_vm,
-        nav,
+        nav: nav.clone(),
         warm_start,
     })?;
     sink(
@@ -551,7 +622,111 @@ fn render_secondary_pages(
         bpr_html,
     );
 
+    render_denominator_pages(evidence, nav, warm_start, sink)?;
+
     Ok(())
+}
+
+/// Render one coverage-denominator drill-down page per entry of
+/// [`DENOMINATOR_DRILL_DOWNS`].
+///
+/// # Errors
+///
+/// Returns [`ReportError::TemplateRenderFailed`] if any template rendering fails.
+fn render_denominator_pages(
+    evidence: &Evidence,
+    nav: &TopNav,
+    warm_start: bool,
+    sink: &mut impl FnMut(String, String),
+) -> Result<(), ReportError> {
+    let org = &evidence.assessment_metadata.organization;
+
+    for entry in DENOMINATOR_DRILL_DOWNS {
+        let vm = build_control_denominator_view_model(evidence, entry);
+        let title = format!("{} Coverage — {org}", entry.display_name);
+        let html = match entry.control {
+            CoverageControl::SecurityPolicy => {
+                render_template(&SecurityPolicyDenominatorTemplate {
+                    vm,
+                    nav: nav.clone(),
+                    title,
+                    warm_start,
+                })
+            }
+            CoverageControl::SecretScanning => {
+                render_template(&SecretScanningDenominatorTemplate {
+                    vm,
+                    nav: nav.clone(),
+                    title,
+                    warm_start,
+                })
+            }
+            CoverageControl::Dependabot => render_template(&DependabotDenominatorTemplate {
+                vm,
+                nav: nav.clone(),
+                title,
+                warm_start,
+            }),
+            CoverageControl::Codeowners => render_template(&CodeownersDenominatorTemplate {
+                vm,
+                nav: nav.clone(),
+                title,
+                warm_start,
+            }),
+        }?;
+        sink(entry.page.file_name().to_string(), html);
+    }
+
+    Ok(())
+}
+
+/// Build the view model behind one coverage-denominator drill-down page.
+///
+/// `eligible` is exactly [`control_denominator_population`]'s
+/// [`DenominatorMembership::Eligible`] entries, so the page's repository set
+/// is the card's denominator by construction rather than by convention.
+fn build_control_denominator_view_model(
+    evidence: &Evidence,
+    entry: &DenominatorDrillDown,
+) -> ControlDenominatorViewModel {
+    let org = &evidence.assessment_metadata.organization;
+    let org_encoded = utf8_percent_encode(org, PATH_SEGMENT).to_string();
+    let population = control_denominator_population(entry.control, &evidence.repositories);
+
+    let mut eligible = Vec::new();
+    let mut unmeasured = Vec::new();
+    for (repo, membership) in &population {
+        let name_encoded = utf8_percent_encode(&repo.repository.name, PATH_SEGMENT);
+        let (repo_name, repo_url) = build_repo_display(repo, &org_encoded, &name_encoded);
+        let visibility = repo.repository.visibility.to_string();
+        let archived = repo.repository.archived;
+        match membership {
+            DenominatorMembership::Eligible(outcome) => eligible.push(DenominatorRepoRow::new(
+                repo_name, repo_url, visibility, archived, *outcome,
+            )),
+            DenominatorMembership::Excluded(reason) => unmeasured.push(UnmeasuredRepoRow {
+                repo_name,
+                repo_url,
+                visibility,
+                archived,
+                reason_label: reason.label(),
+            }),
+        }
+    }
+    eligible.sort_by(|a, b| a.repo_name().cmp(b.repo_name()));
+    unmeasured.sort_by(|a, b| a.repo_name.cmp(&b.repo_name));
+
+    ControlDenominatorViewModel {
+        organization: org.clone(),
+        control_name: entry.display_name,
+        population_description: entry.control.population_description(),
+        page_file_name: entry.page.file_name(),
+        numerator: denominator_met_count(&population),
+        denominator: denominator_repo_count(&population),
+        coverage_formatted: entry.control.coverage(&evidence.metrics).to_string(),
+        eligible,
+        unmeasured,
+    }
 }
 
 /// Everything [`render_owner_pages`] needs beyond its output sink.
