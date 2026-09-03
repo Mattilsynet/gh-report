@@ -130,7 +130,7 @@
         {% endif %}
         {% endfor %}
         <div class="card {{ vm.non_stale_cell.tier.css_class() }}">
-            <p class="card-label">{{ vm.non_stale_label }} {% call tooltip::tooltip("(total - stale) / total for this owner's repos — the share not stale, where stale means not updated in 2+ years. One of seven controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.") %}{% endcall %}</p>
+            <p class="card-label">{{ vm.non_stale_label }} {% call tooltip::tooltip(vm.non_stale_tooltip) %}{% endcall %}</p>
             <p class="card-value">{{ vm.non_stale_cell.rate_formatted }}</p>
             <div class="progress-bar">
                 <div class="progress-fill {{ vm.non_stale_cell.tier.css_class() }} {{ vm.non_stale_cell.width_class }}"></div>

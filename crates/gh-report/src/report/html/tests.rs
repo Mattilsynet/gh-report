@@ -4645,6 +4645,46 @@ fn owners_table_freshness_cell_agrees_with_owner_detail_card() {
 }
 
 #[test]
+fn freshness_tooltip_copy_has_exactly_one_canonical_owner() {
+    const FRAGMENT: &str = "the share not stale, where stale means not updated in 2+ years";
+
+    for (name, source) in [
+        (
+            "owner_detail.html",
+            include_str!("../../../templates/owner_detail.html"),
+        ),
+        (
+            "owners.html",
+            include_str!("../../../templates/owners.html"),
+        ),
+    ] {
+        assert!(
+            !source.contains(FRAGMENT),
+            "{name} re-states the Freshness explanatory copy by hand; it must derive it from the single canonical view_model::NON_STALE_TOOLTIP so the column and the detail card cannot drift"
+        );
+    }
+
+    let evidence = evidence_with_enriched_single_team_owner();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let owners_page = pages.get("owners.html").expect("owners page");
+    let detail_page = pages
+        .iter()
+        .find(|(k, _)| k.starts_with("owners/"))
+        .expect("expected an owner detail page")
+        .1;
+
+    let canonical = crate::report::view_model::NON_STALE_TOOLTIP.replace('\'', "&#39;");
+    assert!(
+        owners_page.contains(&canonical),
+        "the owners-overview Freshness header must render the canonical copy"
+    );
+    assert!(
+        detail_page.contains(&canonical),
+        "the owner-detail Freshness card must render the same canonical copy"
+    );
+}
+
+#[test]
 fn owners_overview_columns_and_cells_derive_from_one_canonical_collection() {
     let evidence = evidence_with_enriched_single_team_owner();
     let fixture = unattributed_owners(&evidence.metrics.owner_metrics);

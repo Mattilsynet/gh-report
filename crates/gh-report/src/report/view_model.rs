@@ -508,6 +508,13 @@ pub struct OwnerDetailViewModel {
     /// shared control vocabulary rather than hardcoded in the template, so
     /// a control rename cannot desynchronise the card from the vocabulary.
     pub non_stale_label: String,
+    /// Explanatory tooltip for the `non_stale_cell` card, borrowed from
+    /// [`NON_STALE_TOOLTIP`] — the same single canonical string the
+    /// owners-overview Freshness column header resolves through
+    /// [`coverage_control_column_tooltip`]. The template must render this
+    /// field rather than re-stating the copy, so card and column cannot
+    /// drift (COM-0027:R3/R4).
+    pub non_stale_tooltip: &'static str,
     /// Orphan-ownership control cell for the "Ownership" card —
     /// the `non_orphaned` per-control coverage rate
     /// `owned / (owned + attributed)`, the same value that feeds this

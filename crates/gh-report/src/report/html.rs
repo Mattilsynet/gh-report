@@ -1315,6 +1315,7 @@ fn build_one_owner_detail_view_model(
         has_stale_repos,
         non_stale_cell,
         non_stale_label: ControlKey::NonStale.display_name().to_string(),
+        non_stale_tooltip: crate::report::view_model::NON_STALE_TOOLTIP,
         non_orphaned_cell,
         non_orphaned_label: NON_ORPHANED_CONTROL.display_name().to_string(),
         roster,
