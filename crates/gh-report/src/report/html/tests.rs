@@ -4394,7 +4394,8 @@ fn render_owner_detail_html_repo_posture_tooltip_states_formula_and_exclusion_ru
 }
 
 #[test]
-fn render_owner_detail_html_non_stale_repos_card_disambiguates_freshness_from_archival_coverage() {
+fn render_owner_detail_html_non_stale_repos_card_distinguishes_lifecycle_freshness_from_lifecycle_retirement()
+ {
     let evidence = evidence_with_mixed_owner_types();
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
 
@@ -4432,6 +4433,56 @@ fn render_owner_detail_html_non_stale_repos_card_disambiguates_freshness_from_ar
     assert!(
         detail_page.contains("distinct from the org-wide Lifecycle: Retirement"),
         "Freshness card tooltip must explicitly disambiguate from the org-level Lifecycle: Retirement metric"
+    );
+}
+
+#[test]
+fn the_two_lifecycle_controls_share_a_prefix_and_stay_distinct_measurements() {
+    use crate::report::view_model::{
+        LIFECYCLE_RETIREMENT_LABEL, LIFECYCLE_RETIREMENT_TOOLTIP, NON_STALE_TOOLTIP,
+    };
+
+    let freshness = super::ControlKey::NonStale.display_name();
+    let retirement = LIFECYCLE_RETIREMENT_LABEL;
+
+    assert!(
+        freshness.starts_with("Lifecycle: "),
+        "the per-owner control must carry the shared Lifecycle prefix; got {freshness:?}"
+    );
+    assert!(
+        retirement.starts_with("Lifecycle: "),
+        "the org-wide control must carry the shared Lifecycle prefix; got {retirement:?}"
+    );
+    assert_ne!(
+        freshness, retirement,
+        "the two Lifecycle controls measure different populations with different denominators \
+         and feed different scores; collapsing them onto one label creates a homonym"
+    );
+
+    assert!(
+        NON_STALE_TOOLTIP.contains("(total - stale) / total"),
+        "Lifecycle: Freshness must state its own formula; got {NON_STALE_TOOLTIP:?}"
+    );
+    assert!(
+        !NON_STALE_TOOLTIP.contains("Archived / (archived + stale-active)"),
+        "Lifecycle: Freshness must not claim the other control's formula"
+    );
+    assert!(
+        LIFECYCLE_RETIREMENT_TOOLTIP.contains("Archived / (archived + stale-active)"),
+        "Lifecycle: Retirement must state its own formula; got {LIFECYCLE_RETIREMENT_TOOLTIP:?}"
+    );
+    assert!(
+        !LIFECYCLE_RETIREMENT_TOOLTIP.contains("(total - stale) / total"),
+        "Lifecycle: Retirement must not claim the other control's formula"
+    );
+
+    assert!(
+        NON_STALE_TOOLTIP.contains(retirement),
+        "Lifecycle: Freshness must name the other Lifecycle control it is distinct from"
+    );
+    assert!(
+        LIFECYCLE_RETIREMENT_TOOLTIP.contains(freshness),
+        "Lifecycle: Retirement must name the other Lifecycle control it is distinct from"
     );
 }
 
@@ -4874,7 +4925,10 @@ fn owners_vm_freshness_cell_reuses_the_detail_card_rate_metric() {
             .to_string(),
         "the owners-column cell must reuse the same non_stale RateMetric the detail card renders, not a recomputation"
     );
-    assert_eq!(vm.control_columns.last().map(|c| c.name), Some("Lifecycle: Freshness"));
+    assert_eq!(
+        vm.control_columns.last().map(|c| c.name),
+        Some("Lifecycle: Freshness")
+    );
     assert!(!vm.control_columns.last().unwrap().tooltip.is_empty());
 }
 
@@ -4915,7 +4969,10 @@ fn is_pending_repo_negative_none() {
 
 #[test]
 fn control_display_name_non_stale() {
-    assert_eq!(super::ControlKey::NonStale.display_name(), "Lifecycle: Freshness");
+    assert_eq!(
+        super::ControlKey::NonStale.display_name(),
+        "Lifecycle: Freshness"
+    );
 }
 
 #[test]
