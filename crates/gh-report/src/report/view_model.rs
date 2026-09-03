@@ -593,6 +593,15 @@ pub struct OwnersViewModel {
     /// derived from the single canonical owners-overview column collection.
     /// Freshness is its rightmost member.
     pub control_columns: Vec<ControlColumn>,
+    /// Header tooltip for the Team Health column.
+    ///
+    /// Composed in Rust so the control it names by
+    /// [`ControlKey::display_name`] cannot drift from the column that
+    /// renders under that name (CHE-0108:R1). The template holds no part of
+    /// this copy.
+    ///
+    /// [`ControlKey::display_name`]: crate::report::html::ControlKey::display_name
+    pub team_health_tooltip: String,
 }
 
 /// A top-scoring security team for display in the CODEOWNERS Summary box.

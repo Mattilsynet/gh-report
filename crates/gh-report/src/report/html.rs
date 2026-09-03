@@ -904,7 +904,20 @@ fn build_owners_view_model(
     Some(OwnersViewModel {
         rows,
         control_columns,
+        team_health_tooltip: team_health_tooltip(ControlKey::NonStale.display_name()),
     })
+}
+
+/// Compose the owners-overview Team Health header tooltip around the
+/// canonical display name of the `non_stale` control.
+///
+/// Sole owner of that copy: `owners.html` interpolates the result rather
+/// than restating the control's name, so renaming the control renames it
+/// here too (CHE-0108:R1, COM-0027:R3).
+fn team_health_tooltip(non_stale_label: &str) -> String {
+    format!(
+        "Geometric mean of measured control rates across seven controls for this owner's repos — Security Policy, Secret Scanning, Dependabot, Branch Protection, {non_stale_label}, Alert-Free, Ownership. The four control-presence columns and the {non_stale_label} column below show five of those inputs; Alert-Free and Ownership feed the score but are not shown as columns. Unmeasured controls are excluded from each rate's denominator. Excludes CODEOWNERS, which is always 100% at the owner level by construction. This is the owner-level set; the org-wide Governance score is a different six-control set. N/A when no control is scorable."
+    )
 }
 
 /// Map an owner per-control coverage key to its `CollectionHealthCheckKind`

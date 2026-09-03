@@ -5354,6 +5354,7 @@ fn podium_excludes_team_at_exactly_100_percent() {
             team_row("climbing-team", 92.0),
         ],
         control_columns: Vec::new(),
+        team_health_tooltip: String::new(),
     };
     let podium = build_top_security_teams(&owners_vm);
 
@@ -5372,6 +5373,7 @@ fn podium_includes_team_at_99_9_percent() {
     let owners_vm = OwnersViewModel {
         rows: vec![team_row("almost-team", 99.9)],
         control_columns: Vec::new(),
+        team_health_tooltip: String::new(),
     };
     let podium = build_top_security_teams(&owners_vm);
 
@@ -5386,6 +5388,7 @@ fn podium_empty_when_every_team_at_100_percent() {
     let owners_vm = OwnersViewModel {
         rows: vec![team_row("team-a", 100.0), team_row("team-b", 100.0)],
         control_columns: Vec::new(),
+        team_health_tooltip: String::new(),
     };
     let podium = build_top_security_teams(&owners_vm);
 
@@ -5405,6 +5408,7 @@ fn podium_ordering_holds_with_100_percent_exemption_applied() {
             team_row("bronze-team", 85.0),
         ],
         control_columns: Vec::new(),
+        team_health_tooltip: String::new(),
     };
     let podium = build_top_security_teams(&owners_vm);
     let ranks: Vec<&str> = podium.iter().map(|t| t.rank_class).collect();
