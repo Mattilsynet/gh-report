@@ -4537,6 +4537,347 @@ fn render_owner_detail_html_non_stale_repos_card_pins_enriched_rate_tier_and_wid
     );
 }
 
+fn owners_header_cells(owners_page: &str) -> Vec<String> {
+    let thead_start = owners_page
+        .find("<thead>")
+        .expect("owners.html must have a <thead>");
+    let thead_end = owners_page[thead_start..]
+        .find("</thead>")
+        .expect("owners.html <thead> must close")
+        + thead_start;
+    owners_page[thead_start..thead_end]
+        .split("<th ")
+        .skip(1)
+        .map(|chunk| {
+            let end = chunk.find("</th>").expect("every <th> must close");
+            chunk[..end].to_string()
+        })
+        .collect()
+}
+
+fn owners_first_row_cells(owners_page: &str) -> Vec<String> {
+    let tbody_start = owners_page
+        .find("<tbody>")
+        .expect("owners.html must have a <tbody>");
+    let row_start = owners_page[tbody_start..]
+        .find("<tr>")
+        .expect("owners.html must have a data row")
+        + tbody_start;
+    let row_end = owners_page[row_start..]
+        .find("</tr>")
+        .expect("the first data row must close")
+        + row_start;
+    owners_page[row_start..row_end]
+        .split("<td")
+        .skip(1)
+        .map(|chunk| {
+            let end = chunk.find("</td>").expect("every <td> must close");
+            chunk[..end].to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn owners_table_freshness_column_is_rightmost_and_sortable() {
+    let evidence = evidence_with_enriched_single_team_owner();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let owners_page = pages.get("owners.html").expect("owners page");
+
+    let headers = owners_header_cells(owners_page);
+    let last = headers.last().expect("owners table must have headers");
+
+    assert!(
+        last.contains("numeric\">Freshness "),
+        "the Freshness column must be the RIGHTMOST owners-table column; headers:\n{headers:#?}"
+    );
+    assert!(
+        last.contains("data-sort-type=\"numeric\""),
+        "the Freshness header must opt into the existing wasm sorter with data-sort-type=\"numeric\"; header:\n{last}"
+    );
+    assert_eq!(
+        headers
+            .iter()
+            .filter(|h| h.contains("numeric\">Freshness "))
+            .count(),
+        1,
+        "exactly one Freshness column may exist; headers:\n{headers:#?}"
+    );
+}
+
+#[test]
+fn owners_table_freshness_cell_agrees_with_owner_detail_card() {
+    let evidence = evidence_with_enriched_single_team_owner();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let owners_page = pages.get("owners.html").expect("owners page");
+
+    let headers = owners_header_cells(owners_page);
+    let cells = owners_first_row_cells(owners_page);
+    assert_eq!(
+        headers.len(),
+        cells.len(),
+        "owners row must have exactly one cell per header"
+    );
+    let freshness_index = headers
+        .iter()
+        .position(|h| h.contains("numeric\">Freshness "))
+        .expect("a Freshness header");
+    let last = &cells[freshness_index];
+
+    assert!(
+        last.contains("100% (1/1)"),
+        "the Freshness cell must follow the owners-table ControlCell convention (whole-percent rate_table_formatted); cell:\n{last}"
+    );
+    assert!(
+        !last.contains("N/A"),
+        "an enriched owner must never render N/A in the Freshness column; cell:\n{last}"
+    );
+
+    let detail_page = pages
+        .iter()
+        .find(|(k, _)| k.starts_with("owners/"))
+        .expect("expected an owner detail page")
+        .1;
+    let card = owner_detail_card_block(detail_page, "Freshness");
+    assert!(
+        card.contains("<p class=\"card-value\">100.0% (1/1)</p>"),
+        "the detail card must still render the same non_stale RateMetric at prose precision; card:\n{card}"
+    );
+}
+
+#[test]
+fn freshness_tooltip_copy_has_exactly_one_canonical_owner() {
+    const FRAGMENT: &str = "the share not stale, where stale means not updated in 2+ years";
+
+    for (name, source) in [
+        (
+            "owner_detail.html",
+            include_str!("../../../templates/owner_detail.html"),
+        ),
+        (
+            "owners.html",
+            include_str!("../../../templates/owners.html"),
+        ),
+    ] {
+        assert!(
+            !source.contains(FRAGMENT),
+            "{name} re-states the Freshness explanatory copy by hand; it must derive it from the single canonical view_model::NON_STALE_TOOLTIP so the column and the detail card cannot drift"
+        );
+    }
+
+    let evidence = evidence_with_enriched_single_team_owner();
+    let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
+    let owners_page = pages.get("owners.html").expect("owners page");
+    let detail_page = pages
+        .iter()
+        .find(|(k, _)| k.starts_with("owners/"))
+        .expect("expected an owner detail page")
+        .1;
+
+    let canonical = crate::report::view_model::NON_STALE_TOOLTIP.replace('\'', "&#39;");
+    assert!(
+        owners_page.contains(&canonical),
+        "the owners-overview Freshness header must render the canonical copy"
+    );
+    assert!(
+        detail_page.contains(&canonical),
+        "the owner-detail Freshness card must render the same canonical copy"
+    );
+}
+
+#[test]
+fn owners_overview_columns_and_cells_derive_from_one_canonical_collection() {
+    let evidence = evidence_with_enriched_single_team_owner();
+    let fixture = unattributed_owners(&evidence.metrics.owner_metrics);
+    let vm = build_owners_view_model(&fixture.owners, &CoverageTiers::default())
+        .expect("owners view model for an enriched owner");
+
+    assert_eq!(
+        vm.control_columns.last().map(|c| c.name),
+        Some("Freshness"),
+        "Freshness must be the RIGHTMOST member of the single canonical owners-overview column collection, not a column appended beside it; columns:\n{:#?}",
+        vm.control_columns
+    );
+    assert!(
+        vm.control_columns.iter().all(|c| !c.tooltip.is_empty()),
+        "every owners-overview column must carry a header tooltip resolved from the shared vocabulary; columns:\n{:#?}",
+        vm.control_columns
+    );
+    for row in &vm.rows {
+        assert_eq!(
+            row.controls.len(),
+            vm.control_columns.len(),
+            "header and cell vectors must both derive from the same canonical collection"
+        );
+    }
+}
+
+/// Two repos for one team, exactly one of them stale, every other control
+/// passing on both.
+///
+/// Deliberately ASYMMETRIC: `non_stale` is 1/2 (50%) while every plausible
+/// wrong source a recomputation could reach for — `security_policy`,
+/// `secret_scanning`, `dependabot_security_updates`, `branch_protection`,
+/// repo count — is 2/2 (100%). A cell built from the wrong key therefore
+/// cannot coincidentally match the right one, which a symmetric 1/1 fixture
+/// permits.
+fn evidence_with_asymmetric_freshness_team_owner() -> Evidence {
+    let mut repos = vec![
+        test_fixtures::make_repository_evidence(
+            "fresh-team-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_with_owners(&["@org/fresh-team"]),
+            ),
+        ),
+        test_fixtures::make_repository_evidence(
+            "stale-team-repo",
+            Visibility::Public,
+            false,
+            test_fixtures::make_checks(
+                test_fixtures::policy_pass_setting(),
+                test_fixtures::secret_enabled_observable(false),
+                test_fixtures::dependabot_enabled(),
+                test_fixtures::branch_pass(),
+                test_fixtures::codeowners_with_owners(&["@org/fresh-team"]),
+            ),
+        ),
+    ];
+    repos[1].repository.updated_at = Some("2019-01-01T00:00:00Z".to_string());
+
+    let mut metrics = crate::aggregate::metrics::aggregate_metrics(&repos);
+    crate::aggregate::metrics::enrich_owner_metrics_with_lifecycle(
+        &mut metrics.owner_metrics,
+        &repos,
+        &test_fixtures::make_timestamp(),
+    );
+    let stats = crate::aggregate::metrics::build_collection_statistics(&repos);
+
+    test_fixtures::make_full_evidence(
+        test_fixtures::make_metadata(),
+        stats,
+        metrics,
+        test_fixtures::make_observability(),
+        repos,
+    )
+}
+
+#[test]
+fn owners_column_and_detail_card_render_the_same_freshness_control_cell() {
+    let evidence = evidence_with_asymmetric_freshness_team_owner();
+    let owner = &evidence.metrics.owner_metrics[0];
+
+    let non_stale = owner
+        .per_control_coverage
+        .get("non_stale")
+        .expect("enriched owner carries a non_stale RateMetric");
+    assert_eq!(
+        non_stale.to_string(),
+        "50.0% (1/2)",
+        "fixture precondition: non_stale must be ASYMMETRIC (1/2), so a cell built from a wrong key cannot coincidentally agree"
+    );
+    for decoy in [
+        "security_policy",
+        "secret_scanning",
+        "dependabot_security_updates",
+        "branch_protection",
+    ] {
+        assert_eq!(
+            owner
+                .per_control_coverage
+                .get(decoy)
+                .map(std::string::ToString::to_string),
+            Some("100.0% (2/2)".to_string()),
+            "fixture precondition: {decoy} must differ from non_stale so it is a detectable decoy"
+        );
+    }
+
+    let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
+    let fixture = unattributed_owners(&evidence.metrics.owner_metrics);
+
+    let owners_vm = build_owners_view_model(&fixture.owners, &CoverageTiers::default())
+        .expect("owners view model");
+    let detail_vms = build_owner_detail_view_models(
+        &fixture.owners,
+        &OwnerDetailBuildContext {
+            owner_repo_map: &owner_repo_map,
+            tiers: &CoverageTiers::default(),
+            organization: &evidence.assessment_metadata.organization,
+            run_timestamp: &evidence.assessment_metadata.run_timestamp,
+            team_rosters: &fixture.rosters,
+            orphaned_by_team: &[],
+            governance_link: None,
+        },
+    );
+
+    let overview = owners_vm.rows[0]
+        .controls
+        .last()
+        .expect("rightmost owners-overview control cell");
+    let detail = &detail_vms[0].1.non_stale_cell;
+
+    assert_eq!(
+        overview.rate_formatted, detail.rate_formatted,
+        "overview column and detail card must render the same rate at prose precision"
+    );
+    assert_eq!(
+        overview.rate_table_formatted, detail.rate_table_formatted,
+        "overview column and detail card must render the same rate at table precision"
+    );
+    assert_eq!(
+        overview.tier.css_class(),
+        detail.tier.css_class(),
+        "overview column and detail card must land in the same coverage tier"
+    );
+    assert_eq!(
+        overview.width_class, detail.width_class,
+        "overview column and detail card must render the same progress width"
+    );
+    assert_eq!(
+        overview.excluded_total, detail.excluded_total,
+        "overview column and detail card must report the same exclusion count"
+    );
+    assert_eq!(
+        overview.excluded_formatted, detail.excluded_formatted,
+        "overview column and detail card must report the same exclusion breakdown"
+    );
+
+    assert_eq!(
+        overview.rate_formatted, "50.0% (1/2)",
+        "both cells must carry the ASYMMETRIC non_stale rate; agreeing on a wrong value is still a regression"
+    );
+    assert_eq!(overview.rate_table_formatted, "50% (1/2)");
+}
+
+#[test]
+fn owners_vm_freshness_cell_reuses_the_detail_card_rate_metric() {
+    let evidence = evidence_with_enriched_single_team_owner();
+    let fixture = unattributed_owners(&evidence.metrics.owner_metrics);
+    let vm = build_owners_view_model(&fixture.owners, &CoverageTiers::default())
+        .expect("owners view model for an enriched owner");
+
+    let row = &vm.rows[0];
+    let freshness_cell = row
+        .controls
+        .last()
+        .expect("owners-overview controls must include the rightmost Freshness cell");
+    assert_eq!(
+        freshness_cell.rate_formatted,
+        evidence.metrics.owner_metrics[0]
+            .per_control_coverage
+            .get("non_stale")
+            .expect("enriched owner carries a non_stale RateMetric")
+            .to_string(),
+        "the owners-column cell must reuse the same non_stale RateMetric the detail card renders, not a recomputation"
+    );
+    assert_eq!(vm.control_columns.last().map(|c| c.name), Some("Freshness"));
+    assert!(!vm.control_columns.last().unwrap().tooltip.is_empty());
+}
+
 #[test]
 fn is_pending_repo_positive() {
     let mut checks = make_checks_with_statuses(
