@@ -1387,16 +1387,16 @@ pub struct ReportViewModel {
     pub health_width_class: &'static str,
 
     /// Display label of the org-wide archived/(archived + stale-active)
-    /// control, derived from [`ARCHIVAL_COVERAGE_LABEL`].
+    /// control, derived from [`LIFECYCLE_RETIREMENT_LABEL`].
     ///
     /// The index template reads this in both places that name the control —
     /// its own card and the Org Governance score tooltip's six-control
     /// roster — so the two cannot drift apart (CHE-0108:R1, COM-0027:R3).
-    pub archival_coverage_label: &'static str,
+    pub lifecycle_retirement_label: &'static str,
     /// Explanatory copy for the card carrying
-    /// [`ReportViewModel::archival_coverage_label`], derived from
-    /// [`ARCHIVAL_COVERAGE_TOOLTIP`].
-    pub archival_coverage_tooltip: &'static str,
+    /// [`ReportViewModel::lifecycle_retirement_label`], derived from
+    /// [`LIFECYCLE_RETIREMENT_TOOLTIP`].
+    pub lifecycle_retirement_tooltip: &'static str,
 
     /// Archival coverage rate: proportion of stale-lifecycle repos
     /// (stale active + archived) that have been archived.
@@ -1669,8 +1669,8 @@ impl ReportViewModel {
             health_score_formatted: health.score_formatted,
             health_score_table_formatted: health.table_formatted,
             health_width_class: health.width_class,
-            archival_coverage_label: ARCHIVAL_COVERAGE_LABEL,
-            archival_coverage_tooltip: ARCHIVAL_COVERAGE_TOOLTIP,
+            lifecycle_retirement_label: LIFECYCLE_RETIREMENT_LABEL,
+            lifecycle_retirement_tooltip: LIFECYCLE_RETIREMENT_TOOLTIP,
             stale_rate,
             stale_rate_formatted,
             stale_tier,
@@ -2439,21 +2439,21 @@ pub(crate) fn coverage_control_how_to_fix(key: &str) -> Option<&'static str> {
 /// Sole owner of this name. Both places that name the control on the index
 /// page — the control's own card and the Org Governance score tooltip's
 /// six-control roster — read it through
-/// [`ReportViewModel::archival_coverage_label`]; neither template may
+/// [`ReportViewModel::lifecycle_retirement_label`]; neither template may
 /// hardcode it (CHE-0108:R1, COM-0027:R3).
 ///
 /// This control has no [`ControlKey`] variant: it is org-level and is not a
 /// member of any per-owner control set.
 ///
 /// [`ControlKey`]: crate::report::html::ControlKey
-pub(crate) const ARCHIVAL_COVERAGE_LABEL: &str = "Lifecycle: Retirement";
+pub(crate) const LIFECYCLE_RETIREMENT_LABEL: &str = "Lifecycle: Retirement";
 
 /// Canonical, single-source explanatory copy for the control labelled
-/// [`ARCHIVAL_COVERAGE_LABEL`].
+/// [`LIFECYCLE_RETIREMENT_LABEL`].
 ///
 /// Sole owner of this string; the index template reads it through
-/// [`ReportViewModel::archival_coverage_tooltip`].
-pub(crate) const ARCHIVAL_COVERAGE_TOOLTIP: &str = "Archived / (archived + stale-active) — fraction of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better.";
+/// [`ReportViewModel::lifecycle_retirement_tooltip`].
+pub(crate) const LIFECYCLE_RETIREMENT_TOOLTIP: &str = "Archived / (archived + stale-active) — fraction of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better.";
 
 /// Canonical, single-source explanatory copy for the `non_stale` control
 /// ("Freshness").

@@ -210,7 +210,7 @@ fn dashboard_report_includes_coverage_metrics() {
 }
 
 #[test]
-fn dashboard_index_archival_coverage_shows_truthful_ratio() {
+fn dashboard_index_lifecycle_retirement_shows_truthful_ratio() {
     let mut evidence = sample_evidence();
     evidence.repositories[0].repository.updated_at = Some("2023-01-01T00:00:00Z".to_string());
     evidence.collection_statistics.archived_repos = 3;
@@ -220,7 +220,7 @@ fn dashboard_index_archival_coverage_shows_truthful_ratio() {
 
     assert!(
         index.contains("75.0% (3/4)"),
-        "Archival Coverage card must show archived/(archived+stale) as (n/d), matching \
+        "Lifecycle: Retirement card must show archived/(archived+stale) as (n/d), matching \
              the sibling coverage cards' RateMetric-derived format"
     );
     assert!(
@@ -710,7 +710,7 @@ fn render_dashboard_index_org_governance_tooltip_states_formula_and_exclusion_ru
 }
 
 #[test]
-fn render_dashboard_index_archival_coverage_tooltip_states_formula() {
+fn render_dashboard_index_lifecycle_retirement_tooltip_states_formula() {
     let evidence = sample_evidence();
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
     let index = &pages["index.html"];
@@ -719,7 +719,7 @@ fn render_dashboard_index_archival_coverage_tooltip_states_formula() {
             index.contains(
                 "Archived / (archived + stale-active) — fraction of stale-lifecycle repos that have been archived"
             ),
-            "Archival Coverage tooltip must state its exact formula; index.html:\n{index}"
+            "Lifecycle: Retirement tooltip must state its exact formula; index.html:\n{index}"
         );
 }
 
