@@ -210,7 +210,7 @@ fn dashboard_report_includes_coverage_metrics() {
 }
 
 #[test]
-fn dashboard_index_archival_coverage_shows_truthful_ratio() {
+fn dashboard_index_lifecycle_retirement_shows_truthful_ratio() {
     let mut evidence = sample_evidence();
     evidence.repositories[0].repository.updated_at = Some("2023-01-01T00:00:00Z".to_string());
     evidence.collection_statistics.archived_repos = 3;
@@ -220,7 +220,7 @@ fn dashboard_index_archival_coverage_shows_truthful_ratio() {
 
     assert!(
         index.contains("75.0% (3/4)"),
-        "Archival Coverage card must show archived/(archived+stale) as (n/d), matching \
+        "Lifecycle: Retirement card must show archived/(archived+stale) as (n/d), matching \
              the sibling coverage cards' RateMetric-derived format"
     );
     assert!(
@@ -699,7 +699,7 @@ fn render_dashboard_index_org_governance_tooltip_states_formula_and_exclusion_ru
     );
     assert!(
             index.contains(
-                "Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS, Archival Coverage"
+                "Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS, Lifecycle: Retirement"
             ),
             "Org Governance tooltip must state its six-control set"
         );
@@ -710,7 +710,7 @@ fn render_dashboard_index_org_governance_tooltip_states_formula_and_exclusion_ru
 }
 
 #[test]
-fn render_dashboard_index_archival_coverage_tooltip_states_formula() {
+fn render_dashboard_index_lifecycle_retirement_tooltip_states_formula() {
     let evidence = sample_evidence();
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
     let index = &pages["index.html"];
@@ -719,7 +719,7 @@ fn render_dashboard_index_archival_coverage_tooltip_states_formula() {
             index.contains(
                 "Archived / (archived + stale-active) — fraction of stale-lifecycle repos that have been archived"
             ),
-            "Archival Coverage tooltip must state its exact formula; index.html:\n{index}"
+            "Lifecycle: Retirement tooltip must state its exact formula; index.html:\n{index}"
         );
 }
 
@@ -4394,7 +4394,8 @@ fn render_owner_detail_html_repo_posture_tooltip_states_formula_and_exclusion_ru
 }
 
 #[test]
-fn render_owner_detail_html_non_stale_repos_card_disambiguates_freshness_from_archival_coverage() {
+fn render_owner_detail_html_non_stale_repos_card_distinguishes_lifecycle_freshness_from_lifecycle_retirement()
+ {
     let evidence = evidence_with_mixed_owner_types();
     let pages = render_dashboard(&evidence, &DashboardConfig::default()).unwrap();
 
@@ -4405,12 +4406,12 @@ fn render_owner_detail_html_non_stale_repos_card_disambiguates_freshness_from_ar
         .1;
 
     assert!(
-        detail_page.contains("card-label\">Freshness"),
+        detail_page.contains("card-label\">Lifecycle: Freshness"),
         "the card label must be the control-vocabulary noun 'Freshness'; detail page:\n{detail_page}"
     );
 
     let card_block = detail_page
-        .split("card-label\">Freshness")
+        .split("card-label\">Lifecycle: Freshness")
         .nth(1)
         .expect("Freshness card block")
         .split("</div>")
@@ -4430,8 +4431,58 @@ fn render_owner_detail_html_non_stale_repos_card_disambiguates_freshness_from_ar
         "the tooltip must not restate the card's own name back at it; under a card named Freshness that phrasing is circular"
     );
     assert!(
-        detail_page.contains("Distinct from the org-wide Archival Coverage"),
-        "Freshness card tooltip must explicitly disambiguate from the org-level Archival Coverage metric"
+        detail_page.contains("distinct from the org-wide Lifecycle: Retirement"),
+        "Freshness card tooltip must explicitly disambiguate from the org-level Lifecycle: Retirement metric"
+    );
+}
+
+#[test]
+fn the_two_lifecycle_controls_share_a_prefix_and_stay_distinct_measurements() {
+    use crate::report::view_model::{
+        LIFECYCLE_RETIREMENT_LABEL, LIFECYCLE_RETIREMENT_TOOLTIP, NON_STALE_TOOLTIP,
+    };
+
+    let freshness = super::ControlKey::NonStale.display_name();
+    let retirement = LIFECYCLE_RETIREMENT_LABEL;
+
+    assert!(
+        freshness.starts_with("Lifecycle: "),
+        "the per-owner control must carry the shared Lifecycle prefix; got {freshness:?}"
+    );
+    assert!(
+        retirement.starts_with("Lifecycle: "),
+        "the org-wide control must carry the shared Lifecycle prefix; got {retirement:?}"
+    );
+    assert_ne!(
+        freshness, retirement,
+        "the two Lifecycle controls measure different populations with different denominators \
+         and feed different scores; collapsing them onto one label creates a homonym"
+    );
+
+    assert!(
+        NON_STALE_TOOLTIP.contains("(total - stale) / total"),
+        "Lifecycle: Freshness must state its own formula; got {NON_STALE_TOOLTIP:?}"
+    );
+    assert!(
+        !NON_STALE_TOOLTIP.contains("Archived / (archived + stale-active)"),
+        "Lifecycle: Freshness must not claim the other control's formula"
+    );
+    assert!(
+        LIFECYCLE_RETIREMENT_TOOLTIP.contains("Archived / (archived + stale-active)"),
+        "Lifecycle: Retirement must state its own formula; got {LIFECYCLE_RETIREMENT_TOOLTIP:?}"
+    );
+    assert!(
+        !LIFECYCLE_RETIREMENT_TOOLTIP.contains("(total - stale) / total"),
+        "Lifecycle: Retirement must not claim the other control's formula"
+    );
+
+    assert!(
+        NON_STALE_TOOLTIP.contains(retirement),
+        "Lifecycle: Freshness must name the other Lifecycle control it is distinct from"
+    );
+    assert!(
+        LIFECYCLE_RETIREMENT_TOOLTIP.contains(freshness),
+        "Lifecycle: Retirement must name the other Lifecycle control it is distinct from"
     );
 }
 
@@ -4513,7 +4564,7 @@ fn render_owner_detail_html_non_stale_repos_card_pins_enriched_rate_tier_and_wid
         .expect("expected an owner detail page")
         .1;
 
-    let card = owner_detail_card_block(detail_page, "Freshness");
+    let card = owner_detail_card_block(detail_page, "Lifecycle: Freshness");
 
     assert!(
         card.contains("<p class=\"card-value\">100.0% (1/1)</p>"),
@@ -4587,7 +4638,7 @@ fn owners_table_freshness_column_is_rightmost_and_sortable() {
     let last = headers.last().expect("owners table must have headers");
 
     assert!(
-        last.contains("numeric\">Freshness "),
+        last.contains("numeric\">Lifecycle: Freshness "),
         "the Freshness column must be the RIGHTMOST owners-table column; headers:\n{headers:#?}"
     );
     assert!(
@@ -4597,7 +4648,7 @@ fn owners_table_freshness_column_is_rightmost_and_sortable() {
     assert_eq!(
         headers
             .iter()
-            .filter(|h| h.contains("numeric\">Freshness "))
+            .filter(|h| h.contains("numeric\">Lifecycle: Freshness "))
             .count(),
         1,
         "exactly one Freshness column may exist; headers:\n{headers:#?}"
@@ -4619,7 +4670,7 @@ fn owners_table_freshness_cell_agrees_with_owner_detail_card() {
     );
     let freshness_index = headers
         .iter()
-        .position(|h| h.contains("numeric\">Freshness "))
+        .position(|h| h.contains("numeric\">Lifecycle: Freshness "))
         .expect("a Freshness header");
     let last = &cells[freshness_index];
 
@@ -4637,7 +4688,7 @@ fn owners_table_freshness_cell_agrees_with_owner_detail_card() {
         .find(|(k, _)| k.starts_with("owners/"))
         .expect("expected an owner detail page")
         .1;
-    let card = owner_detail_card_block(detail_page, "Freshness");
+    let card = owner_detail_card_block(detail_page, "Lifecycle: Freshness");
     assert!(
         card.contains("<p class=\"card-value\">100.0% (1/1)</p>"),
         "the detail card must still render the same non_stale RateMetric at prose precision; card:\n{card}"
@@ -4693,7 +4744,7 @@ fn owners_overview_columns_and_cells_derive_from_one_canonical_collection() {
 
     assert_eq!(
         vm.control_columns.last().map(|c| c.name),
-        Some("Freshness"),
+        Some("Lifecycle: Freshness"),
         "Freshness must be the RIGHTMOST member of the single canonical owners-overview column collection, not a column appended beside it; columns:\n{:#?}",
         vm.control_columns
     );
@@ -4874,7 +4925,10 @@ fn owners_vm_freshness_cell_reuses_the_detail_card_rate_metric() {
             .to_string(),
         "the owners-column cell must reuse the same non_stale RateMetric the detail card renders, not a recomputation"
     );
-    assert_eq!(vm.control_columns.last().map(|c| c.name), Some("Freshness"));
+    assert_eq!(
+        vm.control_columns.last().map(|c| c.name),
+        Some("Lifecycle: Freshness")
+    );
     assert!(!vm.control_columns.last().unwrap().tooltip.is_empty());
 }
 
@@ -4915,7 +4969,10 @@ fn is_pending_repo_negative_none() {
 
 #[test]
 fn control_display_name_non_stale() {
-    assert_eq!(super::ControlKey::NonStale.display_name(), "Freshness");
+    assert_eq!(
+        super::ControlKey::NonStale.display_name(),
+        "Lifecycle: Freshness"
+    );
 }
 
 #[test]
@@ -5354,6 +5411,7 @@ fn podium_excludes_team_at_exactly_100_percent() {
             team_row("climbing-team", 92.0),
         ],
         control_columns: Vec::new(),
+        team_health_tooltip: String::new(),
     };
     let podium = build_top_security_teams(&owners_vm);
 
@@ -5372,6 +5430,7 @@ fn podium_includes_team_at_99_9_percent() {
     let owners_vm = OwnersViewModel {
         rows: vec![team_row("almost-team", 99.9)],
         control_columns: Vec::new(),
+        team_health_tooltip: String::new(),
     };
     let podium = build_top_security_teams(&owners_vm);
 
@@ -5386,6 +5445,7 @@ fn podium_empty_when_every_team_at_100_percent() {
     let owners_vm = OwnersViewModel {
         rows: vec![team_row("team-a", 100.0), team_row("team-b", 100.0)],
         control_columns: Vec::new(),
+        team_health_tooltip: String::new(),
     };
     let podium = build_top_security_teams(&owners_vm);
 
@@ -5405,6 +5465,7 @@ fn podium_ordering_holds_with_100_percent_exemption_applied() {
             team_row("bronze-team", 85.0),
         ],
         control_columns: Vec::new(),
+        team_health_tooltip: String::new(),
     };
     let podium = build_top_security_teams(&owners_vm);
     let ranks: Vec<&str> = podium.iter().map(|t| t.rank_class).collect();

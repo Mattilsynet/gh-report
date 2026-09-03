@@ -94,3 +94,6 @@ spec/fizzbee/*.json
 # than deleting it, since it is not rebuildable from anything in this repo.
 guests/
 
+
+# insta pending snapshots
+*.snap.new

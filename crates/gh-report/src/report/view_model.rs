@@ -593,6 +593,15 @@ pub struct OwnersViewModel {
     /// derived from the single canonical owners-overview column collection.
     /// Freshness is its rightmost member.
     pub control_columns: Vec<ControlColumn>,
+    /// Header tooltip for the Team Health column.
+    ///
+    /// Composed in Rust so the control it names by
+    /// [`ControlKey::display_name`] cannot drift from the column that
+    /// renders under that name (CHE-0108:R1). The template holds no part of
+    /// this copy.
+    ///
+    /// [`ControlKey::display_name`]: crate::report::html::ControlKey::display_name
+    pub team_health_tooltip: String,
 }
 
 /// A top-scoring security team for display in the CODEOWNERS Summary box.
@@ -1386,6 +1395,18 @@ pub struct ReportViewModel {
     /// CSS width class for the health score progress bar.
     pub health_width_class: &'static str,
 
+    /// Display label of the org-wide archived/(archived + stale-active)
+    /// control, derived from [`LIFECYCLE_RETIREMENT_LABEL`].
+    ///
+    /// The index template reads this in both places that name the control —
+    /// its own card and the Org Governance score tooltip's six-control
+    /// roster — so the two cannot drift apart (CHE-0108:R1, COM-0027:R3).
+    pub lifecycle_retirement_label: &'static str,
+    /// Explanatory copy for the card carrying
+    /// [`ReportViewModel::lifecycle_retirement_label`], derived from
+    /// [`LIFECYCLE_RETIREMENT_TOOLTIP`].
+    pub lifecycle_retirement_tooltip: &'static str,
+
     /// Archival coverage rate: proportion of stale-lifecycle repos
     /// (stale active + archived) that have been archived.
     /// Formula: `archived / (archived + stale_active) × 100`.
@@ -1657,6 +1678,8 @@ impl ReportViewModel {
             health_score_formatted: health.score_formatted,
             health_score_table_formatted: health.table_formatted,
             health_width_class: health.width_class,
+            lifecycle_retirement_label: LIFECYCLE_RETIREMENT_LABEL,
+            lifecycle_retirement_tooltip: LIFECYCLE_RETIREMENT_TOOLTIP,
             stale_rate,
             stale_rate_formatted,
             stale_tier,
@@ -2419,6 +2442,28 @@ pub(crate) fn coverage_control_how_to_fix(key: &str) -> Option<&'static str> {
     }
 }
 
+/// Canonical, single-source display label of the org-wide
+/// `archived / (archived + stale_active)` control.
+///
+/// Sole owner of this name. Both places that name the control on the index
+/// page — the control's own card and the Org Governance score tooltip's
+/// six-control roster — read it through
+/// [`ReportViewModel::lifecycle_retirement_label`]; neither template may
+/// hardcode it (CHE-0108:R1, COM-0027:R3).
+///
+/// This control has no [`ControlKey`] variant: it is org-level and is not a
+/// member of any per-owner control set.
+///
+/// [`ControlKey`]: crate::report::html::ControlKey
+pub(crate) const LIFECYCLE_RETIREMENT_LABEL: &str = "Lifecycle: Retirement";
+
+/// Canonical, single-source explanatory copy for the control labelled
+/// [`LIFECYCLE_RETIREMENT_LABEL`].
+///
+/// Sole owner of this string; the index template reads it through
+/// [`ReportViewModel::lifecycle_retirement_tooltip`].
+pub(crate) const LIFECYCLE_RETIREMENT_TOOLTIP: &str = "Archived / (archived + stale-active) — fraction of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better. One of six controls behind the Org Governance score. It asks whether dead work has been retired, the later stage of the repository lifecycle arc. One of two Lifecycle controls, and distinct from the per-owner Lifecycle: Freshness, which asks whether work is still happening and divides by all of an owner's repos rather than by stale-lifecycle repos only.";
+
 /// Canonical, single-source explanatory copy for the `non_stale` control
 /// ("Freshness").
 ///
@@ -2427,7 +2472,7 @@ pub(crate) fn coverage_control_how_to_fix(key: &str) -> Option<&'static str> {
 /// [`coverage_control_column_tooltip`], and the owner-detail Freshness
 /// summary card, via [`OwnerDetailViewModel::non_stale_tooltip`]. Neither
 /// template may hardcode this copy (COM-0027:R3/R4).
-pub(crate) const NON_STALE_TOOLTIP: &str = "(total - stale) / total for this owner's repos — the share not stale, where stale means not updated in 2+ years. One of seven controls behind the Team Health score. Distinct from the org-wide Archival Coverage, which measures what fraction of already-stale repos have been archived.";
+pub(crate) const NON_STALE_TOOLTIP: &str = "(total - stale) / total for this owner's repos — the share not stale, where stale means not updated in 2+ years. One of seven controls behind the Team Health score. It asks whether work is still happening, the earlier stage of the repository lifecycle arc. One of two Lifecycle controls, and distinct from the org-wide Lifecycle: Retirement, which asks whether dead work has been retired and divides by stale-lifecycle repos only rather than by all of this owner's repos.";
 
 pub(crate) fn coverage_control_column_tooltip(key: &str) -> Option<&'static str> {
     match key {

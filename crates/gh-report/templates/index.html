@@ -14,7 +14,7 @@
     </div>
 
     <div class="scorecard">
-        <div class="card health-score-card {{ vm.health_tier.css_class() }}" title="Geometric mean of measured control rates across six controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS, Archival Coverage. Unmeasured controls are excluded from each rate's denominator. Rewards balanced improvement across all controls.">
+        <div class="card health-score-card {{ vm.health_tier.css_class() }}" title="Geometric mean of measured control rates across six controls — Security Policy, Secret Scanning, Dependabot, Branch Protection, CODEOWNERS, {{ vm.lifecycle_retirement_label }}. Unmeasured controls are excluded from each rate's denominator. Rewards balanced improvement across all controls.">
             <p class="card-label">Overall Organization Governance Score</p>
             <p class="card-value">{{ vm.health_score_formatted }}</p>
             <div class="progress-bar">
@@ -79,8 +79,8 @@
             </div>
         </div>
         <div class="scorecard-group">
-            <div class="card {{ vm.stale_tier.css_class() }}" title="Archived / (archived + stale-active) — fraction of stale-lifecycle repos that have been archived. Stale = no update in 2+ years. Higher is better.">
-                <p class="card-label">Archival Coverage</p>
+            <div class="card {{ vm.stale_tier.css_class() }}" title="{{ vm.lifecycle_retirement_tooltip }}">
+                <p class="card-label">{{ vm.lifecycle_retirement_label }}</p>
                 <p class="card-value">{{ vm.stale_rate_formatted }}</p>
                 <p class="card-detail">{{ vm.archived_repos }} archived · {{ vm.stale_active_repos }} stale</p>
                 <div class="progress-bar">
