@@ -103,9 +103,6 @@ pub struct TopNav {
     pub deleted_count: u32,
     /// Count shown on the Admin badge; the badge itself is hidden at zero.
     pub technical_issues_total: u32,
-    /// Deployment's own governance-standard link (UF2-GEN seam), rendered
-    /// by the footer partial when present. `None` for a fresh deployment.
-    pub governance_standard_link: Option<HelpLink>,
 }
 
 impl TopNav {
@@ -564,12 +561,6 @@ pub struct OwnerDetailViewModel {
     /// confirmed absent from the org (departed — warn), `Some(true)`
     /// when confirmed present.
     pub owner_in_org: Option<bool>,
-    /// Prepopulated tidy-governance review prompt for the copy-to-clipboard
-    /// widget (UF2-GEN seam). `None` when no `governance_standard` link is
-    /// configured — the widget does not render at all in that case, rather
-    /// than emit a prompt naming a skill with no repository to point at.
-    /// See [`compose_governance_prompt`].
-    pub governance_prompt: Option<String>,
 }
 
 impl OwnerDetailViewModel {
@@ -1729,68 +1720,6 @@ pub fn compose_team_access_guidance(cfg: &TeamAccessGuidance) -> (String, Vec<He
          not a configuration file."
     );
     (text, cfg.help_links.clone())
-}
-
-/// Compose the tidy-governance review prompt for an owner-detail page's
-/// copy-to-clipboard widget (UF2-GEN seam).
-///
-/// Returns `None` when no governance-standard link is configured, so the
-/// caller can skip rendering the widget entirely rather than emit a prompt
-/// naming a skill with no repository standard to point at.
-///
-/// # Examples
-///
-/// ```
-/// use gh_report::config::org::HelpLink;
-/// use gh_report::report::view_model::{compose_governance_prompt, OwnerRepoRow};
-///
-/// let link = HelpLink {
-///     label: "Governance AI skill".to_string(),
-///     url: "https://example.com/tidy-governance".to_string(),
-/// };
-/// let prompt = compose_governance_prompt(Some(&link), &[], &[]).unwrap();
-/// assert!(prompt.contains("tidy-governance"));
-/// assert!(prompt.contains("https://example.com/tidy-governance"));
-///
-/// assert!(compose_governance_prompt(None, &[], &[]).is_none());
-/// # let _: Option<OwnerRepoRow> = None;
-/// ```
-#[must_use]
-pub fn compose_governance_prompt(
-    link: Option<&HelpLink>,
-    repo_rows: &[OwnerRepoRow],
-    orphan_repo_rows: &[OrphanedRepoRow],
-) -> Option<String> {
-    let link = link?;
-    let mut prompt = format!(
-        "Use the tidy-governance skill to review these repositories against the \
-         governance standard at {}.\n\nRepositories on this team:\n",
-        link.url
-    );
-    if repo_rows.is_empty() {
-        prompt.push_str("(none)\n");
-    } else {
-        for row in repo_rows {
-            prompt.push_str("- ");
-            prompt.push_str(&row.repo_name);
-            prompt.push('\n');
-        }
-    }
-    prompt.push_str("\nOrphaned repositories attributed to this team:\n");
-    if orphan_repo_rows.is_empty() {
-        prompt.push_str("(none)\n");
-    } else {
-        for row in orphan_repo_rows {
-            prompt.push_str("- ");
-            prompt.push_str(&row.repo_name);
-            prompt.push('\n');
-        }
-    }
-    prompt.push_str(
-        "\nNote: the repositories list above is CODEOWNERS-attributed and excludes \
-         archived repositories.",
-    );
-    Some(prompt)
 }
 
 fn health_display(
@@ -4029,64 +3958,5 @@ mod tests {
                 RedFlagId::AdminEnforcementNotEquivalent,
             ]
         );
-    }
-
-    #[test]
-    fn compose_governance_prompt_absent_link_yields_none() {
-        assert!(compose_governance_prompt(None, &[], &[]).is_none());
-    }
-
-    #[test]
-    fn compose_governance_prompt_present_link_includes_repos_and_exclusion_note() {
-        let link = HelpLink {
-            label: "Governance AI skill".to_string(),
-            url: "https://example.com/tidy-governance".to_string(),
-        };
-        let repo_rows = vec![OwnerRepoRow {
-            repo_name: "team-repo".to_string(),
-            repo_url: "https://github.com/org/team-repo".to_string(),
-            visibility: "Public".to_string(),
-            controls: Vec::new(),
-            description: String::new(),
-            language: String::new(),
-            is_fork: false,
-            is_empty: false,
-            license: String::new(),
-            pushed_at: String::new(),
-            created_at: String::new(),
-            last_committer_login: String::new(),
-            last_committer_url: String::new(),
-            last_committer_unregistered: false,
-            last_commit_date: String::new(),
-            is_stale: false,
-            repo_score: None,
-            repo_score_formatted: String::new(),
-            repo_score_tier: CoverageTier::Na,
-            repo_score_width_class: "",
-        }];
-        let orphan_rows = vec![OrphanedRepoRow {
-            repo_name: "orphan-repo".to_string(),
-            repo_url: String::new(),
-            visibility: "Public".to_string(),
-            description: String::new(),
-            language: String::new(),
-            is_empty: false,
-            last_committer_login: String::new(),
-            last_committer_url: String::new(),
-            last_committer_unregistered: false,
-            last_commit_date: String::new(),
-            is_stale: false,
-            attributed_team: None,
-            attributed_team_slug: None,
-        }];
-
-        let prompt = compose_governance_prompt(Some(&link), &repo_rows, &orphan_rows).unwrap();
-
-        assert!(prompt.contains("tidy-governance skill"));
-        assert!(prompt.contains("https://example.com/tidy-governance"));
-        assert!(prompt.contains("team-repo"));
-        assert!(prompt.contains("orphan-repo"));
-        assert!(prompt.contains("excludes"));
-        assert!(prompt.contains("archived"));
     }
 }

@@ -101,11 +101,6 @@ const SORT_CLIENT_WASM: &[u8] = include_bytes!("../../../templates/gh-report-web
 /// `script-src 'self'` without needing `'unsafe-inline'` (CHE-0087 R8).
 const SORT_INIT_JS: &str = include_str!("../../../templates/sort-init.js");
 
-/// Embedded copy-to-clipboard script for the owner-detail governance
-/// prompt widget (UF2-GEN seam). External file for the same
-/// `script-src 'self'` reason as [`SORT_INIT_JS`]; CHE-0087.
-const CLIPBOARD_JS: &str = include_str!("../../../templates/clipboard.js");
-
 /// Pre-computed `CachedPage` for `style.css`.
 ///
 /// Zstd compression and SHA-256 hashing are performed once at first
@@ -146,13 +141,6 @@ pub static CACHED_SORT_CLIENT_WASM: LazyLock<CachedPage> =
 /// Same rationale as [`CACHED_STYLESHEET`]: compute once, clone cheaply.
 pub static CACHED_SORT_INIT_JS: LazyLock<CachedPage> =
     LazyLock::new(|| CachedPage::new("sort-init.js", SORT_INIT_JS.as_bytes().to_vec()));
-
-/// Pre-computed `CachedPage` for `clipboard.js` (the owner-detail
-/// governance-prompt copy-to-clipboard script).
-///
-/// Same rationale as [`CACHED_STYLESHEET`]: compute once, clone cheaply.
-pub static CACHED_CLIPBOARD_JS: LazyLock<CachedPage> =
-    LazyLock::new(|| CachedPage::new("clipboard.js", CLIPBOARD_JS.as_bytes().to_vec()));
 
 /// Shared application state.
 ///
