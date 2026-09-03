@@ -447,7 +447,6 @@ pub fn render_dashboard_streaming(
         orphaned_count,
         deleted_count: vm.deleted_count,
         technical_issues_total: vm.admin_diagnostics.technical_issues_total,
-        governance_standard_link: config.org_help.governance_standard.clone(),
     };
 
     let report = render_template(&ReportTemplate {
@@ -478,7 +477,6 @@ pub fn render_dashboard_streaming(
     sink("gh-report-web-client.js".to_string(), String::new());
     sink("gh-report-web-client_bg.wasm".to_string(), String::new());
     sink("sort-init.js".to_string(), String::new());
-    sink("clipboard.js".to_string(), String::new());
 
     if let Some(ref owners) = owners_vm {
         render_owner_pages(
@@ -601,7 +599,6 @@ fn render_owner_pages(
     sink("owners.html".to_string(), owners_html);
 
     let owner_repo_map = crate::domain::metrics::build_owner_repo_map(&evidence.repositories);
-    let governance_link = nav.governance_standard_link.clone();
     let ctx = OwnerDetailBuildContext {
         owner_repo_map: &owner_repo_map,
         tiers,
@@ -609,7 +606,6 @@ fn render_owner_pages(
         run_timestamp: &evidence.assessment_metadata.run_timestamp,
         team_rosters: &evidence.metrics.team_rosters,
         orphaned_by_team: &orphaned_vm.by_team,
-        governance_link: governance_link.as_ref(),
     };
     let detail_vms = build_owner_detail_view_models(attributed_owners, &ctx);
     let nested_nav = TopNav {
@@ -1177,7 +1173,6 @@ struct OwnerDetailBuildContext<'a> {
     run_timestamp: &'a str,
     team_rosters: &'a [TeamRoster],
     orphaned_by_team: &'a [OrphanedTeamGroup],
-    governance_link: Option<&'a crate::config::org::HelpLink>,
 }
 
 /// Build per-owner detail view models with per-repo status rows.
@@ -1319,12 +1314,6 @@ fn build_one_owner_detail_view_model(
         OwnerType::Team | OwnerType::AmbiguousTeamShaped
     ) && roster_entry.is_none();
 
-    let governance_prompt = crate::report::view_model::compose_governance_prompt(
-        ctx.governance_link,
-        &repo_rows,
-        &orphan_repo_rows,
-    );
-
     let detail = OwnerDetailViewModel {
         owner: m.display_name.clone(),
         owner_short: strip_org_prefix(&m.display_name),
@@ -1345,7 +1334,6 @@ fn build_one_owner_detail_view_model(
         orphan_repo_rows,
         orphan_unresolved,
         owner_in_org: m.in_org,
-        governance_prompt,
     };
 
     (slug, detail)

@@ -34,8 +34,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::aggregate::metrics;
 use crate::app::state::{
-    AppState, CACHED_CLIPBOARD_JS, CACHED_FAVICON_SVG, CACHED_SORT_CLIENT_JS,
-    CACHED_SORT_CLIENT_WASM, CACHED_SORT_INIT_JS, CACHED_STYLESHEET, CACHED_WS_JS, CachedPage,
+    AppState, CACHED_FAVICON_SVG, CACHED_SORT_CLIENT_JS, CACHED_SORT_CLIENT_WASM,
+    CACHED_SORT_INIT_JS, CACHED_STYLESHEET, CACHED_WS_JS, CachedPage,
 };
 use crate::app::write_policy::{source_chain, write_with_policy};
 use crate::collector::ghas_scanning;
@@ -1709,7 +1709,6 @@ pub(crate) async fn build_cached_pages(
                 "gh-report-web-client.js" => CACHED_SORT_CLIENT_JS.clone(),
                 "gh-report-web-client_bg.wasm" => CACHED_SORT_CLIENT_WASM.clone(),
                 "sort-init.js" => CACHED_SORT_INIT_JS.clone(),
-                "clipboard.js" => CACHED_CLIPBOARD_JS.clone(),
                 _ => CachedPage::new(&path, content.into_bytes()),
             };
             cache.insert(path, page);
