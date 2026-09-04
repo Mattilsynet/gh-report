@@ -1802,8 +1802,10 @@ fn reuse_from_baseline(
         let baseline_age =
             baseline::assess_baseline_age(evidence.checks.observed_at(), run_timestamp);
         if !baseline::should_reuse(
-            baseline_updated_at,
-            repo.updated_at.as_deref(),
+            baseline::UpdatedAt::new(baseline_updated_at),
+            repo.updated_at
+                .as_deref()
+                .and_then(baseline::UpdatedAt::new),
             baseline_age,
         ) {
             continue;
