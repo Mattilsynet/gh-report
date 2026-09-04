@@ -136,7 +136,7 @@ description = """\
     semantics, naming conventions, relationship vocabulary, tier \
     classification, and domain management. Covers the adr-fmt \
     binary's own architectural decisions as a Rust CLI tool."""
-crates = ["adr-fmt"]
+crates = []
 
 [[domains]]
 prefix = "FLO"
