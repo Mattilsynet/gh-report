@@ -32,14 +32,15 @@ cargo run -p gh-report -- --dump-baseline --org <your-org> --store-dir ./store
 Operational recovery procedures live at
 [`crates/cherry-pit-gateway/RUNBOOKS.md`](crates/cherry-pit-gateway/RUNBOOKS.md).
 
-## Why a 27-crate workspace behind one dashboard
+## Why a 26-crate workspace behind one dashboard
 
 `gh-report` is built on a `cherry-pit-*` event-sourcing substrate (core,
 gateway, projection, app, web, work-queue, storage primitives), with durable
 events persisted through the `pardosa*` `.pgno` store family (or a
-NATS/JetStream backend). `adr-fmt` and `adr-srv` are the governance plane
-that keeps the ADR corpus this workspace is built against internally
-consistent; `comment-free` enforces the workspace's no-`//`-comments rule.
+NATS/JetStream backend). `adr-srv` is the governance plane that keeps the
+ADR corpus this workspace is built against internally consistent, together
+with `adr-fmt` (consumed from canonical upstream, not a member here);
+`comment-free` enforces the workspace's no-`//`-comments rule.
 A few small internal tooling binaries also live here (`architect`,
 `pardosa-read`, `non-exhaustive-check`). Why the substrate is developed
 here as a first-class concern, rather than only as an implementation
@@ -54,7 +55,9 @@ restate it.
 - **`pardosa*`** — durable event-store substrate (`.pgno` embedded store,
   NATS/JetStream backend, schema, wire format).
 - **`adr-fmt`** — read-only ADR template and link-integrity validator.
-  See [`crates/adr-fmt/`](crates/adr-fmt/).
+  Consumed from canonical upstream
+  [`Mattilsynet/adr-fmt`](https://github.com/Mattilsynet/adr-fmt); not a
+  member of this workspace.
 - **`adr-srv`** — GraphQL service over a projection of the ADR corpus.
   See [`crates/adr-srv/`](crates/adr-srv/).
 - **`comment-free`** — doc-lint tool enforcing the fleet-wide
@@ -71,18 +74,26 @@ This is a Rust workspace (edition 2024, MSRV 1.98).
 ## Quickstart — adr-fmt
 
 `adr-fmt` discovers its corpus via `adr-fmt.toml` at the workspace root.
+It is not a member of this workspace — it is consumed from canonical
+upstream. Install the pinned revision once:
 
 ```console
-cargo build -p adr-fmt
-cargo test  -p adr-fmt
-cargo run   -p adr-fmt -- --lint
-cargo run   -p adr-fmt -- --tree CHE
-cargo run   -p adr-fmt -- --refs CHE-0054
-cargo run   -p adr-fmt -- --context cherry-pit-core
+cargo install --git https://github.com/Mattilsynet/adr-fmt --locked \
+  --rev d27f8d4c2a02b2ff77f156783cc311ebfc081147 adr-fmt
+```
+
+Then run it against this corpus:
+
+```console
+adr-fmt --lint
+adr-fmt --tree CHE
+adr-fmt --refs CHE-0054
+adr-fmt --context cherry-pit-core
 ```
 
 Full rule taxonomy (T0xx template, L0xx links, S0xx lifecycle, P0xx
-parser) is in [`crates/adr-fmt/README.md`](crates/adr-fmt/README.md).
+parser) is in
+[`Mattilsynet/adr-fmt`](https://github.com/Mattilsynet/adr-fmt#readme).
 
 ## More
 

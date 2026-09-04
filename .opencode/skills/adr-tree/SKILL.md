@@ -36,10 +36,10 @@ When in doubt, run unfiltered first and read the domain headers.
 
 ```bash
 # All domains
-cargo run -p adr-fmt --release -- --tree
+adr-fmt --tree
 
 # Single domain
-cargo run -p adr-fmt --release -- --tree <PREFIX>
+adr-fmt --tree <PREFIX>
 ```
 
 Output structure (per domain):

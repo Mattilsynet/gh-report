@@ -18,7 +18,7 @@ matter or use `adr-fmt --tree <prefix>` to list).
 ## Run
 
 ```bash
-cargo run -p adr-fmt --release -- --refs <ADR_ID>
+adr-fmt --refs <ADR_ID>
 ```
 
 Output is one record per inbound citation:
