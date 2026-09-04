@@ -109,30 +109,53 @@ pub fn assess_baseline_age(observed_at: &str, run_timestamp: &str) -> BaselineAg
     }
 }
 
+/// A repository `updated_at` timestamp that is known to be present.
+///
+/// GitHub's `updated_at` reaches this module in two shapes that both mean
+/// "absent": a `None` option, and an empty string. Two spellings of one
+/// state forced [`should_reuse`] to reject the empty spelling with leading
+/// guards before it could express its actual decision. This newtype has no
+/// empty inhabitant, so absence has exactly one spelling — `Option::None` —
+/// and the guards have nothing left to reject.
+///
+/// Construct through [`UpdatedAt::new`]; there is no other constructor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdatedAt<'a>(&'a str);
+
+impl<'a> UpdatedAt<'a> {
+    /// Normalise a raw `updated_at` into a present-or-absent value.
+    ///
+    /// Returns `None` for the empty string, which GitHub and the baseline
+    /// dump both use as an absent-timestamp sentinel.
+    #[must_use]
+    pub fn new(raw: &'a str) -> Option<Self> {
+        if raw.is_empty() {
+            None
+        } else {
+            Some(Self(raw))
+        }
+    }
+}
+
 /// Determine whether a baseline entry can be reused for a given repository.
 ///
-/// Reuse is safe when:
-/// - The baseline entry has a non-empty `updated_at` value.
-/// - The current repository has a non-empty `updated_at` value.
-/// - Both values are identical (repository has not changed since the baseline).
-/// - The baseline entry is [`BaselineAge::Fresh`] (bounds indefinite reuse
-///   of a verdict `updated_at` cannot prove is still correct — see
-///   [`assess_baseline_age`]).
+/// Reuse is safe on exactly one of the input combinations: both timestamps
+/// are present, they are equal (the repository has not changed since the
+/// baseline), and the baseline entry is [`BaselineAge::Fresh`] (bounding
+/// indefinite reuse of a verdict `updated_at` cannot prove is still correct
+/// — see [`assess_baseline_age`]). Every other combination refuses reuse.
+///
+/// Absence is carried by `Option<UpdatedAt<'_>>` rather than by an empty
+/// string, so the whole predicate is one table over the inputs.
 #[must_use]
 pub fn should_reuse(
-    baseline_updated_at: &str,
-    current_updated_at: Option<&str>,
+    baseline_updated_at: Option<UpdatedAt<'_>>,
+    current_updated_at: Option<UpdatedAt<'_>>,
     baseline_age: BaselineAge,
 ) -> bool {
-    if baseline_updated_at.is_empty() {
-        return false;
-    }
-    if baseline_age == BaselineAge::Stale {
-        return false;
-    }
-    match current_updated_at {
-        Some(current) if !current.is_empty() => baseline_updated_at == current,
-        _ => false,
+    match (baseline_updated_at, current_updated_at, baseline_age) {
+        (Some(baseline), Some(current), BaselineAge::Fresh) => baseline == current,
+        (None | Some(_), None | Some(_), BaselineAge::Fresh | BaselineAge::Stale) => false,
     }
 }
 
@@ -207,8 +230,8 @@ mod tests {
     #[test]
     fn reuse_when_updated_at_matches() {
         assert!(should_reuse(
-            "2026-04-09T12:00:00Z",
-            Some("2026-04-09T12:00:00Z"),
+            UpdatedAt::new("2026-04-09T12:00:00Z"),
+            UpdatedAt::new("2026-04-09T12:00:00Z"),
             BaselineAge::Fresh
         ));
     }
@@ -216,8 +239,8 @@ mod tests {
     #[test]
     fn no_reuse_when_updated_at_differs() {
         assert!(!should_reuse(
-            "2026-04-09T12:00:00Z",
-            Some("2026-04-10T12:00:00Z"),
+            UpdatedAt::new("2026-04-09T12:00:00Z"),
+            UpdatedAt::new("2026-04-10T12:00:00Z"),
             BaselineAge::Fresh
         ));
     }
@@ -225,7 +248,7 @@ mod tests {
     #[test]
     fn no_reuse_when_current_is_none() {
         assert!(!should_reuse(
-            "2026-04-09T12:00:00Z",
+            UpdatedAt::new("2026-04-09T12:00:00Z"),
             None,
             BaselineAge::Fresh
         ));
@@ -234,8 +257,8 @@ mod tests {
     #[test]
     fn no_reuse_when_current_is_empty() {
         assert!(!should_reuse(
-            "2026-04-09T12:00:00Z",
-            Some(""),
+            UpdatedAt::new("2026-04-09T12:00:00Z"),
+            UpdatedAt::new(""),
             BaselineAge::Fresh
         ));
     }
@@ -243,8 +266,8 @@ mod tests {
     #[test]
     fn no_reuse_when_baseline_is_empty() {
         assert!(!should_reuse(
-            "",
-            Some("2026-04-09T12:00:00Z"),
+            UpdatedAt::new(""),
+            UpdatedAt::new("2026-04-09T12:00:00Z"),
             BaselineAge::Fresh
         ));
     }
@@ -252,8 +275,8 @@ mod tests {
     #[test]
     fn no_reuse_when_updated_at_identical_but_baseline_stale() {
         assert!(!should_reuse(
-            "2026-04-09T12:00:00Z",
-            Some("2026-04-09T12:00:00Z"),
+            UpdatedAt::new("2026-04-09T12:00:00Z"),
+            UpdatedAt::new("2026-04-09T12:00:00Z"),
             BaselineAge::Stale
         ));
     }
@@ -261,10 +284,44 @@ mod tests {
     #[test]
     fn reuse_when_updated_at_identical_and_baseline_fresh() {
         assert!(should_reuse(
-            "2026-04-09T12:00:00Z",
-            Some("2026-04-09T12:00:00Z"),
+            UpdatedAt::new("2026-04-09T12:00:00Z"),
+            UpdatedAt::new("2026-04-09T12:00:00Z"),
             BaselineAge::Fresh
         ));
+    }
+
+    #[test]
+    fn should_reuse_behaviour_table_is_exhaustive_over_inputs() {
+        let cases: [(&str, Option<&str>, BaselineAge, bool); 16] = [
+            ("", None, BaselineAge::Fresh, false),
+            ("", None, BaselineAge::Stale, false),
+            ("", Some(""), BaselineAge::Fresh, false),
+            ("", Some(""), BaselineAge::Stale, false),
+            ("", Some("X"), BaselineAge::Fresh, false),
+            ("", Some("X"), BaselineAge::Stale, false),
+            ("", Some("Y"), BaselineAge::Fresh, false),
+            ("", Some("Y"), BaselineAge::Stale, false),
+            ("X", None, BaselineAge::Fresh, false),
+            ("X", None, BaselineAge::Stale, false),
+            ("X", Some(""), BaselineAge::Fresh, false),
+            ("X", Some(""), BaselineAge::Stale, false),
+            ("X", Some("X"), BaselineAge::Fresh, true),
+            ("X", Some("X"), BaselineAge::Stale, false),
+            ("X", Some("Y"), BaselineAge::Fresh, false),
+            ("X", Some("Y"), BaselineAge::Stale, false),
+        ];
+
+        for (baseline, current, age, expected) in cases {
+            assert_eq!(
+                should_reuse(
+                    UpdatedAt::new(baseline),
+                    current.and_then(UpdatedAt::new),
+                    age
+                ),
+                expected,
+                "baseline={baseline:?} current={current:?} age={age:?}"
+            );
+        }
     }
 
     #[test]

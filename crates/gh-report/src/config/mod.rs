@@ -138,25 +138,44 @@ pub const COLLECTION_INTERVAL_SECS: u64 = 3_600;
 /// value.
 ///
 /// GitHub does not bump a repository's `updated_at` when its
-/// branch-protection rules change, so an `updated_at` match alone cannot
-/// prove a cached branch-protection verdict is still correct
-/// (`infra::baseline::should_reuse`). This bound forces periodic
-/// re-collection regardless of `updated_at`, at the known cost of one
-/// extra evaluation per repository per window.
+/// branch-protection rules or rulesets change, so an `updated_at` match
+/// alone cannot prove a cached settings verdict is still correct
+/// (`infra::baseline::should_reuse`). This bound is the only thing that
+/// catches settings-only drift: it forces periodic re-collection
+/// regardless of `updated_at`, at the known cost of one extra
+/// evaluation per repository per window.
 ///
 /// The bound is wall-clock, not cycle-count: it caps how long a stale
-/// branch-protection verdict may be served, independent of how often the
-/// collector ticks. 4 hours is a risk-based choice, not the
-/// previously-used 24h figure: a full day between forced re-checks is
-/// too permissive for a reporting-integrity control whose entire purpose
-/// is bounding that staleness window (adr-fmt-glprg review round 2). At
-/// the current [`COLLECTION_INTERVAL_SECS`] it spans 4 collection
-/// cycles, so an unchanged repository still avoids re-collection on 3 of
-/// every 4 sweeps — most of the quota saving baseline reuse exists for —
-/// while the worst-case staleness window stays well within a single
-/// working day. Retuning the collection cadence changes the cycle count
-/// but not this bound, which is why the value is unchanged.
-pub const BASELINE_MAX_AGE_SECS: u64 = 14_400;
+/// settings verdict may be served, independent of how often the
+/// collector ticks.
+///
+/// 24 hours is a cost-driven choice. The measured full-wave collection
+/// run spent 4,079 API calls — 81.6% of a single hourly quota — to
+/// re-evaluate 744 pending repositories, the same run-scoped figure
+/// [`COLLECTION_INTERVAL_SECS`] is tuned against. The larger ~4,854
+/// figure recorded alongside it is a shared gate-epoch counter spanning
+/// prior runs and the independent team-refresh loop, not one run's cost,
+/// and is deliberately not the number used here (ghr-1lyih, which also
+/// records the 771-repository org size as an environment-derived
+/// observation rather than a code-verifiable constant). A bound that
+/// forces such a wave every 4 hours spends six of them a day and does
+/// not scale with either org size or per-repo scrape depth. At 24h
+/// forced full rescans drop from 6/day to 1/day, and the pending
+/// per-repository evaluation fan-out becomes proportional to the
+/// repositories that changed rather than to the whole inventory. Total
+/// per-run cost is not O(repositories changed): the full paginated
+/// inventory fetch and org-alert collection run on every tick, before
+/// baseline filtering. Worst-case staleness stays bounded at 24 hours.
+///
+/// FLO-0002:R2 harmonicity holds: `86_400` / [`COLLECTION_INTERVAL_SECS`]
+/// = 24, an integer number of collection cycles. Retuning the collection
+/// cadence changes the cycle count but not this bound.
+///
+/// Residual risk is consciously accepted: settings-only drift can stay
+/// invisible to the `updated_at` signal for up to a day (ghr-4fabk).
+/// ghr-d1176f2a would decouple settings collection from this bound
+/// entirely and remove the trade-off rather than retune it.
+pub const BASELINE_MAX_AGE_SECS: u64 = 86_400;
 
 /// Fixed interval between team-refresh collector ticks (seconds),
 /// deliberately decoupled from [`COLLECTION_INTERVAL_SECS`] (ghr-3fda2878,
@@ -334,10 +353,18 @@ mod tests {
     }
 
     #[test]
-    fn baseline_max_age_is_four_hours_and_an_integer_multiple_of_the_collection_interval() {
-        assert_eq!(BASELINE_MAX_AGE_SECS, 14_400);
+    fn baseline_max_age_is_twenty_four_hours() {
+        assert_eq!(BASELINE_MAX_AGE_SECS, 86_400);
+        assert_eq!(
+            Duration::from_secs(BASELINE_MAX_AGE_SECS),
+            Duration::from_hours(24)
+        );
+    }
+
+    #[test]
+    fn baseline_max_age_is_an_integer_multiple_of_the_collection_interval() {
         assert_eq!(BASELINE_MAX_AGE_SECS % COLLECTION_INTERVAL_SECS, 0);
-        assert_eq!(BASELINE_MAX_AGE_SECS / COLLECTION_INTERVAL_SECS, 4);
+        assert_ne!(BASELINE_MAX_AGE_SECS / COLLECTION_INTERVAL_SECS, 0);
     }
 
     #[test]
