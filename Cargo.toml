@@ -74,7 +74,7 @@ authors = ["Mattilsynet"]
 # Canonical upstream, rev-pinned: no tags exist on Mattilsynet/adr-fmt,
 # so the rev is the only stable pin. Source admitted in deny.toml
 # [sources].allow-git (RST-0004:R7).
-adr-fmt = { git = "https://github.com/Mattilsynet/adr-fmt", rev = "d27f8d4c2a02b2ff77f156783cc311ebfc081147" }
+adr-fmt = { git = "https://github.com/Mattilsynet/adr-fmt", rev = "840254e165b24709725ca4985e9b483f050bc19c" }
 
 # === Text processing ===
 regex = "1"
