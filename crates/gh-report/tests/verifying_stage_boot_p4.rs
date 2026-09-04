@@ -30,7 +30,6 @@ use gh_report::event::OrgMembershipFetchStatus;
 use pardosa_nats::test_support::LiveNatsServer;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn unique_org() -> String {
@@ -233,7 +232,11 @@ async fn all_three_stores_boot_through_verifying_stage_on_pgno() {
 
 #[test]
 fn all_three_stores_boot_through_verifying_stage_on_nats() {
-    let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+    let Some(server) = LiveNatsServer::try_acquire()
+        .ready_or_skip("all_three_stores_boot_through_verifying_stage_on_nats")
+    else {
+        return;
+    };
     let rt = tokio::runtime::Runtime::new().expect("multi-thread tokio runtime");
     rt.block_on(async {
         let tmp = tempfile::tempdir().expect("tempdir");

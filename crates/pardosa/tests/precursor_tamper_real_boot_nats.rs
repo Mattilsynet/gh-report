@@ -175,6 +175,12 @@ fn run_isolated_worker(worker_name: &str) {
 
 #[test]
 fn enforce_real_boot_rejects_tampered_jetstream_stream_via_open_with_backend() {
+    if LiveNatsServer::try_acquire()
+        .ready_or_skip("enforce_real_boot_rejects_tampered_jetstream_stream_via_open_with_backend")
+        .is_none()
+    {
+        return;
+    }
     run_isolated_worker("enforce_worker_nats_rejects_via_open_with_backend");
 }
 
@@ -185,7 +191,11 @@ fn enforce_real_boot_rejects_tampered_jetstream_stream_via_open_with_backend() {
             never runs under a plain `cargo test`; provisions its own live nats-server \
             so no cross-process server hand-off is required"]
 fn enforce_worker_nats_rejects_via_open_with_backend() {
-    let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+    let Some(server) = LiveNatsServer::try_acquire()
+        .ready_or_skip("enforce_worker_nats_rejects_via_open_with_backend")
+    else {
+        return;
+    };
     let rt = Runtime::new().expect("tokio runtime");
     let tag = unique_tag();
     let stream_name = format!("PARDOSA_TAMPER_ENFORCE_{tag}");
@@ -275,7 +285,11 @@ fn observe_only_real_boot_boots_tampered_jetstream_stream_without_rejecting() {
         std::env::var("PARDOSA_PRECURSOR_CHECK_MODE").is_err(),
         "this test asserts the default ObserveOnly path; env must stay unset here"
     );
-    let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+    let Some(server) = LiveNatsServer::try_acquire()
+        .ready_or_skip("observe_only_real_boot_boots_tampered_jetstream_stream_without_rejecting")
+    else {
+        return;
+    };
     let rt = Runtime::new().expect("tokio runtime");
     let tag = unique_tag();
     let stream_name = format!("PARDOSA_TAMPER_OBSERVE_{tag}");

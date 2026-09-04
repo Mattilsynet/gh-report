@@ -96,7 +96,11 @@ async fn subject_message_count(nats_url: &str, stream_name: &str) -> u64 {
 
 #[test]
 fn append_is_idempotent_under_fence_single_writer_stale_expected_sequence() {
-    let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+    let Some(server) = LiveNatsServer::try_acquire()
+        .ready_or_skip("append_is_idempotent_under_fence_single_writer_stale_expected_sequence")
+    else {
+        return;
+    };
     let rt = Runtime::new().expect("tokio runtime");
     let org = unique_org();
     let nats = NatsStoreConfig::for_org(&org, server.url().to_owned()).expect("nats config");

@@ -193,7 +193,11 @@ fn live_open_refuses_populated_stream_with_foreign_marker() {
 
 #[test]
 fn live_open_backfills_marker_on_populated_markerless_stream() {
-    let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+    let Some(server) = LiveNatsServer::try_acquire()
+        .ready_or_skip("live_open_backfills_marker_on_populated_markerless_stream")
+    else {
+        return;
+    };
     let rt = Runtime::new().expect("tokio runtime");
     let tag = unique_stream_tag();
     let stream_name = format!("PARDOSA_SCHEMA_GATE_{tag}");
@@ -223,7 +227,11 @@ fn live_open_backfills_marker_on_populated_markerless_stream() {
 
 #[test]
 fn live_open_keeps_foreign_pgno_payload_fail_closed_after_marker_backfill() {
-    let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+    let Some(server) = LiveNatsServer::try_acquire()
+        .ready_or_skip("live_open_keeps_foreign_pgno_payload_fail_closed_after_marker_backfill")
+    else {
+        return;
+    };
     let rt = Runtime::new().expect("tokio runtime");
     let tag = unique_stream_tag();
     let stream_name = format!("PARDOSA_SCHEMA_GATE_{tag}");

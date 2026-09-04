@@ -3,7 +3,6 @@ use pardosa::store::{
 };
 use pardosa_nats::test_support::LiveNatsServer;
 use pardosa_nats::{JetStreamBackend as SubstrateJetStreamBackend, JetStreamConfig, RuntimeHandle};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
@@ -121,7 +120,11 @@ fn beta_payloads(store: &EventStore<SpikeBeta>) -> Vec<SpikeBeta> {
 
 #[test]
 fn two_typed_event_stores_coexist_over_distinct_jetstream_subjects() {
-    let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+    let Some(server) = LiveNatsServer::try_acquire()
+        .ready_or_skip("two_typed_event_stores_coexist_over_distinct_jetstream_subjects")
+    else {
+        return;
+    };
     let rt = Runtime::new().expect("tokio runtime");
     let tag = unique_tag();
     let alpha_names = StreamNames::new(&tag, "alpha");
