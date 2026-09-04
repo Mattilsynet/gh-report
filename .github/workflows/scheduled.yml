@@ -105,7 +105,7 @@ jobs:
         with:
           toolchain: 1.98.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo install --locked --path crates/adr-fmt
+      - run: cargo install --locked --git https://github.com/Mattilsynet/adr-fmt --rev d27f8d4c2a02b2ff77f156783cc311ebfc081147 adr-fmt
       - name: adr-fmt lint ratchet (AFM-0003:R3)
         run: |
           out=$(tools/adr-lint-ratchet.sh 2>&1) && rc=0 || rc=$?
