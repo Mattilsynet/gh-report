@@ -6,15 +6,17 @@ global `~/.config/opencode/AGENTS.md` (auto-loaded) — not repeated here.
 
 ## What this repo is
 
-Rust workspace (edition 2024, MSRV 1.98, resolver 3, 26 crates) shipping two
+Rust workspace (edition 2024, MSRV 1.98, resolver 3, 25 crates) shipping two
 binaries plus an ADR-governed library family and a large ADR corpus.
 
 - Binaries (real entrypoints): `adr-srv` (axum GraphQL service over an
   ADR-corpus projection), `gh-report` (GitHub org evidence collector + HTML
-  reporter daemon). `comment-free` is a doc-lint tool. `adr-fmt` (ADR
-  validator, read-only) is **not** built here — it is consumed from canonical
-  `Mattilsynet/adr-fmt` at the rev pinned in `[workspace.dependencies]`, and
-  invoked as an installed binary.
+  reporter daemon). Two tools are **not** built here and are consumed as
+  installed binaries from their canonical repos: `adr-fmt` (ADR validator,
+  read-only) from `Mattilsynet/adr-fmt`, at the rev pinned in
+  `[workspace.dependencies]` for its library consumers; and `comment-free`
+  (doc-lint tool) from `acje/comment-free`, which has no library consumers
+  here and therefore no workspace-dependency pin.
 - `cherry-pit-*` — event-sourcing substrate consumed by `gh-report`.
 - `pardosa*` — `.pgno` event-store substrate + a NATS/JetStream backend
   (`pardosa-nats`). `cherry-pit` does **not** depend on `pardosa` (severed per
