@@ -37,10 +37,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "adr-fmt"
+version = "0.1.0"
+source = "git+https://github.com/Mattilsynet/adr-fmt?rev=d27f8d4c2a02b2ff77f156783cc311ebfc081147#d27f8d4c2a02b2ff77f156783cc311ebfc081147"
+dependencies = [
+ "clap",
+ "regex",
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "adr-srv"
 version = "0.1.0"
 dependencies = [
- "adr-fmt",
+ "adr-fmt 0.1.0 (git+https://github.com/Mattilsynet/adr-fmt?rev=d27f8d4c2a02b2ff77f156783cc311ebfc081147)",
  "async-graphql",
  "async-graphql-axum",
  "axum",

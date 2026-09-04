@@ -141,10 +141,10 @@ pub async fn scrape_corpus<S: AdrStorePort>(
             continue;
         }
         let outcome = parse_domain(&dir)?;
-        for record in outcome.records {
-            ingest_record(service, &record, &mut report, corpus).await?;
+        for record in outcome.records() {
+            ingest_record(service, record, &mut report, corpus).await?;
         }
-        for diag in outcome.diagnostics {
+        for diag in outcome.diagnostics() {
             report.diagnostics.push(format!("parser: {}", diag.message));
         }
     }
@@ -152,10 +152,10 @@ pub async fn scrape_corpus<S: AdrStorePort>(
     let stale_dir = corpus_root.join(&config.stale.directory);
     if stale_dir.is_dir() {
         let outcome = parse_stale(&stale_dir, &config)?;
-        for record in outcome.records {
-            ingest_record(service, &record, &mut report, corpus).await?;
+        for record in outcome.records() {
+            ingest_record(service, record, &mut report, corpus).await?;
         }
-        for diag in outcome.diagnostics {
+        for diag in outcome.diagnostics() {
             report.diagnostics.push(format!("parser: {}", diag.message));
         }
     }
@@ -180,7 +180,7 @@ async fn ingest_record<S: AdrStorePort>(
         Err(reason) => {
             report
                 .diagnostics
-                .push(format!("skip {}: {reason}", record.id));
+                .push(format!("skip {}: {reason}", record.id()));
             return Ok(());
         }
     };
@@ -204,50 +204,43 @@ async fn ingest_record<S: AdrStorePort>(
 /// caller turns that into a `report.diagnostics` entry.
 fn project(record: &AdrRecord) -> Result<AdrIngested, String> {
     let id: AdrId = record
-        .id
+        .id()
         .to_string()
         .parse()
         .map_err(|e| format!("unparseable id ({e})"))?;
 
     let title = record
-        .title
-        .clone()
+        .title()
+        .map(str::to_string)
         .ok_or_else(|| "missing title".to_string())?;
 
-    let date = parse_civil_date(
-        record
-            .date
-            .as_deref()
-            .ok_or_else(|| "missing date".to_string())?,
-    )
-    .map_err(|e| format!("invalid date: {e}"))?;
+    let date = parse_civil_date(record.date().ok_or_else(|| "missing date".to_string())?)
+        .map_err(|e| format!("invalid date: {e}"))?;
 
     let last_reviewed = parse_civil_date(
         record
-            .last_reviewed
-            .as_deref()
+            .last_reviewed()
             .ok_or_else(|| "missing last_reviewed".to_string())?,
     )
     .map_err(|e| format!("invalid last_reviewed: {e}"))?;
 
     let tier = record
-        .tier
+        .tier()
         .map(project_tier)
         .ok_or_else(|| "missing tier".to_string())?;
 
     let status = project_status(
         record
-            .status
-            .as_ref()
+            .status()
             .ok_or_else(|| "missing status".to_string())?,
     );
 
-    let body_bytes = fs::read(&record.file_path)
-        .map_err(|e| format!("read file {}: {e}", record.file_path.display()))?;
+    let body_bytes = fs::read(record.file_path())
+        .map_err(|e| format!("read file {}: {e}", record.file_path().display()))?;
     let body_hash = BodyHash::compute(&body_bytes);
 
     let references: Vec<AdrId> = record
-        .relationships
+        .relationships()
         .iter()
         .filter(|r| r.verb == RelVerb::References)
         .map(|r| {

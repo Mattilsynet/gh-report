@@ -72,6 +72,12 @@ repository = "https://github.com/Mattilsynet/gh-report"
 authors = ["Mattilsynet"]
 
 [workspace.dependencies]
+# === ADR governance library (RST-0004:R1) ===
+# Canonical upstream, rev-pinned: no tags exist on Mattilsynet/adr-fmt,
+# so the rev is the only stable pin. Source admitted in deny.toml
+# [sources].allow-git (RST-0004:R7).
+adr-fmt = { git = "https://github.com/Mattilsynet/adr-fmt", rev = "d27f8d4c2a02b2ff77f156783cc311ebfc081147" }
+
 # === Text processing ===
 regex = "1"
 toml = "1"

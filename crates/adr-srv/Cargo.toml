@@ -10,8 +10,9 @@ publish = false
 workspace = true
 
 [dependencies]
-# adr-fmt library surface (AFM-0026:R1) — already wired in M1.1.
-adr-fmt = { path = "../adr-fmt" }
+# adr-fmt library surface (AFM-0026:R1), sourced from canonical
+# upstream via the workspace-level rev-pinned git dep (RST-0004:R1).
+adr-fmt = { workspace = true }
 
 # Event-sourcing substrate (cherry-pit-core traits: DomainEvent,
 # Projection, ReadPort). Persistence itself is native pardosa
