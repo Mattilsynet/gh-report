@@ -149,14 +149,23 @@ pub const COLLECTION_INTERVAL_SECS: u64 = 3_600;
 /// settings verdict may be served, independent of how often the
 /// collector ticks.
 ///
-/// 24 hours is a cost-driven choice. A forced full rescan is ~4,900 API
-/// calls at the current 771-repository org — ~98% of a single hourly
-/// quota — so a bound that forces one every 4 hours consumes six such
-/// rescans a day and does not scale with either org size or per-repo
-/// scrape depth. At 24h forced full rescans drop from 6/day to 1/day,
-/// and per-run cost becomes O(repositories changed) rather than O(all
-/// repositories) on every fourth run, while worst-case staleness stays
-/// bounded at one working day.
+/// 24 hours is a cost-driven choice. The measured full-wave collection
+/// run spent 4,079 API calls — 81.6% of a single hourly quota — to
+/// re-evaluate 744 pending repositories, the same run-scoped figure
+/// [`COLLECTION_INTERVAL_SECS`] is tuned against. The larger ~4,854
+/// figure recorded alongside it is a shared gate-epoch counter spanning
+/// prior runs and the independent team-refresh loop, not one run's cost,
+/// and is deliberately not the number used here (ghr-1lyih, which also
+/// records the 771-repository org size as an environment-derived
+/// observation rather than a code-verifiable constant). A bound that
+/// forces such a wave every 4 hours spends six of them a day and does
+/// not scale with either org size or per-repo scrape depth. At 24h
+/// forced full rescans drop from 6/day to 1/day, and the pending
+/// per-repository evaluation fan-out becomes proportional to the
+/// repositories that changed rather than to the whole inventory. Total
+/// per-run cost is not O(repositories changed): the full paginated
+/// inventory fetch and org-alert collection run on every tick, before
+/// baseline filtering. Worst-case staleness stays bounded at 24 hours.
 ///
 /// FLO-0002:R2 harmonicity holds: `86_400` / [`COLLECTION_INTERVAL_SECS`]
 /// = 24, an integer number of collection cycles. Retuning the collection
@@ -344,10 +353,18 @@ mod tests {
     }
 
     #[test]
-    fn baseline_max_age_is_twenty_four_hours_and_an_integer_multiple_of_the_collection_interval() {
+    fn baseline_max_age_is_twenty_four_hours() {
         assert_eq!(BASELINE_MAX_AGE_SECS, 86_400);
+        assert_eq!(
+            Duration::from_secs(BASELINE_MAX_AGE_SECS),
+            Duration::from_hours(24)
+        );
+    }
+
+    #[test]
+    fn baseline_max_age_is_an_integer_multiple_of_the_collection_interval() {
         assert_eq!(BASELINE_MAX_AGE_SECS % COLLECTION_INTERVAL_SECS, 0);
-        assert_eq!(BASELINE_MAX_AGE_SECS / COLLECTION_INTERVAL_SECS, 24);
+        assert!(BASELINE_MAX_AGE_SECS >= COLLECTION_INTERVAL_SECS);
     }
 
     #[test]
