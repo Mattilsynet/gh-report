@@ -32,7 +32,7 @@ cargo run -p gh-report -- --dump-baseline --org <your-org> --store-dir ./store
 Operational recovery procedures live at
 [`crates/cherry-pit-gateway/RUNBOOKS.md`](crates/cherry-pit-gateway/RUNBOOKS.md).
 
-## Why a 26-crate workspace behind one dashboard
+## Why a 25-crate workspace behind one dashboard
 
 `gh-report` is built on a `cherry-pit-*` event-sourcing substrate (core,
 gateway, projection, app, web, work-queue, storage primitives), with durable
@@ -40,7 +40,8 @@ events persisted through the `pardosa*` `.pgno` store family (or a
 NATS/JetStream backend). `adr-srv` is the governance plane that keeps the
 ADR corpus this workspace is built against internally consistent, together
 with `adr-fmt` (consumed from canonical upstream, not a member here);
-`comment-free` enforces the workspace's no-`//`-comments rule.
+`comment-free` enforces the workspace's no-`//`-comments rule and is
+likewise consumed from canonical upstream rather than built here.
 A few small internal tooling binaries also live here (`architect`,
 `pardosa-read`, `non-exhaustive-check`). Why the substrate is developed
 here as a first-class concern, rather than only as an implementation
@@ -61,8 +62,9 @@ restate it.
 - **`adr-srv`** — GraphQL service over a projection of the ADR corpus.
   See [`crates/adr-srv/`](crates/adr-srv/).
 - **`comment-free`** — doc-lint tool enforcing the fleet-wide
-  no-`//`-comments rule on Rust source.
-  See [`crates/comment-free/`](crates/comment-free/).
+  no-`//`-comments rule on Rust source. Consumed from canonical upstream
+  [`acje/comment-free`](https://github.com/acje/comment-free) as an
+  installed binary; not a member of this workspace.
 - **ADR corpus** at [`docs/adr/`](docs/adr/). Two domains are actively
   edited: `adr-fmt/` (prefix `AFM`) governs the validator; `cherry/`
   (prefix `CHE`) governs cherry-pit, adr-srv, and gh-report.
