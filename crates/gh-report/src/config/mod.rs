@@ -364,7 +364,7 @@ mod tests {
     #[test]
     fn baseline_max_age_is_an_integer_multiple_of_the_collection_interval() {
         assert_eq!(BASELINE_MAX_AGE_SECS % COLLECTION_INTERVAL_SECS, 0);
-        assert!(BASELINE_MAX_AGE_SECS >= COLLECTION_INTERVAL_SECS);
+        assert_ne!(BASELINE_MAX_AGE_SECS / COLLECTION_INTERVAL_SECS, 0);
     }
 
     #[test]
