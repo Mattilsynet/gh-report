@@ -178,7 +178,11 @@ fn nats_backend_fresh_create_reopen_and_populated_route_preserves_events() {
 
 #[test]
 fn nats_backend_uses_distinct_repo_and_org_streams() {
-    let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+    let Some(server) = LiveNatsServer::try_acquire()
+        .ready_or_skip("nats_backend_uses_distinct_repo_and_org_streams")
+    else {
+        return;
+    };
     let rt = Runtime::new().expect("tokio runtime");
     let org = unique_org();
     let nats = NatsStoreConfig::for_org(&org, server.url().to_owned()).expect("nats config");

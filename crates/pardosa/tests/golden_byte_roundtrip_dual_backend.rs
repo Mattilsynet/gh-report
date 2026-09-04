@@ -19,7 +19,6 @@ use pardosa::store::{
 };
 use pardosa_file::Reader;
 use pardosa_nats::{JetStreamBackend as SubstrateJetStreamBackend, JetStreamConfig, RuntimeHandle};
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use support_live_nats::LiveNatsServer;
 use tokio::runtime::Runtime;
@@ -134,7 +133,11 @@ fn pgno_and_jetstream_rehydrate_fold_identical_frontier_for_same_log() {
         EventStore::<Ledger>::open_with_backend(pgno_backend).expect("open_with_backend(pgno)");
     let pgno_frontier = pgno_store.reader().frontier();
 
-    let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+    let Some(server) = LiveNatsServer::try_acquire()
+        .ready_or_skip("pgno_and_jetstream_rehydrate_fold_identical_frontier_for_same_log")
+    else {
+        return;
+    };
     let rt = Runtime::new().expect("tokio runtime");
     let tag = unique_tag();
     let stream_name = format!("PARDOSA_GOLDEN_{tag}");

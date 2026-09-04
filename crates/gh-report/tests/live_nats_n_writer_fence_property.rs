@@ -109,7 +109,10 @@ async fn subject_message_count(nats_url: &str, stream_name: &str) -> u64 {
 /// `341188b` amendment), and the server durably holds exactly one
 /// message.
 fn n_writers_race_real_fence(n: usize) {
-    let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+    let Some(server) = LiveNatsServer::try_acquire().ready_or_skip("n_writers_race_real_fence")
+    else {
+        return;
+    };
     let rt = Runtime::new().expect("tokio runtime");
     let tag = unique_tag();
     let org = format!("fence-race-{tag}");
@@ -192,7 +195,11 @@ fn n_writers_race_real_fence(n: usize) {
 /// `last_ack_seq` before publishing. Both must succeed.
 #[test]
 fn single_handle_two_racing_appends_never_self_fence() {
-    let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+    let Some(server) = LiveNatsServer::try_acquire()
+        .ready_or_skip("single_handle_two_racing_appends_never_self_fence")
+    else {
+        return;
+    };
     let rt = Runtime::new().expect("tokio runtime");
     let tag = unique_tag();
     let org = format!("self-fence-{tag}");

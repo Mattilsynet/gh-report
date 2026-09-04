@@ -268,7 +268,11 @@ fn live_replay_all_on_purged_stream_returns_empty_vec_promptly() {
 
 #[test]
 fn live_update_stream_description_round_trips_on_populated_markerless_stream() {
-    let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+    let Some(server) = LiveNatsServer::try_acquire()
+        .ready_or_skip("live_update_stream_description_round_trips_on_populated_markerless_stream")
+    else {
+        return;
+    };
     let rt = Runtime::new().expect("tokio runtime");
     let tag = unique_stream_tag();
     let stream_name = format!("PARDOSA_LIVE_{tag}");

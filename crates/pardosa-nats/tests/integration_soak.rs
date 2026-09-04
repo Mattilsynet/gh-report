@@ -24,7 +24,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use support::LiveNatsServer;
+use support::{LiveNats, LiveNatsServer};
 use tokio::runtime::Runtime;
 /// Phase 5 paired-flake-window size. Default `N = 50` unless a
 /// test-plan PR justifies another value.
@@ -347,11 +347,19 @@ struct JetStreamIterContext {
     server: Arc<LiveNatsServer>,
 }
 impl JetStreamIterContext {
-    fn acquire() -> Result<Self, String> {
-        let server = std::panic::catch_unwind(LiveNatsServer::acquire)
-            .map_err(|_| "LiveNatsServer::acquire panicked".to_string())?;
+    fn acquire() -> Result<Option<Self>, String> {
+        let server = match LiveNatsServer::try_acquire() {
+            LiveNats::Ready(server) => server,
+            LiveNats::Unavailable(reason) => {
+                eprintln!("SKIP jetstream_soak: live nats-server unavailable: {reason}");
+                return Ok(None);
+            }
+            LiveNats::Fatal(error) => {
+                return Err(format!("live nats-server harness failed to start: {error}"));
+            }
+        };
         let rt = Runtime::new().map_err(|e| format!("tokio runtime: {e}"))?;
-        Ok(Self { rt, server })
+        Ok(Some(Self { rt, server }))
     }
     fn build_handle(&self, stream_name: &str, subject: &str, durable: &str) -> JetStreamHandle {
         let cfg = JetStreamConfig::builder()
@@ -609,8 +617,11 @@ fn run_jetstream_iteration(ctx: &JetStreamIterContext, iter: usize, tally: &mut 
 #[test]
 #[ignore = "Phase 5 paired flake-window soak — requires nats-server (mission nats-recovery-05-integration-soak)"]
 fn phase5_paired_flake_window_pgno_vs_jetstream() {
-    let ctx = JetStreamIterContext::acquire()
-        .expect("JetStream context (live nats-server harness) must be reachable");
+    let Some(ctx) = JetStreamIterContext::acquire()
+        .expect("JetStream context (live nats-server harness) must start when it is present")
+    else {
+        return;
+    };
     let mut pgno = FailureTally::default();
     let mut jetstream = FailureTally::default();
     for iter in 0..PHASE5_WINDOW_N {

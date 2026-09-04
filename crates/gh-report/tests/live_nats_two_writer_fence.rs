@@ -187,7 +187,11 @@ async fn purge_stream(nats_url: &str, stream_name: &str) {
 
 #[test]
 fn two_writer_fence_conflicts_loser_and_single_writer_handles_sync_and_purge() {
-    let server: Arc<LiveNatsServer> = LiveNatsServer::acquire();
+    let Some(server) = LiveNatsServer::try_acquire()
+        .ready_or_skip("two_writer_fence_conflicts_loser_and_single_writer_handles_sync_and_purge")
+    else {
+        return;
+    };
     let rt = Runtime::new().expect("tokio runtime");
     let org = unique_org();
     let nats = NatsStoreConfig::for_org(&org, server.url().to_owned()).expect("nats config");
