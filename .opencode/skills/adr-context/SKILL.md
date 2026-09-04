@@ -16,13 +16,13 @@ Crate name as it appears in `adr-fmt.toml` `[corpus.crates]` — e.g.
 `adr-fmt`, `cherry-pit-core`, `cherry-pit-gateway`. Not the path; not
 the package version.
 
-If the user names a path (`crates/adr-fmt`) or a binary, normalise to
-the crate name before invoking.
+If the user names a path or a binary, normalise to the crate name
+before invoking.
 
 ## Run
 
 ```bash
-cargo run -p adr-fmt --release -- --context <CRATE>
+adr-fmt --context <CRATE>
 ```
 
 Output structure:

@@ -6,8 +6,9 @@
 # action update, which CI gates as any other dep change.
 #
 # Cargo ecosystem updates are intentionally *not* enabled here: the workspace
-# Cargo.lock is committed deliberately (see crates/adr-fmt/README.md "Cargo.lock
-# policy"), and dep bumps go through cargo-audit + cargo-deny on each PR.
+# Cargo.lock is committed deliberately (see the "Cargo.lock policy" section
+# of https://github.com/Mattilsynet/adr-fmt#readme), and dep bumps go
+# through cargo-audit + cargo-deny on each PR.
 # Enabling Dependabot for cargo would generate noise without changing the
 # safety posture. Revisit when/if cargo-vet lands (Tier-1 follow-up).
 #

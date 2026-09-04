@@ -127,6 +127,34 @@ crates = [
 ]
 
 [[domains]]
+prefix = "GEN"
+name = "Genome Domain (retired)"
+directory = "genome"
+description = """\
+    Retired historical domain. Original genome wire-encoding \
+    decisions: serde-native serialization behind the GenomeSafe \
+    marker trait, fixed-layout schema hashing, and zero-copy \
+    deserialization. Consolidated into PGN; every GEN ADR now lives \
+    in the stale directory and no live ADR is authored under this \
+    prefix. Registered so the prefix resolves per AFM-0008:R2; \
+    GEN retirement/stale moves are governed by AFM-0030."""
+crates = []
+
+[[domains]]
+prefix = "PAR"
+name = "Pardosa Legacy Domain (retired)"
+directory = "pardosa-legacy"
+description = """\
+    Retired historical domain. Original pardosa event-store \
+    decisions predating the PGN consolidation: fiber state machine, \
+    frontier chaining, and container durability. Consolidated into \
+    PGN; every PAR ADR now lives in the stale directory and no live \
+    ADR is authored under this prefix. Registered so the prefix \
+    resolves per AFM-0008:R2; PAR retirement/stale moves are \
+    governed by AFM-0030."""
+crates = []
+
+[[domains]]
 prefix = "AFM"
 name = "adr-fmt Domain"
 directory = "adr-fmt"
@@ -136,7 +164,7 @@ description = """\
     semantics, naming conventions, relationship vocabulary, tier \
     classification, and domain management. Covers the adr-fmt \
     binary's own architectural decisions as a Rust CLI tool."""
-crates = ["adr-fmt"]
+crates = []
 
 [[domains]]
 prefix = "FLO"

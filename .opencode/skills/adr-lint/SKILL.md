@@ -10,11 +10,11 @@ Wrapper skill around `adr-fmt --lint`. Read-only against the corpus
 
 ## Run
 
-Build is cheap and dogfoods the latest source. Prefer the freshly-built
-binary over a stale `target/release/adr-fmt`:
+The `adr-fmt` binary is installed from canonical upstream at the
+revision this workspace pins; it is not built from this tree:
 
 ```bash
-cargo run -p adr-fmt --release -- --lint
+adr-fmt --lint
 ```
 
 Capture both stdout and the exit code. Do not collapse them.

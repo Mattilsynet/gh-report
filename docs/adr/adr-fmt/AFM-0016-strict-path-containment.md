@@ -31,7 +31,7 @@ AFM-0003 R1.
 
 R1 [5]: Validate every config-supplied directory through
   `containment::contained_join` or `contained_join_optional` in
-  `crates/adr-fmt/src/containment.rs`, which enforce the
+  `Mattilsynet/adr-fmt:src/containment.rs`, which enforce the
   full lexical-plus-canonical pipeline
 R2 [5]: Reject lexically as `ContainmentError::Absolute`,
   `ContainmentError::Empty`, or `ContainmentError::ParentTraversal`
@@ -42,7 +42,7 @@ R3 [5]: Canonicalize the joined target via `std::fs::canonicalize`
   `Path::starts_with`; reject mismatches as
   `ContainmentError::EscapesRoot`
 R4 [5]: Surface containment failures via `eprintln!` plus
-  `process::exit(1)` in `crates/adr-fmt/src/main.rs` so they
+  `process::exit(1)` in `Mattilsynet/adr-fmt:src/main.rs` so they
   share the AFM-0003 infrastructure-error channel
 R5 [5]: Canonicalize the user-supplied `cli.adr_directory` and the
   walk-up result of `resolve_adr_root_optional` so subsequent
