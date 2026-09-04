@@ -138,25 +138,35 @@ pub const COLLECTION_INTERVAL_SECS: u64 = 3_600;
 /// value.
 ///
 /// GitHub does not bump a repository's `updated_at` when its
-/// branch-protection rules change, so an `updated_at` match alone cannot
-/// prove a cached branch-protection verdict is still correct
-/// (`infra::baseline::should_reuse`). This bound forces periodic
-/// re-collection regardless of `updated_at`, at the known cost of one
-/// extra evaluation per repository per window.
+/// branch-protection rules or rulesets change, so an `updated_at` match
+/// alone cannot prove a cached settings verdict is still correct
+/// (`infra::baseline::should_reuse`). This bound is the only thing that
+/// catches settings-only drift: it forces periodic re-collection
+/// regardless of `updated_at`, at the known cost of one extra
+/// evaluation per repository per window.
 ///
 /// The bound is wall-clock, not cycle-count: it caps how long a stale
-/// branch-protection verdict may be served, independent of how often the
-/// collector ticks. 4 hours is a risk-based choice, not the
-/// previously-used 24h figure: a full day between forced re-checks is
-/// too permissive for a reporting-integrity control whose entire purpose
-/// is bounding that staleness window (adr-fmt-glprg review round 2). At
-/// the current [`COLLECTION_INTERVAL_SECS`] it spans 4 collection
-/// cycles, so an unchanged repository still avoids re-collection on 3 of
-/// every 4 sweeps — most of the quota saving baseline reuse exists for —
-/// while the worst-case staleness window stays well within a single
-/// working day. Retuning the collection cadence changes the cycle count
-/// but not this bound, which is why the value is unchanged.
-pub const BASELINE_MAX_AGE_SECS: u64 = 14_400;
+/// settings verdict may be served, independent of how often the
+/// collector ticks.
+///
+/// 24 hours is a cost-driven choice. A forced full rescan is ~4,900 API
+/// calls at the current 771-repository org — ~98% of a single hourly
+/// quota — so a bound that forces one every 4 hours consumes six such
+/// rescans a day and does not scale with either org size or per-repo
+/// scrape depth. At 24h forced full rescans drop from 6/day to 1/day,
+/// and per-run cost becomes O(repositories changed) rather than O(all
+/// repositories) on every fourth run, while worst-case staleness stays
+/// bounded at one working day.
+///
+/// FLO-0002:R2 harmonicity holds: `86_400` / [`COLLECTION_INTERVAL_SECS`]
+/// = 24, an integer number of collection cycles. Retuning the collection
+/// cadence changes the cycle count but not this bound.
+///
+/// Residual risk is consciously accepted: settings-only drift can stay
+/// invisible to the `updated_at` signal for up to a day (ghr-4fabk).
+/// ghr-d1176f2a would decouple settings collection from this bound
+/// entirely and remove the trade-off rather than retune it.
+pub const BASELINE_MAX_AGE_SECS: u64 = 86_400;
 
 /// Fixed interval between team-refresh collector ticks (seconds),
 /// deliberately decoupled from [`COLLECTION_INTERVAL_SECS`] (ghr-3fda2878,
@@ -334,10 +344,10 @@ mod tests {
     }
 
     #[test]
-    fn baseline_max_age_is_four_hours_and_an_integer_multiple_of_the_collection_interval() {
-        assert_eq!(BASELINE_MAX_AGE_SECS, 14_400);
+    fn baseline_max_age_is_twenty_four_hours_and_an_integer_multiple_of_the_collection_interval() {
+        assert_eq!(BASELINE_MAX_AGE_SECS, 86_400);
         assert_eq!(BASELINE_MAX_AGE_SECS % COLLECTION_INTERVAL_SECS, 0);
-        assert_eq!(BASELINE_MAX_AGE_SECS / COLLECTION_INTERVAL_SECS, 4);
+        assert_eq!(BASELINE_MAX_AGE_SECS / COLLECTION_INTERVAL_SECS, 24);
     }
 
     #[test]
