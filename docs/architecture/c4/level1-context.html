@@ -60,7 +60,7 @@
     <caption>cherry-pit substrate family</caption>
     <thead><tr><th>Field</th><th>Value</th><th>Citation</th></tr></thead>
     <tbody>
-      <tr><td>Members</td><td>cherry-pit-app, cherry-pit-core, cherry-pit-gateway, cherry-pit-merger, cherry-pit-projection, cherry-pit-storage, cherry-pit-web, cherry-pit-wq, cherry-pit-sd-viz <span class="badge badge--tooling">tooling</span></td><td>&mdash;</td></tr>
+      <tr><td>Members</td><td>cherry-pit-app, cherry-pit-core, cherry-pit-gateway, cherry-pit-merger, cherry-pit-projection, cherry-pit-storage, cherry-pit-web, cherry-pit-wq</td><td>&mdash;</td></tr>
       <tr><td>Substrate deps</td><td>internal only, hub-and-spoke on cherry-pit-core (gateway, merger, projection, web, wq all &rarr; core; app &rarr; core,gateway,projection,web); zero pardosa edges (confirmed by Invariant 2, L2 page)</td><td>see L2 dependency table</td></tr>
     </tbody>
   </table>
@@ -71,9 +71,9 @@
     depends on BOTH pardosa and cherry-pit
     (<code>crates/gh-report/Cargo.toml</code> [dependencies]). The two
     substrates do not depend on each other in either direction: zero
-    "pardosa" dependency lines across all 9 <code>cherry-pit-*/Cargo.toml</code>
+    "pardosa" dependency lines across all 8 <code>cherry-pit-*/Cargo.toml</code>
     files (only a code comment in cherry-pit-core's noting pardosa-encoding
-    was removed, and a self-description string in cherry-pit-sd-viz's), and
+    was removed), and
     zero "cherry" matches across all <code>pardosa*/Cargo.toml</code> files.
   </p>
 
@@ -145,11 +145,6 @@
         <td><code>write_atomic</code>; per repo AGENTS.md CHE-0032 protocol — not re-verified here, code-only citation is the path</td>
         <td><code>crates/cherry-pit-gateway/src/event_store/msgpack_file.rs</code></td>
       </tr>
-      <tr>
-        <td>Standalone wasm viz consumer (not wired to gh-report/pardosa)</td>
-        <td>cherry-pit-sd-viz — crate-type cdylib+rlib per its Cargo.toml, "zero pardosa dependency" self-declared in its Cargo.toml description; not otherwise wired to gh-report or pardosa in the dependency graph observed</td>
-        <td><code>crates/cherry-pit-sd-viz/Cargo.toml</code></td>
-      </tr>
     </tbody>
   </table>
 
@@ -198,13 +193,6 @@ flowchart LR
       (<code>gh-report-ops/cloudrun/ghreport/main.tf</code>). A code-only survey
       scoped to the single repo mis-reads this as a gap; the C4 boundary for a
       deployed service must include its sibling ops repo.
-    </li>
-    <li>
-      <strong>cherry-pit-sd-viz is dependency-graph-isolated:</strong> its
-      relationship to the rest of the cherry-pit family is asserted only by
-      its own <code>Cargo.toml</code> description string, not by any actual
-      dependency edge — no in-scope crate depends on it, and it depends on
-      none in-scope observed.
     </li>
     <li>
       <strong>cherry-pit-merger orphan propagates to L1:</strong> per the

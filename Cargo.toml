@@ -2,7 +2,6 @@
 resolver = "3"
 members = [
     "crates/adr-srv",
-    "crates/architect",
     "crates/cherry-pit-app",
     "crates/cherry-pit-core",
     "crates/cherry-pit-gateway",
@@ -13,7 +12,6 @@ members = [
     "crates/cherry-pit-web",
     "crates/gh-report",
     "crates/gh-report-web-client",
-    "crates/cherry-pit-sd-viz",
     "crates/pardosa",
     "crates/pardosa-fiber-store",
     "crates/pardosa-derive",
@@ -34,7 +32,6 @@ members = [
 # `--target wasm32-unknown-unknown` (or `-p gh-report-web-client`) only.
 default-members = [
     "crates/adr-srv",
-    "crates/architect",
     "crates/cherry-pit-app",
     "crates/cherry-pit-core",
     "crates/cherry-pit-gateway",
@@ -44,7 +41,6 @@ default-members = [
     "crates/cherry-pit-storage",
     "crates/cherry-pit-web",
     "crates/gh-report",
-    "crates/cherry-pit-sd-viz",
     "crates/pardosa",
     "crates/pardosa-fiber-store",
     "crates/pardosa-derive",

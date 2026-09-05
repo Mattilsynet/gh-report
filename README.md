@@ -42,8 +42,8 @@ ADR corpus this workspace is built against internally consistent, together
 with `adr-fmt` (consumed from canonical upstream, not a member here);
 `comment-free` enforces the workspace's no-`//`-comments rule and is
 likewise consumed from canonical upstream rather than built here.
-A few small internal tooling binaries also live here (`architect`,
-`pardosa-read`, `non-exhaustive-check`). Why the substrate is developed
+A few small internal tooling binaries also live here (`pardosa-read`,
+`non-exhaustive-check`). Why the substrate is developed
 here as a first-class concern, rather than only as an implementation
 detail of `gh-report`, is recorded in [`AGENTS.md`](AGENTS.md) § Intent —
 that is the canonical statement of product stance; this README does not

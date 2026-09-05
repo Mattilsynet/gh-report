@@ -74,7 +74,7 @@ R5 [4]: Ring split — the generic `BackoffRegulator` lives in
   crate enters `cherry-pit-wq`).
 
 R6 [5]: Any new error/outcome enum on the wq surface carries
-  `#[non_exhaustive]` (CHE-0021/CHE-0094:R9); `Regulator` methods stay
+  `#[non_exhaustive]` (CHE-0021); `Regulator` methods stay
   sync / RPITIT, never `#[async_trait]` (CHE-0025).
 
 R7 [3]: A local circuit breaker / bulkhead is deferred (trigger-gated

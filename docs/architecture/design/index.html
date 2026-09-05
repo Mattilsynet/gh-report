@@ -168,9 +168,7 @@
   </ul>
   <p>
     <strong>gh-report-web-client</strong> — no README found within scope
-    (gap). Referenced from the cherry-pit-sd-viz README as declaring the
-    <code>web-sys</code> feature surface reused by the wasm viz crate; no
-    further intended-architecture prose located within scope.
+    (gap). No intended-architecture prose located within scope.
     <span class="cite-src">(bd-ghr-71fcc1a7 gaps)</span>
   </p>
 
@@ -439,29 +437,6 @@ flowchart BT
       <cite>CHE-0055:R7</cite>). Status implemented v0.1, flat re-export
       surface (<cite>CHE-0055:R10</cite>).
     </li>
-    <li>
-      <strong>cherry-pit-sd-viz</strong>
-      <span class="badge badge--tooling">tooling</span> — "standalone,
-      client-side, animated discrete-event simulation of gh-report's
-      runtime queue network." No dependency on a running gh-report; no
-      trace capture; wasm/browser-only. Documents the intended gh-report
-      runtime topology narratively: three triggers (scheduled sweep via
-      SweepSaga/SweepPhase; webhook via <code>webhook_handler</code>
-      enqueuing <code>JobSource::External</code>; warm start via
-      <code>warm_start_from_baseline</code> bypassing the queue) feeding a
-      per-packet WRITE side (WorkQueue → worker_loop/
-      LiveEvaluator::evaluate → JobOutcome → delivery_loop → record_repo
-      folds EvidenceProjectionEvent), joined by a BARRIER
-      (<code>BatchTracker</code> — a sweep run blocks until all
-      ScheduledBatch jobs of that run drain; webhook jobs never gate), then
-      a per-RUN READ side (<code>finalize_and_publish</code> →
-      <code>build_cached_pages</code> →
-      <code>commit_cached_pages</code> via atomic <code>ArcSwap</code>
-      swap+generation++ → <code>PageUpdateEvent</code> broadcast once per
-      run finalize), plus a continuous SERVE path (<code>cache_fallback</code>
-      reads the current ArcSwap generation independent of run completion).
-      Strong prose-derived architecture claim for gh-report's dataflow.
-    </li>
   </ul>
 
   <div class="mermaid">
@@ -474,7 +449,6 @@ flowchart TB
   web["cherry-pit-web<br/>(HTTP command adapter,<br/>CHE-0049/0050)"]
   wq["cherry-pit-wq<br/>(queue/pool/budget/<br/>rate-limit, CHE-0055)"]
   merger["cherry-pit-merger<br/>(single-task serialiser,<br/>CHE-0069/0085)"]
-  sdviz["cherry-pit-sd-viz"]:::tooling
 
   core --> app
   core --> gateway

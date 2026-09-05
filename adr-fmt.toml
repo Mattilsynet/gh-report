@@ -65,7 +65,6 @@ crates = [
     "cherry-pit-merger",
     "cherry-pit-wq",
     "cherry-pit-storage",
-    "cherry-pit-sd-viz",
     "gh-report",
     "adr-srv",
 ]
