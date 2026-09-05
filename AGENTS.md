@@ -94,10 +94,28 @@ adr-fmt-xdlw9 O3).
   a code baseline; exit-code criterion: all four commands below exit 0):
   ```
   cargo build  --workspace --all-features --locked                  # 93.7s cold, 678 units
-  cargo test   --workspace --all-features --locked --no-fail-fast   # ~120s warm (~40s compile + 85.6s exec, incl. doctests)
+  timeout 900 cargo test --workspace --all-features --locked --no-fail-fast   # ~120s warm (~40s compile + 85.6s exec, incl. doctests)
   cargo clippy --workspace --all-targets --all-features --locked -- -D warnings  # 49.0s
   cargo fmt --all -- --check                                        # 1.0s
   ```
+  `timeout 900` is mandatory on the BOUNDARY test line, and 900s is derived
+  from the ~120s warm measurement above (~7.5x that line, ~3.4x the whole
+  ~4.4min four-command tier; authoritative figure in bead ghr-df35935d).
+  It is deliberately NOT anchored on the superseded 60-83min figure
+  (ghr-2f56d34d), which measured CPU contention rather than a code baseline.
+  The wrapper exists because the PR #44 deadlock was not CI-specific — a local
+  BOUNDARY would have hung identically, and only per-invocation agent
+  discipline stood between it and an indefinite stall, which is not a property
+  of the tier. Re-derive the bound if the workspace or machine profile changes
+  (iteration-speed rule 2).
+
+  **Exit 124 is `Outcome::Surprise`, NEVER a test failure.** It means the
+  suite was killed at the wall clock without reaching a verdict, so it carries
+  no information about whether any test passed — reporting it as red is as
+  wrong as reporting it as green. Investigate the hang; do not re-run until
+  green, and do not fold it into a failure count. Without this rule the tier
+  trades a silent hang for a silent miscategorisation.
+
   `--no-fail-fast` is mandatory on the BOUNDARY test line: plain `cargo test`
   stops at the first failing test binary, so a failing BOUNDARY silently
   verifies only a fraction of the workspace (measured: ~40% covered before
@@ -135,31 +153,45 @@ adr-fmt-xdlw9 O3).
 ## Live-NATS tests need a pinned `nats-server` (common CI/local gotcha)
 
 `crates/pardosa-nats/src/test_support.rs` spawns a real `nats-server` and
-**asserts its `--version` matches `tools/.nats-server-version` (currently
-2.14.5)** — it panics on mismatch or if the binary is absent. Affected tests
-include `pardosa`'s `dragline::runtime::tests::*jetstream*`. To run them:
-install `nats-server` v2.14.5 onto `PATH`. CI installs it in the `test` job
+checks its `--version` against `tools/.nats-server-version` (currently
+2.14.5). Affected tests include `pardosa`'s
+`dragline::runtime::tests::*jetstream*`. To run them for real, install
+`nats-server` v2.14.5 onto `PATH`. CI installs it in the `test` job
 (checksum-verified). `async-nats` is pinned to the `server_2_14` feature to
 match.
 
-**Default-local impact — two distinct failure modes, do not conflate them:**
+**Skip semantics (since PR #58, `ba331a8`) — absence skips, only a broken
+harness fails.** `LiveNats` is a three-way split and the split is the whole
+point:
 
-1. **Version mismatch (the mode observed locally today).** With a
-   `nats-server` on `PATH` whose version differs from the pin, the live-NATS
-   tests panic with `VersionMismatch { expected: "2.14.5", observed:
-   "2.14.6" }`. Measured across three MID runs: **exactly 10 test targets /
-   15 tests**, stable in both count and reason. Tracked as bd `ghr-3plly`
-   (the pin decision itself). This is the failure set an agent will normally
-   see; treat a run whose only FAILED lines are these 15 as a known-quantity,
-   not `Outcome::Surprise`.
-2. **Absent server.** With no `nats-server` on `PATH` at all, the gate is
-   inconsistently applied: sibling tests in the *same* binaries correctly
-   self-skip with `ignored, requires live nats-server at ...`, while others
-   panic instead of hitting that same guard (origin: `test_support.rs:59,61`).
-   Tracked, not yet fixed: bd `ghr-89b05be0`.
+- `LiveNats::Unavailable` — the executable is absent from `PATH`
+  (`Unavailable::ExecutableAbsent`), or the one present does not match the pin
+  (`Unavailable::VersionMismatch`). **Both SKIP.** `ready_or_skip` prints
+  `SKIP <test>: live nats-server unavailable: <reason>` to stderr and returns
+  `None`, which call sites use as an early return. Neither condition fails a
+  run.
+- `LiveNats::Fatal` — a failed port bind, tempdir, spawn, or readiness wait.
+  **Panics, by design.** A broken harness on a correctly-pinned runner must
+  not silently erase assertions while reporting green.
 
-Either way, do not claim `Outcome::Verified` from a run that never reached
-exit 0 — say so explicitly (partial) and cite the matching bead.
+`Unavailable` is deliberately disjoint from `HarnessError`, so an
+infrastructure fault has no representation on the skip path and cannot reach
+it. The behaviour is pinned by tests in the same file:
+`version_mismatch_still_skips`, `absent_executable_still_skips`, and
+`fatal_harness_fault_does_not_skip`.
+
+Practical consequence: on a machine with no `nats-server`, or with a
+mismatched one, the live-NATS tests **skip and the run still reaches exit 0**.
+There is no expected-failure baseline to memorise — the earlier
+"panics on mismatch" / "exactly 10 test targets / 15 tests" / pinned-2.14.3
+guidance described pre-#58 behaviour and no longer holds. A live-NATS FAILURE
+is now a real signal, not the local default: triage it, do not wave it
+through. With a matching v2.14.5 on `PATH` the tests genuinely execute rather
+than skipping, which is the only configuration that actually exercises them.
+
+Related, still open: `ghr-89b05be0`. Do not claim `Outcome::Verified` from a
+run that never reached exit 0 — say so explicitly (partial) and cite the
+matching bead.
 
 A second, unrelated known-red: `cargo test -p pardosa --test trybuild` is a
 false red on **incremental** builds only (reproduced on `main` @ `d7270f5`);

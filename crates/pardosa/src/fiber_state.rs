@@ -1,10 +1,6 @@
 use crate::error::PardosaError;
 use serde::{Deserialize, Serialize};
 /// Lifecycle state for a fiber under ADR-0003 ("Fiber semantics").
-///
-/// See the rendered state diagram at
-/// [`docs/fiber_state_machine.svg`](https://github.com/acje/rescue-pardosa/blob/main/docs/fiber_state_machine.svg)
-/// (mission rescue-pardosa-fhxn doc lift).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum FiberState {
