@@ -43,7 +43,7 @@ check_projection_lock() {
 
 check_async_trait() {
   fail=0
-  for c in cherry-pit-core cherry-pit-gateway cherry-pit-web cherry-pit-agent \
+  for c in cherry-pit-core cherry-pit-gateway cherry-pit-web cherry-pit-app \
            cherry-pit-projection cherry-pit-wq cherry-pit-storage cherry-pit-sd-viz; do
     if cargo tree -p "$c" -e features 2>&1 | grep -q async-trait; then
       echo "::error::$c transitively depends on async-trait (CHE-0025:R1+R2)"
