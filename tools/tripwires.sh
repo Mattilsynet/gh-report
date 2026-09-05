@@ -41,15 +41,107 @@ check_projection_lock() {
   fi
 }
 
+# Scope: every cherry-pit-* package of the workspace, enumerated structurally
+# via `cargo metadata --no-deps` rather than a literal list or a hand-rolled
+# manifest parser — a literal silently drops coverage on a rename or a new
+# crate, which is how a renamed crate went uncovered while the check stayed
+# green (ghr-8602n), and a line-oriented parser both drops a same-line first
+# member and picks up quoted strings out of comments. The name anchor is
+# ^cherry-pit-, so pardosa-cherry-pit-test-support is out of scope.
+# Fail-open guards: zero cherry-pit-* packages enumerated is a hard failure —
+# a matcher that enumerates nothing would exit 0 forever and is worse than no
+# check. A failing `cargo metadata` or `cargo tree` invocation is likewise a
+# hard failure, never a silent skip and never degraded into the empty
+# enumeration: the original defect piped the error stream into grep, making an
+# unresolvable crate indistinguishable from a clean one.
+# NO unchecked fallible stage may exist in this function: `|| true` is banned
+# here outright, because it discards exactly the status this check exists to
+# observe. Selection and ordering are a single checked jq rather than a
+# `grep | sort` pipeline whose stage statuses are discarded — a sort that
+# truncated the set to one name and exited 74 previously produced a narrowed
+# CLEAN verdict. The surviving candidate count is cross-checked against a
+# count derived independently from the same metadata, so a set narrowed in
+# transit is an error rather than a smaller pass, and each candidate is
+# re-anchored on cherry-pit- so a regressed selection cannot widen it. The
+# match is a bash case glob, not `grep -q`: grep's exit 2 (I/O or binary
+# fault) is indistinguishable from "no match" and would read as clean. Both
+# cargo invocations are --locked: without it this read-only merge gate
+# rewrote Cargo.lock and inspected a freshly resolved graph instead of the
+# committed one. Both also carry --manifest-path, so the enumeration stage
+# and the probe stage cannot inspect two different workspaces.
+# Manifest overridable via ASYNC_TRAIT_MANIFEST for fixture-based proof runs.
 check_async_trait() {
-  fail=0
-  for c in cherry-pit-core cherry-pit-gateway cherry-pit-web cherry-pit-app \
-           cherry-pit-projection cherry-pit-wq cherry-pit-storage; do
-    if cargo tree -p "$c" -e features 2>&1 | grep -q async-trait; then
-      echo "::error::$c transitively depends on async-trait (CHE-0025:R1+R2)"
-      fail=1
+  local manifest="${ASYNC_TRAIT_MANIFEST:-$ROOT/Cargo.toml}"
+
+  if [ ! -f "$manifest" ]; then
+    echo "::error::async-trait: workspace manifest not found at $manifest (CHE-0025:R1+R2)"
+    return 1
+  fi
+
+  local meta
+  if ! meta=$(cargo metadata --locked --no-deps --format-version 1 --manifest-path "$manifest" 2>&1); then
+    echo "::error::async-trait: cargo metadata --locked --no-deps --manifest-path ${manifest} FAILED — a failed workspace enumeration is an ERROR, not an empty member set, refusing to fold it into the no-violation verdict (CHE-0025:R1+R2)"
+    printf '%s\n' "$meta"
+    return 1
+  fi
+
+  local crates
+  if ! crates=$(jq -r '[.packages[].name | select(startswith("cherry-pit-"))] | sort | .[]' <<< "$meta"); then
+    echo "::error::async-trait: selecting and ordering cherry-pit-* package names from cargo metadata for ${manifest} FAILED — refusing to treat an unreadable enumeration as empty (CHE-0025:R1+R2)"
+    return 1
+  fi
+
+  local declared_count
+  if ! declared_count=$(jq -r '[.packages[].name | select(startswith("cherry-pit-"))] | length' <<< "$meta"); then
+    echo "::error::async-trait: deriving the cherry-pit-* member count from cargo metadata for ${manifest} FAILED — refusing to probe an unverified candidate set (CHE-0025:R1+R2)"
+    return 1
+  fi
+  if [[ ! "$declared_count" =~ ^[0-9]+$ ]]; then
+    echo "::error::async-trait: cargo metadata yielded a non-numeric cherry-pit-* member count '${declared_count}' for ${manifest} — refusing to probe an unverified candidate set (CHE-0025:R1+R2)"
+    return 1
+  fi
+
+  local -a crate_list=()
+  local c
+  while IFS= read -r c; do
+    [ -z "$c" ] && continue
+    if [[ "$c" != cherry-pit-* ]]; then
+      echo "::error::async-trait: candidate '${c}' from ${manifest} does not carry the cherry-pit- name anchor — the selection stage is not producing what it claims, refusing to probe an unverified candidate set (CHE-0025:R1+R2)"
+      return 1
     fi
+    crate_list+=("$c")
+  done <<< "$crates"
+
+  local crate_count=${#crate_list[@]}
+  if [ "$crate_count" -ne "$declared_count" ]; then
+    echo "::error::async-trait: candidate set narrowed in transit for ${manifest} — cargo metadata declares ${declared_count} cherry-pit-* members but only ${crate_count} survived enumeration; a truncated candidate set is an ERROR, not a smaller clean verdict (CHE-0025:R1+R2)"
+    return 1
+  fi
+  if [ "$crate_count" -eq 0 ]; then
+    echo "::error::async-trait: enumerated ZERO cherry-pit-* workspace members from $manifest — fail-open guard tripped, refusing to pass silently (CHE-0025:R1+R2)"
+    return 1
+  fi
+
+  local fail=0
+  local tree
+  for c in "${crate_list[@]}"; do
+    if ! tree=$(cargo tree --locked --manifest-path "$manifest" -p "$c" -e features 2>&1); then
+      echo "::error::async-trait: cargo tree --locked --manifest-path ${manifest} -p ${c} -e features FAILED — a probe error is not a clean result, refusing to fold it into the no-violation verdict (CHE-0025:R1+R2)"
+      printf '%s\n' "$tree"
+      fail=1
+      continue
+    fi
+    case "$tree" in
+      *async-trait*)
+        echo "::error::$c transitively depends on async-trait (CHE-0025:R1+R2)"
+        fail=1
+        ;;
+    esac
   done
+
+  if [ "$fail" -eq 0 ]; then
+    echo "async-trait: ${crate_count} cherry-pit-* workspace members enumerated from ${manifest} carry no async-trait edge (CHE-0025:R1+R2)"
+  fi
   return $fail
 }
 
