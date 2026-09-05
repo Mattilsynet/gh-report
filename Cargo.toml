@@ -2,7 +2,6 @@
 resolver = "3"
 members = [
     "crates/adr-srv",
-    "crates/architect",
     "crates/cherry-pit-app",
     "crates/cherry-pit-core",
     "crates/cherry-pit-gateway",
@@ -34,7 +33,6 @@ members = [
 # `--target wasm32-unknown-unknown` (or `-p gh-report-web-client`) only.
 default-members = [
     "crates/adr-srv",
-    "crates/architect",
     "crates/cherry-pit-app",
     "crates/cherry-pit-core",
     "crates/cherry-pit-gateway",
