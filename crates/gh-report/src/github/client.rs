@@ -209,15 +209,6 @@ pub(crate) fn truncate_error_body(body: &str) -> String {
     }
 }
 
-/// Read a response body using streaming chunks with a size limit.
-///
-/// Aborts early if the accumulated body exceeds `max_bytes`, preventing OOM
-/// from unexpectedly large responses. The advisory `Content-Length` header is
-/// checked first as an early exit, but is not trusted — the actual streamed
-/// bytes are always counted.
-///
-/// **Note:** Because the `reqwest` client is configured with `gzip` support,
-/// the limit applies to the **decompressed** body size, not the wire bytes.
 async fn read_body_limited(
     response: reqwest::Response,
     max_bytes: usize,
@@ -275,14 +266,9 @@ async fn read_body_limited(
 /// - `auth_metadata: StdMutex` — one-time metadata capture
 /// - `budget: BudgetGate` — self-imposed API call limit
 pub struct GitHubClient {
-    /// HTTP client — built once and never replaced. Connection pool persists
-    /// across credential refreshes.
     http: reqwest::Client,
-    /// Per-request Authorization header, updated on credential refresh.
-    /// Lock-free reads via `ArcSwap` — zero contention on the hot path.
     auth_header: ArcSwap<AuthHeader>,
     base_url: String,
-    /// The trusted origin (scheme + host + port) used for pagination URL validation.
     trusted_origin: String,
     pub org_name: String,
     pub rate_limit_warnings: AtomicU32,
@@ -292,10 +278,6 @@ pub struct GitHubClient {
     /// Public so callers can check
     /// `should_halt()` for fail-fast at run start.
     pub rate_limit: Arc<RateLimitState>,
-    /// Unix timestamp (seconds since epoch) until which the client is halted.
-    /// `0` = not halted. Auto-clears when the rate-limit window passes.
-    /// Set via `fetch_max` to ensure concurrent halt triggers never regress
-    /// the timestamp backward.
     halted_until: AtomicU64,
     /// Secondary-rate-limit / abuse-detection backoff regulator (ghr-16813e99,
     /// CHE-0046 inheritance). Armed from a parsed `Retry-After` (429 or
@@ -305,77 +287,34 @@ pub struct GitHubClient {
     /// computed jittered-exponential wait for the same instant.
     pub backoff: Arc<BackoffRegulator>,
     credential: tokio::sync::Mutex<GitHubCredential>,
-    /// Single-flight serializer for credential refresh attempts.
-    ///
-    /// Held across the HTTP token exchange so at most one refresh is in
-    /// flight at a time. Distinct from `credential` so the credential data
-    /// mutex is never held across an `.await` of `exchange_installation_token`.
     refresh_lock: tokio::sync::Mutex<()>,
-    /// GitHub App config, if using App authentication (needed for token refresh).
     app_config: Option<GitHubAppConfig>,
-    /// Auth metadata collected from API response headers.
     auth_metadata: StdMutex<Option<AuthMetadata>>,
-    /// Mirrors `credential.expires_at` as Unix timestamp for lock-free checking.
-    /// 0 = never expires (PAT/gh-cli credential).
     credential_expires_at: AtomicU64,
-    /// API call budget gate — self-imposed limit per epoch.
-    /// Shared via `Arc` to allow the daemon to own budget state across
-    /// collection runs.
     budget: Arc<BudgetGate>,
     budget_cancel: tokio_util::sync::CancellationToken,
-    /// Per-run, per-route call aggregation feeding the bounded INFO
-    /// budget-progress checkpoints.
-    ///
-    /// Swapped for a fresh tracker by [`Self::clear_run_cache`] at each
-    /// collection-run boundary, so counts, threshold cursor, start time, and
-    /// call baseline are always those of the run in progress.
     budget_checkpoints: ArcSwap<BudgetCheckpoints>,
-    /// Side-channel for `ETag` extraction: maps API path → last-seen `ETag`.
-    /// Populated by `request_single_inner`, read by `repo_details`.
     last_response_etags: SccHashMap<String, String>,
-    /// Side-channel recording which `repo_details` calls resolved via a
-    /// 304 not-modified `ETag` revalidation (ghr-fe9bb970 / CHE-0055:R17).
-    /// Populated by `try_etag_revalidation`, consumed once by
-    /// [`Self::take_not_modified`].
     not_modified_repos: SccHashMap<String, ()>,
-    /// Process-lifetime record of CODEOWNERS team slugs observed 404
-    /// (deleted) via [`Self::record_deleted_team`]. Deliberately NOT
-    /// cleared by [`Self::clear_run_cache`]: a dead team reference costs
-    /// one wasted API call once per process, not once per collection
-    /// tick, for as long as the process runs. A plain unbounded set is
-    /// safe here because the key space — team slugs referenced by one
-    /// org's CODEOWNERS file — is naturally small and bounded by the
-    /// org's own team count, not by call volume. A legitimately
-    /// recreated team re-appears after the next process restart.
     deleted_team_slugs: SccHashMap<String, ()>,
 }
 
-/// Cached repository detail result. Only successful results are cached.
 #[derive(Debug, Clone)]
 struct CachedResult {
     status_code: u16,
     data: Option<serde_json::Value>,
-    /// `ETag` from the GitHub API response, used for conditional requests.
     etag: Option<String>,
-    /// Whether this entry was seeded from cross-run cache and has been
-    /// invalidated by `evict_stale_entries`. Stale entries are revalidated
-    /// via `ETag` conditional requests before being trusted.
     stale: bool,
 }
 
-/// Whether `team_slug` is already recorded in `cache` as a known-deleted
-/// CODEOWNERS team this process (ghr-1f2d0659-F3).
 fn cache_contains_deleted_team(cache: &SccHashMap<String, ()>, team_slug: &str) -> bool {
     cache.contains_sync(team_slug)
 }
 
-/// Record `team_slug` in `cache` as observed 404 (deleted). Returns `true`
-/// on first insertion, `false` if `team_slug` was already present.
 fn cache_record_deleted_team(cache: &SccHashMap<String, ()>, team_slug: &str) -> bool {
     cache.insert_sync(team_slug.to_string(), ()).is_ok()
 }
 
-/// Extract the origin (scheme + host + optional port) from a URL string.
 fn extract_origin(url_str: &str) -> Option<String> {
     let parsed = url::Url::parse(url_str).ok()?;
     let scheme = parsed.scheme();
@@ -386,7 +325,6 @@ fn extract_origin(url_str: &str) -> Option<String> {
     }
 }
 
-/// Validate that a URL belongs to the same origin as the trusted base URL.
 fn is_same_origin(url_str: &str, trusted_origin: &str) -> bool {
     match extract_origin(url_str) {
         Some(origin) => origin == trusted_origin,
@@ -446,11 +384,6 @@ pub fn validate_api_base_url(url_str: &str) -> Result<String, GitHubApiError> {
     Ok(url_str.trim_end_matches('/').to_string())
 }
 
-/// Duration buffer before expiry at which we refresh GitHub App tokens.
-///
-/// Set to 5 minutes to ensure tokens are refreshed well before GitHub's
-/// 1-hour installation token lifetime expires, accounting for potential
-/// clock drift and in-flight request time.
 const TOKEN_REFRESH_BUFFER: Duration = Duration::from_mins(5);
 
 impl GitHubClient {
@@ -525,10 +458,6 @@ impl GitHubClient {
         })
     }
 
-    /// Build a `reqwest::Client` with default headers (no auth).
-    ///
-    /// Auth is injected per-request via `auth_header` to preserve the
-    /// connection pool across credential refreshes.
     fn build_http_client() -> Result<reqwest::Client, GitHubApiError> {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -551,7 +480,6 @@ impl GitHubClient {
             .map_err(GitHubApiError::Http)
     }
 
-    /// Lock-free check of credential expiry for the fast path.
     fn credential_needs_refresh(&self) -> bool {
         let exp = self.credential_expires_at.load(Ordering::Acquire);
         if exp == 0 {
@@ -564,23 +492,6 @@ impl GitHubClient {
         now + TOKEN_REFRESH_BUFFER.as_secs() >= exp
     }
 
-    /// Time-bounded halt check. Returns `true` when `halted_until` is in
-    /// the future. Auto-clears when the rate-limit window passes.
-    ///
-    /// Follows the same `SystemTime` → Unix timestamp pattern as
-    /// [`credential_needs_refresh`](Self::credential_needs_refresh).
-    ///
-    /// # Clock assumption
-    ///
-    /// Uses `SystemTime` (not monotonic `Instant`) because `halted_until`
-    /// stores a GitHub-provided Unix timestamp. Clock skew smaller than
-    /// the rate-limit window (~3600s) is the assumed invariant.
-    ///
-    /// # Concurrency
-    ///
-    /// Two concurrent requests can both trigger halt and store to
-    /// `halted_until` simultaneously via `fetch_max`. This is benign:
-    /// `fetch_max` ensures the timestamp only moves forward.
     fn is_halted(&self) -> bool {
         let until = self.halted_until.load(Ordering::Acquire);
         if until == 0 {
@@ -593,13 +504,6 @@ impl GitHubClient {
         now < until
     }
 
-    /// Detect a secondary-limit / abuse-detection signal (429, or 403 with
-    /// GitHub's secondary-limit body marker) and, if present, arm
-    /// `self.backoff` with the parsed `Retry-After` resume-at instant.
-    ///
-    /// A plain 403 permission-denied response (no marker, no override)
-    /// leaves `self.backoff` untouched — it is a terminal failure, not a
-    /// secondary-limit signal (CHE-0046:R2).
     fn record_secondary_limit_backoff(&self, status: u16, headers: &http::HeaderMap, body: &str) {
         if let Some(resume_at) =
             crate::github::rate_limit::secondary_limit_resume_at(status, headers, body)
@@ -608,9 +512,6 @@ impl GitHubClient {
         }
     }
 
-    /// Build a failure [`ApiOutcome`] for a non-2xx `response`, feeding any
-    /// secondary-limit `Retry-After` signal into `self.backoff` before the
-    /// body is truncated for the error message.
     async fn failure_outcome(&self, status: u16, response: reqwest::Response) -> ApiOutcome {
         let retryable = matches!(status, 429 | 500 | 502 | 503 | 504);
         let response_headers = response.headers().clone();
@@ -636,13 +537,6 @@ impl GitHubClient {
         self.halted_until.store(0, Ordering::Release);
     }
 
-    /// Ensure the credential is valid, refreshing if necessary.
-    ///
-    /// Uses double-checked locking: a lock-free atomic check on the fast path,
-    /// then acquires a dedicated `refresh_lock` (separate from the credential
-    /// data mutex) and re-checks before refreshing. The HTTP token exchange
-    /// is performed without holding the credential data lock, so other
-    /// readers of `credential` are never blocked on network I/O.
     async fn ensure_credential(&self) -> Result<(), GitHubApiError> {
         if !self.credential_needs_refresh() {
             return Ok(());
@@ -685,11 +579,6 @@ impl GitHubClient {
         Ok(())
     }
 
-    /// Exchange a GitHub App JWT for an installation token.
-    ///
-    /// Reuses `self.http` (preserving the connection pool) and passes the
-    /// JWT as a per-request `Authorization` header — consistent with how
-    /// the main request path injects installation tokens.
     async fn exchange_installation_token(
         &self,
         app_config: &GitHubAppConfig,
@@ -959,23 +848,15 @@ impl GitHubClient {
         }
     }
 
-    /// Make a single (non-paginated) API request.
     async fn request_single(&self, path: &str, timeout_secs: u64, attempt: u32) -> ApiOutcome {
         self.request_single_inner(path, timeout_secs, false, attempt)
             .await
     }
 
-    /// Make a single request that captures response headers.
-    ///
-    /// Used for metadata collection (e.g., `X-OAuth-Scopes` header parsing).
     async fn request_single_with_headers(&self, path: &str, timeout_secs: u64) -> ApiOutcome {
         self.request_single_inner(path, timeout_secs, true, 0).await
     }
 
-    /// Shared implementation for single (non-paginated) API requests.
-    ///
-    /// When `capture_headers` is true, captures OAuth-related response headers
-    /// and includes them in the result.
     async fn request_single_inner(
         &self,
         path: &str,
@@ -1075,12 +956,6 @@ impl GitHubClient {
         }
     }
 
-    /// Make a paginated API request, collecting all pages.
-    ///
-    /// # Safety invariants
-    /// - Validates that each `next` URL from the `Link` header belongs to the
-    ///   same origin as `self.base_url` to prevent SSRF attacks.
-    /// - Enforces a maximum page count to prevent OOM from unbounded pagination.
     async fn request_paginated(&self, path: &str, timeout_secs: u64, attempt: u32) -> ApiOutcome {
         let route = route_template(path);
         let mut all_items: Vec<serde_json::Value> = Vec::new();
@@ -1192,9 +1067,6 @@ impl GitHubClient {
         }
     }
 
-    /// Send a single HTTP GET for a pagination page.
-    ///
-    /// Returns the `Response` on success, or an `ApiOutcome` error.
     async fn send_paginated_request(
         &self,
         url: &str,
@@ -1364,11 +1236,6 @@ impl GitHubClient {
         self.not_modified_repos.remove_sync(repo_name).is_some()
     }
 
-    /// Attempt to revalidate a stale cache entry using an `ETag` conditional request.
-    ///
-    /// Returns `Some(outcome)` if revalidation succeeded (304 or fresh 200).
-    /// Returns `None` if revalidation failed and the caller should fall through
-    /// to a full request.
     async fn try_etag_revalidation(
         &self,
         repo_name: &str,
@@ -1454,7 +1321,6 @@ impl GitHubClient {
         self.cache_revalidated_response(repo_name, status, new_etag, &body)
     }
 
-    /// Cache and return the result of a fresh 200 from `ETag` revalidation.
     fn cache_revalidated_response(
         &self,
         repo_name: &str,
@@ -1855,11 +1721,6 @@ impl GitHubClient {
         caps
     }
 
-    /// Probe a single endpoint and return its capability status.
-    ///
-    /// Note: 403 and 404 are both classified as `PermissionDenied` because
-    /// GitHub returns 404 for unauthorized access to private resources. If
-    /// needed, distinguish these in the future.
     async fn probe_endpoint(&self, path: &str) -> CapabilityStatus {
         let result = self
             .request_single(path, config::DEFAULT_REQUEST_TIMEOUT_SECS, 0)
@@ -1884,7 +1745,6 @@ fn first_repo_default_branch(data: Option<&serde_json::Value>) -> Option<&str> {
     data?.as_array()?.first()?.get("default_branch")?.as_str()
 }
 
-/// Simple jitter: returns a random value in [0, `max_ms`).
 fn fastrand_jitter(max_ms: u64) -> u64 {
     if max_ms == 0 {
         return 0;
@@ -2558,9 +2418,6 @@ mod tests {
         None
     }
 
-    /// Drive two pages where page 2's URL is supplied by the server's `Link`
-    /// header and carries the plant, under a ceiling low enough that a
-    /// checkpoint is emitted on the page-2 attempt.
     async fn drive_server_supplied_link_and_capture_checkpoints() -> Vec<CapturedEvent> {
         use wiremock::matchers::path;
         use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -2861,7 +2718,6 @@ mod tests {
         assert!(std::str::from_utf8(body_portion.as_bytes()).is_ok());
     }
 
-    /// Helper to build default `Arc<BudgetGate>` and `Arc<RateLimitState>` for tests.
     fn test_budget_and_rate_limit() -> (Arc<BudgetGate>, Arc<RateLimitState>) {
         (
             Arc::new(BudgetGate::new(
@@ -2872,7 +2728,6 @@ mod tests {
         )
     }
 
-    /// Helper to build a `GitHubClient` pointed at a local mock server.
     fn build_test_client(base_url: &str) -> GitHubClient {
         let credential = GitHubCredential {
             mode: crate::domain::auth::AuthMode::Pat,
@@ -3079,11 +2934,6 @@ mod tests {
         );
     }
 
-    /// PAT credentials have `credential_expires_at == 0`. The fast path in
-    /// `credential_needs_refresh()` must return `false`, skipping the mutex
-    /// entirely. If it mistakenly returned `true`, `ensure_credential()` would
-    /// fail with "no GitHub App config available for refresh" since PAT clients
-    /// have `app_config: None`.
     #[tokio::test]
     async fn pat_credential_fast_path_skips_refresh() {
         use wiremock::matchers::path;
@@ -3117,9 +2967,6 @@ mod tests {
         assert_eq!(result.status_code(), Some(200));
     }
 
-    /// A 401 response triggers a single stale-token retry. The client calls
-    /// `ensure_credential()` (no-op for PAT), then retries the request.
-    /// The mock server returns 401 on the first call and 200 on the second.
     #[tokio::test]
     async fn stale_token_401_retries_once_then_succeeds() {
         use wiremock::matchers::path;
@@ -3151,9 +2998,6 @@ mod tests {
         assert_eq!(result.status_code(), Some(200));
     }
 
-    /// A persistent 401 (every response is 401) must terminate, not loop
-    /// forever. The 401 retry fires once (setting `stale_token_retried`),
-    /// then the second 401 falls through as a non-retryable failure.
     #[tokio::test]
     async fn persistent_401_terminates_without_infinite_loop() {
         use wiremock::matchers::path;
@@ -3206,10 +3050,6 @@ mod tests {
         oC+wB51AUMN9YZMwF2xDT8ZdwSDb11j4YiG4twBNZdEep0CwDjgM\n\
         -----END RSA PRIVATE KEY-----\n";
 
-    /// Under concurrency, multiple tasks may observe an expired credential
-    /// simultaneously. The double-check locking in `ensure_credential()` must
-    /// ensure exactly one token exchange occurs — verified by wiremock's
-    /// `expect(1)` assertion on the installation token endpoint.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_credential_refresh_deduplicates() {
         use wiremock::matchers::{method, path};
@@ -3639,9 +3479,6 @@ mod tests {
         );
     }
 
-    /// ghr-fe9bb970 / CHE-0055:R17 acceptance: `take_not_modified` reports
-    /// the 304-vs-fresh classification the wq `JobExecutor::charge_of`
-    /// hook needs, one-shot per `repo_details` call.
     #[tokio::test]
     async fn take_not_modified_reflects_304_then_clears_on_fresh_200() {
         use wiremock::matchers::{header, path};
@@ -3682,9 +3519,6 @@ mod tests {
         );
     }
 
-    /// Contrast case: a fresh (non-cached, non-conditional) 200 leaves
-    /// `take_not_modified` false — the executor must classify this as
-    /// `SettleOutcome::Charged`.
     #[tokio::test]
     async fn take_not_modified_is_false_for_a_fresh_200_with_quota_decrement() {
         use wiremock::matchers::path;
@@ -3717,16 +3551,6 @@ mod tests {
         );
     }
 
-    /// ghr-b95e155c acceptance gate: the F1 free-conservation fix taking
-    /// effect in production. `LiveEvaluator` drives the IDENTICAL free
-    /// (`repo_details` 304) job through both the frozen `run_worker_pool`
-    /// and the live `run_worker_pool_regulated`, each with its own fresh
-    /// budget gate seeded with the same stale-ETag cache state. The frozen
-    /// path never consults `charge_of` (dead in that path — CHE-0055:R17),
-    /// so its job-admission permit stays charged even though `repo_details`
-    /// itself resolves 304; the regulated path settles that same permit
-    /// `Free`, netting it to zero. The two totals must differ by exactly
-    /// 1 permit — the job-admission draw this migration now conserves.
     async fn run_free_repo_job_through<F, Fut>(server_uri: &str, run: F) -> u64
     where
         F: FnOnce(
@@ -3811,16 +3635,6 @@ mod tests {
         budget.calls_made() - budget_before
     }
 
-    /// ghr-b95e155c acceptance gate: the F1 free-conservation fix taking
-    /// effect in production. `LiveEvaluator` drives the IDENTICAL free
-    /// (`repo_details` 304) job through both the frozen `run_worker_pool`
-    /// and the live `run_worker_pool_regulated`, each with its own fresh
-    /// budget gate seeded with the same stale-ETag cache state. The frozen
-    /// path never consults `charge_of` (dead in that path — CHE-0055:R17),
-    /// so its job-admission permit stays charged even though `repo_details`
-    /// itself resolves 304; the regulated path settles that same permit
-    /// `Free`, netting it to zero. The two totals must differ by exactly
-    /// 1 permit — the job-admission draw this migration now conserves.
     #[tokio::test]
     async fn free_repo_details_304_conserves_budget_on_regulated_pool_vs_frozen_pool() {
         use crate::app::worker_pool::{
@@ -3897,10 +3711,6 @@ mod tests {
         );
     }
 
-    /// ghr-b95e155c acceptance gate (ii): a charged job (fresh
-    /// `repo_details` 200) must never be settled `Free` on the regulated
-    /// path — its job-admission permit stays charged (asymmetric-risk
-    /// safe default; no budget under-count).
     #[tokio::test]
     async fn charged_repo_details_200_never_settles_free_on_regulated_pool() {
         use crate::app::collect::LiveEvaluator;
@@ -4407,12 +4217,6 @@ mod tests {
         );
     }
 
-    /// ACCEPTANCE 1 (ghr-16813e99): a 429 with `Retry-After: N` must be
-    /// honored — the client issues no further requests until ~now+N, then
-    /// resumes. `up_to_n_times(1)` on the 429 mock means a premature retry
-    /// (before the wait elapses) would exhaust it and fail against the
-    /// unconditional 200 mock's absence for a third attempt; the assertion
-    /// on elapsed wall time is the direct evidence of the honored pause.
     #[tokio::test]
     async fn acceptance_1_retry_after_seconds_honored_before_resuming() {
         use wiremock::matchers::path;
@@ -4452,11 +4256,6 @@ mod tests {
         );
     }
 
-    /// ACCEPTANCE 2 (CHE-0046 fallback): a secondary-limit signal WITHOUT a
-    /// `Retry-After` header falls back to jittered-exponential backoff
-    /// bounded by the retry-loop's own attempt cap — not blind, not
-    /// unbounded, and (per this test) not stretched into the multi-second
-    /// range a Retry-After override would produce.
     #[tokio::test]
     async fn acceptance_2_secondary_limit_without_retry_after_falls_back_to_exponential() {
         use wiremock::matchers::path;
@@ -4489,11 +4288,6 @@ mod tests {
         );
     }
 
-    /// ACCEPTANCE 3 (the escalation-risk guard, ghr-16813e99 SAFETY rule):
-    /// `Retry-After: N` must be honored for AT LEAST N — the wait must
-    /// never be shortened below the server's value, even under a second
-    /// concurrent observation. Under-honoring risks escalating GitHub's
-    /// abuse-detection lockout.
     #[tokio::test]
     async fn acceptance_3_retry_after_wait_is_never_shortened_below_server_value() {
         const RETRY_AFTER_SECS: u64 = 2;
