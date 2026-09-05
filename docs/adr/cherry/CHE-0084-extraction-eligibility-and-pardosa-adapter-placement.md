@@ -1,7 +1,7 @@
 # CHE-0084. Extraction Eligibility and Pardosa Adapter Placement
 
 Date: 2026-07-02
-Last-reviewed: 2026-08-12 — refined — added R9 COM-0017:R4 enforcement statement naming job id build-test-lint / pardosa-dep-deny step (RST-0007:R5)
+Last-reviewed: 2026-09-05 — amended — R9 no longer names a CI mechanism: the pardosa-dep-deny tripwire was retired with its only subject crate cherry-pit-sd-viz (CHE-0094 retired); R5 unweakened, re-arm obligation recorded (COM-0035:R5 via RST-0007:R6)
 Tier: B
 Status: Accepted
 Crates: gh-report, pardosa
@@ -34,10 +34,15 @@ R7 [5]: The Phase-2 fiber-store example is ruled: extract the generic one-fiber-
 
 R8 [5]: If a candidate cannot pass R1 or would need a `cherry-pit-*` crate with a pardosa dependency, it is not extraction-eligible under this ADR; author a later superseding ADR rather than adding a fourth placement home.
 
-R9 [5]: CI enforces R5 with a build-time tripwire (job id build-test-lint,
-step "deny pardosa deps in cherry-pit-sd-viz", .github/workflows/ci-
-reusable.yml): a resolved pardosa* Cargo dependency in cherry-pit-sd-viz
-fails the build (COM-0017:R4).
+R9 [5]: R5 carries no CI mechanism at present. The former build-time tripwire
+(job id build-test-lint, step "deny pardosa deps in cherry-pit-sd-viz",
+.github/workflows/ci-reusable.yml) was retired together with its only subject
+crate, `cherry-pit-sd-viz`, when that crate was deleted; a `cargo tree` probe
+against a nonexistent package cannot fail, so retaining the step would have
+reported green while asserting nothing. R5 remains binding and unweakened. The
+next crate that R4 places in the pardosa-family adapter position MUST
+re-establish an equivalent build-time tripwire naming that crate, and this
+rule is amended at that time to name the new job id and step (COM-0017:R4).
 
 ## Consequences
 
