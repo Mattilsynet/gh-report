@@ -453,70 +453,159 @@ check_deny_ignore_lifecycle() {
 # attribute was carried by convention only: a new crate could silently omit
 # it and nothing failed. Totality is the point — a non-total check is not a
 # check.
-# Scope: every workspace member listed in the root Cargo.toml, and for each
-# member every COMPILATION root it owns (src/lib.rs, src/main.rs, and each
-# src/bin/*.rs), since #![forbid] is an inner attribute scoped to one root.
-# Fail-open guards: zero members parsed, or zero roots discovered, are hard
-# failures — a matcher that enumerates nothing would exit 0 forever and is
-# worse than no check. Manifest overridable via FORBID_UNSAFE_MANIFEST and
-# member paths resolved under FORBID_UNSAFE_ROOT for fixture-based proof
-# runs.
+# Scope: every workspace member, and for each member every COMPILATION root
+# it owns (the lib/bin/cdylib/rlib/staticlib/proc-macro target src_paths),
+# since #![forbid] is an inner attribute scoped to one root.
+# Enumeration is `cargo metadata --locked --no-deps`, NOT a hand-rolled awk
+# scan of [workspace].members. The awk parser this replaced carried a proven
+# fail-OPEN: its `next` unconditionally skipped the line holding
+# `members = [`, so a valid TOML spelling that puts the first member on that
+# line dropped that member silently and the gate reported CLEAN — measured on
+# a fixture whose dropped member lacked the attribute, exit 0. It also read
+# quoted strings out of COMMENT lines inside the array (phantom member, hard
+# fail on valid TOML), and ran past the array entirely when the closing `]`
+# shared a line with the last member, harvesting `resolver = "2"` as a member.
+# Targets are deduplicated by src_path: a target is emitted once per matching
+# `kind` element, so gh-report-web-client (kind ["cdylib","rlib"]) would be
+# counted twice and inflate coverage — `any(.kind[]; ...)` plus `unique`
+# emits each root at most once.
+# NO unchecked fallible stage may exist here: `|| true` is banned outright,
+# because it discards exactly the status this check exists to observe. The
+# root count is cross-checked against the count cargo metadata declares, so a
+# set narrowed in transit is an ERROR rather than a smaller pass. The member
+# count is cross-checked against a second, independently derived member count:
+# the number of packages contributing AT LEAST ONE selected compilation root.
+# A package that contributes none is named in an `::error::` and hard-fails —
+# that is the guard against a package silently dropping out of root
+# enumeration while the gate still reports clean. Zero members and zero roots
+# are hard failures — a matcher that enumerates nothing would exit 0 forever
+# and is worse than no check. The attribute probe distinguishes THREE
+# outcomes, not two: grep's exit 2 (I/O or binary fault) is a probe ERROR and
+# must not read as either a clean root or a missing attribute. cargo metadata
+# is --locked: without it this read-only merge gate rewrites Cargo.lock and
+# inspects a freshly resolved graph instead of the committed one.
+# Manifest overridable via FORBID_UNSAFE_MANIFEST and paths displayed
+# relative to FORBID_UNSAFE_ROOT for fixture-based proof runs.
 check_forbid_unsafe_total() {
   local manifest="${FORBID_UNSAFE_MANIFEST:-$ROOT/Cargo.toml}"
   local base="${FORBID_UNSAFE_ROOT:-$ROOT}"
+  local kindpred='any(.kind[]; . == "lib" or . == "bin" or . == "cdylib" or . == "rlib" or . == "staticlib" or . == "proc-macro")'
+  local sel="[.packages[].targets[] | select(${kindpred}) | .src_path] | unique"
+  local covsel="[.packages[] | select([.targets[] | select(${kindpred})] | length > 0)] | length"
+  local uncovsel="[.packages[] | select([.targets[] | select(${kindpred})] | length == 0) | .name] | .[]"
 
   if [ ! -f "$manifest" ]; then
     echo "::error::forbid-unsafe-total: workspace manifest not found at $manifest (RST-0005:R1)"
     return 1
   fi
 
-  local members
-  members=$(awk '/^members[[:space:]]*=[[:space:]]*\[/{flag=1; next} flag && /^[[:space:]]*\]/{exit} flag{print}' "$manifest" \
-    | grep -oE '"[^"]+"' | tr -d '"')
-
-  local member_count
-  member_count=$(printf '%s\n' "$members" | grep -c . || true)
-  if [ "$member_count" -eq 0 ]; then
-    echo "::error::forbid-unsafe-total: parsed ZERO workspace members from $manifest — fail-open guard tripped, refusing to pass silently (RST-0005:R1)"
+  local meta
+  if ! meta=$(cargo metadata --locked --no-deps --format-version 1 --manifest-path "$manifest" 2>&1); then
+    echo "::error::forbid-unsafe-total: cargo metadata --locked --no-deps --manifest-path ${manifest} FAILED — a failed workspace enumeration is an ERROR, not an empty member set, refusing to fold it into the no-violation verdict (RST-0005:R1)"
+    printf '%s\n' "$meta"
     return 1
   fi
 
-  local roots=()
-  local m
-  while IFS= read -r m; do
-    [ -z "$m" ] && continue
-    local dir="$base/$m"
-    if [ ! -d "$dir" ]; then
-      echo "::error::forbid-unsafe-total: workspace member ${m} listed in $manifest has no directory at ${dir} (RST-0005:R1)"
+  local member_count
+  if ! member_count=$(jq -r '.packages | length' <<< "$meta"); then
+    echo "::error::forbid-unsafe-total: deriving the workspace member count from cargo metadata for ${manifest} FAILED — refusing to treat an unreadable enumeration as empty (RST-0005:R1)"
+    return 1
+  fi
+  if [[ ! "$member_count" =~ ^[0-9]+$ ]]; then
+    echo "::error::forbid-unsafe-total: cargo metadata yielded a non-numeric workspace member count '${member_count}' for ${manifest} — refusing to probe an unverified candidate set (RST-0005:R1)"
+    return 1
+  fi
+  if [ "$member_count" -eq 0 ]; then
+    echo "::error::forbid-unsafe-total: enumerated ZERO workspace members from $manifest — fail-open guard tripped, refusing to pass silently (RST-0005:R1)"
+    return 1
+  fi
+
+  local roots
+  if ! roots=$(jq -r "${sel} | .[]" <<< "$meta"); then
+    echo "::error::forbid-unsafe-total: selecting compilation-root src_paths from cargo metadata for ${manifest} FAILED — refusing to treat an unreadable enumeration as empty (RST-0005:R1)"
+    return 1
+  fi
+
+  local declared_roots
+  if ! declared_roots=$(jq -r "${sel} | length" <<< "$meta"); then
+    echo "::error::forbid-unsafe-total: deriving the compilation-root count from cargo metadata for ${manifest} FAILED — refusing to probe an unverified candidate set (RST-0005:R1)"
+    return 1
+  fi
+  if [[ ! "$declared_roots" =~ ^[0-9]+$ ]]; then
+    echo "::error::forbid-unsafe-total: cargo metadata yielded a non-numeric compilation-root count '${declared_roots}' for ${manifest} — refusing to probe an unverified candidate set (RST-0005:R1)"
+    return 1
+  fi
+
+  local -a root_list=()
+  local r
+  while IFS= read -r r; do
+    [ -z "$r" ] && continue
+    if [[ "$r" != /* || "$r" != *.rs ]]; then
+      echo "::error::forbid-unsafe-total: candidate root '${r}' from ${manifest} is not an absolute path to a .rs file — the selection stage is not producing what it claims, refusing to probe an unverified candidate set (RST-0005:R1)"
       return 1
     fi
-    local candidate
-    for candidate in "$dir/src/lib.rs" "$dir/src/main.rs"; do
-      [ -f "$candidate" ] && roots+=("$candidate")
-    done
-    if [ -d "$dir/src/bin" ]; then
-      while IFS= read -r candidate; do
-        [ -n "$candidate" ] && roots+=("$candidate")
-      done < <(find "$dir/src/bin" -maxdepth 1 -type f -name '*.rs' | sort)
+    if [ ! -f "$r" ]; then
+      echo "::error::forbid-unsafe-total: candidate root '${r}' from ${manifest} does not exist on disk — a missing compilation root is an ERROR, not a clean one (RST-0005:R1)"
+      return 1
     fi
-  done <<< "$members"
+    root_list+=("$r")
+  done <<< "$roots"
 
-  if [ "${#roots[@]}" -eq 0 ]; then
-    echo "::error::forbid-unsafe-total: discovered ZERO crate roots across ${member_count} workspace members — fail-open guard tripped, refusing to pass silently (RST-0005:R1)"
+  local root_count=${#root_list[@]}
+  if [ "$root_count" -ne "$declared_roots" ]; then
+    echo "::error::forbid-unsafe-total: candidate set narrowed in transit for ${manifest} — cargo metadata declares ${declared_roots} compilation roots but only ${root_count} survived enumeration; a truncated candidate set is an ERROR, not a smaller clean verdict (RST-0005:R1)"
+    return 1
+  fi
+  if [ "$root_count" -eq 0 ]; then
+    echo "::error::forbid-unsafe-total: discovered ZERO crate roots across ${member_count} workspace members from $manifest — fail-open guard tripped, refusing to pass silently (RST-0005:R1)"
+    return 1
+  fi
+
+  local covered_count
+  if ! covered_count=$(jq -r "${covsel}" <<< "$meta"); then
+    echo "::error::forbid-unsafe-total: deriving the per-package coverage count from cargo metadata for ${manifest} FAILED — refusing to treat an unreadable enumeration as full coverage (RST-0005:R1)"
+    return 1
+  fi
+  if [[ ! "$covered_count" =~ ^[0-9]+$ ]]; then
+    echo "::error::forbid-unsafe-total: cargo metadata yielded a non-numeric per-package coverage count '${covered_count}' for ${manifest} — refusing to probe an unverified candidate set (RST-0005:R1)"
+    return 1
+  fi
+  if [ "$covered_count" -ne "$member_count" ]; then
+    local uncovered
+    if ! uncovered=$(jq -r "${uncovsel}" <<< "$meta"); then
+      echo "::error::forbid-unsafe-total: naming the packages contributing zero compilation roots for ${manifest} FAILED (RST-0005:R1)"
+      return 1
+    fi
+    local u
+    while IFS= read -r u; do
+      [ -z "$u" ] && continue
+      echo "::error::forbid-unsafe-total: workspace package '${u}' contributes ZERO selected compilation roots — a package invisible to root enumeration is an ERROR, not a clean package (RST-0005:R1)"
+    done <<< "$uncovered"
+    echo "::error::forbid-unsafe-total: per-package coverage FAILED for ${manifest} — ${covered_count} of ${member_count} workspace packages contribute at least one selected compilation root (RST-0005:R1)"
     return 1
   fi
 
   local fail=0
   local root_file
-  for root_file in "${roots[@]}"; do
-    if ! grep -qE '^#!\[forbid\(unsafe_code\)\]' "$root_file"; then
-      echo "::error::forbid-unsafe-total: ${root_file#"$base"/} lacks #![forbid(unsafe_code)] at the crate root (RST-0005:R1)"
-      fail=1
-    fi
+  local probe
+  for root_file in "${root_list[@]}"; do
+    probe=0
+    grep -qE '^#!\[forbid\(unsafe_code\)\]' "$root_file" || probe=$?
+    case "$probe" in
+      0) ;;
+      1)
+        echo "::error::forbid-unsafe-total: ${root_file#"$base"/} lacks #![forbid(unsafe_code)] at the crate root (RST-0005:R1)"
+        fail=1
+        ;;
+      *)
+        echo "::error::forbid-unsafe-total: probing ${root_file#"$base"/} for #![forbid(unsafe_code)] FAILED with grep status ${probe} — a probe error is not a clean result and is not a missing attribute, refusing to fold it into either verdict (RST-0005:R1)"
+        fail=1
+        ;;
+    esac
   done
 
   if [ "$fail" -eq 0 ]; then
-    echo "forbid-unsafe-total: ${#roots[@]} crate roots across ${member_count} workspace members all carry #![forbid(unsafe_code)] (RST-0005:R1)"
+    echo "forbid-unsafe-total: ${root_count} crate roots across ${member_count} workspace members all carry #![forbid(unsafe_code)] (RST-0005:R1)"
   fi
   return $fail
 }
