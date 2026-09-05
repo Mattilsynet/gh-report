@@ -205,7 +205,11 @@ it passes on a clean rebuild. Not a regression.
   from `ci.yml`), invoked via `tools/tripwires.sh <check>` — do not break the
   invariants they guard. Run `tools/tripwires.sh --list` for the current check
   names and dispatch on any single check locally (`tools/tripwires.sh
-  <check>`), or `tools/tripwires.sh all` for every check. Governing citations
+  <check>`), or `tools/tripwires.sh all` for every check. The committed
+  regression harness `tools/tripwire-regression.sh` is the locally-runnable
+  entry point pinning those gates' behaviour; run it before handing off any
+  change to `tools/tripwires.sh`. It is not itself a merge gate — its
+  ratification as one is deferred (see ghr-z9cho.6). Governing citations
   (kept current in the script's `::error::` strings, not duplicated here):
   projection-lock is COM-0018 + CHE-0048:R7; async-trait deny is
   CHE-0025:R1+R2; non-exhaustive gate is RST-0006:R1+R3.
