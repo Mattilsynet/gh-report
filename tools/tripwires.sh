@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-CHECKS=(projection-lock async-trait pardosa-dep fence-converge dead-code-suppression non-exhaustive gate-citation adr-number-collision deny-ignore-lifecycle forbid-unsafe-total)
+CHECKS=(projection-lock async-trait fence-converge dead-code-suppression non-exhaustive gate-citation adr-number-collision deny-ignore-lifecycle forbid-unsafe-total)
 
 # Activated (ghr-y4hkd discharged, ghr-zcr7c/ghr-swxy8): deny.toml now
 # satisfies SEC-0013:R3 (table-form ignores) as of commit be14235; the
@@ -44,20 +44,13 @@ check_projection_lock() {
 check_async_trait() {
   fail=0
   for c in cherry-pit-core cherry-pit-gateway cherry-pit-web cherry-pit-app \
-           cherry-pit-projection cherry-pit-wq cherry-pit-storage cherry-pit-sd-viz; do
+           cherry-pit-projection cherry-pit-wq cherry-pit-storage; do
     if cargo tree -p "$c" -e features 2>&1 | grep -q async-trait; then
       echo "::error::$c transitively depends on async-trait (CHE-0025:R1+R2)"
       fail=1
     fi
   done
   return $fail
-}
-
-check_pardosa_dep() {
-  if cargo tree -p cherry-pit-sd-viz 2>&1 | grep -q pardosa; then
-    echo "::error::cherry-pit-sd-viz depends on a pardosa* crate (CHE-0029/CHE-0084:R5)"
-    return 1
-  fi
 }
 
 check_fence_converge() {
@@ -440,7 +433,6 @@ run_check() {
   case "$1" in
     projection-lock) check_projection_lock ;;
     async-trait) check_async_trait ;;
-    pardosa-dep) check_pardosa_dep ;;
     fence-converge) check_fence_converge ;;
     dead-code-suppression) check_dead_code_suppression ;;
     non-exhaustive) check_non_exhaustive ;;
