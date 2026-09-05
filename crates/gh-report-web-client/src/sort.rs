@@ -80,16 +80,17 @@ pub fn detect_sort_type<'a, I: IntoIterator<Item = &'a str>>(cells: I) -> SortTy
 
 /// Compare two cell strings under the given [`SortType`].
 ///
-/// Numeric comparison treats unparseable values as sorting after all
-/// parseable ones (both unparseable falls back to a text compare so
+/// Numeric comparison treats unparseable values (`N/A`, `—`, blank) as
+/// sorting below every parseable one, including below `0` and below
+/// negative values (both unparseable falls back to a text compare so
 /// the ordering stays a total order).
 #[must_use]
 pub fn compare_cells(a: &str, b: &str, sort_type: SortType) -> Ordering {
     match sort_type {
         SortType::Numeric => match (parse_numeric(a), parse_numeric(b)) {
             (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
-            (Some(_), None) => Ordering::Less,
-            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) => Ordering::Greater,
+            (None, Some(_)) => Ordering::Less,
             (None, None) => a.cmp(b),
         },
         SortType::Date | SortType::Text => a.cmp(b),
@@ -222,12 +223,35 @@ mod tests {
     }
 
     #[test]
-    fn compare_cells_numeric_unparseable_sorts_after_parseable() {
+    fn compare_cells_numeric_unparseable_sorts_before_parseable() {
         assert_eq!(
             compare_cells("N/A", "5", SortType::Numeric),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_cells("5", "N/A", SortType::Numeric),
             Ordering::Greater
         );
-        assert_eq!(compare_cells("5", "N/A", SortType::Numeric), Ordering::Less);
+    }
+
+    #[test]
+    fn compare_cells_numeric_unparseable_sorts_below_zero() {
+        assert_eq!(
+            compare_cells("N/A", "0", SortType::Numeric),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_cells("N/A", "0%", SortType::Numeric),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn compare_cells_numeric_unparseable_sorts_below_negative_values() {
+        assert_eq!(
+            compare_cells("N/A", "-1", SortType::Numeric),
+            Ordering::Less
+        );
     }
 
     #[test]
