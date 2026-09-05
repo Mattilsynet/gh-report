@@ -15,6 +15,46 @@ CHECKS=(projection-lock async-trait fence-converge dead-code-suppression non-exh
 # is total across every workspace compilation root.
 PENDING_CHECKS=()
 
+# Wall-clock bound for the read-only `cargo metadata` / `cargo tree` probes.
+# A hung probe reaches NO verdict, so it must never be folded into the
+# no-violation result (AGENTS.md code-quality rule 1: error is not a negative
+# finding). The containing CI job's own 30-minute timeout bounds the job but
+# not the verdict: without this, a probe wedged behind a registry stall or a
+# lock consumes the job and the gate's answer is decided by the clock rather
+# than by the code. Overridable via TRIPWIRE_PROBE_TIMEOUT_SECS.
+# Scope: the read-only metadata/tree probes only. `cargo run -p
+# non-exhaustive-check` is deliberately NOT wrapped — it compiles, so its
+# runtime is unbounded by design on a cold cache and a wall-clock bound there
+# would convert a slow build into a false gate failure.
+PROBE_TIMEOUT_SECS="${TRIPWIRE_PROBE_TIMEOUT_SECS:-120}"
+
+probe_out=""
+
+run_probe() {
+  local label=$1
+  shift
+
+  if ! command -v timeout >/dev/null 2>&1; then
+    echo "::error::${label}: 'timeout' not found on PATH — refusing to run an unbounded probe, because a probe that hangs reaches no verdict and cannot be distinguished from a clean one"
+    return 1
+  fi
+  if [[ ! "$PROBE_TIMEOUT_SECS" =~ ^[0-9]+$ ]] || [ "$PROBE_TIMEOUT_SECS" -eq 0 ]; then
+    echo "::error::${label}: TRIPWIRE_PROBE_TIMEOUT_SECS='${PROBE_TIMEOUT_SECS}' is not a positive integer — refusing to run a probe with an uninterpretable bound"
+    return 1
+  fi
+
+  local status=0
+  probe_out=$(timeout -- "$PROBE_TIMEOUT_SECS" "$@" 2>&1) || status=$?
+  case "$status" in
+    0) return 0 ;;
+    124 | 137)
+      echo "::error::${label}: probe '$*' was killed after ${PROBE_TIMEOUT_SECS}s at the wall clock (status ${status}) — it reached NO verdict, refusing to fold a timeout into the no-violation result (AGENTS.md code-quality rule 1)"
+      return 1
+      ;;
+    *) return "$status" ;;
+  esac
+}
+
 usage() {
   echo "usage: tools/tripwires.sh <check>|all|--list"
   echo "checks:"
@@ -79,11 +119,12 @@ check_async_trait() {
   fi
 
   local meta
-  if ! meta=$(cargo metadata --locked --no-deps --format-version 1 --manifest-path "$manifest" 2>&1); then
+  if ! run_probe "async-trait" cargo metadata --locked --no-deps --format-version 1 --manifest-path "$manifest"; then
     echo "::error::async-trait: cargo metadata --locked --no-deps --manifest-path ${manifest} FAILED — a failed workspace enumeration is an ERROR, not an empty member set, refusing to fold it into the no-violation verdict (CHE-0025:R1+R2)"
-    printf '%s\n' "$meta"
+    printf '%s\n' "$probe_out"
     return 1
   fi
+  meta=$probe_out
 
   local crates
   if ! crates=$(jq -r '[.packages[].name | select(startswith("cherry-pit-"))] | sort | .[]' <<< "$meta"); then
@@ -125,12 +166,13 @@ check_async_trait() {
   local fail=0
   local tree
   for c in "${crate_list[@]}"; do
-    if ! tree=$(cargo tree --locked --manifest-path "$manifest" -p "$c" -e features 2>&1); then
+    if ! run_probe "async-trait" cargo tree --locked --manifest-path "$manifest" -p "$c" -e features; then
       echo "::error::async-trait: cargo tree --locked --manifest-path ${manifest} -p ${c} -e features FAILED — a probe error is not a clean result, refusing to fold it into the no-violation verdict (CHE-0025:R1+R2)"
-      printf '%s\n' "$tree"
+      printf '%s\n' "$probe_out"
       fail=1
       continue
     fi
+    tree=$probe_out
     case "$tree" in
       *async-trait*)
         echo "::error::$c transitively depends on async-trait (CHE-0025:R1+R2)"
@@ -520,11 +562,12 @@ check_forbid_unsafe_total() {
   fi
 
   local meta
-  if ! meta=$(cargo metadata --locked --no-deps --format-version 1 --manifest-path "$manifest" 2>&1); then
+  if ! run_probe "forbid-unsafe-total" cargo metadata --locked --no-deps --format-version 1 --manifest-path "$manifest"; then
     echo "::error::forbid-unsafe-total: cargo metadata --locked --no-deps --manifest-path ${manifest} FAILED — a failed workspace enumeration is an ERROR, not an empty member set, refusing to fold it into the no-violation verdict (RST-0005:R1)"
-    printf '%s\n' "$meta"
+    printf '%s\n' "$probe_out"
     return 1
   fi
+  meta=$probe_out
 
   local member_count
   if ! member_count=$(jq -r '.packages | length' <<< "$meta"); then
