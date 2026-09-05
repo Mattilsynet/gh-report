@@ -87,15 +87,6 @@ jobs:
       - name: deny async-trait in cherry-pit-* dep trees (CHE-0025:R1+R2)
         if: always()
         run: tools/tripwires.sh async-trait
-      # Tripwire: cherry-pit-sd-viz must carry zero pardosa* Cargo dependency
-      # (CHE-0029 acyclic DAG + CHE-0084:R5 "MUST NOT introduce any
-      # cherry-pit->pardosa dependency edge"). The crate shape-mirrors
-      # pardosa-nats types in doc comments only; a real Cargo dependency edge
-      # would violate the standing severance. Mirrors the async-trait
-      # tripwire shape above (CHE-0094:R8).
-      - name: deny pardosa deps in cherry-pit-sd-viz (CHE-0084:R5)
-        if: always()
-        run: tools/tripwires.sh pardosa-dep
       # Mechanizes RST-0007:R2's id-existence half (RST-0007:R7): every
       # ADR rule id cited in a merge-gate step name: or ::error:: string
       # must name an existing, non-stale ADR carrying that rule id.

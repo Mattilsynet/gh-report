@@ -56,7 +56,6 @@
       <tr><td>cherry-pit-storage</td><td>adapter lib</td><td>fs, lock, signature, error (non_exhaustive)</td></tr>
       <tr><td>cherry-pit-web</td><td>adapter lib (axum, HAS server bind)</td><td>router, middleware::*, projection::*, serve::runtime (bind_serving_port, start, build_router, axum::serve)</td></tr>
       <tr><td>cherry-pit-wq</td><td>adapter lib</td><td>budget, rate_limit, work_queue, worker_pool</td></tr>
-      <tr><td>cherry-pit-sd-viz</td><td><span class="badge badge--tooling">tooling</span> (wasm cdylib)</td><td>binding, layout, scene, sd, sim, sparkline, view</td></tr>
     </tbody>
   </table>
 
@@ -85,7 +84,6 @@
       <tr><td>cherry-pit-storage</td><td>none in-scope (thiserror/tempfile/tracing/serde/sha2/jiff/gethostname/rustix external)</td><td><code>crates/cherry-pit-storage/Cargo.toml</code></td></tr>
       <tr><td>cherry-pit-web</td><td>cherry-pit-core</td><td><code>crates/cherry-pit-web/Cargo.toml</code></td></tr>
       <tr><td>cherry-pit-wq</td><td>cherry-pit-core</td><td><code>crates/cherry-pit-wq/Cargo.toml</code></td></tr>
-      <tr><td>cherry-pit-sd-viz</td><td>none in-scope listed in [dependencies] block observed as empty/absent at survey time</td><td><code>crates/cherry-pit-sd-viz/Cargo.toml</code> (description self-declares "zero pardosa dependency")</td></tr>
     </tbody>
   </table>
   <p>
@@ -127,7 +125,6 @@ flowchart TB
     cstorage["cherry-pit-storage<br/>(adapter lib)"]
     cweb["cherry-pit-web<br/>(adapter lib, axum)"]
     cwq["cherry-pit-wq<br/>(adapter lib)"]
-    csdviz["cherry-pit-sd-viz"]:::tooling
   end
 
   ghreport -->|"Cargo.toml"| cwq
@@ -179,7 +176,7 @@ flowchart TB
       </tr>
       <tr>
         <td>2. cherry-pit &perp; pardosa</td>
-        <td>grep across all 9 cherry-pit-*/Cargo.toml for "pardosa": zero real dependency lines found (only a code comment in cherry-pit-core/Cargo.toml noting pardosa-encoding was REMOVED, and a description string in cherry-pit-sd-viz/Cargo.toml). grep across all pardosa*/Cargo.toml for "cherry": zero matches.</td>
+        <td>grep across all 8 cherry-pit-*/Cargo.toml for "pardosa": zero real dependency lines found (only a code comment in cherry-pit-core/Cargo.toml noting pardosa-encoding was REMOVED). grep across all pardosa*/Cargo.toml for "cherry": zero matches.</td>
         <td>HOLDS both directions.</td>
       </tr>
       <tr>
