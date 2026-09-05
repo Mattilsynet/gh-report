@@ -201,6 +201,30 @@ jobs:
       - name: ban inner #![allow/expect(dead_code)] in crate src (RST-0003:R6)
         run: tools/tripwires.sh dead-code-suppression
 
+  # Meta-gate: the tripwires above are exercised by CI only against the real,
+  # homogeneous, conforming tree, so a future edit can reintroduce an
+  # awk-class under-match with every tripwire job green. This job runs the
+  # committed regression harness, which drives each gate against synthetic
+  # fixtures via its own overrides and asserts BOTH an exit code and a message
+  # fragment. Without it the harness is inert: committed proof that never runs
+  # on the merge path does not stop a gate regression from merging.
+  #
+  # The harness also asserts its own scenario cardinality — deleting or
+  # renaming a pinned scenario fails this job rather than silently reporting
+  # fewer passes at exit 0.
+  tripwire-regression:
+    name: tripwire regression harness (gates still hold)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: pinned merge-gate behaviour still holds, no silent weakening (RST-0007:R6+R7)
+        run: bash tools/tripwire-regression.sh
+
   supply-chain:
     name: supply-chain (audit + deny)
     runs-on: ubuntu-latest
