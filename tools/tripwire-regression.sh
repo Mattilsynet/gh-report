@@ -30,6 +30,35 @@ SCRATCH="$ROOT/.ooda/tmp/tripwire-regression.$$"
 PASS=0
 FAIL=0
 
+# The required scenario set, declared in code and keyed by label.
+#
+# A harness that only counts failures is fail-open to DELETION: remove an
+# expect invocation and the run reports fewer passes and still exits 0, so a
+# future edit can silently shed coverage while the gate suite stays green —
+# the same false-clean class the gates themselves were written to close, one
+# level up. Every label below must execute exactly once per run; a missing,
+# duplicated, or unregistered label fails the harness independently of any
+# gate verdict.
+REQUIRED_SCENARIOS="
+fut/baseline conforming
+fut/under-match first-member-on-members-line
+fut/over-match commented-out member
+fut/dedup cdylib+rlib counted once
+fut/zero members
+fut/package contributing zero roots
+fut/cargo metadata failure
+fut/manifest absent
+fut/probe error is neither clean nor missing
+redirect/FORBID_UNSAFE_MANIFEST reaches enumeration and probe
+redirect/ASYNC_TRAIT_MANIFEST reaches enumeration and tree probe
+redirect/DENY_TOML reaches the ignore-block parser
+redirect/GATE_CITATION_WORKFLOW trips the fail-open guard
+redirect/GATE_CITATION_WORKFLOW enforces per-job citation
+timeout/hung cargo probe fails closed
+timeout/uninterpretable bound fails closed
+"
+EXECUTED=""
+
 cleanup() {
   chmod -R u+rwX "$SCRATCH" 2>/dev/null || true
   rm -r "$SCRATCH" 2>/dev/null || true
@@ -43,6 +72,9 @@ mkdir -p "$SCRATCH"
 expect() {
   local label=$1 want_exit=$2 want_frag=$3 check=$4
   shift 4
+
+  EXECUTED="${EXECUTED}${label}
+"
 
   local out status=0
   out=$(env "$@" bash "$TRIPWIRES" "$check" 2>&1) || status=$?
@@ -234,6 +266,16 @@ expect "fut/manifest absent" 1 "workspace manifest not found" \
 # Scenario 8: grep's exit 2 is an I/O or binary fault, indistinguishable from
 # "no match" to a two-outcome probe. The gate must report it as neither a clean
 # root nor a missing attribute.
+#
+# The fault is induced by a deterministic `grep` shim that returns status 2
+# for the forbid-attribute probe and delegates every other invocation to the
+# real grep. Permission-based induction was not deterministic — a privileged
+# runner can still read a mode-000 file, which previously made this scenario
+# skip silently and shed one of the three required verdicts with the summary
+# still green. A shim reaches the probe on every runner, root included, so the
+# scenario is mandatory and has no skip path. Making the root a directory does
+# not work: the gate's own existence check rejects a non-regular root first,
+# which is a different verdict from a probe fault.
 D=$(new_ws fut_probe_error)
 cat > "$D/Cargo.toml" <<'EOF'
 [workspace]
@@ -242,14 +284,21 @@ members = ["alpha"]
 EOF
 member_pkg "$D" alpha forbid
 lock_ws "$D"
-chmod 000 "$D/alpha/src/lib.rs"
-if [ -r "$D/alpha/src/lib.rs" ]; then
-  echo "skip fut/probe error (running with read override, cannot make a root unreadable)"
-else
-  expect "fut/probe error is neither clean nor missing" 1 "FAILED with grep status" \
-    forbid-unsafe-total "FORBID_UNSAFE_MANIFEST=$D/Cargo.toml" "FORBID_UNSAFE_ROOT=$D"
-fi
-chmod u+rw "$D/alpha/src/lib.rs"
+mkdir -p "$D/bin"
+cat > "$D/bin/grep" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do
+  if [ "$a" = '^#!\[forbid\(unsafe_code\)\]' ]; then
+    echo "grep: simulated I/O fault" >&2
+    exit 2
+  fi
+done
+exec /usr/bin/grep "$@"
+EOF
+chmod +x "$D/bin/grep"
+expect "fut/probe error is neither clean nor missing" 1 "FAILED with grep status 2" \
+  forbid-unsafe-total "FORBID_UNSAFE_MANIFEST=$D/Cargo.toml" "FORBID_UNSAFE_ROOT=$D" \
+  "PATH=$D/bin:$PATH"
 
 echo "== override redirection (a no-op override proves nothing) =="
 
@@ -334,8 +383,49 @@ expect "timeout/uninterpretable bound fails closed" 1 "is not a positive integer
   async-trait "TRIPWIRE_PROBE_TIMEOUT_SECS=not-a-number"
 
 echo
-echo "tripwire-regression: ${PASS} passed, ${FAIL} failed"
+echo "== scenario coverage (a harness that cannot detect its own deletion is fail-open) =="
+
+COVERAGE_FAIL=0
+
+while IFS= read -r want; do
+  [ -n "$want" ] || continue
+  seen=$(printf '%s' "$EXECUTED" | grep -cxF -- "$want" || true)
+  if [ "$seen" -eq 0 ]; then
+    echo "::error::tripwire-regression: required scenario '${want}' did NOT execute — a pinned gate scenario was deleted, renamed, or skipped"
+    COVERAGE_FAIL=$((COVERAGE_FAIL + 1))
+  elif [ "$seen" -ne 1 ]; then
+    echo "::error::tripwire-regression: required scenario '${want}' executed ${seen} times — duplicate registration inflates the pass count without adding coverage"
+    COVERAGE_FAIL=$((COVERAGE_FAIL + 1))
+  fi
+done <<EOF
+$REQUIRED_SCENARIOS
+EOF
+
+while IFS= read -r ran; do
+  [ -n "$ran" ] || continue
+  if ! printf '%s' "$REQUIRED_SCENARIOS" | grep -qxF -- "$ran"; then
+    echo "::error::tripwire-regression: scenario '${ran}' executed but is not in the required set — register it in REQUIRED_SCENARIOS so its deletion is detectable"
+    COVERAGE_FAIL=$((COVERAGE_FAIL + 1))
+  fi
+done <<EOF
+$EXECUTED
+EOF
+
+REQUIRED_COUNT=$(printf '%s' "$REQUIRED_SCENARIOS" | grep -c . || true)
+if [ "$((PASS + FAIL))" -ne "$REQUIRED_COUNT" ]; then
+  echo "::error::tripwire-regression: ${REQUIRED_COUNT} scenarios required, $((PASS + FAIL)) results recorded"
+  COVERAGE_FAIL=$((COVERAGE_FAIL + 1))
+fi
+
+if [ "$COVERAGE_FAIL" -eq 0 ]; then
+  echo "ok   all ${REQUIRED_COUNT} required scenarios executed exactly once"
+fi
+
+echo
+echo "tripwire-regression: ${PASS} passed, ${FAIL} failed, ${COVERAGE_FAIL} coverage fault(s)"
 if [ "$FAIL" -ne 0 ]; then
   echo "::error::tripwire-regression: ${FAIL} pinned gate scenario(s) no longer hold — a merge gate changed behaviour"
+fi
+if [ "$FAIL" -ne 0 ] || [ "$COVERAGE_FAIL" -ne 0 ]; then
   exit 1
 fi
