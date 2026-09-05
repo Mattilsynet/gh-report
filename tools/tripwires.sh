@@ -239,11 +239,31 @@ check_non_exhaustive() {
 # is asserted to return a plausible non-zero count before the assertion
 # runs — a parser that matches nothing would exit 0 forever and is
 # worse than no check.
+# Workflow path overridable via GATE_CITATION_WORKFLOW for fixture-based
+# proof runs: with the path hardcoded the fail-open guard above could not
+# be exercised against a fixture and was itself asserted-but-unproven —
+# the same fail-open shape it exists to close, one level down. Sibling
+# checks parameterize for exactly this reason (DENY_TOML,
+# FORBID_UNSAFE_MANIFEST). The override redirects EVERY workflow-consuming
+# operation in this function — both the citation-token scan and the job
+# enumeration — so a fixture cannot redirect one stage while another still
+# reads the real workflow (the split-graph exposure of ghr-z9cho.4).
+# A missing workflow is a hard failure, never an empty token set: the
+# greps below carry `|| true` to tolerate a legitimate no-match, which
+# would otherwise make an unreadable file indistinguishable from a clean
+# one.
 check_gate_citation() {
+  local workflow="${GATE_CITATION_WORKFLOW:-$ROOT/.github/workflows/ci-reusable.yml}"
+
+  if [ ! -f "$workflow" ]; then
+    echo "::error::gate-citation: workflow not found at $workflow — an unreadable workflow is an ERROR, not a clean one (RST-0007:R7)"
+    return 1
+  fi
+
   local fail=0
   local tokens
-  tokens=$( { grep -hoE -- '- name:.*' .github/workflows/ci-reusable.yml || true; \
-              grep -hoE '::error::.*' .github/workflows/ci-reusable.yml tools/tripwires.sh || true; } \
+  tokens=$( { grep -hoE -- '- name:.*' "$workflow" || true; \
+              grep -hoE '::error::.*' "$workflow" tools/tripwires.sh || true; } \
             | grep -oE '[A-Z]{2,4}-[0-9]{4}:R[0-9]+(\+R[0-9]+)*' | sort -u )
   while IFS= read -r tok; do
     [ -z "$tok" ] && continue
@@ -283,13 +303,13 @@ check_gate_citation() {
       if ($0 ~ /[A-Z][A-Z][A-Z]?[A-Z]?-[0-9][0-9][0-9][0-9]:R[0-9]/) cited = 1
     }
     END { if (job != "") printf "%s\t%d\t%d\n", job, cited, steps }
-  ' .github/workflows/ci-reusable.yml)
+  ' "$workflow")
 
   local job_count step_total
   job_count=$(printf '%s\n' "$job_report" | grep -c . || true)
   step_total=$(printf '%s\n' "$job_report" | awk -F'\t' '{s += $3} END {print s + 0}')
   if [ "$job_count" -eq 0 ] || [ "$step_total" -eq 0 ]; then
-    echo "::error::gate-citation: enumerated ${job_count} job(s) and ${step_total} step name(s) from .github/workflows/ci-reusable.yml — fail-open guard tripped, refusing to pass silently (RST-0007:R7)"
+    echo "::error::gate-citation: enumerated ${job_count} job(s) and ${step_total} step name(s) from ${workflow} — fail-open guard tripped, refusing to pass silently (RST-0007:R7)"
     return 1
   fi
 
