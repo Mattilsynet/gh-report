@@ -224,10 +224,7 @@ mod tests {
 
     #[test]
     fn compare_cells_numeric_unparseable_sorts_before_parseable() {
-        assert_eq!(
-            compare_cells("N/A", "5", SortType::Numeric),
-            Ordering::Less
-        );
+        assert_eq!(compare_cells("N/A", "5", SortType::Numeric), Ordering::Less);
         assert_eq!(
             compare_cells("5", "N/A", SortType::Numeric),
             Ordering::Greater
@@ -236,10 +233,7 @@ mod tests {
 
     #[test]
     fn compare_cells_numeric_unparseable_sorts_below_zero() {
-        assert_eq!(
-            compare_cells("N/A", "0", SortType::Numeric),
-            Ordering::Less
-        );
+        assert_eq!(compare_cells("N/A", "0", SortType::Numeric), Ordering::Less);
         assert_eq!(
             compare_cells("N/A", "0%", SortType::Numeric),
             Ordering::Less
